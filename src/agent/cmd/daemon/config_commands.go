@@ -54,6 +54,7 @@ type webConfigDTO struct {
 	AudioArchive       audioArchiveDTO               `json:"audio_archive"`
 	VoiceNotifications voiceNotificationsDTO         `json:"voice_notifications"`
 	Log                logDTO                        `json:"log"`
+	OTA                otaDTO                        `json:"ota"`
 	HID                hidDTO                        `json:"hid"`
 	Search             searchDTO                     `json:"search"`
 	Telemetry          telemetryDTO                  `json:"telemetry"`
@@ -63,16 +64,16 @@ type webConfigDTO struct {
 }
 
 type modelDTO struct {
-	Provider             string  `json:"provider"`
-	APIKey               string  `json:"api_key"`
-	Model                string  `json:"model"`
-	BaseURL              string  `json:"base_url"`
-	TokenEnv             string  `json:"token_env"`
-	ReasoningEffort      string  `json:"reasoning_effort"`
-	Temperature          float64 `json:"temperature"`
-	MaxResponseTokens    int     `json:"max_response_tokens"`
-	ContextWindow        int     `json:"context_window"`
-	ModelMaxOutputTokens int     `json:"model_max_output_tokens"`
+	Provider             string   `json:"provider"`
+	APIKey               string   `json:"api_key"`
+	Model                string   `json:"model"`
+	BaseURL              string   `json:"base_url"`
+	TokenEnv             string   `json:"token_env"`
+	ReasoningEffort      string   `json:"reasoning_effort"`
+	Temperature          *float64 `json:"temperature,omitempty"`
+	MaxResponseTokens    int      `json:"max_response_tokens"`
+	ContextWindow        int      `json:"context_window"`
+	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
 }
 
 type ttsDTO struct {
@@ -161,12 +162,17 @@ type logDTO struct {
 	LLMHTTPRetentionDays int `json:"llm_http_retention_days"`
 }
 
+type otaDTO struct {
+	GitHubProxyURL string `json:"github_proxy_url"`
+}
+
 type hidDTO struct {
 	KeyboardDevice        string `json:"keyboard_device"`
 	MouseDevice           string `json:"mouse_device"`
 	AndroidKeyboardDevice string `json:"android_keyboard_device"`
 	FrameSocket           string `json:"frame_socket"`
 	PointerMode           string `json:"pointer_mode"`
+	InputBackend          string `json:"input_backend"`
 }
 
 type searchDTO struct {
@@ -331,12 +337,16 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		Log: agent.LogConfig{
 			LLMHTTPRetentionDays: d.Log.LLMHTTPRetentionDays,
 		},
+		OTA: agent.OTAConfig{
+			GitHubProxyURL: d.OTA.GitHubProxyURL,
+		},
 		HID: agent.HIDConfig{
 			KeyboardDevice:        d.HID.KeyboardDevice,
 			MouseDevice:           d.HID.MouseDevice,
 			AndroidKeyboardDevice: d.HID.AndroidKeyboardDevice,
 			FrameSocket:           d.HID.FrameSocket,
 			PointerMode:           d.HID.PointerMode,
+			InputBackend:          d.HID.InputBackend,
 		},
 		Search: agent.SearchConfig{
 			Provider: d.Search.Provider,
@@ -479,12 +489,16 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		Log: logDTO{
 			LLMHTTPRetentionDays: cfg.Log.LLMHTTPRetentionDaysOrDefault(),
 		},
+		OTA: otaDTO{
+			GitHubProxyURL: cfg.OTA.GitHubProxyURLOrDefault(),
+		},
 		HID: hidDTO{
 			KeyboardDevice:        cfg.HID.KeyboardDeviceOrDefault(),
 			MouseDevice:           cfg.HID.MouseDeviceOrDefault(),
 			AndroidKeyboardDevice: cfg.HID.AndroidKeyboardDeviceOrDefault(),
 			FrameSocket:           cfg.HID.FrameSocketOrDefault(),
 			PointerMode:           cfg.HID.PointerModeOrDefault(),
+			InputBackend:          cfg.HID.InputBackendOrDefault(),
 		},
 		Search: searchDTO{
 			Provider:  cfg.Search.ProviderOrDefault(),
@@ -563,6 +577,7 @@ func runConfigCheck(args []string) int {
 	fs := flag.NewFlagSet("config-check", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
 	stdinFlag := fs.Bool("stdin", false, "read config from stdin")
+	configFlag := fs.String("config", "", "path to agent.toml or config directory")
 
 	if err := fs.Parse(args); err != nil {
 		writeConfigCheckError("failed to parse flags: " + err.Error())
@@ -574,15 +589,22 @@ func runConfigCheck(args []string) int {
 		return 1
 	}
 
-	if !*stdinFlag {
-		writeConfigCheckError("--stdin flag is required")
+	configPath := strings.TrimSpace(*configFlag)
+	if *stdinFlag == (configPath != "") {
+		writeConfigCheckError("exactly one of --stdin or --config is required")
 		return 1
 	}
 
-	result, decodeErr := checkConfig(os.Stdin)
-	if decodeErr != nil {
-		writeConfigCheckError("invalid JSON input: " + decodeErr.Error())
-		return 1
+	var result ValidationResult
+	if *stdinFlag {
+		var decodeErr error
+		result, decodeErr = checkConfig(os.Stdin)
+		if decodeErr != nil {
+			writeConfigCheckError("invalid JSON input: " + decodeErr.Error())
+			return 1
+		}
+	} else {
+		result = checkConfigPath(configPath)
 	}
 
 	// Output result as JSON
@@ -597,6 +619,13 @@ func runConfigCheck(args []string) int {
 		return 0
 	}
 	return 1
+}
+
+func checkConfigPath(path string) ValidationResult {
+	if _, err := agent.LoadResolvedConfig(path); err != nil {
+		return ValidationResult{Valid: false, Errors: parseValidationErrors(err)}
+	}
+	return ValidationResult{Valid: true, Errors: []ValidationError{}}
 }
 
 // checkConfig reads a config_web wire-format payload from r, maps it onto

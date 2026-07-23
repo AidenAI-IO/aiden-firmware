@@ -287,6 +287,7 @@ type streamSessionWriter struct {
 	spoke       bool
 	lastErr     error
 	interrupted bool
+	textWritten bool
 }
 
 func (w *streamSessionWriter) setCancel(cancel context.CancelFunc) {
@@ -305,6 +306,7 @@ func (w *streamSessionWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	session := w.session
+	w.textWritten = true
 	w.mu.Unlock()
 
 	if err := session.WriteText(string(p)); err != nil {
@@ -395,9 +397,17 @@ func (w *streamSessionWriter) closeAndWait() error {
 		return nil
 	}
 	session := w.session
+	textWritten := w.textWritten
 	w.mu.Unlock()
 
-	closeErr := session.Close()
+	var closeErr error
+	if textWritten {
+		closeErr = session.Close()
+	} else if aborter, ok := session.(interface{ Abort() error }); ok {
+		closeErr = aborter.Abort()
+	} else {
+		closeErr = session.Close()
+	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()

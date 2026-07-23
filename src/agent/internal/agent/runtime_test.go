@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/langfuse"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -20,6 +21,8 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/model"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -77,22 +80,30 @@ type testModelResolver struct {
 	model llms.Model
 	err   error
 	calls int
-	spec  ModelSpec
+	spec  model.ModelSpec
 }
 
-func (r *testModelResolver) Get() (llms.Model, error) {
+func (r *testModelResolver) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	r.calls++
 	if r.err != nil {
 		return nil, r.err
 	}
-	return r.model, nil
+	return r.model.GenerateContent(ctx, messages, options...)
+}
+
+func (r *testModelResolver) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	r.calls++
+	if r.err != nil {
+		return "", r.err
+	}
+	return r.model.Call(ctx, prompt, options...)
 }
 
 func (r *testModelResolver) CallOptions() []chains.ChainCallOption {
 	return nil
 }
 
-func (r *testModelResolver) Spec() ModelSpec {
+func (r *testModelResolver) Spec() model.ModelSpec {
 	return r.spec
 }
 
@@ -146,13 +157,13 @@ func TestRuntimeRunMarksMainAgentModelCallsForRawHTTPLog(t *testing.T) {
 }
 
 func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
-	ingestCh := make(chan langfuseIngestionRequest, 1)
+	ingestCh := make(chan langfuse.IngestionRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/public/ingestion" {
 			http.NotFound(w, r)
 			return
 		}
-		var req langfuseIngestionRequest
+		var req langfuse.IngestionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -190,7 +201,7 @@ func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
 		t.Fatalf("Run() error = %v, want %v", err, buildErr)
 	}
 
-	var ingest langfuseIngestionRequest
+	var ingest langfuse.IngestionRequest
 	select {
 	case ingest = <-ingestCh:
 	case <-time.After(2 * time.Second):
@@ -2114,8 +2125,85 @@ func (m *scriptedModel) Call(context.Context, string, ...llms.CallOption) (strin
 	panic("unexpected Call invocation")
 }
 
+func (m *scriptedModel) Spec() model.ModelSpec {
+	return model.ModelSpec{
+		Provider:      "fake",
+		Name:          "scripted",
+		ContextWindow: 100,
+	}
+}
+
+func (m *scriptedModel) CallOptions() []chains.ChainCallOption { return nil }
+
 func contentResponse(content string) *llms.ContentResponse {
 	return contentResponseWithInfo(content, nil)
+}
+
+func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	// Runtime compaction uses a minimum context window of 8192 tokens, so this
+	// fixture must comfortably exceed the ~80% threshold to force compaction.
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
+		{Role: contextmanager.MessageRoleSystem, Content: "Answer directly."},
+		{Role: contextmanager.MessageRoleUser, Content: strings.Repeat("user ", 1600)},
+		{Role: contextmanager.MessageRoleAssistant, Content: strings.Repeat("assistant ", 1600)},
+		{
+			Role: contextmanager.MessageRoleToolCall,
+			ToolCalls: []contextmanager.ToolCall{{
+				ID:        "call_1",
+				Name:      "echo",
+				Arguments: `{"input":"` + strings.Repeat("x", 4000) + `"}`,
+			}},
+		},
+		{
+			Role: contextmanager.MessageRoleToolResult,
+			ToolResults: []contextmanager.ToolResult{{
+				ToolCallID: "call_1",
+				Name:       "echo",
+				Content:    strings.Repeat("result ", 1600),
+			}},
+		},
+		{Role: contextmanager.MessageRoleAssistant, Content: "recent tail"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+
+	llmModel := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("compacted summary"),
+			contentResponse("ok"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{ContextWindow: 100},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+	if len(llmModel.messages) != 2 {
+		t.Fatalf("model call count = %d, want 2 (summary + planner)", len(llmModel.messages))
+	}
 }
 
 func contentResponseWithInfo(content string, info map[string]any) *llms.ContentResponse {
@@ -3399,6 +3487,29 @@ func TestRuntimeRunResetsPromptTokensWhenUsageUnavailable(t *testing.T) {
 	}
 }
 
+func TestRuntimeCloseStopsStoragePoller(t *testing.T) {
+	rt, err := NewRuntime(Config{
+		ConfigDir:     ensureTestConfigDir(t, t.TempDir()),
+		Model:         ModelConfig{Provider: "fake"},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	if err := rt.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	select {
+	case <-rt.storage.stop:
+	default:
+		t.Fatal("Close() did not stop the storage poller")
+	}
+}
+
 func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 
@@ -3524,79 +3635,6 @@ func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 	}
 
 	waitForSessionCompaction(t, configDir, runtime.memories)
-}
-
-func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	cfg := DefaultMemoryExtractionConfig()
-	cfg.HotWindowEvents = 4
-
-	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC()
-	for i := 0; i < 9; i++ {
-		if _, err := session.AppendEvent(context.Background(), SessionEvent{
-			EventID: fmt.Sprintf("evt_%d", i),
-			Ts:      now.Format(time.RFC3339Nano),
-			Type:    "user_input",
-			Role:    "user",
-			Content: "历史消息",
-		}); err != nil {
-			t.Fatalf("AppendEvent() error = %v", err)
-		}
-	}
-
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var released atomic.Bool
-	releaseMaintenance := func() {
-		if released.CompareAndSwap(false, true) {
-			close(release)
-		}
-	}
-	defer releaseMaintenance()
-	var startedOnce atomic.Bool
-	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
-		if startedOnce.CompareAndSwap(false, true) {
-			close(started)
-		}
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-release:
-			return "async summary"
-		}
-	}))
-
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1}),
-		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
-		manager,
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	defer runtime.Close()
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
-		done <- err
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("Run() blocked on memory maintenance")
-	}
-
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("async memory maintenance did not start")
-	}
-	releaseMaintenance()
 }
 
 func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
@@ -4663,5 +4701,183 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	}
 	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
 		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
+	}
+}
+
+func TestRuntimePreemptCancelsActiveRun(t *testing.T) {
+	t.Parallel()
+
+	// Model that blocks until context is canceled.
+	model := &blockingFirstCallModel{
+		firstCallStarted: make(chan struct{}),
+		releaseFirstCall: make(chan struct{}),
+		responses:        []*llms.ContentResponse{contentResponse("first"), contentResponse("second")},
+	}
+
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	// Start first run in background.
+	firstDone := make(chan struct{})
+	var firstErr error
+	go func() {
+		defer close(firstDone)
+		_, firstErr = runtime.Run(context.Background(), RunRequest{Input: "first task"})
+	}()
+
+	// Wait for first run to actually start the model call.
+	select {
+	case <-model.firstCallStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not start model call")
+	}
+
+	// Start second run — should preempt the first.
+	secondResult, secondErr := runtime.Run(context.Background(), RunRequest{Input: "second task"})
+
+	// First run should have been canceled.
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not finish after preemption")
+	}
+	if firstErr == nil {
+		t.Fatal("expected first run to return error after preemption")
+	}
+
+	// Second run should succeed.
+	if secondErr != nil {
+		t.Fatalf("second run error = %v", secondErr)
+	}
+	if secondResult.Output != "second" {
+		t.Fatalf("second run output = %q, want 'second'", secondResult.Output)
+	}
+
+	// WasPreempted should report true.
+	if !runtime.WasPreempted(5 * time.Second) {
+		t.Fatal("WasPreempted should return true after preemption")
+	}
+}
+
+func TestRuntimePreemptHooksAreCalled(t *testing.T) {
+	t.Parallel()
+
+	model := &blockingFirstCallModel{
+		firstCallStarted: make(chan struct{}),
+		releaseFirstCall: make(chan struct{}),
+		responses:        []*llms.ContentResponse{contentResponse("first"), contentResponse("second")},
+	}
+
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var hookCalled atomic.Int32
+	runtime.RegisterPreemptHook(func() {
+		hookCalled.Add(1)
+	})
+
+	// Start first run.
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		runtime.Run(context.Background(), RunRequest{Input: "first"})
+	}()
+
+	select {
+	case <-model.firstCallStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not start")
+	}
+
+	// Second run triggers preemption.
+	runtime.Run(context.Background(), RunRequest{Input: "second"})
+
+	if hookCalled.Load() == 0 {
+		t.Fatal("preempt hook was not called")
+	}
+
+	// Wait for first run to complete.
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not complete")
+	}
+}
+
+func TestRuntimePreemptHookPanicDoesNotStopOtherHooks(t *testing.T) {
+	t.Parallel()
+
+	model := &blockingFirstCallModel{
+		firstCallStarted: make(chan struct{}),
+		releaseFirstCall: make(chan struct{}),
+		responses:        []*llms.ContentResponse{contentResponse("first"), contentResponse("second")},
+	}
+
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var hook1Called atomic.Int32
+	var hook2Called atomic.Int32
+	var hook3Called atomic.Int32
+
+	// Register hooks: first and third work normally, second panics.
+	runtime.RegisterPreemptHook(func() {
+		hook1Called.Add(1)
+	})
+	runtime.RegisterPreemptHook(func() {
+		hook2Called.Add(1)
+		panic("intentional test panic")
+	})
+	runtime.RegisterPreemptHook(func() {
+		hook3Called.Add(1)
+	})
+
+	// Start first run.
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		runtime.Run(context.Background(), RunRequest{Input: "first"})
+	}()
+
+	select {
+	case <-model.firstCallStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not start")
+	}
+
+	// Second run triggers preemption with panicking hook.
+	runtime.Run(context.Background(), RunRequest{Input: "second"})
+
+	// All hooks should be called despite the panic in hook 2.
+	if hook1Called.Load() == 0 {
+		t.Error("hook 1 was not called")
+	}
+	if hook2Called.Load() == 0 {
+		t.Error("hook 2 was not called (should have been called before panic)")
+	}
+	if hook3Called.Load() == 0 {
+		t.Error("hook 3 was not called (panic in hook 2 should not stop subsequent hooks)")
+	}
+
+	// Wait for first run to complete.
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not complete")
 	}
 }

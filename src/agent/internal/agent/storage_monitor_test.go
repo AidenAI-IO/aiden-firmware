@@ -167,7 +167,7 @@ func TestStorageMonitorCheckAndRemediatePublishesOnlyCleanupFinalState(t *testin
 		storageSampleWithAvailableMB(60),
 	}}
 	cleaner := &recordingStorageCleaner{name: "logs", priority: 1, freed: 7 * 1024 * 1024}
-	monitor := NewStorageMonitor(StorageConfig{
+	monitor := NewStorageMonitor(StorageMonitorConfig{
 		Enabled:              true,
 		RootPath:             "/userdata",
 		WarningThresholdMB:   50,
@@ -206,7 +206,7 @@ func TestStorageMonitorCheckAndRemediateAppliesRecoveryHysteresis(t *testing.T) 
 		storageSampleWithAvailableMB(53),
 		storageSampleWithAvailableMB(56),
 	}}
-	monitor := NewStorageMonitor(StorageConfig{
+	monitor := NewStorageMonitor(StorageMonitorConfig{
 		Enabled:              true,
 		RootPath:             "/userdata",
 		WarningThresholdMB:   50,

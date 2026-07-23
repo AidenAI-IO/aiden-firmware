@@ -848,6 +848,8 @@ func TestBundledDeviceOperatorContainsEmbeddedDevicePlaybooks(t *testing.T) {
 	for _, want := range []string{
 		"## Text Entry",
 		"segments",
+		"folder/list view",
+		"search_launch_app` success as app-open confirmation only",
 		"## App Switching and Launch",
 		"app_switch",
 		"## Scrolling and Picker Controls",

@@ -56,7 +56,6 @@ func TurnFailureFromError(err error) *TurnFailure {
 		"credits exhausted",
 		"credit balance",
 		"payment required",
-		"api error 402",
 		"status 402",
 		"status code 402",
 	} {

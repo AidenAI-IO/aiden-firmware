@@ -14,6 +14,7 @@ struct ModelToml {
     std::string token_env;
     std::string reasoning_effort;
     double temperature = 0.0;
+    bool has_temperature = false;
     int max_response_tokens = 0;
     int context_window = 0;
     int model_max_output_tokens = 0;
@@ -77,12 +78,17 @@ struct LogToml {
     int llm_http_retention_days = 7;
 };
 
+struct OTAToml {
+    std::string github_proxy_url;
+};
+
 struct HIDToml {
     std::string keyboard_device = "/dev/hidg0";
     std::string mouse_device = "/dev/hidg1";
     std::string android_keyboard_device = "/dev/hidg2";
     std::string frame_socket = "/run/frame_service/frame_service.sock";
     std::string pointer_mode = "absolute";
+    std::string input_backend = "hid";
 };
 
 struct SearchToml {
@@ -143,6 +149,7 @@ struct AgentToml {
     AudioArchiveToml audio_archive;
     VoiceNotificationsToml voice_notifications;
     LogToml log;
+    OTAToml ota;
     HIDToml hid;
     SearchToml search;
     TelemetryToml telemetry;

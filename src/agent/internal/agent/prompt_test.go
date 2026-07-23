@@ -6,10 +6,21 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"aiden-agent/internal/agent/contextmanager"
 )
 
 func testPromptProfile(cfg AgentConfig) RoleProfile {
 	return buildProfile(cfg, NewSkillManager(NewSkillIndex()), nil, agentRoleRules())
+}
+
+func newPromptTestContextManager(t *testing.T) *contextmanager.ContextManager {
+	t.Helper()
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	return manager
 }
 
 func TestRolePromptsIncludeCurrentDate(t *testing.T) {
@@ -23,6 +34,40 @@ func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 	profile := testPromptProfile(AgentConfig{})
 	if !strings.Contains(profile.SystemPrompt, want) {
 		t.Fatalf("system prompt missing current date %q:\n%s", want, profile.SystemPrompt)
+	}
+}
+
+func TestRolePromptIncludesConfiguredResponseLocaleInSystemPrompt(t *testing.T) {
+	manager := NewSkillManager(NewSkillIndex())
+	zh := buildProfile(AgentConfig{Locale: "zh-CN"}, manager, nil, agentRoleRules())
+	en := buildProfile(AgentConfig{Locale: "en-US"}, manager, nil, agentRoleRules())
+
+	if zh.SystemPrompt == en.SystemPrompt {
+		t.Fatalf("system prompt did not change with locale:\nzh=%q\nen=%q", zh.SystemPrompt, en.SystemPrompt)
+	}
+	for _, want := range []string{"configured response locale is zh-CN", "Simplified Chinese", "from the first generated token"} {
+		if !strings.Contains(zh.SystemPrompt, want) {
+			t.Fatalf("Chinese system prompt missing %q:\n%s", want, zh.SystemPrompt)
+		}
+	}
+	for _, want := range []string{"configured response locale is en-US", "English", "from the first generated token"} {
+		if !strings.Contains(en.SystemPrompt, want) {
+			t.Fatalf("English system prompt missing %q:\n%s", want, en.SystemPrompt)
+		}
+	}
+}
+
+func TestStateHookDoesNotInjectResponseLocale(t *testing.T) {
+	runtime := NewRuntimeWithDeps(Config{Locale: "en-US"}, nil, nil, nil, NewSkillIndex())
+	manager := newPromptTestContextManager(t)
+	manager.AddAppendMessageHook(runtime.getStateHook())
+	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	messages := manager.MessageListDump().Messages
+	if len(messages) != 1 || messages[0].Role != contextmanager.MessageRoleUser {
+		t.Fatalf("messages = %#v, want only the user message", messages)
 	}
 }
 
@@ -69,7 +114,9 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		"extra prompt",
 		"## Environment",
 		"## Default behavior",
-		"Default to replying in Simplified Chinese",
+		"configured response locale is zh-CN",
+		"Always respond in Simplified Chinese",
+		"from the first generated token",
 		"Most user input arrives as voice transcribed by STT",
 		"homophone, near-sound, segmentation, or named-entity errors",
 		"choose likely canonical keywords and try reasonable alternate terms",
@@ -409,6 +456,33 @@ func TestPhoneBridgeRuntimeContextDisconnectedBackgroundAppGuidesRecovery(t *tes
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestPhoneBridgeRuntimeContextDisconnectedAndroidAvoidsIOSRecovery(t *testing.T) {
+	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
+		Connected: false,
+		Platform:  "android",
+	})
+
+	for _, want := range []string{
+		"- connected: false",
+		"- platform: android",
+		"Keep Aiden open in the foreground",
+		"call screenshot first",
+		"then try search_launch_app",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtime context missing %q:\n%s", want, got)
+		}
+	}
+	for _, notWant := range []string{
+		"Dynamic Island",
+		"return_entry=dynamic_island",
+	} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("Android runtime context should not include %q:\n%s", notWant, got)
 		}
 	}
 }

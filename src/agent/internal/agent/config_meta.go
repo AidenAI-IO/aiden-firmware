@@ -58,6 +58,7 @@ type FieldMeta struct {
 	Range       *Range       `json:"range,omitempty"`
 	Default     interface{}  `json:"default,omitempty"`
 	Secret      bool         `json:"secret,omitempty"`
+	Nullable    bool         `json:"nullable,omitempty"` // For number fields: empty input means unset (omit key), not 0
 	VisibleWhen *VisibleRule `json:"visibleWhen,omitempty"`
 }
 
@@ -108,14 +109,16 @@ func ConfigMeta() ConfigMetadata {
 				Name: "model",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("openrouter", "openai", "ollama", "fake"),
+						Enum:    enumOptions("openrouter", "openai", "kimi", "kimi-cn", "ollama", "fake"),
 						Default: defaults.Model.Provider},
 					{Key: "token_env", Widget: WidgetText},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(ne("model.provider", "openrouter"))},
-					{Key: "temperature", Widget: WidgetNumber, Default: defaults.Model.Temperature},
+						VisibleWhen: all(in("model.provider", "openai", "ollama"))},
+					// The effective default is model-dependent (resolved at load
+					// time); show the global fallback here as the UI placeholder.
+					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},
 					{Key: "max_response_tokens", Widget: WidgetNumber, Default: defaults.Model.MaxResponseTokens},
 					{Key: "log_raw_http", Widget: WidgetBoolean, Default: defaults.Model.LogRawHTTP},
 					{Key: "reasoning_effort", Widget: WidgetSelect,
@@ -215,10 +218,26 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
+				Name: "storage",
+				Fields: []FieldMeta{
+					{Key: "mount_point", Widget: WidgetText, Default: defaults.Storage.MountPointOrDefault()},
+					{Key: "device", Widget: WidgetText, Default: defaults.Storage.DeviceOrDefault()},
+					{Key: "min_card_free_mb", Widget: WidgetNumber, Default: defaults.Storage.MinCardFreeMBOrDefault()},
+					{Key: "migrate_start_free_pct", Widget: WidgetNumber, Default: defaults.Storage.MigrateStartFreePct},
+					{Key: "migrate_stop_free_pct", Widget: WidgetNumber, Default: defaults.Storage.MigrateStopFreePct},
+				},
+			},
+			{
 				Name: "log",
 				Fields: []FieldMeta{
 					{Key: "llm_http_retention_days", Widget: WidgetNumber,
 						Default: defaults.Log.LLMHTTPRetentionDaysOrDefault()},
+				},
+			},
+			{
+				Name: "ota",
+				Fields: []FieldMeta{
+					{Key: "github_proxy_url", Widget: WidgetText, Default: ""},
 				},
 			},
 			{
@@ -227,6 +246,9 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "pointer_mode", Widget: WidgetSelect,
 						Enum:    enumOptions("absolute", "touchscreen"),
 						Default: defaults.HID.PointerMode},
+					{Key: "input_backend", Widget: WidgetSelect,
+						Enum:    enumOptions("hid", "adb"),
+						Default: defaults.HID.InputBackend},
 					{Key: "keyboard_device", Widget: WidgetText, Default: defaults.HID.KeyboardDevice},
 					{Key: "mouse_device", Widget: WidgetText, Default: defaults.HID.MouseDevice},
 					{Key: "android_keyboard_device", Widget: WidgetText, Default: defaults.HID.AndroidKeyboardDevice},
@@ -281,7 +303,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "agent",
 				Fields: []FieldMeta{
 					{Key: "locale", Widget: WidgetSelect,
-						Enum:    enumOptions("zh-CN", "en-US"),
+						Enum:    enumOptions(localeSimplifiedChinese, localeEnglishUS),
 						Default: defaults.LocaleOrDefault()},
 					{Key: "input_mode", Widget: WidgetSelect,
 						Enum:    enumOptions("text", "stt"),

@@ -50,7 +50,7 @@ func (t *appSearchOpenTool) Name() string { return "search_launch_app" }
 func (t *appSearchOpenTool) Description() string {
 	return strings.TrimSpace(`Search for an app from the system search UI, tap the result, and confirm it opened. ` +
 		`Use this when the fastest path is visible app search instead of bridge-based direct launch. ` +
-		`Input JSON: {"app":"WeChat"}. Returns ok:true only when the target app is visibly opened.`)
+		`Input JSON: {"app":"WeChat"}. Returns ok:true only when the target app is visibly opened; it does not mean an in-app editor, composer, or input field is ready. Observe the opened screen and complete any create/open/navigation step before calling a text-entry tool.`)
 }
 
 func (t *appSearchOpenTool) ArgsSchema() map[string]any {

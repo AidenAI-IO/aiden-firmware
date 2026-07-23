@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -78,6 +80,13 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 			wantInField: "input_mode",
 		},
 		{
+			name: "invalid locale nested under agent",
+			payload: `{"model":{"provider":"openai","model":"gpt-4"},
+				"search":{"provider":"duckduckgo"},
+				"agent":{"locale":"fr-FR"}}`,
+			wantInField: "locale",
+		},
+		{
 			name: "missing model provider",
 			payload: `{"model":{"model":"gpt-4"},
 				"search":{"provider":"duckduckgo"},"agent":{}}`,
@@ -143,6 +152,21 @@ func TestConfigCheck_WireCustomInstructionMapsToAgentConfig(t *testing.T) {
 	}
 }
 
+func TestConfigCheck_WireLocaleMapsToAgentConfig(t *testing.T) {
+	dto := webConfigDTO{
+		Model:  modelDTO{Provider: "openai", Model: "gpt-4"},
+		Search: searchDTO{Provider: "duckduckgo"},
+		Agent:  agentDTO{Locale: "en-US"},
+	}
+	cfg := dto.toAgentConfig()
+	if cfg.Locale != "en-US" {
+		t.Fatalf("Locale = %q, want en-US", cfg.Locale)
+	}
+	if got := webConfigDTOFromAgentConfig(cfg).Agent.Locale; got != "en-US" {
+		t.Fatalf("round-trip locale = %q, want en-US", got)
+	}
+}
+
 // TestConfigCheck_WireTelemetryNested verifies telemetry validation runs
 // against the nested "telemetry" wire object.
 func TestConfigCheck_WireTelemetryNested(t *testing.T) {
@@ -197,5 +221,41 @@ func TestConfigCheck_InvalidJSON(t *testing.T) {
 	_, err := checkConfig(strings.NewReader("not json"))
 	if err == nil {
 		t.Fatal("expected decode error for malformed JSON, got nil")
+	}
+}
+
+func TestConfigCheckPath_ValidatesFullTOMLWithoutRejectingUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	content := `locale = "en-US"
+todo_reminder_tool_calls = 7
+skills_dirs = ["/userdata/skills"]
+future_plugin_flag = true
+
+[device]
+backend = "hdmi"
+future_device_option = "keep me"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	result := checkConfigPath(path)
+	if !result.Valid {
+		t.Fatalf("expected valid config, got errors: %+v", result.Errors)
+	}
+}
+
+func TestConfigCheckPath_RejectsInvalidTOML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte("locale = [\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	result := checkConfigPath(path)
+	if result.Valid {
+		t.Fatal("expected malformed TOML to be rejected")
+	}
+	if len(result.Errors) == 0 || !strings.Contains(result.Errors[0].Message, "TOML") {
+		t.Fatalf("expected TOML decode error, got: %+v", result.Errors)
 	}
 }

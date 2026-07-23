@@ -118,31 +118,33 @@ type PhoneBridgeStatus struct {
 }
 
 type PhoneBridge struct {
-	mu               sync.Mutex
-	conn             *websocket.Conn
-	connected        bool
-	platform         string
-	phoneID          string
-	lastHeartbeatAt  time.Time
-	appState         string
-	appStateAt       time.Time
-	returnEntry      string
-	returnEntryOK    bool
-	returnEntrySeen  bool
-	pipBridgeEnabled bool
-	pipBridgeSeen    bool
-	fgsBridgeEnabled bool
-	fgsBridgeSeen    bool
-	fgsBridgeAt      time.Time
-	environment      *PhoneEnvironment
-	environmentAt    time.Time
-	clipboardText    string
-	clipboardAt      time.Time
-	pendingCmds      map[string]chan BridgeCommandResponse
-	logger           *Logger
-	done             chan struct{}
-	queue            *CommandQueue // HTTP queue for background-compatible commands
-	stateManager     *statemanager.StateManager
+	mu                sync.Mutex
+	statusPublishMu   sync.Mutex
+	statusExpiryTimer *time.Timer
+	conn              *websocket.Conn
+	connected         bool
+	platform          string
+	phoneID           string
+	lastHeartbeatAt   time.Time
+	appState          string
+	appStateAt        time.Time
+	returnEntry       string
+	returnEntryOK     bool
+	returnEntrySeen   bool
+	pipBridgeEnabled  bool
+	pipBridgeSeen     bool
+	fgsBridgeEnabled  bool
+	fgsBridgeSeen     bool
+	fgsBridgeAt       time.Time
+	environment       *PhoneEnvironment
+	environmentAt     time.Time
+	clipboardText     string
+	clipboardAt       time.Time
+	pendingCmds       map[string]chan BridgeCommandResponse
+	logger            *Logger
+	done              chan struct{}
+	queue             *CommandQueue // HTTP queue for background-compatible commands
+	stateManager      *statemanager.StateManager
 }
 
 func NewPhoneBridge(logger *Logger, stateManager *statemanager.StateManager) *PhoneBridge {
@@ -595,6 +597,16 @@ func (pb *PhoneBridge) currentPhoneID() string {
 }
 
 func (pb *PhoneBridge) statusUpdated() {
+	if pb == nil || pb.stateManager == nil {
+		return
+	}
+
+	// Serialize snapshot publication so an older status callback cannot publish
+	// after a newer HTTP poll or WebSocket event. The freshness expiry callback
+	// uses the same path.
+	pb.statusPublishMu.Lock()
+	defer pb.statusPublishMu.Unlock()
+
 	status := pb.getStatus()
 	// update stateManager with the new status
 	// if connected, set app_connected to true
@@ -622,11 +634,96 @@ func (pb *PhoneBridge) statusUpdated() {
 		pb.stateManager.DeleteState("app_fgs_enabled")
 	}
 
-	if status.Environment != nil {
-		pb.stateManager.SetState("app_platform", status.Platform)
+	platform := strings.ToLower(strings.TrimSpace(status.Platform))
+	if platform == "ios" || platform == "android" {
+		pb.stateManager.SetState("app_platform", platform)
 	} else {
 		pb.stateManager.DeleteState("app_platform")
 	}
+
+	if strategy := phoneBridgeTextEntryState(status); strategy != "" {
+		pb.stateManager.SetState("app_text_entry_strategy", strategy)
+	} else {
+		pb.stateManager.DeleteState("app_text_entry_strategy")
+	}
+
+	pb.scheduleStatusExpiryLocked(status)
+}
+
+const (
+	phoneBridgeTextEntryTargetPreserving = "target_preserving_bridge"
+	phoneBridgeTextEntryConnected        = "bridge_connected"
+	phoneBridgeTextEntryRestoreAvailable = "bridge_restore_available"
+	phoneBridgeTextEntryIMEFallback      = "ime_fallback"
+)
+
+func phoneBridgeTextEntryState(status PhoneBridgeStatus) string {
+	platform := strings.ToLower(strings.TrimSpace(status.Platform))
+	if platform != "ios" && platform != "android" {
+		return ""
+	}
+	if phoneBridgeCanUsePiPBackground(status, "clipboard_write") || phoneBridgeCanUseFGSBackground(status, "clipboard_write") {
+		return phoneBridgeTextEntryTargetPreserving
+	}
+	if platform == "android" && phoneBridgeAppNeedsForeground(status) && phoneBridgeReadyForCommand(status, "clipboard_write") {
+		return phoneBridgeTextEntryTargetPreserving
+	}
+	if phoneBridgePiPBackgroundEnabled(status) || phoneBridgeFGSBackgroundEnabled(status) {
+		return phoneBridgeTextEntryIMEFallback
+	}
+	if phoneBridgeReadyForCommand(status, "clipboard_write") {
+		return phoneBridgeTextEntryConnected
+	}
+	if phoneBridgeCanRestoreFromReturnEntry(status) {
+		return phoneBridgeTextEntryRestoreAvailable
+	}
+	return phoneBridgeTextEntryIMEFallback
+}
+
+func (pb *PhoneBridge) scheduleStatusExpiryLocked(status PhoneBridgeStatus) {
+	if pb.statusExpiryTimer != nil {
+		pb.statusExpiryTimer.Stop()
+		pb.statusExpiryTimer = nil
+	}
+
+	delay, ok := phoneBridgeTextEntryStateExpiry(status)
+	if !ok {
+		return
+	}
+	pb.statusExpiryTimer = time.AfterFunc(delay, pb.statusUpdated)
+}
+
+func phoneBridgeTextEntryStateExpiry(status PhoneBridgeStatus) (time.Duration, bool) {
+	var deadline time.Time
+	now := time.Now()
+	consider := func(updatedAt *time.Time) {
+		if updatedAt == nil {
+			return
+		}
+		candidate := updatedAt.Add(phoneBridgeBackgroundStateMaxAge).Add(time.Millisecond)
+		if !candidate.After(now) {
+			return
+		}
+		if deadline.IsZero() || candidate.Before(deadline) {
+			deadline = candidate
+		}
+	}
+
+	if phoneBridgePiPBackgroundEnabled(status) {
+		consider(status.AppStateUpdatedAt)
+	}
+	if phoneBridgeFGSBackgroundEnabled(status) {
+		consider(status.FgsBridgeUpdatedAt)
+	}
+	if deadline.IsZero() {
+		return 0, false
+	}
+
+	delay := time.Until(deadline)
+	if delay <= 0 {
+		return 0, false
+	}
+	return delay, true
 }
 
 func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
@@ -756,7 +853,11 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString("enabled=")
 		builder.WriteString(fmt.Sprintf("%t", *status.PipBridgeEnabled))
 		builder.WriteByte(' ')
-		builder.WriteString("(PiP mode in the background can hide the Dynamic Island return entry)\n")
+		if phoneBridgeIsIOS(status) {
+			builder.WriteString("(PiP mode in the background can hide the Dynamic Island return entry)\n")
+		} else {
+			builder.WriteString("(background bridge mode status)\n")
+		}
 	}
 	if status.FgsBridgeEnabled != nil {
 		builder.WriteString("- fgs_bridge: ")
@@ -781,8 +882,14 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 	} else if phoneBridgePiPBackgroundEnabled(status) {
 		builder.WriteString("- PiP Bridge mode is enabled while Aiden is backgrounded. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
 	} else if phoneBridgeAppNeedsForeground(status) {
-		builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
-		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first tap the Aiden Dynamic Island entry, wait for app_state=active/Phone Bridge reconnect, then send the command. For lock-screen Live Activity entries, use screenshot/HID fallback or visual confirmation instead of blind tapping.\n")
+		if phoneBridgeIsIOS(status) {
+			builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
+			builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first tap the Aiden Dynamic Island entry, wait for app_state=active/Phone Bridge reconnect, then send the command. For lock-screen Live Activity entries, use screenshot/HID fallback or visual confirmation instead of blind tapping.\n")
+		} else if phoneBridgeIsAndroid(status) {
+			builder.WriteString("- The Android Aiden companion app is backgrounded or inactive. bridge_open_app and UI actions require foreground app control or HID fallback; Android FGS Bridge mode only supports background-safe data tools.\n")
+		} else {
+			builder.WriteString("- The Aiden companion app is backgrounded or inactive. Phone Bridge foreground commands may time out until Aiden returns to foreground; use screenshot/HID fallback when reconnect is unavailable.\n")
+		}
 	} else if status.Connected {
 		builder.WriteString("- The phone companion app is connected. Use bridge_open_app as the primary path for opening apps, webpages, and phone dialer screens before falling back to screenshot/HID navigation.\n")
 		builder.WriteString("- bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
@@ -790,7 +897,13 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString("- If bridge_open_app returns {\"ok\":true}, treat the app launch as complete unless the user requested additional in-app actions.")
 	} else {
 		builder.WriteString("- The phone companion app is not connected. Do not assume bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification tools can control the phone right now.\n")
-		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
+		if phoneBridgeIsIOS(status) {
+			builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
+		} else if phoneBridgeIsAndroid(status) {
+			builder.WriteString("- Keep Aiden open in the foreground and wait for Phone Bridge to reconnect before retrying bridge_open_app; otherwise use screenshot plus HID/touch fallback.")
+		} else {
+			builder.WriteString("- Retry companion app tools only after Phone Bridge reconnects or a visible platform return entry is confirmed; otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
+		}
 	}
 	if !status.Connected {
 		if !strings.HasSuffix(builder.String(), "\n") {

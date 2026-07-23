@@ -1,0 +1,216 @@
+"""Device layer for the ADB Android environment bridge.
+
+Wraps all adb interactions with a target Android device (e.g. a Genymotion
+emulator reachable at 127.0.0.1:6555). This module deliberately knows nothing
+about HTTP or the bridge protocol: it returns plain values and raises
+ADBCommandError / ValueError on failure. The bridge layers (tools_api/server)
+translate those into protocol responses.
+"""
+
+from __future__ import annotations
+
+import io
+import re
+import subprocess
+import time
+from typing import Any
+
+
+DEFAULT_SCREENSHOT_MAX_WIDTH = 720
+DEFAULT_JPEG_QUALITY = 75
+
+# Characters adb `input text` can type reliably on a US keyboard layout.
+# Deliberately excludes newline/tab (input text cannot type them) and any
+# non-ASCII text (needs a clipboard/IME path, out of scope for v1).
+ADB_TEXT_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+    " "
+    "-=[]\\;'`,./"
+    "!@#$%^&*()_+{}|:\"~<>?"
+)
+
+KEYCODE_HOME = 3
+KEYCODE_BACK = 4
+KEYCODE_TAB = 61
+KEYCODE_ENTER = 66
+KEYCODE_DEL = 67
+KEYCODE_APP_SWITCH = 187
+
+
+class ADBCommandError(RuntimeError):
+    """An adb command failed or timed out."""
+
+
+class ADBAndroidDevice:
+    """Thin wrapper over the adb CLI for a single device serial."""
+
+    def __init__(
+        self,
+        serial: str,
+        adb_path: str = "adb",
+        timeout_sec: float = 10,
+        screenshot_max_width: int = DEFAULT_SCREENSHOT_MAX_WIDTH,
+        jpeg_quality: int = DEFAULT_JPEG_QUALITY,
+    ):
+        self.serial = str(serial).strip()
+        if not self.serial:
+            raise ValueError("adb serial is required")
+        self.adb_path = adb_path
+        self.timeout_sec = timeout_sec
+        self.screenshot_max_width = max(1, int(screenshot_max_width))
+        self.jpeg_quality = min(95, max(1, int(jpeg_quality)))
+        self._screen_size: tuple[int, int] | None = None
+
+    # ---- low-level -------------------------------------------------------
+
+    def _run(self, args: list[str], *, timeout: float | None = None, binary: bool = False) -> bytes:
+        command = [self.adb_path, "-s", self.serial, *args]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                timeout=timeout if timeout is not None else self.timeout_sec,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise ADBCommandError(f"adb binary not found: {self.adb_path!r}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ADBCommandError(f"adb command timed out: {' '.join(args)}") from exc
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            stdout = result.stdout.decode("utf-8", errors="replace").strip()
+            detail = stderr or stdout or f"exit code {result.returncode}"
+            raise ADBCommandError(f"adb {' '.join(args)} failed: {detail}")
+        return result.stdout if binary else result.stdout
+
+    def _run_text(self, args: list[str], *, timeout: float | None = None) -> str:
+        return self._run(args, timeout=timeout).decode("utf-8", errors="replace")
+
+    # ---- queries ---------------------------------------------------------
+
+    def check_device(self) -> dict[str, Any]:
+        """Return device state; raises ADBCommandError when unreachable."""
+        state = self._run_text(["get-state"]).strip()
+        if state != "device":
+            raise ADBCommandError(f"adb device {self.serial} is not ready: state={state!r}")
+        return {"serial": self.serial, "state": state}
+
+    def screen_size(self) -> tuple[int, int]:
+        """Return the device screen size in pixels (Override wins over Physical)."""
+        if self._screen_size is not None:
+            return self._screen_size
+        output = self._run_text(["shell", "wm", "size"])
+        override: tuple[int, int] | None = None
+        physical: tuple[int, int] | None = None
+        for line in output.splitlines():
+            match = re.search(r"(Override|Physical) size:\s*(\d+)x(\d+)", line)
+            if not match:
+                continue
+            size = (int(match.group(2)), int(match.group(3)))
+            if match.group(1) == "Override":
+                override = size
+            else:
+                physical = size
+        size = override or physical
+        if size is None or size[0] <= 0 or size[1] <= 0:
+            raise ADBCommandError(f"could not parse `wm size` output: {output!r}")
+        self._screen_size = size
+        return size
+
+    def screenshot_jpeg(self) -> tuple[bytes, int, int]:
+        """Capture the screen, downscale, and return (jpeg_bytes, width, height).
+
+        Width/height are the scaled JPEG dimensions. Coordinate conversion must
+        use screen_size() (raw pixels), never these values.
+        """
+        try:
+            from PIL import Image
+        except ImportError as exc:  # pragma: no cover - Pillow is a hard dependency
+            raise ADBCommandError("Pillow is required for screenshots") from exc
+
+        png = self._run(["exec-out", "screencap", "-p"], binary=True, timeout=max(self.timeout_sec, 15))
+        if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ADBCommandError("screencap did not return PNG data")
+        image = Image.open(io.BytesIO(png)).convert("RGB")
+        if image.width > self.screenshot_max_width:
+            new_height = max(1, round(image.height * self.screenshot_max_width / image.width))
+            image = image.resize((self.screenshot_max_width, new_height))
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=self.jpeg_quality)
+        return buffer.getvalue(), image.width, image.height
+
+    # ---- actions ---------------------------------------------------------
+
+    def tap(self, x: int, y: int) -> None:
+        self._run(["shell", "input", "tap", str(int(x)), str(int(y))])
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        self._run(
+            [
+                "shell",
+                "input",
+                "swipe",
+                str(int(x1)),
+                str(int(y1)),
+                str(int(x2)),
+                str(int(y2)),
+                str(max(1, int(duration_ms))),
+            ],
+            timeout=max(self.timeout_sec, duration_ms / 1000 + 5),
+        )
+
+    def keyevent(self, keycode: str | int) -> None:
+        self._run(["shell", "input", "keyevent", str(keycode)])
+
+    def input_text(self, text: str) -> None:
+        """Type ASCII text via `input text`.
+
+        Known limitation: `input text` interprets `%s` as a space, so a literal
+        "%s" in the text is typed as a space. Non-ASCII text is rejected.
+        """
+        unsupported = unsupported_adb_text_chars(text)
+        if unsupported:
+            raise ValueError(
+                f"adb input text supports only US-keyboard ASCII characters; unsupported: {unsupported!r}"
+            )
+        if text == "":
+            raise ValueError("text is required")
+        self._run(["shell", "input", "text", escape_adb_text(text)])
+
+    def start_settings(self) -> None:
+        self._run(["shell", "am", "start", "-a", "android.settings.SETTINGS"])
+
+    def expand_notifications(self) -> None:
+        self._run(["shell", "cmd", "statusbar", "expand-notifications"])
+
+    def expand_settings(self) -> None:
+        self._run(["shell", "cmd", "statusbar", "expand-settings"])
+
+    def collapse_statusbar(self) -> None:
+        self._run(["shell", "cmd", "statusbar", "collapse"])
+
+    def reset_home(self) -> None:
+        """Best-effort reset to a neutral home screen."""
+        try:
+            self.collapse_statusbar()
+        except ADBCommandError:
+            pass
+        self.keyevent("KEYCODE_HOME")
+        time.sleep(0.3)
+
+
+def unsupported_adb_text_chars(text: str) -> str:
+    return "".join(ch for ch in text if ch not in ADB_TEXT_CHARS)
+
+
+def escape_adb_text(text: str) -> str:
+    """Escape text for the device-side shell invoked by `adb shell input text`.
+
+    adb concatenates the shell arguments and runs them through the device's
+    `sh -c`, so the text must be single-quoted for that shell. Spaces become
+    `%s` per `input text` conventions.
+    """
+    escaped = text.replace(" ", "%s")
+    return "'" + escaped.replace("'", "'\\''") + "'"

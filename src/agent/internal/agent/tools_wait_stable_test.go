@@ -118,6 +118,10 @@ func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 	if width, height, _, ok := screen.DimensionsWithAge(); !ok || width != 2 || height != 2 {
 		t.Fatalf("screen dimensions = %dx%d ok=%v, want 2x2 true", width, height, ok)
 	}
+	latest, latestWidth, latestHeight, _, ok := screen.LatestScreenshot(screenDimensionsStaleAfter)
+	if !ok || latestWidth != 2 || latestHeight != 2 || !bytes.Equal(latest, jpegData) {
+		t.Fatalf("latest screenshot = %dx%d bytes=%d ok=%v, want 2x2 bytes=%d true", latestWidth, latestHeight, len(latest), ok, len(jpegData))
+	}
 	visual, ok := any(tool).(visualObservationTool)
 	if !ok || !visual.ReturnsVisualObservation() {
 		t.Fatalf("wait_for_stable_screen must be a visual observation tool")

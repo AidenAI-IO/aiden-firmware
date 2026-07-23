@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/model"
 	"context"
 	"fmt"
 	"os"
@@ -22,7 +23,7 @@ func TestShouldCompressUsesResolverContextWindow8k(t *testing.T) {
 
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 8_000} }),
+		WithContextWindowFn(func() model.ModelSpec { return model.ModelSpec{ContextWindow: 8_000} }),
 	)
 
 	// 50% of 8k = 4000 tokens. 3999 must NOT trigger; 4000 must.
@@ -51,7 +52,7 @@ func TestShouldCompressUsesResolverContextWindow32k(t *testing.T) {
 
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 32_000} }),
+		WithContextWindowFn(func() model.ModelSpec { return model.ModelSpec{ContextWindow: 32_000} }),
 	)
 
 	// 50% of 32k = 16000 tokens.
@@ -73,7 +74,7 @@ func TestShouldCompressUsesResolverContextWindow128k(t *testing.T) {
 
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 128_000} }),
+		WithContextWindowFn(func() model.ModelSpec { return model.ModelSpec{ContextWindow: 128_000} }),
 	)
 
 	// 50% of 128k = 64000 tokens. With the old hardcoded 32k, 20000 tokens
@@ -102,7 +103,7 @@ func TestShouldCompressFallsBackToYAMLWhenResolverUnknown(t *testing.T) {
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
 		// Resolver returns 0 → unknown model → fall back to yaml's 32k.
-		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 0} }),
+		WithContextWindowFn(func() model.ModelSpec { return model.ModelSpec{ContextWindow: 0} }),
 	)
 
 	mgr.SetLastPromptTokens(15_999)
@@ -144,7 +145,7 @@ func TestMaintainFilesystemMemoryUsesResolverContextWindow(t *testing.T) {
 
 	mgr := NewMemoryManager(storageDir,
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 100_000} }),
+		WithContextWindowFn(func() model.ModelSpec { return model.ModelSpec{ContextWindow: 100_000} }),
 	)
 
 	sessionDir := filepath.Join(storageDir, "session")
@@ -197,7 +198,7 @@ func TestMaintainFilesystemMemoryUpdatesLastPromptTokens(t *testing.T) {
 
 	mgr := NewMemoryManager(storageDir,
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 10_000} }),
+		WithContextWindowFn(func() model.ModelSpec { return model.ModelSpec{ContextWindow: 10_000} }),
 	)
 
 	sessionDir := filepath.Join(storageDir, "session")
@@ -315,7 +316,7 @@ func TestColdStartSeedsLastPromptTokensFromHotWindow(t *testing.T) {
 	// Phase 2: cold start — a brand new manager loads the persisted session.
 	mgr := NewMemoryManager(storageDir,
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 10_000} }),
+		WithContextWindowFn(func() model.ModelSpec { return model.ModelSpec{ContextWindow: 10_000} }),
 	)
 	if got := mgr.LastPromptTokens(); got != 0 {
 		t.Fatalf("precondition: fresh manager should start at 0 tokens, got %d", got)
@@ -342,8 +343,8 @@ func TestShouldCompressReservesOutputTokens(t *testing.T) {
 	// Model with 10k context window and 2k max output → input budget = 8k
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() ModelSpec {
-			return ModelSpec{ContextWindow: 10_000, MaxOutput: 2_000}
+		WithContextWindowFn(func() model.ModelSpec {
+			return model.ModelSpec{ContextWindow: 10_000, MaxOutput: 2_000}
 		}),
 	)
 
@@ -381,8 +382,8 @@ func TestMaintainFilesystemMemoryReservesOutputTokens(t *testing.T) {
 	// 50% of 8k = 4000 tokens.
 	mgr := NewMemoryManager(storageDir,
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() ModelSpec {
-			return ModelSpec{ContextWindow: 10_000, MaxOutput: 2_000}
+		WithContextWindowFn(func() model.ModelSpec {
+			return model.ModelSpec{ContextWindow: 10_000, MaxOutput: 2_000}
 		}),
 	)
 

@@ -43,6 +43,23 @@ PiP Bridge is a narrow exception. When the app reports `pip_bridge_enabled=true`
 
 Android FGS Bridge follows the same HTTP queue contract without using WebSocket as a background transport. When the Android foreground service polls `/api/phone-bridge/commands` with `app_state=background` and `fgs_bridge_enabled=true`, the Agent keeps `open_app` unavailable and routes only background-safe data tools through the HTTP queue.
 
+## Desktop Agent With ADB Reverse
+
+When running the Agent on a development computer instead of the Luckfox board, the phone cannot reach `192.168.42.1` because the USB ECM board network does not exist. For Android development, use the ADB input backend and let the phone app connect through ADB reverse:
+
+```text
+Phone relay app -> ws://127.0.0.1:8080/api/phone-bridge
+ADB reverse     -> host computer 127.0.0.1:8080
+```
+
+When `[hid].input_backend = "adb"` is active, the desktop Agent attempts to configure the reverse mapping automatically at startup:
+
+```bash
+adb reverse tcp:8080 tcp:8080
+```
+
+The companion app keeps `192.168.42.1` as the first target, then falls back to the desktop ADB reverse target when the board API is unavailable. Android board-network binding is skipped for loopback URLs so the app can reach the ADB reverse socket.
+
 ## App Opening Flow
 
 ```text

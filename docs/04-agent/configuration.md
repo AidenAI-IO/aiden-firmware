@@ -44,9 +44,9 @@ The firmware starts `config_web` on port 80.
 
 ### What the page can configure
 
-The page fields cover the following config sections (all detailed later on this page):
+The page fields cover the following config sections (all detailed later on this page). The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
-- `agent`: `input_mode`, `trigger_mode`, VAD params, `load_all_tools`, `max_iterations`, `custom_instruction`, `additional_prompt`
+- `agent`: `locale`, `input_mode`, `trigger_mode`, VAD params, `load_all_tools`, `max_iterations`, `custom_instruction`, `additional_prompt`
 - `model`: provider, token_env, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
@@ -62,6 +62,7 @@ The page fields cover the following config sections (all detailed later on this 
 ### Web UI (text mode)
 
 ```toml
+locale = "zh-CN"
 custom_instruction = ""
 max_iterations = -1
 screenshot_keep_n = 3
@@ -99,6 +100,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ### STT voice mode
 
 ```toml
+locale = "zh-CN"
 custom_instruction = ""
 input_mode = "stt"
 trigger_mode = "manual"
@@ -154,6 +156,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 | Field | Default / allowed values | Description |
 | --- | --- | --- |
+| `locale` | `zh-CN` (default) / `en-US` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[stt].language`, which only controls speech recognition. |
 | `custom_instruction` | - | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior. |
 | `additional_prompt` | - | Additional prompt field; appended after the base instruction at runtime |
 | `load_all_tools` | `false` | When `true`, also send `list_scripts`, `read_script`, and `write_script` to the conversational model. This does not expose HTTP-blocked maintenance tools. |
@@ -227,15 +230,36 @@ The three stall-score thresholds must satisfy
 
 | Field | Description |
 | --- | --- |
-| `provider` | `openai`, `openrouter`, `ollama`, `fake` |
+| `provider` | `openai`, `openrouter`, `kimi`, `kimi-cn`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); both accept a `base_url` override. |
 | `model` | Model name; usually required except for `fake` |
-| `base_url` | Custom OpenAI-compatible endpoint |
+| `base_url` | Custom OpenAI-compatible endpoint. Optional for `kimi`/`kimi-cn` (each has a built-in default). |
 | `api_key` | API key written directly |
 | `token_env` | Read the API key from the specified environment variable; only supported by `[model]` |
-| `temperature` | Sampling temperature |
+| `temperature` | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence. |
 | `max_response_tokens` | Maximum output tokens passed to the model on request |
 | `context_window` | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback. |
 | `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry. |
+
+### Moonshot Kimi K3
+
+Use the dedicated `kimi` (global) or `kimi-cn` (mainland China) provider. Each has a built-in Moonshot OpenAI-compatible `base_url`, so only `model` and the API key are required. The `kimi-k3` context window and max output are in the built-in registry, so the metadata overrides can stay unset.
+
+```toml
+# Global site (https://api.moonshot.ai/v1)
+[model]
+provider = "kimi"
+model = "kimi-k3"
+api_key = "MOONSHOT_API_KEY"
+
+# Mainland China site (https://api.moonshot.cn/v1)
+# [model]
+# provider = "kimi-cn"
+# model = "kimi-k3"
+# api_key = "MOONSHOT_API_KEY"
+
+# base_url is optional for kimi/kimi-cn; set it only to override the default
+# (e.g. a proxy or self-hosted gateway).
+```
 
 ## `[log]`
 
@@ -294,6 +318,7 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 | `android_keyboard_device` | `/dev/hidg2` | Consumer Control HID device (`hid.usb2`) used for Android extension keys in `pointer_mode = "touchscreen"` and media/volume/brightness/screenshot keys in `pointer_mode = "absolute"` |
 | `frame_socket` | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool |
 | `pointer_mode` | `absolute` | `absolute` for iOS-style cursor mode on `hid.usb1` plus a limited `hid.usb2` media-key interface; `touchscreen` for Android digitizer mode plus full `hid.usb2` Android extension keys |
+| `input_backend` | `hid` | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands. |
 
 ## `[live_activity]`
 
@@ -499,5 +524,4 @@ Optional. Place `memory/extraction.yaml` under the config directory to control s
 ## Known limitations
 
 - `preferred_model`, `allowed_children`, and `model_text` are currently parsed but not fully wired into execution;
-- The Agent loop has been split into three RoleProfiles: `planner`, `executor`, and `verifier`; skill instructions go into each role profile, function tools are exposed only to the executor, and the tool catalog is given to other roles as planning/review reference; the `verifier` validates against the original task and completion criteria;
 - Example skills may reference old tools and should be checked before production use.

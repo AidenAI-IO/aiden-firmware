@@ -33,11 +33,11 @@ Related documentation:
 | Post-cleanup resampling | Available | Final state always comes from statfs |
 | Degraded write controls | Available | Suspends non-essential persistence |
 | Write-error remediation | Available | Handles ENOSPC and EROFS |
-| Status endpoint | Available | GET /api/storage/status |
+| Status endpoint | Available | GET /api/storage/monitor/status |
 | Cleanup endpoint | Available | POST /api/storage/cleanup |
 | Deployment state file | Available | /run/agent/storage_level |
 | Agent log integration | Available | Default path is /userdata/agent/log/agent.log |
-| Notification event output | Interface available | No production consumer is injected by this module |
+| Notification event output | Available | Publishes through the global VoiceNotificationManager |
 | LED and App presentation | Out of scope | Consumers can poll the status endpoint |
 
 ## Storage Scope
@@ -90,7 +90,7 @@ Manual cleanup ──────┘              │
                                     ├→ run eligible cleaners by priority
                                     ├→ statfs after every cleaner
                                     ├→ apply recovery hysteresis
-                                    └→ publish final StorageStatus
+                                    └→ publish final StorageMonitorStatus
                                            ├→ update write capabilities
                                            ├→ update storage_level file
                                            ├→ serve HTTP status
@@ -239,7 +239,7 @@ At Critical or Emergency, S53agent trims `<CONFIG_DIR>/log/agent.log` to storage
 
 ## Status Model
 
-StorageStatus is the immutable snapshot produced by a successful check.
+StorageMonitorStatus is the immutable snapshot produced by a successful check.
 
 | Field | Meaning |
 | --- | --- |
@@ -273,7 +273,7 @@ Disabling or stopping StorageMonitor removes both the state file and its tempora
 ### Get Status
 
 ~~~http
-GET /api/storage/status
+GET /api/storage/monitor/status
 ~~~
 
 Example response:
@@ -387,15 +387,15 @@ Validation rules:
 
 ## Optional Event Output
 
-StorageMonitor exposes a VoiceNotificationSink interface for final storage-state events.
+StorageMonitor exposes a VoiceNotificationSink interface for final storage-state events. The Agent runtime injects the global VoiceNotificationManager as the production consumer.
 
 - Non-Normal states publish active.
 - Severity changes update the stable storage:device condition.
 - Recovery to Normal publishes resolved.
 - Periodic checks can refresh an equivalent active event.
-- Publish failures do not roll back cleanup or StorageStatus.
+- Publish failures do not roll back cleanup or StorageMonitorStatus.
 
-No concrete consumer is created or injected by this module. Queueing, presentation, playback, deduplication, and delivery policy belong to the consuming subsystem.
+Queueing, presentation, playback, deduplication, and delivery policy remain owned by VoiceNotificationManager.
 
 ## Testing
 
@@ -431,4 +431,3 @@ cd ../..
 - Logs for other services under /var/log are not cleaned.
 - The status API supports polling but not real-time push.
 - LED, Companion App, and complete Web UI presentation are outside this module.
-- The event sink has no production consumer in this module.

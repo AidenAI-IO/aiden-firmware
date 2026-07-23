@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -139,7 +140,7 @@ func TestConvertToStandardMessageList_ToolCalls(t *testing.T) {
 		}},
 	})
 
-	messages := manager.ConvertToStandardMessageList()
+	messages := ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 1 {
 		t.Fatalf("messages = %#v", messages)
 	}
@@ -171,7 +172,7 @@ func TestConvertToStandardMessageList_NormalizesInvalidToolCallArguments(t *test
 		}},
 	})
 
-	messages := manager.ConvertToStandardMessageList()
+	messages := ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 1 || len(messages[0].Parts) != 1 {
 		t.Fatalf("messages = %#v, want one tool call message", messages)
 	}
@@ -213,7 +214,7 @@ func TestConvertToStandardMessageList_ToolResults(t *testing.T) {
 		}},
 	})
 
-	messages := manager.ConvertToStandardMessageList()
+	messages := ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 2 {
 		t.Fatalf("messages = %#v", messages)
 	}
@@ -226,6 +227,44 @@ func TestConvertToStandardMessageList_ToolResults(t *testing.T) {
 	toolResponse, ok := messages[1].Parts[0].(llms.ToolCallResponse)
 	if !ok || toolResponse.ToolCallID != "call_1" || toolResponse.Name != "echo" || toolResponse.Content != `{"output":"hello"}` {
 		t.Fatalf("tool result part = %#v", messages[1].Parts[0])
+	}
+}
+
+func TestNewContextManagerFromMessageListPersistsMessages(t *testing.T) {
+	sessionFolder := t.TempDir()
+	want := []Message{
+		{Role: MessageRoleSystem, Content: "system prompt"},
+		{
+			Role:    MessageRoleToolCall,
+			Content: "checking",
+			ToolCalls: []ToolCall{{
+				ID:        "call_1",
+				Name:      "echo",
+				Arguments: `{"input":"hello"}`,
+			}},
+		},
+		{
+			Role: MessageRoleToolResult,
+			ToolResults: []ToolResult{{
+				ToolCallID: "call_1",
+				Name:       "echo",
+				Content:    `{"output":"hello"}`,
+			}},
+		},
+	}
+
+	manager, err := NewContextManagerFromMessageList(sessionFolder, want)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+
+	reloaded, err := LoadContextManagerFromSessionID(sessionFolder, manager.GetSessionID())
+	if err != nil {
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
+	}
+
+	if got := reloaded.CloneMessageList(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("reloaded messages = %#v, want %#v", got, want)
 	}
 }
 
@@ -273,7 +312,7 @@ func TestAppendMessageRepairsPersistedOrphanToolCallBeforeNextUser(t *testing.T)
 		t.Fatalf("last message = %#v, want user", dump.Messages[2])
 	}
 
-	messages := reloaded.ConvertToStandardMessageList()
+	messages := ConvertMessageList(reloaded.CloneMessageList())
 	if len(messages) != 3 || messages[0].Role != llms.ChatMessageTypeAI || messages[1].Role != llms.ChatMessageTypeTool || messages[2].Role != llms.ChatMessageTypeHuman {
 		t.Fatalf("provider messages = %#v, want assistant/tool/user", messages)
 	}
@@ -338,7 +377,7 @@ func TestAppendMessagePairsLegacyMissingToolCallIDByName(t *testing.T) {
 		t.Fatalf("AppendMessage(tool result) error = %v", err)
 	}
 
-	messages := manager.ConvertToStandardMessageList()
+	messages := ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 2 {
 		t.Fatalf("messages = %#v, want paired call and result", messages)
 	}
@@ -423,73 +462,6 @@ func TestContextManagerAppendMessageHookCanDropOriginalMessage(t *testing.T) {
 	}
 }
 
-func TestContextManagerAppendMessageHookCleanup(t *testing.T) {
-	manager := newTestContextManager(t)
-	remove := manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
-		message.Content = "hooked:" + message.Content
-		return AppendMessageHookResult{Message: &message}
-	})
-
-	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "first"}); err != nil {
-		t.Fatalf("AppendMessage(first) error = %v", err)
-	}
-	remove()
-	remove()
-	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "second"}); err != nil {
-		t.Fatalf("AppendMessage(second) error = %v", err)
-	}
-
-	dump := manager.MessageListDump()
-	if got, want := len(dump.Messages), 2; got != want {
-		t.Fatalf("message count = %d, want %d", got, want)
-	}
-	if dump.Messages[0].Content != "hooked:first" || dump.Messages[1].Content != "second" {
-		t.Fatalf("messages = %#v", dump.Messages)
-	}
-}
-
-func TestContextManagerTransientMessageIsConsumedOnceWithoutPersistence(t *testing.T) {
-	manager := newTestContextManager(t)
-	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"}); err != nil {
-		t.Fatalf("AppendMessage() error = %v", err)
-	}
-	manager.AppendTransientMessage(Message{Role: MessageRoleNotice, Content: "one-shot notice"})
-	if got := len(manager.MessageListDump().Messages); got != 1 {
-		t.Fatalf("persisted message count = %d, want 1", got)
-	}
-
-	firstPrompt := manager.TakeStandardMessageListForModel()
-	if got := len(firstPrompt); got != 2 {
-		t.Fatalf("first prompt message count = %d, want persisted + transient", got)
-	}
-	if firstPrompt[1].Role != llms.ChatMessageTypeHuman || standardMessageText(firstPrompt[1]) != "one-shot notice" {
-		t.Fatalf("transient prompt message = %#v", firstPrompt[1])
-	}
-	if got := len(manager.TakeStandardMessageListForModel()); got != 1 {
-		t.Fatalf("second prompt message count = %d, want transient consumed", got)
-	}
-
-	reloaded, err := LoadContextManagerFromSessionID(manager.sessionFolder, manager.sessionID)
-	if err != nil {
-		t.Fatalf("reload context manager: %v", err)
-	}
-	if got := len(reloaded.ConvertToStandardMessageList()); got != 1 {
-		t.Fatalf("reloaded message count = %d, want transient excluded", got)
-	}
-}
-
-func TestContextManagerTransientMessageCleanupRemovesPendingMessage(t *testing.T) {
-	manager := newTestContextManager(t)
-	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"}); err != nil {
-		t.Fatalf("AppendMessage() error = %v", err)
-	}
-	remove := manager.AppendTransientMessage(Message{Role: MessageRoleNotice, Content: "stale"})
-	remove()
-	if got := len(manager.TakeStandardMessageListForModel()); got != 1 {
-		t.Fatalf("prompt message count after cleanup = %d, want persisted message only", got)
-	}
-}
-
 func TestContextManagerConcurrentAppendWithStatefulHook(t *testing.T) {
 	manager := newTestContextManager(t)
 	var hookMu sync.Mutex
@@ -503,14 +475,12 @@ func TestContextManagerConcurrentAppendWithStatefulHook(t *testing.T) {
 
 	const appends = 32
 	var wg sync.WaitGroup
-	for i := 0; i < appends; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range appends {
+		wg.Go(func() {
 			if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"}); err != nil {
 				t.Errorf("AppendMessage() error = %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -551,7 +521,7 @@ func TestStoreAttachmentPersistsMetadataOnly(t *testing.T) {
 		Attachments: []Attachment{stored},
 	})
 
-	messages := manager.ConvertToStandardMessageList()
+	messages := ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 1 || len(messages[0].Parts) != 2 {
 		t.Fatalf("messages = %#v, want text + binary parts", messages)
 	}
@@ -613,13 +583,54 @@ func TestConvertToStandardMessageListLoadsAttachmentFromFilePath(t *testing.T) {
 		}},
 	})
 
-	messages := manager.ConvertToStandardMessageList()
+	messages := ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 1 || len(messages[0].Parts) != 2 {
 		t.Fatalf("messages = %#v, want text + binary parts", messages)
 	}
 	binaryPart, ok := messages[0].Parts[1].(llms.BinaryContent)
 	if !ok || string(binaryPart.Data) != "manual-bytes" {
 		t.Fatalf("binary part = %#v", messages[0].Parts[1])
+	}
+}
+
+func TestConvertMessageListUsesProvidedSlice(t *testing.T) {
+	manager := newTestContextManager(t)
+	stored, err := manager.StoreAttachment("image/png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("StoreAttachment() error = %v", err)
+	}
+	stored.Source = AttachmentSourceScreenshotObservation
+	if err := manager.AppendMessage(Message{
+		Role:        MessageRoleUser,
+		Content:     "caption",
+		Attachments: []Attachment{stored},
+	}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	cloned := manager.CloneMessageList()
+	if len(cloned) != 1 || len(cloned[0].Attachments) != 1 {
+		t.Fatalf("clone = %#v", cloned)
+	}
+	if cloned[0].Attachments[0].Source != AttachmentSourceScreenshotObservation {
+		t.Fatalf("Source = %q", cloned[0].Attachments[0].Source)
+	}
+
+	// Ephemeral prune: drop attachment, keep text — ConvertMessageList must not read the file.
+	cloned[0].Attachments = nil
+	cloned[0].Content = "caption\n[Image omitted]"
+	converted := ConvertMessageList(cloned)
+	if len(converted) != 1 {
+		t.Fatalf("converted len = %d", len(converted))
+	}
+	for _, part := range converted[0].Parts {
+		if _, ok := part.(llms.BinaryContent); ok {
+			t.Fatalf("expected no binary parts after ephemeral prune, got %#v", converted[0].Parts)
+		}
+	}
+	dump := manager.MessageListDump()
+	if len(dump.Messages) != 1 || len(dump.Messages[0].Attachments) != 1 {
+		t.Fatalf("persisted dump mutated: %#v", dump)
 	}
 }
 
@@ -635,7 +646,7 @@ func TestConvertToStandardMessageListReportsMissingAttachment(t *testing.T) {
 		}},
 	})
 
-	messages := manager.ConvertToStandardMessageList()
+	messages := ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 1 || len(messages[0].Parts) != 2 {
 		t.Fatalf("messages = %#v, want text + omitted attachment notice", messages)
 	}

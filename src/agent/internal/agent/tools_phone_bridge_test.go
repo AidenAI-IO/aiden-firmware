@@ -12,6 +12,15 @@ import (
 	"nhooyr.io/websocket"
 )
 
+func TestSearchLaunchAppDescriptionRequiresFollowUpNavigation(t *testing.T) {
+	desc := (&appSearchOpenTool{}).Description()
+	for _, want := range []string{"target app is visibly opened", "does not mean", "editor", "input field is ready", "create/open/navigation step"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("search_launch_app description missing %q: %s", want, desc)
+		}
+	}
+}
+
 func TestResolveOpenAppTargetsAppAliasStaysSemantic(t *testing.T) {
 	args := openAppArgs{App: " weixin "}
 
@@ -319,8 +328,73 @@ func TestOpenAppDisconnectedGuidesUIFallbackBeforeHandoff(t *testing.T) {
 			t.Fatalf("disconnected output missing %q: %s", want, out)
 		}
 	}
-	if got := te.Details["fallback"]; got != phoneBridgeOpenAppRecoveryGuidance {
+	if got := te.Details["fallback"]; got != phoneBridgeOpenAppRecoveryGuidance(PhoneBridgeStatus{}) {
 		t.Fatalf("fallback detail = %q, want ordered recovery guidance", got)
+	}
+}
+
+func TestOpenAppDisconnectedAndroidDoesNotMentionDynamicIsland(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
+	bridge.mu.Lock()
+	bridge.platform = "android"
+	bridge.mu.Unlock()
+	tool := NewOpenAppTool(bridge, nil)
+
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{"app":"微信"}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	te := ToolErrorFromContext(ctx)
+	if te == nil || te.Code != CodeBridgeNotConnected {
+		t.Fatalf("expected bridge_not_connected; got %+v", te)
+	}
+	if strings.Contains(out, "Dynamic Island") {
+		t.Fatalf("Android disconnected output should not mention Dynamic Island: %s", out)
+	}
+	for _, want := range []string{"Android", "Aiden open in the foreground", "search_launch_app"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("Android disconnected output missing %q: %s", want, out)
+		}
+	}
+	if fallback, _ := te.Details["fallback"].(string); strings.Contains(fallback, "Dynamic Island") {
+		t.Fatalf("Android fallback should not mention Dynamic Island: %s", fallback)
+	}
+}
+
+func TestOpenAppConnectedAndroidBackgroundRequiresForeground(t *testing.T) {
+	sent := false
+	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+		sent = true
+		return BridgeCommandResponse{ID: cmd.ID}
+	})
+	bridge.mu.Lock()
+	bridge.platform = "android"
+	bridge.appState = "background"
+	bridge.appStateAt = time.Now()
+	bridge.mu.Unlock()
+	tool := NewOpenAppTool(bridge, nil)
+
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{"app":"微信"}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	if sent {
+		t.Fatal("background Android open_app was sent over Phone Bridge")
+	}
+	te := ToolErrorFromContext(ctx)
+	if te == nil || te.Code != CodeBridgeNotConnected {
+		t.Fatalf("expected bridge_not_connected; got %+v", te)
+	}
+	if strings.Contains(out, "Dynamic Island") {
+		t.Fatalf("Android background output should not mention Dynamic Island: %s", out)
+	}
+	for _, want := range []string{"Android", "foreground", "search_launch_app"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("Android background output missing %q: %s", want, out)
+		}
 	}
 }
 

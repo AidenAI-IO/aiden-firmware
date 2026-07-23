@@ -110,6 +110,103 @@ func (c AudioArchiveConfig) StoragePathOrDefault() string {
 	return path
 }
 
+// ExplicitStoragePath returns the storage path only when it opts out of
+// storage-manager routing, else "". DefaultConfig seeds StoragePath with the
+// built-in default and the config portal persists resolved values, so a stored
+// "/userdata/audio" is indistinguishable from "never configured" — and it names
+// the same directory the storage manager already uses as the audio eMMC tier.
+// Treat it as unset; only a non-default path pins recordings to a fixed
+// directory.
+func (c AudioArchiveConfig) ExplicitStoragePath() string {
+	path := strings.TrimSpace(c.StoragePath)
+	if path == defaultAudioArchiveStoragePath {
+		return ""
+	}
+	return path
+}
+
+// StorageConfig tunes the optional microSD data store managed by
+// StorageManager. The storage mode itself is not configurable: a usable
+// card means dual storage, otherwise eMMC only (docs/04-agent/storage-modes.md).
+type StorageConfig struct {
+	MountPoint    string `toml:"mount_point,omitempty"`
+	Device        string `toml:"device,omitempty"`
+	MinCardFreeMB int    `toml:"min_card_free_mb,omitempty"`
+	// Watermarks for the background migration of older governed data from
+	// eMMC to the SD card: migration starts when eMMC free space drops
+	// below MigrateStartFreePct and stops once it reaches MigrateStopFreePct.
+	MigrateStartFreePct int `toml:"migrate_start_free_pct,omitempty"`
+	MigrateStopFreePct  int `toml:"migrate_stop_free_pct,omitempty"`
+
+	Enabled              bool                      `toml:"enabled"`
+	RootPath             string                    `toml:"root_path,omitempty"`
+	CheckIntervalSeconds int                       `toml:"check_interval_seconds,omitempty"`
+	WarningThresholdMB   uint64                    `toml:"warning_threshold_mb,omitempty"`
+	CriticalThresholdMB  uint64                    `toml:"critical_threshold_mb,omitempty"`
+	EmergencyThresholdMB uint64                    `toml:"emergency_threshold_mb,omitempty"`
+	RecoveryHysteresisMB uint64                    `toml:"recovery_hysteresis_mb,omitempty"`
+	DegradedMode         StorageDegradedModeConfig `toml:"degraded_mode,omitempty"`
+	Cleanup              StorageCleanupConfig      `toml:"cleanup,omitempty"`
+}
+
+func (c StorageConfig) MonitorConfig() StorageMonitorConfig {
+	return StorageMonitorConfig{
+		Enabled:              c.Enabled,
+		RootPath:             c.RootPath,
+		CheckIntervalSeconds: c.CheckIntervalSeconds,
+		WarningThresholdMB:   c.WarningThresholdMB,
+		CriticalThresholdMB:  c.CriticalThresholdMB,
+		EmergencyThresholdMB: c.EmergencyThresholdMB,
+		RecoveryHysteresisMB: c.RecoveryHysteresisMB,
+		DegradedMode:         c.DegradedMode,
+		Cleanup:              c.Cleanup,
+	}
+}
+
+// MountPointOrDefault returns MountPoint if non-empty, else "/mnt/sdcard".
+func (c StorageConfig) MountPointOrDefault() string {
+	path := strings.TrimSpace(c.MountPoint)
+	if path == "" {
+		return defaultStorageMountPoint
+	}
+	return path
+}
+
+// DeviceOrDefault returns Device if non-empty, else "mmcblk2".
+func (c StorageConfig) DeviceOrDefault() string {
+	dev := strings.TrimSpace(c.Device)
+	if dev == "" {
+		return defaultStorageDevice
+	}
+	return dev
+}
+
+// MinCardFreeMBOrDefault returns MinCardFreeMB if positive, else 64.
+func (c StorageConfig) MinCardFreeMBOrDefault() int {
+	if c.MinCardFreeMB <= 0 {
+		return defaultStorageMinCardFreeMB
+	}
+	return c.MinCardFreeMB
+}
+
+// MigrateWatermarksOrDefault returns the (start, stop) free-space
+// percentages for eMMC→SD migration. Defaults: start below 10%, stop at
+// 50%. An inverted or out-of-range pair falls back to the defaults so a
+// bad config cannot disable or loop the migrator.
+func (c StorageConfig) MigrateWatermarksOrDefault() (int, int) {
+	start, stop := c.MigrateStartFreePct, c.MigrateStopFreePct
+	if start <= 0 {
+		start = defaultStorageMigrateStartFreePct
+	}
+	if stop <= 0 {
+		stop = defaultStorageMigrateStopFreePct
+	}
+	if start >= stop || stop > 95 {
+		return defaultStorageMigrateStartFreePct, defaultStorageMigrateStopFreePct
+	}
+	return start, stop
+}
+
 // LogConfig controls local runtime log retention.
 type LogConfig struct {
 	LLMHTTPRetentionDays int `toml:"llm_http_retention_days,omitempty"`
@@ -123,6 +220,47 @@ func (c LogConfig) LLMHTTPRetentionDaysOrDefault() int {
 	return c.LLMHTTPRetentionDays
 }
 
+// OTAConfig controls OTA update behavior.
+type OTAConfig struct {
+	GitHubProxyURL string `toml:"github_proxy_url,omitempty"`
+}
+
+// GitHubProxyURLOrDefault returns GitHubProxyURL if non-empty and valid, else empty string.
+func (c OTAConfig) GitHubProxyURLOrDefault() string {
+	return strings.TrimSpace(c.GitHubProxyURL)
+}
+
+// Validate checks if the GitHub proxy URL is valid when configured
+func (c OTAConfig) Validate() error {
+	proxyURL := strings.TrimSpace(c.GitHubProxyURL)
+	if proxyURL == "" {
+		return nil // Empty is valid (no proxy)
+	}
+
+	// Parse the URL
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return fmt.Errorf("ota.github_proxy_url: invalid URL: %w", err)
+	}
+
+	// Must have a scheme
+	if parsed.Scheme == "" {
+		return fmt.Errorf("ota.github_proxy_url: must be an absolute URL with scheme (e.g., https://example.com/)")
+	}
+
+	// Must be HTTPS
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("ota.github_proxy_url: must use https, got %s", parsed.Scheme)
+	}
+
+	// Must have a host
+	if parsed.Host == "" {
+		return fmt.Errorf("ota.github_proxy_url: missing host")
+	}
+
+	return nil
+}
+
 type Config struct {
 	Model                      ModelConfig              `toml:"model"`
 	ModelText                  ModelConfig              `toml:"model_text,omitempty"` // Override for STT-then-text mode
@@ -132,9 +270,10 @@ type Config struct {
 	Device                     DeviceConfig             `toml:"device,omitempty"`
 	Audio                      AudioConfig              `toml:"audio,omitempty"`
 	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
+	Storage                    StorageConfig            `toml:"storage,omitempty"`
 	VoiceNotifications         VoiceNotificationsConfig `toml:"voice_notifications,omitempty"`
 	Log                        LogConfig                `toml:"log,omitempty"`
-	Storage                    StorageConfig            `toml:"storage,omitempty"`
+	OTA                        OTAConfig                `toml:"ota,omitempty"`
 	Search                     SearchConfig             `toml:"search,omitempty"`
 	EnvironmentBridge          EnvironmentBridgeConfig  `toml:"-"` // Only set via CLI flags, never from config file
 	Benchmark                  BenchmarkConfig          `toml:"-"` // Only set via CLI flags, never from config file
@@ -179,14 +318,6 @@ type Config struct {
 
 func (c Config) TerminationPolicyOrDefault() TerminationPolicyConfig {
 	return c.TerminationPolicy.resolved()
-}
-
-func (c Config) LocaleOrDefault() string {
-	locale := strings.TrimSpace(c.Locale)
-	if locale == "" {
-		return defaultLocale
-	}
-	return locale
 }
 
 type TelemetryConfig struct {
@@ -374,6 +505,9 @@ type HIDConfig struct {
 	// plus limited hid.usb2 media keys) or "touchscreen" (Android HID digitizer
 	// plus full hid.usb2 Android extension keys).
 	PointerMode string `toml:"pointer_mode,omitempty"`
+	// InputBackend selects the low-level input path for keyboard/touch tools:
+	// "hid" writes USB HID reports, "adb" sends Android adb shell input commands.
+	InputBackend string `toml:"input_backend,omitempty"`
 }
 
 type DeviceConfig struct {
@@ -430,16 +564,33 @@ func (h HIDConfig) PointerTouchscreen() bool {
 	return h.PointerModeOrDefault() == "touchscreen"
 }
 
+func (h HIDConfig) InputBackendOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(h.InputBackend)) {
+	case "adb":
+		return "adb"
+	default:
+		return "hid"
+	}
+}
+
+func (h HIDConfig) InputBackendADB() bool {
+	return h.InputBackendOrDefault() == "adb"
+}
+
 type ModelConfig struct {
-	Provider          string  `toml:"provider"`
-	Model             string  `toml:"model"`
-	BaseURL           string  `toml:"base_url,omitempty"`
-	APIKey            string  `toml:"api_key,omitempty"`
-	TokenEnv          string  `toml:"token_env,omitempty"`
-	Temperature       float64 `toml:"temperature,omitempty"`
-	MaxResponseTokens int     `toml:"max_response_tokens,omitempty"`
-	LogRawHTTP        bool    `toml:"log_raw_http,omitempty"`
-	ReasoningEffort   string  `toml:"reasoning_effort,omitempty"`
+	Provider string `toml:"provider"`
+	Model    string `toml:"model"`
+	BaseURL  string `toml:"base_url,omitempty"`
+	APIKey   string `toml:"api_key,omitempty"`
+	TokenEnv string `toml:"token_env,omitempty"`
+	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
+	// Unset means the effective value is resolved at runtime from model metadata
+	// (see applyModelTemperatureDefault); an explicit value, including 0, is
+	// always honored and sent to the provider.
+	Temperature       *float64 `toml:"temperature,omitempty"`
+	MaxResponseTokens int      `toml:"max_response_tokens,omitempty"`
+	LogRawHTTP        bool     `toml:"log_raw_http,omitempty"`
+	ReasoningEffort   string   `toml:"reasoning_effort,omitempty"`
 	// These override static model metadata; zero means use the registry/fallback.
 	ContextWindow        int      `toml:"context_window,omitempty"`
 	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`
@@ -450,6 +601,7 @@ type ModelConfig struct {
 type AgentConfig struct {
 	Instruction      string
 	AdditionalPrompt string
+	Locale           string
 }
 
 // MemoryConfig is used internally by the memory manager.
@@ -551,6 +703,8 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	}
 
 	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
+	applyRuntimeModelTemperatureDefaults(&cfg)
+	applyRuntimeModelReasoningEffortDefaults(&cfg)
 	applyRuntimeInstructionDefault(&cfg)
 
 	if err := cfg.Validate(); err != nil {
@@ -558,6 +712,68 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// applyRuntimeModelTemperatureDefaults resolves the sampling temperature for
+// model and model_text when the user has not set it. The default is sourced
+// from the model's metadata (some models, e.g. Kimi K3, require a fixed
+// temperature) and falls back to defaultModelTemperature. An explicit
+// model.temperature always takes precedence. This is only called in
+// LoadRuntimeConfig; LoadResolvedConfig (config editor) keeps temperature unset
+// so the editor displays empty and saves without baking defaults into agent.toml.
+func applyRuntimeModelTemperatureDefaults(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	applyModelTemperatureDefault(&cfg.Model)
+	// model_text is an optional override; only resolve a default when it is
+	// actually configured, otherwise leave the unused section untouched.
+	if strings.TrimSpace(cfg.ModelText.Provider) != "" || strings.TrimSpace(cfg.ModelText.Model) != "" {
+		applyModelTemperatureDefault(&cfg.ModelText)
+	}
+}
+
+func applyModelTemperatureDefault(m *ModelConfig) {
+	if m == nil || m.Temperature != nil {
+		return
+	}
+	if spec, ok := LookupModelSpec(m.Provider, m.Model); ok && spec.DefaultTemperature != nil {
+		// Copy the value rather than aliasing the registry pointer.
+		temp := *spec.DefaultTemperature
+		m.Temperature = &temp
+		return
+	}
+	temp := defaultModelTemperature
+	m.Temperature = &temp
+}
+
+// applyRuntimeModelReasoningEffortDefaults resolves reasoning_effort for model
+// and model_text when the user has not set it (empty string). The default is
+// sourced from the model's metadata; forced-reasoning models (e.g. Kimi K3)
+// pin a lighter effort to keep streaming responsive. Unlike temperature there
+// is no global fallback: unknown models stay in auto mode (empty). An explicit
+// model.reasoning_effort always takes precedence. Like the temperature defaults,
+// this only runs in LoadRuntimeConfig; LoadResolvedConfig (config editor) keeps
+// reasoning_effort as-is so the editor does not bake a default into agent.toml.
+func applyRuntimeModelReasoningEffortDefaults(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	applyModelReasoningEffortDefault(&cfg.Model)
+	// model_text is an optional override; only resolve a default when it is
+	// actually configured, otherwise leave the unused section untouched.
+	if strings.TrimSpace(cfg.ModelText.Provider) != "" || strings.TrimSpace(cfg.ModelText.Model) != "" {
+		applyModelReasoningEffortDefault(&cfg.ModelText)
+	}
+}
+
+func applyModelReasoningEffortDefault(m *ModelConfig) {
+	if m == nil || strings.TrimSpace(m.ReasoningEffort) != "" {
+		return
+	}
+	if spec, ok := LookupModelSpec(m.Provider, m.Model); ok && spec.DefaultReasoningEffort != nil {
+		m.ReasoningEffort = *spec.DefaultReasoningEffort
+	}
 }
 
 func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
@@ -577,6 +793,24 @@ func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 		cfg.STT = STTConfig{}
 	} else if !usesDefaultSTTModel(cfg.STT.Provider) && !metadata.IsDefined("stt", "model") {
 		cfg.STT.Model = ""
+	}
+
+	// base_url is only honored for openai and ollama providers; every other
+	// provider pins its own endpoint, so drop any stray override to keep runtime
+	// behavior consistent with the config web UI (which hides the field).
+	clearNonAllowedModelBaseURL(&cfg.Model)
+	clearNonAllowedModelBaseURL(&cfg.ModelText)
+}
+
+func clearNonAllowedModelBaseURL(m *ModelConfig) {
+	if m == nil {
+		return
+	}
+	provider := strings.ToLower(strings.TrimSpace(m.Provider))
+	// Only openai and ollama support base_url override.
+	// openai: custom gateway/proxy; ollama: local server address
+	if provider != "openai" && provider != "ollama" {
+		m.BaseURL = ""
 	}
 }
 
@@ -628,7 +862,7 @@ func LoadResolvedConfig(path string) (Config, error) {
 
 	cfg := DefaultConfig()
 	if exists {
-		if _, err := decodeConfigFile(resolvedPath, &cfg); err != nil {
+		if _, err = decodeConfigFile(resolvedPath, &cfg); err != nil {
 			return Config{}, err
 		}
 	}
@@ -754,6 +988,13 @@ func legacyModelMaxTokens(raw map[string]interface{}, section string) (int, erro
 }
 
 func (c Config) Validate() error {
+	locale := strings.TrimSpace(c.Locale)
+	switch locale {
+	case "", localeSimplifiedChinese, localeEnglishUS:
+	default:
+		return fmt.Errorf("invalid locale: %s (expected zh-CN or en-US)", c.Locale)
+	}
+
 	switch c.Search.ProviderOrDefault() {
 	case searchProviderDuckDuckGo:
 	case searchProviderTavily:
@@ -887,7 +1128,7 @@ func (c Config) Validate() error {
 	if c.Log.LLMHTTPRetentionDays < 0 {
 		return fmt.Errorf("log.llm_http_retention_days must be >= 0, got %d", c.Log.LLMHTTPRetentionDays)
 	}
-	if err := c.Storage.Validate(); err != nil {
+	if err := c.Storage.MonitorConfig().Validate(); err != nil {
 		return err
 	}
 	if c.ScreenshotKeepN < 0 {
@@ -918,6 +1159,11 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid hid.pointer_mode: %s (expected absolute or touchscreen)", c.HID.PointerMode)
 	}
+	switch strings.ToLower(strings.TrimSpace(c.HID.InputBackend)) {
+	case "", "hid", "adb":
+	default:
+		return fmt.Errorf("invalid hid.input_backend: %s (expected hid or adb)", c.HID.InputBackend)
+	}
 
 	if err := c.Telemetry.Validate(); err != nil {
 		return err
@@ -925,8 +1171,19 @@ func (c Config) Validate() error {
 	if err := c.LiveActivity.Validate(); err != nil {
 		return err
 	}
+	if err := c.OTA.Validate(); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func (c Config) LocaleOrDefault() string {
+	locale := strings.TrimSpace(c.Locale)
+	if locale == "" {
+		return defaultLocale
+	}
+	return locale
 }
 
 func (t TelemetryConfig) Validate() error {

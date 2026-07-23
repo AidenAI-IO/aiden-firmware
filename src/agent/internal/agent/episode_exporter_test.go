@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/langfuse"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -442,7 +443,7 @@ func langfuseSpanBodyByName(t *testing.T, batch []langfuseIngestionEvent, name s
 }
 
 func TestBuildLangfuseBatchUploadsCapturedPromptMedia(t *testing.T) {
-	var mediaRequest langfuseMediaCreateRequest
+	var mediaRequest langfuse.MediaCreateRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/public/media" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -622,7 +623,7 @@ func TestExportEpisodeDirUploadsToLangfuse(t *testing.T) {
 				t.Errorf("unexpected auth: ok=%v user=%q pass=%q", ok, user, pass)
 			}
 			body, _ := io.ReadAll(r.Body)
-			var req langfuseIngestionRequest
+			var req langfuse.IngestionRequest
 			if err := json.Unmarshal(body, &req); err != nil {
 				t.Fatalf("decode ingestion request: %v", err)
 			}
@@ -654,7 +655,7 @@ func TestExportEpisodeDirUploadsToLangfuse(t *testing.T) {
 			_, _ = w.Write([]byte(`{"successes":[{"id":"ok","status":201}],"errors":[]}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/public/media":
 			body, _ := io.ReadAll(r.Body)
-			var req langfuseMediaCreateRequest
+			var req langfuse.MediaCreateRequest
 			if err := json.Unmarshal(body, &req); err != nil {
 				t.Fatalf("decode media create request: %v", err)
 			}
@@ -904,7 +905,7 @@ func TestRuntimeStartupExportsInterruptedEpisodeToLangfuse(t *testing.T) {
 			t.Errorf("unexpected auth: ok=%v user=%q pass=%q", ok, user, pass)
 		}
 		body, _ := io.ReadAll(r.Body)
-		var req langfuseIngestionRequest
+		var req langfuse.IngestionRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			t.Errorf("decode ingestion request: %v", err)
 		}

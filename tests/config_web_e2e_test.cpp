@@ -232,6 +232,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
         "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
         "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"storage\":900}}},"
+        "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
         "\"android_keyboard_device\":\"/dev/hidg2\","
         "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
@@ -399,6 +400,20 @@ private:
     static std::string build_response(const std::string& path) {
         if (path == "/api/config-test/stt/start") {
             const std::string body = "{\"ok\":true,\"status\":\"recording\",\"sample_rate\":16000}";
+            std::ostringstream out;
+            out << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Connection: close\r\n"
+                << "\r\n"
+                << body;
+            return out.str();
+        }
+        if (path == "/api/storage/eject") {
+            const std::string body =
+                "{\"effective_mode\":1,"
+                "\"card\":{\"present\":true,\"mounted\":false},"
+                "\"format_job\":{\"status\":\"idle\"}}";
             std::ostringstream out;
             out << "HTTP/1.1 200 OK\r\n"
                 << "Content-Type: application/json\r\n"
@@ -607,6 +622,9 @@ struct StubEnv {
     // env vars; see start_server().
     std::vector<std::string> entries;
     bool has_agent_bin = false;
+    // When non-empty, written to <tmp>/storage.state and passed to config_web
+    // via --storage-state so storage endpoints see a controlled snapshot.
+    std::string storage_state;
 
     void set(const std::string& key, const std::string& value) {
         if (key == "AIDEN_AGENT_BIN") has_agent_bin = true;
@@ -628,6 +646,9 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
     write_file(wifi_conf_path, "");
     write_file(sysenv_path, "");
     write_file(cmdline_path, "console=ttyFIQ0 aiden.slot_suffix=_a root=PARTLABEL=rootfs_a\n");
+    if (!stub_env.storage_state.empty()) {
+        write_file(handle->tmp_dir + "/storage.state", stub_env.storage_state);
+    }
 
     pid_t pid = ::fork();
     REQUIRE(pid >= 0);
@@ -668,6 +689,10 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
         const std::string sysenv_arg = "--system-env=" + sysenv_path;
         const std::string ota_state_arg = "--ota-state=" + ota_state_path;
         const std::string cmdline_arg = "--cmdline=" + cmdline_path;
+        // Point --storage-state at a file inside tmp_dir either way; scenarios
+        // without storage_state content get a missing file, which the status
+        // endpoint must report as unavailable rather than erroring.
+        const std::string storage_state_arg = "--storage-state=" + handle->tmp_dir + "/storage.state";
         std::vector<char*> argv = {
             const_cast<char*>(AIDEN_CONFIG_WEB_BIN),
             const_cast<char*>("--bind=127.0.0.1"),
@@ -677,6 +702,7 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
             const_cast<char*>(sysenv_arg.c_str()),
             const_cast<char*>(ota_state_arg.c_str()),
             const_cast<char*>(cmdline_arg.c_str()),
+            const_cast<char*>(storage_state_arg.c_str()),
             nullptr,
         };
         ::execve(AIDEN_CONFIG_WEB_BIN, argv.data(), envp.data());
@@ -696,6 +722,31 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
 // the scenario, then asserts the HTTP behaviour. Status codes are the main
 // contract we guard: a missing dependency MUST surface as 503 (server-side
 // outage), a CLI rejection MUST surface as 400 (user input).
+
+TEST_CASE("config_web: setup page exposes an immediate persisted locale switch") {
+    StubEnv env;
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/");
+    CHECK(resp.status == 200);
+    CHECK(resp.body.find("id=\"localeSelect\"") != std::string::npos);
+    CHECK(resp.body.find("/api/config/locale") != std::string::npos);
+    CHECK(resp.body.find("localStorage") != std::string::npos);
+    CHECK(resp.body.find("applyLocale") != std::string::npos);
+    CHECK(resp.body.find("'Configuration':'配置'") != std::string::npos);
+    CHECK(resp.body.find("applyLocale(previous,false)") != std::string::npos);
+    CHECK(resp.body.find("let localeRevision=0") != std::string::npos);
+    CHECK(resp.body.find("localeSavePending=true") != std::string::npos);
+    CHECK(resp.body.find("requestLocaleRevision===localeRevision&&!localeSavePending") !=
+          std::string::npos);
+    CHECK(resp.body.find("applyLocale(payload.locale||requested,true)") != std::string::npos);
+    CHECK(resp.body.find("try{await loadAuthoritativeLocale();}catch(refreshErr){}") !=
+          std::string::npos);
+    CHECK(resp.body.find("async function loadAuthoritativeLocale()") != std::string::npos);
+    CHECK(resp.body.find("const configuredLocale=") != std::string::npos);
+    CHECK(resp.body.find("try{await loadConfig();") != std::string::npos);
+    CHECK(resp.body.find("if(metaOk){await loadConfig();") == std::string::npos);
+    CHECK(resp.body.find("window.confirm(localizedText(") != std::string::npos);
+}
 
 TEST_CASE("config_web: GET /api/config/meta returns 200 + parseable JSON when stub agent works") {
     StubEnv env;  // defaults: meta returns minimal valid JSON
@@ -742,6 +793,7 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
 
     cJSON* voice_notifications = cJSON_GetObjectItem(config, "voice_notifications");
     REQUIRE(voice_notifications != nullptr);
+    CHECK(cJSON_GetObjectItem(voice_notifications, "default_locale") == nullptr);
     CHECK(required_json_int(voice_notifications, "max_pending") == 8);
     cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
     REQUIRE(response_tail != nullptr);
@@ -753,8 +805,116 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     REQUIRE(custom_instruction != nullptr);
     REQUIRE(custom_instruction->valuestring != nullptr);
     CHECK(std::string(custom_instruction->valuestring) == "stub custom instruction");
+    cJSON* locale = cJSON_GetObjectItem(agent, "locale");
+    REQUIRE(locale != nullptr);
+    REQUIRE(locale->valuestring != nullptr);
+    CHECK(std::string(locale->valuestring) == "zh-CN");
     CHECK(cJSON_GetObjectItem(agent, "instruction") == nullptr);
     cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: PUT /api/config/locale updates only the device locale") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string original =
+        "# Keep comments and fields owned by the Go agent.\n"
+        "\"locale\" = \"zh-CN\"  # setup language\n"
+        "custom_instruction = \"Keep this instruction.\"\n"
+        "todo_reminder_tool_calls = 7\n"
+        "skills_dirs = [\"/userdata/skills\"]\n"
+        "future_plugin_flag = true\n"
+        "\n"
+        "[device]\n"
+        "backend = \"hdmi\"\n"
+        "future_device_option = \"keep me\"\n";
+    write_file(handle->tmp_dir + "/agent.toml", original);
+
+    HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
+                                     "{\"locale\":\"en-US\"}");
+    CHECK(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* locale = cJSON_GetObjectItem(parsed, "locale");
+    REQUIRE(locale != nullptr);
+    REQUIRE(locale->valuestring != nullptr);
+    CHECK(std::string(locale->valuestring) == "en-US");
+    cJSON* restart = cJSON_GetObjectItem(parsed, "agent_restart_scheduled");
+    REQUIRE(restart != nullptr);
+    CHECK((restart->type & 0xff) == cJSON_True);
+    cJSON_Delete(parsed);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    std::string expected = original;
+    const size_t locale_pos = expected.find("\"zh-CN\"");
+    REQUIRE(locale_pos != std::string::npos);
+    expected.replace(locale_pos, std::strlen("\"zh-CN\""), "\"en-US\"");
+    CHECK(saved == expected);
+}
+
+TEST_CASE("config_web: PUT /api/config/locale inserts a missing locale before sections") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string original =
+        "# Existing top-level config stays in place.\n"
+        "todo_reminder_tool_calls = 4\n"
+        "custom_instruction = \"\"\"\n"
+        "locale = \"this is instruction text\"\n"
+        "[not-a-real-section]\n"
+        "\"\"\"\n"
+        "\n"
+        "[device]\n"
+        "backend = \"hdmi\"\n";
+    write_file(handle->tmp_dir + "/agent.toml", original);
+
+    HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
+                                     "{\"locale\":\"en-US\"}");
+    CHECK(resp.status == 200);
+
+    CHECK(read_file(handle->tmp_dir + "/agent.toml") ==
+          "# Existing top-level config stays in place.\n"
+          "todo_reminder_tool_calls = 4\n"
+          "custom_instruction = \"\"\"\n"
+          "locale = \"this is instruction text\"\n"
+          "[not-a-real-section]\n"
+          "\"\"\"\n"
+          "\n"
+          "locale = \"en-US\"\n"
+          "[device]\n"
+          "backend = \"hdmi\"\n");
+}
+
+TEST_CASE("config_web: PUT /api/config/locale rejects unsupported locales without saving") {
+    StubEnv env;
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml", "locale = \"zh-CN\"\n");
+
+    HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
+                                     "{\"locale\":\"fr-FR\"}");
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("unsupported locale") != std::string::npos);
+    CHECK(read_file(handle->tmp_dir + "/agent.toml").find("locale = \"zh-CN\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: PUT /api/config/locale preserves the confirmed locale when validation fails") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/check.json",
+               "{\"valid\":false,\"errors\":[{\"field\":\"locale\",\"message\":\"stub locale rejection\"}]}\n");
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CHECK_FILE", tmp + "/check.json");
+    env.set("AIDEN_AGENT_STUB_CHECK_EXIT", "1");
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml", "locale = \"zh-CN\"\n");
+
+    HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
+                                     "{\"locale\":\"en-US\"}");
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("stub locale rejection") != std::string::npos);
+    CHECK(read_file(handle->tmp_dir + "/agent.toml").find("locale = \"zh-CN\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/config reports running OTA target version when health failed") {
@@ -848,18 +1008,43 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config accepts empty audio_archive storage_path") {
+TEST_CASE("config_web: POST /api/config omitting temperature clears a saved value") {
+    // Regression test: update_model_from_json() applies JSON as a patch onto the
+    // config pre-loaded from disk. Omitting the temperature key must clear the
+    // previously-saved value (has_temperature=false), letting the UI unset it.
     StubEnv env;
     auto handle = start_server(env);
 
-    const std::string body =
-        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"audio_archive\":{\"enabled\":true,\"max_files\":123,\"max_size_mb\":45,"
-        "\"storage_path\":\"\"},"
+    // First save an explicit temperature.
+    const std::string with_temp =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\","
+        "\"temperature\":0.7},"
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
-    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
-    CHECK(resp.status == 200);
+    HttpResponse first = http_request(handle->port, "POST", "/api/config", with_temp);
+    CHECK(first.status == 200);
+    {
+        std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+        REQUIRE(saved_in.good());
+        std::ostringstream buf;
+        buf << saved_in.rdbuf();
+        CHECK(buf.str().find("temperature = 0.7") != std::string::npos);
+    }
+
+    // Now save again without the temperature key: it must be cleared.
+    const std::string without_temp =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse second = http_request(handle->port, "POST", "/api/config", without_temp);
+    CHECK(second.status == 200);
+
+    std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+    REQUIRE(saved_in.good());
+    std::ostringstream saved_buffer;
+    saved_buffer << saved_in.rdbuf();
+    const std::string saved = saved_buffer.str();
+    CHECK(saved.find("temperature") == std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config preserves voice notification settings") {
@@ -878,6 +1063,7 @@ TEST_CASE("config_web: POST /api/config preserves voice notification settings") 
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
     CHECK(saved.find("[voice_notifications]") != std::string::npos);
+    CHECK(saved.find("default_locale") == std::string::npos);
     CHECK(saved.find("max_pending = 6") != std::string::npos);
     CHECK(saved.find("[voice_notifications.response_tail]") != std::string::npos);
     CHECK(saved.find("max_text_chars = 72") != std::string::npos);
@@ -917,6 +1103,80 @@ TEST_CASE("config_web: POST /api/config rejects invalid voice notification integ
         CHECK_MESSAGE(resp.body.find(test_case.expected_error) != std::string::npos,
                       test_case.name << ": body=" << resp.body);
     }
+}
+
+TEST_CASE("config_web: POST /api/config writes ota section") {
+    // Regression test: update_config_from_json() must handle the ota section.
+    // It was added to AgentToml, TOML read/write, and validation, but was
+    // missed here, so a saved github_proxy_url silently failed to persist.
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse post_resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(post_resp.status == 200);
+
+    std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+    REQUIRE(saved_in.good());
+    std::ostringstream saved_buffer;
+    saved_buffer << saved_in.rdbuf();
+    const std::string saved = saved_buffer.str();
+    CHECK(saved.find("[ota]") != std::string::npos);
+    CHECK(saved.find("github_proxy_url = \"https://gh-proxy.com\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: GET /api/config returns ota and voice notification sections from resolved config") {
+    // Regression test: config_to_json() must serialize the ota section from
+    // the agent's resolved config. It was added to AgentToml and TOML
+    // read/write, but was missed here, so github_proxy_url never came back
+    // on GET even though it was correctly persisted to agent.toml.
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(get_resp.status == 200);
+    cJSON* parsed = cJSON_Parse(get_resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* ota = cJSON_GetObjectItem(config, "ota");
+    REQUIRE(ota != nullptr);
+    cJSON* proxy_url = cJSON_GetObjectItem(ota, "github_proxy_url");
+    REQUIRE(proxy_url != nullptr);
+    REQUIRE(proxy_url->valuestring != nullptr);
+    CHECK(std::string(proxy_url->valuestring) == "https://gh-proxy.com");
+    cJSON* voice_notifications = cJSON_GetObjectItem(config, "voice_notifications");
+    REQUIRE(voice_notifications != nullptr);
+    CHECK(required_json_int(voice_notifications, "max_pending") == 6);
+    cJSON* expiration = cJSON_GetObjectItem(voice_notifications, "expiration");
+    REQUIRE(expiration != nullptr);
+    CHECK(required_json_int(expiration, "default_ttl_seconds") == 120);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: POST /api/config accepts empty audio_archive storage_path") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"audio_archive\":{\"enabled\":true,\"max_files\":123,\"max_size_mb\":45,"
+        "\"storage_path\":\"\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
 }
 
 TEST_CASE("config_web: POST /api/config writes custom_instruction") {
@@ -1403,6 +1663,78 @@ TEST_CASE("config_web: stt live test proxies start and stop to agent") {
     CHECK(requests[1].path == "/api/config-test/stt/stop");
 }
 
+TEST_CASE("config_web: GET /api/storage/status parses the agent state mirror") {
+    StubEnv env;
+    env.storage_state =
+        "SD_PRESENT=1\n"
+        "SD_MOUNTED=1\n"
+        "SD_DEVICE=/dev/mmcblk2p1\n"
+        "SD_MOUNTPOINT=/mnt/sdcard\n"
+        "EFFECTIVE_MODE=2\n"
+        "SD_TOTAL_BYTES=31914983424\n"
+        "SD_FREE_BYTES=31834701824\n"
+        "REASON=\n"
+        "FORMAT_STATUS=idle\n"
+        "FORMAT_FS=\n"
+        "FORMAT_ERROR=\n"
+        "MIGRATE_STATUS=running\n"
+        "MIGRATE_DETAIL=\n"
+        "MIGRATE_ERROR=\n"
+        "MIGRATE_MOVED_FILES=12\n"
+        "MIGRATE_MOVED_BYTES=3145728\n";
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/storage/status");
+    REQUIRE(resp.status == 200);
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    CHECK((cJSON_GetObjectItem(parsed, "available")->type & 0xff) == cJSON_True);
+    CHECK((cJSON_GetObjectItem(parsed, "sd_present")->type & 0xff) == cJSON_True);
+    CHECK((cJSON_GetObjectItem(parsed, "sd_mounted")->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(parsed, "mount_point") == "/mnt/sdcard");
+    CHECK(cJSON_GetObjectItem(parsed, "effective_mode")->valueint == 2);
+    CHECK(cJSON_GetObjectItem(parsed, "total_bytes")->valuedouble == doctest::Approx(31914983424.0));
+    cJSON* job = cJSON_GetObjectItem(parsed, "format_job");
+    REQUIRE(job != nullptr);
+    CHECK(required_json_string(job, "status") == "idle");
+    cJSON* migration = cJSON_GetObjectItem(parsed, "migration");
+    REQUIRE(migration != nullptr);
+    CHECK(required_json_string(migration, "status") == "running");
+    CHECK(cJSON_GetObjectItem(migration, "moved_files")->valueint == 12);
+    CHECK(cJSON_GetObjectItem(migration, "moved_bytes")->valuedouble == doctest::Approx(3145728.0));
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/storage/status reports unavailable without a state file") {
+    StubEnv env;  // no storage_state -> --storage-state points at a missing file
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/storage/status");
+    REQUIRE(resp.status == 200);
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    CHECK((cJSON_GetObjectItem(parsed, "available")->type & 0xff) == cJSON_False);
+    CHECK((cJSON_GetObjectItem(parsed, "sd_present")->type & 0xff) == cJSON_False);
+    CHECK(cJSON_GetObjectItem(parsed, "effective_mode")->valueint == 1);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: POST /api/storage/eject proxies to the agent") {
+    StubAgentSTTTestServer agent_server;
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "POST", "/api/storage/eject", "{}");
+    REQUIRE(resp.status == 200);
+    CHECK(resp.body.find("\"effective_mode\":1") != std::string::npos);
+
+    auto requests = agent_server.requests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].method == "POST");
+    CHECK(requests[0].path == "/api/storage/eject");
+}
+
 TEST_CASE("config_web: GET /api/config accepts optional field-level omissions from resolved config") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
@@ -1830,7 +2162,6 @@ TEST_CASE("config_web: exports support log archive with langfuse agent and http 
 
     const std::string log_dir = handle->tmp_dir + "/log";
     REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
-    write_file(log_dir + "/agent.log", "agent runtime log\n");
     write_file(log_dir + "/llm-http-20260701070000123.log", "old http log\n");
     write_file(log_dir + "/llm-http-20260701080000123.log", "new http log\n");
 
@@ -1859,13 +2190,11 @@ TEST_CASE("config_web: exports support log archive with langfuse agent and http 
     const std::string entries = run_command_capture("LC_ALL=C tar -tzf " + archive);
     CHECK(entries.find("langfuse.yaml\n") != std::string::npos);
     CHECK(entries.find("agent.log\n") != std::string::npos);
-    CHECK(entries.find("http.log\n") != std::string::npos);
+    // Expect the original LLM log filename, not the generic http.log
+    CHECK(entries.find("llm-http-20260701080000123.log\n") != std::string::npos);
 
-    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " http.log");
+    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " llm-http-20260701080000123.log");
     CHECK(http_log.find("new http log") != std::string::npos);
-
-    const std::string agent_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " agent.log");
-    CHECK(agent_log.find("agent runtime log") != std::string::npos);
 
     const std::string langfuse = run_command_capture("LC_ALL=C tar -xOzf " + archive + " langfuse.yaml");
     CHECK(langfuse.find("id: new") != std::string::npos);
@@ -1889,11 +2218,37 @@ TEST_CASE("config_web: support log archive caps staged http log tail") {
     const std::string archive_path = handle->tmp_dir + "/support-logs-large.tar.gz";
     write_binary_file(archive_path, resp.body);
     const std::string archive = shell_quote(archive_path);
-    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " http.log");
+    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " llm-http-20260701090000123.log");
     CHECK(http_log.find("# truncated: copied latest ") != std::string::npos);
     CHECK(http_log.find("begin-marker") == std::string::npos);
     CHECK(http_log.find("end-marker") != std::string::npos);
     CHECK(http_log.size() < content.size());
+}
+
+TEST_CASE("config_web: support log archive falls back to http.log when no LLM log exists") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    // Do not create any llm-http-*.log files
+
+    const std::string memory_dir = handle->tmp_dir + "/memory";
+    REQUIRE(::mkdir(memory_dir.c_str(), 0755) == 0);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/logs/export");
+    REQUIRE(resp.status == 200);
+
+    const std::string archive_path = handle->tmp_dir + "/support-logs-nohttp.tar.gz";
+    write_binary_file(archive_path, resp.body);
+    const std::string archive = shell_quote(archive_path);
+    const std::string entries = run_command_capture("LC_ALL=C tar -tzf " + archive);
+    // When no LLM log exists, should fall back to http.log
+    CHECK(entries.find("http.log\n") != std::string::npos);
+
+    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " http.log");
+    // Should contain placeholder text
+    CHECK(http_log.find("HTTP log unavailable") != std::string::npos);
 }
 
 TEST_CASE("config_web: legacy llm log JSON file endpoint is removed") {

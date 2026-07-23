@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/util"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -682,7 +683,7 @@ func TestRuntimeConfiguresRawHTTPLogWithActiveMemorySessionID(t *testing.T) {
 	memories := NewMemoryManager(memoryDir)
 	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
 
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -752,7 +753,7 @@ func TestRuntimeRawHTTPLogUsesSessionIDForFileName(t *testing.T) {
 	memories := NewMemoryManager(memoryDir)
 	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
 
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -815,7 +816,7 @@ func TestRuntimeRawHTTPLogSwitchesSessionFileAfterRotation(t *testing.T) {
 	memories := NewMemoryManager(memoryDir)
 	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
 
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1032,7 +1033,7 @@ func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
 		BaseURL:    server.URL,
 		LogRawHTTP: true,
 	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1080,7 +1081,7 @@ func TestModelManagerEnablesRawHTTPLoggingFromDefaultConfig(t *testing.T) {
 	cfg.Model = "test-model"
 	cfg.BaseURL = server.URL
 	manager := NewModelManager(cfg, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1127,7 +1128,7 @@ func TestModelManagerDoesNotLogRawHTTPWhenDisabled(t *testing.T) {
 		Model:    "test-model",
 		BaseURL:  server.URL,
 	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1612,7 +1613,7 @@ func TestModelManagerSendsSessionHeaderOnlyForOpenRouter(t *testing.T) {
 
 			mgr := NewModelManager(ModelConfig{Provider: tc.provider, Model: "m", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
 			mgr.SetRawHTTPLogSessionIDProvider(func() string { return "sess-123" })
-			model, err := mgr.Get()
+			model, err := mgr.get()
 			if err != nil {
 				t.Fatalf("Get() error = %v", err)
 			}
@@ -1657,7 +1658,7 @@ func TestOpenRouterSupportedModelAddsPromptCacheControlToSystemPrefix(t *testing
 	defer server.Close()
 
 	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "vendor/cache-control-model", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1708,7 +1709,7 @@ func TestOpenRouterSupportedModelAddsPromptCacheControlToSingleSystemPart(t *tes
 	defer server.Close()
 
 	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "vendor/cache-control-model", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1756,7 +1757,7 @@ func TestOpenRouterUnsupportedModelDoesNotSendPromptCacheControl(t *testing.T) {
 	defer server.Close()
 
 	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "openai/gpt-4o", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1825,8 +1826,8 @@ func TestOpenRouterSessionStickyCacheHit(t *testing.T) {
 			}
 			t.Fatalf("live GenerateContent() error = %v", err)
 		}
-		cached, _ := usageMetricInt(resp.Choices[0].GenerationInfo["cached_tokens"])
-		prompt, _ := usageMetricInt(resp.Choices[0].GenerationInfo["prompt_tokens"])
+		cached, _ := util.UsageMetricInt(resp.Choices[0].GenerationInfo["cached_tokens"])
+		prompt, _ := util.UsageMetricInt(resp.Choices[0].GenerationInfo["prompt_tokens"])
 		t.Logf("model=%s session=%s prompt_tokens=%d cached_tokens=%d", model, sessionID, prompt, cached)
 		return cached
 	}
@@ -1865,13 +1866,13 @@ func TestOpenAICompatibleModelLiveUsageParsing(t *testing.T) {
 	if info == nil {
 		t.Fatalf("live response missing generation info")
 	}
-	prompt, ok := usageMetricInt(info["prompt_tokens"])
+	prompt, ok := util.UsageMetricInt(info["prompt_tokens"])
 	if !ok || prompt <= 0 {
 		t.Fatalf("live response missing positive prompt_tokens: %#v", info)
 	}
 	// cached_tokens must be readable (>=0); a single call without an explicit
 	// cache breakpoint is typically 0, which still proves the field plumbing.
-	cached, _ := usageMetricInt(info["cached_tokens"])
+	cached, _ := util.UsageMetricInt(info["cached_tokens"])
 	usage := telemetryUsageDetails(resp)
 	t.Logf("live model=%s prompt_tokens=%d cached_tokens=%d telemetry=%v", model, prompt, cached, usage)
 }
@@ -2036,7 +2037,7 @@ func TestModelManagerOpenRouterRetriesEOFInModelCall(t *testing.T) {
 		APIKey:   "token",
 		BaseURL:  server.URL,
 	}, ProxyConfig{})
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get model: %v", err)
 	}

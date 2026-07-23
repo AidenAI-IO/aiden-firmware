@@ -85,6 +85,43 @@ func TestAudioArchiveManagerSaveAndCleanup(t *testing.T) {
 	}
 }
 
+func TestAudioArchiveDefaultStoragePathRoutesThroughStorageManager(t *testing.T) {
+	sm := newTestStorageManager(t, &fakeStorageOps{})
+	mgr := NewAudioArchiveManager(AudioArchiveConfig{
+		Enabled:     true,
+		StoragePath: defaultAudioArchiveStoragePath,
+	})
+	mgr.SetStorageManager(sm)
+
+	wantDir := sm.emmcClassDir(StorageClassAudio)
+	if got := mgr.writeDir(); got != wantDir {
+		t.Fatalf("writeDir() = %q, want storage-manager dir %q", got, wantDir)
+	}
+
+	wantRoots := sm.CleanupRoots(StorageClassAudio)
+	gotRoots := mgr.cleanupRoots()
+	if len(gotRoots) != len(wantRoots) || gotRoots[0] != wantRoots[0] {
+		t.Fatalf("cleanupRoots() = %v, want storage-manager roots %v", gotRoots, wantRoots)
+	}
+}
+
+func TestAudioArchiveCustomStoragePathBypassesStorageManager(t *testing.T) {
+	custom := t.TempDir()
+	sm := newTestStorageManager(t, &fakeStorageOps{})
+	mgr := NewAudioArchiveManager(AudioArchiveConfig{
+		Enabled:     true,
+		StoragePath: custom,
+	})
+	mgr.SetStorageManager(sm)
+
+	if got := mgr.writeDir(); got != custom {
+		t.Fatalf("writeDir() = %q, want explicit path %q", got, custom)
+	}
+	if gotRoots := mgr.cleanupRoots(); len(gotRoots) != 1 || gotRoots[0] != custom {
+		t.Fatalf("cleanupRoots() = %v, want [%q]", gotRoots, custom)
+	}
+}
+
 func TestAudioArchiveManagerDisabled(t *testing.T) {
 	cfg := AudioArchiveConfig{
 		Enabled: false,

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/model"
 	"bytes"
 	"context"
 	"errors"
@@ -20,14 +21,13 @@ import (
 	"github.com/tmc/langchaingo/llms/ollama"
 )
 
-type ModelResolver interface {
-	Get() (llms.Model, error)
-	CallOptions() []chains.ChainCallOption
-	// Spec returns capabilities (context window, max output) for the configured
-	// model. Implementations return a zero-value ModelSpec for unknown models;
-	// callers must fall back to a configured default.
-	Spec() ModelSpec
-}
+// Moonshot Kimi OpenAI-compatible endpoints. "kimi" targets the global site and
+// "kimi-cn" targets the mainland China site; both accept a custom base_url
+// override for proxies or self-hosted gateways.
+const (
+	moonshotGlobalBaseURL = "https://api.moonshot.ai/v1"
+	moonshotCNBaseURL     = "https://api.moonshot.cn/v1"
+)
 
 type ModelManager struct {
 	config ModelConfig
@@ -35,7 +35,7 @@ type ModelManager struct {
 	model  llms.Model
 
 	specMu                    sync.Mutex
-	providerSpec              ModelSpec
+	providerSpec              model.ModelSpec
 	providerSpecLoaded        bool
 	providerSpecFetchStarted  bool
 	metadataHTTPClient        *http.Client
@@ -108,7 +108,7 @@ func (m *ModelManager) activeSessionID() string {
 	return m.rawHTTPLogSessionID()
 }
 
-func (m *ModelManager) Get() (llms.Model, error) {
+func (m *ModelManager) get() (llms.Model, error) {
 	if m.model != nil {
 		return m.model, nil
 	}
@@ -121,10 +121,26 @@ func (m *ModelManager) Get() (llms.Model, error) {
 	return built, nil
 }
 
+func (m *ModelManager) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	model, err := m.get()
+	if err != nil {
+		return nil, err
+	}
+	return model.GenerateContent(ctx, messages, options...)
+}
+
+func (m *ModelManager) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	model, err := m.get()
+	if err != nil {
+		return "", err
+	}
+	return model.Call(ctx, prompt, options...)
+}
+
 func (m *ModelManager) CallOptions() []chains.ChainCallOption {
 	options := make([]chains.ChainCallOption, 0, 2)
-	if m.config.Temperature != 0 {
-		options = append(options, chains.WithTemperature(m.config.Temperature))
+	if m.config.Temperature != nil {
+		options = append(options, chains.WithTemperature(*m.config.Temperature))
 	}
 	if m.config.MaxResponseTokens > 0 {
 		options = append(options, chains.WithMaxTokens(m.config.MaxResponseTokens))
@@ -132,7 +148,7 @@ func (m *ModelManager) CallOptions() []chains.ChainCallOption {
 	return options
 }
 
-func (m *ModelManager) Spec() ModelSpec {
+func (m *ModelManager) Spec() model.ModelSpec {
 	spec, _ := LookupModelSpec(m.config.Provider, m.config.Model)
 
 	explicitContextWindow := m.config.ContextWindow > 0
@@ -153,6 +169,10 @@ func (m *ModelManager) Spec() ModelSpec {
 			spec.MaxOutput = providerSpec.MaxOutput
 		}
 	}
+
+	spec.Provider = m.config.Provider
+	spec.Name = m.config.Model
+
 	return spec
 }
 
@@ -162,6 +182,18 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		baseURL := cfg.BaseURL
 		if baseURL == "" {
 			baseURL = "https://api.openai.com/v1"
+		}
+		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
+	case "kimi":
+		baseURL := cfg.BaseURL
+		if baseURL == "" {
+			baseURL = moonshotGlobalBaseURL
+		}
+		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
+	case "kimi-cn":
+		baseURL := cfg.BaseURL
+		if baseURL == "" {
+			baseURL = moonshotCNBaseURL
 		}
 		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
 	case "openrouter":
@@ -224,6 +256,9 @@ func (m *ModelManager) openAICompatibleOptions(cfg ModelConfig) []openAICompatib
 	}
 	if cfg.ReasoningEffort != "" {
 		opts = append(opts, withOpenAICompatibleReasoningEffort(cfg.ReasoningEffort))
+	}
+	if cfg.Temperature != nil {
+		opts = append(opts, withOpenAICompatibleTemperature(cfg.Temperature))
 	}
 	return opts
 }

@@ -24,7 +24,7 @@ func withMinimumStorageLevel(cleaner StorageCleaner, level StorageLevel) Storage
 }
 
 func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManager) *StorageMonitor {
-	storageConfig := cfg.Storage
+	storageConfig := cfg.Storage.MonitorConfig()
 	cleaners := make([]StorageCleaner, 0)
 	priority := 1
 

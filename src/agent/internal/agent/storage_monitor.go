@@ -79,8 +79,8 @@ type StorageCleanupResult struct {
 	Error      string    `json:"error,omitempty"`
 }
 
-// StorageStatus is a consistent snapshot of the final state after remediation.
-type StorageStatus struct {
+// StorageMonitorStatus is a consistent snapshot of the final state after remediation.
+type StorageMonitorStatus struct {
 	Path                     string                 `json:"path"`
 	TotalBytes               uint64                 `json:"total_bytes"`
 	UsedBytes                uint64                 `json:"used_bytes"`
@@ -134,8 +134,8 @@ type StorageCleanupConfig struct {
 	CleanupRetryIntervalSeconds int   `toml:"cleanup_retry_interval_seconds,omitempty"`
 }
 
-// StorageConfig controls persistent storage monitoring and remediation.
-type StorageConfig struct {
+// StorageMonitorConfig controls persistent storage monitoring and remediation.
+type StorageMonitorConfig struct {
 	Enabled              bool                      `toml:"enabled"`
 	RootPath             string                    `toml:"root_path,omitempty"`
 	CheckIntervalSeconds int                       `toml:"check_interval_seconds,omitempty"`
@@ -147,8 +147,8 @@ type StorageConfig struct {
 	Cleanup              StorageCleanupConfig      `toml:"cleanup,omitempty"`
 }
 
-func DefaultStorageConfig() StorageConfig {
-	return StorageConfig{
+func DefaultStorageConfig() StorageMonitorConfig {
+	return StorageMonitorConfig{
 		Enabled:              true,
 		RootPath:             "/userdata",
 		CheckIntervalSeconds: 300,
@@ -172,7 +172,7 @@ func DefaultStorageConfig() StorageConfig {
 	}
 }
 
-func (c StorageConfig) Validate() error {
+func (c StorageMonitorConfig) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
@@ -211,7 +211,7 @@ func (c StorageConfig) Validate() error {
 
 // StorageMonitor owns storage sampling, remediation and final-state projection.
 type StorageMonitor struct {
-	config         StorageConfig
+	config         StorageMonitorConfig
 	sampler        StorageSampler
 	logger         *Logger
 	cleaners       []StorageCleaner
@@ -220,7 +220,7 @@ type StorageMonitor struct {
 
 	checkMu  sync.Mutex
 	statusMu sync.RWMutex
-	status   StorageStatus
+	status   StorageMonitorStatus
 
 	notificationActive bool
 	notifiedLevel      StorageLevel
@@ -236,7 +236,7 @@ type StorageMonitor struct {
 	started bool
 }
 
-func NewStorageMonitor(config StorageConfig, sampler StorageSampler, logger *Logger, cleaners []StorageCleaner, notifier VoiceNotificationSink) *StorageMonitor {
+func NewStorageMonitor(config StorageMonitorConfig, sampler StorageSampler, logger *Logger, cleaners []StorageCleaner, notifier VoiceNotificationSink) *StorageMonitor {
 	if sampler == nil {
 		sampler = statfsStorageSampler{}
 	}
@@ -254,20 +254,20 @@ func NewStorageMonitor(config StorageConfig, sampler StorageSampler, logger *Log
 	}
 }
 
-func (m *StorageMonitor) Status() StorageStatus {
+func (m *StorageMonitor) Status() StorageMonitorStatus {
 	m.statusMu.RLock()
 	defer m.statusMu.RUnlock()
 	return cloneStorageStatus(m.status)
 }
 
-func cloneStorageStatus(status StorageStatus) StorageStatus {
+func cloneStorageStatus(status StorageMonitorStatus) StorageMonitorStatus {
 	status.UnavailableCapabilities = append([]StorageCapability(nil), status.UnavailableCapabilities...)
 	status.CleanupHistory = append([]StorageCleanupResult(nil), status.CleanupHistory...)
 	status.LastCleanupResults = append([]StorageCleanupResult(nil), status.LastCleanupResults...)
 	return status
 }
 
-func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageCheckRequest) (StorageStatus, error) {
+func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageCheckRequest) (StorageMonitorStatus, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -284,7 +284,7 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 	previous := m.Status()
 	initial, err := m.sampleStatus(ctx, path)
 	if err != nil {
-		return StorageStatus{}, err
+		return StorageMonitorStatus{}, err
 	}
 	if m.logger != nil && initial.Level != StorageLevelNormal {
 		m.logger.Warn("storage_monitor: %s %s (%dMB available), warning threshold: %dMB", path, initial.Level, initial.AvailableBytes/storageMegabyte, m.config.WarningThresholdMB)
@@ -357,7 +357,7 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 
 			resampled, sampleErr := m.sampleStatus(ctx, path)
 			if sampleErr != nil {
-				return StorageStatus{}, fmt.Errorf("resample after cleaner %q: %w", cleaner.Name(), sampleErr)
+				return StorageMonitorStatus{}, fmt.Errorf("resample after cleaner %q: %w", cleaner.Name(), sampleErr)
 			}
 			final = resampled
 			effectiveLevel := m.applyRecoveryHysteresis(previous.Level, final.AvailableBytes, final.Level)
@@ -405,7 +405,7 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 	return cloneStorageStatus(final), nil
 }
 
-func (m *StorageMonitor) publishStatusTransition(ctx context.Context, status StorageStatus, refreshActive bool) {
+func (m *StorageMonitor) publishStatusTransition(ctx context.Context, status StorageMonitorStatus, refreshActive bool) {
 	if m.notifier == nil {
 		return
 	}
@@ -446,7 +446,7 @@ func (m *StorageMonitor) publishStatusTransition(ctx context.Context, status Sto
 	}
 }
 
-func (m *StorageMonitor) notificationEvent(status StorageStatus, state string, severity StorageLevel) VoiceNotificationEvent {
+func (m *StorageMonitor) notificationEvent(status StorageMonitorStatus, state string, severity StorageLevel) VoiceNotificationEvent {
 	return VoiceNotificationEvent{
 		Code:      "storage",
 		DedupeKey: "storage:device",
@@ -527,10 +527,10 @@ func isStorageCleanupCategory(target string) bool {
 	}
 }
 
-func (m *StorageMonitor) sampleStatus(ctx context.Context, path string) (StorageStatus, error) {
+func (m *StorageMonitor) sampleStatus(ctx context.Context, path string) (StorageMonitorStatus, error) {
 	sample, err := m.sampler.Sample(ctx, path)
 	if err != nil {
-		return StorageStatus{}, fmt.Errorf("sample storage: %w", err)
+		return StorageMonitorStatus{}, fmt.Errorf("sample storage: %w", err)
 	}
 	used := uint64(0)
 	if sample.TotalBytes >= sample.AvailableBytes {
@@ -541,7 +541,7 @@ func (m *StorageMonitor) sampleStatus(ctx context.Context, path string) (Storage
 		percent = float64(used) / float64(sample.TotalBytes) * 100
 	}
 	now := time.Now()
-	return StorageStatus{
+	return StorageMonitorStatus{
 		Path:           path,
 		TotalBytes:     sample.TotalBytes,
 		UsedBytes:      used,

@@ -17,8 +17,11 @@ import (
 	"unicode/utf8"
 
 	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/statemanager"
+	"aiden-agent/internal/util"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/agents"
@@ -43,7 +46,7 @@ const (
 
 type Runtime struct {
 	config             Config
-	models             ModelResolver
+	models             model.Model
 	memories           *MemoryManager
 	tools              *ToolSet
 	skills             *SkillManager
@@ -63,8 +66,13 @@ type Runtime struct {
 	runtimeID          string
 	telemetrySessionID string
 	environmentBridge  *EnvironmentBridgeClient
-	storageMonitor     *StorageMonitor
 	runGate            chan struct{}
+	preemptMu          sync.Mutex
+	activeCancel       context.CancelFunc
+	preemptHooks       []func()
+	lastPreemptTime    time.Time
+	storage            *StorageManager
+	storageMonitor     *StorageMonitor
 }
 
 type RunRequest struct {
@@ -73,6 +81,7 @@ type RunRequest struct {
 	Turn              TurnInput
 	EpisodeID         string
 	RequestID         string
+	RuntimeContext    string
 	DeviceEnvironment *PhoneEnvironment
 	StreamWriter      io.Writer
 	MaxTokens         int
@@ -105,6 +114,7 @@ type RunResult struct {
 	// Deprecated: use WaitForWakeupReason.
 	SleepReason    string       `json:"sleep_reason,omitempty"`
 	SpeechStreamed bool         `json:"-"`
+	Preempted      bool         `json:"preempted,omitempty"`
 	TurnFailure    *TurnFailure `json:"-"`
 }
 
@@ -230,10 +240,16 @@ type RunEvent struct {
 }
 
 type usageTrackingModel struct {
-	inner           llms.Model
+	inner           model.Model
 	metrics         *RunMetrics
 	promptCapture   *telemetryPromptCapture
 	contextWindowFn ContextWindowFn
+}
+
+func (m *usageTrackingModel) CallOptions() []chains.ChainCallOption { return m.inner.CallOptions() }
+
+func (m *usageTrackingModel) Spec() model.ModelSpec {
+	return m.inner.Spec()
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -352,7 +368,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	summarizeFn := buildLLMSummarizeFn(modelManager)
 	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager, logger)
 	profileFn := buildLLMProfileFn(modelManager)
-	contextWindowFn := func() ModelSpec { return modelManager.Spec() }
+	contextWindowFn := func() model.ModelSpec { return modelManager.Spec() }
 
 	longTermDir := ""
 	if memoryDir != "" {
@@ -406,10 +422,21 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger, WithMemoryPlaneLongTermStore(longTermStore))
 	rt.markInterruptedEpisodesBestEffort()
+
+	// SD/eMMC storage manager (docs/04-agent/storage-modes.md). Absent
+	// hardware degrades to eMMC-only, so starting it is safe everywhere.
+	rt.storage = NewStorageManager(cfg.Storage, logger)
+	rt.storage.Start()
 	return rt, nil
 }
 
-func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
+// Storage returns the SD/eMMC storage manager, or nil when the runtime was
+// built without one (NewRuntimeWithDeps).
+func (r *Runtime) Storage() *StorageManager {
+	return r.storage
+}
+
+func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
 	waitForWakeupController := NewWaitForWakeupController()
 	if tools != nil {
 		if tool, ok := tools.Get(toolWaitForWakeup); ok {
@@ -447,7 +474,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 				}
 			})
 			longTermStore = memories.longTerm
-		} else if longTermStore == nil {
+		} else {
 			// No manager provided, create a standalone store
 			storeOpts := []LongTermMemoryOption{WithLifecycleDir(filepath.Join(memoryDir, "lifecycle"))}
 			longTermStore = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), storeOpts...)
@@ -531,6 +558,55 @@ func (r *Runtime) lockRun(ctx context.Context) (func(), error) {
 	}
 }
 
+// Preempt terminates the currently active run and releases all associated
+// resources (audio recording, TTS playback) via registered hooks.
+func (r *Runtime) Preempt() {
+	if r == nil {
+		return
+	}
+	r.preemptMu.Lock()
+	defer r.preemptMu.Unlock()
+	if r.activeCancel != nil {
+		r.activeCancel()
+		r.lastPreemptTime = time.Now()
+	}
+	for i, hook := range r.preemptHooks {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					if r.logger != nil {
+						r.logger.Warn("[preempt] hook %d panicked: %v", i, recovered)
+					} else {
+						log.Printf("[preempt] hook %d panicked: %v", i, recovered)
+					}
+				}
+			}()
+			hook()
+		}()
+	}
+}
+
+// RegisterPreemptHook adds a callback invoked when a new run preempts the
+// current one. Used to release audio resources (stop recording, stop TTS).
+func (r *Runtime) RegisterPreemptHook(hook func()) {
+	if r == nil || hook == nil {
+		return
+	}
+	r.preemptMu.Lock()
+	defer r.preemptMu.Unlock()
+	r.preemptHooks = append(r.preemptHooks, hook)
+}
+
+// WasPreempted reports whether a preemption occurred within the last duration.
+func (r *Runtime) WasPreempted(within time.Duration) bool {
+	if r == nil {
+		return false
+	}
+	r.preemptMu.Lock()
+	defer r.preemptMu.Unlock()
+	return !r.lastPreemptTime.IsZero() && time.Since(r.lastPreemptTime) < within
+}
+
 func (r *Runtime) NewEpisodeID() string {
 	if r == nil || r.memoryPlane == nil {
 		return ""
@@ -603,11 +679,33 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// Preempt any currently active run and its resources.
+	r.Preempt()
+
 	unlockRun, err := r.lockRun(ctx)
 	if err != nil {
 		return RunResult{}, err
 	}
 	defer unlockRun()
+
+	// Register this run's cancel so future callers can preempt us.
+	runCtx, runCancel := context.WithCancel(ctx)
+	r.preemptMu.Lock()
+	r.activeCancel = runCancel
+	r.preemptMu.Unlock()
+	defer func() {
+		r.preemptMu.Lock()
+		r.activeCancel = nil
+		r.preemptMu.Unlock()
+		runCancel()
+	}()
+
+	// Check if we were preempted while waiting for runGate.
+	if err := runCtx.Err(); err != nil {
+		return RunResult{Preempted: true}, err
+	}
+	ctx = runCtx // Use preemptable context for the rest of the run.
 
 	startTime := time.Now()
 	metrics := &RunMetrics{}
@@ -677,10 +775,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{}, err
 	}
 
-	model, err := r.models.Get()
-	if err != nil {
-		return RunResult{}, err
-	}
 	contextWindow := r.effectiveContextWindow()
 	if contextWindow > 0 {
 		metrics.ContextWindow = contextWindow
@@ -688,11 +782,11 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			r.logger.Info("Resolved model context window: context_window=%d", contextWindow)
 		}
 	}
-	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: func() ModelSpec {
+	m := &usageTrackingModel{inner: r.models, metrics: metrics, promptCapture: promptCapture, contextWindowFn: func() model.ModelSpec {
 		if r.models != nil {
 			return r.models.Spec()
 		}
-		return ModelSpec{}
+		return model.ModelSpec{}
 	}}
 
 	memoryCfg := MemoryConfig{Type: "buffer"}
@@ -919,12 +1013,44 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			return RunResult{}, err
 		}
 	}
+	// append runtime context as assistant message if present (e.g., voice interruption notification)
+	if runtimeContext := strings.TrimSpace(req.RuntimeContext); runtimeContext != "" {
+		if err := r.contextManager.AppendMessage(contextmanager.Message{
+			Role:    contextmanager.MessageRoleAssistant,
+			Content: runtimeContext,
+		}); err != nil {
+			return RunResult{}, err
+		}
+	}
 	// append user message to context manager
 	if err := r.contextManager.AppendMessage(userMessageFromInput(r.contextManager, turnInput.InputText, turnInput.Attachments)); err != nil {
 		return RunResult{}, err
 	}
 
-	agentLoop := NewAgentLoop(model, profile, plannerMemory, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
+	compactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
+	tokenUsage := compactor.EstimateTokenUsage(r.contextManager)
+	// TODO: make this configurable
+	if tokenUsage > int(float64(max(contextWindow, 8192))*0.8) {
+		if r.logger != nil {
+			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, contextWindow: %d", tokenUsage, contextWindow)
+		}
+		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
+		if err != nil {
+			return RunResult{}, err
+		}
+		if compacted {
+			// setup hooks
+			newManager.AddAppendMessageHook(r.getStateHook())
+			// switch to new session
+			err = contextmanager.SwitchSession(newManager.GetSessionFolder(), newManager.GetSessionID())
+			if err != nil {
+				return RunResult{}, err
+			}
+			r.contextManager = newManager
+		}
+	}
+
+	agentLoop := NewAgentLoop(m, profile, plannerMemory, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
 	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
 		if r.tools == nil {
 			return newWheelNudgeGuard(nil)
@@ -1035,11 +1161,11 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 		// key1: value1
 		// key2: value2
 		// ...
-		formated := ""
+		var formated strings.Builder
 		for _, entry := range entries {
-			formated += fmt.Sprintf("%s: %s\n", entry.Key, entry.Value)
+			fmt.Fprintf(&formated, "%s: %s\n", entry.Key, entry.Value)
 		}
-		tagged := fmt.Sprintf("<state>\n%s\n</state>", formated)
+		tagged := util.STag("state", formated.String())
 		// create a new StateMessage
 		stateMessage := contextmanager.Message{
 			Role:    contextmanager.MessageRoleState,
@@ -1405,8 +1531,8 @@ func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
 
 func telemetryModelParametersFromModelConfig(cfg ModelConfig) map[string]interface{} {
 	params := map[string]interface{}{}
-	if cfg.Temperature != 0 {
-		params["temperature"] = cfg.Temperature
+	if cfg.Temperature != nil {
+		params["temperature"] = *cfg.Temperature
 	}
 	if cfg.MaxResponseTokens > 0 {
 		params["max_response_tokens"] = cfg.MaxResponseTokens
@@ -1443,6 +1569,7 @@ func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langt
 		AgentConfig{
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
+			Locale:           r.config.LocaleOrDefault(),
 		},
 		skills,
 		availableTools,
@@ -1515,38 +1642,23 @@ func recordUsageMetrics(metrics *RunMetrics, res *llms.ContentResponse) {
 	// tool-assisted iterations). Accumulate token counts across calls so the run
 	// metrics reflect the whole run rather than only the last call. LastPromptTokens
 	// keeps the largest single-call prompt size for the compression heuristic.
-	if v, ok := usageMetricInt(info["prompt_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["prompt_tokens"]); ok {
 		metrics.PromptTokens += v
 		if v > metrics.LastPromptTokens {
 			metrics.LastPromptTokens = v
 		}
 	}
-	if v, ok := usageMetricInt(info["completion_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["completion_tokens"]); ok {
 		metrics.CompletionTokens += v
 	}
-	if v, ok := usageMetricInt(info["total_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["total_tokens"]); ok {
 		metrics.TotalTokens += v
 	}
-	if v, ok := usageMetricInt(info["cached_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["cached_tokens"]); ok {
 		metrics.CachedPromptTokens += v
 	}
-	if v, ok := usageMetricInt(info["reasoning_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["reasoning_tokens"]); ok {
 		metrics.ReasoningTokens += v
-	}
-}
-
-func usageMetricInt(value any) (int, bool) {
-	switch typed := value.(type) {
-	case int:
-		return typed, true
-	case int32:
-		return int(typed), true
-	case int64:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	default:
-		return 0, false
 	}
 }
 
@@ -2005,12 +2117,8 @@ func truncateForLog(text string, max int) string {
 	return string(runes[:max]) + "..."
 }
 
-func buildLLMSummarizeFn(models ModelResolver) SummarizeFn {
+func buildLLMSummarizeFn(models model.Model) SummarizeFn {
 	return func(ctx context.Context, events []SessionEvent) string {
-		model, err := models.Get()
-		if err != nil {
-			return ""
-		}
 		var transcript strings.Builder
 		for _, evt := range events {
 			if evt.Content == "" {
@@ -2022,7 +2130,7 @@ func buildLLMSummarizeFn(models ModelResolver) SummarizeFn {
 			return ""
 		}
 		prompt := "Summarize this conversation in 2-3 concise sentences. Focus on what was discussed, decided, or requested. Write in the same language as the conversation.\n\n" + transcript.String()
-		result, err := llms.GenerateFromSinglePrompt(ctx, model, prompt, llms.WithMaxTokens(200))
+		result, err := llms.GenerateFromSinglePrompt(ctx, models, prompt, llms.WithMaxTokens(200))
 		if err != nil {
 			return ""
 		}
@@ -2059,15 +2167,8 @@ const (
 	structuredSummaryMaxSummaryRune = 480
 )
 
-func buildLLMStructuredSummarizeFn(models ModelResolver, logger *Logger) StructuredSummarizeFn {
+func buildLLMStructuredSummarizeFn(models model.Model, logger *Logger) StructuredSummarizeFn {
 	return func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
-		model, err := models.Get()
-		if err != nil {
-			if logger != nil {
-				logger.Warn("[memory] structured summary: failed to get model: %v", err)
-			}
-			return ChunkStructuredSummary{}
-		}
 		var transcript strings.Builder
 		for _, evt := range events {
 			content := strings.TrimSpace(evt.Content)
@@ -2079,7 +2180,7 @@ func buildLLMStructuredSummarizeFn(models ModelResolver, logger *Logger) Structu
 		if transcript.Len() == 0 {
 			return ChunkStructuredSummary{}
 		}
-		result, err := llms.GenerateFromSinglePrompt(ctx, model, structuredSummarizerPrompt+transcript.String(), llms.WithMaxTokens(800))
+		result, err := llms.GenerateFromSinglePrompt(ctx, models, structuredSummarizerPrompt+transcript.String(), llms.WithMaxTokens(800))
 		if err != nil {
 			if logger != nil {
 				logger.Warn("[memory] structured summary: LLM generation failed: %v", err)
@@ -2145,12 +2246,8 @@ func capRunes(text string, max int) string {
 	return string(runes[:max])
 }
 
-func buildLLMProfileFn(models ModelResolver) ProfileFn {
+func buildLLMProfileFn(models model.Model) ProfileFn {
 	return func(ctx context.Context, entries []ProfileEntry) string {
-		model, err := models.Get()
-		if err != nil {
-			return ""
-		}
 		var input strings.Builder
 		for _, e := range entries {
 			input.WriteString(fmt.Sprintf("[%s] %s\n", e.Type, e.Content))
@@ -2169,7 +2266,7 @@ Rules:
 
 Memory entries:
 ` + input.String()
-		result, err := llms.GenerateFromSinglePrompt(ctx, model, prompt, llms.WithMaxTokens(400))
+		result, err := llms.GenerateFromSinglePrompt(ctx, models, prompt, llms.WithMaxTokens(400))
 		if err != nil {
 			return ""
 		}
@@ -2181,6 +2278,9 @@ Memory entries:
 func (r *Runtime) Close() error {
 	if r.storageMonitor != nil {
 		r.storageMonitor.Stop()
+	}
+	if r.storage != nil {
+		r.storage.Stop()
 	}
 	if r.mergeWorker != nil {
 		r.mergeWorker.Stop()

@@ -20,7 +20,7 @@ func TestStorageStatusHTTPReturnsConsistentSnapshot(t *testing.T) {
 	server := &Server{storageMonitor: monitor}
 
 	recorder := httptest.NewRecorder()
-	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/storage/status", nil))
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/storage/monitor/status", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET status code = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -51,7 +51,7 @@ func TestStorageStatusHTTPCleanupHistoryUsesCleanerField(t *testing.T) {
 	server := &Server{storageMonitor: monitor}
 
 	recorder := httptest.NewRecorder()
-	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/storage/status", nil))
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/storage/monitor/status", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET status code = %d, body=%s", recorder.Code, recorder.Body.String())
 	}

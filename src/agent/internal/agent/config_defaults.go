@@ -1,12 +1,14 @@
 package agent
 
 const (
-	defaultLocale      = "zh-CN"
-	defaultInstruction = "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。" +
-		"需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。" +
-		"每次视觉观察或输入工具返回后，都要先根据最新画面判断上一步是否已经生效、焦点是否改变、页面是否跳转；不要盲目重复同一个点击、手势或按键。" +
-		"在手机上打开 App、查找联系人、设置项、商品或页面内容时，优先使用系统搜索、App 内搜索或页面上的搜索框；不要先靠连续滑动、翻页来碰运气。" +
-		"用户要求拨打电话时，把它当作手机自动化任务；不要因为没有单独的拨打电话工具就说做不到。"
+	localeSimplifiedChinese = "zh-CN"
+	localeEnglishUS         = "en-US"
+	defaultLocale           = localeSimplifiedChinese
+	defaultInstruction      = "Keep the tone natural, concise, and suitable for TTS playback. " +
+		"Use tools whenever reading or changing phone, external-device, or service state; combine multiple tools when needed. " +
+		"After every visual observation or input-tool result, inspect the latest screen to verify the previous action, focus, and navigation state before continuing; do not blindly repeat the same click, gesture, or key. " +
+		"When opening apps or finding contacts, settings, products, or page content on the phone, prefer system search, in-app search, or visible search fields instead of relying on repeated scrolling. " +
+		"Treat requests to place phone calls as phone-automation tasks; do not claim they are impossible merely because there is no dedicated dial tool."
 	defaultModelProvider           = "openrouter"
 	defaultModelName               = "bytedance-seed/seed-2.0-lite"
 	defaultModelTemperature        = 0.2
@@ -33,27 +35,35 @@ const (
 	defaultAudioArchiveMaxFiles    = 500
 	defaultAudioArchiveMaxSizeMB   = 100
 	defaultLLMHTTPLogRetentionDays = 7
-	defaultKeyboardDevice          = "/dev/hidg0"
-	defaultMouseDevice             = "/dev/hidg1"
-	defaultAndroidKeyboardDevice   = "/dev/hidg2"
-	defaultFrameServiceSocket      = "/run/frame_service/frame_service.sock"
-	defaultPointerMode             = "absolute"
-	defaultInputMode               = "text"
-	defaultTriggerMode             = "manual"
-	defaultSilenceMs               = 550
-	defaultMinSpeechMs             = 300
-	defaultVoiceFollowupTimeoutMs  = 5000
-	defaultVoiceFirstTurnTimeoutMs = 10000
-	defaultVoiceMaxTurns           = 0
-	defaultVoiceMaxResponseTokens  = 300
-	defaultTodoReminderToolCalls   = 3
-	defaultMaxIterations           = -1
-	defaultScreenshotKeepN         = 3
-	defaultScreenshotPruneInterval = 2
-	defaultTelemetryProvider       = "langfuse"
-	defaultTelemetryTimeoutSec     = 30
-	defaultTelemetryMaxRetry       = 2
-	defaultTelemetryEnvironment    = "default"
+	defaultStorageMountPoint       = "/mnt/sdcard"
+	defaultStorageDevice           = "mmcblk2"
+	defaultStorageMinCardFreeMB    = 64
+	// Migration watermarks: start when eMMC free space drops below 10%,
+	// stop once it is back at or above 50%.
+	defaultStorageMigrateStartFreePct = 10
+	defaultStorageMigrateStopFreePct  = 50
+	defaultKeyboardDevice             = "/dev/hidg0"
+	defaultMouseDevice                = "/dev/hidg1"
+	defaultAndroidKeyboardDevice      = "/dev/hidg2"
+	defaultFrameServiceSocket         = "/run/frame_service/frame_service.sock"
+	defaultPointerMode                = "absolute"
+	defaultInputBackend               = "hid"
+	defaultInputMode                  = "text"
+	defaultTriggerMode                = "manual"
+	defaultSilenceMs                  = 550
+	defaultMinSpeechMs                = 300
+	defaultVoiceFollowupTimeoutMs     = 5000
+	defaultVoiceFirstTurnTimeoutMs    = 10000
+	defaultVoiceMaxTurns              = 0
+	defaultVoiceMaxResponseTokens     = 300
+	defaultTodoReminderToolCalls      = 3
+	defaultMaxIterations              = -1
+	defaultScreenshotKeepN            = 3
+	defaultScreenshotPruneInterval    = 2
+	defaultTelemetryProvider          = "langfuse"
+	defaultTelemetryTimeoutSec        = 30
+	defaultTelemetryMaxRetry          = 2
+	defaultTelemetryEnvironment       = "default"
 )
 
 func defaultBoolPtr(value bool) *bool {
@@ -63,11 +73,12 @@ func defaultBoolPtr(value bool) *bool {
 
 func DefaultConfig() Config {
 	return Config{
-		Locale: defaultLocale,
 		Model: ModelConfig{
-			Provider:          defaultModelProvider,
-			Model:             defaultModelName,
-			Temperature:       defaultModelTemperature,
+			Provider: defaultModelProvider,
+			Model:    defaultModelName,
+			// Temperature is intentionally left unset here; the effective default
+			// is resolved from model metadata at load time (see
+			// applyModelTemperatureDefault), falling back to defaultModelTemperature.
 			MaxResponseTokens: defaultModelMaxResponseTokens,
 			LogRawHTTP:        defaultModelLogRawHTTP,
 			ReasoningEffort:   defaultModelReasoningEffort,
@@ -110,16 +121,43 @@ func DefaultConfig() Config {
 				},
 			},
 		},
+		Storage: StorageConfig{
+			MountPoint:           defaultStorageMountPoint,
+			Device:               defaultStorageDevice,
+			MinCardFreeMB:        defaultStorageMinCardFreeMB,
+			MigrateStartFreePct:  defaultStorageMigrateStartFreePct,
+			MigrateStopFreePct:   defaultStorageMigrateStopFreePct,
+			Enabled:              true,
+			RootPath:             "/userdata",
+			CheckIntervalSeconds: 300,
+			WarningThresholdMB:   50,
+			CriticalThresholdMB:  10,
+			EmergencyThresholdMB: 5,
+			RecoveryHysteresisMB: 5,
+			DegradedMode: StorageDegradedModeConfig{
+				DisableLLMHTTPLog:     true,
+				DisableAudioArchive:   true,
+				DisableSessionArchive: true,
+				MaxAgentLogMB:         1,
+			},
+			Cleanup: StorageCleanupConfig{
+				Enabled:                     true,
+				LLMHTTPLogRetentionDays:     []int{7, 3, 1, 0},
+				AudioArchiveRetentionDays:   []int{30, 7, 0},
+				SessionArchiveRetentionDays: []int{30},
+				CleanupRetryIntervalSeconds: 60,
+			},
+		},
 		Log: LogConfig{
 			LLMHTTPRetentionDays: defaultLLMHTTPLogRetentionDays,
 		},
-		Storage: DefaultStorageConfig(),
 		HID: HIDConfig{
 			KeyboardDevice:        defaultKeyboardDevice,
 			MouseDevice:           defaultMouseDevice,
 			AndroidKeyboardDevice: defaultAndroidKeyboardDevice,
 			FrameSocket:           defaultFrameServiceSocket,
 			PointerMode:           defaultPointerMode,
+			InputBackend:          defaultInputBackend,
 		},
 		Search: SearchConfig{
 			Provider: searchProviderDuckDuckGo,
@@ -133,6 +171,7 @@ func DefaultConfig() Config {
 			Tags:              []string{},
 			Environment:       defaultTelemetryEnvironment,
 		},
+		Locale:                     defaultLocale,
 		Instruction:                defaultInstruction,
 		InputMode:                  defaultInputMode,
 		TriggerMode:                defaultTriggerMode,

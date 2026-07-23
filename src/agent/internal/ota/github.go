@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 )
 
 type githubRelease struct {
@@ -17,7 +18,18 @@ type githubAsset struct {
 }
 
 func FetchLatestReleaseAssets(ctx context.Context, baseAPIURL string, bearerToken string) (map[string]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseAPIURL, nil)
+	return FetchLatestReleaseAssetsWithProxy(ctx, baseAPIURL, bearerToken, "")
+}
+
+func FetchLatestReleaseAssetsWithProxy(ctx context.Context, baseAPIURL string, bearerToken string, githubProxyURL string) (map[string]string, error) {
+	// Apply GitHub proxy if configured
+	apiURL := ApplyGitHubProxy(baseAPIURL, githubProxyURL)
+	if apiURL != baseAPIURL {
+		// Log proxy usage for diagnostics
+		fmt.Fprintf(os.Stderr, "ota: using GitHub proxy for API request\n")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
 	}

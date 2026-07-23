@@ -415,6 +415,12 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		return err
 	})
 
+	// Register preempt hook: when a new run starts, release WebUI audio resources.
+	runtime.RegisterPreemptHook(func() {
+		s.interruptAllActiveOutputs()
+		s.abortWebRecording()
+	})
+
 	return s
 }
 
@@ -453,6 +459,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/config-test/stt/stop", s.handleSTTConfigTestStop)
 	mux.HandleFunc("/api/audio/", s.handleAudioFile)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
+	mux.HandleFunc("/api/storage/status", s.handleStorageStatus)
+	mux.HandleFunc("/api/storage/eject", s.handleStorageEject)
+	mux.HandleFunc("/api/storage/format", s.handleStorageFormat)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
 	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
 	mux.HandleFunc("/api/phone-bridge/status", s.handleBridgeStatus)
@@ -462,7 +471,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/android-adb/status", s.handleAndroidADBStatus)
 	mux.HandleFunc("/api/android-adb/pair", s.handleAndroidADBPair)
-	mux.HandleFunc("/api/storage/status", s.handleStorageStatus)
+	mux.HandleFunc("/api/storage/monitor/status", s.handleStorageMonitorStatus)
 	mux.HandleFunc("/api/storage/cleanup", s.handleStorageCleanup)
 
 	// Coordinate debug tool and its screenshot feed. Exposes live screen data,
@@ -855,6 +864,51 @@ func (s *Server) interruptRequestOutputs(requestID string) bool {
 	return true
 }
 
+// interruptAllActiveOutputs interrupts TTS outputs for all active requests.
+func (s *Server) interruptAllActiveOutputs() {
+	s.activeOutputsMu.Lock()
+	var all []*activeTTSOutput
+	for _, outputs := range s.activeOutputs {
+		for output := range outputs {
+			all = append(all, output)
+		}
+	}
+	s.activeOutputsMu.Unlock()
+	for _, output := range all {
+		output.interrupt()
+	}
+}
+
+// abortWebRecording immediately stops any active web audio recording session,
+// discarding any buffered audio. Used during preemption to release the
+// microphone for the new turn.
+func (s *Server) abortWebRecording() {
+	s.recordMu.Lock()
+	recording := s.webRecording
+	s.webRecording = nil
+	s.recordMu.Unlock()
+	if recording == nil {
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("[preempt] Aborting web audio recording")
+	}
+
+	// Close STT session if present to avoid resource leak.
+	recording.mu.Lock()
+	sttSession := recording.sttSession
+	recording.sttSession = nil
+	recording.mu.Unlock()
+	if sttSession != nil {
+		_ = sttSession.Close()
+	}
+
+	// Stop the audio recording session.
+	if err := s.audioClient.StopRecording(recording.sessionID); err != nil && s.logger != nil {
+		s.logger.Warn("[preempt] StopRecording failed: %v", err)
+	}
+}
+
 func (s *Server) setPendingSteer(requestID, content string) (pendingSteerMessage, bool) {
 	s.activeRunsMu.Lock()
 	defer s.activeRunsMu.Unlock()
@@ -1147,7 +1201,11 @@ func (s *Server) handleChatAsync(
 				if s.liveActivity != nil {
 					s.liveActivity.CancelTask(requestID)
 				}
-				pending.err = "request canceled"
+				if s.runtime.WasPreempted(5 * time.Second) {
+					pending.err = "preempted by another input source"
+				} else {
+					pending.err = "request canceled"
+				}
 			} else {
 				errorMsg := Message{
 					Type:      "episode_status",
@@ -2649,49 +2707,60 @@ func (s *Server) handleAudioFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get audio directory from config
-	audioDir := s.runtime.config.AudioArchive.StoragePathOrDefault()
-
 	// Security: only allow base filenames, no path traversal
 	filename = filepath.Base(filename)
-	fullPath := filepath.Join(audioDir, filename)
 
-	// Resolve symlinks to prevent symlink-based traversal attacks
+	// Recordings may live on the SD card and/or eMMC depending on the
+	// storage mode; search every root and serve the first hit.
+	for _, audioDir := range s.audioReadRoots() {
+		resolvedFullPath, ok := resolveAudioFileInDir(audioDir, filename, s.logger)
+		if !ok {
+			continue
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		http.ServeFile(w, r, resolvedFullPath)
+		return
+	}
+	http.Error(w, "File not found", http.StatusNotFound)
+}
+
+// audioReadRoots lists every directory that may hold archived recordings.
+// A non-default storage_path bypasses the storage-mode machinery.
+func (s *Server) audioReadRoots() []string {
+	archive := s.runtime.config.AudioArchive
+	if path := archive.ExplicitStoragePath(); path != "" {
+		return []string{path}
+	}
+	if sm := s.storageManager(); sm != nil {
+		return sm.ReadRoots(StorageClassAudio)
+	}
+	return []string{archive.StoragePathOrDefault()}
+}
+
+// resolveAudioFileInDir resolves filename inside audioDir with symlinks
+// expanded, rejecting anything that escapes the directory.
+func resolveAudioFileInDir(audioDir, filename string, logger *Logger) (string, bool) {
 	resolvedAudioDir, err := filepath.EvalSymlinks(audioDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
-			return
+		if !os.IsNotExist(err) && logger != nil {
+			logger.Warn("[audio] resolve audio dir: %v", err)
 		}
-		if s.logger != nil {
-			s.logger.Warn("[audio] resolve audio dir: %v", err)
-		}
-		http.Error(w, "Internal error", http.StatusInternalServerError)
-		return
+		return "", false
 	}
 
-	resolvedFullPath, err := filepath.EvalSymlinks(fullPath)
+	resolvedFullPath, err := filepath.EvalSymlinks(filepath.Join(audioDir, filename))
 	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "File not found", http.StatusNotFound)
-			return
+		if !os.IsNotExist(err) && logger != nil {
+			logger.Warn("[audio] resolve file path: %v", err)
 		}
-		if s.logger != nil {
-			s.logger.Warn("[audio] resolve file path: %v", err)
-		}
-		http.Error(w, "Internal error", http.StatusInternalServerError)
-		return
+		return "", false
 	}
 
-	// Verify resolved path is within audio directory
+	// Verify the resolved path is within the audio directory.
 	if !strings.HasPrefix(resolvedFullPath, resolvedAudioDir+string(filepath.Separator)) {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
+		return "", false
 	}
-
-	// Serve file
-	w.Header().Set("Content-Type", "audio/wav")
-	http.ServeFile(w, r, resolvedFullPath)
+	return resolvedFullPath, true
 }
 
 func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
@@ -3416,7 +3485,7 @@ const keyboardTapAndroidKeysGuideHTML = `<!DOCTYPE html>
             <strong>Rules:</strong>
             <ul>
                 <li>Use one Android extension key at a time.</li>
-                <li>Do not combine <code>KEYCODE_*</code> or <code>KEY_USAGE_*</code> with <code>ctrl</code>, <code>alt</code>, <code>shift</code>, <code>meta</code>, or standard keyboard keys.</li>
+                <li>Do not combine <code>KEYCODE_*</code> aliases, or legacy <code>KEY_USAGE_*</code> compatibility names, with <code>ctrl</code>, <code>alt</code>, <code>shift</code>, <code>meta</code>, or standard keyboard keys.</li>
                 <li>Raw short names such as <code>app_switch</code> or <code>refresh</code> are also accepted where listed below.</li>
                 <li>Android and vendor ROMs may react differently to some usages even when AOSP maps them.</li>
             </ul>
@@ -3428,8 +3497,8 @@ const keyboardTapAndroidKeysGuideHTML = `<!DOCTYPE html>
                 <li><code>{"keys":["KEYCODE_BACK"]}</code></li>
                 <li><code>{"keys":["KEYCODE_APP_SWITCH"]}</code></li>
                 <li><code>{"keys":["KEYCODE_MEDIA_PLAY_PAUSE"]}</code></li>
-                <li><code>{"keys":["KEY_USAGE_SETTINGS"]}</code></li>
-                <li><code>{"keys":["KEY_USAGE_REFRESH"]}</code></li>
+                <li><code>{"keys":["KEYCODE_SETTINGS"]}</code></li>
+                <li><code>{"keys":["KEYCODE_REFRESH"]}</code></li>
             </ul>
         </div>
 
@@ -3463,34 +3532,41 @@ const keyboardTapAndroidKeysGuideHTML = `<!DOCTYPE html>
             </tbody>
         </table>
 
-        <h2>KEY_USAGE aliases</h2>
+        <h2>HID-backed KEYCODE aliases</h2>
         <table>
             <thead>
                 <tr>
                     <th>Alias</th>
                     <th>Raw name</th>
                     <th>Usage</th>
+                    <th>Android API</th>
                     <th>AOSP action</th>
                 </tr>
             </thead>
-            <tbody>
-                <tr><td><code>KEY_USAGE_SCREENSHOT</code></td><td><code>screenshot</code></td><td><code>0x0c0065</code></td><td>Screenshot</td></tr>
-                <tr><td><code>KEY_USAGE_WINDOW</code></td><td><code>window</code></td><td><code>0x0c0067</code></td><td>Window</td></tr>
-                <tr><td><code>KEY_USAGE_BRIGHTNESS_UP</code></td><td><code>brightness_up</code></td><td><code>0x0c006F</code></td><td>Brightness Up</td></tr>
-                <tr><td><code>KEY_USAGE_BRIGHTNESS_DOWN</code></td><td><code>brightness_down</code></td><td><code>0x0c0070</code></td><td>Brightness Down</td></tr>
-                <tr><td><code>KEY_USAGE_DICTATE</code></td><td><code>dictate</code></td><td><code>0x0c00D8</code></td><td>Dictate</td></tr>
-                <tr><td><code>KEY_USAGE_EMOJI_PICKER</code></td><td><code>emoji_picker</code></td><td><code>0x0c00D9</code></td><td>Emoji Picker</td></tr>
-                <tr><td><code>KEY_USAGE_MEDIA_AUDIO_TRACK</code></td><td><code>media_audio_track</code></td><td><code>0x0c0173</code></td><td>Media Audio Track</td></tr>
-                <tr><td><code>KEY_USAGE_PROFILE_SWITCH</code></td><td><code>profile_switch</code></td><td><code>0x0c019C</code></td><td>Profile Switch</td></tr>
-                <tr><td><code>KEY_USAGE_SETTINGS</code></td><td><code>settings</code></td><td><code>0x0c019F</code></td><td>Settings</td></tr>
-                <tr><td><code>KEY_USAGE_NEW</code></td><td><code>new</code></td><td><code>0x0c0201</code></td><td>New</td></tr>
-                <tr><td><code>KEY_USAGE_CLOSE</code></td><td><code>close</code></td><td><code>0x0c0203</code></td><td>Close</td></tr>
-                <tr><td><code>KEY_USAGE_PRINT</code></td><td><code>print</code></td><td><code>0x0c0208</code></td><td>Print</td></tr>
-                <tr><td><code>KEY_USAGE_REFRESH</code></td><td><code>refresh</code></td><td><code>0x0c0227</code></td><td>Refresh</td></tr>
-                <tr><td><code>KEY_USAGE_FULLSCREEN</code></td><td><code>fullscreen</code></td><td><code>0x0c0232</code></td><td>Fullscreen</td></tr>
-                <tr><td><code>KEY_USAGE_LANGUAGE_SWITCH</code></td><td><code>language_switch</code></td><td><code>0x0c029D</code></td><td>Language Switch</td></tr>
-            </tbody>
-        </table>
+	            <tbody>
+	                <tr><td><code>KEYCODE_SCREENSHOT</code></td><td><code>screenshot</code></td><td><code>0x0c0065</code></td><td>35</td><td>Screenshot</td></tr>
+	                <tr><td><code>KEYCODE_SETTINGS</code></td><td><code>settings</code></td><td><code>0x0c019F</code></td><td>11</td><td>Settings</td></tr>
+	                <tr><td><code>KEYCODE_WINDOW</code></td><td><code>window</code></td><td><code>0x0c0067</code></td><td>11</td><td>Window</td></tr>
+                <tr><td><code>KEYCODE_BRIGHTNESS_UP</code></td><td><code>brightness_up</code></td><td><code>0x0c006F</code></td><td>18</td><td>Brightness Up</td></tr>
+                <tr><td><code>KEYCODE_BRIGHTNESS_DOWN</code></td><td><code>brightness_down</code></td><td><code>0x0c0070</code></td><td>18</td><td>Brightness Down</td></tr>
+                <tr><td><code>KEYCODE_DICTATE</code></td><td><code>dictate</code></td><td><code>0x0c00D8</code></td><td>36</td><td>Dictate</td></tr>
+                <tr><td><code>KEYCODE_EMOJI_PICKER</code></td><td><code>emoji_picker</code></td><td><code>0x0c00D9</code></td><td>35</td><td>Emoji Picker</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_AUDIO_TRACK</code></td><td><code>media_audio_track</code></td><td><code>0x0c0173</code></td><td>19</td><td>Media Audio Track</td></tr>
+                <tr><td><code>KEYCODE_PROFILE_SWITCH</code></td><td><code>profile_switch</code></td><td><code>0x0c019C</code></td><td>29</td><td>Profile Switch</td></tr>
+	                <tr><td><code>KEYCODE_NEW</code></td><td><code>new</code></td><td><code>0x0c0201</code></td><td>36</td><td>New</td></tr>
+	                <tr><td><code>KEYCODE_LANGUAGE_SWITCH</code></td><td><code>language_switch</code></td><td><code>0x0c029D</code></td><td>14</td><td>Language Switch</td></tr>
+	                <tr><td><code>KEYCODE_FULLSCREEN</code></td><td><code>fullscreen</code></td><td><code>0x0c0232</code></td><td>36</td><td>Fullscreen</td></tr>
+	                <tr><td><code>KEYCODE_REFRESH</code></td><td><code>refresh</code></td><td><code>0x0c0227</code></td><td>28</td><td>Refresh</td></tr>
+	                <tr><td><code>KEYCODE_CLOSE</code></td><td><code>close</code></td><td><code>0x0c0203</code></td><td>36</td><td>Close</td></tr>
+	                <tr><td><code>KEYCODE_PRINT</code></td><td><code>print</code></td><td><code>0x0c0208</code></td><td>36</td><td>Print</td></tr>
+	            </tbody>
+	        </table>
+
+	        <h2>Legacy HID usage aliases</h2>
+	        <p>
+	            Older <code>KEY_USAGE_*</code> spellings for the migrated rows remain accepted for compatibility;
+	            new calls should use the <code>KEYCODE_*</code> aliases above.
+	        </p>
 
         <div class="panel">
             <h2>Notes</h2>
@@ -4652,6 +4728,18 @@ const webUI = `<!DOCTYPE html>
                 </div>
                 <div class="tool-lab-status" id="skillStatus"></div>
             </div>
+
+            <div class="sidebar-card storage-panel">
+                <div class="sidebar-kicker">Storage</div>
+                <strong>eMMC + microSD</strong>
+                <div class="sidebar-note" id="storageSummary">Loading storage status...</div>
+                <div class="sidebar-note" id="storageWarning" hidden></div>
+                <div class="tool-lab-row">
+                    <button type="button" class="composer-btn tool-secondary-btn" id="storageEjectBtn" onclick="ejectStorage()">Safe eject</button>
+                </div>
+                <div class="sidebar-note">Formatting is available in the setup portal (192.168.42.1).</div>
+                <div class="tool-lab-status" id="storageStatusMsg"></div>
+            </div>
         </aside>
     </div>
 
@@ -4713,6 +4801,8 @@ const webUI = `<!DOCTYPE html>
         setInterval(refreshCurrentLiveActivity, 2000);
         loadToolCatalog();
         loadToolSkills();
+        loadStorageStatus();
+        setInterval(loadStorageStatus, 5000);
         autoResizeInput();
         connectSSE();
 
@@ -4726,6 +4816,92 @@ const webUI = `<!DOCTYPE html>
                 sendMessage();
             }
         });
+
+        async function loadStorageStatus() {
+            try {
+                const res = await fetch('/api/storage/status');
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                renderStorageStatus(await res.json());
+            } catch (err) {
+                const summary = document.getElementById('storageSummary');
+                if (summary) summary.textContent = 'Storage status unavailable: ' + err.message;
+            }
+        }
+
+        function storageModeName(mode) {
+            if (mode === 1) return 'eMMC only';
+            if (mode === 2) return 'Dual storage';
+            return 'Auto';
+        }
+
+        function storageGB(bytes) {
+            return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+        }
+
+        function renderStorageStatus(status) {
+            const summary = document.getElementById('storageSummary');
+            const warning = document.getElementById('storageWarning');
+            const ejectBtn = document.getElementById('storageEjectBtn');
+            if (!summary || !warning) return;
+
+            let text = 'Running: ' + storageModeName(status.effective_mode) + '. ';
+            if (status.card.mounted) {
+                text += 'SD card mounted at ' + status.mount_point + ' (' +
+                    storageGB(status.card.free_bytes) + ' free of ' + storageGB(status.card.total_bytes) + ').';
+            } else if (status.card.present) {
+                text += 'SD card present but not in use.';
+            } else {
+                text += 'No SD card.';
+            }
+            summary.textContent = text;
+
+            let warn = '';
+            if (status.format_job && status.format_job.status === 'running') {
+                warn = 'Formatting card (' + status.format_job.fs + ')...';
+            } else if (status.migration && status.migration.status === 'running') {
+                warn = 'eMMC is filling up; migrating older recordings to SD (' +
+                    (status.migration.moved_files || 0) + ' files moved)...';
+            } else if (status.migration && status.migration.status === 'failed') {
+                warn = 'Storage migration failed: ' + (status.migration.error || status.migration.detail || 'unknown error');
+            } else if (status.card.reason) {
+                warn = 'Card issue: ' + status.card.reason;
+            }
+            warning.textContent = warn;
+            warning.hidden = !warn;
+
+            const formatting = status.format_job && status.format_job.status === 'running';
+            if (ejectBtn) ejectBtn.disabled = !status.card.mounted || formatting;
+        }
+
+        function setStorageStatusMsg(text, isError) {
+            const el = document.getElementById('storageStatusMsg');
+            if (!el) return;
+            el.textContent = text;
+            el.classList.toggle('error', !!isError);
+        }
+
+        async function postStorage(path, body, pendingMsg, okMsg) {
+            setStorageStatusMsg(pendingMsg, false);
+            try {
+                const res = await fetch(path, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+                renderStorageStatus(data);
+                setStorageStatusMsg(okMsg, false);
+            } catch (err) {
+                setStorageStatusMsg(err.message, true);
+                loadStorageStatus();
+            }
+        }
+
+        async function ejectStorage() {
+            if (!confirm('Sync and unmount the SD card so it can be safely removed?')) return;
+            await postStorage('/api/storage/eject', {}, 'Ejecting...', 'Card ejected. Safe to remove.');
+        }
 
         async function loadHistory() {
             try {

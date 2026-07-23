@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/model"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -109,13 +110,13 @@ func TestProviderMetadataCacheWritesPreserveSpecAndPromptCachePolicy(t *testing.
 		WithProviderModelMetadataCachePath(cachePath),
 	)
 
-	if err := manager.writeProviderModelSpecCache(ModelSpec{ContextWindow: 1024}); err != nil {
+	if err := manager.writeProviderModelSpecCache(model.ModelSpec{ContextWindow: 1024}); err != nil {
 		t.Fatalf("writeProviderModelSpecCache: %v", err)
 	}
 	if err := manager.writeProviderPromptCachePolicyCache(PromptCachePolicyExplicit); err != nil {
 		t.Fatalf("writeProviderPromptCachePolicyCache: %v", err)
 	}
-	if err := manager.writeProviderModelSpecCache(ModelSpec{ContextWindow: 2048}); err != nil {
+	if err := manager.writeProviderModelSpecCache(model.ModelSpec{ContextWindow: 2048}); err != nil {
 		t.Fatalf("writeProviderModelSpecCache second write: %v", err)
 	}
 

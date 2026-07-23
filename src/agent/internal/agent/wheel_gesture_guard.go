@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	wheelNudgeMinPerColumn    = 10
+	wheelNudgeMinPerColumn    = 12
 	wheelNudgeMaxPerColumn    = 64
 	wheelNudgeMaxTotal        = 128
-	wheelNudgeRetrySlack      = 2
+	wheelNudgeRetrySlack      = 4
 	wheelNudgeCenterTolerance = 60.0
 	wheelNudgeColumnTolerance = 60.0
 	wheelNudgeActionBarInset  = 100.0
@@ -22,11 +22,12 @@ const (
 // wheelNudgeGuard is a run-scoped tool execution policy. It validates wheel
 // progress before execution and commits usage only after a successful result.
 type wheelNudgeGuard struct {
-	screen            *screenState
-	total             int
-	columns           []wheelNudgeColumnUsage
-	pendingWheel      *wheelNudgeAttempt
-	pendingNavigation string
+	screen                      *screenState
+	initialScreenshotGeneration uint64
+	total                       int
+	columns                     []wheelNudgeColumnUsage
+	pendingWheel                *wheelNudgeAttempt
+	pendingNavigation           string
 }
 
 type wheelNudgeColumnUsage struct {
@@ -59,13 +60,12 @@ type wheelNudgeAttempt struct {
 type wheelNudgeObservation struct {
 	beforeValue int
 	direction   string
-	maxRows     int
 	cycleSize   int
 	cycleStart  int
 }
 
 func newWheelNudgeGuard(screen *screenState) *wheelNudgeGuard {
-	return &wheelNudgeGuard{screen: screen}
+	return &wheelNudgeGuard{screen: screen, initialScreenshotGeneration: screen.ScreenshotGeneration()}
 }
 
 func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (ToolResult, bool) {
@@ -87,6 +87,12 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 		return ToolResult{}, true
 	}
 	g.pendingWheel = nil
+	if g.screen != nil && g.screen.ScreenshotGeneration() <= g.initialScreenshotGeneration {
+		return invalidWheelResult(
+			"wheel_nudge requires a fresh screenshot captured during the current task before moving a picker",
+			map[string]any{"fresh_screenshot_required": true},
+		), false
+	}
 
 	args, err := parseWheelNudgeArgs(call.Input)
 	if err != nil {
@@ -130,11 +136,22 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 				message := fmt.Sprintf("the previous finger-%s nudge changed %d -> %d; report value_step from the latest visible row ordering before the next movement", column.pending.direction, column.pending.beforeValue, *args.CurrentValue)
 				return invalidWheelResult(message, map[string]any{"column_x": representativeX, "value_step_required": true, "retry_same_column": true}), false
 			}
-			if !wheelObservationMatchesStep(*column.pending, *args.CurrentValue, *args.ValueStep) {
-				message := fmt.Sprintf("wheel observed movement mismatch: the previous finger-%s nudge changed %d -> %d, which does not match value_step=%d", column.pending.direction, column.pending.beforeValue, *args.CurrentValue, *args.ValueStep)
-				return invalidWheelResult(message, map[string]any{
-					"column_x": representativeX, "retry_same_column": true,
-				}), false
+			observedRows, observedOK := wheelObservationRows(*column.pending, *args.CurrentValue, *args.ValueStep)
+			oppositeRows, oppositeOK := wheelObservationRows(*column.pending, *args.CurrentValue, -*args.ValueStep)
+			if !observedOK || (oppositeOK && oppositeRows < observedRows) {
+				requiredStep := -*args.ValueStep
+				requiredSign := "positive"
+				if requiredStep < 0 {
+					requiredSign = "negative"
+				}
+				details := map[string]any{"column_x": representativeX, "retry_same_column": true}
+				message := fmt.Sprintf("wheel observed direction mismatch: the previous finger-%s nudge changed %d -> %d; this movement requires value_step with %s sign, got %d", column.pending.direction, column.pending.beforeValue, *args.CurrentValue, requiredSign, *args.ValueStep)
+				if oppositeOK {
+					details["required_value_step_sign"] = requiredSign
+				} else {
+					message = fmt.Sprintf("wheel observed movement mismatch: the previous finger-%s nudge changed %d -> %d, which is not reachable by value_step=%d", column.pending.direction, column.pending.beforeValue, *args.CurrentValue, *args.ValueStep)
+				}
+				return invalidWheelResult(message, details), false
 			}
 			column.direction = wheelIncreasingDirectionFromVisibleStep(*args.ValueStep)
 			column.pending = nil
@@ -235,7 +252,6 @@ func (g *wheelNudgeGuard) AfterToolCall(_ context.Context, call ToolCall, result
 			column.pending = &wheelNudgeObservation{
 				beforeValue: *attempt.args.CurrentValue,
 				direction:   attempt.plan.direction,
-				maxRows:     attempt.plan.rows,
 				cycleSize:   *attempt.args.CycleSize,
 				cycleStart:  *attempt.args.CycleStart,
 			}
@@ -276,22 +292,47 @@ func wheelValueStepSignForIncreasingDirection(direction string) string {
 	return "negative"
 }
 
-func wheelObservationMatchesStep(observation wheelNudgeObservation, afterValue, valueStep int) bool {
+func wheelObservationRows(observation wheelNudgeObservation, afterValue, valueStep int) (int, bool) {
+	if valueStep == 0 {
+		return 0, false
+	}
 	rowStep := valueStep
 	if observation.direction == "down" {
 		rowStep = -rowStep
 	}
-	maxRows := max(1, observation.maxRows)
-	for rows := 1; rows <= maxRows; rows++ {
-		candidate := observation.beforeValue + rows*rowStep
-		if observation.cycleSize > 0 {
-			candidate = observation.cycleStart + ((candidate-observation.cycleStart)%observation.cycleSize+observation.cycleSize)%observation.cycleSize
+	if observation.cycleSize <= 0 {
+		delta := afterValue - observation.beforeValue
+		if delta == 0 || delta%rowStep != 0 {
+			return 0, false
 		}
-		if candidate == afterValue {
-			return true
-		}
+		rows := delta / rowStep
+		return rows, rows > 0
 	}
-	return false
+	cycleEnd := observation.cycleStart + observation.cycleSize
+	if observation.beforeValue < observation.cycleStart || afterValue < observation.cycleStart || observation.beforeValue >= cycleEnd || afterValue >= cycleEnd {
+		return 0, false
+	}
+	delta := (afterValue - observation.beforeValue + observation.cycleSize) % observation.cycleSize
+	stepMagnitude := rowStep
+	if stepMagnitude < 0 {
+		stepMagnitude = -stepMagnitude
+	}
+	divisor := greatestCommonDivisor(stepMagnitude, observation.cycleSize)
+	if delta%divisor != 0 {
+		return 0, false
+	}
+	reducedCycle := observation.cycleSize / divisor
+	reducedStep := rowStep / divisor
+	reducedStep = (reducedStep%reducedCycle + reducedCycle) % reducedCycle
+	inverse, ok := modularInverse(int64(reducedStep), int64(reducedCycle))
+	if !ok {
+		return 0, false
+	}
+	rows := int((int64(delta/divisor) * inverse) % int64(reducedCycle))
+	if rows == 0 {
+		rows = reducedCycle
+	}
+	return rows, true
 }
 
 func (g *wheelNudgeGuard) columnIndex(pickerID string, columnX, centerY float64, coordSpace string) int {
@@ -462,10 +503,7 @@ func (g *wheelNudgeGuard) guardCoordinates(coordSpace string, x, y, rowSpacing f
 }
 
 func wheelCenterY(args wheelNudgeArgs) float64 {
-	if args.CenterY != nil {
-		return *args.CenterY
-	}
-	return wheelNudgeDefaultY
+	return *args.CenterY
 }
 
 func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
@@ -495,11 +533,25 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 		if args.Anchor != nil {
 			anchor = *args.Anchor
 		}
-		for _, column := range g.columns {
-			x, _, _, pointSpace := g.guardCoordinates(coordinateSpaceNormalized, anchor, column.centerY, 0)
-			if column.coordSpace == pointSpace && math.Abs(column.centerX-x) <= wheelNudgeColumnTolerance {
-				message := "active picker column is owned by wheel_nudge: refusing a directional swipe anchored on that column"
-				return invalidWheelResult(message, map[string]any{"column_x": column.centerX, "retry_same_column": true}), false
+		type directionalAnchor struct {
+			x          float64
+			coordSpace string
+		}
+		candidateAnchors := []directionalAnchor{
+			{x: anchor, coordSpace: coordinateSpaceNormalized},
+		}
+		for _, point := range []*pointerPoint{args.Start, args.End} {
+			if point != nil {
+				candidateAnchors = append(candidateAnchors, directionalAnchor{x: point.X.Float64(), coordSpace: normalizedWheelCoordSpace(args.CoordSpace)})
+			}
+		}
+		for _, candidate := range candidateAnchors {
+			for _, column := range g.columns {
+				x, _, _, pointSpace := g.guardCoordinates(candidate.coordSpace, candidate.x, column.centerY, 0)
+				if column.coordSpace == pointSpace && math.Abs(column.centerX-x) <= wheelNudgeColumnTolerance {
+					message := "active picker column is owned by wheel_nudge: refusing a directional swipe anchored on that column"
+					return invalidWheelResult(message, map[string]any{"column_x": column.centerX, "retry_same_column": true}), false
+				}
 			}
 		}
 		return ToolResult{}, true

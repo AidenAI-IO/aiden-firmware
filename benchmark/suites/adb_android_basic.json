@@ -1,0 +1,197 @@
+{
+  "name": "adb_android_basic",
+  "version": "1.0",
+  "description": "Basic and multi-step ADB Android bridge tests for a Genymotion emulator",
+  "prompt_prefix": "你正在控制一台 Android 模拟器。使用 screenshot 查看屏幕。可以使用 touch_gesture 返回 Home、点击和滑动。可以使用 keyboard_text 输入英文文本。如需打开系统设置，优先使用 quick_action，参数为 platform=android, action=open_settings；也可以通过点击设置图标打开。",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "请返回 Android 主屏幕，并截图确认。",
+    "timeout_sec": 30,
+    "clear_history_after": true
+  },
+  "trace_observations": [],
+  "tasks": [
+    {
+      "id": "screenshot_home",
+      "category": "device_operation",
+      "prompt": "请截图并简要说明当前屏幕内容。",
+      "description_for_judge": "Agent 应该调用 screenshot 并描述当前 Android 屏幕。",
+      "rubric": [
+        {
+          "id": "took_screenshot",
+          "description": "进行了截图"
+        },
+        {
+          "id": "described_screen",
+          "description": "对屏幕内容做了简要描述"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 60,
+        "min_tool_calls": 1,
+        "required_tools": [
+          "screenshot"
+        ]
+      },
+      "repeats": 1
+    },
+    {
+      "id": "go_home",
+      "category": "device_operation",
+      "prompt": "请返回主屏幕并截图。",
+      "description_for_judge": "Agent 应该返回 Android 主屏幕并截图确认。",
+      "rubric": [
+        {
+          "id": "home_and_screenshot",
+          "description": "返回主屏幕并截图"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 60,
+        "min_tool_calls": 1,
+        "required_tools": []
+      },
+      "repeats": 1
+    },
+    {
+      "id": "open_settings",
+      "category": "device_operation",
+      "prompt": "请打开 Android 设置应用并截图。",
+      "description_for_judge": "Agent 应该打开系统设置页面（通过 quick_action open_settings 或点击设置图标），最终截图应显示设置界面。",
+      "rubric": [
+        {
+          "id": "opened_settings",
+          "description": "打开了设置应用"
+        },
+        {
+          "id": "confirmed_with_screenshot",
+          "description": "用截图确认了设置界面"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 90,
+        "min_tool_calls": 1,
+        "required_tools": []
+      },
+      "repeats": 1
+    },
+    {
+      "id": "swipe_screen",
+      "category": "device_operation",
+      "prompt": "请在当前页面执行一次向上滑动，然后截图。",
+      "description_for_judge": "Agent 应该执行一次向上滑动手势并截图。",
+      "rubric": [
+        {
+          "id": "swiped_and_screenshot",
+          "description": "执行滑动并截图"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 60,
+        "min_tool_calls": 1,
+        "required_tools": []
+      },
+      "repeats": 1
+    },
+    {
+      "id": "type_english_text",
+      "category": "device_operation",
+      "prompt": "请打开一个可输入文本的位置，输入 hello android，然后截图。",
+      "description_for_judge": "Agent 应该找到一个文本输入位置（如搜索框），输入英文文本 hello android，并用截图确认。",
+      "rubric": [
+        {
+          "id": "typed_text",
+          "description": "输入了 hello android"
+        },
+        {
+          "id": "confirmed_with_screenshot",
+          "description": "用截图确认了输入结果"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 120,
+        "min_tool_calls": 1,
+        "required_tools": []
+      },
+      "repeats": 1
+    },
+    {
+      "id": "clock_count_alarms",
+      "category": "device_operation",
+      "prompt": "打开时钟应用，告诉我当前有多少个闹钟。",
+      "description_for_judge": "Agent 应该：1) 打开时钟应用（通过应用抽屉或主屏幕图标） 2) 查看闹钟列表页面 3) 正确报告闹钟数量（没有闹钟时应报告没有/0 个）",
+      "rubric": [
+        {
+          "id": "opened_clock_app",
+          "description": "成功打开时钟应用（通过点击图标或应用列表）"
+        },
+        {
+          "id": "viewed_alarm_list",
+          "description": "查看了闹钟列表页面"
+        },
+        {
+          "id": "counted_correctly",
+          "description": "正确识别并报告了闹钟数量"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 180,
+        "min_tool_calls": 2,
+        "required_tools": []
+      },
+      "repeats": 1
+    },
+    {
+      "id": "settings_check_wifi",
+      "category": "device_operation",
+      "prompt": "打开设置应用，检查 WiFi 是否已启用，并告诉我当前状态。",
+      "description_for_judge": "Agent 应该：1) 打开设置应用 2) 进入网络和互联网（或 WLAN/互联网）设置 3) 正确报告 WiFi 当前是启用还是禁用状态",
+      "rubric": [
+        {
+          "id": "opened_settings",
+          "description": "成功打开设置应用"
+        },
+        {
+          "id": "found_wifi_settings",
+          "description": "找到并查看了 WiFi/网络设置"
+        },
+        {
+          "id": "reported_status",
+          "description": "正确报告了 WiFi 的启用/禁用状态"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 180,
+        "min_tool_calls": 2,
+        "required_tools": []
+      },
+      "repeats": 1
+    },
+    {
+      "id": "open_app_drawer",
+      "category": "device_operation",
+      "prompt": "先返回主屏幕，然后向上滑动打开应用抽屉，并告诉我看到了哪些应用。",
+      "description_for_judge": "Agent 应该：1) 返回主屏幕 2) 执行向上滑动手势打开应用抽屉 3) 描述应用抽屉中可见的应用（如电话、短信、设置、时钟、相机等）",
+      "rubric": [
+        {
+          "id": "returned_home",
+          "description": "先返回了主屏幕"
+        },
+        {
+          "id": "opened_app_drawer",
+          "description": "通过向上滑动成功打开了应用抽屉"
+        },
+        {
+          "id": "listed_apps",
+          "description": "描述了应用抽屉中可见的应用"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 120,
+        "min_tool_calls": 2,
+        "required_tools": []
+      },
+      "repeats": 1
+    }
+  ]
+}

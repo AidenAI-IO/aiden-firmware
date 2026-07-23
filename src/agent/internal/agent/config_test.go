@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -74,6 +75,30 @@ func TestConfigInputModeDefaultContract(t *testing.T) {
 	}
 }
 
+func TestConfigLocaleContract(t *testing.T) {
+	if got := DefaultConfig().Locale; got != "zh-CN" {
+		t.Fatalf("DefaultConfig().Locale = %q, want zh-CN", got)
+	}
+	if got := (Config{}).LocaleOrDefault(); got != "zh-CN" {
+		t.Fatalf("Config{}.LocaleOrDefault() = %q, want zh-CN", got)
+	}
+
+	english := Config{Model: ModelConfig{Provider: "fake"}, Locale: "en-US"}
+	if err := english.Validate(); err != nil {
+		t.Fatalf("Validate(en-US) error = %v", err)
+	}
+	if got := english.LocaleOrDefault(); got != "en-US" {
+		t.Fatalf("LocaleOrDefault() = %q, want en-US", got)
+	}
+
+	for _, locale := range []string{"fr-FR", "en-us"} {
+		invalid := Config{Model: ModelConfig{Provider: "fake"}, Locale: locale}
+		if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "locale") {
+			t.Fatalf("Validate(%s) error = %v, want locale rejection", locale, err)
+		}
+	}
+}
+
 func TestLoadRuntimeConfigParsesTerminationPolicyOverrides(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	contents := `
@@ -111,33 +136,111 @@ parse_failure_limit = 13
 	}
 }
 
-func TestLoadRuntimeConfigParsesStorageOverrides(t *testing.T) {
+func TestLoadRuntimeConfigClearsBaseURLForNonOpenAIProvider(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		wantBaseURL string
+	}{
+		{"openai keeps base_url", "openai", "https://gateway.example.com/v1"},
+		{"OpenAI case insensitive keeps base_url", "OpenAI", "https://gateway.example.com/v1"},
+		{"ollama keeps base_url", "ollama", "https://gateway.example.com/v1"},
+		{"Ollama case insensitive keeps base_url", "Ollama", "https://gateway.example.com/v1"},
+		{"openrouter drops base_url", "openrouter", ""},
+		{"kimi drops base_url", "kimi", ""},
+		{"kimi-cn drops base_url", "kimi-cn", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent.toml")
+			contents := `
+[model]
+provider = "` + tt.provider + `"
+model = "some-model"
+base_url = "https://gateway.example.com/v1"
+
+[model_text]
+provider = "` + tt.provider + `"
+model = "some-model"
+base_url = "https://gateway.example.com/v1"
+`
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := LoadRuntimeConfig(path)
+			if err != nil {
+				t.Fatalf("LoadRuntimeConfig() error = %v", err)
+			}
+			if cfg.Model.BaseURL != tt.wantBaseURL {
+				t.Errorf("model.base_url = %q, want %q", cfg.Model.BaseURL, tt.wantBaseURL)
+			}
+			if cfg.ModelText.BaseURL != tt.wantBaseURL {
+				t.Errorf("model_text.base_url = %q, want %q", cfg.ModelText.BaseURL, tt.wantBaseURL)
+			}
+		})
+	}
+}
+
+func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
+	tests := []struct {
+		name    string
+		model   string
+		explSet string // explicit temperature line, empty means unset
+		want    *float64
+	}{
+		{
+			name:  "kimi-k3 without explicit temperature pins model default",
+			model: "kimi-k3",
+			want:  floatPtr(1),
+		},
+		{
+			name:    "explicit temperature overrides kimi-k3 model default",
+			model:   "kimi-k3",
+			explSet: "temperature = 0.5",
+			want:    floatPtr(0.5),
+		},
+		{
+			name:  "unknown model without explicit temperature uses fallback",
+			model: "gpt-5.5",
+			want:  floatPtr(defaultModelTemperature),
+		},
+		{
+			name:    "explicit zero temperature is respected",
+			model:   "kimi-k3",
+			explSet: "temperature = 0.0",
+			want:    floatPtr(0),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent.toml")
+			contents := "[model]\nprovider = \"openai\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := LoadRuntimeConfig(path)
+			if err != nil {
+				t.Fatalf("LoadRuntimeConfig() error = %v", err)
+			}
+			if !floatPtrEqual(cfg.Model.Temperature, tt.want) {
+				t.Errorf("model.temperature = %v, want %v", formatFloatPtr(cfg.Model.Temperature), formatFloatPtr(tt.want))
+			}
+		})
+	}
+}
+
+func TestLoadRuntimeConfigResolvesModelTextTemperatureDefault(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	contents := `
 [model]
-provider = "fake"
+provider = "openai"
+model = "gpt-5.5"
 
-[storage]
-enabled = true
-root_path = "/mnt/device"
-check_interval_seconds = 42
-warning_threshold_mb = 80
-critical_threshold_mb = 20
-emergency_threshold_mb = 6
-recovery_hysteresis_mb = 9
-
-[storage.degraded_mode]
-disable_llm_http_log = false
-disable_audio_archive = false
-disable_session_archive = false
-max_agent_log_mb = 3
-
-[storage.cleanup]
-enabled = false
-llm_http_log_retention_days = [9, 2]
-audio_archive_retention_days = [14]
-session_archive_retention_days = [45]
-cleanup_retry_interval_seconds = 75
+[model_text]
+provider = "kimi"
+model = "kimi-k3"
 `
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -147,19 +250,131 @@ cleanup_retry_interval_seconds = 75
 	if err != nil {
 		t.Fatalf("LoadRuntimeConfig() error = %v", err)
 	}
-	storage := cfg.Storage
-	if storage.RootPath != "/mnt/device" || storage.CheckIntervalSeconds != 42 || storage.WarningThresholdMB != 80 ||
-		storage.CriticalThresholdMB != 20 || storage.EmergencyThresholdMB != 6 || storage.RecoveryHysteresisMB != 9 {
-		t.Fatalf("storage overrides = %+v", storage)
+	if !floatPtrEqual(cfg.Model.Temperature, floatPtr(defaultModelTemperature)) {
+		t.Errorf("model.temperature = %v, want %v (fallback)", formatFloatPtr(cfg.Model.Temperature), defaultModelTemperature)
 	}
-	if storage.DegradedMode.DisableLLMHTTPLog || storage.DegradedMode.DisableAudioArchive || storage.DegradedMode.DisableSessionArchive || storage.DegradedMode.MaxAgentLogMB != 3 {
-		t.Fatalf("storage degraded mode overrides = %+v", storage.DegradedMode)
+	if !floatPtrEqual(cfg.ModelText.Temperature, floatPtr(1)) {
+		t.Errorf("model_text.temperature = %v, want 1 (kimi-k3 default)", formatFloatPtr(cfg.ModelText.Temperature))
 	}
-	if storage.Cleanup.Enabled || !reflect.DeepEqual(storage.Cleanup.LLMHTTPLogRetentionDays, []int{9, 2}) ||
-		!reflect.DeepEqual(storage.Cleanup.AudioArchiveRetentionDays, []int{14}) ||
-		!reflect.DeepEqual(storage.Cleanup.SessionArchiveRetentionDays, []int{45}) || storage.Cleanup.CleanupRetryIntervalSeconds != 75 {
-		t.Fatalf("storage cleanup overrides = %+v", storage.Cleanup)
+}
+
+func TestLoadResolvedConfigKeepsTemperatureUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := "[model]\nprovider = \"kimi\"\nmodel = \"kimi-k3\"\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
+
+	cfg, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	if cfg.Model.Temperature != nil {
+		t.Errorf("model.temperature = %v, want nil (LoadResolvedConfig keeps unset for editor)", formatFloatPtr(cfg.Model.Temperature))
+	}
+}
+
+func TestLoadRuntimeConfigResolvesModelReasoningEffortDefault(t *testing.T) {
+	tests := []struct {
+		name    string
+		model   string
+		explSet string // explicit reasoning_effort line, empty means unset
+		want    string
+	}{
+		{
+			name:  "kimi-k3 without explicit reasoning_effort pins model default",
+			model: "kimi-k3",
+			want:  "low",
+		},
+		{
+			name:    "explicit reasoning_effort overrides kimi-k3 model default",
+			model:   "kimi-k3",
+			explSet: `reasoning_effort = "high"`,
+			want:    "high",
+		},
+		{
+			name:  "unknown model without explicit reasoning_effort stays auto (empty)",
+			model: "gpt-5.5",
+			want:  "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent.toml")
+			contents := "[model]\nprovider = \"openai\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := LoadRuntimeConfig(path)
+			if err != nil {
+				t.Fatalf("LoadRuntimeConfig() error = %v", err)
+			}
+			if cfg.Model.ReasoningEffort != tt.want {
+				t.Errorf("model.reasoning_effort = %q, want %q", cfg.Model.ReasoningEffort, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRuntimeConfigResolvesModelTextReasoningEffortDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := `
+[model]
+provider = "openai"
+model = "gpt-5.5"
+
+[model_text]
+provider = "kimi"
+model = "kimi-k3"
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Model.ReasoningEffort != "" {
+		t.Errorf("model.reasoning_effort = %q, want \"\" (unknown model stays auto)", cfg.Model.ReasoningEffort)
+	}
+	if cfg.ModelText.ReasoningEffort != "low" {
+		t.Errorf("model_text.reasoning_effort = %q, want \"low\" (kimi-k3 default)", cfg.ModelText.ReasoningEffort)
+	}
+}
+
+func TestLoadResolvedConfigKeepsReasoningEffortUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := "[model]\nprovider = \"kimi\"\nmodel = \"kimi-k3\"\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	if cfg.Model.ReasoningEffort != "" {
+		t.Errorf("model.reasoning_effort = %q, want \"\" (LoadResolvedConfig keeps unset for editor)", cfg.Model.ReasoningEffort)
+	}
+}
+
+func floatPtrEqual(a, b *float64) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func formatFloatPtr(p *float64) string {
+	if p == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("%v", *p)
 }
 
 func TestLoadRuntimeConfigParsesVoiceNotificationOverrides(t *testing.T) {
@@ -1255,6 +1470,38 @@ func TestAudioArchiveStoragePathOrDefaultTrimsWhitespace(t *testing.T) {
 	}
 	if got := (AudioArchiveConfig{StoragePath: "  \t  "}).StoragePathOrDefault(); got != defaultAudioArchiveStoragePath {
 		t.Fatalf("StoragePathOrDefault() = %q, want default path", got)
+	}
+}
+
+func TestAudioArchiveExplicitStoragePath(t *testing.T) {
+	tests := []struct {
+		name        string
+		storagePath string
+		want        string
+	}{
+		{"unset", "", ""},
+		{"whitespace only", "  \t ", ""},
+		{"built-in default treated as unset", defaultAudioArchiveStoragePath, ""},
+		{"built-in default with whitespace", "  " + defaultAudioArchiveStoragePath + " ", ""},
+		{"custom path", "/mnt/pinned/audio", "/mnt/pinned/audio"},
+		{"custom path trimmed", " /mnt/pinned/audio ", "/mnt/pinned/audio"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := AudioArchiveConfig{StoragePath: tt.storagePath}
+			if got := cfg.ExplicitStoragePath(); got != tt.want {
+				t.Fatalf("ExplicitStoragePath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The runtime config seeds storage_path with the built-in default, so a stock
+// deployment must still route audio through the storage manager.
+func TestRuntimeDefaultStoragePathIsNotExplicit(t *testing.T) {
+	cfg := DefaultConfig()
+	if got := cfg.AudioArchive.ExplicitStoragePath(); got != "" {
+		t.Fatalf("DefaultConfig().AudioArchive.ExplicitStoragePath() = %q, want empty", got)
 	}
 }
 

@@ -1,10 +1,8 @@
 package contextmanager
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"sync"
 
@@ -61,16 +59,6 @@ type AppendMessageHookResult struct {
 	After   []Message
 }
 
-type appendMessageHookEntry struct {
-	ID   uint64
-	Hook AppendMessageHook
-}
-
-type transientMessageEntry struct {
-	ID      uint64
-	Message Message
-}
-
 type ToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -89,7 +77,10 @@ type Attachment struct {
 	MIMEType string `json:"mime_type"`
 	FileSize int64  `json:"file_size"`
 	FilePath string `json:"file_path"`
+	Source   string `json:"source,omitempty"`
 }
+
+const AttachmentSourceScreenshotObservation = "screenshot_observation"
 
 // ContextManager is a manager for the context of the agent, it is used to manage the context of the agent, it is used to append messages to the context and to fork the context.
 // It is thread safe and can be used concurrently by multiple goroutines.
@@ -97,10 +88,7 @@ type Attachment struct {
 type ContextManager struct {
 	sessionID       string
 	messageList     []Message
-	appendHooks     []appendMessageHookEntry
-	transient       []transientMessageEntry
-	nextHookID      uint64
-	nextTransientID uint64
+	appendHooks     []AppendMessageHook
 	attachmentStore *attachmentStore
 	mu              sync.RWMutex
 	sessionFolder   string
@@ -162,8 +150,41 @@ func NewContextManager(sessionFolder string, systemPrompt string) (*ContextManag
 	return manager, nil
 }
 
+func NewContextManagerFromMessageList(sessionFolder string, messageList []Message) (*ContextManager, error) {
+	newSessionID := newSessionID()
+	attachmentStore, err := newAttachmentStore(sessionFolder, newSessionID)
+	if err != nil {
+		return nil, err
+	}
+	manager := &ContextManager{
+		sessionFolder:   sessionFolder,
+		sessionID:       newSessionID,
+		messageList:     messageList,
+		mu:              sync.RWMutex{},
+		attachmentStore: attachmentStore,
+	}
+	if err := manager.flushFull(); err != nil {
+		return nil, err
+	}
+	return manager, nil
+}
+
 func newSessionID() string {
 	return "s_" + uuid.New().String()
+}
+
+func SwitchSession(sessionFolder string, sessionID string) error {
+	// save session ID to current session file
+	if err := saveCurrentSession(sessionFolder, sessionID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *ContextManager) CloneMessageList() []Message {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return cloneMessages(c.messageList)
 }
 
 func (c *ContextManager) GetSessionFolder() string {
@@ -192,16 +213,26 @@ func (c *ContextManager) appendToList(messages []Message) error {
 	return nil
 }
 
+func (c *ContextManager) flushFull() error {
+	c.mu.RLock()
+	messages := cloneMessages(c.messageList)
+	c.mu.RUnlock()
+	if len(messages) == 0 {
+		return nil
+	}
+	return appendSession(c.sessionFolder, c.sessionID, messages)
+}
+
 func (c *ContextManager) AppendMessage(message Message) error {
 	c.mu.RLock()
-	hooks := append([]appendMessageHookEntry(nil), c.appendHooks...)
+	hooks := append([]AppendMessageHook(nil), c.appendHooks...)
 	c.mu.RUnlock()
 
 	messages := []Message{cloneMessage(message)}
 	for _, entry := range hooks {
 		var next []Message
 		for _, current := range messages {
-			result := entry.Hook(cloneMessage(current))
+			result := entry(cloneMessage(current))
 			next = append(next, cloneMessages(result.Before)...)
 			if result.Message != nil {
 				next = append(next, cloneMessage(*result.Message))
@@ -218,82 +249,26 @@ func (c *ContextManager) AppendMessage(message Message) error {
 	return c.appendToList(messages)
 }
 
-// AppendTransientMessage adds a one-shot message to the next model prompt
-// without writing it to the session. The returned function discards it if it
-// has not been consumed yet.
-func (c *ContextManager) AppendTransientMessage(message Message) func() {
-	if c == nil {
-		return func() {}
-	}
-	c.mu.Lock()
-	c.nextTransientID++
-	id := c.nextTransientID
-	c.transient = append(c.transient, transientMessageEntry{ID: id, Message: cloneMessage(message)})
-	c.mu.Unlock()
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			c.removeTransientMessage(id)
-		})
-	}
-}
-
-func (c *ContextManager) removeTransientMessage(id uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	kept := c.transient[:0]
-	for _, entry := range c.transient {
-		if entry.ID != id {
-			kept = append(kept, entry)
-		}
-	}
-	c.transient = kept
-}
-
-func (c *ContextManager) AddAppendMessageHook(hook AppendMessageHook) func() {
+func (c *ContextManager) AddAppendMessageHook(hook AppendMessageHook) {
 	if hook == nil {
-		return func() {}
+		return
 	}
 	c.mu.Lock()
-	c.nextHookID++
-	id := c.nextHookID
-	c.appendHooks = append(c.appendHooks, appendMessageHookEntry{ID: id, Hook: hook})
+	c.appendHooks = append(c.appendHooks, hook)
 	c.mu.Unlock()
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			c.removeAppendMessageHook(id)
-		})
-	}
-}
-
-func (c *ContextManager) removeAppendMessageHook(id uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i, entry := range c.appendHooks {
-		if entry.ID != id {
-			continue
-		}
-		c.appendHooks = append(c.appendHooks[:i], c.appendHooks[i+1:]...)
-		break
-	}
 }
 
 func (c *ContextManager) AddAppendMessageHooks(hooks []AppendMessageHook) {
 	if len(hooks) == 0 {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	log.Println("[CM] Adding append message hooks", len(hooks))
 	for _, hook := range hooks {
 		if hook == nil {
 			continue
 		}
-		c.nextHookID++
-		c.appendHooks = append(c.appendHooks, appendMessageHookEntry{ID: c.nextHookID, Hook: hook})
+		c.mu.Lock()
+		c.appendHooks = append(c.appendHooks, hook)
+		c.mu.Unlock()
 	}
 }
 
@@ -355,85 +330,6 @@ func cloneMessage(msg Message) Message {
 	return cloned
 }
 
-func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
-	c.mu.RLock()
-	messages := cloneMessages(c.messageList)
-	c.mu.RUnlock()
-	return convertToStandardMessageList(messages)
-}
-
-// TakeStandardMessageListForModel returns persisted context plus one-shot
-// transient messages and clears the transient messages atomically.
-func (c *ContextManager) TakeStandardMessageListForModel() []llms.MessageContent {
-	c.mu.Lock()
-	messages := cloneMessages(c.messageList)
-	for _, entry := range c.transient {
-		messages = append(messages, cloneMessage(entry.Message))
-	}
-	c.transient = nil
-	c.mu.Unlock()
-	return convertToStandardMessageList(messages)
-}
-
-func convertToStandardMessageList(messages []Message) []llms.MessageContent {
-	standardMessageList := make([]llms.MessageContent, len(messages))
-	for i, message := range messages {
-		newMessage := llms.MessageContent{
-			Role:  message.Role.ToStandardRole(),
-			Parts: []llms.ContentPart{},
-		}
-		if message.Role == MessageRoleToolResult {
-			for resultIndex, result := range message.ToolResults {
-				toolCallID := strings.TrimSpace(result.ToolCallID)
-				if toolCallID == "" {
-					toolCallID = toolCallIDOrFallback("", i, resultIndex)
-				}
-				newMessage.Parts = append(newMessage.Parts, llms.ToolCallResponse{
-					ToolCallID: toolCallID,
-					Name:       strings.TrimSpace(result.Name),
-					Content:    result.Content,
-				})
-			}
-			standardMessageList[i] = newMessage
-			continue
-		}
-		if content := strings.TrimSpace(message.Content); content != "" {
-			newMessage.Parts = append(newMessage.Parts, llms.TextPart(content))
-		}
-		for toolIndex, call := range message.ToolCalls {
-			name := strings.TrimSpace(call.Name)
-			if name == "" {
-				continue
-			}
-			newMessage.Parts = append(newMessage.Parts, llms.ToolCall{
-				ID:   toolCallIDOrFallback(call.ID, i, toolIndex),
-				Type: "function",
-				FunctionCall: &llms.FunctionCall{
-					Name:      name,
-					Arguments: normalizeToolCallArguments(call.Arguments),
-				},
-			})
-		}
-		for _, attachment := range message.Attachments {
-			filePath := strings.TrimSpace(attachment.FilePath)
-			if filePath == "" {
-				continue
-			}
-			data, err := os.ReadFile(filePath)
-			if err != nil {
-				newMessage.Parts = append(newMessage.Parts, llms.TextPart(attachmentOmittedMessage(attachment.MIMEType, err)))
-				continue
-			}
-			if len(data) == 0 {
-				continue
-			}
-			newMessage.Parts = append(newMessage.Parts, llms.BinaryPart(attachment.MIMEType, data))
-		}
-		standardMessageList[i] = newMessage
-	}
-	return standardMessageList
-}
-
 func attachmentOmittedMessage(mimeType string, err error) string {
 	label := strings.TrimSpace(mimeType)
 	if label == "" {
@@ -443,83 +339,4 @@ func attachmentOmittedMessage(mimeType string, err error) string {
 		return fmt.Sprintf("[Attachment omitted: %s could not be loaded.]", label)
 	}
 	return fmt.Sprintf("[Attachment omitted: %s could not be loaded: %v]", label, err)
-}
-
-// ConvertChoiceToContextManagerMessage converts a content choice to a context manager message
-func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) Message {
-	role := MessageRoleAssistant
-	if contentChoiceHasToolCalls(choice) {
-		role = MessageRoleToolCall
-	}
-	return Message{
-		Role:      role,
-		Content:   contentChoiceText(choice),
-		ToolCalls: toolCallsFromContentChoice(choice),
-	}
-}
-
-func contentChoiceHasToolCalls(choice llms.ContentChoice) bool {
-	if len(choice.ToolCalls) > 0 {
-		return true
-	}
-	return choice.FuncCall != nil
-}
-
-func contentChoiceText(choice llms.ContentChoice) string {
-	parts := make([]string, 0, 2)
-	if reasoning := strings.TrimSpace(choice.ReasoningContent); reasoning != "" {
-		parts = append(parts, reasoning)
-	}
-	if content := strings.TrimSpace(choice.Content); content != "" {
-		parts = append(parts, content)
-	}
-	return strings.Join(parts, "\n")
-}
-
-func toolCallsFromContentChoice(choice llms.ContentChoice) []ToolCall {
-	toolCalls := choice.ToolCalls
-	if len(toolCalls) == 0 && choice.FuncCall != nil {
-		toolCalls = []llms.ToolCall{{
-			Type:         "function",
-			FunctionCall: choice.FuncCall,
-		}}
-	}
-	result := make([]ToolCall, 0, len(toolCalls))
-	for _, call := range toolCalls {
-		if call.FunctionCall == nil {
-			continue
-		}
-		name := strings.TrimSpace(call.FunctionCall.Name)
-		if name == "" {
-			continue
-		}
-		result = append(result, ToolCall{
-			ID:        strings.TrimSpace(call.ID),
-			Name:      name,
-			Arguments: normalizeToolCallArguments(call.FunctionCall.Arguments),
-		})
-	}
-	return result
-}
-
-func normalizeToolCallArguments(arguments string) string {
-	trimmed := strings.TrimSpace(arguments)
-	if trimmed == "" {
-		return "{}"
-	}
-	if json.Valid([]byte(trimmed)) {
-		return trimmed
-	}
-	encoded, err := json.Marshal(map[string]string{"input": arguments})
-	if err != nil {
-		return "{}"
-	}
-	return string(encoded)
-}
-
-func toolCallIDOrFallback(id string, messageIndex, toolIndex int) string {
-	if id = strings.TrimSpace(id); id != "" {
-		return id
-	}
-	return fmt.Sprintf("ctx_tool_call_%d_%d", messageIndex, toolIndex)
 }

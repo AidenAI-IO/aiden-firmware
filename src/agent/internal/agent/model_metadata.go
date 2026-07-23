@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/model"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -41,7 +42,7 @@ func (m *ModelManager) needsProviderModelMetadata() bool {
 	return m.needsProviderModelMetadataForSpec(spec)
 }
 
-func (m *ModelManager) needsProviderModelMetadataForSpec(spec ModelSpec) bool {
+func (m *ModelManager) needsProviderModelMetadataForSpec(spec model.ModelSpec) bool {
 	if strings.TrimSpace(m.config.Model) == "" {
 		return false
 	}
@@ -54,9 +55,9 @@ func (m *ModelManager) needsProviderModelMetadataForSpec(spec ModelSpec) bool {
 		(!explicitMaxOutput && spec.MaxOutput <= 0)
 }
 
-func (m *ModelManager) cachedProviderModelSpec() ModelSpec {
+func (m *ModelManager) cachedProviderModelSpec() model.ModelSpec {
 	if strings.TrimSpace(m.config.Model) == "" {
-		return ModelSpec{}
+		return model.ModelSpec{}
 	}
 
 	m.specMu.Lock()
@@ -67,7 +68,7 @@ func (m *ModelManager) cachedProviderModelSpec() ModelSpec {
 	}
 	if m.providerSpecFetchStarted {
 		m.specMu.Unlock()
-		return ModelSpec{}
+		return model.ModelSpec{}
 	}
 	m.providerSpecFetchStarted = true
 	m.specMu.Unlock()
@@ -78,7 +79,7 @@ func (m *ModelManager) cachedProviderModelSpec() ModelSpec {
 	}
 
 	go m.fetchProviderModelSpecInBackground()
-	return ModelSpec{}
+	return model.ModelSpec{}
 }
 
 func (m *ModelManager) fetchProviderModelSpecInBackground() {
@@ -107,7 +108,7 @@ func (m *ModelManager) resetProviderModelSpecFetchStarted() {
 	m.providerSpecLoaded = false
 }
 
-func (m *ModelManager) storeProviderModelSpec(spec ModelSpec) {
+func (m *ModelManager) storeProviderModelSpec(spec model.ModelSpec) {
 	m.specMu.Lock()
 	defer m.specMu.Unlock()
 
@@ -121,17 +122,17 @@ type providerModelMetadataCacheFile struct {
 }
 
 type providerModelMetadataCacheEntry struct {
-	Provider          string    `json:"provider"`
-	Model             string    `json:"model"`
-	Endpoint          string    `json:"endpoint"`
-	Spec              ModelSpec `json:"spec"`
-	PromptCachePolicy string    `json:"prompt_cache_policy,omitempty"`
-	FetchedAt         time.Time `json:"fetched_at"`
+	Provider          string          `json:"provider"`
+	Model             string          `json:"model"`
+	Endpoint          string          `json:"endpoint"`
+	Spec              model.ModelSpec `json:"spec"`
+	PromptCachePolicy string          `json:"prompt_cache_policy,omitempty"`
+	FetchedAt         time.Time       `json:"fetched_at"`
 }
 
-func (m *ModelManager) readProviderModelSpecCache() (ModelSpec, bool) {
+func (m *ModelManager) readProviderModelSpecCache() (model.ModelSpec, bool) {
 	if strings.TrimSpace(m.providerMetadataCachePath) == "" {
-		return ModelSpec{}, false
+		return model.ModelSpec{}, false
 	}
 
 	data, err := os.ReadFile(m.providerMetadataCachePath)
@@ -139,26 +140,26 @@ func (m *ModelManager) readProviderModelSpecCache() (ModelSpec, bool) {
 		if !errors.Is(err, os.ErrNotExist) {
 			log.Printf("[WARN] [model-spec] read provider metadata cache %s: %v", m.providerMetadataCachePath, err)
 		}
-		return ModelSpec{}, false
+		return model.ModelSpec{}, false
 	}
 
 	var cache providerModelMetadataCacheFile
 	if err := json.Unmarshal(data, &cache); err != nil {
 		log.Printf("[WARN] [model-spec] parse provider metadata cache %s: %v", m.providerMetadataCachePath, err)
-		return ModelSpec{}, false
+		return model.ModelSpec{}, false
 	}
 	if cache.Version != providerModelMetadataCacheVersion {
-		return ModelSpec{}, false
+		return model.ModelSpec{}, false
 	}
 
 	entry, ok := cache.Entries[m.providerModelSpecCacheKey()]
 	if !ok || !m.providerModelSpecCacheEntryMatches(entry) || !hasProviderModelSpecMetadata(entry.Spec) {
-		return ModelSpec{}, false
+		return model.ModelSpec{}, false
 	}
 	return entry.Spec, true
 }
 
-func (m *ModelManager) writeProviderModelSpecCache(spec ModelSpec) error {
+func (m *ModelManager) writeProviderModelSpecCache(spec model.ModelSpec) error {
 	if strings.TrimSpace(m.providerMetadataCachePath) == "" || !hasProviderModelSpecMetadata(spec) {
 		return nil
 	}
@@ -201,7 +202,7 @@ func (m *ModelManager) writeProviderModelSpecCache(spec ModelSpec) error {
 	return writeFileAtomic(m.providerMetadataCachePath, encoded, 0o644)
 }
 
-func hasProviderModelSpecMetadata(spec ModelSpec) bool {
+func hasProviderModelSpecMetadata(spec model.ModelSpec) bool {
 	return spec.ContextWindow > 0 || spec.MaxOutput > 0
 }
 
@@ -240,14 +241,14 @@ func normalizedModelName(model string) string {
 	return strings.ToLower(strings.TrimSpace(model))
 }
 
-func (m *ModelManager) fetchProviderModelSpec(ctx context.Context) (ModelSpec, error) {
+func (m *ModelManager) fetchProviderModelSpec(ctx context.Context) (model.ModelSpec, error) {
 	switch strings.ToLower(strings.TrimSpace(m.config.Provider)) {
 	case "openrouter":
 		return m.fetchOpenRouterModelSpec(ctx)
 	case "ollama":
 		return m.fetchOllamaModelSpec(ctx)
 	default:
-		return ModelSpec{}, nil
+		return model.ModelSpec{}, nil
 	}
 }
 
@@ -258,46 +259,46 @@ func (m *ModelManager) modelMetadataHTTPClient() *http.Client {
 	return newProxyHTTPClient(m.proxy)
 }
 
-func (m *ModelManager) fetchOpenRouterModelSpec(ctx context.Context) (ModelSpec, error) {
+func (m *ModelManager) fetchOpenRouterModelSpec(ctx context.Context) (model.ModelSpec, error) {
 	token := resolveToken(m.config)
 	if token == "" {
-		return ModelSpec{}, nil
+		return model.ModelSpec{}, nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openRouterModelsURL(m.config.BaseURL), nil)
 	if err != nil {
-		return ModelSpec{}, err
+		return model.ModelSpec{}, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := m.modelMetadataHTTPClient().Do(req)
 	if err != nil {
-		return ModelSpec{}, err
+		return model.ModelSpec{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return ModelSpec{}, fmt.Errorf("openrouter models returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return model.ModelSpec{}, fmt.Errorf("openrouter models returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var payload openRouterModelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return ModelSpec{}, err
+		return model.ModelSpec{}, err
 	}
 
 	modelID := strings.ToLower(strings.TrimSpace(m.config.Model))
-	for _, model := range payload.Data {
-		if strings.ToLower(strings.TrimSpace(model.ID)) != modelID {
+	for _, m := range payload.Data {
+		if strings.ToLower(strings.TrimSpace(m.ID)) != modelID {
 			continue
 		}
-		spec := ModelSpec{
-			ContextWindow: firstPositiveInt(model.TopProvider.ContextLength, model.ContextLength),
-			MaxOutput:     model.TopProvider.MaxCompletionTokens,
+		spec := model.ModelSpec{
+			ContextWindow: firstPositiveInt(m.TopProvider.ContextLength, m.ContextLength),
+			MaxOutput:     m.TopProvider.MaxCompletionTokens,
 		}
 		return spec, nil
 	}
-	return ModelSpec{}, nil
+	return model.ModelSpec{}, nil
 }
 
 func openRouterModelsURL(baseURL string) string {
@@ -321,34 +322,34 @@ type openRouterModelMetadata struct {
 	} `json:"top_provider"`
 }
 
-func (m *ModelManager) fetchOllamaModelSpec(ctx context.Context) (ModelSpec, error) {
+func (m *ModelManager) fetchOllamaModelSpec(ctx context.Context) (model.ModelSpec, error) {
 	body, err := json.Marshal(map[string]string{"model": m.config.Model})
 	if err != nil {
-		return ModelSpec{}, err
+		return model.ModelSpec{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ollamaShowURL(m.config.BaseURL), bytes.NewReader(body))
 	if err != nil {
-		return ModelSpec{}, err
+		return model.ModelSpec{}, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := m.modelMetadataHTTPClient().Do(req)
 	if err != nil {
-		return ModelSpec{}, err
+		return model.ModelSpec{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return ModelSpec{}, fmt.Errorf("ollama show returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return model.ModelSpec{}, fmt.Errorf("ollama show returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var payload ollamaShowResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return ModelSpec{}, err
+		return model.ModelSpec{}, err
 	}
 
-	return ModelSpec{ContextWindow: firstPositiveInt(
+	return model.ModelSpec{ContextWindow: firstPositiveInt(
 		ollamaParametersNumCtx(payload.Parameters),
 		ollamaModelInfoContextLength(payload.ModelInfo),
 	)}, nil

@@ -51,6 +51,7 @@ struct Options {
     std::string ota_state_path = "/userdata/ota/state.json";
     std::string cmdline_path = "/proc/cmdline";
     std::string system_env_path = "/userdata/system/env";
+    std::string storage_state_path = "/run/aiden/storage.state";
 };
 
 struct HttpRequest {
@@ -146,6 +147,8 @@ const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
+const char* kLocaleSimplifiedChinese = "zh-CN";
+const char* kLocaleEnglishUS = "en-US";
 // Default path to the agent binary on device. Tests override this via the
 // AIDEN_AGENT_BIN environment variable, resolved once on first use to keep
 // production calls free of getenv overhead.
@@ -199,6 +202,7 @@ const int kClientReadTimeoutSeconds = 5;
 const char* kDefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 const int kSystemEnvCommandTimeoutMs = 1500;
 const size_t kMaxSystemEnvSize = 64 * 1024;
+const size_t kMaxAgentConfigSize = 1024 * 1024;
 
 std::string read_file_contents(const char* path, size_t max_size);
 bool read_file_contents_checked(const char* path, size_t max_size, std::string* contents, std::string* error);
@@ -206,7 +210,7 @@ std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
 bool parse_decimal(const std::string& text, int min_value, int max_value, int* value);
 std::string parent_dir(const std::string& path);
-std::string runtime_log_dir(const Options& options);
+std::string llm_log_dir(const Options& options);
 std::string agent_log_path(const Options& options);
 bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
@@ -258,7 +262,7 @@ bool post_agent_http_json(const AgentHttpTarget& target,
 bool resolve_agent_http_target(const Options& options,
                                AgentHttpTarget* target,
                                std::string* error);
-ApiResponse proxy_agent_stt_test_request(const Options& options,
+ApiResponse proxy_agent_json_request(const Options& options,
                                          const std::string& agent_path,
                                          const std::string& body);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
@@ -301,6 +305,8 @@ struct ValidationResult {
 };
 
 ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path);
+ValidationResult validate_agent_config_path_via_cli(const std::string& config_path,
+                                                     const char* agent_bin_path);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -375,6 +381,14 @@ std::string normalize_pointer_mode(const std::string& value) {
         mode[i] = static_cast<char>(tolower(static_cast<unsigned char>(mode[i])));
     }
     return mode.empty() ? "absolute" : mode;
+}
+
+std::string normalize_input_backend(const std::string& value) {
+    std::string backend = trim_copy(value);
+    for (size_t i = 0; i < backend.size(); ++i) {
+        backend[i] = static_cast<char>(tolower(static_cast<unsigned char>(backend[i])));
+    }
+    return backend.empty() ? "hid" : backend;
 }
 
 bool starts_with(const std::string& text, const std::string& prefix) {
@@ -608,6 +622,45 @@ bool validate_search_secret_presence(cJSON* root, std::string* error) {
     return true;
 }
 
+bool validate_ota_github_proxy_url(cJSON* root, std::string* error) {
+    cJSON* ota = cJSON_GetObjectItem(root, "ota");
+    if (!ota) {
+        return true;
+    }
+    if (!json_is_object(ota)) {
+        return config_schema_error(error, "ota", "object", ota);
+    }
+
+    cJSON* proxy_url_item = cJSON_GetObjectItem(ota, "github_proxy_url");
+    if (!proxy_url_item || !json_is_string(proxy_url_item)) {
+        return true;
+    }
+
+    std::string url = trim_copy(proxy_url_item->valuestring);
+    if (url.empty()) {
+        return true; // Empty is valid (no proxy)
+    }
+
+    // Check for https:// prefix (case-insensitive)
+    std::string lower_url = lowercase_copy(url);
+    if (lower_url.find("https://") != 0) {
+        if (error) {
+            *error = "ota.github_proxy_url: must use https (got: " + url + ")";
+        }
+        return false;
+    }
+
+    // Check that there's content after https://
+    if (url.length() <= 8) { // "https://" is 8 chars
+        if (error) {
+            *error = "ota.github_proxy_url: missing host";
+        }
+        return false;
+    }
+
+    return true;
+}
+
 bool validate_known_config_field_types(cJSON* root, std::string* error) {
     struct FieldSpec {
         const char* section;
@@ -664,11 +717,13 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"voice_notifications", "response_tail", CONFIG_FIELD_OBJECT},
         {"voice_notifications", "expiration", CONFIG_FIELD_OBJECT},
         {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
+        {"ota", "github_proxy_url", CONFIG_FIELD_STRING},
         {"hid", "keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "mouse_device", CONFIG_FIELD_STRING},
         {"hid", "android_keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "frame_socket", CONFIG_FIELD_STRING},
         {"hid", "pointer_mode", CONFIG_FIELD_STRING},
+        {"hid", "input_backend", CONFIG_FIELD_STRING},
         {"search", "provider", CONFIG_FIELD_STRING},
         {"search", "api_key", CONFIG_FIELD_STRING},
         {"search", "has_api_key", CONFIG_FIELD_BOOL},
@@ -706,8 +761,8 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"live_activity", "private_key_pem", CONFIG_FIELD_STRING},
         {"live_activity", "has_private_key_pem", CONFIG_FIELD_BOOL},
         {"live_activity", "timeout_sec", CONFIG_FIELD_NUMBER},
-        {"agent", "custom_instruction", CONFIG_FIELD_STRING},
         {"agent", "locale", CONFIG_FIELD_STRING},
+        {"agent", "custom_instruction", CONFIG_FIELD_STRING},
         {"agent", "additional_prompt", CONFIG_FIELD_STRING},
         {"agent", "input_mode", CONFIG_FIELD_STRING},
         {"agent", "trigger_mode", CONFIG_FIELD_STRING},
@@ -766,8 +821,14 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
                 !validate_config_field_type(response_tail, "voice_notifications.response_tail", "max_text_chars", CONFIG_FIELD_NUMBER, error)) {
                 return false;
             }
-            if (!validate_non_negative_json_integer(cJSON_GetObjectItem(response_tail, "max_items"), "voice_notifications.response_tail.max_items", error) ||
-                !validate_non_negative_json_integer(cJSON_GetObjectItem(response_tail, "max_text_chars"), "voice_notifications.response_tail.max_text_chars", error)) {
+            if (!validate_non_negative_json_integer(
+                    cJSON_GetObjectItem(response_tail, "max_items"),
+                    "voice_notifications.response_tail.max_items",
+                    error) ||
+                !validate_non_negative_json_integer(
+                    cJSON_GetObjectItem(response_tail, "max_text_chars"),
+                    "voice_notifications.response_tail.max_text_chars",
+                    error)) {
                 return false;
             }
         }
@@ -778,7 +839,10 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
                 !validate_config_field_type(expiration, "voice_notifications.expiration", "code_ttl_seconds", CONFIG_FIELD_OBJECT, error)) {
                 return false;
             }
-            if (!validate_non_negative_json_integer(cJSON_GetObjectItem(expiration, "default_ttl_seconds"), "voice_notifications.expiration.default_ttl_seconds", error)) {
+            if (!validate_non_negative_json_integer(
+                    cJSON_GetObjectItem(expiration, "default_ttl_seconds"),
+                    "voice_notifications.expiration.default_ttl_seconds",
+                    error)) {
                 return false;
             }
             cJSON* code_ttl_seconds = cJSON_GetObjectItem(expiration, "code_ttl_seconds");
@@ -793,9 +857,16 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
                         return false;
                     }
                     if (!json_is_number(item)) {
-                        return config_schema_error(error, std::string("voice_notifications.expiration.code_ttl_seconds.") + code, "number", item);
+                        return config_schema_error(
+                            error,
+                            std::string("voice_notifications.expiration.code_ttl_seconds.") + code,
+                            "number",
+                            item);
                     }
-                    if (!validate_non_negative_json_integer(item, std::string("voice_notifications.expiration.code_ttl_seconds.") + code, error)) {
+                    if (!validate_non_negative_json_integer(
+                            item,
+                            std::string("voice_notifications.expiration.code_ttl_seconds.") + code,
+                            error)) {
                         return false;
                     }
                 }
@@ -1448,7 +1519,7 @@ HttpRequest parse_request(int client_fd, const Options& options) {
             int temp_fd = -1;
             std::string temp_path;
             std::string temp_error;
-            if (!create_temp_file_in_dir(runtime_log_dir(options), "llm-log-upload-", 0644, &temp_fd, &temp_path, &temp_error)) {
+            if (!create_temp_file_in_dir(llm_log_dir(options), "llm-log-upload-", 0644, &temp_fd, &temp_path, &temp_error)) {
                 set_request_error(&req, 500, "Internal Server Error",
                                   temp_error.empty() ? "failed to prepare import body file" : temp_error.c_str());
                 return req;
@@ -1539,7 +1610,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model", "model_text", "tts", "stt", "audio", "audio_archive", "voice_notifications",
-        "log", "hid", "search", "telemetry", "termination_policy",
+        "log", "ota", "hid", "search", "telemetry", "termination_policy",
         "live_activity", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
@@ -1556,7 +1627,8 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
         return false;
     }
     if (!validate_model_section(root, error) ||
-        !validate_search_secret_presence(root, error)) {
+        !validate_search_secret_presence(root, error) ||
+        !validate_ota_github_proxy_url(root, error)) {
         return false;
     }
     return true;
@@ -2316,10 +2388,11 @@ bool resolve_agent_http_target(const Options& options,
     if (error) {
         error->clear();
     }
+    (void)options;
     return true;
 }
 
-ApiResponse proxy_agent_stt_test_request(const Options& options,
+ApiResponse proxy_agent_json_request(const Options& options,
                                          const std::string& agent_path,
                                          const std::string& body) {
     AgentHttpTarget target;
@@ -2344,11 +2417,11 @@ ApiResponse proxy_agent_stt_test_request(const Options& options,
 }
 
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body) {
-    return proxy_agent_stt_test_request(options, "/api/config-test/stt/start", body);
+    return proxy_agent_json_request(options, "/api/config-test/stt/start", body);
 }
 
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
-    return proxy_agent_stt_test_request(options, "/api/config-test/stt/stop", body);
+    return proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
 }
 
 void load_current_wifi_config(const Options& options,
@@ -2377,7 +2450,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(model, "base_url", config.model.base_url.c_str());
     cJSON_AddStringToObject(model, "token_env", config.model.token_env.c_str());
     cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
-    cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
+    if (config.model.has_temperature) {
+        cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
+    }
     cJSON_AddNumberToObject(model, "max_response_tokens", config.model.max_response_tokens);
     cJSON_AddNumberToObject(model, "context_window", config.model.context_window);
     cJSON_AddNumberToObject(model, "model_max_output_tokens", config.model.model_max_output_tokens);
@@ -2388,7 +2463,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(model_text, "model", config.model_text.model.c_str());
     cJSON_AddStringToObject(model_text, "base_url", config.model_text.base_url.c_str());
     cJSON_AddStringToObject(model_text, "token_env", config.model_text.token_env.c_str());
-    cJSON_AddNumberToObject(model_text, "temperature", config.model_text.temperature);
+    if (config.model_text.has_temperature) {
+        cJSON_AddNumberToObject(model_text, "temperature", config.model_text.temperature);
+    }
     cJSON_AddNumberToObject(model_text, "max_response_tokens", config.model_text.max_response_tokens);
     cJSON_AddNumberToObject(model_text, "context_window", config.model_text.context_window);
     cJSON_AddNumberToObject(model_text, "model_max_output_tokens", config.model_text.model_max_output_tokens);
@@ -2442,12 +2519,16 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON* log_config = add_object(root, "log");
     cJSON_AddNumberToObject(log_config, "llm_http_retention_days", config.log.llm_http_retention_days);
 
+    cJSON* ota = add_object(root, "ota");
+    cJSON_AddStringToObject(ota, "github_proxy_url", config.ota.github_proxy_url.c_str());
+
     cJSON* hid = add_object(root, "hid");
     cJSON_AddStringToObject(hid, "keyboard_device", config.hid.keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
     cJSON_AddStringToObject(hid, "android_keyboard_device", config.hid.android_keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
     cJSON_AddStringToObject(hid, "pointer_mode", normalize_pointer_mode(config.hid.pointer_mode).c_str());
+    cJSON_AddStringToObject(hid, "input_backend", normalize_input_backend(config.hid.input_backend).c_str());
 
     cJSON* search = add_object(root, "search");
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
@@ -2677,10 +2758,28 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_str(&m->api_key, obj, "api_key");
     set_json_str(&m->token_env, obj, "token_env");
     set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
-    set_json_double(&m->temperature, obj, "temperature");
+    // Temperature is nullable: presence of the key sets has_temperature, and
+    // its absence clears it. This function applies JSON as a patch onto an
+    // existing config (see handle_post_config), so an omitted key must unset the
+    // value rather than leave a stale one, letting the UI clear temperature by
+    // omitting it.
+    cJSON* temp_item = cJSON_GetObjectItem(obj, "temperature");
+    if (temp_item && json_is_number(temp_item)) {
+        m->temperature = temp_item->valuedouble;
+        m->has_temperature = true;
+    } else {
+        m->has_temperature = false;
+    }
     set_json_int(&m->max_response_tokens, obj, "max_response_tokens");
     set_json_int(&m->context_window, obj, "context_window");
     set_json_int(&m->model_max_output_tokens, obj, "model_max_output_tokens");
+
+    // Clear base_url for non-whitelisted providers to keep config file clean.
+    // Only openai and ollama support base_url override.
+    std::string provider_lower = lowercase_copy(trim_copy(m->provider));
+    if (!m->base_url.empty() && provider_lower != "openai" && provider_lower != "ollama") {
+        m->base_url.clear();
+    }
 }
 
 void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
@@ -2763,6 +2862,11 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->log.llm_http_retention_days, log_config, "llm_http_retention_days");
     }
 
+    cJSON* ota = cJSON_GetObjectItem(root, "ota");
+    if (json_is_object(ota)) {
+        set_json_str(&config->ota.github_proxy_url, ota, "github_proxy_url");
+    }
+
     cJSON* hid = cJSON_GetObjectItem(root, "hid");
     if (json_is_object(hid)) {
         set_json_str(&config->hid.keyboard_device, hid, "keyboard_device");
@@ -2770,6 +2874,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->hid.android_keyboard_device, hid, "android_keyboard_device");
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");
         set_json_str(&config->hid.pointer_mode, hid, "pointer_mode");
+        set_json_str(&config->hid.input_backend, hid, "input_backend");
     }
 
     cJSON* search = cJSON_GetObjectItem(root, "search");
@@ -2876,25 +2981,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     }
 }
 
-ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path) {
-    // Convert config to JSON
-    cJSON* config_json = config_to_json(config, true);
-    char* json_str = cJSON_PrintUnformatted(config_json);
-    cJSON_Delete(config_json);
-
-    if (!json_str) {
-        // Server-side serialization failure: not the user's fault, treat as
-        // unavailable so the UI surfaces it as a server problem.
-        return ValidationResult::unavailable("failed to serialize config to JSON");
-    }
-
-    std::string input(json_str);
-    free(json_str);
-
-    // Call agent config-check CLI
-    std::string cmd = std::string(agent_bin_path) + " config-check --stdin --format=json";
-    CommandResult result = run_command_with_stdin(cmd, input, 2000);
-
+ValidationResult parse_agent_config_validation_result(const CommandResult& result) {
     if (result.timed_out) {
         return ValidationResult::unavailable("config validation timed out");
     }
@@ -2950,6 +3037,33 @@ ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, c
     }
 
     return ValidationResult::invalid(error_msg);
+}
+
+ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path) {
+    // Convert config to JSON
+    cJSON* config_json = config_to_json(config, true);
+    char* json_str = cJSON_PrintUnformatted(config_json);
+    cJSON_Delete(config_json);
+
+    if (!json_str) {
+        // Server-side serialization failure: not the user's fault, treat as
+        // unavailable so the UI surfaces it as a server problem.
+        return ValidationResult::unavailable("failed to serialize config to JSON");
+    }
+
+    std::string input(json_str);
+    free(json_str);
+
+    // Call agent config-check CLI
+    std::string cmd = shell_quote(agent_bin_path) + " config-check --stdin --format=json";
+    return parse_agent_config_validation_result(run_command_with_stdin(cmd, input, 2000));
+}
+
+ValidationResult validate_agent_config_path_via_cli(const std::string& config_path,
+                                                     const char* agent_bin_path) {
+    std::string cmd = shell_quote(agent_bin_path) + " config-check --config="
+                    + shell_quote(config_path) + " --format=json";
+    return parse_agent_config_validation_result(run_command_with_stdin(cmd, "", 2000));
 }
 
 ValidationResult validate_agent_config_for_save(const aiden::AgentToml& config) {
@@ -3699,6 +3813,239 @@ bool atomic_write_file(const std::string& path,
     return true;
 }
 
+size_t find_toml_line_comment(const std::string& line, size_t start) {
+    bool in_basic_string = false;
+    bool in_literal_string = false;
+    bool escaped = false;
+    for (size_t i = start; i < line.size(); ++i) {
+        const char ch = line[i];
+        if (in_basic_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                in_basic_string = false;
+            }
+            continue;
+        }
+        if (in_literal_string) {
+            if (ch == '\'') {
+                in_literal_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_basic_string = true;
+        } else if (ch == '\'') {
+            in_literal_string = true;
+        } else if (ch == '#') {
+            return i;
+        }
+    }
+    return std::string::npos;
+}
+
+bool find_top_level_locale_assignment(const std::string& line, size_t* equals_offset) {
+    size_t pos = 0;
+    while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) {
+        ++pos;
+    }
+    size_t key_size = 0;
+    if (line.compare(pos, 6, "locale") == 0) {
+        key_size = 6;
+    } else if (line.compare(pos, 8, "\"locale\"") == 0 ||
+               line.compare(pos, 8, "'locale'") == 0) {
+        key_size = 8;
+    } else {
+        return false;
+    }
+    pos += key_size;
+    while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) {
+        ++pos;
+    }
+    if (pos >= line.size() || line[pos] != '=') {
+        return false;
+    }
+    if (equals_offset) {
+        *equals_offset = pos;
+    }
+    return true;
+}
+
+void update_toml_multiline_string_state(const std::string& line,
+                                        bool* in_multiline_basic,
+                                        bool* in_multiline_literal) {
+    bool in_basic = false;
+    bool in_literal = false;
+    bool escaped = false;
+    for (size_t i = 0; i < line.size();) {
+        if (*in_multiline_basic) {
+            if (i + 2 < line.size() && line.compare(i, 3, "\"\"\"") == 0 && !escaped) {
+                *in_multiline_basic = false;
+                i += 3;
+                continue;
+            }
+            if (line[i] == '\\' && !escaped) {
+                escaped = true;
+            } else {
+                escaped = false;
+            }
+            ++i;
+            continue;
+        }
+        if (*in_multiline_literal) {
+            if (i + 2 < line.size() && line.compare(i, 3, "'''") == 0) {
+                *in_multiline_literal = false;
+                i += 3;
+            } else {
+                ++i;
+            }
+            continue;
+        }
+        if (in_basic) {
+            if (escaped) {
+                escaped = false;
+            } else if (line[i] == '\\') {
+                escaped = true;
+            } else if (line[i] == '"') {
+                in_basic = false;
+            }
+            ++i;
+            continue;
+        }
+        if (in_literal) {
+            if (line[i] == '\'') {
+                in_literal = false;
+            }
+            ++i;
+            continue;
+        }
+        if (line[i] == '#') {
+            break;
+        }
+        if (i + 2 < line.size() && line.compare(i, 3, "\"\"\"") == 0) {
+            *in_multiline_basic = true;
+            escaped = false;
+            i += 3;
+        } else if (i + 2 < line.size() && line.compare(i, 3, "'''") == 0) {
+            *in_multiline_literal = true;
+            i += 3;
+        } else if (line[i] == '"') {
+            in_basic = true;
+            escaped = false;
+            ++i;
+        } else if (line[i] == '\'') {
+            in_literal = true;
+            ++i;
+        } else {
+            ++i;
+        }
+    }
+}
+
+std::string update_top_level_locale(const std::string& content, const std::string& locale) {
+    size_t first_section_offset = std::string::npos;
+    size_t line_start = 0;
+    bool in_multiline_basic = false;
+    bool in_multiline_literal = false;
+    while (line_start < content.size()) {
+        size_t line_end = content.find('\n', line_start);
+        if (line_end == std::string::npos) {
+            line_end = content.size();
+        }
+        size_t logical_end = line_end;
+        if (logical_end > line_start && content[logical_end - 1] == '\r') {
+            --logical_end;
+        }
+        const std::string line = content.substr(line_start, logical_end - line_start);
+
+        const bool line_starts_inside_multiline = in_multiline_basic || in_multiline_literal;
+        update_toml_multiline_string_state(line, &in_multiline_basic, &in_multiline_literal);
+        if (line_starts_inside_multiline) {
+            if (line_end == content.size()) {
+                break;
+            }
+            line_start = line_end + 1;
+            continue;
+        }
+
+        size_t first_non_space = 0;
+        while (first_non_space < line.size() &&
+               (line[first_non_space] == ' ' || line[first_non_space] == '\t')) {
+            ++first_non_space;
+        }
+        if (first_non_space < line.size() && line[first_non_space] == '[') {
+            first_section_offset = line_start;
+            break;
+        }
+
+        size_t equals_offset = 0;
+        if (find_top_level_locale_assignment(line, &equals_offset)) {
+            size_t value_start = equals_offset + 1;
+            while (value_start < line.size() &&
+                   (line[value_start] == ' ' || line[value_start] == '\t')) {
+                ++value_start;
+            }
+            size_t comment_offset = find_toml_line_comment(line, value_start);
+            size_t value_end = comment_offset == std::string::npos ? line.size() : comment_offset;
+            while (value_end > value_start &&
+                   (line[value_end - 1] == ' ' || line[value_end - 1] == '\t')) {
+                --value_end;
+            }
+            const size_t absolute_value_start = line_start + value_start;
+            const size_t absolute_value_end = line_start + value_end;
+            return content.substr(0, absolute_value_start) + "\"" + locale + "\""
+                 + content.substr(absolute_value_end);
+        }
+
+        if (line_end == content.size()) {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+
+    const size_t insert_offset = first_section_offset == std::string::npos
+        ? content.size() : first_section_offset;
+    std::string insertion;
+    if (insert_offset > 0 && content[insert_offset - 1] != '\n') {
+        insertion += "\n";
+    }
+    insertion += "locale = \"" + locale + "\"\n";
+    return content.substr(0, insert_offset) + insertion + content.substr(insert_offset);
+}
+
+ValidationResult validate_agent_toml_content_for_save(const std::string& content,
+                                                       const std::string& config_path) {
+    const char* agent_bin = agent_bin_path();
+    if (!file_exists(agent_bin)) {
+        std::cerr << "[config] agent binary not found at " << agent_bin
+                  << ", refusing to save unvalidated config\n";
+        return ValidationResult::unavailable(
+                "config validation unavailable: agent binary not found");
+    }
+
+    std::string temp_dir;
+    std::string error;
+    std::string validation_dir = parent_dir(config_path);
+    if (validation_dir.empty()) {
+        validation_dir = ".";
+    }
+    if (!create_temp_dir_in_dir(validation_dir, "agent-locale-check-", &temp_dir, &error)) {
+        return ValidationResult::unavailable("config validation unavailable: " + error);
+    }
+    const std::string temp_path = temp_dir + "/agent.toml";
+    if (!atomic_write_file(temp_path, content, 0600, &error)) {
+        rmdir(temp_dir.c_str());
+        return ValidationResult::unavailable("config validation unavailable: " + error);
+    }
+
+    ValidationResult result = validate_agent_config_path_via_cli(temp_path, agent_bin);
+    unlink(temp_path.c_str());
+    rmdir(temp_dir.c_str());
+    return result;
+}
+
 bool copy_regular_file_tail(const std::string& source,
                             const std::string& destination,
                             size_t max_bytes,
@@ -3935,7 +4282,7 @@ AgentLogSnapshot read_log_snapshot(const char* path, size_t read_size, size_t di
 }
 
 AgentLogSnapshot read_agent_log_snapshot(const Options& options) {
-    std::string path = agent_log_path(options);
+    const std::string path = agent_log_path(options);
     return read_log_snapshot(path.c_str(), kAgentLogReadSize, kAgentLogDisplaySize);
 }
 
@@ -4105,7 +4452,7 @@ TcpPortStatus check_tcp_port(const std::string& host, int port) {
 }
 
 std::string recent_agent_startup_log(const Options& options) {
-    std::string path = agent_log_path(options);
+    const std::string path = agent_log_path(options);
     std::string log = read_file_tail(path.c_str(), kAgentStatusLogReadSize);
     if (log.empty()) {
         return "";
@@ -4476,6 +4823,109 @@ ApiResponse handle_get_agent_log(const Options& options) {
     cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot(options)));
     return make_json_ok(root);
 }
+
+// ----- storage (microSD) ---------------------------------------------------
+//
+// The agent's StorageManager owns the SD card and mirrors its state to a
+// small KEY=VALUE file (docs/04-agent/storage-modes.md). Status reads come
+// straight from that mirror; mutations (mode / format / eject) are proxied to
+// the agent HTTP API, which stays the single executor for card operations.
+
+bool read_storage_state(const std::string& path, std::map<std::string, std::string>* out) {
+    if (!out) {
+        return false;
+    }
+    out->clear();
+    std::string contents = read_file_contents(path.c_str(), 16 * 1024);
+    if (contents.empty()) {
+        return false;
+    }
+    std::istringstream input(contents);
+    std::string line;
+    while (std::getline(input, line)) {
+        std::string trimmed = trim_copy(line);
+        if (trimmed.empty()) {
+            continue;
+        }
+        size_t eq = trimmed.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+        (*out)[trimmed.substr(0, eq)] = trimmed.substr(eq + 1);
+    }
+    return !out->empty();
+}
+
+int storage_state_int(const std::map<std::string, std::string>& kv, const char* key, int fallback) {
+    std::map<std::string, std::string>::const_iterator it = kv.find(key);
+    if (it == kv.end() || it->second.empty()) {
+        return fallback;
+    }
+    char* end = NULL;
+    long value = strtol(it->second.c_str(), &end, 10);
+    if (!end || *end != '\0' || value < 0 || value > 1000000) {
+        return fallback;
+    }
+    return static_cast<int>(value);
+}
+
+double storage_state_double(const std::map<std::string, std::string>& kv, const char* key) {
+    std::map<std::string, std::string>::const_iterator it = kv.find(key);
+    if (it == kv.end() || it->second.empty()) {
+        return 0;
+    }
+    return strtod(it->second.c_str(), NULL);
+}
+
+std::string storage_state_string(const std::map<std::string, std::string>& kv, const char* key) {
+    std::map<std::string, std::string>::const_iterator it = kv.find(key);
+    return it == kv.end() ? std::string() : it->second;
+}
+
+bool storage_state_flag(const std::map<std::string, std::string>& kv, const char* key) {
+    return storage_state_string(kv, key) == "1";
+}
+
+ApiResponse handle_get_storage_status(const Options& options) {
+    std::map<std::string, std::string> kv;
+    bool available = read_storage_state(options.storage_state_path, &kv);
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddBoolToObject(root, "available", available ? 1 : 0);
+    cJSON_AddBoolToObject(root, "sd_present", storage_state_flag(kv, "SD_PRESENT") ? 1 : 0);
+    cJSON_AddBoolToObject(root, "sd_mounted", storage_state_flag(kv, "SD_MOUNTED") ? 1 : 0);
+    cJSON_AddStringToObject(root, "device", storage_state_string(kv, "SD_DEVICE").c_str());
+    cJSON_AddStringToObject(root, "mount_point", storage_state_string(kv, "SD_MOUNTPOINT").c_str());
+    cJSON_AddNumberToObject(root, "effective_mode", storage_state_int(kv, "EFFECTIVE_MODE", 1));
+    cJSON_AddNumberToObject(root, "total_bytes", storage_state_double(kv, "SD_TOTAL_BYTES"));
+    cJSON_AddNumberToObject(root, "free_bytes", storage_state_double(kv, "SD_FREE_BYTES"));
+    cJSON_AddStringToObject(root, "reason", storage_state_string(kv, "REASON").c_str());
+
+    cJSON* job = cJSON_CreateObject();
+    std::string job_status = storage_state_string(kv, "FORMAT_STATUS");
+    cJSON_AddStringToObject(job, "status", job_status.empty() ? "idle" : job_status.c_str());
+    cJSON_AddStringToObject(job, "fs", storage_state_string(kv, "FORMAT_FS").c_str());
+    cJSON_AddBoolToObject(job, "auto", storage_state_flag(kv, "FORMAT_AUTO") ? 1 : 0);
+    cJSON_AddStringToObject(job, "error", storage_state_string(kv, "FORMAT_ERROR").c_str());
+    cJSON_AddItemToObject(root, "format_job", job);
+
+    cJSON* migration = cJSON_CreateObject();
+    std::string migrate_status = storage_state_string(kv, "MIGRATE_STATUS");
+    cJSON_AddStringToObject(migration, "status", migrate_status.empty() ? "idle" : migrate_status.c_str());
+    cJSON_AddStringToObject(migration, "detail", storage_state_string(kv, "MIGRATE_DETAIL").c_str());
+    cJSON_AddStringToObject(migration, "error", storage_state_string(kv, "MIGRATE_ERROR").c_str());
+    cJSON_AddNumberToObject(migration, "moved_files", storage_state_int(kv, "MIGRATE_MOVED_FILES", 0));
+    cJSON_AddNumberToObject(migration, "moved_bytes", storage_state_double(kv, "MIGRATE_MOVED_BYTES"));
+    cJSON_AddItemToObject(root, "migration", migration);
+    return make_json_ok(root);
+}
+
+ApiResponse handle_post_storage(const Options& options,
+                                const std::string& agent_path,
+                                const std::string& body) {
+    return proxy_agent_json_request(options, agent_path, body.empty() ? "{}" : body);
+}
 // LLM_LOG_HANDLERS_PLACEHOLDER
 
 // url_decode expands percent-escapes (%XX) and '+' in a single URL path
@@ -4510,9 +4960,10 @@ std::string url_decode(const std::string& in) {
     return out;
 }
 
-// runtime_log_dir returns the directory shared by the Agent main log and raw
-// LLM HTTP logs. Derive it from the config path the server was launched with.
-std::string runtime_log_dir(const Options& options) {
+// llm_log_dir returns the directory holding the agent's raw LLM HTTP logs.
+// The agent writes them to <config_dir>/log (see runtime.go), so we derive
+// the directory from the config path the server was launched with.
+std::string llm_log_dir(const Options& options) {
     std::string base = parent_dir(options.agent_config_path);
     if (base.empty()) {
         return "log";
@@ -4524,11 +4975,11 @@ std::string runtime_log_dir(const Options& options) {
 }
 
 std::string agent_log_path(const Options& options) {
-    return runtime_log_dir(options) + "/agent.log";
+    return llm_log_dir(options) + "/agent.log";
 }
 
 std::string llm_log_path(const Options& options, const std::string& name) {
-    return runtime_log_dir(options) + "/" + name;
+    return llm_log_dir(options) + "/" + name;
 }
 
 // is_llm_log_name reports whether name is a plain llm-http-*.log filename with
@@ -4623,7 +5074,7 @@ ApiResponse handle_get_llm_logs(const Options& options) {
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON* files = add_array(root, "files");
 
-    const std::string dir_path = runtime_log_dir(options);
+    const std::string dir_path = llm_log_dir(options);
     DIR* dir = opendir(dir_path.c_str());
     if (dir) {
         // Collect matching names, then sort descending so the newest session
@@ -4732,7 +5183,7 @@ std::string episode_dir(const Options& options) {
 }
 
 std::string latest_llm_log_name(const Options& options) {
-    const std::string dir_path = runtime_log_dir(options);
+    const std::string dir_path = llm_log_dir(options);
     DIR* dir = opendir(dir_path.c_str());
     if (!dir) {
         return "";
@@ -4858,7 +5309,7 @@ void remove_tree_best_effort(const std::string& path) {
 ApiResponse handle_export_support_logs(const Options& options) {
     std::string stage_dir;
     std::string error;
-    std::string log_path = agent_log_path(options);
+    const std::string log_path = agent_log_path(options);
     if (!create_temp_dir_in_dir("/tmp", kSupportLogStagePrefix, &stage_dir, &error)) {
         return make_json_error(500, error.empty() ? "failed to create log staging directory" : error);
     }
@@ -4878,11 +5329,22 @@ ApiResponse handle_export_support_logs(const Options& options) {
         "Agent log path not available: " + log_path + "\n",
         kSupportLogAgentMaxBytes,
         &error);
+
+    // Keep the original LLM log filename instead of renaming to http.log
+    // Capture both name and path atomically to avoid race conditions during log rotation
+    std::string llm_log_original_name = latest_llm_log_name(options);
+    std::string llm_log_source_path;
+    if (llm_log_original_name.empty()) {
+        llm_log_original_name = kSupportLogHttpName;
+        llm_log_source_path = "";  // Will trigger placeholder
+    } else {
+        llm_log_source_path = llm_log_path(options, llm_log_original_name);
+    }
     staged = staged && stage_file_or_placeholder(
-        latest_llm_log_path(options),
-        stage_dir + "/" + kSupportLogHttpName,
+        llm_log_source_path,
+        stage_dir + "/" + llm_log_original_name,
         "HTTP log",
-        "No llm-http-*.log files found under " + runtime_log_dir(options) + ".\n",
+        "No llm-http-*.log files found under " + llm_log_dir(options) + ".\n",
         kSupportLogHttpMaxBytes,
         &error);
     if (!staged) {
@@ -4907,12 +5369,12 @@ ApiResponse handle_export_support_logs(const Options& options) {
         " -C " + shell_quote(stage_dir) + " " +
         shell_quote(kSupportLogLangfuseName) + " " +
         shell_quote(kSupportLogAgentName) + " " +
-        shell_quote(kSupportLogHttpName);
+        shell_quote(llm_log_original_name);
     std::string tar_stream_args =
         "-C " + shell_quote(stage_dir) + " " +
         shell_quote(kSupportLogLangfuseName) + " " +
         shell_quote(kSupportLogAgentName) + " " +
-        shell_quote(kSupportLogHttpName);
+        shell_quote(llm_log_original_name);
     std::string fallback_tar_path = archive_path + ".tar";
     std::string command = "tar -czf " + tar_args +
         " 2>/dev/null || (rm -f " + shell_quote(fallback_tar_path) +
@@ -5079,6 +5541,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
 
     cJSON_Delete(root);
     config.hid.pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
+    config.hid.input_backend = normalize_input_backend(config.hid.input_backend);
     bool usbhid_restart_scheduled = original_pointer_mode != config.hid.pointer_mode;
 
     std::string save_error;
@@ -5126,6 +5589,63 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         cJSON_AddItemToObject(response, "wifi_status", wifi_status_to_json(query_wifi_status(options)));
     }
 
+    return make_json_ok(response);
+}
+
+ApiResponse handle_put_config_locale(const Options& options, const std::string& body) {
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        return make_json_error(400, "invalid JSON body");
+    }
+
+    cJSON* locale_item = cJSON_GetObjectItem(root, "locale");
+    if (!json_is_string(locale_item)) {
+        cJSON_Delete(root);
+        return make_json_error(400, "missing locale string");
+    }
+    const std::string locale = locale_item->valuestring;
+    cJSON_Delete(root);
+
+    if (locale != kLocaleSimplifiedChinese && locale != kLocaleEnglishUS) {
+        return make_json_error(400, "unsupported locale; expected zh-CN or en-US");
+    }
+
+    std::string original_content;
+    mode_t config_mode = 0600;
+    if (file_exists(options.agent_config_path.c_str())) {
+        std::string read_error;
+        if (!read_file_contents_checked(options.agent_config_path.c_str(),
+                                        kMaxAgentConfigSize,
+                                        &original_content,
+                                        &read_error)) {
+            return make_json_error(500, read_error.empty() ? "failed to read agent config" : read_error);
+        }
+        struct stat st;
+        if (stat(options.agent_config_path.c_str(), &st) == 0) {
+            config_mode = st.st_mode & 0777;
+        }
+    }
+    const std::string updated_content = update_top_level_locale(original_content, locale);
+
+    ValidationResult validation = validate_agent_toml_content_for_save(
+            updated_content, options.agent_config_path);
+    if (validation.outcome != ValidationOutcome::OK) {
+        const int status = validation.outcome == ValidationOutcome::UNAVAILABLE ? 503 : 400;
+        return make_json_error(status, validation.message);
+    }
+
+    std::string save_error;
+    if (!atomic_write_file(options.agent_config_path, updated_content, config_mode, &save_error)) {
+        return make_json_error(500, save_error);
+    }
+
+    schedule_agent_restart();
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON_AddStringToObject(response, "locale", locale.c_str());
+    cJSON_AddStringToObject(response, "message", "locale saved; agent restarting");
+    cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
     return make_json_ok(response);
 }
 
@@ -5586,7 +6106,10 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
                 cJSON* req = cJSON_CreateObject();
                 cJSON_AddStringToObject(req, "model", model_name.c_str());
                 cJSON_AddNumberToObject(req, "max_tokens", 4);
-                cJSON_AddNumberToObject(req, "temperature", 0);
+                // Omit temperature: this is only an auth/connectivity probe, and
+                // some models (e.g. Kimi K3) reject any temperature but their own
+                // fixed value. Letting the model use its default keeps the check
+                // valid across every provider.
                 cJSON* msgs = add_array(req, "messages");
                 cJSON* msg = cJSON_CreateObject();
                 cJSON_AddStringToObject(msg, "role", "user");
@@ -5756,13 +6279,18 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     } else if (section == "hid") {
         cJSON* pointer_item = cJSON_GetObjectItem(values, "pointer_mode");
         std::string pointer_mode = json_is_string(pointer_item) ? normalize_pointer_mode(pointer_item->valuestring) : "absolute";
+        cJSON* backend_item = cJSON_GetObjectItem(values, "input_backend");
+        std::string input_backend = json_is_string(backend_item) ? normalize_input_backend(backend_item->valuestring) : "hid";
         const char* dev_keys[] = {"keyboard_device", "mouse_device", "android_keyboard_device", NULL};
         for (int i = 0; dev_keys[i]; ++i) {
             cJSON* item = cJSON_GetObjectItem(values, dev_keys[i]);
             std::string path = json_is_string(item) ? trim_copy(item->valuestring) : "";
             cJSON* r = cJSON_CreateObject();
             cJSON_AddStringToObject(r, "check", dev_keys[i]);
-            if (path.empty()) {
+            if (input_backend == "adb") {
+                cJSON_AddBoolToObject(r, "passed", 1);
+                cJSON_AddStringToObject(r, "detail", "skipped when input_backend=adb");
+            } else if (path.empty()) {
                 cJSON_AddBoolToObject(r, "passed", 0);
                 cJSON_AddStringToObject(r, "detail", "path is empty");
                 all_passed = false;
@@ -5782,6 +6310,15 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         bool valid = pointer_mode == "absolute" || pointer_mode == "touchscreen";
         cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
         std::string detail = valid ? "effective mode: " + pointer_mode : "must be absolute or touchscreen";
+        cJSON_AddStringToObject(r, "detail", detail.c_str());
+        if (!valid) all_passed = false;
+        cJSON_AddItemToArray(results, r);
+
+        r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "check", "input_backend");
+        valid = input_backend == "hid" || input_backend == "adb";
+        cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
+        detail = valid ? "effective backend: " + input_backend : "must be hid or adb";
         cJSON_AddStringToObject(r, "detail", detail.c_str());
         if (!valid) all_passed = false;
         cJSON_AddItemToArray(results, r);
@@ -6124,6 +6661,18 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         }
     }
 
+    if (request.method == "GET" && request.path == "/api/storage/status") {
+        return handle_get_storage_status(options);
+    }
+
+    if (request.method == "POST" && request.path == "/api/storage/format") {
+        return handle_post_storage(options, "/api/storage/format", request.body);
+    }
+
+    if (request.method == "POST" && request.path == "/api/storage/eject") {
+        return handle_post_storage(options, "/api/storage/eject", request.body);
+    }
+
     if (request.method == "GET" && request.path == "/api/agent/status") {
         return handle_get_agent_status(options);
     }
@@ -6155,6 +6704,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "POST" && request.path == "/api/config") {
         return handle_post_config(options, request.body);
+    }
+
+    if (request.method == "PUT" && request.path == "/api/config/locale") {
+        return handle_put_config_locale(options, request.body);
     }
 
     if (request.method == "POST" && request.path == "/api/system/env") {
@@ -6216,7 +6769,8 @@ bool parse_int(const char* text, int min_value, int max_value, int* value) {
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0 << " [--bind=IP] [--port=PORT]"
               << " [--config=PATH] [--wifi-config=PATH] [--wifi-iface=NAME]"
-              << " [--ota-state=PATH] [--cmdline=PATH] [--system-env=PATH]" << std::endl;
+              << " [--ota-state=PATH] [--cmdline=PATH] [--system-env=PATH]"
+              << " [--storage-state=PATH]" << std::endl;
 }
 
 bool parse_args(int argc, char** argv, Options* options) {
@@ -6238,6 +6792,7 @@ bool parse_args(int argc, char** argv, Options* options) {
         } else if (consume_prefix(arg, "--ota-state=", &options->ota_state_path)) {
         } else if (consume_prefix(arg, "--cmdline=", &options->cmdline_path)) {
         } else if (consume_prefix(arg, "--system-env=", &options->system_env_path)) {
+        } else if (consume_prefix(arg, "--storage-state=", &options->storage_state_path)) {
         } else {
             return false;
         }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"aiden-agent/internal/agent/model"
+
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -32,13 +34,13 @@ type textInputCandidateClick struct {
 }
 
 type textInputScreenAnalysis struct {
-	ObservedMode        textInputMode             `json:"observed_mode"`
-	FieldText           string                    `json:"field_text"`
-	CompositionPending  bool                      `json:"composition_pending"`
-	WrongIMESuspected   bool                      `json:"wrong_ime_suspected"`
-	SuggestSwitchIME    bool                      `json:"suggest_switch_ime"`
-	Candidates          []textInputCandidateClick `json:"candidates"`
-	Evidence            []string                  `json:"evidence,omitempty"`
+	ObservedMode       textInputMode             `json:"observed_mode"`
+	FieldText          string                    `json:"field_text"`
+	CompositionPending bool                      `json:"composition_pending"`
+	WrongIMESuspected  bool                      `json:"wrong_ime_suspected"`
+	SuggestSwitchIME   bool                      `json:"suggest_switch_ime"`
+	Candidates         []textInputCandidateClick `json:"candidates"`
+	Evidence           []string                  `json:"evidence,omitempty"`
 }
 
 type textInputVision interface {
@@ -46,10 +48,10 @@ type textInputVision interface {
 }
 
 type llmTextInputVision struct {
-	models ModelResolver
+	models model.Model
 }
 
-func newLLMTextInputVision(models ModelResolver) textInputVision {
+func newLLMTextInputVision(models model.Model) textInputVision {
 	if models == nil {
 		return nil
 	}
@@ -127,10 +129,6 @@ Rules:
 }
 
 func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, screenshot screenshotResult) (string, error) {
-	model, err := v.models.Get()
-	if err != nil {
-		return "", err
-	}
 	if strings.TrimSpace(screenshot.Data) == "" {
 		return "", fmt.Errorf("screenshot data missing")
 	}
@@ -144,7 +142,10 @@ func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, scre
 			llms.ImageURLPart(imgURL),
 		}},
 	}
-	resp, err := model.GenerateContent(ctx, msgs, llms.WithTemperature(0), llms.WithJSONMode())
+	// Use the model's configured temperature for vision analysis. Previously
+	// hardcoded to 0 for determinism, but that breaks kimi-k3 (requires temp=1)
+	// and the temperature difference has minimal impact on vision text extraction.
+	resp, err := v.models.GenerateContent(ctx, msgs, llms.WithJSONMode())
 	if err != nil {
 		return "", err
 	}

@@ -33,15 +33,18 @@ func (t *ImageDiffTool) Description() string {
 }
 
 func (t *ImageDiffTool) ArgsSchema() map[string]any {
+	regionSchema := objectArgsSchema(map[string]any{
+		"x": coordinateSchema("Normalized region left coordinate.", 100),
+		"y": coordinateSchema("Normalized region top coordinate.", 200),
+		"w": coordinateSchema("Normalized region width.", 600),
+		"h": coordinateSchema("Normalized region height.", 400),
+	}, "x", "y", "w", "h")
+	regionSchema["examples"] = []map[string]any{{"x": 100, "y": 200, "w": 600, "h": 400}}
+
 	return objectArgsSchema(map[string]any{
 		"before": stringArgSchema("Base64-encoded JPEG from the earlier screenshot data field."),
 		"after":  stringArgSchema("Base64-encoded JPEG from the later screenshot data field."),
-		"region": objectArgsSchema(map[string]any{
-			"x": coordinateSchema("Normalized region left coordinate.", 100),
-			"y": coordinateSchema("Normalized region top coordinate.", 200),
-			"w": coordinateSchema("Normalized region width.", 600),
-			"h": coordinateSchema("Normalized region height.", 400),
-		}, "x", "y", "w", "h"),
+		"region": regionSchema,
 	}, "before", "after")
 }
 
@@ -70,13 +73,28 @@ func (t *ImageDiffTool) Call(ctx context.Context, input string) (string, error) 
 		return toolErrorResultf(ctx, CodeInvalidArguments, "decode after: %v", err), nil
 	}
 
+	// Validate image format: only JPEG is supported (must start with 0xFF 0xD8)
+	if len(beforeData) < 2 {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "before data too short. Use the 'data' field from screenshot tool results."), nil
+	}
+	if len(afterData) < 2 {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "after data too short. Use the 'data' field from screenshot tool results."), nil
+	}
+	// JPEG signature: 0xFF 0xD8
+	if beforeData[0] != 0xFF || beforeData[1] != 0xD8 {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "before is not JPEG format (image_diff only supports JPEG). Use the 'data' field from screenshot tool results."), nil
+	}
+	if afterData[0] != 0xFF || afterData[1] != 0xD8 {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "after is not JPEG format (image_diff only supports JPEG). Use the 'data' field from screenshot tool results."), nil
+	}
+
 	beforeImg, err := jpeg.Decode(bytes.NewReader(beforeData))
 	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "decode before JPEG: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "decode before JPEG: %v. Ensure you are using the 'data' field from screenshot tool results.", err), nil
 	}
 	afterImg, err := jpeg.Decode(bytes.NewReader(afterData))
 	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "decode after JPEG: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "decode after JPEG: %v. Ensure you are using the 'data' field from screenshot tool results.", err), nil
 	}
 
 	fullBounds := beforeImg.Bounds()

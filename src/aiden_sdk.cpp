@@ -1336,6 +1336,7 @@ bool CameraCapture::capture_frame_timeout(VideoFrame& frame, std::vector<uint8_t
             }
         }
 
+        bool uniform_reject = false;
         if (!impl_->acquire_frame(&frame, timeout_ms)) {
             fprintf(stderr, "Failed to acquire frame (attempt %d/%d): %s\n",
                     attempt + 1, max_attempts, strerror(errno));
@@ -1349,8 +1350,9 @@ bool CameraCapture::capture_frame_timeout(VideoFrame& frame, std::vector<uint8_t
                 return true;
             }
 
+            uniform_reject = true;
             fprintf(stderr,
-                    "Rejected uniform frame payload (attempt %d/%d), reinitializing capture\n",
+                    "Skipping uniform frame (attempt %d/%d)\n",
                     attempt + 1, max_attempts);
         }
 
@@ -1361,7 +1363,9 @@ bool CameraCapture::capture_frame_timeout(VideoFrame& frame, std::vector<uint8_t
             break;
         }
 
-        stop();
+        if (!uniform_reject) {
+            stop();
+        }
     }
 
     return false;

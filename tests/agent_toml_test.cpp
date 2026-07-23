@@ -24,6 +24,7 @@ std::string make_temp_path(const char* leaf) {
 
 TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     aiden::AgentToml cfg;
+    cfg.locale = "en-US";
     cfg.custom_instruction = "Hello \"world\"";
     cfg.input_mode = "stt";
     cfg.trigger_mode = "manual";
@@ -65,6 +66,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.model.api_key = "sk-or-test";
     cfg.model.token_env = "OPENROUTER_API_KEY";
     cfg.model.temperature = 0.2;
+    cfg.model.has_temperature = true;
     cfg.model.max_response_tokens = 1000;
     cfg.model.context_window = 64000;
     cfg.model.model_max_output_tokens = 4096;
@@ -132,6 +134,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
         std::ifstream saved_in(path);
         REQUIRE(saved_in.good());
         std::string contents((std::istreambuf_iterator<char>(saved_in)), std::istreambuf_iterator<char>());
+        CHECK(contents.find("locale = \"en-US\"") != std::string::npos);
         CHECK(contents.find("custom_instruction = \"Hello \\\"world\\\"\"") != std::string::npos);
         CHECK(contents.rfind("instruction =", 0) != 0);
         CHECK(contents.find("\ninstruction =") == std::string::npos);
@@ -141,6 +144,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     REQUIRE(aiden::load_agent_toml(path.c_str(), loaded, &err));
     REQUIRE(err.empty());
 
+    CHECK(loaded.locale == "en-US");
     CHECK(loaded.custom_instruction == "Hello \"world\"");
     CHECK(loaded.input_mode == "stt");
     CHECK(loaded.trigger_mode == "manual");

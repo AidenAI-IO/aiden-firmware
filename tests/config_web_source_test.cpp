@@ -1312,13 +1312,17 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
     CHECK(html.find("NO_PROXY=localhost,127.0.0.1,::1") == std::string::npos);
 
     const size_t agent_card = html.find("<h2>Agent Configuration</h2>");
+    const size_t microsd_card = html.find("<h2>microSD Configuration</h2>");
     const size_t telemetry_section = html.find("id=\\\"section-telemetry\\\"");
     const size_t system_env_section = html.find("id=\\\"section-system_env\\\"");
     REQUIRE(agent_card != std::string::npos);
+    REQUIRE(microsd_card != std::string::npos);
     REQUIRE(telemetry_section != std::string::npos);
     REQUIRE(system_env_section != std::string::npos);
     CHECK(agent_card < telemetry_section);
-    CHECK(telemetry_section < system_env_section);
+    CHECK(telemetry_section < microsd_card);
+    CHECK(microsd_card < system_env_section);
+    CHECK(html.find("<h2>Storage (microSD)</h2>") == std::string::npos);
     CHECK(html.find("<div class=\\\"card section-card\\\" id=\\\"section-system_env\\\"") != std::string::npos);
 }
 

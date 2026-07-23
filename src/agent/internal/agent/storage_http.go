@@ -2,155 +2,82 @@ package agent
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
-	"time"
 )
 
-type storageCleanupHistoryResultHTTP struct {
-	Timestamp time.Time `json:"timestamp,omitempty"`
-	Cleaner   string    `json:"cleaner"`
-	FreedMB   uint64    `json:"freed_mb"`
-	Status    string    `json:"status"`
-	Error     string    `json:"error,omitempty"`
-}
-
-type storageCleanupRunResultHTTP struct {
-	Name    string `json:"name"`
-	FreedMB uint64 `json:"freed_mb"`
-	Status  string `json:"status"`
-	Error   string `json:"error,omitempty"`
-}
-
-type storageStatusHTTPResponse struct {
-	Path                    string                            `json:"path"`
-	TotalMB                 uint64                            `json:"total_mb"`
-	UsedMB                  uint64                            `json:"used_mb"`
-	AvailableMB             uint64                            `json:"available_mb"`
-	PercentUsed             float64                           `json:"percent_used"`
-	AlertLevel              StorageLevel                      `json:"alert_level"`
-	DegradedMode            bool                              `json:"degraded_mode"`
-	UnavailableCapabilities []StorageCapability               `json:"unavailable_capabilities"`
-	StatusRevision          uint64                            `json:"status_revision"`
-	LastCleanup             *time.Time                        `json:"last_cleanup,omitempty"`
-	LastCleanupFreedMB      uint64                            `json:"last_cleanup_freed_mb"`
-	CleanupHistory          []storageCleanupHistoryResultHTTP `json:"cleanup_history,omitempty"`
-}
-
-func storageStatusResponse(status StorageStatus) storageStatusHTTPResponse {
-	response := storageStatusHTTPResponse{
-		Path:                    status.Path,
-		TotalMB:                 status.TotalBytes / storageMegabyte,
-		UsedMB:                  status.UsedBytes / storageMegabyte,
-		AvailableMB:             status.AvailableBytes / storageMegabyte,
-		PercentUsed:             status.PercentUsed,
-		AlertLevel:              status.Level,
-		DegradedMode:            len(status.UnavailableCapabilities) > 0,
-		UnavailableCapabilities: append([]StorageCapability(nil), status.UnavailableCapabilities...),
-		StatusRevision:          status.Revision,
-		LastCleanupFreedMB:      status.LastCleanupFreedBytes / storageMegabyte,
-		CleanupHistory:          storageCleanupHistoryResultsHTTP(status.CleanupHistory),
+func (s *Server) storageManager() *StorageManager {
+	if s.runtime == nil {
+		return nil
 	}
-	if !status.LastCleanupAt.IsZero() {
-		lastCleanup := status.LastCleanupAt
-		response.LastCleanup = &lastCleanup
-	}
-	return response
+	return s.runtime.Storage()
 }
 
+func writeStorageError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// handleStorageStatus serves GET /api/storage/status.
 func (s *Server) handleStorageStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeStorageError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if s.storageMonitor == nil {
-		http.Error(w, "storage monitor unavailable", http.StatusServiceUnavailable)
+	sm := s.storageManager()
+	if sm == nil {
+		writeStorageError(w, http.StatusServiceUnavailable, "storage manager unavailable")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(storageStatusResponse(s.storageMonitor.Status()))
+	json.NewEncoder(w).Encode(sm.Status())
 }
 
-type storageCleanupHTTPRequest struct {
-	Force   bool     `json:"force"`
-	Targets []string `json:"targets"`
-}
-
-type storageCleanupHTTPResponse struct {
-	Success         bool                          `json:"success"`
-	FreedMB         uint64                        `json:"freed_mb"`
-	FinalAlertLevel StorageLevel                  `json:"final_alert_level"`
-	AvailableMB     uint64                        `json:"available_mb"`
-	CleanersRun     []storageCleanupRunResultHTTP `json:"cleaners_run,omitempty"`
-}
-
-func (s *Server) handleStorageCleanup(w http.ResponseWriter, r *http.Request) {
+// handleStorageEject serves POST /api/storage/eject.
+func (s *Server) handleStorageEject(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeStorageError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if s.storageMonitor == nil {
-		http.Error(w, "storage monitor unavailable", http.StatusServiceUnavailable)
+	sm := s.storageManager()
+	if sm == nil {
+		writeStorageError(w, http.StatusServiceUnavailable, "storage manager unavailable")
 		return
 	}
-	var request storageCleanupHTTPRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
-		http.Error(w, "invalid storage cleanup request", http.StatusBadRequest)
+	if err := sm.SafeEject(); err != nil {
+		writeStorageError(w, http.StatusConflict, err.Error())
 		return
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		http.Error(w, "invalid storage cleanup request", http.StatusBadRequest)
-		return
-	}
-	if err := s.storageMonitor.ValidateCleanupTargets(request.Targets); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	status, err := s.storageMonitor.CheckAndRemediate(r.Context(), StorageCheckRequest{
-		Reason:  CheckReasonManual,
-		Force:   request.Force,
-		Targets: request.Targets,
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	response := storageCleanupHTTPResponse{
-		Success:         true,
-		FreedMB:         status.CurrentCleanupFreedBytes / storageMegabyte,
-		FinalAlertLevel: status.Level,
-		AvailableMB:     status.AvailableBytes / storageMegabyte,
-		CleanersRun:     storageCleanupRunResultsHTTP(status.LastCleanupResults),
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(sm.Status())
 }
 
-func storageCleanupHistoryResultsHTTP(results []StorageCleanupResult) []storageCleanupHistoryResultHTTP {
-	converted := make([]storageCleanupHistoryResultHTTP, 0, len(results))
-	for _, result := range results {
-		converted = append(converted, storageCleanupHistoryResultHTTP{
-			Timestamp: result.Timestamp,
-			Cleaner:   result.Cleaner,
-			FreedMB:   result.FreedBytes / storageMegabyte,
-			Status:    result.Status,
-			Error:     result.Error,
-		})
+// handleStorageFormat serves POST /api/storage/format
+// {"fs": "fat32"|"ext4"|"exfat", "confirm": "format-sd-card"}. The format runs as an
+// asynchronous job; poll /api/storage/status (format_job) for the outcome.
+func (s *Server) handleStorageFormat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeStorageError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
 	}
-	return converted
-}
-
-func storageCleanupRunResultsHTTP(results []StorageCleanupResult) []storageCleanupRunResultHTTP {
-	converted := make([]storageCleanupRunResultHTTP, 0, len(results))
-	for _, result := range results {
-		converted = append(converted, storageCleanupRunResultHTTP{
-			Name:    result.Cleaner,
-			FreedMB: result.FreedBytes / storageMegabyte,
-			Status:  result.Status,
-			Error:   result.Error,
-		})
+	sm := s.storageManager()
+	if sm == nil {
+		writeStorageError(w, http.StatusServiceUnavailable, "storage manager unavailable")
+		return
 	}
-	return converted
+	var req struct {
+		FS      string `json:"fs"`
+		Confirm string `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeStorageError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := sm.StartFormat(req.FS, req.Confirm); err != nil {
+		writeStorageError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(sm.Status())
 }

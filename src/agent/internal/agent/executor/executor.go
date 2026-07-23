@@ -46,12 +46,14 @@ func (e *LLMCallError) IsLLMTurnFailureSource() {}
 type LLMExecutor struct {
 	model          llms.Model
 	contextManager *contextmanager.ContextManager
+	transforms     []OutboundMessageTransform
 }
 
-func NewLLMExecutor(model llms.Model, contextManager *contextmanager.ContextManager) *LLMExecutor {
+func NewLLMExecutor(model llms.Model, contextManager *contextmanager.ContextManager, transforms ...OutboundMessageTransform) *LLMExecutor {
 	return &LLMExecutor{
 		model:          model,
 		contextManager: contextManager,
+		transforms:     transforms,
 	}
 }
 
@@ -64,8 +66,15 @@ func (e *LLMExecutor) AppendMessage(message contextmanager.Message) error {
 }
 
 func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	messages := e.contextManager.TakeStandardMessageListForModel()
-	contentResponse, err := e.model.GenerateContent(ctx, messages, options...)
+	messages := e.contextManager.CloneMessageList()
+	for _, transform := range e.transforms {
+		if transform == nil {
+			continue
+		}
+		messages = transform.Transform(messages)
+	}
+	standard := contextmanager.ConvertMessageList(messages)
+	contentResponse, err := e.model.GenerateContent(ctx, standard, options...)
 	if err != nil {
 		return nil, MarkLLMCallError(err)
 	}
