@@ -27,7 +27,11 @@ def test_vphone_ios_basic_suite_loads():
     assert all(task.repeats == 1 for task in suite.tasks)
 
     ethernet = next(task for task in suite.tasks if task.id == "settings_read_ethernet_ipv4")
-    assert ethernet.hard_assertions.min_tool_calls >= 4
+    # This task has no min_tool_calls floor: the agent can reach the Ethernet
+    # detail page and screenshot it in as few as 2 calls, and the number of
+    # calls drifts with VM state, so a floor randomly fails correct runs.
+    # Correctness is enforced by required_tools + the judge/rubric instead.
+    assert ethernet.hard_assertions.min_tool_calls == 0
     assert ethernet.hard_assertions.required_tools == ["screenshot"]
     assert {item.id for item in ethernet.rubric} >= {
         "opened_ethernet_interface",
