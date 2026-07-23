@@ -172,7 +172,7 @@ go test ./internal/agent -run 'Test.*QuickAction' -count=1
 
 The expected output includes `ok aiden-agent/internal/agent`.
 
-### 3.3 Confirm That Docker Desktop Is Operational
+### 3.3 Confirm Docker Desktop Is Operational, and Keep the Proxy App Running
 
 The Agent daemon runs in Docker:
 
@@ -182,6 +182,25 @@ docker info >/dev/null && echo "Docker is ready"
 
 If this command fails, start Docker Desktop and wait for it to finish
 initializing before continuing.
+
+**Building the Agent image for the first time pulls base images (`golang`,
+`debian`) from Docker Hub over the network, which relies on the local proxy app
+(e.g. Clash Verge / mihomo, listening on `127.0.0.1:7897`).** If `./start.sh
+agent` fails with an error like the following, the proxy app is usually not
+running or the port is unreachable:
+
+```text
+failed to solve: golang:1.23-bullseye: ... dial tcp 127.0.0.1:7897: connect: connection refused
+```
+
+Fix: make sure the proxy app is running and its port (e.g. `7897`) is reachable,
+then rerun `./start.sh agent`. Once the base images are pulled and cached, later
+builds no longer need the network, but keeping the proxy app running during the
+benchmark is recommended. Quick check:
+
+```bash
+nc -z 127.0.0.1 7897 && echo "proxy port reachable" || echo "proxy DOWN — start your proxy app"
+```
 
 ### 3.4 Check the Agent Model Configuration
 
@@ -630,9 +649,9 @@ different task IDs, tool requests receive `429 no_bridge_env_available`.
 > ```
 >
 > **`./start.sh run` does not score by default (it adds `--no-judge`)**, because
-> the Judge needs `OPENROUTER_API_KEY` and forgetting it turns every task into
-> `JUDGE_ERROR`. To score, add `--judge-model` (see Section 9); the script first
-> checks that `OPENROUTER_API_KEY` is set.
+> the Judge needs an OpenRouter key and forgetting it turns every task into
+> `JUDGE_ERROR`. To score, add `--judge-model` and pass the judge key inline with
+> `--judge-key <key>` (see Section 9); the script checks the key is present first.
 >
 > Each step below shows the `./start.sh run` shorthand and the equivalent full
 > `runner run` command; use either one.
@@ -729,24 +748,27 @@ larger model). Send one request to the daemon manually to warm it up, or raise
 
 ## 9. Enable the Judge for Formal Acceptance Testing (Command-Line Workflow)
 
-After confirming that the entire path works without the Judge, set the
-OpenRouter key used by the Judge in Terminal C:
-
-```bash
-export OPENROUTER_API_KEY="<OpenRouter API key used by the Judge>"
-```
-
-Then add `--judge-model` to enable scoring (`./start.sh run` scores only when
-`--judge-model` is given, and errors out if `OPENROUTER_API_KEY` is unset):
+After confirming that the entire path works without the Judge, enable scoring
+with `--judge-model` and pass the judge's OpenRouter key inline with
+`--judge-key` (no `export` needed). `./start.sh run` does not score by default;
+if you add `--judge-model` without `--judge-key` (and no key in the environment),
+it errors out:
 
 ```bash
 cd path_to_project/benchmark/vphone
-./start.sh run --judge-model anthropic/claude-sonnet-4-6 -v
+./start.sh run \
+  --judge-model anthropic/claude-sonnet-4-6 \
+  --judge-key "<OpenRouter API key used by the Judge>" \
+  -v
 ```
 
-Equivalent full command:
+`--judge-key` is consumed by `./start.sh` and not forwarded to the runner; the
+script sets it as the `OPENROUTER_API_KEY` the judge needs. Equivalent full
+command (the runner reads the key only from the environment, so set it as an
+inline command prefix — still no separate `export`):
 
 ```bash
+OPENROUTER_API_KEY="<OpenRouter API key used by the Judge>" \
 uv run python -m runner run \
   --suite suites/vphone_ios_basic.json \
   --agent-url "$VPHONE_AGENT_URL" \

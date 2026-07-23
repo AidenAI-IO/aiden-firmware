@@ -16,8 +16,9 @@
 # VPHONE_GUEST_SSH_HOST if none is reachable.
 # `run` auto-discovers the running agent daemon's port and control token, so you
 # never paste --agent-url / --benchmark-token-file. Start a daemon first with
-# `./start.sh agent`. Judging is OFF by default (it needs OPENROUTER_API_KEY);
-# pass --judge-model <model> to score.
+# `./start.sh agent`. Judging is OFF by default; pass --judge-model <model> to
+# score, and --judge-key <key> to supply the judge OpenRouter key inline (no
+# export needed).
 #
 # The env file is picked up in this order:
 #   1. $VPHONE_ENV_FILE if already exported
@@ -30,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ENV_FILE="$SCRIPT_DIR/vphone.env"
 
 usage() {
-  sed -n '7,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '7,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 
@@ -150,22 +151,43 @@ case "$SUBCMD" in
       echo "hint: (re)start the daemon with: ./start.sh agent" >&2
       exit 1
     fi
-    # Default suite unless the caller passes their own --suite in "$@".
+    # Pull our own --judge-key <key> out of the args (runner does not know it) and
+    # feed it to the judge as OPENROUTER_API_KEY, so you can pass the key inline
+    # instead of exporting it. Everything else is forwarded to `runner run`.
+    passthru=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --judge-key)
+          [ $# -ge 2 ] || { echo "error: --judge-key needs a value" >&2; exit 1; }
+          export OPENROUTER_API_KEY="$2"
+          shift 2
+          ;;
+        --judge-key=*)
+          export OPENROUTER_API_KEY="${1#--judge-key=}"
+          shift
+          ;;
+        *)
+          passthru+=("$1")
+          shift
+          ;;
+      esac
+    done
+    # Default suite unless the caller passes their own --suite.
     suite_args=()
-    case " $* " in
+    case " ${passthru[*]:-} " in
       *" --suite "*) : ;;
       *) suite_args=(--suite suites/vphone_ios_basic.json) ;;
     esac
-    # Judging is OFF by default: it needs OPENROUTER_API_KEY in the environment,
-    # and forgetting it turns every task into JUDGE_ERROR. Opt in with
-    # --judge-model / --judge; then we require the key up front instead of
+    # Judging is OFF by default: it needs an OpenRouter key, and forgetting it
+    # turns every task into JUDGE_ERROR. Opt in with --judge-model / --judge; then
+    # require the key (from --judge-key or OPENROUTER_API_KEY) up front instead of
     # failing after every task has run.
     judge_args=()
-    case " $* " in
+    case " ${passthru[*]:-} " in
       *" --judge-model "*|*" --judge "*)
         if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-          echo "error: judging requested but OPENROUTER_API_KEY is not set." >&2
-          echo "hint: export OPENROUTER_API_KEY=<judge OpenRouter key> first," >&2
+          echo "error: judging requested but no judge key provided." >&2
+          echo "hint: add --judge-key <judge OpenRouter key>," >&2
           echo "      or drop --judge-model to run without scoring." >&2
           exit 1
         fi
@@ -182,7 +204,7 @@ case "$SUBCMD" in
       --benchmark-token-file "$token_file" \
       --environment-url "$VPHONE_BRIDGE_ENDPOINT" \
       --benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID" \
-      "$@"
+      ${passthru[@]+"${passthru[@]}"}
     ;;
   webui)
     require_free_port "8765" "webui"
