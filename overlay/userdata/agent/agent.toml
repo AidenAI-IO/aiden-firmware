@@ -2,6 +2,7 @@
 # custom_instruction = ""
 # additional_prompt = ""
 # max_iterations = -1
+locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification text
 
 # Screenshot context pruning:
 # keep the latest N screenshots and batch-prune older screenshots every interval

@@ -241,7 +241,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"telemetry\":{\"enabled\":false,\"provider\":\"langfuse\",\"base_url\":\"\","
         "\"public_key\":\"\",\"secret_key\":\"\",\"upload_screenshots\":true,"
         "\"upload_timeout_sec\":30,\"max_retry\":2,\"tags\":[],\"environment\":\"default\"},"
-        "\"agent\":{\"custom_instruction\":\"stub custom instruction\",\"additional_prompt\":\"\","
+        "\"agent\":{\"locale\":\"zh-CN\",\"custom_instruction\":\"stub custom instruction\",\"additional_prompt\":\"\","
         "\"input_mode\":\"text\",\"trigger_mode\":\"manual\",\"vad_backend\":\"rknn\","
         "\"vad_model_path\":\"/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn\","
         "\"vad_helper_path\":\"/oem/usr/bin/rknn_vad\",\"vad_speech_threshold\":0.5,"
@@ -740,6 +740,13 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     REQUIRE(enabled != nullptr);
     CHECK((enabled->type & 0xff) == cJSON_True);
 
+    cJSON* voice_notifications = cJSON_GetObjectItem(config, "voice_notifications");
+    REQUIRE(voice_notifications != nullptr);
+    CHECK(required_json_int(voice_notifications, "max_pending") == 8);
+    cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
+    REQUIRE(response_tail != nullptr);
+    CHECK(required_json_int(response_tail, "max_text_chars") == 40);
+
     cJSON* agent = cJSON_GetObjectItem(config, "agent");
     REQUIRE(agent != nullptr);
     cJSON* custom_instruction = cJSON_GetObjectItem(agent, "custom_instruction");
@@ -853,6 +860,63 @@ TEST_CASE("config_web: POST /api/config accepts empty audio_archive storage_path
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
+}
+
+TEST_CASE("config_web: POST /api/config preserves voice notification settings") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
+        "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
+        "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"network\":123}}},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[voice_notifications]") != std::string::npos);
+    CHECK(saved.find("max_pending = 6") != std::string::npos);
+    CHECK(saved.find("[voice_notifications.response_tail]") != std::string::npos);
+    CHECK(saved.find("max_text_chars = 72") != std::string::npos);
+    CHECK(saved.find("[voice_notifications.expiration]") != std::string::npos);
+    CHECK(saved.find("default_ttl_seconds = 120") != std::string::npos);
+    CHECK(saved.find("[voice_notifications.expiration.code_ttl_seconds]") != std::string::npos);
+    CHECK(saved.find("network = 123") != std::string::npos);
+    CHECK(saved.find("storage = 900") == std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config rejects invalid voice notification integers and TTL keys") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    struct InvalidCase {
+        const char* name;
+        const char* voice_notifications;
+        const char* expected_error;
+    };
+    const InvalidCase cases[] = {
+        {"max_pending", "{\"max_pending\":0.5}", "non-negative integer"},
+        {"max_items", "{\"response_tail\":{\"max_items\":0.5}}", "non-negative integer"},
+        {"max_text_chars", "{\"response_tail\":{\"max_text_chars\":0.5}}", "non-negative integer"},
+        {"default_ttl_seconds", "{\"expiration\":{\"default_ttl_seconds\":0.5}}", "non-negative integer"},
+        {"code_ttl_seconds", "{\"expiration\":{\"code_ttl_seconds\":{\"network\":0.5}}}", "non-negative integer"},
+        {"invalid_ttl_key", "{\"expiration\":{\"code_ttl_seconds\":{\"bad key\":123}}}", "bare TOML key"},
+    };
+
+    for (const auto& test_case : cases) {
+        const std::string body =
+            std::string("{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},") +
+            "\"voice_notifications\":" + test_case.voice_notifications + "," +
+            "\"hid\":{\"pointer_mode\":\"absolute\"}," +
+            "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK_MESSAGE(resp.status == 400, test_case.name << ": status=" << resp.status);
+        CHECK_MESSAGE(resp.body.find(test_case.expected_error) != std::string::npos,
+                      test_case.name << ": body=" << resp.body);
+    }
 }
 
 TEST_CASE("config_web: POST /api/config writes custom_instruction") {

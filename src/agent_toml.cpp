@@ -270,7 +270,9 @@ void apply_kv(AgentToml& cfg,
     std::string sub_err;
 
     if (section.empty()) {
-        if (key == "custom_instruction") {
+        if (key == "locale") {
+            if (!assign_string(&cfg.locale, raw, &sub_err)) fail(sub_err);
+        } else if (key == "custom_instruction") {
             if (!assign_string(&cfg.custom_instruction, raw, &sub_err)) fail(sub_err);
         } else if (key == "additional_prompt") {
             if (!assign_string(&cfg.additional_prompt, raw, &sub_err)) fail(sub_err);
@@ -679,6 +681,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     }
 
     std::ostringstream out;
+    emit_string(out, "locale", cfg.locale);
     if (!cfg.custom_instruction.empty()) emit_string(out, "custom_instruction", cfg.custom_instruction);
     if (!cfg.additional_prompt.empty()) emit_string(out, "additional_prompt", cfg.additional_prompt);
     if (!cfg.input_mode.empty()) emit_string(out, "input_mode", cfg.input_mode);
