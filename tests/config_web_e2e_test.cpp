@@ -229,6 +229,9 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"channels\":1,\"bit_width\":16},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
+        "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
+        "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
+        "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"storage\":900}}},"
         "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
         "\"android_keyboard_device\":\"/dev/hidg2\","
@@ -788,6 +791,14 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     REQUIRE(enabled != nullptr);
     CHECK((enabled->type & 0xff) == cJSON_True);
 
+    cJSON* voice_notifications = cJSON_GetObjectItem(config, "voice_notifications");
+    REQUIRE(voice_notifications != nullptr);
+    CHECK(cJSON_GetObjectItem(voice_notifications, "default_locale") == nullptr);
+    CHECK(required_json_int(voice_notifications, "max_pending") == 8);
+    cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
+    REQUIRE(response_tail != nullptr);
+    CHECK(required_json_int(response_tail, "max_text_chars") == 40);
+
     cJSON* agent = cJSON_GetObjectItem(config, "agent");
     REQUIRE(agent != nullptr);
     cJSON* custom_instruction = cJSON_GetObjectItem(agent, "custom_instruction");
@@ -1036,6 +1047,64 @@ TEST_CASE("config_web: POST /api/config omitting temperature clears a saved valu
     CHECK(saved.find("temperature") == std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config preserves voice notification settings") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
+        "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
+        "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"network\":123}}},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[voice_notifications]") != std::string::npos);
+    CHECK(saved.find("default_locale") == std::string::npos);
+    CHECK(saved.find("max_pending = 6") != std::string::npos);
+    CHECK(saved.find("[voice_notifications.response_tail]") != std::string::npos);
+    CHECK(saved.find("max_text_chars = 72") != std::string::npos);
+    CHECK(saved.find("[voice_notifications.expiration]") != std::string::npos);
+    CHECK(saved.find("default_ttl_seconds = 120") != std::string::npos);
+    CHECK(saved.find("[voice_notifications.expiration.code_ttl_seconds]") != std::string::npos);
+    CHECK(saved.find("network = 123") != std::string::npos);
+    CHECK(saved.find("storage = 900") == std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config rejects invalid voice notification integers and TTL keys") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    struct InvalidCase {
+        const char* name;
+        const char* voice_notifications;
+        const char* expected_error;
+    };
+    const InvalidCase cases[] = {
+        {"max_pending", "{\"max_pending\":0.5}", "non-negative integer"},
+        {"max_items", "{\"response_tail\":{\"max_items\":0.5}}", "non-negative integer"},
+        {"max_text_chars", "{\"response_tail\":{\"max_text_chars\":0.5}}", "non-negative integer"},
+        {"default_ttl_seconds", "{\"expiration\":{\"default_ttl_seconds\":0.5}}", "non-negative integer"},
+        {"code_ttl_seconds", "{\"expiration\":{\"code_ttl_seconds\":{\"network\":0.5}}}", "non-negative integer"},
+        {"invalid_ttl_key", "{\"expiration\":{\"code_ttl_seconds\":{\"bad key\":123}}}", "bare TOML key"},
+    };
+
+    for (const auto& test_case : cases) {
+        const std::string body =
+            std::string("{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},") +
+            "\"voice_notifications\":" + test_case.voice_notifications + "," +
+            "\"hid\":{\"pointer_mode\":\"absolute\"}," +
+            "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK_MESSAGE(resp.status == 400, test_case.name << ": status=" << resp.status);
+        CHECK_MESSAGE(resp.body.find(test_case.expected_error) != std::string::npos,
+                      test_case.name << ": body=" << resp.body);
+    }
+}
+
 TEST_CASE("config_web: POST /api/config writes ota section") {
     // Regression test: update_config_from_json() must handle the ota section.
     // It was added to AgentToml, TOML read/write, and validation, but was
@@ -1060,7 +1129,7 @@ TEST_CASE("config_web: POST /api/config writes ota section") {
     CHECK(saved.find("github_proxy_url = \"https://gh-proxy.com\"") != std::string::npos);
 }
 
-TEST_CASE("config_web: GET /api/config returns ota section from resolved config") {
+TEST_CASE("config_web: GET /api/config returns ota and voice notification sections from resolved config") {
     // Regression test: config_to_json() must serialize the ota section from
     // the agent's resolved config. It was added to AgentToml and TOML
     // read/write, but was missed here, so github_proxy_url never came back
@@ -1087,6 +1156,12 @@ TEST_CASE("config_web: GET /api/config returns ota section from resolved config"
     REQUIRE(proxy_url != nullptr);
     REQUIRE(proxy_url->valuestring != nullptr);
     CHECK(std::string(proxy_url->valuestring) == "https://gh-proxy.com");
+    cJSON* voice_notifications = cJSON_GetObjectItem(config, "voice_notifications");
+    REQUIRE(voice_notifications != nullptr);
+    CHECK(required_json_int(voice_notifications, "max_pending") == 6);
+    cJSON* expiration = cJSON_GetObjectItem(voice_notifications, "expiration");
+    REQUIRE(expiration != nullptr);
+    CHECK(required_json_int(expiration, "default_ttl_seconds") == 120);
     cJSON_Delete(parsed);
 }
 
