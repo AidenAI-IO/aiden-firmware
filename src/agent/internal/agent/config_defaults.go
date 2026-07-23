@@ -127,7 +127,7 @@ func DefaultConfig() Config {
 			MinCardFreeMB:        defaultStorageMinCardFreeMB,
 			MigrateStartFreePct:  defaultStorageMigrateStartFreePct,
 			MigrateStopFreePct:   defaultStorageMigrateStopFreePct,
-			Enabled:              true,
+			MonitorEnabled:       true,
 			RootPath:             "/userdata",
 			CheckIntervalSeconds: 300,
 			WarningThresholdMB:   50,

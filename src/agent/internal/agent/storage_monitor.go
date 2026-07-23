@@ -136,7 +136,7 @@ type StorageCleanupConfig struct {
 
 // StorageMonitorConfig controls persistent storage monitoring and remediation.
 type StorageMonitorConfig struct {
-	Enabled              bool                      `toml:"enabled"`
+	Enabled              bool                      `toml:"monitor_enabled"`
 	RootPath             string                    `toml:"root_path,omitempty"`
 	CheckIntervalSeconds int                       `toml:"check_interval_seconds,omitempty"`
 	WarningThresholdMB   uint64                    `toml:"warning_threshold_mb,omitempty"`
@@ -177,7 +177,7 @@ func (c StorageMonitorConfig) Validate() error {
 		return nil
 	}
 	if strings.TrimSpace(c.RootPath) == "" {
-		return fmt.Errorf("storage.root_path is required when storage.enabled=true")
+		return fmt.Errorf("storage.root_path is required when storage.monitor_enabled=true")
 	}
 	if c.CheckIntervalSeconds <= 0 {
 		return fmt.Errorf("storage.check_interval_seconds must be > 0, got %d", c.CheckIntervalSeconds)

@@ -220,6 +220,7 @@ func ConfigMeta() ConfigMetadata {
 			{
 				Name: "storage",
 				Fields: []FieldMeta{
+					{Key: "monitor_enabled", Widget: WidgetBoolean, Default: defaults.Storage.MonitorEnabled},
 					{Key: "mount_point", Widget: WidgetText, Default: defaults.Storage.MountPointOrDefault()},
 					{Key: "device", Widget: WidgetText, Default: defaults.Storage.DeviceOrDefault()},
 					{Key: "min_card_free_mb", Widget: WidgetNumber, Default: defaults.Storage.MinCardFreeMBOrDefault()},

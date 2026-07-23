@@ -354,7 +354,7 @@ Default configuration:
 
 ~~~toml
 [storage]
-enabled = true
+monitor_enabled = true
 root_path = "/userdata"
 check_interval_seconds = 300
 warning_threshold_mb = 50
@@ -378,7 +378,7 @@ cleanup_retry_interval_seconds = 60
 
 Validation rules:
 
-- root_path is required when storage monitoring is enabled.
+- root_path is required when storage.monitor_enabled is true.
 - check_interval_seconds must be greater than zero.
 - Thresholds must satisfy emergency < critical < warning.
 - max_agent_log_mb must be greater than zero.

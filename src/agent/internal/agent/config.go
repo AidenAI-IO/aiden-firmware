@@ -138,7 +138,7 @@ type StorageConfig struct {
 	MigrateStartFreePct int `toml:"migrate_start_free_pct,omitempty"`
 	MigrateStopFreePct  int `toml:"migrate_stop_free_pct,omitempty"`
 
-	Enabled              bool                      `toml:"enabled"`
+	MonitorEnabled       bool                      `toml:"monitor_enabled"`
 	RootPath             string                    `toml:"root_path,omitempty"`
 	CheckIntervalSeconds int                       `toml:"check_interval_seconds,omitempty"`
 	WarningThresholdMB   uint64                    `toml:"warning_threshold_mb,omitempty"`
@@ -151,7 +151,7 @@ type StorageConfig struct {
 
 func (c StorageConfig) MonitorConfig() StorageMonitorConfig {
 	return StorageMonitorConfig{
-		Enabled:              c.Enabled,
+		Enabled:              c.MonitorEnabled,
 		RootPath:             c.RootPath,
 		CheckIntervalSeconds: c.CheckIntervalSeconds,
 		WarningThresholdMB:   c.WarningThresholdMB,
