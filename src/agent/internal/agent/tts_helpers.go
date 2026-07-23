@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -178,28 +179,38 @@ func speakWithTTSManagerObserved(ctx context.Context, manager *tts.ProviderManag
 		}
 
 		if _, err := stream.Write([]byte(text)); err != nil {
+			speechStarted := stream.startedPlayback()
+			var stopErr error
 			if ctx.Err() != nil {
 				stream.interrupt()
 			}
 			_ = stream.closeAndWait()
+			speechStarted = speechStarted || stream.startedPlayback()
+			if ctx.Err() == nil {
+				stopErr = stream.stopPlayback()
+			}
 			unobserve()
-			lastErr = err
-			if isTransientTTSError(err) && attempt < maxRetries && !stream.startedPlayback() {
+			lastErr = errors.Join(err, stopErr)
+			if stopErr == nil && isTransientTTSError(err) && attempt < maxRetries && !speechStarted {
 				continue
 			}
-			return false, err
+			return speechStarted, lastErr
 		}
 
 		if err := stream.closeAndWait(); err != nil {
+			speechStarted := stream.startedPlayback()
+			var stopErr error
 			if ctx.Err() != nil {
 				stream.interrupt()
+			} else {
+				stopErr = stream.stopPlayback()
 			}
 			unobserve()
-			lastErr = err
-			if isTransientTTSError(err) && attempt < maxRetries && !stream.startedPlayback() {
+			lastErr = errors.Join(err, stopErr)
+			if stopErr == nil && isTransientTTSError(err) && attempt < maxRetries && !speechStarted {
 				continue
 			}
-			return false, err
+			return speechStarted, lastErr
 		}
 		unobserve()
 
@@ -358,6 +369,23 @@ func (w *streamSessionWriter) startedPlayback() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.sink != nil && w.sink.PCMBytes() > 0
+}
+
+func (w *streamSessionWriter) stopPlayback() error {
+	w.mu.Lock()
+	sink := w.sink
+	w.mu.Unlock()
+	if sink == nil {
+		return nil
+	}
+	return sink.Stop()
+}
+
+// emittedSpeech reports whether callers must treat the response as already
+// spoken. Once PCM reaches the playback sink, a later stream-close error must
+// not cause the full response or a failure replacement to be played again.
+func (w *streamSessionWriter) emittedSpeech(closeErr error) bool {
+	return w.startedPlayback() || (closeErr == nil && w.spokeSuccessfully())
 }
 
 // closeAndWait flushes the session and waits for playback to drain.

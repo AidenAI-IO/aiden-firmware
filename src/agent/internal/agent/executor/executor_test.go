@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
@@ -11,6 +12,16 @@ import (
 
 type recordingModel struct {
 	last []llms.MessageContent
+}
+
+type nilResponseModel struct{}
+
+func (nilResponseModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
+	return nil, nil
+}
+
+func (nilResponseModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	return "", nil
 }
 
 func (m *recordingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -59,5 +70,22 @@ func TestGenerateContentAppliesOutboundTransformsWithoutMutatingStore(t *testing
 	dump := manager.MessageListDump()
 	if len(dump.Messages) != 2 {
 		t.Fatalf("persisted messages = %d, want 2", len(dump.Messages))
+	}
+}
+
+func TestGenerateContentMarksNilModelResponseAsLLMCallError(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	exec := NewLLMExecutor(nilResponseModel{}, manager)
+
+	response, err := exec.GenerateContent(context.Background())
+	if response != nil {
+		t.Fatalf("GenerateContent() response = %#v, want nil", response)
+	}
+	var llmErr *LLMCallError
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("GenerateContent() error = %T %v, want LLMCallError", err, err)
 	}
 }
