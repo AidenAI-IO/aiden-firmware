@@ -43,6 +43,34 @@ address. The current key variables include:
 - `$VPHONE_BRIDGE_ENDPOINT`
 - `$VPHONE_BENCHMARK_TASK_ID`
 
+### Launcher Script (No Manual `source`)
+
+To start the Bridge, Agent daemon, or WebUI, use the wrapper script
+`benchmark/vphone/start.sh`. It sources `vphone.env` itself, so you do not have
+to export the variables in each terminal first:
+
+```bash
+cd path_to_project/benchmark/vphone
+
+./start.sh bridge      # start the Bridge (foreground)
+./start.sh agent       # start the Agent daemon
+./start.sh webui       # start the WebUI (:8765)
+./start.sh env         # print the loaded config (API key not shown)
+```
+
+The script selects the config file in the order `$VPHONE_ENV_FILE` → the
+adjacent `vphone.env` → `--env-file <path>`, and checks whether the target port
+is already in use before starting; if it is, it prints the holding process PID
+and a hint instead of a Python `Address already in use` traceback. After editing
+`vphone.env`, rerun the same `./start.sh` command to pick up the new values (the
+Bridge still has to be restarted to read a new guest IP).
+
+When you run the §4–§9 check commands by hand (for example
+`test -r "$VPHONE_AGENT_CONFIG"` or `curl "$VPHONE_BRIDGE_ENDPOINT/health"`),
+those reference `$VPHONE_*` shell variables and still require
+`source vphone.env` in that terminal first. `start.sh` only removes the manual
+`source` step for launching services.
+
 It is recommended to prepare three terminals:
 
 - Terminal A: Keep the VPhone VM running.
@@ -266,6 +294,14 @@ uv run python -m vphone.scripts.start_bridge \
   --env-file "$VPHONE_ENV_FILE"
 ```
 
+Or use the no-`source` launcher (equivalent, and it reports clearly when the
+port is already in use):
+
+```bash
+cd path_to_project/benchmark/vphone
+./start.sh bridge
+```
+
 The expected output is:
 
 ```text
@@ -370,6 +406,13 @@ uv run python -m runner webui \
   --host 127.0.0.1 \
   --port 8765 \
   --agent-config "$VPHONE_AGENT_CONFIG"
+```
+
+Or use the no-`source` launcher (equivalent):
+
+```bash
+cd path_to_project/benchmark/vphone
+./start.sh webui
 ```
 
 - `--agent-config` makes the WebUI's "Agent config" use the same model
@@ -485,6 +528,15 @@ uv run python -m runner start-agent-daemon \
   --environment-bridge-endpoint "$VPHONE_BRIDGE_ENDPOINT" \
   --benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID" \
   --agent-config "$VPHONE_AGENT_CONFIG"
+```
+
+Or use the no-`source` launcher (equivalent; `--name`,
+`--environment-bridge-endpoint`, `--benchmark-task-id`, and `--agent-config`
+are filled in from `vphone.env`, and any extra arguments are passed through):
+
+```bash
+cd path_to_project/benchmark/vphone
+./start.sh agent
 ```
 
 This command builds or reuses the Agent image and starts the container in the
