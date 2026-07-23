@@ -177,19 +177,48 @@ func TestKeyboardTapIsolatesOnlyModifierChords(t *testing.T) {
 	}
 }
 
-func TestKeyboardTextDoesNotReenumerateIOSProfile(t *testing.T) {
+func TestKeyboardTextLeavesUnmodifiedTextOnNormalProfile(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)
 	controller.keyboardDev = dev
 	tool := &KeyboardTextTool{dev: dev, iosKeyboardIsolation: controller}
 
-	out, err := tool.Call(context.Background(), `{"text":"ABC"}`)
+	out, err := tool.Call(context.Background(), `{"text":"abc123-"}`)
 	if err != nil || out != "ok" {
 		t.Fatalf("Call() = %q, %v", out, err)
 	}
 	if len(events) != 0 {
 		t.Fatalf("keyboard_text profile events = %v, want none", events)
+	}
+}
+
+func TestKeyboardTextIsolatesTextContainingShiftedCharacters(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	controller.keyboardDev = dev
+	tool := &KeyboardTextTool{dev: dev, iosKeyboardIsolation: controller}
+
+	const text = "A~!@#$%^&*()_+{}|:\"<>?"
+	out, err := tool.Call(context.Background(), `{"text":"A~!@#$%^&*()_+{}|:\"<>?"}`)
+	if err != nil || out != "ok" {
+		t.Fatalf("Call() = %q, %v", out, err)
+	}
+	if want := []string{"isolate", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("keyboard_text profile events = %v, want %v", events, want)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if want := len(text) * 16; len(data) != want {
+		t.Fatalf("keyboard_text report bytes = %d, want %d", len(data), want)
+	}
+	for offset := 0; offset < len(data); offset += 16 {
+		if data[offset] != 0x02 {
+			t.Fatalf("keyboard_text press report at offset %d has modifier 0x%02x, want Shift", offset, data[offset])
+		}
 	}
 }
 

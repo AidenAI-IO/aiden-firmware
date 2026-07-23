@@ -1055,6 +1055,16 @@ func (t *KeyboardTextTool) ArgsSchema() map[string]any {
 	}, "text")
 }
 
+func keyboardTextUsesModifier(text string) bool {
+	for _, ch := range text {
+		modifier, _, ok := charToHIDKey(byte(ch))
+		if ok && modifier != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, error) {
 	text, errText := parseKeyboardTextInput(input)
 	if errText != "" {
@@ -1080,7 +1090,7 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 		return "ok", nil
 	}
 
-	err := t.iosKeyboardIsolation.withKeyboard(ctx, false, func() error {
+	err := t.iosKeyboardIsolation.withKeyboard(ctx, keyboardTextUsesModifier(text), func() error {
 		releaseReport := make([]byte, 8)
 		for _, ch := range text {
 			modifier, code, ok := charToHIDKey(byte(ch))

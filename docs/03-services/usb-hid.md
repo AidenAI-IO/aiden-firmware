@@ -119,16 +119,18 @@ keyboard and pointer are advertised by the same USB composite. Plain key input
 may work while shortcuts such as `Cmd+A` or `Cmd+V` are ignored.
 
 When `hid.pointer_mode = "absolute"`, firmware builds that include
-`/oem/usr/bin/aiden-dynamic-keyboard` automatically isolate only keyboard taps
-that contain Ctrl, Shift, Option/Alt, or Cmd/Meta. Plain key taps,
-`keyboard_text`, pointer input, and Consumer Control continue to use the normal
-keyboard + pointer + Consumer Control + ECM composite.
+`/oem/usr/bin/aiden-dynamic-keyboard` automatically isolate keyboard actions
+whose HID reports contain Ctrl, Shift, Option/Alt, or Cmd/Meta. This includes
+`keyboard_text` values containing uppercase letters or symbols that require
+Shift on a US keyboard. Plain key taps, unmodified text, pointer input, and
+Consumer Control continue to use the normal keyboard + pointer + Consumer
+Control + ECM composite.
 
-Immediately before a modifier shortcut, the Agent switches the single USB
-gadget to a pointer-free keyboard + Consumer Control + ECM profile. After key
-release, including error and cancellation paths, it restores the normal
+Immediately before a modifier-bearing keyboard action, the Agent switches the
+single USB gadget to a pointer-free keyboard + Consumer Control + ECM profile.
+After the action, including error and cancellation paths, it restores the normal
 composite. The isolated profile uses a distinct USB product ID and serial number
-so iOS does not reuse the pointer-bearing descriptor for the shortcut.
+so iOS does not reuse the pointer-bearing descriptor for the input.
 
 The Luckfox board has one UDC, so isolation and restore briefly disconnect the
 complete composite, including ECM. The dynamic controller and ECM watchdog
