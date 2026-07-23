@@ -14,7 +14,11 @@ from vphone.bridge.server import VPhoneBridgeServer
 def test_vphone_ios_basic_suite_loads():
     suite = load_suite(Path(__file__).parents[1] / "suites" / "vphone_ios_basic.json")
     assert suite.name == "vphone_ios_basic"
+    # The first task is a warmup that absorbs the daemon cold-start
+    # "agent not ready" skip, so the eight scored tasks run once the daemon
+    # is ready. It is a diagnostic task with an empty rubric.
     assert [task.id for task in suite.tasks] == [
+        "warmup",
         "screenshot_home",
         "go_home",
         "open_settings",
@@ -24,6 +28,9 @@ def test_vphone_ios_basic_suite_loads():
         "settings_read_ethernet_ipv4",
         "open_app_library",
     ]
+    warmup = suite.tasks[0]
+    assert warmup.category == "diagnostic"
+    assert warmup.hard_assertions.required_tools == []
     assert all(task.repeats == 1 for task in suite.tasks)
 
     ethernet = next(task for task in suite.tasks if task.id == "settings_read_ethernet_ipv4")

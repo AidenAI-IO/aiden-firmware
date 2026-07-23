@@ -1,6 +1,6 @@
 {
   "name": "vphone_ios_basic",
-  "version": "1.5",
+  "version": "1.6",
   "description": "Basic and multi-step VPhone iOS Environment Bridge tests",
   "prompt_prefix": "你正在控制一台 iOS 虚拟机。使用 screenshot 查看屏幕；触控坐标优先使用 normalized 0 至 1000，不能把缩放后截图像素当作设备像素。使用 touch_gesture 执行点击、滑动和返回主屏幕；点击必须传 type=tap 和 point={x,y}，不能只传 type。调用 quick_action 执行动作时必须同时传 platform=ios 和 action；action 不能放进 url 字段。打开设置使用 {platform:ios, action:open_settings}；打开网页使用 {platform:ios, action:open_url, url:目标网址}。iOS 没有 Android 返回键，使用 quick_action 的 action=back 或从屏幕左边缘向右滑动返回。查找其他 App 时优先使用主屏幕、App 资源库和可见图标，不依赖键盘输入。任务明确要求调用 screenshot 时，即使其他动作已附带返回截图，也必须在最终回答前显式调用一次 screenshot。",
   "global_reset": {
@@ -11,6 +11,20 @@
   },
   "trace_observations": [],
   "tasks": [
+    {
+      "id": "warmup",
+      "category": "diagnostic",
+      "prompt": "请调用一次 screenshot 查看当前屏幕。这是一次预热调用，用于等待 Agent daemon 就绪，无需完成任何具体任务。",
+      "description_for_judge": "预热任务：只要求 Agent 调用一次 screenshot。它存在的目的是吸收 daemon 冷启动期间的“agent not ready”跳过风险，使后续正式任务在 daemon 就绪后再执行。结果不代表模型能力，评分时可忽略。",
+      "rubric": [
+        {"id": "warmup_screenshot", "description": "调用了一次 screenshot（仅用于预热，不代表能力）"}
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 120,
+        "required_tools": []
+      },
+      "repeats": 1
+    },
     {
       "id": "screenshot_home",
       "category": "device_operation",
