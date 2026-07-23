@@ -1275,6 +1275,7 @@ func pointSchema(description string) map[string]any {
 		"y": coordinateSchema("Y coordinate.", 300),
 	}, "x", "y")
 	schema["description"] = description
+	schema["examples"] = []map[string]any{{"x": 500, "y": 300}}
 	return schema
 }
 
