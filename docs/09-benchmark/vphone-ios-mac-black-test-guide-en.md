@@ -54,6 +54,7 @@ cd path_to_project/benchmark/vphone
 
 ./start.sh bridge      # start the Bridge (foreground)
 ./start.sh agent       # start the Agent daemon
+./start.sh run ...     # run the benchmark (auto-discovers daemon port and token)
 ./start.sh webui       # start the WebUI (:8765)
 ./start.sh env         # print the loaded config (API key not shown)
 ```
@@ -565,6 +566,11 @@ created for this run. The `agent.toml` in that directory should be copied from
 
 Save the actual Agent URL in a variable:
 
+> If you run tasks with `./start.sh run` (see Section 8), you can skip the manual
+> `VPHONE_AGENT_URL` / `VPHONE_AGENT_TOKEN_FILE` exports below — `run`
+> auto-discovers the current daemon's port and token. The manual exports are only
+> needed if you insist on the full `runner run` command.
+
 ```bash
 export VPHONE_AGENT_URL="http://127.0.0.1:<port printed by start-agent-daemon>"
 # The daemon's liveness probe uses the root path and returns HTTP 200.
@@ -597,7 +603,36 @@ All commands below must use the same
 `--benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID"`. If the daemon and runner use
 different task IDs, tool requests receive `429 no_bridge_env_available`.
 
+> **Prefer `./start.sh run`.** `start-agent-daemon` assigns a different
+> `agent_url` port each time, so hand-writing `--agent-url "$VPHONE_AGENT_URL"`
+> easily fails with `unknown url type: '/api/tools'` (empty variable) or
+> `agent ... is not reachable` (stale port). `./start.sh run` auto-discovers the
+> current daemon's port and control token and fills in `--environment-url` and
+> `--benchmark-task-id` from `vphone.env`; you only pass task arguments such as
+> `--task-id`:
+>
+> ```bash
+> cd path_to_project/benchmark/vphone
+> ./start.sh run --task-id screenshot_home -v   # a single task
+> ./start.sh run -v                             # the full set
+> ```
+>
+> **`./start.sh run` does not score by default (it adds `--no-judge`)**, because
+> the Judge needs `OPENROUTER_API_KEY` and forgetting it turns every task into
+> `JUDGE_ERROR`. To score, add `--judge-model` (see Section 9); the script first
+> checks that `OPENROUTER_API_KEY` is set.
+>
+> Each step below shows the `./start.sh run` shorthand and the equivalent full
+> `runner run` command; use either one.
+
 ### 8.1 Run the Screenshot Task First
+
+```bash
+cd path_to_project/benchmark/vphone
+./start.sh run --task-id screenshot_home -v
+```
+
+Equivalent full command:
 
 ```bash
 cd "$VPHONE_BENCHMARK_ROOT"
@@ -616,6 +651,13 @@ uv run python -m runner run \
 ### 8.2 Run the New URL Task Next
 
 ```bash
+cd path_to_project/benchmark/vphone
+./start.sh run --task-id open_web_url -v
+```
+
+Equivalent full command:
+
+```bash
 uv run python -m runner run \
   --suite suites/vphone_ios_basic.json \
   --task-id open_web_url \
@@ -631,6 +673,13 @@ This step checks not only the Bridge, but also whether the Agent's
 `quick_action.url` schema is passed to the Bridge correctly.
 
 ### 8.3 Run the Full Task Set (1 warmup + 8 scored tasks)
+
+```bash
+cd path_to_project/benchmark/vphone
+./start.sh run -v
+```
+
+Equivalent full command:
 
 ```bash
 uv run python -m runner run \
@@ -675,7 +724,15 @@ OpenRouter key used by the Judge in Terminal C:
 export OPENROUTER_API_KEY="<OpenRouter API key used by the Judge>"
 ```
 
-Then remove `--no-judge`:
+Then add `--judge-model` to enable scoring (`./start.sh run` scores only when
+`--judge-model` is given, and errors out if `OPENROUTER_API_KEY` is unset):
+
+```bash
+cd path_to_project/benchmark/vphone
+./start.sh run --judge-model anthropic/claude-sonnet-4-6 -v
+```
+
+Equivalent full command:
 
 ```bash
 uv run python -m runner run \

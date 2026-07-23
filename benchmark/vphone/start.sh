@@ -13,7 +13,8 @@
 #
 # `run` auto-discovers the running agent daemon's port and control token, so you
 # never paste --agent-url / --benchmark-token-file. Start a daemon first with
-# `./start.sh agent`.
+# `./start.sh agent`. Judging is OFF by default (it needs OPENROUTER_API_KEY);
+# pass --judge-model <model> to score.
 #
 # The env file is picked up in this order:
 #   1. $VPHONE_ENV_FILE if already exported
@@ -26,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ENV_FILE="$SCRIPT_DIR/vphone.env"
 
 usage() {
-  sed -n '7,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '7,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 
@@ -112,9 +113,27 @@ case "$SUBCMD" in
       *" --suite "*) : ;;
       *) suite_args=(--suite suites/vphone_ios_basic.json) ;;
     esac
+    # Judging is OFF by default: it needs OPENROUTER_API_KEY in the environment,
+    # and forgetting it turns every task into JUDGE_ERROR. Opt in with
+    # --judge-model / --judge; then we require the key up front instead of
+    # failing after every task has run.
+    judge_args=()
+    case " $* " in
+      *" --judge-model "*|*" --judge "*)
+        if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+          echo "error: judging requested but OPENROUTER_API_KEY is not set." >&2
+          echo "hint: export OPENROUTER_API_KEY=<judge OpenRouter key> first," >&2
+          echo "      or drop --judge-model to run without scoring." >&2
+          exit 1
+        fi
+        ;;
+      *" --no-judge "*) : ;;               # caller already opted out
+      *) judge_args=(--no-judge) ;;        # default: no scoring
+    esac
     echo "running against daemon $agent_url (task_id=$VPHONE_BENCHMARK_TASK_ID)"
     exec uv run python -m runner run \
       "${suite_args[@]}" \
+      "${judge_args[@]}" \
       --agent-url "$agent_url" \
       --benchmark-token-file "$token_file" \
       --environment-url "$VPHONE_BRIDGE_ENDPOINT" \
