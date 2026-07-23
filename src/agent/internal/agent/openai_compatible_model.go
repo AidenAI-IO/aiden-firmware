@@ -548,7 +548,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		_ = m.logRawHTTP(ctx, reqPayload.Model, "response", resp.StatusCode, string(body))
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
+		return nil, newProviderHTTPError(resp.StatusCode, body)
 	}
 
 	if reqPayload.Stream {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,69 @@ import (
 
 	"github.com/tmc/langchaingo/llms"
 )
+
+func TestOpenAICompatibleModelReturnsStructuredProviderHTTPError(t *testing.T) {
+	tests := []struct {
+		name             string
+		statusCode       int
+		body             string
+		wantProviderCode string
+		wantFailureCode  string
+	}{
+		{
+			name:             "openrouter payment required",
+			statusCode:       http.StatusPaymentRequired,
+			body:             `{"error":{"message":"This request requires more credits, or fewer max_tokens.","code":402}}`,
+			wantProviderCode: "402",
+			wantFailureCode:  TurnFailureTokenInsufficient,
+		},
+		{
+			name:             "openai insufficient quota",
+			statusCode:       http.StatusTooManyRequests,
+			body:             `{"error":{"message":"quota exhausted","code":"insufficient_quota"}}`,
+			wantProviderCode: "insufficient_quota",
+			wantFailureCode:  TurnFailureTokenInsufficient,
+		},
+		{
+			name:             "provider rate limit",
+			statusCode:       http.StatusTooManyRequests,
+			body:             `{"error":{"message":"too many requests","code":"rate_limit_exceeded"}}`,
+			wantProviderCode: "rate_limit_exceeded",
+			wantFailureCode:  TurnFailureNetworkUnavailable,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			model := newOpenAICompatibleModel(server.URL, "test-model", "token", server.Client())
+			_, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+				Role:  llms.ChatMessageTypeHuman,
+				Parts: []llms.ContentPart{llms.TextPart("test")},
+			}})
+			if err == nil {
+				t.Fatal("GenerateContent() error = nil")
+			}
+
+			var providerErr *ProviderHTTPError
+			if !errors.As(err, &providerErr) {
+				t.Fatalf("GenerateContent() error type = %T, want *ProviderHTTPError", err)
+			}
+			if providerErr.StatusCode != tt.statusCode || providerErr.ProviderCode != tt.wantProviderCode {
+				t.Fatalf("ProviderHTTPError = %#v", providerErr)
+			}
+			failure := TurnFailureFromError(err)
+			if failure == nil || failure.Code != tt.wantFailureCode {
+				t.Fatalf("TurnFailureFromError() = %#v, want %q", failure, tt.wantFailureCode)
+			}
+		})
+	}
+}
 
 func TestOpenAICompatibleModelEncodesAudioAsInputAudio(t *testing.T) {
 	var captured struct {

@@ -31,6 +31,19 @@ func TurnFailureFromError(err error) *TurnFailure {
 	if errors.As(err, &networkError) {
 		return &TurnFailure{Code: TurnFailureNetworkUnavailable}
 	}
+	var statusError interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusError) {
+		switch statusError.HTTPStatusCode() {
+		case 402:
+			return &TurnFailure{Code: TurnFailureTokenInsufficient}
+		case 429:
+			var codeError interface{ ProviderErrorCode() string }
+			if errors.As(err, &codeError) && isQuotaProviderErrorCode(codeError.ProviderErrorCode()) {
+				return &TurnFailure{Code: TurnFailureTokenInsufficient}
+			}
+			return &TurnFailure{Code: TurnFailureNetworkUnavailable}
+		}
+	}
 
 	message := strings.ToLower(err.Error())
 	for _, marker := range []string{
@@ -43,6 +56,7 @@ func TurnFailureFromError(err error) *TurnFailure {
 		"credits exhausted",
 		"credit balance",
 		"payment required",
+		"api error 402",
 		"status 402",
 		"status code 402",
 	} {
@@ -71,6 +85,15 @@ func TurnFailureFromError(err error) *TurnFailure {
 		}
 	}
 	return &TurnFailure{Code: TurnFailureLLMUnavailable}
+}
+
+func isQuotaProviderErrorCode(code string) bool {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "insufficient_quota", "insufficient_credits", "billing_hard_limit_reached":
+		return true
+	default:
+		return false
+	}
 }
 
 type llmTurnFailureSource interface {
