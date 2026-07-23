@@ -63,7 +63,7 @@ read_udc() {
 }
 
 current_mode() {
-	if [ -L "$CONFIG_DIR/hid.usb0" ] && [ ! -L "$CONFIG_DIR/hid.usb1" ] && [ ! -L "$CONFIG_DIR/hid.usb2" ] && [ -L "$CONFIG_DIR/ecm.usb0" ]; then
+	if [ -L "$CONFIG_DIR/hid.usb0" ] && [ ! -L "$CONFIG_DIR/hid.usb1" ] && [ -L "$CONFIG_DIR/hid.usb2" ] && [ -L "$CONFIG_DIR/ecm.usb0" ]; then
 		printf 'isolated\n'
 	elif [ -L "$CONFIG_DIR/hid.usb0" ] && [ -L "$CONFIG_DIR/hid.usb1" ] && [ -L "$CONFIG_DIR/hid.usb2" ] && [ -L "$CONFIG_DIR/ecm.usb0" ]; then
 		printf 'normal\n'
@@ -84,6 +84,7 @@ link_normal_profile() {
 
 link_isolated_profile() {
 	ln -s "$KEYBOARD_FUNC" "$CONFIG_DIR/hid.usb0"
+	ln -s "$EXTRA_KEYS_FUNC" "$CONFIG_DIR/hid.usb2"
 }
 
 link_ecm() {

@@ -20,8 +20,8 @@ const (
 type iosKeyboardIsolationCommand func(context.Context, string, ...string) ([]byte, error)
 
 // iosKeyboardIsolationController serializes access to the three HID devices.
-// Modifier shortcuts temporarily use a keyboard-only USB profile; plain text,
-// pointer input, and Consumer Control keep using the normal composite profile.
+// Modifier shortcuts temporarily use a pointer-free USB profile; plain text,
+// pointer input, and Consumer Control actions do not trigger profile switching.
 type iosKeyboardIsolationController struct {
 	controlPath        string
 	keyboardDev        *HIDDevice

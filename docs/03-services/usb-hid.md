@@ -125,10 +125,10 @@ that contain Ctrl, Shift, Option/Alt, or Cmd/Meta. Plain key taps,
 keyboard + pointer + Consumer Control + ECM composite.
 
 Immediately before a modifier shortcut, the Agent switches the single USB
-gadget to keyboard + ECM only. After key release, including error and
-cancellation paths, it restores the normal composite. The isolated profile uses
-a distinct USB product ID and serial number so iOS does not reuse the
-pointer-bearing descriptor for the shortcut.
+gadget to a pointer-free keyboard + Consumer Control + ECM profile. After key
+release, including error and cancellation paths, it restores the normal
+composite. The isolated profile uses a distinct USB product ID and serial number
+so iOS does not reuse the pointer-bearing descriptor for the shortcut.
 
 The Luckfox board has one UDC, so isolation and restore briefly disconnect the
 complete composite, including ECM. The dynamic controller and ECM watchdog

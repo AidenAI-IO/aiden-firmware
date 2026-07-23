@@ -26,8 +26,15 @@ grep -Fq "trap 'exit 143' TERM" "$CONTROL_SCRIPT" ||
 isolated_branch=$(awk '/link_isolated_profile\(\)/,/^}/' "$CONTROL_SCRIPT")
 printf '%s\n' "$isolated_branch" | grep -Fq 'hid.usb0' ||
 	fail "isolated profile must keep the standard keyboard"
-if printf '%s\n' "$isolated_branch" | grep -Eq 'hid\.usb1|hid\.usb2'; then
-	fail "isolated profile must omit pointer and Consumer Control functions"
+printf '%s\n' "$isolated_branch" | grep -Fq 'hid.usb2' ||
+	fail "isolated profile must keep the Consumer Control function"
+if printf '%s\n' "$isolated_branch" | grep -Fq 'hid.usb1'; then
+	fail "isolated profile must omit only the pointer function"
+fi
+
+current_mode_branch=$(awk '/current_mode\(\)/,/^}/' "$CONTROL_SCRIPT")
+if printf '%s\n' "$current_mode_branch" | grep -Fq '[ ! -L "$CONFIG_DIR/hid.usb2" ]'; then
+	fail "isolated mode detection must require Consumer Control"
 fi
 
 normal_branch=$(awk '/link_normal_profile\(\)/,/^}/' "$CONTROL_SCRIPT")
