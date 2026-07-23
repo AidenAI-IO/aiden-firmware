@@ -162,6 +162,7 @@ def _handler_for(bridge: ADBBridgeServer):
         def _handle_api_screen(self) -> None:
             # Screen capture works with or without an active episode / task id
             # so the runner can grab pre/post screenshots at any point.
+            bridge.state.renew_task_if_owner(benchmark_task_id_from_headers(self.headers))
             with bridge.state.lock:
                 jpeg, width, height = bridge.state.device.screenshot_jpeg()
                 action_log = list(bridge.state.action_log)
@@ -252,7 +253,7 @@ def _health_payload(bridge: ADBBridgeServer, device_info: dict[str, Any]) -> dic
         "concurrent": 1,
         "active_episode_id": bridge.state.active_episode_id,
         "active_task_id": bridge.state.active_task_id,
-        "active_task_lease_state": "active" if bridge.state.active_task_id else "",
+        "active_task_lease_state": bridge.state.active_task_lease_state(),
         "interfaces": ["/api/tools", "/api/screen", "/api/setup", "/api/release", "/api/concurrent"],
     }
 

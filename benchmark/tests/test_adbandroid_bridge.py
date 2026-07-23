@@ -1,6 +1,7 @@
 import base64
 import html
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -154,6 +155,20 @@ def test_setup_with_task_id_takes_ownership_and_is_idempotent(bridge):
 
     status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
     assert status == 200
+
+
+def test_health_reports_expired_task_lease_not_active(bridge):
+    server, _, base_url = bridge
+    status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
+    assert status == 200
+    with server.state.lock:
+        server.state.active_task_expires_at = time.monotonic() - 1
+
+    status, body = _request(base_url, "/health")
+
+    assert status == 200
+    assert body["data"]["active_task_id"] == "suite:task-1"
+    assert body["data"]["active_task_lease_state"] == "expired"
 
 
 def test_setup_with_different_task_id_returns_429(bridge):

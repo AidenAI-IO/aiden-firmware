@@ -21,6 +21,7 @@ from typing import Any
 
 BENCHMARK_TASK_ID_HEADER = "benchmark-task-id"
 ACTION_LOG_LIMIT = 200
+DEFAULT_TASK_LEASE_TTL_SEC = 30 * 60
 
 
 class MissingBenchmarkTaskIDError(ValueError):
@@ -49,8 +50,29 @@ class ADBBridgeState:
     device: Any
     active_task_id: str = ""
     active_episode_id: str = ""
+    active_task_expires_at: float = 0.0
+    task_lease_ttl_sec: float = DEFAULT_TASK_LEASE_TTL_SEC
     action_log: list[dict[str, Any]] = dc.field(default_factory=list)
     lock: threading.RLock = dc.field(default_factory=threading.RLock)
+
+    def _new_task_expiry(self) -> float:
+        return time.monotonic() + max(1.0, float(self.task_lease_ttl_sec))
+
+    def active_task_lease_state(self) -> str:
+        with self.lock:
+            if not self.active_task_id:
+                return ""
+            if self.active_task_expires_at and time.monotonic() >= self.active_task_expires_at:
+                return "expired"
+            return "active"
+
+    def renew_task_if_owner(self, task_id: str) -> None:
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            return
+        with self.lock:
+            if self.active_task_id == task_id:
+                self.active_task_expires_at = self._new_task_expiry()
 
     def check_task_access(self, task_id: str) -> None:
         """Raise NoBridgeEnvAvailableError when a different task owns the device.
@@ -66,6 +88,8 @@ class ADBBridgeState:
                 raise NoBridgeEnvAvailableError(
                     f"adb bridge device is owned by benchmark task {self.active_task_id!r}"
                 )
+            if self.active_task_id == task_id:
+                self.active_task_expires_at = self._new_task_expiry()
 
     def acquire(self, task_id: str) -> tuple[str, bool]:
         """Take (or idempotently re-take) ownership and start a fresh episode.
@@ -85,6 +109,9 @@ class ADBBridgeState:
                     )
                 newly_acquired = self.active_task_id != task_id
                 self.active_task_id = task_id
+                self.active_task_expires_at = self._new_task_expiry()
+            else:
+                self.active_task_expires_at = 0.0
             self.active_episode_id = task_id or f"reset-{uuid.uuid4().hex}"
             self.action_log.clear()
             return self.active_episode_id, newly_acquired
@@ -96,6 +123,7 @@ class ADBBridgeState:
             if not task_id or self.active_task_id != task_id:
                 return False
             self.active_task_id = ""
+            self.active_task_expires_at = 0.0
             return True
 
     def log_action(
