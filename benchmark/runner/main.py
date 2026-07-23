@@ -291,6 +291,39 @@ def _cmd_run_auto_agent_setup(
     run_id: str,
     run_dir: Path,
 ) -> int:
+    mock_server = None
+    if suite.mock_environment is not None:
+        if args.environment_url:
+            print(
+                "Error: suites with mock_environment manage their own environment; "
+                "do not pass --environment-url",
+                file=sys.stderr,
+            )
+            return 2
+        from runner.mock_environment import MockEnvironmentServer
+
+        mock_server = MockEnvironmentServer(
+            suite.mock_environment,
+            suite.source_path.parent,
+        )
+        args.environment_url = mock_server.start()
+        print(f"mock environment started: {args.environment_url}", flush=True)
+    try:
+        return _cmd_run_auto_agent_setup_inner(
+            args, suite, selected_task_ids, run_id, run_dir
+        )
+    finally:
+        if mock_server is not None:
+            mock_server.stop()
+
+
+def _cmd_run_auto_agent_setup_inner(
+    args: argparse.Namespace,
+    suite: Suite,
+    selected_task_ids: list[str],
+    run_id: str,
+    run_dir: Path,
+) -> int:
     if not args.environment_url:
         print("Error: --auto-agent-setup requires --environment-url", file=sys.stderr)
         return 2
@@ -409,6 +442,8 @@ def _cmd_run_auto_agent_setup(
                     run_id,
                     f"agent not ready within {args.agent_ready_timeout_sec}s",
                 )
+            if suite.mock_environment is not None:
+                client.set_phone_bridge_state(suite.mock_environment.phone_bridge)
             if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
                 return skipped_task_result(suite, task, attempt, art_dir, run_id, "agent board clock did not sync before benchmark start")
             print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
@@ -478,6 +513,7 @@ def _cmd_run_auto_agent_setup(
         "judge_prompt_version": "v1",
         "auto_agent_setup": True,
         "concurrency": max_workers,
+        "mock_environment": _mock_environment_manifest(suite),
         "started_at": started, "finished_at": now_iso(),
         "totals": totals,
     }
@@ -521,6 +557,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"Error: invalid --run-id: {run_id!r}", file=sys.stderr)
         return 2
     run_dir = Path(args.out) / run_id
+    if suite.mock_environment is not None and not args.auto_agent_setup:
+        print(
+            "Error: suites with mock_environment require --auto-agent-setup so tool calls "
+            "can be routed to the scripted environment",
+            file=sys.stderr,
+        )
+        return 2
     if args.auto_agent_setup:
         return _cmd_run_auto_agent_setup(args, suite, selected_task_ids, run_id, run_dir)
     if args.repeats is not None and args.repeats <= 0:
@@ -657,6 +700,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "active_skills": active_skills,
         "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
         "judge_prompt_version": "v1",
+        "mock_environment": _mock_environment_manifest(suite),
         "started_at": started, "finished_at": now_iso(),
         "totals": totals,
     }
@@ -712,6 +756,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print("Warning: failed to upload report to board")
     upload_client.close()
     return 0 if manifest["totals"]["passed"] == manifest["totals"]["tasks"] else 1
+
+
+def _mock_environment_manifest(suite: Suite) -> dict[str, object] | None:
+    spec = suite.mock_environment
+    if spec is None:
+        return None
+    return {
+        "phone_bridge": dict(spec.phone_bridge),
+        "tools": sorted(spec.tools),
+        "screen": spec.screen,
+        "screen_text": spec.screen_text,
+    }
 
 
 def _read_optional_token(path: str | Path | None) -> str:

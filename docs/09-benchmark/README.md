@@ -53,6 +53,48 @@ uv run python -m runner run \
 `--auto-agent-setup` ignores `--agent-url`, reads bridge capacity from
 `/api/concurrent`, and starts one isolated agent daemon per active task worker.
 
+### Aiden App Policy Without a Phone
+
+Use a suite-level `mock_environment` for deterministic Phone Bridge strategy
+tests. The runner simulates platform/app state and tool results, so contacts and
+similar app-side data do not require a physical phone or emulator:
+
+```bash
+cd benchmark
+uv run python -m runner run \
+  --suite suites/aiden_app/ios_pip_background_v1.json \
+  --auto-agent-setup \
+  --no-judge \
+  --verbose
+```
+
+The iOS background + PiP examples declare three UI states directly in their
+prompts:
+
+- `ios_pip_notes_open_v1.json`: Notes is already open, so reopening/searching is
+  forbidden.
+- `ios_pip_notes_icon_visible_v1.json`: the Notes icon is visible, so the Agent
+  clicks it directly and must not search.
+- `ios_pip_background_v1.json`: neither Notes nor its icon is visible, so
+  `search_launch_app` is required.
+
+All three use a fixed `bridge_contacts` result and require
+`enter_text_via_bridge` without a separate `bridge_clipboard` call. The generated
+screen is retained for runner pre/post artifacts and fixture state transitions;
+the policy tests do not require the Agent to inspect it. Scripted
+`screen_contains` preconditions prevent text entry before the fixture has actually
+reached the Notes editor.
+
+The mock checks that the Agent chooses `enter_text_via_bridge`; it does not run
+the tool's internal paste fallbacks. In the real Go tool the order is Phone Bridge
+clipboard, `quick_action` paste, direct keyboard paste if the action errors,
+visual verification, then long-press Paste/粘贴 if the shortcut had no visible
+effect. Ordinary typing fallback belongs to `enter_text_in_field`.
+
+Use real devices separately for iOS PiP/Android FGS lifecycle, USB ECM, native
+permissions, actual background queue delivery, app launch behavior, and HID paste
+validation. Mock suites test policy and tool selection, not OS integration.
+
 ## Reports
 
 Runs write a self-contained report under `benchmark/runs/<run-id>/` or, for the
@@ -115,6 +157,9 @@ Common options:
 - `--repeats N` - Override task repeats.
 - `--state-file PATH` - Write progress JSON for WebUI or scripts.
 - `--verbose` - Print detailed rubric results.
+
+Suites with `mock_environment` require `--auto-agent-setup` and must not also pass
+`--environment-url`; the runner starts the scripted bridge itself.
 
 ### `rejudge`
 

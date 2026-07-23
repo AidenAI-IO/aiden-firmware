@@ -1,0 +1,146 @@
+{
+  "name": "aiden_app_ios_pip_notes_icon_visible_v1",
+  "suite_category": "Aiden App / Phone Bridge Policy",
+  "description": "Prompt-conditioned policy test for an iPhone home screen where the Apple Notes icon is declared directly available while Aiden runs through iOS PiP Bridge in the background.",
+  "prompt_prefix": "测试环境状态：当前是 iPhone 主界面，Apple 备忘录 App 图标清晰可见，图标中心为 normalized 坐标 x=180、y=310；应直接点击图标，不要调用 search_launch_app。Aiden 在后台，iOS PiP Bridge 已开启。Phone Bridge runtime status 是平台、App 前后台状态和桥接能力的权威来源。联系人数据必须使用可用的 Phone Bridge 工具查询，不要猜测。向可见编辑框写入最终内容时，根据 runtime text-entry strategy 选择输入工具。",
+  "global_reset": {},
+  "mock_environment": {
+    "phone_bridge": {
+      "connected": false,
+      "platform": "ios",
+      "phone_id": "benchmark-ios-pip-notes-icon",
+      "app_state": "background",
+      "return_entry": "dynamic_island",
+      "return_entry_available": true,
+      "pip_bridge_enabled": true,
+      "fgs_bridge_enabled": false
+    },
+    "screen_text": "iPhone home screen. The Apple Notes app icon is clearly visible; tap its center at normalized coordinate x=180, y=310. Aiden PiP Bridge is active.",
+    "tools": {
+      "bridge_contacts": {
+        "input_contains": {
+          "action": "query",
+          "query": "Biden"
+        },
+        "output": {
+          "ok": true,
+          "contacts": [
+            {
+              "id": "benchmark-contact-biden",
+              "name": "Biden",
+              "phone_numbers": [
+                "+1 202-555-0147"
+              ]
+            }
+          ]
+        }
+      },
+      "mouse_click": {
+        "input_contains": {
+          "x": 180,
+          "y": 310,
+          "coord_space": "normalized"
+        },
+        "screen_contains": "Apple Notes app icon is clearly visible",
+        "output": {
+          "ok": true,
+          "clicked": true,
+          "target": "Apple Notes icon"
+        },
+        "screen_text": "Apple Notes is open on a blank note editor. The editable note body is clearly visible around normalized coordinate x=500, y=360."
+      },
+      "enter_text_via_bridge": {
+        "input_contains": {
+          "text": "+1 202-555-0147",
+          "platform": "ios",
+          "focus": {
+            "coord_space": "normalized"
+          }
+        },
+        "screen_contains": "Apple Notes is open",
+        "output": {
+          "ok": true,
+          "committed": true,
+          "target_text": "+1 202-555-0147",
+          "field_text": "+1 202-555-0147",
+          "required_mode": "ascii",
+          "attempts": 1,
+          "steps": [
+            "clipboard-first: wrote clipboard through background bridge queue",
+            "clipboard-first: focused field",
+            "clipboard-first: quick_action-pasted clipboard",
+            "verified exact field text"
+          ],
+          "reason": "field verified"
+        },
+        "screen_text": "Apple Notes editor now contains exactly: +1 202-555-0147"
+      }
+    }
+  },
+  "tasks": [
+    {
+      "id": "contact_phone_to_note_via_visible_icon",
+      "category": "multi_step",
+      "description_for_judge": "The prompt-defined environment is the iPhone home screen with the Apple Notes icon available at normalized x=180, y=310. The agent must query Biden, directly click that icon instead of searching, and enter the returned number through enter_text_via_bridge.",
+      "prompt": "查询通讯录中 Biden 的手机号，进入备忘录，把查询到的手机号写进空白备忘录。不要猜号码；根据当前屏幕选择最直接的打开方式。",
+      "rubric": [
+        {
+          "id": "clicked_without_search",
+          "check": "The trace calls mouse_click on normalized x=180, y=310 and does not call search_launch_app or bridge_open_app."
+        },
+        {
+          "id": "queried_contact",
+          "check": "The trace calls bridge_contacts with action=query and query=Biden before relying on the phone number."
+        },
+        {
+          "id": "entered_exact_number",
+          "check": "After Notes is open, the trace calls enter_text_via_bridge with text exactly '+1 202-555-0147'."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 10,
+        "must_complete_within_sec": 180,
+        "response_required": true,
+        "required_tools": [
+          "bridge_contacts",
+          "mouse_click",
+          "enter_text_via_bridge"
+        ],
+        "forbidden_tools": [
+          "search_launch_app",
+          "bridge_open_app",
+          "bridge_clipboard"
+        ],
+        "required_tool_calls": [
+          {
+            "tool": "bridge_contacts",
+            "input_contains": {
+              "action": "query",
+              "query": "Biden"
+            }
+          },
+          {
+            "tool": "mouse_click",
+            "input_contains": {
+              "x": 180,
+              "y": 310,
+              "coord_space": "normalized"
+            }
+          },
+          {
+            "tool": "enter_text_via_bridge",
+            "input_contains": {
+              "text": "+1 202-555-0147",
+              "platform": "ios",
+              "focus": {
+                "coord_space": "normalized"
+              }
+            }
+          }
+        ]
+      },
+      "repeats": 1
+    }
+  ]
+}

@@ -685,3 +685,51 @@ def test_episode_memory_suite_guards_against_setup_context_leakage():
         "recall_device_memory" in item.check and "inspect_episode" in item.check
         for item in task.rubric
     )
+
+
+def test_ios_pip_mock_suite_loads_phone_bridge_fixture_and_tool_assertions():
+    suite_path = (
+        Path(__file__).resolve().parents[1]
+        / "suites"
+        / "aiden_app"
+        / "ios_pip_background_v1.json"
+    )
+    suite = load_suite(suite_path)
+
+    assert suite.mock_environment is not None
+    assert suite.mock_environment.phone_bridge["platform"] == "ios"
+    assert suite.mock_environment.phone_bridge["pip_bridge_enabled"] is True
+    assert "bridge_contacts" in suite.mock_environment.tools
+    task = suite.tasks[0]
+    assert task.id == "contact_phone_to_note"
+    assert [item.tool for item in task.hard_assertions.required_tool_calls] == [
+        "bridge_contacts",
+        "search_launch_app",
+        "enter_text_via_bridge",
+    ]
+    assert task.hard_assertions.required_tool_calls[-1].input_contains["text"] == "+1 202-555-0147"
+
+
+def test_ios_pip_mock_suites_cover_three_notes_screen_states():
+    suites_dir = Path(__file__).resolve().parents[1] / "suites" / "aiden_app"
+    already_open = load_suite(suites_dir / "ios_pip_notes_open_v1.json")
+    icon_visible = load_suite(suites_dir / "ios_pip_notes_icon_visible_v1.json")
+    icon_missing = load_suite(suites_dir / "ios_pip_background_v1.json")
+
+    open_task = already_open.tasks[0]
+    assert "search_launch_app" in open_task.hard_assertions.forbidden_tools
+    assert "bridge_open_app" in open_task.hard_assertions.forbidden_tools
+    assert "enter_text_via_bridge" in open_task.hard_assertions.required_tools
+
+    icon_task = icon_visible.tasks[0]
+    assert "mouse_click" in icon_task.hard_assertions.required_tools
+    assert "search_launch_app" in icon_task.hard_assertions.forbidden_tools
+    assert icon_task.hard_assertions.required_tool_calls[1].input_contains == {
+        "x": 180,
+        "y": 310,
+        "coord_space": "normalized",
+    }
+
+    missing_task = icon_missing.tasks[0]
+    assert "search_launch_app" in missing_task.hard_assertions.required_tools
+    assert "bridge_open_app" in missing_task.hard_assertions.forbidden_tools

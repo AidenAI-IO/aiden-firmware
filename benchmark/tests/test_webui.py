@@ -1531,7 +1531,9 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     expected_forward_tools = (
         "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
         "enter_text_in_field,enter_text_via_bridge,"
-        "mouse_click,mouse_move,mouse_scroll,quick_action"
+        "search_launch_app,mouse_click,mouse_move,mouse_scroll,quick_action,"
+        "bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,"
+        "bridge_notification"
     )
     assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}" in compose_text
     assert f'AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "{expected_forward_tools}"' in compose_text

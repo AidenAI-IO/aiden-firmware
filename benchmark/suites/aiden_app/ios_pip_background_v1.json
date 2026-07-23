@@ -1,0 +1,164 @@
+{
+  "name": "aiden_app_ios_pip_background_v1",
+  "suite_category": "Aiden App / Phone Bridge Policy",
+  "description": "Prompt-conditioned policy test for an iPhone where Aiden is backgrounded with PiP Bridge enabled and the declared current UI has no visible Notes page or Notes icon. Phone Bridge state and tool results are simulated; no physical phone is required.",
+  "prompt_prefix": "测试环境状态：当前是 iPhone 主界面，画面中没有打开的备忘录，也看不到备忘录 App 图标，因此需要使用 search_launch_app 进入备忘录。Aiden 在后台，iOS PiP Bridge 已开启。Phone Bridge runtime status 是平台、App 前后台状态和桥接能力的权威来源。联系人等系统数据必须使用可用的 Phone Bridge 数据工具查询，不要猜测。如果 bridge_open_app 没有出现在工具目录中，不要尝试调用它。向已经可见的编辑框写入最终内容时，根据 runtime text-entry strategy 选择输入工具。",
+  "global_reset": {},
+  "mock_environment": {
+    "phone_bridge": {
+      "connected": false,
+      "platform": "ios",
+      "phone_id": "benchmark-ios-pip",
+      "app_state": "background",
+      "return_entry": "dynamic_island",
+      "return_entry_available": true,
+      "pip_bridge_enabled": true,
+      "fgs_bridge_enabled": false
+    },
+    "screen_text": "iPhone home screen showing several app icons, but neither Apple Notes nor a Notes app icon is visible anywhere on the current screenshot. Aiden is backgrounded and PiP Bridge is active.",
+    "tools": {
+      "bridge_contacts": {
+        "input_contains": {
+          "action": "query",
+          "query": "Biden"
+        },
+        "output": {
+          "ok": true,
+          "contacts": [
+            {
+              "id": "benchmark-contact-biden",
+              "name": "Biden",
+              "phone_numbers": [
+                "+1 202-555-0147"
+              ]
+            }
+          ]
+        }
+      },
+      "search_launch_app": [
+        {
+          "input_contains": {
+            "app": "备忘录"
+          },
+          "output": {
+            "ok": true,
+            "target": "备忘录",
+            "reason": "Mock Notes app opened to a blank note editor.",
+            "editor_focus": {
+              "x": 500,
+              "y": 360,
+              "coord_space": "normalized"
+            }
+          },
+          "screen_text": "Apple Notes is open on a blank note editor. The editable note body is visible and focused around normalized coordinate x=500, y=360."
+        },
+        {
+          "input_contains": {
+            "app": "Notes"
+          },
+          "output": {
+            "ok": true,
+            "target": "Notes",
+            "reason": "Mock Notes app opened to a blank note editor.",
+            "editor_focus": {
+              "x": 500,
+              "y": 360,
+              "coord_space": "normalized"
+            }
+          },
+          "screen_text": "Apple Notes is open on a blank note editor. The editable note body is visible and focused around normalized coordinate x=500, y=360."
+        }
+      ],
+      "enter_text_via_bridge": {
+        "input_contains": {
+          "text": "+1 202-555-0147",
+          "platform": "ios",
+          "focus": {
+            "coord_space": "normalized"
+          }
+        },
+        "screen_contains": "Apple Notes is open",
+        "output": {
+          "ok": true,
+          "committed": true,
+          "target_text": "+1 202-555-0147",
+          "field_text": "+1 202-555-0147",
+          "required_mode": "ascii",
+          "attempts": 1,
+          "steps": [
+            "clipboard-first: wrote clipboard through background bridge queue",
+            "clipboard-first: focused field",
+            "clipboard-first: quick_action-pasted clipboard",
+            "verified exact field text"
+          ],
+          "reason": "field verified"
+        },
+        "screen_text": "Apple Notes blank note editor now contains exactly: +1 202-555-0147"
+      }
+    }
+  },
+  "tasks": [
+    {
+      "id": "contact_phone_to_note",
+      "category": "multi_step",
+      "description_for_judge": "The prompt-defined environment is the iPhone home screen with no open Notes page and no visible Notes icon. The contact Biden has phone number +1 202-555-0147. The agent must query bridge_contacts, use search_launch_app, then put the returned number into the editor through enter_text_via_bridge. bridge_open_app is unavailable and bridge_clipboard must not be staged separately.",
+      "prompt": "查询通讯录中 Biden 的手机号，打开备忘录，把查询到的手机号写进当前空白备忘录。不要猜号码。完成后停留在能看到手机号的备忘录编辑页。",
+      "rubric": [
+        {
+          "id": "queried_contact",
+          "check": "The trace calls bridge_contacts with action=query and query=Biden before relying on the phone number."
+        },
+        {
+          "id": "opened_notes_without_bridge_open_app",
+          "check": "Given the declared environment with no visible Notes entry, the trace uses search_launch_app to open Notes/备忘录 and does not call bridge_open_app."
+        },
+        {
+          "id": "used_exact_contact_number",
+          "check": "The trace calls enter_text_via_bridge with text exactly '+1 202-555-0147', matching the deterministic bridge_contacts result."
+        },
+        {
+          "id": "used_target_preserving_text_entry",
+          "check": "The trace calls enter_text_via_bridge with platform=ios and does not call bridge_clipboard as a separate staging step."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 12,
+        "must_complete_within_sec": 180,
+        "response_required": true,
+        "required_tools": [
+          "bridge_contacts",
+          "search_launch_app",
+          "enter_text_via_bridge"
+        ],
+        "forbidden_tools": [
+          "bridge_open_app",
+          "bridge_clipboard"
+        ],
+        "required_tool_calls": [
+          {
+            "tool": "bridge_contacts",
+            "input_contains": {
+              "action": "query",
+              "query": "Biden"
+            }
+          },
+          {
+            "tool": "search_launch_app"
+          },
+          {
+            "tool": "enter_text_via_bridge",
+            "input_contains": {
+              "text": "+1 202-555-0147",
+              "platform": "ios",
+              "focus": {
+                "coord_space": "normalized"
+              }
+            }
+          }
+        ]
+      },
+      "repeats": 1
+    }
+  ]
+}
