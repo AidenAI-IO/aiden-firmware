@@ -58,6 +58,7 @@ type Runtime struct {
 	logger             *Logger
 	profileDebouncer   *ProfileDebouncer
 	waitForWakeup      *WaitForWakeupController
+	voiceNotifications *VoiceNotificationManager
 	memoryPlane        MemoryPlane
 	sessionManager     SessionManager
 	contextManager     *contextmanager.ContextManager
@@ -70,6 +71,7 @@ type Runtime struct {
 	activeCancel       context.CancelFunc
 	preemptHooks       []func()
 	lastPreemptTime    time.Time
+	storage            *StorageManager
 }
 
 type RunRequest struct {
@@ -109,9 +111,10 @@ type RunResult struct {
 	// Deprecated: use WaitForWakeupRequested.
 	SleepRequested bool `json:"sleep_requested,omitempty"`
 	// Deprecated: use WaitForWakeupReason.
-	SleepReason    string `json:"sleep_reason,omitempty"`
-	SpeechStreamed bool   `json:"-"`
-	Preempted      bool   `json:"preempted,omitempty"`
+	SleepReason    string       `json:"sleep_reason,omitempty"`
+	SpeechStreamed bool         `json:"-"`
+	Preempted      bool         `json:"preempted,omitempty"`
+	TurnFailure    *TurnFailure `json:"-"`
 }
 
 func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
@@ -412,7 +415,18 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger, WithMemoryPlaneLongTermStore(longTermStore))
 	rt.markInterruptedEpisodesBestEffort()
+
+	// SD/eMMC storage manager (docs/04-agent/storage-modes.md). Absent
+	// hardware degrades to eMMC-only, so starting it is safe everywhere.
+	rt.storage = NewStorageManager(cfg.Storage, logger)
+	rt.storage.Start()
 	return rt, nil
+}
+
+// Storage returns the SD/eMMC storage manager, or nil when the runtime was
+// built without one (NewRuntimeWithDeps).
+func (r *Runtime) Storage() *StorageManager {
+	return r.storage
 }
 
 func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
@@ -465,13 +479,17 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	}
 
 	rt := &Runtime{
-		config:             cfg,
-		models:             models,
-		memories:           memories,
-		tools:              tools,
-		skills:             skillManager,
-		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
-		waitForWakeup:      waitForWakeupController,
+		config:        cfg,
+		models:        models,
+		memories:      memories,
+		tools:         tools,
+		skills:        skillManager,
+		skillsLoaded:  skillIndex != nil && len(skillIndex.Names()) > 0,
+		waitForWakeup: waitForWakeupController,
+		voiceNotifications: NewVoiceNotificationManager(
+			cfg.VoiceNotifications,
+			WithVoiceNotificationLocale(resolvedVoiceNotificationLocale(cfg)),
+		),
 		runtimeID:          uuid.NewString(),
 		telemetrySessionID: uuid.NewString(),
 		environmentBridge:  environmentBridge,
@@ -646,6 +664,11 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
+	defer func() {
+		if runErr != nil && isLLMTurnFailureSource(runErr) {
+			result.TurnFailure = TurnFailureFromError(runErr)
+		}
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -2246,6 +2269,9 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	if r.storage != nil {
+		r.storage.Stop()
+	}
 	if r.mergeWorker != nil {
 		r.mergeWorker.Stop()
 	}

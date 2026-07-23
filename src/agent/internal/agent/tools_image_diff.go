@@ -33,15 +33,18 @@ func (t *ImageDiffTool) Description() string {
 }
 
 func (t *ImageDiffTool) ArgsSchema() map[string]any {
+	regionSchema := objectArgsSchema(map[string]any{
+		"x": coordinateSchema("Normalized region left coordinate.", 100),
+		"y": coordinateSchema("Normalized region top coordinate.", 200),
+		"w": coordinateSchema("Normalized region width.", 600),
+		"h": coordinateSchema("Normalized region height.", 400),
+	}, "x", "y", "w", "h")
+	regionSchema["examples"] = []map[string]any{{"x": 100, "y": 200, "w": 600, "h": 400}}
+
 	return objectArgsSchema(map[string]any{
 		"before": stringArgSchema("Base64-encoded JPEG from the earlier screenshot data field."),
 		"after":  stringArgSchema("Base64-encoded JPEG from the later screenshot data field."),
-		"region": objectArgsSchema(map[string]any{
-			"x": coordinateSchema("Normalized region left coordinate.", 100),
-			"y": coordinateSchema("Normalized region top coordinate.", 200),
-			"w": coordinateSchema("Normalized region width.", 600),
-			"h": coordinateSchema("Normalized region height.", 400),
-		}, "x", "y", "w", "h"),
+		"region": regionSchema,
 	}, "before", "after")
 }
 

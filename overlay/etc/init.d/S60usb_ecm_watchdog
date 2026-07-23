@@ -19,6 +19,7 @@ LOG_FILE=/var/log/aiden_usb_ecm_watchdog.log
 PID_FILE=/run/aiden_usb_ecm_watchdog.pid
 STATE_FILE=/run/aiden_usb_ecm_watchdog.state
 LEASE_FILE=/tmp/dnsmasq.leases
+GADGET_SWITCH_LOCK_DIR=/run/aiden_dynamic_keyboard.lock
 USB0_ADDR=192.168.42.1
 USB0_NETMASK=255.255.255.0
 
@@ -115,7 +116,37 @@ probe_ecm_connectivity() {
     return 1
 }
 
-reset_composite() {
+acquire_gadget_switch_lock() {
+    if mkdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null; then
+        echo "$$" > "$GADGET_SWITCH_LOCK_DIR/pid"
+        return 0
+    fi
+
+    owner=$(cat "$GADGET_SWITCH_LOCK_DIR/pid" 2>/dev/null || true)
+    case "$owner" in
+        ''|*[!0-9]*) ;;
+        *)
+            if ! kill -0 "$owner" 2>/dev/null; then
+                rm -f "$GADGET_SWITCH_LOCK_DIR/pid"
+                rmdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null || true
+                if mkdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null; then
+                    echo "$$" > "$GADGET_SWITCH_LOCK_DIR/pid"
+                    return 0
+                fi
+            fi
+            ;;
+    esac
+
+    log "USB composite reset deferred; gadget switch lock is busy (owner=${owner:-unknown})"
+    return 1
+}
+
+release_gadget_switch_lock() {
+    rm -f "$GADGET_SWITCH_LOCK_DIR/pid"
+    rmdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null || true
+}
+
+reset_composite_locked() {
     reason="$1"
     started_at=$(date +%s)
     log "resetting USB composite gadget: $reason"
@@ -169,6 +200,18 @@ reset_composite() {
     log "USB composite reset complete (reason=$reason duration=${duration}s udc state=$(cat "$UDC_STATE" 2>/dev/null))"
     log_snapshot "after reset ($reason)"
     write_refresh_state "$reason" "ok" "$started_at" "duration=${duration}s"
+}
+
+reset_composite() {
+    reason="$1"
+    acquire_gadget_switch_lock || return 1
+    if reset_composite_locked "$reason"; then
+        result=0
+    else
+        result=$?
+    fi
+    release_gadget_switch_lock
+    return "$result"
 }
 
 watchdog_main() {

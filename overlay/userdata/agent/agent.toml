@@ -89,6 +89,37 @@ api_key = "OPENAI_API_KEY"
 # max_files = 500             # Keep most recent N audio files
 # max_size_mb = 100           # Or stop when total size exceeds this (MB)
 # storage_path = "/userdata/audio"  # Where to store audio files
+                                    # Setting a path other than the default above
+                                    # bypasses the SD/eMMC storage modes; the
+                                    # default is the managed eMMC tier
+
+# microSD storage tuning (optional; see docs/04-agent/storage-modes.md)
+# Storage mode is automatic: a usable card means dual storage, otherwise
+# eMMC only. New data is always written to eMMC; when eMMC free space drops
+# below migrate_start_free_pct, the oldest recordings are moved to the SD
+# card until free space is back at migrate_stop_free_pct.
+[storage]
+# mount_point = "/mnt/sdcard"       # Where a usable card is mounted
+# device = "mmcblk2"                # SD card block device base name
+# min_card_free_mb = 64             # Cards with less free space are rejected
+# migrate_start_free_pct = 10       # Start migrating below this eMMC free %
+# migrate_stop_free_pct = 50        # Stop once eMMC free % reaches this
+
+# Voice notifications follow a normal Agent reply; they never announce independently.
+[voice_notifications]
+# enabled = true
+# max_pending = 8
+
+[voice_notifications.response_tail]
+# enabled = true
+# max_items = 1
+# max_text_chars = 40
+
+[voice_notifications.expiration]
+# default_ttl_seconds = 0
+
+[voice_notifications.expiration.code_ttl_seconds]
+# storage = 900
 
 # Log retention configuration
 [log]

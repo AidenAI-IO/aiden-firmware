@@ -23,6 +23,15 @@ grep -Fq 'write_refresh_state()' "$WATCHDOG" ||
 grep -Fq 'reset_composite()' "$WATCHDOG" ||
     fail "watchdog must recover by resetting the composite gadget"
 
+grep -Fq 'GADGET_SWITCH_LOCK_DIR=/run/aiden_dynamic_keyboard.lock' "$WATCHDOG" ||
+    fail "watchdog and iOS keyboard isolation must share the gadget switch lock"
+
+grep -Fq 'acquire_gadget_switch_lock || return 1' "$WATCHDOG" ||
+    fail "watchdog must defer resets while the iOS keyboard profile is switching"
+
+grep -Fq 'release_gadget_switch_lock' "$WATCHDOG" ||
+    fail "watchdog must release the shared gadget switch lock after reset"
+
 grep -Fq 'reset_composite "ECM stall"' "$WATCHDOG" ||
     fail "watchdog_main must reset the composite gadget on ECM stalls"
 

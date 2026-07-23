@@ -377,6 +377,47 @@ func formatFloatPtr(p *float64) string {
 	return fmt.Sprintf("%v", *p)
 }
 
+func TestLoadRuntimeConfigParsesVoiceNotificationOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := `
+[model]
+provider = "fake"
+
+[voice_notifications]
+enabled = true
+max_pending = 4
+
+[voice_notifications.response_tail]
+enabled = false
+max_items = 1
+max_text_chars = 64
+
+[voice_notifications.expiration]
+default_ttl_seconds = 30
+
+[voice_notifications.expiration.code_ttl_seconds]
+storage = 120
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	voice := cfg.VoiceNotifications
+	if !voice.EnabledOrDefault() || voice.MaxPending != 4 {
+		t.Fatalf("voice notification overrides = %#v", voice)
+	}
+	if voice.ResponseTail.EnabledOrDefault() || voice.ResponseTail.MaxItems != 1 || voice.ResponseTail.MaxTextChars != 64 {
+		t.Fatalf("response tail overrides = %#v", voice.ResponseTail)
+	}
+	if voice.Expiration.DefaultTTLSeconds != 30 || voice.Expiration.CodeTTLSeconds["storage"] != 120 {
+		t.Fatalf("expiration overrides = %#v", voice.Expiration)
+	}
+}
+
 func TestConfigRejectsInvalidTerminationPolicyThresholdOrder(t *testing.T) {
 	cfg := Config{
 		Model: ModelConfig{Provider: "fake"},
@@ -1429,6 +1470,38 @@ func TestAudioArchiveStoragePathOrDefaultTrimsWhitespace(t *testing.T) {
 	}
 	if got := (AudioArchiveConfig{StoragePath: "  \t  "}).StoragePathOrDefault(); got != defaultAudioArchiveStoragePath {
 		t.Fatalf("StoragePathOrDefault() = %q, want default path", got)
+	}
+}
+
+func TestAudioArchiveExplicitStoragePath(t *testing.T) {
+	tests := []struct {
+		name        string
+		storagePath string
+		want        string
+	}{
+		{"unset", "", ""},
+		{"whitespace only", "  \t ", ""},
+		{"built-in default treated as unset", defaultAudioArchiveStoragePath, ""},
+		{"built-in default with whitespace", "  " + defaultAudioArchiveStoragePath + " ", ""},
+		{"custom path", "/mnt/pinned/audio", "/mnt/pinned/audio"},
+		{"custom path trimmed", " /mnt/pinned/audio ", "/mnt/pinned/audio"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := AudioArchiveConfig{StoragePath: tt.storagePath}
+			if got := cfg.ExplicitStoragePath(); got != tt.want {
+				t.Fatalf("ExplicitStoragePath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The runtime config seeds storage_path with the built-in default, so a stock
+// deployment must still route audio through the storage manager.
+func TestRuntimeDefaultStoragePathIsNotExplicit(t *testing.T) {
+	cfg := DefaultConfig()
+	if got := cfg.AudioArchive.ExplicitStoragePath(); got != "" {
+		t.Fatalf("DefaultConfig().AudioArchive.ExplicitStoragePath() = %q, want empty", got)
 	}
 }
 

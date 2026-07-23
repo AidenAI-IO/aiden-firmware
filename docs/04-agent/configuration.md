@@ -1,6 +1,6 @@
 # Agent Configuration Reference
 
-The Agent expects `-config` to point to a directory, not a single config file. Every field below lives in `agent.toml` and can be edited either through the on-device [Config Web page](#config-web-the-device-config-page) or by hand. TOML is the only supported config format; JSON config is deprecated.
+The Agent expects `-config` to point to a directory, not a single config file. Every field below lives in `agent.toml`. Most fields can be edited through the on-device [Config Web page](#config-web-the-device-config-page); sections without dedicated controls are preserved by Config Web and can be edited by hand. TOML is the only supported config format; JSON config is deprecated.
 
 ## Contents
 
@@ -11,6 +11,7 @@ The Agent expects `-config` to point to a directory, not a single config file. E
 - [`[model]`](#model)
 - [`[log]`](#log)
 - [`[audio]`](#audio)
+- [`[voice_notifications]`](#voice_notifications)
 - [`[hid]`](#hid)
 - [`[stt]` and `[tts]`](#stt-and-tts)
 - [`[live_activity]`](#live_activity)
@@ -50,6 +51,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width
+- `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
 - `log`: LLM HTTP log retention
 - `hid`: keyboard_device, mouse_device, android_keyboard_device, frame_socket, pointer_mode
 - `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
@@ -273,6 +275,39 @@ api_key = "MOONSHOT_API_KEY"
 | `sample_rate` | `16000` | Sample rate |
 | `channels` | `1` | Number of channels |
 | `bit_width` | `16` | Bit width |
+
+## `[voice_notifications]`
+
+Voice notifications attach system reminders to a normal spoken reply or replace a final failed LLM turn with a fixed error message. They never start an independent background announcement. See [Voice Notifications](voice-notifications.md) for the lifecycle and delivery contract.
+
+```toml
+[voice_notifications]
+enabled = true
+max_pending = 8
+
+[voice_notifications.response_tail]
+enabled = true
+max_items = 1
+max_text_chars = 40
+
+[voice_notifications.expiration]
+default_ttl_seconds = 0
+
+[voice_notifications.expiration.code_ttl_seconds]
+storage = 900
+```
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Enable persistent tails and final-turn replacements |
+| `max_pending` | `8` | Maximum active condition records kept by the in-memory manager |
+| `response_tail.enabled` | `true` | Allow persistent reminders to be appended to normal replies |
+| `response_tail.max_items` | `1` | Maximum reminders per reply; the current implementation supports only `1` |
+| `response_tail.max_text_chars` | `40` | Maximum reminder length in Unicode characters |
+| `expiration.default_ttl_seconds` | `0` | Default active-condition lease; `0` disables automatic expiration |
+| `expiration.code_ttl_seconds.<code>` | `storage = 900` | Per-code lease override renewed by each active heartbeat |
+
+Config Web preserves this section through GET/POST and TOML save operations. Edit it directly in `agent.toml` until dedicated controls are added to the page.
 
 ## `[hid]`
 
