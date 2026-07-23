@@ -1,0 +1,164 @@
+{
+  "name": "aiden_app_android_fgs_background_v1",
+  "suite_category": "Aiden App / Phone Bridge Policy",
+  "description": "Prompt-conditioned policy test for an Android phone where Aiden is backgrounded with FGS Bridge enabled and the declared current UI has no visible Notes page or Notes icon.",
+  "prompt_prefix": "测试环境状态：当前是 Android 主界面，画面中没有打开的备忘录，也看不到备忘录 App 图标，因此需要使用 search_launch_app 进入备忘录。Aiden 在后台，Android FGS Bridge 已开启。Phone Bridge runtime status 是平台、App 前后台状态和桥接能力的权威来源。联系人等系统数据必须使用可用的 Phone Bridge 数据工具查询，不要猜测。Android FGS Bridge 只支持后台安全的数据工具，不能把 bridge_open_app 当成前台 App 启动能力。如果 bridge_open_app 没有出现在工具目录中，不要尝试调用它。向已经可见的编辑框写入最终内容时，根据 runtime text-entry strategy 选择输入工具。",
+  "global_reset": {},
+  "mock_environment": {
+    "phone_bridge": {
+      "connected": false,
+      "platform": "android",
+      "phone_id": "benchmark-android-fgs",
+      "app_state": "background",
+      "return_entry": "none",
+      "return_entry_available": false,
+      "pip_bridge_enabled": false,
+      "fgs_bridge_enabled": true
+    },
+    "screen_text": "Android home screen showing several app icons, but neither Notes nor a Notes app icon is visible anywhere on the current screen. Aiden is backgrounded and Android FGS Bridge is active.",
+    "tools": {
+      "bridge_contacts": {
+        "input_contains": {
+          "action": "query",
+          "query": "Biden"
+        },
+        "output": {
+          "ok": true,
+          "contacts": [
+            {
+              "id": "benchmark-contact-biden",
+              "name": "Biden",
+              "phone_numbers": [
+                "+1 202-555-0147"
+              ]
+            }
+          ]
+        }
+      },
+      "search_launch_app": [
+        {
+          "input_contains": {
+            "app": "备忘录"
+          },
+          "output": {
+            "ok": true,
+            "target": "备忘录",
+            "reason": "Mock Android Notes app opened to a blank note editor.",
+            "editor_focus": {
+              "x": 500,
+              "y": 360,
+              "coord_space": "normalized"
+            }
+          },
+          "screen_text": "Android Notes is open on a blank note editor. The editable note body is visible and focused around normalized coordinate x=500, y=360."
+        },
+        {
+          "input_contains": {
+            "app": "Notes"
+          },
+          "output": {
+            "ok": true,
+            "target": "Notes",
+            "reason": "Mock Android Notes app opened to a blank note editor.",
+            "editor_focus": {
+              "x": 500,
+              "y": 360,
+              "coord_space": "normalized"
+            }
+          },
+          "screen_text": "Android Notes is open on a blank note editor. The editable note body is visible and focused around normalized coordinate x=500, y=360."
+        }
+      ],
+      "enter_text_via_bridge": {
+        "input_contains": {
+          "text": "+1 202-555-0147",
+          "platform": "android",
+          "focus": {
+            "coord_space": "normalized"
+          }
+        },
+        "screen_contains": "Android Notes is open",
+        "output": {
+          "ok": true,
+          "committed": true,
+          "target_text": "+1 202-555-0147",
+          "field_text": "+1 202-555-0147",
+          "required_mode": "ascii",
+          "attempts": 1,
+          "steps": [
+            "clipboard-first: wrote clipboard through Android FGS bridge queue",
+            "clipboard-first: focused field",
+            "clipboard-first: quick_action-pasted clipboard",
+            "verified exact field text"
+          ],
+          "reason": "field verified"
+        },
+        "screen_text": "Android Notes blank note editor now contains exactly: +1 202-555-0147"
+      }
+    }
+  },
+  "tasks": [
+    {
+      "id": "contact_phone_to_note_android_fgs",
+      "category": "multi_step",
+      "description_for_judge": "The prompt-defined environment is the Android home screen with no open Notes page and no visible Notes icon. The agent must query bridge_contacts through the FGS background data path, use search_launch_app instead of bridge_open_app, then put the returned number into the editor through enter_text_via_bridge.",
+      "prompt": "查询通讯录中 Biden 的手机号，打开备忘录，把查询到的手机号写进当前空白备忘录。不要猜号码。完成后停留在能看到手机号的备忘录编辑页。",
+      "rubric": [
+        {
+          "id": "queried_contact",
+          "check": "The trace calls bridge_contacts with action=query and query=Biden before relying on the phone number."
+        },
+        {
+          "id": "opened_notes_without_bridge_open_app",
+          "check": "Given Android FGS background mode and no visible Notes entry, the trace uses search_launch_app and does not call bridge_open_app."
+        },
+        {
+          "id": "used_exact_contact_number",
+          "check": "The trace calls enter_text_via_bridge with text exactly '+1 202-555-0147', matching the deterministic bridge_contacts result."
+        },
+        {
+          "id": "used_android_target_preserving_text_entry",
+          "check": "The trace calls enter_text_via_bridge with platform=android and does not call bridge_clipboard as a separate staging step."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 12,
+        "must_complete_within_sec": 180,
+        "response_required": true,
+        "required_tools": [
+          "bridge_contacts",
+          "search_launch_app",
+          "enter_text_via_bridge"
+        ],
+        "forbidden_tools": [
+          "bridge_open_app",
+          "bridge_clipboard"
+        ],
+        "required_tool_calls": [
+          {
+            "tool": "bridge_contacts",
+            "input_contains": {
+              "action": "query",
+              "query": "Biden"
+            }
+          },
+          {
+            "tool": "search_launch_app"
+          },
+          {
+            "tool": "enter_text_via_bridge",
+            "input_contains": {
+              "text": "+1 202-555-0147",
+              "platform": "android",
+              "focus": {
+                "coord_space": "normalized"
+              }
+            }
+          }
+        ]
+      },
+      "repeats": 1
+    }
+  ]
+}

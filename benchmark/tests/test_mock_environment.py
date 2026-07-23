@@ -182,6 +182,69 @@ def test_mock_environment_allows_direct_entry_when_notes_is_already_open():
         server.stop()
 
 
+def test_android_fgs_mock_environment_uses_android_text_entry_after_search():
+    suite_path = (
+        Path(__file__).resolve().parents[1]
+        / "suites"
+        / "aiden_app"
+        / "android_fgs_background_v1.json"
+    )
+    suite = load_suite(suite_path)
+    assert suite.mock_environment is not None
+    server = MockEnvironmentServer(suite.mock_environment, suite_path.parent)
+    base_url = server.start()
+    try:
+        contacts = _json_request(
+            f"{base_url}/api/tools/bridge_contacts",
+            "POST",
+            {"input": json.dumps({"action": "query", "query": "Biden"})},
+        )
+        assert json.loads(contacts["output"])["contacts"][0]["phone_numbers"] == [
+            "+1 202-555-0147"
+        ]
+
+        blocked = _json_request(
+            f"{base_url}/api/tools/enter_text_via_bridge",
+            "POST",
+            {
+                "input": json.dumps(
+                    {
+                        "text": "+1 202-555-0147",
+                        "platform": "android",
+                        "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
+                    }
+                )
+            },
+        )
+        assert blocked["is_error"] is True
+
+        opened = _json_request(
+            f"{base_url}/api/tools/search_launch_app",
+            "POST",
+            {"input": json.dumps({"app": "备忘录"})},
+        )
+        assert json.loads(opened["output"])["ok"] is True
+
+        entered = _json_request(
+            f"{base_url}/api/tools/enter_text_via_bridge",
+            "POST",
+            {
+                "input": json.dumps(
+                    {
+                        "text": "+1 202-555-0147",
+                        "platform": "android",
+                        "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
+                    }
+                )
+            },
+        )
+        assert json.loads(entered["output"])["committed"] is True
+        state = _json_request(f"{base_url}/api/state")
+        assert "Android Notes" in state["data"]["screen_text"]
+    finally:
+        server.stop()
+
+
 def test_mock_environment_rejects_unconfigured_input_when_no_default_matches(tmp_path):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(

@@ -733,3 +733,42 @@ def test_ios_pip_mock_suites_cover_three_notes_screen_states():
     missing_task = icon_missing.tasks[0]
     assert "search_launch_app" in missing_task.hard_assertions.required_tools
     assert "bridge_open_app" in missing_task.hard_assertions.forbidden_tools
+
+
+def test_android_fgs_mock_suites_cover_three_notes_screen_states():
+    suites_dir = Path(__file__).resolve().parents[1] / "suites" / "aiden_app"
+    already_open = load_suite(suites_dir / "android_fgs_notes_open_v1.json")
+    icon_visible = load_suite(suites_dir / "android_fgs_notes_icon_visible_v1.json")
+    icon_missing = load_suite(suites_dir / "android_fgs_background_v1.json")
+
+    for suite in (already_open, icon_visible, icon_missing):
+        assert suite.mock_environment is not None
+        assert suite.mock_environment.phone_bridge["platform"] == "android"
+        assert suite.mock_environment.phone_bridge["app_state"] == "background"
+        assert suite.mock_environment.phone_bridge["pip_bridge_enabled"] is False
+        assert suite.mock_environment.phone_bridge["fgs_bridge_enabled"] is True
+        task = suite.tasks[0]
+        enter_call = next(
+            item
+            for item in task.hard_assertions.required_tool_calls
+            if item.tool == "enter_text_via_bridge"
+        )
+        assert enter_call.input_contains["platform"] == "android"
+        assert "bridge_open_app" in task.hard_assertions.forbidden_tools
+        assert "bridge_clipboard" in task.hard_assertions.forbidden_tools
+
+    open_task = already_open.tasks[0]
+    assert "search_launch_app" in open_task.hard_assertions.forbidden_tools
+    assert "enter_text_via_bridge" in open_task.hard_assertions.required_tools
+
+    icon_task = icon_visible.tasks[0]
+    assert "mouse_click" in icon_task.hard_assertions.required_tools
+    assert "search_launch_app" in icon_task.hard_assertions.forbidden_tools
+    assert icon_task.hard_assertions.required_tool_calls[1].input_contains == {
+        "x": 180,
+        "y": 310,
+        "coord_space": "normalized",
+    }
+
+    missing_task = icon_missing.tasks[0]
+    assert "search_launch_app" in missing_task.hard_assertions.required_tools

@@ -120,18 +120,22 @@ bridge that provides:
   calls; prompt-conditioned policy suites do not require the Agent to inspect it.
 
 Keep these suites in a separate directory such as `suites/aiden_app/`. The iOS
-PiP Notes examples declare three different UI states directly in `prompt_prefix`,
-so the benchmark tests policy selection without mixing in visual perception:
+PiP and Android FGS Notes examples declare three different UI states directly in
+`prompt_prefix`, so the benchmark tests policy selection without mixing in visual
+perception:
 
 | Prompt-defined UI state | Expected app-entry policy | Suite |
 | --- | --- | --- |
 | Blank Notes editor already visible | Do not reopen or search; enter text directly | `ios_pip_notes_open_v1.json` |
 | Home screen with Notes icon visible | Click the visible icon; do not search | `ios_pip_notes_icon_visible_v1.json` |
 | Notes page/icon not visible | Use `search_launch_app` | `ios_pip_background_v1.json` |
+| Blank Notes editor already visible on Android FGS | Do not reopen or search; enter text directly | `android_fgs_notes_open_v1.json` |
+| Android home screen with Notes icon visible | Click the visible icon; do not search | `android_fgs_notes_icon_visible_v1.json` |
+| Android FGS with Notes page/icon not visible | Use `search_launch_app`; do not use `bridge_open_app` | `android_fgs_background_v1.json` |
 
-All three return the same fixed Biden contact, hide the unavailable
-`bridge_open_app`, require `enter_text_via_bridge`, and forbid a separate
-`bridge_clipboard` staging call.
+All six return the same fixed Biden contact, hide the unavailable
+`bridge_open_app`, require `enter_text_via_bridge` with the matching platform,
+and forbid a separate `bridge_clipboard` staging call.
 
 Run it with:
 

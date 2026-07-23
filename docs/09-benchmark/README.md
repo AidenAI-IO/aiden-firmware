@@ -68,8 +68,8 @@ uv run python -m runner run \
   --verbose
 ```
 
-The iOS background + PiP examples declare three UI states directly in their
-prompts:
+The iOS background + PiP and Android background + FGS examples each declare
+three UI states directly in their prompts:
 
 - `ios_pip_notes_open_v1.json`: Notes is already open, so reopening/searching is
   forbidden.
@@ -77,11 +77,19 @@ prompts:
   clicks it directly and must not search.
 - `ios_pip_background_v1.json`: neither Notes nor its icon is visible, so
   `search_launch_app` is required.
+- `android_fgs_notes_open_v1.json`: Android Notes is already open, so
+  reopening/searching is forbidden.
+- `android_fgs_notes_icon_visible_v1.json`: the Android Notes icon is visible,
+  so the Agent clicks it directly and must not search.
+- `android_fgs_background_v1.json`: Android FGS keeps background-safe data tools
+  available, but opening Notes still uses `search_launch_app`; `bridge_open_app`
+  is forbidden because FGS is not a foreground App launcher.
 
-All three use a fixed `bridge_contacts` result and require
-`enter_text_via_bridge` without a separate `bridge_clipboard` call. The generated
-screen is retained for runner pre/post artifacts and fixture state transitions;
-the policy tests do not require the Agent to inspect it. Scripted
+All six use a fixed `bridge_contacts` result and require
+`enter_text_via_bridge` with the matching `ios` or `android` platform, without a
+separate `bridge_clipboard` call. The generated screen is retained for runner
+pre/post artifacts and fixture state transitions; the policy tests do not require
+the Agent to inspect it. Scripted
 `screen_contains` preconditions prevent text entry before the fixture has actually
 reached the Notes editor.
 
