@@ -36,6 +36,26 @@ func TestAudioArchiveManagerSkipsWriteWhenStorageCapabilityUnavailable(t *testin
 	}
 }
 
+func TestAudioArchiveManagerStorageWiringIsConcurrentSafe(t *testing.T) {
+	mgr := NewAudioArchiveManager(AudioArchiveConfig{Enabled: true, StoragePath: t.TempDir()})
+	monitor := NewStorageMonitor(DefaultStorageConfig(), &sequenceStorageSampler{
+		samples: []StorageSample{storageSampleWithAvailableMB(100)},
+	}, nil, nil, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			mgr.SetStorageMonitor(monitor)
+			mgr.SetStorageMonitor(nil)
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		_, _ = mgr.storageComponents()
+	}
+	<-done
+}
+
 func TestAudioArchiveManagerSaveAndCleanup(t *testing.T) {
 	tmpDir := t.TempDir()
 

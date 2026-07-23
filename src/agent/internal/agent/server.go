@@ -31,6 +31,12 @@ import (
 	_ "aiden-agent/internal/agent/tts/adapters/volcengine"
 )
 
+const (
+	agentHTTPReadHeaderTimeout = 10 * time.Second
+	agentHTTPReadTimeout       = 30 * time.Second
+	agentHTTPIdleTimeout       = 120 * time.Second
+)
+
 // Server provides HTTP API for agent interactions
 type Server struct {
 	runtime              *Runtime
@@ -500,8 +506,11 @@ func (s *Server) Start() error {
 	}
 
 	srv := &http.Server{
-		Addr:    s.addr,
-		Handler: handler,
+		Addr:              s.addr,
+		Handler:           handler,
+		ReadHeaderTimeout: agentHTTPReadHeaderTimeout,
+		ReadTimeout:       agentHTTPReadTimeout,
+		IdleTimeout:       agentHTTPIdleTimeout,
 	}
 
 	errCh := make(chan error, 1)

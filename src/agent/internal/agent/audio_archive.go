@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,7 @@ import (
 // AudioArchiveManager handles saving and cleanup of audio recordings.
 type AudioArchiveManager struct {
 	config         AudioArchiveConfig
+	storageMu      sync.RWMutex
 	storage        *StorageManager
 	storageMonitor *StorageMonitor
 }
@@ -29,11 +31,21 @@ func NewAudioArchiveManager(config AudioArchiveConfig) *AudioArchiveManager {
 // non-default storage_path in the config wins over the mode machinery (the
 // built-in default names the managed eMMC tier, see ExplicitStoragePath).
 func (m *AudioArchiveManager) SetStorageManager(sm *StorageManager) {
+	m.storageMu.Lock()
+	defer m.storageMu.Unlock()
 	m.storage = sm
 }
 
 func (m *AudioArchiveManager) SetStorageMonitor(monitor *StorageMonitor) {
+	m.storageMu.Lock()
+	defer m.storageMu.Unlock()
 	m.storageMonitor = monitor
+}
+
+func (m *AudioArchiveManager) storageComponents() (*StorageManager, *StorageMonitor) {
+	m.storageMu.RLock()
+	defer m.storageMu.RUnlock()
+	return m.storage, m.storageMonitor
 }
 
 // writeDir returns the directory new recordings should be written to.
@@ -41,8 +53,9 @@ func (m *AudioArchiveManager) writeDir() string {
 	if path := m.config.ExplicitStoragePath(); path != "" {
 		return path
 	}
-	if m.storage != nil {
-		if dir, err := m.storage.ResolveDir(StorageClassAudio); err == nil {
+	storage, _ := m.storageComponents()
+	if storage != nil {
+		if dir, err := storage.ResolveDir(StorageClassAudio); err == nil {
 			return dir
 		}
 	}
@@ -57,8 +70,9 @@ func (m *AudioArchiveManager) cleanupRoots() []string {
 	if path := m.config.ExplicitStoragePath(); path != "" {
 		return []string{path}
 	}
-	if m.storage != nil {
-		return m.storage.CleanupRoots(StorageClassAudio)
+	storage, _ := m.storageComponents()
+	if storage != nil {
+		return storage.CleanupRoots(StorageClassAudio)
 	}
 	return []string{m.config.StoragePathOrDefault()}
 }
@@ -77,7 +91,8 @@ func (m *AudioArchiveManager) SaveAudio(samples []int16, sampleRate int) (string
 	if !m.config.Enabled {
 		return "", durationMs, nil
 	}
-	if m.storageMonitor != nil && !m.storageMonitor.AllowWrite(StorageCapabilityAudioArchive) {
+	_, storageMonitor := m.storageComponents()
+	if storageMonitor != nil && !storageMonitor.AllowWrite(StorageCapabilityAudioArchive) {
 		return "", durationMs, nil
 	}
 
