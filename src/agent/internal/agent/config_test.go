@@ -1433,6 +1433,38 @@ func TestAudioArchiveStoragePathOrDefaultTrimsWhitespace(t *testing.T) {
 	}
 }
 
+func TestAudioArchiveExplicitStoragePath(t *testing.T) {
+	tests := []struct {
+		name        string
+		storagePath string
+		want        string
+	}{
+		{"unset", "", ""},
+		{"whitespace only", "  \t ", ""},
+		{"built-in default treated as unset", defaultAudioArchiveStoragePath, ""},
+		{"built-in default with whitespace", "  " + defaultAudioArchiveStoragePath + " ", ""},
+		{"custom path", "/mnt/pinned/audio", "/mnt/pinned/audio"},
+		{"custom path trimmed", " /mnt/pinned/audio ", "/mnt/pinned/audio"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := AudioArchiveConfig{StoragePath: tt.storagePath}
+			if got := cfg.ExplicitStoragePath(); got != tt.want {
+				t.Fatalf("ExplicitStoragePath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The runtime config seeds storage_path with the built-in default, so a stock
+// deployment must still route audio through the storage manager.
+func TestRuntimeDefaultStoragePathIsNotExplicit(t *testing.T) {
+	cfg := DefaultConfig()
+	if got := cfg.AudioArchive.ExplicitStoragePath(); got != "" {
+		t.Fatalf("DefaultConfig().AudioArchive.ExplicitStoragePath() = %q, want empty", got)
+	}
+}
+
 func TestAudioArchiveConfigExplicitValues(t *testing.T) {
 	configContent := `
 [audio_archive]

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -753,7 +754,22 @@ func (d *HIDDevice) ensureOpenLocked() error {
 	}
 	f, err := opener(d.path)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", d.path, err)
+		// ENXIO means the device node exists but the USB gadget function is not enabled
+		// (e.g. USB host suspended the connection). Try to trigger a USB composite refresh.
+		if errors.Is(err, syscall.ENXIO) {
+			refreshErr := triggerUSBCompositeRefresh(d.refreshState)
+			if refreshErr == nil {
+				// Wait briefly for the gadget to rebind and reach configured state
+				time.Sleep(2 * time.Second)
+				f, err = opener(d.path)
+			} else {
+				// Propagate watchdog refresh failure so it remains diagnosable
+				return fmt.Errorf("open %s: USB composite refresh failed: %w (original error: %v)", d.path, refreshErr, err)
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("open %s: %w", d.path, err)
+		}
 	}
 	d.file = f
 	d.openedAt = time.Now()
@@ -799,6 +815,25 @@ func (d *HIDDevice) reopenStaleFileLocked() error {
 	if !os.SameFile(fdInfo, pathInfo) {
 		d.closeLocked()
 		return d.ensureOpenLocked()
+	}
+	return nil
+}
+
+func triggerUSBCompositeRefresh(statePath string) error {
+	// Trigger the USB watchdog's refresh command to rebind the USB composite gadget.
+	// This is needed when the USB host suspends the connection or the gadget
+	// enters a stale state where HID device nodes exist but are not functional.
+	// Use a bounded timeout to prevent a hung watchdog from blocking HID recovery.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "/etc/init.d/S60usb_ecm_watchdog", "refresh")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("USB composite refresh timed out after 10s (output: %s)", string(output))
+		}
+		return fmt.Errorf("USB composite refresh failed: %w (output: %s)", err, string(output))
 	}
 	return nil
 }
