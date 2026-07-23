@@ -36,6 +36,86 @@ func TestIOSKeyboardIsolationWrapsModifierShortcut(t *testing.T) {
 	}
 }
 
+func TestIOSKeyboardIsolationBatchCoalescesModifierActions(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+
+	err := controller.withBatch(context.Background(), func(batchCtx context.Context) error {
+		if err := controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "first-shortcut")
+			return nil
+		}); err != nil {
+			return err
+		}
+		if err := controller.withKeyboard(batchCtx, false, func() error {
+			events = append(events, "plain-key")
+			return nil
+		}); err != nil {
+			return err
+		}
+		return controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "second-shortcut")
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withBatch() error = %v", err)
+	}
+	if want := []string{"isolate", "first-shortcut", "plain-key", "second-shortcut", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestIOSKeyboardIsolationNestedBatchReusesOuterProfile(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+
+	err := controller.withBatch(context.Background(), func(batchCtx context.Context) error {
+		return controller.withBatch(batchCtx, func(nestedCtx context.Context) error {
+			return controller.withKeyboard(nestedCtx, true, func() error {
+				events = append(events, "shortcut")
+				return nil
+			})
+		})
+	})
+	if err != nil {
+		t.Fatalf("withBatch() error = %v", err)
+	}
+	if want := []string{"isolate", "shortcut", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestIOSKeyboardIsolationBatchRestoresBeforePointerAndCanReisolate(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+
+	err := controller.withBatch(context.Background(), func(batchCtx context.Context) error {
+		if err := controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "first-shortcut")
+			return nil
+		}); err != nil {
+			return err
+		}
+		if _, err := controller.withPointerCall(batchCtx, func(context.Context) (string, error) {
+			events = append(events, "pointer")
+			return "ok", nil
+		}); err != nil {
+			return err
+		}
+		return controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "second-shortcut")
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withBatch() error = %v", err)
+	}
+	if want := []string{"isolate", "first-shortcut", "restore", "pointer", "isolate", "second-shortcut", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
 func TestIOSKeyboardIsolationLeavesPlainKeyboardInputOnNormalProfile(t *testing.T) {
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)
@@ -267,6 +347,29 @@ func TestIOSKeyboardIsolationRestoresAfterCancellation(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("withKeyboard() error = %v, want context canceled", err)
+	}
+	if want := []string{"isolate", "shortcut", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestIOSKeyboardIsolationBatchRestoresAfterCancellation(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	err := controller.withBatch(ctx, func(batchCtx context.Context) error {
+		if err := controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "shortcut")
+			cancel()
+			return nil
+		}); err != nil {
+			return err
+		}
+		return batchCtx.Err()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("withBatch() error = %v, want context canceled", err)
 	}
 	if want := []string{"isolate", "shortcut", "restore"}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)

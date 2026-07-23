@@ -5,12 +5,27 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"nhooyr.io/websocket"
 )
+
+type iosIsolationPointerTestTool struct {
+	controller *iosKeyboardIsolationController
+	events     *[]string
+}
+
+func (t iosIsolationPointerTestTool) Name() string        { return "touch_gesture" }
+func (t iosIsolationPointerTestTool) Description() string { return "touch_gesture" }
+func (t iosIsolationPointerTestTool) Call(ctx context.Context, _ string) (string, error) {
+	return t.controller.withPointerCall(ctx, func(context.Context) (string, error) {
+		*t.events = append(*t.events, "pointer")
+		return "ok", nil
+	})
+}
 
 func TestSearchLaunchAppDescriptionRequiresFollowUpNavigation(t *testing.T) {
 	desc := (&appSearchOpenTool{}).Description()
@@ -179,6 +194,66 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 	}
 	if len(quick.calls) != 1 || len(keyboardText.calls) != 1 || len(touch.calls) != 1 {
 		t.Fatalf("unexpected tool calls: quick=%v keyboard=%v touch=%v", quick.calls, keyboardText.calls, touch.calls)
+	}
+}
+
+func TestSearchLaunchAppBatchesIOSModifierIsolationAcrossSubtools(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
+	keyboardDev, _ := newTestHIDDevice(t)
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	controller.keyboardDev = keyboardDev
+	keyboardTap := &KeyboardTapTool{dev: keyboardDev, iosKeyboardIsolation: controller}
+	keyboardText := &KeyboardTextTool{dev: keyboardDev, iosKeyboardIsolation: controller}
+	quickAction := &QuickActionTool{
+		keyboard:             keyboardTap,
+		iosKeyboardIsolation: controller,
+	}
+	vision := &stubTextInputVision{}
+	hw := &textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		touchGesture: iosIsolationPointerTestTool{controller: controller, events: &events},
+		keyboardTap:  keyboardTap,
+		keyboardText: keyboardText,
+		quickAction:  quickAction,
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}
+	entryTool := &EnterTextInFieldTool{
+		engine:               newFastTextInputEngine(*hw, vision),
+		iosKeyboardIsolation: controller,
+	}
+	tool := &appSearchOpenTool{
+		hw:                   hw,
+		vision:               vision,
+		platformFn:           func() string { return "ios" },
+		entryTool:            entryTool,
+		sleep:                testNoWaitSleep,
+		iosKeyboardIsolation: controller,
+		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
+			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "WeChat"}, nil
+		},
+		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
+			return bridgeAppOpenResult{Opened: true, Reason: "WeChat visible"}, nil
+		},
+	}
+
+	out, err := tool.Call(context.Background(), `{"app":"WeChat","platform":"ios"}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("Call() output is not JSON: %v: %s", err, out)
+	}
+	if !result.OK {
+		t.Fatalf("Call() output = %s, want ok", out)
+	}
+	if want := []string{"isolate", "restore", "pointer"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("profile events = %v, want %v", events, want)
 	}
 }
 

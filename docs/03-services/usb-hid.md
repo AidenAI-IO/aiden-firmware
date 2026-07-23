@@ -132,6 +132,22 @@ After the action, including error and cancellation paths, it restores the normal
 composite. The isolated profile uses a distinct USB product ID and serial number
 so iOS does not reuse the pointer-bearing descriptor for the input.
 
+Composite Agent tools batch consecutive keyboard operations into one isolation
+scope. For example, `quick_action`, `search_launch_app`,
+`enter_text_in_field`, and `enter_text_via_bridge` can invoke several internal
+modifier shortcuts or shifted text writes without reconnecting the pointer after
+each low-level call. The first modifier-bearing operation isolates the keyboard;
+the first pointer/touch operation restores the normal profile before acting. The
+outer tool scope also performs a context-independent restore when it returns,
+fails, or is canceled, so an interrupted task does not intentionally leave the
+mouse detached.
+
+On iOS, `search_launch_app` ends the isolated shortcut phase immediately after
+opening and clearing Spotlight, then enters a case-insensitive lowercase search
+query on the restored normal profile. This keeps the shortcut sequence to one
+isolate/restore pair while avoiding shifted text immediately after USB profile
+enumeration.
+
 The Luckfox board has one UDC, so isolation and restore briefly disconnect the
 complete composite, including ECM. The dynamic controller and ECM watchdog
 share `/run/aiden_dynamic_keyboard.lock` to prevent overlapping UDC resets.

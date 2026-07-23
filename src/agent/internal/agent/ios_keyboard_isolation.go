@@ -19,6 +19,13 @@ const (
 
 type iosKeyboardIsolationCommand func(context.Context, string, ...string) ([]byte, error)
 
+type iosKeyboardIsolationBatchContextKey struct{}
+
+type iosKeyboardIsolationBatch struct {
+	controller *iosKeyboardIsolationController
+	isolated   bool
+}
+
 // iosKeyboardIsolationController serializes access to the three HID devices.
 // Keyboard actions whose HID reports contain modifiers temporarily use a
 // pointer-free USB profile. Unmodified text, pointer input, and Consumer
@@ -105,6 +112,107 @@ func (c *iosKeyboardIsolationController) recordRestoreResult(err error) {
 	}
 }
 
+func (c *iosKeyboardIsolationController) batchFromContext(ctx context.Context) *iosKeyboardIsolationBatch {
+	if c == nil || ctx == nil {
+		return nil
+	}
+	batch, _ := ctx.Value(iosKeyboardIsolationBatchContextKey{}).(*iosKeyboardIsolationBatch)
+	if batch == nil || batch.controller != c {
+		return nil
+	}
+	return batch
+}
+
+func (c *iosKeyboardIsolationController) restoreBatchProfile(ctx context.Context) error {
+	batch := c.batchFromContext(ctx)
+	if batch == nil {
+		return nil
+	}
+	return batch.restore()
+}
+
+func (b *iosKeyboardIsolationBatch) isolate() error {
+	if b == nil || b.controller == nil || b.isolated {
+		return nil
+	}
+	c := b.controller
+	c.closeHIDDevices()
+	if isolateErr := c.switchProfile("isolate"); isolateErr != nil {
+		restoreErr := c.switchProfile("restore")
+		c.recordRestoreResult(restoreErr)
+		return errors.Join(isolateErr, restoreErr)
+	}
+	c.needsRestore = true
+	b.isolated = true
+	return nil
+}
+
+func (b *iosKeyboardIsolationBatch) restore() error {
+	if b == nil || b.controller == nil || !b.isolated {
+		return nil
+	}
+	c := b.controller
+	c.closeHIDDevices()
+	err := c.switchProfile("restore")
+	c.recordRestoreResult(err)
+	if err == nil {
+		b.isolated = false
+	}
+	return err
+}
+
+// withBatch keeps consecutive keyboard operations in one pointer-free profile.
+// Nested composite tools reuse the same batch. Pointer input restores the normal
+// profile before it runs, and this outer scope always attempts a final restore
+// with a context-independent timeout, including cancellation and error paths.
+func (c *iosKeyboardIsolationController) withBatch(ctx context.Context, action func(context.Context) error) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c == nil {
+		return action(ctx)
+	}
+	if c.batchFromContext(ctx) != nil {
+		return action(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := c.ensureNormalProfileLocked(); err != nil {
+		return err
+	}
+
+	batch := &iosKeyboardIsolationBatch{controller: c}
+	batchCtx := context.WithValue(ctx, iosKeyboardIsolationBatchContextKey{}, batch)
+	defer func() {
+		err = errors.Join(err, batch.restore())
+	}()
+	return action(batchCtx)
+}
+
+func withIOSKeyboardIsolationBatchCall(
+	ctx context.Context,
+	controller *iosKeyboardIsolationController,
+	action func(context.Context) (string, error),
+) (string, error) {
+	if controller == nil {
+		return action(ctx)
+	}
+	var output string
+	err := controller.withBatch(ctx, func(batchCtx context.Context) error {
+		var callErr error
+		output, callErr = action(batchCtx)
+		return callErr
+	})
+	return output, err
+}
+
 func (c *iosKeyboardIsolationController) withKeyboard(ctx context.Context, isolate bool, action func() error) (err error) {
 	if c == nil {
 		return action()
@@ -113,6 +221,15 @@ func (c *iosKeyboardIsolationController) withKeyboard(ctx context.Context, isola
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+	}
+	if batch := c.batchFromContext(ctx); batch != nil {
+		if !isolate {
+			return action()
+		}
+		if err := batch.isolate(); err != nil {
+			return err
+		}
+		return action()
 	}
 
 	c.mu.Lock()
@@ -149,6 +266,17 @@ func (c *iosKeyboardIsolationController) withPointerCall(ctx context.Context, ac
 	if c == nil {
 		return action(ctx)
 	}
+	if batch := c.batchFromContext(ctx); batch != nil {
+		if err := batch.restore(); err != nil {
+			return "", err
+		}
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+		}
+		return action(ctx)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.ensureNormalProfileLocked(); err != nil {
@@ -157,8 +285,16 @@ func (c *iosKeyboardIsolationController) withPointerCall(ctx context.Context, ac
 	return action(ctx)
 }
 
-func (c *iosKeyboardIsolationController) withExtraKeys(action func() error) error {
+func (c *iosKeyboardIsolationController) withExtraKeys(ctx context.Context, action func() error) error {
 	if c == nil {
+		return action()
+	}
+	if batch := c.batchFromContext(ctx); batch != nil {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
 		return action()
 	}
 	c.mu.Lock()

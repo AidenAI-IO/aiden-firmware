@@ -27,16 +27,17 @@ func sleepWithContext(ctx context.Context, delay time.Duration) error {
 }
 
 type appSearchOpenTool struct {
-	hw               *textInputHardwareDeps
-	vision           textInputVision
-	platformFn       func() string
-	findAppTapFn     func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
-	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
-	afterOpenFn      func() error
-	searchTermFn     func(string) string
-	entryTool        *EnterTextInFieldTool
-	launchDelay      time.Duration
-	sleep            func(context.Context, time.Duration) error
+	hw                   *textInputHardwareDeps
+	vision               textInputVision
+	platformFn           func() string
+	findAppTapFn         func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
+	confirmAppOpenFn     func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
+	afterOpenFn          func() error
+	searchTermFn         func(string) string
+	entryTool            *EnterTextInFieldTool
+	launchDelay          time.Duration
+	sleep                func(context.Context, time.Duration) error
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 type appSearchOpenArgs struct {
@@ -62,6 +63,16 @@ func (t *appSearchOpenTool) ArgsSchema() map[string]any {
 }
 
 func (t *appSearchOpenTool) Call(ctx context.Context, input string) (string, error) {
+	var controller *iosKeyboardIsolationController
+	if t != nil {
+		controller = t.iosKeyboardIsolation
+	}
+	return withIOSKeyboardIsolationBatchCall(ctx, controller, func(batchCtx context.Context) (string, error) {
+		return t.call(batchCtx, input)
+	})
+}
+
+func (t *appSearchOpenTool) call(ctx context.Context, input string) (string, error) {
 	if t == nil || t.hw == nil || t.vision == nil {
 		return "error: search_launch_app is not fully configured", nil
 	}
@@ -83,16 +94,17 @@ func (t *appSearchOpenTool) Call(ctx context.Context, input string) (string, err
 		}
 	}
 	result, err := runAppSearchOpenFlow(ctx, appSearchOpenFlowConfig{
-		hw:               t.hw,
-		vision:           t.vision,
-		platform:         platform,
-		searchTerm:       t.searchTerm(args.App),
-		findAppTapFn:     t.findAppTapFn,
-		confirmAppOpenFn: t.confirmAppOpenFn,
-		afterOpenFn:      t.afterOpenFn,
-		entryTool:        t.entryTool,
-		launchDelay:      t.launchDelay,
-		sleep:            t.sleep,
+		hw:                   t.hw,
+		vision:               t.vision,
+		platform:             platform,
+		searchTerm:           t.searchTerm(args.App),
+		findAppTapFn:         t.findAppTapFn,
+		confirmAppOpenFn:     t.confirmAppOpenFn,
+		afterOpenFn:          t.afterOpenFn,
+		entryTool:            t.entryTool,
+		launchDelay:          t.launchDelay,
+		sleep:                t.sleep,
+		iosKeyboardIsolation: t.iosKeyboardIsolation,
 	})
 	if err != nil {
 		return jsonString(map[string]any{"ok": false, "error": err.Error(), "target": args.App, "steps": result.Steps, "vlm_calls": result.VLMCalls}), nil
@@ -122,16 +134,17 @@ func (t *appSearchOpenTool) searchTerm(app string) string {
 }
 
 type appSearchOpenFlowConfig struct {
-	hw               *textInputHardwareDeps
-	vision           textInputVision
-	platform         string
-	searchTerm       string
-	findAppTapFn     func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
-	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
-	afterOpenFn      func() error
-	entryTool        *EnterTextInFieldTool
-	launchDelay      time.Duration
-	sleep            func(context.Context, time.Duration) error
+	hw                   *textInputHardwareDeps
+	vision               textInputVision
+	platform             string
+	searchTerm           string
+	findAppTapFn         func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
+	confirmAppOpenFn     func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
+	afterOpenFn          func() error
+	entryTool            *EnterTextInFieldTool
+	launchDelay          time.Duration
+	sleep                func(context.Context, time.Duration) error
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 type appSearchOpenFlowResult struct {
@@ -183,6 +196,15 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 		return result, err
 	}
 	steps = append(steps, "opened system search")
+	if platform == "ios" && cfg.iosKeyboardIsolation != nil {
+		if err := cfg.iosKeyboardIsolation.restoreBatchProfile(ctx); err != nil {
+			return result, fmt.Errorf("restore normal HID profile before app search text: %w", err)
+		}
+		steps = append(steps, "restored normal HID profile before search text")
+		// Spotlight matching is case-insensitive. Lowercase ASCII avoids Shift
+		// modifiers after the single shortcut isolation/restore pair.
+		searchTerm = strings.ToLower(searchTerm)
+	}
 	engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
 	searchTerms := appSearchFallbackTerms(searchTerm)
 	for idx, term := range searchTerms {
