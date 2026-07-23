@@ -162,10 +162,15 @@ uv run python -m runner run \
 ```
 
 Do not pass `--environment-url`: the suite starts and owns its mock environment.
-Mock suites currently require the CLI `--auto-agent-setup` path so every task gets
-an isolated daemon and benchmark token. The runner uses that token to call the
-benchmark-only `/api/benchmark/phone_bridge_state` endpoint before the task. The
-endpoint is not registered on a normal daemon without a benchmark token.
+On the WebUI, selecting only mock suites automatically shows `Mock Aiden App
+environment`; clicking Run skips the device picker and uses the same isolated
+task-worker path. Do not mix mock suites and real-device/MobileGym suites in one
+job.
+
+On the CLI, mock suites require `--auto-agent-setup` so every task gets an isolated
+daemon and benchmark token. The runner uses that token to call the benchmark-only
+`/api/benchmark/phone_bridge_state` endpoint before the task. The endpoint is not
+registered on a normal daemon without a benchmark token.
 
 Example schema:
 

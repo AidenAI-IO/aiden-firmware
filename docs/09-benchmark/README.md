@@ -61,6 +61,11 @@ and tool results, so contacts and similar app-side data do not require a physica
 phone or emulator. Task-level fixtures let one suite hold a runtime policy matrix
 without creating a JSON file for every case:
 
+In the WebUI, select one or more mock suites and click `Run selected suites`. The
+run configuration changes to `Mock Aiden App environment`, skips the device
+picker, and starts the task-level fixtures automatically. Mock and external-device
+suites must be run as separate jobs.
+
 ```bash
 cd benchmark
 uv run python -m runner run \
