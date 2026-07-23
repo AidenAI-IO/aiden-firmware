@@ -104,6 +104,12 @@ def test_quick_action_suite_marks_non_android_action_tasks():
         "quick_action_browser_new_tab",
         "quick_action_browser_close_tab",
         "quick_action_browser_address_and_refresh",
+        "quick_action_open_editor_and_type",
+        "quick_action_undo",
+        "quick_action_select_all",
+        "quick_action_copy",
+        "quick_action_cut",
+        "quick_action_paste",
     ):
         assert "android" not in task_by_id[task_id].platforms
 
@@ -475,6 +481,24 @@ def test_phone_control_icon_tasks_target_visible_app_icons():
         assert "设置图标" not in task.prompt
         assert "小组件" in task.prompt
     assert "android" not in task_by_id["drag_app_icon"].platforms
+
+
+def test_phone_control_unicode_search_tasks_exclude_adb_android():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert "android" not in task_by_id["settings_search_bluetooth"].platforms
+    assert task_by_id["type_long_mixed_text"].platforms == []
+    assert "Aiden test benchmark-2026!" in task_by_id["type_long_mixed_text"].prompt
+
+
+def test_skill_discovery_mixed_text_task_excludes_adb_android():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "skill_discovery_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert "android" not in task_by_id["discover_device_operator_for_mixed_text_entry"].platforms
 
 
 def test_phone_control_wifi_toggle_is_split_into_on_and_off_tasks():

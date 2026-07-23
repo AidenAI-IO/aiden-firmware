@@ -11,6 +11,9 @@ class ResetError(RuntimeError):
     pass
 
 
+STALE_ADB_OWNER_LEASE_STATES = {"expired", "abandoned"}
+
+
 def _environment_api_endpoint(environment_url: str, endpoint: str) -> str:
     raw = str(environment_url or "").strip()
     if not raw:
@@ -127,6 +130,9 @@ def clear_stale_adb_android_owner(environment_url: str, timeout: float = 2.0) ->
         return ""
     active_task_id = str(data.get("active_task_id") or "").strip()
     if not active_task_id:
+        return ""
+    lease_state = str(data.get("active_task_lease_state") or "").strip().lower()
+    if lease_state not in STALE_ADB_OWNER_LEASE_STATES:
         return ""
     try:
         call_environment_release(environment_url, timeout=max(1, int(timeout)), task_id=active_task_id)

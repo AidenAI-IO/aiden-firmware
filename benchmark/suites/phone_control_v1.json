@@ -162,6 +162,7 @@
     {
       "id": "settings_search_bluetooth",
       "category": "multi_step",
+      "platforms": ["ios"],
       "description_for_judge": "Agent must open Settings, find the search box, search for 蓝牙, and end on the Bluetooth settings page.",
       "prompt": "打开系统设置，搜索「蓝牙」并进入蓝牙设置页面。",
       "rubric": [

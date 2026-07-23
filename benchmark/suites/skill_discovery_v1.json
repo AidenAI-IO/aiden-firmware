@@ -60,6 +60,7 @@
     {
       "id": "discover_device_operator_for_mixed_text_entry",
       "category": "multi_step",
+      "platforms": ["ios"],
       "description_for_judge": "The agent should autonomously load the relevant device-operation skill, create a note, and enter mixed Chinese and ASCII text into a visible field.",
       "prompt": "请打开笔记应用，新建一条笔记，并在标题输入框中输入：Aiden测试 benchmark-2026!",
       "rubric": [

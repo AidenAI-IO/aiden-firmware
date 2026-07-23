@@ -268,6 +268,7 @@
     {
       "id": "quick_action_open_editor_and_type",
       "category": "multi_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must open any editable text surface (Notes/memo/document editor, SMS/message compose box, or similar; do not send messages) and type 你好Aiden into the text field.",
       "setup": {
         "type": "agent_prompt",
@@ -295,6 +296,7 @@
     {
       "id": "quick_action_undo",
       "category": "single_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must use quick_action undo to revert the previously typed text in an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
@@ -322,6 +324,7 @@
     {
       "id": "quick_action_select_all",
       "category": "single_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must use quick_action select_all to select all text in an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
@@ -349,6 +352,7 @@
     {
       "id": "quick_action_copy",
       "category": "single_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must use quick_action copy to copy selected text in an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
@@ -376,6 +380,7 @@
     {
       "id": "quick_action_cut",
       "category": "single_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must use quick_action cut to cut selected text from an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
@@ -403,6 +408,7 @@
     {
       "id": "quick_action_paste",
       "category": "single_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must use quick_action paste to paste previously copied text into an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",

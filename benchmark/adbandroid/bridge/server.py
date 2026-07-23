@@ -252,6 +252,7 @@ def _health_payload(bridge: ADBBridgeServer, device_info: dict[str, Any]) -> dic
         "concurrent": 1,
         "active_episode_id": bridge.state.active_episode_id,
         "active_task_id": bridge.state.active_task_id,
+        "active_task_lease_state": "active" if bridge.state.active_task_id else "",
         "interfaces": ["/api/tools", "/api/screen", "/api/setup", "/api/release", "/api/concurrent"],
     }
 
