@@ -172,7 +172,7 @@ go test ./internal/agent -run 'Test.*QuickAction' -count=1
 
 The expected output includes `ok aiden-agent/internal/agent`.
 
-### 3.3 Confirm Docker Desktop Is Operational, and Keep the Proxy App Running
+### 3.3 Confirm Docker Desktop Is Operational
 
 The Agent daemon runs in Docker:
 
@@ -183,24 +183,28 @@ docker info >/dev/null && echo "Docker is ready"
 If this command fails, start Docker Desktop and wait for it to finish
 initializing before continuing.
 
-**Building the Agent image for the first time pulls base images (`golang`,
-`debian`) from Docker Hub over the network, which relies on the local proxy app
-(e.g. Clash Verge / mihomo, listening on `127.0.0.1:7897`).** If `./start.sh
-agent` fails with an error like the following, the proxy app is usually not
-running or the port is unreachable:
+**The benchmark never uses an HTTP proxy.** Before starting the Agent daemon the
+runner strips `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` from the host shell, so
+neither the docker build nor the daemon container inherits them. You therefore
+**do not need — and are not required — to run Clash or any other proxy app**;
+having one running on the host for other purposes does not affect the benchmark.
+(`NO_PROXY` is still set in the compose file, but that is only a bypass list that
+lets the container reach the Bridge on `host.docker.internal`; it is not a proxy.)
 
-```text
-failed to solve: golang:1.23-bullseye: ... dial tcp 127.0.0.1:7897: connect: connection refused
-```
+Building the Agent image for the first time still needs the network, but it
+connects **directly**: it pulls base images (`golang`, `debian`) from Docker Hub,
+runs `go mod download` for Go dependencies, and `apt-get` installs
+`ca-certificates`. So make sure mac-black can reach Docker Hub,
+`proxy.golang.org`, and the Debian mirrors directly. Once the base images and
+dependencies are pulled and cached, later builds no longer need the network; when
+the image already exists you can pass `--no-build-daemon-image` to reuse it fully
+offline.
 
-Fix: make sure the proxy app is running and its port (e.g. `7897`) is reachable,
-then rerun `./start.sh agent`. Once the base images are pulled and cached, later
-builds no longer need the network, but keeping the proxy app running during the
-benchmark is recommended. Quick check:
-
-```bash
-nc -z 127.0.0.1 7897 && echo "proxy port reachable" || echo "proxy DOWN — start your proxy app"
-```
+> When a direct connection to Docker Hub is hard (e.g. inside China), the repo
+> also ships `benchmark/docker/Dockerfile.agent-daemon.cn` (Huawei Cloud mirror +
+> `goproxy.cn` + Tsinghua apt mirror), which likewise uses no proxy. Note the
+> compose file currently hardcodes the non-`.cn` variant, so `.cn` only takes
+> effect after you switch to it manually.
 
 ### 3.4 Check the Agent Model Configuration
 
@@ -487,7 +491,9 @@ on mac-black, no tunnel is required; open `http://127.0.0.1:8765` directly.
 ### 7A.3 Select the Suite and Configure the Environment
 
 1. In the **Suites** list on the left, select `vphone_ios_basic` (category:
-   Other; 8 tasks). The "Run configuration" section at the top displays
+   Other; 9 tasks). That 9 is the total task count from the suite file,
+   including the leading `warmup` (1 `warmup` + 8 real tasks, matching
+   Section 2). The "Run configuration" section at the top displays
    `1 suites selected`.
 2. Click the blue **Run selected suites** button in the upper-right corner to
    open the **Choose Environment** dialog.
