@@ -93,6 +93,9 @@ func (t *appSearchOpenTool) call(ctx context.Context, input string) (string, err
 			platform = override
 		}
 	}
+	if platform == "" && t.iosKeyboardIsolation != nil {
+		platform = "ios"
+	}
 	result, err := runAppSearchOpenFlow(ctx, appSearchOpenFlowConfig{
 		hw:                   t.hw,
 		vision:               t.vision,

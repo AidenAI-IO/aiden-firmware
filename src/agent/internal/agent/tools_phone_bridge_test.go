@@ -227,7 +227,6 @@ func TestSearchLaunchAppBatchesIOSModifierIsolationAcrossSubtools(t *testing.T) 
 	tool := &appSearchOpenTool{
 		hw:                   hw,
 		vision:               vision,
-		platformFn:           func() string { return "ios" },
 		entryTool:            entryTool,
 		sleep:                testNoWaitSleep,
 		iosKeyboardIsolation: controller,
@@ -239,7 +238,7 @@ func TestSearchLaunchAppBatchesIOSModifierIsolationAcrossSubtools(t *testing.T) 
 		},
 	}
 
-	out, err := tool.Call(context.Background(), `{"app":"WeChat","platform":"ios"}`)
+	out, err := tool.Call(context.Background(), `{"app":"WeChat"}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}

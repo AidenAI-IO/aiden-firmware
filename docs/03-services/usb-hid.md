@@ -148,6 +148,11 @@ query on the restored normal profile. This keeps the shortcut sequence to one
 isolate/restore pair while avoiding shifted text immediately after USB profile
 enumeration.
 
+When `search_launch_app` omits `platform`, an active iOS HID isolation
+controller is also treated as an iOS platform signal. This keeps the documented
+`{"app":"WeChat"}` input on the `Cmd+Space` Spotlight path even while Phone
+Bridge is unavailable or backgrounded.
+
 The Luckfox board has one UDC, so isolation and restore briefly disconnect the
 complete composite, including ECM. The dynamic controller and ECM watchdog
 share `/run/aiden_dynamic_keyboard.lock` to prevent overlapping UDC resets.
