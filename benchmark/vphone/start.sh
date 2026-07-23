@@ -7,8 +7,13 @@
 # Usage:
 #   ./start.sh bridge [extra start_bridge args...]
 #   ./start.sh agent  [extra start-agent-daemon args...]
+#   ./start.sh run    [--task-id X] [--no-judge] [runner run args...]
 #   ./start.sh webui  [extra webui args...]
 #   ./start.sh env                # print the loaded config (no secrets)
+#
+# `run` auto-discovers the running agent daemon's port and control token, so you
+# never paste --agent-url / --benchmark-token-file. Start a daemon first with
+# `./start.sh agent`.
 #
 # The env file is picked up in this order:
 #   1. $VPHONE_ENV_FILE if already exported
@@ -21,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ENV_FILE="$SCRIPT_DIR/vphone.env"
 
 usage() {
-  sed -n '3,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '7,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 
@@ -81,6 +86,39 @@ case "$SUBCMD" in
       --environment-bridge-endpoint "$VPHONE_BRIDGE_ENDPOINT" \
       --benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID" \
       --agent-config "$VPHONE_AGENT_CONFIG" \
+      "$@"
+    ;;
+  run)
+    # Discover the currently running agent daemon's host port and token, so you
+    # never have to paste --agent-url / --benchmark-token-file by hand. The port
+    # is auto-assigned per start-agent-daemon run and changes each time.
+    ports="$(docker ps --filter name=aiden-benchmark-agent --format '{{.Ports}}' | head -1)"
+    host_port="$(printf '%s' "$ports" | sed -nE 's/.*127\.0\.0\.1:([0-9]+)->8080.*/\1/p')"
+    if [ -z "$host_port" ]; then
+      echo "error: no running agent daemon found (container name aiden-benchmark-agent*)." >&2
+      echo "hint: start one first with: ./start.sh agent" >&2
+      exit 1
+    fi
+    agent_url="http://127.0.0.1:$host_port"
+    token_file="${VPHONE_BENCHMARK_ROOT}/runs/cli-services/agent-vphone-ios/config/control_token"
+    if [ ! -r "$token_file" ]; then
+      echo "error: control token not found: $token_file" >&2
+      echo "hint: (re)start the daemon with: ./start.sh agent" >&2
+      exit 1
+    fi
+    # Default suite unless the caller passes their own --suite in "$@".
+    suite_args=()
+    case " $* " in
+      *" --suite "*) : ;;
+      *) suite_args=(--suite suites/vphone_ios_basic.json) ;;
+    esac
+    echo "running against daemon $agent_url (task_id=$VPHONE_BENCHMARK_TASK_ID)"
+    exec uv run python -m runner run \
+      "${suite_args[@]}" \
+      --agent-url "$agent_url" \
+      --benchmark-token-file "$token_file" \
+      --environment-url "$VPHONE_BRIDGE_ENDPOINT" \
+      --benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID" \
       "$@"
     ;;
   webui)
