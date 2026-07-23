@@ -105,6 +105,22 @@ api_key = "OPENAI_API_KEY"
 # migrate_start_free_pct = 10       # Start migrating below this eMMC free %
 # migrate_stop_free_pct = 50        # Stop once eMMC free % reaches this
 
+# Voice notifications follow a normal Agent reply; they never announce independently.
+[voice_notifications]
+# enabled = true
+# max_pending = 8
+
+[voice_notifications.response_tail]
+# enabled = true
+# max_items = 1
+# max_text_chars = 40
+
+[voice_notifications.expiration]
+# default_ttl_seconds = 0
+
+[voice_notifications.expiration.code_ttl_seconds]
+# storage = 900
+
 # Log retention configuration
 [log]
 # llm_http_retention_days = 7  # Keep llm-http-*.log files for this many days

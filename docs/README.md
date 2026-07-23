@@ -37,6 +37,7 @@ This documentation hub is the structured entry point for the project. The root `
 - [Memory Plane: Long-Term Memory](04-agent/memory-plane.md)
 - [Tools HTTP API](04-agent/tools-http-api.md)
 - [Voice Capabilities: VAD / STT / TTS](04-agent/audio-features.md)
+- [Voice Notifications](04-agent/voice-notifications.md)
 - [Skills Mechanism](04-agent/skills.md)
 - [Skills Merge Design](04-agent/skills-merge-design.md)
 - [Human Handoff](04-agent/human-handoff.md)

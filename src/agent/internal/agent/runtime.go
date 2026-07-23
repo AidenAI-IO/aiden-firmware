@@ -58,6 +58,7 @@ type Runtime struct {
 	logger             *Logger
 	profileDebouncer   *ProfileDebouncer
 	waitForWakeup      *WaitForWakeupController
+	voiceNotifications *VoiceNotificationManager
 	memoryPlane        MemoryPlane
 	sessionManager     SessionManager
 	contextManager     *contextmanager.ContextManager
@@ -110,9 +111,10 @@ type RunResult struct {
 	// Deprecated: use WaitForWakeupRequested.
 	SleepRequested bool `json:"sleep_requested,omitempty"`
 	// Deprecated: use WaitForWakeupReason.
-	SleepReason    string `json:"sleep_reason,omitempty"`
-	SpeechStreamed bool   `json:"-"`
-	Preempted      bool   `json:"preempted,omitempty"`
+	SleepReason    string       `json:"sleep_reason,omitempty"`
+	SpeechStreamed bool         `json:"-"`
+	Preempted      bool         `json:"preempted,omitempty"`
+	TurnFailure    *TurnFailure `json:"-"`
 }
 
 func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
@@ -477,13 +479,17 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	}
 
 	rt := &Runtime{
-		config:             cfg,
-		models:             models,
-		memories:           memories,
-		tools:              tools,
-		skills:             skillManager,
-		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
-		waitForWakeup:      waitForWakeupController,
+		config:        cfg,
+		models:        models,
+		memories:      memories,
+		tools:         tools,
+		skills:        skillManager,
+		skillsLoaded:  skillIndex != nil && len(skillIndex.Names()) > 0,
+		waitForWakeup: waitForWakeupController,
+		voiceNotifications: NewVoiceNotificationManager(
+			cfg.VoiceNotifications,
+			WithVoiceNotificationLocale(resolvedVoiceNotificationLocale(cfg)),
+		),
 		runtimeID:          uuid.NewString(),
 		telemetrySessionID: uuid.NewString(),
 		environmentBridge:  environmentBridge,
@@ -658,6 +664,11 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
+	defer func() {
+		if runErr != nil && isLLMTurnFailureSource(runErr) {
+			result.TurnFailure = TurnFailureFromError(runErr)
+		}
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}
