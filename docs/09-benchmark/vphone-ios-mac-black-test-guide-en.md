@@ -23,8 +23,15 @@ mac-black are stored in:
 path_to_project/benchmark/vphone/vphone.env
 ```
 
-Run the following commands in each new terminal to export the configuration as
-environment variables:
+**Starting services does not require a manual `source`:** `./start.sh` (see the
+next section) loads `vphone.env` itself.
+
+Only when you run the check commands in §3, §4, §6, and §12 by hand (for example
+`test -r "$VPHONE_AGENT_CONFIG"`, `test -S "$VPHONE_SOCKET"`, or
+`curl "$VPHONE_BRIDGE_ENDPOINT/health"`) do you first run the following in that
+terminal to export the configuration as `$VPHONE_*` environment variables —
+those check commands have no script wrapper and reference these variables
+directly:
 
 ```bash
 set -a
@@ -32,7 +39,7 @@ source path_to_project/benchmark/vphone/vphone.env
 set +a
 ```
 
-Subsequent commands do not repeatedly hard-code the project path or guest IP
+After sourcing, commands do not repeatedly hard-code the project path or guest IP
 address. The current key variables include:
 
 - `$VPHONE_HARDWARE_DEMO_ROOT`
@@ -68,11 +75,9 @@ and a hint instead of a Python `Address already in use` traceback. After editing
 `vphone.env`, rerun the same `./start.sh` command to pick up the new values (the
 Bridge still has to be restarted to read a new guest IP).
 
-When you run the §4–§9 check commands by hand (for example
-`test -r "$VPHONE_AGENT_CONFIG"` or `curl "$VPHONE_BRIDGE_ENDPOINT/health"`),
-those reference `$VPHONE_*` shell variables and still require
-`source vphone.env` in that terminal first. `start.sh` only removes the manual
-`source` step for launching services.
+`start.sh` only removes the manual `source` step for launching services; when
+you run the check commands by hand you still need to `source vphone.env` first
+(see the section above).
 
 It is recommended to prepare three terminals:
 
