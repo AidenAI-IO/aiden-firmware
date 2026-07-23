@@ -1,6 +1,7 @@
 package agent
 
 const (
+	defaultLocale      = "zh-CN"
 	defaultInstruction = "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。" +
 		"需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。" +
 		"每次视觉观察或输入工具返回后，都要先根据最新画面判断上一步是否已经生效、焦点是否改变、页面是否跳转；不要盲目重复同一个点击、手势或按键。" +
@@ -62,6 +63,7 @@ func defaultBoolPtr(value bool) *bool {
 
 func DefaultConfig() Config {
 	return Config{
+		Locale: defaultLocale,
 		Model: ModelConfig{
 			Provider:          defaultModelProvider,
 			Model:             defaultModelName,
@@ -92,6 +94,21 @@ func DefaultConfig() Config {
 			MaxFiles:    defaultAudioArchiveMaxFiles,
 			MaxSizeMB:   defaultAudioArchiveMaxSizeMB,
 			StoragePath: defaultAudioArchiveStoragePath,
+		},
+		VoiceNotifications: VoiceNotificationsConfig{
+			Enabled:    defaultBoolPtr(true),
+			MaxPending: 8,
+			ResponseTail: VoiceNotificationResponseTailConfig{
+				Enabled:      defaultBoolPtr(true),
+				MaxItems:     1,
+				MaxTextChars: 40,
+			},
+			Expiration: VoiceNotificationExpirationConfig{
+				DefaultTTLSeconds: 0,
+				CodeTTLSeconds: map[string]int{
+					"storage": 900,
+				},
+			},
 		},
 		Log: LogConfig{
 			LLMHTTPRetentionDays: defaultLLMHTTPLogRetentionDays,

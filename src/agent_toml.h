@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -52,6 +53,24 @@ struct AudioArchiveToml {
     int max_files = 500;
     int max_size_mb = 100;
     std::string storage_path = "/userdata/audio";
+};
+
+struct VoiceNotificationResponseTailToml {
+    bool enabled = true;
+    int max_items = 1;
+    int max_text_chars = 40;
+};
+
+struct VoiceNotificationExpirationToml {
+    int default_ttl_seconds = 0;
+    std::map<std::string, int> code_ttl_seconds{{"storage", 900}};
+};
+
+struct VoiceNotificationsToml {
+    bool enabled = true;
+    int max_pending = 8;
+    VoiceNotificationResponseTailToml response_tail;
+    VoiceNotificationExpirationToml expiration;
 };
 
 struct LogToml {
@@ -122,6 +141,7 @@ struct AgentToml {
     STTToml stt;
     AudioToml audio;
     AudioArchiveToml audio_archive;
+    VoiceNotificationsToml voice_notifications;
     LogToml log;
     HIDToml hid;
     SearchToml search;

@@ -64,6 +64,7 @@
 | `overlay/etc/profile.d/aiden-env.sh` | SSH/login shell environment loader snippet |
 | `overlay/oem/usr/bin/aiden-env-run` | Service environment launcher |
 | `overlay/oem/usr/model/` | VAD models and weights, updated with OEM partition |
+| `overlay/oem/usr/share/aiden/audio/voice-notifications/` | Bundled Chinese and English PCM WAV fallback played when final TTS is unavailable |
 | `overlay/userdata/agent/agent.toml` | Agent default configuration template |
 | `overlay/userdata/system/env` | Default system environment template |
 | `overlay/userdata/wpa_supplicant.conf` | Wi-Fi default configuration template |

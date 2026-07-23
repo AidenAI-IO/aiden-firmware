@@ -74,6 +74,18 @@ std::string quote(const std::string& s) {
     return out;
 }
 
+bool is_valid_bare_toml_key(const std::string& key) {
+    if (key.empty()) return false;
+    for (char c : key) {
+        bool valid = (c >= 'a' && c <= 'z') ||
+                     (c >= 'A' && c <= 'Z') ||
+                     (c >= '0' && c <= '9') ||
+                     c == '_' || c == '-';
+        if (!valid) return false;
+    }
+    return true;
+}
+
 bool parse_int(const std::string& raw, int* out, std::string* err) {
     if (raw.empty()) {
         if (err) *err = "empty integer";
@@ -366,6 +378,26 @@ void apply_kv(AgentToml& cfg,
         else if (key == "max_files") assign_int(&cfg.audio_archive.max_files, raw, &sub_err);
         else if (key == "max_size_mb") assign_int(&cfg.audio_archive.max_size_mb, raw, &sub_err);
         else if (key == "storage_path") assign_string(&cfg.audio_archive.storage_path, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "voice_notifications") {
+        if (key == "enabled") assign_bool(&cfg.voice_notifications.enabled, raw, &sub_err);
+        else if (key == "max_pending") assign_non_negative_int(&cfg.voice_notifications.max_pending, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "voice_notifications.response_tail") {
+        if (key == "enabled") assign_bool(&cfg.voice_notifications.response_tail.enabled, raw, &sub_err);
+        else if (key == "max_items") assign_non_negative_int(&cfg.voice_notifications.response_tail.max_items, raw, &sub_err);
+        else if (key == "max_text_chars") assign_non_negative_int(&cfg.voice_notifications.response_tail.max_text_chars, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "voice_notifications.expiration") {
+        if (key == "default_ttl_seconds") assign_non_negative_int(&cfg.voice_notifications.expiration.default_ttl_seconds, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "voice_notifications.expiration.code_ttl_seconds") {
+        int seconds = 0;
+        if (key.empty()) {
+            sub_err = "empty notification code";
+        } else if (assign_non_negative_int(&seconds, raw, &sub_err)) {
+            cfg.voice_notifications.expiration.code_ttl_seconds[key] = seconds;
+        }
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "log") {
         if (key == "llm_http_retention_days") assign_non_negative_int(&cfg.log.llm_http_retention_days, raw, &sub_err);
@@ -715,6 +747,34 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.audio_archive.max_files != 0) emit_int(out, "max_files", cfg.audio_archive.max_files);
     if (cfg.audio_archive.max_size_mb != 0) emit_int(out, "max_size_mb", cfg.audio_archive.max_size_mb);
     emit_string(out, "storage_path", cfg.audio_archive.storage_path);
+    out << "\n";
+
+    out << "[voice_notifications]\n";
+    emit_bool(out, "enabled", cfg.voice_notifications.enabled);
+    emit_int(out, "max_pending", cfg.voice_notifications.max_pending);
+    out << "\n";
+
+    out << "[voice_notifications.response_tail]\n";
+    emit_bool(out, "enabled", cfg.voice_notifications.response_tail.enabled);
+    emit_int(out, "max_items", cfg.voice_notifications.response_tail.max_items);
+    emit_int(out, "max_text_chars", cfg.voice_notifications.response_tail.max_text_chars);
+    out << "\n";
+
+    out << "[voice_notifications.expiration]\n";
+    emit_int(out, "default_ttl_seconds", cfg.voice_notifications.expiration.default_ttl_seconds);
+    out << "\n";
+
+    out << "[voice_notifications.expiration.code_ttl_seconds]\n";
+    for (const auto& item : cfg.voice_notifications.expiration.code_ttl_seconds) {
+        if (!is_valid_bare_toml_key(item.first)) {
+            if (error) {
+                *error = "invalid voice notification TTL code '" + item.first
+                       + "': expected a bare TOML key";
+            }
+            return false;
+        }
+        emit_int(out, item.first.c_str(), item.second);
+    }
     out << "\n";
 
     out << "[log]\n";

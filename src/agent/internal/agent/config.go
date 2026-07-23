@@ -124,59 +124,69 @@ func (c LogConfig) LLMHTTPRetentionDaysOrDefault() int {
 }
 
 type Config struct {
-	Model                      ModelConfig             `toml:"model"`
-	ModelText                  ModelConfig             `toml:"model_text,omitempty"` // Override for STT-then-text mode
-	TTS                        TTSConfig               `toml:"tts,omitempty"`
-	STT                        STTConfig               `toml:"stt,omitempty"`
-	HID                        HIDConfig               `toml:"hid"`
-	Device                     DeviceConfig            `toml:"device,omitempty"`
-	Audio                      AudioConfig             `toml:"audio,omitempty"`
-	AudioArchive               AudioArchiveConfig      `toml:"audio_archive,omitempty"`
-	Log                        LogConfig               `toml:"log,omitempty"`
-	Storage                    StorageConfig           `toml:"storage,omitempty"`
-	Search                     SearchConfig            `toml:"search,omitempty"`
-	EnvironmentBridge          EnvironmentBridgeConfig `toml:"-"` // Only set via CLI flags, never from config file
-	Benchmark                  BenchmarkConfig         `toml:"-"` // Only set via CLI flags, never from config file
-	LiveActivity               LiveActivityConfig      `toml:"live_activity,omitempty"`
-	Instruction                string                  `toml:"custom_instruction,omitempty"`
-	AdditionalPrompt           string                  `toml:"additional_prompt,omitempty"`
-	InputMode                  string                  `toml:"input_mode,omitempty"`   // "text" or "stt"
-	TriggerMode                string                  `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
-	VADBackend                 string                  `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
-	VADModelPath               string                  `toml:"vad_model_path,omitempty"`
-	VADHelperPath              string                  `toml:"vad_helper_path,omitempty"`
-	VADSpeechThreshold         float64                 `toml:"vad_speech_threshold,omitempty"`
-	SilenceMs                  int                     `toml:"silence_ms,omitempty"`
-	MinSpeechMs                int                     `toml:"min_speech_ms,omitempty"`
-	VoiceFollowupEnabled       *bool                   `toml:"voice_followup_enabled,omitempty"`
-	VoiceFollowupTimeoutMs     int                     `toml:"voice_followup_timeout_ms,omitempty"`
-	VoiceFirstTurnTimeoutMs    int                     `toml:"voice_first_turn_timeout_ms,omitempty"`
-	VoiceMaxTurns              int                     `toml:"voice_max_turns,omitempty"`
-	VoiceInterruptOnWakeup     *bool                   `toml:"voice_interrupt_on_wakeup,omitempty"`
-	VoiceStreamingTTSEnabled   *bool                   `toml:"voice_streaming_tts_enabled,omitempty"`
-	VoiceToolCallSpeech        *bool                   `toml:"voice_tool_call_speech,omitempty"`
-	VoiceProgressSpeechEnabled *bool                   `toml:"voice_progress_speech_enabled,omitempty"`
-	VoiceMaxResponseTokens     int                     `toml:"voice_max_response_tokens,omitempty"`
-	LoadAllTools               bool                    `toml:"load_all_tools,omitempty"`
-	TodoReminderToolCalls      int                     `toml:"todo_reminder_tool_calls,omitempty"`
-	MaxIterations              int                     `toml:"max_iterations,omitempty"`
-	TerminationPolicy          TerminationPolicyConfig `toml:"termination_policy,omitempty"`
-	ForceSimpleLoop            bool                    `toml:"-"`
-	ScreenshotKeepN            int                     `toml:"screenshot_keep_n,omitempty"`
-	ScreenshotPruneInterval    int                     `toml:"screenshot_prune_interval,omitempty"`
-	ScreenStableTimeoutMs      int                     `toml:"screen_stable_timeout_ms,omitempty"`
-	ScreenStableMs             int                     `toml:"screen_stable_ms,omitempty"`
-	ScreenStableDiffThreshold  float64                 `toml:"screen_stable_diff_threshold,omitempty"`
-	DefaultPlatform            string                  `toml:"default_platform,omitempty"` // "ios", "android", "mac"
-	SkillsDirs                 []string                `toml:"skills_dirs"`
-	BundledSkillsDir           string                  `toml:"bundled_skills_dir,omitempty"`
-	SkillMergeModel            SkillMergeModel         `toml:"-"`
-	Telemetry                  TelemetryConfig         `toml:"telemetry,omitempty"`
-	ConfigDir                  string                  `toml:"-"`
+	Model                      ModelConfig              `toml:"model"`
+	ModelText                  ModelConfig              `toml:"model_text,omitempty"` // Override for STT-then-text mode
+	TTS                        TTSConfig                `toml:"tts,omitempty"`
+	STT                        STTConfig                `toml:"stt,omitempty"`
+	HID                        HIDConfig                `toml:"hid"`
+	Device                     DeviceConfig             `toml:"device,omitempty"`
+	Audio                      AudioConfig              `toml:"audio,omitempty"`
+	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
+	VoiceNotifications         VoiceNotificationsConfig `toml:"voice_notifications,omitempty"`
+	Log                        LogConfig                `toml:"log,omitempty"`
+	Storage                    StorageConfig            `toml:"storage,omitempty"`
+	Search                     SearchConfig             `toml:"search,omitempty"`
+	EnvironmentBridge          EnvironmentBridgeConfig  `toml:"-"` // Only set via CLI flags, never from config file
+	Benchmark                  BenchmarkConfig          `toml:"-"` // Only set via CLI flags, never from config file
+	LiveActivity               LiveActivityConfig       `toml:"live_activity,omitempty"`
+	Locale                     string                   `toml:"locale,omitempty"`
+	Instruction                string                   `toml:"custom_instruction,omitempty"`
+	AdditionalPrompt           string                   `toml:"additional_prompt,omitempty"`
+	InputMode                  string                   `toml:"input_mode,omitempty"`   // "text" or "stt"
+	TriggerMode                string                   `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
+	VADBackend                 string                   `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
+	VADModelPath               string                   `toml:"vad_model_path,omitempty"`
+	VADHelperPath              string                   `toml:"vad_helper_path,omitempty"`
+	VADSpeechThreshold         float64                  `toml:"vad_speech_threshold,omitempty"`
+	SilenceMs                  int                      `toml:"silence_ms,omitempty"`
+	MinSpeechMs                int                      `toml:"min_speech_ms,omitempty"`
+	VoiceFollowupEnabled       *bool                    `toml:"voice_followup_enabled,omitempty"`
+	VoiceFollowupTimeoutMs     int                      `toml:"voice_followup_timeout_ms,omitempty"`
+	VoiceFirstTurnTimeoutMs    int                      `toml:"voice_first_turn_timeout_ms,omitempty"`
+	VoiceMaxTurns              int                      `toml:"voice_max_turns,omitempty"`
+	VoiceInterruptOnWakeup     *bool                    `toml:"voice_interrupt_on_wakeup,omitempty"`
+	VoiceStreamingTTSEnabled   *bool                    `toml:"voice_streaming_tts_enabled,omitempty"`
+	VoiceToolCallSpeech        *bool                    `toml:"voice_tool_call_speech,omitempty"`
+	VoiceProgressSpeechEnabled *bool                    `toml:"voice_progress_speech_enabled,omitempty"`
+	VoiceMaxResponseTokens     int                      `toml:"voice_max_response_tokens,omitempty"`
+	LoadAllTools               bool                     `toml:"load_all_tools,omitempty"`
+	TodoReminderToolCalls      int                      `toml:"todo_reminder_tool_calls,omitempty"`
+	MaxIterations              int                      `toml:"max_iterations,omitempty"`
+	TerminationPolicy          TerminationPolicyConfig  `toml:"termination_policy,omitempty"`
+	ForceSimpleLoop            bool                     `toml:"-"`
+	ScreenshotKeepN            int                      `toml:"screenshot_keep_n,omitempty"`
+	ScreenshotPruneInterval    int                      `toml:"screenshot_prune_interval,omitempty"`
+	ScreenStableTimeoutMs      int                      `toml:"screen_stable_timeout_ms,omitempty"`
+	ScreenStableMs             int                      `toml:"screen_stable_ms,omitempty"`
+	ScreenStableDiffThreshold  float64                  `toml:"screen_stable_diff_threshold,omitempty"`
+	DefaultPlatform            string                   `toml:"default_platform,omitempty"` // "ios", "android", "mac"
+	SkillsDirs                 []string                 `toml:"skills_dirs"`
+	BundledSkillsDir           string                   `toml:"bundled_skills_dir,omitempty"`
+	SkillMergeModel            SkillMergeModel          `toml:"-"`
+	Telemetry                  TelemetryConfig          `toml:"telemetry,omitempty"`
+	ConfigDir                  string                   `toml:"-"`
 }
 
 func (c Config) TerminationPolicyOrDefault() TerminationPolicyConfig {
 	return c.TerminationPolicy.resolved()
+}
+
+func (c Config) LocaleOrDefault() string {
+	locale := strings.TrimSpace(c.Locale)
+	if locale == "" {
+		return defaultLocale
+	}
+	return locale
 }
 
 type TelemetryConfig struct {
@@ -850,6 +860,26 @@ func (c Config) Validate() error {
 	}
 	if c.VoiceMaxResponseTokens < 0 {
 		return fmt.Errorf("voice_max_response_tokens must be >= 0, got %d", c.VoiceMaxResponseTokens)
+	}
+	if c.VoiceNotifications.MaxPending < 0 {
+		return fmt.Errorf("voice_notifications.max_pending must be >= 0, got %d", c.VoiceNotifications.MaxPending)
+	}
+	if c.VoiceNotifications.ResponseTail.MaxItems < 0 || c.VoiceNotifications.ResponseTail.MaxItems > 1 {
+		return fmt.Errorf("voice_notifications.response_tail.max_items must be 0 or 1, got %d", c.VoiceNotifications.ResponseTail.MaxItems)
+	}
+	if c.VoiceNotifications.ResponseTail.MaxTextChars < 0 {
+		return fmt.Errorf("voice_notifications.response_tail.max_text_chars must be >= 0, got %d", c.VoiceNotifications.ResponseTail.MaxTextChars)
+	}
+	if c.VoiceNotifications.Expiration.DefaultTTLSeconds < 0 {
+		return fmt.Errorf("voice_notifications.expiration.default_ttl_seconds must be >= 0, got %d", c.VoiceNotifications.Expiration.DefaultTTLSeconds)
+	}
+	for code, seconds := range c.VoiceNotifications.Expiration.CodeTTLSeconds {
+		if strings.TrimSpace(code) == "" {
+			return errors.New("voice_notifications.expiration.code_ttl_seconds contains an empty code")
+		}
+		if seconds < 0 {
+			return fmt.Errorf("voice_notifications.expiration.code_ttl_seconds.%s must be >= 0, got %d", code, seconds)
+		}
 	}
 	if c.TodoReminderToolCalls < 0 {
 		return fmt.Errorf("todo_reminder_tool_calls must be >= 0, got %d", c.TodoReminderToolCalls)

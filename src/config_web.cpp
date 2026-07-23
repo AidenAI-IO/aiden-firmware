@@ -31,7 +31,9 @@
 
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -459,6 +461,33 @@ bool config_schema_error(std::string* error,
     return false;
 }
 
+bool is_valid_bare_toml_key(const std::string& key) {
+    if (key.empty()) return false;
+    for (char c : key) {
+        bool valid = (c >= 'a' && c <= 'z') ||
+                     (c >= 'A' && c <= 'Z') ||
+                     (c >= '0' && c <= '9') ||
+                     c == '_' || c == '-';
+        if (!valid) return false;
+    }
+    return true;
+}
+
+bool validate_non_negative_json_integer(cJSON* item,
+                                        const std::string& path,
+                                        std::string* error) {
+    if (!item) return true;
+    double value = item->valuedouble;
+    if (!json_is_number(item) || !std::isfinite(value) || value < 0.0 ||
+        std::floor(value) != value || value > std::numeric_limits<int>::max()) {
+        if (error) {
+            *error = "agent config invalid field " + path + ": expected non-negative integer";
+        }
+        return false;
+    }
+    return true;
+}
+
 std::string config_field_path(const char* section, const char* key) {
     return std::string(section) + "." + key;
 }
@@ -468,6 +497,7 @@ enum ConfigFieldKind {
     CONFIG_FIELD_NUMBER,
     CONFIG_FIELD_BOOL,
     CONFIG_FIELD_ARRAY,
+    CONFIG_FIELD_OBJECT,
 };
 
 bool validate_config_field_type(cJSON* obj,
@@ -500,6 +530,11 @@ bool validate_config_field_type(cJSON* obj,
         case CONFIG_FIELD_ARRAY:
             if (!json_is_array(item)) {
                 return config_schema_error(error, path, "array", item);
+            }
+            return true;
+        case CONFIG_FIELD_OBJECT:
+            if (!json_is_object(item)) {
+                return config_schema_error(error, path, "object", item);
             }
             return true;
     }
@@ -624,6 +659,10 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"audio_archive", "storage_path", CONFIG_FIELD_STRING},
         {"audio_archive", "max_files", CONFIG_FIELD_NUMBER},
         {"audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER},
+        {"voice_notifications", "enabled", CONFIG_FIELD_BOOL},
+        {"voice_notifications", "max_pending", CONFIG_FIELD_NUMBER},
+        {"voice_notifications", "response_tail", CONFIG_FIELD_OBJECT},
+        {"voice_notifications", "expiration", CONFIG_FIELD_OBJECT},
         {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
         {"hid", "keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "mouse_device", CONFIG_FIELD_STRING},
@@ -708,6 +747,58 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
                                         fields[i].kind,
                                         error)) {
             return false;
+        }
+    }
+
+    cJSON* voice_notifications = cJSON_GetObjectItem(root, "voice_notifications");
+    if (json_is_object(voice_notifications)) {
+        if (!validate_non_negative_json_integer(
+                cJSON_GetObjectItem(voice_notifications, "max_pending"),
+                "voice_notifications.max_pending",
+                error)) {
+            return false;
+        }
+        cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
+        if (json_is_object(response_tail)) {
+            if (!validate_config_field_type(response_tail, "voice_notifications.response_tail", "enabled", CONFIG_FIELD_BOOL, error) ||
+                !validate_config_field_type(response_tail, "voice_notifications.response_tail", "max_items", CONFIG_FIELD_NUMBER, error) ||
+                !validate_config_field_type(response_tail, "voice_notifications.response_tail", "max_text_chars", CONFIG_FIELD_NUMBER, error)) {
+                return false;
+            }
+            if (!validate_non_negative_json_integer(cJSON_GetObjectItem(response_tail, "max_items"), "voice_notifications.response_tail.max_items", error) ||
+                !validate_non_negative_json_integer(cJSON_GetObjectItem(response_tail, "max_text_chars"), "voice_notifications.response_tail.max_text_chars", error)) {
+                return false;
+            }
+        }
+
+        cJSON* expiration = cJSON_GetObjectItem(voice_notifications, "expiration");
+        if (json_is_object(expiration)) {
+            if (!validate_config_field_type(expiration, "voice_notifications.expiration", "default_ttl_seconds", CONFIG_FIELD_NUMBER, error) ||
+                !validate_config_field_type(expiration, "voice_notifications.expiration", "code_ttl_seconds", CONFIG_FIELD_OBJECT, error)) {
+                return false;
+            }
+            if (!validate_non_negative_json_integer(cJSON_GetObjectItem(expiration, "default_ttl_seconds"), "voice_notifications.expiration.default_ttl_seconds", error)) {
+                return false;
+            }
+            cJSON* code_ttl_seconds = cJSON_GetObjectItem(expiration, "code_ttl_seconds");
+            if (json_is_object(code_ttl_seconds)) {
+                for (cJSON* item = code_ttl_seconds->child; item; item = item->next) {
+                    const std::string code = item->string ? item->string : "";
+                    if (!is_valid_bare_toml_key(code)) {
+                        if (error) {
+                            *error = "agent config invalid field voice_notifications.expiration.code_ttl_seconds."
+                                   + code + ": expected bare TOML key";
+                        }
+                        return false;
+                    }
+                    if (!json_is_number(item)) {
+                        return config_schema_error(error, std::string("voice_notifications.expiration.code_ttl_seconds.") + code, "number", item);
+                    }
+                    if (!validate_non_negative_json_integer(item, std::string("voice_notifications.expiration.code_ttl_seconds.") + code, error)) {
+                        return false;
+                    }
+                }
+            }
         }
     }
     return true;
@@ -1446,7 +1537,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
     }
 
     const char* sections[] = {
-        "model", "model_text", "tts", "stt", "audio", "audio_archive",
+        "model", "model_text", "tts", "stt", "audio", "audio_archive", "voice_notifications",
         "log", "hid", "search", "telemetry", "termination_policy",
         "live_activity", "agent", NULL,
     };
@@ -2333,6 +2424,20 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(audio_archive, "max_files", config.audio_archive.max_files);
     cJSON_AddNumberToObject(audio_archive, "max_size_mb", config.audio_archive.max_size_mb);
 
+    cJSON* voice_notifications = add_object(root, "voice_notifications");
+    cJSON_AddBoolToObject(voice_notifications, "enabled", config.voice_notifications.enabled ? 1 : 0);
+    cJSON_AddNumberToObject(voice_notifications, "max_pending", config.voice_notifications.max_pending);
+    cJSON* response_tail = add_object(voice_notifications, "response_tail");
+    cJSON_AddBoolToObject(response_tail, "enabled", config.voice_notifications.response_tail.enabled ? 1 : 0);
+    cJSON_AddNumberToObject(response_tail, "max_items", config.voice_notifications.response_tail.max_items);
+    cJSON_AddNumberToObject(response_tail, "max_text_chars", config.voice_notifications.response_tail.max_text_chars);
+    cJSON* expiration = add_object(voice_notifications, "expiration");
+    cJSON_AddNumberToObject(expiration, "default_ttl_seconds", config.voice_notifications.expiration.default_ttl_seconds);
+    cJSON* code_ttl_seconds = add_object(expiration, "code_ttl_seconds");
+    for (const auto& item : config.voice_notifications.expiration.code_ttl_seconds) {
+        cJSON_AddNumberToObject(code_ttl_seconds, item.first.c_str(), item.second);
+    }
+
     cJSON* log_config = add_object(root, "log");
     cJSON_AddNumberToObject(log_config, "llm_http_retention_days", config.log.llm_http_retention_days);
 
@@ -2622,6 +2727,33 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->audio_archive.storage_path, audio_archive, "storage_path");
         set_json_int(&config->audio_archive.max_files, audio_archive, "max_files");
         set_json_int(&config->audio_archive.max_size_mb, audio_archive, "max_size_mb");
+    }
+
+    cJSON* voice_notifications = cJSON_GetObjectItem(root, "voice_notifications");
+    if (json_is_object(voice_notifications)) {
+        set_json_bool(&config->voice_notifications.enabled, voice_notifications, "enabled");
+        set_json_int(&config->voice_notifications.max_pending, voice_notifications, "max_pending");
+
+        cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
+        if (json_is_object(response_tail)) {
+            set_json_bool(&config->voice_notifications.response_tail.enabled, response_tail, "enabled");
+            set_json_int(&config->voice_notifications.response_tail.max_items, response_tail, "max_items");
+            set_json_int(&config->voice_notifications.response_tail.max_text_chars, response_tail, "max_text_chars");
+        }
+
+        cJSON* expiration = cJSON_GetObjectItem(voice_notifications, "expiration");
+        if (json_is_object(expiration)) {
+            set_json_int(&config->voice_notifications.expiration.default_ttl_seconds, expiration, "default_ttl_seconds");
+            cJSON* code_ttl_seconds = cJSON_GetObjectItem(expiration, "code_ttl_seconds");
+            if (json_is_object(code_ttl_seconds)) {
+                config->voice_notifications.expiration.code_ttl_seconds.clear();
+                for (cJSON* item = code_ttl_seconds->child; item; item = item->next) {
+                    if (json_is_number(item) && item->string) {
+                        config->voice_notifications.expiration.code_ttl_seconds[item->string] = item->valueint;
+                    }
+                }
+            }
+        }
     }
 
     cJSON* log_config = cJSON_GetObjectItem(root, "log");

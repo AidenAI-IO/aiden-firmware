@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -412,23 +413,58 @@ func TestStorageMonitorPublishesActiveUpgradeAndResolvedEvents(t *testing.T) {
 		t.Fatalf("published %d events, want 4: %+v", len(notifier.events), notifier.events)
 	}
 	warning := notifier.events[0]
-	if warning.Code != "storage" || warning.DedupeKey != "storage:device" || warning.State != "active" || warning.Severity != StorageLevelWarning {
+	if warning.Code != "storage" || warning.DedupeKey != "storage:device" || warning.State != VoiceNotificationActive || warning.Severity != SeverityWarning {
 		t.Fatalf("warning event = %+v", warning)
 	}
 	updatedWarning := notifier.events[1]
-	if updatedWarning.State != "active" || updatedWarning.Severity != StorageLevelWarning || updatedWarning.Params["available_mb"] != uint64(35) {
+	if updatedWarning.State != VoiceNotificationActive || updatedWarning.Severity != SeverityWarning || updatedWarning.Params["available_mb"] != "35" {
 		t.Fatalf("updated warning event = %+v", updatedWarning)
 	}
 	critical := notifier.events[2]
-	if critical.State != "active" || critical.Severity != StorageLevelCritical {
+	if critical.State != VoiceNotificationActive || critical.Severity != SeverityCritical {
 		t.Fatalf("critical event = %+v", critical)
 	}
 	resolved := notifier.events[3]
-	if resolved.State != "resolved" || resolved.Severity != StorageLevelCritical {
+	if resolved.State != VoiceNotificationResolved || resolved.Severity != SeverityCritical {
 		t.Fatalf("resolved event = %+v, want resolved with previous critical severity", resolved)
 	}
-	if got := resolved.Params["available_mb"]; got != uint64(60) {
+	if got := resolved.Params["available_mb"]; got != "60" {
 		t.Fatalf("resolved available_mb = %#v, want 60", got)
+	}
+}
+
+func TestStorageMonitorPublishesToVoiceNotificationManager(t *testing.T) {
+	sampler := &sequenceStorageSampler{samples: []StorageSample{
+		storageSampleWithAvailableMB(40),
+		storageSampleWithAvailableMB(60),
+	}}
+	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{
+		ResponseTail: VoiceNotificationResponseTailConfig{MaxItems: 1},
+	})
+	config := DefaultStorageConfig()
+	config.Cleanup.Enabled = false
+	monitor := NewStorageMonitor(config, sampler, nil, nil, manager)
+
+	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonStartup}); err != nil {
+		t.Fatalf("warning CheckAndRemediate() error = %v", err)
+	}
+	spoken := manager.PrepareSpokenText(context.Background(), SpokenTextInput{
+		ResponseText:   "处理完成。",
+		TailAppendable: true,
+	})
+	if spoken.Mode != SpokenTextModeTail || !strings.Contains(spoken.Text, "存储空间不足") {
+		t.Fatalf("warning spoken result = %+v", spoken)
+	}
+
+	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonStartup}); err != nil {
+		t.Fatalf("resolved CheckAndRemediate() error = %v", err)
+	}
+	resolved := manager.PrepareSpokenText(context.Background(), SpokenTextInput{
+		ResponseText:   "再次完成。",
+		TailAppendable: true,
+	})
+	if resolved.Mode != SpokenTextModeNormal || resolved.Text != "再次完成。" {
+		t.Fatalf("resolved spoken result = %+v", resolved)
 	}
 }
 

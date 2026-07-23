@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -205,18 +207,6 @@ func (c StorageConfig) Validate() error {
 		}
 	}
 	return nil
-}
-
-type VoiceNotificationSink interface {
-	Publish(ctx context.Context, event VoiceNotificationEvent) error
-}
-
-type VoiceNotificationEvent struct {
-	Code      string                 `json:"code"`
-	DedupeKey string                 `json:"dedupe_key"`
-	Severity  StorageLevel           `json:"severity"`
-	State     string                 `json:"state"`
-	Params    map[string]interface{} `json:"params,omitempty"`
 }
 
 // StorageMonitor owns storage sampling, remediation and final-state projection.
@@ -423,7 +413,7 @@ func (m *StorageMonitor) publishStatusTransition(ctx context.Context, status Sto
 		if !m.notificationActive {
 			return
 		}
-		event := m.notificationEvent(status, "resolved", m.notifiedLevel)
+		event := m.notificationEvent(status, VoiceNotificationResolved, m.notifiedLevel)
 		if err := m.notifier.Publish(ctx, event); err != nil {
 			if m.logger != nil {
 				m.logger.Warn("storage notification publish failed: %v", err)
@@ -438,7 +428,7 @@ func (m *StorageMonitor) publishStatusTransition(ctx context.Context, status Sto
 		}
 		return
 	}
-	event := m.notificationEvent(status, "active", status.Level)
+	event := m.notificationEvent(status, VoiceNotificationActive, status.Level)
 	if m.notificationActive && m.notifiedLevel == status.Level && reflect.DeepEqual(m.lastNotifiedEvent.Params, event.Params) && !refreshActive {
 		return
 	}
@@ -460,15 +450,36 @@ func (m *StorageMonitor) notificationEvent(status StorageStatus, state string, s
 	return VoiceNotificationEvent{
 		Code:      "storage",
 		DedupeKey: "storage:device",
-		Severity:  severity,
+		Severity:  storageNotificationSeverity(severity),
 		State:     state,
-		Params: map[string]interface{}{
+		Params: map[string]string{
 			"path":                     status.Path,
-			"available_mb":             status.AvailableBytes / storageMegabyte,
-			"cleanup_result":           append([]StorageCleanupResult(nil), status.LastCleanupResults...),
-			"unavailable_capabilities": append([]StorageCapability(nil), status.UnavailableCapabilities...),
+			"available_mb":             strconv.FormatUint(status.AvailableBytes/storageMegabyte, 10),
+			"cleanup_result":           storageNotificationJSON(status.LastCleanupResults),
+			"unavailable_capabilities": storageNotificationJSON(status.UnavailableCapabilities),
 		},
 	}
+}
+
+func storageNotificationSeverity(level StorageLevel) NotificationSeverity {
+	switch level {
+	case StorageLevelWarning:
+		return SeverityWarning
+	case StorageLevelCritical:
+		return SeverityCritical
+	case StorageLevelEmergency:
+		return SeverityEmergency
+	default:
+		return SeverityInfo
+	}
+}
+
+func storageNotificationJSON(value interface{}) string {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return "[]"
+	}
+	return string(payload)
 }
 
 func cleanerSelected(name string, targets []string) bool {

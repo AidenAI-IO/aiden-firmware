@@ -55,6 +55,7 @@ type Runtime struct {
 	logger             *Logger
 	profileDebouncer   *ProfileDebouncer
 	waitForWakeup      *WaitForWakeupController
+	voiceNotifications *VoiceNotificationManager
 	memoryPlane        MemoryPlane
 	sessionManager     SessionManager
 	contextManager     *contextmanager.ContextManager
@@ -102,8 +103,9 @@ type RunResult struct {
 	// Deprecated: use WaitForWakeupRequested.
 	SleepRequested bool `json:"sleep_requested,omitempty"`
 	// Deprecated: use WaitForWakeupReason.
-	SleepReason    string `json:"sleep_reason,omitempty"`
-	SpeechStreamed bool   `json:"-"`
+	SleepReason    string       `json:"sleep_reason,omitempty"`
+	SpeechStreamed bool         `json:"-"`
+	TurnFailure    *TurnFailure `json:"-"`
 }
 
 func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
@@ -380,6 +382,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.profileDebouncer = debouncer
 	rt.waitForWakeup = waitForWakeupController
 	rt.storageMonitor = newRuntimeStorageMonitor(cfg, logger, rt.memories)
+	rt.SetVoiceNotificationSink(rt.VoiceNotificationSink())
 	modelManager.SetStorageMonitor(rt.storageMonitor)
 	if rt.memories != nil {
 		rt.memories.SetStorageMonitor(rt.storageMonitor)
@@ -456,13 +459,17 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 	}
 
 	rt := &Runtime{
-		config:             cfg,
-		models:             models,
-		memories:           memories,
-		tools:              tools,
-		skills:             skillManager,
-		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
-		waitForWakeup:      waitForWakeupController,
+		config:        cfg,
+		models:        models,
+		memories:      memories,
+		tools:         tools,
+		skills:        skillManager,
+		skillsLoaded:  skillIndex != nil && len(skillIndex.Names()) > 0,
+		waitForWakeup: waitForWakeupController,
+		voiceNotifications: NewVoiceNotificationManager(
+			cfg.VoiceNotifications,
+			WithVoiceNotificationLocale(resolvedVoiceNotificationLocale(cfg)),
+		),
 		runtimeID:          uuid.NewString(),
 		telemetrySessionID: uuid.NewString(),
 		environmentBridge:  environmentBridge,
@@ -588,6 +595,11 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
+	defer func() {
+		if runErr != nil && isLLMTurnFailureSource(runErr) {
+			result.TurnFailure = TurnFailureFromError(runErr)
+		}
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}

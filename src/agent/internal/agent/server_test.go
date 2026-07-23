@@ -1268,6 +1268,148 @@ func TestServerSpeakToolContentUsesTTS(t *testing.T) {
 	}
 }
 
+func TestServerAsyncChatAppendsVoiceNotificationOnlyToFinalSpeech(t *testing.T) {
+	streamingDisabled := false
+	model := &scriptedModel{responses: roleDirectResponses("Done.\n<tts>Done.</tts>")}
+	cfg := DefaultConfig()
+	cfg.Model = ModelConfig{Provider: "fake"}
+	cfg.Instruction = "Answer directly."
+	cfg.VoiceStreamingTTSEnabled = &streamingDisabled
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, cfg),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("runtime.Close() error = %v", err)
+		}
+	})
+	if err := runtime.VoiceNotificationSink().Publish(context.Background(), VoiceNotificationEvent{
+		Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server := newServerForTest(runtime)
+	provider := &recordingTTSProvider{name: "server-provider"}
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"finish it"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleChat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleChat status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var start map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&start); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := start["request_id"]
+	if requestID == "" {
+		t.Fatal("missing request_id")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var result ChatResultResponse
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code == http.StatusOK {
+			result = ChatResultResponse{}
+			if err := json.NewDecoder(resultRec.Body).Decode(&result); err == nil && result.Status == "complete" {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if result.Status != "complete" {
+		t.Fatalf("chat result = %#v", result)
+	}
+	if strings.Contains(result.Response, "存储空间") {
+		t.Fatalf("display response was changed by voice notification: %q", result.Response)
+	}
+	waitForProviderTextCount(t, provider, 1)
+	if got := provider.texts(); len(got) != 1 || got[0] != "Done.另外提醒一下，设备存储空间不足。" {
+		t.Fatalf("spoken texts = %#v", got)
+	}
+	waitForServerRequestFinished(t, server, requestID)
+}
+
+func TestServerAsyncChatSpeaksReplacementForFinalLLMFailure(t *testing.T) {
+	streamingDisabled := false
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+		}),
+		&testModelResolver{model: failingGenerateModel{err: errors.New("dial tcp: network is unreachable")}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("runtime.Close() error = %v", err)
+		}
+	})
+	server := newServerForTest(runtime)
+	provider := &recordingTTSProvider{name: "server-provider"}
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"finish it"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleChat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleChat status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var start map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&start); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := start["request_id"]
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code == http.StatusOK {
+			var result ChatResultResponse
+			if err := json.NewDecoder(resultRec.Body).Decode(&result); err == nil && result.Status == "error" {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitForProviderTextCount(t, provider, 1)
+	if got := provider.texts(); len(got) != 1 || got[0] != "当前网络不可用，暂时无法完成这个请求。" {
+		t.Fatalf("spoken replacement = %#v", got)
+	}
+	waitForServerRequestFinished(t, server, requestID)
+}
+
+func waitForServerRequestFinished(t *testing.T, server *Server, requestID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		server.activeRunsMu.Lock()
+		_, active := server.activeRuns[requestID]
+		server.activeRunsMu.Unlock()
+		if !active {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("request %q was still active after final speech", requestID)
+}
+
 func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
 	speech := "Read volume."
 	model := &scriptedModel{
