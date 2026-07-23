@@ -151,7 +151,11 @@ switch_mode() {
 
 	udc=$(read_udc)
 	echo "" > "$UDC_PATH"
-	sleep 0.1
+	detach_seconds=0.1
+	if [ "$mode" = normal ]; then
+		detach_seconds=$DYNAMIC_KEYBOARD_RESTORE_DETACH_SECONDS
+	fi
+	sleep "$detach_seconds"
 	unlink_functions
 	set_identity "$mode"
 	if [ "$mode" = isolated ]; then

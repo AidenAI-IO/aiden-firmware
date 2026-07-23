@@ -47,6 +47,12 @@ grep -Fq 'link_ecm' "$CONTROL_SCRIPT" ||
 	fail "both profiles must restore ECM"
 grep -Fq 'echo "" > "$UDC_PATH"' "$CONTROL_SCRIPT" ||
 	fail "profile switching must unbind the single UDC"
+grep -Fq 'detach_seconds=0.1' "$CONTROL_SCRIPT" ||
+	fail "profile isolation must keep the short detach interval"
+grep -Fq 'detach_seconds=$DYNAMIC_KEYBOARD_RESTORE_DETACH_SECONDS' "$CONTROL_SCRIPT" ||
+	fail "normal profile restore must use the longer configured detach interval"
+grep -Eq '^DYNAMIC_KEYBOARD_RESTORE_DETACH_SECONDS=0\.[1-9][0-9]*$' "$CONF_FILE" ||
+	fail "normal profile restore must configure a sub-second detach interval"
 grep -Fq 'wait_for_configuration "$udc"' "$CONTROL_SCRIPT" ||
 	fail "profile switching must wait for iOS to configure the gadget"
 
