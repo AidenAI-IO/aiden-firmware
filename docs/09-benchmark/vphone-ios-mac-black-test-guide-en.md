@@ -79,10 +79,12 @@ It is recommended to prepare three terminals:
 
 ## 2. Current Implementation Baseline
 
-The current `vphone_ios_basic` suite version is `1.5` and contains eight tasks:
+The current `vphone_ios_basic` suite version is `1.6` and contains nine tasks:
+one `warmup` task (category `diagnostic`) plus eight scored tasks.
 
 | Task ID | Validation |
 | --- | --- |
+| `warmup` | Warm-up call; only takes one screenshot, to absorb daemon cold start |
 | `screenshot_home` | Capture and describe the screen |
 | `go_home` | Return to the Home Screen |
 | `open_settings` | Open Settings |
@@ -91,6 +93,13 @@ The current `vphone_ios_basic` suite version is `1.5` and contains eight tasks:
 | `clock_count_alarms` | Open Clock and count the alarms |
 | `settings_read_ethernet_ipv4` | Read the Ethernet IP address, subnet mask, and router |
 | `open_app_library` | Open the App Library and identify visible apps |
+
+`warmup` is the first task and only requires the agent to call `screenshot`
+once. It does not reflect model capability; it exists so the Agent daemon
+finishes its cold start before the scored tasks begin. With a larger model the
+daemon takes longer to become ready on first use, and without a warmup the
+runner marks the leading scored tasks as `skipped (agent not ready)`. Ignore the
+`warmup` result when scoring.
 
 This version does not depend on keyboard input. `open_web_url` opens the URL
 through the iOS URL handler instead of typing it character by character in the
@@ -131,7 +140,8 @@ uv sync --group dev
 uv run python -c 'import json; p=json.load(open("suites/vphone_ios_basic.json")); print(p["version"], len(p["tasks"]), [t["id"] for t in p["tasks"]])'
 ```
 
-The expected version is `1.5`, and the expected task count is `8`. If the branch
+The expected version is `1.6`, and the expected task count is `9` (including the
+leading `warmup`). If the branch
 or task content does not match the version supplied by the person responsible,
 stop testing and confirm the code version first. Do not switch branches directly
 when uncommitted changes are present.
@@ -620,7 +630,7 @@ uv run python -m runner run \
 This step checks not only the Bridge, but also whether the Agent's
 `quick_action.url` schema is passed to the Bridge correctly.
 
-### 8.3 Run All Eight Tasks
+### 8.3 Run the Full Task Set (1 warmup + 8 scored tasks)
 
 ```bash
 uv run python -m runner run \
@@ -633,20 +643,28 @@ uv run python -m runner run \
   -v
 ```
 
-A pre-started daemon with a fixed task ID is suitable for sequential debugging.
-Do not add `--repeats` in this topology. To repeat a test, run `runner run`
-multiple times separately.
+The first task to run is `warmup`, which waits for the daemon to become ready;
+the eight scored tasks follow. A pre-started daemon with a fixed task ID is
+suitable for sequential debugging. Do not add `--repeats` in this topology. To
+repeat a test, run `runner run` multiple times separately.
 
 `--no-judge` is used only to validate the execution path. In this mode,
-acceptance of a completed eight-task run means:
+acceptance of a completed run means:
 
 - There are no Bridge protocol errors.
 - There are no 429 ownership errors.
 - There are no Agent or device timeouts.
+- None of the eight scored tasks are `skipped` (every task after `warmup`
+  should actually run).
 - The tasks produce traces, screenshots, and reports.
 
 It does not mean that multi-step task results are correct. Without the Judge,
 the rubric may show `0/N`.
+
+If leading scored tasks are still marked `skipped (agent not ready)`, the daemon
+cold start is slower than the warmup allows (for example after switching to a
+larger model). Send one request to the daemon manually to warm it up, or raise
+`warmup`'s `must_complete_within_sec`, then rerun.
 
 ## 9. Enable the Judge for Formal Acceptance Testing (Command-Line Workflow)
 
