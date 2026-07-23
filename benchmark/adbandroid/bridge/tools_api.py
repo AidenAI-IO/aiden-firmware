@@ -873,6 +873,8 @@ class ADBToolsAPIHandler:
             "escape": "back",
             "esc": "back",
             "delete_backward": "backspace",
+            "delete": "backspace",
+            "del": "backspace",
         }
         normalized_keys = [alias_map.get(k, k) for k in normalized_keys]
         has_meta = any(k in ("meta", "cmd", "super", "win") for k in normalized_keys)

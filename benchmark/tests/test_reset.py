@@ -89,6 +89,19 @@ def test_agent_prompt_setup_can_make_history_clear_explicit():
 
     assert client.calls[-1] == ("clear_history",)
 
+
+def test_agent_prompt_setup_includes_prompt_prefix():
+    client = RecordingSetupClient()
+
+    per_task_setup(
+        client,
+        {"type": "agent_prompt", "prompt": "prepare editor", "timeout_sec": 5},
+        prompt_prefix="ADB benchmark rules",
+    )
+
+    assert client.calls[0] == ("chat", "ADB benchmark rules\n\nprepare editor", 5)
+
+
 def test_environment_setup_endpoint_is_derived_from_environment_endpoint():
     assert environment_setup_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/setup"
     assert environment_setup_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/api/setup"

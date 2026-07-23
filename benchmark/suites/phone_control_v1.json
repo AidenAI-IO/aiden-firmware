@@ -312,7 +312,7 @@
       "description_for_judge": "Agent must locate a text input and type the literal string 'Aiden test benchmark-2026!' into it.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，并停留在一个空白可编辑输入框中。不要输入任何文字、不要返回。",
+        "prompt": "请先打开 Notepad Free 或任意简单文本编辑应用，新建一个空白文档，并停留在一个空白可编辑输入框中。不要使用 Gmail、邮件、邮箱、浏览器搜索框、翻译应用、收件人字段或主题字段；如果当前在这些页面，请先返回桌面再打开简单文本编辑应用。不要输入任何文字、不要返回。",
         "timeout_sec": 120,
         "clear_history_after": true
       },
@@ -343,7 +343,7 @@
       "description_for_judge": "Agent must clear an input field that already contains text by selecting all and deleting.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请先打开笔记应用并新建一条笔记，在标题输入框中输入 hello-aiden。完成后保持标题输入框聚焦且文字可见，不要清空、不要返回。",
+        "prompt": "请先打开 Notepad Free 或任意简单文本编辑应用，新建一条笔记或空白文档，在标题输入框或正文输入框中输入 hello-aiden。不要使用 Gmail、邮件、邮箱、浏览器搜索框、翻译应用、收件人字段或主题字段。完成后保持该输入框聚焦且文字可见，不要清空、不要返回。",
         "timeout_sec": 120,
         "clear_history_after": true
       },
@@ -370,7 +370,7 @@
       "description_for_judge": "Agent must type a phrase, select all and copy it, then move to a different input field and paste it.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请先打开笔记应用、短信编辑页或任意简单文本编辑应用，准备一个有两个独立空白输入框或编辑区域同时可见的页面，例如笔记的标题输入框和正文输入区域，或短信的收件人输入框和正文输入框。两个输入区域都必须为空；不要使用翻译应用、浏览器搜索框或会自动翻译/转换文本的页面。完成后停留在编辑页面，不要输入任何文字、不要返回。",
+        "prompt": "请先打开 Notepad Free 或任意简单文本编辑应用，准备一个有两个独立空白输入框或编辑区域同时可见的页面，例如笔记的标题输入框和正文输入区域。两个输入区域都必须为空；不要使用 Gmail、邮件、邮箱、收件人字段、主题字段、翻译应用、浏览器搜索框或会自动翻译/转换文本的页面。完成后停留在编辑页面，不要输入任何文字、不要返回。",
         "timeout_sec": 120,
         "clear_history_after": true
       },
@@ -457,11 +457,11 @@
       "description_for_judge": "Agent must drag a currently visible normal app icon from its current position to a different location on the home screen. The icon should end up in a visibly different grid position.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请返回主屏幕，确保当前停留在桌面。",
+        "prompt": "请返回主屏幕，确保当前停留在桌面。选一个图标较少的桌面页。",
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请在当前桌面选择一个可见的普通应用图标，例如时钟、Chrome、Bibi 或 Play 商店；不要选择小组件、空白区域、通知栏或底部导航。将它拖到另一个空白网格位置。",
+      "prompt": "请在当前桌面选择一个可见的普通应用图标，例如时钟、Chrome、Bibi 或 Play 商店；不要选择小组件、空白区域、通知栏或底部导航。将它拖到另一个空白位置。在Android上长按图标可能出现快捷操作，此时不松开移动就能移动图标, 整个操作只应该一次按下，一次抬起。",
       "rubric": [
         {
           "id": "icon_located",

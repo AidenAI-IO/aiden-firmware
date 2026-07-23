@@ -135,12 +135,12 @@ def clear_stale_adb_android_owner(environment_url: str, timeout: float = 2.0) ->
     return active_task_id
 
 
-def per_task_setup(client: AgentClient, setup: dict[str, Any] | None) -> None:
+def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_prefix: str = "") -> None:
     if setup is None:
         return
     setup_type = setup.get("type")
     if setup_type == "agent_prompt":
-        _per_task_setup_agent_prompt(client, setup)
+        _per_task_setup_agent_prompt(client, setup, prompt_prefix=prompt_prefix)
         return
     if setup_type == "seed_memory":
         _per_task_setup_seed_memory(client, setup)
@@ -148,10 +148,13 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None) -> None:
     raise ResetError(f"unsupported setup form: {setup!r}")
 
 
-def _per_task_setup_agent_prompt(client: AgentClient, setup: dict[str, Any]) -> None:
+def _per_task_setup_agent_prompt(client: AgentClient, setup: dict[str, Any], *, prompt_prefix: str = "") -> None:
     prompt = setup.get("prompt")
     if not prompt:
         raise ResetError(f"agent_prompt setup missing prompt: {setup!r}")
+    prefix = str(prompt_prefix or "").strip()
+    if prefix:
+        prompt = f"{prefix}\n\n{prompt}"
     try:
         timeout = int(setup.get("timeout_sec", 90))
     except (ValueError, TypeError) as e:

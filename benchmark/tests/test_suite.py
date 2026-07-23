@@ -437,23 +437,29 @@ def test_phone_control_text_editing_tasks_have_input_setup():
     mixed_setup = task_by_id["type_long_mixed_text"].setup
     assert mixed_setup is not None
     assert mixed_setup["type"] == "agent_prompt"
+    assert "Notepad Free" in mixed_setup["prompt"]
     assert "空白可编辑输入框" in mixed_setup["prompt"]
+    assert "Gmail" in mixed_setup["prompt"]
     assert "不要输入任何文字" in mixed_setup["prompt"]
     assert mixed_setup["clear_history_after"] is True
 
     select_setup = task_by_id["select_all_and_delete"].setup
     assert select_setup is not None
     assert select_setup["type"] == "agent_prompt"
+    assert "Notepad Free" in select_setup["prompt"]
     assert "hello-aiden" in select_setup["prompt"]
+    assert "Gmail" in select_setup["prompt"]
     assert "聚焦" in select_setup["prompt"]
     assert select_setup["clear_history_after"] is True
 
     copy_setup = task_by_id["copy_paste_text"].setup
     assert copy_setup is not None
     assert copy_setup["type"] == "agent_prompt"
+    assert "Notepad Free" in copy_setup["prompt"]
     assert "标题输入框" in copy_setup["prompt"]
     assert "正文输入区域" in copy_setup["prompt"]
-    assert "短信" in copy_setup["prompt"]
+    assert "Gmail" in copy_setup["prompt"]
+    assert "收件人字段" in copy_setup["prompt"]
     assert "翻译应用" in copy_setup["prompt"]
     assert copy_setup["clear_history_after"] is True
 
@@ -468,6 +474,7 @@ def test_phone_control_icon_tasks_target_visible_app_icons():
         assert "普通应用图标" in task.prompt
         assert "设置图标" not in task.prompt
         assert "小组件" in task.prompt
+    assert "android" not in task_by_id["drag_app_icon"].platforms
 
 
 def test_phone_control_wifi_toggle_is_split_into_on_and_off_tasks():

@@ -176,6 +176,10 @@ def test_keyboard_tap_keys_array_semantics(bridge):
     _invoke(base_url, "keyboard_tap", {"keys": ["backspace"]})
     assert ("keyevent", 67) in device.calls
 
+    _invoke(base_url, "keyboard_tap", {"keys": ["delete"]})
+    assert device.calls[-1][0:2] == ("screenshot_jpeg",)
+    assert ("keyevent", 67) in device.calls
+
     status, body = _invoke(base_url, "keyboard_tap", {"keys": ["f5"]})
     assert body["is_error"] is True
 
