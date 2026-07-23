@@ -13,7 +13,8 @@ import (
 
 // AudioArchiveManager handles saving and cleanup of audio recordings.
 type AudioArchiveManager struct {
-	config AudioArchiveConfig
+	config  AudioArchiveConfig
+	storage *StorageManager
 }
 
 // NewAudioArchiveManager creates a new audio archive manager.
@@ -21,6 +22,40 @@ func NewAudioArchiveManager(config AudioArchiveConfig) *AudioArchiveManager {
 	return &AudioArchiveManager{
 		config: config,
 	}
+}
+
+// SetStorageManager routes recordings through the SD/eMMC storage modes. A
+// non-default storage_path in the config wins over the mode machinery (the
+// built-in default names the managed eMMC tier, see ExplicitStoragePath).
+func (m *AudioArchiveManager) SetStorageManager(sm *StorageManager) {
+	m.storage = sm
+}
+
+// writeDir returns the directory new recordings should be written to.
+func (m *AudioArchiveManager) writeDir() string {
+	if path := m.config.ExplicitStoragePath(); path != "" {
+		return path
+	}
+	if m.storage != nil {
+		if dir, err := m.storage.ResolveDir(StorageClassAudio); err == nil {
+			return dir
+		}
+	}
+	return m.config.StoragePathOrDefault()
+}
+
+// cleanupRoots returns the directories the retention limits apply to. With
+// the storage manager present, eMMC space is governed by watermark migration
+// and the limits act as the final eviction tier (SD when a card is mounted,
+// eMMC otherwise); a non-default storage_path bypasses all of that.
+func (m *AudioArchiveManager) cleanupRoots() []string {
+	if path := m.config.ExplicitStoragePath(); path != "" {
+		return []string{path}
+	}
+	if m.storage != nil {
+		return m.storage.CleanupRoots(StorageClassAudio)
+	}
+	return []string{m.config.StoragePathOrDefault()}
 }
 
 // SaveAudio saves audio samples to a WAV file and returns the path, duration in ms, and error.
@@ -39,7 +74,7 @@ func (m *AudioArchiveManager) SaveAudio(samples []int16, sampleRate int) (string
 	}
 
 	// Ensure storage directory exists
-	storagePath := m.config.StoragePathOrDefault()
+	storagePath := m.writeDir()
 	if err := os.MkdirAll(storagePath, 0755); err != nil {
 		return "", 0, fmt.Errorf("create storage dir: %w", err)
 	}
@@ -64,10 +99,20 @@ func (m *AudioArchiveManager) SaveAudio(samples []int16, sampleRate int) (string
 	return filePath, durationMs, nil
 }
 
-// cleanup removes old audio files based on max_files and max_size_mb limits.
+// cleanup applies the max_files and max_size_mb limits to the eviction-tier
+// roots (see cleanupRoots).
 func (m *AudioArchiveManager) cleanup() error {
-	storagePath := m.config.StoragePathOrDefault()
+	var firstErr error
+	for _, root := range m.cleanupRoots() {
+		if err := m.cleanupDir(root); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
 
+// cleanupDir removes old audio files in one directory based on the limits.
+func (m *AudioArchiveManager) cleanupDir(storagePath string) error {
 	entries, err := os.ReadDir(storagePath)
 	if err != nil {
 		return err
@@ -113,6 +158,8 @@ func (m *AudioArchiveManager) cleanup() error {
 	}
 
 	// Delete oldest files until under limits
+	removedFiles := 0
+	var removedBytes int64
 	for len(files) > maxFiles || totalSize > maxSizeBytes {
 		if len(files) == 0 {
 			break
@@ -122,8 +169,14 @@ func (m *AudioArchiveManager) cleanup() error {
 		if err := os.Remove(oldest.path); err != nil {
 			return fmt.Errorf("remove %s: %w", oldest.path, err)
 		}
+		removedFiles++
+		removedBytes += oldest.size
 		files = files[1:]
 		totalSize -= oldest.size
+	}
+	if removedFiles > 0 {
+		fmt.Fprintf(os.Stderr, "[audio_archive] evicted %d oldest recordings (%d bytes) from %s to stay within max_files=%d/max_size_mb=%d\n",
+			removedFiles, removedBytes, storagePath, maxFiles, m.config.MaxSizeMBOrDefault())
 	}
 
 	return nil
