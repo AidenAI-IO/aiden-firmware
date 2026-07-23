@@ -3487,6 +3487,29 @@ func TestRuntimeRunResetsPromptTokensWhenUsageUnavailable(t *testing.T) {
 	}
 }
 
+func TestRuntimeCloseStopsStoragePoller(t *testing.T) {
+	rt, err := NewRuntime(Config{
+		ConfigDir:     ensureTestConfigDir(t, t.TempDir()),
+		Model:         ModelConfig{Provider: "fake"},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	if err := rt.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	select {
+	case <-rt.storage.stop:
+	default:
+		t.Fatal("Close() did not stop the storage poller")
+	}
+}
+
 func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 

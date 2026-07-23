@@ -409,6 +409,20 @@ private:
                 << body;
             return out.str();
         }
+        if (path == "/api/storage/eject") {
+            const std::string body =
+                "{\"effective_mode\":1,"
+                "\"card\":{\"present\":true,\"mounted\":false},"
+                "\"format_job\":{\"status\":\"idle\"}}";
+            std::ostringstream out;
+            out << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Connection: close\r\n"
+                << "\r\n"
+                << body;
+            return out.str();
+        }
         if (path == "/api/config-test/stt/stop") {
             const std::string body =
                 "{\"ok\":true,\"transcript\":\"agent live transcript\","
@@ -608,6 +622,9 @@ struct StubEnv {
     // env vars; see start_server().
     std::vector<std::string> entries;
     bool has_agent_bin = false;
+    // When non-empty, written to <tmp>/storage.state and passed to config_web
+    // via --storage-state so storage endpoints see a controlled snapshot.
+    std::string storage_state;
 
     void set(const std::string& key, const std::string& value) {
         if (key == "AIDEN_AGENT_BIN") has_agent_bin = true;
@@ -629,6 +646,9 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
     write_file(wifi_conf_path, "");
     write_file(sysenv_path, "");
     write_file(cmdline_path, "console=ttyFIQ0 aiden.slot_suffix=_a root=PARTLABEL=rootfs_a\n");
+    if (!stub_env.storage_state.empty()) {
+        write_file(handle->tmp_dir + "/storage.state", stub_env.storage_state);
+    }
 
     pid_t pid = ::fork();
     REQUIRE(pid >= 0);
@@ -669,6 +689,10 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
         const std::string sysenv_arg = "--system-env=" + sysenv_path;
         const std::string ota_state_arg = "--ota-state=" + ota_state_path;
         const std::string cmdline_arg = "--cmdline=" + cmdline_path;
+        // Point --storage-state at a file inside tmp_dir either way; scenarios
+        // without storage_state content get a missing file, which the status
+        // endpoint must report as unavailable rather than erroring.
+        const std::string storage_state_arg = "--storage-state=" + handle->tmp_dir + "/storage.state";
         std::vector<char*> argv = {
             const_cast<char*>(AIDEN_CONFIG_WEB_BIN),
             const_cast<char*>("--bind=127.0.0.1"),
@@ -678,6 +702,7 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
             const_cast<char*>(sysenv_arg.c_str()),
             const_cast<char*>(ota_state_arg.c_str()),
             const_cast<char*>(cmdline_arg.c_str()),
+            const_cast<char*>(storage_state_arg.c_str()),
             nullptr,
         };
         ::execve(AIDEN_CONFIG_WEB_BIN, argv.data(), envp.data());
@@ -1636,6 +1661,78 @@ TEST_CASE("config_web: stt live test proxies start and stop to agent") {
     CHECK(requests[0].body.find("\"socket\":\"/tmp/audio.sock\"") != std::string::npos);
     CHECK(requests[1].method == "POST");
     CHECK(requests[1].path == "/api/config-test/stt/stop");
+}
+
+TEST_CASE("config_web: GET /api/storage/status parses the agent state mirror") {
+    StubEnv env;
+    env.storage_state =
+        "SD_PRESENT=1\n"
+        "SD_MOUNTED=1\n"
+        "SD_DEVICE=/dev/mmcblk2p1\n"
+        "SD_MOUNTPOINT=/mnt/sdcard\n"
+        "EFFECTIVE_MODE=2\n"
+        "SD_TOTAL_BYTES=31914983424\n"
+        "SD_FREE_BYTES=31834701824\n"
+        "REASON=\n"
+        "FORMAT_STATUS=idle\n"
+        "FORMAT_FS=\n"
+        "FORMAT_ERROR=\n"
+        "MIGRATE_STATUS=running\n"
+        "MIGRATE_DETAIL=\n"
+        "MIGRATE_ERROR=\n"
+        "MIGRATE_MOVED_FILES=12\n"
+        "MIGRATE_MOVED_BYTES=3145728\n";
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/storage/status");
+    REQUIRE(resp.status == 200);
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    CHECK((cJSON_GetObjectItem(parsed, "available")->type & 0xff) == cJSON_True);
+    CHECK((cJSON_GetObjectItem(parsed, "sd_present")->type & 0xff) == cJSON_True);
+    CHECK((cJSON_GetObjectItem(parsed, "sd_mounted")->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(parsed, "mount_point") == "/mnt/sdcard");
+    CHECK(cJSON_GetObjectItem(parsed, "effective_mode")->valueint == 2);
+    CHECK(cJSON_GetObjectItem(parsed, "total_bytes")->valuedouble == doctest::Approx(31914983424.0));
+    cJSON* job = cJSON_GetObjectItem(parsed, "format_job");
+    REQUIRE(job != nullptr);
+    CHECK(required_json_string(job, "status") == "idle");
+    cJSON* migration = cJSON_GetObjectItem(parsed, "migration");
+    REQUIRE(migration != nullptr);
+    CHECK(required_json_string(migration, "status") == "running");
+    CHECK(cJSON_GetObjectItem(migration, "moved_files")->valueint == 12);
+    CHECK(cJSON_GetObjectItem(migration, "moved_bytes")->valuedouble == doctest::Approx(3145728.0));
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/storage/status reports unavailable without a state file") {
+    StubEnv env;  // no storage_state -> --storage-state points at a missing file
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/storage/status");
+    REQUIRE(resp.status == 200);
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    CHECK((cJSON_GetObjectItem(parsed, "available")->type & 0xff) == cJSON_False);
+    CHECK((cJSON_GetObjectItem(parsed, "sd_present")->type & 0xff) == cJSON_False);
+    CHECK(cJSON_GetObjectItem(parsed, "effective_mode")->valueint == 1);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: POST /api/storage/eject proxies to the agent") {
+    StubAgentSTTTestServer agent_server;
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "POST", "/api/storage/eject", "{}");
+    REQUIRE(resp.status == 200);
+    CHECK(resp.body.find("\"effective_mode\":1") != std::string::npos);
+
+    auto requests = agent_server.requests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].method == "POST");
+    CHECK(requests[0].path == "/api/storage/eject");
 }
 
 TEST_CASE("config_web: GET /api/config accepts optional field-level omissions from resolved config") {

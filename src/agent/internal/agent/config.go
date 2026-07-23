@@ -110,6 +110,79 @@ func (c AudioArchiveConfig) StoragePathOrDefault() string {
 	return path
 }
 
+// ExplicitStoragePath returns the storage path only when it opts out of
+// storage-manager routing, else "". DefaultConfig seeds StoragePath with the
+// built-in default and the config portal persists resolved values, so a stored
+// "/userdata/audio" is indistinguishable from "never configured" — and it names
+// the same directory the storage manager already uses as the audio eMMC tier.
+// Treat it as unset; only a non-default path pins recordings to a fixed
+// directory.
+func (c AudioArchiveConfig) ExplicitStoragePath() string {
+	path := strings.TrimSpace(c.StoragePath)
+	if path == defaultAudioArchiveStoragePath {
+		return ""
+	}
+	return path
+}
+
+// StorageConfig tunes the optional microSD data store managed by
+// StorageManager. The storage mode itself is not configurable: a usable
+// card means dual storage, otherwise eMMC only (docs/04-agent/storage-modes.md).
+type StorageConfig struct {
+	MountPoint    string `toml:"mount_point,omitempty"`
+	Device        string `toml:"device,omitempty"`
+	MinCardFreeMB int    `toml:"min_card_free_mb,omitempty"`
+	// Watermarks for the background migration of older governed data from
+	// eMMC to the SD card: migration starts when eMMC free space drops
+	// below MigrateStartFreePct and stops once it reaches MigrateStopFreePct.
+	MigrateStartFreePct int `toml:"migrate_start_free_pct,omitempty"`
+	MigrateStopFreePct  int `toml:"migrate_stop_free_pct,omitempty"`
+}
+
+// MountPointOrDefault returns MountPoint if non-empty, else "/mnt/sdcard".
+func (c StorageConfig) MountPointOrDefault() string {
+	path := strings.TrimSpace(c.MountPoint)
+	if path == "" {
+		return defaultStorageMountPoint
+	}
+	return path
+}
+
+// DeviceOrDefault returns Device if non-empty, else "mmcblk2".
+func (c StorageConfig) DeviceOrDefault() string {
+	dev := strings.TrimSpace(c.Device)
+	if dev == "" {
+		return defaultStorageDevice
+	}
+	return dev
+}
+
+// MinCardFreeMBOrDefault returns MinCardFreeMB if positive, else 64.
+func (c StorageConfig) MinCardFreeMBOrDefault() int {
+	if c.MinCardFreeMB <= 0 {
+		return defaultStorageMinCardFreeMB
+	}
+	return c.MinCardFreeMB
+}
+
+// MigrateWatermarksOrDefault returns the (start, stop) free-space
+// percentages for eMMC→SD migration. Defaults: start below 10%, stop at
+// 50%. An inverted or out-of-range pair falls back to the defaults so a
+// bad config cannot disable or loop the migrator.
+func (c StorageConfig) MigrateWatermarksOrDefault() (int, int) {
+	start, stop := c.MigrateStartFreePct, c.MigrateStopFreePct
+	if start <= 0 {
+		start = defaultStorageMigrateStartFreePct
+	}
+	if stop <= 0 {
+		stop = defaultStorageMigrateStopFreePct
+	}
+	if start >= stop || stop > 95 {
+		return defaultStorageMigrateStartFreePct, defaultStorageMigrateStopFreePct
+	}
+	return start, stop
+}
+
 // LogConfig controls local runtime log retention.
 type LogConfig struct {
 	LLMHTTPRetentionDays int `toml:"llm_http_retention_days,omitempty"`
@@ -173,6 +246,7 @@ type Config struct {
 	Device                     DeviceConfig             `toml:"device,omitempty"`
 	Audio                      AudioConfig              `toml:"audio,omitempty"`
 	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
+	Storage                    StorageConfig            `toml:"storage,omitempty"`
 	VoiceNotifications         VoiceNotificationsConfig `toml:"voice_notifications,omitempty"`
 	Log                        LogConfig                `toml:"log,omitempty"`
 	OTA                        OTAConfig                `toml:"ota,omitempty"`
