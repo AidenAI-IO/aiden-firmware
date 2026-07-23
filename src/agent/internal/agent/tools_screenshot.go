@@ -113,7 +113,7 @@ func (t *ScreenshotTool) ReturnsVisualObservation() bool { return true }
 func (t *ScreenshotTool) Description() string {
 	return `Capture a screenshot from the connected display. No input required (pass empty JSON {} or ""). ` +
 		`Returns a JSON object with width, height, and base64-encoded JPEG image data. ` +
-		`The returned width and height define coord_space:"screenshot": use pixel coordinates exactly as measured in this returned image.`
+		`Use normalized 0-1000 coordinates for coordinate input tools. Convert visual measurements from this image before acting: x_normalized=x/max(width-1,1)*1000 and y_normalized=y/max(height-1,1)*1000; do not pass screenshot pixels directly.`
 }
 
 func (t *ScreenshotTool) ArgsSchema() map[string]any {
@@ -175,6 +175,9 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		displayWidth = croppedWidth
 		displayHeight = croppedHeight
 		displayData = croppedData
+	}
+	if t.screen != nil {
+		t.screen.UpdateScreenshot(displayData, displayWidth, displayHeight)
 	}
 
 	result := screenshotResult{

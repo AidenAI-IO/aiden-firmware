@@ -207,6 +207,9 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 		displayHeight = croppedHeight
 		displayData = croppedData
 	}
+	if t.screen != nil {
+		t.screen.UpdateScreenshot(displayData, displayWidth, displayHeight)
+	}
 	result := screenshotResult{
 		Width:  displayWidth,
 		Height: displayHeight,
