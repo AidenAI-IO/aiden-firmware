@@ -103,17 +103,16 @@ func (t *appSearchOpenTool) call(ctx context.Context, input string) (string, err
 		platform = "ios"
 	}
 	result, err := runAppSearchOpenFlow(ctx, appSearchOpenFlowConfig{
-		hw:                   t.hw,
-		vision:               t.vision,
-		platform:             platform,
-		searchTerm:           t.searchTerm(args.App),
-		findAppTapFn:         t.findAppTapFn,
-		confirmAppOpenFn:     t.confirmAppOpenFn,
-		afterOpenFn:          t.afterOpenFn,
-		entryTool:            t.entryTool,
-		launchDelay:          t.launchDelay,
-		sleep:                t.sleep,
-		iosKeyboardIsolation: t.iosKeyboardIsolation,
+		hw:               t.hw,
+		vision:           t.vision,
+		platform:         platform,
+		searchTerm:       t.searchTerm(args.App),
+		findAppTapFn:     t.findAppTapFn,
+		confirmAppOpenFn: t.confirmAppOpenFn,
+		afterOpenFn:      t.afterOpenFn,
+		entryTool:        t.entryTool,
+		launchDelay:      t.launchDelay,
+		sleep:            t.sleep,
 	})
 	if err != nil {
 		return jsonString(map[string]any{"ok": false, "error": err.Error(), "target": args.App, "steps": result.Steps, "vlm_calls": result.VLMCalls}), nil
@@ -143,17 +142,16 @@ func (t *appSearchOpenTool) searchTerm(app string) string {
 }
 
 type appSearchOpenFlowConfig struct {
-	hw                   *textInputHardwareDeps
-	vision               textInputVision
-	platform             string
-	searchTerm           string
-	findAppTapFn         func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
-	confirmAppOpenFn     func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
-	afterOpenFn          func() error
-	entryTool            *EnterTextInFieldTool
-	launchDelay          time.Duration
-	sleep                func(context.Context, time.Duration) error
-	iosKeyboardIsolation *iosKeyboardIsolationController
+	hw               *textInputHardwareDeps
+	vision           textInputVision
+	platform         string
+	searchTerm       string
+	findAppTapFn     func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
+	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
+	afterOpenFn      func() error
+	entryTool        *EnterTextInFieldTool
+	launchDelay      time.Duration
+	sleep            func(context.Context, time.Duration) error
 }
 
 type appSearchOpenFlowResult struct {
