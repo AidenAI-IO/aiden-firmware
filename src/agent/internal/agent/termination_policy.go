@@ -1,16 +1,24 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"image"
+	"image/jpeg"
 	"math"
 	"strings"
 	"time"
 )
+
+// screenshotProgressIgnoreTopFraction excludes the phone status bar, whose
+// clock and battery indicators can change without meaningful UI progress.
+const screenshotProgressIgnoreTopFraction = 0.08
 
 // StopReason explains why the agent loop stopped or intervened.
 type StopReason string
@@ -154,9 +162,8 @@ type TerminationPolicy struct {
 	lastResultHash   string
 	sameResultStreak int
 
-	lastScreenHash             string
+	lastScreen                 image.Image
 	screenUnchangedAfterAction int
-	screenHashBeforeAction     string
 
 	parseFailures  int
 	stallScore     int
@@ -182,9 +189,8 @@ func (p *TerminationPolicy) ResetForSteer() {
 	p.sameSigStreak = 0
 	p.lastResultHash = ""
 	p.sameResultStreak = 0
-	p.lastScreenHash = ""
+	p.lastScreen = nil
 	p.screenUnchangedAfterAction = 0
-	p.screenHashBeforeAction = ""
 	p.parseFailures = 0
 	p.stallScore = 0
 	p.tier = TierNone
@@ -250,9 +256,10 @@ func (p *TerminationPolicy) AfterToolCall(toolName, input, observation string, i
 	p.lastToolName = strings.TrimSpace(toolName)
 	signature := toolCallSignature(toolName, input)
 	resultHash := observationProgressHash(toolName, observation)
+	screen, hasScreenshot := extractScreenshotImage(observation)
 	previousSignature := p.lastToolSig
 	previousResultHash := p.lastResultHash
-	previousScreenHash := p.lastScreenHash
+	previousScreen := p.lastScreen
 	sameSignature := signature != "" && signature == previousSignature
 	madeProgress := false
 
@@ -269,28 +276,23 @@ func (p *TerminationPolicy) AfterToolCall(toolName, input, observation string, i
 		p.lastResultHash = resultHash
 		p.sameResultStreak = 1
 	}
-	if resultHash != "" && previousResultHash != "" && resultHash != previousResultHash && !isError {
+	if !hasScreenshot && resultHash != "" && previousResultHash != "" && resultHash != previousResultHash && !isError {
 		madeProgress = true
 	}
 
-	screenHash := extractScreenshotDataHash(observation)
-	if screenHash != "" {
-		if previousScreenHash != "" && screenHash != previousScreenHash && !isError {
-			madeProgress = true
-		}
-		if isLoopRestrictedActionTool(toolName) {
-			if p.screenHashBeforeAction == "" {
-				p.screenHashBeforeAction = p.lastScreenHash
+	if screen != nil {
+		if changed, comparable := screenshotProgressChanged(previousScreen, screen); comparable {
+			if changed && !isError {
+				madeProgress = true
 			}
-			if screenHash == previousScreenHash && previousScreenHash != "" {
+			if isLoopRestrictedActionTool(toolName) && !changed {
 				p.screenUnchangedAfterAction++
 				p.bumpStall(2)
-			} else {
+			} else if isLoopRestrictedActionTool(toolName) {
 				p.screenUnchangedAfterAction = 0
-				p.screenHashBeforeAction = ""
 			}
 		}
-		p.lastScreenHash = screenHash
+		p.lastScreen = screen
 	} else if isLoopRestrictedActionTool(toolName) && !isError {
 		p.screenUnchangedAfterAction++
 		p.bumpStall(1)
@@ -345,7 +347,6 @@ func (p *TerminationPolicy) recordProgress() {
 	p.sameSigStreak = 1
 	p.sameResultStreak = 1
 	p.screenUnchangedAfterAction = 0
-	p.screenHashBeforeAction = ""
 }
 
 func (p *TerminationPolicy) refreshTier() {
@@ -437,8 +438,8 @@ func observationProgressHash(toolName, observation string) string {
 	if observation == "" {
 		return ""
 	}
-	if screenHash := extractScreenshotDataHash(observation); screenHash != "" {
-		return "screen:" + screenHash
+	if _, ok := extractScreenshotData(observation); ok {
+		return "screen:jpeg"
 	}
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(strings.ToLower(strings.TrimSpace(toolName))))
@@ -447,23 +448,67 @@ func observationProgressHash(toolName, observation string) string {
 	return fmt.Sprintf("obs:%x", hash.Sum64())
 }
 
-func extractScreenshotDataHash(observation string) string {
+func extractScreenshotData(observation string) (string, bool) {
 	observation = strings.TrimSpace(observation)
 	if observation == "" || !strings.HasPrefix(observation, "{") {
-		return ""
+		return "", false
 	}
 	var payload struct {
-		Data string `json:"data"`
+		Format string `json:"format"`
+		Data   string `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(observation), &payload); err != nil {
-		return ""
+		return "", false
 	}
 	data := strings.TrimSpace(payload.Data)
-	if data == "" {
-		return ""
+	if !strings.EqualFold(strings.TrimSpace(payload.Format), "jpeg") || data == "" {
+		return "", false
 	}
-	sum := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(sum[:12])
+	return data, true
+}
+
+func extractScreenshotImage(observation string) (image.Image, bool) {
+	encoded, ok := extractScreenshotData(observation)
+	if !ok {
+		return nil, false
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, true
+	}
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, true
+	}
+	return img, true
+}
+
+func screenshotProgressChanged(before, after image.Image) (changed, comparable bool) {
+	if before == nil || after == nil {
+		return false, false
+	}
+	if before.Bounds() != after.Bounds() {
+		return true, true
+	}
+	bounds := screenshotProgressBounds(after.Bounds())
+	result, err := computeImageDiff(before, after, bounds)
+	if err != nil {
+		return false, false
+	}
+	return result.Changed, true
+}
+
+func screenshotProgressBounds(full image.Rectangle) image.Rectangle {
+	height := full.Dy()
+	if height <= 1 {
+		return full
+	}
+	topRows := int(math.Ceil(float64(height) * screenshotProgressIgnoreTopFraction))
+	if topRows <= 0 || topRows >= height {
+		return full
+	}
+	full.Min.Y += topRows
+	return full
 }
 
 func isLoopRestrictedActionTool(name string) bool {
