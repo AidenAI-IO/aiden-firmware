@@ -229,6 +229,9 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"channels\":1,\"bit_width\":16},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
+        "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
+        "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
+        "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"storage\":900}}},"
         "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
         "\"android_keyboard_device\":\"/dev/hidg2\","
@@ -397,6 +400,20 @@ private:
     static std::string build_response(const std::string& path) {
         if (path == "/api/config-test/stt/start") {
             const std::string body = "{\"ok\":true,\"status\":\"recording\",\"sample_rate\":16000}";
+            std::ostringstream out;
+            out << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Connection: close\r\n"
+                << "\r\n"
+                << body;
+            return out.str();
+        }
+        if (path == "/api/storage/eject") {
+            const std::string body =
+                "{\"effective_mode\":1,"
+                "\"card\":{\"present\":true,\"mounted\":false},"
+                "\"format_job\":{\"status\":\"idle\"}}";
             std::ostringstream out;
             out << "HTTP/1.1 200 OK\r\n"
                 << "Content-Type: application/json\r\n"
@@ -605,6 +622,9 @@ struct StubEnv {
     // env vars; see start_server().
     std::vector<std::string> entries;
     bool has_agent_bin = false;
+    // When non-empty, written to <tmp>/storage.state and passed to config_web
+    // via --storage-state so storage endpoints see a controlled snapshot.
+    std::string storage_state;
 
     void set(const std::string& key, const std::string& value) {
         if (key == "AIDEN_AGENT_BIN") has_agent_bin = true;
@@ -626,6 +646,9 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
     write_file(wifi_conf_path, "");
     write_file(sysenv_path, "");
     write_file(cmdline_path, "console=ttyFIQ0 aiden.slot_suffix=_a root=PARTLABEL=rootfs_a\n");
+    if (!stub_env.storage_state.empty()) {
+        write_file(handle->tmp_dir + "/storage.state", stub_env.storage_state);
+    }
 
     pid_t pid = ::fork();
     REQUIRE(pid >= 0);
@@ -666,6 +689,10 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
         const std::string sysenv_arg = "--system-env=" + sysenv_path;
         const std::string ota_state_arg = "--ota-state=" + ota_state_path;
         const std::string cmdline_arg = "--cmdline=" + cmdline_path;
+        // Point --storage-state at a file inside tmp_dir either way; scenarios
+        // without storage_state content get a missing file, which the status
+        // endpoint must report as unavailable rather than erroring.
+        const std::string storage_state_arg = "--storage-state=" + handle->tmp_dir + "/storage.state";
         std::vector<char*> argv = {
             const_cast<char*>(AIDEN_CONFIG_WEB_BIN),
             const_cast<char*>("--bind=127.0.0.1"),
@@ -675,6 +702,7 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
             const_cast<char*>(sysenv_arg.c_str()),
             const_cast<char*>(ota_state_arg.c_str()),
             const_cast<char*>(cmdline_arg.c_str()),
+            const_cast<char*>(storage_state_arg.c_str()),
             nullptr,
         };
         ::execve(AIDEN_CONFIG_WEB_BIN, argv.data(), envp.data());
@@ -762,6 +790,14 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     cJSON* enabled = cJSON_GetObjectItem(audio_archive, "enabled");
     REQUIRE(enabled != nullptr);
     CHECK((enabled->type & 0xff) == cJSON_True);
+
+    cJSON* voice_notifications = cJSON_GetObjectItem(config, "voice_notifications");
+    REQUIRE(voice_notifications != nullptr);
+    CHECK(cJSON_GetObjectItem(voice_notifications, "default_locale") == nullptr);
+    CHECK(required_json_int(voice_notifications, "max_pending") == 8);
+    cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
+    REQUIRE(response_tail != nullptr);
+    CHECK(required_json_int(response_tail, "max_text_chars") == 40);
 
     cJSON* agent = cJSON_GetObjectItem(config, "agent");
     REQUIRE(agent != nullptr);
@@ -1011,6 +1047,64 @@ TEST_CASE("config_web: POST /api/config omitting temperature clears a saved valu
     CHECK(saved.find("temperature") == std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config preserves voice notification settings") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
+        "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
+        "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"network\":123}}},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[voice_notifications]") != std::string::npos);
+    CHECK(saved.find("default_locale") == std::string::npos);
+    CHECK(saved.find("max_pending = 6") != std::string::npos);
+    CHECK(saved.find("[voice_notifications.response_tail]") != std::string::npos);
+    CHECK(saved.find("max_text_chars = 72") != std::string::npos);
+    CHECK(saved.find("[voice_notifications.expiration]") != std::string::npos);
+    CHECK(saved.find("default_ttl_seconds = 120") != std::string::npos);
+    CHECK(saved.find("[voice_notifications.expiration.code_ttl_seconds]") != std::string::npos);
+    CHECK(saved.find("network = 123") != std::string::npos);
+    CHECK(saved.find("storage = 900") == std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config rejects invalid voice notification integers and TTL keys") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    struct InvalidCase {
+        const char* name;
+        const char* voice_notifications;
+        const char* expected_error;
+    };
+    const InvalidCase cases[] = {
+        {"max_pending", "{\"max_pending\":0.5}", "non-negative integer"},
+        {"max_items", "{\"response_tail\":{\"max_items\":0.5}}", "non-negative integer"},
+        {"max_text_chars", "{\"response_tail\":{\"max_text_chars\":0.5}}", "non-negative integer"},
+        {"default_ttl_seconds", "{\"expiration\":{\"default_ttl_seconds\":0.5}}", "non-negative integer"},
+        {"code_ttl_seconds", "{\"expiration\":{\"code_ttl_seconds\":{\"network\":0.5}}}", "non-negative integer"},
+        {"invalid_ttl_key", "{\"expiration\":{\"code_ttl_seconds\":{\"bad key\":123}}}", "bare TOML key"},
+    };
+
+    for (const auto& test_case : cases) {
+        const std::string body =
+            std::string("{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},") +
+            "\"voice_notifications\":" + test_case.voice_notifications + "," +
+            "\"hid\":{\"pointer_mode\":\"absolute\"}," +
+            "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK_MESSAGE(resp.status == 400, test_case.name << ": status=" << resp.status);
+        CHECK_MESSAGE(resp.body.find(test_case.expected_error) != std::string::npos,
+                      test_case.name << ": body=" << resp.body);
+    }
+}
+
 TEST_CASE("config_web: POST /api/config writes ota section") {
     // Regression test: update_config_from_json() must handle the ota section.
     // It was added to AgentToml, TOML read/write, and validation, but was
@@ -1035,7 +1129,7 @@ TEST_CASE("config_web: POST /api/config writes ota section") {
     CHECK(saved.find("github_proxy_url = \"https://gh-proxy.com\"") != std::string::npos);
 }
 
-TEST_CASE("config_web: GET /api/config returns ota section from resolved config") {
+TEST_CASE("config_web: GET /api/config returns ota and voice notification sections from resolved config") {
     // Regression test: config_to_json() must serialize the ota section from
     // the agent's resolved config. It was added to AgentToml and TOML
     // read/write, but was missed here, so github_proxy_url never came back
@@ -1062,6 +1156,12 @@ TEST_CASE("config_web: GET /api/config returns ota section from resolved config"
     REQUIRE(proxy_url != nullptr);
     REQUIRE(proxy_url->valuestring != nullptr);
     CHECK(std::string(proxy_url->valuestring) == "https://gh-proxy.com");
+    cJSON* voice_notifications = cJSON_GetObjectItem(config, "voice_notifications");
+    REQUIRE(voice_notifications != nullptr);
+    CHECK(required_json_int(voice_notifications, "max_pending") == 6);
+    cJSON* expiration = cJSON_GetObjectItem(voice_notifications, "expiration");
+    REQUIRE(expiration != nullptr);
+    CHECK(required_json_int(expiration, "default_ttl_seconds") == 120);
     cJSON_Delete(parsed);
 }
 
@@ -1561,6 +1661,78 @@ TEST_CASE("config_web: stt live test proxies start and stop to agent") {
     CHECK(requests[0].body.find("\"socket\":\"/tmp/audio.sock\"") != std::string::npos);
     CHECK(requests[1].method == "POST");
     CHECK(requests[1].path == "/api/config-test/stt/stop");
+}
+
+TEST_CASE("config_web: GET /api/storage/status parses the agent state mirror") {
+    StubEnv env;
+    env.storage_state =
+        "SD_PRESENT=1\n"
+        "SD_MOUNTED=1\n"
+        "SD_DEVICE=/dev/mmcblk2p1\n"
+        "SD_MOUNTPOINT=/mnt/sdcard\n"
+        "EFFECTIVE_MODE=2\n"
+        "SD_TOTAL_BYTES=31914983424\n"
+        "SD_FREE_BYTES=31834701824\n"
+        "REASON=\n"
+        "FORMAT_STATUS=idle\n"
+        "FORMAT_FS=\n"
+        "FORMAT_ERROR=\n"
+        "MIGRATE_STATUS=running\n"
+        "MIGRATE_DETAIL=\n"
+        "MIGRATE_ERROR=\n"
+        "MIGRATE_MOVED_FILES=12\n"
+        "MIGRATE_MOVED_BYTES=3145728\n";
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/storage/status");
+    REQUIRE(resp.status == 200);
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    CHECK((cJSON_GetObjectItem(parsed, "available")->type & 0xff) == cJSON_True);
+    CHECK((cJSON_GetObjectItem(parsed, "sd_present")->type & 0xff) == cJSON_True);
+    CHECK((cJSON_GetObjectItem(parsed, "sd_mounted")->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(parsed, "mount_point") == "/mnt/sdcard");
+    CHECK(cJSON_GetObjectItem(parsed, "effective_mode")->valueint == 2);
+    CHECK(cJSON_GetObjectItem(parsed, "total_bytes")->valuedouble == doctest::Approx(31914983424.0));
+    cJSON* job = cJSON_GetObjectItem(parsed, "format_job");
+    REQUIRE(job != nullptr);
+    CHECK(required_json_string(job, "status") == "idle");
+    cJSON* migration = cJSON_GetObjectItem(parsed, "migration");
+    REQUIRE(migration != nullptr);
+    CHECK(required_json_string(migration, "status") == "running");
+    CHECK(cJSON_GetObjectItem(migration, "moved_files")->valueint == 12);
+    CHECK(cJSON_GetObjectItem(migration, "moved_bytes")->valuedouble == doctest::Approx(3145728.0));
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/storage/status reports unavailable without a state file") {
+    StubEnv env;  // no storage_state -> --storage-state points at a missing file
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/storage/status");
+    REQUIRE(resp.status == 200);
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    CHECK((cJSON_GetObjectItem(parsed, "available")->type & 0xff) == cJSON_False);
+    CHECK((cJSON_GetObjectItem(parsed, "sd_present")->type & 0xff) == cJSON_False);
+    CHECK(cJSON_GetObjectItem(parsed, "effective_mode")->valueint == 1);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: POST /api/storage/eject proxies to the agent") {
+    StubAgentSTTTestServer agent_server;
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "POST", "/api/storage/eject", "{}");
+    REQUIRE(resp.status == 200);
+    CHECK(resp.body.find("\"effective_mode\":1") != std::string::npos);
+
+    auto requests = agent_server.requests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].method == "POST");
+    CHECK(requests[0].path == "/api/storage/eject");
 }
 
 TEST_CASE("config_web: GET /api/config accepts optional field-level omissions from resolved config") {

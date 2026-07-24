@@ -1573,13 +1573,16 @@ func TestRuntimeRunPersistsRootInputBeforeModelFailure(t *testing.T) {
 	)
 	t.Cleanup(func() { _ = runtime.Close() })
 
-	_, err := runtime.Run(context.Background(), RunRequest{
+	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:     "打开微信，进入 den 群，发送100块钱红包",
 		EpisodeID: "ep_red_packet_failure",
 		RequestID: "req-red-packet-failure",
 	})
 	if err == nil {
 		t.Fatalf("Run() error = nil, want model failure")
+	}
+	if result.TurnFailure == nil || result.TurnFailure.Code != TurnFailureLLMUnavailable {
+		t.Fatalf("Run() TurnFailure = %#v, want %q", result.TurnFailure, TurnFailureLLMUnavailable)
 	}
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
@@ -1595,6 +1598,24 @@ func TestRuntimeRunPersistsRootInputBeforeModelFailure(t *testing.T) {
 	}
 	if root.EpisodeID != "ep_red_packet_failure" || root.RequestID != "req-red-packet-failure" {
 		t.Fatalf("root event missing episode/request metadata: %#v", root)
+	}
+}
+
+func TestRuntimeRunDoesNotMarkLocalValidationErrorAsTurnFailure(t *testing.T) {
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{})
+	if err == nil {
+		t.Fatal("Run() error = nil, want input validation error")
+	}
+	if result.TurnFailure != nil {
+		t.Fatalf("local validation error TurnFailure = %#v, want nil", result.TurnFailure)
 	}
 }
 
@@ -3464,6 +3485,29 @@ func TestRuntimeRunResetsPromptTokensWhenUsageUnavailable(t *testing.T) {
 	}
 	if got := manager.LastPromptTokens(); got != 0 {
 		t.Fatalf("expected missing usage to reset prompt tokens, got %d", got)
+	}
+}
+
+func TestRuntimeCloseStopsStoragePoller(t *testing.T) {
+	rt, err := NewRuntime(Config{
+		ConfigDir:     ensureTestConfigDir(t, t.TempDir()),
+		Model:         ModelConfig{Provider: "fake"},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	if err := rt.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	select {
+	case <-rt.storage.stop:
+	default:
+		t.Fatal("Close() did not stop the storage poller")
 	}
 }
 

@@ -46,33 +46,34 @@ type ConfigTestCheck struct {
 // Keep this struct in lockstep with config_to_json(); the round-trip is covered
 // by TestConfigCheck_WireFormatContract.
 type webConfigDTO struct {
-	Model             modelDTO                      `json:"model"`
-	ModelText         modelDTO                      `json:"model_text"`
-	TTS               ttsDTO                        `json:"tts"`
-	STT               sttDTO                        `json:"stt"`
-	Audio             audioDTO                      `json:"audio"`
-	AudioArchive      audioArchiveDTO               `json:"audio_archive"`
-	Log               logDTO                        `json:"log"`
-	OTA               otaDTO                        `json:"ota"`
-	HID               hidDTO                        `json:"hid"`
-	Search            searchDTO                     `json:"search"`
-	Telemetry         telemetryDTO                  `json:"telemetry"`
-	LiveActivity      liveActivityDTO               `json:"live_activity"`
-	TerminationPolicy agent.TerminationPolicyConfig `json:"termination_policy"`
-	Agent             agentDTO                      `json:"agent"`
+	Model              modelDTO                      `json:"model"`
+	ModelText          modelDTO                      `json:"model_text"`
+	TTS                ttsDTO                        `json:"tts"`
+	STT                sttDTO                        `json:"stt"`
+	Audio              audioDTO                      `json:"audio"`
+	AudioArchive       audioArchiveDTO               `json:"audio_archive"`
+	VoiceNotifications voiceNotificationsDTO         `json:"voice_notifications"`
+	Log                logDTO                        `json:"log"`
+	OTA                otaDTO                        `json:"ota"`
+	HID                hidDTO                        `json:"hid"`
+	Search             searchDTO                     `json:"search"`
+	Telemetry          telemetryDTO                  `json:"telemetry"`
+	LiveActivity       liveActivityDTO               `json:"live_activity"`
+	TerminationPolicy  agent.TerminationPolicyConfig `json:"termination_policy"`
+	Agent              agentDTO                      `json:"agent"`
 }
 
 type modelDTO struct {
-	Provider             string  `json:"provider"`
-	APIKey               string  `json:"api_key"`
-	Model                string  `json:"model"`
+	Provider             string   `json:"provider"`
+	APIKey               string   `json:"api_key"`
+	Model                string   `json:"model"`
 	BaseURL              string   `json:"base_url"`
 	TokenEnv             string   `json:"token_env"`
 	ReasoningEffort      string   `json:"reasoning_effort"`
 	Temperature          *float64 `json:"temperature,omitempty"`
 	MaxResponseTokens    int      `json:"max_response_tokens"`
-	ContextWindow        int     `json:"context_window"`
-	ModelMaxOutputTokens int     `json:"model_max_output_tokens"`
+	ContextWindow        int      `json:"context_window"`
+	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
 }
 
 type ttsDTO struct {
@@ -137,6 +138,24 @@ type audioArchiveDTO struct {
 	MaxFiles    int    `json:"max_files"`
 	MaxSizeMB   int    `json:"max_size_mb"`
 	StoragePath string `json:"storage_path"`
+}
+
+type voiceNotificationsDTO struct {
+	Enabled      *bool                            `json:"enabled"`
+	MaxPending   int                              `json:"max_pending"`
+	ResponseTail voiceNotificationResponseTailDTO `json:"response_tail"`
+	Expiration   voiceNotificationExpirationDTO   `json:"expiration"`
+}
+
+type voiceNotificationResponseTailDTO struct {
+	Enabled      *bool `json:"enabled"`
+	MaxItems     int   `json:"max_items"`
+	MaxTextChars int   `json:"max_text_chars"`
+}
+
+type voiceNotificationExpirationDTO struct {
+	DefaultTTLSeconds int            `json:"default_ttl_seconds"`
+	CodeTTLSeconds    map[string]int `json:"code_ttl_seconds"`
 }
 
 type logDTO struct {
@@ -302,6 +321,19 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			MaxSizeMB:   d.AudioArchive.MaxSizeMB,
 			StoragePath: d.AudioArchive.StoragePath,
 		},
+		VoiceNotifications: agent.VoiceNotificationsConfig{
+			Enabled:    d.VoiceNotifications.Enabled,
+			MaxPending: d.VoiceNotifications.MaxPending,
+			ResponseTail: agent.VoiceNotificationResponseTailConfig{
+				Enabled:      d.VoiceNotifications.ResponseTail.Enabled,
+				MaxItems:     d.VoiceNotifications.ResponseTail.MaxItems,
+				MaxTextChars: d.VoiceNotifications.ResponseTail.MaxTextChars,
+			},
+			Expiration: agent.VoiceNotificationExpirationConfig{
+				DefaultTTLSeconds: d.VoiceNotifications.Expiration.DefaultTTLSeconds,
+				CodeTTLSeconds:    d.VoiceNotifications.Expiration.CodeTTLSeconds,
+			},
+		},
 		Log: agent.LogConfig{
 			LLMHTTPRetentionDays: d.Log.LLMHTTPRetentionDays,
 		},
@@ -440,6 +472,19 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			MaxFiles:    audioArchive.MaxFilesOrDefault(),
 			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
 			StoragePath: audioArchive.StoragePathOrDefault(),
+		},
+		VoiceNotifications: voiceNotificationsDTO{
+			Enabled:    cfg.VoiceNotifications.Enabled,
+			MaxPending: cfg.VoiceNotifications.MaxPendingOrDefault(),
+			ResponseTail: voiceNotificationResponseTailDTO{
+				Enabled:      cfg.VoiceNotifications.ResponseTail.Enabled,
+				MaxItems:     cfg.VoiceNotifications.ResponseTail.MaxItems,
+				MaxTextChars: cfg.VoiceNotifications.ResponseTail.MaxTextCharsOrDefault(),
+			},
+			Expiration: voiceNotificationExpirationDTO{
+				DefaultTTLSeconds: cfg.VoiceNotifications.Expiration.DefaultTTLSeconds,
+				CodeTTLSeconds:    cfg.VoiceNotifications.Expiration.CodeTTLSeconds,
+			},
 		},
 		Log: logDTO{
 			LLMHTTPRetentionDays: cfg.Log.LLMHTTPRetentionDaysOrDefault(),

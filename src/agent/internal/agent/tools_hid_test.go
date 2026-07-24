@@ -1,15 +1,21 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -107,6 +113,279 @@ func TestWheelNudgeWritesLowInertiaDrag(t *testing.T) {
 	finalMove := reports[1+wheelNudgeDefaultSteps]
 	if finalMove.x != uint16(expectedX) || finalMove.y != uint16(expectedEndY) || finalMove.buttons != 0x01 {
 		t.Fatalf("final move = (%d,%d,%d), want (%d,%d,1)", finalMove.x, finalMove.y, finalMove.buttons, expectedX, expectedEndY)
+	}
+}
+
+func TestMeasureWheelRowSpacingFindsSyntheticPickerRows(t *testing.T) {
+	jpegData := syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40)
+
+	measurement, ok := measureWheelRowSpacingJPEG(jpegData, 600, 300)
+	if !ok {
+		t.Fatal("measureWheelRowSpacingJPEG() did not find synthetic picker rows")
+	}
+	if math.Abs(measurement.Normalized-40) > 2 {
+		t.Fatalf("normalized spacing = %.2f, want about 40", measurement.Normalized)
+	}
+	if measurement.Confidence < 0.5 {
+		t.Fatalf("confidence = %.2f, want at least 0.5", measurement.Confidence)
+	}
+}
+
+func TestMeasureWheelRowSpacingRejectsUniformImage(t *testing.T) {
+	img := image.NewGray(image.Rect(0, 0, 500, 1000))
+	for i := range img.Pix {
+		img.Pix[i] = 24
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("encode uniform image: %v", err)
+	}
+	if measurement, ok := measureWheelRowSpacingJPEG(encoded.Bytes(), 600, 300); ok {
+		t.Fatalf("uniform image produced measurement %+v", measurement)
+	}
+}
+
+func TestSelectWheelRowSpacingPeakRejectsWeakEarlyHarmonic(t *testing.T) {
+	correlations := []float64{0.10, 0.27, 0.10, 0.10, 0.30, 0.10, 0.10}
+	if index, confidence, ok := selectWheelRowSpacingPeak(correlations); ok {
+		t.Fatalf("selectWheelRowSpacingPeak() = index %d confidence %.2f, want low-confidence fallback", index, confidence)
+	}
+}
+
+func TestWheelNudgeUsesMeasuredRowSpacingFromLatestScreenshot(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(500, 1000, screenActiveArea{})
+	screen.UpdateScreenshot(syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":4,"target_value":2,"cycle_size":60,"cycle_start":0,"row_spacing":61,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "row_spacing_source=image") {
+		t.Fatalf("Call output = %q, want image measurement metadata", out)
+	}
+	if !strings.Contains(out, "physical_travel=80") {
+		t.Fatalf("Call output = %q, want two measured 40-unit rows", out)
+	}
+}
+
+func TestWheelNudgeUsesConfidentImageMotionProfileForLargeGap(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(500, 1000, screenActiveArea{})
+	jpegData := syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40)
+	screen.UpdateScreenshot(jpegData, 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":57,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "rows=6") || !strings.Contains(out, "physical_travel=258") {
+		t.Fatalf("Call output = %q, want six measured rows plus settling compensation / 258 units", out)
+	}
+	if !strings.Contains(out, "motion_profile=image_calibrated") {
+		t.Fatalf("Call output = %q, want calibrated motion metadata", out)
+	}
+	if !strings.Contains(out, "settle_compensation_rows=0.45") {
+		t.Fatalf("Call output = %q, want settling compensation metadata", out)
+	}
+
+	reports := readMouseReports(t, dev, path)
+	// Keep touchdown at the original three-row boundary inside the picker,
+	// then extend only the destination by the 0.45-row settling allowance.
+	measurement, measured := measureWheelRowSpacingJPEG(jpegData, 600, 300)
+	if !measured {
+		t.Fatal("synthetic picker row spacing was not measurable")
+	}
+	plannedTravel := 6 * measurement.Normalized
+	expectedX, expectedStartY := normalizedToAbsolutePoint(600, 300+plannedTravel/2)
+	_, expectedEndY := normalizedToAbsolutePoint(600, 300+plannedTravel/2-(6+wheelNudgeMultiRowCompensation)*measurement.Normalized)
+	if reports[0].x != uint16(expectedX) || reports[0].y != uint16(expectedStartY) {
+		t.Fatalf("pre-move = (%d,%d), want compensated drag to start at (%d,%d)", reports[0].x, reports[0].y, expectedX, expectedStartY)
+	}
+	finalMove := reports[1+wheelNudgeDefaultSteps]
+	if finalMove.x != uint16(expectedX) || finalMove.y != uint16(expectedEndY) {
+		t.Fatalf("final move = (%d,%d), want compensated drag to end at (%d,%d)", finalMove.x, finalMove.y, expectedX, expectedEndY)
+	}
+}
+
+func TestWheelNudgeDoesNotCompensateWhenPlannedRowsReachTarget(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(500, 1000, screenActiveArea{})
+	screen.UpdateScreenshot(syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":6,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "rows=3") || !strings.Contains(out, "physical_travel=120") {
+		t.Fatalf("Call output = %q, want exact three-row travel without over-target compensation", out)
+	}
+	if strings.Contains(out, "settle_compensation_rows") {
+		t.Fatalf("Call output = %q, exact-target drag must not add settling compensation", out)
+	}
+}
+
+func TestWheelNudgeUsesConservativeProfileWhenImageMeasurementRejected(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(500, 1000, screenActiveArea{})
+	screen.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 500, 1000), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":57,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "rows=5") || !strings.Contains(out, "physical_travel=175") {
+		t.Fatalf("Call output = %q, want conservative five-row travel", out)
+	}
+	if strings.Contains(out, "motion_profile=image_calibrated") {
+		t.Fatalf("Call output = %q, low-confidence image must not enable calibrated motion", out)
+	}
+}
+
+func TestWheelNudgeMotionProfileBoundaries(t *testing.T) {
+	tests := []struct {
+		gap          int
+		conservative int
+		calibrated   int
+	}{
+		{gap: 1, conservative: 1, calibrated: 1},
+		{gap: 2, conservative: 2, calibrated: 2},
+		{gap: 3, conservative: 2, calibrated: 3},
+		{gap: 4, conservative: 2, calibrated: 3},
+		{gap: 5, conservative: 3, calibrated: 4},
+		{gap: 8, conservative: 3, calibrated: 4},
+		{gap: 9, conservative: 5, calibrated: 6},
+		{gap: 12, conservative: 5, calibrated: 6},
+	}
+	for _, tt := range tests {
+		if got := wheelNudgeRowsForGap(tt.gap); got != tt.conservative {
+			t.Errorf("wheelNudgeRowsForGap(%d) = %d, want %d", tt.gap, got, tt.conservative)
+		}
+		if got := wheelNudgeRowsForConfidentGap(tt.gap); got != tt.calibrated {
+			t.Errorf("wheelNudgeRowsForConfidentGap(%d) = %d, want %d", tt.gap, got, tt.calibrated)
+		}
+	}
+}
+
+func TestWheelNudgeTapDoesNotReportCalibratedDragProfile(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(500, 1000, screenActiveArea{})
+	screen.UpdateScreenshot(syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":8,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":40,"value_step":1,"center_y":300,"visible_target_y":340}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "interaction=tap") {
+		t.Fatalf("Call output = %q, want adjacent-row tap", out)
+	}
+	if strings.Contains(out, "motion_profile=image_calibrated") {
+		t.Fatalf("Call output = %q, tap must not report a drag profile", out)
+	}
+}
+
+func TestWheelNudgeRequiresFreshScreenshotWhenConfigured(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{
+		pc:                     testPointerController(dev, &pointerState{}),
+		screen:                 &screenState{},
+		durationMs:             1,
+		requireFreshScreenshot: true,
+	}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":57,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "fresh screenshot") {
+		t.Fatalf("Call output = %q, want fresh screenshot requirement", out)
+	}
+	if reports := readMouseReports(t, dev, path); len(reports) != 0 {
+		t.Fatalf("len(reports) = %d, want no gesture without a fresh screenshot", len(reports))
+	}
+}
+
+func TestWheelNudgeDwellsAtFinalCoordinateBeforeRelease(t *testing.T) {
+	originalSleep := sleepMs
+	var sleeps []int
+	sleepMs = func(milliseconds int) {
+		sleeps = append(sleeps, milliseconds)
+	}
+	t.Cleanup(func() { sleepMs = originalSleep })
+
+	dev, _ := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	if _, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":5,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !slices.Contains(sleeps, wheelNudgeEndpointHoldMs) {
+		t.Fatalf("sleep calls = %v, want endpoint hold %dms", sleeps, wheelNudgeEndpointHoldMs)
+	}
+}
+
+func syntheticWheelPickerJPEG(t *testing.T, width, height, columnX, centerY, spacing int) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, width, height))
+	for i := range img.Pix {
+		img.Pix[i] = 20
+	}
+	for y := centerY - 20; y <= centerY+20; y++ {
+		for x := 0; x < width; x++ {
+			img.SetGray(x, y, color.Gray{Y: 38})
+		}
+	}
+	for row := -4; row <= 4; row++ {
+		y := centerY + row*spacing
+		brightness := uint8(max(70, 225-35*absInt(row)))
+		drawSyntheticWheelDigits(img, columnX, y, brightness)
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("encode synthetic picker: %v", err)
+	}
+	return encoded.Bytes()
+}
+
+func uniformWheelScreenshotJPEG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, width, height))
+	for index := range img.Pix {
+		img.Pix[index] = 24
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("encode uniform wheel screenshot: %v", err)
+	}
+	return encoded.Bytes()
+}
+
+func drawSyntheticWheelDigits(img *image.Gray, centerX, centerY int, brightness uint8) {
+	for _, digitX := range []int{centerX - 13, centerX + 7} {
+		for y := centerY - 10; y <= centerY+10; y++ {
+			for x := digitX; x <= digitX+3; x++ {
+				img.SetGray(x, y, color.Gray{Y: brightness})
+			}
+		}
+		for y := centerY - 10; y <= centerY-7; y++ {
+			for x := digitX; x <= digitX+10; x++ {
+				img.SetGray(x, y, color.Gray{Y: brightness})
+			}
+		}
+		for y := centerY + 7; y <= centerY+10; y++ {
+			for x := digitX; x <= digitX+10; x++ {
+				img.SetGray(x, y, color.Gray{Y: brightness})
+			}
+		}
 	}
 }
 
@@ -342,7 +621,7 @@ func TestWheelNudgeLargeSupportsDown(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"current_value":16,"target_value":0,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":460,"current_value":16,"target_value":0,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -509,20 +788,26 @@ func TestTouchGestureSchemaDoesNotExposeWheelMetadata(t *testing.T) {
 	}
 }
 
-func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndKeyboardFirst(t *testing.T) {
+func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndConservativeInput(t *testing.T) {
 	description := (&WheelNudgeTool{}).Description()
 	for _, want := range []string{
 		"tap or slow drag",
 		"9+",
-		"2-4",
+		"3-4",
 		"5-8",
+		"confident runtime image measurement",
+		"conservative limits remain",
 		"final requested value",
 		"never substitute an intermediate visible value",
 		"normalized 0-1000 coordinates",
 		"screenshot height",
-		"tap the selected current value",
-		"keyboard_text",
+		"Use wheel_nudge directly from the latest screenshot",
+		"Do not tap the selected row",
+		"do not use keyboard_text for picker values",
 		"derives the shortest row gap",
+		"measures the row spacing",
+		"overrides the caller estimate",
+		"low-confidence images keep the caller estimate",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("wheel_nudge description = %q, want %q", description, want)
@@ -535,7 +820,8 @@ func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndKeyboardFirst(t *testing.T
 
 func TestWheelNudgeRejectsInputsThatWouldBypassGestureGuard(t *testing.T) {
 	invalidInputs := map[string]string{
-		`{"column_x":350,"remaining_gap":1,"current_value":1,"target_value":2,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`: "picker_id is required",
+		`{"picker_id":"alarm-create","column_x":400,"current_value":15,"target_value":7,"cycle_size":24,"cycle_start":0,"row_spacing":40,"value_step":1}`: "center_y is required",
+		`{"column_x":350,"remaining_gap":1,"current_value":1,"target_value":2,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`:            "picker_id is required",
 		`{"column_x":350,"remaining_gap":1,"duration_ms":0}`:    `unknown field "duration_ms"`,
 		`{"column_x":350,"remaining_gap":1,"distance":"micro"}`: `unknown field "distance"`,
 		`{"column_x":"350"}`:                           "cannot unmarshal string",
@@ -559,6 +845,14 @@ func TestWheelNudgeRejectsInputsThatWouldBypassGestureGuard(t *testing.T) {
 				t.Fatalf("invalid input wrote %d HID reports", len(reports))
 			}
 		})
+	}
+}
+
+func TestWheelNudgeSchemaRequiresMeasuredCenterY(t *testing.T) {
+	schema := (&WheelNudgeTool{}).ArgsSchema()
+	required, _ := schema["required"].([]string)
+	if !slices.Contains(required, "center_y") {
+		t.Fatalf("wheel_nudge schema required = %v, want center_y", required)
 	}
 }
 
@@ -1197,6 +1491,39 @@ func TestScreenshotCoordinateSpaceIsNotExposedToModel(t *testing.T) {
 	}
 }
 
+func TestModelFacingDeviceGuidanceUsesNormalizedCoordinatesOnly(t *testing.T) {
+	screenshotSpacePattern := regexp.MustCompile(`(?i)coord_space\s*[:=]\s*["']?screenshot`)
+	assertNoScreenshotCoordinateGuidance := func(name, content string) {
+		t.Helper()
+		lower := strings.ToLower(content)
+		if screenshotSpacePattern.MatchString(content) || strings.Contains(lower, "use screenshot coordinates") || strings.Contains(lower, "screenshot coordinate space") {
+			t.Fatalf("%s still advertises screenshot coordinates: %q", name, content)
+		}
+	}
+
+	descriptions := map[string]string{
+		"mouse_click":   (&MouseClickTool{}).Description(),
+		"mouse_move":    (&MouseMoveTool{}).Description(),
+		"touch_gesture": (&TouchGestureTool{}).Description(),
+		"wheel_nudge":   (&WheelNudgeTool{}).Description(),
+		"screenshot":    (&ScreenshotTool{}).Description(),
+	}
+	for name, description := range descriptions {
+		assertNoScreenshotCoordinateGuidance(name+" description", description)
+	}
+
+	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
+	data, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read device-operator SKILL.md: %v", err)
+	}
+	content := string(data)
+	assertNoScreenshotCoordinateGuidance("device-operator SKILL.md", content)
+	if !strings.Contains(content, `coord_space: "normalized"`) {
+		t.Fatalf("device-operator SKILL.md must direct coordinate tools to normalized space")
+	}
+}
+
 func TestScreenshotCoordinateSpaceStillResolvesForBackwardCompat(t *testing.T) {
 	// A model that still emits the retired "screenshot" space must not hard
 	// fail; the resolver keeps interpreting it as cropped-screenshot pixels.
@@ -1682,22 +2009,20 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 	}
 }
 
-func TestKeyboardTextDescriptionDefinesNumericPickerFallback(t *testing.T) {
+func TestKeyboardTextDescriptionRejectsNumericPickerInput(t *testing.T) {
 	desc := (&KeyboardTextTool{}).Description()
 	for _, want := range []string{
-		"numeric picker",
-		"prefer this before wheel_nudge",
-		"latest screenshot visibly shows",
-		"one verified attempt",
-		"do not switch back to keyboard input",
+		"Do not use keyboard_text for picker/wheel values",
+		"use wheel_nudge",
+		"verify each returned screenshot",
 	} {
 		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing picker fallback guidance %q:\n%s", want, desc)
+			t.Fatalf("description missing conservative picker guidance %q:\n%s", want, desc)
 		}
 	}
 }
 
-func TestDeviceOperatorSkillDefinesKeyboardToWheelFallback(t *testing.T) {
+func TestDeviceOperatorSkillUsesWheelOnlyForPickers(t *testing.T) {
 	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
 	data, err := os.ReadFile(skillPath)
 	if err != nil {
@@ -1705,30 +2030,27 @@ func TestDeviceOperatorSkillDefinesKeyboardToWheelFallback(t *testing.T) {
 	}
 	content := string(data)
 	for _, want := range []string{
-		"before the first `wheel_nudge` on that picker",
-		"do not infer that keyboard entry is unsupported merely because the keyboard is initially hidden",
-		"one verified keyboard attempt",
-		"fresh post-action screenshot",
-		"fall back to `wheel_nudge`",
-		"Do not repeat blind keyboard input",
-		"do not switch back to keyboard input",
+		"use `wheel_nudge` directly from the latest screenshot",
+		"Do not tap the selected row to probe for keyboard/edit mode",
+		"do not use `keyboard_text` for picker values",
+		"do not use `keyboard_text` or `keyboard_tap` to change picker values",
+		"issue one bounded `wheel_nudge`, then read the returned screenshot",
 	} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("device-operator SKILL.md missing keyboard fallback guidance %q", want)
+			t.Fatalf("device-operator SKILL.md missing conservative picker guidance %q", want)
 		}
 	}
 }
 
-func TestTouchGestureDescriptionDefinesNumericPickerEditProbe(t *testing.T) {
+func TestTouchGestureDescriptionReservesPickerForWheelNudge(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
 	for _, want := range []string{
-		"Before the first wheel_nudge on a numeric picker",
-		"selected center row",
-		"even when the keyboard is initially hidden",
-		"use keyboard_text once if edit mode appears",
+		"Do not tap picker rows to probe for keyboard/edit mode",
+		"do not drag picker columns with this tool",
+		"use wheel_nudge for the entire picker interaction",
 	} {
 		if !strings.Contains(desc, want) {
-			t.Fatalf("touch_gesture description missing numeric picker edit probe guidance %q:\n%s", want, desc)
+			t.Fatalf("touch_gesture description missing wheel ownership guidance %q:\n%s", want, desc)
 		}
 	}
 }

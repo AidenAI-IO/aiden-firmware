@@ -287,6 +287,32 @@ func TestWebConfigDTOMapsAudioArchive(t *testing.T) {
 	}
 }
 
+func TestWebConfigDTOMapsVoiceNotifications(t *testing.T) {
+	enabled := false
+	tailEnabled := false
+	voiceNotifications := agent.VoiceNotificationsConfig{
+		Enabled:    &enabled,
+		MaxPending: 6,
+		ResponseTail: agent.VoiceNotificationResponseTailConfig{
+			Enabled:      &tailEnabled,
+			MaxItems:     1,
+			MaxTextChars: 72,
+		},
+		Expiration: agent.VoiceNotificationExpirationConfig{
+			DefaultTTLSeconds: 120,
+			CodeTTLSeconds: map[string]int{
+				"storage": 900,
+			},
+		},
+	}
+
+	dto := webConfigDTOFromAgentConfig(agent.Config{VoiceNotifications: voiceNotifications})
+	cfg := dto.toAgentConfig()
+	if !reflect.DeepEqual(cfg.VoiceNotifications, voiceNotifications) {
+		t.Fatalf("VoiceNotifications = %#v, want %#v", cfg.VoiceNotifications, voiceNotifications)
+	}
+}
+
 func TestWebConfigDTOMapsLog(t *testing.T) {
 	dto := webConfigDTO{
 		Model: modelDTO{Provider: "fake"},

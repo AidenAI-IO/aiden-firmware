@@ -2,10 +2,12 @@ package compactor
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/tokencounter"
 
@@ -25,6 +27,18 @@ func (m *testModel) Spec() model.ModelSpec { return m.ModelSpec }
 type promptCapturingModel struct {
 	prompts []string
 	reply   string
+}
+
+type failingSummaryModel struct {
+	err error
+}
+
+func (m failingSummaryModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	return "", m.err
+}
+
+func (m failingSummaryModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
+	return nil, m.err
 }
 
 func (m *promptCapturingModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
@@ -85,7 +99,7 @@ func TestGenerateSummaryIncludesToolPayloads(t *testing.T) {
 	model := &promptCapturingModel{reply: "summary"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
 
-	got := compactor.generateSummary(context.Background(), []contextmanager.Message{
+	got, err := compactor.generateSummary(context.Background(), []contextmanager.Message{
 		{
 			Role: contextmanager.MessageRoleToolCall,
 			ToolCalls: []contextmanager.ToolCall{{
@@ -103,6 +117,9 @@ func TestGenerateSummaryIncludesToolPayloads(t *testing.T) {
 			}},
 		},
 	})
+	if err != nil {
+		t.Fatalf("generateSummary() error = %v", err)
+	}
 	if got != "summary" {
 		t.Fatalf("generateSummary() = %q, want summary", got)
 	}
@@ -118,5 +135,31 @@ func TestGenerateSummaryIncludesToolPayloads(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("summary prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestCompactPreservesLLMFailureSource(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
+		{Role: contextmanager.MessageRoleUser, Content: "one"},
+		{Role: contextmanager.MessageRoleAssistant, Content: "two"},
+		{Role: contextmanager.MessageRoleUser, Content: "three"},
+		{Role: contextmanager.MessageRoleAssistant, Content: "four"},
+		{Role: contextmanager.MessageRoleUser, Content: "five"},
+		{Role: contextmanager.MessageRoleAssistant, Content: "six"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	compactor := NewCompactor(DefaultProtectRule, &testModel{
+		Model: failingSummaryModel{err: errors.New("API error 429: insufficient_quota")},
+	})
+
+	_, _, err = compactor.Compact(context.Background(), manager)
+	if err == nil {
+		t.Fatal("Compact() error = nil, want LLM failure")
+	}
+	var llmErr *executor.LLMCallError
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("Compact() error = %T %v, want LLMCallError", err, err)
 	}
 }

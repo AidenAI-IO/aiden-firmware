@@ -208,6 +208,7 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 		os.Exit(1)
 	}
 	dialog.SetHistoryAppender(server.AppendHistory)
+	dialog.SetStorageManager(runtime.Storage())
 
 	// Register preempt hook: when a new run starts, release GPIO audio resources.
 	runtime.RegisterPreemptHook(func() {
@@ -261,7 +262,9 @@ type audioDialogRunner interface {
 	WaitForVoiceRunIdle(ctx context.Context) bool
 	ForceResetVoiceRun()
 	InterruptOutput()
+	CanSpeakFinalText() bool
 	Speak(ctx context.Context, text string, interrupt <-chan struct{}) error
+	SpeakFinal(ctx context.Context, text string, interrupt <-chan struct{}) error
 	FlushVAD() []int16
 	FinishManualUtterance(pending []int16) []int16
 	ResetVAD()
@@ -833,6 +836,7 @@ func runVoiceTurnWithInputContext(cfg agent.Config, dialog audioDialogRunner, ru
 	}()
 
 	var result agent.RunResult
+	var turnErr error
 thinking:
 	for {
 		select {
@@ -856,19 +860,29 @@ thinking:
 			cancel()
 			if turnResult.err != nil {
 				log.Printf("[error] %v\n", turnResult.err)
-				return voiceTurnResult{}
+				turnErr = turnResult.err
+				result = turnResult.result
+				break thinking
 			}
 			result = turnResult.result
 			break thinking
 		}
 	}
 
-	if result.WaitForWakeupRequested {
+	if turnErr == nil && result.WaitForWakeupRequested {
 		return voiceTurnResult{waitForWakeupRequested: true}
 	}
 
 	speechText := result.SpokenTextForConfig(cfg)
-	if speechText == "" || result.SpeechStreamed {
+	if result.SpeechStreamed {
+		return voiceTurnResult{}
+	}
+	prepared := runtime.PrepareSpokenText(context.Background(), agent.SpokenTextInput{
+		ResponseText:   speechText,
+		TurnFailure:    result.TurnFailure,
+		TailAppendable: turnErr == nil && !result.SpeechStreamed && dialog.CanSpeakFinalText(),
+	})
+	if prepared.Text == "" {
 		return voiceTurnResult{}
 	}
 
@@ -881,7 +895,7 @@ thinking:
 	speakCtx, cancelSpeak := context.WithCancel(context.Background())
 	speakCh := make(chan error, 1)
 	go func() {
-		speakCh <- dialog.Speak(speakCtx, speechText, nil)
+		speakCh <- dialog.SpeakFinal(speakCtx, prepared.Text, nil)
 	}()
 
 speaking:
@@ -889,14 +903,14 @@ speaking:
 		select {
 		case <-sigChan:
 			cancelSpeak()
-			waitForSpeakCancel(speakCh)
+			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, waitForSpeakCancel(speakCh))
 			return voiceTurnResult{exit: true}
 		case <-events:
 			if interruptOnWakeup {
 				log.Println("[interrupt] wakeup received during speaking, stopping playback")
 				dialog.InterruptOutput()
 				cancelSpeak()
-				waitForSpeakCancel(speakCh)
+				runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, waitForSpeakCancel(speakCh))
 				// During speaking phase, the turn has already completed, so we have the full result
 				return voiceTurnResult{
 					interrupted:     true,
@@ -905,6 +919,7 @@ speaking:
 			}
 		case err := <-speakCh:
 			cancelSpeak()
+			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("[error] speak failed: %v\n", err)
 			}
@@ -1053,14 +1068,16 @@ func waitForTurnCancellation(dialog audioDialogRunner, resultCh <-chan struct {
 	}
 }
 
-func waitForSpeakCancel(speakCh <-chan error) {
+func waitForSpeakCancel(speakCh <-chan error) error {
 	select {
 	case err := <-speakCh:
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("[error] speak failed after signal cancellation: %v\n", err)
 		}
+		return err
 	case <-time.After(voiceTurnCancelWaitTimeout):
 		log.Println("[interrupt] speech did not finish after signal cancellation; exiting")
+		return context.Canceled
 	}
 }
 
