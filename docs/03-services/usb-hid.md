@@ -132,21 +132,18 @@ After the action, including error and cancellation paths, it restores the normal
 composite. The isolated profile uses a distinct USB product ID and serial number
 so iOS does not reuse the pointer-bearing descriptor for the input.
 
-Composite Agent tools batch consecutive keyboard operations into one isolation
-scope. For example, `quick_action`, `search_launch_app`,
-`enter_text_in_field`, and `enter_text_via_bridge` can invoke several internal
-modifier shortcuts or shifted text writes without reconnecting the pointer after
-each low-level call. The first modifier-bearing operation isolates the keyboard;
-the first pointer/touch operation restores the normal profile before acting. The
-outer tool scope also performs a context-independent restore when it returns,
-fails, or is canceled, so an interrupted task does not intentionally leave the
-mouse detached.
+One conversational Agent run owns a shared isolation scope. The first
+modifier-bearing keyboard operation removes the pointer, and later keyboard or
+Consumer Control operations reuse that profile without another enumeration. A
+mouse, touch, scroll, or wheel operation restores the normal profile only when
+the pointer is currently absent. If a later keyboard operation needs a modifier,
+the run isolates again. Success, failure, cancellation, preemption, and normal
+termination all leave the scope through a context-independent final restore.
 
-On iOS, `search_launch_app` ends the isolated shortcut phase immediately after
-opening and clearing Spotlight, then enters a case-insensitive lowercase search
-query on the restored normal profile. This keeps the shortcut sequence to one
-isolate/restore pair while avoiding shifted text immediately after USB profile
-enumeration.
+Direct HTTP Tool API calls use the same rules within one invocation, but do not
+share isolation state across separate requests. A modifier-bearing HTTP call
+therefore isolates and restores once unless that invocation needs pointer input
+before it completes.
 
 When `search_launch_app` omits `platform`, an active iOS HID isolation
 controller is also treated as an iOS platform signal. This keeps the documented

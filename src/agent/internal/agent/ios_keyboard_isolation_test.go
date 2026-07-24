@@ -116,6 +116,36 @@ func TestIOSKeyboardIsolationBatchRestoresBeforePointerAndCanReisolate(t *testin
 	}
 }
 
+func TestIOSKeyboardIsolationBatchKeepsExtraKeysInIsolatedProfile(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+
+	err := controller.withBatch(context.Background(), func(batchCtx context.Context) error {
+		if err := controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "first-shortcut")
+			return nil
+		}); err != nil {
+			return err
+		}
+		if err := controller.withExtraKeys(batchCtx, func() error {
+			events = append(events, "extra-key")
+			return nil
+		}); err != nil {
+			return err
+		}
+		return controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "second-shortcut")
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withBatch() error = %v", err)
+	}
+	if want := []string{"isolate", "first-shortcut", "extra-key", "second-shortcut", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
 func TestIOSKeyboardIsolationLeavesPlainKeyboardInputOnNormalProfile(t *testing.T) {
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)
@@ -356,6 +386,13 @@ func TestIOSKeyboardIsolationRestoresAfterCancellation(t *testing.T) {
 func TestIOSKeyboardIsolationBatchRestoresAfterCancellation(t *testing.T) {
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)
+	controller.run = func(ctx context.Context, _ string, args ...string) ([]byte, error) {
+		events = append(events, args[0])
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	err := controller.withBatch(ctx, func(batchCtx context.Context) error {

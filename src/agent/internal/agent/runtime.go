@@ -698,7 +698,28 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if err := runCtx.Err(); err != nil {
 		return RunResult{Preempted: true}, err
 	}
-	ctx = runCtx // Use preemptable context for the rest of the run.
+
+	return r.withIOSKeyboardIsolationRun(runCtx, func(isolationCtx context.Context) (RunResult, error) {
+		return r.run(isolationCtx, req)
+	})
+}
+
+func (r *Runtime) withIOSKeyboardIsolationRun(
+	ctx context.Context,
+	action func(context.Context) (RunResult, error),
+) (result RunResult, runErr error) {
+	if r == nil || r.tools == nil || r.tools.iosKeyboardIsolation == nil {
+		return action(ctx)
+	}
+	runErr = r.tools.iosKeyboardIsolation.withBatch(ctx, func(batchCtx context.Context) error {
+		result, runErr = action(batchCtx)
+		return runErr
+	})
+	return result, runErr
+}
+
+func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
+	var err error
 
 	startTime := time.Now()
 	metrics := &RunMetrics{}

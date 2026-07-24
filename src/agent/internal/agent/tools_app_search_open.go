@@ -199,15 +199,6 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 		return result, err
 	}
 	steps = append(steps, "opened system search")
-	if platform == "ios" && cfg.iosKeyboardIsolation != nil {
-		if err := cfg.iosKeyboardIsolation.restoreBatchProfile(ctx); err != nil {
-			return result, fmt.Errorf("restore normal HID profile before app search text: %w", err)
-		}
-		steps = append(steps, "restored normal HID profile before search text")
-		// Spotlight matching is case-insensitive. Lowercase ASCII avoids Shift
-		// modifiers after the single shortcut isolation/restore pair.
-		searchTerm = strings.ToLower(searchTerm)
-	}
 	engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
 	searchTerms := appSearchFallbackTerms(searchTerm)
 	for idx, term := range searchTerms {

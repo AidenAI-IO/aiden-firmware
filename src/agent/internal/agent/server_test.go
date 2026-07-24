@@ -3386,6 +3386,32 @@ func TestServerToolInvokeContinuesAfterClientDisconnect(t *testing.T) {
 	}
 }
 
+func TestHTTPToolExecutionSurvivesClientDisconnectForHIDTools(t *testing.T) {
+	for _, toolName := range []string{
+		"keyboard_tap",
+		"keyboard_text",
+		"quick_action",
+		"search_launch_app",
+		"enter_text_in_field",
+		"enter_text_via_bridge",
+		"mouse_click",
+		"mouse_move",
+		"mouse_scroll",
+		"run_script",
+		"touch_gesture",
+		"wheel_nudge",
+	} {
+		t.Run(toolName, func(t *testing.T) {
+			if !httpToolExecutionSurvivesClientDisconnect(toolName) {
+				t.Fatalf("httpToolExecutionSurvivesClientDisconnect(%q) = false, want true", toolName)
+			}
+		})
+	}
+	if httpToolExecutionSurvivesClientDisconnect("screenshot") {
+		t.Fatal("screenshot should keep normal client-cancellation behavior")
+	}
+}
+
 func TestServerToolInvokeUsesUnifiedExecutionAndNormalizesInput(t *testing.T) {
 	tool := &stubTool{
 		name:        "shell",

@@ -123,14 +123,6 @@ func (c *iosKeyboardIsolationController) batchFromContext(ctx context.Context) *
 	return batch
 }
 
-func (c *iosKeyboardIsolationController) restoreBatchProfile(ctx context.Context) error {
-	batch := c.batchFromContext(ctx)
-	if batch == nil {
-		return nil
-	}
-	return batch.restore()
-}
-
 func (b *iosKeyboardIsolationBatch) isolate() error {
 	if b == nil || b.controller == nil || b.isolated {
 		return nil

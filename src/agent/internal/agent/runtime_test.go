@@ -132,6 +132,82 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeIOSKeyboardIsolationCoalescesModifierActionsForWholeRun(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	runtime := &Runtime{tools: &ToolSet{iosKeyboardIsolation: controller}}
+
+	result, err := runtime.withIOSKeyboardIsolationRun(context.Background(), func(runCtx context.Context) (RunResult, error) {
+		if err := controller.withKeyboard(runCtx, true, func() error {
+			events = append(events, "first-shortcut")
+			return nil
+		}); err != nil {
+			return RunResult{}, err
+		}
+		if err := controller.withBatch(runCtx, func(compositeCtx context.Context) error {
+			return controller.withKeyboard(compositeCtx, true, func() error {
+				events = append(events, "second-shortcut")
+				return nil
+			})
+		}); err != nil {
+			return RunResult{}, err
+		}
+		return RunResult{Output: "done"}, nil
+	})
+	if err != nil {
+		t.Fatalf("withIOSKeyboardIsolationRun() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("output = %q, want done", result.Output)
+	}
+	if want := []string{"isolate", "first-shortcut", "second-shortcut", "restore"}; !slices.Equal(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestRuntimeIOSKeyboardIsolationDoesNotSwitchWithoutModifier(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	runtime := &Runtime{tools: &ToolSet{iosKeyboardIsolation: controller}}
+
+	_, err := runtime.withIOSKeyboardIsolationRun(context.Background(), func(runCtx context.Context) (RunResult, error) {
+		return RunResult{}, controller.withKeyboard(runCtx, false, func() error {
+			events = append(events, "plain-key")
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withIOSKeyboardIsolationRun() error = %v", err)
+	}
+	if want := []string{"plain-key"}; !slices.Equal(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestRuntimeIOSKeyboardIsolationRestoresWhenRunIsCanceled(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	runtime := &Runtime{tools: &ToolSet{iosKeyboardIsolation: controller}}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	_, err := runtime.withIOSKeyboardIsolationRun(ctx, func(runCtx context.Context) (RunResult, error) {
+		if err := controller.withKeyboard(runCtx, true, func() error {
+			events = append(events, "shortcut")
+			cancel()
+			return nil
+		}); err != nil {
+			return RunResult{}, err
+		}
+		return RunResult{}, runCtx.Err()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("withIOSKeyboardIsolationRun() error = %v, want context canceled", err)
+	}
+	if want := []string{"isolate", "shortcut", "restore"}; !slices.Equal(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
 func TestRuntimeRunMarksMainAgentModelCallsForRawHTTPLog(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("completed")}
 	runtime := NewRuntimeWithDeps(
