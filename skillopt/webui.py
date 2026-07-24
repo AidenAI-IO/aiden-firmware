@@ -327,6 +327,12 @@ class SkillOptWebApp:
                 if not suite_path.suffix:
                     suite_path = suite_path.with_suffix('.json')
 
+            # Validate that the resolved path is within suites_dir to prevent path traversal
+            suite_path = suite_path.resolve()
+            suites_root = self.config.suites_dir.resolve()
+            if suites_root not in suite_path.parents and suites_root != suite_path:
+                return None
+
             if not suite_path.exists():
                 return None
 

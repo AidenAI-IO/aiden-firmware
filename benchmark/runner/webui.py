@@ -2621,7 +2621,8 @@ class WebHandler(BaseHTTPRequestHandler):
         if len(parts) < 3:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        suite_key = "/".join(parts[2:])
+        # URL decode the suite key to handle encoded slashes and special characters
+        suite_key = urllib.parse.unquote("/".join(parts[2:]))
         suite = self.server.app.get_suite_detail(suite_key)
         if suite is None:
             self.send_error(HTTPStatus.NOT_FOUND)
