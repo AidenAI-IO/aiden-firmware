@@ -1,13 +1,15 @@
 package statemanager
 
 import (
+	"slices"
 	"sort"
 	"sync"
 )
 
 type StateManager struct {
-	m        sync.Map
-	updaters []StateUpdater
+	m         sync.Map
+	updaterMu sync.Mutex
+	updaters  []StateUpdater
 }
 
 type StateEntry struct {
@@ -20,13 +22,13 @@ func NewStateManager() *StateManager {
 }
 
 func (s *StateManager) RegisterUpdater(updater StateUpdater) {
+	s.updaterMu.Lock()
+	defer s.updaterMu.Unlock()
 	if updater == nil {
 		return
 	}
-	for _, registered := range s.updaters {
-		if registered == updater {
-			return
-		}
+	if slices.Contains(s.updaters, updater) {
+		return
 	}
 	s.updaters = append(s.updaters, updater)
 }
@@ -48,6 +50,8 @@ func (s *StateManager) DeleteState(key string) {
 }
 
 func (s *StateManager) update() {
+	s.updaterMu.Lock()
+	defer s.updaterMu.Unlock()
 	for _, updater := range s.updaters {
 		states := updater.UpdateState()
 		for key, value := range states {
