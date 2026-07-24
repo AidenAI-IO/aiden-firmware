@@ -324,8 +324,9 @@ func loadQuickActionsForConfig(configDir string, logger *Logger) {
 
 // QuickActionTool executes predefined platform-specific shortcuts and gestures.
 type QuickActionTool struct {
-	keyboard *KeyboardTapTool
-	touch    *TouchGestureTool
+	keyboard             *KeyboardTapTool
+	touch                *TouchGestureTool
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 func (t *QuickActionTool) Name() string { return "quick_action" }
@@ -354,6 +355,16 @@ type quickActionArgs struct {
 }
 
 func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error) {
+	var controller *iosKeyboardIsolationController
+	if t != nil {
+		controller = t.iosKeyboardIsolation
+	}
+	return withIOSKeyboardIsolationBatchCall(ctx, controller, func(batchCtx context.Context) (string, error) {
+		return t.call(batchCtx, input)
+	})
+}
+
+func (t *QuickActionTool) call(ctx context.Context, input string) (string, error) {
 	var args quickActionArgs
 	trimmed := strings.TrimSpace(input)
 	if touchscreenRCADebugEnabledCached() {

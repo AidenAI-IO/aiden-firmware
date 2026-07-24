@@ -8,9 +8,10 @@ import (
 )
 
 type EnterTextInFieldTool struct {
-	engine     *textInputEngine
-	bridgeTool *EnterTextViaBridgeTool
-	platformFn func() string
+	engine               *textInputEngine
+	bridgeTool           *EnterTextViaBridgeTool
+	platformFn           func() string
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 func (t *EnterTextInFieldTool) SetPlatformFn(fn func() string) {
@@ -43,6 +44,16 @@ func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {
 }
 
 func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, error) {
+	var controller *iosKeyboardIsolationController
+	if t != nil {
+		controller = t.iosKeyboardIsolation
+	}
+	return withIOSKeyboardIsolationBatchCall(ctx, controller, func(batchCtx context.Context) (string, error) {
+		return t.call(batchCtx, input)
+	})
+}
+
+func (t *EnterTextInFieldTool) call(ctx context.Context, input string) (string, error) {
 	if t == nil || t.engine == nil {
 		return toolErrorResultString(ctx, CodeModuleUnavailable, "enter_text_in_field is not fully configured"), nil
 	}

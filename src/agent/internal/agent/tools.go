@@ -12,11 +12,16 @@ import (
 
 // ToolSet is a fixed collection of built-in tools, keyed by name.
 type ToolSet struct {
-	tools               map[string]langtools.Tool
-	screen              *screen.ScreenState
-	phoneBridge         *PhoneBridge
-	phoneBridgeRestorer *PhoneBridgeRestorer
-	textInputHW         *textInputHardwareDeps
+	tools                map[string]langtools.Tool
+	screen               *screen.ScreenState
+	phoneBridge          *PhoneBridge
+	phoneBridgeRestorer  *PhoneBridgeRestorer
+	textInputHW          *textInputHardwareDeps
+	iosKeyboardIsolation *iosKeyboardIsolationController
+}
+
+type runtimePlatformConfigurable interface {
+	SetPlatformFn(func() string)
 }
 
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
@@ -129,7 +134,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput, iosKeyboardIsolation: iosKeyboardIsolation}
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen, requireFreshScreenshot: true}
-	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
+	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture, iosKeyboardIsolation: iosKeyboardIsolation}
 	mouseClick := &MouseClickTool{pc: pointer, screen: screen, adb: adbInput}
 	textInputHW := &textInputHardwareDeps{
 		mouseClick:   mouseClick,
@@ -169,6 +174,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		tool, ok := tools[name]
 		return tool, ok
 	})
+	runScript.iosKeyboardIsolation = iosKeyboardIsolation
 	tools["run_script"] = runScript
 	tools["list_scripts"] = NewListScriptsTool(toolOptions.scriptsDir)
 	tools["read_script"] = NewReadScriptTool(toolOptions.scriptsDir)
@@ -177,10 +183,11 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	tools["request_human_handoff"] = NewHumanHandoffTool()
 
 	toolSet := &ToolSet{
-		tools:               tools,
-		screen:              screen,
-		phoneBridgeRestorer: NewPhoneBridgeRestorer(nil, pointer),
-		textInputHW:         textInputHW,
+		tools:                tools,
+		screen:               screen,
+		phoneBridgeRestorer:  NewPhoneBridgeRestorer(nil, pointer),
+		textInputHW:          textInputHW,
+		iosKeyboardIsolation: iosKeyboardIsolation,
 	}
 	touchGesture.primeScreenMapping = toolSet.PrimeScreenMapping
 	return toolSet
@@ -195,17 +202,18 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn fu
 		return
 	}
 	engine := newTextInputEngine(*s.textInputHW, newLLMTextInputVision(models))
-	tool := &EnterTextInFieldTool{engine: engine, platformFn: platformFn}
+	tool := &EnterTextInFieldTool{engine: engine, platformFn: platformFn, iosKeyboardIsolation: s.iosKeyboardIsolation}
 	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(tool, s.textInputHW.screenshot, 300*time.Millisecond)
 	searchOpenTool := &appSearchOpenTool{
-		hw:          s.textInputHW,
-		vision:      newLLMTextInputVision(models),
-		platformFn:  platformFn,
-		entryTool:   tool,
-		launchDelay: appSearchOpenLaunchDelay,
+		hw:                   s.textInputHW,
+		vision:               newLLMTextInputVision(models),
+		platformFn:           platformFn,
+		entryTool:            tool,
+		launchDelay:          appSearchOpenLaunchDelay,
+		iosKeyboardIsolation: s.iosKeyboardIsolation,
 	}
 	s.tools["search_launch_app"] = searchOpenTool
-	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, platformFn: platformFn}
+	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, platformFn: platformFn, iosKeyboardIsolation: s.iosKeyboardIsolation}
 	tool.bridgeTool = bridgeTool
 	s.tools["enter_text_via_bridge"] = newPostActionScreenshotTool(bridgeTool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
@@ -220,6 +228,21 @@ func (s *ToolSet) SetRunScriptSpeaker(speaker runScriptSpeaker) {
 	}
 	if runScript, ok := tool.(*RunScriptTool); ok {
 		runScript.SetSpeaker(speaker)
+	}
+}
+
+func (s *ToolSet) SetRuntimePlatformFn(fn func() string) {
+	if s == nil {
+		return
+	}
+	for _, name := range []string{"enter_text_in_field", "enter_text_via_bridge", "search_launch_app"} {
+		tool, ok := s.tools[name]
+		if !ok {
+			continue
+		}
+		if configurable, ok := tool.(runtimePlatformConfigurable); ok {
+			configurable.SetPlatformFn(fn)
+		}
 	}
 }
 

@@ -1,13 +1,19 @@
 #!/bin/sh
 # Aiden config web portal. Runs after usb0 + dnsmasq are up.
-# Maintains /userdata/agent/agent.toml for the Go agent daemon.
+# Maintains the Go agent configuration and log viewer.
 
 BIN=/oem/usr/bin/config_web
 ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 PID_FILE=/run/config_web.pid
-CONFIG_PATH=/userdata/agent/agent.toml
+CONFIG_DIR=${CONFIG_DIR:-/userdata/agent}
 WIFI_CONFIG_PATH=/userdata/wpa_supplicant.conf
 SYSTEM_ENV_PATH=${SYSTEM_ENV_PATH:-/userdata/system/env}
+BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
+
+if [ -f "$BOOT_CONF" ]; then
+    . "$BOOT_CONF"
+fi
+CONFIG_PATH=${CONFIG_PATH:-$CONFIG_DIR/agent.toml}
 
 is_running() {
     pid="$1"

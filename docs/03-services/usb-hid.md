@@ -132,9 +132,35 @@ After the action, including error and cancellation paths, it restores the normal
 composite. The isolated profile uses a distinct USB product ID and serial number
 so iOS does not reuse the pointer-bearing descriptor for the input.
 
+One conversational Agent run owns a shared isolation scope. The first
+modifier-bearing keyboard operation removes the pointer, and later keyboard or
+Consumer Control operations reuse that profile without another enumeration. A
+mouse, touch, scroll, or wheel operation restores the normal profile only when
+the pointer is currently absent. If a later keyboard operation needs a modifier,
+the run isolates again. Success, failure, cancellation, preemption, panic
+cleanup, and normal termination all leave the scope through a context-independent
+final restore.
+
+Direct HTTP Tool API calls use the same rules within one invocation, but do not
+share isolation state across separate requests. A modifier-bearing HTTP call
+therefore isolates and restores once unless that invocation needs pointer input
+before it completes.
+
+When `search_launch_app` omits `platform`, an active iOS HID isolation
+controller is also treated as an iOS platform signal. This keeps the documented
+`{"app":"WeChat"}` input on the `Cmd+Space` Spotlight path even while Phone
+Bridge is unavailable or backgrounded.
+
 The Luckfox board has one UDC, so isolation and restore briefly disconnect the
 complete composite, including ECM. The dynamic controller and ECM watchdog
-share `/run/aiden_dynamic_keyboard.lock` to prevent overlapping UDC resets.
+share `/run/aiden_dynamic_keyboard.lock` to prevent overlapping UDC resets. The
+controller also publishes a short post-switch grace deadline so the watchdog
+does not count the planned ECM interruption toward its stall threshold. Normal
+watchdog probes resume after the grace window and still recover persistent ECM
+failures. HID node open recovery also honors this deadline: a transient
+`/dev/hidg*` `ENXIO` waits and retries instead of forcing another composite
+refresh during the planned switch.
+
 Inspect or exercise the profiles manually with:
 
 ```bash

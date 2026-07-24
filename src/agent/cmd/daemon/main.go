@@ -118,6 +118,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer runtime.Close()
+	if err := runtime.StartStorageMonitor(); err != nil {
+		log.Printf("[storage_monitor] startup check failed: %v", err)
+	}
 	if wrote, err := ota.WriteHealthMarkerIfPending("/userdata/ota/pending_boot.json", "/userdata/ota/health.ok"); err != nil {
 		log.Printf("[ota] health marker not written: %v", err)
 	} else if wrote {
@@ -209,6 +212,7 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 	}
 	dialog.SetHistoryAppender(server.AppendHistory)
 	dialog.SetStorageManager(runtime.Storage())
+	dialog.SetStorageMonitor(runtime.StorageMonitor())
 
 	// Register preempt hook: when a new run starts, release GPIO audio resources.
 	runtime.RegisterPreemptHook(func() {

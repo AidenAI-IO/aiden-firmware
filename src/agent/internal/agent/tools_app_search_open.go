@@ -27,22 +27,29 @@ func sleepWithContext(ctx context.Context, delay time.Duration) error {
 }
 
 type appSearchOpenTool struct {
-	hw               *textInputHardwareDeps
-	vision           textInputVision
-	platformFn       func() string
-	findAppTapFn     func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
-	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
-	afterOpenFn      func() error
-	searchTermFn     func(string) string
-	entryTool        *EnterTextInFieldTool
-	launchDelay      time.Duration
-	sleep            func(context.Context, time.Duration) error
+	hw                   *textInputHardwareDeps
+	vision               textInputVision
+	platformFn           func() string
+	findAppTapFn         func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
+	confirmAppOpenFn     func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
+	afterOpenFn          func() error
+	searchTermFn         func(string) string
+	entryTool            *EnterTextInFieldTool
+	launchDelay          time.Duration
+	sleep                func(context.Context, time.Duration) error
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 type appSearchOpenArgs struct {
 	App      string `json:"app"`
 	Name     string `json:"name"`
 	Platform string `json:"platform,omitempty"`
+}
+
+func (t *appSearchOpenTool) SetPlatformFn(fn func() string) {
+	if t != nil {
+		t.platformFn = fn
+	}
 }
 
 func (t *appSearchOpenTool) Name() string { return "search_launch_app" }
@@ -62,6 +69,16 @@ func (t *appSearchOpenTool) ArgsSchema() map[string]any {
 }
 
 func (t *appSearchOpenTool) Call(ctx context.Context, input string) (string, error) {
+	var controller *iosKeyboardIsolationController
+	if t != nil {
+		controller = t.iosKeyboardIsolation
+	}
+	return withIOSKeyboardIsolationBatchCall(ctx, controller, func(batchCtx context.Context) (string, error) {
+		return t.call(batchCtx, input)
+	})
+}
+
+func (t *appSearchOpenTool) call(ctx context.Context, input string) (string, error) {
 	if t == nil || t.hw == nil || t.vision == nil {
 		return "error: search_launch_app is not fully configured", nil
 	}
@@ -81,6 +98,9 @@ func (t *appSearchOpenTool) Call(ctx context.Context, input string) (string, err
 		if override := strings.ToLower(strings.TrimSpace(t.platformFn())); override != "" {
 			platform = override
 		}
+	}
+	if platform == "" && t.iosKeyboardIsolation != nil {
+		platform = "ios"
 	}
 	result, err := runAppSearchOpenFlow(ctx, appSearchOpenFlowConfig{
 		hw:               t.hw,

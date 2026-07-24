@@ -3326,6 +3326,93 @@ func TestServerToolInvokeEndpointAcceptsStructuredJSON(t *testing.T) {
 	}
 }
 
+func TestServerToolInvokeContinuesAfterClientDisconnect(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	tool := &stubTool{
+		name:        "search_launch_app",
+		description: "Search for and open an app.",
+		callFn: func(ctx context.Context, _ string) (string, error) {
+			close(started)
+			select {
+			case <-release:
+				return "ok", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"search_launch_app": tool}},
+		NewSkillIndex(),
+	)
+	server := newServerForTest(runtime)
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/api/tools/search_launch_app", bytes.NewBufferString(`{"input":{"app":"WeChat"}}`)).WithContext(requestCtx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		server.handleToolInvoke(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("tool invocation did not start")
+	}
+	cancelRequest()
+	select {
+	case <-done:
+		t.Fatal("tool invocation stopped when the client request was canceled")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("tool invocation did not finish after release")
+	}
+
+	var resp ToolInvokeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.IsError || resp.Output != "ok" {
+		t.Fatalf("response = %#v, want successful detached execution", resp)
+	}
+}
+
+func TestHTTPToolExecutionSurvivesClientDisconnectForHIDTools(t *testing.T) {
+	for _, toolName := range []string{
+		"keyboard_tap",
+		"keyboard_text",
+		"quick_action",
+		"search_launch_app",
+		"enter_text_in_field",
+		"enter_text_via_bridge",
+		"mouse_click",
+		"mouse_move",
+		"mouse_scroll",
+		"run_script",
+		"touch_gesture",
+		"wheel_nudge",
+	} {
+		t.Run(toolName, func(t *testing.T) {
+			if !httpToolExecutionSurvivesClientDisconnect(toolName) {
+				t.Fatalf("httpToolExecutionSurvivesClientDisconnect(%q) = false, want true", toolName)
+			}
+		})
+	}
+	if httpToolExecutionSurvivesClientDisconnect("screenshot") {
+		t.Fatal("screenshot should keep normal client-cancellation behavior")
+	}
+}
+
 func TestServerToolInvokeUsesUnifiedExecutionAndNormalizesInput(t *testing.T) {
 	tool := &stubTool{
 		name:        "shell",

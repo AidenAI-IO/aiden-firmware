@@ -4,9 +4,9 @@
 
 AGENT_BIN=/oem/usr/bin/agent
 ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
-CONFIG_DIR=/userdata/agent
+CONFIG_DIR=${CONFIG_DIR:-/userdata/agent}
 ADDR=0.0.0.0:8080
-LOG_PATH=/var/log/agent/agent.log
+STORAGE_LEVEL_PATH=${STORAGE_LEVEL_PATH:-/run/agent/storage_level}
 PID_FILE=/run/agent/agent.pid
 WATCHDOG_PID_FILE=/run/agent/agent_watchdog.pid
 BOOT_CONF=/etc/aiden_boot.conf
@@ -15,6 +15,51 @@ if [ -f "$BOOT_CONF" ]; then
     . "$BOOT_CONF"
 fi
 : "${ENABLE_AGENT:=1}"
+LOG_PATH=${LOG_PATH:-$CONFIG_DIR/log/agent.log}
+
+configured_agent_log_max_mb() {
+    config_path="$CONFIG_DIR/agent.toml"
+    [ -r "$config_path" ] || return 0
+    awk '
+        /^\[storage\.degraded_mode\][[:space:]]*$/ { in_section = 1; next }
+        /^\[/ { in_section = 0 }
+        in_section && $1 == "max_agent_log_mb" && $2 == "=" { print $3; exit }
+    ' "$config_path"
+}
+
+agent_log_max_bytes() {
+    if [ -n "${AGENT_LOG_MAX_BYTES:-}" ]; then
+        bytes="$AGENT_LOG_MAX_BYTES"
+    else
+        max_mb="${AGENT_LOG_MAX_MB:-$(configured_agent_log_max_mb)}"
+        case "$max_mb" in
+            ''|*[!0-9]*|0) max_mb=1 ;;
+        esac
+        bytes="$((max_mb * 1024 * 1024))"
+    fi
+    case "$bytes" in
+        ''|*[!0-9]*|0) bytes=$((1024 * 1024)) ;;
+    esac
+    echo "$bytes"
+}
+
+trim_agent_log() {
+    [ -f "$LOG_PATH" ] || return 0
+    level="$(cat "$STORAGE_LEVEL_PATH" 2>/dev/null || true)"
+    case "$level" in
+        critical|emergency) ;;
+        *) return 0 ;;
+    esac
+    max_bytes="$(agent_log_max_bytes)"
+    size="$(wc -c < "$LOG_PATH" | tr -d ' ')"
+    [ "$size" -gt "$max_bytes" ] || return 0
+
+    trim_path="${LOG_PATH}.trim.$$"
+    if tail -c "$max_bytes" "$LOG_PATH" > "$trim_path"; then
+        cat "$trim_path" > "$LOG_PATH"
+    fi
+    rm -f "$trim_path"
+}
 
 is_running() {
     pid="$1"
@@ -89,6 +134,7 @@ start() {
         while true; do
             if [ ! -x "$AGENT_BIN" ]; then
                 echo "[agent] waiting for $AGENT_BIN" >> "$LOG_PATH"
+                trim_agent_log
                 sleep 5
                 continue
             fi
@@ -97,10 +143,15 @@ start() {
             "$ENV_RUN_BIN" "$AGENT_BIN" -config "$CONFIG_DIR" -addr "$ADDR" >> "$LOG_PATH" 2>&1 &
             child="$!"
             echo "$child" > "$PID_FILE"
+            while is_running "$child"; do
+                sleep 1
+                trim_agent_log
+            done
             wait "$child"
             status="$?"
             rm -f "$PID_FILE"
             echo "[agent] exited with status $status; restarting in 2s" >> "$LOG_PATH"
+            trim_agent_log
             sleep 2
         done
     ) &
@@ -135,6 +186,7 @@ stop() {
 status() {
     wpid="$(watchdog_pid)"
     spid="$(service_pid)"
+    echo "log_path=$LOG_PATH"
     if is_running "$wpid"; then
         echo "watchdog=running pid=$wpid"
     else
@@ -161,8 +213,11 @@ case "${1:-}" in
     status)
         status
         ;;
+    trim-log)
+        trim_agent_log
+        ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status}" >&2
+        echo "Usage: $0 {start|stop|restart|status|trim-log}" >&2
         exit 1
         ;;
 esac
