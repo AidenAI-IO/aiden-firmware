@@ -58,16 +58,17 @@ type textViaBridgeResult struct {
 }
 
 type EnterTextViaBridgeTool struct {
-	hw               *textInputHardwareDeps
-	vision           textInputVision
-	bridgeFn         func() *PhoneBridge
-	clipboardWriteFn func(context.Context, *PhoneBridge, string) error
-	findAppTapFn     func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
-	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
-	findPrevAppFn    func(context.Context, screenshotResult) (previousAppCardResult, error)
-	findPasteMenuFn  func(context.Context, screenshotResult, string) (pasteMenuResult, error)
-	platformFn       func() string
-	sleep            func(context.Context, time.Duration) error
+	hw                   *textInputHardwareDeps
+	vision               textInputVision
+	bridgeFn             func() *PhoneBridge
+	clipboardWriteFn     func(context.Context, *PhoneBridge, string) error
+	findAppTapFn         func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
+	confirmAppOpenFn     func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
+	findPrevAppFn        func(context.Context, screenshotResult) (previousAppCardResult, error)
+	findPasteMenuFn      func(context.Context, screenshotResult, string) (pasteMenuResult, error)
+	platformFn           func() string
+	sleep                func(context.Context, time.Duration) error
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 func (t *EnterTextViaBridgeTool) SetPlatformFn(fn func() string) {
@@ -96,6 +97,16 @@ func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
 }
 
 func (t *EnterTextViaBridgeTool) Call(ctx context.Context, input string) (string, error) {
+	var controller *iosKeyboardIsolationController
+	if t != nil {
+		controller = t.iosKeyboardIsolation
+	}
+	return withIOSKeyboardIsolationBatchCall(ctx, controller, func(batchCtx context.Context) (string, error) {
+		return t.call(batchCtx, input)
+	})
+}
+
+func (t *EnterTextViaBridgeTool) call(ctx context.Context, input string) (string, error) {
 	if t == nil || t.hw == nil || t.vision == nil {
 		return "error: enter_text_via_bridge is not fully configured", nil
 	}

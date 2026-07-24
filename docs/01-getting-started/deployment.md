@@ -136,7 +136,7 @@ When starting with the firmware, the main service relationships are as follows:
 | Frame Service | `/var/log/frame_service/frame_service.log` |
 | adb delayed startup | `/var/log/adb/adb-startup.log` |
 | Audio Service | `/var/log/audio_service/audio_service.log` |
-| Agent | `/var/log/agent/agent.log` |
+| Agent | `/userdata/agent/log/agent.log` |
 
 ## Notes
 

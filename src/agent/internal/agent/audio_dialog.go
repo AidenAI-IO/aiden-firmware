@@ -214,6 +214,12 @@ func (d *AudioDialog) SetStorageManager(sm *StorageManager) {
 	}
 }
 
+func (d *AudioDialog) SetStorageMonitor(monitor *StorageMonitor) {
+	if d.audioArchive != nil {
+		d.audioArchive.SetStorageMonitor(monitor)
+	}
+}
+
 // StartRecording starts an audio recording session
 func (d *AudioDialog) StartRecording() error {
 	d.recordMu.Lock()

@@ -44,8 +44,9 @@
 | `/var/log/frame_service/frame_service.log` | Frame Service log |
 | `/var/log/adb/adb-startup.log` | adb delayed startup log |
 | `/var/log/audio_service/audio_service.log` | Audio Service log |
-| `/var/log/agent/agent.log` | Agent log (includes init script and runtime output) |
+| `/userdata/agent/log/agent.log` | Agent log (includes init script and runtime output) |
 | `/userdata/agent/log/llm-http-YYYYMMDDHHMMSSmmm.log` | LLM HTTP request/response log (JSONL format, organized by session) |
+| `/run/agent/storage_level` | Current StorageMonitor level used by deployment-side log guards |
 
 ## Configuration Files
 
@@ -94,6 +95,9 @@ audio_service_cli --socket /run/audio_service/audio_service.sock get-volume
 
 # Agent API
 curl http://<device-ip>:8080/api/tools
+curl http://<device-ip>:8080/api/storage/status
+curl http://<device-ip>:8080/api/storage/monitor/status
+curl -X POST -H 'Content-Type: application/json' -d '{"force":false,"targets":[]}' http://<device-ip>:8080/api/storage/cleanup
 
 # OTA
 /oem/usr/bin/ota status
@@ -101,15 +105,19 @@ curl http://<device-ip>:8080/api/tools
 /oem/usr/bin/abctl read /dev/block/by-name/misc
 
 # Log viewing
-tail -f /var/log/agent/agent.log
+tail -f /userdata/agent/log/agent.log
 jq . /userdata/agent/log/llm-http-$(date +%Y%m%d)*.log
 ```
 
 ## Agent Logs
 
-### /var/log/agent/agent.log
+### /userdata/agent/log/agent.log
 
 Agent main log, contains all output from init script and runtime.
+
+The path follows the runtime config directory: `<CONFIG_DIR>/log/agent.log`. The default config directory is `/userdata/agent`. The former `/var/log/agent/agent.log` is not migrated or used as a fallback.
+
+When StorageMonitor reports `critical` or `emergency`, `S53agent` trims this file to the configured `storage.degraded_mode.max_agent_log_mb` limit while preserving the newest content.
 
 **Session separator marker**:
 ```
