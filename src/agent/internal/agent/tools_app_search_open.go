@@ -46,6 +46,12 @@ type appSearchOpenArgs struct {
 	Platform string `json:"platform,omitempty"`
 }
 
+func (t *appSearchOpenTool) SetPlatformFn(fn func() string) {
+	if t != nil {
+		t.platformFn = fn
+	}
+}
+
 func (t *appSearchOpenTool) Name() string { return "search_launch_app" }
 
 func (t *appSearchOpenTool) Description() string {

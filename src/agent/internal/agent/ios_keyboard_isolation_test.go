@@ -103,6 +103,67 @@ func TestIOSKeyboardIsolationNestedBatchReusesOuterProfile(t *testing.T) {
 	}
 }
 
+func TestIOSKeyboardIsolationBatchWaitCanBeCanceled(t *testing.T) {
+	controller := newTestIOSKeyboardIsolationController(&[]string{})
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- controller.withBatch(context.Background(), func(context.Context) error {
+			close(firstStarted)
+			<-releaseFirst
+			return nil
+		})
+	}()
+
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first batch did not acquire isolation controller")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	secondActionErr := errors.New("second batch action unexpectedly ran")
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- controller.withBatch(ctx, func(context.Context) error {
+			return secondActionErr
+		})
+	}()
+
+	select {
+	case err := <-secondDone:
+		close(releaseFirst)
+		<-firstDone
+		t.Fatalf("second batch returned before cancellation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			close(releaseFirst)
+			<-firstDone
+			t.Fatalf("second batch error = %v, want context canceled", err)
+		}
+		if errors.Is(err, secondActionErr) {
+			close(releaseFirst)
+			<-firstDone
+			t.Fatalf("second batch action ran after cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		close(releaseFirst)
+		<-firstDone
+		t.Fatal("canceled batch remained blocked waiting for isolation controller")
+	}
+
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first batch error = %v", err)
+	}
+}
+
 func TestIOSKeyboardIsolationBatchRestoresBeforePointerAndCanReisolate(t *testing.T) {
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)

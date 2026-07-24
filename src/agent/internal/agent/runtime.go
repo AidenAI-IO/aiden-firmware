@@ -1000,10 +1000,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	// Set platformFn for text entry tools (bridge > config > LLM).
-	type platformConfigurable interface {
-		SetPlatformFn(func() string)
-	}
+	// Set platformFn for platform-aware tools (bridge > config > LLM).
 	platformFn := func() string {
 		if deviceEnv != nil {
 			if p := strings.TrimSpace(deviceEnv.Platform); p != "" {
@@ -1012,13 +1009,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		return defaultPlatform
 	}
-	for _, name := range []string{"enter_text_in_field", "enter_text_via_bridge"} {
-		if textInputTool, ok := r.tools.Get(name); ok {
-			if tool, ok := textInputTool.(platformConfigurable); ok {
-				tool.SetPlatformFn(platformFn)
-			}
-		}
-	}
+	r.tools.SetRuntimePlatformFn(platformFn)
 
 	// setup context manager if not initialized
 	if r.contextManager == nil {

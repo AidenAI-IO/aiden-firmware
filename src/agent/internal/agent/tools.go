@@ -19,6 +19,10 @@ type ToolSet struct {
 	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
+type runtimePlatformConfigurable interface {
+	SetPlatformFn(func() string)
+}
+
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
 // everything is registered here with its runtime dependencies already wired up.
 type BuiltinToolSetOption func(*builtinToolSetOptions)
@@ -156,6 +160,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		tool, ok := tools[name]
 		return tool, ok
 	})
+	runScript.iosKeyboardIsolation = iosKeyboardIsolation
 	tools["run_script"] = runScript
 	tools["list_scripts"] = NewListScriptsTool(toolOptions.scriptsDir)
 	tools["read_script"] = NewReadScriptTool(toolOptions.scriptsDir)
@@ -205,6 +210,21 @@ func (s *ToolSet) SetRunScriptSpeaker(speaker runScriptSpeaker) {
 	}
 	if runScript, ok := tool.(*RunScriptTool); ok {
 		runScript.SetSpeaker(speaker)
+	}
+}
+
+func (s *ToolSet) SetRuntimePlatformFn(fn func() string) {
+	if s == nil {
+		return
+	}
+	for _, name := range []string{"enter_text_in_field", "enter_text_via_bridge", "search_launch_app"} {
+		tool, ok := s.tools[name]
+		if !ok {
+			continue
+		}
+		if configurable, ok := tool.(runtimePlatformConfigurable); ok {
+			configurable.SetPlatformFn(fn)
+		}
 	}
 }
 

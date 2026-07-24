@@ -36,7 +36,8 @@ type iosKeyboardIsolationController struct {
 	pointerDev         *HIDDevice
 	extraKeysDev       *HIDDevice
 	run                iosKeyboardIsolationCommand
-	mu                 sync.Mutex
+	gateOnce           sync.Once
+	gate               chan struct{}
 	needsRestore       bool
 	lastRestoreErr     error
 	lastRestoreFailure time.Time
@@ -74,6 +75,33 @@ func (c *iosKeyboardIsolationController) closeHIDDevices() {
 	if c.extraKeysDev != nil {
 		c.extraKeysDev.Close()
 	}
+}
+
+func (c *iosKeyboardIsolationController) acquire(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.gateOnce.Do(func() {
+		c.gate = make(chan struct{}, 1)
+		c.gate <- struct{}{}
+	})
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.gate:
+	}
+	if err := ctx.Err(); err != nil {
+		c.release()
+		return err
+	}
+	return nil
+}
+
+func (c *iosKeyboardIsolationController) release() {
+	c.gate <- struct{}{}
 }
 
 func (c *iosKeyboardIsolationController) switchProfile(command string) error {
@@ -171,8 +199,10 @@ func (c *iosKeyboardIsolationController) withBatch(ctx context.Context, action f
 		return err
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if err := c.acquire(ctx); err != nil {
+		return err
+	}
+	defer c.release()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -224,8 +254,10 @@ func (c *iosKeyboardIsolationController) withKeyboard(ctx context.Context, isola
 		return action()
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if err := c.acquire(ctx); err != nil {
+		return err
+	}
+	defer c.release()
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -269,8 +301,10 @@ func (c *iosKeyboardIsolationController) withPointerCall(ctx context.Context, ac
 		}
 		return action(ctx)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if err := c.acquire(ctx); err != nil {
+		return "", err
+	}
+	defer c.release()
 	if err := c.ensureNormalProfileLocked(); err != nil {
 		return "", err
 	}
@@ -289,8 +323,10 @@ func (c *iosKeyboardIsolationController) withExtraKeys(ctx context.Context, acti
 		}
 		return action()
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if err := c.acquire(ctx); err != nil {
+		return err
+	}
+	defer c.release()
 	if err := c.ensureNormalProfileLocked(); err != nil {
 		return err
 	}

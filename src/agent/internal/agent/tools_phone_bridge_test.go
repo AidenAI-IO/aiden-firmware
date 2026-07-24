@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	langtools "github.com/tmc/langchaingo/tools"
 	"nhooyr.io/websocket"
 )
 
@@ -194,6 +195,60 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 	}
 	if len(quick.calls) != 1 || len(keyboardText.calls) != 1 || len(touch.calls) != 1 {
 		t.Fatalf("unexpected tool calls: quick=%v keyboard=%v touch=%v", quick.calls, keyboardText.calls, touch.calls)
+	}
+}
+
+func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T) {
+	vision := &stubTextInputVision{}
+	quick := &recordingTextInputTool{name: "quick_action", out: "ok"}
+	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	hw := &textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		quickAction:  quick,
+		touchGesture: touch,
+		keyboardText: keyboardText,
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}
+	tool := &appSearchOpenTool{
+		hw:                   hw,
+		vision:               vision,
+		entryTool:            &EnterTextInFieldTool{engine: newFastTextInputEngine(*hw, vision)},
+		sleep:                testNoWaitSleep,
+		iosKeyboardIsolation: newTestIOSKeyboardIsolationController(&[]string{}),
+		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
+			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "WeChat"}, nil
+		},
+		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
+			return bridgeAppOpenResult{Opened: true, Reason: "WeChat visible"}, nil
+		},
+	}
+	toolSet := &ToolSet{tools: map[string]langtools.Tool{"search_launch_app": tool}}
+	toolSet.SetRuntimePlatformFn(func() string { return "android" })
+
+	out, err := tool.Call(context.Background(), `{"app":"WeChat"}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode Call() output: %v: %s", err, out)
+	}
+	if !result.OK {
+		t.Fatalf("Call() output = %s, want ok", out)
+	}
+	if len(quick.calls) != 1 {
+		t.Fatalf("quick_action calls = %v, want one", quick.calls)
+	}
+	var quickArgs quickActionArgs
+	if err := json.Unmarshal([]byte(quick.calls[0]), &quickArgs); err != nil {
+		t.Fatalf("decode quick_action input: %v", err)
+	}
+	if quickArgs.Platform != "android" {
+		t.Fatalf("quick_action platform = %q, want android", quickArgs.Platform)
 	}
 }
 
