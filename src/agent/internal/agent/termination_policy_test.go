@@ -42,7 +42,7 @@ func TestTerminationPolicyRestrictsActionToolsAndRecoversAfterProgress(t *testin
 		t.Fatal("expected action tool blocked at restrict tier")
 	}
 
-	changedScreen := terminationPolicyScreenshotObservation(t, 200, 400, image.Rect(20, 100, 80, 160))
+	changedScreen := terminationPolicyScreenshotObservation(t, 200, 400, image.Rect(20, 100, 120, 200))
 	progress := policy.AfterToolCall("screenshot", `{}`, changedScreen, false)
 	if progress.Stop || policy.tier != TierNone || policy.stallScore != 0 {
 		t.Fatalf("progress should clear restriction, decision=%#v score=%d tier=%d", progress, policy.stallScore, policy.tier)
@@ -86,17 +86,34 @@ func TestTerminationPolicyIgnoresSubOnePercentPixelChanges(t *testing.T) {
 	}
 }
 
-func TestTerminationPolicyAcceptsPixelChangesAboveOnePercent(t *testing.T) {
+func TestTerminationPolicyIgnoresPixelChangesBelowTenPercent(t *testing.T) {
 	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
 	before := terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{})
 	after := terminationPolicyScreenshotObservation(t, 200, 400, image.Rect(20, 100, 80, 160))
+
+	policy.AfterToolCall("screenshot", `{}`, before, false)
+	policy.stallScore = 1
+	policy.refreshTier()
+	decision := policy.AfterToolCall("screenshot", `{}`, after, false)
+	if decision.Stop {
+		t.Fatalf("sub-10%% change should not immediately stop the run: %#v", decision)
+	}
+	if policy.stallScore == 0 || policy.tier == TierNone {
+		t.Fatalf("sub-10%% change was incorrectly treated as progress: score=%d tier=%d", policy.stallScore, policy.tier)
+	}
+}
+
+func TestTerminationPolicyAcceptsPixelChangesAboveTenPercent(t *testing.T) {
+	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
+	before := terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{})
+	after := terminationPolicyScreenshotObservation(t, 200, 400, image.Rect(20, 100, 120, 200))
 
 	policy.AfterToolCall("screenshot", `{}`, before, false)
 	policy.stallScore = 4
 	policy.refreshTier()
 	decision := policy.AfterToolCall("screenshot", `{}`, after, false)
 	if decision.Stop || policy.stallScore != 0 || policy.tier != TierNone {
-		t.Fatalf("body change above 1%% should count as progress: decision=%#v score=%d tier=%d", decision, policy.stallScore, policy.tier)
+		t.Fatalf("body change above 10%% should count as progress: decision=%#v score=%d tier=%d", decision, policy.stallScore, policy.tier)
 	}
 }
 
@@ -124,6 +141,26 @@ func TestComputeImageDiffUsesStrictOnePercentThreshold(t *testing.T) {
 	}
 	if !result.Changed {
 		t.Fatalf("more than 1%% changed pixels should count as changed: %#v", result)
+	}
+}
+
+func TestScreenshotProgressUsesStrictTenPercentThreshold(t *testing.T) {
+	before := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	after := image.NewRGBA(before.Bounds())
+	changed := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	for y := 8; y < 18; y++ {
+		for x := 0; x < 92; x++ {
+			after.Set(x, y, changed)
+		}
+	}
+
+	if progress, comparable := screenshotProgressChanged(before, after); !comparable || progress {
+		t.Fatalf("exactly 10%% changed pixels should not count as progress: progress=%v comparable=%v", progress, comparable)
+	}
+
+	after.Set(92, 8, changed)
+	if progress, comparable := screenshotProgressChanged(before, after); !comparable || !progress {
+		t.Fatalf("more than 10%% changed pixels should count as progress: progress=%v comparable=%v", progress, comparable)
 	}
 }
 

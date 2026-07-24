@@ -16,9 +16,15 @@ import (
 	"time"
 )
 
-// screenshotProgressIgnoreTopFraction excludes the phone status bar, whose
-// clock and battery indicators can change without meaningful UI progress.
-const screenshotProgressIgnoreTopFraction = 0.08
+const (
+	// screenshotProgressIgnoreTopFraction excludes the phone status bar, whose
+	// clock and battery indicators can change without meaningful UI progress.
+	screenshotProgressIgnoreTopFraction = 0.08
+	// screenshotProgressChangedRatioThreshold is deliberately higher than the
+	// image_diff tool's 1% visibility threshold. Loop-guard progress must reflect
+	// a meaningful UI transition rather than icon rendering or badge changes.
+	screenshotProgressChangedRatioThreshold = 0.10
+)
 
 // StopReason explains why the agent loop stopped or intervened.
 type StopReason string
@@ -495,7 +501,7 @@ func screenshotProgressChanged(before, after image.Image) (changed, comparable b
 	if err != nil {
 		return false, false
 	}
-	return result.Changed, true
+	return result.rawDiffRatio > screenshotProgressChangedRatioThreshold, true
 }
 
 func screenshotProgressBounds(full image.Rectangle) image.Rectangle {
