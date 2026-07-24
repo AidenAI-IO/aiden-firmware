@@ -517,6 +517,7 @@ func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 }
 
 func TestServerHandleChatStreamsLeadingToolTTSWithoutDuplicatePlayback(t *testing.T) {
+	const requestID = "streaming-tts-cleanup"
 	toolSpeech := true
 	toolContent := "<tts>Check volume.</tts>\nChecking volume."
 	finalContent := "<tts>Current volume is 42.</tts>\nCurrent volume is 42."
@@ -556,7 +557,7 @@ func TestServerHandleChatStreamsLeadingToolTTSWithoutDuplicatePlayback(t *testin
 	server.audioClient = NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
 	time.Sleep(30 * time.Millisecond)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?","request_id":"`+requestID+`"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/x-ndjson")
 	req.Header.Set("X-Aiden-Stream", "ndjson")
@@ -579,6 +580,63 @@ func TestServerHandleChatStreamsLeadingToolTTSWithoutDuplicatePlayback(t *testin
 	}
 	if countString(texts, "Current volume is 42.") != 1 {
 		t.Fatalf("final TTS count = %d, want 1: %#v", countString(texts, "Current volume is 42."), texts)
+	}
+	if texts[0] != "Check volume." || texts[1] != "Current volume is 42." {
+		t.Fatalf("TTS order = %#v, want tool progress before final response", texts)
+	}
+	if outputs := server.snapshotActiveOutputs(requestID); len(outputs) != 0 {
+		t.Fatalf("active TTS outputs after streaming response = %d, want 0", len(outputs))
+	}
+}
+
+func TestServerAsyncChatUnregistersStreamingTTSOutput(t *testing.T) {
+	const requestID = "async-tts-cleanup"
+	output := "<tts>Done.</tts>\nDone."
+	model := &scriptedModel{
+		responses:    roleDirectResponses(output),
+		streamChunks: [][]string{{output}},
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: boolPtr(true),
+			Audio:                    AudioConfig{SampleRate: 16000},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	defer runtime.Close()
+	server := newServerForTest(runtime)
+	server.ttsManager = ttsmodule.NewProviderManager(&recordingTTSProvider{name: "server-provider"}, nil)
+	server.audioClient = NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"finish it","request_id":"`+requestID+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleChat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleChat status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code == http.StatusOK {
+			var result ChatResultResponse
+			if err := json.NewDecoder(resultRec.Body).Decode(&result); err == nil && result.Status == "complete" {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitForServerRequestFinished(t, server, requestID)
+	if outputs := server.snapshotActiveOutputs(requestID); len(outputs) != 0 {
+		t.Fatalf("active TTS outputs after async response = %d, want 0", len(outputs))
 	}
 }
 

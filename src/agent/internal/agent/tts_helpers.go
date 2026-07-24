@@ -296,6 +296,11 @@ func (w *streamSessionWriter) setCancel(cancel context.CancelFunc) {
 	w.cancel = cancel
 }
 
+// Write deliberately returns (0, nil) after interruption or a provider write
+// failure so the tag parser can avoid marking speech as emitted without
+// interrupting the LLM stream. Do not wrap streamSessionWriter with generic
+// io.Writer helpers such as io.Copy or bufio.Writer, which assume short writes
+// return a non-nil error.
 func (w *streamSessionWriter) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil

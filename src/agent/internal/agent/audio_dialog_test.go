@@ -736,6 +736,9 @@ func TestAudioDialogStreamsLeadingToolTTSWithoutDuplicatePlayback(t *testing.T) 
 	if countString(texts, "Current volume is 42.") != 1 {
 		t.Fatalf("final TTS count = %d, want 1: %#v", countString(texts, "Current volume is 42."), texts)
 	}
+	if texts[0] != "Check volume." || texts[1] != "Current volume is 42." {
+		t.Fatalf("TTS order = %#v, want tool progress before final response", texts)
+	}
 }
 
 func TestAudioDialogDoesNotSpeakWaitForWakeupToolContent(t *testing.T) {

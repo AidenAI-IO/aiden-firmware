@@ -1182,7 +1182,9 @@ func (s *Server) handleChatAsync(
 				}
 			}
 		}
-		defer unregisterStreamOutput()
+		defer func() {
+			unregisterStreamOutput()
+		}()
 
 		result, err := s.runtime.Run(runCtx, runReq)
 		if newStream != nil {
@@ -1563,7 +1565,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	defer unregisterStreamOutput()
+	defer func() {
+		unregisterStreamOutput()
+	}()
 	s.logger.Info("Creating stream writer")
 	runReq.StreamWriter = newStreamFanoutWriter(streamWriters...)
 
