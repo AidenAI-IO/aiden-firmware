@@ -124,7 +124,15 @@ mark_watchdog_grace() {
 	esac
 	[ "$grace_seconds" -gt 0 ] || die "watchdog grace seconds must be positive"
 	grace_now=$(date +%s)
-	printf '%s\n' "$((grace_now + grace_seconds))" > "$WATCHDOG_GRACE_FILE"
+	grace_tmp="${WATCHDOG_GRACE_FILE}.$$"
+	if ! printf '%s\n' "$((grace_now + grace_seconds))" > "$grace_tmp"; then
+		rm -f "$grace_tmp"
+		die "cannot write watchdog grace deadline"
+	fi
+	if ! mv -f "$grace_tmp" "$WATCHDOG_GRACE_FILE"; then
+		rm -f "$grace_tmp"
+		die "cannot publish watchdog grace deadline"
+	fi
 }
 
 wait_for_configuration() {
