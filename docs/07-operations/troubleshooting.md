@@ -56,7 +56,7 @@ Check:
 
 ```bash
 /etc/init.d/S53agent status
-tail -f /var/log/agent/agent.log
+tail -f /userdata/agent/log/agent.log
 netstat -lntp | grep 8080
 ```
 

@@ -81,6 +81,9 @@ type MemoryManager struct {
 	longTermOnce                   sync.Once
 	lockTimeout                    time.Duration
 	logger                         *Logger
+	storageMonitor                 *StorageMonitor
+	persistencePending             bool
+	pendingSessionEvents           map[string][]SessionEvent
 	sessionBoundaryEnabledOverride *bool
 
 	maintenanceMu      sync.Mutex
@@ -198,6 +201,43 @@ func WithMemoryLogger(logger *Logger) MemoryManagerOption {
 	return func(m *MemoryManager) { m.logger = logger }
 }
 
+func (m *MemoryManager) SetStorageMonitor(monitor *StorageMonitor) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.storageMonitor = monitor
+}
+
+func (m *MemoryManager) allowStorageWrite(capability StorageCapability) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	monitor := m.storageMonitor
+	m.mu.Unlock()
+	return monitor == nil || monitor.AllowWrite(capability)
+}
+
+func (m *MemoryManager) setPersistencePending(pending bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.persistencePending = pending
+	m.mu.Unlock()
+}
+
+func (m *MemoryManager) PersistencePending() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.persistencePending
+}
+
 // WithContextWindowFn lets the runtime supply the active model's context
 // window dynamically. When the callback returns a positive value it overrides
 // the yaml-configured ContextWindow for compression decisions. A zero return
@@ -210,10 +250,11 @@ func WithContextWindowFn(fn ContextWindowFn) MemoryManagerOption {
 // directory and options.
 func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryManager {
 	manager := &MemoryManager{
-		handles:     map[string]*MemoryHandle{},
-		eventCount:  map[string]int{},
-		extraction:  DefaultMemoryExtractionConfig(),
-		lockTimeout: defaultLockTimeout,
+		handles:              map[string]*MemoryHandle{},
+		eventCount:           map[string]int{},
+		pendingSessionEvents: map[string][]SessionEvent{},
+		extraction:           DefaultMemoryExtractionConfig(),
+		lockTimeout:          defaultLockTimeout,
 	}
 	if storageDir != "" {
 		manager.storageDir = storageDir
@@ -409,7 +450,15 @@ func (m *MemoryManager) ClearAll(ctx context.Context, agentName string) error {
 }
 
 // Save persists the current memory state into session events and triggers maintenance.
-func (m *MemoryManager) Save(ctx context.Context, agentName string) error {
+func (m *MemoryManager) Save(ctx context.Context, agentName string) (retErr error) {
+	defer func() { retErr = m.suppressStorageWriteError(retErr) }()
+	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		m.setPersistencePending(true)
+		return nil
+	}
+	if err := m.flushPendingSessionEvents(ctx, agentName, nil); err != nil {
+		return err
+	}
 	records, err := m.Snapshot(ctx, agentName)
 	if err != nil {
 		return err
@@ -417,12 +466,20 @@ func (m *MemoryManager) Save(ctx context.Context, agentName string) error {
 	if err := m.syncSessionRecords(agentName, records); err != nil {
 		return err
 	}
-	return m.maintainFilesystemMemory(ctx)
+	if err := m.maintainFilesystemMemory(ctx); err != nil {
+		return err
+	}
+	m.setPersistencePending(false)
+	return nil
 }
 
 // RequestMaintenance schedules asynchronous memory maintenance.
 func (m *MemoryManager) RequestMaintenance() {
 	if m.storageDir == "" {
+		return
+	}
+	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		m.setPersistencePending(true)
 		return
 	}
 
@@ -462,7 +519,7 @@ func (m *MemoryManager) WaitMaintenance(ctx context.Context) error {
 func (m *MemoryManager) maintenanceLoop() {
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		err := m.maintainFilesystemMemory(ctx)
+		err := m.suppressStorageWriteError(m.maintainFilesystemMemory(ctx))
 		cancel()
 		if err != nil && m.logger != nil {
 			m.logger.Error("[memory] async maintenance failed: %v", err)
@@ -492,20 +549,64 @@ func (m *MemoryManager) AppendMessages(ctx context.Context, agentName string, re
 	return m.AppendMessagesWithMetadata(ctx, agentName, records, SessionEventMetadata{})
 }
 
-func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentName string, records []MessageRecord, meta SessionEventMetadata) error {
+func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentName string, records []MessageRecord, meta SessionEventMetadata) (retErr error) {
+	defer func() { retErr = m.suppressStorageWriteError(retErr) }()
 	if m.storageDir == "" {
 		return nil
 	}
 	if len(records) == 0 {
 		return nil
 	}
+	now := time.Now().UTC()
+	records = sanitizeMessageRecords(records)
+	events := make([]SessionEvent, 0, len(records))
+	for i, record := range records {
+		event := sessionEventFromRecord(record, now, i)
+		event.EventID = ""
+		event.Sequence = 0
+		event = applySessionEventMetadata(event, meta)
+		events = append(events, event)
+	}
+	return m.flushPendingSessionEvents(ctx, agentName, events)
+}
+
+func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string, event SessionEvent, meta SessionEventMetadata) (retErr error) {
+	defer func() { retErr = m.suppressStorageWriteError(retErr) }()
+	if m.storageDir == "" {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	event = applySessionEventMetadata(event, meta)
+	return m.flushPendingSessionEvents(ctx, agentName, []SessionEvent{event})
+}
+
+func (m *MemoryManager) flushPendingSessionEvents(ctx context.Context, agentName string, newEvents []SessionEvent) error {
+	m.mu.Lock()
+	if m.pendingSessionEvents == nil {
+		m.pendingSessionEvents = make(map[string][]SessionEvent)
+	}
+	m.pendingSessionEvents[agentName] = append(m.pendingSessionEvents[agentName], newEvents...)
+	if len(m.pendingSessionEvents[agentName]) > 0 {
+		m.persistencePending = true
+	}
+	m.mu.Unlock()
+
+	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		return nil
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	queued := m.pendingSessionEvents[agentName]
+	if len(queued) == 0 {
+		return nil
+	}
 
 	fl := NewFileLock(m.storageDir)
 	if err := fl.Lock(m.lockTimeout); err != nil {
-		return fmt.Errorf("lock for appending session messages %q: %w", agentName, err)
+		return fmt.Errorf("lock for appending pending session events %q: %w", agentName, err)
 	}
 	defer fl.Unlock()
 
@@ -527,65 +628,49 @@ func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentNam
 	defer file.Close()
 
 	encoder := json.NewEncoder(file)
-	records = sanitizeMessageRecords(records)
-	for i, record := range records {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+	for len(queued) > 0 {
+		if err := ctx.Err(); err != nil {
+			m.pendingSessionEvents[agentName] = queued
+			return err
 		}
-		event := sessionEventFromRecord(record, now, m.eventCount[agentName]+i)
-		event = applySessionEventMetadata(event, meta)
-		event.Sequence = m.eventCount[agentName] + i + 1
+		event := normalizeSessionEventForAppend(queued[0], now, m.eventCount[agentName]+1)
 		if err := encoder.Encode(event); err != nil {
-			return fmt.Errorf("append session messages for %q: %w", agentName, err)
+			m.pendingSessionEvents[agentName] = queued
+			return fmt.Errorf("append pending session event for %q: %w", agentName, err)
 		}
+		m.eventCount[agentName]++
+		queued = queued[1:]
+		m.pendingSessionEvents[agentName] = queued
 	}
-	m.eventCount[agentName] += len(records)
+	delete(m.pendingSessionEvents, agentName)
+	m.persistencePending = m.hasPendingSessionEventsLocked()
 	return nil
 }
 
-func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string, event SessionEvent, meta SessionEventMetadata) error {
-	if m.storageDir == "" {
+func (m *MemoryManager) hasPendingSessionEventsLocked() bool {
+	for _, events := range m.pendingSessionEvents {
+		if len(events) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MemoryManager) suppressStorageWriteError(err error) error {
+	if err == nil || m == nil {
+		return err
+	}
+	m.mu.Lock()
+	monitor := m.storageMonitor
+	m.mu.Unlock()
+	if monitor != nil && monitor.HandleWriteError(err) {
+		m.setPersistencePending(true)
+		if m.logger != nil {
+			m.logger.Warn("[memory] persistence deferred after storage write failure: %v", err)
+		}
 		return nil
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	fl := NewFileLock(m.storageDir)
-	if err := fl.Lock(m.lockTimeout); err != nil {
-		return fmt.Errorf("lock for appending session event %q: %w", agentName, err)
-	}
-	defer fl.Unlock()
-
-	sessionDir := filepath.Dir(m.sessionEventsPath())
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		return fmt.Errorf("create session memory directory: %w", err)
-	}
-	now := time.Now().UTC()
-	if _, err := ensureActiveSessionMetadata(sessionDir, now); err != nil {
-		return fmt.Errorf("ensure active session metadata: %w", err)
-	}
-	if err := m.ensureEventCountLoadedLocked(agentName); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(m.sessionEventsPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("open session events for %q: %w", agentName, err)
-	}
-	defer file.Close()
-
-	event = normalizeSessionEventForAppend(event, now, m.eventCount[agentName]+1)
-	event = applySessionEventMetadata(event, meta)
-	if err := json.NewEncoder(file).Encode(event); err != nil {
-		return fmt.Errorf("append session event for %q: %w", agentName, err)
-	}
-	m.eventCount[agentName]++
-	return nil
+	return err
 }
 
 func (m *MemoryManager) ensureEventCountLoadedLocked(agentName string) error {
@@ -621,6 +706,22 @@ func (m *MemoryManager) RotateSessionEvents() (string, error) {
 func (m *MemoryManager) RotateSessionEventsDetailed() (SessionRotationResult, error) {
 	if m.storageDir == "" {
 		return SessionRotationResult{}, nil
+	}
+	if !m.allowStorageWrite(StorageCapabilitySessionArchive) {
+		return SessionRotationResult{}, nil
+	}
+	m.mu.Lock()
+	pendingAgents := make([]string, 0, len(m.pendingSessionEvents))
+	for agentName, events := range m.pendingSessionEvents {
+		if len(events) > 0 {
+			pendingAgents = append(pendingAgents, agentName)
+		}
+	}
+	m.mu.Unlock()
+	for _, agentName := range pendingAgents {
+		if err := m.flushPendingSessionEvents(context.Background(), agentName, nil); err != nil {
+			return SessionRotationResult{}, err
+		}
 	}
 	rotation, err := func() (SessionRotationResult, error) {
 		m.mu.Lock()
@@ -1100,6 +1201,8 @@ func (m *MemoryManager) removeSessionPersisted(agentName string) error {
 		return fmt.Errorf("remove session memory for %q: %w", agentName, err)
 	}
 	m.eventCount[agentName] = 0
+	delete(m.pendingSessionEvents, agentName)
+	m.persistencePending = m.hasPendingSessionEventsLocked()
 	m.lastPromptTokens = 0
 	m.pendingPromptTokenFloor = 0
 	return nil
@@ -1134,6 +1237,8 @@ func (m *MemoryManager) removeAllPersisted(agentName string) error {
 		}
 	}
 	m.eventCount[agentName] = 0
+	delete(m.pendingSessionEvents, agentName)
+	m.persistencePending = m.hasPendingSessionEventsLocked()
 	m.lastPromptTokens = 0
 	m.pendingPromptTokenFloor = 0
 	return nil
@@ -1141,6 +1246,10 @@ func (m *MemoryManager) removeAllPersisted(agentName string) error {
 
 func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	if m.storageDir == "" {
+		return nil
+	}
+	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		m.setPersistencePending(true)
 		return nil
 	}
 	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
@@ -1269,6 +1378,10 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	// phase 1 unlock and now). If new events were appended, merge them into
 	// hotEvents before replacing the file. This prevents data loss when
 	// persistSnapshot runs concurrently with maintenance.
+	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		m.setPersistencePending(true)
+		return nil
+	}
 	m.mu.Lock()
 	if err := fl.Lock(m.lockTimeout); err != nil {
 		m.mu.Unlock()

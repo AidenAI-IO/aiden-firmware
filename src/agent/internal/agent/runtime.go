@@ -72,6 +72,7 @@ type Runtime struct {
 	preemptHooks       []func()
 	lastPreemptTime    time.Time
 	storage            *StorageManager
+	storageMonitor     *StorageMonitor
 }
 
 type RunRequest struct {
@@ -396,6 +397,12 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
 	rt.waitForWakeup = waitForWakeupController
+	rt.storageMonitor = newRuntimeStorageMonitor(cfg, logger, rt.memories)
+	rt.SetVoiceNotificationSink(rt.VoiceNotificationSink())
+	modelManager.SetStorageMonitor(rt.storageMonitor)
+	if rt.memories != nil {
+		rt.memories.SetStorageMonitor(rt.storageMonitor)
+	}
 
 	// Log runtime start marker.
 	if logger != nil {
@@ -2269,6 +2276,9 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	if r.storageMonitor != nil {
+		r.storageMonitor.Stop()
+	}
 	if r.storage != nil {
 		r.storage.Stop()
 	}
