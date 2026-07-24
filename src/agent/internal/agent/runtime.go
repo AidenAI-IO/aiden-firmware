@@ -89,7 +89,12 @@ type RunRequest struct {
 	StreamWriter      io.Writer
 	MaxTokens         int
 	EventHandler      func(RunEvent)
-	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	// OnRunActive runs after the previous run and its resources have been
+	// preempted and this run owns the runtime gate. Callers can register
+	// request-scoped output here without that output being interrupted by this
+	// run's own startup preemption.
+	OnRunActive   func(context.Context)
+	SteerProvider func(context.Context) (RunSteerMessage, bool)
 	// FinalSteerProvider is called at terminal executor boundaries. It should
 	// atomically consume one last pending steer if available; otherwise it should
 	// close the request's steer acceptance window.
@@ -720,8 +725,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if err := runCtx.Err(); err != nil {
 		return RunResult{Preempted: true}, err
 	}
-
 	return r.withIOSKeyboardIsolationRun(runCtx, func(isolationCtx context.Context) (RunResult, error) {
+		if req.OnRunActive != nil {
+			req.OnRunActive(isolationCtx)
+		}
 		return r.run(isolationCtx, req)
 	})
 }
@@ -2010,6 +2017,10 @@ type streamOutputTracker interface {
 	StreamEmitted() bool
 }
 
+type streamResponseFinisher interface {
+	FinishResponse() bool
+}
+
 func resetStreamWriterState(writer io.Writer) {
 	resetter, ok := writer.(streamStateResetter)
 	if !ok {
@@ -2024,12 +2035,29 @@ func resetStreamBuffer(writer io.Writer) {
 	}
 }
 
+func finishStreamWriterResponse(writer io.Writer) bool {
+	finisher, ok := writer.(streamResponseFinisher)
+	if !ok {
+		return false
+	}
+	return finisher.FinishResponse()
+}
+
 func streamWriterEmitted(writer io.Writer) bool {
 	tracker, ok := writer.(streamOutputTracker)
 	if !ok {
 		return true
 	}
 	return tracker.StreamEmitted()
+}
+
+func (h *runtimeCallbackHandler) FinishStreamingResponse(context.Context) {
+	finishStreamWriterResponse(h.writer)
+}
+
+func (h *runtimeCallbackHandler) AbortStreamingResponse(context.Context) {
+	resetStreamBuffer(h.writer)
+	resetStreamWriterState(h.writer)
 }
 
 func (h *runtimeCallbackHandler) recordFirstToken() {

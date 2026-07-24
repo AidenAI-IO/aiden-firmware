@@ -131,3 +131,12 @@ func (t *trackedSession) Abort() error {
 	})
 	return t.err
 }
+
+// ResetBuffer preserves optional buffering capabilities exposed by the
+// underlying provider session. Without this forwarding method, callers only
+// see trackedSession and cannot discard incomplete text between LLM turns.
+func (t *trackedSession) ResetBuffer() {
+	if resetter, ok := t.StreamSession.(interface{ ResetBuffer() }); ok {
+		resetter.ResetBuffer()
+	}
+}

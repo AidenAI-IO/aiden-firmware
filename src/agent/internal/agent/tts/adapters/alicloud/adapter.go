@@ -174,12 +174,20 @@ type session struct {
 	conn *websocket.Conn
 	sink tts.AudioSink
 
-	writeMu  sync.Mutex
-	readDone chan error
+	writeMu    sync.Mutex
+	readDone   chan error
+	responseMu sync.Mutex
+	pending    *pendingResponse
 
 	closeOnce sync.Once
 	errMu     sync.Mutex
 	lastErr   error
+}
+
+type pendingResponse struct {
+	done chan struct{}
+	err  error
+	once sync.Once
 }
 
 // waitForSessionCreated reads the initial server event before sending anything.
@@ -224,6 +232,9 @@ func (s *session) WriteText(text string) error {
 	if text == "" {
 		return nil
 	}
+	if err := s.waitForPendingResponse(); err != nil {
+		return err
+	}
 	return s.writeEvent(map[string]any{
 		"event_id": newEventID(),
 		"type":     "input_text_buffer.append",
@@ -233,10 +244,21 @@ func (s *session) WriteText(text string) error {
 
 // Flush forces immediate synthesis of the current buffer.
 func (s *session) Flush() error {
-	return s.writeEvent(map[string]any{
+	if err := s.waitForPendingResponse(); err != nil {
+		return err
+	}
+	pending := &pendingResponse{done: make(chan struct{})}
+	s.responseMu.Lock()
+	s.pending = pending
+	s.responseMu.Unlock()
+	err := s.writeEvent(map[string]any{
 		"event_id": newEventID(),
 		"type":     "input_text_buffer.commit",
 	})
+	if err != nil {
+		s.completePendingResponse(err)
+	}
+	return err
 }
 
 func (s *session) writeEvent(ev map[string]any) error {
@@ -256,12 +278,12 @@ func (s *session) readLoop() {
 	for {
 		_, raw, err := s.conn.ReadMessage()
 		if err != nil {
-			s.readDone <- err
+			s.finishRead(err)
 			return
 		}
 		var ev map[string]any
 		if err := json.Unmarshal(raw, &ev); err != nil {
-			s.readDone <- fmt.Errorf("unmarshal: %w", err)
+			s.finishRead(fmt.Errorf("unmarshal: %w", err))
 			return
 		}
 		t, _ := ev["type"].(string)
@@ -274,21 +296,26 @@ func (s *session) readLoop() {
 			}
 			pcm, err := base64.StdEncoding.DecodeString(deltaStr)
 			if err != nil {
-				s.readDone <- fmt.Errorf("decode audio: %w", err)
+				s.finishRead(fmt.Errorf("decode audio: %w", err))
 				return
 			}
 			if len(pcm) > 0 {
 				if err := s.sink.WritePCM(pcm); err != nil {
-					s.readDone <- fmt.Errorf("write pcm: %w", err)
+					s.finishRead(fmt.Errorf("write pcm: %w", err))
 					return
 				}
 			}
-		case "response.audio.done", "response.done":
+		case "response.audio.done":
+			// A response may be followed by another commit in the same session.
+		case "response.done":
+			s.completePendingResponse(nil)
+		case "session.finished":
+			s.completePendingResponse(nil)
 			s.readDone <- nil
 			return
 		case "error":
 			msg, _ := ev["error"].(map[string]any)
-			s.readDone <- fmt.Errorf("server error: %v", msg)
+			s.finishRead(fmt.Errorf("server error: %v", msg))
 			return
 		case "session.updated", "input_text_buffer.committed",
 			"response.created", "response.audio_transcript.delta",
@@ -300,6 +327,9 @@ func (s *session) readLoop() {
 
 func (s *session) Close() error {
 	s.closeOnce.Do(func() {
+		if err := s.waitForPendingResponse(); err != nil {
+			s.recordErr(err)
+		}
 		// Tell server no more text is coming; it flushes and closes.
 		if err := s.writeEvent(map[string]any{
 			"event_id": newEventID(),
@@ -309,7 +339,7 @@ func (s *session) Close() error {
 		}
 
 		// Wait for reader to drain remaining audio.
-		if err := <-s.readDone; err != nil {
+		if err := s.waitReadDone(); err != nil {
 			s.recordErr(err)
 		}
 
@@ -343,10 +373,59 @@ func (s *session) Abort() error {
 		}
 		s.writeMu.Unlock()
 
-		// Wait for reader to exit (will error out on closed connection)
-		<-s.readDone
+		// Wait for reader to exit (will error out on closed connection).
+		_ = s.waitReadDone()
 	})
 	return s.Err()
+}
+
+func (s *session) waitForPendingResponse() error {
+	s.responseMu.Lock()
+	pending := s.pending
+	s.responseMu.Unlock()
+	if pending == nil {
+		return nil
+	}
+	select {
+	case <-pending.done:
+		s.responseMu.Lock()
+		if s.pending == pending {
+			s.pending = nil
+		}
+		s.responseMu.Unlock()
+		return pending.err
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+}
+
+func (s *session) completePendingResponse(err error) {
+	s.responseMu.Lock()
+	pending := s.pending
+	s.responseMu.Unlock()
+	if pending == nil {
+		return
+	}
+	pending.once.Do(func() {
+		pending.err = err
+		close(pending.done)
+	})
+}
+
+func (s *session) finishRead(err error) {
+	s.completePendingResponse(err)
+	s.readDone <- err
+}
+
+func (s *session) waitReadDone() error {
+	waitCtx, cancel := context.WithTimeout(s.ctx, connectTimeout)
+	defer cancel()
+	select {
+	case err := <-s.readDone:
+		return err
+	case <-waitCtx.Done():
+		return waitCtx.Err()
+	}
 }
 
 func (s *session) Err() error {

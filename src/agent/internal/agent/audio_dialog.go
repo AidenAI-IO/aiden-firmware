@@ -582,7 +582,7 @@ func (d *AudioDialog) snapshotActiveOutputs() []*activeTTSOutput {
 	return outputs
 }
 
-func (d *AudioDialog) beginActiveManagedTTSStream(ctx context.Context) (*streamSessionWriter, func(), error) {
+func (d *AudioDialog) beginManagedTTSStreamForRun(ctx context.Context) (*streamSessionWriter, func(), func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -590,16 +590,40 @@ func (d *AudioDialog) beginActiveManagedTTSStream(ctx context.Context) (*streamS
 	stream, err := beginManagedTTSStream(streamCtx, d.ttsManager, d.audioClient, d.config)
 	if err != nil {
 		streamCancel()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	stream.setCancel(streamCancel)
 	output := newActiveTTSOutput(streamCancel)
 	output.setStream(stream)
-	unregister := d.registerActiveOutput(output)
-	return stream, func() {
-		unregister()
+
+	var lifecycleMu sync.Mutex
+	var unregister func()
+	activated := false
+	cleaned := false
+	activate := func() {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		if activated || cleaned {
+			return
+		}
+		activated = true
+		unregister = d.registerActiveOutput(output)
+	}
+	cleanup := func() {
+		lifecycleMu.Lock()
+		if cleaned {
+			lifecycleMu.Unlock()
+			return
+		}
+		cleaned = true
+		unregisterOutput := unregister
+		lifecycleMu.Unlock()
+		if unregisterOutput != nil {
+			unregisterOutput()
+		}
 		streamCancel()
-	}, nil
+	}
+	return stream, activate, cleanup, nil
 }
 
 // InterruptOutput immediately stops any TTS output owned by this dialog.
@@ -914,6 +938,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
 
+	var speechWriter *TTSTagStreamWriter
 	req := RunRequest{
 		Input:          input.InputText,
 		Attachments:    input.Attachments,
@@ -927,8 +952,13 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 				finalAssistantEvent = &captured
 				return
 			}
+			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
 			d.appendVoiceRunEvent(event, requestID)
-			d.HandleRunEvent(ctx, event)
+			if toolSpeechStreamed {
+				log.Printf("[tts] Tool content already streamed: tool=%s", event.ToolName)
+			} else {
+				d.HandleRunEvent(ctx, event)
+			}
 		},
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return d.consumePendingSteer(requestID)
@@ -946,10 +976,9 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	req.EpisodeID = strings.TrimSpace(episodeID)
 
 	var newStream *streamSessionWriter
-	unregisterStream := func() {}
 	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
 		preopenStartedAt := time.Now().UTC()
-		stream, unregister, err := d.beginActiveManagedTTSStream(ctx)
+		stream, activate, cleanup, err := d.beginManagedTTSStreamForRun(ctx)
 		metadata := map[string]interface{}{
 			"provider": d.ttsManager.Current(),
 		}
@@ -965,9 +994,12 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
 		} else {
 			newStream = stream
-			unregisterStream = unregister
-			defer unregisterStream()
-			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
+			defer cleanup()
+			req.OnRunActive = func(context.Context) {
+				activate()
+			}
+			speechWriter = speechStreamWriterForConfig(newStream, d.config)
+			req.StreamWriter = speechWriter
 		}
 	}
 	req.Turn = input
@@ -975,11 +1007,12 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	result, err := runtime.Run(ctx, req)
 	d.stopAcceptingSteer(requestID)
 	if newStream != nil {
+		finalSpeechStreamed := finishSpeechResponse(speechWriter)
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil {
 			log.Printf("[error] new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = newStream.emittedSpeech(closeErr)
+		result.SpeechStreamed = finalSpeechStreamed && newStream.emittedSpeech(closeErr)
 	}
 	if err != nil {
 		return result, fmt.Errorf("LLM request failed: %w", err)
@@ -1289,6 +1322,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
 	var finalAssistantEvent *RunEvent
+	var speechWriter *TTSTagStreamWriter
 
 	req := RunRequest{
 		Input: text,
@@ -1299,31 +1333,39 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 				finalAssistantEvent = &captured
 				return
 			}
+			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
 			d.appendVoiceRunEvent(event, "")
-			d.HandleRunEvent(ctx, event)
+			if toolSpeechStreamed {
+				log.Printf("[tts] Tool content already streamed: tool=%s", event.ToolName)
+			} else {
+				d.HandleRunEvent(ctx, event)
+			}
 		},
 	}
 	var newStream *streamSessionWriter
-	unregisterStream := func() {}
 	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
-		stream, unregister, err := d.beginActiveManagedTTSStream(ctx)
+		stream, activate, cleanup, err := d.beginManagedTTSStreamForRun(ctx)
 		if err != nil {
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
 		} else {
 			newStream = stream
-			unregisterStream = unregister
-			defer unregisterStream()
-			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
+			defer cleanup()
+			req.OnRunActive = func(context.Context) {
+				activate()
+			}
+			speechWriter = speechStreamWriterForConfig(newStream, d.config)
+			req.StreamWriter = speechWriter
 		}
 	}
 
 	result, err := runtime.Run(ctx, req)
 	if newStream != nil {
+		finalSpeechStreamed := finishSpeechResponse(speechWriter)
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil {
 			log.Printf("[error] new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = newStream.emittedSpeech(closeErr)
+		result.SpeechStreamed = finalSpeechStreamed && newStream.emittedSpeech(closeErr)
 	}
 	if err != nil {
 		if d.CanSpeakFinalText() && !result.SpeechStreamed {

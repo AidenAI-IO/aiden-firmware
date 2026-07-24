@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -4890,6 +4891,79 @@ func TestRuntimePreemptHooksAreCalled(t *testing.T) {
 	case <-firstDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("first run did not complete")
+	}
+}
+
+func TestRuntimeOnRunActiveRunsAfterStartupPreemption(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("done")}}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var order []string
+	runtime.RegisterPreemptHook(func() {
+		order = append(order, "preempt")
+	})
+
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "test callback order",
+		OnRunActive: func(context.Context) {
+			order = append(order, "active")
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("Output = %q, want done", result.Output)
+	}
+	if !reflect.DeepEqual(order, []string{"preempt", "active"}) {
+		t.Fatalf("callback order = %#v, want preempt then active", order)
+	}
+}
+
+func TestRuntimeFinalizesStreamingStateAtEachLLMResponseBoundary(t *testing.T) {
+	first := "<tts>Retrying.</tts>Malformed tool response."
+	final := "<tts>Completed.</tts>Completed."
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{Choices: []*llms.ContentChoice{{
+				Content:   first,
+				ToolCalls: []llms.ToolCall{{ID: "malformed"}},
+			}}},
+			contentResponse(final),
+		},
+		streamChunks: [][]string{{first}, {final}},
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var speech strings.Builder
+	writer := NewTTSTagStreamWriter(&speech)
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:        "retry malformed output",
+		StreamWriter: writer,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != final {
+		t.Fatalf("Output = %q, want %q", result.Output, final)
+	}
+	if got := speech.String(); got != "Retrying.Completed." {
+		t.Fatalf("streamed speech = %q, want both response-level TTS blocks", got)
+	}
+	if emitted, ok := writer.ConsumeFinishedResponse(); !ok || !emitted {
+		t.Fatalf("final response emission = (%v, %v), want (true, true)", emitted, ok)
 	}
 }
 

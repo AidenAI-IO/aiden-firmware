@@ -223,6 +223,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
 	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
 	if err != nil {
+		l.abortStreamingResponse(ctx)
 		// If LLM was canceled due to interrupt, check for pending steer
 		if errors.Is(err, context.Canceled) || errors.Is(err, errSteerInterruptToolCancel) {
 			steerInterrupted := errors.Is(context.Cause(llmCtx), errSteerInterruptToolCancel)
@@ -255,6 +256,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		}
 		return "", iterationContinue, err
 	}
+	l.finishStreamingResponse(ctx)
 	l.emitRoleOutput(ctx, roleResponseDebugText(contentResp))
 	if answer := l.touchPointerModeMismatchContentFinalAnswer(contentResp); answer != "" {
 		if l.Recorder != nil {
@@ -669,6 +671,29 @@ func (l *AgentLoop) emitRoleOutput(ctx context.Context, content string) {
 	}
 	if handler, ok := l.CallbacksHandler.(roleOutputHandler); ok {
 		handler.HandleRoleOutput(ctx, "agent", content)
+	}
+}
+
+type streamingResponseBoundaryHandler interface {
+	FinishStreamingResponse(context.Context)
+	AbortStreamingResponse(context.Context)
+}
+
+func (l *AgentLoop) finishStreamingResponse(ctx context.Context) {
+	if l == nil || l.CallbacksHandler == nil {
+		return
+	}
+	if handler, ok := l.CallbacksHandler.(streamingResponseBoundaryHandler); ok {
+		handler.FinishStreamingResponse(ctx)
+	}
+}
+
+func (l *AgentLoop) abortStreamingResponse(ctx context.Context) {
+	if l == nil || l.CallbacksHandler == nil {
+		return
+	}
+	if handler, ok := l.CallbacksHandler.(streamingResponseBoundaryHandler); ok {
+		handler.AbortStreamingResponse(ctx)
 	}
 }
 
