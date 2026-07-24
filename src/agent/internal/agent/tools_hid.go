@@ -697,6 +697,7 @@ type KeyboardTapTool struct {
 	androidDev           *HIDDevice
 	pointerMode          string
 	adb                  *ADBInputController
+	keyboardLayout       string
 	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
@@ -769,8 +770,9 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 	for _, k := range resolved.Keys {
 		if mod, ok := hidModifierMap[k]; ok {
 			modifier |= mod
-		} else if code, ok := hidKeyboardMap[k]; ok {
-			keys = append(keys, code)
+		} else if stroke, ok := keyboardLayoutTapKeyStroke(t.keyboardLayout, k); ok {
+			modifier |= stroke.modifier
+			keys = append(keys, stroke.usage)
 		} else {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "unknown key: %q", k), nil
 		}
@@ -896,14 +898,16 @@ func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs 
 type KeyboardTextTool struct {
 	dev                  *HIDDevice
 	adb                  *ADBInputController
+	keyboardLayout       string
 	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 func (t *KeyboardTextTool) Name() string { return "keyboard_text" }
 
 func (t *KeyboardTextTool) Description() string {
-	return `US-keyboard ASCII text input only via USB HID physical keyboard (not the on-screen soft keyboard). ` +
-		`Allowed characters: a-z, A-Z, 0-9, space, and common US-keyboard punctuation. ` +
+	return `Configured-layout ASCII text input only via USB HID physical keyboard (not the on-screen soft keyboard). ` +
+		`The physical keyboard layout comes from hid.keyboard_layout (qwerty, azerty, or qwertz). ` +
+		`Allowed characters: a-z, A-Z, 0-9, space, and common ASCII punctuation. ` +
 		`For model/tool calls, pass JSON only, for example {"text":"App Store"}; do not pass a bare string. ` +
 		`Do NOT pass non-ASCII text, emoji, or spaced romanization — use enter_text_in_field for input box entry. ` +
 		`Do not transliterate Chinese/CJK targets to pinyin or guessed ASCII keywords; if enter_text_in_field is unavailable, report the blocker instead. ` +
@@ -914,14 +918,14 @@ func (t *KeyboardTextTool) Description() string {
 
 func (t *KeyboardTextTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"text": stringArgSchema("US-keyboard ASCII text to type."),
+		"text": stringArgSchema("ASCII text to type using the configured physical keyboard layout."),
 	}, "text")
 }
 
-func keyboardTextUsesModifier(text string) bool {
+func keyboardTextUsesModifier(layout, text string) bool {
 	for _, ch := range text {
-		modifier, _, ok := charToHIDKey(byte(ch))
-		if ok && modifier != 0 {
+		stroke, ok := keyboardLayoutKeyStroke(layout, byte(ch))
+		if ok && stroke.modifier != 0 {
 			return true
 		}
 	}
@@ -934,11 +938,11 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 		return toolErrorResultString(ctx, CodeInvalidArguments, errText), nil
 	}
 
-	if unsupported := unsupportedKeyboardTextRunes(text); len(unsupported) > 0 {
+	if unsupported := unsupportedKeyboardTextRunes(t.keyboardLayout, text); len(unsupported) > 0 {
 		return toolErrorResultf(
 			ctx,
 			CodeInvalidArguments,
-			"keyboard_text supports only US-keyboard ASCII characters; unsupported characters: %q. Use enter_text_in_field for this target.",
+			"keyboard_text supports only ASCII characters available on the configured physical keyboard layout; unsupported characters: %q. Use enter_text_in_field for this target.",
 			string(unsupported),
 		), nil
 	}
@@ -953,16 +957,16 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 		return "ok", nil
 	}
 
-	err := t.iosKeyboardIsolation.withKeyboard(ctx, keyboardTextUsesModifier(text), func() error {
+	err := t.iosKeyboardIsolation.withKeyboard(ctx, keyboardTextUsesModifier(t.keyboardLayout, text), func() error {
 		releaseReport := make([]byte, 8)
 		for _, ch := range text {
-			modifier, code, ok := charToHIDKey(byte(ch))
+			stroke, ok := keyboardLayoutKeyStroke(t.keyboardLayout, byte(ch))
 			if !ok {
 				continue
 			}
 			report := make([]byte, 8)
-			report[0] = modifier
-			report[2] = code
+			report[0] = stroke.modifier
+			report[2] = stroke.usage
 			// Press then release immediately, same as keyboard_tap.
 			if err := t.dev.Write(report); err != nil {
 				return err
@@ -2694,91 +2698,6 @@ func mouseButtonByte(button string) uint8 {
 	}
 }
 
-func charToHIDKey(ch byte) (modifier uint8, code uint8, ok bool) {
-	switch {
-	case ch >= 'a' && ch <= 'z':
-		return 0, 0x04 + (ch - 'a'), true
-	case ch >= 'A' && ch <= 'Z':
-		return 0x02, 0x04 + (ch - 'A'), true // shift
-	case ch >= '1' && ch <= '9':
-		return 0, 0x1e + (ch - '1'), true
-	case ch == '0':
-		return 0, 0x27, true
-	case ch == ' ':
-		return 0, 0x2c, true
-	case ch == '\n' || ch == '\r':
-		return 0, 0x28, true
-	case ch == '\t':
-		return 0, 0x2b, true
-	case ch == '-':
-		return 0, 0x2d, true
-	case ch == '=':
-		return 0, 0x2e, true
-	case ch == '[':
-		return 0, 0x2f, true
-	case ch == ']':
-		return 0, 0x30, true
-	case ch == '\\':
-		return 0, 0x31, true
-	case ch == ';':
-		return 0, 0x33, true
-	case ch == '\'':
-		return 0, 0x34, true
-	case ch == '`':
-		return 0, 0x35, true
-	case ch == ',':
-		return 0, 0x36, true
-	case ch == '.':
-		return 0, 0x37, true
-	case ch == '/':
-		return 0, 0x38, true
-	// Shifted symbols
-	case ch == '!':
-		return 0x02, 0x1e, true
-	case ch == '@':
-		return 0x02, 0x1f, true
-	case ch == '#':
-		return 0x02, 0x20, true
-	case ch == '$':
-		return 0x02, 0x21, true
-	case ch == '%':
-		return 0x02, 0x22, true
-	case ch == '^':
-		return 0x02, 0x23, true
-	case ch == '&':
-		return 0x02, 0x24, true
-	case ch == '*':
-		return 0x02, 0x25, true
-	case ch == '(':
-		return 0x02, 0x26, true
-	case ch == ')':
-		return 0x02, 0x27, true
-	case ch == '_':
-		return 0x02, 0x2d, true
-	case ch == '+':
-		return 0x02, 0x2e, true
-	case ch == '{':
-		return 0x02, 0x2f, true
-	case ch == '}':
-		return 0x02, 0x30, true
-	case ch == '|':
-		return 0x02, 0x31, true
-	case ch == ':':
-		return 0x02, 0x33, true
-	case ch == '"':
-		return 0x02, 0x34, true
-	case ch == '~':
-		return 0x02, 0x35, true
-	case ch == '<':
-		return 0x02, 0x36, true
-	case ch == '>':
-		return 0x02, 0x37, true
-	case ch == '?':
-		return 0x02, 0x38, true
-	}
-	return 0, 0, false
-}
-
 func parseKeyboardTextInput(input string) (string, string) {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
@@ -2812,14 +2731,14 @@ func parseKeyboardTextInput(input string) (string, string) {
 	return trimmed, ""
 }
 
-func unsupportedKeyboardTextRunes(text string) []rune {
+func unsupportedKeyboardTextRunes(layout, text string) []rune {
 	unsupported := make([]rune, 0)
 	for _, ch := range text {
 		if ch > 0x7F {
 			unsupported = append(unsupported, ch)
 			continue
 		}
-		if _, _, ok := charToHIDKey(byte(ch)); !ok {
+		if _, ok := keyboardLayoutKeyStroke(layout, byte(ch)); !ok {
 			unsupported = append(unsupported, ch)
 		}
 	}

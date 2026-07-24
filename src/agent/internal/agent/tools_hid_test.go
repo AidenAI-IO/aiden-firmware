@@ -67,6 +67,24 @@ func TestToolSetUpdateDeviceEnvironmentTracksPhoneScreenInfo(t *testing.T) {
 	}
 }
 
+func TestBuiltinToolSetWiresConfiguredKeyboardLayout(t *testing.T) {
+	tools := NewBuiltinToolSet(HIDConfig{KeyboardLayout: keyboardLayoutAZERTY}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
+	keyboardText, ok := tools.textInputHW.keyboardText.(*KeyboardTextTool)
+	if !ok {
+		t.Fatalf("keyboardText = %T, want *KeyboardTextTool", tools.textInputHW.keyboardText)
+	}
+	if got := keyboardText.keyboardLayout; got != keyboardLayoutAZERTY {
+		t.Fatalf("keyboard_text layout = %q, want %q", got, keyboardLayoutAZERTY)
+	}
+	keyboardTap, ok := tools.textInputHW.keyboardTap.(*KeyboardTapTool)
+	if !ok {
+		t.Fatalf("keyboardTap = %T, want *KeyboardTapTool", tools.textInputHW.keyboardTap)
+	}
+	if got := keyboardTap.keyboardLayout; got != keyboardLayoutAZERTY {
+		t.Fatalf("keyboard_tap layout = %q, want %q", got, keyboardLayoutAZERTY)
+	}
+}
+
 func TestHIDToolsExposeStructuredSchemas(t *testing.T) {
 	for name, tool := range map[string]structuredInputTool{
 		"keyboard_tap":  &KeyboardTapTool{},
@@ -2078,6 +2096,90 @@ func TestKeyboardTextAcceptsBareTextFallback(t *testing.T) {
 	}
 }
 
+func TestKeyboardTextUsesConfiguredAZERTYLayout(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &KeyboardTextTool{dev: dev, keyboardLayout: keyboardLayoutAZERTY}
+
+	out, err := tool.Call(context.Background(), `{"text":"shape"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+
+	dev.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	wantUsages := []byte{0x16, 0x0b, 0x14, 0x13, 0x08}
+	if len(data) != len(wantUsages)*16 {
+		t.Fatalf("report bytes = %d, want %d", len(data), len(wantUsages)*16)
+	}
+	for i, want := range wantUsages {
+		press := data[i*16 : i*16+8]
+		if press[0] != 0 || press[2] != want {
+			t.Fatalf("press report %d = %v, want modifier 0 and usage 0x%02x", i, press, want)
+		}
+	}
+}
+
+func TestKeyboardTextUsesConfiguredQWERTZLayout(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &KeyboardTextTool{dev: dev, keyboardLayout: keyboardLayoutQWERTZ}
+
+	out, err := tool.Call(context.Background(), `{"text":"yz"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+
+	dev.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	wantUsages := []byte{0x1d, 0x1c}
+	if len(data) != len(wantUsages)*16 {
+		t.Fatalf("report bytes = %d, want %d", len(data), len(wantUsages)*16)
+	}
+	for i, want := range wantUsages {
+		press := data[i*16 : i*16+8]
+		if press[0] != 0 || press[2] != want {
+			t.Fatalf("press report %d = %v, want modifier 0 and usage 0x%02x", i, press, want)
+		}
+	}
+}
+
+func TestKeyboardTextRejectsQWERTZDeadKeysWithoutPartialTyping(t *testing.T) {
+	for _, deadKey := range []string{"^", "`"} {
+		t.Run(deadKey, func(t *testing.T) {
+			dev, path := newTestHIDDevice(t)
+			tool := &KeyboardTextTool{dev: dev, keyboardLayout: keyboardLayoutQWERTZ}
+
+			out, err := tool.Call(context.Background(), fmt.Sprintf(`{"text":"a%sb"}`, deadKey))
+			if err != nil {
+				t.Fatalf("Call returned error: %v", err)
+			}
+			if !strings.Contains(out, fmt.Sprintf(`unsupported characters: %q`, deadKey)) {
+				t.Fatalf("unexpected output: %q", out)
+			}
+
+			dev.Close()
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			if len(data) != 0 {
+				t.Fatalf("dead key must not type a partial prefix, got %d bytes", len(data))
+			}
+		})
+	}
+}
+
 func TestKeyboardTextRejectsUnsupportedCharactersWithoutPartialTyping(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &KeyboardTextTool{dev: dev}
@@ -2558,6 +2660,31 @@ func TestKeyboardTapSendsModifierChordWithHold(t *testing.T) {
 		if release[i] != 0 {
 			t.Fatalf("release report = %v, want all zeros", release)
 		}
+	}
+}
+
+func TestKeyboardTapUsesConfiguredAZERTYLayout(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, keyboardLayout: keyboardLayoutAZERTY}
+
+	out, err := tool.Call(context.Background(), `{"keys":["a"],"hold_ms":1}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data) != 16 {
+		t.Fatalf("report bytes = %d, want 16", len(data))
+	}
+	if data[0] != 0 || data[2] != 0x14 {
+		t.Fatalf("press report = %v, want modifier 0 and AZERTY a usage 0x14", data[:8])
 	}
 }
 

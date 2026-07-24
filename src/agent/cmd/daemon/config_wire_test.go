@@ -59,6 +59,13 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 			wantInField: "pointer_mode",
 		},
 		{
+			name: "invalid keyboard_layout nested under hid",
+			payload: `{"model":{"provider":"openai","model":"gpt-4"},
+				"search":{"provider":"duckduckgo"},
+				"hid":{"keyboard_layout":"dvorak"},"agent":{}}`,
+			wantInField: "keyboard_layout",
+		},
+		{
 			name: "vad_speech_threshold out of range nested under agent",
 			payload: `{"model":{"provider":"openai","model":"gpt-4"},
 				"search":{"provider":"duckduckgo"},

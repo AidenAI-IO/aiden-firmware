@@ -498,6 +498,7 @@ func (a AudioConfig) BitWidthOrDefault() int {
 
 type HIDConfig struct {
 	KeyboardDevice        string `toml:"keyboard_device,omitempty"`
+	KeyboardLayout        string `toml:"keyboard_layout,omitempty"`
 	MouseDevice           string `toml:"mouse_device,omitempty"`
 	AndroidKeyboardDevice string `toml:"android_keyboard_device,omitempty"`
 	FrameSocket           string `toml:"frame_socket,omitempty"`
@@ -528,6 +529,11 @@ func (h HIDConfig) KeyboardDeviceOrDefault() string {
 		return h.KeyboardDevice
 	}
 	return defaultKeyboardDevice
+}
+
+func (h HIDConfig) KeyboardLayoutOrDefault() string {
+	layout, _ := normalizeKeyboardLayout(h.KeyboardLayout)
+	return layout
 }
 
 func (h HIDConfig) MouseDeviceOrDefault() string {
@@ -1154,6 +1160,9 @@ func (c Config) Validate() error {
 		return err
 	}
 
+	if _, ok := normalizeKeyboardLayout(c.HID.KeyboardLayout); !ok {
+		return fmt.Errorf("invalid hid.keyboard_layout: %s (expected %s)", c.HID.KeyboardLayout, keyboardLayoutValuesText())
+	}
 	switch strings.ToLower(strings.TrimSpace(c.HID.PointerMode)) {
 	case "", "absolute", "touchscreen":
 	default:

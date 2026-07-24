@@ -153,6 +153,7 @@ func DefaultConfig() Config {
 		},
 		HID: HIDConfig{
 			KeyboardDevice:        defaultKeyboardDevice,
+			KeyboardLayout:        defaultKeyboardLayout,
 			MouseDevice:           defaultMouseDevice,
 			AndroidKeyboardDevice: defaultAndroidKeyboardDevice,
 			FrameSocket:           defaultFrameServiceSocket,

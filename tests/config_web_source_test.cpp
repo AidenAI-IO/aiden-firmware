@@ -926,6 +926,7 @@ TEST_CASE("config web renders finite choice fields as selects") {
         "tts_provider",
         "tts_speed",
         "stt_provider",
+        "hid_keyboard_layout",
         "hid_pointer_mode",
         "search_provider",
         "telemetry_provider",
@@ -1677,6 +1678,9 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
 
     CHECK(toml_header.find("pointer_mode") != std::string::npos);
     CHECK(toml_source.find("\"pointer_mode\"") != std::string::npos);
+    CHECK(toml_header.find("keyboard_layout") != std::string::npos);
+    CHECK(toml_source.find("\"keyboard_layout\"") != std::string::npos);
+    CHECK(source.find("\"keyboard_layout\"") != std::string::npos);
     CHECK(source.find("kUsbHidInitScript = \"/etc/init.d/S49usbhid\"") == std::string::npos);
     CHECK(source.find("schedule_usbhid_restart") == std::string::npos);
     CHECK(source.find("usbhid_restart_scheduled") != std::string::npos);
@@ -1695,6 +1699,8 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
     CHECK(html.find("hid_pointer_mode") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_pointer_mode\\\"") != std::string::npos);
+    CHECK(html.find("hid_keyboard_layout") != std::string::npos);
+    CHECK(html.find("<select id=\\\"hid_keyboard_layout\\\"") != std::string::npos);
     CHECK(html.find("pointer_mode requires power off and restart to take effect") != std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
     CHECK(html.find("/api/poweroff") != std::string::npos);

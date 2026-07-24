@@ -719,6 +719,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
         {"ota", "github_proxy_url", CONFIG_FIELD_STRING},
         {"hid", "keyboard_device", CONFIG_FIELD_STRING},
+        {"hid", "keyboard_layout", CONFIG_FIELD_STRING},
         {"hid", "mouse_device", CONFIG_FIELD_STRING},
         {"hid", "android_keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "frame_socket", CONFIG_FIELD_STRING},
@@ -2524,6 +2525,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
     cJSON* hid = add_object(root, "hid");
     cJSON_AddStringToObject(hid, "keyboard_device", config.hid.keyboard_device.c_str());
+    cJSON_AddStringToObject(hid, "keyboard_layout", config.hid.keyboard_layout.c_str());
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
     cJSON_AddStringToObject(hid, "android_keyboard_device", config.hid.android_keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
@@ -2870,6 +2872,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* hid = cJSON_GetObjectItem(root, "hid");
     if (json_is_object(hid)) {
         set_json_str(&config->hid.keyboard_device, hid, "keyboard_device");
+        set_json_str(&config->hid.keyboard_layout, hid, "keyboard_layout");
         set_json_str(&config->hid.mouse_device, hid, "mouse_device");
         set_json_str(&config->hid.android_keyboard_device, hid, "android_keyboard_device");
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");

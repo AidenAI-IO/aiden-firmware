@@ -76,6 +76,10 @@ func TestResolvedWebConfigDTO_MissingFileUsesDefaults(t *testing.T) {
 		t.Fatalf("HID frame_socket = %q, want %q",
 			dto.HID.FrameSocket, agent.DefaultConfig().HID.FrameSocket)
 	}
+	if dto.HID.KeyboardLayout != agent.DefaultConfig().HID.KeyboardLayout {
+		t.Fatalf("HID keyboard_layout = %q, want %q",
+			dto.HID.KeyboardLayout, agent.DefaultConfig().HID.KeyboardLayout)
+	}
 	if dto.Log.LLMHTTPRetentionDays != agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault() {
 		t.Fatalf("log.llm_http_retention_days = %d, want %d",
 			dto.Log.LLMHTTPRetentionDays, agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault())
@@ -173,6 +177,7 @@ model = "gpt-4o-mini"
 
 [hid]
 pointer_mode = "touchscreen"
+keyboard_layout = "azerty"
 
 [log]
 llm_http_retention_days = 14
@@ -189,6 +194,9 @@ llm_http_retention_days = 14
 	}
 	if dto.HID.PointerMode != "touchscreen" {
 		t.Fatalf("hid.pointer_mode = %q, want touchscreen", dto.HID.PointerMode)
+	}
+	if dto.HID.KeyboardLayout != "azerty" {
+		t.Fatalf("hid.keyboard_layout = %q, want azerty", dto.HID.KeyboardLayout)
 	}
 	if !dto.Agent.VoiceFollowupEnabled {
 		t.Fatal("agent.voice_followup_enabled = false, want true from current config")
@@ -224,7 +232,7 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	}
 	if defaults.HID.FrameSocket == "" || defaults.HID.KeyboardDevice == "" ||
 		defaults.HID.MouseDevice == "" || defaults.HID.AndroidKeyboardDevice == "" ||
-		defaults.HID.PointerMode == "" {
+		defaults.HID.PointerMode == "" || defaults.HID.KeyboardLayout == "" {
 		t.Fatalf("hid defaults were not populated: %+v", defaults.HID)
 	}
 	if defaults.Log.LLMHTTPRetentionDays != agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault() {

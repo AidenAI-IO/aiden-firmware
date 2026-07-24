@@ -74,6 +74,14 @@ type ConfigMetadata struct {
 	Sections []SectionMeta `json:"sections"`
 }
 
+func keyboardLayoutEnumOptions() []EnumOption {
+	options := make([]EnumOption, 0, len(keyboardLayoutDefinitions))
+	for _, layout := range keyboardLayoutDefinitions {
+		options = append(options, EnumOption{Value: layout.value, Label: layout.label})
+	}
+	return options
+}
+
 // enumOptions builds plain value==label options from raw strings.
 func enumOptions(values ...string) []EnumOption {
 	opts := make([]EnumOption, 0, len(values))
@@ -244,6 +252,9 @@ func ConfigMeta() ConfigMetadata {
 			{
 				Name: "hid",
 				Fields: []FieldMeta{
+					{Key: "keyboard_layout", Widget: WidgetSelect,
+						Enum:    keyboardLayoutEnumOptions(),
+						Default: defaults.HID.KeyboardLayoutOrDefault()},
 					{Key: "pointer_mode", Widget: WidgetSelect,
 						Enum:    enumOptions("absolute", "touchscreen"),
 						Default: defaults.HID.PointerMode},

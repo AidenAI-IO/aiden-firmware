@@ -53,7 +53,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `audio`: socket, sample_rate, channels, bit_width
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
 - `log`: LLM HTTP log retention
-- `hid`: keyboard_device, mouse_device, android_keyboard_device, frame_socket, pointer_mode
+- `hid`: keyboard_device, keyboard_layout, mouse_device, android_keyboard_device, frame_socket, pointer_mode, input_backend
 - `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
 - Wi-Fi: SSID / PSK etc. (written to `/userdata/wpa_supplicant.conf`)
 
@@ -90,6 +90,7 @@ llm_http_retention_days = 7
 
 [hid]
 keyboard_device = "/dev/hidg0"
+keyboard_layout = "qwerty"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
@@ -145,6 +146,7 @@ bit_width = 16
 
 [hid]
 keyboard_device = "/dev/hidg0"
+keyboard_layout = "qwerty"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
@@ -314,6 +316,7 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 | Field | Default | Description |
 | --- | --- | --- |
 | `keyboard_device` | `/dev/hidg0` | Keyboard HID device |
+| `keyboard_layout` | `qwerty` | Physical keyboard layout selected on the phone: `qwerty`, `azerty`, or `qwertz`. Used by `keyboard_text` and standard text-like `keyboard_tap` keys; changing it requires only an Agent restart. |
 | `mouse_device` | `/dev/hidg1` | Mouse/touch HID device |
 | `android_keyboard_device` | `/dev/hidg2` | Consumer Control HID device (`hid.usb2`) used for Android extension keys in `pointer_mode = "touchscreen"` and media/volume/brightness/screenshot keys in `pointer_mode = "absolute"` |
 | `frame_socket` | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool |

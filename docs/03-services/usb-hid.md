@@ -86,6 +86,7 @@ sudo ./build/bin/example_usb_hid cleanup
 ```toml
 [hid]
 keyboard_device = "/dev/hidg0"
+keyboard_layout = "qwerty"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
@@ -110,7 +111,9 @@ Built-in Agent tools:
 
 It is recommended to use normalized coordinates (`0..1000`, with center at `500,500`) to avoid click position shifts due to display resolution changes.
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center; only explicitly pass `coord_space: "pixel"` when the screenshot pixel coordinates and HID touch coordinates are already calibrated. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
-`keyboard_text` simulates a US keyboard and can only input ASCII typeable characters; Chinese input should be completed through pinyin/English search terms and on-screen candidates, and Chinese character strings cannot be passed directly to the tool.
+`keyboard_layout` must match the physical keyboard layout selected on the phone. Supported values are `qwerty` (default), `azerty`, and `qwertz`. Both `keyboard_text` and standard text-like keys in `keyboard_tap` use this mapping. Changing it only requires an Agent restart; it does not change USB descriptors or require a gadget restart.
+
+`keyboard_text` can only input ASCII typeable characters. Chinese input should be completed through pinyin/English search terms and on-screen candidates, and Chinese character strings cannot be passed directly to the tool. The configured layouts cover common ASCII keys, but country-specific punctuation variants may still require device verification.
 
 ## iOS AssistiveTouch modifier isolation
 
@@ -122,7 +125,7 @@ When `hid.pointer_mode = "absolute"`, firmware builds that include
 `/oem/usr/bin/aiden-dynamic-keyboard` automatically isolate keyboard actions
 whose HID reports contain Ctrl, Shift, Option/Alt, or Cmd/Meta. This includes
 `keyboard_text` values containing uppercase letters or symbols that require
-Shift on a US keyboard. Plain key taps, unmodified text, pointer input, and
+Shift or AltGr on the configured keyboard layout. Plain key taps, unmodified text, pointer input, and
 Consumer Control continue to use the normal keyboard + pointer + Consumer
 Control + ECM composite.
 
