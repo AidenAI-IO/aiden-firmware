@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/screen"
 	"path/filepath"
 	"sort"
 	"time"
@@ -12,7 +13,7 @@ import (
 // ToolSet is a fixed collection of built-in tools, keyed by name.
 type ToolSet struct {
 	tools               map[string]langtools.Tool
-	screen              *screenState
+	screen              *screen.ScreenState
 	phoneBridge         *PhoneBridge
 	phoneBridgeRestorer *PhoneBridgeRestorer
 	textInputHW         *textInputHardwareDeps
@@ -92,7 +93,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 
 	kbDev := NewHIDDevice(hidCfg.KeyboardDeviceOrDefault())
 	androidKbDev := NewHIDDevice(hidCfg.AndroidKeyboardDeviceOrDefault())
-	screen := &screenState{}
+	screen := &screen.ScreenState{}
 	pointer := newPointerController(hidCfg)
 	iosKeyboardIsolation := newIOSKeyboardIsolationController(hidCfg, kbDev, pointer.dev, androidKbDev)
 	pointer.iosKeyboardIsolation = iosKeyboardIsolation

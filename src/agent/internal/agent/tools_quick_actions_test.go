@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/json"
 	"os"
@@ -187,7 +188,7 @@ func TestQuickActionExecutesDelegatedTouchGesture(t *testing.T) {
 	tool := &QuickActionTool{
 		touch: &TouchGestureTool{
 			pc:     testPointerController(dev, &pointerState{}),
-			screen: &screenState{},
+			screen: &screen.ScreenState{},
 		},
 	}
 	out, err := tool.Call(context.Background(), `{"action":"back","platform":"ios"}`)
@@ -328,7 +329,7 @@ func TestQuickActionAlternativeBinding(t *testing.T) {
 		keyboard: &KeyboardTapTool{dev: dev},
 		touch: &TouchGestureTool{
 			pc:     testPointerController(dev, &pointerState{}),
-			screen: &screenState{},
+			screen: &screen.ScreenState{},
 		},
 	}
 	out, err := tool.Call(context.Background(), `{"action":"back","platform":"android","alternative":true}`)

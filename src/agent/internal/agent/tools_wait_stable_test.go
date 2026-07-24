@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -67,7 +68,7 @@ func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encodeJPEG() error = %v", err)
 	}
-	screen := &screenState{}
+	screen := &screen.ScreenState{}
 	client := &fakeWaitStableFrameClient{
 		rawFrames: []fakeWaitStableFrame{
 			{meta: frameMetadata{Seq: 1, Width: 2, Height: 2, PixelFormat: "nv12"}, data: rawFrame},
@@ -212,7 +213,7 @@ func TestWaitStableScreenToolUsesJPEGSourceMetadataForSharedScreenState(t *testi
 	if err != nil {
 		t.Fatalf("encodeJPEG() error = %v", err)
 	}
-	screen := &screenState{}
+	screenState := &screen.ScreenState{}
 	client := &fakeWaitStableFrameClient{
 		rawFrames: []fakeWaitStableFrame{
 			{meta: frameMetadata{Seq: 1, Width: 2, Height: 2, PixelFormat: "nv12"}, data: rawFrame},
@@ -236,7 +237,7 @@ func TestWaitStableScreenToolUsesJPEGSourceMetadataForSharedScreenState(t *testi
 	tool := &WaitStableScreenTool{
 		client:   client,
 		defaults: ScreenStableDefaults{TimeoutMs: 50, StableMs: 1, DiffThreshold: 2},
-		screen:   screen,
+		screen:   screenState,
 	}
 
 	out, err := tool.Call(context.Background(), `{}`)
@@ -254,11 +255,11 @@ func TestWaitStableScreenToolUsesJPEGSourceMetadataForSharedScreenState(t *testi
 	if result.ActiveArea != nil {
 		t.Fatalf("expected no active_area in cropped jpeg response, got %#v", result.ActiveArea)
 	}
-	width, height, active, _, ok := screen.ActiveAreaWithAge()
+	width, height, active, _, ok := screenState.ActiveAreaWithAge()
 	if !ok || width != 16 || height != 9 {
 		t.Fatalf("screen dimensions = %dx%d ok=%v, want 16x9 true", width, height, ok)
 	}
-	want := screenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
+	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
@@ -287,7 +288,7 @@ func TestWaitStableScreenToolCropsDetectedActiveAreaForModelObservation(t *testi
 		t.Fatalf("encodeJPEG() error = %v", err)
 	}
 
-	screen := &screenState{}
+	screenState := &screen.ScreenState{}
 	client := &fakeWaitStableFrameClient{
 		rawFrames: []fakeWaitStableFrame{
 			{meta: frameMetadata{Seq: 1, Width: 8, Height: 4, PixelFormat: "nv12"}, data: rawFrame},
@@ -299,7 +300,7 @@ func TestWaitStableScreenToolCropsDetectedActiveAreaForModelObservation(t *testi
 	tool := &WaitStableScreenTool{
 		client:   client,
 		defaults: ScreenStableDefaults{TimeoutMs: 50, StableMs: 1, DiffThreshold: 2},
-		screen:   screen,
+		screen:   screenState,
 	}
 
 	out, err := tool.Call(context.Background(), `{}`)
@@ -334,11 +335,11 @@ func TestWaitStableScreenToolCropsDetectedActiveAreaForModelObservation(t *testi
 	if decoded.Width != 4 || decoded.Height != 4 {
 		t.Fatalf("decoded cropped jpeg = %dx%d, want 4x4", decoded.Width, decoded.Height)
 	}
-	width, height, active, _, ok := screen.ActiveAreaWithAge()
+	width, height, active, _, ok := screenState.ActiveAreaWithAge()
 	if !ok || width != 8 || height != 4 {
 		t.Fatalf("screen dimensions = %dx%d ok=%v, want 8x4 true", width, height, ok)
 	}
-	want := screenActiveArea{X: 2, Y: 0, Width: 4, Height: 4, Valid: true}
+	want := screen.ScreenActiveArea{X: 2, Y: 0, Width: 4, Height: 4, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}

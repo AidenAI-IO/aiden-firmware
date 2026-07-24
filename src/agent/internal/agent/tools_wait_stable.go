@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -59,7 +60,7 @@ func (d ScreenStableDefaults) InputJSON() string {
 type WaitStableScreenTool struct {
 	client   waitStableFrameClient
 	defaults ScreenStableDefaults
-	screen   *screenState
+	screen   *screen.ScreenState
 }
 
 type waitStableFrameClient interface {
@@ -86,8 +87,8 @@ type waitStableScreenObservationResult struct {
 	LastDiff      *float64 `json:"last_diff,omitempty"`
 }
 
-func NewWaitStableScreenTool(socketPath string, defaults ScreenStableDefaults, screens ...*screenState) *WaitStableScreenTool {
-	var screen *screenState
+func NewWaitStableScreenTool(socketPath string, defaults ScreenStableDefaults, screens ...*screen.ScreenState) *WaitStableScreenTool {
+	var screen *screen.ScreenState
 	if len(screens) > 0 {
 		screen = screens[0]
 	}
@@ -166,9 +167,9 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 		return screenshotResult{}, fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
 	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("wait_stable.captureScreenshot frame meta=%s capture_backend=%q mapping_before={%s}", formatTouchscreenRCAMetadata(meta), captureInfo.Backend, formatTouchscreenRCAScreenMapping(t.screen))
+		touchscreenRCALogf("wait_stable.captureScreenshot frame meta=%s capture_backend=%q mapping_before={%s}", formatTouchscreenRCAMetadata(meta), captureInfo.Backend, t.screen.Format())
 	}
-	active := screenActiveArea{}
+	active := screen.ScreenActiveArea{}
 	sourceWidth := int(meta.Width)
 	sourceHeight := int(meta.Height)
 	alreadyCropped := false
@@ -185,11 +186,11 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 			"wait_stable.captureScreenshot resolved active_area source=%dx%d active=%s already_cropped=%v jpeg_dimensions=%dx%d mapping_before_update={%s}",
 			sourceWidth,
 			sourceHeight,
-			formatTouchscreenRCAActiveArea(active),
+			active.Format(),
 			alreadyCropped,
 			meta.Width,
 			meta.Height,
-			formatTouchscreenRCAScreenMapping(t.screen),
+			t.screen.Format(),
 		)
 	}
 	if t.screen != nil {
@@ -225,7 +226,7 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 			displayHeight,
 			len(displayData),
 			result.CaptureBackend,
-			formatTouchscreenRCAScreenMapping(t.screen),
+			t.screen.Format(),
 		)
 	}
 	return result, nil
@@ -257,7 +258,7 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 			timeout.Milliseconds(),
 			stableFor.Milliseconds(),
 			diffThreshold,
-			formatTouchscreenRCAScreenMapping(t.screen),
+			t.screen.Format(),
 		)
 	}
 
@@ -291,7 +292,7 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 				LastDiff:      lastDiff,
 			}
 			if touchscreenRCADebugEnabledCached() {
-				touchscreenRCALogf("wait_stable.wait completed stable=%v elapsed_ms=%d screen_changed=%v last_diff=%s mapping_after_wait={%s}", result.Stable, result.ElapsedMs, screenChanged, formatTouchscreenRCAFloatPtr(lastDiff), formatTouchscreenRCAScreenMapping(t.screen))
+				touchscreenRCALogf("wait_stable.wait completed stable=%v elapsed_ms=%d screen_changed=%v last_diff=%s mapping_after_wait={%s}", result.Stable, result.ElapsedMs, screenChanged, formatTouchscreenRCAFloatPtr(lastDiff), t.screen.Format())
 			}
 			return result, nil
 		}
@@ -305,7 +306,7 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 				LastDiff:      lastDiff,
 			}
 			if touchscreenRCADebugEnabledCached() {
-				touchscreenRCALogf("wait_stable.wait timeout stable=%v elapsed_ms=%d screen_changed=%v last_diff=%s mapping_after_wait={%s}", result.Stable, result.ElapsedMs, screenChanged, formatTouchscreenRCAFloatPtr(lastDiff), formatTouchscreenRCAScreenMapping(t.screen))
+				touchscreenRCALogf("wait_stable.wait timeout stable=%v elapsed_ms=%d screen_changed=%v last_diff=%s mapping_after_wait={%s}", result.Stable, result.ElapsedMs, screenChanged, formatTouchscreenRCAFloatPtr(lastDiff), t.screen.Format())
 			}
 			return result, nil
 		}

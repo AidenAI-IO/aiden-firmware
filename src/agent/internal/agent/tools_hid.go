@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -403,194 +404,11 @@ type HIDDevice struct {
 	refreshState string
 }
 
-type screenState struct {
-	mu                   sync.RWMutex
-	width                int
-	height               int
-	active               screenActiveArea
-	phoneScreen          PhoneScreenInfo
-	updatedAt            time.Time
-	screenshotJPEG       []byte
-	screenshotWidth      int
-	screenshotHeight     int
-	screenshotUpdatedAt  time.Time
-	screenshotGeneration uint64
-}
-
-type screenMappingState struct {
-	width     int
-	height    int
-	active    screenActiveArea
-	updatedAt time.Time
-}
-
-// screenActiveArea represents the mirrored phone touch region inside the
-// captured HDMI frame. When the companion app reports the phone's original
-// screen dimensions, this is the largest centered region in the frame with the
-// same aspect ratio. Falling back to "visible non-black content" is only an
-// approximation for when accurate phone screen info is unavailable.
-type screenActiveArea struct {
-	X      int  `json:"x"`
-	Y      int  `json:"y"`
-	Width  int  `json:"width"`
-	Height int  `json:"height"`
-	Valid  bool `json:"valid"`
-}
-
 type pointerState struct {
 	mu    sync.Mutex
 	x     int
 	y     int
 	valid bool
-}
-
-func (s *screenState) Update(width, height int) {
-	s.UpdateActiveArea(width, height, screenActiveArea{})
-}
-
-func (s *screenState) UpdatePhoneScreenInfo(info PhoneScreenInfo) {
-	if s == nil {
-		return
-	}
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("screen.UpdatePhoneScreenInfo before={%s} new_phone_screen=%q", formatTouchscreenRCAScreenMapping(s), formatPhoneScreen(info))
-	}
-	s.mu.Lock()
-	s.phoneScreen = info
-	s.mu.Unlock()
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("screen.UpdatePhoneScreenInfo after={%s}", formatTouchscreenRCAScreenMapping(s))
-	}
-}
-
-func (s *screenState) ClearPhoneScreenInfo() {
-	if s == nil {
-		return
-	}
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("screen.ClearPhoneScreenInfo before={%s}", formatTouchscreenRCAScreenMapping(s))
-	}
-	s.mu.Lock()
-	s.phoneScreen = PhoneScreenInfo{}
-	s.mu.Unlock()
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("screen.ClearPhoneScreenInfo after={%s}", formatTouchscreenRCAScreenMapping(s))
-	}
-}
-
-func (s *screenState) PhoneScreenInfo() PhoneScreenInfo {
-	if s == nil {
-		return PhoneScreenInfo{}
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.phoneScreen
-}
-
-func (s *screenState) UpdateActiveArea(width, height int, active screenActiveArea) {
-	if width <= 0 || height <= 0 {
-		if touchscreenRCADebugEnabledCached() {
-			touchscreenRCALogf("screen.UpdateActiveArea ignored invalid dimensions width=%d height=%d active=%s before={%s}", width, height, formatTouchscreenRCAActiveArea(active), formatTouchscreenRCAScreenMapping(s))
-		}
-		return
-	}
-	requestedActive := active
-	if active.Valid {
-		if active.X < 0 || active.Y < 0 || active.Width <= 0 || active.Height <= 0 || active.X+active.Width > width || active.Y+active.Height > height {
-			active = screenActiveArea{}
-		}
-	}
-
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf(
-			"screen.UpdateActiveArea before={%s} request_width=%d request_height=%d requested_active=%s committed_active=%s",
-			formatTouchscreenRCAScreenMapping(s),
-			width,
-			height,
-			formatTouchscreenRCAActiveArea(requestedActive),
-			formatTouchscreenRCAActiveArea(active),
-		)
-	}
-	s.mu.Lock()
-	s.width = width
-	s.height = height
-	s.active = active
-	s.updatedAt = time.Now()
-	s.mu.Unlock()
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("screen.UpdateActiveArea after={%s}", formatTouchscreenRCAScreenMapping(s))
-	}
-}
-
-func (s *screenState) Dimensions() (width, height int, ok bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.width <= 0 || s.height <= 0 {
-		return 0, 0, false
-	}
-	return s.width, s.height, true
-}
-
-func (s *screenState) DimensionsWithAge() (width, height int, age time.Duration, ok bool) {
-	width, height, _, age, ok = s.ActiveAreaWithAge()
-	return width, height, age, ok
-}
-
-func (s *screenState) ActiveAreaWithAge() (width, height int, active screenActiveArea, age time.Duration, ok bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.width <= 0 || s.height <= 0 {
-		return 0, 0, screenActiveArea{}, 0, false
-	}
-	active = s.active
-	if !active.Valid {
-		active = screenActiveArea{X: 0, Y: 0, Width: s.width, Height: s.height, Valid: true}
-	}
-	if s.updatedAt.IsZero() {
-		return s.width, s.height, active, 0, true
-	}
-	return s.width, s.height, active, time.Since(s.updatedAt), true
-}
-
-func (s *screenState) MappingState() screenMappingState {
-	if s == nil {
-		return screenMappingState{}
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return screenMappingState{
-		width:     s.width,
-		height:    s.height,
-		active:    s.active,
-		updatedAt: s.updatedAt,
-	}
-}
-
-func (s *screenState) FreshActiveArea(maxAge time.Duration) bool {
-	if s == nil {
-		return false
-	}
-	_, _, active, age, ok := s.ActiveAreaWithAge()
-	state := s.MappingState()
-	if !ok || !active.Valid || state.updatedAt.IsZero() {
-		return false
-	}
-	if maxAge > 0 && age >= maxAge {
-		return false
-	}
-	return true
-}
-
-func (s *screenState) RestoreMappingState(state screenMappingState) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.width = state.width
-	s.height = state.height
-	s.active = state.active
-	s.updatedAt = state.updatedAt
 }
 
 func (s *pointerState) Update(x, y int) {
@@ -837,7 +655,7 @@ func (d *HIDDevice) reopenStaleFileLocked() error {
 	return nil
 }
 
-func triggerUSBCompositeRefresh(statePath string) error {
+func triggerUSBCompositeRefresh(_ string) error {
 	// Trigger the USB watchdog's refresh command to rebind the USB composite gadget.
 	// This is needed when the USB host suspends the connection or the gadget
 	// enters a stale state where HID device nodes exist but are not functional.
@@ -1165,7 +983,7 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 // MouseClickTool moves the mouse to coordinates and clicks.
 type MouseClickTool struct {
 	pc     *pointerController
-	screen *screenState
+	screen *screen.ScreenState
 	adb    *ADBInputController
 }
 
@@ -1235,7 +1053,7 @@ func (t *MouseClickTool) call(ctx context.Context, input string) (string, error)
 // MouseMoveTool moves the mouse to coordinates without clicking.
 type MouseMoveTool struct {
 	pc     *pointerController
-	screen *screenState
+	screen *screen.ScreenState
 	adb    *ADBInputController
 }
 
@@ -1295,7 +1113,7 @@ func (t *MouseMoveTool) call(ctx context.Context, input string) (string, error) 
 // TouchGestureTool executes touch-like pointer gestures for mobile UI control.
 type TouchGestureTool struct {
 	pc                 *pointerController
-	screen             *screenState
+	screen             *screen.ScreenState
 	adb                *ADBInputController
 	primeScreenMapping func(context.Context) error
 }
@@ -1540,7 +1358,7 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 				end.y,
 				coordinateSpaceNormalized,
 				touchscreenRCAPointerMode(t.pc),
-				formatTouchscreenRCAScreenMapping(t.screen),
+				t.screen.Format(),
 			)
 		}
 		if sameResolvedPointerPoint(start, end) {
@@ -1670,7 +1488,7 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 	}
 
 	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("touch_gesture completed type=%q mapping_after_action_before_post_screenshot={%s}", gestureType, formatTouchscreenRCAScreenMapping(t.screen))
+		touchscreenRCALogf("touch_gesture completed type=%q mapping_after_action_before_post_screenshot={%s}", gestureType, t.screen.Format())
 	}
 	return "ok", nil
 }
@@ -1690,13 +1508,13 @@ func (t *TouchGestureTool) ensureTouchscreenMapping(ctx context.Context, coordSp
 		return nil
 	}
 	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("touch_gesture prime mapping before input coord_space=%q mapping_before={%s}", coordSpace, formatTouchscreenRCAScreenMapping(t.screen))
+		touchscreenRCALogf("touch_gesture prime mapping before input coord_space=%q mapping_before={%s}", coordSpace, t.screen.Format())
 	}
 	if err := t.primeScreenMapping(ctx); err != nil {
 		return err
 	}
 	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("touch_gesture prime mapping succeeded mapping_after={%s}", formatTouchscreenRCAScreenMapping(t.screen))
+		touchscreenRCALogf("touch_gesture prime mapping succeeded mapping_after={%s}", t.screen.Format())
 	}
 	return nil
 }
@@ -1714,7 +1532,7 @@ func sameResolvedPointerPoint(first, second resolvedPointerPoint) bool {
 // low-inertia vertical drag that is less likely to fling past the target.
 type WheelNudgeTool struct {
 	pc                     *pointerController
-	screen                 *screenState
+	screen                 *screen.ScreenState
 	durationMs             int
 	requireFreshScreenshot bool
 }
@@ -2307,7 +2125,7 @@ const (
 	coordinateSpaceAbsolute   = "absolute"
 )
 
-func resolveRequiredPoint(screen *screenState, touchscreen bool, point *pointerPoint, coordSpace string) (resolvedPointerPoint, error) {
+func resolveRequiredPoint(screen *screen.ScreenState, touchscreen bool, point *pointerPoint, coordSpace string) (resolvedPointerPoint, error) {
 	if point == nil {
 		return resolvedPointerPoint{}, fmt.Errorf("point is required")
 	}
@@ -2319,7 +2137,7 @@ func resolveRequiredPoint(screen *screenState, touchscreen bool, point *pointerP
 	return resolvedPointerPoint{x: x, y: y}, nil
 }
 
-func resolvePointOrDefaultNormalized(screen *screenState, touchscreen bool, point *pointerPoint, coordSpace string, defaultX, defaultY float64) (resolvedPointerPoint, error) {
+func resolvePointOrDefaultNormalized(screen *screen.ScreenState, touchscreen bool, point *pointerPoint, coordSpace string, defaultX, defaultY float64) (resolvedPointerPoint, error) {
 	if point != nil {
 		return resolveRequiredPoint(screen, touchscreen, point, coordSpace)
 	}
@@ -2335,11 +2153,11 @@ func resolvePointOrDefaultNormalized(screen *screenState, touchscreen bool, poin
 	return resolvedPointerPoint{x: x, y: y}, nil
 }
 
-func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
+func resolvePointerPosition(screen *screen.ScreenState, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
 	return resolvePointerPositionForSurface(screen, false, x, y, coordSpace, defaultSpace)
 }
 
-func resolvePointerPositionForSurface(screen *screenState, touchscreen bool, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
+func resolvePointerPositionForSurface(screen *screen.ScreenState, touchscreen bool, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
 	space, err := normalizeCoordinateSpace(coordSpace, defaultSpace)
 	if err != nil {
 		return 0, 0, err
@@ -2397,7 +2215,7 @@ func resolvePointerPositionForSurface(screen *screenState, touchscreen bool, x, 
 	return 0, 0, fmt.Errorf("unsupported coord_space: %q", coordSpace)
 }
 
-func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, x, y float64) (int, int, error) {
+func normalizedToAbsolutePointForSurface(screen *screen.ScreenState, touchscreen bool, x, y float64) (int, int, error) {
 	// Normalized coordinates are always interpreted within active_area:
 	// 0-1000 maps to the mirrored phone touch region inside the HDMI frame.
 	//
@@ -2429,7 +2247,7 @@ func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, 
 						fullFramePixelY,
 						width,
 						height,
-						formatTouchscreenRCAActiveArea(active),
+						active.Format(),
 						age.Milliseconds(),
 						absX,
 						absY,
@@ -2448,7 +2266,7 @@ func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, 
 					activePixelY,
 					width,
 					height,
-					formatTouchscreenRCAActiveArea(active),
+					active.Format(),
 					age.Milliseconds(),
 					absX,
 					absY,
@@ -2459,7 +2277,7 @@ func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, 
 	}
 	absX, absY := normalizedToAbsolutePoint(x, y)
 	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("normalizedToAbsolute fallback input_norm=(%.2f,%.2f) touchscreen=%v absolute=(%d,%d) mapping={%s}", x, y, touchscreen, absX, absY, formatTouchscreenRCAScreenMapping(screen))
+		touchscreenRCALogf("normalizedToAbsolute fallback input_norm=(%.2f,%.2f) touchscreen=%v absolute=(%d,%d) mapping={%s}", x, y, touchscreen, absX, absY, screen.Format())
 	}
 	return absX, absY, nil
 }
@@ -2486,12 +2304,12 @@ func normalizedToAbsolutePoint(x, y float64) (int, int) {
 	return int(math.Round(clampFloat(x, 0, 1000) / 1000.0 * absMouseMaxPos)), int(math.Round(clampFloat(y, 0, 1000) / 1000.0 * absMouseMaxPos))
 }
 
-func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveArea, touchscreen bool) (int, int, error) {
+func pixelToAbsolutePoint(x, y float64, width, height int, active screen.ScreenActiveArea, touchscreen bool) (int, int, error) {
 	if width <= 0 || height <= 0 {
 		return 0, 0, fmt.Errorf("invalid screen dimensions: %dx%d", width, height)
 	}
 	if !active.Valid {
-		active = screenActiveArea{X: 0, Y: 0, Width: width, Height: height, Valid: true}
+		active = screen.ScreenActiveArea{X: 0, Y: 0, Width: width, Height: height, Valid: true}
 	}
 	// Pixel coordinates are relative to the cropped active area image that the
 	// LLM sees, not the full HDMI frame. Bounds check against active area size.
@@ -2505,7 +2323,7 @@ func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveAr
 	return scalePixelToAbsolute(x, active.Width), scalePixelToAbsolute(y, active.Height), nil
 }
 
-func screenshotPixelToAbsolutePoint(x, y float64, sourceWidth, sourceHeight int, active screenActiveArea, touchscreen bool) (int, int, error) {
+func screenshotPixelToAbsolutePoint(x, y float64, sourceWidth, sourceHeight int, active screen.ScreenActiveArea, touchscreen bool) (int, int, error) {
 	if sourceWidth <= 0 || sourceHeight <= 0 || !active.Valid || active.Width <= 0 || active.Height <= 0 {
 		return 0, 0, fmt.Errorf("invalid screenshot mapping: source=%dx%d active=%+v", sourceWidth, sourceHeight, active)
 	}
@@ -2666,7 +2484,7 @@ func directionalSwipePreset(strength string) (directionalSwipeSettings, error) {
 	}
 }
 
-func directionalSwipeEndpoints(screen *screenState, touchscreen bool, gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {
+func directionalSwipeEndpoints(screen *screen.ScreenState, touchscreen bool, gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {
 	startX, startY, endX, endY, err := directionalSwipeNormalizedCoordinates(gestureType, distance, anchor, preset)
 	if err != nil {
 		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
@@ -2706,7 +2524,7 @@ func directionalSwipeEndpoints(screen *screenState, touchscreen bool, gestureTyp
 			startAbsY,
 			endAbsX,
 			endAbsY,
-			formatTouchscreenRCAScreenMapping(screen),
+			screen.Format(),
 		)
 	}
 	return resolvedPointerPoint{x: startAbsX, y: startAbsY}, resolvedPointerPoint{x: endAbsX, y: endAbsY}, nil

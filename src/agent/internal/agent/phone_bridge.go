@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/statemanager"
 	"context"
 	"encoding/json"
@@ -45,42 +46,28 @@ type BridgeCommandResponse struct {
 }
 
 type PhoneEnvironment struct {
-	CapturedAt       string             `json:"captured_at,omitempty"`
-	Source           string             `json:"source,omitempty"`
-	Platform         string             `json:"platform,omitempty"`
-	SystemName       string             `json:"system_name,omitempty"`
-	SystemVersion    string             `json:"system_version,omitempty"`
-	IsTablet         *bool              `json:"is_tablet,omitempty"`
-	Locale           string             `json:"locale,omitempty"`
-	Language         string             `json:"language,omitempty"`
-	Region           string             `json:"region,omitempty"`
-	TimeZone         string             `json:"time_zone,omitempty"`
-	UTCOffsetMinutes *int               `json:"utc_offset_minutes,omitempty"`
-	UTCOffset        string             `json:"utc_offset,omitempty"`
-	Uses24HourClock  *bool              `json:"uses_24_hour_clock,omitempty"`
-	Manufacturer     string             `json:"manufacturer,omitempty"`
-	Brand            string             `json:"brand,omitempty"`
-	Model            string             `json:"model,omitempty"`
-	DeviceName       string             `json:"device_name,omitempty"`
-	Screen           PhoneScreenInfo    `json:"screen,omitempty"`
-	Battery          PhoneBatteryInfo   `json:"battery,omitempty"`
-	SystemApps       []AvailableAppInfo `json:"system_apps,omitempty"`
-	ThirdPartyApps   []AvailableAppInfo `json:"third_party_apps,omitempty"`
-	AvailableApps    []AvailableAppInfo `json:"available_apps,omitempty"`
-}
-
-type PhoneScreenInfo struct {
-	Width              *float64 `json:"width,omitempty"`
-	Height             *float64 `json:"height,omitempty"`
-	WidthPixels        *int     `json:"width_pixels,omitempty"`
-	HeightPixels       *int     `json:"height_pixels,omitempty"`
-	NativeWidthPixels  *int     `json:"native_width_pixels,omitempty"`
-	NativeHeightPixels *int     `json:"native_height_pixels,omitempty"`
-	Scale              *float64 `json:"scale,omitempty"`
-	NativeScale        *float64 `json:"native_scale,omitempty"`
-	Density            *float64 `json:"density,omitempty"`
-	DensityDPI         *int     `json:"density_dpi,omitempty"`
-	ScaledDensity      *float64 `json:"scaled_density,omitempty"`
+	CapturedAt       string                 `json:"captured_at,omitempty"`
+	Source           string                 `json:"source,omitempty"`
+	Platform         string                 `json:"platform,omitempty"`
+	SystemName       string                 `json:"system_name,omitempty"`
+	SystemVersion    string                 `json:"system_version,omitempty"`
+	IsTablet         *bool                  `json:"is_tablet,omitempty"`
+	Locale           string                 `json:"locale,omitempty"`
+	Language         string                 `json:"language,omitempty"`
+	Region           string                 `json:"region,omitempty"`
+	TimeZone         string                 `json:"time_zone,omitempty"`
+	UTCOffsetMinutes *int                   `json:"utc_offset_minutes,omitempty"`
+	UTCOffset        string                 `json:"utc_offset,omitempty"`
+	Uses24HourClock  *bool                  `json:"uses_24_hour_clock,omitempty"`
+	Manufacturer     string                 `json:"manufacturer,omitempty"`
+	Brand            string                 `json:"brand,omitempty"`
+	Model            string                 `json:"model,omitempty"`
+	DeviceName       string                 `json:"device_name,omitempty"`
+	Screen           screen.PhoneScreenInfo `json:"screen,omitempty"`
+	Battery          PhoneBatteryInfo       `json:"battery,omitempty"`
+	SystemApps       []AvailableAppInfo     `json:"system_apps,omitempty"`
+	ThirdPartyApps   []AvailableAppInfo     `json:"third_party_apps,omitempty"`
+	AvailableApps    []AvailableAppInfo     `json:"available_apps,omitempty"`
 }
 
 type PhoneBatteryInfo struct {
@@ -960,35 +947,6 @@ func boolLabel(label string, value *bool) string {
 		return label + "=true"
 	}
 	return label + "=false"
-}
-
-func formatPhoneScreen(screen PhoneScreenInfo) string {
-	parts := make([]string, 0, 8)
-	if screen.Width != nil && screen.Height != nil {
-		parts = append(parts, fmt.Sprintf("%.2fx%.2f pt/dp", *screen.Width, *screen.Height))
-	}
-	if screen.WidthPixels != nil && screen.HeightPixels != nil {
-		parts = append(parts, fmt.Sprintf("%dx%d px", *screen.WidthPixels, *screen.HeightPixels))
-	}
-	if screen.NativeWidthPixels != nil && screen.NativeHeightPixels != nil {
-		parts = append(parts, fmt.Sprintf("native=%dx%d px", *screen.NativeWidthPixels, *screen.NativeHeightPixels))
-	}
-	if screen.Scale != nil {
-		parts = append(parts, fmt.Sprintf("scale=%.2f", *screen.Scale))
-	}
-	if screen.NativeScale != nil {
-		parts = append(parts, fmt.Sprintf("native_scale=%.2f", *screen.NativeScale))
-	}
-	if screen.Density != nil {
-		parts = append(parts, fmt.Sprintf("density=%.2f", *screen.Density))
-	}
-	if screen.DensityDPI != nil {
-		parts = append(parts, fmt.Sprintf("density_dpi=%d", *screen.DensityDPI))
-	}
-	if screen.ScaledDensity != nil {
-		parts = append(parts, fmt.Sprintf("scaled_density=%.2f", *screen.ScaledDensity))
-	}
-	return strings.Join(parts, ", ")
 }
 
 func formatPhoneBattery(battery PhoneBatteryInfo) string {
