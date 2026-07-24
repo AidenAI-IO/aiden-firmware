@@ -86,24 +86,21 @@ func TestTerminationPolicyIgnoresSubOnePercentPixelChanges(t *testing.T) {
 	}
 }
 
-func TestTerminationPolicyIgnoresPixelChangesBelowTenPercent(t *testing.T) {
+func TestTerminationPolicyAcceptsLocalizedPixelChanges(t *testing.T) {
 	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
 	before := terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{})
 	after := terminationPolicyScreenshotObservation(t, 200, 400, image.Rect(20, 100, 80, 160))
 
 	policy.AfterToolCall("screenshot", `{}`, before, false)
-	policy.stallScore = 1
+	policy.stallScore = 4
 	policy.refreshTier()
 	decision := policy.AfterToolCall("screenshot", `{}`, after, false)
-	if decision.Stop {
-		t.Fatalf("sub-10%% change should not immediately stop the run: %#v", decision)
-	}
-	if policy.stallScore == 0 || policy.tier == TierNone {
-		t.Fatalf("sub-10%% change was incorrectly treated as progress: score=%d tier=%d", policy.stallScore, policy.tier)
+	if decision.Stop || policy.stallScore != 0 || policy.tier != TierNone {
+		t.Fatalf("localized structural change should count as progress: decision=%#v score=%d tier=%d", decision, policy.stallScore, policy.tier)
 	}
 }
 
-func TestTerminationPolicyAcceptsPixelChangesAboveTenPercent(t *testing.T) {
+func TestTerminationPolicyAcceptsLargePageChanges(t *testing.T) {
 	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
 	before := terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{})
 	after := terminationPolicyScreenshotObservation(t, 200, 400, image.Rect(20, 100, 120, 200))
@@ -113,7 +110,7 @@ func TestTerminationPolicyAcceptsPixelChangesAboveTenPercent(t *testing.T) {
 	policy.refreshTier()
 	decision := policy.AfterToolCall("screenshot", `{}`, after, false)
 	if decision.Stop || policy.stallScore != 0 || policy.tier != TierNone {
-		t.Fatalf("body change above 10%% should count as progress: decision=%#v score=%d tier=%d", decision, policy.stallScore, policy.tier)
+		t.Fatalf("large page change should count as progress: decision=%#v score=%d tier=%d", decision, policy.stallScore, policy.tier)
 	}
 }
 
@@ -144,23 +141,47 @@ func TestComputeImageDiffUsesStrictOnePercentThreshold(t *testing.T) {
 	}
 }
 
-func TestScreenshotProgressUsesStrictTenPercentThreshold(t *testing.T) {
-	before := image.NewRGBA(image.Rect(0, 0, 100, 100))
+func TestScreenshotProgressIgnoresDistributedPixelNoise(t *testing.T) {
+	before := image.NewRGBA(image.Rect(0, 0, 400, 800))
 	after := image.NewRGBA(before.Bounds())
 	changed := color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	for y := 8; y < 18; y++ {
-		for x := 0; x < 92; x++ {
+	bounds := screenshotProgressBounds(before.Bounds())
+	for row := 0; row < screenshotProgressGridRows; row++ {
+		y := bounds.Min.Y + bounds.Dy()*row/screenshotProgressGridRows
+		for column := 0; column < screenshotProgressGridColumns; column++ {
+			x := bounds.Min.X + bounds.Dx()*column/screenshotProgressGridColumns
 			after.Set(x, y, changed)
 		}
 	}
 
+	result, err := computeImageDiff(before, after, bounds)
+	if err != nil {
+		t.Fatalf("compute raw image diff: %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("fixture should exceed raw image_diff 1%% threshold: %#v", result)
+	}
 	if progress, comparable := screenshotProgressChanged(before, after); !comparable || progress {
-		t.Fatalf("exactly 10%% changed pixels should not count as progress: progress=%v comparable=%v", progress, comparable)
+		t.Fatalf("distributed one-pixel noise should not count as structural progress: progress=%v comparable=%v", progress, comparable)
+	}
+}
+
+func TestScreenshotProgressUsesStrictOnePercentChangedBlockThreshold(t *testing.T) {
+	before := image.NewRGBA(image.Rect(0, 0, 400, 800))
+	after := image.NewRGBA(before.Bounds())
+	changed := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	bounds := screenshotProgressBounds(before.Bounds())
+	for index := 0; index < 32; index++ {
+		fillScreenshotProgressGridCell(after, bounds, index, changed)
 	}
 
-	after.Set(92, 8, changed)
+	if progress, comparable := screenshotProgressChanged(before, after); !comparable || progress {
+		t.Fatalf("exactly 1%% changed blocks should not count as progress: progress=%v comparable=%v", progress, comparable)
+	}
+
+	fillScreenshotProgressGridCell(after, bounds, 32, changed)
 	if progress, comparable := screenshotProgressChanged(before, after); !comparable || !progress {
-		t.Fatalf("more than 10%% changed pixels should count as progress: progress=%v comparable=%v", progress, comparable)
+		t.Fatalf("more than 1%% changed blocks should count as progress: progress=%v comparable=%v", progress, comparable)
 	}
 }
 
@@ -225,4 +246,14 @@ func terminationPolicyScreenshotObservation(t *testing.T, width, height int, cha
 		t.Fatalf("marshal test screenshot observation: %v", err)
 	}
 	return string(encoded)
+}
+
+func fillScreenshotProgressGridCell(img draw.Image, bounds image.Rectangle, index int, fill color.Color) {
+	row := index / screenshotProgressGridColumns
+	column := index % screenshotProgressGridColumns
+	x0 := bounds.Min.X + bounds.Dx()*column/screenshotProgressGridColumns
+	x1 := bounds.Min.X + bounds.Dx()*(column+1)/screenshotProgressGridColumns
+	y0 := bounds.Min.Y + bounds.Dy()*row/screenshotProgressGridRows
+	y1 := bounds.Min.Y + bounds.Dy()*(row+1)/screenshotProgressGridRows
+	draw.Draw(img, image.Rect(x0, y0, x1, y1), &image.Uniform{C: fill}, image.Point{}, draw.Src)
 }

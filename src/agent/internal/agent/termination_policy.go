@@ -20,10 +20,12 @@ const (
 	// screenshotProgressIgnoreTopFraction excludes the phone status bar, whose
 	// clock and battery indicators can change without meaningful UI progress.
 	screenshotProgressIgnoreTopFraction = 0.08
-	// screenshotProgressChangedRatioThreshold is deliberately higher than the
-	// image_diff tool's 1% visibility threshold. Loop-guard progress must reflect
-	// a meaningful UI transition rather than icon rendering or badge changes.
-	screenshotProgressChangedRatioThreshold = 0.10
+	// The normalized grid preserves layout changes across screenshot resolutions
+	// while averaging away anti-aliasing, clock hands, and badge rendering noise.
+	screenshotProgressGridColumns           = 40
+	screenshotProgressGridRows              = 80
+	screenshotProgressBlockChannelThreshold = 8
+	screenshotProgressChangedBlockThreshold = 0.01
 )
 
 // StopReason explains why the agent loop stopped or intervened.
@@ -497,11 +499,11 @@ func screenshotProgressChanged(before, after image.Image) (changed, comparable b
 		return true, true
 	}
 	bounds := screenshotProgressBounds(after.Bounds())
-	result, err := computeImageDiff(before, after, bounds)
-	if err != nil {
+	diffRatio, ok := screenshotProgressBlockDiffRatio(before, after, bounds)
+	if !ok {
 		return false, false
 	}
-	return result.rawDiffRatio > screenshotProgressChangedRatioThreshold, true
+	return diffRatio > screenshotProgressChangedBlockThreshold, true
 }
 
 func screenshotProgressBounds(full image.Rectangle) image.Rectangle {
@@ -515,6 +517,62 @@ func screenshotProgressBounds(full image.Rectangle) image.Rectangle {
 	}
 	full.Min.Y += topRows
 	return full
+}
+
+func screenshotProgressBlockDiffRatio(before, after image.Image, bounds image.Rectangle) (float64, bool) {
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return 0, false
+	}
+	columns := screenshotProgressGridColumns
+	if width < columns {
+		columns = width
+	}
+	rows := screenshotProgressGridRows
+	if height < rows {
+		rows = height
+	}
+
+	changedBlocks := 0
+	totalBlocks := columns * rows
+	for row := 0; row < rows; row++ {
+		y0 := bounds.Min.Y + height*row/rows
+		y1 := bounds.Min.Y + height*(row+1)/rows
+		for column := 0; column < columns; column++ {
+			x0 := bounds.Min.X + width*column/columns
+			x1 := bounds.Min.X + width*(column+1)/columns
+			pixelCount := uint64((x1 - x0) * (y1 - y0))
+			var beforeR, beforeG, beforeB uint64
+			var afterR, afterG, afterB uint64
+			for y := y0; y < y1; y++ {
+				for x := x0; x < x1; x++ {
+					br, bg, bb, _ := before.At(x, y).RGBA()
+					ar, ag, ab, _ := after.At(x, y).RGBA()
+					beforeR += uint64(br >> 8)
+					beforeG += uint64(bg >> 8)
+					beforeB += uint64(bb >> 8)
+					afterR += uint64(ar >> 8)
+					afterG += uint64(ag >> 8)
+					afterB += uint64(ab >> 8)
+				}
+			}
+			threshold := uint64(screenshotProgressBlockChannelThreshold) * pixelCount
+			if absDiffUint64(beforeR, afterR) > threshold ||
+				absDiffUint64(beforeG, afterG) > threshold ||
+				absDiffUint64(beforeB, afterB) > threshold {
+				changedBlocks++
+			}
+		}
+	}
+	return float64(changedBlocks) / float64(totalBlocks), true
+}
+
+func absDiffUint64(a, b uint64) uint64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }
 
 func isLoopRestrictedActionTool(name string) bool {

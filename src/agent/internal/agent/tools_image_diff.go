@@ -149,10 +149,9 @@ func finiteNormalized(value float64) bool {
 }
 
 type imageDiffResult struct {
-	Changed      bool    `json:"changed"`
-	DiffRatio    float64 `json:"diff_ratio"`
-	PrimaryAxis  string  `json:"primary_axis"`
-	rawDiffRatio float64
+	Changed     bool    `json:"changed"`
+	DiffRatio   float64 `json:"diff_ratio"`
+	PrimaryAxis string  `json:"primary_axis"`
 }
 
 // diffThreshold is the per-channel absolute difference that counts as a changed
@@ -204,10 +203,9 @@ func computeImageDiff(before, after image.Image, bounds image.Rectangle) (*image
 	primaryAxis := detectPrimaryAxis(rowChanged, colChanged, changedPixels)
 
 	return &imageDiffResult{
-		Changed:      diffRatio > imageDiffChangedRatioThreshold,
-		DiffRatio:    math.Round(diffRatio*1000) / 1000,
-		PrimaryAxis:  primaryAxis,
-		rawDiffRatio: diffRatio,
+		Changed:     diffRatio > imageDiffChangedRatioThreshold,
+		DiffRatio:   math.Round(diffRatio*1000) / 1000,
+		PrimaryAxis: primaryAxis,
 	}, nil
 }
 
