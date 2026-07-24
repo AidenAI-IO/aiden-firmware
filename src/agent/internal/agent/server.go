@@ -1116,6 +1116,8 @@ func (s *Server) handleChatAsync(
 			})
 		}()
 
+		var speechWriter *TTSTagStreamWriter
+
 		// Event handler pushes intermediate messages into the pending result
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
@@ -1132,7 +1134,11 @@ func (s *Server) handleChatAsync(
 				s.liveActivity.UpdateFromRunEvent(requestID, event)
 			}
 
-			if text := s.toolCallSpeechText(event); text != "" {
+			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
+			if toolSpeechStreamed && s.logger != nil {
+				s.logger.Info("Tool content TTS already streamed: tool=%s", event.ToolName)
+			}
+			if text := s.toolCallSpeechText(event); text != "" && !toolSpeechStreamed {
 				go s.speakToolContent(runCtx, text)
 			}
 		}
@@ -1165,8 +1171,11 @@ func (s *Server) handleChatAsync(
 					newStream = stream
 					output := newActiveTTSOutput(nil)
 					output.setStream(newStream)
-					unregisterStreamOutput = s.registerActiveOutput(requestID, output)
-					runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+					runReq.OnRunActive = func(context.Context) {
+						unregisterStreamOutput = s.registerActiveOutput(requestID, output)
+					}
+					speechWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+					runReq.StreamWriter = speechWriter
 				}
 			}
 		}
@@ -1174,11 +1183,12 @@ func (s *Server) handleChatAsync(
 
 		result, err := s.runtime.Run(runCtx, runReq)
 		if newStream != nil {
+			finalSpeechStreamed := speechWriter != nil && speechWriter.FinishResponse()
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
 				s.logger.Error("new TTS stream failed: %v", closeErr)
 			}
-			result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
+			result.SpeechStreamed = closeErr == nil && finalSpeechStreamed && newStream.spokeSuccessfully()
 		}
 
 		pending.mu.Lock()
@@ -1488,6 +1498,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	steerProvider, steerInterrupt := s.prepareRunSteerCallbacks(req.RequestID)
 	s.logger.Info("Creating run request")
+	var speechWriter *TTSTagStreamWriter
 	runReq := RunRequest{
 		Input:                   inputText,
 		Attachments:             turnInput.Attachments,
@@ -1508,7 +1519,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
-			if text := s.toolCallSpeechText(event); text != "" {
+			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
+			if toolSpeechStreamed && s.logger != nil {
+				s.logger.Info("Tool content TTS already streamed: tool=%s", event.ToolName)
+			}
+			if text := s.toolCallSpeechText(event); text != "" && !toolSpeechStreamed {
 				go s.speakToolContent(ctx, text)
 			}
 		},
@@ -1532,8 +1547,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				newStream = streamSession
 				output := newActiveTTSOutput(nil)
 				output.setStream(newStream)
-				unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
-				streamWriters = append(streamWriters, speechStreamWriterForConfig(newStream, s.runtime.config))
+				runReq.OnRunActive = func(context.Context) {
+					unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
+				}
+				speechWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+				streamWriters = append(streamWriters, speechWriter)
 			}
 		}
 	}
@@ -1544,11 +1562,12 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("Running runtime")
 	result, err := s.runtime.Run(ctx, runReq)
 	if newStream != nil {
+		finalSpeechStreamed := speechWriter != nil && speechWriter.FinishResponse()
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
 			s.logger.Error("new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
+		result.SpeechStreamed = closeErr == nil && finalSpeechStreamed && newStream.spokeSuccessfully()
 	}
 	if err != nil {
 		canceled := errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled)

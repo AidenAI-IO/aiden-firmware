@@ -886,6 +886,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
 
+	var speechWriter *TTSTagStreamWriter
 	req := RunRequest{
 		Input:          input.InputText,
 		Attachments:    input.Attachments,
@@ -899,8 +900,13 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 				finalAssistantEvent = &captured
 				return
 			}
+			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
 			d.appendVoiceRunEvent(event, requestID)
-			d.HandleRunEvent(ctx, event)
+			if toolSpeechStreamed {
+				log.Printf("[tts] Tool content already streamed: tool=%s", event.ToolName)
+			} else {
+				d.HandleRunEvent(ctx, event)
+			}
 		},
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return d.consumePendingSteer(requestID)
@@ -939,7 +945,8 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 			newStream = stream
 			unregisterStream = unregister
 			defer unregisterStream()
-			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
+			speechWriter = speechStreamWriterForConfig(newStream, d.config)
+			req.StreamWriter = speechWriter
 		}
 	}
 	req.Turn = input
@@ -947,11 +954,12 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	result, err := runtime.Run(ctx, req)
 	d.stopAcceptingSteer(requestID)
 	if newStream != nil {
+		finalSpeechStreamed := speechWriter != nil && speechWriter.FinishResponse()
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil {
 			log.Printf("[error] new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
+		result.SpeechStreamed = closeErr == nil && finalSpeechStreamed && newStream.spokeSuccessfully()
 	}
 	if err != nil {
 		return RunResult{}, fmt.Errorf("LLM request failed: %w", err)
@@ -1232,6 +1240,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
 	var finalAssistantEvent *RunEvent
+	var speechWriter *TTSTagStreamWriter
 
 	req := RunRequest{
 		Input: text,
@@ -1242,8 +1251,13 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 				finalAssistantEvent = &captured
 				return
 			}
+			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
 			d.appendVoiceRunEvent(event, "")
-			d.HandleRunEvent(ctx, event)
+			if toolSpeechStreamed {
+				log.Printf("[tts] Tool content already streamed: tool=%s", event.ToolName)
+			} else {
+				d.HandleRunEvent(ctx, event)
+			}
 		},
 	}
 	var newStream *streamSessionWriter
@@ -1256,17 +1270,19 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 			newStream = stream
 			unregisterStream = unregister
 			defer unregisterStream()
-			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
+			speechWriter = speechStreamWriterForConfig(newStream, d.config)
+			req.StreamWriter = speechWriter
 		}
 	}
 
 	result, err := runtime.Run(ctx, req)
 	if newStream != nil {
+		finalSpeechStreamed := speechWriter != nil && speechWriter.FinishResponse()
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil {
 			log.Printf("[error] new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
+		result.SpeechStreamed = closeErr == nil && finalSpeechStreamed && newStream.spokeSuccessfully()
 	}
 	if err != nil {
 		return fmt.Errorf("LLM request failed: %w", err)

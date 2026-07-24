@@ -83,7 +83,12 @@ type RunRequest struct {
 	StreamWriter      io.Writer
 	MaxTokens         int
 	EventHandler      func(RunEvent)
-	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	// OnRunActive runs after the previous run and its resources have been
+	// preempted and this run owns the runtime gate. Callers can register
+	// request-scoped output here without that output being interrupted by this
+	// run's own startup preemption.
+	OnRunActive   func(context.Context)
+	SteerProvider func(context.Context) (RunSteerMessage, bool)
 	// FinalSteerProvider is called at terminal executor boundaries. It should
 	// atomically consume one last pending steer if available; otherwise it should
 	// close the request's steer acceptance window.
@@ -676,6 +681,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{Preempted: true}, err
 	}
 	ctx = runCtx // Use preemptable context for the rest of the run.
+	if req.OnRunActive != nil {
+		req.OnRunActive(ctx)
+	}
 
 	startTime := time.Now()
 	metrics := &RunMetrics{}

@@ -516,6 +516,72 @@ func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatStreamsLeadingToolTTSWithoutDuplicatePlayback(t *testing.T) {
+	toolSpeech := true
+	toolContent := "<tts>Check volume.</tts>\nChecking volume."
+	finalContent := "<tts>Current volume is 42.</tts>\nCurrent volume is 42."
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, toolContent),
+			contentResponse(finalContent),
+		},
+		streamChunks: [][]string{
+			{toolContent},
+			{finalContent},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Use tools when external state is requested.",
+			VoiceStreamingTTSEnabled: boolPtr(true),
+			VoiceToolCallSpeech:      &toolSpeech,
+			Audio:                    AudioConfig{SampleRate: 16000},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": &stubTool{
+				name:        "audio_volume",
+				description: "Get the current audio playback volume.",
+				output:      `{"volume":42}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+	defer runtime.Close()
+	server := newServerForTest(runtime)
+	provider := &flushRecordingTTSProvider{name: "server-provider"}
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
+	time.Sleep(30 * time.Millisecond)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("X-Aiden-Stream", "ndjson")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	waitForFlushProviderTextCount(t, provider, 2)
+	time.Sleep(100 * time.Millisecond)
+	texts := provider.texts()
+	if len(texts) != 2 {
+		writes, flushCalls := provider.activity()
+		t.Fatalf("leading tool TTS should stream once before final TTS, got %#v writes=%#v flush_calls=%d", texts, writes, flushCalls)
+	}
+	if countString(texts, "Check volume.") != 1 {
+		t.Fatalf("tool TTS count = %d, want 1: %#v", countString(texts, "Check volume."), texts)
+	}
+	if countString(texts, "Current volume is 42.") != 1 {
+		t.Fatalf("final TTS count = %d, want 1: %#v", countString(texts, "Current volume is 42."), texts)
+	}
+}
+
 type failingStreamWriter struct {
 	err error
 }

@@ -795,6 +795,14 @@ type recordingTTSProvider struct {
 	seen []string
 }
 
+type flushRecordingTTSProvider struct {
+	name       string
+	mu         sync.Mutex
+	seen       []string
+	writes     []string
+	flushCalls int
+}
+
 const testTTSPlaybackStartPCMBytes = 48000
 
 type playbackStartedTransientErrorProvider struct {
@@ -825,6 +833,18 @@ func (p *playbackStartedTransientErrorProvider) BeginStream(ctx context.Context,
 
 func (p *recordingTTSProvider) Close() error { return nil }
 
+func (p *flushRecordingTTSProvider) Name() string { return p.name }
+
+func (p *flushRecordingTTSProvider) Capabilities() ttsmodule.Capabilities {
+	return ttsmodule.Capabilities{}
+}
+
+func (p *flushRecordingTTSProvider) BeginStream(ctx context.Context, sink ttsmodule.AudioSink) (ttsmodule.StreamSession, error) {
+	return &flushRecordingTTSSession{provider: p, sink: sink}, nil
+}
+
+func (p *flushRecordingTTSProvider) Close() error { return nil }
+
 func (p *playbackStartedTransientErrorProvider) Close() error { return nil }
 
 func (p *recordingTTSProvider) texts() []string {
@@ -833,12 +853,31 @@ func (p *recordingTTSProvider) texts() []string {
 	return append([]string(nil), p.seen...)
 }
 
+func (p *flushRecordingTTSProvider) texts() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.seen...)
+}
+
+func (p *flushRecordingTTSProvider) activity() ([]string, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.writes...), p.flushCalls
+}
+
 func (p *playbackStartedTransientErrorProvider) beginCalls() int {
 	return int(p.calls.Load())
 }
 
 type recordingTTSSession struct {
 	provider *recordingTTSProvider
+	sink     ttsmodule.AudioSink
+	buf      bytes.Buffer
+	err      error
+}
+
+type flushRecordingTTSSession struct {
+	provider *flushRecordingTTSProvider
 	sink     ttsmodule.AudioSink
 	buf      bytes.Buffer
 	err      error
@@ -854,9 +893,36 @@ func (s *recordingTTSSession) WriteText(text string) error {
 	return nil
 }
 
+func (s *flushRecordingTTSSession) WriteText(text string) error {
+	_, _ = s.buf.WriteString(text)
+	s.provider.mu.Lock()
+	s.provider.writes = append(s.provider.writes, text)
+	s.provider.mu.Unlock()
+	return nil
+}
+
 func (s *playbackStartedTransientErrorSession) WriteText(text string) error { return nil }
 
 func (s *recordingTTSSession) Flush() error { return nil }
+
+func (s *flushRecordingTTSSession) Flush() error {
+	s.provider.mu.Lock()
+	s.provider.flushCalls++
+	s.provider.mu.Unlock()
+	text := s.buf.String()
+	s.buf.Reset()
+	if text == "" {
+		return nil
+	}
+	s.provider.mu.Lock()
+	s.provider.seen = append(s.provider.seen, text)
+	s.provider.mu.Unlock()
+	if err := s.sink.WritePCM(make([]byte, testTTSPlaybackStartPCMBytes)); err != nil {
+		s.err = err
+		return err
+	}
+	return nil
+}
 
 func (s *playbackStartedTransientErrorSession) Flush() error { return nil }
 
@@ -874,6 +940,8 @@ func (s *recordingTTSSession) Close() error {
 	return nil
 }
 
+func (s *flushRecordingTTSSession) Close() error { return s.Flush() }
+
 func (s *playbackStartedTransientErrorSession) Close() error {
 	if err := s.sink.WritePCM(make([]byte, 16000)); err != nil {
 		s.err = err
@@ -885,6 +953,8 @@ func (s *playbackStartedTransientErrorSession) Close() error {
 }
 
 func (s *recordingTTSSession) Err() error { return s.err }
+
+func (s *flushRecordingTTSSession) Err() error { return s.err }
 
 func (s *playbackStartedTransientErrorSession) Err() error { return s.err }
 

@@ -292,7 +292,10 @@ func (w *streamSessionWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	if w.interrupted {
 		w.mu.Unlock()
-		return len(p), nil
+		// Report zero accepted bytes to the tag parser while still suppressing an
+		// error. The parser returns success to the LLM stream but will not mark
+		// this speech as emitted, allowing the non-streaming fallback to run.
+		return 0, nil
 	}
 	session := w.session
 	w.textWritten = true
@@ -304,6 +307,7 @@ func (w *streamSessionWriter) Write(p []byte) (int, error) {
 			w.lastErr = err
 		}
 		w.mu.Unlock()
+		return 0, nil
 	}
 	// Always return success so the LLM stream is not interrupted by TTS errors.
 	return len(p), nil

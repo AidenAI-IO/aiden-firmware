@@ -116,6 +116,22 @@ func TestBuildSpeechTextJoinsMultipleTTSTags(t *testing.T) {
 	}
 }
 
+func TestBuildSpeechTextTreatsResponseEndAsUnclosedTTSTagFallback(t *testing.T) {
+	output := "<tts>已经完成。"
+
+	if got := BuildSpeechText(output, Config{}); got != "已经完成。" {
+		t.Fatalf("BuildSpeechText() = %q, want unclosed TTS content", got)
+	}
+}
+
+func TestBuildSpeechTextDropsPartialClosingTagAtResponseEnd(t *testing.T) {
+	output := "<tts>已经完成。</tt"
+
+	if got := BuildSpeechText(output, Config{}); got != "已经完成。" {
+		t.Fatalf("BuildSpeechText() = %q, want partial closing tag removed", got)
+	}
+}
+
 func TestBuildSpeechTextMatchesTTSTagsWithByteStableOffsets(t *testing.T) {
 	output := "可见正文 İ K <TTS>K value</TTS> 尾部正文"
 
@@ -341,6 +357,67 @@ func TestSpeechStreamWriterStreamsOnlyFirstLeadingTTSTag(t *testing.T) {
 	}
 }
 
+func TestSpeechStreamWriterFinishResponseAllowsNextLeadingTTSTag(t *testing.T) {
+	sink := &flushingSpeechSink{}
+	writer := NewSpeechStreamWriter(sink)
+
+	if _, err := writer.Write([]byte("<tts>工具进度。</tts>正文")); err != nil {
+		t.Fatalf("Write(tool progress) error = %v", err)
+	}
+	if !writer.FinishResponse() {
+		t.Fatal("FinishResponse() = false, want streamed tool progress")
+	}
+	if writer.StreamEmitted() {
+		t.Fatal("StreamEmitted() = true after FinishResponse")
+	}
+
+	if _, err := writer.Write([]byte("<tts>最终回复。</tts>正文")); err != nil {
+		t.Fatalf("Write(final response) error = %v", err)
+	}
+	if got := sink.String(); got != "工具进度。最终回复。" {
+		t.Fatalf("streamed speech = %q", got)
+	}
+	if sink.flushCalls != 2 {
+		t.Fatalf("Flush() calls = %d, want 2", sink.flushCalls)
+	}
+}
+
+func TestSpeechStreamWriterFinishResponseFlushesUnclosedLeadingTTS(t *testing.T) {
+	sink := &flushingSpeechSink{}
+	writer := NewSpeechStreamWriter(sink)
+
+	if _, err := writer.Write([]byte("<tts>好的，已经完成。")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if !writer.FinishResponse() {
+		t.Fatal("FinishResponse() = false, want unclosed leading TTS streamed")
+	}
+	if got := sink.String(); got != "好的，已经完成。" {
+		t.Fatalf("streamed speech = %q", got)
+	}
+	if sink.flushCalls != 1 {
+		t.Fatalf("Flush() calls = %d, want 1", sink.flushCalls)
+	}
+}
+
+func TestSpeechStreamWriterFinishResponseDropsPartialClosingTag(t *testing.T) {
+	sink := &flushingSpeechSink{}
+	writer := NewSpeechStreamWriter(sink)
+
+	if _, err := writer.Write([]byte("<tts>好的，已经完成。</tt")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if !writer.FinishResponse() {
+		t.Fatal("FinishResponse() = false, want partial closing tag fallback streamed")
+	}
+	if got := sink.String(); got != "好的，已经完成。" {
+		t.Fatalf("streamed speech = %q", got)
+	}
+	if sink.flushCalls != 1 {
+		t.Fatalf("Flush() calls = %d, want 1", sink.flushCalls)
+	}
+}
+
 func TestSpeechStreamWriterResetBufferClearsParserState(t *testing.T) {
 	sink := &resettableSpeechSink{}
 	writer := NewSpeechStreamWriter(sink)
@@ -365,6 +442,23 @@ func TestSpeechStreamWriterResetBufferClearsParserState(t *testing.T) {
 	}
 	if got := sink.String(); got != "fresh" {
 		t.Fatalf("streamed speech after reset = %q, want %q", got, "fresh")
+	}
+}
+
+func TestSpeechStreamWriterDoesNotMarkInterruptedTTSStreamAsEmitted(t *testing.T) {
+	stream := &streamSessionWriter{interrupted: true}
+	writer := NewTTSTagStreamWriter(stream)
+	input := []byte("<tts>Checking volume.</tts>\nChecking volume.")
+
+	n, err := writer.Write(input)
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if n != len(input) {
+		t.Fatalf("Write() = %d, want %d", n, len(input))
+	}
+	if writer.StreamEmitted() {
+		t.Fatal("StreamEmitted() = true for interrupted TTS stream")
 	}
 }
 

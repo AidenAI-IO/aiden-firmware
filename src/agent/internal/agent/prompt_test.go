@@ -198,7 +198,8 @@ func TestDefaultAgentBehaviorRequiresTTSBeforeVisibleText(t *testing.T) {
 	for _, want := range []string{
 		"Responses must begin with exactly one <tts>...</tts> block",
 		"followed by ordinary user-facing text",
-		"after the user-facing progress text",
+		"When invoking tools, begin assistant content with exactly one <tts>...</tts> block",
+		"followed by brief user-facing progress text",
 	} {
 		if !strings.Contains(behavior, want) {
 			t.Fatalf("defaultAgentBehavior missing %q:\n%s", want, behavior)
@@ -206,6 +207,9 @@ func TestDefaultAgentBehaviorRequiresTTSBeforeVisibleText(t *testing.T) {
 	}
 	if strings.Contains(behavior, "ordinary user-facing text, followed by exactly one <tts>") {
 		t.Fatalf("defaultAgentBehavior still requests trailing TTS:\n%s", behavior)
+	}
+	if strings.Contains(behavior, "after the user-facing progress text") {
+		t.Fatalf("defaultAgentBehavior still requests trailing tool-call TTS:\n%s", behavior)
 	}
 }
 
