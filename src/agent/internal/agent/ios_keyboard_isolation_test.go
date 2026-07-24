@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+var errIOSKeyboardRestoreUsedCanceledContext = errors.New("iOS HID restore used canceled context")
+
 func newTestIOSKeyboardIsolationController(events *[]string) *iosKeyboardIsolationController {
 	return &iosKeyboardIsolationController{
 		controlPath: "/test/control",
@@ -18,6 +20,21 @@ func newTestIOSKeyboardIsolationController(events *[]string) *iosKeyboardIsolati
 			return nil, nil
 		},
 	}
+}
+
+func newCancellationSensitiveIOSKeyboardIsolationController(events *[]string) *iosKeyboardIsolationController {
+	controller := newTestIOSKeyboardIsolationController(events)
+	controller.run = func(ctx context.Context, _ string, args ...string) ([]byte, error) {
+		*events = append(*events, args[0])
+		if args[0] == "restore" && ctx.Err() != nil {
+			return nil, errIOSKeyboardRestoreUsedCanceledContext
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	return controller
 }
 
 func TestIOSKeyboardIsolationWrapsModifierShortcut(t *testing.T) {
@@ -32,6 +49,177 @@ func TestIOSKeyboardIsolationWrapsModifierShortcut(t *testing.T) {
 		t.Fatalf("withKeyboard() error = %v", err)
 	}
 	if want := []string{"isolate", "shortcut", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestIOSKeyboardIsolationBatchCoalescesModifierActions(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+
+	err := controller.withBatch(context.Background(), func(batchCtx context.Context) error {
+		if err := controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "first-shortcut")
+			return nil
+		}); err != nil {
+			return err
+		}
+		if err := controller.withKeyboard(batchCtx, false, func() error {
+			events = append(events, "plain-key")
+			return nil
+		}); err != nil {
+			return err
+		}
+		return controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "second-shortcut")
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withBatch() error = %v", err)
+	}
+	if want := []string{"isolate", "first-shortcut", "plain-key", "second-shortcut", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestIOSKeyboardIsolationNestedBatchReusesOuterProfile(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+
+	err := controller.withBatch(context.Background(), func(batchCtx context.Context) error {
+		return controller.withBatch(batchCtx, func(nestedCtx context.Context) error {
+			return controller.withKeyboard(nestedCtx, true, func() error {
+				events = append(events, "shortcut")
+				return nil
+			})
+		})
+	})
+	if err != nil {
+		t.Fatalf("withBatch() error = %v", err)
+	}
+	if want := []string{"isolate", "shortcut", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestIOSKeyboardIsolationBatchWaitCanBeCanceled(t *testing.T) {
+	controller := newTestIOSKeyboardIsolationController(&[]string{})
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- controller.withBatch(context.Background(), func(context.Context) error {
+			close(firstStarted)
+			<-releaseFirst
+			return nil
+		})
+	}()
+
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first batch did not acquire isolation controller")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	secondActionErr := errors.New("second batch action unexpectedly ran")
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- controller.withBatch(ctx, func(context.Context) error {
+			return secondActionErr
+		})
+	}()
+
+	select {
+	case err := <-secondDone:
+		close(releaseFirst)
+		<-firstDone
+		t.Fatalf("second batch returned before cancellation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			close(releaseFirst)
+			<-firstDone
+			t.Fatalf("second batch error = %v, want context canceled", err)
+		}
+		if errors.Is(err, secondActionErr) {
+			close(releaseFirst)
+			<-firstDone
+			t.Fatalf("second batch action ran after cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		close(releaseFirst)
+		<-firstDone
+		t.Fatal("canceled batch remained blocked waiting for isolation controller")
+	}
+
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first batch error = %v", err)
+	}
+}
+
+func TestIOSKeyboardIsolationBatchRestoresBeforePointerAndCanReisolate(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+
+	err := controller.withBatch(context.Background(), func(batchCtx context.Context) error {
+		if err := controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "first-shortcut")
+			return nil
+		}); err != nil {
+			return err
+		}
+		if _, err := controller.withPointerCall(batchCtx, func(context.Context) (string, error) {
+			events = append(events, "pointer")
+			return "ok", nil
+		}); err != nil {
+			return err
+		}
+		return controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "second-shortcut")
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withBatch() error = %v", err)
+	}
+	if want := []string{"isolate", "first-shortcut", "restore", "pointer", "isolate", "second-shortcut", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestIOSKeyboardIsolationBatchKeepsExtraKeysInIsolatedProfile(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+
+	err := controller.withBatch(context.Background(), func(batchCtx context.Context) error {
+		if err := controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "first-shortcut")
+			return nil
+		}); err != nil {
+			return err
+		}
+		if err := controller.withExtraKeys(batchCtx, func() error {
+			events = append(events, "extra-key")
+			return nil
+		}); err != nil {
+			return err
+		}
+		return controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "second-shortcut")
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withBatch() error = %v", err)
+	}
+	if want := []string{"isolate", "first-shortcut", "extra-key", "second-shortcut", "restore"}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
 }
@@ -267,6 +455,32 @@ func TestIOSKeyboardIsolationRestoresAfterCancellation(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("withKeyboard() error = %v, want context canceled", err)
+	}
+	if want := []string{"isolate", "shortcut", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestIOSKeyboardIsolationBatchRestoresAfterCancellation(t *testing.T) {
+	events := []string{}
+	controller := newCancellationSensitiveIOSKeyboardIsolationController(&events)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	err := controller.withBatch(ctx, func(batchCtx context.Context) error {
+		if err := controller.withKeyboard(batchCtx, true, func() error {
+			events = append(events, "shortcut")
+			cancel()
+			return nil
+		}); err != nil {
+			return err
+		}
+		return batchCtx.Err()
+	})
+	if errors.Is(err, errIOSKeyboardRestoreUsedCanceledContext) {
+		t.Fatalf("withBatch() restore used canceled context: %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("withBatch() error = %v, want context canceled", err)
 	}
 	if want := []string{"isolate", "shortcut", "restore"}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)

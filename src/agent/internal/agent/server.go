@@ -2821,7 +2821,13 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startedAt := time.Now()
-	execution := executeToolCall(r.Context(), ToolCallExecution{
+	executionCtx := r.Context()
+	cancelExecution := context.CancelFunc(func() {})
+	if httpToolExecutionSurvivesClientDisconnect(toolName) {
+		executionCtx, cancelExecution = detachedHTTPToolExecutionContext(r.Context())
+	}
+	defer cancelExecution()
+	execution := executeToolCall(executionCtx, ToolCallExecution{
 		Specs:  NewToolSpecs([]langtools.Tool{spec.Tool}),
 		Action: schema.AgentAction{Tool: spec.Name, ToolInput: rawInput},
 	})
@@ -2857,6 +2863,35 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+const httpToolExecutionTimeout = 5 * time.Minute
+
+func httpToolExecutionSurvivesClientDisconnect(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "keyboard_tap", "keyboard_text", "quick_action", "search_launch_app",
+		"enter_text_in_field", "enter_text_via_bridge", "mouse_click", "mouse_move",
+		"mouse_scroll", "run_script", "touch_gesture", "wheel_nudge":
+		return true
+	default:
+		return false
+	}
+}
+
+// detachedHTTPToolExecutionContext lets an accepted tool invocation finish even
+// if the client connection disappears. This matters for iOS HID operations:
+// switching USB profiles briefly disconnects the composite ECM interface, which
+// can otherwise cancel the very HTTP request that initiated the operation.
+// Keep an explicit upper bound so abandoned requests cannot run indefinitely.
+func detachedHTTPToolExecutionContext(requestCtx context.Context) (context.Context, context.CancelFunc) {
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
+	deadline := time.Now().Add(httpToolExecutionTimeout)
+	if requestDeadline, ok := requestCtx.Deadline(); ok && requestDeadline.Before(deadline) {
+		deadline = requestDeadline
+	}
+	return context.WithDeadline(context.WithoutCancel(requestCtx), deadline)
 }
 
 func (s *Server) handleToolSkills(w http.ResponseWriter, r *http.Request) {

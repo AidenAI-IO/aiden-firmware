@@ -932,7 +932,7 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		if holdMs <= 0 {
 			holdMs = defaultKeyboardTapHoldMs
 		}
-		if err := t.iosKeyboardIsolation.withExtraKeys(func() error {
+		if err := t.iosKeyboardIsolation.withExtraKeys(ctx, func() error {
 			return t.tapAndroidExtension(resolved.AndroidExtensionKey, resolved.AndroidUsage, holdMs)
 		}); err != nil {
 			code := CodeToolExecutionFailed

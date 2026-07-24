@@ -705,7 +705,28 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if err := runCtx.Err(); err != nil {
 		return RunResult{Preempted: true}, err
 	}
-	ctx = runCtx // Use preemptable context for the rest of the run.
+
+	return r.withIOSKeyboardIsolationRun(runCtx, func(isolationCtx context.Context) (RunResult, error) {
+		return r.run(isolationCtx, req)
+	})
+}
+
+func (r *Runtime) withIOSKeyboardIsolationRun(
+	ctx context.Context,
+	action func(context.Context) (RunResult, error),
+) (result RunResult, runErr error) {
+	if r == nil || r.tools == nil || r.tools.iosKeyboardIsolation == nil {
+		return action(ctx)
+	}
+	runErr = r.tools.iosKeyboardIsolation.withBatch(ctx, func(batchCtx context.Context) error {
+		result, runErr = action(batchCtx)
+		return runErr
+	})
+	return result, runErr
+}
+
+func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
+	var err error
 
 	startTime := time.Now()
 	metrics := &RunMetrics{}
@@ -986,10 +1007,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	// Set platformFn for text entry tools (bridge > config > LLM).
-	type platformConfigurable interface {
-		SetPlatformFn(func() string)
-	}
+	// Set platformFn for platform-aware tools (bridge > config > LLM).
 	platformFn := func() string {
 		if deviceEnv != nil {
 			if p := strings.TrimSpace(deviceEnv.Platform); p != "" {
@@ -998,13 +1016,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		return defaultPlatform
 	}
-	for _, name := range []string{"enter_text_in_field", "enter_text_via_bridge"} {
-		if textInputTool, ok := r.tools.Get(name); ok {
-			if tool, ok := textInputTool.(platformConfigurable); ok {
-				tool.SetPlatformFn(platformFn)
-			}
-		}
-	}
+	r.tools.SetRuntimePlatformFn(platformFn)
 
 	// setup context manager if not initialized
 	if r.contextManager == nil {
