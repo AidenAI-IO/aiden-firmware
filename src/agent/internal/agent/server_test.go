@@ -581,6 +581,9 @@ func TestServerHandleChatKeepsToolEventSpeechWithoutDuplicatePlayback(t *testing
 	if countString(texts, "Current volume is 42.") != 1 {
 		t.Fatalf("final TTS count = %d, want 1: %#v", countString(texts, "Current volume is 42."), texts)
 	}
+	if texts[0] != "Check volume." || texts[1] != "Current volume is 42." {
+		t.Fatalf("TTS playback order = %#v, want tool progress before final response", texts)
+	}
 	if outputs := server.snapshotActiveOutputs(requestID); len(outputs) != 0 {
 		t.Fatalf("active TTS outputs after streaming response = %d, want 0", len(outputs))
 	}
