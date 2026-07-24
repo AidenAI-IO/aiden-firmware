@@ -215,6 +215,9 @@ func (s *ScreenState) LatestScreenshot(maxAge time.Duration) (jpegData []byte, w
 }
 
 func (s *ScreenState) Format() string {
+	if s == nil {
+		return ""
+	}
 	width, height, active, age, ok := s.ActiveAreaWithAge()
 	state := s.MappingState()
 	phoneScreen := s.PhoneScreenInfo()
