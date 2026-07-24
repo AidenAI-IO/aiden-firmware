@@ -80,8 +80,9 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 	if result.Width != 2 || result.Height != 2 || result.Format != "jpeg" || result.Size != len(jpegData) {
 		t.Fatalf("unexpected screenshot metadata: %#v", result)
 	}
-	if result.ActiveArea != nil {
-		t.Fatalf("expected no active_area in already-cropped jpeg response, got %#v", result.ActiveArea)
+	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
+	if result.SourceWidth != 16 || result.SourceHeight != 9 || result.ActiveArea == nil || *result.ActiveArea != want || result.ActiveWidth != want.Width || result.ActiveHeight != want.Height {
+		t.Fatalf("unexpected source mapping metadata: %#v", result)
 	}
 	if result.CaptureBackend != "adb" {
 		t.Fatalf("capture backend = %q, want adb", result.CaptureBackend)
@@ -100,7 +101,6 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 	if !ok || width != 16 || height != 9 {
 		t.Fatalf("screen dimensions = %dx%d ok=%v, want 16x9 true", width, height, ok)
 	}
-	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}

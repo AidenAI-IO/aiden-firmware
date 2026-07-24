@@ -39,6 +39,7 @@ type ToolCallExecution struct {
 	Callback               callbacks.Handler
 	EnvironmentBridge      *EnvironmentBridgeClient
 	EnvironmentBridgeTools []string // Tool name globs to forward; empty forwards nothing (see shouldForwardToEnvironmentBridge)
+	ResultObserver         ToolResultObserver
 }
 
 type ToolCallExecutionResult struct {
@@ -51,6 +52,11 @@ type ToolCallExecutionResult struct {
 
 type BeforeToolCallHook func(context.Context, ToolCall) (ToolResult, bool)
 type AfterToolCallHook func(context.Context, ToolCall, ToolResult) ToolResult
+
+// ToolResultObserver receives the final normalized result for every tool
+// execution, regardless of whether it ran locally or through the environment
+// bridge. Observers may update local derived state but must not mutate results.
+type ToolResultObserver func(context.Context, ToolCall, ToolResult)
 
 type toolExecutionHookHandler interface {
 	BeforeToolCall(ctx context.Context, call ToolCall) (ToolResult, bool)
@@ -292,6 +298,9 @@ func runAfterToolCallHook(ctx context.Context, execution ToolCallExecution, call
 	}
 	if handler, ok := execution.Callback.(toolExecutionHookHandler); ok {
 		result = normalizeToolResult(handler.AfterToolCall(ctx, call, result))
+	}
+	if execution.ResultObserver != nil {
+		execution.ResultObserver(ctx, call, result)
 	}
 	return result
 }

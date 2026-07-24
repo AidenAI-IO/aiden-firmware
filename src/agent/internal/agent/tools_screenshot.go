@@ -29,6 +29,8 @@ type screenCaptureInfo struct {
 type screenshotResult struct {
 	Width          int                      `json:"width"`
 	Height         int                      `json:"height"`
+	SourceWidth    int                      `json:"source_width,omitempty"`
+	SourceHeight   int                      `json:"source_height,omitempty"`
 	ActiveArea     *screen.ScreenActiveArea `json:"active_area,omitempty"`
 	ActiveWidth    int                      `json:"active_width,omitempty"`
 	ActiveHeight   int                      `json:"active_height,omitempty"`
@@ -182,11 +184,16 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	}
 
 	result := screenshotResult{
-		Width:  displayWidth,
-		Height: displayHeight,
-		Format: "jpeg",
-		Size:   len(displayData),
-		Data:   base64.StdEncoding.EncodeToString(displayData),
+		Width:        displayWidth,
+		Height:       displayHeight,
+		SourceWidth:  sourceWidth,
+		SourceHeight: sourceHeight,
+		ActiveArea:   &active,
+		ActiveWidth:  active.Width,
+		ActiveHeight: active.Height,
+		Format:       "jpeg",
+		Size:         len(displayData),
+		Data:         base64.StdEncoding.EncodeToString(displayData),
 	}
 	applyScreenCaptureInfo(&result, captureInfo)
 	if touchscreenRCADebugEnabledCached() {

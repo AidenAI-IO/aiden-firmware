@@ -346,7 +346,6 @@ type ToolInvokeResponse struct {
 
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
-	bridge := NewPhoneBridge(runtime.logger, runtime.stateManager)
 	s := &Server{
 		runtime:             runtime,
 		addr:                addr,
@@ -355,7 +354,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		userFilesToolsDir:   "/userdata/agent_tools",
 		history:             make([]Message, 0),
 		screenCaptureClient: NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
-		bridge:              bridge,
+		bridge:              runtime.PhoneBridge(),
 		androidADB:          NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
 		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:      make(map[string]*chatPendingResult),
@@ -377,7 +376,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		})
 	}
 	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
-	runtime.tools.RegisterPhoneBridge(bridge)
+	runtime.tools.RegisterPhoneBridge(s.bridge)
 	s.loadHistoryFromDisk()
 
 	// Initialize speech clients if configured.

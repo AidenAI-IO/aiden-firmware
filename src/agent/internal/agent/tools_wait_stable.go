@@ -212,11 +212,16 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 		t.screen.UpdateScreenshot(displayData, displayWidth, displayHeight)
 	}
 	result := screenshotResult{
-		Width:  displayWidth,
-		Height: displayHeight,
-		Format: "jpeg",
-		Size:   len(displayData),
-		Data:   base64.StdEncoding.EncodeToString(displayData),
+		Width:        displayWidth,
+		Height:       displayHeight,
+		SourceWidth:  sourceWidth,
+		SourceHeight: sourceHeight,
+		ActiveArea:   &active,
+		ActiveWidth:  active.Width,
+		ActiveHeight: active.Height,
+		Format:       "jpeg",
+		Size:         len(displayData),
+		Data:         base64.StdEncoding.EncodeToString(displayData),
 	}
 	applyScreenCaptureInfo(&result, captureInfo)
 	if touchscreenRCADebugEnabledCached() {

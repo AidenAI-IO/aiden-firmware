@@ -252,14 +252,14 @@ func TestWaitStableScreenToolUsesJPEGSourceMetadataForSharedScreenState(t *testi
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("output is not valid wait screenshot JSON: %v", err)
 	}
-	if result.ActiveArea != nil {
-		t.Fatalf("expected no active_area in cropped jpeg response, got %#v", result.ActiveArea)
+	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
+	if result.SourceWidth != 16 || result.SourceHeight != 9 || result.ActiveArea == nil || *result.ActiveArea != want || result.ActiveWidth != want.Width || result.ActiveHeight != want.Height {
+		t.Fatalf("unexpected source mapping metadata: %#v", result.screenshotResult)
 	}
 	width, height, active, _, ok := screenState.ActiveAreaWithAge()
 	if !ok || width != 16 || height != 9 {
 		t.Fatalf("screen dimensions = %dx%d ok=%v, want 16x9 true", width, height, ok)
 	}
-	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
@@ -315,8 +315,9 @@ func TestWaitStableScreenToolCropsDetectedActiveAreaForModelObservation(t *testi
 	if result.Width != 4 || result.Height != 4 {
 		t.Fatalf("cropped screenshot dimensions = %dx%d, want 4x4", result.Width, result.Height)
 	}
-	if result.ActiveArea != nil || result.ActiveWidth != 0 || result.ActiveHeight != 0 {
-		t.Fatalf("expected cropped observation without active area metadata, got %#v", result.screenshotResult)
+	want := screen.ScreenActiveArea{X: 2, Y: 0, Width: 4, Height: 4, Valid: true}
+	if result.SourceWidth != 8 || result.SourceHeight != 4 || result.ActiveArea == nil || *result.ActiveArea != want || result.ActiveWidth != want.Width || result.ActiveHeight != want.Height {
+		t.Fatalf("unexpected cropped observation mapping metadata: %#v", result.screenshotResult)
 	}
 	if result.Data == base64.StdEncoding.EncodeToString(fullJPEGData) {
 		t.Fatal("expected cropped screenshot bytes, got original full-frame JPEG")
@@ -339,7 +340,6 @@ func TestWaitStableScreenToolCropsDetectedActiveAreaForModelObservation(t *testi
 	if !ok || width != 8 || height != 4 {
 		t.Fatalf("screen dimensions = %dx%d ok=%v, want 8x4 true", width, height, ok)
 	}
-	want := screen.ScreenActiveArea{X: 2, Y: 0, Width: 4, Height: 4, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
