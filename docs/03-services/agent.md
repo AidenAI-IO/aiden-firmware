@@ -6,17 +6,17 @@
 
 | Parameter | Default Value |
 | --- | --- |
-| Config | `/oem/usr/etc/agent/config.toml` |
-| Log | `/var/log/agent/agent.log` |
+| Config | `/userdata/agent/agent.toml` |
+| Log | `/userdata/agent/log/agent.log` |
 | Binary | `/oem/usr/bin/agent` |
 | Session data | `/userdata/agent/` |
 
 ## Startup
 
 ```bash
-/etc/init.d/S57agent start
-/etc/init.d/S57agent status
-/etc/init.d/S57agent restart
+/etc/init.d/S53agent start
+/etc/init.d/S53agent status
+/etc/init.d/S53agent restart
 ```
 
 ## Modes

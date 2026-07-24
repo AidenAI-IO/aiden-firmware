@@ -77,7 +77,7 @@ Runtime directory:
 └── memory/       # conversation memory persistence directory
 ```
 
-Outer init script log: `/var/log/agent/agent.log`.
+Agent init script and runtime output: `/userdata/agent/log/agent.log`.
 
 ## OTA
 

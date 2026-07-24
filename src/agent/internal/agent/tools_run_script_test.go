@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,45 @@ func TestRunScriptExecutesJSONLStepsWithoutLLM(t *testing.T) {
 	}
 	if result.Steps[1].Text != "正在打开设置" || result.Steps[1].Output != "queued" {
 		t.Fatalf("tts result = %#v, want text and queued output", result.Steps[1])
+	}
+}
+
+func TestRunScriptBatchesIOSModifierIsolationAcrossSteps(t *testing.T) {
+	skipHIDSleeps(t)
+
+	scriptsDir := t.TempDir()
+	dev, _ := newTestHIDDevice(t)
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	controller.keyboardDev = dev
+	keyboard := &KeyboardTapTool{dev: dev, iosKeyboardIsolation: controller}
+	tool := NewRunScriptTool(scriptsDir, func(name string) (langtools.Tool, bool) {
+		if name == "keyboard_tap" {
+			return keyboard, true
+		}
+		return nil, false
+	})
+	tool.iosKeyboardIsolation = controller
+
+	file := "modifier-batch.jsonl"
+	writeRunScriptTestFile(t, scriptsDir, file, strings.Join([]string{
+		`{"type":"call","tool":"keyboard_tap","input":{"keys":["meta","a"],"hold_ms":1}}`,
+		`{"type":"call","tool":"keyboard_tap","input":{"keys":["meta","c"],"hold_ms":1}}`,
+	}, "\n"))
+
+	out, err := tool.Call(context.Background(), `{"file":`+quoteJSON(file)+`}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	var result runScriptResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid result JSON: %v\n%s", err, out)
+	}
+	if !result.OK || result.StepsRun != 2 {
+		t.Fatalf("result = %#v, output=%s", result, out)
+	}
+	if want := []string{"isolate", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("profile events = %v, want %v", events, want)
 	}
 }
 

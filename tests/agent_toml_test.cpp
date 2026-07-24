@@ -59,6 +59,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.screen_stable_timeout_ms = 4500;
     cfg.screen_stable_ms = 700;
     cfg.screen_stable_diff_threshold = 2.5;
+    cfg.locale = "en-US";
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "openai/gpt-4o-mini";
@@ -207,6 +208,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.audio_archive.max_files == 42);
     CHECK(loaded.audio_archive.max_size_mb == 17);
     CHECK(loaded.audio_archive.storage_path == "/tmp/audio-archive");
+    CHECK(loaded.locale == "en-US");
 
     CHECK(loaded.hid.keyboard_device == "/dev/hidg0");
     CHECK(loaded.hid.mouse_device == "/dev/hidg1");
