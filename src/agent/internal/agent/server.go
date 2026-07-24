@@ -31,6 +31,12 @@ import (
 	_ "aiden-agent/internal/agent/tts/adapters/volcengine"
 )
 
+const (
+	agentHTTPReadHeaderTimeout = 10 * time.Second
+	agentHTTPReadTimeout       = 30 * time.Second
+	agentHTTPIdleTimeout       = 120 * time.Second
+)
+
 // Server provides HTTP API for agent interactions
 type Server struct {
 	runtime              *Runtime
@@ -66,6 +72,7 @@ type Server struct {
 	steerSignals         map[string]chan struct{}
 	steersMu             sync.Mutex
 	eventBroadcaster     *EventBroadcaster
+	storageMonitor       *StorageMonitor
 }
 
 type webAudioRecording struct {
@@ -364,6 +371,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		pendingSteers:       make(map[string]pendingSteerMessage),
 		steerSignals:        make(map[string]chan struct{}),
 		eventBroadcaster:    NewEventBroadcaster(),
+		storageMonitor:      runtime.storageMonitor,
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -422,8 +430,8 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	return s
 }
 
-// Start starts the HTTP server
-func (s *Server) Start() error {
+// Handler returns the HTTP API and web UI routes served by Server.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// API endpoints
@@ -469,6 +477,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/android-adb/status", s.handleAndroidADBStatus)
 	mux.HandleFunc("/api/android-adb/pair", s.handleAndroidADBPair)
+	mux.HandleFunc("/api/storage/monitor/status", s.handleStorageMonitorStatus)
+	mux.HandleFunc("/api/storage/cleanup", s.handleStorageCleanup)
 
 	// Coordinate debug tool and its screenshot feed. Exposes live screen data,
 	// so it is intentionally available on all listen addresses (including the
@@ -484,14 +494,23 @@ func (s *Server) Start() error {
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
+	return mux
+}
+
+// Start starts the HTTP server
+func (s *Server) Start() error {
+	handler := s.Handler()
 
 	if s.logger != nil {
 		s.logger.Info("Starting HTTP server on %s", s.addr)
 	}
 
 	srv := &http.Server{
-		Addr:    s.addr,
-		Handler: mux,
+		Addr:              s.addr,
+		Handler:           handler,
+		ReadHeaderTimeout: agentHTTPReadHeaderTimeout,
+		ReadTimeout:       agentHTTPReadTimeout,
+		IdleTimeout:       agentHTTPIdleTimeout,
 	}
 
 	errCh := make(chan error, 1)
@@ -2011,7 +2030,7 @@ func (s *Server) speakFinalTextForRequest(ctx context.Context, requestID string,
 }
 
 func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {
-	s.logger.Info("Playing prompt sound: %s, %s", kind, label)
+	s.logger.Info("Playing prompt sound: %v, %s", kind, label)
 	if s.audioClient == nil {
 		return
 	}

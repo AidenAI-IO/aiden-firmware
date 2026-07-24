@@ -432,6 +432,9 @@ func TestTurnFailureFromErrorClassifiesFinalLLMFailures(t *testing.T) {
 		{name: "dns", err: &net.DNSError{Err: "no such host", Name: "api.example.com"}, want: TurnFailureNetworkUnavailable},
 		{name: "timeout", err: context.DeadlineExceeded, want: TurnFailureNetworkUnavailable},
 		{name: "quota", err: errors.New("provider returned 402: insufficient balance"), want: TurnFailureTokenInsufficient},
+		{name: "structured payment required", err: &testProviderHTTPError{statusCode: 402}, want: TurnFailureTokenInsufficient},
+		{name: "structured quota code", err: &testProviderHTTPError{statusCode: 429, providerCode: "insufficient_quota"}, want: TurnFailureTokenInsufficient},
+		{name: "structured rate limit", err: &testProviderHTTPError{statusCode: 429, providerCode: "rate_limit_exceeded"}, want: TurnFailureNetworkUnavailable},
 		{name: "openai quota code", err: errors.New(`API error 429: {"error":{"code":"insufficient_quota"}}`), want: TurnFailureTokenInsufficient},
 		{name: "openai quota message", err: errors.New("You exceeded your current quota, please check your plan and billing details."), want: TurnFailureTokenInsufficient},
 		{name: "rate limited", err: errors.New("API error 429: rate limit exceeded"), want: TurnFailureNetworkUnavailable},
@@ -452,6 +455,15 @@ func TestTurnFailureFromErrorClassifiesFinalLLMFailures(t *testing.T) {
 		})
 	}
 }
+
+type testProviderHTTPError struct {
+	statusCode   int
+	providerCode string
+}
+
+func (e *testProviderHTTPError) Error() string             { return "opaque provider failure" }
+func (e *testProviderHTTPError) HTTPStatusCode() int       { return e.statusCode }
+func (e *testProviderHTTPError) ProviderErrorCode() string { return e.providerCode }
 
 func TestVoiceNotificationManagerDoesNotRankRecentDowngradeAsUpgrade(t *testing.T) {
 	now := time.Unix(1000, 0)
