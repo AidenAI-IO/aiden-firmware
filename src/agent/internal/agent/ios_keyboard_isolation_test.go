@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+var errIOSKeyboardRestoreUsedCanceledContext = errors.New("iOS HID restore used canceled context")
+
 func newTestIOSKeyboardIsolationController(events *[]string) *iosKeyboardIsolationController {
 	return &iosKeyboardIsolationController{
 		controlPath: "/test/control",
@@ -18,6 +20,21 @@ func newTestIOSKeyboardIsolationController(events *[]string) *iosKeyboardIsolati
 			return nil, nil
 		},
 	}
+}
+
+func newCancellationSensitiveIOSKeyboardIsolationController(events *[]string) *iosKeyboardIsolationController {
+	controller := newTestIOSKeyboardIsolationController(events)
+	controller.run = func(ctx context.Context, _ string, args ...string) ([]byte, error) {
+		*events = append(*events, args[0])
+		if args[0] == "restore" && ctx.Err() != nil {
+			return nil, errIOSKeyboardRestoreUsedCanceledContext
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	return controller
 }
 
 func TestIOSKeyboardIsolationWrapsModifierShortcut(t *testing.T) {
@@ -385,14 +402,7 @@ func TestIOSKeyboardIsolationRestoresAfterCancellation(t *testing.T) {
 
 func TestIOSKeyboardIsolationBatchRestoresAfterCancellation(t *testing.T) {
 	events := []string{}
-	controller := newTestIOSKeyboardIsolationController(&events)
-	controller.run = func(ctx context.Context, _ string, args ...string) ([]byte, error) {
-		events = append(events, args[0])
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}
+	controller := newCancellationSensitiveIOSKeyboardIsolationController(&events)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	err := controller.withBatch(ctx, func(batchCtx context.Context) error {
@@ -405,6 +415,9 @@ func TestIOSKeyboardIsolationBatchRestoresAfterCancellation(t *testing.T) {
 		}
 		return batchCtx.Err()
 	})
+	if errors.Is(err, errIOSKeyboardRestoreUsedCanceledContext) {
+		t.Fatalf("withBatch() restore used canceled context: %v", err)
+	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("withBatch() error = %v, want context canceled", err)
 	}

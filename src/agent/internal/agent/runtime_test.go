@@ -186,7 +186,7 @@ func TestRuntimeIOSKeyboardIsolationDoesNotSwitchWithoutModifier(t *testing.T) {
 
 func TestRuntimeIOSKeyboardIsolationRestoresWhenRunIsCanceled(t *testing.T) {
 	events := []string{}
-	controller := newTestIOSKeyboardIsolationController(&events)
+	controller := newCancellationSensitiveIOSKeyboardIsolationController(&events)
 	runtime := &Runtime{tools: &ToolSet{iosKeyboardIsolation: controller}}
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -200,6 +200,9 @@ func TestRuntimeIOSKeyboardIsolationRestoresWhenRunIsCanceled(t *testing.T) {
 		}
 		return RunResult{}, runCtx.Err()
 	})
+	if errors.Is(err, errIOSKeyboardRestoreUsedCanceledContext) {
+		t.Fatalf("withIOSKeyboardIsolationRun() restore used canceled context: %v", err)
+	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("withIOSKeyboardIsolationRun() error = %v, want context canceled", err)
 	}

@@ -137,8 +137,9 @@ modifier-bearing keyboard operation removes the pointer, and later keyboard or
 Consumer Control operations reuse that profile without another enumeration. A
 mouse, touch, scroll, or wheel operation restores the normal profile only when
 the pointer is currently absent. If a later keyboard operation needs a modifier,
-the run isolates again. Success, failure, cancellation, preemption, and normal
-termination all leave the scope through a context-independent final restore.
+the run isolates again. Success, failure, cancellation, preemption, panic
+cleanup, and normal termination all leave the scope through a context-independent
+final restore.
 
 Direct HTTP Tool API calls use the same rules within one invocation, but do not
 share isolation state across separate requests. A modifier-bearing HTTP call
