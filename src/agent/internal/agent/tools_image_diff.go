@@ -157,7 +157,12 @@ type imageDiffResult struct {
 // diffThreshold is the per-channel absolute difference that counts as a changed
 // pixel. JPEG compression introduces ~5-10 unit noise; 15 gives a comfortable
 // margin while still catching real content movement.
-const diffThreshold = 15
+const (
+	diffThreshold = 15
+	// imageDiffChangedRatioThreshold requires more than 1% of compared pixels
+	// to change before the screen is considered meaningfully different.
+	imageDiffChangedRatioThreshold = 0.01
+)
 
 func computeImageDiff(before, after image.Image, bounds image.Rectangle) (*imageDiffResult, error) {
 	w := bounds.Dx()
@@ -198,7 +203,7 @@ func computeImageDiff(before, after image.Image, bounds image.Rectangle) (*image
 	primaryAxis := detectPrimaryAxis(rowChanged, colChanged, changedPixels)
 
 	return &imageDiffResult{
-		Changed:     diffRatio > 0.01,
+		Changed:     diffRatio > imageDiffChangedRatioThreshold,
 		DiffRatio:   math.Round(diffRatio*1000) / 1000,
 		PrimaryAxis: primaryAxis,
 	}, nil
