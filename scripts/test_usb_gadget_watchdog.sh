@@ -26,6 +26,21 @@ grep -Fq 'reset_composite()' "$WATCHDOG" ||
 grep -Fq 'GADGET_SWITCH_LOCK_DIR=/run/aiden_dynamic_keyboard.lock' "$WATCHDOG" ||
     fail "watchdog and iOS keyboard isolation must share the gadget switch lock"
 
+grep -Fq 'PLANNED_SWITCH_GRACE_FILE=/run/aiden_dynamic_keyboard.grace' "$WATCHDOG" ||
+    fail "watchdog and iOS keyboard isolation must share the planned switch grace deadline"
+
+grep -Fq 'planned_switch_grace_active()' "$WATCHDOG" ||
+    fail "watchdog must recognize planned profile switch grace windows"
+
+grep -Fq 'planned profile switch grace active; clearing ECM failure count' "$WATCHDOG" ||
+    fail "watchdog must clear stale ECM failures during planned profile switches"
+
+grep -Fq 'ECM probe interrupted by planned profile switch; ignoring failure' "$WATCHDOG" ||
+    fail "watchdog must ignore probes interrupted by a newly started profile switch"
+
+grep -Fq 'USB composite reset deferred; planned profile switch grace is active' "$WATCHDOG" ||
+    fail "watchdog must recheck planned switch grace before automatic reset"
+
 grep -Fq 'acquire_gadget_switch_lock || return 1' "$WATCHDOG" ||
     fail "watchdog must defer resets while the iOS keyboard profile is switching"
 

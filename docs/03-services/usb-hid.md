@@ -153,7 +153,12 @@ Bridge is unavailable or backgrounded.
 
 The Luckfox board has one UDC, so isolation and restore briefly disconnect the
 complete composite, including ECM. The dynamic controller and ECM watchdog
-share `/run/aiden_dynamic_keyboard.lock` to prevent overlapping UDC resets.
+share `/run/aiden_dynamic_keyboard.lock` to prevent overlapping UDC resets. The
+controller also publishes a short post-switch grace deadline so the watchdog
+does not count the planned ECM interruption toward its stall threshold. Normal
+watchdog probes resume after the grace window and still recover persistent ECM
+failures.
+
 Inspect or exercise the profiles manually with:
 
 ```bash
