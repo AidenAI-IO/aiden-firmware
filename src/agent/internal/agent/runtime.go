@@ -20,6 +20,7 @@ import (
 	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/statemanager"
 	"aiden-agent/internal/util"
 
@@ -72,6 +73,8 @@ type Runtime struct {
 	preemptHooks       []func()
 	lastPreemptTime    time.Time
 	storage            *StorageManager
+	screenState        *screen.ScreenState
+	phoneBridge        *PhoneBridge
 	storageMonitor     *StorageMonitor
 }
 
@@ -86,7 +89,12 @@ type RunRequest struct {
 	StreamWriter      io.Writer
 	MaxTokens         int
 	EventHandler      func(RunEvent)
-	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	// OnRunActive runs after the previous run and its resources have been
+	// preempted and this run owns the runtime gate. Callers can register
+	// request-scoped output here without that output being interrupted by this
+	// run's own startup preemption.
+	OnRunActive   func(context.Context)
+	SteerProvider func(context.Context) (RunSteerMessage, bool)
 	// FinalSteerProvider is called at terminal executor boundaries. It should
 	// atomically consume one last pending steer if available; otherwise it should
 	// close the request's steer acceptance window.
@@ -349,9 +357,11 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
+	screenState := &screen.ScreenState{}
 	toolSet := NewBuiltinToolSetFromConfig(
 		cfg,
 		proxy,
+		WithScreenState(screenState),
 		WithWaitForWakeupController(waitForWakeupController),
 		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
 	)
@@ -427,6 +437,12 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	// hardware degrades to eMMC-only, so starting it is safe everywhere.
 	rt.storage = NewStorageManager(cfg.Storage, logger)
 	rt.storage.Start()
+
+	rt.screenState = screenState
+	rt.phoneBridge = NewPhoneBridge(logger)
+	rt.stateManager.RegisterUpdater(screenState)
+	rt.stateManager.RegisterUpdater(rt.phoneBridge)
+
 	return rt, nil
 }
 
@@ -434,6 +450,10 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 // built without one (NewRuntimeWithDeps).
 func (r *Runtime) Storage() *StorageManager {
 	return r.storage
+}
+
+func (r *Runtime) PhoneBridge() *PhoneBridge {
+	return r.phoneBridge
 }
 
 func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
@@ -705,8 +725,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if err := runCtx.Err(); err != nil {
 		return RunResult{Preempted: true}, err
 	}
-
 	return r.withIOSKeyboardIsolationRun(runCtx, func(isolationCtx context.Context) (RunResult, error) {
+		if req.OnRunActive != nil {
+			req.OnRunActive(isolationCtx)
+		}
 		return r.run(isolationCtx, req)
 	})
 }
@@ -1071,6 +1093,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	agentLoop.EnvironmentBridge = r.environmentBridge
 	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
+	agentLoop.ToolResultObserver = newScreenToolResultObserver(r.screenState)
 	agentLoop.SteerInterrupt = req.SteerInterrupt
 	agentLoop.SteerProvider = req.SteerProvider
 	agentLoop.SteerWaiter = req.SteerWaiter
@@ -1994,6 +2017,10 @@ type streamOutputTracker interface {
 	StreamEmitted() bool
 }
 
+type streamResponseFinisher interface {
+	FinishResponse() bool
+}
+
 func resetStreamWriterState(writer io.Writer) {
 	resetter, ok := writer.(streamStateResetter)
 	if !ok {
@@ -2008,12 +2035,29 @@ func resetStreamBuffer(writer io.Writer) {
 	}
 }
 
+func finishStreamWriterResponse(writer io.Writer) bool {
+	finisher, ok := writer.(streamResponseFinisher)
+	if !ok {
+		return false
+	}
+	return finisher.FinishResponse()
+}
+
 func streamWriterEmitted(writer io.Writer) bool {
 	tracker, ok := writer.(streamOutputTracker)
 	if !ok {
 		return true
 	}
 	return tracker.StreamEmitted()
+}
+
+func (h *runtimeCallbackHandler) FinishStreamingResponse(context.Context) {
+	finishStreamWriterResponse(h.writer)
+}
+
+func (h *runtimeCallbackHandler) AbortStreamingResponse(context.Context) {
+	resetStreamBuffer(h.writer)
+	resetStreamWriterState(h.writer)
 }
 
 func (h *runtimeCallbackHandler) recordFirstToken() {

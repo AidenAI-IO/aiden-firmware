@@ -18,5 +18,9 @@ func newServerForTest(runtime *Runtime) *Server {
 	if runtime.stateManager == nil {
 		runtime.stateManager = statemanager.NewStateManager()
 	}
+	if runtime.phoneBridge == nil {
+		runtime.phoneBridge = NewPhoneBridge(runtime.logger)
+		runtime.stateManager.RegisterUpdater(runtime.phoneBridge)
+	}
 	return NewServer(runtime, ":0")
 }

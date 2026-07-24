@@ -353,7 +353,6 @@ type ToolInvokeResponse struct {
 
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
-	bridge := NewPhoneBridge(runtime.logger, runtime.stateManager)
 	s := &Server{
 		runtime:             runtime,
 		addr:                addr,
@@ -362,7 +361,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		userFilesToolsDir:   "/userdata/agent_tools",
 		history:             make([]Message, 0),
 		screenCaptureClient: NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
-		bridge:              bridge,
+		bridge:              runtime.PhoneBridge(),
 		androidADB:          NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
 		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:      make(map[string]*chatPendingResult),
@@ -385,7 +384,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		})
 	}
 	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
-	runtime.tools.RegisterPhoneBridge(bridge)
+	runtime.tools.RegisterPhoneBridge(s.bridge)
 	s.loadHistoryFromDisk()
 
 	// Initialize speech clients if configured.
@@ -1138,6 +1137,8 @@ func (s *Server) handleChatAsync(
 			})
 		}()
 
+		var speechWriter *TTSTagStreamWriter
+
 		// Event handler pushes intermediate messages into the pending result
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
@@ -1154,7 +1155,11 @@ func (s *Server) handleChatAsync(
 				s.liveActivity.UpdateFromRunEvent(requestID, event)
 			}
 
-			if text := s.toolCallSpeechText(event); text != "" {
+			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
+			if toolSpeechStreamed && s.logger != nil {
+				s.logger.Info("Tool content TTS already streamed: tool=%s", event.ToolName)
+			}
+			if text := s.toolCallSpeechText(event); text != "" && !toolSpeechStreamed {
 				go s.speakToolContent(runCtx, text)
 			}
 		}
@@ -1187,20 +1192,26 @@ func (s *Server) handleChatAsync(
 					newStream = stream
 					output := newActiveTTSOutput(nil)
 					output.setStream(newStream)
-					unregisterStreamOutput = s.registerActiveOutput(requestID, output)
-					runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+					runReq.OnRunActive = func(context.Context) {
+						unregisterStreamOutput = s.registerActiveOutput(requestID, output)
+					}
+					speechWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+					runReq.StreamWriter = speechWriter
 				}
 			}
 		}
-		defer unregisterStreamOutput()
+		defer func() {
+			unregisterStreamOutput()
+		}()
 
 		result, err := s.runtime.Run(runCtx, runReq)
 		if newStream != nil {
+			finalSpeechStreamed := finishSpeechResponse(speechWriter)
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
 				s.logger.Error("new TTS stream failed: %v", closeErr)
 			}
-			result.SpeechStreamed = newStream.emittedSpeech(closeErr)
+			result.SpeechStreamed = finalSpeechStreamed && newStream.emittedSpeech(closeErr)
 		}
 
 		pending.mu.Lock()
@@ -1515,6 +1526,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	steerProvider, steerInterrupt := s.prepareRunSteerCallbacks(req.RequestID)
 	s.logger.Info("Creating run request")
+	var speechWriter *TTSTagStreamWriter
 	runReq := RunRequest{
 		Input:                   inputText,
 		Attachments:             turnInput.Attachments,
@@ -1535,7 +1547,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
-			if text := s.toolCallSpeechText(event); text != "" {
+			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
+			if toolSpeechStreamed && s.logger != nil {
+				s.logger.Info("Tool content TTS already streamed: tool=%s", event.ToolName)
+			}
+			if text := s.toolCallSpeechText(event); text != "" && !toolSpeechStreamed {
 				go s.speakToolContent(ctx, text)
 			}
 		},
@@ -1559,23 +1575,29 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				newStream = streamSession
 				output := newActiveTTSOutput(nil)
 				output.setStream(newStream)
-				unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
-				streamWriters = append(streamWriters, speechStreamWriterForConfig(newStream, s.runtime.config))
+				runReq.OnRunActive = func(context.Context) {
+					unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
+				}
+				speechWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+				streamWriters = append(streamWriters, speechWriter)
 			}
 		}
 	}
-	defer unregisterStreamOutput()
+	defer func() {
+		unregisterStreamOutput()
+	}()
 	s.logger.Info("Creating stream writer")
 	runReq.StreamWriter = newStreamFanoutWriter(streamWriters...)
 
 	s.logger.Info("Running runtime")
 	result, err := s.runtime.Run(ctx, runReq)
 	if newStream != nil {
+		finalSpeechStreamed := finishSpeechResponse(speechWriter)
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
 			s.logger.Error("new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = newStream.emittedSpeech(closeErr)
+		result.SpeechStreamed = finalSpeechStreamed && newStream.emittedSpeech(closeErr)
 	}
 	if err != nil {
 		canceled := errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled)
@@ -1847,6 +1869,19 @@ func (w *streamFanoutWriter) ResetBuffer() {
 			resetter.ResetBuffer()
 		}
 	}
+}
+
+func (w *streamFanoutWriter) FinishResponse() bool {
+	if w == nil {
+		return false
+	}
+	emitted := false
+	for _, writer := range w.writers {
+		if finishStreamWriterResponse(writer) {
+			emitted = true
+		}
+	}
+	return emitted
 }
 
 func (w *streamFanoutWriter) StreamEmitted() bool {

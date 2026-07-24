@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -37,7 +38,7 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 		t.Fatalf("encodeJPEG() error = %v", err)
 	}
 
-	screen := &screenState{}
+	screenState := &screen.ScreenState{}
 	client := &fakeScreenshotFrameClient{
 		meta: frameMetadata{
 			Seq:          99,
@@ -64,7 +65,7 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 	}
 	tool := &ScreenshotTool{
 		client: client,
-		screen: screen,
+		screen: screenState,
 	}
 
 	out, err := tool.Call(context.Background(), `{}`)
@@ -79,8 +80,9 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 	if result.Width != 2 || result.Height != 2 || result.Format != "jpeg" || result.Size != len(jpegData) {
 		t.Fatalf("unexpected screenshot metadata: %#v", result)
 	}
-	if result.ActiveArea != nil {
-		t.Fatalf("expected no active_area in already-cropped jpeg response, got %#v", result.ActiveArea)
+	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
+	if result.SourceWidth != 16 || result.SourceHeight != 9 || result.ActiveArea == nil || *result.ActiveArea != want || result.ActiveWidth != want.Width || result.ActiveHeight != want.Height {
+		t.Fatalf("unexpected source mapping metadata: %#v", result)
 	}
 	if result.CaptureBackend != "adb" {
 		t.Fatalf("capture backend = %q, want adb", result.CaptureBackend)
@@ -95,15 +97,14 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 		t.Fatalf("LatestFrameWithFormat call count = %d, want 1", client.calls)
 	}
 
-	width, height, active, _, ok := screen.ActiveAreaWithAge()
+	width, height, active, _, ok := screenState.ActiveAreaWithAge()
 	if !ok || width != 16 || height != 9 {
 		t.Fatalf("screen dimensions = %dx%d ok=%v, want 16x9 true", width, height, ok)
 	}
-	want := screenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
-	latest, latestWidth, latestHeight, _, ok := screen.LatestScreenshot(screenDimensionsStaleAfter)
+	latest, latestWidth, latestHeight, _, ok := screenState.LatestScreenshot(screenDimensionsStaleAfter)
 	if !ok || latestWidth != 2 || latestHeight != 2 || !bytes.Equal(latest, jpegData) {
 		t.Fatalf("latest screenshot = %dx%d bytes=%d ok=%v, want 2x2 bytes=%d true", latestWidth, latestHeight, len(latest), ok, len(jpegData))
 	}

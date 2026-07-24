@@ -38,6 +38,12 @@ func extractTTSText(output string) string {
 		remaining = remaining[start+len(ttsStartTag):]
 		end := asciiIndexFold(remaining, ttsEndTag)
 		if end < 0 {
+			// Treat the response boundary as an implicit closing tag. The model can
+			// occasionally omit </tts>; keeping the explicit opening tag as the
+			// authorization boundary avoids silently dropping that speech.
+			if text := strings.TrimSpace(trimPartialTTSEndTagSuffix(remaining)); text != "" {
+				parts = append(parts, text)
+			}
 			break
 		}
 		if text := strings.TrimSpace(remaining[:end]); text != "" {
@@ -198,7 +204,7 @@ func finalizeAssistantOutput(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
-func speechStreamWriterForConfig(target io.Writer, cfg Config) io.Writer {
+func speechStreamWriterForConfig(target io.Writer, cfg Config) *TTSTagStreamWriter {
 	if target == nil {
 		return nil
 	}
@@ -207,10 +213,19 @@ func speechStreamWriterForConfig(target io.Writer, cfg Config) io.Writer {
 }
 
 type TTSTagStreamWriter struct {
-	target  io.Writer
-	pending []byte
-	inTTS   bool
-	emitted bool
+	target                  io.Writer
+	pending                 []byte
+	inTTS                   bool
+	seenTTS                 bool
+	streamTTS               bool
+	outsideContent          bool
+	emitted                 bool
+	finishedResponseReady   bool
+	finishedResponseEmitted bool
+}
+
+type ttsStreamFlusher interface {
+	Flush() error
 }
 
 func NewTTSTagStreamWriter(target io.Writer) *TTSTagStreamWriter {
@@ -221,8 +236,20 @@ func (w *TTSTagStreamWriter) ResetStreamState() {
 	if w == nil {
 		return
 	}
+	w.resetResponseState()
+	w.finishedResponseReady = false
+	w.finishedResponseEmitted = false
+}
+
+func (w *TTSTagStreamWriter) resetResponseState() {
+	if w == nil {
+		return
+	}
 	w.pending = nil
 	w.inTTS = false
+	w.seenTTS = false
+	w.streamTTS = false
+	w.outsideContent = false
 	w.emitted = false
 }
 
@@ -240,6 +267,76 @@ func (w *TTSTagStreamWriter) StreamEmitted() bool {
 	return w != nil && w.emitted
 }
 
+// FinishResponse reports whether the just-completed LLM response streamed a
+// leading TTS block, then resets parser state so the next tool iteration or
+// final response can stream its own leading block. If the model omitted the
+// closing tag, the response boundary acts as an implicit </tts>: held trailing
+// bytes are emitted and the provider is flushed immediately.
+func (w *TTSTagStreamWriter) FinishResponse() bool {
+	if w == nil {
+		return false
+	}
+	if w.inTTS && w.streamTTS {
+		pending := trimPartialTTSEndTagSuffixBytes(w.pending)
+		for len(pending) > 0 {
+			safeLen := validUTF8PrefixLen(pending, len(pending))
+			if safeLen <= 0 {
+				if len(pending) > 0 && utf8.RuneStart(pending[0]) {
+					break
+				}
+				pending = pending[1:]
+				continue
+			}
+			if err := w.writeTTSBytes(pending[:safeLen]); err != nil {
+				w.ResetBuffer()
+				return false
+			}
+			pending = pending[safeLen:]
+		}
+		if flusher, ok := w.target.(ttsStreamFlusher); ok {
+			if err := flusher.Flush(); err != nil {
+				w.ResetBuffer()
+				return false
+			}
+		}
+	}
+	emitted := w.StreamEmitted()
+	w.resetResponseState()
+	w.finishedResponseReady = true
+	w.finishedResponseEmitted = emitted
+	return emitted
+}
+
+// ConsumeFinishedResponse reports the speech result captured at the most
+// recent LLM response boundary. The boolean result is false when no boundary
+// has been finalized since the previous consume.
+func (w *TTSTagStreamWriter) ConsumeFinishedResponse() (bool, bool) {
+	if w == nil || !w.finishedResponseReady {
+		return false, false
+	}
+	emitted := w.finishedResponseEmitted
+	w.finishedResponseReady = false
+	w.finishedResponseEmitted = false
+	return emitted, true
+}
+
+func finishSpeechResponse(writer *TTSTagStreamWriter) bool {
+	if writer == nil {
+		return false
+	}
+	if emitted, ok := writer.ConsumeFinishedResponse(); ok {
+		return emitted
+	}
+	return writer.FinishResponse()
+}
+
+func finishToolCallSpeechStream(event RunEvent, writer *TTSTagStreamWriter) bool {
+	if writer == nil || event.Type != runEventToolCall {
+		return false
+	}
+	return finishSpeechResponse(writer)
+}
+
 func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 	if w == nil || w.target == nil || len(p) == 0 {
 		return len(p), nil
@@ -249,36 +346,61 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 		if !w.inTTS {
 			idx := bytes.Index(asciiLowerBytes(w.pending), []byte(ttsStartTag))
 			if idx < 0 {
+				searchSuffixLen := len(ttsStartTag) - 1
+				if discardLen := len(w.pending) - searchSuffixLen; discardLen > 0 {
+					w.markOutsideContent(w.pending[:discardLen])
+				}
 				w.pending = keepTagSearchSuffix(w.pending, len(ttsStartTag)-1)
 				return len(p), nil
 			}
+			w.markOutsideContent(w.pending[:idx])
 			w.pending = w.pending[idx+len(ttsStartTag):]
 			w.inTTS = true
+			// Only the first leading TTS block in an LLM response is streamed.
+			// Tool-call completion resets this response-level state before the next
+			// iteration and suppresses duplicate playback from the tool event.
+			w.streamTTS = !w.outsideContent && !w.seenTTS
+			w.seenTTS = true
 			continue
 		}
 
 		idx := bytes.Index(asciiLowerBytes(w.pending), []byte(ttsEndTag))
 		if idx >= 0 {
-			// Find the longest valid UTF-8 prefix before the end tag
-			skipBytes := 0
-			for idx > skipBytes {
-				safeIdx := validUTF8PrefixLen(w.pending[skipBytes:], idx-skipBytes)
-				if safeIdx > 0 {
-					if err := w.writeTTSBytes(w.pending[skipBytes : skipBytes+safeIdx]); err != nil {
-						return 0, err
+			if w.streamTTS {
+				// Find the longest valid UTF-8 prefix before the end tag.
+				skipBytes := 0
+				for idx > skipBytes {
+					safeIdx := validUTF8PrefixLen(w.pending[skipBytes:], idx-skipBytes)
+					if safeIdx > 0 {
+						if err := w.writeTTSBytes(w.pending[skipBytes : skipBytes+safeIdx]); err != nil {
+							return 0, err
+						}
+						break
 					}
-					break
+					// Skip this invalid leading byte.
+					skipBytes++
 				}
-				// Skip this invalid leading byte
-				skipBytes++
 			}
 			w.pending = w.pending[idx+len(ttsEndTag):]
 			w.inTTS = false
+			if w.streamTTS {
+				if flusher, ok := w.target.(ttsStreamFlusher); ok {
+					if err := flusher.Flush(); err != nil {
+						return 0, err
+					}
+				}
+			}
+			w.streamTTS = false
+			w.outsideContent = false
 			continue
 		}
 
 		safeLen := len(w.pending) - (len(ttsEndTag) - 1)
 		if safeLen <= 0 {
+			return len(p), nil
+		}
+		if !w.streamTTS {
+			w.pending = append(w.pending[:0], w.pending[safeLen:]...)
 			return len(p), nil
 		}
 		safeLen = validUTF8PrefixLen(w.pending, safeLen)
@@ -299,6 +421,21 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	return len(p), nil
+}
+
+func (w *TTSTagStreamWriter) markOutsideContent(p []byte) {
+	if w.outsideContent {
+		return
+	}
+	for _, b := range p {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		default:
+			w.outsideContent = true
+			return
+		}
+	}
 }
 
 func validUTF8PrefixLen(buf []byte, n int) int {
@@ -373,6 +510,32 @@ func keepTagSearchSuffix(buf []byte, max int) []byte {
 		return buf
 	}
 	return append(buf[:0], buf[len(buf)-max:]...)
+}
+
+func trimPartialTTSEndTagSuffix(text string) string {
+	trimmed := trimPartialTTSEndTagSuffixBytes([]byte(text))
+	return string(trimmed)
+}
+
+func trimPartialTTSEndTagSuffixBytes(buf []byte) []byte {
+	maxLen := len(ttsEndTag) - 1
+	if len(buf) < maxLen {
+		maxLen = len(buf)
+	}
+	for suffixLen := maxLen; suffixLen > 0; suffixLen-- {
+		start := len(buf) - suffixLen
+		matched := true
+		for i := 0; i < suffixLen; i++ {
+			if asciiLowerByte(buf[start+i]) != asciiLowerByte(ttsEndTag[i]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return buf[:start]
+		}
+	}
+	return buf
 }
 
 func asciiIndexFold(s, substr string) int {

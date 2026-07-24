@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,7 +23,7 @@ const (
 // wheelNudgeGuard is a run-scoped tool execution policy. It validates wheel
 // progress before execution and commits usage only after a successful result.
 type wheelNudgeGuard struct {
-	screen                      *screenState
+	screen                      *screen.ScreenState
 	initialScreenshotGeneration uint64
 	total                       int
 	columns                     []wheelNudgeColumnUsage
@@ -64,7 +65,7 @@ type wheelNudgeObservation struct {
 	cycleStart  int
 }
 
-func newWheelNudgeGuard(screen *screenState) *wheelNudgeGuard {
+func newWheelNudgeGuard(screen *screen.ScreenState) *wheelNudgeGuard {
 	return &wheelNudgeGuard{screen: screen, initialScreenshotGeneration: screen.ScreenshotGeneration()}
 }
 

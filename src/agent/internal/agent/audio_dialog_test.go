@@ -673,6 +673,74 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	}
 }
 
+func TestAudioDialogKeepsToolEventSpeechWithoutDuplicatePlayback(t *testing.T) {
+	toolSpeech := true
+	toolContent := "Checking volume.\n<tts>Check volume.</tts>"
+	finalContent := "<tts>Current volume is 42.</tts>\nCurrent volume is 42."
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, toolContent),
+			contentResponse(finalContent),
+		},
+		streamChunks: [][]string{
+			{toolContent},
+			{finalContent},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Use tools when external state is requested.",
+			VoiceStreamingTTSEnabled: boolPtr(true),
+			VoiceToolCallSpeech:      &toolSpeech,
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": &stubTool{
+				name:        "audio_volume",
+				description: "Get the current audio playback volume.",
+				output:      `{"volume":42}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+	provider := &flushRecordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 16000},
+			InputMode:                "stt",
+			VoiceStreamingTTSEnabled: boolPtr(true),
+			VoiceToolCallSpeech:      &toolSpeech,
+		},
+		sttClient:    &stubSTTClient{transcript: "check volume"},
+		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+
+	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
+		t.Fatalf("ProcessUtterance() error = %v", err)
+	}
+	waitForFlushProviderTextCount(t, provider, 2)
+	time.Sleep(100 * time.Millisecond)
+
+	texts := provider.texts()
+	if len(texts) != 2 {
+		t.Fatalf("tool-event and final TTS should each play once, got %#v", texts)
+	}
+	if countString(texts, "Check volume.") != 1 {
+		t.Fatalf("tool TTS count = %d, want 1: %#v", countString(texts, "Check volume."), texts)
+	}
+	if countString(texts, "Current volume is 42.") != 1 {
+		t.Fatalf("final TTS count = %d, want 1: %#v", countString(texts, "Current volume is 42."), texts)
+	}
+	if texts[0] != "Check volume." || texts[1] != "Current volume is 42." {
+		t.Fatalf("TTS playback order = %#v, want tool progress before final response", texts)
+	}
+}
+
 func TestAudioDialogDoesNotSpeakWaitForWakeupToolContent(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
@@ -794,7 +862,11 @@ func TestAudioDialogStreamingSpeechErrorDoesNotHideWaitForWakeupRequest(t *testi
 }
 
 func TestAudioDialogCountsPartialStreamingPlaybackAsStreamedWhenCloseFails(t *testing.T) {
-	model := &scriptedModel{responses: roleDirectResponses("Partial spoken reply.")}
+	output := "<tts>Partial spoken reply.</tts>\nPartial spoken reply."
+	model := &scriptedModel{
+		responses:    roleDirectResponses(output),
+		streamChunks: [][]string{{output}},
+	}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: model},
@@ -1714,6 +1786,18 @@ func waitForProviderTextCount(t *testing.T, provider *recordingTTSProvider, coun
 	}
 }
 
+func waitForFlushProviderTextCount(t *testing.T, provider *flushRecordingTTSProvider, count int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		got := len(provider.texts())
+		if got >= count {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func assertNoProviderTextWithin(t *testing.T, provider *recordingTTSProvider, duration time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(duration)
@@ -1733,6 +1817,16 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func countString(values []string, want string) int {
+	count := 0
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+	return count
 }
 
 func serveDelayedStartRecording(t *testing.T, socketPath string, ready chan<- struct{}) {

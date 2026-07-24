@@ -140,6 +140,28 @@ func TestProviderHolderTrackedSessionAbortReleasesActiveSession(t *testing.T) {
 	}
 }
 
+func TestProviderHolderTrackedSessionForwardsResetBuffer(t *testing.T) {
+	provider := &blockingProvider{name: "current", started: make(chan *blockingSession, 1)}
+	holder := NewProviderHolder(provider)
+
+	session, err := holder.BeginStream(context.Background(), noopSink{})
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+	started := waitForBlockingSession(t, provider.started)
+	resetter, ok := session.(interface{ ResetBuffer() })
+	if !ok {
+		t.Fatal("tracked session does not expose ResetBuffer")
+	}
+	resetter.ResetBuffer()
+	if started.resetCalls != 1 {
+		t.Fatalf("underlying ResetBuffer() calls = %d, want 1", started.resetCalls)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func waitForBlockingSession(t *testing.T, ch <-chan *blockingSession) *blockingSession {
 	t.Helper()
 	select {
@@ -177,6 +199,7 @@ func (p *blockingProvider) Close() error {
 type blockingSession struct {
 	closeCalls int
 	abortCalls int
+	resetCalls int
 }
 
 func (s *blockingSession) WriteText(string) error { return nil }
@@ -189,7 +212,8 @@ func (s *blockingSession) Abort() error {
 	s.abortCalls++
 	return nil
 }
-func (s *blockingSession) Err() error { return nil }
+func (s *blockingSession) ResetBuffer() { s.resetCalls++ }
+func (s *blockingSession) Err() error   { return nil }
 
 type noopSink struct{}
 

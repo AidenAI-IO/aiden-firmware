@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"fmt"
 	"strings"
@@ -36,7 +37,7 @@ func TestWheelGestureGuardCommitsOnlySuccessfulToolCalls(t *testing.T) {
 }
 
 func TestWheelGestureGuardRequiresScreenshotFromCurrentRun(t *testing.T) {
-	screen := &screenState{}
+	screen := &screen.ScreenState{}
 	screen.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 500, 1000), 500, 1000)
 	guard := newWheelNudgeGuard(screen)
 	call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, 0, 20, 0, 0, "normalized"))
@@ -191,10 +192,10 @@ func TestWheelGestureGuardLocksFinalTargetPerColumn(t *testing.T) {
 }
 
 func TestWheelGestureGuardMatchesScreenshotWheelWithNormalizedTouch(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
-	guard := newWheelNudgeGuard(screen)
-	screen.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
+	guard := newWheelNudgeGuard(screenState)
+	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
 	wheel := wheelNudgeGuardCall(validWheelGuardInput(304, 289, 48, 5, 60, 0, "screenshot"))
 	if result, allowed := guard.BeforeToolCall(context.Background(), wheel); !allowed || result.Error != nil {
 		t.Fatalf("wheel call unexpectedly blocked: allowed=%v result=%#v", allowed, result)
@@ -211,10 +212,10 @@ func TestWheelGestureGuardMatchesScreenshotWheelWithNormalizedTouch(t *testing.T
 }
 
 func TestWheelGestureGuardClearsColumnsAfterSuccessfulNavigationTap(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
-	guard := newWheelNudgeGuard(screen)
-	screen.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
+	guard := newWheelNudgeGuard(screenState)
+	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
 	wheel := wheelNudgeGuardCall(validWheelGuardInput(314, 289, 48, 5, 60, 0, "screenshot"))
 	if result, allowed := guard.BeforeToolCall(context.Background(), wheel); !allowed || result.Error != nil {
 		t.Fatalf("wheel call unexpectedly blocked: allowed=%v result=%#v", allowed, result)
@@ -626,10 +627,10 @@ func TestWheelGestureGuardBlocksTouchGestureOnActiveWheelColumn(t *testing.T) {
 }
 
 func TestWheelGestureGuardBlocksDirectionalSwipeWhilePickerIsActive(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
-	guard := newWheelNudgeGuard(screen)
-	screen.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
+	guard := newWheelNudgeGuard(screenState)
+	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
 	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(304, 289, 48, 5, 60, 0, "screenshot")))
 
 	swipe := ToolCall{
@@ -658,10 +659,10 @@ func TestWheelGestureGuardBlocksDirectionalSwipeWithExplicitWheelPoints(t *testi
 }
 
 func TestWheelGestureGuardAllowsDirectionalSwipeOutsidePickerColumns(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
-	guard := newWheelNudgeGuard(screen)
-	screen.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
+	guard := newWheelNudgeGuard(screenState)
+	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
 	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(304, 289, 48, 5, 60, 0, "screenshot")))
 
 	swipe := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: `{"type":"swipe_up","strength":"small","anchor":150}`}
@@ -671,10 +672,10 @@ func TestWheelGestureGuardAllowsDirectionalSwipeOutsidePickerColumns(t *testing.
 }
 
 func TestWheelGestureGuardBlocksMouseClickAcrossCoordinateSpaces(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
-	guard := newWheelNudgeGuard(screen)
-	screen.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
+	guard := newWheelNudgeGuard(screenState)
+	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
 	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(304, 289, 48, 5, 60, 0, "screenshot")))
 
 	click := ToolCall{
@@ -711,10 +712,10 @@ func TestWheelGestureGuardBlocksMouseClickOnExhaustedColumnWithoutRetry(t *testi
 }
 
 func TestWheelGestureGuardBlocksPixelTouchAcrossCoordinateSpaces(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
-	guard := newWheelNudgeGuard(screen)
-	screen.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
+	guard := newWheelNudgeGuard(screenState)
+	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
 	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(304, 289, 48, 5, 60, 0, "screenshot")))
 
 	tap := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: `{"type":"tap","coord_space":"pixel","point":{"x":304,"y":513}}`}

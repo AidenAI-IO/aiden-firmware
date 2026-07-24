@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -37,7 +38,7 @@ type adbInputScreenSize struct {
 
 // ADBInputController sends Android input events through adb shell input.
 type ADBInputController struct {
-	screen *screenState
+	screen *screen.ScreenState
 	client *ADBScreenClient
 	runADB adbCommandRunner
 
@@ -46,7 +47,7 @@ type ADBInputController struct {
 	screenSizeExpires time.Time
 }
 
-func NewADBInputController(screen *screenState) *ADBInputController {
+func NewADBInputController(screen *screen.ScreenState) *ADBInputController {
 	return &ADBInputController{
 		screen: screen,
 		client: NewADBScreenClient(),

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"bytes"
 	"encoding/base64"
 	"fmt"
@@ -17,11 +18,11 @@ type coordinateDebugScreenshotOptions struct {
 
 type coordinateDebugScreenshotResult struct {
 	screenshotResult
-	SourceWidth                int               `json:"source_width"`
-	SourceHeight               int               `json:"source_height"`
-	SourceActiveArea           *screenActiveArea `json:"source_active_area,omitempty"`
-	OriginalScreenWidthPixels  *int              `json:"original_screen_width_pixels,omitempty"`
-	OriginalScreenHeightPixels *int              `json:"original_screen_height_pixels,omitempty"`
+	SourceWidth                int                      `json:"source_width"`
+	SourceHeight               int                      `json:"source_height"`
+	SourceActiveArea           *screen.ScreenActiveArea `json:"source_active_area,omitempty"`
+	OriginalScreenWidthPixels  *int                     `json:"original_screen_width_pixels,omitempty"`
+	OriginalScreenHeightPixels *int                     `json:"original_screen_height_pixels,omitempty"`
 }
 
 func parseCoordinateDebugScreenshotOptions(r *http.Request) coordinateDebugScreenshotOptions {
@@ -40,7 +41,7 @@ func parseCoordinateDebugScreenshotOptions(r *http.Request) coordinateDebugScree
 	return options
 }
 
-func (s *Server) coordinateDebugScreen() *screenState {
+func (s *Server) coordinateDebugScreen() *screen.ScreenState {
 	if s == nil || s.runtime == nil || s.runtime.tools == nil {
 		return nil
 	}
@@ -59,7 +60,7 @@ func (s *Server) coordinateDebugOriginalScreenSize() (*int, *int) {
 	return &width, &height
 }
 
-func (s *Server) newCoordinateDebugScreenshotResult(display screenshotResult, sourceWidth, sourceHeight int, sourceActive *screenActiveArea) *coordinateDebugScreenshotResult {
+func (s *Server) newCoordinateDebugScreenshotResult(display screenshotResult, sourceWidth, sourceHeight int, sourceActive *screen.ScreenActiveArea) *coordinateDebugScreenshotResult {
 	if sourceWidth <= 0 {
 		sourceWidth = display.Width
 	}
@@ -81,7 +82,7 @@ func (s *Server) newCoordinateDebugScreenshotResult(display screenshotResult, so
 func (s *Server) coordinateDebugScreenshotResultFromScreenState(display screenshotResult) *coordinateDebugScreenshotResult {
 	sourceWidth := display.Width
 	sourceHeight := display.Height
-	var sourceActive *screenActiveArea
+	var sourceActive *screen.ScreenActiveArea
 	screen := s.coordinateDebugScreen()
 	if screen != nil {
 		if width, height, active, age, ok := screen.ActiveAreaWithAge(); ok && age < screenDimensionsStaleAfter {
@@ -96,22 +97,22 @@ func (s *Server) coordinateDebugScreenshotResultFromScreenState(display screensh
 	return s.newCoordinateDebugScreenshotResult(display, sourceWidth, sourceHeight, sourceActive)
 }
 
-func coordinateDebugScreenshotMatchesMapping(display screenshotResult, state screenMappingState) bool {
-	if state.width <= 0 || state.height <= 0 {
+func coordinateDebugScreenshotMatchesMapping(display screenshotResult, state screen.ScreenMappingState) bool {
+	if state.Width <= 0 || state.Height <= 0 {
 		return false
 	}
-	active := state.active
+	active := state.Active
 	if !active.Valid {
-		active = screenActiveArea{
+		active = screen.ScreenActiveArea{
 			X:      0,
 			Y:      0,
-			Width:  state.width,
-			Height: state.height,
+			Width:  state.Width,
+			Height: state.Height,
 			Valid:  true,
 		}
 	}
 	if active.X < 0 || active.Y < 0 || active.Width <= 0 || active.Height <= 0 ||
-		active.X+active.Width > state.width || active.Y+active.Height > state.height {
+		active.X+active.Width > state.Width || active.Y+active.Height > state.Height {
 		return false
 	}
 	return display.Width == active.Width && display.Height == active.Height
@@ -127,7 +128,7 @@ func coordinateDebugDisplayScreenshot(jpegData []byte, width, height int) screen
 	}
 }
 
-func coordinateDebugSourceActiveArea(active screenActiveArea, sourceWidth, sourceHeight int) *screenActiveArea {
+func coordinateDebugSourceActiveArea(active screen.ScreenActiveArea, sourceWidth, sourceHeight int) *screen.ScreenActiveArea {
 	if !active.Valid {
 		return nil
 	}
@@ -193,15 +194,15 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	}
 	sourceWidth := int(meta.Width)
 	sourceHeight := int(meta.Height)
-	screen := s.coordinateDebugScreen()
-	sourceActive := detectScreenshotActiveAreaForScreen(screen, rawJPEGData, sourceWidth, sourceHeight)
-	if screen != nil {
-		screen.UpdateActiveArea(sourceWidth, sourceHeight, sourceActive)
+	currentScreen := s.coordinateDebugScreen()
+	sourceActive := detectScreenshotActiveAreaForScreen(currentScreen, rawJPEGData, sourceWidth, sourceHeight)
+	if currentScreen != nil {
+		currentScreen.UpdateActiveArea(sourceWidth, sourceHeight, sourceActive)
 	}
 	displayJPEGData := rawJPEGData
 	displayWidth := sourceWidth
 	displayHeight := sourceHeight
-	var displayActiveArea *screenActiveArea
+	var displayActiveArea *screen.ScreenActiveArea
 
 	if options.CropBlackBars && sourceActive.Valid {
 		croppedJPEGData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(rawJPEGData, sourceActive, screenshotJPEGQuality)
@@ -230,7 +231,7 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	return result, displayJPEGData, nil
 }
 
-func preferredPhoneScreenPixels(screen PhoneScreenInfo) (int, int, bool) {
+func preferredPhoneScreenPixels(screen screen.PhoneScreenInfo) (int, int, bool) {
 	if screen.NativeWidthPixels != nil && screen.NativeHeightPixels != nil &&
 		*screen.NativeWidthPixels > 0 && *screen.NativeHeightPixels > 0 {
 		return *screen.NativeWidthPixels, *screen.NativeHeightPixels, true
@@ -250,7 +251,7 @@ func (s *Server) captureCoordinateDebugScreenshotResult(options coordinateDebugS
 	return result, nil
 }
 
-func cropJPEGToActiveArea(jpegData []byte, active screenActiveArea, quality int) ([]byte, int, int, error) {
+func cropJPEGToActiveArea(jpegData []byte, active screen.ScreenActiveArea, quality int) ([]byte, int, int, error) {
 	img, err := jpeg.Decode(bytes.NewReader(jpegData))
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("decode jpeg for crop: %w", err)
