@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/screen"
 )
 
 func testPromptProfile(cfg AgentConfig) RoleProfile {
@@ -394,7 +395,7 @@ func TestPhoneBridgeRuntimeContextIncludesPhoneEnvironment(t *testing.T) {
 			Brand:           "Apple",
 			Model:           "iPhone16,2",
 			DeviceName:      "User device",
-			Screen:          PhoneScreenInfo{WidthPixels: testIntPtr(1179), HeightPixels: testIntPtr(2556), Scale: testFloatPtr(3)},
+			Screen:          screen.PhoneScreenInfo{WidthPixels: testIntPtr(1179), HeightPixels: testIntPtr(2556), Scale: testFloatPtr(3)},
 			Battery:         PhoneBatteryInfo{Level: testFloatPtr(0.87), Charging: testBoolPtr(true), State: "charging"},
 			SystemApps:      []AvailableAppInfo{{Name: "Camera", Available: true}, {Name: "Contacts", Available: true}},
 			ThirdPartyApps:  []AvailableAppInfo{{Name: "WeChat", Available: true}, {Name: "Douyin", Available: false}, {Name: "Alipay", Available: true}},

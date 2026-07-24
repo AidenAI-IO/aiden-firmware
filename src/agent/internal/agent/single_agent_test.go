@@ -113,7 +113,7 @@ func TestSingleAgentDoesNotRunDefaultFinalVerifierReview(t *testing.T) {
 
 func TestSingleAgentUsesUIFallbackAfterDisconnectedOpenApp(t *testing.T) {
 	model := &disconnectedOpenAppFallbackModel{}
-	bridge := NewPhoneBridge(nil, nil)
+	bridge := NewPhoneBridge(nil)
 	bridge.mu.Lock()
 	bridge.platform = "ios"
 	bridge.appState = "background"

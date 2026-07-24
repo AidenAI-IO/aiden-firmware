@@ -20,6 +20,7 @@ import (
 	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/statemanager"
 	"aiden-agent/internal/util"
 
@@ -72,6 +73,8 @@ type Runtime struct {
 	preemptHooks       []func()
 	lastPreemptTime    time.Time
 	storage            *StorageManager
+	screenState        *screen.ScreenState
+	phoneBridge        *PhoneBridge
 	storageMonitor     *StorageMonitor
 }
 
@@ -349,9 +352,11 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
+	screenState := &screen.ScreenState{}
 	toolSet := NewBuiltinToolSetFromConfig(
 		cfg,
 		proxy,
+		WithScreenState(screenState),
 		WithWaitForWakeupController(waitForWakeupController),
 		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
 	)
@@ -427,6 +432,12 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	// hardware degrades to eMMC-only, so starting it is safe everywhere.
 	rt.storage = NewStorageManager(cfg.Storage, logger)
 	rt.storage.Start()
+
+	rt.screenState = screenState
+	rt.phoneBridge = NewPhoneBridge(logger)
+	rt.stateManager.RegisterUpdater(screenState)
+	rt.stateManager.RegisterUpdater(rt.phoneBridge)
+
 	return rt, nil
 }
 
@@ -434,6 +445,10 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 // built without one (NewRuntimeWithDeps).
 func (r *Runtime) Storage() *StorageManager {
 	return r.storage
+}
+
+func (r *Runtime) PhoneBridge() *PhoneBridge {
+	return r.phoneBridge
 }
 
 func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
@@ -1071,6 +1086,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	agentLoop.EnvironmentBridge = r.environmentBridge
 	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
+	agentLoop.ToolResultObserver = newScreenToolResultObserver(r.screenState)
 	agentLoop.SteerInterrupt = req.SteerInterrupt
 	agentLoop.SteerProvider = req.SteerProvider
 	agentLoop.SteerWaiter = req.SteerWaiter

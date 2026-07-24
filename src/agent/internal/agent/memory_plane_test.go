@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/base64"
 	"os"
@@ -645,7 +646,7 @@ func TestRuntimeRetrieveUsesAutomaticScreenHints(t *testing.T) {
 		}
 	}
 
-	screen := &screenState{}
+	screen := &screen.ScreenState{}
 	screen.Update(640, 1200)
 	model := &scriptedModel{responses: roleDirectResponses("done")}
 	runtime := NewRuntimeWithDeps(

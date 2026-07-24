@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/screen"
 	"path/filepath"
 	"sort"
 	"time"
@@ -12,7 +13,7 @@ import (
 // ToolSet is a fixed collection of built-in tools, keyed by name.
 type ToolSet struct {
 	tools                map[string]langtools.Tool
-	screen               *screenState
+	screen               *screen.ScreenState
 	phoneBridge          *PhoneBridge
 	phoneBridgeRestorer  *PhoneBridgeRestorer
 	textInputHW          *textInputHardwareDeps
@@ -31,6 +32,7 @@ type builtinToolSetOptions struct {
 	waitForWakeupController *WaitForWakeupController
 	screenStable            ScreenStableDefaults
 	scriptsDir              string
+	screenState             *screen.ScreenState
 }
 
 func WithWaitForWakeupController(controller *WaitForWakeupController) BuiltinToolSetOption {
@@ -48,6 +50,15 @@ func WithScreenStableDefaults(defaults ScreenStableDefaults) BuiltinToolSetOptio
 func WithRunScriptScriptsDir(dir string) BuiltinToolSetOption {
 	return func(options *builtinToolSetOptions) {
 		options.scriptsDir = dir
+	}
+}
+
+// WithScreenState makes the tools publish visual observations to a shared
+// ScreenState. When omitted, a private state is created for backwards
+// compatibility with callers that only need the tool set itself.
+func WithScreenState(state *screen.ScreenState) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.screenState = state
 	}
 }
 
@@ -97,7 +108,10 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 
 	kbDev := NewHIDDevice(hidCfg.KeyboardDeviceOrDefault())
 	androidKbDev := NewHIDDevice(hidCfg.AndroidKeyboardDeviceOrDefault())
-	screen := &screenState{}
+	screen := toolOptions.screenState
+	if screen == nil {
+		screen = newToolScreenState()
+	}
 	pointer := newPointerController(hidCfg)
 	iosKeyboardIsolation := newIOSKeyboardIsolationController(hidCfg, kbDev, pointer.dev, androidKbDev)
 	pointer.iosKeyboardIsolation = iosKeyboardIsolation
@@ -177,6 +191,10 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	}
 	touchGesture.primeScreenMapping = toolSet.PrimeScreenMapping
 	return toolSet
+}
+
+func newToolScreenState() *screen.ScreenState {
+	return &screen.ScreenState{}
 }
 
 func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn func() string) {

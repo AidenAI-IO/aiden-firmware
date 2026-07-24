@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"errors"
 	"testing"
@@ -17,7 +18,7 @@ func TestToolSetPrimeScreenMappingCapturesScreenshotMetadata(t *testing.T) {
 		t.Fatalf("encodeJPEG() error = %v", err)
 	}
 
-	screen := &screenState{}
+	currentScreen := &screen.ScreenState{}
 	client := &fakeScreenshotFrameClient{
 		meta: frameMetadata{
 			Seq:          42,
@@ -36,9 +37,9 @@ func TestToolSetPrimeScreenMappingCapturesScreenshotMetadata(t *testing.T) {
 	}
 	tools := &ToolSet{
 		tools: map[string]langtools.Tool{
-			"screenshot": &ScreenshotTool{client: client, screen: screen},
+			"screenshot": &ScreenshotTool{client: client, screen: currentScreen},
 		},
-		screen: screen,
+		screen: currentScreen,
 	}
 
 	if err := tools.PrimeScreenMapping(context.Background()); err != nil {
@@ -47,14 +48,14 @@ func TestToolSetPrimeScreenMappingCapturesScreenshotMetadata(t *testing.T) {
 	if client.calls != 1 {
 		t.Fatalf("LatestFrameWithFormat calls = %d, want 1", client.calls)
 	}
-	width, height, active, _, ok := screen.ActiveAreaWithAge()
+	width, height, active, _, ok := currentScreen.ActiveAreaWithAge()
 	if !ok {
 		t.Fatal("screen mapping was not established")
 	}
 	if width != 1920 || height != 1080 {
 		t.Fatalf("source dimensions = %dx%d, want 1920x1080", width, height)
 	}
-	wantActive := screenActiveArea{X: 711, Y: 0, Width: 497, Height: 1080, Valid: true}
+	wantActive := screen.ScreenActiveArea{X: 711, Y: 0, Width: 497, Height: 1080, Valid: true}
 	if active != wantActive {
 		t.Fatalf("active area = %+v, want %+v", active, wantActive)
 	}
@@ -69,7 +70,7 @@ func TestToolSetPrimeScreenMappingTreatsFullFrameFallbackAsFresh(t *testing.T) {
 		t.Fatalf("encodeJPEG() error = %v", err)
 	}
 
-	screen := &screenState{}
+	currentScreen := &screen.ScreenState{}
 	client := &fakeScreenshotFrameClient{
 		meta: frameMetadata{
 			Seq:         43,
@@ -82,44 +83,44 @@ func TestToolSetPrimeScreenMappingTreatsFullFrameFallbackAsFresh(t *testing.T) {
 	}
 	tools := &ToolSet{
 		tools: map[string]langtools.Tool{
-			"screenshot": &ScreenshotTool{client: client, screen: screen},
+			"screenshot": &ScreenshotTool{client: client, screen: currentScreen},
 		},
-		screen: screen,
+		screen: currentScreen,
 	}
 
 	if err := tools.PrimeScreenMapping(context.Background()); err != nil {
 		t.Fatalf("PrimeScreenMapping() error = %v", err)
 	}
-	width, height, active, _, ok := screen.ActiveAreaWithAge()
+	width, height, active, _, ok := currentScreen.ActiveAreaWithAge()
 	if !ok {
 		t.Fatal("screen mapping was not established")
 	}
 	if width != 2 || height != 2 {
 		t.Fatalf("source dimensions = %dx%d, want 2x2", width, height)
 	}
-	wantActive := screenActiveArea{X: 0, Y: 0, Width: 2, Height: 2, Valid: true}
+	wantActive := screen.ScreenActiveArea{X: 0, Y: 0, Width: 2, Height: 2, Valid: true}
 	if active != wantActive {
 		t.Fatalf("active area = %+v, want %+v", active, wantActive)
 	}
-	if !screen.FreshActiveArea(screenDimensionsStaleAfter) {
+	if !currentScreen.FreshActiveArea(screenDimensionsStaleAfter) {
 		t.Fatal("expected full-frame fallback mapping to be fresh after successful prime")
 	}
 }
 
 func TestToolSetPrimeScreenMappingFailureKeepsFreshFullFrameFallback(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{})
+	currentScreen := &screen.ScreenState{}
+	currentScreen.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{})
 	tools := &ToolSet{
 		tools: map[string]langtools.Tool{
 			"screenshot": failingPrimeScreenshotTool{},
 		},
-		screen: screen,
+		screen: currentScreen,
 	}
 
 	if err := tools.PrimeScreenMapping(context.Background()); err == nil {
 		t.Fatal("expected PrimeScreenMapping() error")
 	}
-	if !screen.FreshActiveArea(screenDimensionsStaleAfter) {
+	if !currentScreen.FreshActiveArea(screenDimensionsStaleAfter) {
 		t.Fatal("expected fresh full-frame fallback mapping after capture failure")
 	}
 }

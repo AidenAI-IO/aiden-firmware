@@ -10,6 +10,17 @@ import (
 	"time"
 )
 
+func newPhoneBridgeWithStateManager(stateManager *statemanager.StateManager) *PhoneBridge {
+	bridge := NewPhoneBridge(nil)
+	stateManager.RegisterUpdater(bridge)
+	return bridge
+}
+
+func currentPhoneBridgeState(stateManager *statemanager.StateManager, key string) string {
+	stateManager.GetAllStates()
+	return stateManager.GetState(key)
+}
+
 // TestHTTPEnqueueCommand tests POST /api/phone-bridge/commands
 func TestHTTPEnqueueCommand(t *testing.T) {
 	bridge := newPhoneBridgeForTest()
@@ -217,7 +228,7 @@ func TestHTTPPollCommands(t *testing.T) {
 
 func TestHTTPPollCommandsRecordsAndroidFGSBridgeState(t *testing.T) {
 	stateManager := statemanager.NewStateManager()
-	bridge := NewPhoneBridge(nil, stateManager)
+	bridge := newPhoneBridgeWithStateManager(stateManager)
 	defer bridge.queue.Stop()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/commands?platform=android&phone_id=android-abc&app_state=background&fgs_bridge_enabled=true", nil)
@@ -244,18 +255,18 @@ func TestHTTPPollCommandsRecordsAndroidFGSBridgeState(t *testing.T) {
 	if status.FgsBridgeUpdatedAt == nil {
 		t.Fatal("fgs_bridge_updated_at is nil")
 	}
-	strategy := stateManager.GetState("app_text_entry_strategy")
+	strategy := currentPhoneBridgeState(stateManager, "app_text_entry_strategy")
 	if strategy != phoneBridgeTextEntryTargetPreserving {
 		t.Fatalf("app_text_entry_strategy = %q, want %q", strategy, phoneBridgeTextEntryTargetPreserving)
 	}
-	if platform := stateManager.GetState("app_platform"); platform != "android" {
+	if platform := currentPhoneBridgeState(stateManager, "app_platform"); platform != "android" {
 		t.Fatalf("app_platform = %q, want android", platform)
 	}
 }
 
 func TestHTTPPollCommandsRecordsIOSPiPTextEntryStrategy(t *testing.T) {
 	stateManager := statemanager.NewStateManager()
-	bridge := NewPhoneBridge(nil, stateManager)
+	bridge := newPhoneBridgeWithStateManager(stateManager)
 	defer bridge.queue.Stop()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/commands?platform=ios&phone_id=ios-abc&app_state=background&pip_bridge_enabled=true", nil)
@@ -265,26 +276,19 @@ func TestHTTPPollCommandsRecordsIOSPiPTextEntryStrategy(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
 	}
-	strategy := stateManager.GetState("app_text_entry_strategy")
+	strategy := currentPhoneBridgeState(stateManager, "app_text_entry_strategy")
 	if strategy != phoneBridgeTextEntryTargetPreserving {
 		t.Fatalf("app_text_entry_strategy = %q, want %q", strategy, phoneBridgeTextEntryTargetPreserving)
 	}
-	if platform := stateManager.GetState("app_platform"); platform != "ios" {
+	if platform := currentPhoneBridgeState(stateManager, "app_platform"); platform != "ios" {
 		t.Fatalf("app_platform = %q, want ios", platform)
 	}
 }
 
 func TestPhoneBridgeTextEntryStrategyExpiresWithoutAnotherPoll(t *testing.T) {
 	stateManager := statemanager.NewStateManager()
-	bridge := NewPhoneBridge(nil, stateManager)
+	bridge := newPhoneBridgeWithStateManager(stateManager)
 	defer bridge.queue.Stop()
-	t.Cleanup(func() {
-		bridge.statusPublishMu.Lock()
-		if bridge.statusExpiryTimer != nil {
-			bridge.statusExpiryTimer.Stop()
-		}
-		bridge.statusPublishMu.Unlock()
-	})
 
 	bridge.mu.Lock()
 	bridge.platform = "ios"
@@ -293,32 +297,24 @@ func TestPhoneBridgeTextEntryStrategyExpiresWithoutAnotherPoll(t *testing.T) {
 	bridge.pipBridgeEnabled = true
 	bridge.pipBridgeSeen = true
 	bridge.mu.Unlock()
-	bridge.statusUpdated()
 
-	if got := stateManager.GetState("app_text_entry_strategy"); got != phoneBridgeTextEntryTargetPreserving {
+	if got := currentPhoneBridgeState(stateManager, "app_text_entry_strategy"); got != phoneBridgeTextEntryTargetPreserving {
 		t.Fatalf("initial strategy = %q, want %q", got, phoneBridgeTextEntryTargetPreserving)
 	}
 
 	deadline := time.Now().Add(time.Second)
-	for stateManager.GetState("app_text_entry_strategy") != phoneBridgeTextEntryIMEFallback && time.Now().Before(deadline) {
+	for currentPhoneBridgeState(stateManager, "app_text_entry_strategy") != phoneBridgeTextEntryIMEFallback && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if got := stateManager.GetState("app_text_entry_strategy"); got != phoneBridgeTextEntryIMEFallback {
+	if got := currentPhoneBridgeState(stateManager, "app_text_entry_strategy"); got != phoneBridgeTextEntryIMEFallback {
 		t.Fatalf("expired strategy = %q, want %q", got, phoneBridgeTextEntryIMEFallback)
 	}
 }
 
 func TestPhoneBridgeTextEntryStrategySkipsExpiredPiPDeadline(t *testing.T) {
 	stateManager := statemanager.NewStateManager()
-	bridge := NewPhoneBridge(nil, stateManager)
+	bridge := newPhoneBridgeWithStateManager(stateManager)
 	defer bridge.queue.Stop()
-	t.Cleanup(func() {
-		bridge.statusPublishMu.Lock()
-		if bridge.statusExpiryTimer != nil {
-			bridge.statusExpiryTimer.Stop()
-		}
-		bridge.statusPublishMu.Unlock()
-	})
 
 	bridge.mu.Lock()
 	bridge.platform = "android"
@@ -331,23 +327,22 @@ func TestPhoneBridgeTextEntryStrategySkipsExpiredPiPDeadline(t *testing.T) {
 	bridge.fgsBridgeSeen = true
 	bridge.fgsBridgeAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge + 100*time.Millisecond)
 	bridge.mu.Unlock()
-	bridge.statusUpdated()
 
-	if got := stateManager.GetState("app_text_entry_strategy"); got != phoneBridgeTextEntryTargetPreserving {
+	if got := currentPhoneBridgeState(stateManager, "app_text_entry_strategy"); got != phoneBridgeTextEntryTargetPreserving {
 		t.Fatalf("initial strategy = %q, want %q", got, phoneBridgeTextEntryTargetPreserving)
 	}
 
 	deadline := time.Now().Add(time.Second)
-	for stateManager.GetState("app_text_entry_strategy") != phoneBridgeTextEntryIMEFallback && time.Now().Before(deadline) {
+	for currentPhoneBridgeState(stateManager, "app_text_entry_strategy") != phoneBridgeTextEntryIMEFallback && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if got := stateManager.GetState("app_text_entry_strategy"); got != phoneBridgeTextEntryIMEFallback {
+	if got := currentPhoneBridgeState(stateManager, "app_text_entry_strategy"); got != phoneBridgeTextEntryIMEFallback {
 		t.Fatalf("expired strategy = %q, want %q", got, phoneBridgeTextEntryIMEFallback)
 	}
 }
 
 func TestHTTPPollCommandsSuppressesAndroidForegroundFGSQueue(t *testing.T) {
-	bridge := NewPhoneBridge(nil, statemanager.NewStateManager())
+	bridge := NewPhoneBridge(nil)
 	defer bridge.queue.Stop()
 
 	if err := bridge.queue.Enqueue(BridgeCommand{

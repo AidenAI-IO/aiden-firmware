@@ -49,6 +49,7 @@ type AgentLoop struct {
 	TerminationPolicy        *TerminationPolicy
 	DevicePlatform           string
 	PointerMode              string
+	ToolResultObserver       ToolResultObserver
 	toolExecutionHookFactory func() toolExecutionHookHandler
 	contextManager           *contextmanager.ContextManager
 }
@@ -353,6 +354,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		Callback:               l.CallbacksHandler,
 		EnvironmentBridge:      l.EnvironmentBridge,
 		EnvironmentBridgeTools: l.EnvironmentBridgeTools,
+		ResultObserver:         l.ToolResultObserver,
 	})
 	if l.Recorder != nil {
 		l.Recorder.RecordExecution(ToolCallExecutionResult{

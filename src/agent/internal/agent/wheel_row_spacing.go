@@ -6,7 +6,6 @@ import (
 	"image/jpeg"
 	"math"
 	"sort"
-	"time"
 )
 
 const (
@@ -22,45 +21,6 @@ type wheelRowSpacingMeasurement struct {
 	Pixels      float64
 	Confidence  float64
 	Correlation float64
-}
-
-func (s *screenState) UpdateScreenshot(jpegData []byte, width, height int) {
-	if s == nil || len(jpegData) == 0 || width <= 1 || height <= 1 {
-		return
-	}
-	copyData := append([]byte(nil), jpegData...)
-	s.mu.Lock()
-	s.screenshotJPEG = copyData
-	s.screenshotWidth = width
-	s.screenshotHeight = height
-	s.screenshotUpdatedAt = time.Now()
-	s.screenshotGeneration++
-	s.mu.Unlock()
-}
-
-func (s *screenState) ScreenshotGeneration() uint64 {
-	if s == nil {
-		return 0
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.screenshotGeneration
-}
-
-func (s *screenState) LatestScreenshot(maxAge time.Duration) (jpegData []byte, width, height int, age time.Duration, ok bool) {
-	if s == nil {
-		return nil, 0, 0, 0, false
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if len(s.screenshotJPEG) == 0 || s.screenshotWidth <= 1 || s.screenshotHeight <= 1 || s.screenshotUpdatedAt.IsZero() {
-		return nil, 0, 0, 0, false
-	}
-	age = time.Since(s.screenshotUpdatedAt)
-	if maxAge > 0 && age >= maxAge {
-		return nil, 0, 0, age, false
-	}
-	return append([]byte(nil), s.screenshotJPEG...), s.screenshotWidth, s.screenshotHeight, age, true
 }
 
 func measureWheelRowSpacingJPEG(jpegData []byte, columnX, centerY float64) (wheelRowSpacingMeasurement, bool) {

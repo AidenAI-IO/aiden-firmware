@@ -28,6 +28,7 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/screen"
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
@@ -55,7 +56,7 @@ type mappingStateMutatingTool struct {
 	name        string
 	description string
 	output      string
-	screen      *screenState
+	screen      *screen.ScreenState
 	inputs      []string
 }
 
@@ -66,7 +67,7 @@ func (t *mappingStateMutatingTool) Description() string { return t.description }
 func (t *mappingStateMutatingTool) Call(_ context.Context, input string) (string, error) {
 	t.inputs = append(t.inputs, input)
 	if t.screen != nil {
-		t.screen.UpdateActiveArea(320, 240, screenActiveArea{})
+		t.screen.UpdateActiveArea(320, 240, screen.ScreenActiveArea{})
 	}
 	return t.output, nil
 }
@@ -655,21 +656,21 @@ func TestServerEventStreamAllowsRunEventMessages(t *testing.T) {
 }
 
 func TestHandleCoordinateDebugTap(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1280, 720, screenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true})
+	currentScreen := &screen.ScreenState{}
+	currentScreen.UpdateActiveArea(1280, 720, screen.ScreenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true})
 	tool := &mappingStateMutatingTool{
 		name:        "touch_gesture",
 		description: "Touch gesture tool.",
 		output:      `{"width":1280,"height":576,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":"ok"}`,
-		screen:      screen,
+		screen:      currentScreen,
 	}
 	toolSet := &ToolSet{
 		tools: map[string]langtools.Tool{
 			"touch_gesture": tool,
 		},
-		screen: screen,
+		screen: currentScreen,
 	}
-	toolSet.screen.UpdatePhoneScreenInfo(PhoneScreenInfo{
+	toolSet.screen.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{
 		NativeWidthPixels:  intPtr(1179),
 		NativeHeightPixels: intPtr(2556),
 	})
@@ -728,7 +729,7 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	if resp.Screenshot.SourceWidth != 1280 || resp.Screenshot.SourceHeight != 720 {
 		t.Fatalf("unexpected screenshot source dimensions: %#v", resp.Screenshot)
 	}
-	if resp.Screenshot.SourceActiveArea == nil || *resp.Screenshot.SourceActiveArea != (screenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true}) {
+	if resp.Screenshot.SourceActiveArea == nil || *resp.Screenshot.SourceActiveArea != (screen.ScreenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true}) {
 		t.Fatalf("unexpected screenshot active area: %#v", resp.Screenshot.SourceActiveArea)
 	}
 	if resp.Screenshot.OriginalScreenWidthPixels == nil || *resp.Screenshot.OriginalScreenWidthPixels != 1179 {
@@ -741,7 +742,7 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	if !ok || width != 1280 || height != 720 {
 		t.Fatalf("screen state dimensions = %dx%d ok=%v, want 1280x720 true", width, height, ok)
 	}
-	if active != (screenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true}) {
+	if active != (screen.ScreenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true}) {
 		t.Fatalf("screen state active area = %+v", active)
 	}
 }
@@ -974,7 +975,7 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 
 	envData, err := json.Marshal(PhoneEnvironment{
 		Platform: "android",
-		Screen: PhoneScreenInfo{
+		Screen: screen.PhoneScreenInfo{
 			WidthPixels:        intPtr(1080),
 			HeightPixels:       intPtr(1920),
 			NativeWidthPixels:  intPtr(1080),
@@ -1020,7 +1021,7 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	if width != 16 || height != 9 {
 		t.Fatalf("screen dimensions = %dx%d, want 16x9", width, height)
 	}
-	want := screenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
+	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
@@ -1243,7 +1244,7 @@ func TestHandleCoordinateDebugTapRecapturesScreenshotWhenMappingUnavailable(t *t
 	if resp.Screenshot.SourceWidth != 16 || resp.Screenshot.SourceHeight != 9 {
 		t.Fatalf("unexpected screenshot source dimensions: %#v", resp.Screenshot)
 	}
-	want := &screenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
+	want := &screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
 	if resp.Screenshot.SourceActiveArea == nil || *resp.Screenshot.SourceActiveArea != *want {
 		t.Fatalf("unexpected screenshot active area: %#v", resp.Screenshot.SourceActiveArea)
 	}

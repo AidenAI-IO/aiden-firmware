@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"bytes"
 	"encoding/json"
 	"image"
@@ -226,7 +227,7 @@ func TestCropJPEGToActiveArea(t *testing.T) {
 		t.Fatalf("encode source jpeg: %v", err)
 	}
 
-	cropped, width, height, err := cropJPEGToActiveArea(buf.Bytes(), screenActiveArea{X: 1, Y: 1, Width: 2, Height: 2, Valid: true}, 100)
+	cropped, width, height, err := cropJPEGToActiveArea(buf.Bytes(), screen.ScreenActiveArea{X: 1, Y: 1, Width: 2, Height: 2, Valid: true}, 100)
 	if err != nil {
 		t.Fatalf("cropJPEGToActiveArea: %v", err)
 	}
@@ -244,38 +245,38 @@ func TestCropJPEGToActiveArea(t *testing.T) {
 }
 
 func TestDeriveActiveAreaFromPhoneScreenUsesReportedAspectRatio(t *testing.T) {
-	approx := screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
-	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, PhoneScreenInfo{
+	approx := screen.ScreenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
+	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, screen.PhoneScreenInfo{
 		WidthPixels:  intPtr(1080),
 		HeightPixels: intPtr(1920),
 	}, approx)
 	if !ok {
 		t.Fatal("expected aspect-ratio derived active area")
 	}
-	want := screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
+	want := screen.ScreenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
 }
 
 func TestDeriveActiveAreaFromNativePhoneScreenUsesApproxToChooseOrientation(t *testing.T) {
-	approx := screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
-	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, PhoneScreenInfo{
+	approx := screen.ScreenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
+	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, screen.PhoneScreenInfo{
 		NativeWidthPixels:  intPtr(1920),
 		NativeHeightPixels: intPtr(1080),
 	}, approx)
 	if !ok {
 		t.Fatal("expected active area derived from native screen dimensions")
 	}
-	want := screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
+	want := screen.ScreenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
 }
 
 func TestDeriveActiveAreaFromPhoneScreenConsidersNativeDimensionsAlongsideCurrent(t *testing.T) {
-	approx := screenActiveArea{X: 717, Y: 0, Width: 486, Height: 1080, Valid: true}
-	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, PhoneScreenInfo{
+	approx := screen.ScreenActiveArea{X: 717, Y: 0, Width: 486, Height: 1080, Valid: true}
+	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, screen.PhoneScreenInfo{
 		WidthPixels:        intPtr(1080),
 		HeightPixels:       intPtr(1920),
 		NativeWidthPixels:  intPtr(1080),
@@ -284,22 +285,22 @@ func TestDeriveActiveAreaFromPhoneScreenConsidersNativeDimensionsAlongsideCurren
 	if !ok {
 		t.Fatal("expected active area derived from current and native screen dimensions")
 	}
-	want := screenActiveArea{X: 717, Y: 0, Width: 486, Height: 1080, Valid: true}
+	want := screen.ScreenActiveArea{X: 717, Y: 0, Width: 486, Height: 1080, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
 }
 
 func TestDeriveActiveAreaFromReportedPhoneScreenCanChooseRotatedOrientation(t *testing.T) {
-	approx := screenActiveArea{X: 0, Y: 97, Width: 1920, Height: 886, Valid: true}
-	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, PhoneScreenInfo{
+	approx := screen.ScreenActiveArea{X: 0, Y: 97, Width: 1920, Height: 886, Valid: true}
+	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, screen.PhoneScreenInfo{
 		WidthPixels:  intPtr(1080),
 		HeightPixels: intPtr(2340),
 	}, approx)
 	if !ok {
 		t.Fatal("expected rotated active area derived from reported screen dimensions")
 	}
-	want := screenActiveArea{X: 0, Y: 97, Width: 1920, Height: 886, Valid: true}
+	want := screen.ScreenActiveArea{X: 0, Y: 97, Width: 1920, Height: 886, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
