@@ -12,14 +12,15 @@ import (
 )
 
 // Logger provides structured logging to stdout/stderr
-// Output is captured by the init script and written to /var/log/agent/agent.log
+// Output is captured by the init script and written to <config_dir>/log/agent.log.
 type Logger struct {
-	logger *log.Logger
-	mu     sync.Mutex
+	logger         *log.Logger
+	mu             sync.Mutex
+	storageMonitor *StorageMonitor
 }
 
 // NewLogger creates a new logger that writes to stdout/stderr
-// The init script redirects output to /var/log/agent/agent.log
+// The init script redirects output to <config_dir>/log/agent.log.
 func NewLogger(configDir string, llmHTTPRetentionDays int) (*Logger, error) {
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	log.SetOutput(os.Stderr)
@@ -106,25 +107,43 @@ func (l *Logger) Close() error {
 }
 
 func (l *Logger) Info(format string, args ...interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.logger.Printf("[INFO] "+format, args...)
+	l.write("INFO", format, args...)
 }
 
 func (l *Logger) Error(format string, args ...interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.logger.Printf("[ERROR] "+format, args...)
+	l.write("ERROR", format, args...)
 }
 
 func (l *Logger) Debug(format string, args ...interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.logger.Printf("[DEBUG] "+format, args...)
+	l.write("DEBUG", format, args...)
 }
 
 func (l *Logger) Warn(format string, args ...interface{}) {
+	l.write("WARN", format, args...)
+}
+
+func (l *Logger) SetStorageMonitor(monitor *StorageMonitor) {
+	if l == nil {
+		return
+	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.logger.Printf("[WARN] "+format, args...)
+	l.storageMonitor = monitor
+	l.mu.Unlock()
+}
+
+func (l *Logger) write(level string, format string, args ...interface{}) {
+	if l == nil || l.logger == nil {
+		return
+	}
+	l.mu.Lock()
+	monitor := l.storageMonitor
+	if monitor != nil && !monitor.AllowWrite(StorageCapabilityAgentLog) {
+		l.mu.Unlock()
+		return
+	}
+	err := l.logger.Output(3, fmt.Sprintf("[%s] %s", level, fmt.Sprintf(format, args...)))
+	l.mu.Unlock()
+	if err != nil && monitor != nil {
+		monitor.HandleWriteError(err)
+	}
 }

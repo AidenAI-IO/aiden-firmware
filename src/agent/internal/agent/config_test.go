@@ -1505,6 +1505,34 @@ func TestRuntimeDefaultStoragePathIsNotExplicit(t *testing.T) {
 	}
 }
 
+func TestStorageMonitorEnabledConfigKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		storage string
+		want    bool
+	}{
+		{name: "new key disables monitor", storage: "monitor_enabled = false", want: false},
+		{name: "legacy ambiguous key is ignored", storage: "enabled = false", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configFile := filepath.Join(t.TempDir(), "agent.toml")
+			content := "[model]\nprovider = \"fake\"\n\n[storage]\n" + tt.storage + "\n"
+			if err := os.WriteFile(configFile, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := LoadRuntimeConfig(configFile)
+			if err != nil {
+				t.Fatalf("LoadRuntimeConfig() error = %v", err)
+			}
+			if cfg.Storage.MonitorEnabled != tt.want {
+				t.Fatalf("Storage.MonitorEnabled = %t, want %t", cfg.Storage.MonitorEnabled, tt.want)
+			}
+		})
+	}
+}
+
 func TestAudioArchiveConfigExplicitValues(t *testing.T) {
 	configContent := `
 [audio_archive]

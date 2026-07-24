@@ -53,6 +53,16 @@ grep -Fq 'detach_seconds=$DYNAMIC_KEYBOARD_RESTORE_DETACH_SECONDS' "$CONTROL_SCR
 	fail "normal profile restore must use the longer configured detach interval"
 grep -Eq '^DYNAMIC_KEYBOARD_RESTORE_DETACH_SECONDS=0\.[1-9][0-9]*$' "$CONF_FILE" ||
 	fail "normal profile restore must configure a sub-second detach interval"
+grep -Eq '^DYNAMIC_KEYBOARD_WATCHDOG_GRACE_SECONDS=[1-9][0-9]*$' "$CONF_FILE" ||
+	fail "planned profile switches must configure a positive watchdog grace window"
+grep -Fq 'WATCHDOG_GRACE_FILE=/run/aiden_dynamic_keyboard.grace' "$CONTROL_SCRIPT" ||
+	fail "profile switching must publish the shared watchdog grace deadline"
+[ "$(grep -Ec '^[[:space:]]*grace_tmp=.*WATCHDOG_GRACE_FILE' "$CONTROL_SCRIPT")" -eq 1 ] ||
+	fail "watchdog grace publication must use a same-directory temporary file"
+grep -Fq 'mv -f "$grace_tmp" "$WATCHDOG_GRACE_FILE"' "$CONTROL_SCRIPT" ||
+	fail "watchdog grace publication must atomically replace the shared deadline"
+[ "$(grep -Ec '^[[:space:]]*mark_watchdog_grace$' "$CONTROL_SCRIPT")" -ge 2 ] ||
+	fail "profile switching must refresh watchdog grace before and after re-enumeration"
 grep -Fq 'wait_for_configuration "$udc"' "$CONTROL_SCRIPT" ||
 	fail "profile switching must wait for iOS to configure the gadget"
 

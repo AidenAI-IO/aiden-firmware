@@ -48,12 +48,13 @@ func runScriptSpeakerFromContext(ctx context.Context) runScriptSpeaker {
 // RunScriptTool executes local JSONL demo scripts without involving the LLM
 // between scripted steps.
 type RunScriptTool struct {
-	lookup     runScriptToolLookup
-	speaker    runScriptSpeaker
-	sleeper    runScriptSleeper
-	readFile   func(string) ([]byte, error)
-	scriptsDir string
-	mu         sync.RWMutex
+	lookup               runScriptToolLookup
+	speaker              runScriptSpeaker
+	sleeper              runScriptSleeper
+	readFile             func(string) ([]byte, error)
+	scriptsDir           string
+	iosKeyboardIsolation *iosKeyboardIsolationController
+	mu                   sync.RWMutex
 }
 
 func NewRunScriptTool(scriptsDir string, lookup runScriptToolLookup) *RunScriptTool {
@@ -94,6 +95,16 @@ func (t *RunScriptTool) speakerFn(ctx context.Context) runScriptSpeaker {
 }
 
 func (t *RunScriptTool) Call(ctx context.Context, input string) (string, error) {
+	var controller *iosKeyboardIsolationController
+	if t != nil {
+		controller = t.iosKeyboardIsolation
+	}
+	return withIOSKeyboardIsolationBatchCall(ctx, controller, func(batchCtx context.Context) (string, error) {
+		return t.call(batchCtx, input)
+	})
+}
+
+func (t *RunScriptTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		File string `json:"file"`
 	}
