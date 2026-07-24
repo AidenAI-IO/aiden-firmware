@@ -320,6 +320,7 @@ func TestAudioDialogRunAgentTurnStreamsTTSTagThroughProviderManager(t *testing.T
 		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 	}
+	runtime.RegisterPreemptHook(dialog.InterruptOutput)
 
 	result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "hello"}, runtime)
 	if err != nil {

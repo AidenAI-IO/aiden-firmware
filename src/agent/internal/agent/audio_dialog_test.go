@@ -673,9 +673,9 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	}
 }
 
-func TestAudioDialogStreamsLeadingToolTTSWithoutDuplicatePlayback(t *testing.T) {
+func TestAudioDialogKeepsToolEventSpeechWithoutDuplicatePlayback(t *testing.T) {
 	toolSpeech := true
-	toolContent := "<tts>Check volume.</tts>\nChecking volume."
+	toolContent := "Checking volume.\n<tts>Check volume.</tts>"
 	finalContent := "<tts>Current volume is 42.</tts>\nCurrent volume is 42."
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -728,16 +728,13 @@ func TestAudioDialogStreamsLeadingToolTTSWithoutDuplicatePlayback(t *testing.T) 
 
 	texts := provider.texts()
 	if len(texts) != 2 {
-		t.Fatalf("leading tool TTS should stream once before final TTS, got %#v", texts)
+		t.Fatalf("tool-event and final TTS should each play once, got %#v", texts)
 	}
 	if countString(texts, "Check volume.") != 1 {
 		t.Fatalf("tool TTS count = %d, want 1: %#v", countString(texts, "Check volume."), texts)
 	}
 	if countString(texts, "Current volume is 42.") != 1 {
 		t.Fatalf("final TTS count = %d, want 1: %#v", countString(texts, "Current volume is 42."), texts)
-	}
-	if texts[0] != "Check volume." || texts[1] != "Current volume is 42." {
-		t.Fatalf("TTS order = %#v, want tool progress before final response", texts)
 	}
 }
 

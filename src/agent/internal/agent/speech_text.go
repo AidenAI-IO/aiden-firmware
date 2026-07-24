@@ -213,13 +213,15 @@ func speechStreamWriterForConfig(target io.Writer, cfg Config) *TTSTagStreamWrit
 }
 
 type TTSTagStreamWriter struct {
-	target         io.Writer
-	pending        []byte
-	inTTS          bool
-	seenTTS        bool
-	streamTTS      bool
-	outsideContent bool
-	emitted        bool
+	target                  io.Writer
+	pending                 []byte
+	inTTS                   bool
+	seenTTS                 bool
+	streamTTS               bool
+	outsideContent          bool
+	emitted                 bool
+	finishedResponseReady   bool
+	finishedResponseEmitted bool
 }
 
 type ttsStreamFlusher interface {
@@ -231,6 +233,15 @@ func NewTTSTagStreamWriter(target io.Writer) *TTSTagStreamWriter {
 }
 
 func (w *TTSTagStreamWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	w.resetResponseState()
+	w.finishedResponseReady = false
+	w.finishedResponseEmitted = false
+}
+
+func (w *TTSTagStreamWriter) resetResponseState() {
 	if w == nil {
 		return
 	}
@@ -290,15 +301,40 @@ func (w *TTSTagStreamWriter) FinishResponse() bool {
 		}
 	}
 	emitted := w.StreamEmitted()
-	w.ResetStreamState()
+	w.resetResponseState()
+	w.finishedResponseReady = true
+	w.finishedResponseEmitted = emitted
 	return emitted
+}
+
+// ConsumeFinishedResponse reports the speech result captured at the most
+// recent LLM response boundary. The boolean result is false when no boundary
+// has been finalized since the previous consume.
+func (w *TTSTagStreamWriter) ConsumeFinishedResponse() (bool, bool) {
+	if w == nil || !w.finishedResponseReady {
+		return false, false
+	}
+	emitted := w.finishedResponseEmitted
+	w.finishedResponseReady = false
+	w.finishedResponseEmitted = false
+	return emitted, true
+}
+
+func finishSpeechResponse(writer *TTSTagStreamWriter) bool {
+	if writer == nil {
+		return false
+	}
+	if emitted, ok := writer.ConsumeFinishedResponse(); ok {
+		return emitted
+	}
+	return writer.FinishResponse()
 }
 
 func finishToolCallSpeechStream(event RunEvent, writer *TTSTagStreamWriter) bool {
 	if writer == nil || event.Type != runEventToolCall {
 		return false
 	}
-	return writer.FinishResponse()
+	return finishSpeechResponse(writer)
 }
 
 func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {

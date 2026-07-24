@@ -582,7 +582,7 @@ func (d *AudioDialog) snapshotActiveOutputs() []*activeTTSOutput {
 	return outputs
 }
 
-func (d *AudioDialog) beginActiveManagedTTSStream(ctx context.Context) (*streamSessionWriter, func(), error) {
+func (d *AudioDialog) beginManagedTTSStreamForRun(ctx context.Context) (*streamSessionWriter, func(), func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -590,16 +590,40 @@ func (d *AudioDialog) beginActiveManagedTTSStream(ctx context.Context) (*streamS
 	stream, err := beginManagedTTSStream(streamCtx, d.ttsManager, d.audioClient, d.config)
 	if err != nil {
 		streamCancel()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	stream.setCancel(streamCancel)
 	output := newActiveTTSOutput(streamCancel)
 	output.setStream(stream)
-	unregister := d.registerActiveOutput(output)
-	return stream, func() {
-		unregister()
+
+	var lifecycleMu sync.Mutex
+	var unregister func()
+	activated := false
+	cleaned := false
+	activate := func() {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		if activated || cleaned {
+			return
+		}
+		activated = true
+		unregister = d.registerActiveOutput(output)
+	}
+	cleanup := func() {
+		lifecycleMu.Lock()
+		if cleaned {
+			lifecycleMu.Unlock()
+			return
+		}
+		cleaned = true
+		unregisterOutput := unregister
+		lifecycleMu.Unlock()
+		if unregisterOutput != nil {
+			unregisterOutput()
+		}
 		streamCancel()
-	}, nil
+	}
+	return stream, activate, cleanup, nil
 }
 
 // InterruptOutput immediately stops any TTS output owned by this dialog.
@@ -952,10 +976,9 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	req.EpisodeID = strings.TrimSpace(episodeID)
 
 	var newStream *streamSessionWriter
-	unregisterStream := func() {}
 	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
 		preopenStartedAt := time.Now().UTC()
-		stream, unregister, err := d.beginActiveManagedTTSStream(ctx)
+		stream, activate, cleanup, err := d.beginManagedTTSStreamForRun(ctx)
 		metadata := map[string]interface{}{
 			"provider": d.ttsManager.Current(),
 		}
@@ -971,8 +994,10 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
 		} else {
 			newStream = stream
-			unregisterStream = unregister
-			defer unregisterStream()
+			defer cleanup()
+			req.OnRunActive = func(context.Context) {
+				activate()
+			}
 			speechWriter = speechStreamWriterForConfig(newStream, d.config)
 			req.StreamWriter = speechWriter
 		}
@@ -982,7 +1007,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	result, err := runtime.Run(ctx, req)
 	d.stopAcceptingSteer(requestID)
 	if newStream != nil {
-		finalSpeechStreamed := speechWriter != nil && speechWriter.FinishResponse()
+		finalSpeechStreamed := finishSpeechResponse(speechWriter)
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil {
 			log.Printf("[error] new TTS stream failed: %v", closeErr)
@@ -1318,15 +1343,16 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		},
 	}
 	var newStream *streamSessionWriter
-	unregisterStream := func() {}
 	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
-		stream, unregister, err := d.beginActiveManagedTTSStream(ctx)
+		stream, activate, cleanup, err := d.beginManagedTTSStreamForRun(ctx)
 		if err != nil {
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
 		} else {
 			newStream = stream
-			unregisterStream = unregister
-			defer unregisterStream()
+			defer cleanup()
+			req.OnRunActive = func(context.Context) {
+				activate()
+			}
 			speechWriter = speechStreamWriterForConfig(newStream, d.config)
 			req.StreamWriter = speechWriter
 		}
@@ -1334,7 +1360,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 
 	result, err := runtime.Run(ctx, req)
 	if newStream != nil {
-		finalSpeechStreamed := speechWriter != nil && speechWriter.FinishResponse()
+		finalSpeechStreamed := finishSpeechResponse(speechWriter)
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil {
 			log.Printf("[error] new TTS stream failed: %v", closeErr)

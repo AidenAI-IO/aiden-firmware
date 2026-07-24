@@ -516,10 +516,10 @@ func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 	}
 }
 
-func TestServerHandleChatStreamsLeadingToolTTSWithoutDuplicatePlayback(t *testing.T) {
+func TestServerHandleChatKeepsToolEventSpeechWithoutDuplicatePlayback(t *testing.T) {
 	const requestID = "streaming-tts-cleanup"
 	toolSpeech := true
-	toolContent := "<tts>Check volume.</tts>\nChecking volume."
+	toolContent := "Checking volume.\n<tts>Check volume.</tts>"
 	finalContent := "<tts>Current volume is 42.</tts>\nCurrent volume is 42."
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -573,16 +573,13 @@ func TestServerHandleChatStreamsLeadingToolTTSWithoutDuplicatePlayback(t *testin
 	texts := provider.texts()
 	if len(texts) != 2 {
 		writes, flushCalls := provider.activity()
-		t.Fatalf("leading tool TTS should stream once before final TTS, got %#v writes=%#v flush_calls=%d", texts, writes, flushCalls)
+		t.Fatalf("tool-event and final TTS should each play once, got %#v writes=%#v flush_calls=%d", texts, writes, flushCalls)
 	}
 	if countString(texts, "Check volume.") != 1 {
 		t.Fatalf("tool TTS count = %d, want 1: %#v", countString(texts, "Check volume."), texts)
 	}
 	if countString(texts, "Current volume is 42.") != 1 {
 		t.Fatalf("final TTS count = %d, want 1: %#v", countString(texts, "Current volume is 42."), texts)
-	}
-	if texts[0] != "Check volume." || texts[1] != "Current volume is 42." {
-		t.Fatalf("TTS order = %#v, want tool progress before final response", texts)
 	}
 	if outputs := server.snapshotActiveOutputs(requestID); len(outputs) != 0 {
 		t.Fatalf("active TTS outputs after streaming response = %d, want 0", len(outputs))
@@ -1627,18 +1624,20 @@ func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
 
 func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 	toolSpeechEnabled := true
-	streamingDisabled := false
+	streamingEnabled := true
+	toolContent := "Going idle.\n<tts>Standby mode.</tts>"
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked","speech":"Standby mode."}`),
+			toolCallResponseWithContent("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`, toolContent),
 		},
+		streamChunks: [][]string{{toolContent}},
 	}
 	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Use tools.",
-			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceStreamingTTSEnabled: &streamingEnabled,
 			VoiceToolCallSpeech:      &toolSpeechEnabled,
 		}),
 		&testModelResolver{model: model},
@@ -1666,19 +1665,22 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 }
 
 func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
+	toolContent := "Reading volume.\n<tts>Let me read the current volume.</tts>"
+	finalContent := "<tts>The current audio volume is 42.</tts>\nThe current audio volume is 42."
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Reading volume.\n<tts>Let me read the current volume.</tts>"),
-			contentResponse("The current audio volume is 42."),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, toolContent),
+			contentResponse(finalContent),
 		},
+		streamChunks: [][]string{{toolContent}, {finalContent}},
 	}
-	streamingDisabled := false
+	streamingEnabled := true
 	toolSpeechDisabled := false
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Use tools when external state is requested.",
-			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceStreamingTTSEnabled: &streamingEnabled,
 			VoiceToolCallSpeech:      &toolSpeechDisabled,
 		}),
 		&testModelResolver{model: model},
@@ -1693,9 +1695,9 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 		NewSkillIndex(),
 	)
 	server := newServerForTest(runtime)
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "Let me read the current volume."}
+	provider := &recordingTTSProvider{name: "server-provider"}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
-	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
+	server.audioClient = NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1715,6 +1717,7 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 		t.Fatalf("missing request_id in response: %#v", startResp)
 	}
 
+	completed := false
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
@@ -1728,12 +1731,8 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 			t.Fatalf("decode result response: %v", err)
 		}
 		if resp.Status == "complete" {
-			select {
-			case <-provider.started:
-				t.Fatal("tool content TTS started despite voice_tool_call_speech=false")
-			default:
-			}
-			return
+			completed = true
+			break
 		}
 		if resp.Status == "error" {
 			t.Fatalf("chat request failed: %s", resp.Error)
@@ -1742,7 +1741,14 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
-	t.Fatalf("chat request did not complete before deadline: request_id=%s", requestID)
+	if !completed {
+		t.Fatalf("chat request did not complete before deadline: request_id=%s", requestID)
+	}
+	waitForServerRequestFinished(t, server, requestID)
+	waitForProviderTextCount(t, provider, 1)
+	if got := provider.texts(); len(got) != 1 || got[0] != "The current audio volume is 42." {
+		t.Fatalf("spoken texts = %#v, want final answer only", got)
+	}
 }
 
 func TestServerShouldSpeakToolCallRequiresTTSTag(t *testing.T) {

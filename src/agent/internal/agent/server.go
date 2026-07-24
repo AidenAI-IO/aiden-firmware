@@ -1207,7 +1207,7 @@ func (s *Server) handleChatAsync(
 
 		result, err := s.runtime.Run(runCtx, runReq)
 		if newStream != nil {
-			finalSpeechStreamed := speechWriter != nil && speechWriter.FinishResponse()
+			finalSpeechStreamed := finishSpeechResponse(speechWriter)
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
 				s.logger.Error("new TTS stream failed: %v", closeErr)
@@ -1593,7 +1593,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("Running runtime")
 	result, err := s.runtime.Run(ctx, runReq)
 	if newStream != nil {
-		finalSpeechStreamed := speechWriter != nil && speechWriter.FinishResponse()
+		finalSpeechStreamed := finishSpeechResponse(speechWriter)
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
 			s.logger.Error("new TTS stream failed: %v", closeErr)
@@ -1870,6 +1870,19 @@ func (w *streamFanoutWriter) ResetBuffer() {
 			resetter.ResetBuffer()
 		}
 	}
+}
+
+func (w *streamFanoutWriter) FinishResponse() bool {
+	if w == nil {
+		return false
+	}
+	emitted := false
+	for _, writer := range w.writers {
+		if finishStreamWriterResponse(writer) {
+			emitted = true
+		}
+	}
+	return emitted
 }
 
 func (w *streamFanoutWriter) StreamEmitted() bool {

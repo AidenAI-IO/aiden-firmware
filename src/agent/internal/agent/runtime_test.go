@@ -4926,6 +4926,47 @@ func TestRuntimeOnRunActiveRunsAfterStartupPreemption(t *testing.T) {
 	}
 }
 
+func TestRuntimeFinalizesStreamingStateAtEachLLMResponseBoundary(t *testing.T) {
+	first := "<tts>Retrying.</tts>Malformed tool response."
+	final := "<tts>Completed.</tts>Completed."
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{Choices: []*llms.ContentChoice{{
+				Content:   first,
+				ToolCalls: []llms.ToolCall{{ID: "malformed"}},
+			}}},
+			contentResponse(final),
+		},
+		streamChunks: [][]string{{first}, {final}},
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var speech strings.Builder
+	writer := NewTTSTagStreamWriter(&speech)
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:        "retry malformed output",
+		StreamWriter: writer,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != final {
+		t.Fatalf("Output = %q, want %q", result.Output, final)
+	}
+	if got := speech.String(); got != "Retrying.Completed." {
+		t.Fatalf("streamed speech = %q, want both response-level TTS blocks", got)
+	}
+	if emitted, ok := writer.ConsumeFinishedResponse(); !ok || !emitted {
+		t.Fatalf("final response emission = (%v, %v), want (true, true)", emitted, ok)
+	}
+}
+
 func TestRuntimePreemptHookPanicDoesNotStopOtherHooks(t *testing.T) {
 	t.Parallel()
 

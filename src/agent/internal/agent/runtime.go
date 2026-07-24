@@ -2001,6 +2001,10 @@ type streamOutputTracker interface {
 	StreamEmitted() bool
 }
 
+type streamResponseFinisher interface {
+	FinishResponse() bool
+}
+
 func resetStreamWriterState(writer io.Writer) {
 	resetter, ok := writer.(streamStateResetter)
 	if !ok {
@@ -2015,12 +2019,29 @@ func resetStreamBuffer(writer io.Writer) {
 	}
 }
 
+func finishStreamWriterResponse(writer io.Writer) bool {
+	finisher, ok := writer.(streamResponseFinisher)
+	if !ok {
+		return false
+	}
+	return finisher.FinishResponse()
+}
+
 func streamWriterEmitted(writer io.Writer) bool {
 	tracker, ok := writer.(streamOutputTracker)
 	if !ok {
 		return true
 	}
 	return tracker.StreamEmitted()
+}
+
+func (h *runtimeCallbackHandler) FinishStreamingResponse(context.Context) {
+	finishStreamWriterResponse(h.writer)
+}
+
+func (h *runtimeCallbackHandler) AbortStreamingResponse(context.Context) {
+	resetStreamBuffer(h.writer)
+	resetStreamWriterState(h.writer)
 }
 
 func (h *runtimeCallbackHandler) recordFirstToken() {
