@@ -157,7 +157,9 @@ share `/run/aiden_dynamic_keyboard.lock` to prevent overlapping UDC resets. The
 controller also publishes a short post-switch grace deadline so the watchdog
 does not count the planned ECM interruption toward its stall threshold. Normal
 watchdog probes resume after the grace window and still recover persistent ECM
-failures.
+failures. HID node open recovery also honors this deadline: a transient
+`/dev/hidg*` `ENXIO` waits and retries instead of forcing another composite
+refresh during the planned switch.
 
 Inspect or exercise the profiles manually with:
 

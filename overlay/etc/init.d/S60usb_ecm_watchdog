@@ -220,10 +220,14 @@ reset_composite_locked() {
 reset_composite() {
     reason="$1"
     acquire_gadget_switch_lock || return 1
-    if [ "$reason" = "ECM stall" ] && planned_switch_grace_active; then
-        log "USB composite reset deferred; planned profile switch grace is active (until=$planned_grace_until)"
+    if planned_switch_grace_active; then
+        log "USB composite reset skipped during planned profile switch grace (reason=$reason until=$planned_grace_until)"
         release_gadget_switch_lock
-        return 1
+        # HIDDevice uses the refresh command after an ENXIO open. Treat a
+        # planned-switch skip as successful so it waits briefly and retries the
+        # recreated node instead of failing the tool or forcing another reset.
+        [ "$reason" = "manual refresh" ] && return 0
+        return 2
     fi
     if reset_composite_locked "$reason"; then
         result=0
@@ -308,11 +312,20 @@ watchdog_main() {
             fi
 
             log "ECM stall detected; resetting composite gadget"
-            # Start the cooldown window from the attempt itself: even if the
-            # reset fails, we don't want to hammer the gadget every interval.
-            last_reset=$now
             if reset_composite "ECM stall"; then
+                last_reset=$now
                 ecm_fail_count=0
+            else
+                reset_result=$?
+                if [ "$reset_result" -eq 2 ]; then
+                    # A profile switch began after the final probe check. This
+                    # is not a failed reset attempt and must not start cooldown.
+                    ecm_fail_count=0
+                else
+                    # Start cooldown from a real attempt even when it fails so
+                    # a persistent fault cannot hammer the gadget every loop.
+                    last_reset=$now
+                fi
             fi
         fi
     done
