@@ -3522,6 +3522,7 @@ func TestServerToolInvokeContinuesAfterClientDisconnect(t *testing.T) {
 
 func TestHTTPToolExecutionSurvivesClientDisconnectForHIDTools(t *testing.T) {
 	for _, toolName := range []string{
+		"keyboard_layout_probe",
 		"keyboard_tap",
 		"keyboard_text",
 		"quick_action",
@@ -3543,6 +3544,44 @@ func TestHTTPToolExecutionSurvivesClientDisconnectForHIDTools(t *testing.T) {
 	}
 	if httpToolExecutionSurvivesClientDisconnect("screenshot") {
 		t.Fatal("screenshot should keep normal client-cancellation behavior")
+	}
+}
+
+func TestServerKeyboardLayoutProbeEndpointWritesRawProbe(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	probe := &KeyboardLayoutProbeTool{dev: dev}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"keyboard_layout_probe": probe}},
+		NewSkillIndex(),
+	)
+	server := newServerForTest(runtime)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tools/keyboard_layout_probe", bytes.NewBufferString(`{"input":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleToolInvoke(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp ToolInvokeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.IsError || resp.Output != "ok" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+
+	dev.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data) != 5*16 {
+		t.Fatalf("report bytes = %d, want %d", len(data), 5*16)
 	}
 }
 

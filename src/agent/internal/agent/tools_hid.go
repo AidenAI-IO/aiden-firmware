@@ -894,6 +894,64 @@ func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs 
 	return t.dev.Write(make([]byte, 8))
 }
 
+var keyboardLayoutProbeUsages = [...]uint8{
+	0x04, // physical QWERTY A key
+	0x14, // physical QWERTY Q key
+	0x1a, // physical QWERTY W key
+	0x1c, // physical QWERTY Y key
+	0x1d, // physical QWERTY Z key
+}
+
+// KeyboardLayoutProbeTool types a fixed sequence of physical QWERTY key
+// positions so a human can identify how the phone maps USB HID usages. It must
+// not apply hid.keyboard_layout: doing so would make calibration depend on the
+// value it is trying to determine.
+type KeyboardLayoutProbeTool struct {
+	dev                  *HIDDevice
+	adb                  *ADBInputController
+	iosKeyboardIsolation *iosKeyboardIsolationController
+}
+
+func (t *KeyboardLayoutProbeTool) Name() string { return "keyboard_layout_probe" }
+
+func (t *KeyboardLayoutProbeTool) Description() string {
+	return `Send the raw USB HID keyboard-layout calibration probe using the physical QWERTY key positions for "aqwyz". ` +
+		`The phone displays "aqwyz" for QWERTY, "qazyw" for AZERTY, or "aqwzy" for QWERTZ. ` +
+		`Input: {}. This tool bypasses hid.keyboard_layout and requires the USB HID input backend.`
+}
+
+func (t *KeyboardLayoutProbeTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{})
+}
+
+func (t *KeyboardLayoutProbeTool) Call(ctx context.Context, _ string) (string, error) {
+	if t.adb != nil {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "keyboard layout calibration requires the USB HID input backend; hid.input_backend=adb sends logical text and cannot identify the host keyboard layout"), nil
+	}
+	if t.dev == nil {
+		return toolErrorResultString(ctx, CodeToolExecutionFailed, "keyboard HID device is unavailable"), nil
+	}
+
+	err := t.iosKeyboardIsolation.withKeyboard(ctx, false, func() error {
+		releaseReport := make([]byte, 8)
+		for _, usage := range keyboardLayoutProbeUsages {
+			report := make([]byte, 8)
+			report[2] = usage
+			if err := t.dev.Write(report); err != nil {
+				return err
+			}
+			if err := t.dev.Write(releaseReport); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
+	}
+	return "ok", nil
+}
+
 // KeyboardTextTool types a string character by character via HID.
 type KeyboardTextTool struct {
 	dev                  *HIDDevice

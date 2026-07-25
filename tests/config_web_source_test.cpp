@@ -962,6 +962,38 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("const selectFieldOptions=") == std::string::npos);
 }
 
+TEST_CASE("config web exposes guided keyboard layout calibration") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("/api/hid/keyboard-layout/probe") != std::string::npos);
+    CHECK(source.find("/api/tools/keyboard_layout_probe") != std::string::npos);
+    CHECK(source.find("/api/hid/keyboard-layout/calibrate") != std::string::npos);
+    CHECK(source.find("keyboard_layout_from_probe_observation") != std::string::npos);
+    CHECK(html.find("id=\\\"keyboardLayoutProbeBtn\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"keyboardLayoutCalibrationModal\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"keyboardLayoutObserved\\\"") != std::string::npos);
+    CHECK(html.find("function startKeyboardLayoutProbe()") != std::string::npos);
+    CHECK(html.find("function applyKeyboardLayoutCalibration()") != std::string::npos);
+    CHECK(html.find("ensureSelectOption(layoutSelect,layout)") != std::string::npos);
+    CHECK(html.find("value=\\\"aqwyz\\\">aqwyz — QWERTY") != std::string::npos);
+    CHECK(html.find("value=\\\"qazyw\\\">qazyw — AZERTY") != std::string::npos);
+    CHECK(html.find("value=\\\"aqwzy\\\">aqwzy — QWERTZ") != std::string::npos);
+    CHECK(html.find("'/api/hid/keyboard-layout/probe'") != std::string::npos);
+    CHECK(html.find("'/api/hid/keyboard-layout/calibrate'") != std::string::npos);
+}
+
 TEST_CASE("config web degrades gracefully when config metadata is unavailable") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());

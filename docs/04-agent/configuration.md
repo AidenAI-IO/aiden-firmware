@@ -316,7 +316,7 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 | Field | Default | Description |
 | --- | --- | --- |
 | `keyboard_device` | `/dev/hidg0` | Keyboard HID device |
-| `keyboard_layout` | `qwerty` | Physical keyboard layout selected on the phone: `qwerty`, `azerty`, or `qwertz`. Used by `keyboard_text` and standard text-like `keyboard_tap` keys; changing it requires only an Agent restart. |
+| `keyboard_layout` | `qwerty` | How the phone interprets the external USB HID keyboard: `qwerty`, `azerty`, or `qwertz`. The visible soft-keyboard layout may differ. Used by `keyboard_text` and standard text-like `keyboard_tap` keys; changing it requires only an Agent restart. Config Web can detect it by sending a raw physical-key probe while an English/Latin input field is focused. |
 | `mouse_device` | `/dev/hidg1` | Mouse/touch HID device |
 | `android_keyboard_device` | `/dev/hidg2` | Consumer Control HID device (`hid.usb2`) used for Android extension keys in `pointer_mode = "touchscreen"` and media/volume/brightness/screenshot keys in `pointer_mode = "absolute"` |
 | `frame_socket` | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool |

@@ -2154,6 +2154,51 @@ func TestKeyboardTextUsesConfiguredQWERTZLayout(t *testing.T) {
 	}
 }
 
+func TestKeyboardLayoutProbeSendsFixedQWERTYPhysicalUsages(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &KeyboardLayoutProbeTool{dev: dev}
+
+	out, err := tool.Call(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+
+	dev.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	wantUsages := []byte{0x04, 0x14, 0x1a, 0x1c, 0x1d} // physical QWERTY keys for aqwyz
+	if len(data) != len(wantUsages)*16 {
+		t.Fatalf("report bytes = %d, want %d", len(data), len(wantUsages)*16)
+	}
+	for i, want := range wantUsages {
+		press := data[i*16 : i*16+8]
+		if press[0] != 0 || press[2] != want {
+			t.Fatalf("press report %d = %v, want modifier 0 and usage 0x%02x", i, press, want)
+		}
+		release := data[i*16+8 : i*16+16]
+		if !bytes.Equal(release, make([]byte, 8)) {
+			t.Fatalf("release report %d = %v, want all zeroes", i, release)
+		}
+	}
+}
+
+func TestKeyboardLayoutProbeRejectsADBBackend(t *testing.T) {
+	tool := &KeyboardLayoutProbeTool{adb: &ADBInputController{}}
+
+	out, err := tool.Call(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "requires the USB HID input backend") {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
 func TestKeyboardTextRejectsQWERTZDeadKeysWithoutPartialTyping(t *testing.T) {
 	for _, deadKey := range []string{"^", "`"} {
 		t.Run(deadKey, func(t *testing.T) {

@@ -111,7 +111,17 @@ Built-in Agent tools:
 
 It is recommended to use normalized coordinates (`0..1000`, with center at `500,500`) to avoid click position shifts due to display resolution changes.
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center; only explicitly pass `coord_space: "pixel"` when the screenshot pixel coordinates and HID touch coordinates are already calibrated. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
-`keyboard_layout` must match the physical keyboard layout selected on the phone. Supported values are `qwerty` (default), `azerty`, and `qwertz`. Both `keyboard_text` and standard text-like keys in `keyboard_tap` use this mapping. Changing it only requires an Agent restart; it does not change USB descriptors or require a gadget restart.
+`keyboard_layout` must match how the phone interprets the external USB HID keyboard. Supported values are `qwerty` (default), `azerty`, and `qwertz`. The visible soft-keyboard layout is not authoritative: a phone can display an AZERTY soft keyboard while still interpreting Aiden's USB HID reports as QWERTY. Both `keyboard_text` and standard text-like keys in `keyboard_tap` use this mapping. Changing it only requires an Agent restart; it does not change USB descriptors or require a gadget restart.
+
+Config Web provides **Detect keyboard layout** under `[hid]`. Focus an empty English/Latin input field on the phone, run the detector, and select the exact probe text shown:
+
+| Phone output | Save as |
+| --- | --- |
+| `aqwyz` | `qwerty` |
+| `qazyw` | `azerty` |
+| `aqwzy` | `qwertz` |
+
+The detector sends fixed raw QWERTY physical usages and deliberately bypasses the current `keyboard_layout`, so a wrong saved value cannot influence the result. It is unavailable with `input_backend = "adb"`, because ADB sends logical text rather than physical USB HID usages.
 
 `keyboard_text` can only input ASCII typeable characters. Chinese input should be completed through pinyin/English search terms and on-screen candidates, and Chinese character strings cannot be passed directly to the tool. The configured layouts cover common ASCII keys, but country-specific punctuation variants may still require device verification.
 
