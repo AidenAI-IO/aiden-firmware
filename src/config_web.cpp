@@ -265,6 +265,7 @@ bool resolve_agent_http_target(const Options& options,
 ApiResponse proxy_agent_json_request(const Options& options,
                                          const std::string& agent_path,
                                          const std::string& body);
+ApiResponse handle_usb_reenumerate(const Options& options);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
@@ -2423,6 +2424,30 @@ ApiResponse handle_stt_test_start(const Options& options, const std::string& bod
 
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
     return proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
+}
+
+ApiResponse handle_usb_reenumerate(const Options& options) {
+    const char* script =
+        "#!/bin/sh\n"
+        "UDC=$(ls /sys/class/udc/ 2>/dev/null | head -n1)\n"
+        "GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid\n"
+        "if [ -z \"$UDC\" ] || [ ! -d \"$GADGET_DIR\" ]; then\n"
+        "  exit 1\n"
+        "fi\n"
+        "echo \"\" > \"$GADGET_DIR/UDC\" 2>/dev/null\n"
+        "sleep 1\n"
+        "echo \"$UDC\" > \"$GADGET_DIR/UDC\"\n";
+
+    CommandResult result = run_command_with_stdin("sh -s", script, 5000);
+
+    if (result.exit_code != 0) {
+        return make_json_error(500, "USB re-enumeration failed: " + result.output);
+    }
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddStringToObject(response, "message", "USB re-enumeration triggered successfully");
+    return make_json_ok(response);
 }
 
 void load_current_wifi_config(const Options& options,
@@ -5506,6 +5531,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     load_current_agent_config(options, &config, &ignore_error);
     load_current_wifi_config(options, &wifi, &ignore_error);
     std::string original_pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
+    std::string original_keyboard_layout = config.hid.keyboard_layout;
 
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
     if (config_json) {
@@ -5546,6 +5572,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     config.hid.pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
     config.hid.input_backend = normalize_input_backend(config.hid.input_backend);
     bool usbhid_restart_scheduled = original_pointer_mode != config.hid.pointer_mode;
+    bool keyboard_layout_changed = original_keyboard_layout != config.hid.keyboard_layout;
 
     std::string save_error;
     if (!aiden::save_agent_toml(options.agent_config_path.c_str(), config, &save_error)) {
@@ -5560,6 +5587,16 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     bool agent_restart_scheduled = !usbhid_restart_scheduled;
     if (agent_restart_scheduled) {
         schedule_agent_restart();
+    }
+
+    // Trigger USB re-enumeration when keyboard_layout changes
+    if (keyboard_layout_changed && !usbhid_restart_scheduled) {
+        ApiResponse reenumerate_result = handle_usb_reenumerate(options);
+        if (reenumerate_result.status_code != 200) {
+            // Log but don't fail the config save
+            fprintf(stderr, "USB re-enumeration failed after keyboard_layout change: %s\n",
+                    reenumerate_result.body.c_str());
+        }
     }
 
     cJSON* response = cJSON_CreateObject();
@@ -6739,6 +6776,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "POST" && request.path == "/api/config/test/stt/stop") {
         return handle_stt_test_stop(options, request.body);
+    }
+
+    if (request.method == "POST" && request.path == "/api/hid/usb-reenumerate") {
+        return handle_usb_reenumerate(options);
     }
 
     if (request.method == "POST" && request.path == "/api/config/test") {

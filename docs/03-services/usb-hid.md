@@ -117,11 +117,11 @@ Select the matching layout under `[hid]` in Config Web (`qwerty`, `azerty`, or `
 
 A phone running iOS locks its hardware-keyboard layout at the moment the USB keyboard is enumerated, based on the software keyboard that is active at that instant. Switching the on-screen keyboard afterwards does not change the locked interpretation. To align a non-QWERTY layout:
 
-1. Set `keyboard_layout` in Config Web to the target layout.
-2. On the phone, switch the input language to the matching one (for example French for `azerty`).
-3. Power-cycle Aiden (unplug and reconnect). The phone re-locks the hardware layout on the new enumeration, matching the language active in step 2.
+1. On the phone, switch the input language to the matching one (for example French for `azerty`, German for `qwertz`).
+2. Set `keyboard_layout` in Config Web to the target layout and save.
+3. Config Web automatically triggers USB re-enumeration. The phone re-locks the hardware layout based on the language active in step 1.
 
-The order matters: switch the language _before_ reconnecting, because the layout is locked during enumeration. Reconnecting is a low-cost operation, so this is preferred over any runtime detection.
+The order matters: switch the language _before_ saving the configuration, because the layout is locked during enumeration. Re-enumeration happens automatically when `keyboard_layout` changes, so no power-cycling is needed.
 
 `keyboard_text` can only input ASCII typeable characters. For Chinese or other non-ASCII text, use `enter_text_in_field` (which leverages the phone's on-screen keyboard and IME candidates) instead of transliterating to pinyin or romanized approximations. The configured layouts cover common ASCII keys, but country-specific punctuation variants may still require device verification.
 
