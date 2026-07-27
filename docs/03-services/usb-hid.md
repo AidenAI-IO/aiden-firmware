@@ -123,7 +123,7 @@ A phone running iOS locks its hardware-keyboard layout at the moment the USB key
 
 The order matters: switch the language _before_ reconnecting, because the layout is locked during enumeration. Reconnecting is a low-cost operation, so this is preferred over any runtime detection.
 
-`keyboard_text` can only input ASCII typeable characters. Chinese input should be completed through pinyin/English search terms and on-screen candidates, and Chinese character strings cannot be passed directly to the tool. The configured layouts cover common ASCII keys, but country-specific punctuation variants may still require device verification.
+`keyboard_text` can only input ASCII typeable characters. For Chinese or other non-ASCII text, use `enter_text_in_field` (which leverages the phone's on-screen keyboard and IME candidates) instead of transliterating to pinyin or romanized approximations. The configured layouts cover common ASCII keys, but country-specific punctuation variants may still require device verification.
 
 ## iOS AssistiveTouch modifier isolation
 

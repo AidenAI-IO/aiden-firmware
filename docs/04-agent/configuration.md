@@ -323,17 +323,6 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 | `pointer_mode`            | `absolute`                              | `absolute` for iOS-style cursor mode on `hid.usb1` plus a limited `hid.usb2` media-key interface; `touchscreen` for Android digitizer mode plus full `hid.usb2` Android extension keys                                                                                                                                                                                                                                               |
 | `input_backend`           | `hid`                                   | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands.                                                                                                                                                                                                                                                       |
 
-## `[live_activity]`
-
-Used for the iOS companion app Live Activity / Dynamic Island task status. The agent-side state snapshot is enabled by default. Background, lock-screen, or not-open app remote updates go through the Aiden Live Activity relay. Official firmware preconfigures relay settings in `overlay/userdata/agent/agent.toml`, so newly flashed boards work with the official app without users entering the relay key. The normal config page does not expose the relay key. Apple APNs credentials stay on the relay/backend and are not placed in board config. See [Live Activity / Dynamic Island](./live-activity.md).
-
-| Field           | Default                                 | Description                                                                                       |
-| --------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `enabled`       | `true`                                  | Enables agent-side state snapshots and APIs                                                       |
-| `relay_url`     | preconfigured in official firmware      | Aiden Live Activity relay URL; only advanced deployments need to override it                      |
-| `relay_api_key` | preconfigured in official firmware      | Shared relay Bearer token; must match the app build config and relay server `AIDEN_RELAY_API_KEY` |
-| `board_id`      | generated in `/userdata/agent/board_id` | Board ID in relay; generated on first run. Empty or `default` is not a valid relay identity       |
-
 ## `[stt]` and `[tts]`
 
 `[stt]` is required when `input_mode = "stt"`; `[tts]` is required when `input_mode = "stt"`.
@@ -456,11 +445,20 @@ voice_id = "zh_female_vv_uranus_bigtts"
 
 ## `[live_activity]`
 
-For the iOS companion app's Live Activity / Dynamic Island task status. The agent-side status snapshot is enabled by default; the APNs-related fields only apply to remote updates when the app is backgrounded, on the lock screen, or not open. Foreground local updates do not need and will not use APNs. See the full flow in [Live Activity / Dynamic Island](./live-activity.md).
+For the iOS companion app's Live Activity / Dynamic Island task status. The agent-side status snapshot is enabled by default. See the full flow in [Live Activity / Dynamic Island](./live-activity.md).
+
+**Relay-based updates** (legacy, used when APNs credentials are not configured):
+
+| Field           | Default                                 | Description                                                                                       |
+| --------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `relay_url`     | preconfigured in official firmware      | Aiden Live Activity relay URL; only advanced deployments need to override it                      |
+| `relay_api_key` | preconfigured in official firmware      | Shared relay Bearer token; must match the app build config and relay server `AIDEN_RELAY_API_KEY` |
+| `board_id`      | generated in `/userdata/agent/board_id` | Board ID in relay; generated on first run. Empty or `default` is not a valid relay identity       |
+
+**APNs-based updates** (for remote updates when the app is backgrounded, on lock screen, or not open):
 
 | Field              | Default                              | Description                                                                                                                        |
 | ------------------ | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`          | `true`                               | Whether to enable the agent-side status snapshot and API                                                                           |
 | `bundle_id`        | -                                    | iOS app bundle id; required only when configuring background APNs and `topic` is not explicitly set                                |
 | `topic`            | `<bundle_id>.push-type.liveactivity` | APNs topic; usually does not need to be set manually                                                                               |
 | `environment`      | `sandbox`                            | `sandbox` or `production`                                                                                                          |

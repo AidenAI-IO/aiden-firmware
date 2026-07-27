@@ -146,6 +146,7 @@ var qwertzSymbolKeyStrokes = map[byte]hidKeyStroke{
 	'}':  {modifier: hidModifierRightAlt, usage: 0x27},
 	'?':  {modifier: hidModifierLeftShift, usage: 0x2d},
 	'\\': {modifier: hidModifierRightAlt, usage: 0x2d},
+	'^':  {usage: 0x35},
 	'+':  {usage: 0x30},
 	'*':  {modifier: hidModifierLeftShift, usage: 0x30},
 	'~':  {modifier: hidModifierRightAlt, usage: 0x30},
