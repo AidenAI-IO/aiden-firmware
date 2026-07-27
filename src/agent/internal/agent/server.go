@@ -449,6 +449,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/setup", s.handleSetup)
 	if s.benchmarkToken() != "" {
 		mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
+		mux.HandleFunc("/api/benchmark/phone_bridge_state", s.handleBenchmarkPhoneBridgeState)
 	}
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/clear-all", s.handleClearAll)
@@ -2271,6 +2272,36 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "seeded",
 		"id":     id,
+	})
+}
+
+func (s *Server) handleBenchmarkPhoneBridgeState(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.bridge == nil {
+		http.Error(w, "phone bridge is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var status PhoneBridgeStatus
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
+	if err := decoder.Decode(&status); err != nil {
+		http.Error(w, "decode phone bridge state: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.bridge.ApplyBenchmarkStatus(status); err != nil {
+		http.Error(w, "apply phone bridge state: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":     true,
+		"status": s.bridge.getStatus(),
 	})
 }
 

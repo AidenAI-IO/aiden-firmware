@@ -3878,7 +3878,9 @@ func newBenchmarkSeedMemoryServer(t *testing.T) (*Server, string) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
-	return newServerForTest(runtime), configDir
+	server := newServerForTest(runtime)
+	t.Cleanup(func() { server.bridge.queue.Stop() })
+	return server, configDir
 }
 
 func TestHandleBenchmarkSeedMemorySucceeds(t *testing.T) {
@@ -3925,6 +3927,91 @@ func TestHandleBenchmarkSeedMemoryRequiresBenchmarkToken(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkPhoneBridgeStateAppliesIOSPiPPolicy(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	body := `{
+		"connected": false,
+		"platform": "ios",
+		"phone_id": "benchmark-ios-pip",
+		"app_state": "background",
+		"return_entry": "dynamic_island",
+		"return_entry_available": true,
+		"pip_bridge_enabled": true,
+		"fgs_bridge_enabled": false
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/phone_bridge_state", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkPhoneBridgeState(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	status := server.bridge.getStatus()
+	if status.Platform != "ios" || status.AppState != "background" {
+		t.Fatalf("unexpected bridge status: %+v", status)
+	}
+	if status.AppStateUpdatedAt == nil || status.PipBridgeEnabled == nil || !*status.PipBridgeEnabled {
+		t.Fatalf("PiP benchmark status was not made fresh: %+v", status)
+	}
+	if !phoneBridgeToolAvailable(status, toolBridgeContacts) {
+		t.Fatal("bridge_contacts should be available in fresh iOS PiP background state")
+	}
+	if phoneBridgeToolAvailable(status, toolBridgeOpenApp) {
+		t.Fatal("bridge_open_app must be unavailable in iOS PiP background state")
+	}
+	server.runtime.stateManager.GetAllStates()
+	if got := server.runtime.stateManager.GetState("app_text_entry_strategy"); got != phoneBridgeTextEntryTargetPreserving {
+		t.Fatalf("app_text_entry_strategy = %q, want %q", got, phoneBridgeTextEntryTargetPreserving)
+	}
+}
+
+func TestHandleBenchmarkPhoneBridgeStateRequiresBenchmarkToken(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/benchmark/phone_bridge_state",
+		bytes.NewBufferString(`{"platform":"ios","app_state":"background"}`),
+	)
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkPhoneBridgeState(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkPhoneBridgeStateRejectsInvalidState(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "platform", body: `{"platform":"windows","app_state":"active"}`},
+		{name: "app state", body: `{"platform":"ios","app_state":"suspended"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := newBenchmarkSeedMemoryServer(t)
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/benchmark/phone_bridge_state",
+				bytes.NewBufferString(tc.body),
+			)
+			req.Header.Set("Authorization", "Bearer test-benchmark-token")
+			rec := httptest.NewRecorder()
+
+			server.handleBenchmarkPhoneBridgeState(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

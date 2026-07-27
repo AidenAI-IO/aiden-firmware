@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any
 from runner.models import HardAssertionFailure, HardAssertionResults, Trace
+from runner.matching import dict_contains
 from runner.suite import HardAssertions, TraceObservationSpec
 from runner.trace import trace_has_skill_read
 
@@ -88,37 +89,27 @@ def _trace_has_tool_call(trace: Trace, tool_name: str, input_contains: dict[str,
     for tc in trace.tool_calls:
         if tc.tool != target:
             continue
-        if _dict_contains(tc.input if isinstance(tc.input, dict) else {}, input_contains):
+        if dict_contains(tc.input if isinstance(tc.input, dict) else {}, input_contains):
             return True
     return False
-
-
-def _dict_contains(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
-    for key, expected_value in expected.items():
-        if key not in actual:
-            return False
-        actual_value = actual[key]
-        if isinstance(expected_value, dict):
-            if not isinstance(actual_value, dict):
-                return False
-            if not _dict_contains(actual_value, expected_value):
-                return False
-            continue
-        if actual_value != expected_value:
-            return False
-    return True
 
 
 def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool) -> AssertionOutcome:
     tools_used = [tc.tool for tc in trace.tool_calls]
     unique_tools = _unique_preserve_order(tools_used)
     prohibited_action_offenders = _prohibited_action_offenders(trace, spec.prohibited_actions)
+    missing_tool_calls = [
+        requirement
+        for requirement in spec.required_tool_calls
+        if not _trace_has_tool_call(trace, requirement.tool, requirement.input_contains)
+    ]
     results = HardAssertionResults(
         min_tool_calls=trace.total_tool_calls >= spec.min_tool_calls,
         max_tool_calls=trace.total_tool_calls <= spec.max_tool_calls,
         required_tools=all(tool in tools_used for tool in spec.required_tools),
         forbidden_tools=not any(tool in tools_used for tool in spec.forbidden_tools),
         prohibited_actions=not prohibited_action_offenders if spec.prohibited_actions else None,
+        required_tool_calls=not missing_tool_calls if spec.required_tool_calls else None,
         timeout=not timed_out,
         response_exists=bool(trace.final_response) if spec.response_required else True,
     )
@@ -198,16 +189,36 @@ def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool
                 actual=f"Prohibited semantic action calls: {_format_list(prohibited_action_offenders)}.",
             )
         )
+    if results.required_tool_calls is False:
+        expected = [
+            _required_tool_call_description(item.tool, item.input_contains)
+            for item in missing_tool_calls
+        ]
+        failures.append(
+            HardAssertionFailure(
+                id="required_tool_calls",
+                label="Required Tool Calls",
+                requirement=f"Trace must contain: {_format_list(expected)}.",
+                actual=f"Used: {_format_list(unique_tools)}.",
+            )
+        )
     all_passed = (
         results.min_tool_calls
         and results.max_tool_calls
         and results.required_tools
         and results.forbidden_tools
         and (results.prohibited_actions is not False)
+        and (results.required_tool_calls is not False)
         and results.timeout
         and results.response_exists
     )
     return AssertionOutcome(all_passed=bool(all_passed), results=results, failures=failures)
+
+
+def _required_tool_call_description(tool: str, input_contains: dict[str, Any]) -> str:
+    if not input_contains:
+        return tool
+    return f"{tool} input contains {json.dumps(input_contains, ensure_ascii=False, sort_keys=True)}"
 
 
 def evaluate_expected_answer(

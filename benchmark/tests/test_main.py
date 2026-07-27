@@ -1,5 +1,7 @@
-import time
 import json
+import time
+import urllib.parse
+
 import pytest
 
 from runner.agent_client import ToolInvokeResult
@@ -624,6 +626,159 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert captured["kwargs"]["environment_bridge_mode"] is True
     assert captured["task_kwargs"]["active_skills"] == ["device-operator"]
     assert stale_clears == ["http://127.0.0.1:19090"]
+
+
+def test_mock_environment_suite_requires_auto_agent_setup(tmp_path, capsys):
+    suite_path = tmp_path / "mock-suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mock_suite",
+                "mock_environment": {
+                    "phone_bridge": {"platform": "ios"},
+                    "tools": {},
+                },
+                "tasks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 2
+    assert "mock_environment require --auto-agent-setup" in capsys.readouterr().err
+
+
+def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
+    monkeypatch, tmp_path
+):
+    suite_path = tmp_path / "mock-suite.json"
+    phone_state = {
+        "connected": False,
+        "platform": "ios",
+        "app_state": "background",
+        "pip_bridge_enabled": True,
+    }
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mock_suite",
+                "tasks": [
+                    {
+                        "id": "policy",
+                        "category": "diagnostic",
+                        "prompt": "test policy",
+                        "description_for_judge": "test policy",
+                        "rubric": [{"id": "done", "check": "done"}],
+                        "mock_environment": {
+                            "phone_bridge": phone_state,
+                            "screen_text": "mock home screen",
+                            "tools": {"screenshot": {"output": {"ok": True}}},
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            captured["client_base_url"] = base_url
+            captured["benchmark_token"] = benchmark_token
+
+        def set_phone_bridge_state(self, state):
+            captured["phone_state"] = state
+            return {"ok": True}
+
+        def close(self):
+            pass
+
+    def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "control_token").write_text("mock-token", encoding="utf-8")
+
+    def fake_start_daemon_compose(job, **kwargs):
+        captured["job"] = job
+        captured["daemon_kwargs"] = kwargs
+        return "container-id"
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "prepare_run_config", fake_prepare_run_config)
+    monkeypatch.setattr(
+        webui, "docker_published_port", lambda container_id, container_port: 18081
+    )
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
+    monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "run_one_task",
+        lambda client, suite, task, attempt, artifact_dir, *args, **kwargs: TaskResult(
+            suite=suite.name,
+            run_id="mock-run",
+            task_id=task.id,
+            category=task.category,
+            attempt=attempt,
+            status="passed",
+            rubric=[],
+            rubric_pass_count=0,
+            rubric_total=0,
+            artifact_dir=str(artifact_dir),
+        ),
+    )
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "mock-run",
+            "--auto-agent-setup",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    assert captured["phone_state"] == phone_state
+    assert captured["benchmark_token"] == "mock-token"
+    assert captured["job"].endpoint.startswith("http://127.0.0.1:")
+    assert captured["job"].docker_endpoint.startswith(
+        "http://host.docker.internal:"
+    )
+    public_endpoint = urllib.parse.urlparse(captured["job"].endpoint)
+    docker_endpoint = urllib.parse.urlparse(captured["job"].docker_endpoint)
+    assert public_endpoint.path.startswith("/_aiden_mock/")
+    assert docker_endpoint.path == public_endpoint.path
+    assert captured["daemon_kwargs"]["environment_bridge_endpoint"] == captured[
+        "job"
+    ].docker_endpoint
+    manifest = json.loads(
+        (tmp_path / "runs" / "mock-run" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["mock_environment"]["default"] is None
+    assert manifest["mock_environment"]["tasks"]["policy"]["phone_bridge"] == phone_state
+    assert manifest["environment_url"].endswith("/_aiden_mock/REDACTED")
 
 
 def test_auto_agent_setup_caps_environment_concurrency(monkeypatch, tmp_path):
