@@ -517,10 +517,10 @@ func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 	}
 }
 
-func TestServerHandleChatKeepsToolEventSpeechWithoutDuplicatePlayback(t *testing.T) {
+func TestServerHandleChatStreamsLeadingToolSpeechWithoutDuplicatePlayback(t *testing.T) {
 	const requestID = "streaming-tts-cleanup"
 	toolSpeech := true
-	toolContent := "Checking volume.\n<tts>Check volume.</tts>"
+	toolContent := "<tts>Check volume.</tts>\nChecking volume."
 	finalContent := "<tts>Current volume is 42.</tts>\nCurrent volume is 42."
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{

@@ -673,9 +673,9 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	}
 }
 
-func TestAudioDialogKeepsToolEventSpeechWithoutDuplicatePlayback(t *testing.T) {
+func TestAudioDialogStreamsLeadingToolSpeechWithoutDuplicatePlayback(t *testing.T) {
 	toolSpeech := true
-	toolContent := "Checking volume.\n<tts>Check volume.</tts>"
+	toolContent := "<tts>Check volume.</tts>\nChecking volume."
 	finalContent := "<tts>Current volume is 42.</tts>\nCurrent volume is 42."
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
