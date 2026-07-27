@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -28,6 +29,19 @@ def _task_mock_environment(suite_name: str, task_id: str):
     task = next(task for task in suite.tasks if task.id == task_id)
     assert task.mock_environment is not None
     return suite_path, task.mock_environment
+
+
+def test_mock_environment_wildcard_bind_advertises_loopback(tmp_path):
+    spec = MockEnvironmentSpec(phone_bridge={}, tools={})
+    server = MockEnvironmentServer(spec, tmp_path, host="0.0.0.0")
+    base_url = server.start()
+    try:
+        assert server._httpd is not None
+        assert server._httpd.server_address[0] == "0.0.0.0"
+        assert urllib.parse.urlparse(base_url).hostname == "127.0.0.1"
+        assert _json_request(f"{base_url}/health")["ok"] is True
+    finally:
+        server.stop()
 
 
 def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
@@ -294,3 +308,19 @@ def test_mock_environment_activate_switches_task_fixture(tmp_path):
         assert state["data"]["screen_text"] == "Android fixture"
     finally:
         server.stop()
+
+
+def test_mock_environment_missing_screen_falls_back_to_placeholder(tmp_path):
+    spec = MockEnvironmentSpec(
+        phone_bridge={},
+        tools={},
+        screen="missing-screen.jpg",
+        screen_text="Fallback screen",
+    )
+    server = MockEnvironmentServer(spec, tmp_path)
+
+    payload = server.screenshot_payload()
+
+    assert payload["format"] == "jpeg"
+    assert payload["data"]
+    assert payload["description"] == "Fallback screen"

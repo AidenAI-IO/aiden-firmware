@@ -4626,6 +4626,8 @@ INDEX_HTML = r"""<!doctype html>
         taskDiv.appendChild(body);
         container.appendChild(taskDiv);
       });
+    }
+
     function selectedSuiteEnvironmentMode(){
       const selected = Array.from(selectedSuites)
         .map(key => suites.find(suite => suite.key === key))

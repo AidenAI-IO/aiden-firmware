@@ -2102,6 +2102,12 @@ def test_webui_html_exposes_mock_environment_run_mode():
     assert "Mock suites and external device suites must run in separate jobs" in webui.INDEX_HTML
 
 
+def test_webui_inline_script_has_balanced_braces():
+    script = webui.INDEX_HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+
+    assert script.count("{") == script.count("}")
+
+
 def test_failed_adb_start_does_not_leave_resurrectable_manifest(tmp_path: Path, monkeypatch):
     from runner import adb_android_environment as adb_env_mod
 

@@ -42,7 +42,8 @@ class MockEnvironmentServer:
         self._httpd = ThreadingHTTPServer((self.host, self.port), _handler_for(self))
         self._httpd.daemon_threads = True
         bound_host, bound_port = self._httpd.server_address[:2]
-        self.base_url = f"http://{bound_host}:{bound_port}"
+        advertised_host = "127.0.0.1" if bound_host == "0.0.0.0" else bound_host
+        self.base_url = f"http://{advertised_host}:{bound_port}"
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
             name="benchmark-mock-environment",
@@ -62,7 +63,10 @@ class MockEnvironmentServer:
         self._thread = None
 
     def activate(self, spec: MockEnvironmentSpec) -> None:
-        """Switch the scripted fixture before starting an isolated task worker."""
+        """Switch fixtures between tasks while no requests are in flight.
+
+        The mock bridge advertises concurrency one to preserve this invariant.
+        """
         with self._lock:
             self.spec = spec
             self.calls.clear()
@@ -123,7 +127,10 @@ class MockEnvironmentServer:
     def _screen_bytes(self) -> bytes:
         if self.spec.screen:
             screen_path = self.suite_dir / self.spec.screen
-            return screen_path.read_bytes()
+            try:
+                return screen_path.read_bytes()
+            except OSError:
+                pass
         image = Image.new("RGB", (1170, 2532), "#f5f5f7")
         draw = ImageDraw.Draw(image)
         draw.rounded_rectangle(

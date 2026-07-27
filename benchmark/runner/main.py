@@ -309,7 +309,11 @@ def _cmd_run_auto_agent_setup(
                 for task in suite.tasks
                 if (spec := task.mock_environment) is not None
             )
-        mock_server = MockEnvironmentServer(initial_spec, suite.source_path.parent)
+        mock_server = MockEnvironmentServer(
+            initial_spec,
+            suite.source_path.parent,
+            host="0.0.0.0",
+        )
         args.environment_url = mock_server.start()
         print(f"mock environment started: {args.environment_url}", flush=True)
     try:
