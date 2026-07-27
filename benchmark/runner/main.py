@@ -312,10 +312,12 @@ def _cmd_run_auto_agent_setup(
         mock_server = MockEnvironmentServer(
             initial_spec,
             suite.source_path.parent,
-            host="0.0.0.0",
+            # Docker host-gateway access requires a wildcard listener. The mock
+            # server protects it with a high-entropy, per-run capability path.
+            host="0.0.0.0",  # noqa: S104
         )
         args.environment_url = mock_server.start()
-        print(f"mock environment started: {args.environment_url}", flush=True)
+        print(f"mock environment started: {mock_server.redacted_url}", flush=True)
     try:
         return _cmd_run_auto_agent_setup_inner(
             args, suite, selected_task_ids, run_id, run_dir, mock_server=mock_server
@@ -380,6 +382,9 @@ def _cmd_run_auto_agent_setup_inner(
             units.append((len(units) + 1, task, attempt, repeats))
 
     total_runs = len(units)
+    display_environment_url = (
+        mock_server.redacted_url if mock_server is not None else args.environment_url
+    )
     base_state = {
         "status": "running",
         "suite": str(suite.source_path),
@@ -499,7 +504,11 @@ def _cmd_run_auto_agent_setup_inner(
     results = []
     completed = 0
     max_workers = min(max(1, concurrency), max(1, total_runs))
-    print(f"auto agent setup enabled: concurrency={max_workers} environment={args.environment_url}", flush=True)
+    print(
+        f"auto agent setup enabled: concurrency={max_workers} "
+        f"environment={display_environment_url}",
+        flush=True,
+    )
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"bench-cli-{run_id}") as executor:
         future_to_unit = {
             executor.submit(run_unit, index, task, attempt, repeats): (index, task, attempt)
@@ -527,7 +536,7 @@ def _cmd_run_auto_agent_setup_inner(
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
         "selected_task_ids": selected_task_ids,
         "agent_url": None,
-        "environment_url": args.environment_url or None,
+        "environment_url": display_environment_url or None,
         "agent_model": args.agent_model,
         "active_skills": active_skills,
         "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,

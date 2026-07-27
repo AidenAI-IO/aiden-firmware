@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import secrets
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,7 +17,7 @@ from runner.suite import MockEnvironmentSpec, MockToolResponseSpec
 
 
 class MockEnvironmentServer:
-    """Scripted environment bridge used by deterministic agent policy suites."""
+    """Scripted bridge protected by an unguessable per-instance URL path."""
 
     def __init__(
         self,
@@ -24,17 +25,28 @@ class MockEnvironmentServer:
         suite_dir: Path,
         host: str = "127.0.0.1",
         port: int = 0,
+        auth_token: str = "",
     ):
         self.spec = spec
         self.suite_dir = Path(suite_dir)
         self.host = host
         self.port = port
+        configured_token = str(auth_token or "").strip()
+        self.auth_token = configured_token or secrets.token_urlsafe(32)
+        self.base_path = f"/_aiden_mock/{urllib.parse.quote(self.auth_token, safe='')}"
         self.base_url = ""
         self.screen_text = spec.screen_text or "Mock phone environment ready."
         self.calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+
+    @property
+    def redacted_url(self) -> str:
+        if not self.base_url:
+            return ""
+        parsed = urllib.parse.urlparse(self.base_url)
+        return urllib.parse.urlunparse(parsed._replace(path="/_aiden_mock/REDACTED"))
 
     def start(self) -> str:
         if self._httpd is not None:
@@ -43,7 +55,7 @@ class MockEnvironmentServer:
         self._httpd.daemon_threads = True
         bound_host, bound_port = self._httpd.server_address[:2]
         advertised_host = "127.0.0.1" if bound_host == "0.0.0.0" else bound_host
-        self.base_url = f"http://{advertised_host}:{bound_port}"
+        self.base_url = f"http://{advertised_host}:{bound_port}{self.base_path}"
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
             name="benchmark-mock-environment",
@@ -153,7 +165,10 @@ class MockEnvironmentServer:
 def _handler_for(server: MockEnvironmentServer):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            path = urllib.parse.urlparse(self.path).path
+            path = self._authorized_path()
+            if path is None:
+                self._json(404, {"ok": False, "error": {"code": "not_found"}})
+                return
             if path == "/health":
                 self._json(200, {"ok": True, "data": {"bridge_type": "mock"}})
                 return
@@ -191,7 +206,10 @@ def _handler_for(server: MockEnvironmentServer):
                                 "input_mode": "json",
                                 "example_input": "{}",
                                 "args_schema": {"type": "object"},
-                                "http": {"method": "POST", "path": f"/api/tools/{name}"},
+                                "http": {
+                                    "method": "POST",
+                                    "path": f"{server.base_path}/api/tools/{name}",
+                                },
                             }
                             for name in names
                         ]
@@ -207,7 +225,10 @@ def _handler_for(server: MockEnvironmentServer):
             )
 
         def do_POST(self) -> None:
-            path = urllib.parse.urlparse(self.path).path
+            path = self._authorized_path()
+            if path is None:
+                self._json(404, {"ok": False, "error": {"code": "not_found"}})
+                return
             if path == "/api/setup":
                 server.reset()
                 self._json(200, {"ok": True, "data": {"setup": True}})
@@ -241,6 +262,15 @@ def _handler_for(server: MockEnvironmentServer):
                 404,
                 {"ok": False, "error": {"code": "not_found", "message": path}},
             )
+
+        def _authorized_path(self) -> str | None:
+            path = urllib.parse.urlparse(self.path).path
+            if path == server.base_path:
+                return "/"
+            prefix = server.base_path + "/"
+            if path.startswith(prefix):
+                return path[len(server.base_path) :]
+            return None
 
         def _read_json(self) -> dict[str, Any] | None:
             try:

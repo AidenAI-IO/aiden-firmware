@@ -1,5 +1,7 @@
-import time
 import json
+import time
+import urllib.parse
+
 import pytest
 
 from runner.agent_client import ToolInvokeResult
@@ -612,6 +614,10 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
     assert captured["job"].docker_endpoint.startswith(
         "http://host.docker.internal:"
     )
+    public_endpoint = urllib.parse.urlparse(captured["job"].endpoint)
+    docker_endpoint = urllib.parse.urlparse(captured["job"].docker_endpoint)
+    assert public_endpoint.path.startswith("/_aiden_mock/")
+    assert docker_endpoint.path == public_endpoint.path
     assert captured["daemon_kwargs"]["environment_bridge_endpoint"] == captured[
         "job"
     ].docker_endpoint
@@ -622,6 +628,7 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
     )
     assert manifest["mock_environment"]["default"] is None
     assert manifest["mock_environment"]["tasks"]["policy"]["phone_bridge"] == phone_state
+    assert manifest["environment_url"].endswith("/_aiden_mock/REDACTED")
 
 
 def test_auto_agent_setup_caps_environment_concurrency(monkeypatch, tmp_path):

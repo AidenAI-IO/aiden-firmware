@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+import pytest
 
 from runner.mock_environment import MockEnvironmentServer
 from runner.suite import MockEnvironmentSpec, MockToolResponseSpec, load_suite
@@ -38,8 +41,19 @@ def test_mock_environment_wildcard_bind_advertises_loopback(tmp_path):
     try:
         assert server._httpd is not None
         assert server._httpd.server_address[0] == "0.0.0.0"
-        assert urllib.parse.urlparse(base_url).hostname == "127.0.0.1"
+        parsed = urllib.parse.urlparse(base_url)
+        assert parsed.hostname == "127.0.0.1"
+        assert parsed.path == f"/_aiden_mock/{server.auth_token}"
         assert _json_request(f"{base_url}/health")["ok"] is True
+        catalog = _json_request(f"{base_url}/api/tools")
+        assert catalog["tools"][0]["http"]["path"].startswith(parsed.path)
+
+        unprotected_url = urllib.parse.urlunparse(
+            parsed._replace(path="/health", params="", query="", fragment="")
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            _json_request(unprotected_url)
+        assert exc_info.value.code == 404
     finally:
         server.stop()
 
