@@ -304,8 +304,11 @@ func TestWebSocketRejectsInvalidAudioHex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginStream() error = %v", err)
 	}
-	if err := session.WriteText("this sentence is long enough."); err == nil || !strings.Contains(err.Error(), "decode audio hex") {
-		t.Fatalf("WriteText() error = %v, want decode audio hex", err)
+	if err := session.WriteText("this sentence is long enough."); err != nil {
+		t.Fatalf("WriteText() error = %v", err)
+	}
+	if err := session.Close(); err == nil || !strings.Contains(err.Error(), "decode audio hex") {
+		t.Fatalf("Close() error = %v, want decode audio hex", err)
 	}
 }
 
@@ -349,16 +352,111 @@ func TestWebSocketReadAudioHonorsContextCancellation(t *testing.T) {
 		t.Fatalf("BeginStream() error = %v", err)
 	}
 
+	if err := session.WriteText("this sentence is long enough."); err != nil {
+		t.Fatalf("WriteText() error = %v", err)
+	}
 	done := make(chan error, 1)
-	go func() { done <- session.WriteText("this sentence is long enough.") }()
+	go func() { done <- session.Close() }()
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Fatal("WriteText() error = nil, want context cancellation")
+			t.Fatal("Close() error = nil, want context cancellation")
 		}
 	case <-time.After(500 * time.Millisecond):
 		server.CloseClientConnections()
-		t.Fatal("WriteText() blocked after context cancellation")
+		t.Fatal("Close() blocked after context cancellation")
+	}
+}
+
+func TestWebSocketPrefetchesChunksAndWritesPCMInOrder(t *testing.T) {
+	const (
+		firstText  = "好的，给你讲一个程序员的笑话。为什么程序员总是分不清万圣节和圣诞节？"
+		secondText = "因为 Oct 31 等于 Dec 25。"
+	)
+	firstStarted := make(chan struct{})
+	secondFinished := make(chan struct{})
+	releaseFirst := make(chan struct{})
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		_ = conn.WriteJSON(map[string]any{"event": "connected_success"})
+		var start map[string]any
+		if err := conn.ReadJSON(&start); err != nil {
+			t.Errorf("read task_start: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"event": "task_started"})
+		var cont map[string]any
+		if err := conn.ReadJSON(&cont); err != nil {
+			t.Errorf("read task_continue: %v", err)
+			return
+		}
+		var finish map[string]any
+		if err := conn.ReadJSON(&finish); err != nil {
+			t.Errorf("read task_finish: %v", err)
+			return
+		}
+
+		text, _ := cont["text"].(string)
+		switch text {
+		case firstText:
+			close(firstStarted)
+			<-releaseFirst
+			_ = conn.WriteJSON(map[string]any{"data": map[string]any{"audio": "31"}})
+		case secondText:
+			_ = conn.WriteJSON(map[string]any{"data": map[string]any{"audio": "32"}})
+			close(secondFinished)
+		default:
+			t.Errorf("unexpected synthesized text %q", text)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"event": "task_finished"})
+	}))
+	defer server.Close()
+
+	provider, err := NewWebSocket(tts.ProviderConfig{
+		APIKey:   "test-key",
+		Endpoint: "ws" + server.URL[len("http"):],
+	})
+	if err != nil {
+		t.Fatalf("NewWebSocket() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sink := &recordingSink{format: tts.AudioFormat{SampleRate: 32000, Channels: 1, BitWidth: 16}}
+	session, err := provider.BeginStream(ctx, sink)
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+	if err := session.WriteText(firstText + secondText); err != nil {
+		t.Fatalf("WriteText() error = %v", err)
+	}
+
+	select {
+	case <-firstStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first synthesis did not start")
+	}
+	select {
+	case <-secondFinished:
+		// The second WebSocket cycle completed while the first was still held.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second synthesis was not prefetched concurrently")
+	}
+	close(releaseFirst)
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if got := string(sink.data); got != "12" {
+		t.Fatalf("sink data = %q, want ordered PCM %q", got, "12")
 	}
 }
 

@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	wsEndpoint    = "wss://api.minimax.io/ws/v1/t2a_v2"
-	wsEndpointCN  = "wss://api.minimaxi.com/ws/v1/t2a_v2"
-	wsConnTimeout = 10 * time.Second
+	wsEndpoint                  = "wss://api.minimax.io/ws/v1/t2a_v2"
+	wsEndpointCN                = "wss://api.minimaxi.com/ws/v1/t2a_v2"
+	wsConnTimeout               = 10 * time.Second
+	maxConcurrentChunkSynthesis = 3
 )
 
 // WebSocketAdapter implements TTSProvider using Minimax WebSocket API.
@@ -48,21 +49,34 @@ func (a *WebSocketAdapter) BeginStream(ctx context.Context, sink tts.AudioSink) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ready := make(chan struct{})
+	close(ready)
 	return &wsSession{
-		ctx:  ctx,
-		cfg:  a.cfg,
-		sink: sink,
-		buf:  &sentenceBuffer{},
+		ctx:       ctx,
+		cfg:       a.cfg,
+		sink:      sink,
+		buf:       &sentenceBuffer{},
+		playTail:  ready,
+		synthesis: make(chan struct{}, maxConcurrentChunkSynthesis),
 	}, nil
 }
 
-// wsSession buffers text until sentence boundaries, then performs a full
-// task_start → task_continue → receive audio → task_finish cycle per sentence.
+// wsSession buffers text until sentence boundaries, then prefetches multiple
+// sentence syntheses concurrently. Each sentence still requires its own full
+// task_start → task_continue → task_finish cycle, but orderedChunkSink
+// releases the resulting PCM to the shared playback sink in response order.
+// This hides the next WebSocket handshake behind playback of the current chunk.
 type wsSession struct {
 	ctx  context.Context
 	cfg  commonConfig
 	sink tts.AudioSink
 	buf  *sentenceBuffer
+
+	jobsMu    sync.Mutex
+	jobs      sync.WaitGroup
+	playTail  chan struct{}
+	synthesis chan struct{}
+	closed    bool
 
 	errMu   sync.Mutex
 	lastErr error
@@ -71,8 +85,7 @@ type wsSession struct {
 func (s *wsSession) WriteText(text string) error {
 	chunks := s.buf.Write(text)
 	for _, chunk := range chunks {
-		if err := s.synthesizeChunk(chunk); err != nil {
-			s.recordErr(err)
+		if err := s.enqueueChunk(chunk); err != nil {
 			return err
 		}
 	}
@@ -81,8 +94,7 @@ func (s *wsSession) WriteText(text string) error {
 
 func (s *wsSession) Flush() error {
 	if rest := s.buf.Flush(); rest != "" {
-		if err := s.synthesizeChunk(rest); err != nil {
-			s.recordErr(err)
+		if err := s.enqueueChunk(rest); err != nil {
 			return err
 		}
 	}
@@ -100,12 +112,62 @@ func (s *wsSession) ResetBuffer() {
 
 func (s *wsSession) Close() error {
 	if err := s.Flush(); err != nil {
-		return err
+		s.recordErr(err)
 	}
+	s.jobsMu.Lock()
+	s.closed = true
+	s.jobsMu.Unlock()
+	s.jobs.Wait()
 	if err := s.sink.Drain(s.ctx); err != nil {
 		s.recordErr(err)
 	}
 	return s.Err()
+}
+
+func (s *wsSession) enqueueChunk(text string) error {
+	select {
+	case s.synthesis <- struct{}{}:
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+
+	s.jobsMu.Lock()
+	if s.closed {
+		s.jobsMu.Unlock()
+		<-s.synthesis
+		return tts.ErrSessionClosed
+	}
+	previous := s.playTail
+	done := make(chan struct{})
+	s.playTail = done
+	s.jobs.Add(1)
+	s.jobsMu.Unlock()
+
+	go s.runChunk(text, previous, done)
+	return nil
+}
+
+func (s *wsSession) runChunk(text string, previous <-chan struct{}, done chan struct{}) {
+	defer s.jobs.Done()
+	defer close(done)
+	defer func() { <-s.synthesis }()
+
+	chunkSink := &orderedChunkSink{
+		ctx:      s.ctx,
+		target:   s.sink,
+		previous: previous,
+	}
+	err := s.synthesizeChunk(text, chunkSink)
+	if err == nil {
+		err = chunkSink.Finish()
+	} else {
+		// Preserve response ordering even when this chunk fails, so a later
+		// successful synthesis cannot overtake audio still playing before it.
+		_ = chunkSink.WaitForTurn()
+	}
+	if err != nil {
+		s.recordErr(err)
+	}
 }
 
 func (s *wsSession) Err() error {
@@ -123,13 +185,13 @@ func (s *wsSession) recordErr(err error) {
 }
 
 // synthesizeChunk performs one full WebSocket TTS cycle for a sentence.
-func (s *wsSession) synthesizeChunk(text string) error {
+func (s *wsSession) synthesizeChunk(text string, sink tts.AudioSink) error {
 	select {
 	case <-s.ctx.Done():
 		return s.ctx.Err()
 	default:
 	}
-	format := s.sink.Format()
+	format := sink.Format()
 	sampleRate := format.SampleRate
 	if sampleRate <= 0 {
 		sampleRate = defaultSampleRate
@@ -213,7 +275,7 @@ func (s *wsSession) synthesizeChunk(text string) error {
 					return fmt.Errorf("decode audio hex: %w", err)
 				}
 				if len(pcm) > 0 {
-					if err := s.sink.WritePCM(pcm); err != nil {
+					if err := sink.WritePCM(pcm); err != nil {
 						return err
 					}
 					wroteAudio = true
@@ -222,6 +284,73 @@ func (s *wsSession) synthesizeChunk(text string) error {
 		}
 	}
 }
+
+// orderedChunkSink consumes a prefetched sentence as fast as Minimax sends it,
+// buffering PCM until the preceding sentence has finished writing. Once its
+// turn arrives, buffered and subsequent PCM are forwarded directly so playback
+// remains continuous without reordering concurrently synthesized sentences.
+type orderedChunkSink struct {
+	ctx      context.Context
+	target   tts.AudioSink
+	previous <-chan struct{}
+	ready    bool
+	pending  []byte
+}
+
+func (s *orderedChunkSink) Format() tts.AudioFormat { return s.target.Format() }
+
+func (s *orderedChunkSink) WritePCM(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if !s.ready {
+		select {
+		case <-s.previous:
+			s.ready = true
+		case <-s.ctx.Done():
+			return s.ctx.Err()
+		default:
+			s.pending = append(s.pending, data...)
+			return nil
+		}
+	}
+	if err := s.flushPending(); err != nil {
+		return err
+	}
+	return s.target.WritePCM(data)
+}
+
+func (s *orderedChunkSink) Finish() error {
+	if err := s.WaitForTurn(); err != nil {
+		return err
+	}
+	return s.flushPending()
+}
+
+func (s *orderedChunkSink) WaitForTurn() error {
+	if s.ready {
+		return nil
+	}
+	select {
+	case <-s.previous:
+		s.ready = true
+		return nil
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+}
+
+func (s *orderedChunkSink) flushPending() error {
+	if len(s.pending) == 0 {
+		return nil
+	}
+	pending := s.pending
+	s.pending = nil
+	return s.target.WritePCM(pending)
+}
+
+func (s *orderedChunkSink) Drain(context.Context) error { return nil }
+func (s *orderedChunkSink) Stop() error                 { return nil }
 
 func (s *wsSession) dial() (*websocket.Conn, error) {
 	dialer, err := websocketDialerForConfig(s.cfg)
