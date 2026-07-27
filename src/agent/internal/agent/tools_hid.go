@@ -1169,24 +1169,29 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 
 func (t *TouchGestureTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
-		Type         string        `json:"type"`
-		Point        *pointerPoint `json:"point"`
-		Start        *pointerPoint `json:"start"`
-		End          *pointerPoint `json:"end"`
-		CoordSpace   string        `json:"coord_space"`
-		Button       string        `json:"button"`
-		DurationMs   *int          `json:"duration_ms"`
-		HoldBeforeMs *int          `json:"hold_before_ms"`
-		HoldAfterMs  *int          `json:"hold_after_ms"`
-		HoldMs       *int          `json:"hold_ms"`
-		PauseMs      *int          `json:"pause_ms"`
-		Steps        *int          `json:"steps"`
-		Distance     *float64      `json:"distance"`
-		Anchor       *float64      `json:"anchor"`
-		Strength     string        `json:"strength"`
+		Type         string             `json:"type"`
+		Point        *pointerPoint      `json:"point"`
+		Start        *pointerPoint      `json:"start"`
+		End          *pointerPoint      `json:"end"`
+		X            *pointerCoordinate `json:"x"`
+		Y            *pointerCoordinate `json:"y"`
+		CoordSpace   string             `json:"coord_space"`
+		Button       string             `json:"button"`
+		DurationMs   *int               `json:"duration_ms"`
+		HoldBeforeMs *int               `json:"hold_before_ms"`
+		HoldAfterMs  *int               `json:"hold_after_ms"`
+		HoldMs       *int               `json:"hold_ms"`
+		PauseMs      *int               `json:"pause_ms"`
+		Steps        *int               `json:"steps"`
+		Distance     *float64           `json:"distance"`
+		Anchor       *float64           `json:"anchor"`
+		Strength     string             `json:"strength"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Common mistakes: missing quotes around string values, incorrect comma placement, point/start/end must be objects with named keys like {\"x\":500,\"y\":300} not bare values. Example: {\"type\":\"tap\",\"point\":{\"x\":500,\"y\":500}}", err), nil
+	}
+	if args.Point == nil && args.X != nil && args.Y != nil {
+		args.Point = &pointerPoint{X: *args.X, Y: *args.Y}
 	}
 
 	gestureType := strings.ToLower(strings.TrimSpace(args.Type))
