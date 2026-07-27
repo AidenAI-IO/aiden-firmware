@@ -334,7 +334,7 @@ def test_run_skips_tasks_outside_target_platform(monkeypatch, tmp_path):
         ]
     )
 
-    assert rc == 1
+    assert rc == 0
     assert called_tasks == ["android_task"]
     manifest = json.loads((tmp_path / "runs" / "platform-run" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["target_platform"] == "android"
@@ -390,7 +390,7 @@ def test_run_all_platform_skipped_tasks_does_not_require_agent(monkeypatch, tmp_
         ]
     )
 
-    assert rc == 1
+    assert rc == 0
     manifest = json.loads((tmp_path / "runs" / "all-skipped-run" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["totals"]["skipped"] == 1
 

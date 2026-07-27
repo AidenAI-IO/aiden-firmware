@@ -265,6 +265,13 @@ def _result_totals(results: list[object], total_tasks: int | None = None) -> dic
     return totals
 
 
+def _run_exit_code(totals: dict[str, int]) -> int:
+    if totals.get("failed", 0) or totals.get("judge_error", 0) or totals.get("timeout", 0):
+        return 1
+    accounted = totals.get("passed", 0) + totals.get("skipped", 0)
+    return 0 if accounted == totals.get("tasks", 0) else 1
+
+
 def _selected_task_ids(args: argparse.Namespace) -> list[str]:
     ids: list[str] = []
     for value in list(args.task_id or []) + [args.task_ids or ""]:
@@ -583,7 +590,7 @@ def _cmd_run_auto_agent_setup(
     print(f"Skipped:       {manifest['totals']['skipped']}", flush=True)
     print(f"Results saved to: {run_dir}", flush=True)
     print("="*60 + "\n", flush=True)
-    return 0 if manifest["totals"]["passed"] == manifest["totals"]["tasks"] else 1
+    return _run_exit_code(manifest["totals"])
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -813,7 +820,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         else:
             print("Warning: failed to upload report to board")
         upload_client.close()
-    return 0 if manifest["totals"]["passed"] == manifest["totals"]["tasks"] else 1
+    return _run_exit_code(manifest["totals"])
 
 
 def _read_optional_token(path: str | Path | None) -> str:

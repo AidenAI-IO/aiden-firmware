@@ -101,6 +101,8 @@ def test_quick_action_suite_marks_non_android_action_tasks():
         "quick_action_home_screen_right",
         "quick_action_control_center",
         "quick_action_control_center_dismiss",
+        "quick_action_spotlight_search",
+        "quick_action_spotlight_search_via_input",
         "quick_action_browser_new_tab",
         "quick_action_browser_close_tab",
         "quick_action_browser_address_and_refresh",

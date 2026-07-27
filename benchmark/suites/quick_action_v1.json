@@ -206,6 +206,7 @@
     {
       "id": "quick_action_spotlight_search",
       "category": "multi_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must use quick_action spotlight_search to open global search, then type 设置 and open the Settings app from results.",
       "setup": {
         "type": "agent_prompt",
@@ -237,6 +238,7 @@
     {
       "id": "quick_action_spotlight_search_via_input",
       "category": "multi_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must use quick_action spotlight_search to open global search, then use the visible input field to type 设置 and open Settings from results.",
       "setup": {
         "type": "agent_prompt",
