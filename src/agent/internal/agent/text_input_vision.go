@@ -17,6 +17,10 @@ type textInputScreenPhase string
 const (
 	textInputPhaseBeforeType textInputScreenPhase = "before_type"
 	textInputPhaseAfterType  textInputScreenPhase = "after_type"
+	// Keep non-streaming vision analysis bounded. Some providers otherwise spend
+	// an unbounded amount of time producing hidden reasoning before returning
+	// the small JSON decision this workflow needs.
+	textInputVisionMaxTokens = 200
 )
 
 type textInputScreenAnalysisRequest struct {
@@ -37,6 +41,7 @@ type textInputScreenAnalysis struct {
 	ObservedMode       textInputMode             `json:"observed_mode"`
 	FieldText          string                    `json:"field_text"`
 	CompositionPending bool                      `json:"composition_pending"`
+	CommitWithEnter    bool                      `json:"commit_with_enter"`
 	WrongIMESuspected  bool                      `json:"wrong_ime_suspected"`
 	SuggestSwitchIME   bool                      `json:"suggest_switch_ime"`
 	Candidates         []textInputCandidateClick `json:"candidates"`
@@ -68,6 +73,7 @@ func (v *llmTextInputVision) AnalyzeScreen(ctx context.Context, screenshot scree
 		ObservedMode       string                    `json:"observed_mode"`
 		FieldText          string                    `json:"field_text"`
 		CompositionPending bool                      `json:"composition_pending"`
+		CommitWithEnter    bool                      `json:"commit_with_enter"`
 		WrongIMESuspected  bool                      `json:"wrong_ime_suspected"`
 		SuggestSwitchIME   bool                      `json:"suggest_switch_ime"`
 		Candidates         []textInputCandidateClick `json:"candidates"`
@@ -84,6 +90,7 @@ func (v *llmTextInputVision) AnalyzeScreen(ctx context.Context, screenshot scree
 		ObservedMode:       mode,
 		FieldText:          strings.TrimSpace(parsed.FieldText),
 		CompositionPending: parsed.CompositionPending,
+		CommitWithEnter:    parsed.CommitWithEnter,
 		WrongIMESuspected:  parsed.WrongIMESuspected,
 		SuggestSwitchIME:   parsed.SuggestSwitchIME,
 		Candidates:         parsed.Candidates,
@@ -98,7 +105,7 @@ func buildTextInputAnalysisPrompt(req textInputScreenAnalysisRequest) string {
 	}
 	phaseHint := "Typing has NOT started yet. If IME mode is unclear, set observed_mode=unknown and suggest_switch_ime=false."
 	if req.Phase == textInputPhaseAfterType {
-		phaseHint = "Typing already happened. Read ONLY the focused target input field for field_text. Do NOT copy IME candidate bar, preedit strip, keyboard suggestions, or inline composition text into field_text. Set composition_pending=true when target text is visible only in IME candidates/preedit and is not yet fully committed inside the target input field. If field shows only latin/pinyin segments instead of target characters, set wrong_ime_suspected=true and suggest_switch_ime=true."
+		phaseHint = "Typing already happened. Read ONLY the focused target input field for field_text. Do NOT copy IME candidate bar, preedit strip, keyboard suggestions, or inline composition text into field_text. Set composition_pending=true when target text is visible only in IME candidates/preedit and is not yet fully committed inside the target input field. Set commit_with_enter=true only when pressing Enter will safely commit the exact current ASCII target without selecting or changing it; otherwise leave it false. If field shows only latin/pinyin segments instead of target characters, set wrong_ime_suspected=true and suggest_switch_ime=true."
 	}
 	return strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot (Android/iOS/macOS) for text-input automation.
 Platform: %q
@@ -113,6 +120,7 @@ Return JSON only:
   "observed_mode": "ascii|composition|unknown",
   "field_text": "exact committed text visible ONLY inside the target input field",
   "composition_pending": false,
+  "commit_with_enter": false,
   "wrong_ime_suspected": false,
   "suggest_switch_ime": false,
   "candidates": [{"x":500,"y":800,"text":"你"}],
@@ -122,6 +130,7 @@ Return JSON only:
 Rules:
 - field_text: committed text inside the target input box only; exclude IME candidate rows, preedit, and keyboard suggestion chips
 - composition_pending: true when target characters still need candidate selection or are only visible outside the target input field
+- commit_with_enter: true only when Enter safely commits the exact current ASCII preedit; never use it to choose a CJK candidate
 - observed_mode: ascii=direct Latin entry; composition=IME with candidates/preedit; unknown=unclear
 - candidates: normalized click points 0-1000 for visible IME candidates that would commit target text into the field; [] if none
 - wrong_ime_suspected: true when field shows raw romanization instead of target script
@@ -145,7 +154,10 @@ func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, scre
 	// Use the model's configured temperature for vision analysis. Previously
 	// hardcoded to 0 for determinism, but that breaks kimi-k3 (requires temp=1)
 	// and the temperature difference has minimal impact on vision text extraction.
-	resp, err := v.models.GenerateContent(ctx, msgs, llms.WithJSONMode())
+	resp, err := v.models.GenerateContent(ctx, msgs,
+		llms.WithJSONMode(),
+		llms.WithMaxTokens(textInputVisionMaxTokens),
+	)
 	if err != nil {
 		return "", err
 	}

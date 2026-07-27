@@ -77,11 +77,9 @@ func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...Bu
 
 var scriptCallableToolNames = map[string]struct{}{
 	"audio_volume":           {},
-	"enter_text_in_field":    {},
-	"enter_text_via_bridge":  {},
+	"enter_text":             {},
 	"image_diff":             {},
 	"keyboard_tap":           {},
-	"keyboard_text":          {},
 	"mouse_click":            {},
 	"mouse_move":             {},
 	"mouse_scroll":           {},
@@ -147,7 +145,6 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 
 	tools := map[string]langtools.Tool{
 		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"keyboard_text":          newPostActionStableScreenshotTool(keyboardText, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_click":            newPostActionStableScreenshotTool(mouseClick, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
@@ -203,7 +200,6 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn fu
 	}
 	engine := newTextInputEngine(*s.textInputHW, newLLMTextInputVision(models))
 	tool := &EnterTextInFieldTool{engine: engine, platformFn: platformFn, iosKeyboardIsolation: s.iosKeyboardIsolation}
-	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(tool, s.textInputHW.screenshot, 300*time.Millisecond)
 	searchOpenTool := &appSearchOpenTool{
 		hw:                   s.textInputHW,
 		vision:               newLLMTextInputVision(models),
@@ -215,7 +211,8 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn fu
 	s.tools["search_launch_app"] = searchOpenTool
 	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, platformFn: platformFn, iosKeyboardIsolation: s.iosKeyboardIsolation}
 	tool.bridgeTool = bridgeTool
-	s.tools["enter_text_via_bridge"] = newPostActionScreenshotTool(bridgeTool, s.textInputHW.screenshot, 300*time.Millisecond)
+	entryTool := &EnterTextTool{engine: engine, bridgeTool: bridgeTool, platformFn: platformFn, iosKeyboardIsolation: s.iosKeyboardIsolation}
+	s.tools["enter_text"] = newPostActionScreenshotTool(entryTool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
 
 func (s *ToolSet) SetRunScriptSpeaker(speaker runScriptSpeaker) {
@@ -235,7 +232,7 @@ func (s *ToolSet) SetRuntimePlatformFn(fn func() string) {
 	if s == nil {
 		return
 	}
-	for _, name := range []string{"enter_text_in_field", "enter_text_via_bridge", "search_launch_app"} {
+	for _, name := range []string{"enter_text", "search_launch_app"} {
 		tool, ok := s.tools[name]
 		if !ok {
 			continue
@@ -284,9 +281,6 @@ func (s *ToolSet) Names() []string {
 }
 
 func (s *ToolSet) toolAvailable(name string) bool {
-	if name == "enter_text_via_bridge" {
-		return s.phoneBridge != nil
-	}
 	if !isPhoneBridgeToolName(name) {
 		return true
 	}

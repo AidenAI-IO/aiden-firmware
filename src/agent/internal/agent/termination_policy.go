@@ -577,8 +577,8 @@ func absDiffUint64(a, b uint64) uint64 {
 
 func isLoopRestrictedActionTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "keyboard_tap", "keyboard_text", "mouse_click", "mouse_move", "mouse_scroll",
-		"touch_gesture", "quick_action", "enter_text_in_field", "enter_text_via_bridge",
+	case "keyboard_tap", "mouse_click", "mouse_move", "mouse_scroll", "touch_gesture",
+		"quick_action", "enter_text",
 		"search_launch_app", toolBridgeOpenApp:
 		return true
 	default:

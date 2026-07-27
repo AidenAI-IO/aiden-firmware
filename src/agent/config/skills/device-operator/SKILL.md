@@ -15,9 +15,7 @@ metadata:
       mouse_move,
       mouse_scroll,
       keyboard_tap,
-      keyboard_text,
-      enter_text_in_field,
-      enter_text_via_bridge,
+      enter_text,
       search_launch_app,
       request_human_handoff,
       recall_memory,
@@ -58,10 +56,9 @@ Prefer the highest-level reliable tool for the job:
   - If `status=reserved` in a list result, or `quick_action` returns `ok=false` or an error, skip it and use direct input tools instead.
   - If `ok=true` but the screenshot shows no expected change, treat it as ineffective: try `alternative=true` once when alternatives are listed, otherwise switch tools. Never loop on the same binding.
 - Use `touch_gesture` for mobile taps, swipes, drag, back, and home gestures.
-- For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `keyboard_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
-- Use `enter_text_in_field` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
+- For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `enter_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
+- Use `enter_text` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
 - Use `keyboard_tap` for enter, escape, tab, arrows, shortcuts, and simple key actions.
-- Use `keyboard_text` only for simple standalone ASCII typing outside picker/wheel controls. Never use it for picker values, Chinese/CJK, or emoji field entry.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch-style controls are not appropriate.
 
 If a semantic tool fails, read the message and choose a different approach. Do not retry the same binding unless the tool explicitly offers a distinct alternative.
@@ -80,7 +77,7 @@ Before using coordinates:
 
 ## Text Entry
 
-Use `enter_text_in_field` for normal input boxes such as search fields, forms, and chat composers.
+Use `enter_text` for normal input boxes such as search fields, forms, and chat composers.
 
 Required pattern:
 
@@ -94,34 +91,23 @@ Required pattern:
 ```
 
 - Focus coordinates must come from the latest screenshot.
-- Before calling either text-entry tool, the latest screenshot must clearly show the actual editable field or composer, and `focus` must be inside that visible field. An app home screen, folder/list view, blank area, or screen that only shows a create/new button is not input-ready; first create/open the document or message and observe its editor.
+- Before calling `enter_text`, the latest screenshot must clearly show the actual editable field or composer, and `focus` must be inside that visible field. An app home screen, folder/list view, blank area, or screen that only shows a create/new button is not input-ready; first create/open the document or message and observe its editor.
 - Treat `search_launch_app` success as app-open confirmation only. It does not prove an in-app editor or input field is ready.
 - Success requires `committed:true` and `field_text` matching the requested text, or a fresh screenshot that visibly confirms the field content.
 - `committed:false` means failure; do not tell the user text was entered.
 - For Chinese/CJK composition, provide `segments` as romanization syllables in typing order, e.g. `"你好"` -> `["ni","hao"]`.
-- Never pass Chinese, emoji, or romanization blobs to `keyboard_text`.
 - If text remains in the IME candidate/preedit area instead of the field, retry once with corrected focus/segments or report the blocker.
 
-Use `enter_text_via_bridge` only when:
-
-- the latest screenshot already shows the actual editable field/composer and the supplied `focus` point is inside it;
-- runtime `app_text_entry_strategy` is `target_preserving_bridge` and the target is non-search CJK/non-ASCII, multiline, or final composer text;
-- the user explicitly asks to use the companion app, bridge, or clipboard;
-- direct field entry failed and the bridge is available;
-- the text is long, emoji-heavy, or otherwise unsuitable for HID typing.
-
-After bridge entry, verify the target field or submitted result before reporting success.
-If the structured result from `enter_text_via_bridge` conflicts with its attached screenshot, treat this as uncertain verification rather than immediate input failure. Call `wait_for_stable_screen` once and compare the requested text with the fresh observation. Preserve the current field while evidence conflicts; do not perform corrective input until the fresh observation identifies a concrete mismatch. If correction is necessary, change only the confirmed mismatch and keep already-correct content intact.
+`enter_text` automatically prefers a usable Phone Bridge clipboard path, then falls back to ordered ASCII and IME runs. If its structured result conflicts with its attached screenshot, treat this as uncertain verification rather than immediate input failure. Call `wait_for_stable_screen` once and compare the requested text with the fresh observation. Preserve the current field while evidence conflicts; do not perform corrective input until the fresh observation identifies a concrete mismatch.
 
 For simple keys:
 
 - Use `keyboard_tap` for submit, enter, escape, tab, arrows, shortcuts, or backspace.
-- Use `keyboard_text` only for simple standalone ASCII text when not entering a normal field.
 - For ordinary deletion in a field, prefer `keyboard_tap` with `{"keys":["backspace"]}`; `delete` is forward-delete.
 
 If text does not appear or appears in the wrong place, stop typing, take a fresh screenshot, re-check focus and field identity, then retry once with corrected focus or input method. If still failing, summarize observed field state and ask for help or use bridge if appropriate.
 
-If a text or keyboard tool reports missing HID devices such as `/dev/hidg0` or `/dev/hidg1`, treat direct text entry as unavailable in this environment. Do not fall back to `keyboard_text` for Chinese/CJK, emoji, or romanization guessing. Take at most one fresh screenshot to confirm the current state; unless the target is already clearly visible and reachable without text entry, stop and report the blocker with the exact tool error and ask for help or use an explicitly available bridge path.
+If `enter_text` reports missing HID devices such as `/dev/hidg0` or `/dev/hidg1`, treat direct local text entry as unavailable in this environment. Take at most one fresh screenshot to confirm the current state; unless the target is already clearly visible and reachable without text entry, stop and report the blocker with the exact tool error and ask for help.
 
 ## App Switching and Launch
 
@@ -188,7 +174,7 @@ For picker/wheel controls, discover columns from the current UI rather than assu
 
 All `wheel_nudge` geometry uses normalized 0-1000 coordinates. Convert horizontal `column_x` with `pixel_x / max(screenshot_width - 1, 1) * 1000`. Convert vertical `center_y`, the caller's `row_spacing` estimate, and `visible_target_y` with `pixel_y_or_distance / max(screenshot_height - 1, 1) * 1000`; never divide a vertical distance by screenshot width. Runtime uses image-derived row spacing when confident and falls back to the caller estimate otherwise. Do not pass a coordinate-space selector to `wheel_nudge`.
 
-Use `wheel_nudge` as the conservative path for the whole picker interaction. Do not tap the selected row to expose a hidden editor and do not use `keyboard_text` or `keyboard_tap` to change picker values, even if the control appears temporarily editable. Picker focus and replacement behavior varies across apps and cannot be verified reliably from HID success alone. Read the latest screenshot, issue one bounded `wheel_nudge`, then read the returned screenshot before the next move. Direct taps on unselected picker rows and all picker drags also belong to `wheel_nudge`.
+Use `wheel_nudge` as the conservative path for the whole picker interaction. Do not tap the selected row to expose a hidden editor and do not use `enter_text` or `keyboard_tap` to change picker values, even if the control appears temporarily editable. Picker focus and replacement behavior varies across apps and cannot be verified reliably from HID success alone. Read the latest screenshot, issue one bounded `wheel_nudge`, then read the returned screenshot before the next move. Direct taps on unselected picker rows and all picker drags also belong to `wheel_nudge`.
 
 - Pass `cycle_size:0` for a non-cyclic ordered column. For cyclic columns, `cycle_size` is the numeric domain span/modulus, not the number of displayed rows: a `00..59` minute wheel with `value_step:5` still uses `cycle_size:60`, while months use `cycle_start:1, cycle_size:12`; calendar-day size depends on the selected year/month.
 - `value_step` is the signed value change for one visible row downward. Therefore `value_step > 0` means finger-up increases the selected value, and `value_step < 0` means finger-down increases it.

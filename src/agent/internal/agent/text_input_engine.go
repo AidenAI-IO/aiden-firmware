@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -99,8 +100,15 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 	imeSwitches := 0
 	vlmCalls := 0
 	retryWrongIME := false
+	startedAt := time.Now()
+	log.Printf("[text-input] start strategy=single target=%q platform=%s mode=%s max_attempts=%d", args.Text, platform, interactionMode, maxAttempts)
+	defer func() {
+		log.Printf("[text-input] finish strategy=single target=%q duration=%s", args.Text, time.Since(startedAt).Round(time.Millisecond))
+	}()
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attemptStartedAt := time.Now()
+		log.Printf("[text-input] attempt=%d start target=%q retype=%t retry_wrong_ime=%t", attempt, args.Text, attempt == 1 || retryWrongIME, retryWrongIME)
 		steps = append(steps, fmt.Sprintf("attempt %d begin", attempt))
 		retype := attempt == 1 || retryWrongIME
 		if (attempt == 1 || retype) && !(attempt == 1 && args.SkipFocus) {
@@ -225,6 +233,7 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 			continue
 		}
 		if committed {
+			log.Printf("[text-input] attempt=%d committed=true field=%q duration=%s", attempt, fieldText, time.Since(attemptStartedAt).Round(time.Millisecond))
 			result := enterTextInFieldResult{
 				OK:           true,
 				Committed:    true,
@@ -241,6 +250,7 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 			return finalizeEnterTextInFieldResult(result, args.SendAfterCommit), nil
 		}
 		steps = append(steps, fmt.Sprintf("verify failed: field=%q", fieldText))
+		log.Printf("[text-input] attempt=%d committed=false field=%q wrong_ime=%t duration=%s", attempt, fieldText, wrongIME, time.Since(attemptStartedAt).Round(time.Millisecond))
 		retryWrongIME = wrongIME
 		if wrongIME {
 			_ = e.clearField(ctx, platform)
@@ -261,6 +271,194 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 	}, nil
 }
 
+// RunSegmented enters mixed text without relying on a clipboard route. ASCII
+// runs use the HID keyboard directly; non-ASCII runs are committed through the
+// existing IME/candidate-selection flow. This keeps their order intact (for
+// example, "Order中文#42") while avoiding IME work for the ASCII portions.
+func (e *textInputEngine) RunSegmented(ctx context.Context, args enterTextInFieldArgs) (enterTextInFieldResult, error) {
+	if e == nil || e.vision == nil {
+		return enterTextInFieldResult{}, fmt.Errorf("text input engine not configured")
+	}
+	args.Text = strings.TrimSpace(args.Text)
+	if args.Text == "" {
+		return enterTextInFieldResult{Reason: "text is required"}, nil
+	}
+	chunks, err := splitTextInputChunks(args.Text)
+	if err != nil {
+		return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredTextInputMode(args.Text)), Reason: err.Error()}, nil
+	}
+	if len(chunks) == 1 {
+		return e.Run(ctx, args)
+	}
+	startedAt := time.Now()
+	log.Printf("[text-input] start strategy=segmented target=%q chunks=%d", args.Text, len(chunks))
+	defer func() {
+		log.Printf("[text-input] finish strategy=segmented target=%q duration=%s", args.Text, time.Since(startedAt).Round(time.Millisecond))
+	}()
+	platform := strings.ToLower(strings.TrimSpace(args.Platform))
+	if platform == "" {
+		platform = "android"
+	}
+	if err := e.applyFocus(ctx, args.Focus); err != nil {
+		return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredTextInputMode(args.Text)), Attempts: 1, Reason: err.Error()}, nil
+	}
+
+	compositionSegments, err := splitSegmentsForTextChunks(chunks, args.Segments)
+	if err != nil {
+		return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredTextInputMode(args.Text)), Attempts: 1, Reason: err.Error()}, nil
+	}
+	steps := []string{"split input into ASCII and IME runs"}
+	prefix := ""
+	vlmCalls := 0
+	lastFieldText := ""
+	for index, chunk := range chunks {
+		chunkStartedAt := time.Now()
+		log.Printf("[text-input] chunk=%d kind=%s text=%q start", index+1, map[bool]string{true: "ascii", false: "ime"}[chunk.ascii], chunk.text)
+		prefix += chunk.text
+		if chunk.ascii {
+			if err := e.typeASCII(ctx, chunk.text); err != nil {
+				return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredTextInputMode(args.Text)), Attempts: 1, VLMCalls: vlmCalls, Reason: err.Error(), Steps: steps}, nil
+			}
+			steps = append(steps, fmt.Sprintf("typed ASCII run %d: %q", index+1, chunk.text))
+			partialArgs := args
+			partialArgs.Text = prefix
+			committed, fieldText, calls, notes, err := e.verifyASCIIRun(ctx, platform, partialArgs)
+			vlmCalls += calls
+			steps = append(steps, notes...)
+			if err != nil || !committed {
+				reason := "ASCII run was not verified"
+				if err != nil {
+					reason = err.Error()
+				}
+				return enterTextInFieldResult{TargetText: args.Text, FieldText: fieldText, RequiredMode: string(requiredTextInputMode(args.Text)), Attempts: 1, VLMCalls: vlmCalls, Reason: reason, Steps: steps}, nil
+			}
+			lastFieldText = fieldText
+			log.Printf("[text-input] chunk=%d kind=ascii committed=true duration=%s", index+1, time.Since(chunkStartedAt).Round(time.Millisecond))
+			continue
+		}
+		if err := e.sleepFor(ctx, textInputCompositionReadyDelay); err != nil {
+			return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredTextInputMode(args.Text)), Attempts: 1, VLMCalls: vlmCalls, Reason: err.Error(), Steps: steps}, nil
+		}
+		partialArgs := args
+		partialArgs.Text = prefix
+		committed, fieldText, wrongIME, calls, notes, err := e.typeCompositionWithCandidateSelection(ctx, platform, partialArgs, compositionSegments[index])
+		vlmCalls += calls
+		steps = append(steps, notes...)
+		if err != nil || !committed {
+			reason := "IME run was not verified"
+			if err != nil {
+				reason = err.Error()
+			} else if wrongIME {
+				reason = "wrong IME suspected"
+			}
+			return enterTextInFieldResult{TargetText: args.Text, FieldText: fieldText, RequiredMode: string(requiredTextInputMode(args.Text)), Attempts: 1, VLMCalls: vlmCalls, WrongIMESuspected: wrongIME, Reason: reason, Steps: steps}, nil
+		}
+		lastFieldText = fieldText
+		log.Printf("[text-input] chunk=%d kind=ime committed=true duration=%s", index+1, time.Since(chunkStartedAt).Round(time.Millisecond))
+	}
+	result := enterTextInFieldResult{OK: true, Committed: true, TargetText: args.Text, FieldText: lastFieldText, RequiredMode: string(requiredTextInputMode(args.Text)), Attempts: 1, VLMCalls: vlmCalls, Reason: "field verified", Steps: steps}
+	return finalizeEnterTextInFieldResult(result, args.SendAfterCommit), nil
+}
+
+// verifyASCIIRun asks vision whether HID typing landed as committed field text
+// or is still an IME preedit. Enter is sent only when the model explicitly
+// identifies it as a safe commit action for this exact ASCII prefix.
+func (e *textInputEngine) verifyASCIIRun(ctx context.Context, platform string, args enterTextInFieldArgs) (bool, string, int, []string, error) {
+	analysis, calls, steps, err := e.analyzeScreen(ctx, platform, args, nil)
+	if err != nil {
+		return false, "", calls, steps, err
+	}
+	if committed, fieldText := evaluateFieldCommit(analysis, args.Text); committed {
+		return true, fieldText, calls, steps, nil
+	}
+	if !analysis.CompositionPending || !analysis.CommitWithEnter {
+		log.Printf("[text-input] ascii verify target=%q committed=false composition_pending=%t commit_with_enter=%t", args.Text, analysis.CompositionPending, analysis.CommitWithEnter)
+		return false, analysis.FieldText, calls, steps, nil
+	}
+	steps = append(steps, "ASCII preedit pending; model approved Enter commit")
+	log.Printf("[text-input] ascii verify target=%q action=enter reason=approved_preedit_commit", args.Text)
+	if err := e.tapKeys(ctx, []string{"enter"}); err != nil {
+		return false, analysis.FieldText, calls, steps, err
+	}
+	if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+		return false, analysis.FieldText, calls, steps, err
+	}
+	analysis, moreCalls, moreSteps, err := e.analyzeScreen(ctx, platform, args, nil)
+	calls += moreCalls
+	steps = append(steps, moreSteps...)
+	if err != nil {
+		return false, analysis.FieldText, calls, steps, err
+	}
+	committed, fieldText := evaluateFieldCommit(analysis, args.Text)
+	return committed, fieldText, calls, steps, nil
+}
+
+type textInputChunk struct {
+	text  string
+	ascii bool
+}
+
+func splitTextInputChunks(text string) ([]textInputChunk, error) {
+	var chunks []textInputChunk
+	for _, r := range text {
+		ascii := r <= 0x7f && func() bool { _, _, ok := charToHIDKey(byte(r)); return ok }()
+		if r <= 0x7f && !ascii {
+			return nil, fmt.Errorf("unsupported ASCII character %q for keyboard input", r)
+		}
+		if len(chunks) == 0 || chunks[len(chunks)-1].ascii != ascii {
+			chunks = append(chunks, textInputChunk{ascii: ascii})
+		}
+		chunks[len(chunks)-1].text += string(r)
+	}
+	return chunks, nil
+}
+
+func splitSegmentsForTextChunks(chunks []textInputChunk, segments []string) ([][]string, error) {
+	result := make([][]string, len(chunks))
+	compositionCount := 0
+	for _, chunk := range chunks {
+		if !chunk.ascii {
+			compositionCount++
+		}
+	}
+	if compositionCount == 0 {
+		return result, nil
+	}
+	normalized := normalizeCompositionSegments(segments)
+	if len(normalized) == 0 {
+		return nil, fmt.Errorf("composition input requires segments (IME romanization syllables)")
+	}
+	if compositionCount == 1 {
+		for i, chunk := range chunks {
+			if !chunk.ascii {
+				result[i] = normalized
+			}
+		}
+		return result, nil
+	}
+	next := 0
+	for i, chunk := range chunks {
+		if chunk.ascii {
+			continue
+		}
+		need := 0
+		for _, r := range chunk.text {
+			if containsHanRunes(string(r)) {
+				need++
+			}
+		}
+		if need == 0 || next+need > len(normalized) {
+			return nil, fmt.Errorf("mixed text requires IME segments for each non-ASCII run, in text order")
+		}
+		result[i] = normalized[next : next+need]
+		next += need
+	}
+	if next != len(normalized) {
+		return nil, fmt.Errorf("mixed text IME segments do not match its non-ASCII runs")
+	}
+	return result, nil
+}
+
 func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string, args enterTextInFieldArgs, requiredMode textInputMode, segments []string) (committed bool, fieldText string, wrongIME bool, imeSwitches, vlmCalls int, steps []string, err error) {
 	analysis, calls, stepNotes, err := e.analyzeScreen(ctx, platform, args, segments)
 	vlmCalls += calls
@@ -274,6 +472,25 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 	}
 	if analysis.CompositionPending {
 		steps = append(steps, "composition pending; target not committed to input field yet")
+	}
+	if requiredMode == textInputModeASCII && analysis.CompositionPending && analysis.CommitWithEnter {
+		steps = append(steps, "ASCII preedit pending; model approved Enter commit")
+		log.Printf("[text-input] ascii verify target=%q action=enter reason=approved_preedit_commit", args.Text)
+		if err := e.tapKeys(ctx, []string{"enter"}); err != nil {
+			return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
+		}
+		if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+			return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
+		}
+		analysis, calls, stepNotes, err = e.analyzeScreen(ctx, platform, args, segments)
+		vlmCalls += calls
+		steps = append(steps, stepNotes...)
+		if err != nil {
+			return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
+		}
+		if committed, fieldText := evaluateFieldCommit(analysis, args.Text); committed {
+			return true, fieldText, false, imeSwitches, vlmCalls, steps, nil
+		}
 	}
 
 	if requiredMode == textInputModeComposition {
@@ -352,10 +569,14 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 }
 
 func (e *textInputEngine) analyzeScreen(ctx context.Context, platform string, args enterTextInFieldArgs, segments []string) (analysis textInputScreenAnalysis, vlmCalls int, steps []string, err error) {
+	startedAt := time.Now()
 	shot, err := e.captureScreenshot(ctx)
 	if err != nil {
+		log.Printf("[text-input] analyze target=%q screenshot_error=%v duration=%s", args.Text, err, time.Since(startedAt).Round(time.Millisecond))
 		return textInputScreenAnalysis{}, 0, nil, err
 	}
+	screenshotDuration := time.Since(startedAt)
+	visionStartedAt := time.Now()
 	analysis, err = e.vision.AnalyzeScreen(ctx, shot, textInputScreenAnalysisRequest{
 		Phase:      textInputPhaseAfterType,
 		Platform:   platform,
@@ -365,8 +586,10 @@ func (e *textInputEngine) analyzeScreen(ctx context.Context, platform string, ar
 	})
 	vlmCalls++
 	if err != nil {
+		log.Printf("[text-input] analyze target=%q screenshot=%s vision=%s error=%v", args.Text, screenshotDuration.Round(time.Millisecond), time.Since(visionStartedAt).Round(time.Millisecond), err)
 		return textInputScreenAnalysis{}, vlmCalls, nil, err
 	}
+	log.Printf("[text-input] analyze target=%q screenshot=%s vision=%s total=%s field=%q pending=%t enter=%t", args.Text, screenshotDuration.Round(time.Millisecond), time.Since(visionStartedAt).Round(time.Millisecond), time.Since(startedAt).Round(time.Millisecond), analysis.FieldText, analysis.CompositionPending, analysis.CommitWithEnter)
 	steps = append(steps, fmt.Sprintf("analyze: mode=%s field=%q pending=%v candidates=%d wrong_ime=%v",
 		analysis.ObservedMode, analysis.FieldText, analysis.CompositionPending, len(analysis.Candidates), analysis.WrongIMESuspected))
 	return analysis, vlmCalls, steps, nil
