@@ -82,6 +82,7 @@ func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 		defaults: ScreenStableDefaults{TimeoutMs: 50, StableMs: 1, DiffThreshold: 2},
 		screen:   screen,
 	}
+	screen.UpdateScreenshotWithID(98, jpegData, 2, 2)
 
 	out, err := tool.Call(context.Background(), `{}`)
 	if err != nil {
@@ -109,6 +110,12 @@ func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 	}
 	if result.Width != 2 || result.Height != 2 || result.Format != "jpeg" || result.Size != len(jpegData) {
 		t.Fatalf("unexpected screenshot metadata: %#v", result.screenshotResult)
+	}
+	if result.ScreenshotID != 99 {
+		t.Fatalf("screenshot_id = %d, want 99", result.ScreenshotID)
+	}
+	if result.PreviousScreenshotID != 98 {
+		t.Fatalf("previous_screenshot_id = %d, want 98", result.PreviousScreenshotID)
 	}
 	if result.Data != base64.StdEncoding.EncodeToString(jpegData) {
 		t.Fatalf("unexpected screenshot data: %q", result.Data)

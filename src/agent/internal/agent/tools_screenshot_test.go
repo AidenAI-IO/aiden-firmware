@@ -67,6 +67,7 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 		client: client,
 		screen: screenState,
 	}
+	screenState.UpdateScreenshotWithID(98, jpegData, 2, 2)
 
 	out, err := tool.Call(context.Background(), `{}`)
 	if err != nil {
@@ -79,6 +80,12 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 	}
 	if result.Width != 2 || result.Height != 2 || result.Format != "jpeg" || result.Size != len(jpegData) {
 		t.Fatalf("unexpected screenshot metadata: %#v", result)
+	}
+	if result.ScreenshotID != 99 {
+		t.Fatalf("screenshot_id = %d, want 99", result.ScreenshotID)
+	}
+	if result.PreviousScreenshotID != 98 {
+		t.Fatalf("previous_screenshot_id = %d, want 98", result.PreviousScreenshotID)
 	}
 	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
 	if result.SourceWidth != 16 || result.SourceHeight != 9 || result.ActiveArea == nil || *result.ActiveArea != want || result.ActiveWidth != want.Width || result.ActiveHeight != want.Height {

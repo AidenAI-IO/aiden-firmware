@@ -156,7 +156,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"image_diff": {
 		Category:     "observation",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"before":"<base64-jpeg>","after":"<base64-jpeg>"}`,
+		ExampleInput: `{"before_id":123,"after_id":124}`,
 	},
 	"shell": {
 		Category:     "system",

@@ -50,7 +50,7 @@ Defaults: 700ms / 24 steps / hold_before 80ms / hold_after 0ms. Coordinate syste
 
 ### screenshot Tool
 
-Returns base64 JPEG + width/height. Auto-screenshot after each HID operation (500ms delay), no manual call needed.
+Returns `previous_screenshot_id` + `screenshot_id` + base64 JPEG + width/height. Auto-screenshot after each HID operation (500ms delay), no manual call needed.
 
 ### save_memory / recall_memory
 
@@ -66,9 +66,14 @@ Persist cross-session memory for caching widget parameters (see Section V).
 
 ```text
 Input:
-  before:    string  — base64 JPEG (data field of pre-swipe screenshot)
-  after:     string  — base64 JPEG (data field of post-swipe screenshot)
+  before_id: integer — screenshot_id captured before the UI action
+  after_id:  integer — screenshot_id returned by the UI action's post-action screenshot
   region:    object  — Optional, {x, y, w, h}, 0-1000 normalized coordinates, limits comparison area
+
+The tool resolves the two IDs from the Agent's recent local screenshot state.
+Screenshot Base64 is not passed back through the tool protocol. If the IDs no
+longer match the retained pair, the tool returns an error instead of comparing
+the wrong screenshots.
 
 Output:
   changed:       bool    — diff_ratio > 0.01

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -40,7 +41,12 @@ func newScreenToolResultObserver(state *screen.ScreenState) ToolResultObserver {
 		}
 		jpegData, err := base64.StdEncoding.DecodeString(observation.Data)
 		if err == nil {
-			state.UpdateScreenshot(jpegData, observation.Width, observation.Height)
+			latest, latestWidth, latestHeight, _, latestOK := state.LatestScreenshot(0)
+			if latestOK && latestWidth == observation.Width && latestHeight == observation.Height &&
+				bytes.Equal(latest, jpegData) && state.ScreenshotUpdatedSince(call.StartedAt) {
+				return
+			}
+			state.UpdateScreenshotWithID(observation.ScreenshotID, jpegData, observation.Width, observation.Height)
 		}
 	}
 }

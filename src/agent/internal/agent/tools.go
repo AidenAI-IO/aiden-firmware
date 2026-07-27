@@ -156,7 +156,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"screenshot":             screenshot,
 		"wait_for_stable_screen": waitStable,
-		"image_diff":             &ImageDiffTool{},
+		"image_diff":             &ImageDiffTool{screen: screen},
 		"audio_volume":           NewAudioVolumeTool(audioCfg.SocketOrDefault()),
 		"shell":                  &ShellTool{proxy: proxyCfg},
 		"weather":                NewWeatherTool(proxyCfg),

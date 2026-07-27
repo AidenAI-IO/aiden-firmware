@@ -22,17 +22,25 @@ type PhoneScreenInfo struct {
 }
 
 type ScreenState struct {
-	mu                   sync.RWMutex
-	width                int
-	height               int
-	active               ScreenActiveArea
-	phoneScreen          PhoneScreenInfo
-	updatedAt            time.Time
-	screenshotJPEG       []byte
-	screenshotWidth      int
-	screenshotHeight     int
-	screenshotUpdatedAt  time.Time
-	screenshotGeneration uint64
+	mu                     sync.RWMutex
+	width                  int
+	height                 int
+	active                 ScreenActiveArea
+	phoneScreen            PhoneScreenInfo
+	updatedAt              time.Time
+	screenshotJPEG         []byte
+	screenshotID           uint64
+	screenshotWidth        int
+	screenshotHeight       int
+	previousScreenshotJPEG []byte
+	previousScreenshotID   uint64
+	screenshotUpdatedAt    time.Time
+	screenshotGeneration   uint64
+}
+
+type Screenshot struct {
+	ID   uint64
+	JPEG []byte
 }
 
 type ScreenMappingState struct {
@@ -176,17 +184,40 @@ func (s *ScreenState) RestoreMappingState(state ScreenMappingState) {
 }
 
 func (s *ScreenState) UpdateScreenshot(jpegData []byte, width, height int) {
+	s.UpdateScreenshotWithID(0, jpegData, width, height)
+}
+
+func (s *ScreenState) UpdateScreenshotWithID(id uint64, jpegData []byte, width, height int) (previousID, currentID uint64) {
 	if s == nil || len(jpegData) == 0 || width <= 1 || height <= 1 {
-		return
+		return 0, 0
 	}
 	copyData := append([]byte(nil), jpegData...)
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.screenshotGeneration++
+	if id == 0 {
+		id = s.screenshotGeneration
+	}
+	if len(s.screenshotJPEG) > 0 {
+		s.previousScreenshotJPEG = s.screenshotJPEG
+		s.previousScreenshotID = s.screenshotID
+		previousID = s.screenshotID
+	}
 	s.screenshotJPEG = copyData
+	s.screenshotID = id
 	s.screenshotWidth = width
 	s.screenshotHeight = height
 	s.screenshotUpdatedAt = time.Now()
-	s.screenshotGeneration++
-	s.mu.Unlock()
+	return previousID, id
+}
+
+func (s *ScreenState) ScreenshotUpdatedSince(since time.Time) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.screenshotUpdatedAt.IsZero() && !s.screenshotUpdatedAt.Before(since)
 }
 
 func (s *ScreenState) ScreenshotGeneration() uint64 {
@@ -212,6 +243,19 @@ func (s *ScreenState) LatestScreenshot(maxAge time.Duration) (jpegData []byte, w
 		return nil, 0, 0, age, false
 	}
 	return append([]byte(nil), s.screenshotJPEG...), s.screenshotWidth, s.screenshotHeight, age, true
+}
+
+func (s *ScreenState) LatestScreenshotPair() (before, after Screenshot, ok bool) {
+	if s == nil {
+		return Screenshot{}, Screenshot{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.previousScreenshotJPEG) == 0 || len(s.screenshotJPEG) == 0 {
+		return Screenshot{}, Screenshot{}, false
+	}
+	return Screenshot{ID: s.previousScreenshotID, JPEG: append([]byte(nil), s.previousScreenshotJPEG...)},
+		Screenshot{ID: s.screenshotID, JPEG: append([]byte(nil), s.screenshotJPEG...)}, true
 }
 
 func (s *ScreenState) Format() string {

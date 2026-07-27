@@ -1012,6 +1012,12 @@ func compactMaterializedScreenshotObservation(result postActionScreenshotResult)
 		"size":           result.Size,
 		"screenshot_ref": result.ScreenshotRef,
 	}
+	if result.ScreenshotID > 0 {
+		compact["screenshot_id"] = result.ScreenshotID
+	}
+	if result.PreviousScreenshotID > 0 {
+		compact["previous_screenshot_id"] = result.PreviousScreenshotID
+	}
 	if strings.TrimSpace(result.ActionOutput) != "" {
 		compact["action_output"] = strings.TrimSpace(result.ActionOutput)
 	}
