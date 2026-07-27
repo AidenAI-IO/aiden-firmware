@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import http.client
+import io
 import json
 import urllib.error
 import urllib.parse
@@ -7,8 +10,10 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
-from runner.mock_environment import MockEnvironmentServer
+from runner import mock_environment as mock_environment_module
+from runner.mock_environment import MAX_REQUEST_BODY_BYTES, MockEnvironmentServer
 from runner.suite import MockEnvironmentSpec, MockToolResponseSpec, load_suite
 
 
@@ -338,3 +343,66 @@ def test_mock_environment_missing_screen_falls_back_to_placeholder(tmp_path):
     assert payload["format"] == "jpeg"
     assert payload["data"]
     assert payload["description"] == "Fallback screen"
+
+
+def test_mock_environment_normalizes_fixture_screen_metadata(tmp_path):
+    fixture = tmp_path / "screen.png"
+    image = Image.new("RGBA", (320, 640), (12, 34, 56, 128))
+    image.save(fixture, format="PNG")
+    spec = MockEnvironmentSpec(
+        phone_bridge={},
+        tools={},
+        screen=fixture.name,
+    )
+    server = MockEnvironmentServer(spec, tmp_path)
+
+    payload = server.screenshot_payload()
+    raw = base64.b64decode(payload["data"])
+    with Image.open(io.BytesIO(raw)) as normalized:
+        assert normalized.format == "JPEG"
+        assert normalized.size == (320, 640)
+    assert payload["format"] == "jpeg"
+    assert payload["width"] == 320
+    assert payload["height"] == 640
+
+
+@pytest.mark.parametrize("content_length", [-1, MAX_REQUEST_BODY_BYTES + 1])
+def test_mock_environment_rejects_invalid_content_length(tmp_path, content_length):
+    spec = MockEnvironmentSpec(phone_bridge={}, tools={})
+    server = MockEnvironmentServer(spec, tmp_path)
+    base_url = server.start()
+    parsed = urllib.parse.urlparse(base_url)
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    try:
+        connection.putrequest("POST", f"{parsed.path}/api/tools/screenshot")
+        connection.putheader("Content-Length", str(content_length))
+        connection.endheaders()
+        response = connection.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+
+        assert response.status == 400
+        assert payload["error"]["code"] == "bad_request"
+    finally:
+        connection.close()
+        server.stop()
+
+
+def test_mock_environment_times_out_incomplete_request_body(tmp_path, monkeypatch):
+    monkeypatch.setattr(mock_environment_module, "REQUEST_TIMEOUT_SECONDS", 0.05)
+    spec = MockEnvironmentSpec(phone_bridge={}, tools={})
+    server = MockEnvironmentServer(spec, tmp_path)
+    base_url = server.start()
+    parsed = urllib.parse.urlparse(base_url)
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=1)
+    try:
+        connection.putrequest("POST", f"{parsed.path}/api/tools/screenshot")
+        connection.putheader("Content-Length", "10")
+        connection.endheaders(b"{}")
+        response = connection.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+
+        assert response.status == 400
+        assert payload["error"]["code"] == "bad_request"
+    finally:
+        connection.close()
+        server.stop()

@@ -15,6 +15,9 @@ from PIL import Image, ImageDraw
 from runner.matching import dict_contains
 from runner.suite import MockEnvironmentSpec, MockToolResponseSpec
 
+MAX_REQUEST_BODY_BYTES = 1024 * 1024
+REQUEST_TIMEOUT_SECONDS = 5.0
+
 
 class MockEnvironmentServer:
     """Scripted bridge protected by an unguessable per-instance URL path."""
@@ -117,11 +120,14 @@ class MockEnvironmentServer:
         )
 
     def screenshot_payload(self) -> dict[str, Any]:
-        raw = self._screen_bytes()
+        image = self._screen_image()
+        width, height = image.size
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=88)
         return {
-            "data": base64.b64encode(raw).decode("ascii"),
-            "width": 1170,
-            "height": 2532,
+            "data": base64.b64encode(output.getvalue()).decode("ascii"),
+            "width": width,
+            "height": height,
             "format": "jpeg",
             "description": self.screen_text,
         }
@@ -136,11 +142,13 @@ class MockEnvironmentServer:
             "calls": calls,
         }
 
-    def _screen_bytes(self) -> bytes:
+    def _screen_image(self) -> Image.Image:
         if self.spec.screen:
             screen_path = self.suite_dir / self.spec.screen
             try:
-                return screen_path.read_bytes()
+                with Image.open(screen_path) as image:
+                    image.load()
+                    return image.convert("RGB")
             except OSError:
                 pass
         image = Image.new("RGB", (1170, 2532), "#f5f5f7")
@@ -157,13 +165,15 @@ class MockEnvironmentServer:
         for line in _wrap_text(self.screen_text, width=72):
             draw.text((95, y), line, fill="#222222")
             y += 38
-        output = io.BytesIO()
-        image.save(output, format="JPEG", quality=88)
-        return output.getvalue()
+        return image
 
 
 def _handler_for(server: MockEnvironmentServer):
     class Handler(BaseHTTPRequestHandler):
+        def setup(self) -> None:
+            super().setup()
+            self.connection.settimeout(REQUEST_TIMEOUT_SECONDS)
+
         def do_GET(self) -> None:
             path = self._authorized_path()
             if path is None:
@@ -275,9 +285,18 @@ def _handler_for(server: MockEnvironmentServer):
         def _read_json(self) -> dict[str, Any] | None:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
+                if length < 0 or length > MAX_REQUEST_BODY_BYTES:
+                    raise ValueError(
+                        f"Content-Length must be between 0 and {MAX_REQUEST_BODY_BYTES}"
+                    )
                 raw = self.rfile.read(length) if length else b"{}"
                 payload = json.loads(raw.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            except (
+                OSError,
+                ValueError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+            ) as exc:
                 self._json(
                     400,
                     {
