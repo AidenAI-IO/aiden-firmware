@@ -311,6 +311,66 @@ class SkillOptWebApp:
     def list_targets(self) -> list[dict[str, Any]]:
         return list_skillopt_targets(self.config.suites_dir)
 
+    def get_suite_detail(self, suite_key: str) -> dict[str, Any] | None:
+        try:
+            from runner.suite import load_suite
+            # Handle skillopt/{skill}/{suite} format
+            parts = suite_key.split('/')
+            if len(parts) >= 3 and parts[0] == 'skillopt':
+                skill_name = parts[1]
+                suite_name = '/'.join(parts[2:])
+                if not suite_name.endswith('.json'):
+                    suite_name += '.json'
+                suite_path = self.config.suites_dir / skill_name / suite_name
+            else:
+                suite_path = self.config.suites_dir / suite_key
+                if not suite_path.suffix:
+                    suite_path = suite_path.with_suffix('.json')
+
+            # Validate that the resolved path is within suites_dir to prevent path traversal
+            suite_path = suite_path.resolve()
+            suites_root = self.config.suites_dir.resolve()
+            if suites_root not in suite_path.parents and suites_root != suite_path:
+                return None
+
+            if not suite_path.exists():
+                return None
+
+            suite = load_suite(suite_path)
+            tasks = []
+            for task in suite.tasks:
+                rubric = [{"id": item.id, "check": item.check} for item in task.rubric]
+                hard_assertions = {
+                    "min_tool_calls": task.hard_assertions.min_tool_calls,
+                    "max_tool_calls": task.hard_assertions.max_tool_calls,
+                    "must_complete_within_sec": task.hard_assertions.must_complete_within_sec,
+                    "response_required": task.hard_assertions.response_required,
+                    "required_tools": task.hard_assertions.required_tools,
+                    "forbidden_tools": task.hard_assertions.forbidden_tools,
+                    "prohibited_actions": task.hard_assertions.prohibited_actions,
+                }
+                tasks.append({
+                    "id": task.id,
+                    "category": task.category,
+                    "description_for_judge": task.description_for_judge,
+                    "prompt": task.prompt,
+                    "rubric": rubric,
+                    "hard_assertions": hard_assertions,
+                    "setup": task.setup,
+                    "repeats": task.repeats,
+                    "input_screenshot": task.input_screenshot,
+                    "expected_answer": task.expected_answer,
+                    "answer_format": task.answer_format,
+                    "expected_recalled_memory_ids": task.expected_recalled_memory_ids,
+                })
+            return {
+                "name": suite.name,
+                "prompt_prefix": suite.prompt_prefix,
+                "tasks": tasks,
+            }
+        except Exception:
+            return None
+
     def _resolve_target_payload(self, payload: dict[str, Any]) -> None:
         if payload.get("skill") and payload.get("train_suite") and payload.get("validation_suite"):
             return
@@ -802,6 +862,14 @@ def make_handler(app: SkillOptWebApp):
                 return
             if path == "/api/targets":
                 self._send_json(200, {"targets": app.list_targets()})
+                return
+            if path.startswith("/api/suites/"):
+                suite_key = urllib.parse.unquote(path.removeprefix("/api/suites/"))
+                suite = app.get_suite_detail(suite_key)
+                if suite is None:
+                    self._send_json(404, {"error": "suite not found"})
+                    return
+                self._send_json(200, {"suite": suite})
                 return
             if path == "/api/webui-settings":
                 self._send_json(200, {"settings": app.get_webui_settings()})
@@ -1499,6 +1567,87 @@ INDEX_HTML = r"""<!doctype html>
     a { color: var(--blue); text-decoration: none; }
     a:hover { text-decoration: underline; }
     .empty-row { color: var(--muted); height: 48px; }
+    .task-detail {
+      border: 1px solid var(--border);
+      margin-bottom: 16px;
+      background: var(--layer);
+    }
+    .task-detail-header {
+      background: #f0f0f0;
+      padding: 12px 16px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .task-detail-header:hover { background: #e8e8e8; }
+    .task-detail-header::before {
+      content: '▼';
+      font-size: 10px;
+      transition: transform 0.2s;
+      color: var(--muted);
+    }
+    .task-detail-header.collapsed::before { transform: rotate(-90deg); }
+    .task-detail-body {
+      padding: 16px;
+      display: block;
+    }
+    .task-detail-body.collapsed { display: none; }
+    .detail-section { margin-bottom: 16px; }
+    .detail-section:last-child { margin-bottom: 0; }
+    .detail-section h3 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .detail-section pre {
+      margin: 0;
+      min-height: auto;
+      max-height: 300px;
+      padding: 12px;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .detail-list { display: grid; gap: 8px; }
+    .detail-item {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 12px;
+      font-size: 13px;
+    }
+    .detail-item dt {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .detail-item dd {
+      margin: 0;
+      color: var(--text);
+      word-break: break-word;
+    }
+    .rubric-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 8px;
+    }
+    .rubric-item {
+      background: var(--layer-alt);
+      padding: 10px 12px;
+      border-left: 3px solid var(--blue);
+      font-size: 13px;
+    }
+    .rubric-item strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--text);
+    }
+    .rubric-item span { color: var(--muted-2); }
     @media (max-width: 980px) {
       .layout { grid-template-columns: 1fr; }
       .suite-table-wrap { max-height: 360px; }
@@ -1648,6 +1797,24 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 
+  <div id="suiteDetailDialog" class="modal-backdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="suiteDetailTitle">
+      <div class="modal-header">
+        <div>
+          <h2 id="suiteDetailTitle" class="tile-title">Suite Details</h2>
+          <div id="suiteDetailSubtitle" class="tile-kicker"></div>
+        </div>
+        <button id="closeSuiteDetail" class="ghost-button table-button" type="button">Close</button>
+      </div>
+      <div class="modal-body">
+        <div id="suiteDetailContent"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelSuiteDetail" class="ghost-button" type="button">Close</button>
+      </div>
+    </section>
+  </div>
+
   <div id="runEnvDialog" class="modal-backdrop" hidden>
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="runEnvTitle">
       <div class="modal-header">
@@ -1697,6 +1864,148 @@ INDEX_HTML = r"""<!doctype html>
     let agentConfigEditing = false;
 
     function escapeHtml(value){ return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+    function escapeAttr(value){ return String(value ?? '').replace(/['"]/g, ''); }
+
+    async function openSuiteDetail(suiteKey){
+      try {
+        const res = await fetch(`/api/suites/${encodeURIComponent(suiteKey)}`);
+        if(!res.ok) throw new Error('Failed to load suite details');
+        const body = await res.json();
+        const suite = body.suite;
+        document.getElementById('suiteDetailTitle').textContent = suite.name || suiteKey;
+        document.getElementById('suiteDetailSubtitle').textContent = suiteKey;
+        renderSuiteDetail(suite);
+        document.getElementById('suiteDetailDialog').hidden = false;
+      } catch (err) {
+        console.error('Failed to load suite detail:', err);
+      }
+    }
+
+    function closeSuiteDetail(){
+      document.getElementById('suiteDetailDialog').hidden = true;
+    }
+
+    function renderSuiteDetail(suite){
+      const container = document.getElementById('suiteDetailContent');
+      container.innerHTML = '';
+
+      if(suite.prompt_prefix){
+        const section = document.createElement('div');
+        section.className = 'detail-section';
+        section.innerHTML = `<h3>Prompt Prefix</h3><pre>${escapeHtml(suite.prompt_prefix)}</pre>`;
+        container.appendChild(section);
+      }
+
+      const tasksTitle = document.createElement('div');
+      tasksTitle.className = 'detail-section';
+      tasksTitle.innerHTML = `<h3>Tasks (${suite.tasks.length})</h3>`;
+      container.appendChild(tasksTitle);
+
+      suite.tasks.forEach((task, index) => {
+        const taskDiv = document.createElement('div');
+        taskDiv.className = 'task-detail';
+
+        const header = document.createElement('div');
+        header.className = 'task-detail-header';
+        header.innerHTML = `<span>${index + 1}. ${escapeHtml(task.id)}</span><span class="muted" style="margin-left:auto">${escapeHtml(task.category)}</span>`;
+
+        const body = document.createElement('div');
+        body.className = 'task-detail-body';
+
+        // Description
+        if(task.description_for_judge){
+          const desc = document.createElement('div');
+          desc.className = 'detail-section';
+          desc.innerHTML = `<h3>Description</h3><p style="margin:0; color:var(--text); line-height:1.5">${escapeHtml(task.description_for_judge)}</p>`;
+          body.appendChild(desc);
+        }
+
+        // Prompt
+        if(task.prompt){
+          const prompt = document.createElement('div');
+          prompt.className = 'detail-section';
+          prompt.innerHTML = `<h3>Prompt</h3><pre>${escapeHtml(task.prompt)}</pre>`;
+          body.appendChild(prompt);
+        }
+
+        // Expected Answer
+        if(task.expected_answer){
+          const answer = document.createElement('div');
+          answer.className = 'detail-section';
+          answer.innerHTML = `<h3>Expected Answer</h3><p style="margin:0; color:var(--green); font-weight:600">${escapeHtml(task.expected_answer)}${task.answer_format ? ` (${task.answer_format})` : ''}</p>`;
+          body.appendChild(answer);
+        }
+
+        // Rubric
+        if(task.rubric && task.rubric.length){
+          const rubric = document.createElement('div');
+          rubric.className = 'detail-section';
+          rubric.innerHTML = `<h3>Rubric (${task.rubric.length} items)</h3>`;
+          const list = document.createElement('ul');
+          list.className = 'rubric-list';
+          task.rubric.forEach(item => {
+            const li = document.createElement('li');
+            li.className = 'rubric-item';
+            li.innerHTML = `<strong>${escapeHtml(item.id)}</strong><span>${escapeHtml(item.check)}</span>`;
+            list.appendChild(li);
+          });
+          rubric.appendChild(list);
+          body.appendChild(rubric);
+        }
+
+        // Hard Assertions
+        if(task.hard_assertions){
+          const ha = task.hard_assertions;
+          const assertions = document.createElement('div');
+          assertions.className = 'detail-section';
+          assertions.innerHTML = `<h3>Hard Assertions</h3>`;
+          const dl = document.createElement('dl');
+          dl.className = 'detail-list';
+          dl.innerHTML = `
+            <div class="detail-item"><dt>Min tool calls</dt><dd>${ha.min_tool_calls || 0}</dd></div>
+            <div class="detail-item"><dt>Max tool calls</dt><dd>${ha.max_tool_calls || 50}</dd></div>
+            <div class="detail-item"><dt>Timeout</dt><dd>${ha.must_complete_within_sec || 180}s</dd></div>
+            <div class="detail-item"><dt>Response required</dt><dd>${ha.response_required ? 'Yes' : 'No'}</dd></div>
+            ${ha.required_tools && ha.required_tools.length ? `<div class="detail-item"><dt>Required tools</dt><dd>${ha.required_tools.join(', ')}</dd></div>` : ''}
+            ${ha.forbidden_tools && ha.forbidden_tools.length ? `<div class="detail-item"><dt>Forbidden tools</dt><dd>${ha.forbidden_tools.join(', ')}</dd></div>` : ''}
+            ${ha.prohibited_actions && ha.prohibited_actions.length ? `<div class="detail-item"><dt>Prohibited actions</dt><dd>${ha.prohibited_actions.join(', ')}</dd></div>` : ''}
+          `;
+          assertions.appendChild(dl);
+          body.appendChild(assertions);
+        }
+
+        // Setup
+        if(task.setup){
+          const setup = document.createElement('div');
+          setup.className = 'detail-section';
+          setup.innerHTML = `<h3>Setup</h3><pre>${escapeHtml(JSON.stringify(task.setup, null, 2))}</pre>`;
+          body.appendChild(setup);
+        }
+
+        // Other fields
+        const other = document.createElement('div');
+        other.className = 'detail-section';
+        other.innerHTML = `<h3>Other</h3>`;
+        const otherDl = document.createElement('dl');
+        otherDl.className = 'detail-list';
+        otherDl.innerHTML = `
+          <div class="detail-item"><dt>Repeats</dt><dd>${task.repeats || 1}</dd></div>
+          ${task.input_screenshot ? `<div class="detail-item"><dt>Input screenshot</dt><dd>${escapeHtml(task.input_screenshot)}</dd></div>` : ''}
+          ${task.expected_recalled_memory_ids && task.expected_recalled_memory_ids.length ? `<div class="detail-item"><dt>Expected memory IDs</dt><dd>${task.expected_recalled_memory_ids.join(', ')}</dd></div>` : ''}
+        `;
+        other.appendChild(otherDl);
+        body.appendChild(other);
+
+        header.onclick = () => {
+          const collapsed = body.classList.toggle('collapsed');
+          header.classList.toggle('collapsed', collapsed);
+        };
+
+        taskDiv.appendChild(header);
+        taskDiv.appendChild(body);
+        container.appendChild(taskDiv);
+      });
+    }
     function cssToken(value){ return String(value ?? '').toLowerCase().replace(/[^a-z0-9_-]/g, '_'); }
 
     function selectedTarget(){
@@ -1829,9 +2138,13 @@ INDEX_HTML = r"""<!doctype html>
         tr.className = current && current.id === t.id ? 'selected-row' : '';
         tr.innerHTML = `<td><input type="radio" name="activeTarget" ${current && current.id === t.id ? 'checked' : ''}></td>
           <td title="${escapeHtml(t.train_suite + ' / ' + t.validation_suite)}"><div class="cell-main"><span>${escapeHtml(t.name || t.skill)}</span><small>${escapeHtml(t.skill)}</small></div></td>
-          <td>${t.train_task_count || 0}</td>
-          <td>${t.validation_task_count || 0}</td>`;
+          <td><a href="#" data-suite-detail="${escapeHtml(t.train_suite)}">${t.train_task_count || 0}</a></td>
+          <td><a href="#" data-suite-detail="${escapeHtml(t.validation_suite)}">${t.validation_task_count || 0}</a></td>`;
         tr.querySelector('input').onchange = () => setSelectedTarget(t.id);
+        const trainLink = tr.querySelector('[data-suite-detail="' + escapeAttr(t.train_suite) + '"]');
+        const validationLink = tr.querySelector('[data-suite-detail="' + escapeAttr(t.validation_suite) + '"]');
+        if(trainLink) trainLink.onclick = e => { e.preventDefault(); openSuiteDetail(t.train_suite); };
+        if(validationLink) validationLink.onclick = e => { e.preventDefault(); openSuiteDetail(t.validation_suite); };
         tbody.appendChild(tr);
       });
     }
@@ -2217,6 +2530,9 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById('closeRunEnv').onclick = closeRunEnvironmentDialog;
     document.getElementById('cancelRunEnv').onclick = closeRunEnvironmentDialog;
     document.getElementById('runEnvDialog').onclick = e => { if(e.target.id === 'runEnvDialog') closeRunEnvironmentDialog(); };
+    document.getElementById('suiteDetailDialog').onclick = e => { if(e.target.id === 'suiteDetailDialog') closeSuiteDetail(); };
+    document.getElementById('closeSuiteDetail').onclick = closeSuiteDetail;
+    document.getElementById('cancelSuiteDetail').onclick = closeSuiteDetail;
     document.getElementById('activeStopJob').onclick = () => { if(activeJobId) stopJob(activeJobId); };
     document.getElementById('showJobLog').onclick = () => { if(activeJobId) loadActiveJob(); };
     document.getElementById('suiteFilter').oninput = renderTargets;

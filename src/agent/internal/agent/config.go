@@ -137,6 +137,30 @@ type StorageConfig struct {
 	// below MigrateStartFreePct and stops once it reaches MigrateStopFreePct.
 	MigrateStartFreePct int `toml:"migrate_start_free_pct,omitempty"`
 	MigrateStopFreePct  int `toml:"migrate_stop_free_pct,omitempty"`
+
+	MonitorEnabled       bool                      `toml:"monitor_enabled"`
+	RootPath             string                    `toml:"root_path,omitempty"`
+	CheckIntervalSeconds int                       `toml:"check_interval_seconds,omitempty"`
+	WarningThresholdMB   uint64                    `toml:"warning_threshold_mb,omitempty"`
+	CriticalThresholdMB  uint64                    `toml:"critical_threshold_mb,omitempty"`
+	EmergencyThresholdMB uint64                    `toml:"emergency_threshold_mb,omitempty"`
+	RecoveryHysteresisMB uint64                    `toml:"recovery_hysteresis_mb,omitempty"`
+	DegradedMode         StorageDegradedModeConfig `toml:"degraded_mode,omitempty"`
+	Cleanup              StorageCleanupConfig      `toml:"cleanup,omitempty"`
+}
+
+func (c StorageConfig) MonitorConfig() StorageMonitorConfig {
+	return StorageMonitorConfig{
+		Enabled:              c.MonitorEnabled,
+		RootPath:             c.RootPath,
+		CheckIntervalSeconds: c.CheckIntervalSeconds,
+		WarningThresholdMB:   c.WarningThresholdMB,
+		CriticalThresholdMB:  c.CriticalThresholdMB,
+		EmergencyThresholdMB: c.EmergencyThresholdMB,
+		RecoveryHysteresisMB: c.RecoveryHysteresisMB,
+		DegradedMode:         c.DegradedMode,
+		Cleanup:              c.Cleanup,
+	}
 }
 
 // MountPointOrDefault returns MountPoint if non-empty, else "/mnt/sdcard".
@@ -1103,6 +1127,9 @@ func (c Config) Validate() error {
 	}
 	if c.Log.LLMHTTPRetentionDays < 0 {
 		return fmt.Errorf("log.llm_http_retention_days must be >= 0, got %d", c.Log.LLMHTTPRetentionDays)
+	}
+	if err := c.Storage.MonitorConfig().Validate(); err != nil {
+		return err
 	}
 	if c.ScreenshotKeepN < 0 {
 		return fmt.Errorf("screenshot_keep_n must be >= 0, got %d", c.ScreenshotKeepN)

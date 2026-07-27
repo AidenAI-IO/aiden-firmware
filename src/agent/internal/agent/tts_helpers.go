@@ -296,6 +296,11 @@ func (w *streamSessionWriter) setCancel(cancel context.CancelFunc) {
 	w.cancel = cancel
 }
 
+// Write deliberately returns (0, nil) after interruption or a provider write
+// failure so the tag parser can avoid marking speech as emitted without
+// interrupting the LLM stream. Do not wrap streamSessionWriter with generic
+// io.Writer helpers such as io.Copy or bufio.Writer, which assume short writes
+// return a non-nil error.
 func (w *streamSessionWriter) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -303,7 +308,10 @@ func (w *streamSessionWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	if w.interrupted {
 		w.mu.Unlock()
-		return len(p), nil
+		// Report zero accepted bytes to the tag parser while still suppressing an
+		// error. The parser returns success to the LLM stream but will not mark
+		// this speech as emitted, allowing the non-streaming fallback to run.
+		return 0, nil
 	}
 	session := w.session
 	w.textWritten = true
@@ -315,9 +323,35 @@ func (w *streamSessionWriter) Write(p []byte) (int, error) {
 			w.lastErr = err
 		}
 		w.mu.Unlock()
+		return 0, nil
 	}
 	// Always return success so the LLM stream is not interrupted by TTS errors.
 	return len(p), nil
+}
+
+// Flush asks the provider to synthesize any text it has buffered so a complete
+// <tts> block can start playing before the rest of the assistant response has
+// finished streaming. As with Write, provider errors are recorded without
+// interrupting the LLM response stream.
+func (w *streamSessionWriter) Flush() error {
+	w.mu.Lock()
+	if w.interrupted {
+		w.mu.Unlock()
+		return nil
+	}
+	session := w.session
+	w.mu.Unlock()
+
+	if err := session.Flush(); err != nil {
+		w.mu.Lock()
+		if w.lastErr == nil && !w.interrupted {
+			w.lastErr = err
+		}
+		w.mu.Unlock()
+	}
+	// Keep TTS failures isolated from the LLM stream; closeAndWait reports the
+	// recorded error after the model response has completed.
+	return nil
 }
 
 // ttsBufferResetter is implemented by TTS sessions that buffer text internally

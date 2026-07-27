@@ -19,6 +19,8 @@ LOG_FILE=/var/log/aiden_usb_ecm_watchdog.log
 PID_FILE=/run/aiden_usb_ecm_watchdog.pid
 STATE_FILE=/run/aiden_usb_ecm_watchdog.state
 LEASE_FILE=/tmp/dnsmasq.leases
+GADGET_SWITCH_LOCK_DIR=/run/aiden_dynamic_keyboard.lock
+PLANNED_SWITCH_GRACE_FILE=/run/aiden_dynamic_keyboard.grace
 USB0_ADDR=192.168.42.1
 USB0_NETMASK=255.255.255.0
 
@@ -115,7 +117,51 @@ probe_ecm_connectivity() {
     return 1
 }
 
-reset_composite() {
+read_planned_switch_grace_until() {
+    planned_grace_until=$(cat "$PLANNED_SWITCH_GRACE_FILE" 2>/dev/null || true)
+    case "$planned_grace_until" in
+        ''|*[!0-9]*) planned_grace_until=0 ;;
+    esac
+    printf '%s\n' "$planned_grace_until"
+}
+
+planned_switch_grace_active() {
+    planned_grace_until=$(read_planned_switch_grace_until)
+    planned_grace_now=$(date +%s)
+    [ "$planned_grace_until" -gt "$planned_grace_now" ]
+}
+
+acquire_gadget_switch_lock() {
+    if mkdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null; then
+        echo "$$" > "$GADGET_SWITCH_LOCK_DIR/pid"
+        return 0
+    fi
+
+    owner=$(cat "$GADGET_SWITCH_LOCK_DIR/pid" 2>/dev/null || true)
+    case "$owner" in
+        ''|*[!0-9]*) ;;
+        *)
+            if ! kill -0 "$owner" 2>/dev/null; then
+                rm -f "$GADGET_SWITCH_LOCK_DIR/pid"
+                rmdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null || true
+                if mkdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null; then
+                    echo "$$" > "$GADGET_SWITCH_LOCK_DIR/pid"
+                    return 0
+                fi
+            fi
+            ;;
+    esac
+
+    log "USB composite reset deferred; gadget switch lock is busy (owner=${owner:-unknown})"
+    return 1
+}
+
+release_gadget_switch_lock() {
+    rm -f "$GADGET_SWITCH_LOCK_DIR/pid"
+    rmdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null || true
+}
+
+reset_composite_locked() {
     reason="$1"
     started_at=$(date +%s)
     log "resetting USB composite gadget: $reason"
@@ -171,10 +217,32 @@ reset_composite() {
     write_refresh_state "$reason" "ok" "$started_at" "duration=${duration}s"
 }
 
+reset_composite() {
+    reason="$1"
+    acquire_gadget_switch_lock || return 1
+    if planned_switch_grace_active; then
+        log "USB composite reset skipped during planned profile switch grace (reason=$reason until=$planned_grace_until)"
+        release_gadget_switch_lock
+        # HIDDevice uses the refresh command after an ENXIO open. Treat a
+        # planned-switch skip as successful so it waits briefly and retries the
+        # recreated node instead of failing the tool or forcing another reset.
+        [ "$reason" = "manual refresh" ] && return 0
+        return 2
+    fi
+    if reset_composite_locked "$reason"; then
+        result=0
+    else
+        result=$?
+    fi
+    release_gadget_switch_lock
+    return "$result"
+}
+
 watchdog_main() {
     ecm_fail_count=0
     last_reset=0
     last_udc_state=$(read_udc_state)
+    last_planned_grace_until=0
 
     log_snapshot "watchdog loop start"
     if [ "$last_udc_state" = "configured" ]; then
@@ -202,11 +270,36 @@ watchdog_main() {
             continue
         fi
 
+        if planned_switch_grace_active; then
+            if [ "$planned_grace_until" != "$last_planned_grace_until" ]; then
+                log "planned profile switch grace active until $planned_grace_until; skipping ECM probe"
+            fi
+            if [ "$ecm_fail_count" -ne 0 ]; then
+                log "planned profile switch grace active; clearing ECM failure count"
+            fi
+            ecm_fail_count=0
+            last_planned_grace_until=$planned_grace_until
+            continue
+        fi
+        if [ "$last_planned_grace_until" -ne 0 ]; then
+            log "planned profile switch grace ended; resuming ECM probes"
+            last_planned_grace_until=0
+        fi
+
         if probe_ecm_connectivity; then
             if [ "$ecm_fail_count" -ne 0 ]; then
                 log "ECM probe recovered after $ecm_fail_count failure(s)"
             fi
             ecm_fail_count=0
+            continue
+        fi
+
+        # The profile switch may begin while arping is already in flight. Check
+        # the grace marker again before counting that expected interruption.
+        if planned_switch_grace_active; then
+            log "ECM probe interrupted by planned profile switch; ignoring failure until $planned_grace_until"
+            ecm_fail_count=0
+            last_planned_grace_until=$planned_grace_until
             continue
         fi
 
@@ -219,11 +312,20 @@ watchdog_main() {
             fi
 
             log "ECM stall detected; resetting composite gadget"
-            # Start the cooldown window from the attempt itself: even if the
-            # reset fails, we don't want to hammer the gadget every interval.
-            last_reset=$now
             if reset_composite "ECM stall"; then
+                last_reset=$now
                 ecm_fail_count=0
+            else
+                reset_result=$?
+                if [ "$reset_result" -eq 2 ]; then
+                    # A profile switch began after the final probe check. This
+                    # is not a failed reset attempt and must not start cooldown.
+                    ecm_fail_count=0
+                else
+                    # Start cooldown from a real attempt even when it fails so
+                    # a persistent fault cannot hammer the gadget every loop.
+                    last_reset=$now
+                fi
             fi
         fi
     done

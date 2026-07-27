@@ -20,6 +20,7 @@ import (
 	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/statemanager"
 	"aiden-agent/internal/util"
 
@@ -72,6 +73,9 @@ type Runtime struct {
 	preemptHooks       []func()
 	lastPreemptTime    time.Time
 	storage            *StorageManager
+	screenState        *screen.ScreenState
+	phoneBridge        *PhoneBridge
+	storageMonitor     *StorageMonitor
 }
 
 type RunRequest struct {
@@ -85,7 +89,12 @@ type RunRequest struct {
 	StreamWriter      io.Writer
 	MaxTokens         int
 	EventHandler      func(RunEvent)
-	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	// OnRunActive runs after the previous run and its resources have been
+	// preempted and this run owns the runtime gate. Callers can register
+	// request-scoped output here without that output being interrupted by this
+	// run's own startup preemption.
+	OnRunActive   func(context.Context)
+	SteerProvider func(context.Context) (RunSteerMessage, bool)
 	// FinalSteerProvider is called at terminal executor boundaries. It should
 	// atomically consume one last pending steer if available; otherwise it should
 	// close the request's steer acceptance window.
@@ -348,9 +357,11 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
+	screenState := &screen.ScreenState{}
 	toolSet := NewBuiltinToolSetFromConfig(
 		cfg,
 		proxy,
+		WithScreenState(screenState),
 		WithWaitForWakeupController(waitForWakeupController),
 		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
 	)
@@ -396,6 +407,12 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
 	rt.waitForWakeup = waitForWakeupController
+	rt.storageMonitor = newRuntimeStorageMonitor(cfg, logger, rt.memories)
+	rt.SetVoiceNotificationSink(rt.VoiceNotificationSink())
+	modelManager.SetStorageMonitor(rt.storageMonitor)
+	if rt.memories != nil {
+		rt.memories.SetStorageMonitor(rt.storageMonitor)
+	}
 
 	// Log runtime start marker.
 	if logger != nil {
@@ -420,6 +437,12 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	// hardware degrades to eMMC-only, so starting it is safe everywhere.
 	rt.storage = NewStorageManager(cfg.Storage, logger)
 	rt.storage.Start()
+
+	rt.screenState = screenState
+	rt.phoneBridge = NewPhoneBridge(logger)
+	rt.stateManager.RegisterUpdater(screenState)
+	rt.stateManager.RegisterUpdater(rt.phoneBridge)
+
 	return rt, nil
 }
 
@@ -427,6 +450,10 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 // built without one (NewRuntimeWithDeps).
 func (r *Runtime) Storage() *StorageManager {
 	return r.storage
+}
+
+func (r *Runtime) PhoneBridge() *PhoneBridge {
+	return r.phoneBridge
 }
 
 func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
@@ -698,7 +725,30 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if err := runCtx.Err(); err != nil {
 		return RunResult{Preempted: true}, err
 	}
-	ctx = runCtx // Use preemptable context for the rest of the run.
+	return r.withIOSKeyboardIsolationRun(runCtx, func(isolationCtx context.Context) (RunResult, error) {
+		if req.OnRunActive != nil {
+			req.OnRunActive(isolationCtx)
+		}
+		return r.run(isolationCtx, req)
+	})
+}
+
+func (r *Runtime) withIOSKeyboardIsolationRun(
+	ctx context.Context,
+	action func(context.Context) (RunResult, error),
+) (result RunResult, runErr error) {
+	if r == nil || r.tools == nil || r.tools.iosKeyboardIsolation == nil {
+		return action(ctx)
+	}
+	runErr = r.tools.iosKeyboardIsolation.withBatch(ctx, func(batchCtx context.Context) error {
+		result, runErr = action(batchCtx)
+		return runErr
+	})
+	return result, runErr
+}
+
+func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
+	var err error
 
 	startTime := time.Now()
 	metrics := &RunMetrics{}
@@ -979,10 +1029,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	// Set platformFn for text entry tools (bridge > config > LLM).
-	type platformConfigurable interface {
-		SetPlatformFn(func() string)
-	}
+	// Set platformFn for platform-aware tools (bridge > config > LLM).
 	platformFn := func() string {
 		if deviceEnv != nil {
 			if p := strings.TrimSpace(deviceEnv.Platform); p != "" {
@@ -991,13 +1038,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		return defaultPlatform
 	}
-	for _, name := range []string{"enter_text_in_field", "enter_text_via_bridge"} {
-		if textInputTool, ok := r.tools.Get(name); ok {
-			if tool, ok := textInputTool.(platformConfigurable); ok {
-				tool.SetPlatformFn(platformFn)
-			}
-		}
-	}
+	r.tools.SetRuntimePlatformFn(platformFn)
 
 	// setup context manager if not initialized
 	if r.contextManager == nil {
@@ -1052,6 +1093,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	agentLoop.EnvironmentBridge = r.environmentBridge
 	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
+	agentLoop.ToolResultObserver = newScreenToolResultObserver(r.screenState)
 	agentLoop.SteerInterrupt = req.SteerInterrupt
 	agentLoop.SteerProvider = req.SteerProvider
 	agentLoop.SteerWaiter = req.SteerWaiter
@@ -1975,6 +2017,10 @@ type streamOutputTracker interface {
 	StreamEmitted() bool
 }
 
+type streamResponseFinisher interface {
+	FinishResponse() bool
+}
+
 func resetStreamWriterState(writer io.Writer) {
 	resetter, ok := writer.(streamStateResetter)
 	if !ok {
@@ -1989,12 +2035,29 @@ func resetStreamBuffer(writer io.Writer) {
 	}
 }
 
+func finishStreamWriterResponse(writer io.Writer) bool {
+	finisher, ok := writer.(streamResponseFinisher)
+	if !ok {
+		return false
+	}
+	return finisher.FinishResponse()
+}
+
 func streamWriterEmitted(writer io.Writer) bool {
 	tracker, ok := writer.(streamOutputTracker)
 	if !ok {
 		return true
 	}
 	return tracker.StreamEmitted()
+}
+
+func (h *runtimeCallbackHandler) FinishStreamingResponse(context.Context) {
+	finishStreamWriterResponse(h.writer)
+}
+
+func (h *runtimeCallbackHandler) AbortStreamingResponse(context.Context) {
+	resetStreamBuffer(h.writer)
+	resetStreamWriterState(h.writer)
 }
 
 func (h *runtimeCallbackHandler) recordFirstToken() {
@@ -2269,6 +2332,9 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	if r.storageMonitor != nil {
+		r.storageMonitor.Stop()
+	}
 	if r.storage != nil {
 		r.storage.Stop()
 	}

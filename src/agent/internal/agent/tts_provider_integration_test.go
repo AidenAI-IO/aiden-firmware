@@ -121,6 +121,25 @@ func TestStreamSessionWriterClosesSessionWhenTextWritten(t *testing.T) {
 	}
 }
 
+func TestStreamSessionWriterFlushesProviderWithoutInterruptingLLMStream(t *testing.T) {
+	flushErr := errors.New("flush failed")
+	session := &flushTrackingStreamSession{flushErr: flushErr}
+	w := &streamSessionWriter{session: session}
+
+	if _, err := w.Write([]byte("short speech")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v, want provider error isolated from LLM stream", err)
+	}
+	if session.flushCalls != 1 {
+		t.Fatalf("provider Flush() calls = %d, want 1", session.flushCalls)
+	}
+	if err := w.closeAndWait(); !errors.Is(err, flushErr) {
+		t.Fatalf("closeAndWait() error = %v, want recorded flush error", err)
+	}
+}
+
 func TestHandleTTSSettingsPostInitializesManagerWhenAbsent(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
@@ -280,8 +299,8 @@ func containsProviderName(values []string, target string) bool {
 
 func TestAudioDialogRunAgentTurnStreamsTTSTagThroughProviderManager(t *testing.T) {
 	model := &rawStreamingModel{
-		content: "streamed answer\n<tts>streamed answer</tts>",
-		chunks:  []string{"streamed answer\n<t", "ts>streamed ", "answer</tts>"},
+		content: "<tts>streamed answer</tts>\nstreamed answer",
+		chunks:  []string{"<t", "ts>streamed ", "answer</tts>\nstreamed answer"},
 	}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
@@ -301,6 +320,7 @@ func TestAudioDialogRunAgentTurnStreamsTTSTagThroughProviderManager(t *testing.T
 		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 	}
+	runtime.RegisterPreemptHook(dialog.InterruptOutput)
 
 	result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "hello"}, runtime)
 	if err != nil {
@@ -316,10 +336,10 @@ func TestAudioDialogRunAgentTurnStreamsTTSTagThroughProviderManager(t *testing.T
 
 func TestAudioDialogRunAgentTurnReturnsFullAnswerWithStreamedSpeech(t *testing.T) {
 	model := &rawStreamingModel{
-		content: "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。\n<tts>已完成设置，当前音量是 42。</tts>",
+		content: "<tts>已完成设置，当前音量是 42。</tts>\n已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。",
 		chunks: []string{
-			"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。\n<t",
-			"ts>已完成设置，当前音量是 42。</tts>",
+			"<tts>已完成设置，当前音量是 42。</tt",
+			"s>\n已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。",
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -348,7 +368,7 @@ func TestAudioDialogRunAgentTurnReturnsFullAnswerWithStreamedSpeech(t *testing.T
 	if !result.SpeechStreamed {
 		t.Fatal("SpeechStreamed = false, want true with streaming callback")
 	}
-	wantOutput := "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。\n<tts>已完成设置，当前音量是 42。</tts>"
+	wantOutput := "<tts>已完成设置，当前音量是 42。</tts>\n已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"
 	if result.Output != wantOutput {
 		t.Fatalf("Output = %q", result.Output)
 	}
@@ -388,10 +408,10 @@ func TestAudioDialogInterruptOutputStopsBackgroundToolSpeech(t *testing.T) {
 
 func TestRuntimeRunStreamsTTSTaggedChunksToWriter(t *testing.T) {
 	model := &rawStreamingModel{
-		content: "完整回答保留给屏幕。\n<tts>播报摘要。</tts>",
+		content: "<tts>播报摘要。</tts>\n完整回答保留给屏幕。",
 		chunks: []string{
-			"完整回答保留给屏幕。\n<t",
-			"ts>播报摘要。</tts>",
+			"<t",
+			"ts>播报摘要。</tts>\n完整回答保留给屏幕。",
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -413,7 +433,7 @@ func TestRuntimeRunStreamsTTSTaggedChunksToWriter(t *testing.T) {
 	if stream.String() != "播报摘要。" {
 		t.Fatalf("stream = %q, want TTS tag content", stream.String())
 	}
-	if result.Output != "完整回答保留给屏幕。\n<tts>播报摘要。</tts>" {
+	if result.Output != "<tts>播报摘要。</tts>\n完整回答保留给屏幕。" {
 		t.Fatalf("Output = %q", result.Output)
 	}
 }
@@ -718,6 +738,19 @@ func (s *abortableStreamSession) Abort() error {
 }
 func (s *abortableStreamSession) Err() error { return nil }
 
+type flushTrackingStreamSession struct {
+	flushCalls int
+	flushErr   error
+}
+
+func (s *flushTrackingStreamSession) WriteText(string) error { return nil }
+func (s *flushTrackingStreamSession) Flush() error {
+	s.flushCalls++
+	return s.flushErr
+}
+func (s *flushTrackingStreamSession) Close() error { return nil }
+func (s *flushTrackingStreamSession) Err() error   { return s.flushErr }
+
 type formatCheckingTTSProvider struct {
 	name       string
 	caps       ttsmodule.Capabilities
@@ -763,6 +796,14 @@ type recordingTTSProvider struct {
 	seen []string
 }
 
+type flushRecordingTTSProvider struct {
+	name       string
+	mu         sync.Mutex
+	seen       []string
+	writes     []string
+	flushCalls int
+}
+
 const testTTSPlaybackStartPCMBytes = 48000
 
 type playbackStartedTransientErrorProvider struct {
@@ -793,6 +834,18 @@ func (p *playbackStartedTransientErrorProvider) BeginStream(ctx context.Context,
 
 func (p *recordingTTSProvider) Close() error { return nil }
 
+func (p *flushRecordingTTSProvider) Name() string { return p.name }
+
+func (p *flushRecordingTTSProvider) Capabilities() ttsmodule.Capabilities {
+	return ttsmodule.Capabilities{}
+}
+
+func (p *flushRecordingTTSProvider) BeginStream(ctx context.Context, sink ttsmodule.AudioSink) (ttsmodule.StreamSession, error) {
+	return &flushRecordingTTSSession{provider: p, sink: sink}, nil
+}
+
+func (p *flushRecordingTTSProvider) Close() error { return nil }
+
 func (p *playbackStartedTransientErrorProvider) Close() error { return nil }
 
 func (p *recordingTTSProvider) texts() []string {
@@ -801,12 +854,31 @@ func (p *recordingTTSProvider) texts() []string {
 	return append([]string(nil), p.seen...)
 }
 
+func (p *flushRecordingTTSProvider) texts() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.seen...)
+}
+
+func (p *flushRecordingTTSProvider) activity() ([]string, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.writes...), p.flushCalls
+}
+
 func (p *playbackStartedTransientErrorProvider) beginCalls() int {
 	return int(p.calls.Load())
 }
 
 type recordingTTSSession struct {
 	provider *recordingTTSProvider
+	sink     ttsmodule.AudioSink
+	buf      bytes.Buffer
+	err      error
+}
+
+type flushRecordingTTSSession struct {
+	provider *flushRecordingTTSProvider
 	sink     ttsmodule.AudioSink
 	buf      bytes.Buffer
 	err      error
@@ -822,9 +894,36 @@ func (s *recordingTTSSession) WriteText(text string) error {
 	return nil
 }
 
+func (s *flushRecordingTTSSession) WriteText(text string) error {
+	_, _ = s.buf.WriteString(text)
+	s.provider.mu.Lock()
+	s.provider.writes = append(s.provider.writes, text)
+	s.provider.mu.Unlock()
+	return nil
+}
+
 func (s *playbackStartedTransientErrorSession) WriteText(text string) error { return nil }
 
 func (s *recordingTTSSession) Flush() error { return nil }
+
+func (s *flushRecordingTTSSession) Flush() error {
+	s.provider.mu.Lock()
+	s.provider.flushCalls++
+	s.provider.mu.Unlock()
+	text := s.buf.String()
+	s.buf.Reset()
+	if text == "" {
+		return nil
+	}
+	s.provider.mu.Lock()
+	s.provider.seen = append(s.provider.seen, text)
+	s.provider.mu.Unlock()
+	if err := s.sink.WritePCM(make([]byte, testTTSPlaybackStartPCMBytes)); err != nil {
+		s.err = err
+		return err
+	}
+	return nil
+}
 
 func (s *playbackStartedTransientErrorSession) Flush() error { return nil }
 
@@ -842,6 +941,8 @@ func (s *recordingTTSSession) Close() error {
 	return nil
 }
 
+func (s *flushRecordingTTSSession) Close() error { return s.Flush() }
+
 func (s *playbackStartedTransientErrorSession) Close() error {
 	if err := s.sink.WritePCM(make([]byte, 16000)); err != nil {
 		s.err = err
@@ -853,6 +954,8 @@ func (s *playbackStartedTransientErrorSession) Close() error {
 }
 
 func (s *recordingTTSSession) Err() error { return s.err }
+
+func (s *flushRecordingTTSSession) Err() error { return s.err }
 
 func (s *playbackStartedTransientErrorSession) Err() error { return s.err }
 

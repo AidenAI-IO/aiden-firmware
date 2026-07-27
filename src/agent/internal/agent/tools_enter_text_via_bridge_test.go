@@ -10,15 +10,14 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+func newPhoneBridgeForTest() *PhoneBridge {
+	return NewPhoneBridge(newTestLogger())
+}
+
 func newTestPhoneBridge(t *testing.T) *PhoneBridge {
 	t.Helper()
 	pb := newPhoneBridgeForTest()
 	t.Cleanup(func() {
-		pb.statusPublishMu.Lock()
-		if pb.statusExpiryTimer != nil {
-			pb.statusExpiryTimer.Stop()
-		}
-		pb.statusPublishMu.Unlock()
 		pb.queue.Stop()
 	})
 	return pb

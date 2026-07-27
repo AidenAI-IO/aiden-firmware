@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/screen"
 )
 
 func testPromptProfile(cfg AgentConfig) RoleProfile {
@@ -190,6 +191,26 @@ func TestDefaultAgentBehaviorExcludesEnvironmentGuidance(t *testing.T) {
 		if strings.Contains(behavior, unexpected) {
 			t.Fatalf("defaultAgentBehavior should not include environment guidance %q:\n%s", unexpected, behavior)
 		}
+	}
+}
+
+func TestDefaultAgentBehaviorRequiresTTSBeforeVisibleText(t *testing.T) {
+	behavior := defaultAgentBehavior()
+	for _, want := range []string{
+		"Responses must begin with exactly one <tts>...</tts> block",
+		"followed by ordinary user-facing text",
+		"When invoking tools, put brief user-facing progress text first",
+		"Tool-call TTS stays trailing",
+	} {
+		if !strings.Contains(behavior, want) {
+			t.Fatalf("defaultAgentBehavior missing %q:\n%s", want, behavior)
+		}
+	}
+	if strings.Contains(behavior, "ordinary user-facing text, followed by exactly one <tts>") {
+		t.Fatalf("defaultAgentBehavior still requests trailing TTS:\n%s", behavior)
+	}
+	if strings.Contains(behavior, "When invoking tools, begin assistant content with exactly one <tts>") {
+		t.Fatalf("defaultAgentBehavior requests leading tool-call TTS:\n%s", behavior)
 	}
 }
 
@@ -394,7 +415,7 @@ func TestPhoneBridgeRuntimeContextIncludesPhoneEnvironment(t *testing.T) {
 			Brand:           "Apple",
 			Model:           "iPhone16,2",
 			DeviceName:      "User device",
-			Screen:          PhoneScreenInfo{WidthPixels: testIntPtr(1179), HeightPixels: testIntPtr(2556), Scale: testFloatPtr(3)},
+			Screen:          screen.PhoneScreenInfo{WidthPixels: testIntPtr(1179), HeightPixels: testIntPtr(2556), Scale: testFloatPtr(3)},
 			Battery:         PhoneBatteryInfo{Level: testFloatPtr(0.87), Charging: testBoolPtr(true), State: "charging"},
 			SystemApps:      []AvailableAppInfo{{Name: "Camera", Available: true}, {Name: "Contacts", Available: true}},
 			ThirdPartyApps:  []AvailableAppInfo{{Name: "WeChat", Available: true}, {Name: "Douyin", Available: false}, {Name: "Alipay", Available: true}},

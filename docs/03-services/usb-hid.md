@@ -112,27 +112,64 @@ It is recommended to use normalized coordinates (`0..1000`, with center at `500,
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center; only explicitly pass `coord_space: "pixel"` when the screenshot pixel coordinates and HID touch coordinates are already calibrated. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
 `keyboard_text` simulates a US keyboard and can only input ASCII typeable characters; Chinese input should be completed through pinyin/English search terms and on-screen candidates, and Chinese character strings cannot be passed directly to the tool.
 
-## iOS shortcut paste prerequisite
+## iOS AssistiveTouch modifier isolation
 
-On iOS, HID text input and HID keyboard shortcuts are separate failure domains. `keyboard_text` can successfully type ASCII while shortcuts such as paste (`keyboard_tap` with `["meta","v"]` / `Cmd+V`) still have no UI effect.
+On iOS, AssistiveTouch can make modifier routing unstable when an external
+keyboard and pointer are advertised by the same USB composite. Plain key input
+may work while shortcuts such as `Cmd+A` or `Cmd+V` are ignored.
 
-The keyboard HID function is advertised as a boot keyboard (`protocol=1`, `subclass=1`) for broad host compatibility. If iOS retains a stale external-keyboard session, it may accept plain keycodes while ignoring modifier chords; symptoms include `Shift+1` producing `1` instead of `!`, and `Cmd+A` / `Cmd+V` doing nothing. Force a clean composite gadget re-enumeration before chasing HID timing or key mappings, but do it as an explicit recovery step rather than after every healthy host configuration event.
+When `hid.pointer_mode = "absolute"`, firmware builds that include
+`/oem/usr/bin/aiden-dynamic-keyboard` automatically isolate keyboard actions
+whose HID reports contain Ctrl, Shift, Option/Alt, or Cmd/Meta. This includes
+`keyboard_text` values containing uppercase letters or symbols that require
+Shift on a US keyboard. Plain key taps, unmodified text, pointer input, and
+Consumer Control continue to use the normal keyboard + pointer + Consumer
+Control + ECM composite.
 
-For stale iOS HID sessions, capture the current watchdog snapshot first and then run the manual refresh command:
+Immediately before a modifier-bearing keyboard action, the Agent switches the
+single USB gadget to a pointer-free keyboard + Consumer Control + ECM profile.
+After the action, including error and cancellation paths, it restores the normal
+composite. The isolated profile uses a distinct USB product ID and serial number
+so iOS does not reuse the pointer-bearing descriptor for the input.
+
+One conversational Agent run owns a shared isolation scope. The first
+modifier-bearing keyboard operation removes the pointer, and later keyboard or
+Consumer Control operations reuse that profile without another enumeration. A
+mouse, touch, scroll, or wheel operation restores the normal profile only when
+the pointer is currently absent. If a later keyboard operation needs a modifier,
+the run isolates again. Success, failure, cancellation, preemption, panic
+cleanup, and normal termination all leave the scope through a context-independent
+final restore.
+
+Direct HTTP Tool API calls use the same rules within one invocation, but do not
+share isolation state across separate requests. A modifier-bearing HTTP call
+therefore isolates and restores once unless that invocation needs pointer input
+before it completes.
+
+When `search_launch_app` omits `platform`, an active iOS HID isolation
+controller is also treated as an iOS platform signal. This keeps the documented
+`{"app":"WeChat"}` input on the `Cmd+Space` Spotlight path even while Phone
+Bridge is unavailable or backgrounded.
+
+The Luckfox board has one UDC, so isolation and restore briefly disconnect the
+complete composite, including ECM. The dynamic controller and ECM watchdog
+share `/run/aiden_dynamic_keyboard.lock` to prevent overlapping UDC resets. The
+controller also publishes a short post-switch grace deadline so the watchdog
+does not count the planned ECM interruption toward its stall threshold. Normal
+watchdog probes resume after the grace window and still recover persistent ECM
+failures. HID node open recovery also honors this deadline: a transient
+`/dev/hidg*` `ENXIO` waits and retries instead of forcing another composite
+refresh during the planned switch.
+
+Inspect or exercise the profiles manually with:
 
 ```bash
-/etc/init.d/S60usb_ecm_watchdog snapshot
-/etc/init.d/S60usb_ecm_watchdog refresh
+/oem/usr/bin/aiden-dynamic-keyboard status
+/oem/usr/bin/aiden-dynamic-keyboard isolate
+/oem/usr/bin/aiden-dynamic-keyboard restore
 ```
 
-The watchdog intentionally preserves normal `configured` transitions. Automatically refreshing a healthy composite gadget can leave `/dev/hidg0` or `/dev/hidg1` present but unopenable until the phone fully re-enumerates the interfaces.
-
-Before validating shortcut-based paste on iPhone or iPad, turn on:
-
-```text
-Settings > Accessibility > Keyboards & Typing > Full Keyboard Access
-```
-
-On some iOS versions this path may be shown as `Settings > Accessibility > Keyboards > Full Keyboard Access`.
-
-Use HDMI visual feedback after the shortcut. A successful `/dev/hidg0` write only means the HID report was accepted by the device node; it does not prove that iOS executed the paste action. If clipboard content is known to be present and plain typing works but `meta+v` / `rmeta+v` does nothing, check Full Keyboard Access first before changing HID timing or retrying the same shortcut path.
+After any test, `status` should report `mode=normal` and list `hid.usb0`,
+`hid.usb1`, `hid.usb2`, and `ecm.usb0`. Use HDMI visual feedback to verify the
+shortcut effect; a successful `/dev/hidg0` write only proves that the gadget
+accepted the HID report.

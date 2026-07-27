@@ -6,6 +6,7 @@ locale = "zh-CN"
 # custom_instruction = ""
 # additional_prompt = ""
 # max_iterations = -1
+locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification text
 
 # Screenshot context pruning:
 # keep the latest N screenshots and batch-prune older screenshots every interval
@@ -93,17 +94,21 @@ api_key = "OPENAI_API_KEY"
                                     # bypasses the SD/eMMC storage modes; the
                                     # default is the managed eMMC tier
 
-# microSD storage tuning (optional; see docs/04-agent/storage-modes.md)
 # Storage mode is automatic: a usable card means dual storage, otherwise
-# eMMC only. New data is always written to eMMC; when eMMC free space drops
-# below migrate_start_free_pct, the oldest recordings are moved to the SD
-# card until free space is back at migrate_stop_free_pct.
+# eMMC only. StorageMonitor independently protects the persistent data root.
 [storage]
 # mount_point = "/mnt/sdcard"       # Where a usable card is mounted
 # device = "mmcblk2"                # SD card block device base name
 # min_card_free_mb = 64             # Cards with less free space are rejected
 # migrate_start_free_pct = 10       # Start migrating below this eMMC free %
 # migrate_stop_free_pct = 50        # Stop once eMMC free % reaches this
+# monitor_enabled = true             # Capacity monitoring; SD management remains automatic
+# root_path = "/userdata"
+# check_interval_seconds = 300
+# warning_threshold_mb = 50
+# critical_threshold_mb = 10
+# emergency_threshold_mb = 5
+# recovery_hysteresis_mb = 5
 
 # Voice notifications follow a normal Agent reply; they never announce independently.
 [voice_notifications]
@@ -124,6 +129,19 @@ api_key = "OPENAI_API_KEY"
 # Log retention configuration
 [log]
 # llm_http_retention_days = 7  # Keep llm-http-*.log files for this many days
+
+[storage.degraded_mode]
+# disable_llm_http_log = true
+# disable_audio_archive = true
+# disable_session_archive = true
+max_agent_log_mb = 1
+
+[storage.cleanup]
+# enabled = true
+# llm_http_log_retention_days = [7, 3, 1, 0]
+# audio_archive_retention_days = [30, 7, 0]
+# session_archive_retention_days = [30]
+# cleanup_retry_interval_seconds = 60
 
 # Speech-to-Text (STT) configuration
 # Required when input_mode = "stt"

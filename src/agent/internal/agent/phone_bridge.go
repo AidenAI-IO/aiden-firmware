@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"aiden-agent/internal/agent/statemanager"
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,42 +45,28 @@ type BridgeCommandResponse struct {
 }
 
 type PhoneEnvironment struct {
-	CapturedAt       string             `json:"captured_at,omitempty"`
-	Source           string             `json:"source,omitempty"`
-	Platform         string             `json:"platform,omitempty"`
-	SystemName       string             `json:"system_name,omitempty"`
-	SystemVersion    string             `json:"system_version,omitempty"`
-	IsTablet         *bool              `json:"is_tablet,omitempty"`
-	Locale           string             `json:"locale,omitempty"`
-	Language         string             `json:"language,omitempty"`
-	Region           string             `json:"region,omitempty"`
-	TimeZone         string             `json:"time_zone,omitempty"`
-	UTCOffsetMinutes *int               `json:"utc_offset_minutes,omitempty"`
-	UTCOffset        string             `json:"utc_offset,omitempty"`
-	Uses24HourClock  *bool              `json:"uses_24_hour_clock,omitempty"`
-	Manufacturer     string             `json:"manufacturer,omitempty"`
-	Brand            string             `json:"brand,omitempty"`
-	Model            string             `json:"model,omitempty"`
-	DeviceName       string             `json:"device_name,omitempty"`
-	Screen           PhoneScreenInfo    `json:"screen,omitempty"`
-	Battery          PhoneBatteryInfo   `json:"battery,omitempty"`
-	SystemApps       []AvailableAppInfo `json:"system_apps,omitempty"`
-	ThirdPartyApps   []AvailableAppInfo `json:"third_party_apps,omitempty"`
-	AvailableApps    []AvailableAppInfo `json:"available_apps,omitempty"`
-}
-
-type PhoneScreenInfo struct {
-	Width              *float64 `json:"width,omitempty"`
-	Height             *float64 `json:"height,omitempty"`
-	WidthPixels        *int     `json:"width_pixels,omitempty"`
-	HeightPixels       *int     `json:"height_pixels,omitempty"`
-	NativeWidthPixels  *int     `json:"native_width_pixels,omitempty"`
-	NativeHeightPixels *int     `json:"native_height_pixels,omitempty"`
-	Scale              *float64 `json:"scale,omitempty"`
-	NativeScale        *float64 `json:"native_scale,omitempty"`
-	Density            *float64 `json:"density,omitempty"`
-	DensityDPI         *int     `json:"density_dpi,omitempty"`
-	ScaledDensity      *float64 `json:"scaled_density,omitempty"`
+	CapturedAt       string                 `json:"captured_at,omitempty"`
+	Source           string                 `json:"source,omitempty"`
+	Platform         string                 `json:"platform,omitempty"`
+	SystemName       string                 `json:"system_name,omitempty"`
+	SystemVersion    string                 `json:"system_version,omitempty"`
+	IsTablet         *bool                  `json:"is_tablet,omitempty"`
+	Locale           string                 `json:"locale,omitempty"`
+	Language         string                 `json:"language,omitempty"`
+	Region           string                 `json:"region,omitempty"`
+	TimeZone         string                 `json:"time_zone,omitempty"`
+	UTCOffsetMinutes *int                   `json:"utc_offset_minutes,omitempty"`
+	UTCOffset        string                 `json:"utc_offset,omitempty"`
+	Uses24HourClock  *bool                  `json:"uses_24_hour_clock,omitempty"`
+	Manufacturer     string                 `json:"manufacturer,omitempty"`
+	Brand            string                 `json:"brand,omitempty"`
+	Model            string                 `json:"model,omitempty"`
+	DeviceName       string                 `json:"device_name,omitempty"`
+	Screen           screen.PhoneScreenInfo `json:"screen,omitempty"`
+	Battery          PhoneBatteryInfo       `json:"battery,omitempty"`
+	SystemApps       []AvailableAppInfo     `json:"system_apps,omitempty"`
+	ThirdPartyApps   []AvailableAppInfo     `json:"third_party_apps,omitempty"`
+	AvailableApps    []AvailableAppInfo     `json:"available_apps,omitempty"`
 }
 
 type PhoneBatteryInfo struct {
@@ -119,7 +105,6 @@ type PhoneBridgeStatus struct {
 
 type PhoneBridge struct {
 	mu                sync.Mutex
-	statusPublishMu   sync.Mutex
 	statusExpiryTimer *time.Timer
 	conn              *websocket.Conn
 	connected         bool
@@ -144,15 +129,13 @@ type PhoneBridge struct {
 	logger            *Logger
 	done              chan struct{}
 	queue             *CommandQueue // HTTP queue for background-compatible commands
-	stateManager      *statemanager.StateManager
 }
 
-func NewPhoneBridge(logger *Logger, stateManager *statemanager.StateManager) *PhoneBridge {
+func NewPhoneBridge(logger *Logger) *PhoneBridge {
 	return &PhoneBridge{
-		pendingCmds:  make(map[string]chan BridgeCommandResponse),
-		logger:       logger,
-		queue:        NewCommandQueue(logger),
-		stateManager: stateManager,
+		pendingCmds: make(map[string]chan BridgeCommandResponse),
+		logger:      logger,
+		queue:       NewCommandQueue(logger),
 	}
 }
 
@@ -190,8 +173,6 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	pb.done = make(chan struct{})
 	done := pb.done
 	pb.mu.Unlock()
-
-	pb.statusUpdated()
 
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: client connected (platform=%s phone_id=%s)", platform, phoneID)
@@ -243,7 +224,6 @@ func (pb *PhoneBridge) readLoop(conn *websocket.Conn, done chan struct{}) {
 			}
 		}
 		pb.mu.Unlock()
-		pb.statusUpdated()
 		close(done)
 		conn.Close(websocket.StatusNormalClosure, "")
 		if pb.logger != nil {
@@ -340,8 +320,6 @@ func (pb *PhoneBridge) handleEnvironmentEvent(resp BridgeCommandResponse) bool {
 	pb.lastHeartbeatAt = pb.environmentAt
 	pb.mu.Unlock()
 
-	pb.statusUpdated()
-
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: environment updated (platform=%s)", env.Platform)
 	}
@@ -398,8 +376,6 @@ func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
 	}
 	pb.lastHeartbeatAt = pb.appStateAt
 	pb.mu.Unlock()
-
-	pb.statusUpdated()
 
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: app state updated (%s)", appState)
@@ -596,58 +572,56 @@ func (pb *PhoneBridge) currentPhoneID() string {
 	return strings.TrimSpace(pb.phoneID)
 }
 
-func (pb *PhoneBridge) statusUpdated() {
-	if pb == nil || pb.stateManager == nil {
-		return
+func (pb *PhoneBridge) UpdateState() map[string]string {
+	ret := make(map[string]string)
+	if pb == nil {
+		return ret
 	}
 
 	// Serialize snapshot publication so an older status callback cannot publish
 	// after a newer HTTP poll or WebSocket event. The freshness expiry callback
 	// uses the same path.
-	pb.statusPublishMu.Lock()
-	defer pb.statusPublishMu.Unlock()
-
 	status := pb.getStatus()
 	// update stateManager with the new status
 	// if connected, set app_connected to true
 	if status.Connected {
-		pb.stateManager.SetState("app_connected", "true")
+		ret["app_connected"] = "true"
 	} else {
-		pb.stateManager.SetState("app_connected", "false")
+		ret["app_connected"] = "false"
 	}
 
 	if status.AppState != "" {
-		pb.stateManager.SetState("app_state", status.AppState)
+		ret["app_state"] = status.AppState
 	} else {
-		pb.stateManager.DeleteState("app_state")
+		ret["app_state"] = "unknown"
 	}
 
 	if status.PipBridgeEnabled != nil {
-		pb.stateManager.SetState("app_pip_enabled", fmt.Sprintf("%t", *status.PipBridgeEnabled))
+		ret["app_pip_enabled"] = fmt.Sprintf("%t", *status.PipBridgeEnabled)
 	} else {
-		pb.stateManager.DeleteState("app_pip_enabled")
+		ret["app_pip_enabled"] = "unknown"
 	}
 
 	if status.FgsBridgeEnabled != nil {
-		pb.stateManager.SetState("app_fgs_enabled", fmt.Sprintf("%t", *status.FgsBridgeEnabled))
+		ret["app_fgs_enabled"] = fmt.Sprintf("%t", *status.FgsBridgeEnabled)
 	} else {
-		pb.stateManager.DeleteState("app_fgs_enabled")
+		ret["app_fgs_enabled"] = "unknown"
 	}
 
 	platform := strings.ToLower(strings.TrimSpace(status.Platform))
 	if platform == "ios" || platform == "android" {
-		pb.stateManager.SetState("app_platform", platform)
+		ret["app_platform"] = platform
 	} else {
-		pb.stateManager.DeleteState("app_platform")
+		ret["app_platform"] = "unknown"
 	}
 
 	if strategy := phoneBridgeTextEntryState(status); strategy != "" {
-		pb.stateManager.SetState("app_text_entry_strategy", strategy)
+		ret["app_text_entry_strategy"] = strategy
 	} else {
-		pb.stateManager.DeleteState("app_text_entry_strategy")
+		ret["app_text_entry_strategy"] = "unknown"
 	}
 
-	pb.scheduleStatusExpiryLocked(status)
+	return ret
 }
 
 const (
@@ -678,19 +652,6 @@ func phoneBridgeTextEntryState(status PhoneBridgeStatus) string {
 		return phoneBridgeTextEntryRestoreAvailable
 	}
 	return phoneBridgeTextEntryIMEFallback
-}
-
-func (pb *PhoneBridge) scheduleStatusExpiryLocked(status PhoneBridgeStatus) {
-	if pb.statusExpiryTimer != nil {
-		pb.statusExpiryTimer.Stop()
-		pb.statusExpiryTimer = nil
-	}
-
-	delay, ok := phoneBridgeTextEntryStateExpiry(status)
-	if !ok {
-		return
-	}
-	pb.statusExpiryTimer = time.AfterFunc(delay, pb.statusUpdated)
 }
 
 func phoneBridgeTextEntryStateExpiry(status PhoneBridgeStatus) (time.Duration, bool) {
@@ -960,35 +921,6 @@ func boolLabel(label string, value *bool) string {
 		return label + "=true"
 	}
 	return label + "=false"
-}
-
-func formatPhoneScreen(screen PhoneScreenInfo) string {
-	parts := make([]string, 0, 8)
-	if screen.Width != nil && screen.Height != nil {
-		parts = append(parts, fmt.Sprintf("%.2fx%.2f pt/dp", *screen.Width, *screen.Height))
-	}
-	if screen.WidthPixels != nil && screen.HeightPixels != nil {
-		parts = append(parts, fmt.Sprintf("%dx%d px", *screen.WidthPixels, *screen.HeightPixels))
-	}
-	if screen.NativeWidthPixels != nil && screen.NativeHeightPixels != nil {
-		parts = append(parts, fmt.Sprintf("native=%dx%d px", *screen.NativeWidthPixels, *screen.NativeHeightPixels))
-	}
-	if screen.Scale != nil {
-		parts = append(parts, fmt.Sprintf("scale=%.2f", *screen.Scale))
-	}
-	if screen.NativeScale != nil {
-		parts = append(parts, fmt.Sprintf("native_scale=%.2f", *screen.NativeScale))
-	}
-	if screen.Density != nil {
-		parts = append(parts, fmt.Sprintf("density=%.2f", *screen.Density))
-	}
-	if screen.DensityDPI != nil {
-		parts = append(parts, fmt.Sprintf("density_dpi=%d", *screen.DensityDPI))
-	}
-	if screen.ScaledDensity != nil {
-		parts = append(parts, fmt.Sprintf("scaled_density=%.2f", *screen.ScaledDensity))
-	}
-	return strings.Join(parts, ", ")
 }
 
 func formatPhoneBattery(battery PhoneBatteryInfo) string {

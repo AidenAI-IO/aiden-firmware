@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -152,11 +153,11 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		http.Error(w, `{"ok":false,"error":"touch_gesture tool unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
-	screen := s.coordinateDebugScreen()
-	mappingState := screenMappingState{}
-	if screen != nil {
-		mappingState = screen.MappingState()
-		defer screen.RestoreMappingState(mappingState)
+	currentScreen := s.coordinateDebugScreen()
+	mappingState := screen.ScreenMappingState{}
+	if currentScreen != nil {
+		mappingState = currentScreen.MappingState()
+		defer currentScreen.RestoreMappingState(mappingState)
 	}
 
 	toolInput, err := json.Marshal(map[string]any{
@@ -182,8 +183,8 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		http.Error(w, fmt.Sprintf(`{"ok":false,"error":%q}`, te.Message), httpStatusForToolError(te))
 		return
 	}
-	if screen != nil {
-		screen.RestoreMappingState(mappingState)
+	if currentScreen != nil {
+		currentScreen.RestoreMappingState(mappingState)
 	}
 
 	var actionResult postActionScreenshotResult

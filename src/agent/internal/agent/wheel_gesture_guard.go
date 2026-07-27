@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,11 +23,12 @@ const (
 // wheelNudgeGuard is a run-scoped tool execution policy. It validates wheel
 // progress before execution and commits usage only after a successful result.
 type wheelNudgeGuard struct {
-	screen            *screenState
-	total             int
-	columns           []wheelNudgeColumnUsage
-	pendingWheel      *wheelNudgeAttempt
-	pendingNavigation string
+	screen                      *screen.ScreenState
+	initialScreenshotGeneration uint64
+	total                       int
+	columns                     []wheelNudgeColumnUsage
+	pendingWheel                *wheelNudgeAttempt
+	pendingNavigation           string
 }
 
 type wheelNudgeColumnUsage struct {
@@ -63,8 +65,8 @@ type wheelNudgeObservation struct {
 	cycleStart  int
 }
 
-func newWheelNudgeGuard(screen *screenState) *wheelNudgeGuard {
-	return &wheelNudgeGuard{screen: screen}
+func newWheelNudgeGuard(screen *screen.ScreenState) *wheelNudgeGuard {
+	return &wheelNudgeGuard{screen: screen, initialScreenshotGeneration: screen.ScreenshotGeneration()}
 }
 
 func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (ToolResult, bool) {
@@ -86,6 +88,12 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 		return ToolResult{}, true
 	}
 	g.pendingWheel = nil
+	if g.screen != nil && g.screen.ScreenshotGeneration() <= g.initialScreenshotGeneration {
+		return invalidWheelResult(
+			"wheel_nudge requires a fresh screenshot captured during the current task before moving a picker",
+			map[string]any{"fresh_screenshot_required": true},
+		), false
+	}
 
 	args, err := parseWheelNudgeArgs(call.Input)
 	if err != nil {
@@ -496,10 +504,7 @@ func (g *wheelNudgeGuard) guardCoordinates(coordSpace string, x, y, rowSpacing f
 }
 
 func wheelCenterY(args wheelNudgeArgs) float64 {
-	if args.CenterY != nil {
-		return *args.CenterY
-	}
-	return wheelNudgeDefaultY
+	return *args.CenterY
 }
 
 func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
@@ -529,11 +534,25 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 		if args.Anchor != nil {
 			anchor = *args.Anchor
 		}
-		for _, column := range g.columns {
-			x, _, _, pointSpace := g.guardCoordinates(coordinateSpaceNormalized, anchor, column.centerY, 0)
-			if column.coordSpace == pointSpace && math.Abs(column.centerX-x) <= wheelNudgeColumnTolerance {
-				message := "active picker column is owned by wheel_nudge: refusing a directional swipe anchored on that column"
-				return invalidWheelResult(message, map[string]any{"column_x": column.centerX, "retry_same_column": true}), false
+		type directionalAnchor struct {
+			x          float64
+			coordSpace string
+		}
+		candidateAnchors := []directionalAnchor{
+			{x: anchor, coordSpace: coordinateSpaceNormalized},
+		}
+		for _, point := range []*pointerPoint{args.Start, args.End} {
+			if point != nil {
+				candidateAnchors = append(candidateAnchors, directionalAnchor{x: point.X.Float64(), coordSpace: normalizedWheelCoordSpace(args.CoordSpace)})
+			}
+		}
+		for _, candidate := range candidateAnchors {
+			for _, column := range g.columns {
+				x, _, _, pointSpace := g.guardCoordinates(candidate.coordSpace, candidate.x, column.centerY, 0)
+				if column.coordSpace == pointSpace && math.Abs(column.centerX-x) <= wheelNudgeColumnTolerance {
+					message := "active picker column is owned by wheel_nudge: refusing a directional swipe anchored on that column"
+					return invalidWheelResult(message, map[string]any{"column_x": column.centerX, "retry_same_column": true}), false
+				}
 			}
 		}
 		return ToolResult{}, true

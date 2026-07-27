@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -129,6 +130,85 @@ func TestRuntimeRun(t *testing.T) {
 	}
 	if len(result.Memory) != 0 {
 		t.Fatalf("expected empty memory snapshot without a storage dir, got %#v", result.Memory)
+	}
+}
+
+func TestRuntimeIOSKeyboardIsolationCoalescesModifierActionsForWholeRun(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	runtime := &Runtime{tools: &ToolSet{iosKeyboardIsolation: controller}}
+
+	result, err := runtime.withIOSKeyboardIsolationRun(context.Background(), func(runCtx context.Context) (RunResult, error) {
+		if err := controller.withKeyboard(runCtx, true, func() error {
+			events = append(events, "first-shortcut")
+			return nil
+		}); err != nil {
+			return RunResult{}, err
+		}
+		if err := controller.withBatch(runCtx, func(compositeCtx context.Context) error {
+			return controller.withKeyboard(compositeCtx, true, func() error {
+				events = append(events, "second-shortcut")
+				return nil
+			})
+		}); err != nil {
+			return RunResult{}, err
+		}
+		return RunResult{Output: "done"}, nil
+	})
+	if err != nil {
+		t.Fatalf("withIOSKeyboardIsolationRun() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("output = %q, want done", result.Output)
+	}
+	if want := []string{"isolate", "first-shortcut", "second-shortcut", "restore"}; !slices.Equal(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestRuntimeIOSKeyboardIsolationDoesNotSwitchWithoutModifier(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	runtime := &Runtime{tools: &ToolSet{iosKeyboardIsolation: controller}}
+
+	_, err := runtime.withIOSKeyboardIsolationRun(context.Background(), func(runCtx context.Context) (RunResult, error) {
+		return RunResult{}, controller.withKeyboard(runCtx, false, func() error {
+			events = append(events, "plain-key")
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withIOSKeyboardIsolationRun() error = %v", err)
+	}
+	if want := []string{"plain-key"}; !slices.Equal(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestRuntimeIOSKeyboardIsolationRestoresWhenRunIsCanceled(t *testing.T) {
+	events := []string{}
+	controller := newCancellationSensitiveIOSKeyboardIsolationController(&events)
+	runtime := &Runtime{tools: &ToolSet{iosKeyboardIsolation: controller}}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	_, err := runtime.withIOSKeyboardIsolationRun(ctx, func(runCtx context.Context) (RunResult, error) {
+		if err := controller.withKeyboard(runCtx, true, func() error {
+			events = append(events, "shortcut")
+			cancel()
+			return nil
+		}); err != nil {
+			return RunResult{}, err
+		}
+		return RunResult{}, runCtx.Err()
+	})
+	if errors.Is(err, errIOSKeyboardRestoreUsedCanceledContext) {
+		t.Fatalf("withIOSKeyboardIsolationRun() restore used canceled context: %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("withIOSKeyboardIsolationRun() error = %v, want context canceled", err)
+	}
+	if want := []string{"isolate", "shortcut", "restore"}; !slices.Equal(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
 	}
 }
 
@@ -4811,6 +4891,79 @@ func TestRuntimePreemptHooksAreCalled(t *testing.T) {
 	case <-firstDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("first run did not complete")
+	}
+}
+
+func TestRuntimeOnRunActiveRunsAfterStartupPreemption(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("done")}}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var order []string
+	runtime.RegisterPreemptHook(func() {
+		order = append(order, "preempt")
+	})
+
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "test callback order",
+		OnRunActive: func(context.Context) {
+			order = append(order, "active")
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("Output = %q, want done", result.Output)
+	}
+	if !reflect.DeepEqual(order, []string{"preempt", "active"}) {
+		t.Fatalf("callback order = %#v, want preempt then active", order)
+	}
+}
+
+func TestRuntimeFinalizesStreamingStateAtEachLLMResponseBoundary(t *testing.T) {
+	first := "<tts>Retrying.</tts>Malformed tool response."
+	final := "<tts>Completed.</tts>Completed."
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{Choices: []*llms.ContentChoice{{
+				Content:   first,
+				ToolCalls: []llms.ToolCall{{ID: "malformed"}},
+			}}},
+			contentResponse(final),
+		},
+		streamChunks: [][]string{{first}, {final}},
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var speech strings.Builder
+	writer := NewTTSTagStreamWriter(&speech)
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:        "retry malformed output",
+		StreamWriter: writer,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != final {
+		t.Fatalf("Output = %q, want %q", result.Output, final)
+	}
+	if got := speech.String(); got != "Retrying.Completed." {
+		t.Fatalf("streamed speech = %q, want both response-level TTS blocks", got)
+	}
+	if emitted, ok := writer.ConsumeFinishedResponse(); !ok || !emitted {
+		t.Fatalf("final response emission = (%v, %v), want (true, true)", emitted, ok)
 	}
 }
 

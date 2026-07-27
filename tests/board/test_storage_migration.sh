@@ -54,7 +54,7 @@ SYS_ENV=/userdata/system/env
 SYS_ENV_BAK=/userdata/system/env.stmig.bak
 STATE=/run/aiden/storage.state
 SD_AUDIO=/mnt/sdcard/aiden/audio
-AGENT_LOG=/var/log/agent/agent.log
+AGENT_LOG=/userdata/agent/log/agent.log
 ENV_LINE="AIDEN_STORAGE_EMMC_ROOT=$EMMC"
 
 PASS=0

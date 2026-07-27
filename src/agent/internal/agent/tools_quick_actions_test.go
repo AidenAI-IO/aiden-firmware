@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -187,7 +190,7 @@ func TestQuickActionExecutesDelegatedTouchGesture(t *testing.T) {
 	tool := &QuickActionTool{
 		touch: &TouchGestureTool{
 			pc:     testPointerController(dev, &pointerState{}),
-			screen: &screenState{},
+			screen: &screen.ScreenState{},
 		},
 	}
 	out, err := tool.Call(context.Background(), `{"action":"back","platform":"ios"}`)
@@ -256,6 +259,56 @@ func TestQuickActionSpotlightSearchClearsSearchField(t *testing.T) {
 	assertReleaseReport(t, reports[7], "release after second Cmd+A")
 	assertKeyboardReport(t, reports[8], 0, hidKeyboardMap["backspace"], "second Backspace")
 	assertReleaseReport(t, reports[9], "release after second Backspace")
+}
+
+func TestQuickActionSpotlightSearchBatchesIOSModifierIsolation(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
+	dev, _ := newTestHIDDevice(t)
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	controller.keyboardDev = dev
+	tool := &QuickActionTool{
+		keyboard:             &KeyboardTapTool{dev: dev, iosKeyboardIsolation: controller},
+		iosKeyboardIsolation: controller,
+	}
+
+	out, err := tool.Call(context.Background(), `{"action":"spotlight_search","platform":"ios"}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if !quickActionResultOK(t, out) {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	if want := []string{"isolate", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("profile events = %v, want %v", events, want)
+	}
+}
+
+func TestQuickActionRestoresIOSPointerWhenCanceledMidSequence(t *testing.T) {
+	skipHIDSleeps(t)
+
+	previousSleep := sleepQuickActionDelay
+	sleepQuickActionDelay = func(context.Context, int) error { return context.Canceled }
+	t.Cleanup(func() { sleepQuickActionDelay = previousSleep })
+
+	dev, _ := newTestHIDDevice(t)
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	controller.keyboardDev = dev
+	tool := &QuickActionTool{
+		keyboard:             &KeyboardTapTool{dev: dev, iosKeyboardIsolation: controller},
+		iosKeyboardIsolation: controller,
+	}
+
+	_, err := tool.Call(context.Background(), `{"action":"spotlight_search","platform":"ios"}`)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Call error = %v, want context canceled", err)
+	}
+	if want := []string{"isolate", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("profile events = %v, want %v", events, want)
+	}
 }
 
 func readKeyboardReports(t *testing.T, dev *HIDDevice, path string) [][]byte {
@@ -328,7 +381,7 @@ func TestQuickActionAlternativeBinding(t *testing.T) {
 		keyboard: &KeyboardTapTool{dev: dev},
 		touch: &TouchGestureTool{
 			pc:     testPointerController(dev, &pointerState{}),
-			screen: &screenState{},
+			screen: &screen.ScreenState{},
 		},
 	}
 	out, err := tool.Call(context.Background(), `{"action":"back","platform":"android","alternative":true}`)

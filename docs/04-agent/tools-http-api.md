@@ -78,6 +78,19 @@ The HTTP catalog is generated from registered Agent-owned tools at runtime. It c
 
 `current_time` and `calculator` are not registered and therefore do not appear in either the conversational or HTTP tool catalogs. Use `shell` for controller-local precise time, timezone, and deterministic calculations. The conversational Agent omits `list_scripts`, `read_script`, and `write_script` from its default LLM `tools` request; configure `load_all_tools = true` to include those three script-authoring tools.
 
+Once an HID-affecting tool invocation is accepted, its execution is independent
+of the client socket and has a five-minute server-side timeout. This is important
+when the client reaches the board through USB ECM: iOS keyboard profile isolation
+briefly re-enumerates the USB composite and may drop the HTTP connection, but the
+tool continues running and still performs its final HID profile restore. The
+caller may need to reconnect and observe the resulting screen if the response
+socket was lost. This applies to keyboard, pointer/touch, composite text/search,
+quick-action, and script tools that can participate in the serialized HID flow.
+Within one HTTP invocation, consecutive modifier-bearing actions share one
+pointer-free phase; pointer/touch input restores the mouse before acting.
+Separate HTTP invocations each manage their own isolation scope. Other HTTP
+tools retain normal client-cancellation behavior.
+
 The HTTP catalog is a separate policy. It exposes registered operational and specialized tools together with their `args_schema`, but internal maintenance tools such as `skill_manage` and `skill_mark_used` are never listed or callable through the default HTTP Tool API.
 
 ## curl Examples

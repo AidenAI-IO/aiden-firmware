@@ -1,15 +1,22 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -34,7 +41,7 @@ func TestResolvePointerPositionNormalized(t *testing.T) {
 func TestToolSetUpdateDeviceEnvironmentTracksPhoneScreenInfo(t *testing.T) {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
 	env := &PhoneEnvironment{
-		Screen: PhoneScreenInfo{
+		Screen: screen.PhoneScreenInfo{
 			WidthPixels:        intPtr(1080),
 			HeightPixels:       intPtr(1920),
 			NativeWidthPixels:  intPtr(1080),
@@ -80,7 +87,7 @@ func TestHIDToolsExposeStructuredSchemas(t *testing.T) {
 
 func TestWheelNudgeWritesLowInertiaDrag(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":650,"remaining_gap":3,"current_value":10,"target_value":13,"cycle_size":24,"cycle_start":0,"row_spacing":70,"value_step":1,"center_y":500}`)
 	if err != nil {
@@ -110,9 +117,282 @@ func TestWheelNudgeWritesLowInertiaDrag(t *testing.T) {
 	}
 }
 
+func TestMeasureWheelRowSpacingFindsSyntheticPickerRows(t *testing.T) {
+	jpegData := syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40)
+
+	measurement, ok := measureWheelRowSpacingJPEG(jpegData, 600, 300)
+	if !ok {
+		t.Fatal("measureWheelRowSpacingJPEG() did not find synthetic picker rows")
+	}
+	if math.Abs(measurement.Normalized-40) > 2 {
+		t.Fatalf("normalized spacing = %.2f, want about 40", measurement.Normalized)
+	}
+	if measurement.Confidence < 0.5 {
+		t.Fatalf("confidence = %.2f, want at least 0.5", measurement.Confidence)
+	}
+}
+
+func TestMeasureWheelRowSpacingRejectsUniformImage(t *testing.T) {
+	img := image.NewGray(image.Rect(0, 0, 500, 1000))
+	for i := range img.Pix {
+		img.Pix[i] = 24
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("encode uniform image: %v", err)
+	}
+	if measurement, ok := measureWheelRowSpacingJPEG(encoded.Bytes(), 600, 300); ok {
+		t.Fatalf("uniform image produced measurement %+v", measurement)
+	}
+}
+
+func TestSelectWheelRowSpacingPeakRejectsWeakEarlyHarmonic(t *testing.T) {
+	correlations := []float64{0.10, 0.27, 0.10, 0.10, 0.30, 0.10, 0.10}
+	if index, confidence, ok := selectWheelRowSpacingPeak(correlations); ok {
+		t.Fatalf("selectWheelRowSpacingPeak() = index %d confidence %.2f, want low-confidence fallback", index, confidence)
+	}
+}
+
+func TestWheelNudgeUsesMeasuredRowSpacingFromLatestScreenshot(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(500, 1000, screen.ScreenActiveArea{})
+	screenState.UpdateScreenshot(syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screenState, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":4,"target_value":2,"cycle_size":60,"cycle_start":0,"row_spacing":61,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "row_spacing_source=image") {
+		t.Fatalf("Call output = %q, want image measurement metadata", out)
+	}
+	if !strings.Contains(out, "physical_travel=80") {
+		t.Fatalf("Call output = %q, want two measured 40-unit rows", out)
+	}
+}
+
+func TestWheelNudgeUsesConfidentImageMotionProfileForLargeGap(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(500, 1000, screen.ScreenActiveArea{})
+	jpegData := syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40)
+	screenState.UpdateScreenshot(jpegData, 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screenState, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":57,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "rows=6") || !strings.Contains(out, "physical_travel=258") {
+		t.Fatalf("Call output = %q, want six measured rows plus settling compensation / 258 units", out)
+	}
+	if !strings.Contains(out, "motion_profile=image_calibrated") {
+		t.Fatalf("Call output = %q, want calibrated motion metadata", out)
+	}
+	if !strings.Contains(out, "settle_compensation_rows=0.45") {
+		t.Fatalf("Call output = %q, want settling compensation metadata", out)
+	}
+
+	reports := readMouseReports(t, dev, path)
+	// Keep touchdown at the original three-row boundary inside the picker,
+	// then extend only the destination by the 0.45-row settling allowance.
+	measurement, measured := measureWheelRowSpacingJPEG(jpegData, 600, 300)
+	if !measured {
+		t.Fatal("synthetic picker row spacing was not measurable")
+	}
+	plannedTravel := 6 * measurement.Normalized
+	expectedX, expectedStartY := normalizedToAbsolutePoint(600, 300+plannedTravel/2)
+	_, expectedEndY := normalizedToAbsolutePoint(600, 300+plannedTravel/2-(6+wheelNudgeMultiRowCompensation)*measurement.Normalized)
+	if reports[0].x != uint16(expectedX) || reports[0].y != uint16(expectedStartY) {
+		t.Fatalf("pre-move = (%d,%d), want compensated drag to start at (%d,%d)", reports[0].x, reports[0].y, expectedX, expectedStartY)
+	}
+	finalMove := reports[1+wheelNudgeDefaultSteps]
+	if finalMove.x != uint16(expectedX) || finalMove.y != uint16(expectedEndY) {
+		t.Fatalf("final move = (%d,%d), want compensated drag to end at (%d,%d)", finalMove.x, finalMove.y, expectedX, expectedEndY)
+	}
+}
+
+func TestWheelNudgeDoesNotCompensateWhenPlannedRowsReachTarget(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(500, 1000, screen.ScreenActiveArea{})
+	screenState.UpdateScreenshot(syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screenState, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":6,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "rows=3") || !strings.Contains(out, "physical_travel=120") {
+		t.Fatalf("Call output = %q, want exact three-row travel without over-target compensation", out)
+	}
+	if strings.Contains(out, "settle_compensation_rows") {
+		t.Fatalf("Call output = %q, exact-target drag must not add settling compensation", out)
+	}
+}
+
+func TestWheelNudgeUsesConservativeProfileWhenImageMeasurementRejected(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(500, 1000, screen.ScreenActiveArea{})
+	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 500, 1000), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screenState, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":57,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "rows=5") || !strings.Contains(out, "physical_travel=175") {
+		t.Fatalf("Call output = %q, want conservative five-row travel", out)
+	}
+	if strings.Contains(out, "motion_profile=image_calibrated") {
+		t.Fatalf("Call output = %q, low-confidence image must not enable calibrated motion", out)
+	}
+}
+
+func TestWheelNudgeMotionProfileBoundaries(t *testing.T) {
+	tests := []struct {
+		gap          int
+		conservative int
+		calibrated   int
+	}{
+		{gap: 1, conservative: 1, calibrated: 1},
+		{gap: 2, conservative: 2, calibrated: 2},
+		{gap: 3, conservative: 2, calibrated: 3},
+		{gap: 4, conservative: 2, calibrated: 3},
+		{gap: 5, conservative: 3, calibrated: 4},
+		{gap: 8, conservative: 3, calibrated: 4},
+		{gap: 9, conservative: 5, calibrated: 6},
+		{gap: 12, conservative: 5, calibrated: 6},
+	}
+	for _, tt := range tests {
+		if got := wheelNudgeRowsForGap(tt.gap); got != tt.conservative {
+			t.Errorf("wheelNudgeRowsForGap(%d) = %d, want %d", tt.gap, got, tt.conservative)
+		}
+		if got := wheelNudgeRowsForConfidentGap(tt.gap); got != tt.calibrated {
+			t.Errorf("wheelNudgeRowsForConfidentGap(%d) = %d, want %d", tt.gap, got, tt.calibrated)
+		}
+	}
+}
+
+func TestWheelNudgeTapDoesNotReportCalibratedDragProfile(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(500, 1000, screen.ScreenActiveArea{})
+	screenState.UpdateScreenshot(syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screenState, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":8,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":40,"value_step":1,"center_y":300,"visible_target_y":340}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "interaction=tap") {
+		t.Fatalf("Call output = %q, want adjacent-row tap", out)
+	}
+	if strings.Contains(out, "motion_profile=image_calibrated") {
+		t.Fatalf("Call output = %q, tap must not report a drag profile", out)
+	}
+}
+
+func TestWheelNudgeRequiresFreshScreenshotWhenConfigured(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{
+		pc:                     testPointerController(dev, &pointerState{}),
+		screen:                 &screen.ScreenState{},
+		durationMs:             1,
+		requireFreshScreenshot: true,
+	}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":57,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "fresh screenshot") {
+		t.Fatalf("Call output = %q, want fresh screenshot requirement", out)
+	}
+	if reports := readMouseReports(t, dev, path); len(reports) != 0 {
+		t.Fatalf("len(reports) = %d, want no gesture without a fresh screenshot", len(reports))
+	}
+}
+
+func TestWheelNudgeDwellsAtFinalCoordinateBeforeRelease(t *testing.T) {
+	originalSleep := sleepMs
+	var sleeps []int
+	sleepMs = func(milliseconds int) {
+		sleeps = append(sleeps, milliseconds)
+	}
+	t.Cleanup(func() { sleepMs = originalSleep })
+
+	dev, _ := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
+	if _, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":5,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !slices.Contains(sleeps, wheelNudgeEndpointHoldMs) {
+		t.Fatalf("sleep calls = %v, want endpoint hold %dms", sleeps, wheelNudgeEndpointHoldMs)
+	}
+}
+
+func syntheticWheelPickerJPEG(t *testing.T, width, height, columnX, centerY, spacing int) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, width, height))
+	for i := range img.Pix {
+		img.Pix[i] = 20
+	}
+	for y := centerY - 20; y <= centerY+20; y++ {
+		for x := 0; x < width; x++ {
+			img.SetGray(x, y, color.Gray{Y: 38})
+		}
+	}
+	for row := -4; row <= 4; row++ {
+		y := centerY + row*spacing
+		brightness := uint8(max(70, 225-35*absInt(row)))
+		drawSyntheticWheelDigits(img, columnX, y, brightness)
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("encode synthetic picker: %v", err)
+	}
+	return encoded.Bytes()
+}
+
+func uniformWheelScreenshotJPEG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, width, height))
+	for index := range img.Pix {
+		img.Pix[index] = 24
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("encode uniform wheel screenshot: %v", err)
+	}
+	return encoded.Bytes()
+}
+
+func drawSyntheticWheelDigits(img *image.Gray, centerX, centerY int, brightness uint8) {
+	for _, digitX := range []int{centerX - 13, centerX + 7} {
+		for y := centerY - 10; y <= centerY+10; y++ {
+			for x := digitX; x <= digitX+3; x++ {
+				img.SetGray(x, y, color.Gray{Y: brightness})
+			}
+		}
+		for y := centerY - 10; y <= centerY-7; y++ {
+			for x := digitX; x <= digitX+10; x++ {
+				img.SetGray(x, y, color.Gray{Y: brightness})
+			}
+		}
+		for y := centerY + 7; y <= centerY+10; y++ {
+			for x := digitX; x <= digitX+10; x++ {
+				img.SetGray(x, y, color.Gray{Y: brightness})
+			}
+		}
+	}
+}
+
 func TestWheelNudgeUsesRowGapForMultiValueSteps(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"five-minute-picker","column_x":500,"remaining_gap":2,"current_value":0,"target_value":10,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":5,"center_y":500}`)
 	if err != nil {
@@ -125,7 +405,7 @@ func TestWheelNudgeUsesRowGapForMultiValueSteps(t *testing.T) {
 
 func TestWheelNudgeRejectsTargetUnreachableByValueStep(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"five-minute-picker","column_x":500,"remaining_gap":1,"current_value":0,"target_value":3,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":5,"center_y":500}`)
 	if err != nil {
@@ -141,7 +421,7 @@ func TestWheelNudgeRejectsTargetUnreachableByValueStep(t *testing.T) {
 
 func TestWheelNudgeTapsAdjacentVisibleTarget(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":650,"remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"row_spacing":70,"value_step":1,"center_y":500,"visible_target_y":570}`)
 	if err != nil {
@@ -168,7 +448,7 @@ func TestWheelNudgeTapsAdjacentVisibleTarget(t *testing.T) {
 
 func TestWheelNudgeAdjacentTargetWithoutVisibleCoordinateUsesMicroDrag(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":650,"remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"row_spacing":70,"value_step":1,"center_y":500}`)
 	if err != nil {
@@ -181,7 +461,7 @@ func TestWheelNudgeAdjacentTargetWithoutVisibleCoordinateUsesMicroDrag(t *testin
 
 func TestWheelNudgeNonAdjacentTargetIgnoresVisibleCoordinateAndUsesBoundedDrag(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":188,"remaining_gap":6,"current_value":15,"target_value":9,"cycle_size":24,"cycle_start":0,"row_spacing":46,"value_step":1,"center_y":271,"visible_target_y":167}`)
 	if err != nil {
@@ -197,7 +477,7 @@ func TestWheelNudgeNonAdjacentTargetIgnoresVisibleCoordinateAndUsesBoundedDrag(t
 
 func TestWheelNudgeRejectsUnverifiedVisibleTargetCoordinate(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":650,"remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"row_spacing":70,"value_step":1,"center_y":500,"visible_target_y":800}`)
 	if err != nil {
@@ -213,7 +493,7 @@ func TestWheelNudgeRejectsUnverifiedVisibleTargetCoordinate(t *testing.T) {
 
 func TestWheelNudgeRejectsAdjacentTargetOutsideTightRowCenterTolerance(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":193,"remaining_gap":1,"current_value":10,"target_value":9,"cycle_size":24,"cycle_start":0,"row_spacing":43,"value_step":1,"center_y":240,"visible_target_y":187}`)
 	if err != nil {
@@ -229,7 +509,7 @@ func TestWheelNudgeRejectsAdjacentTargetOutsideTightRowCenterTolerance(t *testin
 
 func TestTouchGestureRejectsDistinctInputsResolvingToSameHIDPoint(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"drag","coord_space":"normalized","start":{"x":500,"y":500},"end":{"x":500.001,"y":500.001}}`)
 	if err != nil {
@@ -242,14 +522,14 @@ func TestTouchGestureRejectsDistinctInputsResolvingToSameHIDPoint(t *testing.T) 
 
 func TestTouchGestureTouchscreenPrimesMappingBeforeNormalizedInput(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	screen := &screenState{}
+	screenState := &screen.ScreenState{}
 	primeCalls := 0
 	tool := &TouchGestureTool{
 		pc:     testTouchscreenPointerController(dev, &pointerState{}),
-		screen: screen,
+		screen: screenState,
 		primeScreenMapping: func(context.Context) error {
 			primeCalls++
-			screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 0, Width: 497, Height: 1080, Valid: true})
+			screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 0, Width: 497, Height: 1080, Valid: true})
 			return nil
 		},
 	}
@@ -284,7 +564,7 @@ func TestTouchGestureTouchscreenDoesNotWriteWhenMappingPrimeFails(t *testing.T) 
 	dev, path := newTestHIDDevice(t)
 	tool := &TouchGestureTool{
 		pc:     testTouchscreenPointerController(dev, &pointerState{}),
-		screen: &screenState{},
+		screen: &screen.ScreenState{},
 		primeScreenMapping: func(context.Context) error {
 			return errors.New("frame service recovering")
 		},
@@ -304,12 +584,12 @@ func TestTouchGestureTouchscreenDoesNotWriteWhenMappingPrimeFails(t *testing.T) 
 
 func TestTouchGestureTouchscreenKeepsFreshFullFrameMappingWhenPrimeWouldFail(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{})
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{})
 	primeCalls := 0
 	tool := &TouchGestureTool{
 		pc:     testTouchscreenPointerController(dev, &pointerState{}),
-		screen: screen,
+		screen: screenState,
 		primeScreenMapping: func(context.Context) error {
 			primeCalls++
 			return errors.New("frame service unavailable")
@@ -340,9 +620,9 @@ func TestTouchGestureTouchscreenKeepsFreshFullFrameMappingWhenPrimeWouldFail(t *
 
 func TestWheelNudgeLargeSupportsDown(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"current_value":16,"target_value":0,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":460,"current_value":16,"target_value":0,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -372,7 +652,7 @@ func TestWheelNudgeLargeSupportsDown(t *testing.T) {
 
 func TestWheelNudgeReportsEffectiveTravelAfterEdgeClamping(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"edge-picker","column_x":500,"current_value":0,"target_value":12,"cycle_size":0,"cycle_start":0,"row_spacing":300,"value_step":1,"center_y":990}`)
 	if err != nil {
@@ -396,9 +676,9 @@ func TestWheelNudgeReportsEffectiveTravelAfterEdgeClamping(t *testing.T) {
 
 func TestWheelNudgeUsesScreenshotRelativeColumnAndCenter(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screenState, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":195,"current_value":10,"target_value":13,"cycle_size":24,"cycle_start":0,"row_spacing":38,"value_step":1,"center_y":273,"coord_space":"screenshot"}`)
 	if err != nil {
@@ -426,7 +706,7 @@ func TestWheelNudgeUsesScreenshotRelativeColumnAndCenter(t *testing.T) {
 
 func TestWheelNudgeDerivesBoundedTravelFromGapAndRowSpacing(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":500,"current_value":8,"target_value":13,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	if err != nil {
@@ -452,7 +732,7 @@ func TestWheelNudgeDerivesBoundedTravelFromGapAndRowSpacing(t *testing.T) {
 
 func TestWheelNudgeIgnoresLegacyRemainingGapAndDerivesShortestPath(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"minute-picker","column_x":500,"center_y":500,"remaining_gap":46,"current_value":47,"target_value":1,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	if err != nil {
@@ -465,7 +745,7 @@ func TestWheelNudgeIgnoresLegacyRemainingGapAndDerivesShortestPath(t *testing.T)
 
 func TestWheelNudgeFirstMicroProbeUsesExactlyOneMeasuredRow(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
-	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":500,"current_value":2,"target_value":12,"cycle_size":60,"cycle_start":0,"row_spacing":42}`)
 	if err != nil {
@@ -509,20 +789,26 @@ func TestTouchGestureSchemaDoesNotExposeWheelMetadata(t *testing.T) {
 	}
 }
 
-func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndKeyboardFirst(t *testing.T) {
+func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndConservativeInput(t *testing.T) {
 	description := (&WheelNudgeTool{}).Description()
 	for _, want := range []string{
 		"tap or slow drag",
 		"9+",
-		"2-4",
+		"3-4",
 		"5-8",
+		"confident runtime image measurement",
+		"conservative limits remain",
 		"final requested value",
 		"never substitute an intermediate visible value",
 		"normalized 0-1000 coordinates",
 		"screenshot height",
-		"tap the selected current value",
-		"keyboard_text",
+		"Use wheel_nudge directly from the latest screenshot",
+		"Do not tap the selected row",
+		"do not use keyboard_text for picker values",
 		"derives the shortest row gap",
+		"measures the row spacing",
+		"overrides the caller estimate",
+		"low-confidence images keep the caller estimate",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("wheel_nudge description = %q, want %q", description, want)
@@ -535,7 +821,8 @@ func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndKeyboardFirst(t *testing.T
 
 func TestWheelNudgeRejectsInputsThatWouldBypassGestureGuard(t *testing.T) {
 	invalidInputs := map[string]string{
-		`{"column_x":350,"remaining_gap":1,"current_value":1,"target_value":2,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`: "picker_id is required",
+		`{"picker_id":"alarm-create","column_x":400,"current_value":15,"target_value":7,"cycle_size":24,"cycle_start":0,"row_spacing":40,"value_step":1}`: "center_y is required",
+		`{"column_x":350,"remaining_gap":1,"current_value":1,"target_value":2,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`:            "picker_id is required",
 		`{"column_x":350,"remaining_gap":1,"duration_ms":0}`:    `unknown field "duration_ms"`,
 		`{"column_x":350,"remaining_gap":1,"distance":"micro"}`: `unknown field "distance"`,
 		`{"column_x":"350"}`:                           "cannot unmarshal string",
@@ -546,7 +833,7 @@ func TestWheelNudgeRejectsInputsThatWouldBypassGestureGuard(t *testing.T) {
 	for input, wantError := range invalidInputs {
 		t.Run(input, func(t *testing.T) {
 			dev, path := newTestHIDDevice(t)
-			tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+			tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}, durationMs: 1}
 
 			out, err := tool.Call(context.Background(), input)
 			if err != nil {
@@ -559,6 +846,14 @@ func TestWheelNudgeRejectsInputsThatWouldBypassGestureGuard(t *testing.T) {
 				t.Fatalf("invalid input wrote %d HID reports", len(reports))
 			}
 		})
+	}
+}
+
+func TestWheelNudgeSchemaRequiresMeasuredCenterY(t *testing.T) {
+	schema := (&WheelNudgeTool{}).ArgsSchema()
+	required, _ := schema["required"].([]string)
+	if !slices.Contains(required, "center_y") {
+		t.Fatalf("wheel_nudge schema required = %v, want center_y", required)
 	}
 }
 
@@ -623,15 +918,15 @@ func (r *recordingADBRunner) run(ctx context.Context, _ string, args ...string) 
 	return []byte(out), nil, nil
 }
 
-func newTestADBInputController(t *testing.T, screen *screenState, runner *recordingADBRunner) *ADBInputController {
+func newTestADBInputController(t *testing.T, screenState *screen.ScreenState, runner *recordingADBRunner) *ADBInputController {
 	t.Helper()
 	t.Setenv("AIDEN_ADB_PATH", "/fake/adb")
 	t.Setenv("AIDEN_ADB_SERIAL", "serial123")
-	if screen == nil {
-		screen = &screenState{}
+	if screenState == nil {
+		screenState = &screen.ScreenState{}
 	}
 	return &ADBInputController{
-		screen: screen,
+		screen: screenState,
 		client: NewADBScreenClient(),
 		runADB: runner.run,
 	}
@@ -662,10 +957,10 @@ func stringSliceMatrixEqual(a, b [][]string) bool {
 }
 
 func TestADBMouseClickUsesInputTapWithNormalizedCoordinates(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
 	runner := &recordingADBRunner{}
-	tool := &MouseClickTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+	tool := &MouseClickTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
 
 	out, err := tool.Call(context.Background(), `{"x":500,"y":250,"coord_space":"normalized"}`)
 	if err != nil {
@@ -682,10 +977,10 @@ func TestADBMouseClickUsesInputTapWithNormalizedCoordinates(t *testing.T) {
 }
 
 func TestADBMouseClickAutoRejectsOutOfRangeCoordinates(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
 	runner := &recordingADBRunner{}
-	tool := &MouseClickTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+	tool := &MouseClickTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
 
 	out, err := tool.Call(context.Background(), `{"x":1500,"y":500,"coord_space":"auto"}`)
 	if err != nil {
@@ -700,10 +995,10 @@ func TestADBMouseClickAutoRejectsOutOfRangeCoordinates(t *testing.T) {
 }
 
 func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
 	runner := &recordingADBRunner{}
-	tool := &TouchGestureTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+	tool := &TouchGestureTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":900},"end":{"x":900,"y":100},"duration_ms":321}`)
 	if err != nil {
@@ -722,10 +1017,10 @@ func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
 func TestADBTouchGestureSwipeAndDragRejectSameResolvedPoint(t *testing.T) {
 	for _, gestureType := range []string{"swipe", "drag"} {
 		t.Run(gestureType, func(t *testing.T) {
-			screen := &screenState{}
-			screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+			screenState := &screen.ScreenState{}
+			screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
 			runner := &recordingADBRunner{}
-			tool := &TouchGestureTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+			tool := &TouchGestureTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
 			ctx, _ := WithToolError(context.Background())
 
 			out, err := tool.Call(ctx, fmt.Sprintf(`{"type":%q,"start":{"x":500,"y":500},"end":{"x":500,"y":500}}`, gestureType))
@@ -746,10 +1041,10 @@ func TestADBTouchGestureSwipeAndDragRejectSameResolvedPoint(t *testing.T) {
 }
 
 func TestADBTouchGestureLongPressExtendsCommandTimeout(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
 	runner := &recordingADBRunner{}
-	tool := &TouchGestureTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+	tool := &TouchGestureTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
 
 	out, err := tool.Call(context.Background(), `{"type":"long_press","point":{"x":50,"y":50},"duration_ms":9000}`)
 	if err != nil {
@@ -773,7 +1068,7 @@ func TestADBTouchGestureLongPressExtendsCommandTimeout(t *testing.T) {
 
 func TestADBTouchGestureBackUsesKeyevent(t *testing.T) {
 	runner := &recordingADBRunner{}
-	tool := &TouchGestureTool{screen: &screenState{}, adb: newTestADBInputController(t, nil, runner)}
+	tool := &TouchGestureTool{screen: &screen.ScreenState{}, adb: newTestADBInputController(t, nil, runner)}
 
 	out, err := tool.Call(context.Background(), `{"type":"back"}`)
 	if err != nil {
@@ -792,7 +1087,7 @@ func TestADBTouchGestureBackUsesKeyevent(t *testing.T) {
 func TestADBTouchGestureBackDoesNotPrimeTouchscreenMapping(t *testing.T) {
 	runner := &recordingADBRunner{}
 	tool := &TouchGestureTool{
-		screen: &screenState{},
+		screen: &screen.ScreenState{},
 		adb:    newTestADBInputController(t, nil, runner),
 		primeScreenMapping: func(context.Context) error {
 			return errors.New("mapping should not run for adb")
@@ -970,10 +1265,10 @@ func TestADBKeyboardTextFallsBackToKeyEventsWhenADBKeyboardUnavailable(t *testin
 }
 
 func TestADBMouseMoveRejectsUnsupportedAfterCoordinateValidation(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
 	runner := &recordingADBRunner{}
-	tool := &MouseMoveTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+	tool := &MouseMoveTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
 	ctx, _ := WithToolError(context.Background())
 
 	out, err := tool.Call(ctx, `{"x":500,"y":250,"coord_space":"normalized"}`)
@@ -992,10 +1287,10 @@ func TestADBMouseMoveRejectsUnsupportedAfterCoordinateValidation(t *testing.T) {
 }
 
 func TestADBMouseScrollUsesSwipeApproximation(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
 	runner := &recordingADBRunner{}
-	tool := &MouseScrollTool{adb: newTestADBInputController(t, screen, runner)}
+	tool := &MouseScrollTool{adb: newTestADBInputController(t, screenState, runner)}
 
 	out, err := tool.Call(context.Background(), `{"delta":-3}`)
 	if err != nil {
@@ -1021,10 +1316,10 @@ func TestParseADBWMSizePrefersOverrideSize(t *testing.T) {
 }
 
 func TestResolvePointerPositionPixelUsesScreenDimensions(t *testing.T) {
-	screen := &screenState{}
-	screen.Update(1000, 2000)
+	screenState := &screen.ScreenState{}
+	screenState.Update(1000, 2000)
 
-	x, y, err := resolvePointerPosition(screen, 500, 1000, "pixel", coordinateSpaceAuto)
+	x, y, err := resolvePointerPosition(screenState, 500, 1000, "pixel", coordinateSpaceAuto)
 	if err != nil {
 		t.Fatalf("resolvePointerPosition returned error: %v", err)
 	}
@@ -1037,12 +1332,12 @@ func TestResolvePointerPositionPixelUsesScreenDimensions(t *testing.T) {
 }
 
 func TestResolvePointerPositionPixelUsesActiveArea(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
 
 	// Pixel coords are now relative to cropped image (608x1080).
 	// x=304 in crop = center of active area (was x=960 in full frame).
-	x, y, err := resolvePointerPosition(screen, 304, 540, "pixel", coordinateSpaceAuto)
+	x, y, err := resolvePointerPosition(screenState, 304, 540, "pixel", coordinateSpaceAuto)
 	if err != nil {
 		t.Fatalf("resolvePointerPosition returned error: %v", err)
 	}
@@ -1057,12 +1352,12 @@ func TestResolvePointerPositionPixelUsesActiveArea(t *testing.T) {
 }
 
 func TestResolvePointerPositionPixelUses720pActiveArea(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1280, 720, screenActiveArea{X: 320, Y: 0, Width: 640, Height: 720, Valid: true})
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1280, 720, screen.ScreenActiveArea{X: 320, Y: 0, Width: 640, Height: 720, Valid: true})
 
 	// Pixel coords relative to cropped image (640x720).
 	// x=320 in crop = center (was x=640 in full frame).
-	x, y, err := resolvePointerPosition(screen, 320, 360, "pixel", coordinateSpaceAuto)
+	x, y, err := resolvePointerPosition(screenState, 320, 360, "pixel", coordinateSpaceAuto)
 	if err != nil {
 		t.Fatalf("resolvePointerPosition returned error: %v", err)
 	}
@@ -1077,10 +1372,10 @@ func TestResolvePointerPositionPixelUses720pActiveArea(t *testing.T) {
 }
 
 func TestResolvePointerPositionNormalizedUsesActiveArea(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
 
-	x, y, err := resolvePointerPosition(screen, 0, 500, "normalized", coordinateSpaceNormalized)
+	x, y, err := resolvePointerPosition(screenState, 0, 500, "normalized", coordinateSpaceNormalized)
 	if err != nil {
 		t.Fatalf("resolvePointerPosition returned error: %v", err)
 	}
@@ -1094,10 +1389,10 @@ func TestResolvePointerPositionNormalizedUsesActiveArea(t *testing.T) {
 }
 
 func TestResolvePointerPositionTouchscreenNormalizedUsesFrameSpaceWithinActiveArea(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
 
-	x, y, err := resolvePointerPositionForSurface(screen, true, 627, 180, "normalized", coordinateSpaceNormalized)
+	x, y, err := resolvePointerPositionForSurface(screenState, true, 627, 180, "normalized", coordinateSpaceNormalized)
 	if err != nil {
 		t.Fatalf("resolvePointerPositionForSurface returned error: %v", err)
 	}
@@ -1113,12 +1408,12 @@ func TestResolvePointerPositionTouchscreenNormalizedUsesFrameSpaceWithinActiveAr
 }
 
 func TestResolvePointerPositionTouchscreenPixelUsesFrameSpace(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
 
 	// Pixel coords relative to cropped image (608x1080).
 	// x=304 in crop = center of active area → full frame x = 656+304 = 960.
-	x, y, err := resolvePointerPositionForSurface(screen, true, 304, 540, "pixel", coordinateSpaceAuto)
+	x, y, err := resolvePointerPositionForSurface(screenState, true, 304, 540, "pixel", coordinateSpaceAuto)
 	if err != nil {
 		t.Fatalf("resolvePointerPositionForSurface returned error: %v", err)
 	}
@@ -1134,12 +1429,12 @@ func TestResolvePointerPositionTouchscreenPixelUsesFrameSpace(t *testing.T) {
 }
 
 func TestResolvePointerPositionPixelRejectsBlackBar(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
 
 	// With pixel relative to cropped image, "black bar" doesn't exist.
 	// But x=700 exceeds cropped width (608), so it should still error.
-	_, _, err := resolvePointerPosition(screen, 700, 540, "pixel", coordinateSpaceAuto)
+	_, _, err := resolvePointerPosition(screenState, 700, 540, "pixel", coordinateSpaceAuto)
 	if err == nil {
 		t.Fatal("expected error for pixel coordinates outside cropped image bounds")
 	}
@@ -1149,10 +1444,10 @@ func TestResolvePointerPositionPixelRejectsBlackBar(t *testing.T) {
 }
 
 func TestResolvePointerPositionScreenshotUsesReturnedCropPixels(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 
-	x, y, err := resolvePointerPositionForSurface(screen, false, 249, 526, "screenshot", coordinateSpaceNormalized)
+	x, y, err := resolvePointerPositionForSurface(screenState, false, 249, 526, "screenshot", coordinateSpaceNormalized)
 	if err != nil {
 		t.Fatalf("absolute screenshot coordinates returned error: %v", err)
 	}
@@ -1163,7 +1458,7 @@ func TestResolvePointerPositionScreenshotUsesReturnedCropPixels(t *testing.T) {
 		t.Fatalf("absolute y = %d, want %d", y, want)
 	}
 
-	x, y, err = resolvePointerPositionForSurface(screen, true, 249, 526, "screenshot", coordinateSpaceNormalized)
+	x, y, err = resolvePointerPositionForSurface(screenState, true, 249, 526, "screenshot", coordinateSpaceNormalized)
 	if err != nil {
 		t.Fatalf("touchscreen screenshot coordinates returned error: %v", err)
 	}
@@ -1197,23 +1492,56 @@ func TestScreenshotCoordinateSpaceIsNotExposedToModel(t *testing.T) {
 	}
 }
 
+func TestModelFacingDeviceGuidanceUsesNormalizedCoordinatesOnly(t *testing.T) {
+	screenshotSpacePattern := regexp.MustCompile(`(?i)coord_space\s*[:=]\s*["']?screenshot`)
+	assertNoScreenshotCoordinateGuidance := func(name, content string) {
+		t.Helper()
+		lower := strings.ToLower(content)
+		if screenshotSpacePattern.MatchString(content) || strings.Contains(lower, "use screenshot coordinates") || strings.Contains(lower, "screenshot coordinate space") {
+			t.Fatalf("%s still advertises screenshot coordinates: %q", name, content)
+		}
+	}
+
+	descriptions := map[string]string{
+		"mouse_click":   (&MouseClickTool{}).Description(),
+		"mouse_move":    (&MouseMoveTool{}).Description(),
+		"touch_gesture": (&TouchGestureTool{}).Description(),
+		"wheel_nudge":   (&WheelNudgeTool{}).Description(),
+		"screenshot":    (&ScreenshotTool{}).Description(),
+	}
+	for name, description := range descriptions {
+		assertNoScreenshotCoordinateGuidance(name+" description", description)
+	}
+
+	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
+	data, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read device-operator SKILL.md: %v", err)
+	}
+	content := string(data)
+	assertNoScreenshotCoordinateGuidance("device-operator SKILL.md", content)
+	if !strings.Contains(content, `coord_space: "normalized"`) {
+		t.Fatalf("device-operator SKILL.md must direct coordinate tools to normalized space")
+	}
+}
+
 func TestScreenshotCoordinateSpaceStillResolvesForBackwardCompat(t *testing.T) {
 	// A model that still emits the retired "screenshot" space must not hard
 	// fail; the resolver keeps interpreting it as cropped-screenshot pixels.
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 0, Y: 0, Width: 496, Height: 1080, Valid: true})
-	if _, _, err := resolvePointerPositionForSurface(screen, false, 248, 540, "screenshot", coordinateSpaceNormalized); err != nil {
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 0, Y: 0, Width: 496, Height: 1080, Valid: true})
+	if _, _, err := resolvePointerPositionForSurface(screenState, false, 248, 540, "screenshot", coordinateSpaceNormalized); err != nil {
 		t.Fatalf("screenshot space should still resolve for backward compat: %v", err)
 	}
 }
 
 func TestScalePixelToAbsoluteUsesActiveAreaYOffset(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1280, 720, screenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true})
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1280, 720, screen.ScreenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true})
 
 	// Pixel coords relative to cropped image (1280x576).
 	// y=94 in crop (was y=166 in full frame, 166-72=94).
-	x, y, err := resolvePointerPosition(screen, 919, 94, "pixel", coordinateSpaceAuto)
+	x, y, err := resolvePointerPosition(screenState, 919, 94, "pixel", coordinateSpaceAuto)
 	if err != nil {
 		t.Fatalf("resolvePointerPosition returned error: %v", err)
 	}
@@ -1228,7 +1556,7 @@ func TestScalePixelToAbsoluteUsesActiveAreaYOffset(t *testing.T) {
 }
 
 func TestScreenshotCoordinatesPreserveNearlyFullAxisOffsetForAbsolutePointer(t *testing.T) {
-	active := screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true}
+	active := screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true}
 	x, y, err := screenshotPixelToAbsolutePoint(286, 231, 1920, 1080, active, false)
 	if err != nil {
 		t.Fatalf("screenshotPixelToAbsolutePoint returned error: %v", err)
@@ -1244,9 +1572,9 @@ func TestScreenshotCoordinatesPreserveNearlyFullAxisOffsetForAbsolutePointer(t *
 }
 
 func TestNormalizedCoordinatesPreserveNearlyFullAxisOffsetForAbsolutePointer(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
-	x, y, err := resolvePointerPositionForSurface(screen, false, 500, 220, "normalized", coordinateSpaceNormalized)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
+	x, y, err := resolvePointerPositionForSurface(screenState, false, 500, 220, "normalized", coordinateSpaceNormalized)
 	if err != nil {
 		t.Fatalf("resolvePointerPositionForSurface returned error: %v", err)
 	}
@@ -1260,10 +1588,10 @@ func TestNormalizedCoordinatesPreserveNearlyFullAxisOffsetForAbsolutePointer(t *
 }
 
 func TestResolvePointerPositionAutoTreatsUnitCoordinatesAsNormalized(t *testing.T) {
-	screen := &screenState{}
-	screen.Update(1000, 2000)
+	screenState := &screen.ScreenState{}
+	screenState.Update(1000, 2000)
 
-	x, y, err := resolvePointerPosition(screen, 500, 250, "", coordinateSpaceAuto)
+	x, y, err := resolvePointerPosition(screenState, 500, 250, "", coordinateSpaceAuto)
 	if err != nil {
 		t.Fatalf("resolvePointerPosition returned error: %v", err)
 	}
@@ -1276,17 +1604,17 @@ func TestResolvePointerPositionAutoTreatsUnitCoordinatesAsNormalized(t *testing.
 }
 
 func TestResolvePointerPositionPixelRequiresDimensions(t *testing.T) {
-	_, _, err := resolvePointerPosition(&screenState{}, 10, 20, "pixel", coordinateSpaceAuto)
+	_, _, err := resolvePointerPosition(&screen.ScreenState{}, 10, 20, "pixel", coordinateSpaceAuto)
 	if err == nil {
 		t.Fatal("expected error for pixel coordinates without screen dimensions")
 	}
 }
 
 func TestResolvePointerPositionPixelRejectsOutOfBounds(t *testing.T) {
-	screen := &screenState{}
-	screen.Update(431, 947)
+	screenState := &screen.ScreenState{}
+	screenState.Update(431, 947)
 
-	_, _, err := resolvePointerPosition(screen, 745, 125, "pixel", coordinateSpaceAuto)
+	_, _, err := resolvePointerPosition(screenState, 745, 125, "pixel", coordinateSpaceAuto)
 	if err == nil {
 		t.Fatal("expected error for out-of-bounds pixel coordinates")
 	}
@@ -1296,13 +1624,13 @@ func TestResolvePointerPositionPixelRejectsOutOfBounds(t *testing.T) {
 }
 
 func TestResolvePointerPositionPixelRelativeToCroppedImage(t *testing.T) {
-	screen := &screenState{}
+	screenState := &screen.ScreenState{}
 	// Full frame 1920x1080, active area starts at x=712, width=496
 	// LLM sees cropped 496x1080 image, passes coords relative to that
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 712, Y: 0, Width: 496, Height: 1080, Valid: true})
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 712, Y: 0, Width: 496, Height: 1080, Valid: true})
 
 	// x=248 is center of cropped image, y=1030 is near bottom
-	x, y, err := resolvePointerPosition(screen, 248, 1030, "pixel", coordinateSpaceAuto)
+	x, y, err := resolvePointerPosition(screenState, 248, 1030, "pixel", coordinateSpaceAuto)
 	if err != nil {
 		t.Fatalf("pixel coords relative to cropped image should work: %v", err)
 	}
@@ -1318,11 +1646,11 @@ func TestResolvePointerPositionPixelRelativeToCroppedImage(t *testing.T) {
 }
 
 func TestResolvePointerPositionPixelRejectsOutsideCroppedBounds(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 712, Y: 0, Width: 496, Height: 1080, Valid: true})
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 712, Y: 0, Width: 496, Height: 1080, Valid: true})
 
 	// x=500 exceeds cropped image width 496
-	_, _, err := resolvePointerPosition(screen, 500, 540, "pixel", coordinateSpaceAuto)
+	_, _, err := resolvePointerPosition(screenState, 500, 540, "pixel", coordinateSpaceAuto)
 	if err == nil {
 		t.Fatal("expected error for x=500 outside cropped image width 496")
 	}
@@ -1382,7 +1710,7 @@ func readTouchscreenReports(t *testing.T, dev *HIDDevice, path string) []touchsc
 
 func TestTouchGestureSwipeWritesDragSequence(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":900},"end":{"x":900,"y":100},"steps":3,"duration_ms":0}`)
 	if err != nil {
@@ -1420,7 +1748,7 @@ func TestTouchGestureSwipeWritesDragSequence(t *testing.T) {
 
 func TestDirectionalSwipeStrengthControlsDistance(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe_up","strength":"tiny","duration_ms":0,"hold_before_ms":0,"hold_after_ms":0}`)
 	if err != nil {
@@ -1444,7 +1772,7 @@ func TestDirectionalSwipeStrengthControlsDistance(t *testing.T) {
 
 func TestDirectionalSwipeDistanceOverridesStrength(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe_up","strength":"tiny","distance":200,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":0,"steps":2}`)
 	if err != nil {
@@ -1468,7 +1796,7 @@ func TestDirectionalSwipeDistanceOverridesStrength(t *testing.T) {
 
 func TestDirectionalSwipeStrengthDefaultsToImmediateRelease(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe_left","strength":"medium","steps":2,"duration_ms":0,"hold_before_ms":0}`)
 	if err != nil {
@@ -1491,7 +1819,7 @@ func TestDirectionalSwipeStrengthDefaultsToImmediateRelease(t *testing.T) {
 
 func TestDirectionalSwipeRejectsInvalidStrength(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe_up","strength":"huge"}`)
 	if err != nil {
@@ -1509,7 +1837,7 @@ func TestDirectionalSwipeRejectsInvalidStrength(t *testing.T) {
 
 func TestMouseMoveAutoFallsBackToAbsoluteWithoutScreenDimensions(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &MouseMoveTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &MouseMoveTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"x":2000,"y":3000}`)
 	if err != nil {
@@ -1533,7 +1861,7 @@ func TestMouseMoveAutoFallsBackToAbsoluteWithoutScreenDimensions(t *testing.T) {
 
 func TestMouseClickAcceptsStringCoordinates(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &MouseClickTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &MouseClickTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"x":"500","y":"250","coord_space":"normalized"}`)
 	if err != nil {
@@ -1554,7 +1882,7 @@ func TestMouseClickAcceptsStringCoordinates(t *testing.T) {
 
 func TestTouchGestureTapAcceptsStringCoordinates(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":"500","y":"250"}}`)
 	if err != nil {
@@ -1575,7 +1903,7 @@ func TestTouchGestureTapAcceptsStringCoordinates(t *testing.T) {
 
 func TestTouchscreenTapWritesTouchDownAndUp(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":250}}`)
 	if err != nil {
@@ -1601,9 +1929,9 @@ func TestTouchscreenTapWritesTouchDownAndUp(t *testing.T) {
 
 func TestTouchscreenTapUsesFrameSpaceForActiveArea(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
-	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: screen}
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: screenState}
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":627,"y":180}}`)
 	if err != nil {
@@ -1631,7 +1959,7 @@ func TestTouchscreenTapUsesFrameSpaceForActiveArea(t *testing.T) {
 
 func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":200,"y":500},"end":{"x":800,"y":500},"steps":2,"duration_ms":0,"hold_before_ms":0}`)
 	if err != nil {
@@ -1683,22 +2011,20 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 	}
 }
 
-func TestKeyboardTextDescriptionDefinesNumericPickerFallback(t *testing.T) {
+func TestKeyboardTextDescriptionRejectsNumericPickerInput(t *testing.T) {
 	desc := (&KeyboardTextTool{}).Description()
 	for _, want := range []string{
-		"numeric picker",
-		"prefer this before wheel_nudge",
-		"latest screenshot visibly shows",
-		"one verified attempt",
-		"do not switch back to keyboard input",
+		"Do not use keyboard_text for picker/wheel values",
+		"use wheel_nudge",
+		"verify each returned screenshot",
 	} {
 		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing picker fallback guidance %q:\n%s", want, desc)
+			t.Fatalf("description missing conservative picker guidance %q:\n%s", want, desc)
 		}
 	}
 }
 
-func TestDeviceOperatorSkillDefinesKeyboardToWheelFallback(t *testing.T) {
+func TestDeviceOperatorSkillUsesWheelOnlyForPickers(t *testing.T) {
 	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
 	data, err := os.ReadFile(skillPath)
 	if err != nil {
@@ -1706,30 +2032,27 @@ func TestDeviceOperatorSkillDefinesKeyboardToWheelFallback(t *testing.T) {
 	}
 	content := string(data)
 	for _, want := range []string{
-		"before the first `wheel_nudge` on that picker",
-		"do not infer that keyboard entry is unsupported merely because the keyboard is initially hidden",
-		"one verified keyboard attempt",
-		"fresh post-action screenshot",
-		"fall back to `wheel_nudge`",
-		"Do not repeat blind keyboard input",
-		"do not switch back to keyboard input",
+		"use `wheel_nudge` directly from the latest screenshot",
+		"Do not tap the selected row to probe for keyboard/edit mode",
+		"do not use `keyboard_text` for picker values",
+		"do not use `keyboard_text` or `keyboard_tap` to change picker values",
+		"issue one bounded `wheel_nudge`, then read the returned screenshot",
 	} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("device-operator SKILL.md missing keyboard fallback guidance %q", want)
+			t.Fatalf("device-operator SKILL.md missing conservative picker guidance %q", want)
 		}
 	}
 }
 
-func TestTouchGestureDescriptionDefinesNumericPickerEditProbe(t *testing.T) {
+func TestTouchGestureDescriptionReservesPickerForWheelNudge(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
 	for _, want := range []string{
-		"Before the first wheel_nudge on a numeric picker",
-		"selected center row",
-		"even when the keyboard is initially hidden",
-		"use keyboard_text once if edit mode appears",
+		"Do not tap picker rows to probe for keyboard/edit mode",
+		"do not drag picker columns with this tool",
+		"use wheel_nudge for the entire picker interaction",
 	} {
 		if !strings.Contains(desc, want) {
-			t.Fatalf("touch_gesture description missing numeric picker edit probe guidance %q:\n%s", want, desc)
+			t.Fatalf("touch_gesture description missing wheel ownership guidance %q:\n%s", want, desc)
 		}
 	}
 }
@@ -2127,7 +2450,7 @@ func TestMouseScrollToolRejectsTouchscreenPointerMode(t *testing.T) {
 func TestMouseScrollUsesLastPointerPosition(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	state := &pointerState{}
-	moveTool := &MouseMoveTool{pc: testPointerController(dev, state), screen: &screenState{}}
+	moveTool := &MouseMoveTool{pc: testPointerController(dev, state), screen: &screen.ScreenState{}}
 	scrollTool := &MouseScrollTool{pc: testPointerController(dev, state)}
 
 	if out, err := moveTool.Call(context.Background(), `{"x":2000,"y":3000}`); err != nil || out != "ok" {
@@ -2726,7 +3049,7 @@ func TestTapPointerSettlesCursorBeforePress(t *testing.T) {
 
 func TestMouseClickToolHoldsBetweenPressAndRelease(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &MouseClickTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &MouseClickTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"x":500,"y":500,"coord_space":"normalized"}`)
 	if err != nil {
@@ -2748,7 +3071,7 @@ func TestMouseClickToolHoldsBetweenPressAndRelease(t *testing.T) {
 
 func TestTouchGestureTapAcceptsHoldMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500},"hold_ms":150}`)
 	if err != nil {
@@ -2770,7 +3093,7 @@ func TestTouchGestureTapAcceptsHoldMs(t *testing.T) {
 
 func TestTouchGestureSwipeAppliesDefaultHoldBeforeMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	// duration_ms=0 keeps the per-step delay at 0 so only the hold_before_ms
 	// shows up between the press and the first move step.
@@ -2795,7 +3118,7 @@ func TestTouchGestureSwipeAppliesDefaultHoldBeforeMs(t *testing.T) {
 
 func TestTouchGestureSwipeDefaultsUseSlowerMotionAndImmediateRelease(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":500},"end":{"x":900,"y":500}}`)
 	if err != nil {
@@ -2825,7 +3148,7 @@ func TestTouchGestureSwipeDefaultsUseSlowerMotionAndImmediateRelease(t *testing.
 
 func TestTouchGestureSwipeAcceptsHoldAfterMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":500},"end":{"x":900,"y":500},"steps":2,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":120}`)
 	if err != nil {
@@ -2848,7 +3171,7 @@ func TestTouchGestureSwipeAcceptsHoldAfterMs(t *testing.T) {
 
 func TestTouchGestureBackStartsAtLeftPhysicalEdge(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"back","steps":2,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":0}`)
 	if err != nil {
@@ -2880,7 +3203,7 @@ func TestTouchGestureBackStartsAtLeftPhysicalEdge(t *testing.T) {
 
 func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"home","steps":2,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":0}`)
 	if err != nil {
@@ -2979,7 +3302,7 @@ func keyboardTapKeysSchemaDescription(t *testing.T) string {
 
 func TestTouchGestureDefaultEdgeGestureRejectsInvalidCoordSpace(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"back","coord_space":"typo"}`)
 	if err != nil {
@@ -2997,7 +3320,7 @@ func TestTouchGestureDefaultEdgeGestureRejectsInvalidCoordSpace(t *testing.T) {
 
 func TestTouchGestureDragKeepsZeroHoldBeforeMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":100,"y":100},"end":{"x":900,"y":900},"steps":2,"duration_ms":0}`)
 	if err != nil {
@@ -3073,7 +3396,7 @@ func (w *countingFailWriter) Close() error {
 }
 
 func TestScreenStateDimensionsWithAge(t *testing.T) {
-	screen := &screenState{}
+	screen := &screen.ScreenState{}
 
 	if _, _, _, ok := screen.DimensionsWithAge(); ok {
 		t.Fatal("expected ok=false before Update")
@@ -3092,62 +3415,9 @@ func TestScreenStateDimensionsWithAge(t *testing.T) {
 	}
 }
 
-func TestScreenStateFreshActiveAreaUsesFullFrameFallbackAndExpires(t *testing.T) {
-	screen := &screenState{}
-	screen.UpdateActiveArea(1920, 1080, screenActiveArea{})
-
-	if !screen.FreshActiveArea(screenDimensionsStaleAfter) {
-		t.Fatal("expected fresh full-frame fallback mapping")
-	}
-
-	screen.mu.Lock()
-	screen.updatedAt = time.Now().Add(-2 * screenDimensionsStaleAfter)
-	screen.mu.Unlock()
-
-	if screen.FreshActiveArea(screenDimensionsStaleAfter) {
-		t.Fatal("expected stale full-frame fallback mapping to expire")
-	}
-}
-
-func TestResolvePointerPositionPixelRejectsStaleDimensions(t *testing.T) {
-	screen := &screenState{}
-	screen.Update(1000, 2000)
-
-	// Backdate the cache to look older than the staleness threshold.
-	screen.mu.Lock()
-	screen.updatedAt = time.Now().Add(-2 * screenDimensionsStaleAfter)
-	screen.mu.Unlock()
-
-	_, _, err := resolvePointerPosition(screen, 500, 1000, "pixel", coordinateSpaceAuto)
-	if err == nil {
-		t.Fatal("expected error for stale pixel coordinates")
-	}
-	if !strings.Contains(err.Error(), "stale") && !strings.Contains(err.Error(), "old") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestResolvePointerPositionAutoFallsBackWhenStale(t *testing.T) {
-	screen := &screenState{}
-	screen.Update(1000, 2000)
-	screen.mu.Lock()
-	screen.updatedAt = time.Now().Add(-2 * screenDimensionsStaleAfter)
-	screen.mu.Unlock()
-
-	// Auto must not error on stale cache; it falls back to treating values as
-	// absolute HID coordinates, matching the cold-start behaviour.
-	x, y, err := resolvePointerPosition(screen, 2000, 3000, "", coordinateSpaceAuto)
-	if err != nil {
-		t.Fatalf("expected no error on stale auto, got %v", err)
-	}
-	if x != 2000 || y != 3000 {
-		t.Fatalf("auto fallback = (%d,%d), want (2000,3000)", x, y)
-	}
-}
-
 func TestTouchGestureSwipeRejectsPointInsteadOfStartEnd(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe","point":{"x":500,"y":500}}`)
 	if err != nil {
@@ -3165,7 +3435,7 @@ func TestTouchGestureSwipeRejectsPointInsteadOfStartEnd(t *testing.T) {
 
 func TestTouchGestureRejectsZeroDistanceDrag(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"drag","coord_space":"screenshot","start":{"x":313,"y":513},"end":{"x":313,"y":513},"steps":20}`)
 	if err != nil {
@@ -3183,7 +3453,7 @@ func TestTouchGestureRejectsZeroDistanceDrag(t *testing.T) {
 
 func TestTouchGestureAcceptsArrayPointFormat(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":[500,250]}`)
 	if err != nil {

@@ -31,6 +31,12 @@ import (
 	_ "aiden-agent/internal/agent/tts/adapters/volcengine"
 )
 
+const (
+	agentHTTPReadHeaderTimeout = 10 * time.Second
+	agentHTTPReadTimeout       = 30 * time.Second
+	agentHTTPIdleTimeout       = 120 * time.Second
+)
+
 // Server provides HTTP API for agent interactions
 type Server struct {
 	runtime              *Runtime
@@ -66,6 +72,7 @@ type Server struct {
 	steerSignals         map[string]chan struct{}
 	steersMu             sync.Mutex
 	eventBroadcaster     *EventBroadcaster
+	storageMonitor       *StorageMonitor
 }
 
 type webAudioRecording struct {
@@ -346,7 +353,6 @@ type ToolInvokeResponse struct {
 
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
-	bridge := NewPhoneBridge(runtime.logger, runtime.stateManager)
 	s := &Server{
 		runtime:             runtime,
 		addr:                addr,
@@ -355,7 +361,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		userFilesToolsDir:   "/userdata/agent_tools",
 		history:             make([]Message, 0),
 		screenCaptureClient: NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
-		bridge:              bridge,
+		bridge:              runtime.PhoneBridge(),
 		androidADB:          NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
 		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:      make(map[string]*chatPendingResult),
@@ -364,6 +370,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		pendingSteers:       make(map[string]pendingSteerMessage),
 		steerSignals:        make(map[string]chan struct{}),
 		eventBroadcaster:    NewEventBroadcaster(),
+		storageMonitor:      runtime.storageMonitor,
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -377,7 +384,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		})
 	}
 	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
-	runtime.tools.RegisterPhoneBridge(bridge)
+	runtime.tools.RegisterPhoneBridge(s.bridge)
 	s.loadHistoryFromDisk()
 
 	// Initialize speech clients if configured.
@@ -422,8 +429,8 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	return s
 }
 
-// Start starts the HTTP server
-func (s *Server) Start() error {
+// Handler returns the HTTP API and web UI routes served by Server.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// API endpoints
@@ -469,6 +476,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/android-adb/status", s.handleAndroidADBStatus)
 	mux.HandleFunc("/api/android-adb/pair", s.handleAndroidADBPair)
+	mux.HandleFunc("/api/storage/monitor/status", s.handleStorageMonitorStatus)
+	mux.HandleFunc("/api/storage/cleanup", s.handleStorageCleanup)
 
 	// Coordinate debug tool and its screenshot feed. Exposes live screen data,
 	// so it is intentionally available on all listen addresses (including the
@@ -484,14 +493,23 @@ func (s *Server) Start() error {
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
+	return mux
+}
+
+// Start starts the HTTP server
+func (s *Server) Start() error {
+	handler := s.Handler()
 
 	if s.logger != nil {
 		s.logger.Info("Starting HTTP server on %s", s.addr)
 	}
 
 	srv := &http.Server{
-		Addr:    s.addr,
-		Handler: mux,
+		Addr:              s.addr,
+		Handler:           handler,
+		ReadHeaderTimeout: agentHTTPReadHeaderTimeout,
+		ReadTimeout:       agentHTTPReadTimeout,
+		IdleTimeout:       agentHTTPIdleTimeout,
 	}
 
 	errCh := make(chan error, 1)
@@ -1119,6 +1137,8 @@ func (s *Server) handleChatAsync(
 			})
 		}()
 
+		var speechWriter *TTSTagStreamWriter
+
 		// Event handler pushes intermediate messages into the pending result
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
@@ -1135,7 +1155,11 @@ func (s *Server) handleChatAsync(
 				s.liveActivity.UpdateFromRunEvent(requestID, event)
 			}
 
-			if text := s.toolCallSpeechText(event); text != "" {
+			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
+			if toolSpeechStreamed && s.logger != nil {
+				s.logger.Info("Tool content TTS already streamed: tool=%s", event.ToolName)
+			}
+			if text := s.toolCallSpeechText(event); text != "" && !toolSpeechStreamed {
 				go s.speakToolContent(runCtx, text)
 			}
 		}
@@ -1168,20 +1192,26 @@ func (s *Server) handleChatAsync(
 					newStream = stream
 					output := newActiveTTSOutput(nil)
 					output.setStream(newStream)
-					unregisterStreamOutput = s.registerActiveOutput(requestID, output)
-					runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+					runReq.OnRunActive = func(context.Context) {
+						unregisterStreamOutput = s.registerActiveOutput(requestID, output)
+					}
+					speechWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+					runReq.StreamWriter = speechWriter
 				}
 			}
 		}
-		defer unregisterStreamOutput()
+		defer func() {
+			unregisterStreamOutput()
+		}()
 
 		result, err := s.runtime.Run(runCtx, runReq)
 		if newStream != nil {
+			finalSpeechStreamed := finishSpeechResponse(speechWriter)
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
 				s.logger.Error("new TTS stream failed: %v", closeErr)
 			}
-			result.SpeechStreamed = newStream.emittedSpeech(closeErr)
+			result.SpeechStreamed = finalSpeechStreamed && newStream.emittedSpeech(closeErr)
 		}
 
 		pending.mu.Lock()
@@ -1496,6 +1526,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	steerProvider, steerInterrupt := s.prepareRunSteerCallbacks(req.RequestID)
 	s.logger.Info("Creating run request")
+	var speechWriter *TTSTagStreamWriter
 	runReq := RunRequest{
 		Input:                   inputText,
 		Attachments:             turnInput.Attachments,
@@ -1516,7 +1547,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
-			if text := s.toolCallSpeechText(event); text != "" {
+			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
+			if toolSpeechStreamed && s.logger != nil {
+				s.logger.Info("Tool content TTS already streamed: tool=%s", event.ToolName)
+			}
+			if text := s.toolCallSpeechText(event); text != "" && !toolSpeechStreamed {
 				go s.speakToolContent(ctx, text)
 			}
 		},
@@ -1540,23 +1575,29 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				newStream = streamSession
 				output := newActiveTTSOutput(nil)
 				output.setStream(newStream)
-				unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
-				streamWriters = append(streamWriters, speechStreamWriterForConfig(newStream, s.runtime.config))
+				runReq.OnRunActive = func(context.Context) {
+					unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
+				}
+				speechWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+				streamWriters = append(streamWriters, speechWriter)
 			}
 		}
 	}
-	defer unregisterStreamOutput()
+	defer func() {
+		unregisterStreamOutput()
+	}()
 	s.logger.Info("Creating stream writer")
 	runReq.StreamWriter = newStreamFanoutWriter(streamWriters...)
 
 	s.logger.Info("Running runtime")
 	result, err := s.runtime.Run(ctx, runReq)
 	if newStream != nil {
+		finalSpeechStreamed := finishSpeechResponse(speechWriter)
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
 			s.logger.Error("new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = newStream.emittedSpeech(closeErr)
+		result.SpeechStreamed = finalSpeechStreamed && newStream.emittedSpeech(closeErr)
 	}
 	if err != nil {
 		canceled := errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled)
@@ -1830,6 +1871,19 @@ func (w *streamFanoutWriter) ResetBuffer() {
 	}
 }
 
+func (w *streamFanoutWriter) FinishResponse() bool {
+	if w == nil {
+		return false
+	}
+	emitted := false
+	for _, writer := range w.writers {
+		if finishStreamWriterResponse(writer) {
+			emitted = true
+		}
+	}
+	return emitted
+}
+
 func (w *streamFanoutWriter) StreamEmitted() bool {
 	if w == nil {
 		return false
@@ -2011,7 +2065,7 @@ func (s *Server) speakFinalTextForRequest(ctx context.Context, requestID string,
 }
 
 func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {
-	s.logger.Info("Playing prompt sound: %s, %s", kind, label)
+	s.logger.Info("Playing prompt sound: %v, %s", kind, label)
 	if s.audioClient == nil {
 		return
 	}
@@ -2802,7 +2856,13 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startedAt := time.Now()
-	execution := executeToolCall(r.Context(), ToolCallExecution{
+	executionCtx := r.Context()
+	cancelExecution := context.CancelFunc(func() {})
+	if httpToolExecutionSurvivesClientDisconnect(toolName) {
+		executionCtx, cancelExecution = detachedHTTPToolExecutionContext(r.Context())
+	}
+	defer cancelExecution()
+	execution := executeToolCall(executionCtx, ToolCallExecution{
 		Specs:  NewToolSpecs([]langtools.Tool{spec.Tool}),
 		Action: schema.AgentAction{Tool: spec.Name, ToolInput: rawInput},
 	})
@@ -2838,6 +2898,35 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+const httpToolExecutionTimeout = 5 * time.Minute
+
+func httpToolExecutionSurvivesClientDisconnect(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "keyboard_tap", "keyboard_text", "quick_action", "search_launch_app",
+		"enter_text_in_field", "enter_text_via_bridge", "mouse_click", "mouse_move",
+		"mouse_scroll", "run_script", "touch_gesture", "wheel_nudge":
+		return true
+	default:
+		return false
+	}
+}
+
+// detachedHTTPToolExecutionContext lets an accepted tool invocation finish even
+// if the client connection disappears. This matters for iOS HID operations:
+// switching USB profiles briefly disconnects the composite ECM interface, which
+// can otherwise cancel the very HTTP request that initiated the operation.
+// Keep an explicit upper bound so abandoned requests cannot run indefinitely.
+func detachedHTTPToolExecutionContext(requestCtx context.Context) (context.Context, context.CancelFunc) {
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
+	deadline := time.Now().Add(httpToolExecutionTimeout)
+	if requestDeadline, ok := requestCtx.Deadline(); ok && requestDeadline.Before(deadline) {
+		deadline = requestDeadline
+	}
+	return context.WithDeadline(context.WithoutCancel(requestCtx), deadline)
 }
 
 func (s *Server) handleToolSkills(w http.ResponseWriter, r *http.Request) {

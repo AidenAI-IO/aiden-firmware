@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -52,10 +53,15 @@ const (
 	directionalSwipeSmallDistance   = 200.0
 	directionalSwipeTinyDistance    = 40.0
 
-	wheelNudgeDefaultY     = 460.0
-	wheelNudgeDefaultMs    = 1400
-	wheelNudgeDefaultSteps = 18
-	wheelNudgeRowTolerance = 0.20
+	wheelNudgeDefaultMs      = 1400
+	wheelNudgeDefaultSteps   = 18
+	wheelNudgeRowTolerance   = 0.20
+	wheelNudgeEndpointHoldMs = 120
+	// wheelNudgeMultiRowCompensation crosses the picker snap threshold that
+	// otherwise makes calibrated drags of three or more rows settle one row
+	// short. It is only applied when the plan leaves at least one full row of
+	// target margin, so an exact-target drag cannot be pushed past its target.
+	wheelNudgeMultiRowCompensation = 0.45
 
 	phoneBackStartX = 1
 	phoneBackEndX   = 750
@@ -398,189 +404,11 @@ type HIDDevice struct {
 	refreshState string
 }
 
-type screenState struct {
-	mu          sync.RWMutex
-	width       int
-	height      int
-	active      screenActiveArea
-	phoneScreen PhoneScreenInfo
-	updatedAt   time.Time
-}
-
-type screenMappingState struct {
-	width     int
-	height    int
-	active    screenActiveArea
-	updatedAt time.Time
-}
-
-// screenActiveArea represents the mirrored phone touch region inside the
-// captured HDMI frame. When the companion app reports the phone's original
-// screen dimensions, this is the largest centered region in the frame with the
-// same aspect ratio. Falling back to "visible non-black content" is only an
-// approximation for when accurate phone screen info is unavailable.
-type screenActiveArea struct {
-	X      int  `json:"x"`
-	Y      int  `json:"y"`
-	Width  int  `json:"width"`
-	Height int  `json:"height"`
-	Valid  bool `json:"valid"`
-}
-
 type pointerState struct {
 	mu    sync.Mutex
 	x     int
 	y     int
 	valid bool
-}
-
-func (s *screenState) Update(width, height int) {
-	s.UpdateActiveArea(width, height, screenActiveArea{})
-}
-
-func (s *screenState) UpdatePhoneScreenInfo(info PhoneScreenInfo) {
-	if s == nil {
-		return
-	}
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("screen.UpdatePhoneScreenInfo before={%s} new_phone_screen=%q", formatTouchscreenRCAScreenMapping(s), formatPhoneScreen(info))
-	}
-	s.mu.Lock()
-	s.phoneScreen = info
-	s.mu.Unlock()
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("screen.UpdatePhoneScreenInfo after={%s}", formatTouchscreenRCAScreenMapping(s))
-	}
-}
-
-func (s *screenState) ClearPhoneScreenInfo() {
-	if s == nil {
-		return
-	}
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("screen.ClearPhoneScreenInfo before={%s}", formatTouchscreenRCAScreenMapping(s))
-	}
-	s.mu.Lock()
-	s.phoneScreen = PhoneScreenInfo{}
-	s.mu.Unlock()
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("screen.ClearPhoneScreenInfo after={%s}", formatTouchscreenRCAScreenMapping(s))
-	}
-}
-
-func (s *screenState) PhoneScreenInfo() PhoneScreenInfo {
-	if s == nil {
-		return PhoneScreenInfo{}
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.phoneScreen
-}
-
-func (s *screenState) UpdateActiveArea(width, height int, active screenActiveArea) {
-	if width <= 0 || height <= 0 {
-		if touchscreenRCADebugEnabledCached() {
-			touchscreenRCALogf("screen.UpdateActiveArea ignored invalid dimensions width=%d height=%d active=%s before={%s}", width, height, formatTouchscreenRCAActiveArea(active), formatTouchscreenRCAScreenMapping(s))
-		}
-		return
-	}
-	requestedActive := active
-	if active.Valid {
-		if active.X < 0 || active.Y < 0 || active.Width <= 0 || active.Height <= 0 || active.X+active.Width > width || active.Y+active.Height > height {
-			active = screenActiveArea{}
-		}
-	}
-
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf(
-			"screen.UpdateActiveArea before={%s} request_width=%d request_height=%d requested_active=%s committed_active=%s",
-			formatTouchscreenRCAScreenMapping(s),
-			width,
-			height,
-			formatTouchscreenRCAActiveArea(requestedActive),
-			formatTouchscreenRCAActiveArea(active),
-		)
-	}
-	s.mu.Lock()
-	s.width = width
-	s.height = height
-	s.active = active
-	s.updatedAt = time.Now()
-	s.mu.Unlock()
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("screen.UpdateActiveArea after={%s}", formatTouchscreenRCAScreenMapping(s))
-	}
-}
-
-func (s *screenState) Dimensions() (width, height int, ok bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.width <= 0 || s.height <= 0 {
-		return 0, 0, false
-	}
-	return s.width, s.height, true
-}
-
-func (s *screenState) DimensionsWithAge() (width, height int, age time.Duration, ok bool) {
-	width, height, _, age, ok = s.ActiveAreaWithAge()
-	return width, height, age, ok
-}
-
-func (s *screenState) ActiveAreaWithAge() (width, height int, active screenActiveArea, age time.Duration, ok bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.width <= 0 || s.height <= 0 {
-		return 0, 0, screenActiveArea{}, 0, false
-	}
-	active = s.active
-	if !active.Valid {
-		active = screenActiveArea{X: 0, Y: 0, Width: s.width, Height: s.height, Valid: true}
-	}
-	if s.updatedAt.IsZero() {
-		return s.width, s.height, active, 0, true
-	}
-	return s.width, s.height, active, time.Since(s.updatedAt), true
-}
-
-func (s *screenState) MappingState() screenMappingState {
-	if s == nil {
-		return screenMappingState{}
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return screenMappingState{
-		width:     s.width,
-		height:    s.height,
-		active:    s.active,
-		updatedAt: s.updatedAt,
-	}
-}
-
-func (s *screenState) FreshActiveArea(maxAge time.Duration) bool {
-	if s == nil {
-		return false
-	}
-	_, _, active, age, ok := s.ActiveAreaWithAge()
-	state := s.MappingState()
-	if !ok || !active.Valid || state.updatedAt.IsZero() {
-		return false
-	}
-	if maxAge > 0 && age >= maxAge {
-		return false
-	}
-	return true
-}
-
-func (s *screenState) RestoreMappingState(state screenMappingState) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.width = state.width
-	s.height = state.height
-	s.active = state.active
-	s.updatedAt = state.updatedAt
 }
 
 func (s *pointerState) Update(x, y int) {
@@ -608,9 +436,10 @@ func (s *pointerState) Current() (x, y int, ok bool) {
 
 // pointerController sends hid.usb1 reports in absolute mouse or touchscreen mode.
 type pointerController struct {
-	dev         *HIDDevice
-	state       *pointerState
-	touchscreen bool
+	dev                  *HIDDevice
+	state                *pointerState
+	touchscreen          bool
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 func newPointerController(hid HIDConfig) *pointerController {
@@ -619,6 +448,13 @@ func newPointerController(hid HIDConfig) *pointerController {
 		state:       &pointerState{},
 		touchscreen: hid.PointerTouchscreen(),
 	}
+}
+
+func withIOSPointerCall(ctx context.Context, pc *pointerController, action func(context.Context) (string, error)) (string, error) {
+	if pc == nil || pc.iosKeyboardIsolation == nil {
+		return action(ctx)
+	}
+	return pc.iosKeyboardIsolation.withPointerCall(ctx, action)
 }
 
 func NewHIDDevice(path string) *HIDDevice {
@@ -819,7 +655,7 @@ func (d *HIDDevice) reopenStaleFileLocked() error {
 	return nil
 }
 
-func triggerUSBCompositeRefresh(statePath string) error {
+func triggerUSBCompositeRefresh(_ string) error {
 	// Trigger the USB watchdog's refresh command to rebind the USB composite gadget.
 	// This is needed when the USB host suspends the connection or the gadget
 	// enters a stale state where HID device nodes exist but are not functional.
@@ -857,10 +693,11 @@ func hidWriteWouldBlock(err error) bool {
 
 // KeyboardTapTool sends a key press then release via HID.
 type KeyboardTapTool struct {
-	dev         *HIDDevice
-	androidDev  *HIDDevice
-	pointerMode string
-	adb         *ADBInputController
+	dev                  *HIDDevice
+	androidDev           *HIDDevice
+	pointerMode          string
+	adb                  *ADBInputController
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
@@ -913,7 +750,9 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		if holdMs <= 0 {
 			holdMs = defaultKeyboardTapHoldMs
 		}
-		if err := t.tapAndroidExtension(resolved.AndroidExtensionKey, resolved.AndroidUsage, holdMs); err != nil {
+		if err := t.iosKeyboardIsolation.withExtraKeys(ctx, func() error {
+			return t.tapAndroidExtension(resolved.AndroidExtensionKey, resolved.AndroidUsage, holdMs)
+		}); err != nil {
 			code := CodeToolExecutionFailed
 			if errors.Is(err, errAndroidExtensionUnavailable) {
 				code = CodeModuleUnavailable
@@ -948,7 +787,9 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		}
 	}
 
-	if err := t.tapKeyboardChord(modifier, keys, holdMs); err != nil {
+	if err := t.iosKeyboardIsolation.withKeyboard(ctx, modifier != 0, func() error {
+		return t.tapKeyboardChord(modifier, keys, holdMs)
+	}); err != nil {
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return "ok", nil
@@ -1053,8 +894,9 @@ func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs 
 
 // KeyboardTextTool types a string character by character via HID.
 type KeyboardTextTool struct {
-	dev *HIDDevice
-	adb *ADBInputController
+	dev                  *HIDDevice
+	adb                  *ADBInputController
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 func (t *KeyboardTextTool) Name() string { return "keyboard_text" }
@@ -1066,7 +908,7 @@ func (t *KeyboardTextTool) Description() string {
 		`Do NOT pass non-ASCII text, emoji, or spaced romanization — use enter_text_in_field for input box entry. ` +
 		`Do not transliterate Chinese/CJK targets to pinyin or guessed ASCII keywords; if enter_text_in_field is unavailable, report the blocker instead. ` +
 		`If a Chinese IME is active but the target text is English, switch to the English/Latin keyboard first, commonly with the globe/input-method key; do not leave English text in Chinese IME preedit/candidate state. ` +
-		`For a numeric picker, prefer this before wheel_nudge when the latest screenshot visibly shows keyboard/edit mode. Make one verified attempt, then inspect the post-action screenshot; if the value did not change exactly as intended, stop keyboard input and use wheel_nudge. Once wheel fallback begins for that picker, do not switch back to keyboard input. ` +
+		`Do not use keyboard_text for picker/wheel values, even if tapping the selected row appears to expose edit mode; use wheel_nudge and verify each returned screenshot instead. ` +
 		`keyboard_text remains for simple standalone ASCII typing outside the enter_text_in_field workflow. ` +
 		`Bare plain text is accepted only as a legacy compatibility fallback.`
 }
@@ -1075,6 +917,16 @@ func (t *KeyboardTextTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"text": stringArgSchema("US-keyboard ASCII text to type."),
 	}, "text")
+}
+
+func keyboardTextUsesModifier(text string) bool {
+	for _, ch := range text {
+		modifier, _, ok := charToHIDKey(byte(ch))
+		if ok && modifier != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, error) {
@@ -1102,22 +954,28 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 		return "ok", nil
 	}
 
-	releaseReport := make([]byte, 8)
-	for _, ch := range text {
-		modifier, code, ok := charToHIDKey(byte(ch))
-		if !ok {
-			continue
+	err := t.iosKeyboardIsolation.withKeyboard(ctx, keyboardTextUsesModifier(text), func() error {
+		releaseReport := make([]byte, 8)
+		for _, ch := range text {
+			modifier, code, ok := charToHIDKey(byte(ch))
+			if !ok {
+				continue
+			}
+			report := make([]byte, 8)
+			report[0] = modifier
+			report[2] = code
+			// Press then release immediately, same as keyboard_tap.
+			if err := t.dev.Write(report); err != nil {
+				return err
+			}
+			if err := t.dev.Write(releaseReport); err != nil {
+				return err
+			}
 		}
-		report := make([]byte, 8)
-		report[0] = modifier
-		report[2] = code
-		// Press then release immediately, same as keyboard_tap.
-		if err := t.dev.Write(report); err != nil {
-			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
-		}
-		if err := t.dev.Write(releaseReport); err != nil {
-			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
-		}
+		return nil
+	})
+	if err != nil {
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 
 	return "ok", nil
@@ -1126,7 +984,7 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 // MouseClickTool moves the mouse to coordinates and clicks.
 type MouseClickTool struct {
 	pc     *pointerController
-	screen *screenState
+	screen *screen.ScreenState
 	adb    *ADBInputController
 }
 
@@ -1146,6 +1004,16 @@ func (t *MouseClickTool) ArgsSchema() map[string]any {
 }
 
 func (t *MouseClickTool) Call(ctx context.Context, input string) (string, error) {
+	var pc *pointerController
+	if t != nil {
+		pc = t.pc
+	}
+	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+		return t.call(callCtx, input)
+	})
+}
+
+func (t *MouseClickTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		X          pointerCoordinate `json:"x"`
 		Y          pointerCoordinate `json:"y"`
@@ -1186,7 +1054,7 @@ func (t *MouseClickTool) Call(ctx context.Context, input string) (string, error)
 // MouseMoveTool moves the mouse to coordinates without clicking.
 type MouseMoveTool struct {
 	pc     *pointerController
-	screen *screenState
+	screen *screen.ScreenState
 	adb    *ADBInputController
 }
 
@@ -1205,6 +1073,16 @@ func (t *MouseMoveTool) ArgsSchema() map[string]any {
 }
 
 func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) {
+	var pc *pointerController
+	if t != nil {
+		pc = t.pc
+	}
+	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+		return t.call(callCtx, input)
+	})
+}
+
+func (t *MouseMoveTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		X          pointerCoordinate `json:"x"`
 		Y          pointerCoordinate `json:"y"`
@@ -1236,7 +1114,7 @@ func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) 
 // TouchGestureTool executes touch-like pointer gestures for mobile UI control.
 type TouchGestureTool struct {
 	pc                 *pointerController
-	screen             *screenState
+	screen             *screen.ScreenState
 	adb                *ADBInputController
 	primeScreenMapping func(context.Context) error
 }
@@ -1246,7 +1124,7 @@ func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 func (t *TouchGestureTool) Description() string {
 	return `Perform a custom touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for tap/swipe/drag and other freehand screen gestures. ` +
 		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Swipe direction names describe finger movement, not content scroll. ` +
-		`This is a generic input tool and has no picker/wheel movement semantics. Before the first wheel_nudge on a numeric picker, use one tap on the selected center row to probe for keyboard/edit mode even when the keyboard is initially hidden; use keyboard_text once if edit mode appears. Use wheel_nudge for unselected-row taps and every picker drag.`
+		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
@@ -1280,6 +1158,16 @@ func pointSchema(description string) map[string]any {
 }
 
 func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, error) {
+	var pc *pointerController
+	if t != nil {
+		pc = t.pc
+	}
+	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+		return t.call(callCtx, input)
+	})
+}
+
+func (t *TouchGestureTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		Type         string        `json:"type"`
 		Point        *pointerPoint `json:"point"`
@@ -1471,7 +1359,7 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 				end.y,
 				coordinateSpaceNormalized,
 				touchscreenRCAPointerMode(t.pc),
-				formatTouchscreenRCAScreenMapping(t.screen),
+				t.screen.Format(),
 			)
 		}
 		if sameResolvedPointerPoint(start, end) {
@@ -1601,7 +1489,7 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 	}
 
 	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("touch_gesture completed type=%q mapping_after_action_before_post_screenshot={%s}", gestureType, formatTouchscreenRCAScreenMapping(t.screen))
+		touchscreenRCALogf("touch_gesture completed type=%q mapping_after_action_before_post_screenshot={%s}", gestureType, t.screen.Format())
 	}
 	return "ok", nil
 }
@@ -1621,13 +1509,13 @@ func (t *TouchGestureTool) ensureTouchscreenMapping(ctx context.Context, coordSp
 		return nil
 	}
 	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("touch_gesture prime mapping before input coord_space=%q mapping_before={%s}", coordSpace, formatTouchscreenRCAScreenMapping(t.screen))
+		touchscreenRCALogf("touch_gesture prime mapping before input coord_space=%q mapping_before={%s}", coordSpace, t.screen.Format())
 	}
 	if err := t.primeScreenMapping(ctx); err != nil {
 		return err
 	}
 	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("touch_gesture prime mapping succeeded mapping_after={%s}", formatTouchscreenRCAScreenMapping(t.screen))
+		touchscreenRCALogf("touch_gesture prime mapping succeeded mapping_after={%s}", t.screen.Format())
 	}
 	return nil
 }
@@ -1644,9 +1532,10 @@ func sameResolvedPointerPoint(first, second resolvedPointerPoint) bool {
 // column. It taps an adjacent target row when possible, otherwise it uses a
 // low-inertia vertical drag that is less likely to fling past the target.
 type WheelNudgeTool struct {
-	pc         *pointerController
-	screen     *screenState
-	durationMs int
+	pc                     *pointerController
+	screen                 *screen.ScreenState
+	durationMs             int
+	requireFreshScreenshot bool
 }
 
 type wheelNudgeArgs struct {
@@ -1678,13 +1567,14 @@ func (t *WheelNudgeTool) Name() string { return "wheel_nudge" }
 
 func (t *WheelNudgeTool) Description() string {
 	return `Move a visible picker/wheel column toward a target value. This is the only tool for wheel interactions; never attach wheel semantics to touch_gesture. ` +
-		`Before the first wheel_nudge on a numeric picker, tap the selected current value once. If edit mode appears, use keyboard_text once and verify the exact target in the returned screenshot; call wheel_nudge only after that keyboard-first path is unavailable or fails verification. ` +
+		`Use wheel_nudge directly from the latest screenshot. Do not tap the selected row to expose edit mode and do not use keyboard_text for picker values; the keyboard shortcut is unreliable across picker implementations. ` +
 		`target_value is the final requested value for this column and must remain fixed across calls; never substitute an intermediate visible value just because it is closer on screen. ` +
 		`When the target is exactly one visibly observed row above or below the selected row, pass visible_target_y and the tool taps that coordinate. Without that evidence it performs one bounded low-inertia drag. ` +
 		`Input JSON: {"picker_id":"alarm-create","column_x":393,"current_value":10,"target_value":16,"cycle_size":24,"cycle_start":0,"row_spacing":39,"value_step":1,"center_y":253}. ` +
-		`All wheel geometry uses normalized 0-1000 coordinates. Normalize column_x using the screenshot width; normalize center_y, row_spacing, and visible_target_y using the screenshot height. In particular, row_spacing=(pixel row spacing/screenshot height)*1000, never divide a vertical distance by screenshot width. ` +
+		`center_y is mandatory and must be measured from the selected center row in the latest screenshot; never omit it or reuse a fixed default across picker layouts. ` +
+		`All wheel geometry uses normalized 0-1000 coordinates. Normalize column_x using max(screenshot width-1,1); normalize center_y, row_spacing, and visible_target_y using max(screenshot height-1,1). In particular, row_spacing=(pixel row spacing/max(screenshot height-1,1))*1000, never divide a vertical distance by screenshot width. Runtime also measures the row spacing from repeated text-line geometry in the latest screenshot and overrides the caller estimate when that image measurement is confident; low-confidence images keep the caller estimate. ` +
 		`value_step is the signed numeric change for one visible row downward. The tool derives the shortest row gap, numeric direction, and finger movement from current_value, target_value, value_step, and the declared domain, so callers must not calculate a gap or guess gesture directions. Omit value_step only when visible ordering is insufficient; the tool then performs one fixed finger-up row probe. ` +
-		`Actual drag travel is coarse-to-fine: gaps of 9+, 5-8, 2-4, and 1 picker rows move at most 5, 3, 2, and 1 measured rows using row_spacing. Longer coarse drags also take proportionally longer so they remain low-inertia rather than becoming a fling or leaving the visible picker area. ` +
+		`Actual drag travel is coarse-to-fine. With a confident runtime image measurement, gaps of 9+, 5-8, 3-4, 2, and 1 picker rows move at most 6, 4, 3, 2, and 1 measured rows; otherwise the conservative limits remain 5, 3, 2, and 1. Calibrated multi-row drags add a sub-row settling allowance only when at least one full target row remains, preserving the exact-target no-overshoot boundary. Longer coarse drags also take proportionally longer so they remain low-inertia rather than becoming a fling or leaving the visible picker area. ` +
 		`The tool performs one tap or slow drag and returns a post-action screenshot; read the new centered value and call it again with the fresh observation.`
 }
 
@@ -1696,14 +1586,24 @@ func (t *WheelNudgeTool) ArgsSchema() map[string]any {
 		"target_value":     nonNegativeIntegerSchema("Requested numeric target value for this wheel column."),
 		"cycle_size":       nonNegativeIntegerSchema("Numeric span/modulus of the cyclic domain, not the number of displayed rows; use 0 for a non-cyclic numeric wheel. For a 00..59 minute wheel with value_step 5, cycle_size is still 60."),
 		"cycle_start":      nonNegativeIntegerSchema("Lowest value in a cyclic wheel. Use 0 for 00-based time wheels and 1 for one-based wheels such as months, calendar days, or 12-hour clocks. Ignored when cycle_size is 0."),
-		"row_spacing":      coordinateSchema("Normalized 0-1000 vertical distance between adjacent visible row centers. Compute pixel spacing / screenshot height * 1000; do not divide by screenshot width."),
+		"row_spacing":      coordinateSchema("Best normalized 0-1000 estimate of the vertical distance between adjacent visible row centers. Compute pixel spacing / max(screenshot height-1,1) * 1000; runtime may replace this estimate with a confident image-derived measurement."),
 		"value_step":       integerArgSchema("Signed numeric change for one visible row downward. The tool derives gesture direction from this value; omit only for a genuinely unknown one-row probe."),
-		"center_y":         coordinateSchema("Normalized 0-1000 vertical center of the visible wheel selection area. Default is 460."),
+		"center_y":         coordinateSchema("Required normalized 0-1000 vertical center of the selected wheel row, measured from the latest screenshot."),
 		"visible_target_y": coordinateSchema("Exact normalized 0-1000 Y coordinate of a target value visibly observed one row above or below center_y. Omit unless the target row is actually visible in the latest screenshot."),
-	}, "picker_id", "column_x", "current_value", "target_value", "cycle_size", "cycle_start", "row_spacing")
+	}, "picker_id", "column_x", "current_value", "target_value", "cycle_size", "cycle_start", "row_spacing", "center_y")
 }
 
 func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error) {
+	var pc *pointerController
+	if t != nil {
+		pc = t.pc
+	}
+	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+		return t.call(callCtx, input)
+	})
+}
+
+func (t *WheelNudgeTool) call(ctx context.Context, input string) (string, error) {
 	args, err := parseWheelNudgeArgs(input)
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
@@ -1715,17 +1615,52 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "current_value, target_value, cycle_size, and cycle_start are required"), nil
 	}
-	plan, err := planWheelNudge(args)
-	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
-	}
-	travel := float64(plan.rows) * *args.RowSpacing
 	coordSpace := args.CoordSpace
 	if coordSpace == "" || coordSpace == coordinateSpaceAuto {
 		coordSpace = coordinateSpaceNormalized
 	}
+	modelRowSpacing := *args.RowSpacing
+	measurementSummary := ""
+	imageCalibrated := false
+	if coordSpace == coordinateSpaceNormalized {
+		if t.screen == nil {
+			if t.requireFreshScreenshot {
+				return toolErrorResultString(ctx, CodeInvalidArguments, "wheel_nudge requires a fresh screenshot from the current screen before moving a picker"), nil
+			}
+		} else if jpegData, _, _, _, ok := t.screen.LatestScreenshot(screenDimensionsStaleAfter); ok {
+			startedAt := time.Now()
+			if measurement, measured := measureWheelRowSpacingJPEG(jpegData, *args.ColumnX, *args.CenterY); measured {
+				measuredRowSpacing := measurement.Normalized
+				args.RowSpacing = &measuredRowSpacing
+				imageCalibrated = true
+				measurementSummary = fmt.Sprintf(
+					" row_spacing_source=image measured_row_spacing=%.1f model_row_spacing=%.1f confidence=%.2f measurement_ms=%.1f",
+					measurement.Normalized,
+					modelRowSpacing,
+					measurement.Confidence,
+					float64(time.Since(startedAt).Microseconds())/1000.0,
+				)
+			}
+		} else if t.requireFreshScreenshot {
+			return toolErrorResultString(ctx, CodeInvalidArguments, "wheel_nudge requires a fresh screenshot from the current screen before moving a picker"), nil
+		}
+	}
+	plan, err := planWheelNudge(args)
+	if err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+	}
+	if imageCalibrated && !plan.probe && plan.tapY == nil {
+		plan.rows = wheelNudgeRowsForConfidentGap(plan.gap)
+		measurementSummary += " motion_profile=image_calibrated"
+	}
+	plannedTravel := float64(plan.rows) * *args.RowSpacing
+	travel := plannedTravel
+	if imageCalibrated && plan.rows >= 3 && plan.rows < plan.gap {
+		travel += wheelNudgeMultiRowCompensation * *args.RowSpacing
+		measurementSummary += fmt.Sprintf(" settle_compensation_rows=%.2f", wheelNudgeMultiRowCompensation)
+	}
 
-	centerY := wheelNudgeDefaultY
+	centerY := *args.CenterY
 	gestureTravel := travel
 	maxY := 1000.0
 	if coordSpace == coordinateSpaceScreenshot {
@@ -1737,10 +1672,6 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 			return toolErrorResultString(ctx, CodeInvalidArguments, "screenshot coordinates require a fresh screenshot"), nil
 		}
 		maxY = float64(active.Height - 1)
-		centerY = (wheelNudgeDefaultY / 1000.0) * maxY
-	}
-	if args.CenterY != nil {
-		centerY = *args.CenterY
 	}
 	if centerY < 0 || centerY > maxY {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "center_y=%.0f is outside the visible coordinate range 0..%.0f", centerY, maxY), nil
@@ -1759,10 +1690,13 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 		if err := tapPointerWithHold(t.pc, point.x, point.y, mouseButtonByte("left"), defaultTapHoldMs); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
-		return fmt.Sprintf("ok: wheel_nudge interaction=tap row_offset=%d target_value=%d", plan.rowOffset, *args.TargetValue), nil
+		return fmt.Sprintf("ok: wheel_nudge interaction=tap row_offset=%d target_value=%d%s", plan.rowOffset, *args.TargetValue, measurementSummary), nil
 	}
 
-	startOffset := gestureTravel / 2
+	// Keep touchdown at the original planned-row boundary. Extending both ends
+	// symmetrically can move the press beyond the outermost visible picker row,
+	// so apply any settling allowance only at the drag destination.
+	startOffset := plannedTravel / 2
 	var startY, endY float64
 	if plan.direction == "up" {
 		startY = clampFloat(centerY+startOffset, 0, maxY)
@@ -1799,13 +1733,13 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 		mouseButtonByte("left"),
 		durationMs,
 		80,
-		0,
+		wheelNudgeEndpointHoldMs,
 		wheelNudgeDefaultSteps,
 	); err != nil {
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 
-	return fmt.Sprintf("ok: wheel_nudge direction=%s distance=%s rows=%d physical_travel=%.0f duration_ms=%d", plan.direction, plan.distance, plan.rows, physicalTravel, durationMs), nil
+	return fmt.Sprintf("ok: wheel_nudge direction=%s distance=%s rows=%d physical_travel=%.0f duration_ms=%d%s", plan.direction, plan.distance, plan.rows, physicalTravel, durationMs, measurementSummary), nil
 }
 
 func planWheelNudge(args wheelNudgeArgs) (wheelNudgePlan, error) {
@@ -1897,8 +1831,8 @@ func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
 	if args.CoordSpace != "" && args.CoordSpace != coordinateSpaceAuto && args.CoordSpace != coordinateSpaceScreenshot && args.CoordSpace != coordinateSpaceNormalized {
 		return wheelNudgeArgs{}, fmt.Errorf("unsupported coord_space for wheel_nudge: %q", args.CoordSpace)
 	}
-	if args.CenterY != nil && (math.IsNaN(*args.CenterY) || math.IsInf(*args.CenterY, 0)) {
-		return wheelNudgeArgs{}, fmt.Errorf("center_y must be a finite number")
+	if args.CenterY == nil || math.IsNaN(*args.CenterY) || math.IsInf(*args.CenterY, 0) {
+		return wheelNudgeArgs{}, fmt.Errorf("center_y is required and must be a finite number measured from the selected row in the latest screenshot")
 	}
 	if args.VisibleTargetY != nil && (math.IsNaN(*args.VisibleTargetY) || math.IsInf(*args.VisibleTargetY, 0)) {
 		return wheelNudgeArgs{}, fmt.Errorf("visible_target_y must be a finite number")
@@ -1909,17 +1843,36 @@ func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
 	return args, nil
 }
 
-func wheelNudgeRowsForGap(gap int) int {
+type wheelNudgeMotionProfile struct {
+	nearRows   int
+	mediumRows int
+	farRows    int
+}
+
+var (
+	wheelNudgeConservativeProfile = wheelNudgeMotionProfile{nearRows: 2, mediumRows: 3, farRows: 5}
+	wheelNudgeCalibratedProfile   = wheelNudgeMotionProfile{nearRows: 3, mediumRows: 4, farRows: 6}
+)
+
+func wheelNudgeRowsForGapWithProfile(gap int, profile wheelNudgeMotionProfile) int {
 	switch {
 	case gap <= 1:
 		return 1
 	case gap <= 4:
-		return min(gap, 2)
+		return min(gap, profile.nearRows)
 	case gap <= 8:
-		return min(gap, 3)
+		return min(gap, profile.mediumRows)
 	default:
-		return min(gap, 5)
+		return min(gap, profile.farRows)
 	}
+}
+
+func wheelNudgeRowsForGap(gap int) int {
+	return wheelNudgeRowsForGapWithProfile(gap, wheelNudgeConservativeProfile)
+}
+
+func wheelNudgeRowsForConfidentGap(gap int) int {
+	return wheelNudgeRowsForGapWithProfile(gap, wheelNudgeCalibratedProfile)
 }
 
 // MouseScrollTool sends mouse wheel events.
@@ -1941,6 +1894,16 @@ func (t *MouseScrollTool) ArgsSchema() map[string]any {
 }
 
 func (t *MouseScrollTool) Call(ctx context.Context, input string) (string, error) {
+	var pc *pointerController
+	if t != nil {
+		pc = t.pc
+	}
+	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+		return t.call(callCtx, input)
+	})
+}
+
+func (t *MouseScrollTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		Delta int `json:"delta"`
 	}
@@ -2163,7 +2126,7 @@ const (
 	coordinateSpaceAbsolute   = "absolute"
 )
 
-func resolveRequiredPoint(screen *screenState, touchscreen bool, point *pointerPoint, coordSpace string) (resolvedPointerPoint, error) {
+func resolveRequiredPoint(screen *screen.ScreenState, touchscreen bool, point *pointerPoint, coordSpace string) (resolvedPointerPoint, error) {
 	if point == nil {
 		return resolvedPointerPoint{}, fmt.Errorf("point is required")
 	}
@@ -2175,7 +2138,7 @@ func resolveRequiredPoint(screen *screenState, touchscreen bool, point *pointerP
 	return resolvedPointerPoint{x: x, y: y}, nil
 }
 
-func resolvePointOrDefaultNormalized(screen *screenState, touchscreen bool, point *pointerPoint, coordSpace string, defaultX, defaultY float64) (resolvedPointerPoint, error) {
+func resolvePointOrDefaultNormalized(screen *screen.ScreenState, touchscreen bool, point *pointerPoint, coordSpace string, defaultX, defaultY float64) (resolvedPointerPoint, error) {
 	if point != nil {
 		return resolveRequiredPoint(screen, touchscreen, point, coordSpace)
 	}
@@ -2191,11 +2154,11 @@ func resolvePointOrDefaultNormalized(screen *screenState, touchscreen bool, poin
 	return resolvedPointerPoint{x: x, y: y}, nil
 }
 
-func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
+func resolvePointerPosition(screen *screen.ScreenState, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
 	return resolvePointerPositionForSurface(screen, false, x, y, coordSpace, defaultSpace)
 }
 
-func resolvePointerPositionForSurface(screen *screenState, touchscreen bool, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
+func resolvePointerPositionForSurface(screen *screen.ScreenState, touchscreen bool, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
 	space, err := normalizeCoordinateSpace(coordSpace, defaultSpace)
 	if err != nil {
 		return 0, 0, err
@@ -2253,7 +2216,7 @@ func resolvePointerPositionForSurface(screen *screenState, touchscreen bool, x, 
 	return 0, 0, fmt.Errorf("unsupported coord_space: %q", coordSpace)
 }
 
-func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, x, y float64) (int, int, error) {
+func normalizedToAbsolutePointForSurface(screen *screen.ScreenState, touchscreen bool, x, y float64) (int, int, error) {
 	// Normalized coordinates are always interpreted within active_area:
 	// 0-1000 maps to the mirrored phone touch region inside the HDMI frame.
 	//
@@ -2285,7 +2248,7 @@ func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, 
 						fullFramePixelY,
 						width,
 						height,
-						formatTouchscreenRCAActiveArea(active),
+						active.Format(),
 						age.Milliseconds(),
 						absX,
 						absY,
@@ -2304,7 +2267,7 @@ func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, 
 					activePixelY,
 					width,
 					height,
-					formatTouchscreenRCAActiveArea(active),
+					active.Format(),
 					age.Milliseconds(),
 					absX,
 					absY,
@@ -2315,7 +2278,7 @@ func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, 
 	}
 	absX, absY := normalizedToAbsolutePoint(x, y)
 	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("normalizedToAbsolute fallback input_norm=(%.2f,%.2f) touchscreen=%v absolute=(%d,%d) mapping={%s}", x, y, touchscreen, absX, absY, formatTouchscreenRCAScreenMapping(screen))
+		touchscreenRCALogf("normalizedToAbsolute fallback input_norm=(%.2f,%.2f) touchscreen=%v absolute=(%d,%d) mapping={%s}", x, y, touchscreen, absX, absY, screen.Format())
 	}
 	return absX, absY, nil
 }
@@ -2342,12 +2305,12 @@ func normalizedToAbsolutePoint(x, y float64) (int, int) {
 	return int(math.Round(clampFloat(x, 0, 1000) / 1000.0 * absMouseMaxPos)), int(math.Round(clampFloat(y, 0, 1000) / 1000.0 * absMouseMaxPos))
 }
 
-func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveArea, touchscreen bool) (int, int, error) {
+func pixelToAbsolutePoint(x, y float64, width, height int, active screen.ScreenActiveArea, touchscreen bool) (int, int, error) {
 	if width <= 0 || height <= 0 {
 		return 0, 0, fmt.Errorf("invalid screen dimensions: %dx%d", width, height)
 	}
 	if !active.Valid {
-		active = screenActiveArea{X: 0, Y: 0, Width: width, Height: height, Valid: true}
+		active = screen.ScreenActiveArea{X: 0, Y: 0, Width: width, Height: height, Valid: true}
 	}
 	// Pixel coordinates are relative to the cropped active area image that the
 	// LLM sees, not the full HDMI frame. Bounds check against active area size.
@@ -2361,7 +2324,7 @@ func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveAr
 	return scalePixelToAbsolute(x, active.Width), scalePixelToAbsolute(y, active.Height), nil
 }
 
-func screenshotPixelToAbsolutePoint(x, y float64, sourceWidth, sourceHeight int, active screenActiveArea, touchscreen bool) (int, int, error) {
+func screenshotPixelToAbsolutePoint(x, y float64, sourceWidth, sourceHeight int, active screen.ScreenActiveArea, touchscreen bool) (int, int, error) {
 	if sourceWidth <= 0 || sourceHeight <= 0 || !active.Valid || active.Width <= 0 || active.Height <= 0 {
 		return 0, 0, fmt.Errorf("invalid screenshot mapping: source=%dx%d active=%+v", sourceWidth, sourceHeight, active)
 	}
@@ -2522,7 +2485,7 @@ func directionalSwipePreset(strength string) (directionalSwipeSettings, error) {
 	}
 }
 
-func directionalSwipeEndpoints(screen *screenState, touchscreen bool, gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {
+func directionalSwipeEndpoints(screen *screen.ScreenState, touchscreen bool, gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {
 	startX, startY, endX, endY, err := directionalSwipeNormalizedCoordinates(gestureType, distance, anchor, preset)
 	if err != nil {
 		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
@@ -2562,7 +2525,7 @@ func directionalSwipeEndpoints(screen *screenState, touchscreen bool, gestureTyp
 			startAbsY,
 			endAbsX,
 			endAbsY,
-			formatTouchscreenRCAScreenMapping(screen),
+			screen.Format(),
 		)
 	}
 	return resolvedPointerPoint{x: startAbsX, y: startAbsY}, resolvedPointerPoint{x: endAbsX, y: endAbsY}, nil

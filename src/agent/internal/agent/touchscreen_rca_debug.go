@@ -1,12 +1,12 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 	"sync/atomic"
-	"time"
 )
 
 const touchscreenRCADebugEnv = "AIDEN_TOUCHSCREEN_RCA_DEBUG"
@@ -39,10 +39,6 @@ func touchscreenRCADebugEnabledFromEnv() bool {
 	}
 }
 
-func formatTouchscreenRCAActiveArea(active screenActiveArea) string {
-	return fmt.Sprintf("{x:%d y:%d w:%d h:%d valid:%v}", active.X, active.Y, active.Width, active.Height, active.Valid)
-}
-
 func formatTouchscreenRCAMetadata(meta *frameMetadata) string {
 	if !touchscreenRCADebugEnabledCached() {
 		return ""
@@ -68,47 +64,7 @@ func formatTouchscreenRCAMetadata(meta *frameMetadata) string {
 	)
 }
 
-func formatTouchscreenRCAScreenMapping(screen *screenState) string {
-	if !touchscreenRCADebugEnabledCached() {
-		return ""
-	}
-	if screen == nil {
-		return "screen=nil"
-	}
-
-	width, height, active, age, ok := screen.ActiveAreaWithAge()
-	state := screen.MappingState()
-	phoneScreen := screen.PhoneScreenInfo()
-	phoneScreenText := formatPhoneScreen(phoneScreen)
-	if phoneScreenText == "" {
-		phoneScreenText = "<empty>"
-	}
-
-	rawAge := "unset"
-	if !state.updatedAt.IsZero() {
-		rawAge = fmt.Sprintf("%d", time.Since(state.updatedAt).Milliseconds())
-	}
-	effectiveAge := "unset"
-	if ok {
-		effectiveAge = fmt.Sprintf("%d", age.Milliseconds())
-	}
-
-	return fmt.Sprintf(
-		"active_area_with_age_ok=%v effective_width=%d effective_height=%d effective_active=%s effective_age_ms=%s raw_width=%d raw_height=%d raw_active=%s raw_age_ms=%s phone_screen=%q",
-		ok,
-		width,
-		height,
-		formatTouchscreenRCAActiveArea(active),
-		effectiveAge,
-		state.width,
-		state.height,
-		formatTouchscreenRCAActiveArea(state.active),
-		rawAge,
-		phoneScreenText,
-	)
-}
-
-func formatTouchscreenRCAMappingSummary(screen *screenState) string {
+func formatTouchscreenRCAMappingSummary(screen *screen.ScreenState) string {
 	if !touchscreenRCADebugEnabledCached() {
 		return ""
 	}
@@ -123,7 +79,7 @@ func formatTouchscreenRCAMappingSummary(screen *screenState) string {
 		"active_area_ok=true width=%d height=%d active=%s age_ms=%d",
 		width,
 		height,
-		formatTouchscreenRCAActiveArea(active),
+		active.Format(),
 		age.Milliseconds(),
 	)
 }
@@ -162,7 +118,7 @@ func formatTouchscreenRCAQuickActionMapping(tool *QuickActionTool) string {
 	if tool.touch == nil {
 		return "quick_action.touch=nil"
 	}
-	return formatTouchscreenRCAScreenMapping(tool.touch.screen)
+	return formatTouchscreenRCAMappingSummary(tool.touch.screen)
 }
 
 func formatTouchscreenRCAQuickActionMappingSummary(tool *QuickActionTool) string {
@@ -178,7 +134,7 @@ func formatTouchscreenRCAQuickActionMappingSummary(tool *QuickActionTool) string
 	return formatTouchscreenRCAMappingSummary(tool.touch.screen)
 }
 
-func touchscreenRCALogResolvedPoint(label string, screen *screenState, pc *pointerController, raw *pointerPoint, coordSpace string, resolved resolvedPointerPoint) {
+func touchscreenRCALogResolvedPoint(label string, screen *screen.ScreenState, pc *pointerController, raw *pointerPoint, coordSpace string, resolved resolvedPointerPoint) {
 	if !touchscreenRCADebugEnabledCached() {
 		return
 	}
@@ -190,6 +146,6 @@ func touchscreenRCALogResolvedPoint(label string, screen *screenState, pc *point
 		touchscreenRCAPointerMode(pc),
 		resolved.x,
 		resolved.y,
-		formatTouchscreenRCAScreenMapping(screen),
+		formatTouchscreenRCAMappingSummary(screen),
 	)
 }
