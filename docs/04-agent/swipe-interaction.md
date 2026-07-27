@@ -50,7 +50,7 @@ Defaults: 700ms / 24 steps / hold_before 80ms / hold_after 0ms. Coordinate syste
 
 ### screenshot Tool
 
-Returns `previous_screenshot_id` + `screenshot_id` + base64 JPEG + width/height. Auto-screenshot after each HID operation (500ms delay), no manual call needed.
+Returns `previous_screenshot_id` + `screenshot_id` + base64 JPEG + width/height. HID action tools automatically return a post-action screenshot with the retained screenshot pair and image metadata after the action settles. A manual screenshot may still be required when no valid pair is available.
 
 ### save_memory / recall_memory
 

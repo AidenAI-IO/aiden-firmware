@@ -62,6 +62,14 @@ type Screenshot struct {
 	JPEG []byte
 }
 
+type ScreenshotObservation struct {
+	ID        uint64
+	JPEG      []byte
+	Width     int
+	Height    int
+	UpdatedAt time.Time
+}
+
 type ScreenMappingState struct {
 	Width     int
 	Height    int
@@ -230,15 +238,6 @@ func (s *ScreenState) UpdateScreenshotWithID(id uint64, jpegData []byte, width, 
 	return previousID, id
 }
 
-func (s *ScreenState) ScreenshotUpdatedSince(since time.Time) bool {
-	if s == nil {
-		return false
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return !s.screenshotUpdatedAt.IsZero() && !s.screenshotUpdatedAt.Before(since)
-}
-
 func (s *ScreenState) ScreenshotGeneration() uint64 {
 	if s == nil {
 		return 0
@@ -249,19 +248,33 @@ func (s *ScreenState) ScreenshotGeneration() uint64 {
 }
 
 func (s *ScreenState) LatestScreenshot(maxAge time.Duration) (jpegData []byte, width, height int, age time.Duration, ok bool) {
+	observation, age, ok := s.LatestScreenshotObservation(maxAge)
+	if !ok {
+		return nil, 0, 0, age, false
+	}
+	return observation.JPEG, observation.Width, observation.Height, age, true
+}
+
+func (s *ScreenState) LatestScreenshotObservation(maxAge time.Duration) (observation ScreenshotObservation, age time.Duration, ok bool) {
 	if s == nil {
-		return nil, 0, 0, 0, false
+		return ScreenshotObservation{}, 0, false
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.screenshotJPEG) == 0 || s.screenshotWidth <= 1 || s.screenshotHeight <= 1 || s.screenshotUpdatedAt.IsZero() {
-		return nil, 0, 0, 0, false
+		return ScreenshotObservation{}, 0, false
 	}
 	age = time.Since(s.screenshotUpdatedAt)
 	if maxAge > 0 && age >= maxAge {
-		return nil, 0, 0, age, false
+		return ScreenshotObservation{}, age, false
 	}
-	return append([]byte(nil), s.screenshotJPEG...), s.screenshotWidth, s.screenshotHeight, age, true
+	return ScreenshotObservation{
+		ID:        s.screenshotID,
+		JPEG:      append([]byte(nil), s.screenshotJPEG...),
+		Width:     s.screenshotWidth,
+		Height:    s.screenshotHeight,
+		UpdatedAt: s.screenshotUpdatedAt,
+	}, age, true
 }
 
 func (s *ScreenState) LatestScreenshotPair() (before, after Screenshot, ok bool) {

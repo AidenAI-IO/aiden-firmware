@@ -110,6 +110,8 @@ curl -X POST http://127.0.0.1:8080/api/tools/screenshot \
   -H 'Content-Type: application/json' \
   -d '{"input":{}}'
 
+# Replace 123 and 124 with the previous_screenshot_id and screenshot_id integer
+# values returned by the preceding screenshot or post-action result.
 curl -X POST http://127.0.0.1:8080/api/tools/image_diff \
   -H 'Content-Type: application/json' \
   -d '{"input":{"before_id":123,"after_id":124}}'

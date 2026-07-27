@@ -41,9 +41,10 @@ func newScreenToolResultObserver(state *screen.ScreenState) ToolResultObserver {
 		}
 		jpegData, err := base64.StdEncoding.DecodeString(observation.Data)
 		if err == nil {
-			latest, latestWidth, latestHeight, _, latestOK := state.LatestScreenshot(0)
-			if latestOK && latestWidth == observation.Width && latestHeight == observation.Height &&
-				bytes.Equal(latest, jpegData) && state.ScreenshotUpdatedSince(call.StartedAt) {
+			latest, _, latestOK := state.LatestScreenshotObservation(0)
+			if latestOK && latest.ID == observation.ScreenshotID &&
+				latest.Width == observation.Width && latest.Height == observation.Height &&
+				bytes.Equal(latest.JPEG, jpegData) && !latest.UpdatedAt.Before(call.StartedAt) {
 				return
 			}
 			state.UpdateScreenshotWithID(observation.ScreenshotID, jpegData, observation.Width, observation.Height)
