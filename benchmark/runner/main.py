@@ -291,6 +291,50 @@ def _cmd_run_auto_agent_setup(
     run_id: str,
     run_dir: Path,
 ) -> int:
+    mock_server = None
+    if _suite_has_mock_environment(suite):
+        if args.environment_url:
+            print(
+                "Error: suites or tasks with mock_environment manage their own environment; "
+                "do not pass --environment-url",
+                file=sys.stderr,
+            )
+            return 2
+        from runner.mock_environment import MockEnvironmentServer
+
+        initial_spec = suite.mock_environment
+        if initial_spec is None:
+            initial_spec = next(
+                spec
+                for task in suite.tasks
+                if (spec := task.mock_environment) is not None
+            )
+        mock_server = MockEnvironmentServer(
+            initial_spec,
+            suite.source_path.parent,
+            # Docker host-gateway access requires a wildcard listener. The mock
+            # server protects it with a high-entropy, per-run capability path.
+            host="0.0.0.0",  # noqa: S104
+        )
+        args.environment_url = mock_server.start()
+        print(f"mock environment started: {mock_server.redacted_url}", flush=True)
+    try:
+        return _cmd_run_auto_agent_setup_inner(
+            args, suite, selected_task_ids, run_id, run_dir, mock_server=mock_server
+        )
+    finally:
+        if mock_server is not None:
+            mock_server.stop()
+
+
+def _cmd_run_auto_agent_setup_inner(
+    args: argparse.Namespace,
+    suite: Suite,
+    selected_task_ids: list[str],
+    run_id: str,
+    run_dir: Path,
+    mock_server=None,
+) -> int:
     if not args.environment_url:
         print("Error: --auto-agent-setup requires --environment-url", file=sys.stderr)
         return 2
@@ -338,6 +382,9 @@ def _cmd_run_auto_agent_setup(
             units.append((len(units) + 1, task, attempt, repeats))
 
     total_runs = len(units)
+    display_environment_url = (
+        mock_server.redacted_url if mock_server is not None else args.environment_url
+    )
     base_state = {
         "status": "running",
         "suite": str(suite.source_path),
@@ -385,6 +432,18 @@ def _cmd_run_auto_agent_setup(
         art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if repeats > 1 else "")
         try:
             print(f"[{progress}] STARTING   {task.id} attempt={attempt}", flush=True)
+            task_mock_environment = _task_mock_environment(suite, task)
+            if mock_server is not None:
+                if task_mock_environment is None:
+                    return skipped_task_result(
+                        suite,
+                        task,
+                        attempt,
+                        art_dir,
+                        run_id,
+                        "task has no mock_environment and the suite has no default",
+                    )
+                mock_server.activate(task_mock_environment)
             container_id = start_daemon_compose(
                 job,
                 image=args.daemon_image,
@@ -409,6 +468,8 @@ def _cmd_run_auto_agent_setup(
                     run_id,
                     f"agent not ready within {args.agent_ready_timeout_sec}s",
                 )
+            if task_mock_environment is not None:
+                client.set_phone_bridge_state(task_mock_environment.phone_bridge)
             if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
                 return skipped_task_result(suite, task, attempt, art_dir, run_id, "agent board clock did not sync before benchmark start")
             print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
@@ -443,7 +504,11 @@ def _cmd_run_auto_agent_setup(
     results = []
     completed = 0
     max_workers = min(max(1, concurrency), max(1, total_runs))
-    print(f"auto agent setup enabled: concurrency={max_workers} environment={args.environment_url}", flush=True)
+    print(
+        f"auto agent setup enabled: concurrency={max_workers} "
+        f"environment={display_environment_url}",
+        flush=True,
+    )
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"bench-cli-{run_id}") as executor:
         future_to_unit = {
             executor.submit(run_unit, index, task, attempt, repeats): (index, task, attempt)
@@ -471,13 +536,14 @@ def _cmd_run_auto_agent_setup(
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
         "selected_task_ids": selected_task_ids,
         "agent_url": None,
-        "environment_url": args.environment_url or None,
+        "environment_url": display_environment_url or None,
         "agent_model": args.agent_model,
         "active_skills": active_skills,
         "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "auto_agent_setup": True,
         "concurrency": max_workers,
+        "mock_environment": _mock_environment_manifest(suite),
         "started_at": started, "finished_at": now_iso(),
         "totals": totals,
     }
@@ -521,6 +587,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"Error: invalid --run-id: {run_id!r}", file=sys.stderr)
         return 2
     run_dir = Path(args.out) / run_id
+    if _suite_has_mock_environment(suite) and not args.auto_agent_setup:
+        print(
+            "Error: suites or tasks with mock_environment require --auto-agent-setup so tool calls "
+            "can be routed to the scripted environment",
+            file=sys.stderr,
+        )
+        return 2
     if args.auto_agent_setup:
         return _cmd_run_auto_agent_setup(args, suite, selected_task_ids, run_id, run_dir)
     if args.repeats is not None and args.repeats <= 0:
@@ -657,6 +730,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "active_skills": active_skills,
         "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
         "judge_prompt_version": "v1",
+        "mock_environment": _mock_environment_manifest(suite),
         "started_at": started, "finished_at": now_iso(),
         "totals": totals,
     }
@@ -712,6 +786,43 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print("Warning: failed to upload report to board")
     upload_client.close()
     return 0 if manifest["totals"]["passed"] == manifest["totals"]["tasks"] else 1
+
+
+def _mock_environment_manifest(suite: Suite) -> dict[str, object] | None:
+    task_specs = {
+        task.id: _serialize_mock_environment(task.mock_environment)
+        for task in suite.tasks
+        if task.mock_environment is not None
+    }
+    if suite.mock_environment is None and not task_specs:
+        return None
+    if suite.mock_environment is not None and not task_specs:
+        return _serialize_mock_environment(suite.mock_environment)
+    return {
+        "default": _serialize_mock_environment(suite.mock_environment),
+        "tasks": task_specs,
+    }
+
+
+def _serialize_mock_environment(spec) -> dict[str, object] | None:
+    if spec is None:
+        return None
+    return {
+        "phone_bridge": dict(spec.phone_bridge),
+        "tools": sorted(spec.tools),
+        "screen": spec.screen,
+        "screen_text": spec.screen_text,
+    }
+
+
+def _task_mock_environment(suite: Suite, task: TaskSpec):
+    return task.mock_environment or suite.mock_environment
+
+
+def _suite_has_mock_environment(suite: Suite) -> bool:
+    return suite.mock_environment is not None or any(
+        task.mock_environment is not None for task in suite.tasks
+    )
 
 
 def _read_optional_token(path: str | Path | None) -> str:

@@ -29,6 +29,7 @@ class HardAssertionResults:
     required_tools: bool | None = None
     forbidden_tools: bool | None = None
     prohibited_actions: bool | None = None
+    required_tool_calls: bool | None = None
     timeout: bool = True
     response_exists: bool = False
     expected_answer: bool | None = None

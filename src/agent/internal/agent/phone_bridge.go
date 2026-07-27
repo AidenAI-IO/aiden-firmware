@@ -749,6 +749,80 @@ func clonePhoneEnvironment(env PhoneEnvironment) PhoneEnvironment {
 	return env
 }
 
+// ApplyBenchmarkStatus replaces the runtime Phone Bridge state for benchmark-only
+// daemon workers. The caller is responsible for restricting access to a
+// benchmark-authenticated endpoint. Freshness timestamps are set to now so
+// PiP/FGS policy tests remain deterministic for the following task.
+func (pb *PhoneBridge) ApplyBenchmarkStatus(status PhoneBridgeStatus) error {
+	if pb == nil {
+		return fmt.Errorf("phone bridge is not configured")
+	}
+	platform := strings.ToLower(strings.TrimSpace(status.Platform))
+	if platform != "" && platform != "ios" && platform != "android" {
+		return fmt.Errorf("unsupported platform %q", status.Platform)
+	}
+	appState := ""
+	if strings.TrimSpace(status.AppState) != "" {
+		var ok bool
+		appState, ok = normalizeAppState(status.AppState)
+		if !ok {
+			return fmt.Errorf("unsupported app_state %q", status.AppState)
+		}
+	}
+	now := time.Now()
+
+	pb.mu.Lock()
+	pb.connected = status.Connected
+	pb.platform = platform
+	pb.phoneID = strings.TrimSpace(status.PhoneID)
+	if status.Connected {
+		pb.lastHeartbeatAt = now
+	} else {
+		pb.lastHeartbeatAt = time.Time{}
+	}
+	pb.appState = appState
+	if appState != "" {
+		pb.appStateAt = now
+	} else {
+		pb.appStateAt = time.Time{}
+	}
+	pb.returnEntry = strings.ToLower(strings.TrimSpace(status.ReturnEntry))
+	pb.returnEntrySeen = status.ReturnEntryAvailable != nil
+	if status.ReturnEntryAvailable != nil {
+		pb.returnEntryOK = *status.ReturnEntryAvailable
+	} else {
+		pb.returnEntryOK = false
+	}
+	pb.pipBridgeSeen = status.PipBridgeEnabled != nil
+	if status.PipBridgeEnabled != nil {
+		pb.pipBridgeEnabled = *status.PipBridgeEnabled
+	} else {
+		pb.pipBridgeEnabled = false
+	}
+	pb.fgsBridgeSeen = status.FgsBridgeEnabled != nil
+	if status.FgsBridgeEnabled != nil {
+		pb.fgsBridgeEnabled = *status.FgsBridgeEnabled
+		pb.fgsBridgeAt = now
+	} else {
+		pb.fgsBridgeEnabled = false
+		pb.fgsBridgeAt = time.Time{}
+	}
+	if status.Environment != nil {
+		env := clonePhoneEnvironment(*status.Environment)
+		if strings.TrimSpace(env.Platform) == "" {
+			env.Platform = platform
+		}
+		pb.environment = &env
+		pb.environmentAt = now
+	} else {
+		pb.environment = nil
+		pb.environmentAt = time.Time{}
+	}
+	pb.mu.Unlock()
+
+	return nil
+}
+
 func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 	if !status.Connected &&
 		strings.TrimSpace(status.AppState) == "" &&
