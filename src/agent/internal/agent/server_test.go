@@ -3965,6 +3965,7 @@ func TestHandleBenchmarkPhoneBridgeStateAppliesIOSPiPPolicy(t *testing.T) {
 	if phoneBridgeToolAvailable(status, toolBridgeOpenApp) {
 		t.Fatal("bridge_open_app must be unavailable in iOS PiP background state")
 	}
+	server.runtime.stateManager.GetAllStates()
 	if got := server.runtime.stateManager.GetState("app_text_entry_strategy"); got != phoneBridgeTextEntryTargetPreserving {
 		t.Fatalf("app_text_entry_strategy = %q, want %q", got, phoneBridgeTextEntryTargetPreserving)
 	}

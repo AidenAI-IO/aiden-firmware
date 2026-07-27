@@ -820,7 +820,6 @@ func (pb *PhoneBridge) ApplyBenchmarkStatus(status PhoneBridgeStatus) error {
 	}
 	pb.mu.Unlock()
 
-	pb.statusUpdated()
 	return nil
 }
 
