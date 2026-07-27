@@ -93,12 +93,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"text":"Settings"}`,
 	},
-	"keyboard_layout_probe": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{}`,
-		AgentExposed: toolSpecBoolPtr(false),
-	},
 	"enter_text_in_field": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,

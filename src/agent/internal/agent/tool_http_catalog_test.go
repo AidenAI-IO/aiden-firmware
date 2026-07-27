@@ -96,26 +96,6 @@ func TestRunScriptExposedToAgentAndToolLab(t *testing.T) {
 	}
 }
 
-func TestKeyboardLayoutProbeIsHTTPOnly(t *testing.T) {
-	runtime := NewRuntimeWithDeps(
-		Config{},
-		nil,
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-	descriptor, ok := runtime.ToolDescriptorByName("keyboard_layout_probe")
-	if !ok {
-		t.Fatal("expected keyboard_layout_probe in Tool Lab HTTP catalog")
-	}
-	if descriptor.HTTP.Path != "/api/tools/keyboard_layout_probe" {
-		t.Fatalf("unexpected HTTP path: %q", descriptor.HTTP.Path)
-	}
-	if toolAgentExposed("keyboard_layout_probe") {
-		t.Fatal("keyboard_layout_probe must not be exposed to the conversational agent")
-	}
-}
-
 func TestTimeAndCalculatorAreNotRegistered(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{},

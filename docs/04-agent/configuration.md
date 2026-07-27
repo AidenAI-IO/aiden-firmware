@@ -156,40 +156,40 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 ### General
 
-| Field | Default / allowed values | Description |
-| --- | --- | --- |
-| `locale` | `zh-CN` (default) / `en-US` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[stt].language`, which only controls speech recognition. |
-| `custom_instruction` | - | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior. |
-| `additional_prompt` | - | Additional prompt field; appended after the base instruction at runtime |
-| `load_all_tools` | `false` | When `true`, also send `list_scripts`, `read_script`, and `write_script` to the conversational model. This does not expose HTTP-blocked maintenance tools. |
-| `max_iterations` | `-1` | Maximum number of tool-call loops per run; `-1` means unlimited |
-| `screenshot_keep_n` | `3` | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default |
-| `screenshot_prune_interval` | `2` | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default |
-| `input_mode` | `text` / `stt` | Input mode |
-| `todo_reminder_tool_calls` | `3` | In single-agent/default mode, after how many consecutive tool calls to remind the model to update the todo; set to `0` to use the default |
+| Field                       | Default / allowed values    | Description                                                                                                                                                                                               |
+| --------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `locale`                    | `zh-CN` (default) / `en-US` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[stt].language`, which only controls speech recognition. |
+| `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
+| `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
+| `load_all_tools`            | `false`                     | When `true`, also send `list_scripts`, `read_script`, and `write_script` to the conversational model. This does not expose HTTP-blocked maintenance tools.                                                |
+| `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
+| `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
+| `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
+| `input_mode`                | `text` / `stt`              | Input mode                                                                                                                                                                                                |
+| `todo_reminder_tool_calls`  | `3`                         | In single-agent/default mode, after how many consecutive tool calls to remind the model to update the todo; set to `0` to use the default                                                                 |
 
 ### Voice & VAD
 
 These fields apply to the `stt` input mode.
 
-| Field | Default | Description |
-| --- | --- | --- |
-| `trigger_mode` | `manual` / `wakeup` | Voice-mode trigger method |
-| `vad_backend` | `rknn` | VAD backend: `rknn` uses NPU encoder + CPU LSTM/decoder, `cpu` uses a pure-CPU helper |
-| `vad_model_path` | `/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"` |
-| `vad_helper_path` | `/oem/usr/bin/rknn_vad` | VAD helper executable path; the CPU backend defaults to `/oem/usr/bin/cpu_vad` |
-| `vad_speech_threshold` | `0.5` | Silero VAD speech probability threshold |
-| `silence_ms` | `650` | How many milliseconds of silence before an utterance is considered finished |
-| `min_speech_ms` | `300` | Minimum valid speech duration |
-| `voice_followup_enabled` | `false` | Enable continuous follow-up after a single wakeup in wakeup mode; defaults to one wakeup per turn |
-| `voice_followup_timeout_ms` | `6000` | Window to wait for a user follow-up after the Agent replies |
-| `voice_first_turn_timeout_ms` | `10000` | Window to wait for the first utterance after wakeup |
-| `voice_max_turns` | `0` | Maximum turns per wakeup session; `0` means unlimited |
-| `voice_interrupt_on_wakeup` | `true` | When a wakeup is received again within a session, cancel thinking/TTS and listen again; repeated wakeups during the listening or recording phase are merged or ignored |
-| `voice_streaming_tts_enabled` | `true` | Feed the LLM streaming output into TTS sentence by sentence, reducing the wait before the first sentence plays |
-| `voice_tool_call_speech` | `true` | Whether to asynchronously read the `content` of a tool-call event; this content comes only from the assistant content in the same LLM tool-call response, and stays silent when absent |
-| `voice_progress_speech_enabled` | `true` | Whether to announce a short progress message when a todo item enters `in_progress`; todo state is still sent to the UI/trace |
-| `voice_max_response_tokens` | `400` | Per-turn output token limit for voice replies (must be `>= 0`) |
+| Field                           | Default                                                     | Description                                                                                                                                                                            |
+| ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `trigger_mode`                  | `manual` / `wakeup`                                         | Voice-mode trigger method                                                                                                                                                              |
+| `vad_backend`                   | `rknn`                                                      | VAD backend: `rknn` uses NPU encoder + CPU LSTM/decoder, `cpu` uses a pure-CPU helper                                                                                                  |
+| `vad_model_path`                | `/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"`                                                                                                                  |
+| `vad_helper_path`               | `/oem/usr/bin/rknn_vad`                                     | VAD helper executable path; the CPU backend defaults to `/oem/usr/bin/cpu_vad`                                                                                                         |
+| `vad_speech_threshold`          | `0.5`                                                       | Silero VAD speech probability threshold                                                                                                                                                |
+| `silence_ms`                    | `650`                                                       | How many milliseconds of silence before an utterance is considered finished                                                                                                            |
+| `min_speech_ms`                 | `300`                                                       | Minimum valid speech duration                                                                                                                                                          |
+| `voice_followup_enabled`        | `false`                                                     | Enable continuous follow-up after a single wakeup in wakeup mode; defaults to one wakeup per turn                                                                                      |
+| `voice_followup_timeout_ms`     | `6000`                                                      | Window to wait for a user follow-up after the Agent replies                                                                                                                            |
+| `voice_first_turn_timeout_ms`   | `10000`                                                     | Window to wait for the first utterance after wakeup                                                                                                                                    |
+| `voice_max_turns`               | `0`                                                         | Maximum turns per wakeup session; `0` means unlimited                                                                                                                                  |
+| `voice_interrupt_on_wakeup`     | `true`                                                      | When a wakeup is received again within a session, cancel thinking/TTS and listen again; repeated wakeups during the listening or recording phase are merged or ignored                 |
+| `voice_streaming_tts_enabled`   | `true`                                                      | Feed the LLM streaming output into TTS sentence by sentence, reducing the wait before the first sentence plays                                                                         |
+| `voice_tool_call_speech`        | `true`                                                      | Whether to asynchronously read the `content` of a tool-call event; this content comes only from the assistant content in the same LLM tool-call response, and stays silent when absent |
+| `voice_progress_speech_enabled` | `true`                                                      | Whether to announce a short progress message when a todo item enters `in_progress`; todo state is still sent to the UI/trace                                                           |
+| `voice_max_response_tokens`     | `400`                                                       | Per-turn output token limit for voice replies (must be `>= 0`)                                                                                                                         |
 
 The model pointed to by `vad_model_path` must first be converted from the Silero ONNX to RV1106 RKNN on a PC using `silero-vad/convert_silero_vad_to_rknn.py`, then placed at the corresponding path on the device. The CPU backend requires `silero_vad_6_2_lstm_decoder_weights.bin` to include the Conv1d encoder extension, which can be generated from the TorchScript file shipped with the repo using `silero-vad/export_silero_vad_v6_2_weights.py`.
 When `vad_helper_path` is still the built-in default, switching `vad_backend` automatically switches the helper; only when set to a custom path does it run that custom path.
@@ -213,34 +213,34 @@ terminate_stall_score = 6
 parse_failure_limit = 3
 ```
 
-| Field | Default | Description |
-| --- | --- | --- |
-| `enabled` | `true` | Enable tiered loop detection and graceful termination |
-| `max_seconds` | `0` | Wall-clock budget per instruction; `0` disables the time budget, and a consumed steer starts a fresh budget |
-| `repeat_action_limit` | `3` | Stop after this many identical tool calls with identical results |
-| `same_result_limit` | `3` | Number of repeated identical results considered stalled |
-| `screen_unchanged_limit` | `5` | Stop after this many UI actions without a screen change |
-| `soft_notice_stall_score` | `2` | Stall score that injects a one-shot strategy-change notice |
-| `restrict_tools_stall_score` | `4` | Stall score that temporarily blocks repeated UI action tools |
-| `terminate_stall_score` | `6` | Stall score that ends the run gracefully |
-| `parse_failure_limit` | `3` | Stop after this many consecutive unparseable model outputs |
+| Field                        | Default | Description                                                                                                 |
+| ---------------------------- | ------- | ----------------------------------------------------------------------------------------------------------- |
+| `enabled`                    | `true`  | Enable tiered loop detection and graceful termination                                                       |
+| `max_seconds`                | `0`     | Wall-clock budget per instruction; `0` disables the time budget, and a consumed steer starts a fresh budget |
+| `repeat_action_limit`        | `3`     | Stop after this many identical tool calls with identical results                                            |
+| `same_result_limit`          | `3`     | Number of repeated identical results considered stalled                                                     |
+| `screen_unchanged_limit`     | `5`     | Stop after this many UI actions without a screen change                                                     |
+| `soft_notice_stall_score`    | `2`     | Stall score that injects a one-shot strategy-change notice                                                  |
+| `restrict_tools_stall_score` | `4`     | Stall score that temporarily blocks repeated UI action tools                                                |
+| `terminate_stall_score`      | `6`     | Stall score that ends the run gracefully                                                                    |
+| `parse_failure_limit`        | `3`     | Stop after this many consecutive unparseable model outputs                                                  |
 
 The three stall-score thresholds must satisfy
 `soft_notice_stall_score < restrict_tools_stall_score < terminate_stall_score`.
 
 ## `[model]`
 
-| Field | Description |
-| --- | --- |
-| `provider` | `openai`, `openrouter`, `kimi`, `kimi-cn`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); both accept a `base_url` override. |
-| `model` | Model name; usually required except for `fake` |
-| `base_url` | Custom OpenAI-compatible endpoint. Optional for `kimi`/`kimi-cn` (each has a built-in default). |
-| `api_key` | API key written directly |
-| `token_env` | Read the API key from the specified environment variable; only supported by `[model]` |
-| `temperature` | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence. |
-| `max_response_tokens` | Maximum output tokens passed to the model on request |
-| `context_window` | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback. |
-| `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry. |
+| Field                     | Description                                                                                                                                                                                                                                          |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider`                | `openai`, `openrouter`, `kimi`, `kimi-cn`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); both accept a `base_url` override. |
+| `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
+| `base_url`                | Custom OpenAI-compatible endpoint. Optional for `kimi`/`kimi-cn` (each has a built-in default).                                                                                                                                                      |
+| `api_key`                 | API key written directly                                                                                                                                                                                                                             |
+| `token_env`               | Read the API key from the specified environment variable; only supported by `[model]`                                                                                                                                                                |
+| `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
+| `max_response_tokens`     | Maximum output tokens passed to the model on request                                                                                                                                                                                                 |
+| `context_window`          | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback.                                                                        |
+| `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry.                                                                                                                     |
 
 ### Moonshot Kimi K3
 
@@ -265,18 +265,18 @@ api_key = "MOONSHOT_API_KEY"
 
 ## `[log]`
 
-| Field | Default | Description |
-| --- | --- | --- |
-| `llm_http_retention_days` | `7` | Number of days to keep raw LLM HTTP logs under `<config_dir>/log` (`llm-http-*.log`). Cleanup runs when the agent starts; unset or `0` uses the default. |
+| Field                     | Default | Description                                                                                                                                              |
+| ------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm_http_retention_days` | `7`     | Number of days to keep raw LLM HTTP logs under `<config_dir>/log` (`llm-http-*.log`). Cleanup runs when the agent starts; unset or `0` uses the default. |
 
 ## `[audio]`
 
-| Field | Default | Description |
-| --- | --- | --- |
-| `socket` | `/run/audio_service/audio_service.sock` | Audio Service socket |
-| `sample_rate` | `16000` | Sample rate |
-| `channels` | `1` | Number of channels |
-| `bit_width` | `16` | Bit width |
+| Field         | Default                                 | Description          |
+| ------------- | --------------------------------------- | -------------------- |
+| `socket`      | `/run/audio_service/audio_service.sock` | Audio Service socket |
+| `sample_rate` | `16000`                                 | Sample rate          |
+| `channels`    | `1`                                     | Number of channels   |
+| `bit_width`   | `16`                                    | Bit width            |
 
 ## `[voice_notifications]`
 
@@ -299,40 +299,40 @@ default_ttl_seconds = 0
 storage = 900
 ```
 
-| Field | Default | Description |
-| --- | --- | --- |
-| `enabled` | `true` | Enable persistent tails and final-turn replacements |
-| `max_pending` | `8` | Maximum active condition records kept by the in-memory manager |
-| `response_tail.enabled` | `true` | Allow persistent reminders to be appended to normal replies |
-| `response_tail.max_items` | `1` | Maximum reminders per reply; the current implementation supports only `1` |
-| `response_tail.max_text_chars` | `40` | Maximum reminder length in Unicode characters |
-| `expiration.default_ttl_seconds` | `0` | Default active-condition lease; `0` disables automatic expiration |
-| `expiration.code_ttl_seconds.<code>` | `storage = 900` | Per-code lease override renewed by each active heartbeat |
+| Field                                | Default         | Description                                                               |
+| ------------------------------------ | --------------- | ------------------------------------------------------------------------- |
+| `enabled`                            | `true`          | Enable persistent tails and final-turn replacements                       |
+| `max_pending`                        | `8`             | Maximum active condition records kept by the in-memory manager            |
+| `response_tail.enabled`              | `true`          | Allow persistent reminders to be appended to normal replies               |
+| `response_tail.max_items`            | `1`             | Maximum reminders per reply; the current implementation supports only `1` |
+| `response_tail.max_text_chars`       | `40`            | Maximum reminder length in Unicode characters                             |
+| `expiration.default_ttl_seconds`     | `0`             | Default active-condition lease; `0` disables automatic expiration         |
+| `expiration.code_ttl_seconds.<code>` | `storage = 900` | Per-code lease override renewed by each active heartbeat                  |
 
 Config Web preserves this section through GET/POST and TOML save operations. Edit it directly in `agent.toml` until dedicated controls are added to the page.
 
 ## `[hid]`
 
-| Field | Default | Description |
-| --- | --- | --- |
-| `keyboard_device` | `/dev/hidg0` | Keyboard HID device |
-| `keyboard_layout` | `qwerty` | How the phone interprets the external USB HID keyboard: `qwerty`, `azerty`, or `qwertz`. The visible soft-keyboard layout may differ. Used by `keyboard_text` and standard text-like `keyboard_tap` keys; changing it requires only an Agent restart. Config Web can detect it by sending a raw physical-key probe while an English/Latin input field is focused. |
-| `mouse_device` | `/dev/hidg1` | Mouse/touch HID device |
-| `android_keyboard_device` | `/dev/hidg2` | Consumer Control HID device (`hid.usb2`) used for Android extension keys in `pointer_mode = "touchscreen"` and media/volume/brightness/screenshot keys in `pointer_mode = "absolute"` |
-| `frame_socket` | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool |
-| `pointer_mode` | `absolute` | `absolute` for iOS-style cursor mode on `hid.usb1` plus a limited `hid.usb2` media-key interface; `touchscreen` for Android digitizer mode plus full `hid.usb2` Android extension keys |
-| `input_backend` | `hid` | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands. |
+| Field                     | Default                                 | Description                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `keyboard_device`         | `/dev/hidg0`                            | Keyboard HID device                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `keyboard_layout`         | `qwerty`                                | How the phone interprets the external USB HID keyboard: `qwerty`, `azerty`, or `qwertz`. The visible soft-keyboard layout may differ. Used by `keyboard_text` and standard text-like `keyboard_tap` keys; changing it requires only an Agent restart. iOS locks the hardware layout at USB enumeration, so switch the phone's input language to match, then power-cycle Aiden to re-align. See [USB HID](../03-services/usb-hid.md). |
+| `mouse_device`            | `/dev/hidg1`                            | Mouse/touch HID device                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `android_keyboard_device` | `/dev/hidg2`                            | Consumer Control HID device (`hid.usb2`) used for Android extension keys in `pointer_mode = "touchscreen"` and media/volume/brightness/screenshot keys in `pointer_mode = "absolute"`                                                                                                                                                                                                                                                |
+| `frame_socket`            | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool                                                                                                                                                                                                                                                                                                                                                                                     |
+| `pointer_mode`            | `absolute`                              | `absolute` for iOS-style cursor mode on `hid.usb1` plus a limited `hid.usb2` media-key interface; `touchscreen` for Android digitizer mode plus full `hid.usb2` Android extension keys                                                                                                                                                                                                                                               |
+| `input_backend`           | `hid`                                   | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands.                                                                                                                                                                                                                                                       |
 
 ## `[live_activity]`
 
 Used for the iOS companion app Live Activity / Dynamic Island task status. The agent-side state snapshot is enabled by default. Background, lock-screen, or not-open app remote updates go through the Aiden Live Activity relay. Official firmware preconfigures relay settings in `overlay/userdata/agent/agent.toml`, so newly flashed boards work with the official app without users entering the relay key. The normal config page does not expose the relay key. Apple APNs credentials stay on the relay/backend and are not placed in board config. See [Live Activity / Dynamic Island](./live-activity.md).
 
-| Field | Default | Description |
-| --- | --- | --- |
-| `enabled` | `true` | Enables agent-side state snapshots and APIs |
-| `relay_url` | preconfigured in official firmware | Aiden Live Activity relay URL; only advanced deployments need to override it |
-| `relay_api_key` | preconfigured in official firmware | Shared relay Bearer token; must match the app build config and relay server `AIDEN_RELAY_API_KEY` |
-| `board_id` | generated in `/userdata/agent/board_id` | Board ID in relay; generated on first run. Empty or `default` is not a valid relay identity |
+| Field           | Default                                 | Description                                                                                       |
+| --------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `enabled`       | `true`                                  | Enables agent-side state snapshots and APIs                                                       |
+| `relay_url`     | preconfigured in official firmware      | Aiden Live Activity relay URL; only advanced deployments need to override it                      |
+| `relay_api_key` | preconfigured in official firmware      | Shared relay Bearer token; must match the app build config and relay server `AIDEN_RELAY_API_KEY` |
+| `board_id`      | generated in `/userdata/agent/board_id` | Board ID in relay; generated on first run. Empty or `default` is not a valid relay identity       |
 
 ## `[stt]` and `[tts]`
 
@@ -354,27 +354,27 @@ TTS:
 
 `[tts]` common fields:
 
-| Field | Description |
-| --- | --- |
-| `provider` | Required. One of `minimax`, `minimax-cn`, `fish-audio`, `alicloud`, `volcengine` |
-| `api_key` | Required. The authentication key for each provider; the examples below omit this field to avoid writing keys into the docs |
-| `model` | Optional. Minimax model name, Fish Audio model header, Alibaba Cloud Realtime model name, Volcengine `X-Api-Resource-Id` |
-| `voice_id` | Optional. Minimax voice id, Alibaba Cloud voice, Volcengine speaker; Fish Audio can use it as a reference id |
-| `reference_id` | Optional. Fish Audio reference id; takes priority over `voice_id` when set |
-| `emotion` | Optional. Minimax emotion; Volcengine passes it through as `audio_params.emotion`, requires voice support |
-| `speed` | Optional. Speech rate, default `1.0`; the supported range varies by provider, refer to the official docs |
+| Field          | Description                                                                                                                |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `provider`     | Required. One of `minimax`, `minimax-cn`, `fish-audio`, `alicloud`, `volcengine`                                           |
+| `api_key`      | Required. The authentication key for each provider; the examples below omit this field to avoid writing keys into the docs |
+| `model`        | Optional. Minimax model name, Fish Audio model header, Alibaba Cloud Realtime model name, Volcengine `X-Api-Resource-Id`   |
+| `voice_id`     | Optional. Minimax voice id, Alibaba Cloud voice, Volcengine speaker; Fish Audio can use it as a reference id               |
+| `reference_id` | Optional. Fish Audio reference id; takes priority over `voice_id` when set                                                 |
+| `emotion`      | Optional. Minimax emotion; Volcengine passes it through as `audio_params.emotion`, requires voice support                  |
+| `speed`        | Optional. Speech rate, default `1.0`; the supported range varies by provider, refer to the official docs                   |
 
 The config examples below only show non-key fields relevant to adapter behavior; at actual runtime you still need to provide the corresponding `api_key` in the device config via `[tts]` or `[tts.credentials.<provider>]`.
 
 Common TTS adapter configs:
 
-| Provider | `model` example | Voice/reference field | Description |
-| --- | --- | --- | --- |
-| `minimax` | `speech-2.8-hd` | `voice_id = "male-qn-qingse"` | Minimax WebSocket via `api.minimax.io`; `emotion` is passed through to Minimax |
-| `minimax-cn` | `speech-2.8-hd` | `voice_id = "male-qn-qingse"` | Minimax WebSocket via `api.minimaxi.com`; `emotion` is passed through to Minimax |
-| `fish-audio` | `s2-pro` | `reference_id = "98655a12fa944e26b274c535e5e03842"` | WebSocket live TTS; `model` is sent via the handshake header, `reference_id` takes priority over `voice_id` |
-| `alicloud` | `qwen3-tts-flash-realtime` | `voice_id = "Cherry"` | DashScope Realtime; the adapter outputs 24 kHz PCM, automatically resampling when the sample rate differs |
-| `volcengine` | `seed-tts-2.0` | `voice_id = "zh_female_vv_uranus_bigtts"` | `model` maps to `X-Api-Resource-Id`, `voice_id` maps to the speaker, and the two must match |
+| Provider     | `model` example            | Voice/reference field                               | Description                                                                                                 |
+| ------------ | -------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `minimax`    | `speech-2.8-hd`            | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimax.io`; `emotion` is passed through to Minimax                              |
+| `minimax-cn` | `speech-2.8-hd`            | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimaxi.com`; `emotion` is passed through to Minimax                            |
+| `fish-audio` | `s2-pro`                   | `reference_id = "98655a12fa944e26b274c535e5e03842"` | WebSocket live TTS; `model` is sent via the handshake header, `reference_id` takes priority over `voice_id` |
+| `alicloud`   | `qwen3-tts-flash-realtime` | `voice_id = "Cherry"`                               | DashScope Realtime; the adapter outputs 24 kHz PCM, automatically resampling when the sample rate differs   |
+| `volcengine` | `seed-tts-2.0`             | `voice_id = "zh_female_vv_uranus_bigtts"`           | `model` maps to `X-Api-Resource-Id`, `voice_id` maps to the speaker, and the two must match                 |
 
 ### Provider examples
 
@@ -453,21 +453,22 @@ voice_id = "Cherry"
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
 ```
+
 ## `[live_activity]`
 
 For the iOS companion app's Live Activity / Dynamic Island task status. The agent-side status snapshot is enabled by default; the APNs-related fields only apply to remote updates when the app is backgrounded, on the lock screen, or not open. Foreground local updates do not need and will not use APNs. See the full flow in [Live Activity / Dynamic Island](./live-activity.md).
 
-| Field | Default | Description |
-| --- | --- | --- |
-| `enabled` | `true` | Whether to enable the agent-side status snapshot and API |
-| `bundle_id` | - | iOS app bundle id; required only when configuring background APNs and `topic` is not explicitly set |
-| `topic` | `<bundle_id>.push-type.liveactivity` | APNs topic; usually does not need to be set manually |
-| `environment` | `sandbox` | `sandbox` or `production` |
-| `team_id` | - | Apple Developer Team ID; used only by background APNs |
-| `key_id` | - | APNs Auth Key ID; used only by background APNs |
-| `private_key_path` | - | APNs `.p8` private key path; used only by background APNs |
-| `private_key_pem` | - | Inline APNs `.p8` PEM directly; for development/debugging only, do not place in open-source config or on user boards in production |
-| `timeout_sec` | `10` | Background APNs request timeout |
+| Field              | Default                              | Description                                                                                                                        |
+| ------------------ | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`          | `true`                               | Whether to enable the agent-side status snapshot and API                                                                           |
+| `bundle_id`        | -                                    | iOS app bundle id; required only when configuring background APNs and `topic` is not explicitly set                                |
+| `topic`            | `<bundle_id>.push-type.liveactivity` | APNs topic; usually does not need to be set manually                                                                               |
+| `environment`      | `sandbox`                            | `sandbox` or `production`                                                                                                          |
+| `team_id`          | -                                    | Apple Developer Team ID; used only by background APNs                                                                              |
+| `key_id`           | -                                    | APNs Auth Key ID; used only by background APNs                                                                                     |
+| `private_key_path` | -                                    | APNs `.p8` private key path; used only by background APNs                                                                          |
+| `private_key_pem`  | -                                    | Inline APNs `.p8` PEM directly; for development/debugging only, do not place in open-source config or on user boards in production |
+| `timeout_sec`      | `10`                                 | Background APNs request timeout                                                                                                    |
 
 ## Episode telemetry (Langfuse)
 
@@ -498,31 +499,31 @@ NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 OPENROUTER_API_KEY=...
 ```
 
-| Variable | Description |
-| --- | --- |
-| `HTTP_PROXY` / `http_proxy` | HTTP proxy URL, for example `http://127.0.0.1:7890` |
-| `HTTPS_PROXY` / `https_proxy` | HTTPS proxy URL, usually the same HTTP proxy endpoint |
-| `ALL_PROXY` / `all_proxy` | Generic proxy used by HTTP clients and some WebSocket adapters |
-| `NO_PROXY` / `no_proxy` | Comma-separated bypass rules; when a proxy URL is set and no bypass value is present, the launcher injects the default private-network bypass list |
+| Variable                      | Description                                                                                                                                        |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HTTP_PROXY` / `http_proxy`   | HTTP proxy URL, for example `http://127.0.0.1:7890`                                                                                                |
+| `HTTPS_PROXY` / `https_proxy` | HTTPS proxy URL, usually the same HTTP proxy endpoint                                                                                              |
+| `ALL_PROXY` / `all_proxy`     | Generic proxy used by HTTP clients and some WebSocket adapters                                                                                     |
+| `NO_PROXY` / `no_proxy`       | Comma-separated bypass rules; when a proxy URL is set and no bypass value is present, the launcher injects the default private-network bypass list |
 
 ## `memory/extraction.yaml`
 
 Optional. Place `memory/extraction.yaml` under the config directory to control session-memory compaction and chunk extraction. Missing files and invalid fields fall back to defaults. See [session-memory.md](./session-memory.md) for the full flow.
 
-| Field | Default | Description |
-| --- | --- | --- |
-| `reserve_tokens` | `8192` | Token headroom reserved below the active model context window. Compaction triggers when `prompt_tokens >= context_window - reserve_tokens`. The value is clamped to at most half of the window so small-window models remain usable. |
-| `keep_recent_tokens` | `20000` | Approximate token budget for the hot window retained by token-based cut-point selection. It is clamped together with `reserve_tokens` to fit the active window. |
-| `hot_window_events` | `30` | Target number of recent events retained by the count fallback. Used only when prompt-token data is unavailable. |
-| `count_compress_after_events` | `hot_window_events * 2` | Event-count trigger used only when prompt-token data is unavailable. If omitted, it is derived from the normalized `hot_window_events`; explicit values must be greater than `hot_window_events`. |
-| `context_window` | `32000` | Fallback context window for compaction when the active model is not present in `model_specs`. Runtime normally derives this from `ModelResolver.Spec()`; this value is only used for unknown models. |
-| `compress_at_percent` | `50` | Percentage trigger: compaction starts when `prompt_tokens / context_window >= compress_at_percent%`. |
-| `summary_max_chunks` | `10` | Number of chunk summaries kept in the Recent Chunks section of `summary.md`. Older entries move to the archive and are folded into the Rolling Summary. |
-| `session_boundary_enabled` | `true` | Classify each new user turn as continuing the current session or starting a new one. A `new` boundary archives the current `memory/session/` directory and recreates an empty active session. |
-| `session_boundary_short_gap_seconds` | `300` | Gap below which a turn is treated as continuation regardless of lexical signals. |
-| `session_boundary_long_gap_seconds` | `1800` | Gap above which a turn is treated as a fresh session regardless of lexical signals. |
-| `tag_candidates` | see defaults | Candidate keywords matched when tagging chunk summaries. |
-| `entity_suffixes` | `["App","app","APP"]` | Suffixes recognized during entity extraction. |
+| Field                                | Default                 | Description                                                                                                                                                                                                                          |
+| ------------------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `reserve_tokens`                     | `8192`                  | Token headroom reserved below the active model context window. Compaction triggers when `prompt_tokens >= context_window - reserve_tokens`. The value is clamped to at most half of the window so small-window models remain usable. |
+| `keep_recent_tokens`                 | `20000`                 | Approximate token budget for the hot window retained by token-based cut-point selection. It is clamped together with `reserve_tokens` to fit the active window.                                                                      |
+| `hot_window_events`                  | `30`                    | Target number of recent events retained by the count fallback. Used only when prompt-token data is unavailable.                                                                                                                      |
+| `count_compress_after_events`        | `hot_window_events * 2` | Event-count trigger used only when prompt-token data is unavailable. If omitted, it is derived from the normalized `hot_window_events`; explicit values must be greater than `hot_window_events`.                                    |
+| `context_window`                     | `32000`                 | Fallback context window for compaction when the active model is not present in `model_specs`. Runtime normally derives this from `ModelResolver.Spec()`; this value is only used for unknown models.                                 |
+| `compress_at_percent`                | `50`                    | Percentage trigger: compaction starts when `prompt_tokens / context_window >= compress_at_percent%`.                                                                                                                                 |
+| `summary_max_chunks`                 | `10`                    | Number of chunk summaries kept in the Recent Chunks section of `summary.md`. Older entries move to the archive and are folded into the Rolling Summary.                                                                              |
+| `session_boundary_enabled`           | `true`                  | Classify each new user turn as continuing the current session or starting a new one. A `new` boundary archives the current `memory/session/` directory and recreates an empty active session.                                        |
+| `session_boundary_short_gap_seconds` | `300`                   | Gap below which a turn is treated as continuation regardless of lexical signals.                                                                                                                                                     |
+| `session_boundary_long_gap_seconds`  | `1800`                  | Gap above which a turn is treated as a fresh session regardless of lexical signals.                                                                                                                                                  |
+| `tag_candidates`                     | see defaults            | Candidate keywords matched when tagging chunk summaries.                                                                                                                                                                             |
+| `entity_suffixes`                    | `["App","app","APP"]`   | Suffixes recognized during entity extraction.                                                                                                                                                                                        |
 
 ## Known limitations
 

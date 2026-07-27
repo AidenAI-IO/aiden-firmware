@@ -65,21 +65,21 @@ sudo ./build/bin/example_usb_hid cleanup
 
 ## Global Parameters
 
-| Parameter | Description |
-| --- | --- |
-| `--gadget-root PATH` | configfs gadget root path |
-| `--gadget-name NAME` | gadget name |
-| `--keyboard-dev PATH` | keyboard HID device |
-| `--touch-dev PATH` | touch/mouse HID device |
-| `--state-dir PATH` | state file directory |
-| `--manufacturer TEXT` | USB manufacturer string |
-| `--product-name TEXT` | USB product string |
-| `--serial TEXT` | USB serial string |
-| `--vendor INT` / `--product-id INT` | USB VID/PID |
-| `--udc NAME` | specify UDC |
-| `--width INT` / `--height INT` | coordinate space dimensions |
-| `--duration-ms INT` | input action duration |
-| `--force` | force certain operations |
+| Parameter                           | Description                 |
+| ----------------------------------- | --------------------------- |
+| `--gadget-root PATH`                | configfs gadget root path   |
+| `--gadget-name NAME`                | gadget name                 |
+| `--keyboard-dev PATH`               | keyboard HID device         |
+| `--touch-dev PATH`                  | touch/mouse HID device      |
+| `--state-dir PATH`                  | state file directory        |
+| `--manufacturer TEXT`               | USB manufacturer string     |
+| `--product-name TEXT`               | USB product string          |
+| `--serial TEXT`                     | USB serial string           |
+| `--vendor INT` / `--product-id INT` | USB VID/PID                 |
+| `--udc NAME`                        | specify UDC                 |
+| `--width INT` / `--height INT`      | coordinate space dimensions |
+| `--duration-ms INT`                 | input action duration       |
+| `--force`                           | force certain operations    |
 
 ## Agent HID Configuration
 
@@ -113,15 +113,15 @@ It is recommended to use normalized coordinates (`0..1000`, with center at `500,
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center; only explicitly pass `coord_space: "pixel"` when the screenshot pixel coordinates and HID touch coordinates are already calibrated. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
 `keyboard_layout` must match how the phone interprets the external USB HID keyboard. Supported values are `qwerty` (default), `azerty`, and `qwertz`. The visible soft-keyboard layout is not authoritative: a phone can display an AZERTY soft keyboard while still interpreting Aiden's USB HID reports as QWERTY. Both `keyboard_text` and standard text-like keys in `keyboard_tap` use this mapping. Changing it only requires an Agent restart; it does not change USB descriptors or require a gadget restart.
 
-Config Web provides **Detect keyboard layout** under `[hid]`. Focus an empty English/Latin input field on the phone, run the detector, and select the exact probe text shown:
+Select the matching layout under `[hid]` in Config Web (`qwerty`, `azerty`, or `qwertz`). Most users keep the default `qwerty`; only change it if typed characters come out transposed (for example "shape" becomes "shqpe").
 
-| Phone output | Save as |
-| --- | --- |
-| `aqwyz` | `qwerty` |
-| `qazyw` | `azerty` |
-| `aqwzy` | `qwertz` |
+A phone running iOS locks its hardware-keyboard layout at the moment the USB keyboard is enumerated, based on the software keyboard that is active at that instant. Switching the on-screen keyboard afterwards does not change the locked interpretation. To align a non-QWERTY layout:
 
-The detector sends fixed raw QWERTY physical usages and deliberately bypasses the current `keyboard_layout`, so a wrong saved value cannot influence the result. It is unavailable with `input_backend = "adb"`, because ADB sends logical text rather than physical USB HID usages.
+1. Set `keyboard_layout` in Config Web to the target layout.
+2. On the phone, switch the input language to the matching one (for example French for `azerty`).
+3. Power-cycle Aiden (unplug and reconnect). The phone re-locks the hardware layout on the new enumeration, matching the language active in step 2.
+
+The order matters: switch the language _before_ reconnecting, because the layout is locked during enumeration. Reconnecting is a low-cost operation, so this is preferred over any runtime detection.
 
 `keyboard_text` can only input ASCII typeable characters. Chinese input should be completed through pinyin/English search terms and on-screen candidates, and Chinese character strings cannot be passed directly to the tool. The configured layouts cover common ASCII keys, but country-specific punctuation variants may still require device verification.
 

@@ -265,7 +265,6 @@ bool resolve_agent_http_target(const Options& options,
 ApiResponse proxy_agent_json_request(const Options& options,
                                          const std::string& agent_path,
                                          const std::string& body);
-ApiResponse handle_keyboard_layout_probe(const Options& options);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
@@ -2424,12 +2423,6 @@ ApiResponse handle_stt_test_start(const Options& options, const std::string& bod
 
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
     return proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
-}
-
-ApiResponse handle_keyboard_layout_probe(const Options& options) {
-    return proxy_agent_json_request(options,
-                                    "/api/tools/keyboard_layout_probe",
-                                    "{\"input\":{}}");
 }
 
 void load_current_wifi_config(const Options& options,
@@ -5602,54 +5595,6 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     return make_json_ok(response);
 }
 
-bool keyboard_layout_from_probe_observation(const std::string& observed,
-                                            std::string* layout) {
-    const std::string normalized = lowercase_copy(trim_copy(observed));
-    struct Mapping {
-        const char* observed;
-        const char* layout;
-    };
-    const Mapping mappings[] = {
-        {"aqwyz", "qwerty"},
-        {"qazyw", "azerty"},
-        {"aqwzy", "qwertz"},
-    };
-    for (size_t i = 0; i < sizeof(mappings) / sizeof(mappings[0]); ++i) {
-        if (normalized == mappings[i].observed) {
-            if (layout) {
-                *layout = mappings[i].layout;
-            }
-            return true;
-        }
-    }
-    return false;
-}
-
-ApiResponse handle_keyboard_layout_calibration(const Options& options,
-                                               const std::string& body) {
-    cJSON* request = cJSON_Parse(body.c_str());
-    if (!request) {
-        return make_json_error(400, "invalid JSON body");
-    }
-    cJSON* observed_item = cJSON_GetObjectItem(request, "observed");
-    std::string layout;
-    if (!json_is_string(observed_item) ||
-        !keyboard_layout_from_probe_observation(observed_item->valuestring, &layout)) {
-        cJSON_Delete(request);
-        return make_json_error(400, "observed must be one of aqwyz, qazyw, or aqwzy");
-    }
-    cJSON_Delete(request);
-
-    cJSON* patch = cJSON_CreateObject();
-    cJSON* config = add_object(patch, "config");
-    cJSON* hid = add_object(config, "hid");
-    cJSON_AddStringToObject(hid, "keyboard_layout", layout.c_str());
-    cJSON_AddBoolToObject(patch, "apply_wifi", 0);
-    const std::string patch_body = cjson_to_string(patch);
-    cJSON_Delete(patch);
-    return handle_post_config(options, patch_body);
-}
-
 ApiResponse handle_put_config_locale(const Options& options, const std::string& body) {
     cJSON* root = cJSON_Parse(body.c_str());
     if (!root) {
@@ -6794,14 +6739,6 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "POST" && request.path == "/api/config/test/stt/stop") {
         return handle_stt_test_stop(options, request.body);
-    }
-
-    if (request.method == "POST" && request.path == "/api/hid/keyboard-layout/probe") {
-        return handle_keyboard_layout_probe(options);
-    }
-
-    if (request.method == "POST" && request.path == "/api/hid/keyboard-layout/calibrate") {
-        return handle_keyboard_layout_calibration(options, request.body);
     }
 
     if (request.method == "POST" && request.path == "/api/config/test") {
