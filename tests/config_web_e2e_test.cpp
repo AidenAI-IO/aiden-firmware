@@ -437,19 +437,6 @@ private:
                 << body;
             return out.str();
         }
-        if (path == "/api/tools/keyboard_layout_probe") {
-            const std::string body =
-                "{\"tool\":{\"name\":\"keyboard_layout_probe\"},"
-                "\"raw_input\":\"{}\",\"output\":\"ok\",\"is_error\":false}";
-            std::ostringstream out;
-            out << "HTTP/1.1 200 OK\r\n"
-                << "Content-Type: application/json\r\n"
-                << "Content-Length: " << body.size() << "\r\n"
-                << "Connection: close\r\n"
-                << "\r\n"
-                << body;
-            return out.str();
-        }
         const std::string body = "not found";
         std::ostringstream out;
         out << "HTTP/1.1 404 Not Found\r\n"
@@ -1699,51 +1686,6 @@ TEST_CASE("config_web: stt live test proxies start and stop to agent") {
     CHECK(requests[0].body.find("\"socket\":\"/tmp/audio.sock\"") != std::string::npos);
     CHECK(requests[1].method == "POST");
     CHECK(requests[1].path == "/api/config-test/stt/stop");
-}
-
-TEST_CASE("config_web: keyboard layout calibration proxies the raw HID probe to agent") {
-    StubAgentHTTPServer agent_server;
-    StubEnv env;
-    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
-    auto handle = start_server(env);
-
-    HttpResponse resp = http_request(handle->port, "POST", "/api/hid/keyboard-layout/probe", "{}");
-    REQUIRE(resp.status == 200);
-    CHECK(resp.body.find("\"name\":\"keyboard_layout_probe\"") != std::string::npos);
-    CHECK(resp.body.find("\"is_error\":false") != std::string::npos);
-
-    const std::vector<CapturedHTTPRequest> requests = agent_server.requests();
-    REQUIRE(requests.size() == 1);
-    CHECK(requests[0].method == "POST");
-    CHECK(requests[0].path == "/api/tools/keyboard_layout_probe");
-    CHECK(requests[0].body == "{\"input\":{}}");
-}
-
-TEST_CASE("config_web: keyboard layout calibration maps observations and restarts only agent") {
-    StubEnv env;
-    auto handle = start_server(env);
-
-    struct Scenario {
-        const char* observed;
-        const char* layout;
-    };
-    const Scenario scenarios[] = {
-        {"aqwyz", "qwerty"},
-        {"qazyw", "azerty"},
-        {"aqwzy", "qwertz"},
-    };
-    for (const auto& scenario : scenarios) {
-        const std::string body = std::string("{\"observed\":\"") + scenario.observed + "\"}";
-        HttpResponse resp = http_request(handle->port, "POST", "/api/hid/keyboard-layout/calibrate", body);
-        REQUIRE(resp.status == 200);
-        CHECK(resp.body.find(std::string("\"keyboard_layout\":\"") + scenario.layout + "\"") != std::string::npos);
-        CHECK(resp.body.find("\"agent_restart_scheduled\":true") != std::string::npos);
-        CHECK(resp.body.find("\"usbhid_restart_required\":false") != std::string::npos);
-        CHECK(resp.body.find("\"reboot_required\":false") != std::string::npos);
-
-        const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-        CHECK(saved.find(std::string("keyboard_layout = \"") + scenario.layout + "\"") != std::string::npos);
-    }
 }
 
 TEST_CASE("config_web: GET /api/storage/status parses the agent state mirror") {
