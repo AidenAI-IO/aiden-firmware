@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -117,7 +118,7 @@ func TestImageDiffAcceptsAutomaticPostActionScreenshot(t *testing.T) {
 	state := &screen.ScreenState{}
 	beforeJPEG := solidImageDiffJPEG(t, color.Black)
 	afterJPEG := solidImageDiffJPEG(t, color.White)
-	state.UpdateScreenshotWithID(801, beforeJPEG, 40, 40)
+	_, beforeID := state.UpdateScreenshot(beforeJPEG, 40, 40)
 
 	screenshot := &ScreenshotTool{
 		client: &fakeScreenshotFrameClient{
@@ -147,11 +148,12 @@ func TestImageDiffAcceptsAutomaticPostActionScreenshot(t *testing.T) {
 	if err := json.Unmarshal([]byte(postActionOutput), &observation); err != nil {
 		t.Fatalf("unmarshal post-action observation: %v", err)
 	}
-	if observation.PreviousScreenshotID != 801 || observation.ScreenshotID != 802 {
-		t.Fatalf("post-action screenshot pair = %d -> %d, want 801 -> 802", observation.PreviousScreenshotID, observation.ScreenshotID)
+	if observation.PreviousScreenshotID != beforeID || observation.ScreenshotID == 0 || observation.ScreenshotID == beforeID {
+		t.Fatalf("post-action screenshot pair = %d -> %d, want %d -> a new ID", observation.PreviousScreenshotID, observation.ScreenshotID, beforeID)
 	}
 
-	diffOutput, err := (&ImageDiffTool{screen: state}).Call(context.Background(), `{"before_id":801,"after_id":802}`)
+	diffInput := fmt.Sprintf(`{"before_id":%d,"after_id":%d}`, beforeID, observation.ScreenshotID)
+	diffOutput, err := (&ImageDiffTool{screen: state}).Call(context.Background(), diffInput)
 	if err != nil {
 		t.Fatalf("image_diff returned error: %v", err)
 	}

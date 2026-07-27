@@ -71,6 +71,8 @@ Input:
   region:    object  — Optional, {x, y, w, h}, 0-1000 normalized coordinates, limits comparison area
 
 The tool resolves the two IDs from the Agent's recent local screenshot state.
+Treat screenshot IDs as opaque values; they are not frame-service sequence
+numbers and callers must not derive or increment them.
 Screenshot Base64 is not passed back through the tool protocol. If the IDs no
 longer match the retained pair, the tool returns an error instead of comparing
 the wrong screenshots.

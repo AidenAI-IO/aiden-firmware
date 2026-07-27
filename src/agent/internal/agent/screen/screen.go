@@ -2,10 +2,29 @@ package screen
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+var screenshotObservationID atomic.Uint64
+
+func init() {
+	// Keep screenshot IDs short enough to be copied exactly as JSON numbers,
+	// while using a process-specific seed so Agent restarts do not immediately
+	// reuse the same IDs retained in conversation history.
+	seed := uint64(time.Now().UnixNano()) ^ uint64(os.Getpid())<<32
+	seed ^= seed >> 33
+	seed *= 0xff51afd7ed558ccd
+	seed ^= seed >> 33
+	seed &= (1 << 31) - 1
+	if seed == 0 {
+		seed = 1
+	}
+	screenshotObservationID.Store(seed)
+}
 
 type PhoneScreenInfo struct {
 	Width              *float64 `json:"width,omitempty"`
@@ -183,8 +202,8 @@ func (s *ScreenState) RestoreMappingState(state ScreenMappingState) {
 	s.updatedAt = state.UpdatedAt
 }
 
-func (s *ScreenState) UpdateScreenshot(jpegData []byte, width, height int) {
-	s.UpdateScreenshotWithID(0, jpegData, width, height)
+func (s *ScreenState) UpdateScreenshot(jpegData []byte, width, height int) (previousID, currentID uint64) {
+	return s.UpdateScreenshotWithID(0, jpegData, width, height)
 }
 
 func (s *ScreenState) UpdateScreenshotWithID(id uint64, jpegData []byte, width, height int) (previousID, currentID uint64) {
@@ -196,7 +215,7 @@ func (s *ScreenState) UpdateScreenshotWithID(id uint64, jpegData []byte, width, 
 	defer s.mu.Unlock()
 	s.screenshotGeneration++
 	if id == 0 {
-		id = s.screenshotGeneration
+		id = screenshotObservationID.Add(1)
 	}
 	if len(s.screenshotJPEG) > 0 {
 		s.previousScreenshotJPEG = s.screenshotJPEG

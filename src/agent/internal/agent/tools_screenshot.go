@@ -117,7 +117,8 @@ func (t *ScreenshotTool) ReturnsVisualObservation() bool { return true }
 
 func (t *ScreenshotTool) Description() string {
 	return `Capture a screenshot from the connected display. No input required (pass empty JSON {} or ""). ` +
-		`Returns a JSON object with previous_screenshot_id, screenshot_id, width, height, and base64-encoded JPEG image data. ` +
+		`Returns a JSON object with opaque previous_screenshot_id and screenshot_id values, width, height, and base64-encoded JPEG image data. ` +
+		`Copy screenshot IDs exactly when calling image_diff; never derive them from frame sequence numbers. ` +
 		`Use normalized 0-1000 coordinates for coordinate input tools. Convert visual measurements from this image before acting: x_normalized=x/max(width-1,1)*1000 and y_normalized=y/max(height-1,1)*1000; do not pass screenshot pixels directly.`
 }
 
@@ -182,9 +183,9 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		displayData = croppedData
 	}
 	previousScreenshotID := uint64(0)
-	screenshotID := meta.Seq
+	screenshotID := uint64(0)
 	if t.screen != nil {
-		previousScreenshotID, screenshotID = t.screen.UpdateScreenshotWithID(meta.Seq, displayData, displayWidth, displayHeight)
+		previousScreenshotID, screenshotID = t.screen.UpdateScreenshot(displayData, displayWidth, displayHeight)
 	}
 
 	result := screenshotResult{

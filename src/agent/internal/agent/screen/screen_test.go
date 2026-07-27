@@ -5,6 +5,17 @@ import (
 	"testing"
 )
 
+func TestUpdateScreenshotGeneratesDistinctOpaqueIDs(t *testing.T) {
+	firstState := &ScreenState{}
+	secondState := &ScreenState{}
+
+	_, firstID := firstState.UpdateScreenshot([]byte("first-jpeg"), 10, 20)
+	_, secondID := secondState.UpdateScreenshot([]byte("second-jpeg"), 10, 20)
+	if firstID == 0 || secondID == 0 || firstID == secondID {
+		t.Fatalf("generated screenshot IDs = %d, %d; want distinct non-zero IDs", firstID, secondID)
+	}
+}
+
 func TestLatestScreenshotPairTracksTwoMostRecentUpdates(t *testing.T) {
 	state := &ScreenState{}
 	first := []byte("first-jpeg")

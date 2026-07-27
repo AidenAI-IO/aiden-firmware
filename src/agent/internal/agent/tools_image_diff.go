@@ -21,7 +21,7 @@ type ImageDiffTool struct {
 func (t *ImageDiffTool) Name() string { return "image_diff" }
 
 func (t *ImageDiffTool) Description() string {
-	return `Compare two recent screenshot observations by their screenshot_id values and return pixel-level difference metrics. ` +
+	return `Compare two recent screenshot observations by their opaque screenshot_id values and return pixel-level difference metrics. ` +
 		`before_id and after_id must be copied from actual screenshot or post-action screenshot results; never invent IDs or use placeholder/example values. ` +
 		`Each visual result includes previous_screenshot_id and screenshot_id when a comparable pair is retained; pass those values directly. ` +
 		`Use the pre-action screenshot_id as before_id and the post-action screenshot_id as after_id. ` +
@@ -45,8 +45,8 @@ func (t *ImageDiffTool) ArgsSchema() map[string]any {
 	regionSchema["examples"] = []map[string]any{{"x": 100, "y": 200, "w": 600, "h": 400}}
 
 	return objectArgsSchema(map[string]any{
-		"before_id": minIntegerArgSchema("Actual screenshot_id copied from the screenshot captured before the UI action; never invent this value.", 1),
-		"after_id":  minIntegerArgSchema("Actual screenshot_id copied from the post-action screenshot result; never invent this value.", 1),
+		"before_id": minIntegerArgSchema("Opaque screenshot_id copied from the screenshot captured before the UI action; never invent or derive this value.", 1),
+		"after_id":  minIntegerArgSchema("Opaque screenshot_id copied from the post-action screenshot result; never invent or derive this value.", 1),
 		"region":    regionSchema,
 	}, "before_id", "after_id")
 }
