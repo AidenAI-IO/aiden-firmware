@@ -59,7 +59,8 @@ func phoneBridgeToolAvailable(status PhoneBridgeStatus, name string) bool {
 	case toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
 		return phoneBridgeReadyForCommand(status, phoneBridgeBackgroundCommandTypeForTool(name)) ||
 			phoneBridgeCanUsePiPBackground(status, phoneBridgeBackgroundCommandTypeForTool(name)) ||
-			phoneBridgeCanUseFGSBackground(status, phoneBridgeBackgroundCommandTypeForTool(name))
+			phoneBridgeCanUseFGSBackground(status, phoneBridgeBackgroundCommandTypeForTool(name)) ||
+			phoneBridgeCanRestoreFromReturnEntry(status)
 	default:
 		return true
 	}

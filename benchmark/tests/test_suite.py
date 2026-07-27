@@ -257,6 +257,95 @@ def test_load_suite_rejects_non_string_prompt_prefix(tmp_path: Path):
     with pytest.raises(SuiteValidationError):
         load_suite(p)
 
+
+def test_load_suite_parses_task_level_mock_environment(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "mock_environment": {
+                    "phone_bridge": {
+                        "platform": "ios",
+                        "app_state": "background",
+                        "pip_bridge_enabled": False,
+                    },
+                    "tools": {
+                        "bridge_contacts": {
+                            "output": {"ok": True, "contacts": []},
+                        }
+                    },
+                },
+            }
+        ],
+    }
+    p = tmp_path / "task-mock.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.mock_environment is None
+    assert suite.tasks[0].mock_environment is not None
+    assert suite.tasks[0].mock_environment.phone_bridge["platform"] == "ios"
+    assert "bridge_contacts" in suite.tasks[0].mock_environment.tools
+
+
+def test_load_suite_allows_task_mock_to_override_suite_default(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "mock_environment": {
+            "phone_bridge": {"platform": "ios"},
+            "tools": {"bridge_contacts": {"output": {"ok": True}}},
+        },
+        "tasks": [
+            FIXTURE["tasks"][0],
+            {
+                **FIXTURE["tasks"][0],
+                "id": "android_override",
+                "mock_environment": {
+                    "phone_bridge": {"platform": "android"},
+                    "tools": {"bridge_calendar": {"output": {"ok": True}}},
+                },
+            },
+        ],
+    }
+    p = tmp_path / "task-mock-override.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.mock_environment is not None
+    assert suite.mock_environment.phone_bridge["platform"] == "ios"
+    assert suite.tasks[0].mock_environment is None
+    assert suite.tasks[1].mock_environment is not None
+    assert suite.tasks[1].mock_environment.phone_bridge["platform"] == "android"
+
+
+def test_load_suite_rejects_partial_task_level_mock_environment_without_default(
+    tmp_path: Path,
+):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "mock_environment": {
+                    "phone_bridge": {"platform": "ios"},
+                    "tools": {},
+                },
+            },
+            {
+                **FIXTURE["tasks"][0],
+                "id": "without_mock",
+            },
+        ],
+    }
+    p = tmp_path / "partial-task-mock.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="must define it for every task"):
+        load_suite(p)
+
 def test_load_suite_rejects_invalid_expected_option_answer(tmp_path: Path):
     fixture = {
         **FIXTURE,
@@ -685,3 +774,103 @@ def test_episode_memory_suite_guards_against_setup_context_leakage():
         "recall_device_memory" in item.check and "inspect_episode" in item.check
         for item in task.rubric
     )
+
+
+def test_notes_entry_policy_suite_covers_three_screen_states():
+    suites_dir = Path(__file__).resolve().parents[1] / "suites" / "aiden_app"
+    suite = load_suite(suites_dir / "notes_entry_policy_v1.json")
+    tasks = {task.id: task for task in suite.tasks}
+
+    assert suite.mock_environment is None
+    assert set(tasks) == {
+        "ios_pip_notes_already_open",
+        "ios_pip_notes_icon_visible",
+        "ios_pip_notes_icon_missing",
+    }
+    assert all(task.mock_environment is not None for task in suite.tasks)
+
+    open_task = tasks["ios_pip_notes_already_open"]
+    assert "search_launch_app" in open_task.hard_assertions.forbidden_tools
+    assert "bridge_open_app" in open_task.hard_assertions.forbidden_tools
+    assert "enter_text_via_bridge" in open_task.hard_assertions.required_tools
+    assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in open_task.prompt
+
+    icon_task = tasks["ios_pip_notes_icon_visible"]
+    assert "mouse_click" in icon_task.hard_assertions.required_tools
+    assert "search_launch_app" in icon_task.hard_assertions.forbidden_tools
+    assert icon_task.hard_assertions.required_tool_calls[1].input_contains == {
+        "x": 180,
+        "y": 310,
+        "coord_space": "normalized",
+    }
+    assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in icon_task.prompt
+
+    missing_task = tasks["ios_pip_notes_icon_missing"]
+    assert "search_launch_app" in missing_task.hard_assertions.required_tools
+    assert "bridge_open_app" in missing_task.hard_assertions.forbidden_tools
+    text_matcher = missing_task.hard_assertions.required_tool_calls[2].input_contains["text"]
+    assert text_matcher == {"$contains": "+1 202-555-0147"}
+
+
+def test_phone_bridge_data_policy_suite_covers_tools_and_routing_modes():
+    suites_dir = Path(__file__).resolve().parents[1] / "suites" / "aiden_app"
+    suite = load_suite(suites_dir / "phone_bridge_data_policy_v1.json")
+    tasks = {task.id: task for task in suite.tasks}
+
+    assert suite.mock_environment is None
+    assert len(tasks) == 12
+    assert all(task.mock_environment is not None for task in suite.tasks)
+    assert {
+        tool
+        for task in suite.tasks
+        for tool in task.hard_assertions.required_tools
+    } == {
+        "bridge_contacts",
+        "bridge_calendar",
+        "bridge_clipboard",
+        "bridge_notification",
+    }
+    required_calls = [
+        call
+        for task in suite.tasks
+        for call in task.hard_assertions.required_tool_calls
+    ]
+    assert {
+        call.input_contains.get("action")
+        for call in required_calls
+        if call.tool == "bridge_calendar"
+    } == {"query", "create"}
+    assert {
+        call.input_contains.get("action")
+        for call in required_calls
+        if call.tool == "bridge_clipboard"
+    } == {"read", "write"}
+
+    dynamic_island_tasks = [
+        task for task_id, task in tasks.items() if task_id.startswith("ios_dynamic_island_")
+    ]
+    pip_tasks = [task for task_id, task in tasks.items() if task_id.startswith("ios_pip_")]
+    fgs_tasks = [task for task_id, task in tasks.items() if task_id.startswith("android_fgs_")]
+    assert len(dynamic_island_tasks) == 4
+    assert len(pip_tasks) == 4
+    assert len(fgs_tasks) == 4
+
+    for task in dynamic_island_tasks:
+        state = task.mock_environment.phone_bridge
+        assert state["platform"] == "ios"
+        assert state["pip_bridge_enabled"] is False
+        assert state["return_entry"] == "dynamic_island"
+        assert state["return_entry_available"] is True
+        assert "bridge_open_app" in task.hard_assertions.forbidden_tools
+
+    for task in pip_tasks:
+        state = task.mock_environment.phone_bridge
+        assert state["platform"] == "ios"
+        assert state["pip_bridge_enabled"] is True
+        assert "bridge_open_app" in task.hard_assertions.forbidden_tools
+
+    for task in fgs_tasks:
+        state = task.mock_environment.phone_bridge
+        assert state["platform"] == "android"
+        assert state["fgs_bridge_enabled"] is True
+        assert "bridge_open_app" in task.hard_assertions.forbidden_tools

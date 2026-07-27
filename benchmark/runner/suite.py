@@ -25,6 +25,11 @@ class TraceObservationSpec:
     input_contains: dict[str, Any] = dc.field(default_factory=dict)
 
 @dc.dataclass
+class RequiredToolCallSpec:
+    tool: str
+    input_contains: dict[str, Any] = dc.field(default_factory=dict)
+
+@dc.dataclass
 class HardAssertions:
     min_tool_calls: int = 0
     max_tool_calls: int = 50
@@ -33,6 +38,24 @@ class HardAssertions:
     required_tools: list[str] = dc.field(default_factory=list)
     forbidden_tools: list[str] = dc.field(default_factory=list)
     prohibited_actions: list[str] = dc.field(default_factory=list)
+    required_tool_calls: list[RequiredToolCallSpec] = dc.field(default_factory=list)
+
+@dc.dataclass
+class MockToolResponseSpec:
+    input_contains: dict[str, Any] = dc.field(default_factory=dict)
+    screen_contains: str = ""
+    output: Any = dc.field(default_factory=dict)
+    is_error: bool = False
+    error: str = ""
+    screen_text: str = ""
+
+@dc.dataclass
+class MockEnvironmentSpec:
+    phone_bridge: dict[str, Any]
+    tools: dict[str, list[MockToolResponseSpec]]
+    screen: str | None = None
+    screen_text: str = ""
+    default_tool_response: MockToolResponseSpec | None = None
 
 @dc.dataclass
 class TaskSpec:
@@ -43,6 +66,7 @@ class TaskSpec:
     rubric: list[RubricItem]
     hard_assertions: HardAssertions
     setup: dict[str, Any] | None = None
+    mock_environment: MockEnvironmentSpec | None = None
     repeats: int = 1
     input_screenshot: str | None = None
     expected_answer: str | None = None
@@ -58,6 +82,7 @@ class Suite:
     source_path: Path
     prompt_prefix: str = ""
     trace_observations: list[TraceObservationSpec] = dc.field(default_factory=list)
+    mock_environment: MockEnvironmentSpec | None = None
 
 def load_suite(path: Path) -> Suite:
     raw_bytes = Path(path).read_bytes()
@@ -107,6 +132,9 @@ def load_suite(path: Path) -> Suite:
         required_tools = _string_list_assertion(ha.get("required_tools", []), tid, "required_tools")
         forbidden_tools = _string_list_assertion(ha.get("forbidden_tools", []), tid, "forbidden_tools")
         prohibited_actions = _string_list_assertion(ha.get("prohibited_actions", []), tid, "prohibited_actions")
+        required_tool_calls = _required_tool_call_assertions(
+            ha.get("required_tool_calls", []), tid
+        )
         overlap = sorted(set(required_tools) & set(forbidden_tools))
         if overlap:
             raise SuiteValidationError(
@@ -120,6 +148,7 @@ def load_suite(path: Path) -> Suite:
             required_tools=required_tools,
             forbidden_tools=forbidden_tools,
             prohibited_actions=prohibited_actions,
+            required_tool_calls=required_tool_calls,
         )
         # Validate and bound repeats
         try:
@@ -152,12 +181,17 @@ def load_suite(path: Path) -> Suite:
             isinstance(item, str) and item.strip() for item in expected_recalled_memory_ids
         ):
             raise SuiteValidationError(f"task {tid}: expected_recalled_memory_ids must be a list of non-empty strings")
+        task_mock_environment = _parse_mock_environment(
+            raw.get("mock_environment"),
+            path=f"task {tid}.mock_environment",
+        )
         tasks.append(TaskSpec(
             id=tid, category=cat,
             description_for_judge=raw["description_for_judge"],
             prompt=raw["prompt"],
             rubric=rubric, hard_assertions=hard,
             setup=raw.get("setup"),
+            mock_environment=task_mock_environment,
             repeats=repeats,
             input_screenshot=raw.get("input_screenshot"),
             expected_answer=expected_answer,
@@ -201,6 +235,16 @@ def load_suite(path: Path) -> Suite:
             )
         )
 
+    mock_environment = _parse_mock_environment(data.get("mock_environment"))
+    if mock_environment is None and any(task.mock_environment is not None for task in tasks):
+        missing_task_ids = [task.id for task in tasks if task.mock_environment is None]
+        if missing_task_ids:
+            raise SuiteValidationError(
+                "a suite using task-level mock_environment must define it for every task "
+                "or provide a suite-level mock_environment default; missing: "
+                + ", ".join(missing_task_ids)
+            )
+
     return Suite(
         name=data.get("name", Path(path).stem),
         global_reset=data.get("global_reset") or {},
@@ -209,6 +253,7 @@ def load_suite(path: Path) -> Suite:
         source_path=Path(path),
         prompt_prefix=prompt_prefix,
         trace_observations=trace_observations,
+        mock_environment=mock_environment,
     )
 
 
@@ -226,3 +271,130 @@ def _string_list_assertion(raw: Any, task_id: str, field: str) -> list[str]:
         seen.add(name)
         out.append(name)
     return out
+
+
+def _required_tool_call_assertions(raw: Any, task_id: str) -> list[RequiredToolCallSpec]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise SuiteValidationError(
+            f"task {task_id}: hard_assertions.required_tool_calls must be an array"
+        )
+    out: list[RequiredToolCallSpec] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise SuiteValidationError(
+                f"task {task_id}: required_tool_calls[{index}] must be an object"
+            )
+        tool = str(item.get("tool") or "").strip()
+        input_contains = item.get("input_contains") or {}
+        if not tool:
+            raise SuiteValidationError(
+                f"task {task_id}: required_tool_calls[{index}] requires tool"
+            )
+        if not isinstance(input_contains, dict):
+            raise SuiteValidationError(
+                f"task {task_id}: required_tool_calls[{index}].input_contains must be an object"
+            )
+        out.append(RequiredToolCallSpec(tool=tool, input_contains=input_contains))
+    return out
+
+
+def _parse_mock_environment(
+    raw: Any,
+    *,
+    path: str = "mock_environment",
+) -> MockEnvironmentSpec | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise SuiteValidationError(f"{path} must be an object")
+    phone_bridge = raw.get("phone_bridge") or {}
+    if not isinstance(phone_bridge, dict):
+        raise SuiteValidationError(f"{path}.phone_bridge must be an object")
+    platform = str(phone_bridge.get("platform") or "").strip().lower()
+    if platform and platform not in {"ios", "android"}:
+        raise SuiteValidationError(
+            f"{path}.phone_bridge.platform must be ios or android"
+        )
+    app_state = str(phone_bridge.get("app_state") or "").strip().lower()
+    if app_state and app_state not in {"active", "background", "inactive"}:
+        raise SuiteValidationError(
+            f"{path}.phone_bridge.app_state must be active, background, or inactive"
+        )
+    for field in (
+        "connected",
+        "return_entry_available",
+        "pip_bridge_enabled",
+        "fgs_bridge_enabled",
+    ):
+        if field in phone_bridge and not isinstance(phone_bridge[field], bool):
+            raise SuiteValidationError(
+                f"{path}.phone_bridge.{field} must be boolean"
+            )
+
+    tools_raw = raw.get("tools") or {}
+    if not isinstance(tools_raw, dict):
+        raise SuiteValidationError(f"{path}.tools must be an object")
+    tools: dict[str, list[MockToolResponseSpec]] = {}
+    for raw_name, raw_responses in tools_raw.items():
+        name = str(raw_name or "").strip()
+        if not name:
+            raise SuiteValidationError(f"{path}.tools contains an empty tool name")
+        items = raw_responses if isinstance(raw_responses, list) else [raw_responses]
+        if not items:
+            raise SuiteValidationError(
+                f"{path}.tools.{name} must contain at least one response"
+            )
+        tools[name] = [
+            _parse_mock_tool_response(item, f"{path}.tools.{name}")
+            for item in items
+        ]
+
+    default_raw = raw.get("default_tool_response")
+    default_response = None
+    if default_raw is not None:
+        default_response = _parse_mock_tool_response(
+            default_raw, f"{path}.default_tool_response"
+        )
+    screen = raw.get("screen")
+    if screen is not None and (not isinstance(screen, str) or not screen.strip()):
+        raise SuiteValidationError(f"{path}.screen must be a non-empty string")
+    screen_text = raw.get("screen_text", "")
+    if not isinstance(screen_text, str):
+        raise SuiteValidationError(f"{path}.screen_text must be a string")
+    return MockEnvironmentSpec(
+        phone_bridge=dict(phone_bridge),
+        tools=tools,
+        screen=screen.strip() if isinstance(screen, str) else None,
+        screen_text=screen_text,
+        default_tool_response=default_response,
+    )
+
+
+def _parse_mock_tool_response(raw: Any, path: str) -> MockToolResponseSpec:
+    if not isinstance(raw, dict):
+        raise SuiteValidationError(f"{path} response must be an object")
+    input_contains = raw.get("input_contains") or {}
+    if not isinstance(input_contains, dict):
+        raise SuiteValidationError(f"{path}.input_contains must be an object")
+    screen_contains = raw.get("screen_contains", "")
+    if not isinstance(screen_contains, str):
+        raise SuiteValidationError(f"{path}.screen_contains must be a string")
+    is_error = raw.get("is_error", False)
+    if not isinstance(is_error, bool):
+        raise SuiteValidationError(f"{path}.is_error must be boolean")
+    error = raw.get("error", "")
+    if not isinstance(error, str):
+        raise SuiteValidationError(f"{path}.error must be a string")
+    screen_text = raw.get("screen_text", "")
+    if not isinstance(screen_text, str):
+        raise SuiteValidationError(f"{path}.screen_text must be a string")
+    return MockToolResponseSpec(
+        input_contains=input_contains,
+        screen_contains=screen_contains,
+        output=raw.get("output", {}),
+        is_error=is_error,
+        error=error,
+        screen_text=screen_text,
+    )

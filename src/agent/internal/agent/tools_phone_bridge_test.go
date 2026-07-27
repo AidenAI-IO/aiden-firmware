@@ -671,6 +671,102 @@ func TestClipboardReadUsesPiPBackgroundQueueWhenActive(t *testing.T) {
 	}
 }
 
+func TestPhoneBridgeDataToolsRestoreFromDynamicIslandBeforeCommand(t *testing.T) {
+	tests := []struct {
+		name        string
+		commandType string
+		input       string
+		response    json.RawMessage
+		newTool     func(*PhoneBridge, *PhoneBridgeRestorer) langtools.Tool
+	}{
+		{
+			name:        "clipboard read",
+			commandType: "clipboard_read",
+			input:       `{"action":"read"}`,
+			response:    json.RawMessage(`{"text":"hello"}`),
+			newTool: func(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) langtools.Tool {
+				return NewClipboardTool(bridge, restorer)
+			},
+		},
+		{
+			name:        "calendar query",
+			commandType: "calendar_query",
+			input:       `{"action":"query","from":"2026-07-23T00:00:00+08:00","to":"2026-07-24T00:00:00+08:00"}`,
+			response:    json.RawMessage(`{"events":[]}`),
+			newTool: func(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) langtools.Tool {
+				return NewCalendarTool(bridge, restorer)
+			},
+		},
+		{
+			name:        "contacts query",
+			commandType: "contacts_query",
+			input:       `{"action":"query","query":"Biden"}`,
+			response:    json.RawMessage(`{"contacts":[]}`),
+			newTool: func(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) langtools.Tool {
+				return NewContactsTool(bridge, restorer)
+			},
+		},
+		{
+			name:        "notification send",
+			commandType: "notification_send",
+			input:       `{"title":"Bridge test","body":"restored"}`,
+			response:    json.RawMessage(`{"notification_id":"notification-1"}`),
+			newTool: func(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) langtools.Tool {
+				return NewNotificationTool(bridge, restorer)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+				if cmd.Type != tt.commandType {
+					t.Errorf("command type = %q, want %q", cmd.Type, tt.commandType)
+				}
+				return BridgeCommandResponse{ID: cmd.ID, Data: tt.response}
+			})
+			bridge.mu.Lock()
+			bridge.platform = "ios"
+			bridge.appState = "background"
+			bridge.appStateAt = time.Now()
+			bridge.returnEntry = "dynamic_island"
+			bridge.returnEntrySeen = true
+			bridge.returnEntryOK = true
+			bridge.mu.Unlock()
+
+			restorer := NewPhoneBridgeRestorer(bridge, nil)
+			restorer.waitTimeout = time.Second
+			tapped := false
+			restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+				tapped = true
+				bridge.mu.Lock()
+				bridge.appState = "active"
+				bridge.returnEntry = "none"
+				bridge.returnEntrySeen = true
+				bridge.returnEntryOK = false
+				bridge.lastHeartbeatAt = time.Now()
+				bridge.mu.Unlock()
+				return nil
+			}
+
+			out, err := tt.newTool(bridge, restorer).Call(context.Background(), tt.input)
+			if err != nil {
+				t.Fatalf("Call returned err: %v", err)
+			}
+			if !tapped {
+				t.Fatal("Dynamic Island return entry was not tapped")
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(out), &payload); err != nil {
+				t.Fatalf("output is not JSON: %v; raw=%s", err, out)
+			}
+			if restored, _ := payload["restored_from_return_entry"].(bool); !restored {
+				t.Fatalf("output missing restored_from_return_entry=true: %s", out)
+			}
+		})
+	}
+}
+
 func newTestPhoneBridgeWithApp(t *testing.T, handle func(BridgeCommand) BridgeCommandResponse) *PhoneBridge {
 	t.Helper()
 	bridge := newPhoneBridgeForTest()
