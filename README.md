@@ -11,6 +11,29 @@ It is not a final integrated hardware product.
 
 ![Aiden Development Board](./aiden-dev-board.webp)
 
+## Hardware & Self-Assembly
+
+The current development setup centers on:
+
+- [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero), RV1106 /
+  Rockchip platform running Buildroot Linux;
+- [TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html),
+  HDMI-to-CSI bridge for external screen capture;
+- a USB-C hub that provides HDMI output for capture and a USB data path back to
+  the target device;
+- ASRPro 2.0 for voice recognition, connected to the Pico Zero alongside a
+  1 W / 8 Ω speaker connected directly to the Pico Zero speaker output;
+- the Pico Zero Linux USB gadget stack for keyboard, pointer/touch, and ECM
+  networking.
+
+Some prototype hardware revisions may include additional USB modules, but the
+firmware-documented HID path is the Linux gadget path exposed as `/dev/hidg0`
+and `/dev/hidg1`.
+
+For the complete parts list, self-assembly instructions, wiring diagram, and
+target-device prerequisites, see
+[Hardware & Wiring](docs/01-getting-started/hardware.md).
+
 ## What Aiden Does
 
 The current hardware setup connects to a phone or computer through a USB-C hub:
@@ -101,26 +124,6 @@ Board audio
 At runtime, the Agent is intentionally decoupled from C++ service internals:
 Frame and Audio capabilities go through Unix domain sockets, while device
 control goes through the Linux USB gadget HID device nodes.
-
-## Hardware
-
-The current development setup centers on:
-
-- [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero), RV1106 /
-  Rockchip platform running Buildroot Linux;
-- [TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html),
-  HDMI-to-CSI bridge for external screen capture;
-- a USB-C hub that provides HDMI output for capture and a USB data path back to
-  the target device;
-- the Pico Zero Linux USB gadget stack for keyboard, pointer/touch, and ECM
-  networking.
-
-Some prototype hardware revisions may include additional USB modules, but the
-firmware-documented HID path is the Linux gadget path exposed as `/dev/hidg0`
-and `/dev/hidg1`.
-
-See [Hardware & Wiring](docs/01-getting-started/hardware.md) for wiring and
-target-device prerequisites.
 
 ## Quick Start
 
