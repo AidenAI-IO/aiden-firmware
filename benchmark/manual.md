@@ -213,6 +213,12 @@ a task from entering text before the preceding open/click action has actually
 transitioned the fixture into Notes. It is an internal fixture state guard, not a
 requirement for the Agent to call `screenshot`.
 
+`input_contains` normally compares leaf values exactly. For a string field that
+may include harmless surrounding context, use `{"$contains": "substring"}` as
+the expected value. The same matcher works in mock responses and
+`hard_assertions.required_tool_calls`; for example, `{"text": {"$contains":
+"+1 202-555-0147"}}` accepts both the bare number and `Biden: +1 202-555-0147`.
+
 `enter_text_via_bridge` has its own internal decision chain in the real Go tool:
 
 1. Prepare or reuse the clipboard through the connected/background Phone Bridge

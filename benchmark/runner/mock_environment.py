@@ -11,6 +11,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
+from runner.matching import dict_contains
 from runner.suite import MockEnvironmentSpec, MockToolResponseSpec
 
 
@@ -82,7 +83,7 @@ class MockEnvironmentServer:
                     not response.screen_contains
                     or response.screen_contains in self.screen_text
                 )
-                if screen_matches and _dict_contains(
+                if screen_matches and dict_contains(
                     tool_input, response.input_contains
                 ):
                     if response.screen_text:
@@ -286,21 +287,6 @@ def _decode_tool_input(raw: Any) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {"raw_input": raw}
     return decoded if isinstance(decoded, dict) else {"value": decoded}
-
-
-def _dict_contains(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
-    for key, expected_value in expected.items():
-        if key not in actual:
-            return False
-        actual_value = actual[key]
-        if isinstance(expected_value, dict):
-            if not isinstance(actual_value, dict) or not _dict_contains(
-                actual_value, expected_value
-            ):
-                return False
-        elif actual_value != expected_value:
-            return False
-    return True
 
 
 def _wrap_text(text: str, width: int) -> list[str]:

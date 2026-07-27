@@ -793,6 +793,7 @@ def test_notes_entry_policy_suite_covers_three_screen_states():
     assert "search_launch_app" in open_task.hard_assertions.forbidden_tools
     assert "bridge_open_app" in open_task.hard_assertions.forbidden_tools
     assert "enter_text_via_bridge" in open_task.hard_assertions.required_tools
+    assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in open_task.prompt
 
     icon_task = tasks["ios_pip_notes_icon_visible"]
     assert "mouse_click" in icon_task.hard_assertions.required_tools
@@ -802,10 +803,13 @@ def test_notes_entry_policy_suite_covers_three_screen_states():
         "y": 310,
         "coord_space": "normalized",
     }
+    assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in icon_task.prompt
 
     missing_task = tasks["ios_pip_notes_icon_missing"]
     assert "search_launch_app" in missing_task.hard_assertions.required_tools
     assert "bridge_open_app" in missing_task.hard_assertions.forbidden_tools
+    text_matcher = missing_task.hard_assertions.required_tool_calls[2].input_contains["text"]
+    assert text_matcher == {"$contains": "+1 202-555-0147"}
 
 
 def test_phone_bridge_data_policy_suite_covers_tools_and_routing_modes():

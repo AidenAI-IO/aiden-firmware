@@ -77,7 +77,7 @@ def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
             {
                 "input": json.dumps(
                     {
-                        "text": "+1 202-555-0147",
+                        "text": "Biden: +1 202-555-0147",
                         "platform": "ios",
                         "focus": {
                             "x": 500,

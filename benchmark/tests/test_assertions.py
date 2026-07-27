@@ -121,6 +121,37 @@ def test_required_tool_calls_match_nested_input_subset():
     assert out.results.required_tool_calls is True
 
 
+def test_required_tool_calls_support_string_contains_matcher():
+    trace = Trace(
+        tool_calls=[
+            ToolCall(
+                step=1,
+                tool="enter_text_via_bridge",
+                input={"text": "Biden: +1 202-555-0147", "platform": "ios"},
+            )
+        ],
+        final_response="ok",
+        total_tool_calls=1,
+        total_duration_ms=0,
+    )
+    spec = HardAssertions(
+        required_tool_calls=[
+            RequiredToolCallSpec(
+                tool="enter_text_via_bridge",
+                input_contains={
+                    "text": {"$contains": "+1 202-555-0147"},
+                    "platform": "ios",
+                },
+            )
+        ]
+    )
+
+    out = evaluate_hard_assertions(trace, spec, timed_out=False)
+
+    assert out.all_passed is True
+    assert out.results.required_tool_calls is True
+
+
 def test_required_tool_calls_report_missing_input_match():
     trace = Trace(
         tool_calls=[ToolCall(step=1, tool="bridge_contacts", input={"action": "query", "query": "Alice"})],

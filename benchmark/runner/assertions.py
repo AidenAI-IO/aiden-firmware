@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any
 from runner.models import HardAssertionFailure, HardAssertionResults, Trace
+from runner.matching import dict_contains
 from runner.suite import HardAssertions, TraceObservationSpec
 from runner.trace import trace_has_skill_read
 
@@ -88,25 +89,9 @@ def _trace_has_tool_call(trace: Trace, tool_name: str, input_contains: dict[str,
     for tc in trace.tool_calls:
         if tc.tool != target:
             continue
-        if _dict_contains(tc.input if isinstance(tc.input, dict) else {}, input_contains):
+        if dict_contains(tc.input if isinstance(tc.input, dict) else {}, input_contains):
             return True
     return False
-
-
-def _dict_contains(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
-    for key, expected_value in expected.items():
-        if key not in actual:
-            return False
-        actual_value = actual[key]
-        if isinstance(expected_value, dict):
-            if not isinstance(actual_value, dict):
-                return False
-            if not _dict_contains(actual_value, expected_value):
-                return False
-            continue
-        if actual_value != expected_value:
-            return False
-    return True
 
 
 def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool) -> AssertionOutcome:
