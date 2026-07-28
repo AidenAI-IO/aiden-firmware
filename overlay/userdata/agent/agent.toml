@@ -82,6 +82,7 @@ api_key = "OPENAI_API_KEY"
 # sample_rate = 16000
 # channels = 1
 # bit_width = 16
+# playback_backend = "auto" # "auto" uses audio_service on board, local player in PC/ADB agent mode; "audio_service" and "local" force a backend
 
 # Audio archive configuration (optional)
 # When enabled, saves audio recordings to disk for playback in web UI.

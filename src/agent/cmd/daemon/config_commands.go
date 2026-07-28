@@ -127,10 +127,11 @@ func (d sttDTO) transcriptionTestRequest(wavData []byte) agent.STTTranscriptionT
 }
 
 type audioDTO struct {
-	Socket     string `json:"socket"`
-	SampleRate int    `json:"sample_rate"`
-	Channels   int    `json:"channels"`
-	BitWidth   int    `json:"bit_width"`
+	Socket          string `json:"socket"`
+	SampleRate      int    `json:"sample_rate"`
+	Channels        int    `json:"channels"`
+	BitWidth        int    `json:"bit_width"`
+	PlaybackBackend string `json:"playback_backend"`
 }
 
 type audioArchiveDTO struct {
@@ -310,10 +311,11 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			EngineModelType: d.STT.EngineModelType,
 		},
 		Audio: agent.AudioConfig{
-			Socket:     d.Audio.Socket,
-			SampleRate: d.Audio.SampleRate,
-			Channels:   d.Audio.Channels,
-			BitWidth:   d.Audio.BitWidth,
+			Socket:          d.Audio.Socket,
+			SampleRate:      d.Audio.SampleRate,
+			Channels:        d.Audio.Channels,
+			BitWidth:        d.Audio.BitWidth,
+			PlaybackBackend: d.Audio.PlaybackBackend,
 		},
 		AudioArchive: agent.AudioArchiveConfig{
 			Enabled:     d.AudioArchive.Enabled,
@@ -462,10 +464,11 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			EngineModelType: cfg.STT.EngineModelType,
 		},
 		Audio: audioDTO{
-			Socket:     cfg.Audio.SocketOrDefault(),
-			SampleRate: cfg.Audio.SampleRateOrDefault(),
-			Channels:   cfg.Audio.ChannelsOrDefault(),
-			BitWidth:   cfg.Audio.BitWidthOrDefault(),
+			Socket:          cfg.Audio.SocketOrDefault(),
+			SampleRate:      cfg.Audio.SampleRateOrDefault(),
+			Channels:        cfg.Audio.ChannelsOrDefault(),
+			BitWidth:        cfg.Audio.BitWidthOrDefault(),
+			PlaybackBackend: cfg.Audio.PlaybackBackendOrDefault(),
 		},
 		AudioArchive: audioArchiveDTO{
 			Enabled:     audioArchive.Enabled,
@@ -933,6 +936,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "audio.channels"
 	} else if strings.Contains(errMsg, "audio.bit_width") {
 		field = "audio.bit_width"
+	} else if strings.Contains(errMsg, "audio.playback_backend") {
+		field = "audio.playback_backend"
 	} else if strings.Contains(errMsg, "telemetry.base_url") {
 		field = "telemetry.base_url"
 	} else if strings.Contains(errMsg, "telemetry.public_key") {
