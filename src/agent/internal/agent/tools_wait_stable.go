@@ -114,7 +114,7 @@ func (t *WaitStableScreenTool) Description() string {
 			`Use only while operating a visible target UI, after a UI action or known UI transition that may animate, navigate, or load; do not call for text-only reasoning, arithmetic, comparison, or memory lookup. `+
 			`Input: {} (empty JSON object). Configured timeouts: timeout_ms=%d, stable_ms=%d, diff_threshold=%g. `+
 			`The screen is stable when consecutive frames stay below diff_threshold for stable_ms. `+
-			`Returns {"ok":true,"stable":true/false,"elapsed_ms":N,"screen_changed":true/false,...} plus a screenshot observation with opaque previous_screenshot_id and screenshot_id values, width, height, format, size, and base64 JPEG data. Copy those IDs exactly; never derive them from frame sequence numbers. `+
+			`Returns {"ok":true,"stable":true/false,"elapsed_ms":N,"screen_changed":true/false,...} plus a screenshot observation with width, height, format, size, and base64 JPEG data. `+
 			`screen_changed=false means no visible frame change was observed during the wait window; if a previous UI action was expected to change the screen, do not assume it succeeded and inspect the screenshot. `+
 			`stable=false means the wait timed out while the screen was still changing (for example video playback); that is not an error and the screenshot is still captured as a best-effort observation.`,
 		resolved.TimeoutMs,
@@ -208,24 +208,20 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 		displayHeight = croppedHeight
 		displayData = croppedData
 	}
-	previousScreenshotID := uint64(0)
-	screenshotID := uint64(0)
 	if t.screen != nil {
-		previousScreenshotID, screenshotID = t.screen.UpdateScreenshot(displayData, displayWidth, displayHeight)
+		t.screen.UpdateScreenshot(displayData, displayWidth, displayHeight)
 	}
 	result := screenshotResult{
-		Width:                displayWidth,
-		Height:               displayHeight,
-		PreviousScreenshotID: previousScreenshotID,
-		ScreenshotID:         screenshotID,
-		SourceWidth:          sourceWidth,
-		SourceHeight:         sourceHeight,
-		ActiveArea:           &active,
-		ActiveWidth:          active.Width,
-		ActiveHeight:         active.Height,
-		Format:               "jpeg",
-		Size:                 len(displayData),
-		Data:                 base64.StdEncoding.EncodeToString(displayData),
+		Width:        displayWidth,
+		Height:       displayHeight,
+		SourceWidth:  sourceWidth,
+		SourceHeight: sourceHeight,
+		ActiveArea:   &active,
+		ActiveWidth:  active.Width,
+		ActiveHeight: active.Height,
+		Format:       "jpeg",
+		Size:         len(displayData),
+		Data:         base64.StdEncoding.EncodeToString(displayData),
 	}
 	applyScreenCaptureInfo(&result, captureInfo)
 	if touchscreenRCADebugEnabledCached() {

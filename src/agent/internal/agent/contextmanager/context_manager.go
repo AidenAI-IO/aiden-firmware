@@ -3,6 +3,8 @@ package contextmanager
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -303,6 +305,62 @@ func (c *ContextManager) StoreAttachment(mimeType string, data []byte) (Attachme
 	}
 
 	return c.attachmentStore.store(mimeType, data)
+}
+
+// ReadScreenshotAttachment returns a screenshot attachment registered in the
+// active context. The caller supplies only the opaque attachment filename that
+// was shown to the model; arbitrary paths and non-screenshot attachments are
+// rejected.
+func (c *ContextManager) ReadScreenshotAttachment(attachmentID string) ([]byte, error) {
+	attachmentID = strings.TrimSpace(attachmentID)
+	if attachmentID == "" || filepath.Base(attachmentID) != attachmentID || strings.ContainsAny(attachmentID, `/\\`) {
+		return nil, fmt.Errorf("invalid screenshot attachment ID")
+	}
+
+	c.mu.RLock()
+	filePath := ""
+	for _, message := range c.messageList {
+		for _, attachment := range message.Attachments {
+			if attachment.Source != AttachmentSourceScreenshotObservation {
+				continue
+			}
+			candidate := strings.TrimSpace(attachment.FilePath)
+			if candidate != "" && filepath.Base(candidate) == attachmentID {
+				filePath = candidate
+				break
+			}
+		}
+		if filePath != "" {
+			break
+		}
+	}
+	sessionFolder := c.sessionFolder
+	c.mu.RUnlock()
+
+	if filePath == "" {
+		return nil, fmt.Errorf("attachment is not present in the active context")
+	}
+	root, err := filepath.Abs(sessionFolder)
+	if err != nil {
+		return nil, fmt.Errorf("resolve session folder: %w", err)
+	}
+	candidate, err := filepath.Abs(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve attachment path: %w", err)
+	}
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return nil, fmt.Errorf("attachment path is outside the session folder")
+	}
+
+	data, err := os.ReadFile(candidate)
+	if err != nil {
+		return nil, fmt.Errorf("read screenshot attachment: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("screenshot attachment is empty")
+	}
+	return data, nil
 }
 
 func cloneMessages(messages []Message) []Message {

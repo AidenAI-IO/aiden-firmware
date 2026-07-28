@@ -263,14 +263,9 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	if !includeVisual {
 		imageAvailability = "The image is replaced with a placeholder in the next message."
 	}
-	screenshotIDs := screenshotObservationIDFields(result.screenshotResult)
-	if screenshotIDs != "" {
-		screenshotIDs += " "
-	}
 	toolContent := fmt.Sprintf(
-		"%s returned a screenshot observation: %sformat=%s width=%d height=%d size=%d bytes. %s",
+		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. %s",
 		step.Action.Tool,
-		screenshotIDs,
 		result.Format,
 		result.Width,
 		result.Height,
@@ -280,10 +275,9 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	if strings.TrimSpace(result.ActionOutput) != "" {
 		actionOutput := compactToolObservation(result.ActionOutput)
 		toolContent = fmt.Sprintf(
-			"%s completed with output %q, then returned a screenshot observation after the action settled: %sformat=%s width=%d height=%d size=%d bytes. %s",
+			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. %s",
 			step.Action.Tool,
 			actionOutput,
-			screenshotIDs,
 			result.Format,
 			result.Width,
 			result.Height,
@@ -312,17 +306,6 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 			buildImagePart(visual.MIMEType, visual.ImageBytes),
 		},
 	}}
-}
-
-func screenshotObservationIDFields(result screenshotResult) string {
-	var fields []string
-	if result.PreviousScreenshotID > 0 {
-		fields = append(fields, fmt.Sprintf("previous_screenshot_id=%d", result.PreviousScreenshotID))
-	}
-	if result.ScreenshotID > 0 {
-		fields = append(fields, fmt.Sprintf("screenshot_id=%d", result.ScreenshotID))
-	}
-	return strings.Join(fields, " ")
 }
 
 func screenshotObservationStatusSummary(result postActionScreenshotResult) string {

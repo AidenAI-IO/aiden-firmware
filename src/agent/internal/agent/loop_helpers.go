@@ -54,19 +54,11 @@ func compactScreenshotObservation(toolName, observation string) (string, bool) {
 			size = len(imageBytes)
 		}
 	}
-	screenshotIDs := ""
-	if result.PreviousScreenshotID > 0 {
-		screenshotIDs += fmt.Sprintf(" previous_screenshot_id=%d", result.PreviousScreenshotID)
-	}
-	if result.ScreenshotID > 0 {
-		screenshotIDs += fmt.Sprintf(" screenshot_id=%d", result.ScreenshotID)
-	}
 	if strings.TrimSpace(result.ActionOutput) != "" {
 		return fmt.Sprintf(
-			"%s completed with output %q, then returned a screenshot observation after the action settled:%s format=%s width=%d height=%d size=%d bytes. Image data omitted from text summary.",
+			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. Image data omitted from text summary.",
 			toolName,
 			compactToolObservation(result.ActionOutput),
-			screenshotIDs,
 			format,
 			result.Width,
 			result.Height,
@@ -74,9 +66,8 @@ func compactScreenshotObservation(toolName, observation string) (string, bool) {
 		), true
 	}
 	return fmt.Sprintf(
-		"%s returned a screenshot observation:%s format=%s width=%d height=%d size=%d bytes. Image data omitted from text summary.",
+		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. Image data omitted from text summary.",
 		toolName,
-		screenshotIDs,
 		format,
 		result.Width,
 		result.Height,

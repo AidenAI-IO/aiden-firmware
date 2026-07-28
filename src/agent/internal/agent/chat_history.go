@@ -195,12 +195,6 @@ func stripScreenshotData(content string) string {
 		"format": format,
 		"size":   result.Size,
 	}
-	if result.ScreenshotID > 0 {
-		compact["screenshot_id"] = result.ScreenshotID
-	}
-	if result.PreviousScreenshotID > 0 {
-		compact["previous_screenshot_id"] = result.PreviousScreenshotID
-	}
 	if strings.TrimSpace(result.ActionOutput) != "" {
 		compact["action_output"] = strings.TrimSpace(result.ActionOutput)
 	}

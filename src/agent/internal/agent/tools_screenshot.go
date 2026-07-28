@@ -27,21 +27,19 @@ type screenCaptureInfo struct {
 }
 
 type screenshotResult struct {
-	Width                int                      `json:"width"`
-	Height               int                      `json:"height"`
-	PreviousScreenshotID uint64                   `json:"previous_screenshot_id,omitempty"`
-	ScreenshotID         uint64                   `json:"screenshot_id,omitempty"`
-	SourceWidth          int                      `json:"source_width,omitempty"`
-	SourceHeight         int                      `json:"source_height,omitempty"`
-	ActiveArea           *screen.ScreenActiveArea `json:"active_area,omitempty"`
-	ActiveWidth          int                      `json:"active_width,omitempty"`
-	ActiveHeight         int                      `json:"active_height,omitempty"`
-	Format               string                   `json:"format"`
-	Size                 int                      `json:"size"`
-	Data                 string                   `json:"data,omitempty"`
-	ScreenshotRef        string                   `json:"screenshot_ref,omitempty"`
-	CaptureBackend       string                   `json:"capture_backend,omitempty"`
-	ADBDevice            *adbDeviceInfo           `json:"adb_device,omitempty"`
+	Width          int                      `json:"width"`
+	Height         int                      `json:"height"`
+	SourceWidth    int                      `json:"source_width,omitempty"`
+	SourceHeight   int                      `json:"source_height,omitempty"`
+	ActiveArea     *screen.ScreenActiveArea `json:"active_area,omitempty"`
+	ActiveWidth    int                      `json:"active_width,omitempty"`
+	ActiveHeight   int                      `json:"active_height,omitempty"`
+	Format         string                   `json:"format"`
+	Size           int                      `json:"size"`
+	Data           string                   `json:"data,omitempty"`
+	ScreenshotRef  string                   `json:"screenshot_ref,omitempty"`
+	CaptureBackend string                   `json:"capture_backend,omitempty"`
+	ADBDevice      *adbDeviceInfo           `json:"adb_device,omitempty"`
 }
 
 type screenshotFrameClient interface {
@@ -117,8 +115,7 @@ func (t *ScreenshotTool) ReturnsVisualObservation() bool { return true }
 
 func (t *ScreenshotTool) Description() string {
 	return `Capture a screenshot from the connected display. No input required (pass empty JSON {} or ""). ` +
-		`Returns a JSON object with opaque previous_screenshot_id and screenshot_id values, width, height, and base64-encoded JPEG image data. ` +
-		`Copy screenshot IDs exactly when calling image_diff; never derive them from frame sequence numbers. ` +
+		`Returns a JSON object with width, height, and base64-encoded JPEG image data. ` +
 		`Use normalized 0-1000 coordinates for coordinate input tools. Convert visual measurements from this image before acting: x_normalized=x/max(width-1,1)*1000 and y_normalized=y/max(height-1,1)*1000; do not pass screenshot pixels directly.`
 }
 
@@ -182,25 +179,21 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		displayHeight = croppedHeight
 		displayData = croppedData
 	}
-	previousScreenshotID := uint64(0)
-	screenshotID := uint64(0)
 	if t.screen != nil {
-		previousScreenshotID, screenshotID = t.screen.UpdateScreenshot(displayData, displayWidth, displayHeight)
+		t.screen.UpdateScreenshot(displayData, displayWidth, displayHeight)
 	}
 
 	result := screenshotResult{
-		Width:                displayWidth,
-		Height:               displayHeight,
-		PreviousScreenshotID: previousScreenshotID,
-		ScreenshotID:         screenshotID,
-		SourceWidth:          sourceWidth,
-		SourceHeight:         sourceHeight,
-		ActiveArea:           &active,
-		ActiveWidth:          active.Width,
-		ActiveHeight:         active.Height,
-		Format:               "jpeg",
-		Size:                 len(displayData),
-		Data:                 base64.StdEncoding.EncodeToString(displayData),
+		Width:        displayWidth,
+		Height:       displayHeight,
+		SourceWidth:  sourceWidth,
+		SourceHeight: sourceHeight,
+		ActiveArea:   &active,
+		ActiveWidth:  active.Width,
+		ActiveHeight: active.Height,
+		Format:       "jpeg",
+		Size:         len(displayData),
+		Data:         base64.StdEncoding.EncodeToString(displayData),
 	}
 	applyScreenCaptureInfo(&result, captureInfo)
 	if touchscreenRCADebugEnabledCached() {

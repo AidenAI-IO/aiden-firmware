@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -60,6 +61,12 @@ func ConvertMessageList(messages []Message) []llms.MessageContent {
 			}
 			if len(data) == 0 {
 				continue
+			}
+			if attachment.Source == AttachmentSourceScreenshotObservation {
+				attachmentID := filepath.Base(filePath)
+				if attachmentID != "." && attachmentID != "" {
+					newMessage.Parts = append(newMessage.Parts, llms.TextPart(fmt.Sprintf("[screenshot_attachment_id=%s]", attachmentID)))
+				}
 			}
 			newMessage.Parts = append(newMessage.Parts, llms.BinaryPart(attachment.MIMEType, data))
 		}

@@ -175,10 +175,10 @@ Scrollable region discipline:
 
 Calibration loop:
 
-1. Record the current screenshot's `screenshot_id`, then start with medium strength.
-2. Read the gesture result's automatic post-action screenshot and its `screenshot_id`; do not take another screenshot before comparison.
-3. Use visual inspection or call `image_diff` with those before/after IDs to confirm movement and estimate rows/items moved.
-   Never invent screenshot IDs. If two real IDs have not appeared in screenshot or post-action results, call `screenshot` again before using `image_diff`.
+1. Record the current screenshot's `screenshot_attachment_id`, then start with medium strength.
+2. Read the gesture result's automatic post-action screenshot and its `screenshot_attachment_id`; do not take another screenshot before comparison.
+3. Use visual inspection or call `image_diff` with those exact values in `before` and `after` to confirm movement and estimate rows/items moved.
+   Never invent attachment IDs. If there is no suitable pre-action screenshot attachment, call `screenshot` before the gesture.
 4. If far from target, increase strength; if close, use small/tiny.
 5. If overshot, reverse direction and reduce strength.
 6. Do not repeat the same strength/distance after a failed attempt.

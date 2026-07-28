@@ -52,8 +52,6 @@ func TestWaitStableScreenDescriptionDocumentsUsePolicy(t *testing.T) {
 		"do not call for text-only reasoning",
 		"screen_changed=false means",
 		"stable=false means",
-		"opaque previous_screenshot_id",
-		"never derive them from frame sequence numbers",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
@@ -84,7 +82,6 @@ func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 		defaults: ScreenStableDefaults{TimeoutMs: 50, StableMs: 1, DiffThreshold: 2},
 		screen:   screen,
 	}
-	_, initialScreenshotID := screen.UpdateScreenshot(jpegData, 2, 2)
 
 	out, err := tool.Call(context.Background(), `{}`)
 	if err != nil {
@@ -112,12 +109,6 @@ func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 	}
 	if result.Width != 2 || result.Height != 2 || result.Format != "jpeg" || result.Size != len(jpegData) {
 		t.Fatalf("unexpected screenshot metadata: %#v", result.screenshotResult)
-	}
-	if result.ScreenshotID == 0 || result.ScreenshotID == initialScreenshotID {
-		t.Fatalf("screenshot_id = %d, want a new non-zero ID after %d", result.ScreenshotID, initialScreenshotID)
-	}
-	if result.PreviousScreenshotID != initialScreenshotID {
-		t.Fatalf("previous_screenshot_id = %d, want %d", result.PreviousScreenshotID, initialScreenshotID)
 	}
 	if result.Data != base64.StdEncoding.EncodeToString(jpegData) {
 		t.Fatalf("unexpected screenshot data: %q", result.Data)

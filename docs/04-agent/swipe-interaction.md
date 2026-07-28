@@ -50,7 +50,7 @@ Defaults: 700ms / 24 steps / hold_before 80ms / hold_after 0ms. Coordinate syste
 
 ### screenshot Tool
 
-Returns `previous_screenshot_id` + `screenshot_id` + base64 JPEG + width/height. HID action tools automatically return a post-action screenshot with the retained screenshot pair and image metadata after the action settles. A manual screenshot may still be required when no valid pair is available.
+Returns base64 JPEG + width/height. In Agent context, each visual observation is persisted as an attachment and shown to the model with a unique `screenshot_attachment_id`. HID action tools automatically return a post-action screenshot after the action settles; take a manual screenshot first when there is no suitable pre-action observation to compare.
 
 ### save_memory / recall_memory
 
@@ -66,16 +66,14 @@ Persist cross-session memory for caching widget parameters (see Section V).
 
 ```text
 Input:
-  before_id: integer — screenshot_id captured before the UI action
-  after_id:  integer — screenshot_id returned by the UI action's post-action screenshot
+  before:    string  — screenshot_attachment_id for the pre-action observation
+  after:     string  — screenshot_attachment_id for the post-action observation
   region:    object  — Optional, {x, y, w, h}, 0-1000 normalized coordinates, limits comparison area
 
-The tool resolves the two IDs from the Agent's recent local screenshot state.
-Treat screenshot IDs as opaque values; they are not frame-service sequence
-numbers and callers must not derive or increment them.
-Screenshot Base64 is not passed back through the tool protocol. If the IDs no
-longer match the retained pair, the tool returns an error instead of comparing
-the wrong screenshots.
+Copy attachment IDs exactly from the labels shown beside screenshot observations.
+The tool resolves only screenshot attachments registered in the active Agent
+context, so arbitrary paths and non-screenshot attachments are rejected. Direct
+HTTP callers may pass base64 JPEG data in `before` and `after` instead.
 
 Output:
   changed:       bool    — diff_ratio > 0.01

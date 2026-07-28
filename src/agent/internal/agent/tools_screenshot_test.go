@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -28,15 +27,6 @@ func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality
 	c.calls++
 	meta := c.meta
 	return &meta, append([]byte(nil), c.data...), cloneScreenCaptureInfo(c.captureInfo), nil
-}
-
-func TestScreenshotDescriptionDocumentsOpaqueIDs(t *testing.T) {
-	desc := (&ScreenshotTool{}).Description()
-	for _, want := range []string{"opaque previous_screenshot_id", "Copy screenshot IDs exactly", "never derive them from frame sequence numbers"} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing %q:\n%s", want, desc)
-		}
-	}
 }
 
 func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) {
@@ -77,7 +67,6 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 		client: client,
 		screen: screenState,
 	}
-	_, initialScreenshotID := screenState.UpdateScreenshot(jpegData, 2, 2)
 
 	out, err := tool.Call(context.Background(), `{}`)
 	if err != nil {
@@ -90,12 +79,6 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 	}
 	if result.Width != 2 || result.Height != 2 || result.Format != "jpeg" || result.Size != len(jpegData) {
 		t.Fatalf("unexpected screenshot metadata: %#v", result)
-	}
-	if result.ScreenshotID == 0 || result.ScreenshotID == initialScreenshotID {
-		t.Fatalf("screenshot_id = %d, want a new non-zero ID after %d", result.ScreenshotID, initialScreenshotID)
-	}
-	if result.PreviousScreenshotID != initialScreenshotID {
-		t.Fatalf("previous_screenshot_id = %d, want %d", result.PreviousScreenshotID, initialScreenshotID)
 	}
 	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
 	if result.SourceWidth != 16 || result.SourceHeight != 9 || result.ActiveArea == nil || *result.ActiveArea != want || result.ActiveWidth != want.Width || result.ActiveHeight != want.Height {
@@ -110,20 +93,8 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 	if result.Data != base64.StdEncoding.EncodeToString(jpegData) {
 		t.Fatalf("unexpected screenshot data: %q", result.Data)
 	}
-
-	secondOut, err := tool.Call(context.Background(), `{}`)
-	if err != nil {
-		t.Fatalf("second Call() error = %v", err)
-	}
-	var secondResult screenshotResult
-	if err := json.Unmarshal([]byte(secondOut), &secondResult); err != nil {
-		t.Fatalf("second output is not valid screenshot JSON: %v", err)
-	}
-	if secondResult.PreviousScreenshotID != result.ScreenshotID || secondResult.ScreenshotID == 0 || secondResult.ScreenshotID == result.ScreenshotID {
-		t.Fatalf("repeated frame seq produced screenshot pair %d -> %d after %d", secondResult.PreviousScreenshotID, secondResult.ScreenshotID, result.ScreenshotID)
-	}
-	if client.calls != 2 {
-		t.Fatalf("LatestFrameWithFormat call count = %d, want 2", client.calls)
+	if client.calls != 1 {
+		t.Fatalf("LatestFrameWithFormat call count = %d, want 1", client.calls)
 	}
 
 	width, height, active, _, ok := screenState.ActiveAreaWithAge()

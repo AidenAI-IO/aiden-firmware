@@ -1,11 +1,8 @@
 package agent
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"testing"
-	"time"
 
 	"aiden-agent/internal/agent/screen"
 
@@ -38,67 +35,5 @@ func TestScreenToolResultObserverUpdatesStateFromBridgedScreenshot(t *testing.T)
 	want := screen.ScreenActiveArea{X: 711, Y: 0, Width: 498, Height: 1080, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
-	}
-}
-
-func TestScreenToolResultObserverDoesNotDuplicateLocalScreenshotUpdate(t *testing.T) {
-	state := &screen.ScreenState{}
-	jpegData := []byte("local-jpeg")
-	startedAt := time.Now()
-	state.UpdateScreenshotWithID(99, jpegData, 390, 844)
-	generation := state.ScreenshotGeneration()
-
-	output := `{"width":390,"height":844,"screenshot_id":99,"format":"jpeg","data":"` + base64.StdEncoding.EncodeToString(jpegData) + `"}`
-	newScreenToolResultObserver(state)(context.Background(), ToolCall{
-		Spec:      ToolSpec{Name: "screenshot", Tool: &stubTool{name: "screenshot", visual: true}},
-		StartedAt: startedAt,
-	}, ToolResult{Output: output})
-
-	if got := state.ScreenshotGeneration(); got != generation {
-		t.Fatalf("screenshot generation = %d, want %d", got, generation)
-	}
-	if _, _, ok := state.LatestScreenshotPair(); ok {
-		t.Fatal("local tool result was recorded as a second screenshot")
-	}
-}
-
-func TestScreenToolResultObserverRecordsBridgedScreenshotObservation(t *testing.T) {
-	state := &screen.ScreenState{}
-	before := []byte("before-jpeg")
-	after := []byte("after-jpeg")
-	state.UpdateScreenshotWithID(99, before, 390, 844)
-
-	output := `{"width":390,"height":844,"screenshot_id":100,"format":"jpeg","data":"` + base64.StdEncoding.EncodeToString(after) + `"}`
-	newScreenToolResultObserver(state)(context.Background(), ToolCall{
-		Spec:      ToolSpec{Name: "screenshot", Tool: &stubTool{name: "screenshot", visual: true}},
-		StartedAt: time.Now().Add(time.Second),
-	}, ToolResult{Output: output})
-
-	gotBefore, gotAfter, ok := state.LatestScreenshotPair()
-	if !ok || gotBefore.ID != 99 || gotAfter.ID != 100 || !bytes.Equal(gotBefore.JPEG, before) || !bytes.Equal(gotAfter.JPEG, after) {
-		t.Fatalf("bridged screenshot pair = %#v -> %#v, ok=%v", gotBefore, gotAfter, ok)
-	}
-}
-
-func TestScreenToolResultObserverRecordsIdenticalJPEGWithDifferentID(t *testing.T) {
-	state := &screen.ScreenState{}
-	jpegData := []byte("same-jpeg")
-	state.UpdateScreenshotWithID(99, jpegData, 390, 844)
-	startedAt := time.Now()
-	state.UpdateScreenshotWithID(100, jpegData, 390, 844)
-	generation := state.ScreenshotGeneration()
-
-	output := `{"width":390,"height":844,"screenshot_id":101,"format":"jpeg","data":"` + base64.StdEncoding.EncodeToString(jpegData) + `"}`
-	newScreenToolResultObserver(state)(context.Background(), ToolCall{
-		Spec:      ToolSpec{Name: "screenshot", Tool: &stubTool{name: "screenshot", visual: true}},
-		StartedAt: startedAt,
-	}, ToolResult{Output: output})
-
-	if got := state.ScreenshotGeneration(); got != generation+1 {
-		t.Fatalf("screenshot generation = %d, want %d", got, generation+1)
-	}
-	before, after, ok := state.LatestScreenshotPair()
-	if !ok || before.ID != 100 || after.ID != 101 || !bytes.Equal(before.JPEG, jpegData) || !bytes.Equal(after.JPEG, jpegData) {
-		t.Fatalf("identical bridged screenshot pair = %#v -> %#v, ok=%v", before, after, ok)
 	}
 }
