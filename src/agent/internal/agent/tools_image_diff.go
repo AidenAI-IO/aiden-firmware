@@ -9,19 +9,40 @@ import (
 	"image"
 	"image/jpeg"
 	"math"
+	"path/filepath"
+	"strings"
 )
 
+type imageDiffAttachmentResolver func(string) ([]byte, error)
+
+type imageDiffAttachmentResolverContextKey struct{}
+
+func withImageDiffAttachmentResolver(ctx context.Context, resolver imageDiffAttachmentResolver) context.Context {
+	if resolver == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, imageDiffAttachmentResolverContextKey{}, resolver)
+}
+
+func imageDiffAttachmentResolverFromContext(ctx context.Context) imageDiffAttachmentResolver {
+	if ctx == nil {
+		return nil
+	}
+	resolver, _ := ctx.Value(imageDiffAttachmentResolverContextKey{}).(imageDiffAttachmentResolver)
+	return resolver
+}
+
 // ImageDiffTool compares two JPEG screenshots and returns pixel-level difference
-// metrics. It is a pure-compute tool that does not call the LLM, intended for
-// quickly checking whether a swipe gesture had any visible effect.
+// metrics. Agent calls normally reference persisted screenshot attachments by
+// filename; direct HTTP callers may continue to pass Base64 JPEG data.
 type ImageDiffTool struct{}
 
 func (t *ImageDiffTool) Name() string { return "image_diff" }
 
 func (t *ImageDiffTool) Description() string {
 	return `Compare two JPEG screenshots and return pixel-level difference metrics. ` +
-		`Input JSON: {"before": "<base64 JPEG>", "after": "<base64 JPEG>", "region": {"x": 300, "y": 200, "w": 400, "h": 600}}. ` +
-		`"before" and "after" are the "data" fields from screenshot tool results. ` +
+		`For Agent calls, copy the screenshot_attachment_id shown beside each screenshot observation into before and after; never invent or modify attachment IDs. ` +
+		`Direct HTTP callers may also pass the Base64 JPEG data returned by the screenshot tool. ` +
 		`"region" is optional normalized coordinates (0-1000) to restrict comparison to a sub-region — use this to focus on the scrollable area and ignore static UI chrome. ` +
 		`Returns: ` +
 		`"changed" (bool, true when diff_ratio > 0.01), ` +
@@ -42,8 +63,8 @@ func (t *ImageDiffTool) ArgsSchema() map[string]any {
 	regionSchema["examples"] = []map[string]any{{"x": 100, "y": 200, "w": 600, "h": 400}}
 
 	return objectArgsSchema(map[string]any{
-		"before": stringArgSchema("Base64-encoded JPEG from the earlier screenshot data field."),
-		"after":  stringArgSchema("Base64-encoded JPEG from the later screenshot data field."),
+		"before": stringArgSchema("Earlier screenshot_attachment_id copied from the visual observation, or Base64 JPEG data for direct HTTP calls."),
+		"after":  stringArgSchema("Later screenshot_attachment_id copied from the visual observation, or Base64 JPEG data for direct HTTP calls."),
 		"region": regionSchema,
 	}, "before", "after")
 }
@@ -55,46 +76,38 @@ func (t *ImageDiffTool) Call(ctx context.Context, input string) (string, error) 
 		Region *imageDiffRegion `json:"region"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"before\": \"<base64>\", \"after\": \"<base64>\", \"region\": {\"x\": 300, \"y\": 200, \"w\": 400, \"h\": 600}}. Common mistakes: before/after must be base64-encoded JPEG strings, region is optional but if provided must be an object with x, y, w, h fields", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"before\": \"<screenshot_attachment_id>\", \"after\": \"<screenshot_attachment_id>\", \"region\": {\"x\": 300, \"y\": 200, \"w\": 400, \"h\": 600}}", err), nil
 	}
-	if args.Before == "" {
+	if strings.TrimSpace(args.Before) == "" {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "before is required"), nil
 	}
-	if args.After == "" {
+	if strings.TrimSpace(args.After) == "" {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "after is required"), nil
 	}
 
-	beforeData, err := base64.StdEncoding.DecodeString(args.Before)
+	beforeData, err := resolveImageDiffInput(ctx, args.Before)
 	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "decode before: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "resolve before: %v", err), nil
 	}
-	afterData, err := base64.StdEncoding.DecodeString(args.After)
+	afterData, err := resolveImageDiffInput(ctx, args.After)
 	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "decode after: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "resolve after: %v", err), nil
 	}
 
-	// Validate image format: only JPEG is supported (must start with 0xFF 0xD8)
-	if len(beforeData) < 2 {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "before data too short. Use the 'data' field from screenshot tool results."), nil
+	if len(beforeData) < 2 || beforeData[0] != 0xFF || beforeData[1] != 0xD8 {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "before is not JPEG format (image_diff only supports JPEG). Use a screenshot_attachment_id or the 'data' field from screenshot tool results"), nil
 	}
-	if len(afterData) < 2 {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "after data too short. Use the 'data' field from screenshot tool results."), nil
-	}
-	// JPEG signature: 0xFF 0xD8
-	if beforeData[0] != 0xFF || beforeData[1] != 0xD8 {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "before is not JPEG format (image_diff only supports JPEG). Use the 'data' field from screenshot tool results."), nil
-	}
-	if afterData[0] != 0xFF || afterData[1] != 0xD8 {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "after is not JPEG format (image_diff only supports JPEG). Use the 'data' field from screenshot tool results."), nil
+	if len(afterData) < 2 || afterData[0] != 0xFF || afterData[1] != 0xD8 {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "after is not JPEG format (image_diff only supports JPEG). Use a screenshot_attachment_id or the 'data' field from screenshot tool results"), nil
 	}
 
 	beforeImg, err := jpeg.Decode(bytes.NewReader(beforeData))
 	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "decode before JPEG: %v. Ensure you are using the 'data' field from screenshot tool results.", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "decode before JPEG: %v", err), nil
 	}
 	afterImg, err := jpeg.Decode(bytes.NewReader(afterData))
 	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "decode after JPEG: %v. Ensure you are using the 'data' field from screenshot tool results.", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "decode after JPEG: %v", err), nil
 	}
 
 	fullBounds := beforeImg.Bounds()
@@ -118,6 +131,38 @@ func (t *ImageDiffTool) Call(ctx context.Context, input string) (string, error) 
 
 	out, _ := json.Marshal(result)
 	return string(out), nil
+}
+
+func resolveImageDiffInput(ctx context.Context, input string) ([]byte, error) {
+	value := strings.TrimSpace(input)
+	if isScreenshotAttachmentID(value) {
+		resolver := imageDiffAttachmentResolverFromContext(ctx)
+		if resolver == nil {
+			return nil, fmt.Errorf("screenshot attachment %q is unavailable outside an active Agent context", value)
+		}
+		data, err := resolver(value)
+		if err != nil {
+			return nil, fmt.Errorf("screenshot attachment %q: %w", value, err)
+		}
+		return data, nil
+	}
+	data, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("expected a screenshot_attachment_id or Base64 JPEG: %w", err)
+	}
+	return data, nil
+}
+
+func isScreenshotAttachmentID(value string) bool {
+	if value == "" || filepath.Base(value) != value || strings.ContainsAny(value, `/\\`) {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(value)) {
+	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
+		return true
+	default:
+		return false
+	}
 }
 
 type imageDiffRegion struct {

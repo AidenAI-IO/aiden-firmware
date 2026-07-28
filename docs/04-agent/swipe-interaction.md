@@ -50,7 +50,7 @@ Defaults: 700ms / 24 steps / hold_before 80ms / hold_after 0ms. Coordinate syste
 
 ### screenshot Tool
 
-Returns base64 JPEG + width/height. Auto-screenshot after each HID operation (500ms delay), no manual call needed.
+Returns base64 JPEG + width/height. In Agent context, each visual observation is persisted as an attachment and shown to the model with a unique `screenshot_attachment_id`. HID action tools automatically return a post-action screenshot after the action settles; take a manual screenshot first when there is no suitable pre-action observation to compare.
 
 ### save_memory / recall_memory
 
@@ -66,9 +66,14 @@ Persist cross-session memory for caching widget parameters (see Section V).
 
 ```text
 Input:
-  before:    string  — base64 JPEG (data field of pre-swipe screenshot)
-  after:     string  — base64 JPEG (data field of post-swipe screenshot)
+  before:    string  — screenshot_attachment_id for the pre-action observation
+  after:     string  — screenshot_attachment_id for the post-action observation
   region:    object  — Optional, {x, y, w, h}, 0-1000 normalized coordinates, limits comparison area
+
+Copy attachment IDs exactly from the labels shown beside screenshot observations.
+The tool resolves only screenshot attachments registered in the active Agent
+context, so arbitrary paths and non-screenshot attachments are rejected. Direct
+HTTP callers may pass base64 JPEG data in `before` and `after` instead.
 
 Output:
   changed:       bool    — diff_ratio > 0.01
