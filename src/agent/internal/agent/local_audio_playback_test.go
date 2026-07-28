@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -156,20 +157,70 @@ func TestLocalAudioPlaybackBackendRejectsRIFFDataOverflow(t *testing.T) {
 		}
 	}()
 
-	backend.mu.Lock()
-	backend.sessions[sessionID].dataBytes = wavMaxDataBytes
-	backend.mu.Unlock()
+	session := localAudioPlaybackTestSession(t, backend, sessionID)
+	session.mu.Lock()
+	session.dataBytes = wavMaxDataBytes
+	session.mu.Unlock()
 	err = backend.WritePlayChunk(sessionID, []byte{1}, false)
 	if err == nil || !strings.Contains(err.Error(), "RIFF limit") {
 		t.Fatalf("WritePlayChunk(overflow) error = %v, want RIFF limit", err)
 	}
 
-	backend.mu.Lock()
-	backend.sessions[sessionID].dataBytes = wavMaxDataBytes + 1
-	backend.mu.Unlock()
+	session.mu.Lock()
+	session.dataBytes = wavMaxDataBytes + 1
+	session.mu.Unlock()
 	err = backend.WritePlayChunk(sessionID, nil, true)
 	if err == nil || !strings.Contains(err.Error(), "RIFF limit") {
 		t.Fatalf("WritePlayChunk(final overflow) error = %v, want RIFF limit", err)
+	}
+}
+
+func TestLocalAudioPlaybackBackendFinalizationFailureCleansUp(t *testing.T) {
+	oldLookPath := localAudioLookPath
+	oldCommandContext := localAudioCommandContext
+	defer func() {
+		localAudioLookPath = oldLookPath
+		localAudioCommandContext = oldCommandContext
+	}()
+	localAudioLookPath = func(name string) (string, error) {
+		return name, nil
+	}
+	missingPlayer := filepath.Join(t.TempDir(), "missing-player")
+	localAudioCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, missingPlayer)
+	}
+
+	backend := newLocalAudioPlaybackBackend(nil)
+	sessionID, err := backend.StartPlayback(tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err != nil {
+		t.Fatalf("StartPlayback() error = %v", err)
+	}
+	session := localAudioPlaybackTestSession(t, backend, sessionID)
+	path := session.path
+
+	err = backend.WritePlayChunk(sessionID, []byte{1, 2}, true)
+	if err == nil || !strings.Contains(err.Error(), "start local audio player") {
+		t.Fatalf("WritePlayChunk(final start failure) error = %v, want start local audio player", err)
+	}
+	session.mu.Lock()
+	final := session.final
+	failedErr := session.failedErr
+	session.mu.Unlock()
+	if final {
+		t.Fatal("session.final = true after failed finalization, want false")
+	}
+	if failedErr == nil {
+		t.Fatal("session.failedErr = nil after failed finalization")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary wav still exists or stat failed differently: %v", err)
+	}
+	if localAudioPlaybackSessionExists(backend, sessionID) {
+		t.Fatal("failed session still present in backend session map")
+	}
+	err = backend.WritePlayChunk(sessionID, nil, true)
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("WritePlayChunk(second final) error = %v, want session not found", err)
 	}
 }
 
@@ -187,6 +238,23 @@ func TestWriteWAVHeaderRejectsOversizeData(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "RIFF limit") {
 		t.Fatalf("writeWAVHeader() error = %v, want RIFF limit", err)
 	}
+}
+
+func localAudioPlaybackTestSession(t *testing.T, backend *localAudioPlaybackBackend, sessionID uint64) *localAudioPlaybackSession {
+	t.Helper()
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	session := backend.sessions[sessionID]
+	if session == nil {
+		t.Fatalf("local playback session %d not found", sessionID)
+	}
+	return session
+}
+
+func localAudioPlaybackSessionExists(backend *localAudioPlaybackBackend, sessionID uint64) bool {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	return backend.sessions[sessionID] != nil
 }
 
 func TestLocalAudioPlaybackHelper(t *testing.T) {

@@ -32,11 +32,14 @@ type localAudioPlaybackBackend struct {
 }
 
 type localAudioPlaybackSession struct {
+	mu        sync.Mutex
 	format    tts.AudioFormat
 	file      *os.File
 	path      string
 	dataBytes uint64
 	final     bool
+	stopped   bool
+	failedErr error
 	cancel    context.CancelFunc
 	done      chan error
 }
@@ -93,9 +96,17 @@ func (b *localAudioPlaybackBackend) WritePlayChunk(sessionID uint64, data []byte
 		return fmt.Errorf("local playback session not found: %d", sessionID)
 	}
 
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if err := session.stateError(sessionID); err != nil {
+		return err
+	}
 	if len(data) > 0 {
 		if session.final {
 			return fmt.Errorf("local playback session already finalized")
+		}
+		if session.file == nil {
+			return fmt.Errorf("local playback session file is unavailable")
 		}
 		if err := validateLocalPlaybackAppendSize(session.dataBytes, uint64(len(data))); err != nil {
 			return err
@@ -115,39 +126,7 @@ func (b *localAudioPlaybackBackend) WritePlayChunk(sessionID uint64, data []byte
 	if session.final {
 		return nil
 	}
-	if err := validateLocalPlaybackDataSize(session.dataBytes); err != nil {
-		return err
-	}
-	session.final = true
-	if err := patchWAVHeader(session.file, session.format, session.dataBytes); err != nil {
-		return fmt.Errorf("finalize local playback wav header: %w", err)
-	}
-	if err := session.file.Close(); err != nil {
-		return fmt.Errorf("close local playback wav: %w", err)
-	}
-	session.file = nil
-	if player == nil {
-		return fmt.Errorf("local audio player is unavailable")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cmd := localAudioCommandContext(ctx, player.name, player.args(session.path)...)
-	if err := cmd.Start(); err != nil {
-		cancel()
-		_ = os.Remove(session.path)
-		return fmt.Errorf("start local audio player %q: %w", player.name, err)
-	}
-	session.cancel = cancel
-	session.done = make(chan error, 1)
-	go func(path string, id uint64) {
-		err := cmd.Wait()
-		cancel()
-		_ = os.Remove(path)
-		b.mu.Lock()
-		delete(b.sessions, id)
-		b.mu.Unlock()
-		session.done <- err
-	}(session.path, sessionID)
-	return nil
+	return b.finalizeLocalPlaybackSessionLocked(sessionID, session, player)
 }
 
 func (b *localAudioPlaybackBackend) StopPlayback(sessionID uint64) error {
@@ -158,19 +137,96 @@ func (b *localAudioPlaybackBackend) StopPlayback(sessionID uint64) error {
 	if session == nil {
 		return nil
 	}
+	session.mu.Lock()
+	session.stopped = true
 	if session.cancel != nil {
 		session.cancel()
 	}
 	if session.file != nil {
 		_ = session.file.Close()
+		session.file = nil
 	}
-	if session.done != nil {
-		<-session.done
+	done := session.done
+	path := session.path
+	session.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+	if path != "" {
+		_ = os.Remove(path)
+	}
+	return nil
+}
+
+func (s *localAudioPlaybackSession) stateError(sessionID uint64) error {
+	if s.failedErr != nil {
+		return fmt.Errorf("local playback session failed: %w", s.failedErr)
+	}
+	if s.stopped {
+		return fmt.Errorf("local playback session stopped: %d", sessionID)
+	}
+	return nil
+}
+
+func (b *localAudioPlaybackBackend) finalizeLocalPlaybackSessionLocked(sessionID uint64, session *localAudioPlaybackSession, player *localAudioPlayer) error {
+	if err := validateLocalPlaybackDataSize(session.dataBytes); err != nil {
+		return b.failLocalPlaybackSessionLocked(sessionID, session, err)
+	}
+	if session.file == nil {
+		return b.failLocalPlaybackSessionLocked(sessionID, session, fmt.Errorf("local playback session file is unavailable"))
+	}
+	if err := patchWAVHeader(session.file, session.format, session.dataBytes); err != nil {
+		return b.failLocalPlaybackSessionLocked(sessionID, session, fmt.Errorf("finalize local playback wav header: %w", err))
+	}
+	if err := session.file.Close(); err != nil {
+		return b.failLocalPlaybackSessionLocked(sessionID, session, fmt.Errorf("close local playback wav: %w", err))
+	}
+	session.file = nil
+	if player == nil {
+		return b.failLocalPlaybackSessionLocked(sessionID, session, fmt.Errorf("local audio player is unavailable"))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	session.cancel = cancel
+	cmd := localAudioCommandContext(ctx, player.name, player.args(session.path)...)
+	if err := cmd.Start(); err != nil {
+		return b.failLocalPlaybackSessionLocked(sessionID, session, fmt.Errorf("start local audio player %q: %w", player.name, err))
+	}
+	session.done = make(chan error, 1)
+	session.final = true
+	go func(path string, id uint64, done chan<- error) {
+		err := cmd.Wait()
+		cancel()
+		_ = os.Remove(path)
+		b.mu.Lock()
+		delete(b.sessions, id)
+		b.mu.Unlock()
+		done <- err
+	}(session.path, sessionID, session.done)
+	return nil
+}
+
+func (b *localAudioPlaybackBackend) failLocalPlaybackSessionLocked(sessionID uint64, session *localAudioPlaybackSession, err error) error {
+	session.failedErr = err
+	b.cleanupLocalPlaybackSessionLocked(sessionID, session)
+	return err
+}
+
+func (b *localAudioPlaybackBackend) cleanupLocalPlaybackSessionLocked(sessionID uint64, session *localAudioPlaybackSession) {
+	if session.cancel != nil {
+		session.cancel()
+		session.cancel = nil
+	}
+	if session.file != nil {
+		_ = session.file.Close()
+		session.file = nil
 	}
 	if session.path != "" {
 		_ = os.Remove(session.path)
+		session.path = ""
 	}
-	return nil
+	b.mu.Lock()
+	delete(b.sessions, sessionID)
+	b.mu.Unlock()
 }
 
 func (b *localAudioPlaybackBackend) localPlayer() (*localAudioPlayer, error) {
