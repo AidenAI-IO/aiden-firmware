@@ -266,6 +266,7 @@ ApiResponse proxy_agent_json_request(const Options& options,
                                          const std::string& agent_path,
                                          const std::string& body);
 ApiResponse handle_usb_reenumerate(const Options& options);
+void schedule_usb_reenumerate(int delay_seconds);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
@@ -2426,22 +2427,56 @@ ApiResponse handle_stt_test_stop(const Options& options, const std::string& body
     return proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
 }
 
-ApiResponse handle_usb_reenumerate(const Options& options) {
-    const char* script =
-        "#!/bin/sh\n"
-        "UDC=$(ls /sys/class/udc/ 2>/dev/null | head -n1)\n"
-        "GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid\n"
-        "if [ -z \"$UDC\" ] || [ ! -d \"$GADGET_DIR\" ]; then\n"
-        "  exit 1\n"
-        "fi\n"
-        "echo \"\" > \"$GADGET_DIR/UDC\" 2>/dev/null\n"
-        "sleep 1\n"
-        "echo \"$UDC\" > \"$GADGET_DIR/UDC\"\n";
+// Shell script that unbinds and rebinds the USB gadget UDC to force the host
+// to re-enumerate the device. Fails loudly if either transition does not
+// succeed so callers can distinguish a real re-enumeration from a no-op.
+static const char* kUsbReenumerateScript =
+    "#!/bin/sh\n"
+    "UDC=$(ls /sys/class/udc/ 2>/dev/null | head -n1)\n"
+    "GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid\n"
+    "if [ -z \"$UDC\" ] || [ ! -d \"$GADGET_DIR\" ]; then\n"
+    "  echo 'Error: UDC device or gadget directory not found' >&2\n"
+    "  exit 1\n"
+    "fi\n"
+    "# Unbind\n"
+    "if ! echo \"\" > \"$GADGET_DIR/UDC\" 2>/dev/null; then\n"
+    "  echo 'Error: Failed to unbind UDC' >&2\n"
+    "  exit 2\n"
+    "fi\n"
+    "sleep 1\n"
+    "# Rebind\n"
+    "if ! echo \"$UDC\" > \"$GADGET_DIR/UDC\" 2>/dev/null; then\n"
+    "  echo 'Error: Failed to rebind UDC' >&2\n"
+    "  exit 3\n"
+    "fi\n"
+    "echo 'USB re-enumeration completed successfully'\n";
 
-    CommandResult result = run_command_with_stdin("sh -s", script, 5000);
+// Kick off USB re-enumeration without blocking the caller. Used from the
+// config-save path, where the agent restart is also backgrounded: the toggle
+// waits a few seconds so the restart settles first, then runs detached so a
+// slow or hung UDC transition can never stall POST /api/config. Failures are
+// logged to the system log; callers that need the outcome synchronously should
+// use handle_usb_reenumerate() (POST /api/hid/usb-reenumerate) instead.
+void schedule_usb_reenumerate(int delay_seconds) {
+    std::string script(kUsbReenumerateScript);
+    // Run the script detached in the background after a settle delay. Logging
+    // to `logger` keeps a trace without a synchronous result.
+    std::string cmd =
+        "( sleep " + std::to_string(delay_seconds) + "; "
+        "printf '%s' " + shell_quote(script) + " | sh -s "
+        "2>&1 | logger -t config_web_usb_reenumerate ) &";
+    int rc = system(cmd.c_str());
+    (void)rc;
+}
+
+ApiResponse handle_usb_reenumerate(const Options& options) {
+    CommandResult result = run_command_with_stdin("sh -s", kUsbReenumerateScript, 5000);
 
     if (result.exit_code != 0) {
-        return make_json_error(500, "USB re-enumeration failed: " + result.output);
+        std::string error_msg = result.output.empty()
+            ? "USB re-enumeration failed with exit code " + std::to_string(result.exit_code)
+            : result.output;
+        return make_json_error(500, error_msg);
     }
 
     cJSON* response = cJSON_CreateObject();
@@ -5589,14 +5624,15 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         schedule_agent_restart();
     }
 
-    // Trigger USB re-enumeration when keyboard_layout changes
-    if (keyboard_layout_changed && !usbhid_restart_scheduled) {
-        ApiResponse reenumerate_result = handle_usb_reenumerate(options);
-        if (reenumerate_result.status_code != 200) {
-            // Log but don't fail the config save
-            fprintf(stderr, "USB re-enumeration failed after keyboard_layout change: %s\n",
-                    reenumerate_result.body.c_str());
-        }
+    // Schedule USB re-enumeration in the background when keyboard_layout
+    // changes. It runs detached after a short settle delay so the backgrounded
+    // agent restart (scheduled above) lands first and the synchronous UDC
+    // toggle never blocks this response. The outcome is reported to the caller
+    // as "scheduled"; clients that need a definitive result can call
+    // POST /api/hid/usb-reenumerate, which propagates unbind/rebind failures.
+    bool usb_reenumeration_scheduled = keyboard_layout_changed && !usbhid_restart_scheduled;
+    if (usb_reenumeration_scheduled) {
+        schedule_usb_reenumerate(3);
     }
 
     cJSON* response = cJSON_CreateObject();
@@ -5604,8 +5640,11 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON_AddStringToObject(response, "message",
                             usbhid_restart_scheduled
                                 ? "config saved; reboot required for usb hid pointer_mode"
-                                : "config saved; agent restarting");
+                                : (usb_reenumeration_scheduled
+                                   ? "config saved; agent restarting and USB re-enumerating"
+                                   : "config saved; agent restarting"));
     cJSON_AddBoolToObject(response, "agent_restart_scheduled", agent_restart_scheduled ? 1 : 0);
+    cJSON_AddBoolToObject(response, "usb_reenumeration_scheduled", usb_reenumeration_scheduled ? 1 : 0);
     cJSON_AddBoolToObject(response, "usbhid_restart_scheduled", 0);
     cJSON_AddBoolToObject(response, "usbhid_restart_required", usbhid_restart_scheduled ? 1 : 0);
     cJSON_AddBoolToObject(response, "reboot_required", usbhid_restart_scheduled ? 1 : 0);
