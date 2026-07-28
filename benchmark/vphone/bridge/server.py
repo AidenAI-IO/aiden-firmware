@@ -166,7 +166,13 @@ def _handler_for(bridge: VPhoneBridgeServer):
                 self._send_error(400, "bad_header", "Content-Length must be non-negative")
                 return None
             if length > MAX_REQUEST_BODY_BYTES:
-                self._send_error(413, "request_too_large", f"request body exceeds {MAX_REQUEST_BODY_BYTES} bytes")
+                # Deliberately do not read the oversized body; close instead so the
+                # unread bytes cannot be parsed as the next request under keep-alive.
+                self._send_error(
+                    413, "request_too_large",
+                    f"request body exceeds {MAX_REQUEST_BODY_BYTES} bytes",
+                    close=True,
+                )
                 return None
             raw = self.rfile.read(length) if length else b"{}"
             try:
@@ -186,15 +192,18 @@ def _handler_for(bridge: VPhoneBridgeServer):
             } else 500
             self._send_error(status, exc.code, str(exc))
 
-        def _send_error(self, status: int, code: str, message: str) -> None:
-            self._send_json(status, bridge_error(code, message, status=status))
+        def _send_error(self, status: int, code: str, message: str, *, close: bool = False) -> None:
+            self._send_json(status, bridge_error(code, message, status=status), close=close)
 
-        def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+        def _send_json(self, status: int, payload: dict[str, Any], *, close: bool = False) -> None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))
+            if close:
+                self.close_connection = True
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(data)
 

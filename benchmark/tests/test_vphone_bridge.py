@@ -228,9 +228,80 @@ def test_request_body_limit_is_enforced_before_reading_body(bridge):
     connection.endheaders()
     response = connection.getresponse()
     body = json.loads(response.read())
+    connection_header = response.getheader("Connection")
     connection.close()
     assert response.status == 413
     assert body["error"]["code"] == "request_too_large"
+    # The oversized body is never read, so the connection must not be reused:
+    # leftover bytes would otherwise be parsed as the next request.
+    assert connection_header == "close"
+
+
+def test_mouse_scroll_labels_its_own_action_log_entry(bridge):
+    server, _, base_url = bridge
+    request(base_url, "/api/setup", method="POST", task_id="owner")
+    status, body = request(
+        base_url,
+        "/api/tools/mouse_scroll",
+        method="POST",
+        payload={"input": {"delta": 5}},
+        task_id="owner",
+    )
+    assert status == 200 and body["is_error"] is False
+    entries = list(server.state.action_log)
+    assert len(entries) == 1
+    assert entries[0]["tool"] == "mouse_scroll"
+    assert entries[0]["input"] == {"delta": 5}
+    assert entries[0]["vphone"].startswith("swipe_down")
+
+
+def test_concurrent_scroll_and_click_keep_their_own_log_labels():
+    """mouse_scroll used to relabel action_log[-1] after _execute_device released
+    the state lock, so a concurrent call's entry could be renamed. Each entry's
+    tool label must match its own recorded gesture."""
+
+    class SlowDevice(FakeVPhoneDevice):
+        def swipe(self, x1, y1, x2, y2, duration_ms):
+            time.sleep(0.01)
+            super().swipe(x1, y1, x2, y2, duration_ms)
+
+        def tap(self, x, y):
+            time.sleep(0.01)
+            super().tap(x, y)
+
+    device = SlowDevice()
+    server = VPhoneBridgeServer(device, port=0, action_settle_sec=0)
+    base_url = server.start()
+    server.state.acquire("owner")
+    try:
+
+        def call(index):
+            if index % 2 == 0:
+                return request(
+                    base_url, "/api/tools/mouse_scroll", method="POST",
+                    payload={"input": {"delta": 3}}, task_id="owner",
+                )
+            return request(
+                base_url, "/api/tools/mouse_click", method="POST",
+                payload={"input": {"x": 500, "y": 500}}, task_id="owner",
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(call, i) for i in range(8)]
+            for future in futures:
+                assert future.result(timeout=10)[0] == 200
+    finally:
+        server.stop()
+
+    entries = list(server.state.action_log)
+    assert len(entries) == 8
+    for entry in entries:
+        if entry["tool"] == "mouse_scroll":
+            assert entry["input"] == {"delta": 3}, entry
+            assert entry["vphone"].startswith("swipe_"), entry
+        else:
+            assert entry["tool"] == "mouse_click", entry
+            assert entry["vphone"].startswith("tap "), entry
 
 
 def test_catalog_omits_keyboard_when_host_does_not_support_it():

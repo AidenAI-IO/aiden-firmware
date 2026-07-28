@@ -126,6 +126,10 @@ enter_benchmark_root() {
   local root="${VPHONE_BENCHMARK_ROOT:-$SCRIPT_DIR/..}"
   require_dir VPHONE_BENCHMARK_ROOT "$root"
   cd "$root"
+  # Publish the resolved root. When vphone.env omits the variable we fall back to
+  # $SCRIPT_DIR/.., and later bare references (and child processes) must see that
+  # same directory instead of aborting with `unbound variable` under `set -u`.
+  export VPHONE_BENCHMARK_ROOT="$PWD"
 }
 
 # Print one loaded value for `./start.sh env`, flagging entries that are unset or

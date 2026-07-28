@@ -7,6 +7,7 @@ import argparse
 import base64
 import io
 import json
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -149,9 +150,18 @@ def validate_bridge(
                 method="POST",
                 task_id=task_id,
             )
-            if status != 200 or (release.get("data") or {}).get("released") is not True:
+            if status == 200 and (release.get("data") or {}).get("released") is True:
+                checks.append("release")
+            elif sys.exc_info()[0] is None:
                 raise BridgeValidationError(f"release failed: HTTP {status}: {release}")
-            checks.append("release")
+            else:
+                # A validation failure is already propagating. main() only prints
+                # str(exc), so raising here would replace the root cause the
+                # operator needs; report the cleanup failure separately instead.
+                print(
+                    f"warning: release failed while another error was propagating: HTTP {status}: {release}",
+                    file=sys.stderr,
+                )
 
     return {
         "ok": True,

@@ -287,7 +287,14 @@ class VPhoneToolsAPIHandler:
             self._send_json(handler, 400, {"error": "bad_header", "output": "Content-Length must be non-negative", "is_error": True})
             return None
         if length > MAX_REQUEST_BODY_BYTES:
-            self._send_json(handler, 413, {"error": "request_too_large", "output": f"request body exceeds {MAX_REQUEST_BODY_BYTES} bytes", "is_error": True})
+            # Deliberately do not read the oversized body. Close instead, so the
+            # unread bytes can never be parsed as the next request should this
+            # handler ever be switched to HTTP/1.1 keep-alive.
+            self._send_json(
+                handler, 413,
+                {"error": "request_too_large", "output": f"request body exceeds {MAX_REQUEST_BODY_BYTES} bytes", "is_error": True},
+                close=True,
+            )
             return None
         raw = handler.rfile.read(length) if length else b"{}"
         try:
@@ -323,7 +330,15 @@ class VPhoneToolsAPIHandler:
             screenshot = self._capture_screenshot()
         return {"output": json.dumps(screenshot), "is_error": False}
 
-    def _call_touch_gesture(self, tool_input: dict[str, Any]) -> dict[str, Any]:
+    def _call_touch_gesture(
+        self,
+        tool_input: dict[str, Any],
+        *,
+        log_as: tuple[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Run a gesture. `log_as` overrides the (tool_name, tool_input) recorded
+        in the action log, so callers that reuse this path (mouse_scroll) label
+        their own entry while it is still written under the state lock."""
         raw_type = tool_input.get("type", "")
         if not isinstance(raw_type, str) or not raw_type.strip():
             return {"output": "error: type is required", "is_error": True}
@@ -334,6 +349,7 @@ class VPhoneToolsAPIHandler:
                 "output": f"error: iOS touch gestures do not support button {button!r}",
                 "is_error": True,
             }
+        log_name, log_input = log_as or ("touch_gesture", tool_input)
         device = self.state.device
         try:
             if gesture_type in {"tap", "double_tap", "long_press"}:
@@ -342,7 +358,7 @@ class VPhoneToolsAPIHandler:
                 x, y = _to_pixels(point, width, height)
                 if gesture_type == "tap":
                     return self._execute_device(
-                        lambda: device.tap(x, y), "touch_gesture", tool_input, f"tap {x} {y}"
+                        lambda: device.tap(x, y), log_name, log_input, f"tap {x} {y}"
                     )
                 if gesture_type == "double_tap":
                     pause_ms = _duration_ms_arg(
@@ -350,14 +366,14 @@ class VPhoneToolsAPIHandler:
                     )
                     return self._execute_device(
                         lambda: device.double_tap(x, y, pause_ms),
-                        "touch_gesture", tool_input, f"double_tap {x} {y} pause={pause_ms}",
+                        log_name, log_input, f"double_tap {x} {y} pause={pause_ms}",
                     )
                 hold_ms = _duration_ms_arg(
                     tool_input.get("duration_ms") or tool_input.get("hold_ms"), DEFAULT_LONG_PRESS_MS
                 )
                 return self._execute_device(
                     lambda: device.swipe(x, y, x, y, hold_ms),
-                    "touch_gesture", tool_input, f"long_press {x} {y} duration={hold_ms}",
+                    log_name, log_input, f"long_press {x} {y} duration={hold_ms}",
                 )
             if gesture_type in {"swipe", "drag"}:
                 width, height = device.screen_size()
@@ -368,7 +384,7 @@ class VPhoneToolsAPIHandler:
                 duration = _duration_ms_arg(tool_input.get("duration_ms"), 300)
                 return self._execute_device(
                     lambda: device.swipe(x1, y1, x2, y2, duration),
-                    "touch_gesture", tool_input, f"swipe {x1} {y1} {x2} {y2} duration={duration}",
+                    log_name, log_input, f"swipe {x1} {y1} {x2} {y2} duration={duration}",
                 )
             if gesture_type in {"swipe_left", "swipe_right", "swipe_up", "swipe_down"}:
                 payload = _directional_swipe_payload(gesture_type, tool_input)
@@ -378,12 +394,12 @@ class VPhoneToolsAPIHandler:
                 duration = payload["duration_ms"]
                 return self._execute_device(
                     lambda: device.swipe(x1, y1, x2, y2, duration),
-                    "touch_gesture", tool_input, f"{gesture_type} {x1} {y1} {x2} {y2}",
+                    log_name, log_input, f"{gesture_type} {x1} {y1} {x2} {y2}",
                 )
             if gesture_type == "home":
-                return self._execute_device(device.reset_home, "touch_gesture", tool_input, "key home")
+                return self._execute_device(device.reset_home, log_name, log_input, "key home")
             if gesture_type == "back":
-                return self._edge_back(tool_name="touch_gesture", tool_input=tool_input)
+                return self._edge_back(tool_name=log_name, tool_input=log_input)
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         return {"output": f"error: unsupported gesture type: {gesture_type}", "is_error": True}
@@ -418,13 +434,14 @@ class VPhoneToolsAPIHandler:
             return self._call_noop_with_screenshot()
         strength = "medium" if abs(delta) >= 3 else "small"
         gesture = "swipe_up" if delta < 0 else "swipe_down"
-        result = self._call_touch_gesture({"type": gesture, "strength": strength})
-        if not result.get("is_error"):
-            with self.state.lock:
-                if self.state.action_log:
-                    self.state.action_log[-1]["tool"] = "mouse_scroll"
-                    self.state.action_log[-1]["input"] = tool_input
-        return result
+        # Label the log entry through log_as rather than rewriting action_log[-1]
+        # afterwards: that mutation happened after _execute_device released the
+        # state lock, so a concurrent tool call could have appended its own entry
+        # in between and had it renamed to mouse_scroll.
+        return self._call_touch_gesture(
+            {"type": gesture, "strength": strength},
+            log_as=("mouse_scroll", tool_input),
+        )
 
     def _call_keyboard_text(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         if "keyboard" not in self.state.device.capabilities():
@@ -681,12 +698,21 @@ class VPhoneToolsAPIHandler:
         )
 
     @staticmethod
-    def _send_json(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
+    def _send_json(
+        handler: BaseHTTPRequestHandler,
+        status: int,
+        payload: dict[str, Any],
+        *,
+        close: bool = False,
+    ) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         handler.send_response(status)
         handler.send_header("Content-Type", "application/json")
         handler.send_header("Cache-Control", "no-store")
         handler.send_header("Content-Length", str(len(data)))
+        if close:
+            handler.close_connection = True
+            handler.send_header("Connection", "close")
         handler.end_headers()
         handler.wfile.write(data)
 
