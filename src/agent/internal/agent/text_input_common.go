@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -27,7 +28,12 @@ const (
 	textInputClearBackspaceFallback = 16
 	textInputMaxAttempts            = 3
 	textInputCandidatePageMax       = 5
+	textInputCandidateActionMax     = 20
+	textInputCandidateMoveMax       = 20
 	textInputCandidatePageDelay     = 300 * time.Millisecond
+	textInputVisionParseAttempts    = 3
+	textInputPlanAttempts           = 3
+	textInputPlanMaxTokens          = 800
 )
 
 var textInputCompositionReadyDelay = 450 * time.Millisecond
@@ -76,24 +82,76 @@ func compositionSegmentsForText(text string, segments []string) ([]string, error
 	return segs, nil
 }
 
+// textInputCompositionPlanner derives the ASCII keystrokes required by the
+// active IME for a non-ASCII target. It is intentionally internal to the text
+// entry workflow so the main agent never has to construct pinyin/IME segments.
+type textInputCompositionPlanner interface {
+	PlanComposition(ctx context.Context, text string) ([]string, error)
+}
+
+func (e *textInputEngine) compositionSegmentsForText(ctx context.Context, text string, override []string) ([]string, error) {
+	if segments := normalizeCompositionSegments(override); len(segments) > 0 {
+		return segments, nil
+	}
+	planner, ok := e.vision.(textInputCompositionPlanner)
+	if !ok {
+		return nil, fmt.Errorf("IME segment planner is not configured for %q", text)
+	}
+	segments, err := planner.PlanComposition(ctx, text)
+	if err != nil {
+		return nil, fmt.Errorf("plan IME segments: %w", err)
+	}
+	segments = normalizePlannedCompositionSegments(segments)
+	if len(segments) == 0 {
+		return nil, fmt.Errorf("IME segment planner returned no input for %q", text)
+	}
+	for _, segment := range segments {
+		for _, r := range segment {
+			if r > 0x7f {
+				return nil, fmt.Errorf("IME segment planner returned non-ASCII input %q", segment)
+			}
+			if _, _, ok := charToHIDKey(byte(r)); !ok {
+				return nil, fmt.Errorf("IME segment planner returned unsupported key %q", r)
+			}
+		}
+	}
+	return segments, nil
+}
+
+// normalizePlannedCompositionSegments tolerates an LLM returning a whole
+// pinyin phrase (for example "ni hao") in one JSON array entry. keyboard_text
+// correctly rejects that form, so split it into individual HID-safe chunks
+// before any keyboard call.
+func normalizePlannedCompositionSegments(segments []string) []string {
+	out := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		out = append(out, strings.Fields(segment)...)
+	}
+	return out
+}
+
 func fieldTextExactlyMatches(fieldText, targetText string) bool {
 	return strings.TrimSpace(fieldText) == strings.TrimSpace(targetText)
 }
 
 func evaluateFieldCommit(analysis textInputScreenAnalysis, targetText string) (committed bool, fieldText string) {
 	fieldText = strings.TrimSpace(analysis.FieldText)
-	targetText = strings.TrimSpace(targetText)
-	if needsCompositionInput(targetText) {
-		if analysis.CompositionPending {
-			return false, fieldText
-		}
-		return fieldTextExactlyMatches(fieldText, targetText), fieldText
-	}
-	// ASCII: committed text in the field wins even if VLM wrongly sets composition_pending.
-	if fieldTextExactlyMatches(fieldText, targetText) || strings.EqualFold(fieldText, targetText) {
-		return true, fieldText
-	}
-	return false, fieldText
+	// field_text is a diagnostic transcription, not a reliable code-point-level
+	// representation of the screenshot. target_matched already means that the
+	// vision model found the target in the committed field, so do not override
+	// that decision with a second OCR/string or composition flag check.
+	return analysis.TargetMatched, fieldText
+}
+
+func asciiPartNeedsEnter(analysis textInputScreenAnalysis) bool {
+	return analysis.CompositionPending ||
+		analysis.ObservedMode == textInputModeComposition ||
+		len(analysis.Candidates) > 0 ||
+		analysis.CandidateExpand
+}
+
+func imeCandidateStateActive(analysis textInputScreenAnalysis) bool {
+	return analysis.CompositionPending || len(analysis.Candidates) > 0 || analysis.CandidateExpand
 }
 
 func shouldSuspectWrongIME(analysis textInputScreenAnalysis, fieldText string, segments []string, requiredMode textInputMode) bool {

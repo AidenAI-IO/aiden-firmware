@@ -24,28 +24,29 @@ const (
 )
 
 type textInputScreenAnalysisRequest struct {
-	Phase      textInputScreenPhase
-	Platform   string
-	TargetText string
-	Focus      focusPointArgs
-	Segments   []string
+	Phase            textInputScreenPhase
+	Platform         string
+	TargetText       string
+	Focus            focusPointArgs
+	Segments         []string
+	LastDirectInput  string
+	LastDirectTarget string
 }
 
-type textInputCandidateClick struct {
-	X    float64 `json:"x"`
-	Y    float64 `json:"y"`
-	Text string  `json:"text,omitempty"`
+type textInputCandidateSelection struct {
+	Offset int    `json:"offset"`
+	Text   string `json:"text,omitempty"`
 }
 
 type textInputScreenAnalysis struct {
-	ObservedMode       textInputMode             `json:"observed_mode"`
-	FieldText          string                    `json:"field_text"`
-	CompositionPending bool                      `json:"composition_pending"`
-	CommitWithEnter    bool                      `json:"commit_with_enter"`
-	WrongIMESuspected  bool                      `json:"wrong_ime_suspected"`
-	SuggestSwitchIME   bool                      `json:"suggest_switch_ime"`
-	Candidates         []textInputCandidateClick `json:"candidates"`
-	Evidence           []string                  `json:"evidence,omitempty"`
+	ObservedMode       textInputMode                 `json:"observed_mode"`
+	FieldText          string                        `json:"field_text"`
+	TargetMatched      bool                          `json:"target_matched"`
+	CompositionPending bool                          `json:"composition_pending"`
+	WrongIMESuspected  bool                          `json:"wrong_ime_suspected"`
+	SuggestSwitchIME   bool                          `json:"suggest_switch_ime"`
+	Candidates         []textInputCandidateSelection `json:"candidates"`
+	CandidateExpand    bool                          `json:"candidate_expand,omitempty"`
 }
 
 type textInputVision interface {
@@ -70,14 +71,14 @@ func (v *llmTextInputVision) AnalyzeScreen(ctx context.Context, screenshot scree
 		return textInputScreenAnalysis{}, err
 	}
 	var parsed struct {
-		ObservedMode       string                    `json:"observed_mode"`
-		FieldText          string                    `json:"field_text"`
-		CompositionPending bool                      `json:"composition_pending"`
-		CommitWithEnter    bool                      `json:"commit_with_enter"`
-		WrongIMESuspected  bool                      `json:"wrong_ime_suspected"`
-		SuggestSwitchIME   bool                      `json:"suggest_switch_ime"`
-		Candidates         []textInputCandidateClick `json:"candidates"`
-		Evidence           []string                  `json:"evidence"`
+		ObservedMode       string                        `json:"observed_mode"`
+		FieldText          string                        `json:"field_text"`
+		TargetMatched      bool                          `json:"target_matched"`
+		CompositionPending bool                          `json:"composition_pending"`
+		WrongIMESuspected  bool                          `json:"wrong_ime_suspected"`
+		SuggestSwitchIME   bool                          `json:"suggest_switch_ime"`
+		Candidates         []textInputCandidateSelection `json:"candidates"`
+		CandidateExpand    bool                          `json:"candidate_expand"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		return textInputScreenAnalysis{}, fmt.Errorf("parse screen analysis: %w", err)
@@ -89,13 +90,106 @@ func (v *llmTextInputVision) AnalyzeScreen(ctx context.Context, screenshot scree
 	return textInputScreenAnalysis{
 		ObservedMode:       mode,
 		FieldText:          strings.TrimSpace(parsed.FieldText),
+		TargetMatched:      parsed.TargetMatched,
 		CompositionPending: parsed.CompositionPending,
-		CommitWithEnter:    parsed.CommitWithEnter,
 		WrongIMESuspected:  parsed.WrongIMESuspected,
 		SuggestSwitchIME:   parsed.SuggestSwitchIME,
 		Candidates:         parsed.Candidates,
-		Evidence:           uniqueNonEmpty(parsed.Evidence),
+		CandidateExpand:    parsed.CandidateExpand,
 	}, nil
+}
+
+// PlanComposition turns one non-ASCII text run into the ASCII keystrokes that
+// should be sent to the current IME. This keeps transliteration out of the
+// public tool contract; enter_text callers supply only the original text.
+func (v *llmTextInputVision) PlanComposition(ctx context.Context, target string) ([]string, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil, fmt.Errorf("IME target text is required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	prompt := fmt.Sprintf(`Convert each character of the following exact non-ASCII text into the ASCII keystrokes needed to enter it with a standard phone IME.
+Target text: %q
+
+Return JSON only:
+{"mappings":[{"index":0,"text":"原","input":"yuan"}]}
+
+Rules:
+- Return exactly one mapping for every Unicode character in Target text.
+- index is the zero-based character index in Target text; include every index exactly once.
+- text must be exactly the one target character at index.
+- input is that character's common context-appropriate romanization/IME input.
+- input must contain only lowercase ASCII letters or digits, without spaces or tone marks.
+- Mapping array order does not matter; the caller reorders it by index.
+- Do not include explanations or candidate labels.`, target)
+	var lastErr error
+	for attempt := 1; attempt <= textInputPlanAttempts; attempt++ {
+		attemptPrompt := prompt
+		if lastErr != nil {
+			attemptPrompt += fmt.Sprintf("\n\nThe previous response was invalid: %s. Return the complete JSON object again.", lastErr)
+		}
+		resp, err := v.models.GenerateContent(ctx, []llms.MessageContent{
+			llms.TextParts(llms.ChatMessageTypeSystem, "You plan exact IME keystrokes for text-entry automation. Output JSON only."),
+			llms.TextParts(llms.ChatMessageTypeHuman, attemptPrompt),
+		}, llms.WithJSONMode(), llms.WithMaxTokens(textInputPlanMaxTokens))
+		if err != nil {
+			return nil, err
+		}
+		if len(resp.Choices) == 0 {
+			lastErr = fmt.Errorf("empty IME planning response")
+			continue
+		}
+		segments, err := parseTextInputCompositionPlan(target, resp.Choices[0].Content)
+		if err == nil {
+			return segments, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("IME plan remained invalid after %d attempts: %w", textInputPlanAttempts, lastErr)
+}
+
+func parseTextInputCompositionPlan(target, raw string) ([]string, error) {
+	var parsed struct {
+		Mappings []struct {
+			Index int    `json:"index"`
+			Text  string `json:"text"`
+			Input string `json:"input"`
+		} `json:"mappings"`
+	}
+	if err := json.Unmarshal([]byte(stripJSONCodeFence(raw)), &parsed); err != nil {
+		return nil, fmt.Errorf("parse IME plan: %w", err)
+	}
+	runes := []rune(target)
+	if len(parsed.Mappings) != len(runes) {
+		return nil, fmt.Errorf("IME plan returned %d character mappings for %d target characters", len(parsed.Mappings), len(runes))
+	}
+	segments := make([]string, len(runes))
+	seen := make([]bool, len(runes))
+	for _, mapping := range parsed.Mappings {
+		if mapping.Index < 0 || mapping.Index >= len(runes) {
+			return nil, fmt.Errorf("IME plan mapping index %d is out of range", mapping.Index)
+		}
+		if seen[mapping.Index] {
+			return nil, fmt.Errorf("IME plan contains duplicate mapping index %d", mapping.Index)
+		}
+		mappedRunes := []rune(mapping.Text)
+		if len(mappedRunes) != 1 || mappedRunes[0] != runes[mapping.Index] {
+			return nil, fmt.Errorf("IME plan mapping index %d has text %q, want %q", mapping.Index, mapping.Text, string(runes[mapping.Index]))
+		}
+		input := strings.TrimSpace(mapping.Input)
+		if input == "" {
+			return nil, fmt.Errorf("IME plan mapping index %d has empty input", mapping.Index)
+		}
+		for _, r := range input {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+				return nil, fmt.Errorf("IME plan mapping index %d has invalid input %q", mapping.Index, input)
+			}
+		}
+		seen[mapping.Index] = true
+		segments[mapping.Index] = input
+	}
+	return segments, nil
 }
 
 func buildTextInputAnalysisPrompt(req textInputScreenAnalysisRequest) string {
@@ -105,13 +199,15 @@ func buildTextInputAnalysisPrompt(req textInputScreenAnalysisRequest) string {
 	}
 	phaseHint := "Typing has NOT started yet. If IME mode is unclear, set observed_mode=unknown and suggest_switch_ime=false."
 	if req.Phase == textInputPhaseAfterType {
-		phaseHint = "Typing already happened. Read ONLY the focused target input field for field_text. Do NOT copy IME candidate bar, preedit strip, keyboard suggestions, or inline composition text into field_text. Set composition_pending=true when target text is visible only in IME candidates/preedit and is not yet fully committed inside the target input field. Set commit_with_enter=true only when pressing Enter will safely commit the exact current ASCII target without selecting or changing it; otherwise leave it false. If field shows only latin/pinyin segments instead of target characters, set wrong_ime_suspected=true and suggest_switch_ime=true."
+		phaseHint = "Typing already happened. Read ONLY the focused target input field for field_text. Do NOT copy IME candidate bar, preedit strip, keyboard suggestions, or inline composition text into field_text. Set composition_pending=true whenever the just-typed content is still in an IME preedit or candidate state and needs confirmation before more text is typed. If a Last direct HID input is given and any IME candidate/preedit box is visible for that ASCII part, observed_mode MUST be composition even when the raw ASCII already appears inside the field. If the direct ASCII part is committed with no active candidate/preedit box, set composition_pending=false and observed_mode=ascii. IME candidate selection is handled separately. If field shows only latin/pinyin segments instead of target characters, set wrong_ime_suspected=true and suggest_switch_ime=true."
 	}
 	return strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot (Android/iOS/macOS) for text-input automation.
 Platform: %q
 Phase: %q
 Target text: %q
 Typed segments: %s
+Last direct HID input: %q
+Expected rendered text for that direct part: %q
 Focus (normalized 0-1000): (%.0f, %.0f)
 %s
 
@@ -119,22 +215,23 @@ Return JSON only:
 {
   "observed_mode": "ascii|composition|unknown",
   "field_text": "exact committed text visible ONLY inside the target input field",
+  "target_matched": false,
   "composition_pending": false,
-  "commit_with_enter": false,
   "wrong_ime_suspected": false,
   "suggest_switch_ime": false,
-  "candidates": [{"x":500,"y":800,"text":"你"}],
-  "evidence": ["short reason"]
+  "candidates": [{"offset":2,"text":"你"}],
+  "candidate_expand": false
 }
 
 Rules:
 - field_text: committed text inside the target input box only; exclude IME candidate rows, preedit, and keyboard suggestion chips
-- composition_pending: true when target characters still need candidate selection or are only visible outside the target input field
-- commit_with_enter: true only when Enter safely commits the exact current ASCII preedit; never use it to choose a CJK candidate
-- observed_mode: ascii=direct Latin entry; composition=IME with candidates/preedit; unknown=unclear
-- candidates: normalized click points 0-1000 for visible IME candidates that would commit target text into the field; [] if none
+- target_matched: directly judge whether the committed text visible in the focused field matches Target text. Use visual meaning, not a code-point comparison of your field_text transcription. Treat visually equivalent punctuation forms such as full-width versus half-width comma as matching when the screenshot cannot reliably distinguish them. Return false for missing, extra, reordered, or visibly wrong letters, digits, or words
+- composition_pending: true whenever the just-typed content is still in an IME preedit/candidate state and requires confirmation, including an ASCII part shown with an IME candidate box
+- observed_mode: ascii=direct Latin entry with no active candidate/preedit box; composition=any active IME candidate/preedit state, including a candidate box shown for an ASCII part such as "4k60"
+- candidates: return at most one entry only when the exact intended pending word or phrase is visibly present and selecting it would make the committed field match Target text. offset is the signed number of keyboard moves from the currently highlighted candidate: positive means Right, negative means Left, zero means press Space immediately. Never return the first/default candidate merely because it is first or looks similar; [] if the intended candidate is not visibly present
+- candidate_expand: true when the intended candidate is not visible in the collapsed candidate row and the candidate list should be expanded with the Down key; otherwise false. Do not set it when the intended candidate is already visible
 - wrong_ime_suspected: true when field shows raw romanization instead of target script
-- suggest_switch_ime: true only when confident the wrong keyboard/IME is active`, req.Platform, req.Phase, req.TargetText, segments, req.Focus.X, req.Focus.Y, phaseHint))
+- suggest_switch_ime: true only when confident the wrong keyboard/IME is active`, req.Platform, req.Phase, req.TargetText, segments, req.LastDirectInput, req.LastDirectTarget, req.Focus.X, req.Focus.Y, phaseHint))
 }
 
 func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, screenshot screenshotResult) (string, error) {
@@ -179,19 +276,17 @@ type stubTextInputVision struct {
 	analyses []textInputScreenAnalysis
 }
 
-func (s *stubTextInputVision) AnalyzeScreen(_ context.Context, _ screenshotResult, _ textInputScreenAnalysisRequest) (textInputScreenAnalysis, error) {
+func (s *stubTextInputVision) AnalyzeScreen(_ context.Context, _ screenshotResult, req textInputScreenAnalysisRequest) (textInputScreenAnalysis, error) {
 	if len(s.analyses) == 0 {
 		return textInputScreenAnalysis{ObservedMode: textInputModeComposition}, nil
 	}
 	out := s.analyses[0]
 	s.analyses = s.analyses[1:]
-	return out, nil
-}
-
-func analysisToClicks(candidates []textInputCandidateClick) []focusPointArgs {
-	out := make([]focusPointArgs, 0, len(candidates))
-	for _, candidate := range candidates {
-		out = append(out, focusPointArgs{X: candidate.X, Y: candidate.Y, CoordSpace: "normalized"})
+	// Existing unit-test fixtures predate target_matched and describe successful
+	// observations through field_text. Preserve that fixture shorthand without
+	// reintroducing string comparison into the production verifier.
+	if !out.TargetMatched && fieldTextExactlyMatches(out.FieldText, req.TargetText) {
+		out.TargetMatched = true
 	}
-	return out
+	return out, nil
 }

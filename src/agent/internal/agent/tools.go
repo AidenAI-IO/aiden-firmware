@@ -141,6 +141,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		keyboardText: keyboardText,
 		quickAction:  quickAction,
 		screenshot:   screenshot,
+		waitStable:   waitStable,
 	}
 
 	tools := map[string]langtools.Tool{

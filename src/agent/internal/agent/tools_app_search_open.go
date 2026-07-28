@@ -212,7 +212,6 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 			return result, err
 		}
 		result.VLMCalls += entryResult.VLMCalls
-		steps = append(steps, entryResult.Steps...)
 		steps = append(steps, fmt.Sprintf("searched %q", term))
 		if err := sleep(ctx, appSearchResultSettleDelay); err != nil {
 			result.Steps = append(steps, "wait for search results canceled")

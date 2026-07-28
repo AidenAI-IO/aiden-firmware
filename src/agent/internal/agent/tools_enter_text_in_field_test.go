@@ -54,7 +54,7 @@ func TestEnterTextInFieldDescriptionDocumentsStrategyAndVerification(t *testing.
 		"send_after_commit=true",
 		"enter_text_via_bridge",
 		"committed:true",
-		"field_text matches target exactly",
+		"field_text is diagnostic visual transcription",
 		"normalized coordinates",
 	} {
 		if !strings.Contains(desc, want) {
@@ -216,6 +216,9 @@ func TestEnterTextInFieldASCII(t *testing.T) {
 	if !strings.Contains(out, `"committed": true`) || !strings.Contains(out, `"vlm_calls": 1`) {
 		t.Fatalf("unexpected output: %s", out)
 	}
+	if len(kbTap.calls) != 0 {
+		t.Fatalf("already committed ASCII must not receive Enter confirmation: %v", kbTap.calls)
+	}
 }
 
 func TestEnterTextInFieldSearchModeHandsOffAfterASCIIInput(t *testing.T) {
@@ -351,9 +354,9 @@ func TestEnterTextInFieldCompositionSuccess(t *testing.T) {
 			ObservedMode:       textInputModeComposition,
 			FieldText:          "nihao",
 			CompositionPending: true,
-			Candidates:         []textInputCandidateClick{{X: 500, Y: 800, Text: "你好"}},
+			Candidates:         []textInputCandidateSelection{{Offset: 0, Text: "你好"}},
 		},
-		// after clicking candidate: committed
+		// after keyboard-confirming candidate: committed
 		{FieldText: "你好"},
 	}}
 	engine := newFastTextInputEngine(textInputHardwareDeps{
@@ -514,10 +517,11 @@ func TestEvaluateFieldCommitRejectsCandidateOnly(t *testing.T) {
 		t.Fatal("candidate/preedit only should not commit")
 	}
 	committed, _ = evaluateFieldCommit(textInputScreenAnalysis{
-		FieldText: "你好",
+		FieldText:     "你好",
+		TargetMatched: true,
 	}, "你好")
 	if !committed {
-		t.Fatal("exact field match should commit")
+		t.Fatal("vision-confirmed target match should commit")
 	}
 }
 
@@ -525,7 +529,7 @@ func TestShouldSuspectWrongIMESkipsWhenCandidatesVisible(t *testing.T) {
 	analysis := textInputScreenAnalysis{
 		FieldText:          "nihao",
 		CompositionPending: true,
-		Candidates:         []textInputCandidateClick{{X: 500, Y: 800, Text: "你好"}},
+		Candidates:         []textInputCandidateSelection{{Offset: 0, Text: "你好"}},
 		ObservedMode:       textInputModeASCII,
 	}
 	if shouldSuspectWrongIME(analysis, analysis.FieldText, []string{"ni", "hao"}, textInputModeComposition) {
@@ -536,10 +540,24 @@ func TestShouldSuspectWrongIMESkipsWhenCandidatesVisible(t *testing.T) {
 func TestEvaluateFieldCommitAcceptsASCIIDespitePendingFlag(t *testing.T) {
 	committed, _ := evaluateFieldCommit(textInputScreenAnalysis{
 		FieldText:          "hello",
+		TargetMatched:      true,
 		CompositionPending: true,
 	}, "hello")
 	if !committed {
-		t.Fatal("ascii field match should commit even when composition_pending is true")
+		t.Fatal("vision-confirmed field match should win over a contradictory pending flag")
+	}
+}
+
+func TestEvaluateFieldCommitUsesVisualMatchInsteadOfFieldTextEquality(t *testing.T) {
+	committed, fieldText := evaluateFieldCommit(textInputScreenAnalysis{
+		FieldText:     "你好我是Aiden,",
+		TargetMatched: true,
+	}, "你好我是Aiden，")
+	if !committed {
+		t.Fatal("visually confirmed punctuation match should commit despite transcription code-point differences")
+	}
+	if fieldText != "你好我是Aiden," {
+		t.Fatalf("fieldText = %q, want diagnostic transcription preserved", fieldText)
 	}
 }
 
@@ -575,18 +593,19 @@ func TestEnterTextInFieldRetryWithoutRetype(t *testing.T) {
 	pending := textInputScreenAnalysis{
 		FieldText:          "nihao",
 		CompositionPending: true,
-		Candidates:         []textInputCandidateClick{{X: 500, Y: 800, Text: "你好"}},
+		Candidates:         []textInputCandidateSelection{{Offset: 0, Text: "你好"}},
 	}
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
-		// attempt 1: after space commit, analyze sees pending with candidate
+		// attempt 1: before committing, analyze sees the matching candidate
 		pending,
 		// after clicking candidate: committed
 		{FieldText: "你好"},
 	}}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
-		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardTap:  kbTap,
 		keyboardText: kbText,
 		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
@@ -601,6 +620,9 @@ func TestEnterTextInFieldRetryWithoutRetype(t *testing.T) {
 	}
 	if len(kbText.calls) != 2 {
 		t.Fatalf("expected single type pass (ni+hao), got keyboard_text calls=%v", kbText.calls)
+	}
+	if len(kbTap.calls) != 1 || !strings.Contains(kbTap.calls[0], "space") {
+		t.Fatalf("candidate selection should confirm the highlighted match with Space, keyboard_tap calls=%v", kbTap.calls)
 	}
 }
 
@@ -664,9 +686,6 @@ func TestTextInputEngineFirstCompositionAttemptRespectsContextCancelDuringIMEWai
 	if result.Reason != context.Canceled.Error() {
 		t.Fatalf("Reason=%q, want %q", result.Reason, context.Canceled.Error())
 	}
-	if len(result.Steps) == 0 || !strings.Contains(result.Steps[len(result.Steps)-1], "IME to settle") {
-		t.Fatalf("expected IME settle step in result, got: %v", result.Steps)
-	}
 	if result.Committed {
 		t.Fatalf("Committed=%v, want false", result.Committed)
 	}
@@ -681,12 +700,12 @@ func TestEnterTextInFieldCandidatePaging(t *testing.T) {
 		// after first page-down: still no match
 		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true, Candidates: nil},
 		// after second page-down: candidate found
-		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true, Candidates: []textInputCandidateClick{{X: 500, Y: 800, Text: "你"}}},
-		// after clicking candidate: committed
+		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true, Candidates: []textInputCandidateSelection{{Offset: 0, Text: "你"}}},
+		// after keyboard-confirming candidate: committed
 		{FieldText: "你"},
 		// second segment "hao" typed, analyze
-		{ObservedMode: textInputModeComposition, FieldText: "你", CompositionPending: true, Candidates: []textInputCandidateClick{{X: 500, Y: 800, Text: "好"}}},
-		// after clicking: committed
+		{ObservedMode: textInputModeComposition, FieldText: "你", CompositionPending: true, Candidates: []textInputCandidateSelection{{Offset: 0, Text: "好"}}},
+		// after keyboard-confirming: committed
 		{FieldText: "你好"},
 	}}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
@@ -715,6 +734,105 @@ func TestEnterTextInFieldCandidatePaging(t *testing.T) {
 	}
 	if !hasDown {
 		t.Fatalf("expected page-down tap, keyboard_tap calls=%v", kbTap.calls)
+	}
+}
+
+func TestCompositionExpandsCandidatesBeforeSelectingHiddenTarget(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
+		{
+			ObservedMode:       textInputModeComposition,
+			CompositionPending: true,
+			CandidateExpand:    true,
+		},
+		{
+			ObservedMode:       textInputModeComposition,
+			CompositionPending: true,
+			Candidates:         []textInputCandidateSelection{{Offset: 2, Text: "是一个硬件智能"}},
+		},
+		{FieldText: "是一个硬件智能", TargetMatched: true},
+	}}
+	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	engine := newFastTextInputEngine(textInputHardwareDeps{
+		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  kbTap,
+		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+
+	committed, _, _, _, _, err := engine.typeCompositionWithCandidateSelection(
+		context.Background(),
+		"ios",
+		enterTextInFieldArgs{Text: "是一个硬件智能"},
+		[]string{"shi", "yi", "ge", "ying", "jian", "zhi", "neng"},
+	)
+	if err != nil || !committed {
+		t.Fatalf("typeCompositionWithCandidateSelection() committed=%v err=%v", committed, err)
+	}
+	if len(kbTap.calls) != 4 {
+		t.Fatalf("keyboard taps=%v, want Down, Right, Right, Space", kbTap.calls)
+	}
+	for index, want := range []string{"down", "right", "right", "space"} {
+		if !strings.Contains(kbTap.calls[index], want) {
+			t.Fatalf("keyboard tap %d=%q, want %q; all=%v", index, kbTap.calls[index], want, kbTap.calls)
+		}
+	}
+}
+
+func TestSelectCandidateByKeyboardUsesLeftForNegativeOffset(t *testing.T) {
+	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	engine := newFastTextInputEngine(textInputHardwareDeps{keyboardTap: kbTap}, &stubTextInputVision{})
+	if err := engine.selectCandidateByKeyboard(context.Background(), textInputCandidateSelection{Offset: -2, Text: "目标"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(kbTap.calls) != 3 {
+		t.Fatalf("keyboard taps=%v, want Left, Left, Space", kbTap.calls)
+	}
+	for index, want := range []string{"left", "left", "space"} {
+		if !strings.Contains(kbTap.calls[index], want) {
+			t.Fatalf("keyboard tap %d=%q, want %q", index, kbTap.calls[index], want)
+		}
+	}
+}
+
+func TestCompositionContinuesSelectingWhileCandidateStateRemains(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
+		{
+			ObservedMode:       textInputModeComposition,
+			CompositionPending: true,
+			Candidates:         []textInputCandidateSelection{{Offset: 0, Text: "我们"}},
+		},
+		{
+			ObservedMode:       textInputModeComposition,
+			FieldText:          "我们",
+			CompositionPending: true,
+			Candidates:         []textInputCandidateSelection{{Offset: 1, Text: "大概率"}},
+		},
+		{FieldText: "我们大概率", TargetMatched: true},
+	}}
+	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	engine := newFastTextInputEngine(textInputHardwareDeps{
+		keyboardTap:  kbTap,
+		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+
+	committed, _, _, _, _, err := engine.typeCompositionWithCandidateSelection(
+		context.Background(),
+		"ios",
+		enterTextInFieldArgs{Text: "我们大概率"},
+		[]string{"wo", "men", "da", "gai", "lv"},
+	)
+	if err != nil || !committed {
+		t.Fatalf("typeCompositionWithCandidateSelection() committed=%v err=%v", committed, err)
+	}
+	spaceCount := 0
+	for _, call := range kbTap.calls {
+		if strings.Contains(call, "space") {
+			spaceCount++
+		}
+	}
+	if spaceCount != 2 {
+		t.Fatalf("keyboard taps=%v, want two candidate confirmations", kbTap.calls)
 	}
 }
 

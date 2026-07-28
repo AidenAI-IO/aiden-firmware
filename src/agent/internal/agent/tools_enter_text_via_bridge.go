@@ -53,7 +53,6 @@ type textViaBridgeResult struct {
 	FieldText         string
 	PostSendFieldText string
 	VLMCalls          int
-	Steps             []string
 	Err               error
 }
 
@@ -123,13 +122,12 @@ func (t *EnterTextViaBridgeTool) call(ctx context.Context, input string) (string
 	if platform == "" {
 		platform = "android"
 	}
-	args.Text = strings.TrimSpace(args.Text)
 	result := enterTextInFieldResult{
 		TargetText:   args.Text,
 		RequiredMode: string(requiredTextInputMode(args.Text)),
 		Attempts:     1,
 	}
-	if args.Text == "" {
+	if strings.TrimSpace(args.Text) == "" {
 		result.Reason = "text is required"
 		return jsonString(result), nil
 	}
@@ -185,7 +183,6 @@ func textViaBridgeResultToFieldResult(text string, bridgeResult textViaBridgeRes
 	result.FieldText = bridgeResult.FieldText
 	result.PostSendFieldText = bridgeResult.PostSendFieldText
 	result.VLMCalls = bridgeResult.VLMCalls
-	result.Steps = bridgeResult.Steps
 	result.OK = bridgeResult.Committed
 	if sendAfterCommit {
 		result.OK = bridgeResult.Committed && bridgeResult.SendVerified
@@ -273,16 +270,15 @@ func (t *EnterTextViaBridgeTool) runTargetPreservingClipboardFlow(ctx context.Co
 		return textViaBridgeResult{Err: fmt.Errorf("phone bridge is not configured")}
 	}
 	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
-	preserved, preserveSteps, preserveErr := t.writeClipboardPreservingTarget(ctx, bridge, platform, args.Text)
+	preserved, _, preserveErr := t.writeClipboardPreservingTarget(ctx, bridge, platform, args.Text)
 	if preserveErr != nil {
-		return textViaBridgeResult{Attempted: true, Steps: preserveSteps, Err: preserveErr}
+		return textViaBridgeResult{Attempted: true, Err: preserveErr}
 	}
 	if !preserved {
 		return textViaBridgeResult{}
 	}
 	result := t.focusPasteVerify(ctx, engine, platform, args)
 	result.Attempted = true
-	result.Steps = append(preserveSteps, result.Steps...)
 	return result
 }
 
@@ -290,7 +286,6 @@ func (t *EnterTextViaBridgeTool) runPreparedClipboardPasteFlow(ctx context.Conte
 	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
 	result := t.focusPasteVerify(ctx, engine, platform, args)
 	result.Attempted = true
-	result.Steps = append([]string{"clipboard-first: using prepared clipboard in current app"}, result.Steps...)
 	return result
 }
 
@@ -300,12 +295,11 @@ func (t *EnterTextViaBridgeTool) runBackgroundClipboardQueueFlow(ctx context.Con
 		return textViaBridgeResult{Attempted: true, Err: fmt.Errorf("phone bridge is not configured")}
 	}
 	if err := t.writeClipboard(ctx, bridge, args.Text); err != nil {
-		return textViaBridgeResult{Attempted: true, Steps: []string{"clipboard-first: background clipboard write failed"}, Err: err}
+		return textViaBridgeResult{Attempted: true, Err: err}
 	}
 	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
 	result := t.focusPasteVerify(ctx, engine, platform, args)
 	result.Attempted = true
-	result.Steps = append([]string{"clipboard-first: wrote clipboard through background bridge queue"}, result.Steps...)
 	return result
 }
 
@@ -315,38 +309,32 @@ func (t *EnterTextViaBridgeTool) runLegacyBridgeFlow(ctx context.Context, platfo
 		return textViaBridgeResult{Attempted: true, Err: fmt.Errorf("phone bridge is not configured")}
 	}
 	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
-	restoreSteps, restoreCalls, restoreErr := t.restoreBridgeAppIfNeeded(ctx, bridge, platform)
-	steps := append([]string{}, restoreSteps...)
+	_, restoreCalls, restoreErr := t.restoreBridgeAppIfNeeded(ctx, bridge, platform)
 	vlmCalls := restoreCalls
 	if restoreErr != nil {
-		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: steps, Err: restoreErr}
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Err: restoreErr}
 	}
 	bridge = t.currentBridge()
 	if bridge == nil || !bridge.Connected() {
-		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: steps, Err: fmt.Errorf("phone bridge did not connect")}
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Err: fmt.Errorf("phone bridge did not connect")}
 	}
 	if err := t.writeClipboard(ctx, bridge, args.Text); err != nil {
-		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: append(steps, "clipboard write failed"), Err: err}
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Err: err}
 	}
-	steps = append(steps, "clipboard-first: wrote clipboard in bridge app")
 	if err := t.sleepAfterClipboardWrite(ctx); err != nil {
-		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: append(steps, "clipboard-first: wait before app switch canceled"), Err: err}
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Err: err}
 	}
-	steps = append(steps, "clipboard-first: waited before app switch")
 	if _, err := t.callQuickAction(ctx, "app_switch", platform); err != nil {
-		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: append(steps, "clipboard-first: return to prior app failed"), Err: err}
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Err: err}
 	}
-	steps = append(steps, "clipboard-first: opened app switcher")
 	returnCalls, err := t.returnToPreviousApp(ctx, engine)
 	vlmCalls += returnCalls
 	if err != nil {
-		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: append(steps, "clipboard-first: select previous app failed"), Err: err}
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Err: err}
 	}
-	steps = append(steps, "clipboard-first: returned to prior app")
 	result := t.focusPasteVerify(ctx, engine, platform, args)
 	result.Attempted = true
 	result.VLMCalls += vlmCalls
-	result.Steps = append(steps, result.Steps...)
 	return result
 }
 
@@ -387,46 +375,29 @@ func (t *EnterTextViaBridgeTool) focusPasteVerify(ctx context.Context, engine *t
 	var result textViaBridgeResult
 	for attempt := 1; attempt <= textViaBridgePasteAttempts; attempt++ {
 		if err := engine.applyFocus(ctx, args.Focus); err != nil {
-			result.Steps = append(result.Steps, "clipboard-first focus failed: "+err.Error())
 			result.Err = err
 			return result
 		}
-		result.Steps = append(result.Steps, fmt.Sprintf("clipboard-first: focused field (attempt %d)", attempt))
-		pasteMethod := ""
 		var pasteErr error
 		if attempt == 1 {
-			var fallbackReason string
-			pasteMethod, fallbackReason, pasteErr = t.pasteClipboard(ctx, platform)
-			if fallbackReason != "" && pasteErr == nil {
-				result.Steps = append(result.Steps, "clipboard-first: quick_action paste failed, used keyboard fallback: "+fallbackReason)
-			}
-			if pasteErr != nil {
-				result.Steps = append(result.Steps, "clipboard-first: shortcut paste reported an error; observing field before fallback: "+pasteErr.Error())
-			}
+			_, _, pasteErr = t.pasteClipboard(ctx, platform)
 		} else {
-			var menuSteps []string
 			var calls int
 			var err error
-			pasteMethod, calls, menuSteps, err = t.pasteViaContextMenu(ctx, engine, platform, args.Focus)
+			_, calls, _, err = t.pasteViaContextMenu(ctx, engine, platform, args.Focus)
 			result.VLMCalls += calls
-			result.Steps = append(result.Steps, menuSteps...)
 			if err != nil {
-				result.Steps = append(result.Steps, "clipboard-first context-menu paste failed")
 				result.Err = err
 				return result
 			}
 		}
-		if pasteErr == nil {
-			result.Steps = append(result.Steps, fmt.Sprintf("clipboard-first: %s-pasted clipboard (attempt %d)", pasteMethod, attempt))
-		}
 		if err := t.sleepAfterPaste(ctx); err != nil {
-			result.Steps = append(result.Steps, "clipboard-first: wait after paste canceled")
 			result.Err = err
 			return result
 		}
 		analysis, calls, analyzeSteps, err := engine.analyzeScreen(ctx, platform, args, nil)
 		result.VLMCalls += calls
-		result.Steps = append(result.Steps, analyzeSteps...)
+		_ = analyzeSteps
 		if err != nil {
 			result.Err = err
 			return result
@@ -440,23 +411,17 @@ func (t *EnterTextViaBridgeTool) focusPasteVerify(ctx context.Context, engine *t
 				result.SendVerified = verified
 				result.PostSendFieldText = postFieldText
 				result.VLMCalls += calls
-				result.Steps = append(result.Steps, sendSteps...)
+				_ = sendSteps
 				result.Err = err
 			}
 			return result
 		} else {
-			result.Steps = append(result.Steps, fmt.Sprintf("clipboard-first: field verify failed after paste attempt %d", attempt))
 			result.FieldText = analysis.FieldText
 			if strings.TrimSpace(analysis.FieldText) != "" {
-				result.Steps = append(result.Steps, "clipboard-first: not retrying paste because field already contains unverified text")
 				return result
 			}
 			if attempt == 1 {
-				if pasteErr != nil {
-					result.Steps = append(result.Steps, "clipboard-first: fresh observation confirmed the shortcut had no visible effect; trying long-press Paste menu")
-				} else {
-					result.Steps = append(result.Steps, "clipboard-first: shortcut paste had no visible effect; trying long-press Paste menu")
-				}
+				_ = pasteErr
 			}
 		}
 	}
@@ -675,9 +640,6 @@ func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, b
 		sleep:            t.sleep,
 	})
 	vlmCalls += openResult.VLMCalls
-	for _, step := range openResult.Steps {
-		steps = append(steps, "clipboard-first: "+step)
-	}
 	if err != nil {
 		return steps, vlmCalls, err
 	}

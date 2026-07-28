@@ -27,7 +27,7 @@ func (t *EnterTextInFieldTool) Description() string {
 		`Prefer this over keyboard_text for any input field entry; keyboard_text is ASCII-only and has no field verification. ` +
 		`Precondition: the latest screenshot must clearly show the actual editable field or composer, and focus coordinates must be inside that visible field. Opening an app, folder/list view, or screen that only shows a create/new button is not enough; first create or open the document/message and observe its editor. Never use a guessed blank-space coordinate. ` +
 		`Use this for search fields, contact lookup, short text when no target-preserving Phone Bridge clipboard path is available, and normal IME/pinyin entry. When runtime app_text_entry_strategy is target_preserving_bridge, do not use this for non-search CJK/non-ASCII, multiline, or final composer text; call enter_text_via_bridge directly and pass the reported app_platform. For a user request to send, reply, or message from an already-open composer, set send_after_commit=true. ` +
-		`Returns committed:true only when the exact target text is fully committed in the input field. Report success only when committed:true and field_text matches target exactly. ` +
+		`Returns committed:true only when vision confirms the target text is fully committed in the input field. field_text is diagnostic visual transcription and is not used for code-point equality. ` +
 		`Focus coordinates use the same coord_space system as touch/click tools; prefer normalized coordinates from the latest screenshot.`
 }
 
@@ -72,7 +72,6 @@ func (t *EnterTextInFieldTool) call(ctx context.Context, input string) (string, 
 			return jsonString(finalizeEnterTextInFieldResult(bridgeResult, args.SendAfterCommit)), nil
 		}
 		if attempted && strings.TrimSpace(bridgeResult.FieldText) != "" {
-			bridgeResult.Steps = append(bridgeResult.Steps, "clipboard-first: preserving unverified field text until a fresh observation identifies a concrete mismatch")
 			if strings.TrimSpace(bridgeResult.Reason) != "" {
 				bridgeResult.Reason += "; fresh observation required before corrective input"
 			} else {
@@ -126,15 +125,7 @@ func finalizeEnterTextInFieldResult(result enterTextInFieldResult, sendAfterComm
 func mergeClipboardFallbackResult(clipboardResult, fallbackResult enterTextInFieldResult) enterTextInFieldResult {
 	merged := fallbackResult
 	merged.VLMCalls += clipboardResult.VLMCalls
-	steps := append([]string{}, clipboardResult.Steps...)
 	reason := strings.TrimSpace(clipboardResult.Reason)
-	if reason != "" {
-		steps = append(steps, "clipboard-first: falling back to HID/IME: "+reason)
-	} else {
-		steps = append(steps, "clipboard-first: falling back to HID/IME")
-	}
-	steps = append(steps, fallbackResult.Steps...)
-	merged.Steps = steps
 	if !merged.Committed && reason != "" {
 		fallbackReason := strings.TrimSpace(merged.Reason)
 		guidance := "clipboard path failed; continue with same target field and latest screenshot evidence"
