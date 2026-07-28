@@ -201,6 +201,9 @@ llm_http_retention_days = 14
 		t.Fatalf("audio.socket = %q, want default %q",
 			dto.Audio.Socket, agent.DefaultConfig().Audio.Socket)
 	}
+	if dto.Audio.PlaybackBackend != agent.AudioPlaybackBackendAudioService {
+		t.Fatalf("audio.playback_backend = %q, want audio_service", dto.Audio.PlaybackBackend)
+	}
 	if dto.Log.LLMHTTPRetentionDays != 14 {
 		t.Fatalf("log.llm_http_retention_days = %d, want 14", dto.Log.LLMHTTPRetentionDays)
 	}
@@ -215,7 +218,8 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 		t.Fatalf("search provider = %q, want duckduckgo", defaults.Search.Provider)
 	}
 	if defaults.Audio.Socket == "" || defaults.Audio.SampleRate == 0 ||
-		defaults.Audio.Channels == 0 || defaults.Audio.BitWidth == 0 {
+		defaults.Audio.Channels == 0 || defaults.Audio.BitWidth == 0 ||
+		defaults.Audio.PlaybackBackend == "" {
 		t.Fatalf("audio defaults were not populated: %+v", defaults.Audio)
 	}
 	if defaults.AudioArchive.Enabled || defaults.AudioArchive.StoragePath == "" ||
@@ -284,6 +288,26 @@ func TestWebConfigDTOMapsAudioArchive(t *testing.T) {
 	if roundTrip.AudioArchive.Enabled || roundTrip.AudioArchive.MaxFiles != 42 ||
 		roundTrip.AudioArchive.MaxSizeMB != 17 || roundTrip.AudioArchive.StoragePath != "/tmp/audio-archive" {
 		t.Fatalf("round-trip AudioArchive = %+v, want DTO values", roundTrip.AudioArchive)
+	}
+}
+
+func TestWebConfigDTOMapsAudioPlaybackBackend(t *testing.T) {
+	dto := webConfigDTO{
+		Audio: audioDTO{
+			Socket:          "/tmp/audio.sock",
+			SampleRate:      24000,
+			Channels:        1,
+			BitWidth:        16,
+			PlaybackBackend: agent.AudioPlaybackBackendLocal,
+		},
+	}
+	cfg := dto.toAgentConfig()
+	if cfg.Audio.PlaybackBackend != agent.AudioPlaybackBackendLocal {
+		t.Fatalf("Audio.PlaybackBackend = %q, want local", cfg.Audio.PlaybackBackend)
+	}
+	roundTrip := webConfigDTOFromAgentConfig(agent.Config{Audio: cfg.Audio})
+	if roundTrip.Audio.PlaybackBackend != agent.AudioPlaybackBackendLocal {
+		t.Fatalf("round-trip audio.playback_backend = %q, want local", roundTrip.Audio.PlaybackBackend)
 	}
 }
 

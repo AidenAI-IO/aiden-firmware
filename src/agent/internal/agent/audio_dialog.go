@@ -30,6 +30,7 @@ type AudioDialog struct {
 	audioClient         *AudioServiceClient
 	sttClient           STTClient
 	ttsManager          *tts.ProviderManager
+	ttsPlaybackBackend  tts.AudioServiceBackend
 	vad                 *AudioVAD
 	recordMu            sync.Mutex
 	recordActive        bool
@@ -196,13 +197,14 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	}
 
 	return &AudioDialog{
-		config:       cfg,
-		audioClient:  audioClient,
-		sttClient:    sttClient,
-		ttsManager:   ttsManager,
-		vad:          vad,
-		audioArchive: NewAudioArchiveManager(cfg.AudioArchive),
-		connWarmer:   connWarmer,
+		config:             cfg,
+		audioClient:        audioClient,
+		sttClient:          sttClient,
+		ttsManager:         ttsManager,
+		ttsPlaybackBackend: newTTSPlaybackBackendFromConfig(cfg, audioClient, nil),
+		vad:                vad,
+		audioArchive:       NewAudioArchiveManager(cfg.AudioArchive),
+		connWarmer:         connWarmer,
 	}, nil
 }
 
@@ -587,7 +589,7 @@ func (d *AudioDialog) beginManagedTTSStreamForRun(ctx context.Context) (*streamS
 		ctx = context.Background()
 	}
 	streamCtx, streamCancel := context.WithCancel(ctx)
-	stream, err := beginManagedTTSStream(streamCtx, d.ttsManager, d.audioClient, d.config)
+	stream, err := beginManagedTTSStream(streamCtx, d.ttsManager, d.currentTTSPlaybackBackend(), d.config)
 	if err != nil {
 		streamCancel()
 		return nil, nil, nil, err
@@ -1161,7 +1163,23 @@ func (d *AudioDialog) SpeakFinal(ctx context.Context, text string, interrupt <-c
 }
 
 func (d *AudioDialog) CanSpeakFinalText() bool {
-	return d != nil && d.audioClient != nil && (d.ttsManager != nil || canPlayTTSUnavailableFallback(d.config))
+	return d != nil && d.currentTTSPlaybackBackend() != nil && (d.ttsManager != nil || canPlayTTSUnavailableFallback(d.config))
+}
+
+func (d *AudioDialog) currentTTSPlaybackBackend() tts.AudioServiceBackend {
+	if d == nil {
+		return nil
+	}
+	if d.ttsPlaybackBackend != nil {
+		if backend, ok := d.ttsPlaybackBackend.(*audioBackend); ok && d.audioClient != nil && backend.c != d.audioClient {
+			return newAudioBackend(d.audioClient)
+		}
+		return d.ttsPlaybackBackend
+	}
+	if d.audioClient == nil {
+		return nil
+	}
+	return newAudioBackend(d.audioClient)
 }
 
 func (d *AudioDialog) ConfigureRuntimeTools(ctx context.Context, runtime *Runtime) context.Context {
@@ -1206,9 +1224,9 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 	if d.ttsManager == nil && !allowFallback {
 		return nil
 	}
-	if d.audioClient == nil {
+	if d.currentTTSPlaybackBackend() == nil {
 		if allowFallback {
-			return fmt.Errorf("audio service is not configured")
+			return fmt.Errorf("tts playback backend is not configured")
 		}
 		return nil
 	}
@@ -1241,7 +1259,7 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 	ttsErr := errTTSNotConfigured
 	if d.ttsManager != nil {
 		log.Printf("[tts] Starting streaming playback...\n")
-		speechStarted, ttsErr = speakWithTTSManagerObserved(speakCtx, d.ttsManager, d.audioClient, d.config, text, func(stream *streamSessionWriter) func() {
+		speechStarted, ttsErr = speakWithTTSManagerObserved(speakCtx, d.ttsManager, d.currentTTSPlaybackBackend(), d.config, text, func(stream *streamSessionWriter) func() {
 			stream.setCancel(cancelOutput)
 			output.setStream(stream)
 			return func() {

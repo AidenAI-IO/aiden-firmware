@@ -247,6 +247,7 @@ static const char* CONFIG_WEB_HTML =
     "            <div class=\"field\"><label>sample_rate</label><input id=\"audio_sample_rate\" type=\"number\" data-section=\"audio\"></div>\n"
     "            <div class=\"field\"><label>channels</label><input id=\"audio_channels\" type=\"number\" data-section=\"audio\"></div>\n"
     "            <div class=\"field\"><label>bit_width</label><input id=\"audio_bit_width\" type=\"number\" data-section=\"audio\"></div>\n"
+    "            <div class=\"field\"><label>playback_backend</label><select id=\"audio_playback_backend\" data-section=\"audio\"></select></div>\n"
     "          </div>\n"
     "        </div>\n"
     "        <div class=\"section-card\" id=\"section-audio_archive\">\n"

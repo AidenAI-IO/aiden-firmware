@@ -98,6 +98,13 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 				"search":{"provider":"google"},"agent":{}}`,
 			wantInField: "search.provider",
 		},
+		{
+			name: "invalid audio playback backend",
+			payload: `{"model":{"provider":"openai","model":"gpt-4"},
+				"search":{"provider":"duckduckgo"},
+				"audio":{"playback_backend":"speaker"},"agent":{}}`,
+			wantInField: "audio.playback_backend",
+		},
 	}
 
 	for _, tc := range invalidCases {

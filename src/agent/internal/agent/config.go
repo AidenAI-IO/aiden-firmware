@@ -401,10 +401,11 @@ type STTConfig struct {
 }
 
 type AudioConfig struct {
-	Socket     string `toml:"socket,omitempty"`
-	SampleRate int    `toml:"sample_rate,omitempty"`
-	Channels   int    `toml:"channels,omitempty"`
-	BitWidth   int    `toml:"bit_width,omitempty"`
+	Socket          string `toml:"socket,omitempty"`
+	SampleRate      int    `toml:"sample_rate,omitempty"`
+	Channels        int    `toml:"channels,omitempty"`
+	BitWidth        int    `toml:"bit_width,omitempty"`
+	PlaybackBackend string `toml:"playback_backend,omitempty"`
 }
 
 type ProxyConfig struct {
@@ -494,6 +495,39 @@ func (a AudioConfig) BitWidthOrDefault() int {
 		return a.BitWidth
 	}
 	return defaultAudioBitWidth
+}
+
+const (
+	AudioPlaybackBackendAuto         = "auto"
+	AudioPlaybackBackendAudioService = "audio_service"
+	AudioPlaybackBackendLocal        = "local"
+)
+
+func normalizeAudioPlaybackBackend(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", AudioPlaybackBackendAuto:
+		return AudioPlaybackBackendAuto, nil
+	case AudioPlaybackBackendAudioService, "audio-service", "audioservice":
+		return AudioPlaybackBackendAudioService, nil
+	case AudioPlaybackBackendLocal, "pc", "desktop":
+		return AudioPlaybackBackendLocal, nil
+	default:
+		return "", fmt.Errorf("invalid audio.playback_backend: %s (expected auto, audio_service, or local)", value)
+	}
+}
+
+func (c Config) AudioPlaybackBackendOrDefault() string {
+	backend, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend)
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(c.Audio.PlaybackBackend))
+	}
+	if backend != AudioPlaybackBackendAuto {
+		return backend
+	}
+	if c.HID.InputBackendADB() || c.EnvironmentBridge.Enabled {
+		return AudioPlaybackBackendLocal
+	}
+	return AudioPlaybackBackendAudioService
 }
 
 type HIDConfig struct {
@@ -1020,6 +1054,9 @@ func (c Config) Validate() error {
 	case "hdmi":
 	default:
 		return fmt.Errorf("invalid device.backend: %s (expected hdmi)", c.Device.Backend)
+	}
+	if _, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend); err != nil {
+		return err
 	}
 	if c.Model.MaxResponseTokens < 0 {
 		return fmt.Errorf("model.max_response_tokens must be >= 0, got %d", c.Model.MaxResponseTokens)
