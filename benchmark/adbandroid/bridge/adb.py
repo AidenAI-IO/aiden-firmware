@@ -18,6 +18,12 @@ from typing import Any
 
 DEFAULT_SCREENSHOT_MAX_WIDTH = 720
 DEFAULT_JPEG_QUALITY = 75
+WINDOW_XML_REMOTE_PATH = "/sdcard/aiden-window.xml"
+PREFERRED_ASCII_INPUT_METHODS = (
+    "org.pocketworkstation.pckeyboard/.LatinIME",
+    "com.android.inputmethod.latin/.LatinIME",
+)
+DEFAULT_TEXT_RESTORE_WAIT_SEC = 0.08
 
 # Characters adb `input text` can type reliably on a US keyboard layout.
 # Deliberately excludes newline/tab (input text cannot type them) and any
@@ -177,7 +183,60 @@ class ADBAndroidDevice:
             )
         if text == "":
             raise ValueError("text is required")
-        self._run(["shell", "input", "text", escape_adb_text(text)])
+        restore_ime = self._switch_to_ascii_input_method()
+        try:
+            self._run(["shell", "input", "text", escape_adb_text(text)])
+        finally:
+            self._restore_input_method(restore_ime)
+
+    def dump_window_xml(self) -> str:
+        """Return the current Android UI hierarchy XML."""
+        try:
+            self._run_text(["shell", "uiautomator", "dump", WINDOW_XML_REMOTE_PATH], timeout=5)
+            xml = self._run_text(["shell", "cat", WINDOW_XML_REMOTE_PATH], timeout=5)
+        finally:
+            try:
+                self._run(["shell", "rm", "-f", WINDOW_XML_REMOTE_PATH], timeout=2)
+            except ADBCommandError:
+                pass
+        if "<hierarchy" not in xml:
+            raise ADBCommandError("uiautomator dump did not produce hierarchy XML")
+        return xml
+
+    def current_input_method(self) -> str:
+        return self._run_text(["shell", "settings", "get", "secure", "default_input_method"], timeout=5).strip()
+
+    def list_input_methods(self) -> list[str]:
+        output = self._run_text(["shell", "ime", "list", "-s"], timeout=5)
+        return [line.strip() for line in output.splitlines() if line.strip()]
+
+    def set_input_method(self, ime_id: str) -> None:
+        output = self._run_text(["shell", "ime", "set", ime_id], timeout=5)
+        if "error" in output.lower():
+            raise ADBCommandError(f"set input method {ime_id!r} failed: {output.strip()}")
+
+    def _switch_to_ascii_input_method(self) -> str:
+        try:
+            original_ime = self.current_input_method()
+            if original_ime in PREFERRED_ASCII_INPUT_METHODS:
+                return ""
+            enabled_imes = set(self.list_input_methods())
+            preferred = next((ime for ime in PREFERRED_ASCII_INPUT_METHODS if ime in enabled_imes), "")
+            if not preferred or preferred == original_ime:
+                return ""
+            self.set_input_method(preferred)
+            return original_ime
+        except ADBCommandError:
+            return ""
+
+    def _restore_input_method(self, ime_id: str) -> None:
+        if not ime_id or ime_id.lower() == "null":
+            return
+        time.sleep(DEFAULT_TEXT_RESTORE_WAIT_SEC)
+        try:
+            self.set_input_method(ime_id)
+        except ADBCommandError:
+            pass
 
     def start_settings(self) -> None:
         self._run(["shell", "am", "start", "-a", "android.settings.SETTINGS"])

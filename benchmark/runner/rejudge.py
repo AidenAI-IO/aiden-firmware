@@ -15,8 +15,8 @@ def _post_screenshot_path(attempt_dir: Path) -> Path:
     return legacy_steps[-1] if legacy_steps else post
 
 
-def rejudge_run(run_dir: Path, judge_model: str) -> int:
-    cfg = JudgeConfig(model=judge_model)
+def rejudge_run(run_dir: Path, judge_model: str, judge_base_url: str) -> int:
+    cfg = JudgeConfig(model=judge_model, base_url=judge_base_url)
     cache = run_dir / "_judge_cache"
     new_results = []
     for line in (run_dir / "results.jsonl").read_text("utf-8").splitlines():

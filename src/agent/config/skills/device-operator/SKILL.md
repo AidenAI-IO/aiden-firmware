@@ -60,6 +60,7 @@ Prefer the highest-level reliable tool for the job:
 - Use `touch_gesture` for mobile taps, swipes, drag, back, and home gestures.
 - For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `keyboard_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text_in_field` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
+- Before entering English/ASCII text into any field, inspect the visible keyboard language. If a Chinese IME is active, for example the space bar says `拼音` or candidate/preedit text is shown, first switch to the English/Latin keyboard with the globe/input-method key, then type. Do not use `keyboard_text` while English text remains in Chinese IME preedit/candidate state.
 - Use `keyboard_tap` for enter, escape, tab, arrows, shortcuts, and simple key actions.
 - Use `keyboard_text` only for simple standalone ASCII typing outside picker/wheel controls. Never use it for picker values, Chinese/CJK, or emoji field entry.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch-style controls are not appropriate.
@@ -100,6 +101,7 @@ Required pattern:
 - `committed:false` means failure; do not tell the user text was entered.
 - For Chinese/CJK composition, provide `segments` as romanization syllables in typing order, e.g. `"你好"` -> `["ni","hao"]`.
 - Never pass Chinese, emoji, or romanization blobs to `keyboard_text`.
+- When English text must be entered while a Chinese IME is active, switch to the English/Latin keyboard first, commonly via the globe/input-method key. Do not leave the English text in Chinese IME preedit/candidate state.
 - If text remains in the IME candidate/preedit area instead of the field, retry once with corrected focus/segments or report the blocker.
 
 Use `enter_text_via_bridge` only when:

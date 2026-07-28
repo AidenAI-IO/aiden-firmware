@@ -252,15 +252,8 @@
           ]
         },
         "android": {
-          "status": "active",
-          "steps": [
-            { "tool": "keyboard_tap", "input": { "keys": ["meta"] }, "delay_ms_after": 600 },
-            { "tool": "keyboard_tap", "input": { "keys": ["ctrl", "a"] }, "delay_ms_after": 60 },
-            { "tool": "keyboard_tap", "input": { "keys": ["backspace"] }, "delay_ms_after": 60 },
-            { "tool": "keyboard_tap", "input": { "keys": ["ctrl", "a"] }, "delay_ms_after": 60 },
-            { "tool": "keyboard_tap", "input": { "keys": ["backspace"] } }
-          ],
-          "note": "verified: Meta alone opens app / global search, then Ctrl+A Backspace twice to clear stale query"
+          "status": "reserved",
+          "note": "spotlight_search is not available on all android phones"
         },
         "mac": {
           "status": "active",
