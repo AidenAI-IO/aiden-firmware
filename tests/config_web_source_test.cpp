@@ -329,6 +329,22 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web links to wetty browser terminal") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("id=\\\"terminalLink\\\"") != std::string::npos);
+    CHECK(html.find("Terminal") != std::string::npos);
+    CHECK(html.find(":3000/wetty/") != std::string::npos);
+    CHECK(html.find("function configureTerminalLink()") != std::string::npos);
+    CHECK(html.find("configureTerminalLink();let metaOk=true") != std::string::npos);
+}
+
 TEST_CASE("config web auto-scrolls agent logs only while pinned to bottom") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());

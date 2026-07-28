@@ -1,0 +1,122 @@
+#!/bin/sh
+# Browser terminal powered by wetty.
+
+BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
+ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
+NODE_BIN=${NODE_BIN:-/usr/bin/node}
+WETTY_BIN=${WETTY_BIN:-/usr/bin/wetty}
+PID_FILE=${WETTY_PID_FILE:-/run/wetty.pid}
+LOG_PATH=${WETTY_LOG_PATH:-/var/log/wetty/wetty.log}
+WETTY_HOST=${WETTY_HOST:-192.168.42.1}
+WETTY_PORT=${WETTY_PORT:-3000}
+WETTY_BASE=${WETTY_BASE:-/wetty/}
+WETTY_TITLE=${WETTY_TITLE:-Aiden Shell}
+WETTY_COMMAND=${WETTY_COMMAND:-/bin/login}
+
+if [ -f "$BOOT_CONF" ]; then
+    . "$BOOT_CONF"
+fi
+: "${ENABLE_WETTY:=1}"
+
+is_running() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    case "$cmd" in
+        *wetty*) return 0 ;;
+    esac
+    return 1
+}
+
+current_pid() {
+    [ -f "$PID_FILE" ] || return
+    pid="$(cat "$PID_FILE" 2>/dev/null)"
+    case "$pid" in
+        ''|*[!0-9]*) return ;;
+    esac
+    echo "$pid"
+}
+
+start() {
+    if [ "$ENABLE_WETTY" != "1" ]; then
+        echo "wetty disabled by config (ENABLE_WETTY=$ENABLE_WETTY)"
+        return 0
+    fi
+
+    pid="$(current_pid)"
+    if is_running "$pid"; then
+        echo "wetty already running (pid $pid)"
+        return 0
+    fi
+
+    if [ ! -x "$NODE_BIN" ]; then
+        echo "node not found at $NODE_BIN"
+        return 1
+    fi
+    if [ ! -x "$WETTY_BIN" ]; then
+        echo "wetty not found at $WETTY_BIN"
+        return 1
+    fi
+    if [ ! -x "$ENV_RUN_BIN" ]; then
+        echo "Environment wrapper not found at $ENV_RUN_BIN"
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$PID_FILE")" "$(dirname "$LOG_PATH")"
+    chmod 0755 "$(dirname "$PID_FILE")" "$(dirname "$LOG_PATH")" 2>/dev/null || true
+
+    "$ENV_RUN_BIN" "$WETTY_BIN" \
+        --host "$WETTY_HOST" \
+        --port "$WETTY_PORT" \
+        --base "$WETTY_BASE" \
+        --title "$WETTY_TITLE" \
+        --command "$WETTY_COMMAND" \
+        >> "$LOG_PATH" 2>&1 &
+    child_pid=$!
+    echo "$child_pid" > "$PID_FILE"
+    sleep 1
+
+    pid="$(current_pid)"
+    if ! is_running "$pid"; then
+        rm -f "$PID_FILE"
+        echo "Failed to start wetty; see $LOG_PATH"
+        return 1
+    fi
+
+    echo "Started wetty (pid $pid, http://$WETTY_HOST:$WETTY_PORT$WETTY_BASE)"
+}
+
+stop() {
+    pid="$(current_pid)"
+    if is_running "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        i=0
+        while is_running "$pid" && [ "$i" -lt 5 ]; do
+            sleep 1
+            i="$((i + 1))"
+        done
+        is_running "$pid" && kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE"
+    echo "Stopped wetty"
+}
+
+status() {
+    pid="$(current_pid)"
+    echo "log_path=$LOG_PATH"
+    if is_running "$pid"; then
+        echo "wetty=running pid=$pid addr=$WETTY_HOST:$WETTY_PORT base=$WETTY_BASE"
+    else
+        echo "wetty=stopped"
+    fi
+}
+
+case "${1:-}" in
+    start)          start ;;
+    stop)           stop ;;
+    restart|reload) stop; start ;;
+    status)         status ;;
+    *) echo "Usage: $0 {start|stop|restart|reload|status}" >&2; exit 1 ;;
+esac
