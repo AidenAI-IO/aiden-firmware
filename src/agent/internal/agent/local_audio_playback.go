@@ -24,12 +24,13 @@ const (
 )
 
 type localAudioPlaybackBackend struct {
-	mu              sync.Mutex
-	playerAdmission sync.Mutex
-	nextID          uint64
-	sessions        map[uint64]*localAudioPlaybackSession
-	player          *localAudioPlayer
-	logger          *Logger
+	mu                       sync.Mutex
+	playerAdmission          sync.Mutex
+	playerAdmissionBlockedFn func()
+	nextID                   uint64
+	sessions                 map[uint64]*localAudioPlaybackSession
+	player                   *localAudioPlayer
+	logger                   *Logger
 }
 
 type localAudioPlaybackSession struct {
@@ -187,7 +188,7 @@ func (b *localAudioPlaybackBackend) finalizeLocalPlaybackSessionLocked(sessionID
 	if player == nil {
 		return b.failLocalPlaybackSessionLocked(sessionID, session, fmt.Errorf("local audio player is unavailable"))
 	}
-	b.playerAdmission.Lock()
+	b.acquirePlayerAdmission()
 	ctx, cancel := context.WithCancel(context.Background())
 	session.cancel = cancel
 	cmd := localAudioCommandContext(ctx, player.name, player.args(session.path)...)
@@ -209,6 +210,16 @@ func (b *localAudioPlaybackBackend) finalizeLocalPlaybackSessionLocked(sessionID
 		done <- err
 	}(session.path, sessionID, session.done)
 	return nil
+}
+
+func (b *localAudioPlaybackBackend) acquirePlayerAdmission() {
+	if b.playerAdmission.TryLock() {
+		return
+	}
+	if b.playerAdmissionBlockedFn != nil {
+		b.playerAdmissionBlockedFn()
+	}
+	b.playerAdmission.Lock()
 }
 
 func (b *localAudioPlaybackBackend) failLocalPlaybackSessionLocked(sessionID uint64, session *localAudioPlaybackSession, err error) error {

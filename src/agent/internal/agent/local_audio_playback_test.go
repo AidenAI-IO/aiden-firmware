@@ -280,6 +280,7 @@ func TestLocalAudioPlaybackBackendSerializesPlayerAdmission(t *testing.T) {
 
 	releaseFirst := filepath.Join(t.TempDir(), "release-first")
 	starts := make(chan int, 2)
+	admissionBlocked := make(chan struct{}, 1)
 	var startCount int32
 	localAudioCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		idx := int(atomic.AddInt32(&startCount, 1))
@@ -295,6 +296,9 @@ func TestLocalAudioPlaybackBackendSerializesPlayerAdmission(t *testing.T) {
 	}
 
 	backend := newLocalAudioPlaybackBackend(nil)
+	backend.playerAdmissionBlockedFn = func() {
+		admissionBlocked <- struct{}{}
+	}
 	firstID, err := backend.StartPlayback(tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
 	if err != nil {
 		t.Fatalf("first StartPlayback() error = %v", err)
@@ -321,10 +325,11 @@ func TestLocalAudioPlaybackBackendSerializesPlayerAdmission(t *testing.T) {
 	go func() {
 		secondDone <- backend.WritePlayChunk(secondID, []byte{2}, true)
 	}()
+	waitLocalAudioAdmissionBlocked(t, admissionBlocked)
 	select {
 	case got := <-starts:
 		t.Fatalf("second player started before first admission released: start index %d", got)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 
 	if err := os.WriteFile(releaseFirst, []byte("done"), 0600); err != nil {
@@ -369,6 +374,15 @@ func localAudioPlaybackSessionExists(backend *localAudioPlaybackBackend, session
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
 	return backend.sessions[sessionID] != nil
+}
+
+func waitLocalAudioAdmissionBlocked(t *testing.T, blocked <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for local audio admission block")
+	}
 }
 
 func waitLocalAudioStart(t *testing.T, starts <-chan int) int {
