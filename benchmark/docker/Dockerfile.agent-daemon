@@ -2,13 +2,9 @@
 
 FROM golang:1.23-bullseye AS agent-daemon-builder
 
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY} \
-    GOTOOLCHAIN=auto
+# Benchmark builds never use an HTTP proxy; the build must reach Docker Hub /
+# proxy.golang.org / the Debian mirrors directly.
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /build
 
