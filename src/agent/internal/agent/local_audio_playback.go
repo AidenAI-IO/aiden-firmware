@@ -24,11 +24,12 @@ const (
 )
 
 type localAudioPlaybackBackend struct {
-	mu       sync.Mutex
-	nextID   uint64
-	sessions map[uint64]*localAudioPlaybackSession
-	player   *localAudioPlayer
-	logger   *Logger
+	mu              sync.Mutex
+	playerAdmission sync.Mutex
+	nextID          uint64
+	sessions        map[uint64]*localAudioPlaybackSession
+	player          *localAudioPlayer
+	logger          *Logger
 }
 
 type localAudioPlaybackSession struct {
@@ -113,11 +114,12 @@ func (b *localAudioPlaybackBackend) WritePlayChunk(sessionID uint64, data []byte
 		}
 		n, err := session.file.Write(data)
 		if err != nil {
-			return fmt.Errorf("write local playback pcm: %w", err)
+			session.dataBytes += uint64(n)
+			return b.failLocalPlaybackSessionLocked(sessionID, session, fmt.Errorf("write local playback pcm: %w", err))
 		}
 		session.dataBytes += uint64(n)
 		if n != len(data) {
-			return fmt.Errorf("write local playback pcm: wrote %d of %d bytes", n, len(data))
+			return b.failLocalPlaybackSessionLocked(sessionID, session, fmt.Errorf("write local playback pcm: wrote %d of %d bytes", n, len(data)))
 		}
 	}
 	if !isFinal {
@@ -185,15 +187,19 @@ func (b *localAudioPlaybackBackend) finalizeLocalPlaybackSessionLocked(sessionID
 	if player == nil {
 		return b.failLocalPlaybackSessionLocked(sessionID, session, fmt.Errorf("local audio player is unavailable"))
 	}
+	b.playerAdmission.Lock()
 	ctx, cancel := context.WithCancel(context.Background())
 	session.cancel = cancel
 	cmd := localAudioCommandContext(ctx, player.name, player.args(session.path)...)
 	if err := cmd.Start(); err != nil {
+		cancel()
+		b.playerAdmission.Unlock()
 		return b.failLocalPlaybackSessionLocked(sessionID, session, fmt.Errorf("start local audio player %q: %w", player.name, err))
 	}
 	session.done = make(chan error, 1)
 	session.final = true
 	go func(path string, id uint64, done chan<- error) {
+		defer b.playerAdmission.Unlock()
 		err := cmd.Wait()
 		cancel()
 		_ = os.Remove(path)

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -224,6 +225,119 @@ func TestLocalAudioPlaybackBackendFinalizationFailureCleansUp(t *testing.T) {
 	}
 }
 
+func TestLocalAudioPlaybackBackendWriteFailureCleansUp(t *testing.T) {
+	oldLookPath := localAudioLookPath
+	defer func() { localAudioLookPath = oldLookPath }()
+	localAudioLookPath = func(name string) (string, error) {
+		return name, nil
+	}
+
+	backend := newLocalAudioPlaybackBackend(nil)
+	sessionID, err := backend.StartPlayback(tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err != nil {
+		t.Fatalf("StartPlayback() error = %v", err)
+	}
+	session := localAudioPlaybackTestSession(t, backend, sessionID)
+	path := session.path
+	session.mu.Lock()
+	if err := session.file.Close(); err != nil {
+		t.Fatalf("close test wav: %v", err)
+	}
+	session.mu.Unlock()
+
+	err = backend.WritePlayChunk(sessionID, []byte{1, 2}, false)
+	if err == nil || !strings.Contains(err.Error(), "write local playback pcm") {
+		t.Fatalf("WritePlayChunk(write failure) error = %v, want write local playback pcm", err)
+	}
+	session.mu.Lock()
+	failedErr := session.failedErr
+	dataBytes := session.dataBytes
+	session.mu.Unlock()
+	if failedErr == nil {
+		t.Fatal("session.failedErr = nil after write failure")
+	}
+	if dataBytes != 0 {
+		t.Fatalf("session.dataBytes = %d, want 0 for failed zero-byte write", dataBytes)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary wav still exists or stat failed differently: %v", err)
+	}
+	if localAudioPlaybackSessionExists(backend, sessionID) {
+		t.Fatal("failed session still present in backend session map")
+	}
+}
+
+func TestLocalAudioPlaybackBackendSerializesPlayerAdmission(t *testing.T) {
+	oldLookPath := localAudioLookPath
+	oldCommandContext := localAudioCommandContext
+	defer func() {
+		localAudioLookPath = oldLookPath
+		localAudioCommandContext = oldCommandContext
+	}()
+	localAudioLookPath = func(name string) (string, error) {
+		return name, nil
+	}
+
+	releaseFirst := filepath.Join(t.TempDir(), "release-first")
+	starts := make(chan int, 2)
+	var startCount int32
+	localAudioCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		idx := int(atomic.AddInt32(&startCount, 1))
+		starts <- idx
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestLocalAudioPlaybackHelper")
+		cmd.Env = append(os.Environ(), "AIDEN_LOCAL_AUDIO_HELPER=1")
+		if idx == 1 {
+			cmd.Env = append(cmd.Env, "AIDEN_LOCAL_AUDIO_WAIT_FILE="+releaseFirst)
+		} else {
+			cmd.Env = append(cmd.Env, "AIDEN_LOCAL_AUDIO_EXIT=1")
+		}
+		return cmd
+	}
+
+	backend := newLocalAudioPlaybackBackend(nil)
+	firstID, err := backend.StartPlayback(tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err != nil {
+		t.Fatalf("first StartPlayback() error = %v", err)
+	}
+	defer func() { _ = backend.StopPlayback(firstID) }()
+	secondID, err := backend.StartPlayback(tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err != nil {
+		t.Fatalf("second StartPlayback() error = %v", err)
+	}
+	defer func() { _ = backend.StopPlayback(secondID) }()
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- backend.WritePlayChunk(firstID, []byte{1}, true)
+	}()
+	if got := waitLocalAudioStart(t, starts); got != 1 {
+		t.Fatalf("first player start index = %d, want 1", got)
+	}
+	if err := waitLocalAudioDone(t, firstDone); err != nil {
+		t.Fatalf("first WritePlayChunk(final) error = %v", err)
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- backend.WritePlayChunk(secondID, []byte{2}, true)
+	}()
+	select {
+	case got := <-starts:
+		t.Fatalf("second player started before first admission released: start index %d", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := os.WriteFile(releaseFirst, []byte("done"), 0600); err != nil {
+		t.Fatalf("release first player: %v", err)
+	}
+	if got := waitLocalAudioStart(t, starts); got != 2 {
+		t.Fatalf("second player start index = %d, want 2", got)
+	}
+	if err := waitLocalAudioDone(t, secondDone); err != nil {
+		t.Fatalf("second WritePlayChunk(final) error = %v", err)
+	}
+}
+
 func TestWriteWAVHeaderRejectsOversizeData(t *testing.T) {
 	file, err := os.CreateTemp("", "aiden-tts-header-*.wav")
 	if err != nil {
@@ -257,9 +371,44 @@ func localAudioPlaybackSessionExists(backend *localAudioPlaybackBackend, session
 	return backend.sessions[sessionID] != nil
 }
 
+func waitLocalAudioStart(t *testing.T, starts <-chan int) int {
+	t.Helper()
+	select {
+	case got := <-starts:
+		return got
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for local audio player start")
+		return 0
+	}
+}
+
+func waitLocalAudioDone(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for local playback finalization")
+		return nil
+	}
+}
+
 func TestLocalAudioPlaybackHelper(t *testing.T) {
 	if os.Getenv("AIDEN_LOCAL_AUDIO_HELPER") != "1" {
 		return
+	}
+	if os.Getenv("AIDEN_LOCAL_AUDIO_EXIT") == "1" {
+		return
+	}
+	if waitFile := os.Getenv("AIDEN_LOCAL_AUDIO_WAIT_FILE"); waitFile != "" {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(waitFile); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		os.Exit(2)
 	}
 	time.Sleep(5 * time.Second)
 	os.Exit(0)
