@@ -6,19 +6,22 @@ import os
 import re
 import sys
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from runner.agent_client import AgentClient
 from runner.analysis import AnalysisConfig, _int_env, analyze_run
 from runner.html_report import generate_report_html, upload_report
-from runner.judge import JudgeConfig
+from runner.judge import DEFAULT_JUDGE_BASE_URL, JudgeConfig
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
-from runner.reset import ResetError, call_environment_release
+from runner.reset import ResetError, call_environment_release, clear_stale_adb_android_owner
 from runner.runtask import run_one_task, skipped_task_result
 from runner.suite import Suite, TaskSpec, load_suite
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+VALID_TARGET_PLATFORMS = {"ios", "android", "mac"}
 
 
 def wait_for_agent_clock(
@@ -65,6 +68,11 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--agent-config", default="")
     p_run.add_argument("--benchmark-token-file", default="")
     p_run.add_argument("--judge-model", default="claude-sonnet-4-6")
+    p_run.add_argument(
+        "--judge-base-url",
+        default=os.environ.get("AIDEN_BENCHMARK_JUDGE_BASE_URL", DEFAULT_JUDGE_BASE_URL),
+        help="OpenAI-compatible base URL for judge requests",
+    )
     p_run.add_argument("--agent-model", default=os.environ.get("AIDEN_MODEL") or os.environ.get("MODEL_NAME") or os.environ.get("OPENAI_MODEL") or "")
     p_run.add_argument("--no-judge", action="store_true")
     p_run.add_argument("--repeats", type=int, default=None)
@@ -80,6 +88,9 @@ def cli(argv: list[str] | None = None) -> int:
                        help="Optional run directory name under --out")
     p_run.add_argument("--benchmark-task-id", default="",
                        help="Task routing id to use for environment setup/screen/release")
+    p_run.add_argument("--target-platform", default=os.environ.get("AIDEN_BENCHMARK_TARGET_PLATFORM", "auto"),
+                       choices=["auto", "ios", "android", "mac"],
+                       help="Filter suite tasks by platform; auto infers adb_android environments as android")
     p_run.add_argument("--skip-clock-wait", action="store_true")
     p_run.add_argument("--clock-timeout-sec", type=int, default=180)
     p_run.add_argument("--agent-ready-timeout-sec", type=int, default=120)
@@ -90,6 +101,11 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument(
         "--analysis-model",
         default=os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MODEL"),
+    )
+    p_run.add_argument(
+        "--analysis-base-url",
+        default=os.environ.get("AIDEN_BENCHMARK_ANALYSIS_BASE_URL"),
+        help="OpenAI-compatible base URL for post-run LLM analysis; defaults to judge base URL",
     )
     p_run.add_argument(
         "--analysis-max-log-bytes",
@@ -111,6 +127,10 @@ def cli(argv: list[str] | None = None) -> int:
     p_rejudge = sub.add_parser("rejudge")
     p_rejudge.add_argument("--run-dir", required=True)
     p_rejudge.add_argument("--judge-model", default="claude-sonnet-4-6")
+    p_rejudge.add_argument(
+        "--judge-base-url",
+        default=os.environ.get("AIDEN_BENCHMARK_JUDGE_BASE_URL", DEFAULT_JUDGE_BASE_URL),
+    )
     p_compare = sub.add_parser("compare")
     p_compare.add_argument("--runs", nargs=2, required=True)
     p_webui = sub.add_parser("webui")
@@ -131,7 +151,7 @@ def cli(argv: list[str] | None = None) -> int:
         return _cmd_run(args)
     if args.cmd == "rejudge":
         from runner.rejudge import rejudge_run
-        return rejudge_run(Path(args.run_dir), args.judge_model)
+        return rejudge_run(Path(args.run_dir), args.judge_model, args.judge_base_url)
     if args.cmd == "compare":
         from runner.compare import compare_runs
         return compare_runs(Path(args.runs[0]), Path(args.runs[1]))
@@ -245,6 +265,13 @@ def _result_totals(results: list[object], total_tasks: int | None = None) -> dic
     return totals
 
 
+def _run_exit_code(totals: dict[str, int]) -> int:
+    if totals.get("failed", 0) or totals.get("judge_error", 0) or totals.get("timeout", 0):
+        return 1
+    accounted = totals.get("passed", 0) + totals.get("skipped", 0)
+    return 0 if accounted == totals.get("tasks", 0) else 1
+
+
 def _selected_task_ids(args: argparse.Namespace) -> list[str]:
     ids: list[str] = []
     for value in list(args.task_id or []) + [args.task_ids or ""]:
@@ -284,10 +311,68 @@ def _task_route_id(args: argparse.Namespace, suite: Suite, task_id: str, attempt
     return route_id
 
 
+def _resolve_target_platform(args: argparse.Namespace) -> str:
+    raw = str(getattr(args, "target_platform", "") or "").strip().lower()
+    if raw and raw != "auto":
+        return raw
+    environment_url = str(getattr(args, "environment_url", "") or "").strip()
+    if not environment_url:
+        return ""
+    try:
+        health = _read_environment_health(environment_url)
+    except Exception:
+        return ""
+    bridge_type = str(health.get("bridge_type") or "").strip().lower()
+    if bridge_type == "adb_android":
+        return "android"
+    platform = str(health.get("platform") or health.get("device_platform") or "").strip().lower()
+    if platform in VALID_TARGET_PLATFORMS:
+        return platform
+    return ""
+
+
+def _read_environment_health(environment_url: str) -> dict:
+    parsed = urllib.parse.urlsplit(str(environment_url).strip())
+    if not parsed.scheme or not parsed.netloc:
+        return {}
+    url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "/health", "", ""))
+    with urllib.request.urlopen(url, timeout=0.5) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+        return payload["data"]
+    return payload if isinstance(payload, dict) else {}
+
+
+def _task_repeats(args: argparse.Namespace, task: TaskSpec) -> int:
+    repeats = args.repeats if args.repeats is not None else task.repeats
+    return repeats if repeats > 0 else 1
+
+
+def _task_platform_skip_reason(task: TaskSpec, target_platform: str) -> str:
+    if not target_platform or not task.platforms or target_platform in task.platforms:
+        return ""
+    return f"task platforms {', '.join(task.platforms)} do not include target platform {target_platform}"
+
+
+def _build_task_units(
+    args: argparse.Namespace,
+    suite: Suite,
+    target_platform: str,
+) -> list[tuple[int, TaskSpec, int, int, str]]:
+    units: list[tuple[int, TaskSpec, int, int, str]] = []
+    for task in suite.tasks:
+        repeats = _task_repeats(args, task)
+        skip_reason = _task_platform_skip_reason(task, target_platform)
+        for attempt in range(1, repeats + 1):
+            units.append((len(units) + 1, task, attempt, repeats, skip_reason))
+    return units
+
+
 def _cmd_run_auto_agent_setup(
     args: argparse.Namespace,
     suite: Suite,
     selected_task_ids: list[str],
+    target_platform: str,
     run_id: str,
     run_dir: Path,
 ) -> int:
@@ -320,7 +405,7 @@ def _cmd_run_auto_agent_setup(
         print(f"mock environment started: {mock_server.redacted_url}", flush=True)
     try:
         return _cmd_run_auto_agent_setup_inner(
-            args, suite, selected_task_ids, run_id, run_dir, mock_server=mock_server
+            args, suite, selected_task_ids, target_platform, run_id, run_dir, mock_server=mock_server
         )
     finally:
         if mock_server is not None:
@@ -331,6 +416,7 @@ def _cmd_run_auto_agent_setup_inner(
     args: argparse.Namespace,
     suite: Suite,
     selected_task_ids: list[str],
+    target_platform: str,
     run_id: str,
     run_dir: Path,
     mock_server=None,
@@ -363,25 +449,24 @@ def _cmd_run_auto_agent_setup_inner(
     workers_dir = run_dir / "workers"
     workers_dir.mkdir(parents=True, exist_ok=True)
     setup_log = run_dir / "auto-agent-setup.log"
-    ensure_daemon_image(args.daemon_image, not args.no_build_daemon_image, setup_log)
 
-    concurrency = read_environment_bridge_concurrency(args.environment_url) or 1
-    if args.max_concurrency > 0:
-        concurrency = min(concurrency, args.max_concurrency)
+    units = _build_task_units(args, suite, target_platform)
+    total_runs = len(units)
+    has_runnable_units = any(not unit[4] for unit in units)
+    if has_runnable_units:
+        clear_stale_adb_android_owner(args.environment_url)
+        ensure_daemon_image(args.daemon_image, not args.no_build_daemon_image, setup_log)
+        concurrency = read_environment_bridge_concurrency(args.environment_url) or 1
+        if args.max_concurrency > 0:
+            concurrency = min(concurrency, args.max_concurrency)
+    else:
+        concurrency = 1
     docker_environment_url = endpoint_for_docker(args.environment_url.rstrip("/"))
-    judge_cfg = None if args.no_judge else JudgeConfig(model=args.judge_model)
+    judge_cfg = None if args.no_judge else JudgeConfig(model=args.judge_model, base_url=args.judge_base_url)
     active_skills = _selected_skills(args)
     judge_cache = run_dir / "_judge_cache"
     sha, dirty = git_sha(REPO_ROOT)
     started = now_iso()
-    units: list[tuple[int, TaskSpec, int, int]] = []
-    for task in suite.tasks:
-        repeats = args.repeats if args.repeats is not None else task.repeats
-        repeats = repeats if repeats > 0 else 1
-        for attempt in range(1, repeats + 1):
-            units.append((len(units) + 1, task, attempt, repeats))
-
-    total_runs = len(units)
     display_environment_url = (
         mock_server.redacted_url if mock_server is not None else args.environment_url
     )
@@ -402,8 +487,12 @@ def _cmd_run_auto_agent_setup_inner(
     if args.agent_config:
         agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
 
-    def run_unit(index: int, task: TaskSpec, attempt: int, repeats: int):
+    def run_unit(index: int, task: TaskSpec, attempt: int, repeats: int, skip_reason: str):
         progress = f"{index}/{total_runs}"
+        art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if repeats > 1 else "")
+        if skip_reason:
+            print(f"[{progress}] SKIPPED    {task.id} attempt={attempt} ({skip_reason})", flush=True)
+            return skipped_task_result(suite, task, attempt, art_dir, run_id, skip_reason)
         token = worker_token(str(suite.source_path), f"{task.id}-{attempt}")
         worker_dir = workers_dir / token
         config_dir = worker_dir / "config"
@@ -429,7 +518,6 @@ def _cmd_run_auto_agent_setup_inner(
         )
         log_proc = None
         client = None
-        art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if repeats > 1 else "")
         try:
             print(f"[{progress}] STARTING   {task.id} attempt={attempt}", flush=True)
             task_mock_environment = _task_mock_environment(suite, task)
@@ -511,8 +599,8 @@ def _cmd_run_auto_agent_setup_inner(
     )
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"bench-cli-{run_id}") as executor:
         future_to_unit = {
-            executor.submit(run_unit, index, task, attempt, repeats): (index, task, attempt)
-            for index, task, attempt, repeats in units
+            executor.submit(run_unit, index, task, attempt, repeats, skip_reason): (index, task, attempt)
+            for index, task, attempt, repeats, skip_reason in units
         }
         for future in concurrent.futures.as_completed(future_to_unit):
             index, task, attempt = future_to_unit[future]
@@ -539,8 +627,9 @@ def _cmd_run_auto_agent_setup_inner(
         "environment_url": display_environment_url or None,
         "agent_model": args.agent_model,
         "active_skills": active_skills,
-        "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
+        "judge_config": {"provider": "openrouter", "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
         "judge_prompt_version": "v1",
+        "target_platform": target_platform or None,
         "auto_agent_setup": True,
         "concurrency": max_workers,
         "mock_environment": _mock_environment_manifest(suite),
@@ -568,7 +657,7 @@ def _cmd_run_auto_agent_setup_inner(
     print(f"Skipped:       {manifest['totals']['skipped']}", flush=True)
     print(f"Results saved to: {run_dir}", flush=True)
     print("="*60 + "\n", flush=True)
-    return 0 if manifest["totals"]["passed"] == manifest["totals"]["tasks"] else 1
+    return _run_exit_code(manifest["totals"])
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -587,6 +676,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"Error: invalid --run-id: {run_id!r}", file=sys.stderr)
         return 2
     run_dir = Path(args.out) / run_id
+    target_platform = _resolve_target_platform(args)
     if _suite_has_mock_environment(suite) and not args.auto_agent_setup:
         print(
             "Error: suites or tasks with mock_environment require --auto-agent-setup so tool calls "
@@ -595,30 +685,33 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         return 2
     if args.auto_agent_setup:
-        return _cmd_run_auto_agent_setup(args, suite, selected_task_ids, run_id, run_dir)
+        return _cmd_run_auto_agent_setup(args, suite, selected_task_ids, target_platform, run_id, run_dir)
     if args.repeats is not None and args.repeats <= 0:
         print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
         return 2
-    client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
-    if not client.health():
-        print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
-        client.close()
-        return 2
-    if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
-        print("agent board clock did not sync before benchmark start", file=sys.stderr)
-        client.close()
-        return 2
-    judge_cfg = None if args.no_judge else JudgeConfig(model=args.judge_model)
+    units = _build_task_units(args, suite, target_platform)
+    has_runnable_units = any(not unit[4] for unit in units)
+    client = None
+    if has_runnable_units:
+        if args.environment_url:
+            clear_stale_adb_android_owner(args.environment_url)
+        client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
+        if not client.health():
+            print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
+            client.close()
+            return 2
+        if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
+            print("agent board clock did not sync before benchmark start", file=sys.stderr)
+            client.close()
+            return 2
+    judge_cfg = None if args.no_judge else JudgeConfig(model=args.judge_model, base_url=args.judge_base_url)
     active_skills = _selected_skills(args)
     judge_cache = run_dir / "_judge_cache"
     sha, dirty = git_sha(REPO_ROOT)
     started = now_iso()
     results = []
     # Compute total number of executions (accounting for repeats) for progress display
-    total_runs = 0
-    for task in suite.tasks:
-        n = args.repeats if args.repeats is not None else task.repeats
-        total_runs += n if n > 0 else 1
+    total_runs = len(units)
     completed = 0
     base_state = {
         "status": "running",
@@ -631,66 +724,55 @@ def _cmd_run(args: argparse.Namespace) -> int:
     }
     _write_state(args.state_file, base_state)
     try:
-        for task in suite.tasks:
-            n = args.repeats if args.repeats is not None else task.repeats
-            if n <= 0:
-                n = 1
-            for attempt in range(1, n + 1):
-                task_benchmark_id = _task_route_id(args, suite, task.id, attempt, n)
-                try:
-                    current_index = completed + 1
-                    progress = f"{current_index}/{total_runs}"
-                    _write_state(args.state_file, {
-                        **base_state,
-                        "completed": completed,
-                        "current": current_index,
-                        "current_task": task.id,
-                        "current_attempt": attempt,
-                        "totals": _result_totals(results, total_runs),
-                    })
-                    print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
-                    if not wait_for_agent_ready(
-                        client, timeout_sec=args.agent_ready_timeout_sec
-                    ):
-                        print(
-                            f"[{progress}] SKIPPED    {task.id} attempt={attempt} "
-                            f"rubric=0/{len(task.rubric)} wall=Nonems "
-                            f"(agent not ready)",
-                            flush=True,
+        for current_index, task, attempt, n, skip_reason in units:
+            if skip_reason:
+                art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
+                r = skipped_task_result(suite, task, attempt, art_dir, run_id, skip_reason)
+                _log_task_result(task.id, attempt, r, verbose=args.verbose, progress=f"{current_index}/{total_runs}")
+                results.append(r)
+                completed += 1
+                _write_state(args.state_file, {
+                    **base_state,
+                    "completed": completed,
+                    "current": current_index,
+                    "current_task": task.id,
+                    "current_attempt": attempt,
+                    "last_result": "skipped",
+                    "totals": _result_totals(results, total_runs),
+                })
+                continue
+            if client is None:
+                raise RuntimeError("agent client is unavailable for runnable benchmark task")
+            task_benchmark_id = _task_route_id(args, suite, task.id, attempt, n)
+            try:
+                progress = f"{current_index}/{total_runs}"
+                _write_state(args.state_file, {
+                    **base_state,
+                    "completed": completed,
+                    "current": current_index,
+                    "current_task": task.id,
+                    "current_attempt": attempt,
+                    "totals": _result_totals(results, total_runs),
+                })
+                print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
+                if not wait_for_agent_ready(
+                    client, timeout_sec=args.agent_ready_timeout_sec
+                ):
+                    print(
+                        f"[{progress}] SKIPPED    {task.id} attempt={attempt} "
+                        f"rubric=0/{len(task.rubric)} wall=Nonems "
+                        f"(agent not ready)",
+                        flush=True,
+                    )
+                    results.append(
+                        skipped_task_result(
+                            suite, task, attempt,
+                            run_dir / "tasks" / task.id
+                            / (f"attempt_{attempt}" if n > 1 else ""),
+                            run_id,
+                            f"agent not ready within {args.agent_ready_timeout_sec}s",
                         )
-                        results.append(
-                            skipped_task_result(
-                                suite, task, attempt,
-                                run_dir / "tasks" / task.id
-                                / (f"attempt_{attempt}" if n > 1 else ""),
-                                run_id,
-                                f"agent not ready within {args.agent_ready_timeout_sec}s",
-                            )
-                        )
-                        completed += 1
-                        _write_state(args.state_file, {
-                            **base_state,
-                            "completed": completed,
-                            "current": current_index,
-                            "current_task": task.id,
-                            "current_attempt": attempt,
-                            "last_result": "skipped",
-                            "totals": _result_totals(results, total_runs),
-                        })
-                        continue
-
-                    art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
-                    try:
-                        r = run_one_task(client, suite, task, attempt, art_dir,
-                                          judge_cfg, judge_cache, run_id,
-                                          environment_url=args.environment_url or None,
-                                          benchmark_task_id=task_benchmark_id,
-                                          active_skills=active_skills)
-                    except Exception as e:
-                        print(f"[{progress}] ERROR      {task.id} attempt={attempt} — {e}", flush=True)
-                        r = skipped_task_result(suite, task, attempt, art_dir, run_id, str(e))
-                    _log_task_result(task.id, attempt, r, verbose=args.verbose, progress=progress)
-                    results.append(r)
+                    )
                     completed += 1
                     _write_state(args.state_file, {
                         **base_state,
@@ -698,27 +780,52 @@ def _cmd_run(args: argparse.Namespace) -> int:
                         "current": current_index,
                         "current_task": task.id,
                         "current_attempt": attempt,
-                        "last_result": r.status,
+                        "last_result": "skipped",
                         "totals": _result_totals(results, total_runs),
                     })
+                    continue
 
-                    if r.status in {"timeout", "skipped", "judge_error", "failed"}:
-                        if not recover_agent_after_timeout(
+                art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
+                try:
+                    r = run_one_task(client, suite, task, attempt, art_dir,
+                                      judge_cfg, judge_cache, run_id,
+                                      environment_url=args.environment_url or None,
+                                      benchmark_task_id=task_benchmark_id,
+                                      active_skills=active_skills)
+                except Exception as e:
+                    print(f"[{progress}] ERROR      {task.id} attempt={attempt} — {e}", flush=True)
+                    r = skipped_task_result(suite, task, attempt, art_dir, run_id, str(e))
+                _log_task_result(task.id, attempt, r, verbose=args.verbose, progress=progress)
+                results.append(r)
+                completed += 1
+                _write_state(args.state_file, {
+                    **base_state,
+                    "completed": completed,
+                    "current": current_index,
+                    "current_task": task.id,
+                    "current_attempt": attempt,
+                    "last_result": r.status,
+                    "totals": _result_totals(results, total_runs),
+                })
+
+                if r.status in {"timeout", "skipped", "judge_error", "failed"}:
+                    if not recover_agent_after_timeout(
+                        client, timeout_sec=args.agent_recovery_timeout_sec
+                    ):
+                        wait_for_agent_ready(
                             client, timeout_sec=args.agent_recovery_timeout_sec
-                        ):
-                            wait_for_agent_ready(
-                                client, timeout_sec=args.agent_recovery_timeout_sec
-                            )
-                    if args.inter_task_cooldown_sec > 0:
-                        time.sleep(args.inter_task_cooldown_sec)
-                finally:
-                    if args.environment_url:
-                        try:
-                            call_environment_release(args.environment_url, task_id=task_benchmark_id)
-                        except ResetError as exc:
-                            print(f"warning: failed to release environment task route for {task_benchmark_id}: {exc}", file=sys.stderr, flush=True)
+                        )
+                if args.inter_task_cooldown_sec > 0:
+                    time.sleep(args.inter_task_cooldown_sec)
+            finally:
+                if args.environment_url:
+                    try:
+                        call_environment_release(args.environment_url, task_id=task_benchmark_id)
+                    except ResetError as exc:
+                        print(f"warning: failed to release environment task route for {task_benchmark_id}: {exc}", file=sys.stderr, flush=True)
     finally:
-        client.close()
+        if client is not None:
+            client.close()
     totals = _result_totals(results, total_runs)
     manifest = {
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
@@ -728,8 +835,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "environment_url": args.environment_url or None,
         "agent_model": args.agent_model,
         "active_skills": active_skills,
-        "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
+        "judge_config": {"provider": "openrouter", "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
         "judge_prompt_version": "v1",
+        "target_platform": target_platform or None,
         "mock_environment": _mock_environment_manifest(suite),
         "started_at": started, "finished_at": now_iso(),
         "totals": totals,
@@ -743,6 +851,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         analysis_result = analyze_run(run_dir, REPO_ROOT, AnalysisConfig(
             enabled=True,
             model=args.analysis_model or args.judge_model,
+            base_url=args.analysis_base_url or args.judge_base_url,
             max_log_bytes=args.analysis_max_log_bytes,
             max_code_bytes=args.analysis_max_code_bytes,
             timeout_sec=args.analysis_timeout_sec,
@@ -779,13 +888,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
     print(f"\n📁 Results saved to: {run_dir}", flush=True)
     print("="*60 + "\n", flush=True)
 
-    upload_client = AgentClient(base_url=args.agent_url)
-    if upload_report(upload_client, html, run_dir):
-        print(f"Report uploaded → http://{args.agent_url.split('//')[1].split(':')[0]}:80/benchmark")
-    else:
-        print("Warning: failed to upload report to board")
-    upload_client.close()
-    return 0 if manifest["totals"]["passed"] == manifest["totals"]["tasks"] else 1
+    if has_runnable_units:
+        upload_client = AgentClient(base_url=args.agent_url)
+        if upload_report(upload_client, html, run_dir):
+            print(f"Report uploaded → http://{args.agent_url.split('//')[1].split(':')[0]}:80/benchmark")
+        else:
+            print("Warning: failed to upload report to board")
+        upload_client.close()
+    return _run_exit_code(manifest["totals"])
 
 
 def _mock_environment_manifest(suite: Suite) -> dict[str, object] | None:

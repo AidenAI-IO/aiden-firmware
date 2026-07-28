@@ -9,7 +9,7 @@
       "skill_name": "device-operator"
     }
   ],
-  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机，不是 macOS、Linux 或桌面系统；测试环境可能是 iOS、Android 或其他移动系统。开始操作目标 UI 前，必须先调用 skill_read 读取 device-operator；读取后优先使用 quick_action 等语义工具，再根据需要使用 screenshot、touch_gesture、mouse_click、enter_text_in_field、keyboard_text、keyboard_tap 等手机 UI 工具。不要使用 shell、open、osascript 或桌面命令来打开目标手机上的 App。每次工具返回截图后，先判断页面是否变化、是否已经进入目标页面，再继续下一步；如果截图没有变化，不要反复点击同一坐标。打开系统设置或时钟时，优先点击当前手机主屏幕上可见的图标，或使用系统搜索。",
+  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机，不是 macOS、Linux 或桌面系统；测试环境可能是 iOS、Android 或其他移动系统。开始操作目标 UI 前，必须先调用 skill_read 读取 device-operator；读取后优先使用 quick_action 等语义工具，再根据需要使用 screenshot、touch_gesture、mouse_click、enter_text_in_field、keyboard_text、keyboard_tap 等手机 UI 工具。不要使用 shell、open、osascript 或桌面命令来打开目标手机上的 App；在 ADB Android benchmark 中也不要使用 bridge_open_app、search_launch_app 或 shell 排查板子服务，这些路径不属于当前手机控制环境。每次工具返回截图后，先判断页面是否变化、是否已经进入目标页面，再继续下一步；如果截图没有变化，不要反复点击同一坐标。涉及文本输入时，先从最新截图确认键盘/输入法状态；如果要输入英文或 ASCII（如 hello、Aiden、benchmark），但键盘仍是中文输入法（空格键显示“拼音”或出现候选/预编辑），必须先点地球/输入法键切到英文/Latin 键盘，再输入；不要通过中文 IME 候选词提交英文。ADB 文本工具如果返回 committed:false 但附带截图，必须先根据截图确认真实输入框内容和输入法状态，再决定是否切换键盘或重试。ADB Android 中复制、粘贴、全选优先使用长按输入框后出现的可见编辑菜单，不要依赖 Ctrl/Meta 快捷键。如需android平台打开系统设置，优先使用 quick_action，参数为 platform=android, action=open_settings; iOS打开系统设置或时钟时，优先点击当前手机主屏幕上可见的图标，或使用系统搜索。",
   "global_reset": {},
   "tasks": [
     {
@@ -162,6 +162,7 @@
     {
       "id": "settings_search_bluetooth",
       "category": "multi_step",
+      "platforms": ["ios"],
       "description_for_judge": "Agent must open Settings, find the search box, search for 蓝牙, and end on the Bluetooth settings page.",
       "prompt": "打开系统设置，搜索「蓝牙」并进入蓝牙设置页面。",
       "rubric": [
@@ -309,20 +310,26 @@
     {
       "id": "type_long_mixed_text",
       "category": "multi_step",
-      "description_for_judge": "Agent must locate a text input and type the literal string 'Aiden测试 benchmark-2026!' into it.",
-      "prompt": "在当前可输入位置输入：Aiden测试 benchmark-2026!",
+      "description_for_judge": "Agent must locate a text input and type the literal string 'Aiden test benchmark-2026!' into it.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请先打开 Notepad Free 或任意简单文本编辑应用，新建一个空白文档，并停留在一个空白可编辑输入框中。不要使用 Gmail、邮件、邮箱、浏览器搜索框、翻译应用、收件人字段或主题字段；如果当前在这些页面，请先返回桌面再打开简单文本编辑应用。不要输入任何文字、不要返回。",
+        "timeout_sec": 120,
+        "clear_history_after": true
+      },
+      "prompt": "在当前可输入位置输入：Aiden test benchmark-2026!",
       "rubric": [
         {
           "id": "input_focused",
           "check": "Trace shows a focused text input."
         },
         {
-          "id": "english_part",
-          "check": "Post-screenshot shows the English portion 'Aiden ... benchmark-2026!' in the input."
+          "id": "text_present",
+          "check": "Post-screenshot shows the literal text 'Aiden test benchmark-2026!' in the input."
         },
         {
-          "id": "chinese_part",
-          "check": "Post-screenshot shows the Chinese characters '测试' in the input."
+          "id": "no_extra_garbage",
+          "check": "No unrelated typed characters appear before or after the target text."
         }
       ],
       "hard_assertions": {
@@ -337,7 +344,7 @@
       "description_for_judge": "Agent must clear an input field that already contains text by selecting all and deleting.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请先打开笔记应用并新建一条笔记，在标题输入框中输入 hello-aiden。完成后保持标题输入框聚焦且文字可见，不要清空、不要返回。",
+        "prompt": "请先打开 Notepad Free 或任意简单文本编辑应用，新建一条笔记或空白文档，在标题输入框或正文输入框中输入 hello-aiden。不要使用 Gmail、邮件、邮箱、浏览器搜索框、翻译应用、收件人字段或主题字段。完成后保持该输入框聚焦且文字可见，不要清空、不要返回。",
         "timeout_sec": 120,
         "clear_history_after": true
       },
@@ -364,11 +371,11 @@
       "description_for_judge": "Agent must type a phrase, select all and copy it, then move to a different input field and paste it.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请先打开笔记应用并新建一条空白笔记，确保标题输入框和正文输入区域同时可见且都为空。完成后停留在编辑页面，不要输入任何文字、不要返回。",
+        "prompt": "请先打开 Notepad Free 或任意简单文本编辑应用，准备一个有两个独立空白输入框或编辑区域同时可见的页面，例如笔记的标题输入框和正文输入区域。两个输入区域都必须为空；不要使用 Gmail、邮件、邮箱、收件人字段、主题字段、翻译应用、浏览器搜索框或会自动翻译/转换文本的页面。完成后停留在编辑页面，不要输入任何文字、不要返回。",
         "timeout_sec": 120,
         "clear_history_after": true
       },
-      "prompt": "在第一个输入框输入 hello-aiden，然后选中复制，切到第二个输入框粘贴。",
+      "prompt": "在第一个空白输入框输入 hello-aiden；输入前如果是中文输入法，先切到英文/Latin 键盘。然后选中复制，切到第二个空白输入框粘贴。",
       "rubric": [
         {
           "id": "first_input_typed",
@@ -376,7 +383,7 @@
         },
         {
           "id": "copy_action",
-          "check": "Trace shows a copy action (META+C)."
+          "check": "Trace shows a copy action, either through a visible Android edit menu or a supported shortcut."
         },
         {
           "id": "second_input_focused",
@@ -389,7 +396,7 @@
       ],
       "hard_assertions": {
         "min_tool_calls": 4,
-        "max_tool_calls": 15,
+        "max_tool_calls": 18,
         "must_complete_within_sec": 180
       }
     },
@@ -421,22 +428,22 @@
     {
       "id": "long_press_app_icon",
       "category": "single_step",
-      "description_for_judge": "Agent must long-press the Settings app icon on the home screen to trigger the contextual popup menu.",
+      "description_for_judge": "Agent must long-press a currently visible normal app icon on the home screen to trigger the contextual popup menu.",
       "setup": {
         "type": "agent_prompt",
         "prompt": "请返回主屏幕，确保当前停留在桌面。",
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请长按桌面上的设置图标，直到弹出操作菜单。",
+      "prompt": "请长按当前桌面上一个可见的普通应用图标；不要长按天气/时间小组件、空白桌面、通知栏或底部导航。直到弹出该应用的操作菜单。",
       "rubric": [
         {
           "id": "long_press_performed",
-          "check": "Trace contains a touch_gesture long_press action on the Settings icon area."
+          "check": "Trace contains a touch_gesture long_press action on a visible normal app icon area."
         },
         {
           "id": "popup_visible",
-          "check": "Post-screenshot shows a contextual popup menu or action overlay near the Settings icon."
+          "check": "Post-screenshot shows a contextual popup menu or action overlay near the app icon."
         }
       ],
       "hard_assertions": {
@@ -448,18 +455,18 @@
     {
       "id": "drag_app_icon",
       "category": "multi_step",
-      "description_for_judge": "Agent must drag the Settings app icon from its current position to a different location on the home screen. The icon should end up in a visibly different grid position.",
+      "description_for_judge": "Agent must drag a currently visible normal app icon from its current position to a different location on the home screen. The icon should end up in a visibly different grid position.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请返回主屏幕，确保当前停留在桌面。",
+        "prompt": "请返回主屏幕，确保当前停留在桌面。选一个图标较少的桌面页。",
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请找到桌面上的设置图标，将它拖到另一个位置。",
+      "prompt": "请在当前桌面选择一个可见的普通应用图标；不要选择小组件、空白区域、通知栏或底部导航。将它拖到另一个空白位置。在Android上长按图标可能出现快捷操作，此时不松开移动就能移动图标, 整个操作只应该一次按下，一次抬起。",
       "rubric": [
         {
           "id": "icon_located",
-          "check": "Trace shows agent took a screenshot and identified the Settings icon position."
+          "check": "Trace shows agent took a screenshot and identified a visible normal app icon position."
         },
         {
           "id": "drag_performed",
@@ -467,7 +474,7 @@
         },
         {
           "id": "icon_moved",
-          "check": "Post-screenshot shows the Settings icon in a different grid position compared to the pre-screenshot."
+          "check": "Post-screenshot shows the chosen app icon in a different grid position compared to the pre-screenshot."
         }
       ],
       "hard_assertions": {

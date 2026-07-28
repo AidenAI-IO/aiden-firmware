@@ -116,6 +116,7 @@ def test_prepare_task_isolation_runs_agent_prompt_after_environment_setup(monkey
         tasks=[],
         sha256="sha",
         source_path=__import__("pathlib").Path("suite.json"),
+        prompt_prefix="ADB benchmark rules",
     )
     task = TaskSpec(
         id="open_settings",
@@ -138,7 +139,7 @@ def test_prepare_task_isolation_runs_agent_prompt_after_environment_setup(monkey
     )
 
     assert setup_calls == [("http://127.0.0.1:9090", "suite.json:open_settings", 180)]
-    assert client.chats == [("open a settings sub-page", 45)]
+    assert client.chats == [("ADB benchmark rules\n\nopen a settings sub-page", 45)]
     assert client.clears == 2
 
 

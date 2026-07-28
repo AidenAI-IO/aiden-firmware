@@ -136,7 +136,7 @@ parse_failure_limit = 13
 	}
 }
 
-func TestLoadRuntimeConfigClearsBaseURLForNonOpenAIProvider(t *testing.T) {
+func TestLoadRuntimeConfigClearsBaseURLOnlyForProvidersWithoutOverrides(t *testing.T) {
 	tests := []struct {
 		name        string
 		provider    string
@@ -144,11 +144,12 @@ func TestLoadRuntimeConfigClearsBaseURLForNonOpenAIProvider(t *testing.T) {
 	}{
 		{"openai keeps base_url", "openai", "https://gateway.example.com/v1"},
 		{"OpenAI case insensitive keeps base_url", "OpenAI", "https://gateway.example.com/v1"},
+		{"openrouter keeps base_url", "openrouter", "https://gateway.example.com/v1"},
+		{"kimi keeps base_url", "kimi", "https://gateway.example.com/v1"},
+		{"kimi-cn keeps base_url", "kimi-cn", "https://gateway.example.com/v1"},
 		{"ollama keeps base_url", "ollama", "https://gateway.example.com/v1"},
 		{"Ollama case insensitive keeps base_url", "Ollama", "https://gateway.example.com/v1"},
-		{"openrouter drops base_url", "openrouter", ""},
-		{"kimi drops base_url", "kimi", ""},
-		{"kimi-cn drops base_url", "kimi-cn", ""},
+		{"fake drops base_url", "fake", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

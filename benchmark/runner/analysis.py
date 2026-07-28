@@ -16,6 +16,7 @@ DEFAULT_MAX_LOG_BYTES = 64 * 1024
 DEFAULT_MAX_CODE_BYTES = 128 * 1024
 DEFAULT_TOTAL_CONTEXT_BYTES = 320 * 1024
 DEFAULT_TIMEOUT_SEC = 180
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 ROOT_CAUSE_CATEGORIES = {
     "suite_issue",
     "project_code_issue",
@@ -35,6 +36,7 @@ BRIDGE_INACTIVE_SETUP_RE = re.compile(
 class AnalysisConfig:
     enabled: bool = False
     model: str = DEFAULT_MODEL
+    base_url: str = DEFAULT_BASE_URL
     max_log_bytes: int = DEFAULT_MAX_LOG_BYTES
     max_code_bytes: int = DEFAULT_MAX_CODE_BYTES
     total_context_bytes: int = DEFAULT_TOTAL_CONTEXT_BYTES
@@ -85,6 +87,9 @@ def config_from_env() -> AnalysisConfig:
         model=os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MODEL")
         or os.environ.get("AIDEN_BENCHMARK_JUDGE_MODEL")
         or DEFAULT_MODEL,
+        base_url=os.environ.get("AIDEN_BENCHMARK_ANALYSIS_BASE_URL")
+        or os.environ.get("AIDEN_BENCHMARK_JUDGE_BASE_URL")
+        or DEFAULT_BASE_URL,
         max_log_bytes=_int_env("AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES", DEFAULT_MAX_LOG_BYTES),
         max_code_bytes=_int_env("AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES", DEFAULT_MAX_CODE_BYTES),
         total_context_bytes=_int_env(
@@ -719,7 +724,7 @@ def chat_analysis_model(cfg: AnalysisConfig, context: dict[str, Any], api_key: s
         }
     ).encode("utf-8")
     req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
+        f"{(cfg.base_url or DEFAULT_BASE_URL).rstrip('/')}/chat/completions",
         data=payload,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",

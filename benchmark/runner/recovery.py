@@ -61,9 +61,9 @@ def prepare_task_isolation(
                     task_id=benchmark_task_id or task.id,
                     timeout=DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
                 )
-                per_task_setup(client, task.setup)
+                per_task_setup(client, task.setup, prompt_prefix=suite.prompt_prefix)
             elif not task.input_screenshot:
-                per_task_setup(client, task.setup)
+                per_task_setup(client, task.setup, prompt_prefix=suite.prompt_prefix)
             return
         except (ResetError, AgentTimeoutError, AgentRequestError) as e:
             last_error = e

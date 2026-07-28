@@ -71,6 +71,8 @@ def test_adb_android_basic_suite_loads_device_operation_tasks():
     # and it may pick quick_action vs touch_gesture for the same outcome.
     by_id = {task.id: task for task in suite.tasks}
     assert by_id["screenshot_home"].hard_assertions.required_tools == ["screenshot"]
+    assert "英文/Latin 键盘" in suite.prompt_prefix
+    assert "中文输入法" in suite.prompt_prefix
     for task_id in (
         "go_home",
         "open_settings",
@@ -81,9 +83,37 @@ def test_adb_android_basic_suite_loads_device_operation_tasks():
         "open_app_drawer",
     ):
         assert by_id[task_id].hard_assertions.required_tools == []
-    # The ported multi-step tasks genuinely need navigation before observing.
-    for task_id in ("clock_count_alarms", "settings_check_wifi", "open_app_drawer"):
+    assert by_id["settings_check_wifi"].hard_assertions.min_tool_calls == 1
+    # These ported multi-step tasks genuinely need navigation before observing.
+    for task_id in ("clock_count_alarms", "open_app_drawer"):
         assert by_id[task_id].hard_assertions.min_tool_calls >= 2
+
+
+def test_quick_action_suite_marks_non_android_action_tasks():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "quick_action_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    for task_id in (
+        "quick_action_switch_left",
+        "quick_action_switch_right",
+        "quick_action_home_screen_left",
+        "quick_action_home_screen_right",
+        "quick_action_control_center",
+        "quick_action_control_center_dismiss",
+        "quick_action_spotlight_search",
+        "quick_action_spotlight_search_via_input",
+        "quick_action_browser_new_tab",
+        "quick_action_browser_close_tab",
+        "quick_action_browser_address_and_refresh",
+        "quick_action_open_editor_and_type",
+        "quick_action_undo",
+        "quick_action_select_all",
+        "quick_action_copy",
+        "quick_action_cut",
+        "quick_action_paste",
+    ):
+        assert "android" not in task_by_id[task_id].platforms
 
 
 def test_benchmark_suites_do_not_use_tool_sequence():
@@ -142,6 +172,39 @@ def test_load_suite_parses_expected_recalled_memory_ids(tmp_path: Path):
     suite = load_suite(p)
 
     assert suite.tasks[0].expected_recalled_memory_ids == ["mem_expected"]
+
+def test_load_suite_parses_task_platforms(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "platforms": ["Android", "ios", "android"],
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.tasks[0].platforms == ["android", "ios"]
+
+def test_load_suite_rejects_invalid_task_platform(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "platforms": ["windows"],
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="invalid platform"):
+        load_suite(p)
 
 def test_load_suite_parses_required_and_forbidden_tools(tmp_path: Path):
     fixture = {
@@ -435,6 +498,21 @@ def test_phone_control_suite_constrains_agent_to_phone_ui():
     assert "只能通过截图" not in suite.prompt_prefix
 
 
+def test_mobile_text_entry_suites_prompt_for_ime_switching():
+    suites_root = Path(__file__).resolve().parents[1] / "suites"
+    for suite_name in (
+        "adb_android_basic.json",
+        "app_workflow_v1.json",
+        "phone_control_v1.json",
+        "quick_action_v1.json",
+        "skill_discovery_v1.json",
+    ):
+        suite = load_suite(suites_root / suite_name)
+        assert "中文输入法" in suite.prompt_prefix, suite_name
+        assert "英文/Latin" in suite.prompt_prefix, suite_name
+        assert "地球/输入法键" in suite.prompt_prefix, suite_name
+
+
 def test_phone_control_navigation_tasks_have_setup_pages():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
     suite = load_suite(suite_path)
@@ -453,19 +531,65 @@ def test_phone_control_text_editing_tasks_have_input_setup():
     suite = load_suite(suite_path)
     task_by_id = {task.id: task for task in suite.tasks}
 
+    mixed_setup = task_by_id["type_long_mixed_text"].setup
+    assert mixed_setup is not None
+    assert mixed_setup["type"] == "agent_prompt"
+    assert "Notepad Free" in mixed_setup["prompt"]
+    assert "空白可编辑输入框" in mixed_setup["prompt"]
+    assert "Gmail" in mixed_setup["prompt"]
+    assert "不要输入任何文字" in mixed_setup["prompt"]
+    assert mixed_setup["clear_history_after"] is True
+
     select_setup = task_by_id["select_all_and_delete"].setup
     assert select_setup is not None
     assert select_setup["type"] == "agent_prompt"
+    assert "Notepad Free" in select_setup["prompt"]
     assert "hello-aiden" in select_setup["prompt"]
+    assert "Gmail" in select_setup["prompt"]
     assert "聚焦" in select_setup["prompt"]
     assert select_setup["clear_history_after"] is True
 
     copy_setup = task_by_id["copy_paste_text"].setup
     assert copy_setup is not None
     assert copy_setup["type"] == "agent_prompt"
+    assert "Notepad Free" in copy_setup["prompt"]
     assert "标题输入框" in copy_setup["prompt"]
     assert "正文输入区域" in copy_setup["prompt"]
+    assert "Gmail" in copy_setup["prompt"]
+    assert "收件人字段" in copy_setup["prompt"]
+    assert "翻译应用" in copy_setup["prompt"]
     assert copy_setup["clear_history_after"] is True
+
+
+def test_phone_control_icon_tasks_target_visible_app_icons():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    for task_id in ("long_press_app_icon", "drag_app_icon"):
+        task = task_by_id[task_id]
+        assert "普通应用图标" in task.prompt
+        assert "设置图标" not in task.prompt
+        assert "小组件" in task.prompt
+    assert "android" not in task_by_id["drag_app_icon"].platforms
+
+
+def test_phone_control_unicode_search_tasks_exclude_adb_android():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert "android" not in task_by_id["settings_search_bluetooth"].platforms
+    assert task_by_id["type_long_mixed_text"].platforms == []
+    assert "Aiden test benchmark-2026!" in task_by_id["type_long_mixed_text"].prompt
+
+
+def test_skill_discovery_mixed_text_task_excludes_adb_android():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "skill_discovery_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert "android" not in task_by_id["discover_device_operator_for_mixed_text_entry"].platforms
 
 
 def test_phone_control_wifi_toggle_is_split_into_on_and_off_tasks():

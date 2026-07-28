@@ -40,7 +40,7 @@ def test_rejudge_uses_latest_legacy_step_screenshot_when_post_missing(tmp_path: 
 
     monkeypatch.setattr(rejudge, "judge_task", fake_judge_task)
 
-    assert rejudge.rejudge_run(run_dir, "judge-model") == 0
+    assert rejudge.rejudge_run(run_dir, "judge-model", "https://judge.example/v1") == 0
 
     assert captured["post_screenshot"] == latest
     rows = [json.loads(line) for line in (run_dir / "results.rejudged.jsonl").read_text(encoding="utf-8").splitlines()]

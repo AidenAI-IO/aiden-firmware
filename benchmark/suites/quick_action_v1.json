@@ -2,7 +2,7 @@
   "name": "quick_action_v1",
   "suite_category": "Perception & Control",
   "description": "Tests for quick_action navigation shortcuts — verifies the agent correctly uses predefined platform shortcuts.",
-  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机。可以使用 quick_action、screenshot、touch_gesture、keyboard_text、keyboard_tap 等工具。每次工具返回截图后，先判断页面是否变化再继续下一步。",
+  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机。可以使用 quick_action、screenshot、touch_gesture、keyboard_text、keyboard_tap 等工具。每次工具返回截图后，先判断页面是否变化再继续下一步。涉及文本输入时，先从最新截图确认键盘/输入法状态；如果要输入英文或 ASCII（如 hello、Aiden、benchmark），但键盘仍是中文输入法（空格键显示“拼音”或出现候选/预编辑），必须先点地球/输入法键切到英文/Latin 键盘，再输入；不要通过中文 IME 候选词提交英文。",
   "global_reset": {},
   "tasks": [
     {
@@ -66,6 +66,7 @@
     {
       "id": "quick_action_switch_left",
       "category": "single_step",
+      "platforms": ["ios"],
       "description_for_judge": "Agent must use quick_app_switch_left from the home screen to switch to the previous app.",
       "setup": {
         "type": "agent_prompt",
@@ -93,6 +94,7 @@
     {
       "id": "quick_action_switch_right",
       "category": "single_step",
+      "platforms": ["ios"],
       "description_for_judge": "Agent must use quick_app_switch_right from the home screen to switch to the next app.",
       "setup": {
         "type": "agent_prompt",
@@ -120,6 +122,7 @@
     {
       "id": "quick_action_home_screen_left",
       "category": "single_step",
+      "platforms": ["ios"],
       "description_for_judge": "Agent must use quick_action home_screen_left to switch to the previous home screen page.",
       "setup": {
         "type": "agent_prompt",
@@ -147,6 +150,7 @@
     {
       "id": "quick_action_home_screen_right",
       "category": "single_step",
+      "platforms": ["ios"],
       "description_for_judge": "Agent must use quick_action home_screen_right to switch to the next home screen page.",
       "setup": {
         "type": "agent_prompt",
@@ -174,6 +178,7 @@
     {
       "id": "quick_action_control_center",
       "category": "single_step",
+      "platforms": ["ios"],
       "description_for_judge": "Agent must use quick_action control_center to open the Control Center panel.",
       "setup": {
         "type": "agent_prompt",
@@ -201,6 +206,7 @@
     {
       "id": "quick_action_spotlight_search",
       "category": "multi_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must use quick_action spotlight_search to open global search, then type 设置 and open the Settings app from results.",
       "setup": {
         "type": "agent_prompt",
@@ -232,6 +238,7 @@
     {
       "id": "quick_action_spotlight_search_via_input",
       "category": "multi_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must use quick_action spotlight_search to open global search, then use the visible input field to type 设置 and open Settings from results.",
       "setup": {
         "type": "agent_prompt",
@@ -263,18 +270,19 @@
     {
       "id": "quick_action_open_editor_and_type",
       "category": "multi_step",
-      "description_for_judge": "Agent must open a text editing app (Notes, memo, or similar) and type 你好Aiden into the text field.",
+      "platforms": ["ios", "mac"],
+      "description_for_judge": "Agent must open any editable text surface (Notes/memo/document editor, SMS/message compose box, or similar; do not send messages) and type 你好Aiden into the text field.",
       "setup": {
         "type": "agent_prompt",
         "prompt": "请回到主屏幕，确保当前停留在桌面。",
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请打开备忘录或任何可以编辑文本的应用，然后在输入框中输入「你好Aiden」。",
+      "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，然后在输入框中输入「你好Aiden」。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
       "rubric": [
         {
           "id": "opened_text_app",
-          "check": "Trace shows agent opened a text editing app (Notes, memo, or similar with a text input area)."
+          "check": "Trace shows agent opened an editable text surface (Notes/memo/document editor, SMS/message compose box, or similar with a text input area)."
         },
         {
           "id": "text_typed",
@@ -290,10 +298,11 @@
     {
       "id": "quick_action_undo",
       "category": "single_step",
-      "description_for_judge": "Agent must use quick_action undo to revert the previously typed text in a text editor.",
+      "platforms": ["ios", "mac"],
+      "description_for_judge": "Agent must use quick_action undo to revert the previously typed text in an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开备忘录或任何可以编辑文本的应用，新建一个空白文档，然后输入「你好Aiden」，确保文字已显示在输入框中。",
+        "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，进入一个空白或可清空的输入框，然后输入「你好Aiden」，确保文字已显示在输入框中。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
         "timeout_sec": 90,
         "clear_history_after": true
       },
@@ -317,10 +326,11 @@
     {
       "id": "quick_action_select_all",
       "category": "single_step",
-      "description_for_judge": "Agent must use quick_action select_all to select all text in a text editor.",
+      "platforms": ["ios", "mac"],
+      "description_for_judge": "Agent must use quick_action select_all to select all text in an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开备忘录或任何可以编辑文本的应用，新建一个空白文档，输入「你好Aiden」，确保文字已显示在输入框中。",
+        "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，进入一个空白或可清空的输入框，输入「你好Aiden」，确保文字已显示在输入框中。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
         "timeout_sec": 90,
         "clear_history_after": true
       },
@@ -344,10 +354,11 @@
     {
       "id": "quick_action_copy",
       "category": "single_step",
-      "description_for_judge": "Agent must use quick_action copy to copy selected text in a text editor.",
+      "platforms": ["ios", "mac"],
+      "description_for_judge": "Agent must use quick_action copy to copy selected text in an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开备忘录或任何可以编辑文本的应用，新建一个空白文档，输入「你好Aiden」，然后全选文字（确保文字处于选中状态）。",
+        "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，进入一个空白或可清空的输入框，输入「你好Aiden」，然后全选文字（确保文字处于选中状态）。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
         "timeout_sec": 90,
         "clear_history_after": true
       },
@@ -371,10 +382,11 @@
     {
       "id": "quick_action_cut",
       "category": "single_step",
-      "description_for_judge": "Agent must use quick_action cut to cut selected text from a text editor.",
+      "platforms": ["ios", "mac"],
+      "description_for_judge": "Agent must use quick_action cut to cut selected text from an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开备忘录或任何可以编辑文本的应用，新建一个空白文档，输入「你好Aiden」，然后全选文字（确保文字处于选中状态）。",
+        "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，进入一个空白或可清空的输入框，输入「你好Aiden」，然后全选文字（确保文字处于选中状态）。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
         "timeout_sec": 90,
         "clear_history_after": true
       },
@@ -398,10 +410,11 @@
     {
       "id": "quick_action_paste",
       "category": "single_step",
-      "description_for_judge": "Agent must use quick_action paste to paste previously copied text into a text editor.",
+      "platforms": ["ios", "mac"],
+      "description_for_judge": "Agent must use quick_action paste to paste previously copied text into an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开备忘录或任何可以编辑文本的应用，新建一个空白文档，输入「你好Aiden」，全选并复制文字，然后清空输入框，确保输入框当前为空但剪贴板中有内容。",
+        "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，进入一个空白或可清空的输入框，输入「你好Aiden」，全选并复制文字，然后清空输入框，确保输入框当前为空但剪贴板中有内容。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
         "timeout_sec": 120,
         "clear_history_after": true
       },
@@ -425,6 +438,7 @@
     {
       "id": "quick_action_browser_new_tab",
       "category": "multi_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must open a browser and use quick_action browser_new_tab to create a new tab.",
       "setup": {
         "type": "agent_prompt",
@@ -452,6 +466,7 @@
     {
       "id": "quick_action_browser_close_tab",
       "category": "multi_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must close the newly created tab using quick_action browser_close_tab.",
       "setup": {
         "type": "agent_prompt",
@@ -479,6 +494,7 @@
     {
       "id": "quick_action_browser_address_and_refresh",
       "category": "multi_step",
+      "platforms": ["ios", "mac"],
       "description_for_judge": "Agent must focus the browser address bar via quick_action, navigate to a URL, and then refresh the page via quick_action browser_refresh.",
       "setup": {
         "type": "agent_prompt",
@@ -545,6 +561,7 @@
     {
       "id": "quick_action_control_center_dismiss",
       "category": "multi_step",
+      "platforms": ["ios"],
       "description_for_judge": "Agent must open the Control Center via quick_action, then dismiss it using quick_action dismiss_panel.",
       "setup": {
         "type": "agent_prompt",

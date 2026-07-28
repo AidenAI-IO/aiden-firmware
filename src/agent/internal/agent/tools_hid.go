@@ -907,6 +907,7 @@ func (t *KeyboardTextTool) Description() string {
 		`For model/tool calls, pass JSON only, for example {"text":"App Store"}; do not pass a bare string. ` +
 		`Do NOT pass non-ASCII text, emoji, or spaced romanization — use enter_text_in_field for input box entry. ` +
 		`Do not transliterate Chinese/CJK targets to pinyin or guessed ASCII keywords; if enter_text_in_field is unavailable, report the blocker instead. ` +
+		`If a Chinese IME is active but the target text is English, switch to the English/Latin keyboard first, commonly with the globe/input-method key; do not leave English text in Chinese IME preedit/candidate state. ` +
 		`Do not use keyboard_text for picker/wheel values, even if tapping the selected row appears to expose edit mode; use wheel_nudge and verify each returned screenshot instead. ` +
 		`keyboard_text remains for simple standalone ASCII typing outside the enter_text_in_field workflow. ` +
 		`Bare plain text is accepted only as a legacy compatibility fallback.`
@@ -1168,24 +1169,29 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 
 func (t *TouchGestureTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
-		Type         string        `json:"type"`
-		Point        *pointerPoint `json:"point"`
-		Start        *pointerPoint `json:"start"`
-		End          *pointerPoint `json:"end"`
-		CoordSpace   string        `json:"coord_space"`
-		Button       string        `json:"button"`
-		DurationMs   *int          `json:"duration_ms"`
-		HoldBeforeMs *int          `json:"hold_before_ms"`
-		HoldAfterMs  *int          `json:"hold_after_ms"`
-		HoldMs       *int          `json:"hold_ms"`
-		PauseMs      *int          `json:"pause_ms"`
-		Steps        *int          `json:"steps"`
-		Distance     *float64      `json:"distance"`
-		Anchor       *float64      `json:"anchor"`
-		Strength     string        `json:"strength"`
+		Type         string             `json:"type"`
+		Point        *pointerPoint      `json:"point"`
+		Start        *pointerPoint      `json:"start"`
+		End          *pointerPoint      `json:"end"`
+		X            *pointerCoordinate `json:"x"`
+		Y            *pointerCoordinate `json:"y"`
+		CoordSpace   string             `json:"coord_space"`
+		Button       string             `json:"button"`
+		DurationMs   *int               `json:"duration_ms"`
+		HoldBeforeMs *int               `json:"hold_before_ms"`
+		HoldAfterMs  *int               `json:"hold_after_ms"`
+		HoldMs       *int               `json:"hold_ms"`
+		PauseMs      *int               `json:"pause_ms"`
+		Steps        *int               `json:"steps"`
+		Distance     *float64           `json:"distance"`
+		Anchor       *float64           `json:"anchor"`
+		Strength     string             `json:"strength"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Common mistakes: missing quotes around string values, incorrect comma placement, point/start/end must be objects with named keys like {\"x\":500,\"y\":300} not bare values. Example: {\"type\":\"tap\",\"point\":{\"x\":500,\"y\":500}}", err), nil
+	}
+	if args.Point == nil && args.X != nil && args.Y != nil {
+		args.Point = &pointerPoint{X: *args.X, Y: *args.Y}
 	}
 
 	gestureType := strings.ToLower(strings.TrimSpace(args.Type))

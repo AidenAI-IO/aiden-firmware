@@ -14,12 +14,14 @@ from runner.models import RubricVerdict
 from runner.suite import RubricItem
 
 JUDGE_PROMPT_VERSION = "v1"
+DEFAULT_JUDGE_BASE_URL = "https://openrouter.ai/api/v1"
 
 @dc.dataclass
 class JudgeConfig:
     provider: str = "openrouter"
     model: str = "anthropic/claude-sonnet-4-6"
     api_key_env: str = "OPENROUTER_API_KEY"
+    base_url: str = DEFAULT_JUDGE_BASE_URL
 
 @dc.dataclass
 class JudgeOutput:
@@ -57,7 +59,7 @@ def _read_image_b64(p: Path) -> str:
     return base64.b64encode(p.read_bytes()).decode("ascii")
 
 def _cache_key(pre: Path | None, post: Path | None, trace_json: str, rubric: list[RubricItem],
-               description: str, final_response: str, model: str) -> str:
+               description: str, final_response: str, model: str, base_url: str) -> str:
     h = hashlib.sha256()
     if pre is not None:
         h.update(pre.read_bytes())
@@ -69,8 +71,12 @@ def _cache_key(pre: Path | None, post: Path | None, trace_json: str, rubric: lis
     for r in rubric:
         h.update(r.id.encode()); h.update(r.check.encode())
     h.update(model.encode())
+    h.update(base_url.encode())
     h.update(JUDGE_PROMPT_VERSION.encode())
     return h.hexdigest()
+
+def _chat_completions_url(base_url: str) -> str:
+    return f"{(base_url or DEFAULT_JUDGE_BASE_URL).rstrip('/')}/chat/completions"
 
 def _judge_images(
     pre_screenshot: Path | None,
@@ -106,7 +112,7 @@ def judge_task(
     image_items = _judge_images(pre_screenshot, post_screenshot)
     image_labels = [label for label, _ in image_items]
     key = _cache_key(pre_screenshot, post_screenshot, trace_json, rubric, description,
-                     final_response, cfg.model)
+                     final_response, cfg.model, cfg.base_url)
     if cache_dir is not None:
         cached = cache_dir / f"{key}.json"
         if cached.exists():
@@ -132,7 +138,7 @@ def judge_task(
         {"type": "text", "text": f"TOOL TRACE:\n{trace_json}"},
         {"type": "text", "text": f"FINAL RESPONSE:\n{final_response}"},
     ]
-    # Use OpenRouter's OpenAI-compatible chat completions endpoint
+    # Use an OpenAI-compatible chat completions endpoint.
     api_key = os.environ.get(cfg.api_key_env, "").strip()
     if not api_key:
         raise RuntimeError(f"missing env var {cfg.api_key_env}")
@@ -142,7 +148,7 @@ def judge_task(
         "max_tokens": 1024,
     }).encode("utf-8")
     req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
+        _chat_completions_url(cfg.base_url),
         data=payload,
         headers={
             "Authorization": f"Bearer {api_key}",
