@@ -468,7 +468,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			SampleRate:      cfg.Audio.SampleRateOrDefault(),
 			Channels:        cfg.Audio.ChannelsOrDefault(),
 			BitWidth:        cfg.Audio.BitWidthOrDefault(),
-			PlaybackBackend: cfg.AudioPlaybackBackendOrDefault(),
+			PlaybackBackend: cfg.Audio.PlaybackBackendOrDefault(),
 		},
 		AudioArchive: audioArchiveDTO{
 			Enabled:     audioArchive.Enabled,

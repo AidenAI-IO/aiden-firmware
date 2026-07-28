@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,6 +85,107 @@ func TestLocalAudioPlaybackBackendReportsMissingPlayer(t *testing.T) {
 	_, err := backend.StartPlayback(tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
 	if err == nil {
 		t.Fatal("StartPlayback() error = nil, want missing local player")
+	}
+}
+
+func TestValidateLocalPlaybackFormatRejectsWAVHeaderOverflow(t *testing.T) {
+	cases := []struct {
+		name   string
+		format tts.AudioFormat
+		want   string
+	}{
+		{
+			name:   "channels",
+			format: tts.AudioFormat{SampleRate: 16000, Channels: 65536, BitWidth: 16},
+			want:   "channels",
+		},
+		{
+			name:   "bit width",
+			format: tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 65536},
+			want:   "bit_width",
+		},
+		{
+			name:   "block align",
+			format: tts.AudioFormat{SampleRate: 16000, Channels: 65535, BitWidth: 16},
+			want:   "block_align",
+		},
+		{
+			name:   "byte rate",
+			format: tts.AudioFormat{SampleRate: 1000000, Channels: 1, BitWidth: 65528},
+			want:   "byte_rate",
+		},
+	}
+	if strconv.IntSize > 32 {
+		tooLargeSampleRate := wavMaxUint32 + 1
+		cases = append(cases, struct {
+			name   string
+			format tts.AudioFormat
+			want   string
+		}{
+			name:   "sample rate",
+			format: tts.AudioFormat{SampleRate: int(tooLargeSampleRate), Channels: 1, BitWidth: 16},
+			want:   "sample_rate",
+		})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateLocalPlaybackFormat(tc.format)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateLocalPlaybackFormat() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLocalAudioPlaybackBackendRejectsRIFFDataOverflow(t *testing.T) {
+	oldLookPath := localAudioLookPath
+	defer func() { localAudioLookPath = oldLookPath }()
+	localAudioLookPath = func(name string) (string, error) {
+		return name, nil
+	}
+
+	backend := newLocalAudioPlaybackBackend(nil)
+	sessionID, err := backend.StartPlayback(tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err != nil {
+		t.Fatalf("StartPlayback() error = %v", err)
+	}
+	defer func() {
+		if err := backend.StopPlayback(sessionID); err != nil {
+			t.Fatalf("StopPlayback() error = %v", err)
+		}
+	}()
+
+	backend.mu.Lock()
+	backend.sessions[sessionID].dataBytes = wavMaxDataBytes
+	backend.mu.Unlock()
+	err = backend.WritePlayChunk(sessionID, []byte{1}, false)
+	if err == nil || !strings.Contains(err.Error(), "RIFF limit") {
+		t.Fatalf("WritePlayChunk(overflow) error = %v, want RIFF limit", err)
+	}
+
+	backend.mu.Lock()
+	backend.sessions[sessionID].dataBytes = wavMaxDataBytes + 1
+	backend.mu.Unlock()
+	err = backend.WritePlayChunk(sessionID, nil, true)
+	if err == nil || !strings.Contains(err.Error(), "RIFF limit") {
+		t.Fatalf("WritePlayChunk(final overflow) error = %v, want RIFF limit", err)
+	}
+}
+
+func TestWriteWAVHeaderRejectsOversizeData(t *testing.T) {
+	file, err := os.CreateTemp("", "aiden-tts-header-*.wav")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
+	}
+	defer func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	}()
+
+	err = writeWAVHeader(file, tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}, wavMaxDataBytes+1)
+	if err == nil || !strings.Contains(err.Error(), "RIFF limit") {
+		t.Fatalf("writeWAVHeader() error = %v, want RIFF limit", err)
 	}
 }
 

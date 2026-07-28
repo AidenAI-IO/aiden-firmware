@@ -516,6 +516,14 @@ func normalizeAudioPlaybackBackend(value string) (string, error) {
 	}
 }
 
+func (a AudioConfig) PlaybackBackendOrDefault() string {
+	backend, err := normalizeAudioPlaybackBackend(a.PlaybackBackend)
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(a.PlaybackBackend))
+	}
+	return backend
+}
+
 func (c Config) AudioPlaybackBackendOrDefault() string {
 	backend, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend)
 	if err != nil {

@@ -201,8 +201,8 @@ llm_http_retention_days = 14
 		t.Fatalf("audio.socket = %q, want default %q",
 			dto.Audio.Socket, agent.DefaultConfig().Audio.Socket)
 	}
-	if dto.Audio.PlaybackBackend != agent.AudioPlaybackBackendAudioService {
-		t.Fatalf("audio.playback_backend = %q, want audio_service", dto.Audio.PlaybackBackend)
+	if dto.Audio.PlaybackBackend != agent.AudioPlaybackBackendAuto {
+		t.Fatalf("audio.playback_backend = %q, want auto", dto.Audio.PlaybackBackend)
 	}
 	if dto.Log.LLMHTTPRetentionDays != 14 {
 		t.Fatalf("log.llm_http_retention_days = %d, want 14", dto.Log.LLMHTTPRetentionDays)
@@ -308,6 +308,27 @@ func TestWebConfigDTOMapsAudioPlaybackBackend(t *testing.T) {
 	roundTrip := webConfigDTOFromAgentConfig(agent.Config{Audio: cfg.Audio})
 	if roundTrip.Audio.PlaybackBackend != agent.AudioPlaybackBackendLocal {
 		t.Fatalf("round-trip audio.playback_backend = %q, want local", roundTrip.Audio.PlaybackBackend)
+	}
+
+	autoDTO := webConfigDTO{
+		Audio: audioDTO{
+			Socket:          "/tmp/audio.sock",
+			SampleRate:      24000,
+			Channels:        1,
+			BitWidth:        16,
+			PlaybackBackend: agent.AudioPlaybackBackendAuto,
+		},
+	}
+	autoCfg := autoDTO.toAgentConfig()
+	if autoCfg.Audio.PlaybackBackend != agent.AudioPlaybackBackendAuto {
+		t.Fatalf("auto Audio.PlaybackBackend = %q, want auto", autoCfg.Audio.PlaybackBackend)
+	}
+	autoRoundTrip := webConfigDTOFromAgentConfig(agent.Config{
+		Audio: autoCfg.Audio,
+		HID:   agent.HIDConfig{InputBackend: "adb"},
+	})
+	if autoRoundTrip.Audio.PlaybackBackend != agent.AudioPlaybackBackendAuto {
+		t.Fatalf("auto round-trip audio.playback_backend = %q, want auto", autoRoundTrip.Audio.PlaybackBackend)
 	}
 }
 

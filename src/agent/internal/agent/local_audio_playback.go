@@ -17,6 +17,12 @@ var (
 	localAudioCommandContext = exec.CommandContext
 )
 
+const (
+	wavMaxUint16    = uint64(65535)
+	wavMaxUint32    = uint64(4294967295)
+	wavMaxDataBytes = wavMaxUint32 - 36
+)
+
 type localAudioPlaybackBackend struct {
 	mu       sync.Mutex
 	nextID   uint64
@@ -29,7 +35,7 @@ type localAudioPlaybackSession struct {
 	format    tts.AudioFormat
 	file      *os.File
 	path      string
-	dataBytes uint32
+	dataBytes uint64
 	final     bool
 	cancel    context.CancelFunc
 	done      chan error
@@ -91,17 +97,26 @@ func (b *localAudioPlaybackBackend) WritePlayChunk(sessionID uint64, data []byte
 		if session.final {
 			return fmt.Errorf("local playback session already finalized")
 		}
+		if err := validateLocalPlaybackAppendSize(session.dataBytes, uint64(len(data))); err != nil {
+			return err
+		}
 		n, err := session.file.Write(data)
 		if err != nil {
 			return fmt.Errorf("write local playback pcm: %w", err)
 		}
-		session.dataBytes += uint32(n)
+		session.dataBytes += uint64(n)
+		if n != len(data) {
+			return fmt.Errorf("write local playback pcm: wrote %d of %d bytes", n, len(data))
+		}
 	}
 	if !isFinal {
 		return nil
 	}
 	if session.final {
 		return nil
+	}
+	if err := validateLocalPlaybackDataSize(session.dataBytes); err != nil {
+		return err
 	}
 	session.final = true
 	if err := patchWAVHeader(session.file, session.format, session.dataBytes); err != nil {
@@ -220,19 +235,59 @@ func validateLocalPlaybackFormat(format tts.AudioFormat) error {
 	if format.SampleRate <= 0 {
 		return fmt.Errorf("local playback requires sample_rate > 0")
 	}
+	if uint64(format.SampleRate) > wavMaxUint32 {
+		return fmt.Errorf("local playback sample_rate %d exceeds WAV uint32 limit", format.SampleRate)
+	}
 	if format.Channels <= 0 {
 		return fmt.Errorf("local playback requires channels > 0")
+	}
+	if uint64(format.Channels) > wavMaxUint16 {
+		return fmt.Errorf("local playback channels %d exceeds WAV uint16 limit", format.Channels)
 	}
 	if format.BitWidth <= 0 || format.BitWidth%8 != 0 {
 		return fmt.Errorf("local playback requires byte-aligned bit_width, got %d", format.BitWidth)
 	}
+	if uint64(format.BitWidth) > wavMaxUint16 {
+		return fmt.Errorf("local playback bit_width %d exceeds WAV uint16 limit", format.BitWidth)
+	}
+	blockAlign := uint64(format.Channels) * uint64(format.BitWidth/8)
+	if blockAlign > wavMaxUint16 {
+		return fmt.Errorf("local playback block_align %d exceeds WAV uint16 limit", blockAlign)
+	}
+	byteRate := uint64(format.SampleRate) * blockAlign
+	if byteRate > wavMaxUint32 {
+		return fmt.Errorf("local playback byte_rate %d exceeds WAV uint32 limit", byteRate)
+	}
 	return nil
 }
 
-func writeWAVHeader(file *os.File, format tts.AudioFormat, dataBytes uint32) error {
+func validateLocalPlaybackDataSize(dataBytes uint64) error {
+	if dataBytes > wavMaxDataBytes {
+		return fmt.Errorf("local playback wav data size %d exceeds RIFF limit %d", dataBytes, wavMaxDataBytes)
+	}
+	return nil
+}
+
+func validateLocalPlaybackAppendSize(currentBytes, chunkBytes uint64) error {
+	if err := validateLocalPlaybackDataSize(currentBytes); err != nil {
+		return err
+	}
+	if chunkBytes > wavMaxDataBytes-currentBytes {
+		return fmt.Errorf("local playback wav data size %d exceeds RIFF limit %d", currentBytes+chunkBytes, wavMaxDataBytes)
+	}
+	return nil
+}
+
+func writeWAVHeader(file *os.File, format tts.AudioFormat, dataBytes uint64) error {
+	if err := validateLocalPlaybackFormat(format); err != nil {
+		return err
+	}
+	if err := validateLocalPlaybackDataSize(dataBytes); err != nil {
+		return err
+	}
 	header := make([]byte, 44)
 	copy(header[0:4], "RIFF")
-	binary.LittleEndian.PutUint32(header[4:8], 36+dataBytes)
+	binary.LittleEndian.PutUint32(header[4:8], uint32(36+dataBytes))
 	copy(header[8:12], "WAVE")
 	copy(header[12:16], "fmt ")
 	binary.LittleEndian.PutUint32(header[16:20], 16)
@@ -244,14 +299,14 @@ func writeWAVHeader(file *os.File, format tts.AudioFormat, dataBytes uint32) err
 	binary.LittleEndian.PutUint16(header[32:34], blockAlign)
 	binary.LittleEndian.PutUint16(header[34:36], uint16(format.BitWidth))
 	copy(header[36:40], "data")
-	binary.LittleEndian.PutUint32(header[40:44], dataBytes)
+	binary.LittleEndian.PutUint32(header[40:44], uint32(dataBytes))
 	if _, err := file.Write(header); err != nil {
 		return err
 	}
 	return nil
 }
 
-func patchWAVHeader(file *os.File, format tts.AudioFormat, dataBytes uint32) error {
+func patchWAVHeader(file *os.File, format tts.AudioFormat, dataBytes uint64) error {
 	if _, err := file.Seek(0, 0); err != nil {
 		return err
 	}
