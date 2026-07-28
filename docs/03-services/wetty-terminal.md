@@ -8,9 +8,9 @@ The active Pico Zero Buildroot defconfig enables:
 
 - `BR2_PACKAGE_NODEJS=y`
 - `BR2_PACKAGE_OPENSSL=y`
-- `BR2_PACKAGE_NODEJS_MODULES_ADDITIONAL="wetty@2.7.0"`
+- `BR2_PACKAGE_NODEJS_MODULES_ADDITIONAL="--omit=optional wetty@2.5.0 sass@1.69.7"`
 
-The SDK-provided Buildroot tree is `2023.02.6` and builds Node.js `16.20.0`. WeTTY `2.7.0` is pinned because current WeTTY 3.x releases require Node.js `>=20`.
+The SDK-provided Buildroot tree is `2023.02.6` and builds Node.js `16.20.0`. WeTTY `2.5.0` is pinned because later WeTTY releases require Node.js `>=18`, and `sass@1.69.7` is pinned to avoid Node.js 20-only transitive releases. Optional npm dependencies are omitted so prebuilt non-ARM native addons are not copied into the target rootfs.
 
 Run the Linux/image build from an x86 host:
 
