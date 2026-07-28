@@ -21,7 +21,7 @@
 
 ## Modes
 
-- **Voice mode**: Continuous voice interaction using audio_service for recording/playback and STT/TTS providers
+- **Voice mode**: Continuous voice interaction using audio_service for recording, the configured TTS playback backend for speech, and STT/TTS providers
 - **Text mode**: HTTP-based text interaction for testing and debugging
 
 ## Configuration
@@ -34,6 +34,7 @@ provider = "anthropic"  # or "openai", "gemini"
 
 [audio]
 socket = "/run/audio_service/audio_service.sock"
+playback_backend = "auto"
 
 [hid]
 frame_socket = "/run/frame_service/frame_service.sock"

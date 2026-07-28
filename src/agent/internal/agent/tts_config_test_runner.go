@@ -47,7 +47,8 @@ func RunTTSPlaybackTest(ctx context.Context, cfg Config, req TTSPlaybackTestRequ
 	defer manager.Close()
 
 	audio := NewAudioServiceClient(cfg.Audio.SocketOrDefault())
-	spoke, err := speakWithTTSManager(ctx, manager, audio, cfg, text)
+	playback := newTTSPlaybackBackendFromConfig(cfg, audio, nil)
+	spoke, err := speakWithTTSManager(ctx, manager, playback, cfg, text)
 	result := TTSPlaybackTestResult{
 		Provider: manager.Current(),
 		Text:     text,
