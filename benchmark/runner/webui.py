@@ -63,11 +63,20 @@ DEFAULT_DAEMON_READY_TIMEOUT_SEC = 90
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
 DEFAULT_MOBILEGYM_PARALLEL_ENVS = 5
 DEFAULT_JUDGE_MODEL = JudgeConfig().model
+DEFAULT_JUDGE_BASE_URL = JudgeConfig().base_url
 WEBUI_SETTINGS_FILE = "webui-settings.json"
 JOB_RECORD_FILE = "job.json"
 LOG_TAIL_BYTES = 96 * 1024
 TERMINAL_JOB_STATUSES = {"passed", "failed", "stopped", "canceled"}
-TERMINAL_TASK_STATUSES = {"passed", "failed", "stopped", "canceled"}
+TERMINAL_TASK_STATUSES = {
+    "passed",
+    "failed",
+    "stopped",
+    "canceled",
+    "skipped",
+    "timeout",
+    "judge_error",
+}
 STOP_REQUESTED_JOB_STATUSES = {"stopping", "stopped", "canceled"}
 JOB_REPORT_RUN_ID = "_job-report"
 
@@ -145,6 +154,7 @@ class Job:
     task_records: list[TaskRecord] = dc.field(default_factory=list)
     no_judge: bool = False
     judge_model: str = DEFAULT_JUDGE_MODEL
+    judge_base_url: str = DEFAULT_JUDGE_BASE_URL
     judge_api_key_set: bool = False
     repeats: int | None = None
     parallel_tasks: int = 1
@@ -178,6 +188,44 @@ class BenchmarkWebApp:
 
     def list_suites(self) -> list[dict[str, Any]]:
         return list_benchmark_suites(self.config.suites_dir)
+
+    def get_suite_detail(self, suite_key: str) -> dict[str, Any] | None:
+        try:
+            suite_path = resolve_suite_path(self.config.suites_dir, suite_key)
+            suite = load_suite(suite_path)
+            tasks = []
+            for task in suite.tasks:
+                rubric = [{"id": item.id, "check": item.check} for item in task.rubric]
+                hard_assertions = {
+                    "min_tool_calls": task.hard_assertions.min_tool_calls,
+                    "max_tool_calls": task.hard_assertions.max_tool_calls,
+                    "must_complete_within_sec": task.hard_assertions.must_complete_within_sec,
+                    "response_required": task.hard_assertions.response_required,
+                    "required_tools": task.hard_assertions.required_tools,
+                    "forbidden_tools": task.hard_assertions.forbidden_tools,
+                    "prohibited_actions": task.hard_assertions.prohibited_actions,
+                }
+                tasks.append({
+                    "id": task.id,
+                    "category": task.category,
+                    "description_for_judge": task.description_for_judge,
+                    "prompt": task.prompt,
+                    "rubric": rubric,
+                    "hard_assertions": hard_assertions,
+                    "setup": task.setup,
+                    "repeats": task.repeats,
+                    "input_screenshot": task.input_screenshot,
+                    "expected_answer": task.expected_answer,
+                    "answer_format": task.answer_format,
+                    "expected_recalled_memory_ids": task.expected_recalled_memory_ids,
+                })
+            return {
+                "name": suite.name,
+                "prompt_prefix": suite.prompt_prefix,
+                "tasks": tasks,
+            }
+        except Exception:
+            return None
 
     def list_jobs(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -222,6 +270,9 @@ class BenchmarkWebApp:
         if "model" in incoming_judge:
             model = str(incoming_judge.get("model") or "").strip() or DEFAULT_JUDGE_MODEL
             current_judge["model"] = model
+        if "base_url" in incoming_judge:
+            base_url = str(incoming_judge.get("base_url") or "").strip() or DEFAULT_JUDGE_BASE_URL
+            current_judge["base_url"] = base_url
         if "api_key" in incoming_judge:
             api_key = str(incoming_judge.get("api_key") or "").strip()
             if api_key:
@@ -368,19 +419,18 @@ class BenchmarkWebApp:
             self.stop_adb_android_environment(environment_id)
 
     def start_job(self, payload: dict[str, Any]) -> dict[str, Any]:
-        endpoint = str(payload.get("endpoint") or "").strip()
-        if not endpoint:
-            raise ValueError("endpoint is required")
-        parsed = urllib.parse.urlparse(endpoint)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("endpoint must be an http(s) URL")
-
         suite_keys = payload.get("suites") or []
         if not isinstance(suite_keys, list) or not suite_keys:
             raise ValueError("at least one suite is required")
         suite_keys = [str(item) for item in suite_keys]
-        for key in suite_keys:
-            resolve_suite_path(self.config.suites_dir, key)
+        suite_paths = [
+            resolve_suite_path(self.config.suites_dir, key) for key in suite_keys
+        ]
+        mock_suite_flags = [suite_uses_mock_environment(path) for path in suite_paths]
+        if any(mock_suite_flags) and not all(mock_suite_flags):
+            raise ValueError(
+                "mock environment suites and external environment suites must run in separate jobs"
+            )
 
         repeats = payload.get("repeats")
         repeats_value = None
@@ -390,9 +440,29 @@ class BenchmarkWebApp:
                 raise ValueError("repeats must be positive")
 
         environment_payload = payload.get("environment") if isinstance(payload.get("environment"), dict) else {}
-        environment_type = str(payload.get("environment_type") or environment_payload.get("type") or "device")
-        if environment_type not in {"device", "mobilegym", "adb_android"}:
-            raise ValueError("environment_type must be device, mobilegym, or adb_android")
+        requested_environment_type = str(
+            payload.get("environment_type") or environment_payload.get("type") or ""
+        ).strip()
+        if all(mock_suite_flags):
+            if requested_environment_type and requested_environment_type != "mock":
+                raise ValueError("mock environment suites must use environment_type=mock")
+            environment_type = "mock"
+        else:
+            environment_type = requested_environment_type or "device"
+            if environment_type == "mock":
+                raise ValueError("environment_type=mock requires mock environment suites")
+        if environment_type not in {"device", "mobilegym", "adb_android", "mock"}:
+            raise ValueError(
+                "environment_type must be device, mobilegym, adb_android, or mock"
+            )
+
+        endpoint = str(payload.get("endpoint") or "").strip()
+        if environment_type != "mock":
+            if not endpoint:
+                raise ValueError("endpoint is required")
+            parsed = urllib.parse.urlparse(endpoint)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("endpoint must be an http(s) URL")
 
         settings = self._load_webui_settings(include_secrets=True)
         judge_settings = settings.get("judge") if isinstance(settings.get("judge"), dict) else {}
@@ -401,6 +471,11 @@ class BenchmarkWebApp:
             str(payload.get("judge_model") or "").strip()
             or str(judge_settings.get("model") or "").strip()
             or DEFAULT_JUDGE_MODEL
+        )
+        judge_base_url = (
+            str(payload.get("judge_base_url") or "").strip()
+            or str(judge_settings.get("base_url") or "").strip()
+            or DEFAULT_JUDGE_BASE_URL
         )
         judge_api_key = (
             str(payload.get("judge_api_key") or "").strip()
@@ -419,6 +494,12 @@ class BenchmarkWebApp:
         environment_endpoint = str(payload.get("environment_endpoint") or "").strip()
         environment_web_url = str(payload.get("environment_web_url") or environment_payload.get("web_url") or "").strip()
         parallel_tasks = parse_positive_int(payload.get("parallel_tasks"), default=1, field="parallel_tasks")
+        if environment_type == "mock":
+            environment_id = "mock-aiden-app"
+            environment_name = "Mock Aiden App environment"
+            environment_endpoint = ""
+            environment_web_url = ""
+            parallel_tasks = 1
         if environment_type == "device" and not environment_endpoint:
             environment_endpoint = endpoint.rstrip("/")
         if environment_type == "mobilegym":
@@ -456,7 +537,7 @@ class BenchmarkWebApp:
         job = Job(
             id=job_id,
             endpoint=endpoint,
-            docker_endpoint=endpoint_for_docker(endpoint),
+            docker_endpoint=endpoint_for_docker(endpoint) if endpoint else "",
             suites=suite_keys,
             environment_endpoint=environment_endpoint,
             environment_id=environment_id,
@@ -465,7 +546,7 @@ class BenchmarkWebApp:
             environment_web_url=environment_web_url,
             status="queued",
             created_at=now,
-            agent_url=f"http://127.0.0.1:{port}",
+            agent_url="" if environment_type == "mock" else f"http://127.0.0.1:{port}",
             container_name=f"aiden-benchmark-agent-{job_id}",
             config_dir=str(job_dir / "config"),
             raw_runs_dir=str(raw_runs_dir),
@@ -474,6 +555,7 @@ class BenchmarkWebApp:
             daemon_log=str(job_dir / "daemon.log"),
             no_judge=no_judge,
             judge_model=judge_model,
+            judge_base_url=judge_base_url,
             judge_api_key_set=bool(judge_api_key) and not no_judge,
             repeats=repeats_value,
             parallel_tasks=parallel_tasks,
@@ -710,6 +792,30 @@ class BenchmarkWebApp:
             agent_config_text = self.get_agent_config()["content"]
             prepare_run_config(self.config.base_config_dir, Path(job.config_dir), agent_config_text=agent_config_text)
             self._raise_if_job_stop_requested(job)
+            if job.environment_type == "mock":
+                self._set_job(
+                    job,
+                    status="running",
+                    message="running mock environment suites",
+                )
+                for suite_key in job.suites:
+                    self._raise_if_job_stop_requested(job)
+                    self._run_mock_suite(job, suite_key)
+                self._raise_if_job_stop_requested(job)
+                self._refresh_job_report(job)
+                final_status = (
+                    "passed"
+                    if job.suite_results
+                    and all(item.get("exit_code") == 0 for item in job.suite_results)
+                    else "failed"
+                )
+                self._set_job(
+                    job,
+                    status=final_status,
+                    finished_at=now_iso(),
+                    message="",
+                )
+                return
             self._set_job(job, status="starting_agent", message="starting docker agent")
             ensure_daemon_image(
                 self.config.daemon_image,
@@ -734,6 +840,7 @@ class BenchmarkWebApp:
                 host_port=host_port,
                 config_dir=Path(job.config_dir),
                 environment_bridge_endpoint=job.docker_endpoint,
+                benchmark_task_id=job_benchmark_task_id(job.id),
                 log_path=Path(job.runner_log),
                 stop_requested=lambda: self._job_stop_requested(job),
             )
@@ -750,6 +857,7 @@ class BenchmarkWebApp:
                 if log_proc is not None:
                     log_proc.terminate()
                 stop_daemon_compose(job)
+                self._release_job_environment(job)
             self._raise_if_job_stop_requested(job)
             self._refresh_job_report(job)
             final_status = "passed" if job.suite_results and all(item.get("exit_code") == 0 for item in job.suite_results) else "failed"
@@ -776,6 +884,24 @@ class BenchmarkWebApp:
                 for key in list(self._job_runner_procs):
                     if key.startswith(f"{job.id}:"):
                         self._job_runner_procs.pop(key, None)
+
+    def _release_job_environment(self, job: Job) -> None:
+        """Drop the job's environment ownership after its daemon is gone.
+
+        The runner releases each task's route itself, but a job that is stopped
+        or crashes mid-task never gets there, and the job-level route id is
+        never reused — so a leaked lease would answer every later job with
+        429 until the bridge is restarted.
+        """
+        if not job.environment_endpoint:
+            return
+        try:
+            call_environment_release(
+                job.environment_endpoint,
+                task_id=job_benchmark_task_id(job.id),
+            )
+        except Exception as exc:
+            append_log(Path(job.runner_log), f"warning: failed to release environment: {exc}")
 
     def _refresh_job_report(self, job: Job) -> None:
         try:
@@ -1018,6 +1144,7 @@ class BenchmarkWebApp:
                 cmd.append("--no-judge")
             else:
                 cmd.extend(["--judge-model", job.judge_model or DEFAULT_JUDGE_MODEL])
+                cmd.extend(["--judge-base-url", job.judge_base_url or DEFAULT_JUDGE_BASE_URL])
             if job.repeats:
                 cmd.extend(["--repeats", str(job.repeats)])
             env = os.environ.copy()
@@ -1215,10 +1342,14 @@ class BenchmarkWebApp:
         cmd.extend(["--benchmark-token-file", str(Path(job.config_dir) / "control_token")])
         if job.environment_endpoint:
             cmd.extend(["--environment-url", job.environment_endpoint])
+            # Must match the id the shared daemon was started with, or the
+            # bridge rejects the daemon's tool calls as another task's.
+            cmd.extend(["--benchmark-task-id", job_benchmark_task_id(job.id)])
         if job.no_judge:
             cmd.append("--no-judge")
         else:
             cmd.extend(["--judge-model", job.judge_model or DEFAULT_JUDGE_MODEL])
+            cmd.extend(["--judge-base-url", job.judge_base_url or DEFAULT_JUDGE_BASE_URL])
         if job.repeats:
             cmd.extend(["--repeats", str(job.repeats)])
         append_log(Path(job.runner_log), "\n$ " + " ".join(cmd))
@@ -1268,6 +1399,130 @@ class BenchmarkWebApp:
         if self._job_stop_requested(job):
             raise JobStopped("job stop requested")
 
+    def _run_mock_suite(self, job: Job, suite_key: str) -> None:
+        self._raise_if_job_stop_requested(job)
+        suite_path = resolve_suite_path(self.config.suites_dir, suite_key)
+        suite = load_suite(suite_path)
+        for task in suite.tasks:
+            record = self._ensure_task_record(job, suite_key, task.id)
+            self._set_task_record(
+                job,
+                record.id,
+                status="queued",
+                message="waiting for mock environment worker",
+                runner_log=job.runner_log,
+                daemon_log="",
+                screen_url="",
+            )
+
+        run_id = f"{job.id}-{worker_token(suite_key, 'mock')}"
+        run_dir = Path(job.raw_runs_dir) / run_id
+        cmd = [
+            sys.executable,
+            "-m",
+            "runner.main",
+            "run",
+            "--suite",
+            str(suite_path),
+            "--auto-agent-setup",
+            "--daemon-image",
+            self.config.daemon_image,
+            "--base-config-dir",
+            job.config_dir,
+            "--run-id",
+            run_id,
+            "--out",
+            job.raw_runs_dir,
+            "--state-file",
+            job.state_file,
+            "--verbose",
+        ]
+        if not self.config.build_daemon_image:
+            cmd.append("--no-build-daemon-image")
+        if job.no_judge:
+            cmd.append("--no-judge")
+        else:
+            cmd.extend(["--judge-model", job.judge_model or DEFAULT_JUDGE_MODEL])
+        if job.repeats:
+            cmd.extend(["--repeats", str(job.repeats)])
+
+        env = os.environ.copy()
+        if not job.no_judge:
+            with self._lock:
+                judge_api_key = self._job_judge_api_keys.get(job.id, "")
+            if judge_api_key:
+                env["OPENROUTER_API_KEY"] = judge_api_key
+        exit_code = self._run_runner_process(job, cmd, env)
+
+        result = {
+            "suite": suite_key,
+            "exit_code": exit_code,
+            "run_id": run_id if run_dir.exists() else "",
+        }
+        if run_dir.exists():
+            manifest = read_json_file(run_dir / "manifest.json") or {}
+            result["manifest"] = manifest
+            result["report_url"] = f"/reports/{job.id}/{run_id}/report.html"
+        self._update_mock_task_records(job, suite_key, run_id, run_dir)
+        if self._job_stop_requested(job):
+            update_state_status(Path(job.state_file), "stopped", run_id=job.id)
+            result["stopped"] = True
+        with self._lock:
+            job.suite_results.append(result)
+        self._persist_job(job)
+        if self._job_stop_requested(job):
+            raise JobStopped("job stop requested")
+
+    def _update_mock_task_records(
+        self,
+        job: Job,
+        suite_key: str,
+        run_id: str,
+        run_dir: Path,
+    ) -> None:
+        rows = read_results_jsonl(run_dir / "results.jsonl")
+        report_url = (
+            f"/reports/{job.id}/{run_id}/report.html" if run_dir.exists() else ""
+        )
+        updated_task_ids: set[str] = set()
+        for row in rows:
+            task_id = str(row.get("task_id") or "").strip()
+            if not task_id:
+                continue
+            updated_task_ids.add(task_id)
+            record = self._ensure_task_record(job, suite_key, task_id)
+            status = str(row.get("status") or "failed").strip() or "failed"
+            self._set_task_record(
+                job,
+                record.id,
+                status=status,
+                message="completed in mock environment",
+                finished_at=now_iso(),
+                run_id=run_id,
+                report_url=report_url,
+                exit_code=0 if status == "passed" else 1,
+            )
+        fallback_status = "stopped" if self._job_stop_requested(job) else "failed"
+        with self._lock:
+            missing_record_ids = [
+                record.id
+                for record in job.task_records
+                if record.suite == suite_key
+                and record.task_id not in updated_task_ids
+                and record.status not in TERMINAL_TASK_STATUSES
+            ]
+        for record_id in missing_record_ids:
+            self._set_task_record(
+                job,
+                record_id,
+                status=fallback_status,
+                message="mock environment run ended without a task result",
+                finished_at=now_iso(),
+                run_id=run_id,
+                report_url=report_url,
+                exit_code=1,
+            )
+
 
 def list_benchmark_suites(suites_dir: Path) -> list[dict[str, Any]]:
     suites = []
@@ -1299,9 +1554,30 @@ def list_benchmark_suites(suites_dir: Path) -> list[dict[str, Any]]:
                 "task_count": len(entries),
                 "categories": categories,
                 "suite_category": data.get("suite_category", "Other"),
+                "mock_environment": suite_data_uses_mock_environment(data),
             }
         suites.append(item)
     return suites
+
+
+def suite_data_uses_mock_environment(data: dict[str, Any]) -> bool:
+    if data.get("mock_environment") is not None:
+        return True
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list):
+        return False
+    return any(
+        isinstance(task, dict) and task.get("mock_environment") is not None
+        for task in tasks
+    )
+
+
+def suite_uses_mock_environment(path: Path) -> bool:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(data, dict) and suite_data_uses_mock_environment(data)
 
 
 def resolve_suite_path(suites_dir: Path, key: str) -> Path:
@@ -1339,6 +1615,20 @@ def worker_token(suite_key: str, task_id: str) -> str:
 
 def task_worker_key(job_id: str, task_record_id: str) -> str:
     return f"{job_id}:{task_record_id}"
+
+
+def job_benchmark_task_id(job_id: str) -> str:
+    """Route id shared by a job's single daemon and its runner processes.
+
+    Jobs that run every task through one long-lived daemon (device, adb_android,
+    and non-parallel mobilegym) cannot use the runner's default per-task route
+    id: the daemon is started once, so it would send one fixed id — or none at
+    all — while the runner claimed a different id per task, and an environment
+    bridge that enforces single-environment ownership rejects the mismatch with
+    `429 no_bridge_env_available`. One id per job keeps both sides in agreement;
+    tasks run sequentially on that path, so job-level ownership is enough.
+    """
+    return f"webui:{job_id}"
 
 
 def runner_procs_for_stop(value: Any) -> list[subprocess.Popen]:
@@ -1418,6 +1708,7 @@ def default_webui_settings(include_secrets: bool = False) -> dict[str, Any]:
     judge: dict[str, Any] = {
         "enabled": True,
         "model": DEFAULT_JUDGE_MODEL,
+        "base_url": DEFAULT_JUDGE_BASE_URL,
     }
     if include_secrets:
         judge["api_key"] = ""
@@ -1461,6 +1752,7 @@ def normalize_webui_settings(data: Any, include_secrets: bool = False) -> dict[s
     judge: dict[str, Any] = {
         "enabled": bool(raw_judge.get("enabled", True)),
         "model": str(raw_judge.get("model") or DEFAULT_JUDGE_MODEL).strip() or DEFAULT_JUDGE_MODEL,
+        "base_url": str(raw_judge.get("base_url") or DEFAULT_JUDGE_BASE_URL).strip() or DEFAULT_JUDGE_BASE_URL,
     }
     if include_secrets:
         judge["api_key"] = api_key
@@ -1858,6 +2150,13 @@ def daemon_compose_env(
     environment_bridge_mode: bool | None = None,
 ) -> dict[str, str]:
     env = dict(os.environ)
+    # Benchmark runs never go through an HTTP proxy: strip any proxy variables the
+    # host shell may have exported (e.g. a running Clash), so neither the docker
+    # build (base image / go mod / apt) nor the daemon container inherits them.
+    # NO_PROXY is a bypass list, not a proxy, and is set explicitly below.
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                "http_proxy", "https_proxy", "all_proxy"):
+        env.pop(key, None)
     env["AIDEN_DAEMON_IMAGE"] = image
     bridge_enabled = bool(environment_bridge_endpoint) if environment_bridge_mode is None else bool(environment_bridge_mode)
     env["AIDEN_ENVIRONMENT_BRIDGE_MODE"] = "1" if bridge_enabled else "0"
@@ -2097,7 +2396,7 @@ def write_job_report(job: Job, *, analysis_api_key: str = "") -> str:
         "selected_task_ids": [str(row.get("task_id") or "") for row in rows],
         "agent_url": job.agent_url,
         "environment_url": job.environment_endpoint or None,
-        "judge_config": None if job.no_judge else {"provider": "openrouter", "model": job.judge_model or DEFAULT_JUDGE_MODEL},
+        "judge_config": None if job.no_judge else {"provider": "openrouter", "model": job.judge_model or DEFAULT_JUDGE_MODEL, "base_url": job.judge_base_url or DEFAULT_JUDGE_BASE_URL},
         "started_at": job.started_at,
         "finished_at": job.finished_at or now_iso(),
         "totals": totals_from_report_rows(rows),
@@ -2124,6 +2423,8 @@ def _run_job_analysis_if_enabled(
         return None
     if not os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MODEL") and job.judge_model:
         cfg.model = job.judge_model or DEFAULT_JUDGE_MODEL
+    if not os.environ.get("AIDEN_BENCHMARK_ANALYSIS_BASE_URL"):
+        cfg.base_url = job.judge_base_url or DEFAULT_JUDGE_BASE_URL
     if analysis_api_key:
         cfg.api_key_value = analysis_api_key
     result = analyze_run(report_dir, REPO_ROOT, cfg)
@@ -2373,6 +2674,9 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/suites":
             self._send_json({"suites": self.server.app.list_suites()})
             return
+        if path.startswith("/api/suites/"):
+            self._handle_get_suite(path)
+            return
         if path == "/api/agent-config":
             self._send_json({"config": self.server.app.get_agent_config()})
             return
@@ -2574,6 +2878,19 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json(payload, status=status)
             return
         self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _handle_get_suite(self, path: str) -> None:
+        parts = path.strip("/").split("/")
+        if len(parts) < 3:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        # URL decode the suite key to handle encoded slashes and special characters
+        suite_key = urllib.parse.unquote("/".join(parts[2:]))
+        suite = self.server.app.get_suite_detail(suite_key)
+        if suite is None:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self._send_json({"suite": suite})
 
     def _handle_screen_viewer(self, path: str) -> None:
         parts = path.strip("/").split("/")
@@ -3293,7 +3610,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .judge-inline {
       display: grid;
-      grid-template-columns: auto minmax(220px, 1fr) minmax(180px, 0.8fr);
+      grid-template-columns: auto minmax(220px, 1fr) minmax(240px, 1fr) minmax(180px, 0.8fr);
       gap: 12px;
       align-items: end;
     }
@@ -3407,6 +3724,102 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--muted);
       height: 48px;
     }
+    .task-detail {
+      border: 1px solid var(--border);
+      margin-bottom: 16px;
+      background: var(--layer);
+    }
+    .task-detail-header {
+      background: #f0f0f0;
+      padding: 12px 16px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .task-detail-header:hover {
+      background: #e8e8e8;
+    }
+    .task-detail-header::before {
+      content: '▼';
+      font-size: 10px;
+      transition: transform 0.2s;
+      color: var(--muted);
+    }
+    .task-detail-header.collapsed::before {
+      transform: rotate(-90deg);
+    }
+    .task-detail-body {
+      padding: 16px;
+      display: block;
+    }
+    .task-detail-body.collapsed {
+      display: none;
+    }
+    .detail-section {
+      margin-bottom: 16px;
+    }
+    .detail-section:last-child {
+      margin-bottom: 0;
+    }
+    .detail-section h3 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .detail-section pre {
+      margin: 0;
+      min-height: auto;
+      max-height: 300px;
+      padding: 12px;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .detail-list {
+      display: grid;
+      gap: 8px;
+    }
+    .detail-item {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 12px;
+      font-size: 13px;
+    }
+    .detail-item dt {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .detail-item dd {
+      margin: 0;
+      color: var(--text);
+      word-break: break-word;
+    }
+    .rubric-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 8px;
+    }
+    .rubric-item {
+      background: var(--layer-alt);
+      padding: 10px 12px;
+      border-left: 3px solid var(--blue);
+      font-size: 13px;
+    }
+    .rubric-item strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--text);
+    }
+    .rubric-item span {
+      color: var(--muted-2);
+    }
     @media (max-width: 980px) {
       .layout { grid-template-columns: 1fr; }
       .suite-table-wrap { max-height: 360px; }
@@ -3455,6 +3868,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="judge-inline">
             <label class="check-label"><input id="judgeEnabled" type="checkbox" checked> Enable judge</label>
             <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="anthropic/claude-sonnet-4-6"></div>
+            <div class="field"><label for="judgeBaseUrl">Base URL</label><input id="judgeBaseUrl" autocomplete="off" placeholder="https://openrouter.ai/api/v1"></div>
             <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="OPENROUTER_API_KEY"></div>
           </div>
           <div class="run-actions">
@@ -3489,7 +3903,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="tile-header">
           <div>
             <h2 class="tile-title">Task workers</h2>
-            <div class="tile-kicker">Concurrent MobileGym task records</div>
+            <div class="tile-kicker">Isolated environment task records</div>
           </div>
         </div>
         <div class="table-wrap task-table-wrap">
@@ -3551,6 +3965,23 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </section>
   </main>
+  <div id="suiteDetailDialog" class="modal-backdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="suiteDetailTitle">
+      <div class="modal-header">
+        <div>
+          <h2 id="suiteDetailTitle" class="tile-title">Suite Details</h2>
+          <div id="suiteDetailSubtitle" class="tile-kicker"></div>
+        </div>
+        <button id="closeSuiteDetail" class="ghost-button table-button" type="button">Close</button>
+      </div>
+      <div class="modal-body">
+        <div id="suiteDetailContent"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelSuiteDetail" class="ghost-button" type="button">Close</button>
+      </div>
+    </section>
+  </div>
   <div id="runEnvDialog" class="modal-backdrop" hidden>
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="runEnvTitle">
       <div class="modal-header">
@@ -3609,6 +4040,7 @@ INDEX_HTML = r"""<!doctype html>
   </div>
   <script>
     const DEFAULT_JUDGE_MODEL = 'anthropic/claude-sonnet-4-6';
+    const DEFAULT_JUDGE_BASE_URL = 'https://openrouter.ai/api/v1';
     let deviceEnvironments = [];
     let mobilegymEnvironments = [];
     let adbAndroidEnvironments = [];
@@ -3652,6 +4084,7 @@ INDEX_HTML = r"""<!doctype html>
       const judge = settings.judge || {};
       document.getElementById('judgeEnabled').checked = judge.enabled !== false;
       document.getElementById('judgeModel').value = String(judge.model || DEFAULT_JUDGE_MODEL);
+      document.getElementById('judgeBaseUrl').value = String(judge.base_url || DEFAULT_JUDGE_BASE_URL);
       const keyInput = document.getElementById('judgeApiKey');
       keyInput.value = '';
       keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'OPENROUTER_API_KEY';
@@ -3661,7 +4094,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     async function saveWebuiSettings(options = {}){
       const judge = currentJudgeSettings();
-      const judgePayload = {enabled: judge.enabled, model: judge.model};
+      const judgePayload = {enabled: judge.enabled, model: judge.model, base_url: judge.baseUrl};
       if(judge.apiKey) judgePayload.api_key = judge.apiKey;
       const payload = {
         judge: judgePayload,
@@ -3712,8 +4145,9 @@ INDEX_HTML = r"""<!doctype html>
     function currentJudgeSettings(){
       const enabled = document.getElementById('judgeEnabled').checked;
       const model = document.getElementById('judgeModel').value.trim() || DEFAULT_JUDGE_MODEL;
+      const baseUrl = document.getElementById('judgeBaseUrl').value.trim() || DEFAULT_JUDGE_BASE_URL;
       const apiKey = document.getElementById('judgeApiKey').value.trim();
-      return {enabled, model, apiKey};
+      return {enabled, model, baseUrl, apiKey};
     }
 
     function persistJudgeSettings(){
@@ -3725,6 +4159,7 @@ INDEX_HTML = r"""<!doctype html>
     function syncJudgePanel(){
       const enabled = document.getElementById('judgeEnabled').checked;
       document.getElementById('judgeModel').disabled = !enabled;
+      document.getElementById('judgeBaseUrl').disabled = !enabled;
       document.getElementById('judgeApiKey').disabled = !enabled;
     }
 
@@ -3847,7 +4282,7 @@ INDEX_HTML = r"""<!doctype html>
         if(remove) remove.onclick = () => env.type === 'adb_android' ? removeADBAndroid(env.id) : removeMobileGym(env.id);
         tbody.appendChild(tr);
       });
-      document.getElementById('selectedEnvLabel').textContent = current ? current.name : 'No environment';
+      syncRunState();
     }
 
     function managedEnvActionHtml(env){
@@ -4091,14 +4526,17 @@ INDEX_HTML = r"""<!doctype html>
           const tr = document.createElement('tr');
           tr.className = 'suite-row';
           if(isCollapsed) tr.style.display = 'none';
+          const mockBadge = s.mock_environment ? ' <span class="status">mock</span>' : '';
           tr.innerHTML = `<td><input type="checkbox" ${selectedSuites.has(s.key) ? 'checked' : ''}></td>
             <td title="${escapeHtml(s.key)}"><div class="cell-main"><span>${escapeHtml(s.name)}</span><small>${escapeHtml(s.key)}</small></div></td>
-            <td><span class="status">${escapeHtml(s.kind)}</span></td>
-            <td>${s.task_count || 0}</td>`;
+            <td><span class="status">${escapeHtml(s.kind)}</span>${mockBadge}</td>
+            <td><a href="#" data-suite-detail="${escapeHtml(s.key)}">${s.task_count || 0}</a></td>`;
           tr.querySelector('input').onchange = e => {
             if(e.target.checked) selectedSuites.add(s.key); else selectedSuites.delete(s.key);
             syncRunState();
           };
+          const detailLink = tr.querySelector('[data-suite-detail]');
+          if(detailLink) detailLink.onclick = e => { e.preventDefault(); openSuiteDetail(s.key); };
           tbody.appendChild(tr);
         });
       });
@@ -4115,19 +4553,202 @@ INDEX_HTML = r"""<!doctype html>
       return suite ? suite.name : key;
     }
 
+    async function openSuiteDetail(suiteKey){
+      try {
+        const res = await fetch(`/api/suites/${encodeURIComponent(suiteKey)}`);
+        if(!res.ok) throw new Error('Failed to load suite details');
+        const body = await res.json();
+        const suite = body.suite;
+        document.getElementById('suiteDetailTitle').textContent = suite.name || suiteKey;
+        document.getElementById('suiteDetailSubtitle').textContent = suiteKey;
+        renderSuiteDetail(suite);
+        document.getElementById('suiteDetailDialog').hidden = false;
+      } catch (err) {
+        document.getElementById('logBox').textContent = err.message || String(err);
+      }
+    }
+
+    function closeSuiteDetail(){
+      document.getElementById('suiteDetailDialog').hidden = true;
+    }
+
+    function renderSuiteDetail(suite){
+      const container = document.getElementById('suiteDetailContent');
+      container.innerHTML = '';
+
+      if(suite.prompt_prefix){
+        const section = document.createElement('div');
+        section.className = 'detail-section';
+        section.innerHTML = `<h3>Prompt Prefix</h3><pre>${escapeHtml(suite.prompt_prefix)}</pre>`;
+        container.appendChild(section);
+      }
+
+      const tasksTitle = document.createElement('div');
+      tasksTitle.className = 'detail-section';
+      tasksTitle.innerHTML = `<h3>Tasks (${suite.tasks.length})</h3>`;
+      container.appendChild(tasksTitle);
+
+      suite.tasks.forEach((task, index) => {
+        const taskDiv = document.createElement('div');
+        taskDiv.className = 'task-detail';
+
+        const header = document.createElement('div');
+        header.className = 'task-detail-header';
+        header.innerHTML = `<span>${index + 1}. ${escapeHtml(task.id)}</span><span class="muted" style="margin-left:auto">${escapeHtml(task.category)}</span>`;
+
+        const body = document.createElement('div');
+        body.className = 'task-detail-body';
+
+        // Description
+        if(task.description_for_judge){
+          const desc = document.createElement('div');
+          desc.className = 'detail-section';
+          desc.innerHTML = `<h3>Description</h3><p style="margin:0; color:var(--text); line-height:1.5">${escapeHtml(task.description_for_judge)}</p>`;
+          body.appendChild(desc);
+        }
+
+        // Prompt
+        if(task.prompt){
+          const prompt = document.createElement('div');
+          prompt.className = 'detail-section';
+          prompt.innerHTML = `<h3>Prompt</h3><pre>${escapeHtml(task.prompt)}</pre>`;
+          body.appendChild(prompt);
+        }
+
+        // Expected Answer
+        if(task.expected_answer){
+          const answer = document.createElement('div');
+          answer.className = 'detail-section';
+          answer.innerHTML = `<h3>Expected Answer</h3><p style="margin:0; color:var(--green); font-weight:600">${escapeHtml(task.expected_answer)}${task.answer_format ? ` (${task.answer_format})` : ''}</p>`;
+          body.appendChild(answer);
+        }
+
+        // Rubric
+        if(task.rubric && task.rubric.length){
+          const rubric = document.createElement('div');
+          rubric.className = 'detail-section';
+          rubric.innerHTML = `<h3>Rubric (${task.rubric.length} items)</h3>`;
+          const list = document.createElement('ul');
+          list.className = 'rubric-list';
+          task.rubric.forEach(item => {
+            const li = document.createElement('li');
+            li.className = 'rubric-item';
+            li.innerHTML = `<strong>${escapeHtml(item.id)}</strong><span>${escapeHtml(item.check)}</span>`;
+            list.appendChild(li);
+          });
+          rubric.appendChild(list);
+          body.appendChild(rubric);
+        }
+
+        // Hard Assertions
+        if(task.hard_assertions){
+          const ha = task.hard_assertions;
+          const assertions = document.createElement('div');
+          assertions.className = 'detail-section';
+          assertions.innerHTML = `<h3>Hard Assertions</h3>`;
+          const dl = document.createElement('dl');
+          dl.className = 'detail-list';
+          dl.innerHTML = `
+            <div class="detail-item"><dt>Min tool calls</dt><dd>${ha.min_tool_calls || 0}</dd></div>
+            <div class="detail-item"><dt>Max tool calls</dt><dd>${ha.max_tool_calls || 50}</dd></div>
+            <div class="detail-item"><dt>Timeout</dt><dd>${ha.must_complete_within_sec || 180}s</dd></div>
+            <div class="detail-item"><dt>Response required</dt><dd>${ha.response_required ? 'Yes' : 'No'}</dd></div>
+            ${ha.required_tools && ha.required_tools.length ? `<div class="detail-item"><dt>Required tools</dt><dd>${ha.required_tools.join(', ')}</dd></div>` : ''}
+            ${ha.forbidden_tools && ha.forbidden_tools.length ? `<div class="detail-item"><dt>Forbidden tools</dt><dd>${ha.forbidden_tools.join(', ')}</dd></div>` : ''}
+            ${ha.prohibited_actions && ha.prohibited_actions.length ? `<div class="detail-item"><dt>Prohibited actions</dt><dd>${ha.prohibited_actions.join(', ')}</dd></div>` : ''}
+          `;
+          assertions.appendChild(dl);
+          body.appendChild(assertions);
+        }
+
+        // Setup
+        if(task.setup){
+          const setup = document.createElement('div');
+          setup.className = 'detail-section';
+          setup.innerHTML = `<h3>Setup</h3><pre>${escapeHtml(JSON.stringify(task.setup, null, 2))}</pre>`;
+          body.appendChild(setup);
+        }
+
+        // Other fields
+        const other = document.createElement('div');
+        other.className = 'detail-section';
+        other.innerHTML = `<h3>Other</h3>`;
+        const otherDl = document.createElement('dl');
+        otherDl.className = 'detail-list';
+        otherDl.innerHTML = `
+          <div class="detail-item"><dt>Repeats</dt><dd>${task.repeats || 1}</dd></div>
+          ${task.input_screenshot ? `<div class="detail-item"><dt>Input screenshot</dt><dd>${escapeHtml(task.input_screenshot)}</dd></div>` : ''}
+          ${task.expected_recalled_memory_ids && task.expected_recalled_memory_ids.length ? `<div class="detail-item"><dt>Expected memory IDs</dt><dd>${task.expected_recalled_memory_ids.join(', ')}</dd></div>` : ''}
+        `;
+        other.appendChild(otherDl);
+        body.appendChild(other);
+
+        header.onclick = () => {
+          const collapsed = body.classList.toggle('collapsed');
+          header.classList.toggle('collapsed', collapsed);
+        };
+
+        taskDiv.appendChild(header);
+        taskDiv.appendChild(body);
+        container.appendChild(taskDiv);
+      });
+    }
+
+    function selectedSuiteEnvironmentMode(){
+      const selected = Array.from(selectedSuites)
+        .map(key => suites.find(suite => suite.key === key))
+        .filter(Boolean);
+      if(!selected.length) return 'none';
+      const mockCount = selected.filter(suite => suite.mock_environment).length;
+      if(mockCount === selected.length) return 'mock';
+      if(mockCount > 0) return 'mixed';
+      return 'external';
+    }
+
+    function mockEnvironment(){
+      return {
+        id: 'mock-aiden-app',
+        name: 'Mock Aiden App environment',
+        endpoint: '',
+        type: 'mock',
+        status: 'running'
+      };
+    }
+
     function syncRunState(){
       const env = selectedEnv();
       const judge = currentJudgeSettings();
+      const mode = selectedSuiteEnvironmentMode();
       document.getElementById('selectedSuitesLabel').textContent = `${selectedSuites.size} suites`;
-      document.getElementById('selectedEnvLabel').textContent = env ? env.name : 'No environment';
+      const environmentLabel = mode === 'mock'
+        ? 'Mock Aiden App environment'
+        : mode === 'mixed'
+          ? 'Mixed environments - run separately'
+          : env ? env.name : 'No environment';
+      document.getElementById('selectedEnvLabel').textContent = environmentLabel;
       document.getElementById('selectedJudgeLabel').textContent = judge.enabled ? `judge: ${judge.model}` : 'judge: off';
-      document.getElementById('runBtn').disabled = selectedSuites.size === 0;
+      const runButton = document.getElementById('runBtn');
+      runButton.disabled = selectedSuites.size === 0 || mode === 'mixed';
+      runButton.title = mode === 'mixed'
+        ? 'Mock suites and device suites must run separately.'
+        : mode === 'mock'
+          ? 'Run with task-level mock environments; no phone or emulator required.'
+          : '';
       const confirm = document.getElementById('confirmRunBtn');
       if(confirm) confirm.disabled = !envCanRun(env) || selectedSuites.size === 0;
     }
 
     async function openRunEnvironmentDialog(){
       if(selectedSuites.size === 0) return;
+      const mode = selectedSuiteEnvironmentMode();
+      if(mode === 'mixed'){
+        document.getElementById('logBox').textContent = 'Mock suites and external device suites must run in separate jobs.';
+        return;
+      }
+      if(mode === 'mock'){
+        await startRun(mockEnvironment());
+        return;
+      }
       await loadMobileGymEnvironments();
       await loadADBAndroidEnvironments();
       renderEnvs();
@@ -4153,7 +4774,7 @@ INDEX_HTML = r"""<!doctype html>
         if(!saved) return false;
       }
       const judge = currentJudgeSettings();
-      selectedEnvironmentId = env.id;
+      if(env.type !== 'mock') selectedEnvironmentId = env.id;
       const settingsSaved = await saveWebuiSettings({keepInputs: true});
       if(!settingsSaved) return false;
       const res = await fetch('/api/jobs', {
@@ -4162,10 +4783,12 @@ INDEX_HTML = r"""<!doctype html>
         body: JSON.stringify({
           endpoint: env.endpoint,
           environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || '', web_url: env.web_url || '', serial: env.serial || '', parallel_envs: env.parallel_envs || 5},
+          environment_type: env.type,
           suites: Array.from(selectedSuites),
           parallel_tasks: env.type === 'mobilegym' ? (env.parallel_envs || 5) : 1,
           no_judge: !judge.enabled,
-          judge_model: judge.model
+          judge_model: judge.model,
+          judge_base_url: judge.baseUrl
         })
       });
       const body = await res.json();
@@ -4235,7 +4858,7 @@ INDEX_HTML = r"""<!doctype html>
         const report = job.report_url
           ? `<a href="${escapeHtml(job.report_url)}" target="_blank" rel="noreferrer">report</a>`
           : '';
-        const envLabel = job.environment_name || job.endpoint;
+        const envLabel = job.environment_name || job.endpoint || 'No environment';
         const envType = job.environment_type || 'device';
         const actionHtml = jobCanStop(job)
           ? `<button class="danger" data-stop-job="${escapeHtml(job.id)}" ${job.status === 'stopping' ? 'disabled' : ''}>Stop</button>`
@@ -4243,7 +4866,7 @@ INDEX_HTML = r"""<!doctype html>
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><div class="cell-main"><a href="#" data-job="${job.id}">${escapeHtml(job.id)}</a><small>${escapeHtml(job.created_at || '')}</small></div></td>
           <td title="${escapeHtml(suiteDetail || suiteLabel)}"><div class="cell-main"><span>${escapeHtml(suiteLabel)}</span><small>${escapeHtml(suiteDetail)}</small></div></td>
-          <td title="${escapeHtml(job.endpoint)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>${escapeHtml(envType)}</small></div></td>
+          <td title="${escapeHtml(job.environment_name || job.endpoint || envLabel)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>${escapeHtml(envType)}</small></div></td>
           <td><span class="status ${cssToken(job.status)}">${escapeHtml(job.status)}</span></td>
           <td>${report || '<span class="muted">none</span>'}</td>
           <td>${actionHtml}</td>`;
@@ -4278,7 +4901,10 @@ INDEX_HTML = r"""<!doctype html>
 
     function renderActiveJob(job){
       const activeLabel = document.getElementById('activeJobLabel');
-      activeLabel.textContent = `${job.id} - ${job.agent_url}`;
+      const runtimeLabel = job.environment_type === 'mock'
+        ? (job.environment_name || 'Mock Aiden App environment')
+        : job.agent_url;
+      activeLabel.textContent = `${job.id} - ${runtimeLabel}`;
       const st = document.getElementById('activeJobStatus');
       st.className = 'status ' + job.status;
       st.textContent = job.status;
@@ -4388,6 +5014,7 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById('resetAgentConfig').onclick = resetAgentConfig;
     document.getElementById('judgeEnabled').onchange = persistJudgeSettings;
     document.getElementById('judgeModel').oninput = persistJudgeSettings;
+    document.getElementById('judgeBaseUrl').oninput = persistJudgeSettings;
     document.getElementById('judgeApiKey').oninput = syncRunState;
     document.getElementById('judgeApiKey').onchange = persistJudgeSettings;
     document.getElementById('agentConfigText').oninput = () => {
@@ -4397,13 +5024,28 @@ INDEX_HTML = r"""<!doctype html>
     };
     document.getElementById('suiteFilter').oninput = renderSuites;
     document.getElementById('jobCategoryFilter').onchange = renderJobs;
+    const runEnvDialog = document.getElementById('runEnvDialog');
+    let runEnvBackdropPointerDown = false;
     document.getElementById('runBtn').onclick = openRunEnvironmentDialog;
     document.getElementById('closeRunEnv').onclick = closeRunEnvironmentDialog;
     document.getElementById('cancelRunEnv').onclick = closeRunEnvironmentDialog;
     document.getElementById('confirmRunBtn').onclick = confirmRun;
-    document.getElementById('runEnvDialog').onclick = e => {
-      if(e.target.id === 'runEnvDialog') closeRunEnvironmentDialog();
+    runEnvDialog.onpointerdown = e => {
+      runEnvBackdropPointerDown = e.target === runEnvDialog;
     };
+    runEnvDialog.onpointercancel = () => {
+      runEnvBackdropPointerDown = false;
+    };
+    runEnvDialog.onclick = e => {
+      const backdropClick = e.target === runEnvDialog && runEnvBackdropPointerDown;
+      runEnvBackdropPointerDown = false;
+      if(backdropClick) closeRunEnvironmentDialog();
+    };
+    document.getElementById('suiteDetailDialog').onclick = e => {
+      if(e.target.id === 'suiteDetailDialog') closeSuiteDetail();
+    };
+    document.getElementById('closeSuiteDetail').onclick = closeSuiteDetail;
+    document.getElementById('cancelSuiteDetail').onclick = closeSuiteDetail;
     document.getElementById('activeStopJob').onclick = () => { if(activeJobId) stopJob(activeJobId); };
     document.getElementById('showJobLog').onclick = () => { activeTaskLogId = null; if(activeJobId) loadActiveJob(); };
     setAgentConfigEditing(false);

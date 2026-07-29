@@ -173,6 +173,26 @@ def test_seed_memory_sends_benchmark_token_header():
     assert result == {"status": "seeded", "id": "mem-1"}
 
 
+def test_set_phone_bridge_state_sends_benchmark_token_header():
+    seen = {}
+    client = AgentClient(base_url="http://test", benchmark_token="state-token")
+    state = {
+        "platform": "ios",
+        "app_state": "background",
+        "pip_bridge_enabled": True,
+    }
+    with patch(
+        "urllib.request.urlopen",
+        _captured(seen, body={"ok": True, "status": state}),
+    ):
+        result = client.set_phone_bridge_state(state)
+
+    assert seen["url"].endswith("/api/benchmark/phone_bridge_state")
+    assert seen["headers"]["authorization"] == "Bearer state-token"
+    assert json.loads(seen["body"])["pip_bridge_enabled"] is True
+    assert result["ok"] is True
+
+
 def test_health_returns_true_when_tools_endpoint_ok():
     seen = {}
     client = AgentClient(base_url="http://test")

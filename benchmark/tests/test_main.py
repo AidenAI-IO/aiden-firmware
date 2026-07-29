@@ -1,5 +1,7 @@
-import time
 import json
+import time
+import urllib.parse
+
 import pytest
 
 from runner.agent_client import ToolInvokeResult
@@ -31,6 +33,13 @@ def test_wait_for_agent_clock_retries_until_board_clock_is_current(monkeypatch):
     assert [call[0] for call in client.calls] == ["shell", "shell", "shell"]
     assert all(call[1]["command"] == "date +%Y" for call in client.calls)
     assert sleeps == [2, 2]
+
+
+def test_resolve_target_platform_infers_adb_android(monkeypatch):
+    args = type("Args", (), {"target_platform": "auto", "environment_url": "http://127.0.0.1:18899"})()
+    monkeypatch.setattr(main, "_read_environment_health", lambda environment_url: {"bridge_type": "adb_android"})
+
+    assert main._resolve_target_platform(args) == "android"
 
 
 def _task_result_with_details():
@@ -248,6 +257,146 @@ def test_run_state_file_records_incremental_totals(monkeypatch, tmp_path):
     }
 
 
+def test_run_skips_tasks_outside_target_platform(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "platform_suite",
+                "tasks": [
+                    {
+                        "id": "android_task",
+                        "platforms": ["android"],
+                        "category": "diagnostic",
+                        "prompt": "android",
+                        "description_for_judge": "android",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    },
+                    {
+                        "id": "ios_task",
+                        "platforms": ["ios"],
+                        "category": "diagnostic",
+                        "prompt": "ios",
+                        "description_for_judge": "ios",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    called_tasks = []
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            self.base_url = base_url
+
+        def health(self):
+            return True
+
+        def close(self):
+            pass
+
+    def fake_run_one_task(client, suite, task, attempt, artifact_dir, *args, **kwargs):
+        called_tasks.append(task.id)
+        return TaskResult(
+            suite=suite.name,
+            run_id="platform-run",
+            task_id=task.id,
+            category=task.category,
+            attempt=attempt,
+            status="passed",
+            rubric=[],
+            rubric_pass_count=0,
+            rubric_total=0,
+            artifact_dir=str(artifact_dir),
+        )
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "run_one_task", fake_run_one_task)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(main, "upload_report", lambda *args, **kwargs: False)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "platform-run",
+            "--target-platform",
+            "android",
+            "--no-judge",
+            "--inter-task-cooldown-sec",
+            "0",
+        ]
+    )
+
+    assert rc == 0
+    assert called_tasks == ["android_task"]
+    manifest = json.loads((tmp_path / "runs" / "platform-run" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["target_platform"] == "android"
+    assert manifest["totals"] == {
+        "tasks": 2,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 1,
+        "judge_error": 0,
+        "timeout": 0,
+    }
+
+
+def test_run_all_platform_skipped_tasks_does_not_require_agent(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "platform_suite",
+                "tasks": [
+                    {
+                        "id": "ios_task",
+                        "platforms": ["ios"],
+                        "category": "diagnostic",
+                        "prompt": "ios",
+                        "description_for_judge": "ios",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_client(*args, **kwargs):
+        raise AssertionError("AgentClient should not be constructed when every task is platform-skipped")
+
+    monkeypatch.setattr(main, "AgentClient", fail_client)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "all-skipped-run",
+            "--target-platform",
+            "android",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    manifest = json.loads((tmp_path / "runs" / "all-skipped-run" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["totals"]["skipped"] == 1
+
+
 def test_run_triggers_llm_analysis_when_enabled(monkeypatch, tmp_path):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(json.dumps({"name": "empty_suite", "tasks": []}), encoding="utf-8")
@@ -395,6 +544,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     )
 
     captured = {}
+    stale_clears = []
 
     class FakeClient:
         def __init__(self, base_url, benchmark_token=""):
@@ -411,6 +561,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
     monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
     monkeypatch.setattr(main, "call_environment_release", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "clear_stale_adb_android_owner", lambda url: stale_clears.append(url))
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "read_environment_bridge_concurrency", lambda *args, **kwargs: 1)
     def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
@@ -474,6 +625,160 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert captured["kwargs"]["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert captured["kwargs"]["environment_bridge_mode"] is True
     assert captured["task_kwargs"]["active_skills"] == ["device-operator"]
+    assert stale_clears == ["http://127.0.0.1:19090"]
+
+
+def test_mock_environment_suite_requires_auto_agent_setup(tmp_path, capsys):
+    suite_path = tmp_path / "mock-suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mock_suite",
+                "mock_environment": {
+                    "phone_bridge": {"platform": "ios"},
+                    "tools": {},
+                },
+                "tasks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 2
+    assert "mock_environment require --auto-agent-setup" in capsys.readouterr().err
+
+
+def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
+    monkeypatch, tmp_path
+):
+    suite_path = tmp_path / "mock-suite.json"
+    phone_state = {
+        "connected": False,
+        "platform": "ios",
+        "app_state": "background",
+        "pip_bridge_enabled": True,
+    }
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mock_suite",
+                "tasks": [
+                    {
+                        "id": "policy",
+                        "category": "diagnostic",
+                        "prompt": "test policy",
+                        "description_for_judge": "test policy",
+                        "rubric": [{"id": "done", "check": "done"}],
+                        "mock_environment": {
+                            "phone_bridge": phone_state,
+                            "screen_text": "mock home screen",
+                            "tools": {"screenshot": {"output": {"ok": True}}},
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            captured["client_base_url"] = base_url
+            captured["benchmark_token"] = benchmark_token
+
+        def set_phone_bridge_state(self, state):
+            captured["phone_state"] = state
+            return {"ok": True}
+
+        def close(self):
+            pass
+
+    def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "control_token").write_text("mock-token", encoding="utf-8")
+
+    def fake_start_daemon_compose(job, **kwargs):
+        captured["job"] = job
+        captured["daemon_kwargs"] = kwargs
+        return "container-id"
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "prepare_run_config", fake_prepare_run_config)
+    monkeypatch.setattr(
+        webui, "docker_published_port", lambda container_id, container_port: 18081
+    )
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
+    monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "run_one_task",
+        lambda client, suite, task, attempt, artifact_dir, *args, **kwargs: TaskResult(
+            suite=suite.name,
+            run_id="mock-run",
+            task_id=task.id,
+            category=task.category,
+            attempt=attempt,
+            status="passed",
+            rubric=[],
+            rubric_pass_count=0,
+            rubric_total=0,
+            artifact_dir=str(artifact_dir),
+        ),
+    )
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "mock-run",
+            "--auto-agent-setup",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    assert captured["phone_state"] == phone_state
+    assert captured["benchmark_token"] == "mock-token"
+    assert captured["job"].endpoint.startswith("http://127.0.0.1:")
+    assert captured["job"].docker_endpoint.startswith(
+        "http://host.docker.internal:"
+    )
+    public_endpoint = urllib.parse.urlparse(captured["job"].endpoint)
+    docker_endpoint = urllib.parse.urlparse(captured["job"].docker_endpoint)
+    assert public_endpoint.path.startswith("/_aiden_mock/")
+    assert docker_endpoint.path == public_endpoint.path
+    assert captured["daemon_kwargs"]["environment_bridge_endpoint"] == captured[
+        "job"
+    ].docker_endpoint
+    manifest = json.loads(
+        (tmp_path / "runs" / "mock-run" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["mock_environment"]["default"] is None
+    assert manifest["mock_environment"]["tasks"]["policy"]["phone_bridge"] == phone_state
+    assert manifest["environment_url"].endswith("/_aiden_mock/REDACTED")
 
 
 def test_auto_agent_setup_caps_environment_concurrency(monkeypatch, tmp_path):
@@ -609,6 +914,32 @@ def test_auto_agent_setup_rejects_negative_max_concurrency_before_setup(monkeypa
     assert "max-concurrency must be non-negative" in capsys.readouterr().err
 
 
+def test_task_route_id_keeps_explicit_id_verbatim_across_attempts(tmp_path):
+    import argparse
+    from pathlib import Path
+
+    from runner.suite import Suite
+
+    suite = Suite(
+        name="suite",
+        global_reset={},
+        tasks=[],
+        sha256="",
+        source_path=Path(tmp_path / "suite.json"),
+    )
+    derived = argparse.Namespace(benchmark_task_id="")
+    explicit = argparse.Namespace(benchmark_task_id="webui:job-test")
+
+    # Without an explicit id every attempt gets its own route, so parallel
+    # environments can hand each attempt a separate device.
+    assert main._task_route_id(derived, suite, "t1", 1, 2) == "suite.json:t1:attempt-1"
+    assert main._task_route_id(derived, suite, "t1", 2, 2) == "suite.json:t1:attempt-2"
+    # With an explicit id the caller already started its daemon under that id;
+    # suffixing attempts here would break ownership on the second repeat.
+    assert main._task_route_id(explicit, suite, "t1", 1, 2) == "webui:job-test"
+    assert main._task_route_id(explicit, suite, "t1", 2, 2) == "webui:job-test"
+
+
 def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_path):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(
@@ -630,6 +961,7 @@ def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_pa
     )
     route_ids = []
     releases = []
+    stale_clears = []
 
     class FakeClient:
         def __init__(self, base_url):
@@ -667,6 +999,7 @@ def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_pa
         "call_environment_release",
         lambda environment_url, task_id=None, **kwargs: releases.append((environment_url, task_id)),
     )
+    monkeypatch.setattr(main, "clear_stale_adb_android_owner", lambda url: stale_clears.append(url))
 
     rc = main.cli(
         [
@@ -693,3 +1026,4 @@ def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_pa
         ("http://127.0.0.1:19090", "suite.json:open_clock:attempt-1"),
         ("http://127.0.0.1:19090", "suite.json:open_clock:attempt-2"),
     ]
+    assert stale_clears == ["http://127.0.0.1:19090"]

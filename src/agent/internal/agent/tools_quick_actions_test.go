@@ -5,11 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/tmc/langchaingo/schema"
+	langtools "github.com/tmc/langchaingo/tools"
 )
 
 func TestBundledQuickActionsPathUsesOEMPartition(t *testing.T) {
@@ -57,6 +62,15 @@ func TestQuickActionExposesStructuredSchema(t *testing.T) {
 	platform := props["platform"].(map[string]any)
 	if platform["type"] != "string" {
 		t.Fatalf("platform type = %#v, want string", platform["type"])
+	}
+	// quick_action exposes only the actions defined in quick_actions.json; it
+	// carries no transport for bridge-invented capabilities such as open_url.
+	if props["url"] != nil {
+		t.Fatalf("quick_action schema must not carry a url field: %#v", props)
+	}
+	required, ok := schema["required"].([]string)
+	if !ok || len(required) != 2 || required[0] != "action" || required[1] != "platform" {
+		t.Fatalf("required = %#v, want action and platform", schema["required"])
 	}
 }
 
@@ -125,11 +139,11 @@ func TestQuickActionListActionAlias(t *testing.T) {
 
 func TestQuickActionDescriptionDocumentsListInspection(t *testing.T) {
 	desc := (&QuickActionTool{}).Description()
-	if !strings.Contains(desc, `{"list":true,"platform":"android"}`) {
-		t.Fatalf("description missing list=true inspection example: %s", desc)
+	if !strings.Contains(desc, `{"action":"list","platform":"android"}`) {
+		t.Fatalf("description missing action=list inspection example: %s", desc)
 	}
-	if !strings.Contains(desc, `do not pass {"action":"list"}`) {
-		t.Fatalf("description missing action=list warning: %s", desc)
+	if !strings.Contains(desc, `Always pass action and platform`) {
+		t.Fatalf("description missing required action/platform guidance: %s", desc)
 	}
 	// The reserved/alternative/no-retry behavior playbook now lives in the
 	// device-operator skill, not the tool description.
@@ -416,6 +430,54 @@ func TestQuickActionUnknownAction(t *testing.T) {
 	}
 	if out != te.Message {
 		t.Errorf("Output (%q) must equal Error.Message (%q)", out, te.Message)
+	}
+}
+
+// In environment-bridge mode quick_action is forwarded verbatim (see
+// shouldForwardToEnvironmentBridge) rather than resolved against the local
+// quick_actions.json bindings, so the action the model picked must reach the
+// bridge untouched.
+func TestQuickActionForwardsInputToEnvironmentBridge(t *testing.T) {
+	input := `{"action":"app_switch","platform":"ios"}`
+
+	var gotBody string
+	bridge := NewEnvironmentBridgeClient("http://bridge.local")
+	bridge.httpClient = &http.Client{Transport: bridgeCancelRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		gotBody = string(body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"output":"ok"}`)),
+		}, nil
+	})}
+
+	specs := NewToolSpecs([]langtools.Tool{&QuickActionTool{}})
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs:                  specs,
+		Action:                 schema.AgentAction{Tool: "quick_action", ToolInput: input},
+		EnvironmentBridge:      bridge,
+		EnvironmentBridgeTools: []string{"quick_action"},
+	})
+	if result.Error != nil {
+		t.Fatalf("unexpected execution error: %v", result.Error)
+	}
+
+	var forwarded struct {
+		Input string `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(gotBody), &forwarded); err != nil {
+		t.Fatalf("bridge request body is not JSON (%q): %v", gotBody, err)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(forwarded.Input), &args); err != nil {
+		t.Fatalf("forwarded tool input is not JSON (%q): %v", forwarded.Input, err)
+	}
+	if args["action"] != "app_switch" || args["platform"] != "ios" {
+		t.Fatalf("action/platform lost in forwarding: %s", forwarded.Input)
 	}
 }
 

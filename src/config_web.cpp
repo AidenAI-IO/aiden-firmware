@@ -710,6 +710,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"audio", "sample_rate", CONFIG_FIELD_NUMBER},
         {"audio", "channels", CONFIG_FIELD_NUMBER},
         {"audio", "bit_width", CONFIG_FIELD_NUMBER},
+        {"audio", "playback_backend", CONFIG_FIELD_STRING},
         {"audio_archive", "enabled", CONFIG_FIELD_BOOL},
         {"audio_archive", "storage_path", CONFIG_FIELD_STRING},
         {"audio_archive", "max_files", CONFIG_FIELD_NUMBER},
@@ -2556,6 +2557,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(audio, "sample_rate", config.audio.sample_rate);
     cJSON_AddNumberToObject(audio, "channels", config.audio.channels);
     cJSON_AddNumberToObject(audio, "bit_width", config.audio.bit_width);
+    cJSON_AddStringToObject(audio, "playback_backend", config.audio.playback_backend.c_str());
 
     cJSON* audio_archive = add_object(root, "audio_archive");
     cJSON_AddBoolToObject(audio_archive, "enabled", config.audio_archive.enabled ? 1 : 0);
@@ -2882,6 +2884,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->audio.sample_rate, audio, "sample_rate");
         set_json_int(&config->audio.channels, audio, "channels");
         set_json_int(&config->audio.bit_width, audio, "bit_width");
+        set_json_str(&config->audio.playback_backend, audio, "playback_backend");
     }
 
     cJSON* audio_archive = cJSON_GetObjectItem(root, "audio_archive");

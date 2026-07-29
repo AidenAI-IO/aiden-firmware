@@ -27,7 +27,7 @@ The Go Agent supports device-side voice interaction, primarily consisting of `in
 | Audio client | `audio_client.go` | Connects to `audio_service`, starts recording/playback sessions, reads/writes PCM chunks |
 | VAD | `vad.go` + `/oem/usr/bin/rknn_vad` or `/oem/usr/bin/cpu_vad` | Silero VAD inference; input is fixed at 16 kHz, 512 samples/32 ms, with `state` maintained in helper |
 | STT | `stt.go`, `tencent_asr_stt.go` | OpenAI Whisper / OpenRouter / Tencent Cloud ASR (`tencent-asr`; legacy values `tencent` / `tencent_asr` are compatible) |
-| TTS | `tts/`, `tts_helpers.go` | Pluggable TTS provider, outputs PCM for playback via `audio_service`; automatically resamples to device playback sample rate when necessary |
+| TTS | `tts/`, `tts_helpers.go` | Pluggable TTS provider, outputs PCM for the configured playback backend; automatically resamples to the target playback sample rate when necessary |
 | Dialog manager | `audio_dialog.go` | Orchestrates recording, VAD, STT/LLM/TTS flow |
 | Voice notifications | `voice_notification.go`, `tts_fallback.go` | Adds a persistent response tail or final-turn failure replacement before TTS, with bundled local WAV fallback when final TTS is unavailable |
 
@@ -48,7 +48,7 @@ Device-side audio loop:
 2. VAD determines sentence boundaries;
 3. Sends WAV to STT;
 4. STT text goes to Agent runtime;
-5. TTS synthesizes reply and plays via `audio_service`.
+5. TTS synthesizes the reply and plays it through the configured playback backend.
 
 Before final non-streaming TTS, the runtime passes the spoken reply through the shared [Voice Notification manager](voice-notifications.md). A successful turn may receive one short persistent tail. A final LLM failure may use a fixed replacement. These changes affect spoken text only, not assistant history or UI response text.
 
@@ -87,6 +87,7 @@ socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
 bit_width = 16
+playback_backend = "auto"
 
 [stt]
 provider = "openai-whisper"
@@ -118,7 +119,9 @@ Common fields in `[tts]` are `provider`, `api_key`, `model`, `voice_id`, `emotio
 
 All TTS providers are called through a unified streaming session: the Agent writes LLM output fragments to the adapter, and the adapter decides when to send to the backend. Fish Audio, Alicloud, and Volcengine are true streaming WebSocket links; the Minimax WebSocket adapter buffers internally at sentence boundaries before sending, so the upper layer doesn't need to distinguish between “true streaming” or “sentence-level streaming”. The runtime can switch providers via `POST /api/settings/tts`; playback that has already started will continue using the old provider, and subsequent requests will use the new provider.
 
-Final assistant responses begin with the concise spoken form in `<tts>...</tts>`, followed by the user-facing text. Only the first leading TTS block in each LLM response is streamed; when its closing `</tts>` tag arrives, the runtime immediately flushes the provider so short MiniMax speech does not wait for the remaining visible response. If the model omits the closing tag, the response boundary is treated as an implicit `</tts>` and flushes the remaining speech instead of dropping it. Tool-call progress keeps its TTS block after the user-facing progress text and remains on the existing tool-event speech path, preserving `voice_tool_call_speech` and tool-specific suppression such as `wait_for_wakeup`.
+Every assistant response uses one protocol: its first bytes are exactly one leading `<tts>...</tts>` block, followed by the user-facing text. This applies both to final answers and to progress content emitted with tool calls. The spoken and visible forms do not need to be identical.
+
+Only the first leading TTS block in each LLM response is streamed. When its closing `</tts>` tag arrives, the runtime immediately flushes the provider so short MiniMax speech does not wait for the remaining visible response. At a tool-call response boundary, the streamed block is finalized before the tool event is handled, preventing the same progress speech from being played again through the tool-event path while still preserving `voice_tool_call_speech` and tool-specific suppression such as `wait_for_wakeup`. Trailing tags, extra TTS blocks, and missing closing tags remain runtime compatibility fallbacks for older or malformed model output, but they are not valid prompt output. If the model omits the closing tag, the response boundary acts as an implicit `</tts>` and flushes the remaining speech instead of dropping it.
 
 ```toml
 # Minimax WebSocket
@@ -159,8 +162,8 @@ speed = 1.0
 
 ## Dependencies
 
-- `audio_service` must be running;
-- TTS adapter outputs PCM directly and writes to `audio_service`;
+- `audio_service` must be running for board-side recording/playback;
+- TTS adapter outputs PCM and writes to the configured playback backend. `audio.playback_backend = "auto"` uses `audio_service` on board and the local OS player in desktop/PC Agent mode through ADB input backend or environment bridge;
 - `rknn_vad` / `cpu_vad` helper must be executable; when `vad_backend="rknn"`, `vad_model_path` points to a converted encoder RKNN; when `vad_backend="cpu"`, helper defaults to `/oem/usr/bin/cpu_vad`;
 - STT/TTS require external API keys;
 - `wakeup` mode requires GPIO 33 or GPIO 32 hardware trigger condition.

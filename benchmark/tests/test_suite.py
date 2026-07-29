@@ -71,6 +71,8 @@ def test_adb_android_basic_suite_loads_device_operation_tasks():
     # and it may pick quick_action vs touch_gesture for the same outcome.
     by_id = {task.id: task for task in suite.tasks}
     assert by_id["screenshot_home"].hard_assertions.required_tools == ["screenshot"]
+    assert "英文/Latin 键盘" in suite.prompt_prefix
+    assert "中文输入法" in suite.prompt_prefix
     for task_id in (
         "go_home",
         "open_settings",
@@ -81,9 +83,37 @@ def test_adb_android_basic_suite_loads_device_operation_tasks():
         "open_app_drawer",
     ):
         assert by_id[task_id].hard_assertions.required_tools == []
-    # The ported multi-step tasks genuinely need navigation before observing.
-    for task_id in ("clock_count_alarms", "settings_check_wifi", "open_app_drawer"):
+    assert by_id["settings_check_wifi"].hard_assertions.min_tool_calls == 1
+    # These ported multi-step tasks genuinely need navigation before observing.
+    for task_id in ("clock_count_alarms", "open_app_drawer"):
         assert by_id[task_id].hard_assertions.min_tool_calls >= 2
+
+
+def test_quick_action_suite_marks_non_android_action_tasks():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "quick_action_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    for task_id in (
+        "quick_action_switch_left",
+        "quick_action_switch_right",
+        "quick_action_home_screen_left",
+        "quick_action_home_screen_right",
+        "quick_action_control_center",
+        "quick_action_control_center_dismiss",
+        "quick_action_spotlight_search",
+        "quick_action_spotlight_search_via_input",
+        "quick_action_browser_new_tab",
+        "quick_action_browser_close_tab",
+        "quick_action_browser_address_and_refresh",
+        "quick_action_open_editor_and_type",
+        "quick_action_undo",
+        "quick_action_select_all",
+        "quick_action_copy",
+        "quick_action_cut",
+        "quick_action_paste",
+    ):
+        assert "android" not in task_by_id[task_id].platforms
 
 
 def test_benchmark_suites_do_not_use_tool_sequence():
@@ -142,6 +172,39 @@ def test_load_suite_parses_expected_recalled_memory_ids(tmp_path: Path):
     suite = load_suite(p)
 
     assert suite.tasks[0].expected_recalled_memory_ids == ["mem_expected"]
+
+def test_load_suite_parses_task_platforms(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "platforms": ["Android", "ios", "android"],
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.tasks[0].platforms == ["android", "ios"]
+
+def test_load_suite_rejects_invalid_task_platform(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "platforms": ["windows"],
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="invalid platform"):
+        load_suite(p)
 
 def test_load_suite_parses_required_and_forbidden_tools(tmp_path: Path):
     fixture = {
@@ -257,6 +320,95 @@ def test_load_suite_rejects_non_string_prompt_prefix(tmp_path: Path):
     with pytest.raises(SuiteValidationError):
         load_suite(p)
 
+
+def test_load_suite_parses_task_level_mock_environment(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "mock_environment": {
+                    "phone_bridge": {
+                        "platform": "ios",
+                        "app_state": "background",
+                        "pip_bridge_enabled": False,
+                    },
+                    "tools": {
+                        "bridge_contacts": {
+                            "output": {"ok": True, "contacts": []},
+                        }
+                    },
+                },
+            }
+        ],
+    }
+    p = tmp_path / "task-mock.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.mock_environment is None
+    assert suite.tasks[0].mock_environment is not None
+    assert suite.tasks[0].mock_environment.phone_bridge["platform"] == "ios"
+    assert "bridge_contacts" in suite.tasks[0].mock_environment.tools
+
+
+def test_load_suite_allows_task_mock_to_override_suite_default(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "mock_environment": {
+            "phone_bridge": {"platform": "ios"},
+            "tools": {"bridge_contacts": {"output": {"ok": True}}},
+        },
+        "tasks": [
+            FIXTURE["tasks"][0],
+            {
+                **FIXTURE["tasks"][0],
+                "id": "android_override",
+                "mock_environment": {
+                    "phone_bridge": {"platform": "android"},
+                    "tools": {"bridge_calendar": {"output": {"ok": True}}},
+                },
+            },
+        ],
+    }
+    p = tmp_path / "task-mock-override.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.mock_environment is not None
+    assert suite.mock_environment.phone_bridge["platform"] == "ios"
+    assert suite.tasks[0].mock_environment is None
+    assert suite.tasks[1].mock_environment is not None
+    assert suite.tasks[1].mock_environment.phone_bridge["platform"] == "android"
+
+
+def test_load_suite_rejects_partial_task_level_mock_environment_without_default(
+    tmp_path: Path,
+):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "mock_environment": {
+                    "phone_bridge": {"platform": "ios"},
+                    "tools": {},
+                },
+            },
+            {
+                **FIXTURE["tasks"][0],
+                "id": "without_mock",
+            },
+        ],
+    }
+    p = tmp_path / "partial-task-mock.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="must define it for every task"):
+        load_suite(p)
+
 def test_load_suite_rejects_invalid_expected_option_answer(tmp_path: Path):
     fixture = {
         **FIXTURE,
@@ -346,6 +498,21 @@ def test_phone_control_suite_constrains_agent_to_phone_ui():
     assert "只能通过截图" not in suite.prompt_prefix
 
 
+def test_mobile_text_entry_suites_prompt_for_ime_switching():
+    suites_root = Path(__file__).resolve().parents[1] / "suites"
+    for suite_name in (
+        "adb_android_basic.json",
+        "app_workflow_v1.json",
+        "phone_control_v1.json",
+        "quick_action_v1.json",
+        "skill_discovery_v1.json",
+    ):
+        suite = load_suite(suites_root / suite_name)
+        assert "中文输入法" in suite.prompt_prefix, suite_name
+        assert "英文/Latin" in suite.prompt_prefix, suite_name
+        assert "地球/输入法键" in suite.prompt_prefix, suite_name
+
+
 def test_phone_control_navigation_tasks_have_setup_pages():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
     suite = load_suite(suite_path)
@@ -364,19 +531,65 @@ def test_phone_control_text_editing_tasks_have_input_setup():
     suite = load_suite(suite_path)
     task_by_id = {task.id: task for task in suite.tasks}
 
+    mixed_setup = task_by_id["type_long_mixed_text"].setup
+    assert mixed_setup is not None
+    assert mixed_setup["type"] == "agent_prompt"
+    assert "Notepad Free" in mixed_setup["prompt"]
+    assert "空白可编辑输入框" in mixed_setup["prompt"]
+    assert "Gmail" in mixed_setup["prompt"]
+    assert "不要输入任何文字" in mixed_setup["prompt"]
+    assert mixed_setup["clear_history_after"] is True
+
     select_setup = task_by_id["select_all_and_delete"].setup
     assert select_setup is not None
     assert select_setup["type"] == "agent_prompt"
+    assert "Notepad Free" in select_setup["prompt"]
     assert "hello-aiden" in select_setup["prompt"]
+    assert "Gmail" in select_setup["prompt"]
     assert "聚焦" in select_setup["prompt"]
     assert select_setup["clear_history_after"] is True
 
     copy_setup = task_by_id["copy_paste_text"].setup
     assert copy_setup is not None
     assert copy_setup["type"] == "agent_prompt"
+    assert "Notepad Free" in copy_setup["prompt"]
     assert "标题输入框" in copy_setup["prompt"]
     assert "正文输入区域" in copy_setup["prompt"]
+    assert "Gmail" in copy_setup["prompt"]
+    assert "收件人字段" in copy_setup["prompt"]
+    assert "翻译应用" in copy_setup["prompt"]
     assert copy_setup["clear_history_after"] is True
+
+
+def test_phone_control_icon_tasks_target_visible_app_icons():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    for task_id in ("long_press_app_icon", "drag_app_icon"):
+        task = task_by_id[task_id]
+        assert "普通应用图标" in task.prompt
+        assert "设置图标" not in task.prompt
+        assert "小组件" in task.prompt
+    assert "android" not in task_by_id["drag_app_icon"].platforms
+
+
+def test_phone_control_unicode_search_tasks_exclude_adb_android():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert "android" not in task_by_id["settings_search_bluetooth"].platforms
+    assert task_by_id["type_long_mixed_text"].platforms == []
+    assert "Aiden test benchmark-2026!" in task_by_id["type_long_mixed_text"].prompt
+
+
+def test_skill_discovery_mixed_text_task_excludes_adb_android():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "skill_discovery_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert "android" not in task_by_id["discover_device_operator_for_mixed_text_entry"].platforms
 
 
 def test_phone_control_wifi_toggle_is_split_into_on_and_off_tasks():
@@ -685,3 +898,103 @@ def test_episode_memory_suite_guards_against_setup_context_leakage():
         "recall_device_memory" in item.check and "inspect_episode" in item.check
         for item in task.rubric
     )
+
+
+def test_notes_entry_policy_suite_covers_three_screen_states():
+    suites_dir = Path(__file__).resolve().parents[1] / "suites" / "aiden_app"
+    suite = load_suite(suites_dir / "notes_entry_policy_v1.json")
+    tasks = {task.id: task for task in suite.tasks}
+
+    assert suite.mock_environment is None
+    assert set(tasks) == {
+        "ios_pip_notes_already_open",
+        "ios_pip_notes_icon_visible",
+        "ios_pip_notes_icon_missing",
+    }
+    assert all(task.mock_environment is not None for task in suite.tasks)
+
+    open_task = tasks["ios_pip_notes_already_open"]
+    assert "search_launch_app" in open_task.hard_assertions.forbidden_tools
+    assert "bridge_open_app" in open_task.hard_assertions.forbidden_tools
+    assert "enter_text_via_bridge" in open_task.hard_assertions.required_tools
+    assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in open_task.prompt
+
+    icon_task = tasks["ios_pip_notes_icon_visible"]
+    assert "mouse_click" in icon_task.hard_assertions.required_tools
+    assert "search_launch_app" in icon_task.hard_assertions.forbidden_tools
+    assert icon_task.hard_assertions.required_tool_calls[1].input_contains == {
+        "x": 180,
+        "y": 310,
+        "coord_space": "normalized",
+    }
+    assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in icon_task.prompt
+
+    missing_task = tasks["ios_pip_notes_icon_missing"]
+    assert "search_launch_app" in missing_task.hard_assertions.required_tools
+    assert "bridge_open_app" in missing_task.hard_assertions.forbidden_tools
+    text_matcher = missing_task.hard_assertions.required_tool_calls[2].input_contains["text"]
+    assert text_matcher == {"$contains": "+1 202-555-0147"}
+
+
+def test_phone_bridge_data_policy_suite_covers_tools_and_routing_modes():
+    suites_dir = Path(__file__).resolve().parents[1] / "suites" / "aiden_app"
+    suite = load_suite(suites_dir / "phone_bridge_data_policy_v1.json")
+    tasks = {task.id: task for task in suite.tasks}
+
+    assert suite.mock_environment is None
+    assert len(tasks) == 12
+    assert all(task.mock_environment is not None for task in suite.tasks)
+    assert {
+        tool
+        for task in suite.tasks
+        for tool in task.hard_assertions.required_tools
+    } == {
+        "bridge_contacts",
+        "bridge_calendar",
+        "bridge_clipboard",
+        "bridge_notification",
+    }
+    required_calls = [
+        call
+        for task in suite.tasks
+        for call in task.hard_assertions.required_tool_calls
+    ]
+    assert {
+        call.input_contains.get("action")
+        for call in required_calls
+        if call.tool == "bridge_calendar"
+    } == {"query", "create"}
+    assert {
+        call.input_contains.get("action")
+        for call in required_calls
+        if call.tool == "bridge_clipboard"
+    } == {"read", "write"}
+
+    dynamic_island_tasks = [
+        task for task_id, task in tasks.items() if task_id.startswith("ios_dynamic_island_")
+    ]
+    pip_tasks = [task for task_id, task in tasks.items() if task_id.startswith("ios_pip_")]
+    fgs_tasks = [task for task_id, task in tasks.items() if task_id.startswith("android_fgs_")]
+    assert len(dynamic_island_tasks) == 4
+    assert len(pip_tasks) == 4
+    assert len(fgs_tasks) == 4
+
+    for task in dynamic_island_tasks:
+        state = task.mock_environment.phone_bridge
+        assert state["platform"] == "ios"
+        assert state["pip_bridge_enabled"] is False
+        assert state["return_entry"] == "dynamic_island"
+        assert state["return_entry_available"] is True
+        assert "bridge_open_app" in task.hard_assertions.forbidden_tools
+
+    for task in pip_tasks:
+        state = task.mock_environment.phone_bridge
+        assert state["platform"] == "ios"
+        assert state["pip_bridge_enabled"] is True
+        assert "bridge_open_app" in task.hard_assertions.forbidden_tools
+
+    for task in fgs_tasks:
+        state = task.mock_environment.phone_bridge
+        assert state["platform"] == "android"
+        assert state["fgs_bridge_enabled"] is True
+        assert "bridge_open_app" in task.hard_assertions.forbidden_tools

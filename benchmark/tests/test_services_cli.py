@@ -223,6 +223,33 @@ def test_agent_daemon_compose_passes_benchmark_token_file_env_var():
     assert "AIDEN_BENCHMARK_TOKEN_FILE: ${AIDEN_BENCHMARK_TOKEN_FILE:-}" in compose
 
 
+def test_daemon_compose_env_strips_host_proxy(monkeypatch):
+    # The benchmark never uses an HTTP proxy: a proxy exported on the host (e.g.
+    # a running Clash) must not leak into the docker build or the daemon
+    # container. NO_PROXY is a bypass list and must survive.
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.setenv(key, "http://127.0.0.1:7897")
+
+    env = webui.daemon_compose_env(
+        image="aiden-agent-daemon:test",
+        environment_bridge_endpoint="http://host.docker.internal:18080",
+    )
+
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                "http_proxy", "https_proxy", "all_proxy"):
+        assert key not in env, f"{key} leaked into daemon env"
+    assert "host.docker.internal" in env["NO_PROXY"]
+
+
+def test_agent_daemon_compose_does_not_forward_proxy():
+    compose = (webui.BENCHMARK_DOCKER_DIR / "docker-compose.agent-daemon.yml").read_text(encoding="utf-8")
+
+    assert "HTTP_PROXY" not in compose
+    assert "HTTPS_PROXY" not in compose
+    assert "ALL_PROXY" not in compose
+
+
 def test_daemon_compose_env_enables_benchmark_token_for_config_dir(tmp_path: Path):
     env = webui.daemon_compose_env(
         image="aiden-agent-daemon:test",

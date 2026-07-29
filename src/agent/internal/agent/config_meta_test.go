@@ -189,6 +189,19 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		}
 	}
 
+	audioPlaybackEnum := enumValues("audio.playback_backend")
+	for _, b := range []string{AudioPlaybackBackendAuto, AudioPlaybackBackendAudioService, AudioPlaybackBackendLocal} {
+		if !contains(audioPlaybackEnum, b) {
+			t.Errorf("audio.playback_backend enum missing %q", b)
+		}
+	}
+	for _, b := range audioPlaybackEnum {
+		c := Config{Audio: AudioConfig{PlaybackBackend: b}, Model: ModelConfig{Provider: "openai", Model: "x"}}
+		if err := c.Validate(); err != nil {
+			t.Errorf("audio.playback_backend enum value %q rejected by Validate: %v", b, err)
+		}
+	}
+
 	// vad_backend enum must match normalizeVADBackend's accepted set.
 	for _, b := range enumValues("agent.vad_backend") {
 		if _, err := normalizeVADBackend(b); err != nil {
@@ -235,6 +248,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio.sample_rate", defaults.Audio.SampleRate},
 		{"audio.channels", defaults.Audio.Channels},
 		{"audio.bit_width", defaults.Audio.BitWidth},
+		{"audio.playback_backend", defaults.Audio.PlaybackBackend},
 		{"audio_archive.enabled", defaults.AudioArchive.Enabled},
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},

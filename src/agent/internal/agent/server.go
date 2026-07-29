@@ -52,6 +52,7 @@ type Server struct {
 	ttsManager           *tts.ProviderManager
 	ttsMu                sync.RWMutex
 	audioClient          *AudioServiceClient
+	ttsPlaybackBackend   tts.AudioServiceBackend
 	screenCaptureMu      sync.Mutex
 	screenCaptureClient  *ScreenCaptureClient
 	recordMu             sync.Mutex
@@ -390,6 +391,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	// Initialize speech clients if configured.
 	cfg := runtime.config
 	s.audioClient = NewAudioServiceClient(cfg.Audio.SocketOrDefault())
+	s.ttsPlaybackBackend = newTTSPlaybackBackendFromConfig(cfg, s.audioClient, s.logger)
 
 	sttClient, err := NewSTTClientFromConfig(cfg)
 	if err != nil {
@@ -416,7 +418,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		if manager == nil {
 			return fmt.Errorf("tts is not configured")
 		}
-		_, err := speakWithTTSManager(ctx, manager, s.audioClient, s.runtime.config, text)
+		_, err := speakWithTTSManager(ctx, manager, s.currentTTSPlaybackBackend(), s.runtime.config, text)
 		return err
 	})
 
@@ -449,6 +451,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/setup", s.handleSetup)
 	if s.benchmarkToken() != "" {
 		mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
+		mux.HandleFunc("/api/benchmark/phone_bridge_state", s.handleBenchmarkPhoneBridgeState)
 	}
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/clear-all", s.handleClearAll)
@@ -1181,9 +1184,9 @@ func (s *Server) handleChatAsync(
 		unregisterStreamOutput := func() {}
 		ttsManager := s.currentTTSManager()
 
-		if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
+		if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.currentTTSPlaybackBackend() != nil {
 			if ttsManager != nil {
-				stream, err := beginManagedTTSStream(runCtx, ttsManager, s.audioClient, s.runtime.config)
+				stream, err := beginManagedTTSStream(runCtx, ttsManager, s.currentTTSPlaybackBackend(), s.runtime.config)
 				if err != nil {
 					if s.logger != nil {
 						s.logger.Warn("TTS BeginStream failed: %v", err)
@@ -1563,10 +1566,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	streamWriters := []io.Writer{
 		newChatAssistantStreamWriter(stream, episodeID, req.RequestID),
 	}
-	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
+	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.currentTTSPlaybackBackend() != nil {
 		s.logger.Info("Starting TTS stream")
 		if ttsManager != nil {
-			streamSession, err := beginManagedTTSStream(ctx, ttsManager, s.audioClient, s.runtime.config)
+			streamSession, err := beginManagedTTSStream(ctx, ttsManager, s.currentTTSPlaybackBackend(), s.runtime.config)
 			if err != nil {
 				if s.logger != nil {
 					s.logger.Warn("TTS BeginStream failed: %v", err)
@@ -1904,7 +1907,7 @@ func (w *streamFanoutWriter) StreamEmitted() bool {
 
 func (s *Server) speakToolContent(ctx context.Context, content string) {
 	content = strings.TrimSpace(content)
-	if content == "" || s.audioClient == nil {
+	if content == "" || s.currentTTSPlaybackBackend() == nil {
 		return
 	}
 	if ctx == nil {
@@ -1942,8 +1945,24 @@ func (s *Server) currentTTSManager() *tts.ProviderManager {
 	return s.ttsManager
 }
 
+func (s *Server) currentTTSPlaybackBackend() tts.AudioServiceBackend {
+	if s == nil {
+		return nil
+	}
+	if s.ttsPlaybackBackend != nil {
+		if backend, ok := s.ttsPlaybackBackend.(*audioBackend); ok && s.audioClient != nil && backend.c != s.audioClient {
+			return newAudioBackend(s.audioClient)
+		}
+		return s.ttsPlaybackBackend
+	}
+	if s.audioClient == nil {
+		return nil
+	}
+	return newAudioBackend(s.audioClient)
+}
+
 func (s *Server) canSpeakFinalText() bool {
-	if s == nil || s.audioClient == nil {
+	if s == nil || s.currentTTSPlaybackBackend() == nil {
 		return false
 	}
 	if s.currentTTSManager() != nil {
@@ -2023,7 +2042,7 @@ func (s *Server) speakTextObservedMode(ctx context.Context, requestID, text stri
 	speechStarted := false
 	ttsErr := errTTSNotConfigured
 	if manager != nil {
-		speechStarted, ttsErr = speakWithTTSManagerObserved(speakCtx, manager, s.audioClient, cfg, text, func(stream *streamSessionWriter) func() {
+		speechStarted, ttsErr = speakWithTTSManagerObserved(speakCtx, manager, s.currentTTSPlaybackBackend(), cfg, text, func(stream *streamSessionWriter) func() {
 			stream.setCancel(cancelOutput)
 			output.setStream(stream)
 			return func() {
@@ -2271,6 +2290,36 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "seeded",
 		"id":     id,
+	})
+}
+
+func (s *Server) handleBenchmarkPhoneBridgeState(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.bridge == nil {
+		http.Error(w, "phone bridge is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var status PhoneBridgeStatus
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
+	if err := decoder.Decode(&status); err != nil {
+		http.Error(w, "decode phone bridge state: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.bridge.ApplyBenchmarkStatus(status); err != nil {
+		http.Error(w, "apply phone bridge state: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":     true,
+		"status": s.bridge.getStatus(),
 	})
 }
 

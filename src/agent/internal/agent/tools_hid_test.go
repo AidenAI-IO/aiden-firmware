@@ -1032,6 +1032,26 @@ func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
 	}
 }
 
+func TestADBTouchGestureTapAcceptsLegacyTopLevelCoordinates(t *testing.T) {
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	runner := &recordingADBRunner{}
+	tool := &TouchGestureTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","coord_space":"normalized","x":"500","y":"250"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := []string{"-s", "serial123", "shell", "input", "tap", "540", "600"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
 func TestADBTouchGestureSwipeAndDragRejectSameResolvedPoint(t *testing.T) {
 	for _, gestureType := range []string{"swipe", "drag"} {
 		t.Run(gestureType, func(t *testing.T) {
@@ -2010,6 +2030,7 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 		"Do NOT pass non-ASCII",
 		"enter_text_in_field",
 		"Do not transliterate Chinese/CJK targets to pinyin",
+		"English/Latin keyboard",
 		`{"text":"App Store"}`,
 		"do not pass a bare string",
 	} {

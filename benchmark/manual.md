@@ -89,7 +89,10 @@ Typical scenario:
 The tools the default WebUI Docker daemon forwards include:
 
 ```text
-screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_click,mouse_move,mouse_scroll,quick_action
+screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text_in_field,
+enter_text_via_bridge,search_launch_app,mouse_click,mouse_move,mouse_scroll,
+quick_action,bridge_open_app,bridge_clipboard,bridge_calendar,
+bridge_contacts,bridge_notification
 ```
 
 Notes:
@@ -102,6 +105,143 @@ Notes:
 - `run --agent-url ...` on the CLI calls the specified agent directly and does not
   start an environment bridge automatically; if you need an environment bridge you
   must start the daemon yourself and pass the relevant daemon parameters.
+
+#### Mock Aiden App environments
+
+Phone Bridge strategy tests usually do not need a physical phone or emulator. A
+suite can declare a default `mock_environment`, and each task can override it, to
+start an in-process scripted environment bridge that provides:
+
+- A fixed Phone Bridge runtime state, including iOS/Android, foreground/background,
+  iOS PiP Bridge, and Android FGS Bridge.
+- Deterministic responses for contacts, clipboard, calendar, notifications, app
+  search, and text-entry tools.
+- A generated phone screen artifact whose text can change after scripted tool
+  calls; prompt-conditioned policy suites do not require the Agent to inspect it.
+
+Keep these suites in a separate directory such as `suites/aiden_app/`. Prefer one
+policy-matrix suite with task-level mocks when cases only differ by runtime state
+or scripted tool results. A suite-level mock remains useful as a default; an
+individual task may override it. If there is no suite-level default, every task
+must declare its own mock.
+
+The Notes entry suite declares three UI states directly in task prompts, so the
+benchmark tests policy selection without mixing in visual perception:
+
+| Prompt-defined UI state | Expected app-entry policy | Suite |
+| --- | --- | --- |
+| Blank Notes editor already visible | Do not reopen or search; enter text directly | `notes_entry_policy_v1.json` |
+| Home screen with Notes icon visible | Click the visible icon; do not search | `notes_entry_policy_v1.json` |
+| Notes page/icon not visible | Use `search_launch_app`; do not use `bridge_open_app` | `notes_entry_policy_v1.json` |
+
+All three return the same fixed Biden contact, hide the unavailable
+`bridge_open_app`, require `enter_text_via_bridge`, and forbid a separate
+`bridge_clipboard` staging call.
+
+`phone_bridge_data_policy_v1.json` covers contacts, calendar query/create,
+clipboard read/write, and notifications across these runtime policies:
+
+| Runtime state | Expected Phone Bridge policy |
+| --- | --- |
+| iOS background, PiP disabled, Dynamic Island return entry reachable | Call the `bridge_*` data tool directly; the tool restores Aiden internally before sending the command. Do not click Dynamic Island manually. |
+| iOS background with PiP enabled | Send background-safe data commands directly through the PiP queue. |
+| Android background with FGS enabled | Send background-safe data commands directly through the FGS queue. |
+
+`bridge_open_app` is excluded in all of these background-policy cases. PiP and
+FGS keep data commands available; they do not turn app launch into a
+background-safe operation.
+
+Run it with:
+
+```bash
+uv run python -m runner run \
+  --suite suites/aiden_app/phone_bridge_data_policy_v1.json \
+  --auto-agent-setup \
+  --no-judge \
+  --verbose
+```
+
+Do not pass `--environment-url`: the suite starts and owns its mock environment.
+On the WebUI, selecting only mock suites automatically shows `Mock Aiden App
+environment`; clicking Run skips the device picker and uses the same isolated
+task-worker path. Do not mix mock suites and real-device/MobileGym suites in one
+job.
+
+On the CLI, mock suites require `--auto-agent-setup` so every task gets an isolated
+daemon and benchmark token. The runner uses that token to call the benchmark-only
+`/api/benchmark/phone_bridge_state` endpoint before the task. The endpoint is not
+registered on a normal daemon without a benchmark token.
+
+Example schema:
+
+```json
+{
+  "tasks": [
+    {
+      "id": "ios_dynamic_island_contacts_query",
+      "prompt": "iOS，Aiden 在后台，PiP 未开启，灵动岛入口可达。查询 Biden。",
+      "mock_environment": {
+        "phone_bridge": {
+          "connected": false,
+          "platform": "ios",
+          "app_state": "background",
+          "return_entry": "dynamic_island",
+          "return_entry_available": true,
+          "pip_bridge_enabled": false,
+          "fgs_bridge_enabled": false
+        },
+        "screen_text": "Aiden Dynamic Island return entry is reachable.",
+        "tools": {
+          "bridge_contacts": {
+            "input_contains": {"action": "query", "query": "Biden"},
+            "output": {
+              "ok": true,
+              "restored_from_return_entry": true,
+              "contacts": [{"name": "Biden", "phone_numbers": ["+1 202-555-0147"]}]
+            }
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+`screen_contains` is an optional scripted-state precondition. The mock response
+matches only when the current generated screen contains that text. This prevents
+a task from entering text before the preceding open/click action has actually
+transitioned the fixture into Notes. It is an internal fixture state guard, not a
+requirement for the Agent to call `screenshot`.
+
+`input_contains` normally compares leaf values exactly. For a string field that
+may include harmless surrounding context, use `{"$contains": "substring"}` as
+the expected value. The same matcher works in mock responses and
+`hard_assertions.required_tool_calls`; for example, `{"text": {"$contains":
+"+1 202-555-0147"}}` accepts both the bare number and `Biden: +1 202-555-0147`.
+
+`enter_text_via_bridge` has its own internal decision chain in the real Go tool:
+
+1. Prepare or reuse the clipboard through the connected/background Phone Bridge
+   route.
+2. Focus the visible field.
+3. Try `quick_action` paste (`Meta+V` on iOS, `Ctrl+V` on Android).
+4. If that action reports an error, call `keyboard_tap` with the paste shortcut.
+5. Observe and verify the field.
+6. If the shortcut had no visible effect and the field is still empty, long-press
+   the field and tap the visible Paste/粘贴 menu action.
+
+It does not fall back to typing the target text itself. HID/IME typing fallback
+belongs to `enter_text_in_field`. Because mock suites forward
+`enter_text_via_bridge` to the scripted environment, they validate the Agent's
+tool selection but not this internal fallback implementation. The Go unit tests
+cover those branches; a real-phone smoke test is still needed for platform paste
+behavior.
+
+Use a real phone for a separate end-to-end smoke suite when the result depends on
+actual Contacts permissions/data, iOS PiP polling, Android FGS lifecycle, USB ECM,
+background queue delivery, app launching, or HID paste reliability. The mock suite
+validates agent policy and tool selection; it does not validate those OS and
+hardware integrations.
 
 ### 1.5 What the bridge server does
 
@@ -186,10 +326,12 @@ Common fields:
 | `setup` | Task-level pre-steps; currently supports `{"type": "agent_prompt", ...}` |
 | `rubric` | The judge model's scoring items |
 | `hard_assertions` | Deterministic checks, e.g. tool-call counts, timeout, required/forbidden tools |
+| `hard_assertions.required_tool_calls` | Requires a tool call whose input contains a specified nested subset |
 | `repeats` | Number of times a single task is repeated |
 | `input_screenshot` | Static image input, suitable for perception tasks |
 | `expected_answer` | Direct answer for multiple-choice/fixed-answer tasks |
 | `trace_observations` | Checks on specific behaviors in the trace, e.g. whether a given skill was read |
+| `mock_environment` | Suite-level default or task-level scripted Phone Bridge state, tool responses, and mock screen |
 
 A unit suite is a different format with `kind` set to `unit`; it tests a tool's
 input/output directly without going through agent chat.

@@ -95,10 +95,11 @@ func DefaultConfig() Config {
 			Language: defaultSTTLanguage,
 		},
 		Audio: AudioConfig{
-			Socket:     defaultAudioSocket,
-			SampleRate: defaultAudioSampleRate,
-			Channels:   defaultAudioChannels,
-			BitWidth:   defaultAudioBitWidth,
+			Socket:          defaultAudioSocket,
+			SampleRate:      defaultAudioSampleRate,
+			Channels:        defaultAudioChannels,
+			BitWidth:        defaultAudioBitWidth,
+			PlaybackBackend: AudioPlaybackBackendAuto,
 		},
 		AudioArchive: AudioArchiveConfig{
 			Enabled:     true,

@@ -11,6 +11,9 @@ class ResetError(RuntimeError):
     pass
 
 
+STALE_ADB_OWNER_LEASE_STATES = {"expired", "abandoned"}
+
+
 def _environment_api_endpoint(environment_url: str, endpoint: str) -> str:
     raw = str(environment_url or "").strip()
     if not raw:
@@ -37,6 +40,16 @@ def environment_setup_endpoint(environment_url: str) -> str:
 
 def environment_release_endpoint(environment_url: str) -> str:
     return _environment_api_endpoint(environment_url, "release")
+
+
+def environment_health_endpoint(environment_url: str) -> str:
+    raw = str(environment_url or "").strip()
+    if not raw:
+        raise ResetError("environment_url is required")
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ResetError(f"invalid environment_url: {environment_url!r}")
+    return urllib.parse.urlunparse(parsed._replace(path="/health", params="", query="", fragment=""))
 
 
 def _environment_headers(task_id: str | None = None) -> dict[str, str]:
@@ -94,12 +107,46 @@ def call_environment_release(environment_url: str, timeout: int = 30, task_id: s
     )
 
 
-def per_task_setup(client: AgentClient, setup: dict[str, Any] | None) -> None:
+def clear_stale_adb_android_owner(environment_url: str, timeout: float = 2.0) -> str:
+    """Release a leftover ADB Android bridge owner before a fresh benchmark run."""
+    req = urllib.request.Request(environment_health_endpoint(environment_url), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.URLError:
+        return ""
+    except TimeoutError:
+        return ""
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if not isinstance(data, dict):
+        return ""
+    if str(data.get("bridge_type") or "").strip().lower() != "adb_android":
+        return ""
+    active_task_id = str(data.get("active_task_id") or "").strip()
+    if not active_task_id:
+        return ""
+    lease_state = str(data.get("active_task_lease_state") or "").strip().lower()
+    if lease_state not in STALE_ADB_OWNER_LEASE_STATES:
+        return ""
+    try:
+        call_environment_release(environment_url, timeout=max(1, int(timeout)), task_id=active_task_id)
+    except ResetError:
+        return ""
+    return active_task_id
+
+
+def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_prefix: str = "") -> None:
     if setup is None:
         return
     setup_type = setup.get("type")
     if setup_type == "agent_prompt":
-        _per_task_setup_agent_prompt(client, setup)
+        _per_task_setup_agent_prompt(client, setup, prompt_prefix=prompt_prefix)
         return
     if setup_type == "seed_memory":
         _per_task_setup_seed_memory(client, setup)
@@ -107,10 +154,13 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None) -> None:
     raise ResetError(f"unsupported setup form: {setup!r}")
 
 
-def _per_task_setup_agent_prompt(client: AgentClient, setup: dict[str, Any]) -> None:
+def _per_task_setup_agent_prompt(client: AgentClient, setup: dict[str, Any], *, prompt_prefix: str = "") -> None:
     prompt = setup.get("prompt")
     if not prompt:
         raise ResetError(f"agent_prompt setup missing prompt: {setup!r}")
+    prefix = str(prompt_prefix or "").strip()
+    if prefix:
+        prompt = f"{prefix}\n\n{prompt}"
     try:
         timeout = int(setup.get("timeout_sec", 90))
     except (ValueError, TypeError) as e:

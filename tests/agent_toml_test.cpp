@@ -85,6 +85,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.audio.sample_rate = 16000;
     cfg.audio.channels = 1;
     cfg.audio.bit_width = 16;
+    cfg.audio.playback_backend = "local";
 
     cfg.audio_archive.enabled = false;
     cfg.audio_archive.max_files = 42;
@@ -204,6 +205,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.audio.sample_rate == 16000);
     CHECK(loaded.audio.channels == 1);
     CHECK(loaded.audio.bit_width == 16);
+    CHECK(loaded.audio.playback_backend == "local");
 
     CHECK(loaded.audio_archive.enabled == false);
     CHECK(loaded.audio_archive.max_files == 42);

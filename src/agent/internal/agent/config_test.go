@@ -159,7 +159,7 @@ parse_failure_limit = 13
 	}
 }
 
-func TestLoadRuntimeConfigClearsBaseURLForNonOpenAIProvider(t *testing.T) {
+func TestLoadRuntimeConfigClearsBaseURLOnlyForProvidersWithoutOverrides(t *testing.T) {
 	tests := []struct {
 		name        string
 		provider    string
@@ -167,11 +167,12 @@ func TestLoadRuntimeConfigClearsBaseURLForNonOpenAIProvider(t *testing.T) {
 	}{
 		{"openai keeps base_url", "openai", "https://gateway.example.com/v1"},
 		{"OpenAI case insensitive keeps base_url", "OpenAI", "https://gateway.example.com/v1"},
+		{"openrouter keeps base_url", "openrouter", "https://gateway.example.com/v1"},
+		{"kimi keeps base_url", "kimi", "https://gateway.example.com/v1"},
+		{"kimi-cn keeps base_url", "kimi-cn", "https://gateway.example.com/v1"},
 		{"ollama keeps base_url", "ollama", "https://gateway.example.com/v1"},
 		{"Ollama case insensitive keeps base_url", "Ollama", "https://gateway.example.com/v1"},
-		{"openrouter drops base_url", "openrouter", ""},
-		{"kimi drops base_url", "kimi", ""},
-		{"kimi-cn drops base_url", "kimi-cn", ""},
+		{"fake drops base_url", "fake", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1167,6 +1168,32 @@ func TestDeviceConfigBackendDefaultsToHDMI(t *testing.T) {
 	cfg := Config{Model: ModelConfig{Provider: "fake"}}
 	if got := cfg.Device.BackendOrDefault(); got != "hdmi" {
 		t.Fatalf("BackendOrDefault() = %q, want hdmi", got)
+	}
+}
+
+func TestAudioPlaybackBackendDefaultsByAgentMode(t *testing.T) {
+	if got := (Config{Model: ModelConfig{Provider: "fake"}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendAudioService {
+		t.Fatalf("default playback backend = %q, want audio_service", got)
+	}
+	if got := (Config{Model: ModelConfig{Provider: "fake"}, HID: HIDConfig{InputBackend: "adb"}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendLocal {
+		t.Fatalf("adb playback backend = %q, want local", got)
+	}
+	if got := (Config{Model: ModelConfig{Provider: "fake"}, EnvironmentBridge: EnvironmentBridgeConfig{Enabled: true}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendLocal {
+		t.Fatalf("environment bridge playback backend = %q, want local", got)
+	}
+	if got := (Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{PlaybackBackend: "audio-service"}, HID: HIDConfig{InputBackend: "adb"}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendAudioService {
+		t.Fatalf("explicit audio-service backend = %q, want audio_service", got)
+	}
+}
+
+func TestConfigValidateRejectsUnknownAudioPlaybackBackend(t *testing.T) {
+	cfg := Config{
+		Model: ModelConfig{Provider: "fake"},
+		Audio: AudioConfig{PlaybackBackend: "bogus"},
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "invalid audio.playback_backend") {
+		t.Fatalf("Validate() error = %v, want invalid audio.playback_backend", err)
 	}
 }
 

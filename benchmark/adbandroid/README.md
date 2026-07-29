@@ -222,7 +222,16 @@ a gesture on failure). Pass `{"list": true}` to see the full catalog.
 - **Text input is English-only**: `adb input text` cannot type Chinese/IME
   composed text; non-ASCII returns an explicit error, and a literal `%s` in the
   text is typed as a space (the `input text` escaping convention). Chinese input
-  would need a clipboard/IME approach, not yet implemented.
+  would need a clipboard/IME approach, not yet implemented. For ASCII input, the
+  bridge temporarily switches to a known enabled Latin IME when available, then
+  restores the previous IME.
+- **Text entry is verified best-effort**: `enter_text_in_field` and
+  `enter_text_via_bridge` report `committed:true` only when Android UIAutomator
+  exposes matching editable field text after `adb input text`. The bridge dumps
+  UIAutomator XML to a temporary device file and reads it back because some
+  devices do not emit XML for `/dev/tty`. When verification is unavailable or
+  the field text differs, they return `committed:false` with a post-action
+  screenshot so the agent can inspect the keyboard/IME state before retrying.
 - **Single-device, serial**: one bridge drives one device and does not support
   concurrent tasks. For multiple devices run multiple bridge instances (different
   ports + different serials).

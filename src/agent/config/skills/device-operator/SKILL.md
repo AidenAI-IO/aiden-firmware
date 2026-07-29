@@ -54,12 +54,13 @@ For cross-app tasks that require extracting data from a source app and entering 
 
 Prefer the highest-level reliable tool for the job:
 
-- Use `quick_action` first when a catalog shortcut clearly matches the goal, such as back, home, app switch, search, copy/paste, or browser actions. Pass the observed `platform` when known. Common actions include back, home, hide_app, quit_app, app_switch, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, and browser_* actions; use `{"list":true,"platform":"..."}` to see the active catalog.
+- Use `quick_action` first when a catalog shortcut clearly matches the goal, such as back, home, app switch, search, copy/paste, or browser actions. Always pass both `action` and the observed `platform`. Common actions include back, home, hide_app, quit_app, app_switch, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, and browser_* actions; use `{"action":"list","platform":"..."}` to see the active catalog.
   - If `status=reserved` in a list result, or `quick_action` returns `ok=false` or an error, skip it and use direct input tools instead.
   - If `ok=true` but the screenshot shows no expected change, treat it as ineffective: try `alternative=true` once when alternatives are listed, otherwise switch tools. Never loop on the same binding.
 - Use `touch_gesture` for mobile taps, swipes, drag, back, and home gestures.
 - For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `keyboard_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text_in_field` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
+- Before entering English/ASCII text into any field, inspect the visible keyboard language. If a Chinese IME is active, for example the space bar says `拼音` or candidate/preedit text is shown, first switch to the English/Latin keyboard with the globe/input-method key, then type. Do not use `keyboard_text` while English text remains in Chinese IME preedit/candidate state.
 - Use `keyboard_tap` for enter, escape, tab, arrows, shortcuts, and simple key actions.
 - Use `keyboard_text` only for simple standalone ASCII typing outside picker/wheel controls. Never use it for picker values, Chinese/CJK, or emoji field entry.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch-style controls are not appropriate.
@@ -100,6 +101,7 @@ Required pattern:
 - `committed:false` means failure; do not tell the user text was entered.
 - For Chinese/CJK composition, provide `segments` as romanization syllables in typing order, e.g. `"你好"` -> `["ni","hao"]`.
 - Never pass Chinese, emoji, or romanization blobs to `keyboard_text`.
+- When English text must be entered while a Chinese IME is active, switch to the English/Latin keyboard first, commonly via the globe/input-method key. Do not leave the English text in Chinese IME preedit/candidate state.
 - If text remains in the IME candidate/preedit area instead of the field, retry once with corrected focus/segments or report the blocker.
 
 Use `enter_text_via_bridge` only when:
@@ -175,9 +177,10 @@ Scrollable region discipline:
 
 Calibration loop:
 
-1. Start with medium strength.
-2. Screenshot immediately after the gesture.
-3. Use visual inspection or `image_diff` to confirm movement and estimate rows/items moved.
+1. Record the current screenshot's `screenshot_attachment_id`, then start with medium strength.
+2. Read the gesture result's automatic post-action screenshot and its `screenshot_attachment_id`; do not take another screenshot before comparison.
+3. Use visual inspection or call `image_diff` with those exact values in `before` and `after` to confirm movement and estimate rows/items moved.
+   Never invent attachment IDs. If there is no suitable pre-action screenshot attachment, call `screenshot` before the gesture.
 4. If far from target, increase strength; if close, use small/tiny.
 5. If overshot, reverse direction and reduce strength.
 6. Do not repeat the same strength/distance after a failed attempt.

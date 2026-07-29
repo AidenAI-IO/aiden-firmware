@@ -123,7 +123,7 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(in("model.provider", "openai", "ollama"))},
+						VisibleWhen: all(in("model.provider", "openai", "openrouter", "kimi", "kimi-cn", "ollama"))},
 					// The effective default is model-dependent (resolved at load
 					// time); show the global fallback here as the UI placeholder.
 					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},
@@ -210,6 +210,9 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "sample_rate", Widget: WidgetNumber, Default: defaults.Audio.SampleRate},
 					{Key: "channels", Widget: WidgetNumber, Default: defaults.Audio.Channels},
 					{Key: "bit_width", Widget: WidgetNumber, Default: defaults.Audio.BitWidth},
+					{Key: "playback_backend", Widget: WidgetSelect,
+						Enum:    enumOptions(AudioPlaybackBackendAuto, AudioPlaybackBackendAudioService, AudioPlaybackBackendLocal),
+						Default: defaults.Audio.PlaybackBackend},
 				},
 			},
 			{

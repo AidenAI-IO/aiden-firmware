@@ -50,7 +50,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `model`: provider, token_env, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
-- `audio`: socket, sample_rate, channels, bit_width
+- `audio`: socket, sample_rate, channels, bit_width, playback_backend
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
 - `log`: LLM HTTP log retention
 - `hid`: keyboard_device, keyboard_layout, mouse_device, android_keyboard_device, frame_socket, pointer_mode, input_backend
@@ -84,6 +84,7 @@ socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
 bit_width = 16
+playback_backend = "auto"
 
 [log]
 llm_http_retention_days = 7
@@ -143,6 +144,7 @@ socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
 bit_width = 16
+playback_backend = "auto"
 
 [hid]
 keyboard_device = "/dev/hidg0"
@@ -271,12 +273,13 @@ api_key = "MOONSHOT_API_KEY"
 
 ## `[audio]`
 
-| Field         | Default                                 | Description          |
-| ------------- | --------------------------------------- | -------------------- |
-| `socket`      | `/run/audio_service/audio_service.sock` | Audio Service socket |
-| `sample_rate` | `16000`                                 | Sample rate          |
-| `channels`    | `1`                                     | Number of channels   |
-| `bit_width`   | `16`                                    | Bit width            |
+| Field              | Default                                 | Description                                                                                                                                                                                                                   |
+| ------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `socket`           | `/run/audio_service/audio_service.sock` | Audio Service socket                                                                                                                                                                                                          |
+| `sample_rate`      | `16000`                                 | Sample rate                                                                                                                                                                                                                   |
+| `channels`         | `1`                                     | Number of channels                                                                                                                                                                                                            |
+| `bit_width`        | `16`                                    | Bit width                                                                                                                                                                                                                     |
+| `playback_backend` | `auto`                                  | TTS playback backend. `auto` uses `audio_service` on board and the local OS player when the Agent is running in desktop/PC mode through ADB input backend or environment bridge. Use `audio_service` or `local` to force one. |
 
 ## `[voice_notifications]`
 

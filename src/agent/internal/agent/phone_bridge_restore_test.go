@@ -148,6 +148,54 @@ func TestPhoneBridgeOpenAppUnavailableForBackgroundAndroid(t *testing.T) {
 	}
 }
 
+func TestPhoneBridgeDataToolsAvailableForDynamicIslandRestore(t *testing.T) {
+	enabled := false
+	available := true
+	status := PhoneBridgeStatus{
+		Connected:            false,
+		Platform:             "ios",
+		AppState:             "background",
+		ReturnEntry:          "dynamic_island",
+		ReturnEntryAvailable: &available,
+		PipBridgeEnabled:     &enabled,
+	}
+
+	for _, name := range []string{
+		toolBridgeClipboard,
+		toolBridgeCalendar,
+		toolBridgeContacts,
+		toolBridgeNotification,
+	} {
+		if !phoneBridgeToolAvailable(status, name) {
+			t.Errorf("%s must remain available when Dynamic Island can restore Aiden", name)
+		}
+	}
+	if !phoneBridgeToolAvailable(status, toolBridgeOpenApp) {
+		t.Fatal("bridge_open_app should remain available when Dynamic Island can restore Aiden")
+	}
+}
+
+func TestPhoneBridgeBackgroundSafeCommandTypesCoverAllDataTools(t *testing.T) {
+	for _, commandType := range []string{
+		"clipboard_read",
+		"clipboard_write",
+		"calendar_create",
+		"calendar_query",
+		"calendar_delete",
+		"contacts_query",
+		"contacts_create",
+		"contacts_update",
+		"notification_send",
+	} {
+		if !phoneBridgeBackgroundSafeCommandType(commandType) {
+			t.Errorf("%s must be background-safe", commandType)
+		}
+	}
+	if phoneBridgeBackgroundSafeCommandType("open_app") {
+		t.Fatal("open_app must not be background-safe")
+	}
+}
+
 func TestPhoneBridgeCanUsePiPBackgroundOnlyForSafeDataCommands(t *testing.T) {
 	enabled := true
 	status := PhoneBridgeStatus{
@@ -156,11 +204,21 @@ func TestPhoneBridgeCanUsePiPBackgroundOnlyForSafeDataCommands(t *testing.T) {
 		AppStateUpdatedAt: ptrTime(time.Now()),
 		PipBridgeEnabled:  &enabled,
 	}
-	if !phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
-		t.Fatal("clipboard_read should be allowed in iOS PiP background bridge mode")
+	for _, name := range []string{
+		toolBridgeClipboard,
+		toolBridgeCalendar,
+		toolBridgeContacts,
+		toolBridgeNotification,
+	} {
+		if !phoneBridgeToolAvailable(status, name) {
+			t.Errorf("%s should be available in iOS PiP background bridge mode", name)
+		}
 	}
 	if phoneBridgeCanUsePiPBackground(status, "open_app") {
 		t.Fatal("open_app must not be allowed in iOS PiP background bridge mode")
+	}
+	if phoneBridgeToolAvailable(status, toolBridgeOpenApp) {
+		t.Fatal("bridge_open_app tool must be hidden in iOS PiP background bridge mode")
 	}
 
 	status.AppState = "active"
@@ -191,17 +249,21 @@ func TestPhoneBridgeCanUseFGSBackgroundOnlyForSafeDataCommands(t *testing.T) {
 		FgsBridgeEnabled:   &enabled,
 		FgsBridgeUpdatedAt: ptrTime(time.Now()),
 	}
-	if !phoneBridgeCanUseFGSBackground(status, "clipboard_read") {
-		t.Fatal("clipboard_read should be allowed in Android FGS background bridge mode")
+	for _, name := range []string{
+		toolBridgeClipboard,
+		toolBridgeCalendar,
+		toolBridgeContacts,
+		toolBridgeNotification,
+	} {
+		if !phoneBridgeToolAvailable(status, name) {
+			t.Errorf("%s should be available in Android FGS background bridge mode", name)
+		}
 	}
 	if phoneBridgeCanUseFGSBackground(status, "open_app") {
 		t.Fatal("open_app must not be allowed in Android FGS background bridge mode")
 	}
 	if phoneBridgeToolAvailable(status, toolBridgeOpenApp) {
 		t.Fatal("bridge_open_app tool must be hidden while Android FGS background bridge mode is active")
-	}
-	if !phoneBridgeToolAvailable(status, toolBridgeClipboard) {
-		t.Fatal("bridge_clipboard tool should be available through Android FGS background queue")
 	}
 
 	status.AppState = "active"
