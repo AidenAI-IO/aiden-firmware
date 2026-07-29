@@ -176,6 +176,19 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		}
 	}
 
+	keyboardLayoutEnum := enumValues("hid.keyboard_layout")
+	for _, layout := range []string{keyboardLayoutQWERTY, keyboardLayoutAZERTY, keyboardLayoutQWERTZ} {
+		if !contains(keyboardLayoutEnum, layout) {
+			t.Errorf("hid.keyboard_layout enum missing %q", layout)
+		}
+	}
+	for _, layout := range keyboardLayoutEnum {
+		c := Config{HID: HIDConfig{KeyboardLayout: layout}, Model: ModelConfig{Provider: "openai", Model: "x"}}
+		if err := c.Validate(); err != nil {
+			t.Errorf("hid.keyboard_layout enum value %q rejected by Validate: %v", layout, err)
+		}
+	}
+
 	audioPlaybackEnum := enumValues("audio.playback_backend")
 	for _, b := range []string{AudioPlaybackBackendAuto, AudioPlaybackBackendAudioService, AudioPlaybackBackendLocal} {
 		if !contains(audioPlaybackEnum, b) {
@@ -242,6 +255,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio_archive.storage_path", defaults.AudioArchive.StoragePathOrDefault()},
 		{"log.llm_http_retention_days", defaults.Log.LLMHTTPRetentionDaysOrDefault()},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
+		{"hid.keyboard_layout", defaults.HID.KeyboardLayout},
 		{"hid.mouse_device", defaults.HID.MouseDevice},
 		{"hid.android_keyboard_device", defaults.HID.AndroidKeyboardDevice},
 		{"hid.frame_socket", defaults.HID.FrameSocket},

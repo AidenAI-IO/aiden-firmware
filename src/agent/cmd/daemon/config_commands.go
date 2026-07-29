@@ -169,6 +169,7 @@ type otaDTO struct {
 
 type hidDTO struct {
 	KeyboardDevice        string `json:"keyboard_device"`
+	KeyboardLayout        string `json:"keyboard_layout"`
 	MouseDevice           string `json:"mouse_device"`
 	AndroidKeyboardDevice string `json:"android_keyboard_device"`
 	FrameSocket           string `json:"frame_socket"`
@@ -344,6 +345,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		},
 		HID: agent.HIDConfig{
 			KeyboardDevice:        d.HID.KeyboardDevice,
+			KeyboardLayout:        d.HID.KeyboardLayout,
 			MouseDevice:           d.HID.MouseDevice,
 			AndroidKeyboardDevice: d.HID.AndroidKeyboardDevice,
 			FrameSocket:           d.HID.FrameSocket,
@@ -497,6 +499,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		},
 		HID: hidDTO{
 			KeyboardDevice:        cfg.HID.KeyboardDeviceOrDefault(),
+			KeyboardLayout:        cfg.HID.KeyboardLayoutOrDefault(),
 			MouseDevice:           cfg.HID.MouseDeviceOrDefault(),
 			AndroidKeyboardDevice: cfg.HID.AndroidKeyboardDeviceOrDefault(),
 			FrameSocket:           cfg.HID.FrameSocketOrDefault(),
@@ -906,6 +909,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "input_mode"
 	} else if strings.Contains(errMsg, "trigger_mode") {
 		field = "trigger_mode"
+	} else if strings.Contains(errMsg, "hid.keyboard_layout") || strings.Contains(errMsg, "keyboard_layout") {
+		field = "hid.keyboard_layout"
 	} else if strings.Contains(errMsg, "hid.pointer_mode") || strings.Contains(errMsg, "pointer_mode") {
 		field = "hid.pointer_mode"
 	} else if strings.Contains(errMsg, "max_iterations") {

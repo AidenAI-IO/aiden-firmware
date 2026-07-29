@@ -942,6 +942,7 @@ TEST_CASE("config web renders finite choice fields as selects") {
         "tts_provider",
         "tts_speed",
         "stt_provider",
+        "hid_keyboard_layout",
         "hid_pointer_mode",
         "search_provider",
         "telemetry_provider",
@@ -975,6 +976,36 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("rangeOptions(field.range.min,field.range.max,field.range.step") != std::string::npos);
     // The legacy hard-coded option table must be gone.
     CHECK(html.find("const selectFieldOptions=") == std::string::npos);
+}
+
+TEST_CASE("config web keeps the keyboard layout selector but drops probe calibration") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    // The keyboard_layout selector stays: users pick the layout manually.
+    CHECK(html.find("id=\\\"hid_keyboard_layout\\\"") != std::string::npos);
+
+    // The probe/calibration flow is fully removed from both source and UI.
+    CHECK(source.find("/api/hid/keyboard-layout/probe") == std::string::npos);
+    CHECK(source.find("/api/tools/keyboard_layout_probe") == std::string::npos);
+    CHECK(source.find("/api/hid/keyboard-layout/calibrate") == std::string::npos);
+    CHECK(source.find("keyboard_layout_from_probe_observation") == std::string::npos);
+    CHECK(html.find("keyboardLayoutProbeBtn") == std::string::npos);
+    CHECK(html.find("keyboardLayoutCalibrationModal") == std::string::npos);
+    CHECK(html.find("keyboardLayoutObserved") == std::string::npos);
+    CHECK(html.find("startKeyboardLayoutProbe") == std::string::npos);
+    CHECK(html.find("applyKeyboardLayoutCalibration") == std::string::npos);
 }
 
 TEST_CASE("config web degrades gracefully when config metadata is unavailable") {
@@ -1693,6 +1724,9 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
 
     CHECK(toml_header.find("pointer_mode") != std::string::npos);
     CHECK(toml_source.find("\"pointer_mode\"") != std::string::npos);
+    CHECK(toml_header.find("keyboard_layout") != std::string::npos);
+    CHECK(toml_source.find("\"keyboard_layout\"") != std::string::npos);
+    CHECK(source.find("\"keyboard_layout\"") != std::string::npos);
     CHECK(source.find("kUsbHidInitScript = \"/etc/init.d/S49usbhid\"") == std::string::npos);
     CHECK(source.find("schedule_usbhid_restart") == std::string::npos);
     CHECK(source.find("usbhid_restart_scheduled") != std::string::npos);
@@ -1711,6 +1745,8 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
     CHECK(html.find("hid_pointer_mode") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_pointer_mode\\\"") != std::string::npos);
+    CHECK(html.find("hid_keyboard_layout") != std::string::npos);
+    CHECK(html.find("<select id=\\\"hid_keyboard_layout\\\"") != std::string::npos);
     CHECK(html.find("pointer_mode requires power off and restart to take effect") != std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
     CHECK(html.find("/api/poweroff") != std::string::npos);

@@ -1,12 +1,11 @@
 # Device UI and Agent response language: "zh-CN" or "en-US".
 # This is independent from [stt].language, which only controls speech recognition.
-locale = "zh-CN"
+locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification text
 
 # Agent instruction and behavior
 # custom_instruction = ""
 # additional_prompt = ""
 # max_iterations = -1
-locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification text
 
 # Screenshot context pruning:
 # keep the latest N screenshots and batch-prune older screenshots every interval
@@ -177,6 +176,7 @@ speed = 1.0                   # Speech speed: 0.5 - 2.0
 # HID (Human Interface Device) configuration
 [hid]
 # keyboard_device = "/dev/hidg0"
+# keyboard_layout = "qwerty"  # How the phone interprets the USB HID keyboard: "qwerty", "azerty", or "qwertz"
 # mouse_device = "/dev/hidg1"
 # android_keyboard_device = "/dev/hidg2"  # hid.usb2 Consumer Control keys; Android nav keys in touchscreen mode, media/volume/brightness/screenshot keys in absolute mode
 # frame_socket = "/run/frame_service/frame_service.sock"
