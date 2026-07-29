@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -24,8 +25,16 @@ var DefaultProtectRule = ProtectRule{
 }
 
 type Compactor struct {
-	ProtectRule ProtectRule
-	Model       model.Model
+	ProtectRule                ProtectRule
+	Model                      model.Model
+	HistoricalToolResultTarget int
+}
+
+func (c *Compactor) SetHistoricalToolResultTarget(target int) {
+	if c == nil {
+		return
+	}
+	c.HistoricalToolResultTarget = max(0, target)
 }
 
 func NewCompactor(protectRule ProtectRule, model model.Model) *Compactor {
@@ -43,14 +52,24 @@ func validateProtectRule(protectRule ProtectRule) {
 }
 
 func (c *Compactor) EstimateTokenUsage(session *contextmanager.ContextManager) int {
-	messageList := session.CloneMessageList()
+	if session == nil {
+		return 0
+	}
+	return estimateMessageListTokenUsage(session.CloneMessageList())
+}
+
+func estimateMessageListTokenUsage(messageList []contextmanager.Message) int {
 	tokenUsage := 0
 	for _, msg := range messageList {
 		switch msg.Role {
 		case contextmanager.MessageRoleToolCall:
-			tokenUsage += tokencounter.EstimateTextTokens(msg.ToolCalls[0].Arguments)
+			for _, call := range msg.ToolCalls {
+				tokenUsage += tokencounter.EstimateTextTokens(call.Arguments)
+			}
 		case contextmanager.MessageRoleToolResult:
-			tokenUsage += tokencounter.EstimateTextTokens(msg.ToolResults[0].Content)
+			for _, result := range msg.ToolResults {
+				tokenUsage += tokencounter.EstimateTextTokens(result.Content)
+			}
 		default:
 			tokenUsage += tokencounter.EstimateTextTokens(msg.Content)
 		}
@@ -62,9 +81,24 @@ func (c *Compactor) EstimateTokenUsage(session *contextmanager.ContextManager) i
 }
 
 func (c *Compactor) Compact(ctx context.Context, session *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
+	if session == nil {
+		return nil, false, nil
+	}
+	messageList := session.CloneMessageList()
+	if c.HistoricalToolResultTarget > 0 {
+		var replaced int
+		messageList, replaced = compactHistoricalToolResults(messageList, c.HistoricalToolResultTarget)
+		if replaced > 0 && estimateMessageListTokenUsage(messageList) <= c.HistoricalToolResultTarget {
+			newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, messageList)
+			if err != nil {
+				return nil, false, err
+			}
+			return newManager, true, nil
+		}
+	}
+
 	HeadN := c.ProtectRule.HeadN
 	TailN := c.ProtectRule.TailN
-	messageList := session.CloneMessageList()
 
 	// adjust headN so that headN is assitant, tool_result or user_message, make sure headN not breaking tool_call pairs
 	for i := HeadN - 1; i < len(messageList); i++ {
@@ -98,17 +132,129 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 		return nil, false, fmt.Errorf("failed to generate summary")
 	}
 	// assemble
-	newMessageList := append(heads, contextmanager.Message{
+	newMessageList := append(append([]contextmanager.Message(nil), heads...), contextmanager.Message{
 		Role:    contextmanager.MessageRoleUser,
 		Content: c.formatSummary(summary),
 	})
 	newMessageList = append(newMessageList, tails...)
 	// create new context manager
-	newManager, err := contextmanager.NewContextManagerFromMessageList(session.GetSessionFolder(), newMessageList)
+	newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, newMessageList)
 	if err != nil {
 		return nil, false, err
 	}
 	return newManager, true, nil
+}
+
+func compactHistoricalToolResults(messageList []contextmanager.Message, targetTokens int) ([]contextmanager.Message, int) {
+	if targetTokens <= 0 || len(messageList) == 0 {
+		return messageList, 0
+	}
+	latestUserIndex := -1
+	for i := len(messageList) - 1; i >= 0; i-- {
+		if messageList[i].Role == contextmanager.MessageRoleUser {
+			latestUserIndex = i
+			break
+		}
+	}
+	if latestUserIndex <= 0 {
+		return messageList, 0
+	}
+
+	replaced := 0
+	for messageIndex := 0; messageIndex < latestUserIndex; messageIndex++ {
+		message := &messageList[messageIndex]
+		if message.Role != contextmanager.MessageRoleToolResult {
+			continue
+		}
+		for resultIndex := range message.ToolResults {
+			result := &message.ToolResults[resultIndex]
+			if result.Meta != nil && result.Meta.Reason == "historical_compaction" {
+				continue
+			}
+			call, ok := findHistoricalToolCall(messageList, result.ToolCallID, messageIndex)
+			if !ok {
+				continue
+			}
+			meta := result.Meta
+			if meta == nil {
+				meta = &contextmanager.ToolResultMeta{
+					OriginalBytes:   int64(len(result.Content)),
+					OriginalChars:   utf8.RuneCountInString(result.Content),
+					EstimatedTokens: tokencounter.EstimateTextTokens(result.Content),
+					Complete:        true,
+					Summary:         compactHistoricalSummary(result.Content),
+				}
+				result.Meta = meta
+			}
+			result.Content = historicalToolResultPlaceholder(*result, call)
+			meta.Complete = false
+			meta.Reason = "historical_compaction"
+			replaced++
+			if estimateMessageListTokenUsage(messageList) <= targetTokens {
+				return messageList, replaced
+			}
+		}
+	}
+	return messageList, replaced
+}
+
+func findHistoricalToolCall(messageList []contextmanager.Message, toolCallID string, before int) (contextmanager.ToolCall, bool) {
+	toolCallID = strings.TrimSpace(toolCallID)
+	if toolCallID == "" {
+		return contextmanager.ToolCall{}, false
+	}
+	for i := before - 1; i >= 0; i-- {
+		for _, call := range messageList[i].ToolCalls {
+			if strings.TrimSpace(call.ID) == toolCallID {
+				return call, true
+			}
+		}
+	}
+	return contextmanager.ToolCall{}, false
+}
+
+func historicalToolResultPlaceholder(result contextmanager.ToolResult, call contextmanager.ToolCall) string {
+	toolName := strings.TrimSpace(result.Name)
+	if toolName == "" {
+		toolName = strings.TrimSpace(call.Name)
+	}
+	if toolName == "" {
+		toolName = "tool"
+	}
+	summary := ""
+	if result.Meta != nil {
+		summary = strings.TrimSpace(result.Meta.Summary)
+	}
+	if summary == "" {
+		summary = compactHistoricalSummary(result.Content)
+	}
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "[%s] historical result compressed.\n", toolName)
+	if summary != "" {
+		builder.WriteString(summary)
+		if !strings.HasSuffix(summary, "\n") {
+			builder.WriteByte('\n')
+		}
+	}
+	if result.Meta != nil && strings.TrimSpace(result.Meta.ArtifactRef) != "" {
+		if result.Meta.ArtifactComplete {
+			fmt.Fprintf(&builder, "Full result: %s", result.Meta.ArtifactRef)
+		} else {
+			fmt.Fprintf(&builder, "Saved partial result: %s", result.Meta.ArtifactRef)
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func compactHistoricalSummary(content string) string {
+	runes := []rune(strings.TrimSpace(content))
+	const maxRunes = 512
+	if len(runes) <= maxRunes {
+		return string(runes)
+	}
+	head := maxRunes / 2
+	tail := maxRunes - head
+	return fmt.Sprintf("%s\n... %d chars omitted ...\n%s", string(runes[:head]), len(runes)-maxRunes, string(runes[len(runes)-tail:]))
 }
 
 func (c *Compactor) generateSummary(ctx context.Context, messageList []contextmanager.Message) (string, error) {

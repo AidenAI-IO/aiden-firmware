@@ -163,3 +163,77 @@ func TestCompactPreservesLLMFailureSource(t *testing.T) {
 		t.Fatalf("Compact() error = %T %v, want LLMCallError", err, err)
 	}
 }
+
+func TestCompactShrinksHistoricalToolResultsBeforeCallingSummaryModel(t *testing.T) {
+	sessionFolder := t.TempDir()
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
+		{Role: contextmanager.MessageRoleSystem, Content: "system"},
+		{Role: contextmanager.MessageRoleUser, Content: "old request"},
+		{
+			Role: contextmanager.MessageRoleToolCall,
+			ToolCalls: []contextmanager.ToolCall{{
+				ID:        "old_call",
+				Name:      "shell",
+				Arguments: `{"command":"go test ./..."}`,
+			}},
+		},
+		{
+			Role: contextmanager.MessageRoleToolResult,
+			ToolResults: []contextmanager.ToolResult{{
+				ToolCallID: "old_call",
+				Name:       "shell",
+				Content:    strings.Repeat("large historical output ", 1_000),
+				Meta: &contextmanager.ToolResultMeta{
+					ArtifactRef:      "artifact://tr_old",
+					OriginalBytes:    24_000,
+					OriginalChars:    24_000,
+					Complete:         false,
+					ArtifactComplete: true,
+					Summary:          "128 passed, 2 failed",
+				},
+			}},
+		},
+		{Role: contextmanager.MessageRoleAssistant, Content: "old answer"},
+		{Role: contextmanager.MessageRoleUser, Content: "new request"},
+		{
+			Role:      contextmanager.MessageRoleToolCall,
+			ToolCalls: []contextmanager.ToolCall{{ID: "new_call", Name: "shell", Arguments: `{"command":"pwd"}`}},
+		},
+		{
+			Role:        contextmanager.MessageRoleToolResult,
+			ToolResults: []contextmanager.ToolResult{{ToolCallID: "new_call", Name: "shell", Content: "current result"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	model := &promptCapturingModel{reply: "summary should not be called"}
+	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
+	compactor.SetHistoricalToolResultTarget(500)
+
+	newManager, compacted, err := compactor.Compact(context.Background(), manager)
+	if err != nil {
+		t.Fatalf("Compact() error = %v", err)
+	}
+	if !compacted || newManager == nil {
+		t.Fatal("Compact() did not create a compacted manager")
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("summary model calls = %d, want 0", len(model.prompts))
+	}
+	if newManager.GetArtifactScopeID() != manager.GetArtifactScopeID() {
+		t.Fatalf("artifact scope = %q, want %q", newManager.GetArtifactScopeID(), manager.GetArtifactScopeID())
+	}
+
+	messages := newManager.CloneMessageList()
+	oldResult := messages[3].ToolResults[0]
+	if !strings.Contains(oldResult.Content, "[shell]") || !strings.Contains(oldResult.Content, "128 passed, 2 failed") || !strings.Contains(oldResult.Content, "artifact://tr_old") {
+		t.Fatalf("historical placeholder = %q", oldResult.Content)
+	}
+	if oldResult.Meta == nil || oldResult.Meta.Complete || oldResult.Meta.Reason != "historical_compaction" {
+		t.Fatalf("historical metadata = %#v", oldResult.Meta)
+	}
+	if got := messages[7].ToolResults[0].Content; got != "current result" {
+		t.Fatalf("current tool result = %q, want unchanged", got)
+	}
+}

@@ -2,89 +2,71 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"aiden-agent/internal/agent/model"
+
 	"github.com/tmc/langchaingo/llms"
 )
 
-func TestGuardMessagesWithinContextWindowFallbackOmitsCombinedToolResults(t *testing.T) {
-	messages := contextBudgetToolMessages(
-		strings.Repeat("alpha ", 240),
-		strings.Repeat("bravo ", 240),
-	)
-	inputBudget := maxSingleToolResponsePromptTokens(t, messages) + 12
-	if got := estimateMessagesTokens(messages); got <= inputBudget {
-		t.Fatalf("test setup total tokens = %d, want > %d", got, inputBudget)
+func TestHardContextGuardAllowsRequestWithinBudget(t *testing.T) {
+	messages := []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, "system"),
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
 	}
-
-	sanitized := guardMessagesWithinContextWindow(contextBudgetWindowModel{window: inputBudget}, messages, nil)
-	if got := estimateMessagesTokens(sanitized); got > inputBudget {
-		t.Fatalf("sanitized tokens = %d, want <= %d", got, inputBudget)
+	guard := NewHardContextGuard(model.ModelSpec{ContextWindow: 4_000, MaxOutput: 500})
+	got, err := guard.Apply(context.Background(), messages, nil)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
 	}
-	contents := toolResponseContents(t, sanitized)
-	if !strings.Contains(contents[0], "tool result omitted") || !strings.Contains(contents[1], "tool result omitted") {
-		t.Fatalf("combined tool responses should be omitted by fallback pass: %#v", contents)
-	}
-	if !strings.HasPrefix(contents[0], "note:") || !strings.HasPrefix(contents[1], "note:") {
-		t.Fatalf("omission placeholders should use note prefix: %#v", contents)
+	if len(got) != len(messages) {
+		t.Fatalf("Apply() messages = %d, want %d", len(got), len(messages))
 	}
 }
 
-func TestGuardMessagesWithinContextWindowDoesNotTreatRawOmissionTextAsAlreadyOmitted(t *testing.T) {
-	oversizedOutput := strings.Repeat("oversized ", 720)
-	rawOmissionTextOutput := "raw diagnostic says tool result omitted by the remote process\n" + strings.Repeat("secondary ", 160)
-	messages := contextBudgetToolMessages(oversizedOutput, rawOmissionTextOutput)
-	candidates := collectToolResponseBudgetCandidates(messages)
-	if len(candidates) != 2 {
-		t.Fatalf("test setup candidates = %d, want 2", len(candidates))
-	}
-	inputBudget := estimateSingleToolResponsePromptTokens(messages, candidates[1]) + 12
-	if got := estimateSingleToolResponsePromptTokens(messages, candidates[0]); got <= inputBudget {
-		t.Fatalf("oversized single prompt tokens = %d, want > %d", got, inputBudget)
-	}
-	if got := estimateMessagesTokens(messages); got <= inputBudget {
-		t.Fatalf("test setup total tokens = %d, want > %d", got, inputBudget)
-	}
+func TestHardContextGuardRejectsOverBudgetWithoutOmittingToolResults(t *testing.T) {
+	rawResult := strings.Repeat("large-result ", 500)
+	messages := contextBudgetToolMessages(rawResult)
+	guard := NewHardContextGuard(model.ModelSpec{ContextWindow: 1_000, MaxOutput: 200})
 
-	sanitized := guardMessagesWithinContextWindow(contextBudgetWindowModel{window: inputBudget}, messages, nil)
-	contents := toolResponseContents(t, sanitized)
-	if contents[1] == rawOmissionTextOutput {
-		t.Fatalf("raw tool output containing omission text should not be treated as already omitted")
+	got, err := guard.Apply(context.Background(), messages, nil)
+	if got != nil {
+		t.Fatalf("Apply() messages = %#v, want nil on rejection", got)
 	}
-	if !strings.HasPrefix(contents[1], "note:") || !strings.Contains(contents[1], "would exceed the model context window") || !strings.Contains(contents[1], "tool call already completed") {
-		t.Fatalf("second tool response should be replaced with omission metadata, got: %q", contents[1])
+	var budgetErr *ContextBudgetExceededError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("Apply() error = %T %v, want ContextBudgetExceededError", err, err)
+	}
+	if budgetErr.EstimatedPromptTokens <= budgetErr.InputBudget {
+		t.Fatalf("budget error = %#v, want estimated > budget", budgetErr)
+	}
+	if !strings.Contains(rawResult, "large-result") {
+		t.Fatal("test setup mutated raw result")
 	}
 }
 
-func TestGuardMessagesWithinContextWindowUsesStableOmissionTextAcrossPromptSizes(t *testing.T) {
-	oversizedOutput := strings.Repeat("oversized ", 720)
-	baseMessages := contextBudgetToolMessages(oversizedOutput)
-	extraPromptMessages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, "system prompt"),
-		llms.TextParts(llms.ChatMessageTypeHuman, "summarize tool output"),
-		llms.TextParts(llms.ChatMessageTypeHuman, "extra surrounding context that should not change the omission placeholder"),
+func TestHardContextGuardCountsToolSchemaTokens(t *testing.T) {
+	messages := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeSystem, strings.Repeat("x", 1_800))}
+	largeDescription := strings.Repeat("schema ", 300)
+	options := []llms.CallOption{llms.WithTools([]llms.Tool{{
+		Type: "function",
+		Function: &llms.FunctionDefinition{
+			Name:        "large_tool",
+			Description: largeDescription,
+			Parameters:  map[string]any{"type": "object"},
+		},
+	}})}
+	guard := NewHardContextGuard(model.ModelSpec{ContextWindow: 1_200, MaxOutput: 200})
+	_, err := guard.Apply(context.Background(), messages, options)
+	var budgetErr *ContextBudgetExceededError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("Apply() error = %T %v, want ContextBudgetExceededError", err, err)
 	}
-	extraPromptMessages = append(extraPromptMessages, baseMessages[2:]...)
-
-	baseCandidates := collectToolResponseBudgetCandidates(baseMessages)
-	if len(baseCandidates) != 1 {
-		t.Fatalf("base candidates = %d, want 1", len(baseCandidates))
-	}
-	baseInputBudget := estimateSingleToolResponsePromptTokens(baseMessages, baseCandidates[0]) - 1
-	if baseInputBudget <= 0 {
-		t.Fatalf("base input budget = %d, want > 0", baseInputBudget)
-	}
-
-	model := contextBudgetWindowModel{window: baseInputBudget}
-	baseSanitized := guardMessagesWithinContextWindow(model, baseMessages, nil)
-	extraSanitized := guardMessagesWithinContextWindow(model, extraPromptMessages, nil)
-	baseContent := toolResponseContents(t, baseSanitized)[0]
-	extraContent := toolResponseContents(t, extraSanitized)[0]
-
-	if baseContent != extraContent {
-		t.Fatalf("omission placeholder should stay stable across prompt sizes\nbase:  %q\nextra: %q", baseContent, extraContent)
+	if budgetErr.ToolSchemaTokens == 0 {
+		t.Fatalf("Apply() tool schema tokens = 0")
 	}
 }
 
@@ -120,22 +102,6 @@ func contextBudgetToolMessages(outputs ...string) []llms.MessageContent {
 	return messages
 }
 
-func maxSingleToolResponsePromptTokens(t *testing.T, messages []llms.MessageContent) int {
-	t.Helper()
-	candidates := collectToolResponseBudgetCandidates(messages)
-	if len(candidates) == 0 {
-		t.Fatal("no tool response candidates")
-	}
-	maxTokens := 0
-	for _, candidate := range candidates {
-		tokens := estimateSingleToolResponsePromptTokens(messages, candidate)
-		if tokens > maxTokens {
-			maxTokens = tokens
-		}
-	}
-	return maxTokens
-}
-
 func toolResponseContents(t *testing.T, messages []llms.MessageContent) []string {
 	t.Helper()
 	var contents []string
@@ -150,20 +116,4 @@ func toolResponseContents(t *testing.T, messages []llms.MessageContent) []string
 		t.Fatalf("no tool responses found in messages: %#v", messages)
 	}
 	return contents
-}
-
-type contextBudgetWindowModel struct {
-	window int
-}
-
-func (m contextBudgetWindowModel) contextWindow() int {
-	return m.window
-}
-
-func (m contextBudgetWindowModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
-	panic("unexpected GenerateContent invocation")
-}
-
-func (m contextBudgetWindowModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
-	panic("unexpected Call invocation")
 }

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
 	"path/filepath"
@@ -348,6 +349,13 @@ func (s *ToolSet) RegisterSkillTools(skillsDir, manifestPath string, onModify ..
 	s.tools["skill_read"] = NewSkillReadTool(skillsDir, usagePath)
 	s.tools["skill_manage"] = NewSkillManageTool(skillsDir, manifestPath, onModify...)
 	s.tools["skill_mark_used"] = NewSkillMarkUsedTool(skillsDir, usagePath)
+}
+
+func (s *ToolSet) RegisterArtifactReadTool(managerFn func() *contextmanager.ContextManager) {
+	if s == nil {
+		return
+	}
+	s.tools["artifact_read"] = NewArtifactReadTool(managerFn)
 }
 
 func usagePathForManifest(manifestPath string) string {

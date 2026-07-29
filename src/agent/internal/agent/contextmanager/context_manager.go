@@ -68,9 +68,21 @@ type ToolCall struct {
 }
 
 type ToolResult struct {
-	ToolCallID string `json:"tool_call_id"`
-	Name       string `json:"name"`
-	Content    string `json:"content"`
+	ToolCallID string          `json:"tool_call_id"`
+	Name       string          `json:"name"`
+	Content    string          `json:"content"`
+	Meta       *ToolResultMeta `json:"meta,omitempty"`
+}
+
+type ToolResultMeta struct {
+	ArtifactRef      string `json:"artifact_ref,omitempty"`
+	OriginalBytes    int64  `json:"original_bytes,omitempty"`
+	OriginalChars    int    `json:"original_chars,omitempty"`
+	EstimatedTokens  int    `json:"estimated_tokens,omitempty"`
+	Complete         bool   `json:"complete"`
+	ArtifactComplete bool   `json:"artifact_complete"`
+	Reason           string `json:"reason,omitempty"`
+	Summary          string `json:"summary,omitempty"`
 }
 
 // Attachment tracks file metadata for message attachments. Binary content is stored on disk
@@ -89,9 +101,11 @@ const AttachmentSourceScreenshotObservation = "screenshot_observation"
 // SessionID is the id of the session, it is used to identify the session of the agent. Conversation in a same session are shared the same context.
 type ContextManager struct {
 	sessionID       string
+	artifactScopeID string
 	messageList     []Message
 	appendHooks     []AppendMessageHook
 	attachmentStore *attachmentStore
+	artifactStore   *artifactStore
 	mu              sync.RWMutex
 	sessionFolder   string
 }
@@ -106,18 +120,34 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 	if err != nil {
 		return nil, err
 	}
+	metadata, found, err := loadSessionMetadata(sessionFolder, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || strings.TrimSpace(metadata.ArtifactScopeID) == "" {
+		metadata.ArtifactScopeID = sessionID
+		if err := saveSessionMetadata(sessionFolder, sessionID, metadata); err != nil {
+			return nil, err
+		}
+	}
 
 	attachmentStore, err := newAttachmentStore(sessionFolder, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	artifactStore, err := newArtifactStore(sessionFolder, metadata.ArtifactScopeID)
 	if err != nil {
 		return nil, err
 	}
 
 	return &ContextManager{
 		sessionID:       sessionID,
+		artifactScopeID: metadata.ArtifactScopeID,
 		messageList:     messageList,
 		mu:              sync.RWMutex{},
 		sessionFolder:   sessionFolder,
 		attachmentStore: attachmentStore,
+		artifactStore:   artifactStore,
 	}, nil
 }
 
@@ -154,16 +184,44 @@ func NewContextManager(sessionFolder string, systemPrompt string) (*ContextManag
 
 func NewContextManagerFromMessageList(sessionFolder string, messageList []Message) (*ContextManager, error) {
 	newSessionID := newSessionID()
-	attachmentStore, err := newAttachmentStore(sessionFolder, newSessionID)
+	return newContextManagerFromMessageList(sessionFolder, newSessionID, newSessionID, messageList)
+}
+
+func NewContextManagerRevisionFromMessageList(parent *ContextManager, messageList []Message) (*ContextManager, error) {
+	if parent == nil {
+		return nil, fmt.Errorf("parent context manager is nil")
+	}
+	return newContextManagerFromMessageList(
+		parent.GetSessionFolder(),
+		newSessionID(),
+		parent.GetArtifactScopeID(),
+		messageList,
+	)
+}
+
+func newContextManagerFromMessageList(sessionFolder, sessionID, artifactScopeID string, messageList []Message) (*ContextManager, error) {
+	if strings.TrimSpace(artifactScopeID) == "" {
+		artifactScopeID = sessionID
+	}
+	if err := saveSessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: artifactScopeID}); err != nil {
+		return nil, err
+	}
+	attachmentStore, err := newAttachmentStore(sessionFolder, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	artifactStore, err := newArtifactStore(sessionFolder, artifactScopeID)
 	if err != nil {
 		return nil, err
 	}
 	manager := &ContextManager{
 		sessionFolder:   sessionFolder,
-		sessionID:       newSessionID,
-		messageList:     messageList,
+		sessionID:       sessionID,
+		artifactScopeID: artifactScopeID,
+		messageList:     cloneMessages(messageList),
 		mu:              sync.RWMutex{},
 		attachmentStore: attachmentStore,
+		artifactStore:   artifactStore,
 	}
 	if err := manager.flushFull(); err != nil {
 		return nil, err
@@ -195,6 +253,34 @@ func (c *ContextManager) GetSessionFolder() string {
 
 func (c *ContextManager) GetSessionID() string {
 	return c.sessionID
+}
+
+func (c *ContextManager) GetArtifactScopeID() string {
+	if c == nil {
+		return ""
+	}
+	return c.artifactScopeID
+}
+
+func (c *ContextManager) StoreArtifact(mimeType string, data []byte, metadata ArtifactMetadata) (ArtifactRef, error) {
+	if c == nil || c.artifactStore == nil {
+		return ArtifactRef{}, fmt.Errorf("artifact store is unavailable")
+	}
+	return c.artifactStore.store(mimeType, data, metadata)
+}
+
+func (c *ContextManager) ReadArtifact(ref string, offset int64, limit int) (ArtifactChunk, error) {
+	if c == nil || c.artifactStore == nil {
+		return ArtifactChunk{}, fmt.Errorf("artifact store is unavailable")
+	}
+	return c.artifactStore.read(ref, offset, limit)
+}
+
+func (c *ContextManager) SearchArtifact(ref, query string, offset int64, limit int) (ArtifactChunk, error) {
+	if c == nil || c.artifactStore == nil {
+		return ArtifactChunk{}, fmt.Errorf("artifact store is unavailable")
+	}
+	return c.artifactStore.search(ref, query, offset, limit)
 }
 
 func (c *ContextManager) appendToList(messages []Message) error {
@@ -381,6 +467,13 @@ func cloneMessage(msg Message) Message {
 	}
 	if len(msg.ToolResults) > 0 {
 		cloned.ToolResults = append([]ToolResult(nil), msg.ToolResults...)
+		for i := range cloned.ToolResults {
+			if msg.ToolResults[i].Meta == nil {
+				continue
+			}
+			meta := *msg.ToolResults[i].Meta
+			cloned.ToolResults[i].Meta = &meta
+		}
 	}
 	if len(msg.Attachments) > 0 {
 		cloned.Attachments = append([]Attachment(nil), msg.Attachments...)
