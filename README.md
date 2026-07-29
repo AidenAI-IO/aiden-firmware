@@ -15,43 +15,26 @@ It is not a final integrated hardware product.
 
 The current development setup centers on:
 
-- [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero), RV1106 /
-  Rockchip platform running Buildroot Linux;
-- [TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html),
-  HDMI-to-CSI bridge for external screen capture;
-- a USB-C hub that provides HDMI output for capture and a USB data path back to
-  the target device;
-- ASRPro 2.0 for voice recognition, connected to the Pico Zero alongside a
-  1 W / 8 Ω speaker connected directly to the Pico Zero speaker output;
-- the Pico Zero Linux USB gadget stack for keyboard, pointer/touch, and ECM
-  networking.
+- [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero), RV1106 / Rockchip platform running Buildroot Linux;
+- [TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html), HDMI-to-CSI bridge for external screen capture;
+- [ASRPRO 2.0](https://item.taobao.com/item.htm?id=676711841241) for voice recognition, connected to the Pico Zero alongside a 1 W / 8 Ω speaker connected directly to the Pico Zero speaker output;
+- A USB-C hub that provides HDMI output for capture and a USB data path back to the target device;
+- The Pico Zero Linux USB gadget stack for keyboard, pointer/touch, and ECM networking.
 
-Some prototype hardware revisions may include additional USB modules, but the
-firmware-documented HID path is the Linux gadget path exposed as `/dev/hidg0`
-and `/dev/hidg1`.
+Some prototype hardware revisions may include additional USB modules, but the firmware-documented HID path is the Linux gadget path exposed as `/dev/hidg0` and `/dev/hidg1`.
 
-For the complete parts list, self-assembly instructions, wiring diagram, and
-target-device prerequisites, see
-[Hardware & Wiring](docs/01-getting-started/hardware.md).
+For the complete parts list, self-assembly instructions, wiring diagram, and target-device prerequisites, see [Hardware & Wiring](docs/01-getting-started/hardware.md).
 
 ## What Aiden Does
 
 The current hardware setup connects to a phone or computer through a USB-C hub:
 
-- the target device's display output is captured through HDMI and the TC358743
-  HDMI-to-CSI path;
-- the Luckfox Pico Zero exposes a composite USB gadget with keyboard/pointer HID
-  and USB ECM networking;
-- the Go Agent sends screenshots to a configured multimodal model, decides the
-  next action, and writes keyboard/mouse/touch reports to `/dev/hidg0` and
-  `/dev/hidg1`;
-- voice mode records audio on the board, applies VAD, then uses configured STT,
-  LLM, and TTS providers.
+- the target device's display output is captured through HDMI and the TC358743 HDMI-to-CSI path;
+- the Luckfox Pico Zero exposes a composite USB gadget with keyboard/pointer HID and USB ECM networking;
+- the Go Agent sends screenshots to a configured multimodal model, decides the next action, and writes keyboard/mouse/touch reports to `/dev/hidg0` and `/dev/hidg1`;
+- voice mode records audio on the board, applies VAD, then uses configured STT, LLM, and TTS providers.
 
-The basic control path does not require jailbreak, ADB, developer mode, or a
-custom app on the target device. It does require a target that can output video
-to the capture path and accept USB HID input. iOS control also requires
-AssistiveTouch to be enabled.
+The basic control path does not require jailbreak, ADB, developer mode, or a custom app on the target device. It does require a target that can output video to the capture path and accept USB HID input. iOS control also requires AssistiveTouch to be enabled.
 
 ## Key Features
 
@@ -86,19 +69,13 @@ Most mobile agent projects are lab prototypes that require a laptop or desktop t
 
 ## Repository Scope
 
-- **Firmware integration**: Buildroot overlay, init scripts, USB gadget setup,
-  Wi-Fi/config portal defaults, and full `update.img` generation.
-- **C++ services**: `frame_service` owns HDMI capture and exposes screenshots over
-  Unix domain sockets; `audio_service` owns recording/playback and volume state.
-- **Go Agent**: the device-side LLM runtime, voice loop, skills, memory, and
-  built-in screenshot/HID/audio/shell tools.
-- **USB networking**: The board exposes `usb0` at `192.168.42.1` for the device
-  config page and local board-to-phone communication.
-- **OTA**: A/B partition updates, signed manifests, health confirmation, and
-  `abctl` diagnostics.
+- **Firmware integration**: Buildroot overlay, init scripts, USB gadget setup, Wi-Fi/config portal defaults, and full `update.img` generation.
+- **C++ services**: `frame_service` owns HDMI capture and exposes screenshots over Unix domain sockets; `audio_service` owns recording/playback and volume state.
+- **Go Agent**: the device-side LLM runtime, voice loop, skills, memory, and built-in screenshot/HID/audio/shell tools.
+- **USB networking**: The board exposes `usb0` at `192.168.42.1` for the device config page and local board-to-phone communication.
+- **OTA**: A/B partition updates, signed manifests, health confirmation, and `abctl` diagnostics.
 
-The firmware has no required Aiden-hosted backend. Screenshots, audio, and text
-are sent only to the model/STT/TTS/search endpoints you configure.
+The firmware has no required Aiden-hosted backend. Screenshots, audio, and text are sent only to the model/STT/TTS/search endpoints you configure.
 
 ## Architecture
 
@@ -121,28 +98,17 @@ Board audio
     -> audio_service playback
 ```
 
-At runtime, the Agent is intentionally decoupled from C++ service internals:
-Frame and Audio capabilities go through Unix domain sockets, while device
-control goes through the Linux USB gadget HID device nodes.
+At runtime, the Agent is intentionally decoupled from C++ service internals: Frame and Audio capabilities go through Unix domain sockets, while device control goes through the Linux USB gadget HID device nodes.
 
 ## Quick Start
 
-First-time hardware users should start with
-[Newcomer Quickstart](docs/01-getting-started/quickstart.md). It walks through
-wiring, flashing, Wi-Fi setup, Agent configuration, voice verification, and
-troubleshooting.
+First-time hardware users should start with [Newcomer Quickstart](docs/01-getting-started/quickstart.md). It walks through wiring, flashing, Wi-Fi setup, Agent configuration, voice verification, and troubleshooting.
 
 Clone the repository:
 
 ```bash
 git clone --recursive git@github.com:AidenAI-IO/aiden-firmware.git
 cd aiden-firmware
-```
-
-Run host-native unit tests:
-
-```bash
-make test
 ```
 
 Build ARM binaries for the device:
@@ -194,16 +160,10 @@ The full documentation is organized under [docs/](docs/README.md):
 
 ## Contributing
 
-Contributions are welcome for firmware, services, Agent runtime, skills, tests,
-benchmarks, and documentation. Before contributing, read [LICENSE](LICENSE); it
-defines the dual-license terms, contribution license grant, patent terms, and
-hardware-design licensing notes for this repository.
+Contributions are welcome for firmware, services, Agent runtime, skills, tests, benchmarks, and documentation. Before contributing, read [LICENSE](LICENSE); it defines the dual-license terms, contribution license grant, patent terms, and hardware-design licensing notes for this repository.
 
 Do not commit secrets, device-specific credentials, or local environment files.
 
 ## License
 
-This repository is distributed under the dual-license terms described in
-[LICENSE](LICENSE), with the AGPL-3.0 text included in
-[LICENSE-AGPL-3.0](LICENSE-AGPL-3.0). Third-party components keep their own
-licenses; see [NOTICE](NOTICE) for details.
+This repository is distributed under the dual-license terms described in [LICENSE](LICENSE), with the AGPL-3.0 text included in [LICENSE-AGPL-3.0](LICENSE-AGPL-3.0). Third-party components keep their own licenses; see [NOTICE](NOTICE) for details.
