@@ -75,6 +75,29 @@ func TestConfigInputModeDefaultContract(t *testing.T) {
 	}
 }
 
+func TestHIDKeyboardLayoutDefaultsToQWERTY(t *testing.T) {
+	if got := (HIDConfig{}).KeyboardLayoutOrDefault(); got != keyboardLayoutQWERTY {
+		t.Fatalf("KeyboardLayoutOrDefault() = %q, want %q", got, keyboardLayoutQWERTY)
+	}
+	if got := DefaultConfig().HID.KeyboardLayout; got != keyboardLayoutQWERTY {
+		t.Fatalf("DefaultConfig().HID.KeyboardLayout = %q, want %q", got, keyboardLayoutQWERTY)
+	}
+}
+
+func TestConfigValidateKeyboardLayout(t *testing.T) {
+	for _, layout := range []string{keyboardLayoutQWERTY, keyboardLayoutAZERTY, keyboardLayoutQWERTZ} {
+		cfg := Config{Model: ModelConfig{Provider: "fake"}, HID: HIDConfig{KeyboardLayout: layout}}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() rejected keyboard layout %q: %v", layout, err)
+		}
+	}
+
+	cfg := Config{Model: ModelConfig{Provider: "fake"}, HID: HIDConfig{KeyboardLayout: "dvorak"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "hid.keyboard_layout") {
+		t.Fatalf("Validate() error = %v, want hid.keyboard_layout rejection", err)
+	}
+}
+
 func TestConfigLocaleContract(t *testing.T) {
 	if got := DefaultConfig().Locale; got != "zh-CN" {
 		t.Fatalf("DefaultConfig().Locale = %q, want zh-CN", got)

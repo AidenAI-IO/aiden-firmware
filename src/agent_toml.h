@@ -85,6 +85,7 @@ struct OTAToml {
 
 struct HIDToml {
     std::string keyboard_device = "/dev/hidg0";
+    std::string keyboard_layout = "qwerty";
     std::string mouse_device = "/dev/hidg1";
     std::string android_keyboard_device = "/dev/hidg2";
     std::string frame_socket = "/run/frame_service/frame_service.sock";
