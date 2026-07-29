@@ -914,6 +914,32 @@ def test_auto_agent_setup_rejects_negative_max_concurrency_before_setup(monkeypa
     assert "max-concurrency must be non-negative" in capsys.readouterr().err
 
 
+def test_task_route_id_keeps_explicit_id_verbatim_across_attempts(tmp_path):
+    import argparse
+    from pathlib import Path
+
+    from runner.suite import Suite
+
+    suite = Suite(
+        name="suite",
+        global_reset={},
+        tasks=[],
+        sha256="",
+        source_path=Path(tmp_path / "suite.json"),
+    )
+    derived = argparse.Namespace(benchmark_task_id="")
+    explicit = argparse.Namespace(benchmark_task_id="webui:job-test")
+
+    # Without an explicit id every attempt gets its own route, so parallel
+    # environments can hand each attempt a separate device.
+    assert main._task_route_id(derived, suite, "t1", 1, 2) == "suite.json:t1:attempt-1"
+    assert main._task_route_id(derived, suite, "t1", 2, 2) == "suite.json:t1:attempt-2"
+    # With an explicit id the caller already started its daemon under that id;
+    # suffixing attempts here would break ownership on the second repeat.
+    assert main._task_route_id(explicit, suite, "t1", 1, 2) == "webui:job-test"
+    assert main._task_route_id(explicit, suite, "t1", 2, 2) == "webui:job-test"
+
+
 def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_path):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(

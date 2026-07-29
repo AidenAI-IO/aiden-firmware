@@ -202,6 +202,9 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "sample_rate", Widget: WidgetNumber, Default: defaults.Audio.SampleRate},
 					{Key: "channels", Widget: WidgetNumber, Default: defaults.Audio.Channels},
 					{Key: "bit_width", Widget: WidgetNumber, Default: defaults.Audio.BitWidth},
+					{Key: "playback_backend", Widget: WidgetSelect,
+						Enum:    enumOptions(AudioPlaybackBackendAuto, AudioPlaybackBackendAudioService, AudioPlaybackBackendLocal),
+						Default: defaults.Audio.PlaybackBackend},
 				},
 			},
 			{

@@ -2,14 +2,10 @@
 
 FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/golang:1.23 AS agent-daemon-builder
 
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
+# China-mirror image: reaches the Huawei registry / goproxy.cn / Tsinghua apt
+# mirror directly, so it never uses an HTTP proxy.
 WORKDIR /build
-ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY} \
-    GOPROXY=https://goproxy.cn,direct \
+ENV GOPROXY=https://goproxy.cn,direct \
     GOTOOLCHAIN=auto
 
 COPY src/agent/go.mod src/agent/go.sum ./
@@ -19,13 +15,6 @@ COPY src/agent/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o daemon ./cmd/daemon
 
 FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/debian:bullseye-slim AS agent-daemon-runtime
-
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY}
 
 RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list && \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \

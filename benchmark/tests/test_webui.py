@@ -923,6 +923,82 @@ def test_run_suite_passes_mobilegym_environment_url(tmp_path: Path, monkeypatch)
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
 
 
+def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
+    tmp_path: Path, monkeypatch
+):
+    # A device job runs every task through a single daemon. If that daemon and
+    # the runner do not claim the same route id, a bridge that enforces
+    # single-environment ownership answers every tool call with
+    # 429 no_bridge_env_available.
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+            build_daemon_image=False,
+        )
+    )
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    raw_runs_dir.mkdir(parents=True)
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://host.docker.internal:8899",
+        docker_endpoint="http://host.docker.internal:8899",
+        environment_endpoint="http://127.0.0.1:8899",
+        suites=["suite.json"],
+        environment_type="device",
+        agent_url="http://127.0.0.1:18080",
+        config_dir=str(tmp_path / "runs" / "job-test" / "config"),
+        raw_runs_dir=str(raw_runs_dir),
+        state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        daemon_log=str(tmp_path / "runs" / "job-test" / "daemon.log"),
+        no_judge=True,
+    )
+    captured: dict[str, Any] = {}
+
+    class FakeProc:
+        def wait(self):
+            return 0
+
+    def fake_start_daemon_compose(*args, **kwargs):
+        captured["daemon_task_id"] = kwargs.get("benchmark_task_id")
+        return "container-id"
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
+    monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_wait_for_daemon", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_refresh_job_report", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui.subprocess, "Popen", fake_popen)
+    releases: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        webui,
+        "call_environment_release",
+        lambda environment_url, timeout=30, task_id=None: releases.append((environment_url, task_id)),
+    )
+
+    app._run_job(job)
+
+    expected = webui.job_benchmark_task_id("job-test")
+    assert captured["daemon_task_id"] == expected
+    assert captured["cmd"][captured["cmd"].index("--benchmark-task-id") + 1] == expected
+    # A stopped or crashed job must not leave the lease behind: the id is never
+    # reused, so a leak would 429 every later job.
+    assert releases == [("http://127.0.0.1:8899", expected)]
+
+
 def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path, monkeypatch):
     suites = tmp_path / "suites"
     suites.mkdir()

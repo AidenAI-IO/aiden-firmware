@@ -114,6 +114,18 @@ func ttsPlaybackTargetFormat(cfg Config, source tts.AudioFormat) tts.AudioFormat
 	return target
 }
 
+func newTTSPlaybackBackendFromConfig(cfg Config, audio *AudioServiceClient, logger *Logger) tts.AudioServiceBackend {
+	switch cfg.AudioPlaybackBackendOrDefault() {
+	case AudioPlaybackBackendLocal:
+		return newLocalAudioPlaybackBackend(logger)
+	default:
+		if audio == nil {
+			return nil
+		}
+		return newAudioBackend(audio)
+	}
+}
+
 func containsInt(values []int, target int) bool {
 	for _, value := range values {
 		if value == target {
@@ -123,13 +135,16 @@ func containsInt(values []int, target int) bool {
 	return false
 }
 
-func beginManagedTTSStream(ctx context.Context, manager *tts.ProviderManager, audio *AudioServiceClient, cfg Config) (*streamSessionWriter, error) {
+func beginManagedTTSStream(ctx context.Context, manager *tts.ProviderManager, playback tts.AudioServiceBackend, cfg Config) (*streamSessionWriter, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if playback == nil {
+		return nil, errors.New("tts playback backend is not configured")
+	}
 	holder := manager.Holder()
 	sourceFormat := ttsPlaybackFormat(cfg, holder.Capabilities())
-	targetSink := tts.NewAudioServiceSink(newAudioBackend(audio), ttsPlaybackTargetFormat(cfg, sourceFormat))
+	targetSink := tts.NewAudioServiceSink(playback, ttsPlaybackTargetFormat(cfg, sourceFormat))
 	providerSink := tts.NewResamplingSink(sourceFormat, targetSink)
 	session, err := holder.BeginStream(ctx, providerSink)
 	if err != nil {
@@ -140,13 +155,13 @@ func beginManagedTTSStream(ctx context.Context, manager *tts.ProviderManager, au
 
 type ttsStreamObserver func(*streamSessionWriter) func()
 
-func speakWithTTSManager(ctx context.Context, manager *tts.ProviderManager, audio *AudioServiceClient, cfg Config, text string) (bool, error) {
-	return speakWithTTSManagerObserved(ctx, manager, audio, cfg, text, nil)
+func speakWithTTSManager(ctx context.Context, manager *tts.ProviderManager, playback tts.AudioServiceBackend, cfg Config, text string) (bool, error) {
+	return speakWithTTSManagerObserved(ctx, manager, playback, cfg, text, nil)
 }
 
-func speakWithTTSManagerObserved(ctx context.Context, manager *tts.ProviderManager, audio *AudioServiceClient, cfg Config, text string, observe ttsStreamObserver) (bool, error) {
+func speakWithTTSManagerObserved(ctx context.Context, manager *tts.ProviderManager, playback tts.AudioServiceBackend, cfg Config, text string, observe ttsStreamObserver) (bool, error) {
 	text = strings.TrimSpace(text)
-	if text == "" || manager == nil || audio == nil {
+	if text == "" || manager == nil || playback == nil {
 		return false, nil
 	}
 
@@ -163,7 +178,7 @@ func speakWithTTSManagerObserved(ctx context.Context, manager *tts.ProviderManag
 			}
 		}
 
-		stream, err := beginManagedTTSStream(ctx, manager, audio, cfg)
+		stream, err := beginManagedTTSStream(ctx, manager, playback, cfg)
 		if err != nil {
 			lastErr = err
 			if isTransientTTSError(err) && attempt < maxRetries {

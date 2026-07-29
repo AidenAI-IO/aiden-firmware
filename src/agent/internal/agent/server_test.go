@@ -1990,7 +1990,7 @@ func TestServerHandleChatCancelStopsRequestScopedStreamingTTSPlayback(t *testing
 	defer cancel()
 	server.registerActiveRun(requestID, cancel)
 
-	stream, err := beginManagedTTSStream(ctx, server.ttsManager, server.audioClient, Config{})
+	stream, err := beginManagedTTSStream(ctx, server.ttsManager, server.currentTTSPlaybackBackend(), Config{})
 	if err != nil {
 		t.Fatalf("beginManagedTTSStream() error = %v", err)
 	}

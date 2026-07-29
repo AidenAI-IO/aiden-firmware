@@ -840,6 +840,7 @@ class BenchmarkWebApp:
                 host_port=host_port,
                 config_dir=Path(job.config_dir),
                 environment_bridge_endpoint=job.docker_endpoint,
+                benchmark_task_id=job_benchmark_task_id(job.id),
                 log_path=Path(job.runner_log),
                 stop_requested=lambda: self._job_stop_requested(job),
             )
@@ -856,6 +857,7 @@ class BenchmarkWebApp:
                 if log_proc is not None:
                     log_proc.terminate()
                 stop_daemon_compose(job)
+                self._release_job_environment(job)
             self._raise_if_job_stop_requested(job)
             self._refresh_job_report(job)
             final_status = "passed" if job.suite_results and all(item.get("exit_code") == 0 for item in job.suite_results) else "failed"
@@ -882,6 +884,24 @@ class BenchmarkWebApp:
                 for key in list(self._job_runner_procs):
                     if key.startswith(f"{job.id}:"):
                         self._job_runner_procs.pop(key, None)
+
+    def _release_job_environment(self, job: Job) -> None:
+        """Drop the job's environment ownership after its daemon is gone.
+
+        The runner releases each task's route itself, but a job that is stopped
+        or crashes mid-task never gets there, and the job-level route id is
+        never reused — so a leaked lease would answer every later job with
+        429 until the bridge is restarted.
+        """
+        if not job.environment_endpoint:
+            return
+        try:
+            call_environment_release(
+                job.environment_endpoint,
+                task_id=job_benchmark_task_id(job.id),
+            )
+        except Exception as exc:
+            append_log(Path(job.runner_log), f"warning: failed to release environment: {exc}")
 
     def _refresh_job_report(self, job: Job) -> None:
         try:
@@ -1322,6 +1342,9 @@ class BenchmarkWebApp:
         cmd.extend(["--benchmark-token-file", str(Path(job.config_dir) / "control_token")])
         if job.environment_endpoint:
             cmd.extend(["--environment-url", job.environment_endpoint])
+            # Must match the id the shared daemon was started with, or the
+            # bridge rejects the daemon's tool calls as another task's.
+            cmd.extend(["--benchmark-task-id", job_benchmark_task_id(job.id)])
         if job.no_judge:
             cmd.append("--no-judge")
         else:
@@ -1592,6 +1615,20 @@ def worker_token(suite_key: str, task_id: str) -> str:
 
 def task_worker_key(job_id: str, task_record_id: str) -> str:
     return f"{job_id}:{task_record_id}"
+
+
+def job_benchmark_task_id(job_id: str) -> str:
+    """Route id shared by a job's single daemon and its runner processes.
+
+    Jobs that run every task through one long-lived daemon (device, adb_android,
+    and non-parallel mobilegym) cannot use the runner's default per-task route
+    id: the daemon is started once, so it would send one fixed id — or none at
+    all — while the runner claimed a different id per task, and an environment
+    bridge that enforces single-environment ownership rejects the mismatch with
+    `429 no_bridge_env_available`. One id per job keeps both sides in agreement;
+    tasks run sequentially on that path, so job-level ownership is enough.
+    """
+    return f"webui:{job_id}"
 
 
 def runner_procs_for_stop(value: Any) -> list[subprocess.Popen]:
@@ -2113,6 +2150,13 @@ def daemon_compose_env(
     environment_bridge_mode: bool | None = None,
 ) -> dict[str, str]:
     env = dict(os.environ)
+    # Benchmark runs never go through an HTTP proxy: strip any proxy variables the
+    # host shell may have exported (e.g. a running Clash), so neither the docker
+    # build (base image / go mod / apt) nor the daemon container inherits them.
+    # NO_PROXY is a bypass list, not a proxy, and is set explicitly below.
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                "http_proxy", "https_proxy", "all_proxy"):
+        env.pop(key, None)
     env["AIDEN_DAEMON_IMAGE"] = image
     bridge_enabled = bool(environment_bridge_endpoint) if environment_bridge_mode is None else bool(environment_bridge_mode)
     env["AIDEN_ENVIRONMENT_BRIDGE_MODE"] = "1" if bridge_enabled else "0"
