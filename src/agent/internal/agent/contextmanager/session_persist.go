@@ -10,6 +10,10 @@ import (
 	"strings"
 )
 
+type sessionMetadata struct {
+	ArtifactScopeID string `json:"artifact_scope_id"`
+}
+
 // fetchCurrentSession fetches the current session ID from the session folder, should be called when initializing the context manager.
 func fetchCurrentSession(sessionFolder string) string {
 	// sessionFolder/.current_session content is the session ID
@@ -27,6 +31,36 @@ func fetchCurrentSession(sessionFolder string) string {
 func saveCurrentSession(sessionFolder string, sessionID string) error {
 	sessionIDFile := filepath.Join(sessionFolder, ".current_session")
 	return os.WriteFile(sessionIDFile, []byte(sessionID), 0o644)
+}
+
+func sessionMetadataPath(sessionFolder, sessionID string) string {
+	return filepath.Join(sessionFolder, sessionID+".meta.json")
+}
+
+func loadSessionMetadata(sessionFolder, sessionID string) (sessionMetadata, bool, error) {
+	data, err := os.ReadFile(sessionMetadataPath(sessionFolder, sessionID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return sessionMetadata{}, false, nil
+		}
+		return sessionMetadata{}, false, fmt.Errorf("read session metadata: %w", err)
+	}
+	var metadata sessionMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return sessionMetadata{}, false, fmt.Errorf("decode session metadata: %w", err)
+	}
+	return metadata, true, nil
+}
+
+func saveSessionMetadata(sessionFolder, sessionID string, metadata sessionMetadata) error {
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("marshal session metadata: %w", err)
+	}
+	if err := writeArtifactFileAtomically(sessionMetadataPath(sessionFolder, sessionID), data); err != nil {
+		return fmt.Errorf("write session metadata: %w", err)
+	}
+	return nil
 }
 
 func appendSession(sessionFolder string, sessionID string, messages []Message) error {
@@ -86,20 +120,29 @@ func loadSession(sessionFolder string, sessionID string) ([]Message, error) {
 // ClearAllSessions clears all sessions in the session folder, including the .current_session file.
 func ClearAllSessions(sessionFolder string) error {
 	sessionIDFile := filepath.Join(sessionFolder, ".current_session")
-	if err := os.Remove(sessionIDFile); err != nil {
+	if err := os.Remove(sessionIDFile); err != nil && !os.IsNotExist(err) {
 		log.Printf("failed to remove current session file %s: %v\n", sessionIDFile, err)
 	}
-	sessionFiles, err := filepath.Glob(filepath.Join(sessionFolder, "*.jsonl"))
+	entries, err := os.ReadDir(sessionFolder)
 	if err != nil {
-		return fmt.Errorf("failed to glob session files in %s: %w", sessionFolder, err)
-	}
-	for _, sessionFile := range sessionFiles {
-		sessionID := strings.TrimSuffix(filepath.Base(sessionFile), ".jsonl")
-		if err := os.Remove(sessionFile); err != nil {
-			log.Printf("failed to remove session file %s: %v\n", sessionFile, err)
+		if os.IsNotExist(err) {
+			return nil
 		}
-		if err := removeSessionDataDir(sessionFolder, sessionID); err != nil {
-			log.Printf("failed to remove session data directory %s: %v\n", sessionID, err)
+		return fmt.Errorf("failed to list session files in %s: %w", sessionFolder, err)
+	}
+	for _, entry := range entries {
+		path := filepath.Join(sessionFolder, entry.Name())
+		if entry.IsDir() {
+			if err := os.RemoveAll(path); err != nil {
+				log.Printf("failed to remove session data directory %s: %v\n", entry.Name(), err)
+			}
+			continue
+		}
+		if !strings.HasSuffix(entry.Name(), ".jsonl") && !strings.HasSuffix(entry.Name(), ".meta.json") {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("failed to remove session file %s: %v\n", path, err)
 		}
 	}
 	return nil

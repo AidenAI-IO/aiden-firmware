@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"path/filepath"
+
+	"aiden-agent/internal/agent/contextmanager"
 )
 
 type leveledStorageCleaner struct {
@@ -27,6 +29,9 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 	storageConfig := cfg.Storage.MonitorConfig()
 	cleaners := make([]StorageCleaner, 0)
 	priority := 1
+	artifactCleaner := contextmanager.NewArtifactStoreCleaner(filepath.Join(cfg.ConfigDir, "sessions"), priority)
+	priority++
+	cleaners = append(cleaners, withMinimumStorageLevel(artifactCleaner, StorageLevelNormal))
 
 	currentSessionID := func() (string, error) {
 		if memories == nil {

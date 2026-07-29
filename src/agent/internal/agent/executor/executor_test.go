@@ -46,6 +46,14 @@ func (dropUserTransform) Transform(messages []contextmanager.Message) []contextm
 	return out
 }
 
+type rejectingContentPolicy struct {
+	err error
+}
+
+func (p rejectingContentPolicy) Apply(context.Context, []llms.MessageContent, []llms.CallOption) ([]llms.MessageContent, error) {
+	return nil, p.err
+}
+
 func TestGenerateContentAppliesOutboundTransformsWithoutMutatingStore(t *testing.T) {
 	sessionFolder := t.TempDir()
 	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, nil)
@@ -87,5 +95,30 @@ func TestGenerateContentMarksNilModelResponseAsLLMCallError(t *testing.T) {
 	var llmErr *LLMCallError
 	if !errors.As(err, &llmErr) {
 		t.Fatalf("GenerateContent() error = %T %v, want LLMCallError", err, err)
+	}
+}
+
+func TestGenerateContentReturnsLocalPolicyErrorWithoutCallingModel(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
+		{Role: contextmanager.MessageRoleSystem, Content: "system"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	model := &recordingModel{}
+	localErr := errors.New("context budget exceeded")
+	exec := NewLLMExecutor(model, manager)
+	exec.SetOutboundContentPolicy(rejectingContentPolicy{err: localErr})
+
+	response, err := exec.GenerateContent(context.Background())
+	if response != nil || !errors.Is(err, localErr) {
+		t.Fatalf("GenerateContent() response=%#v error=%v", response, err)
+	}
+	if model.last != nil {
+		t.Fatalf("model was called with messages: %#v", model.last)
+	}
+	var llmErr *LLMCallError
+	if errors.As(err, &llmErr) {
+		t.Fatalf("local policy error was wrapped as LLMCallError: %v", err)
 	}
 }

@@ -522,6 +522,11 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		environmentBridge:  environmentBridge,
 		stateManager:       statemanager.NewStateManager(),
 	}
+	if tools != nil {
+		tools.RegisterArtifactReadTool(func() *contextmanager.ContextManager {
+			return rt.contextManager
+		})
+	}
 	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
 		modelManager.SetRawHTTPLogSessionIDProvider(func() string {
@@ -1062,11 +1067,25 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	compactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
+	budgetContextWindow := contextWindow
+	if budgetContextWindow <= 0 {
+		budgetContextWindow = defaultContextWindowFallback
+	}
+	maxResponseTokens := r.models.Spec().MaxOutput
+	if r.config.Model.MaxResponseTokens > 0 {
+		maxResponseTokens = r.config.Model.MaxResponseTokens
+	}
+	if req.MaxTokens > 0 {
+		maxResponseTokens = req.MaxTokens
+	}
+	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
+	compactionTrigger := usableInputBudget * toolResultSoftLimitPercent / 100
+	compactionTarget := usableInputBudget * 70 / 100
+	compactor.SetHistoricalToolResultTarget(compactionTarget)
 	tokenUsage := compactor.EstimateTokenUsage(r.contextManager)
-	// TODO: make this configurable
-	if tokenUsage > int(float64(max(contextWindow, 8192))*0.8) {
+	if tokenUsage > compactionTrigger {
 		if r.logger != nil {
-			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, contextWindow: %d", tokenUsage, contextWindow)
+			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
 		}
 		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
 		if err != nil {

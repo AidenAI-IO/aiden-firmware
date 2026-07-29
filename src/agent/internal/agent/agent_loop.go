@@ -50,6 +50,7 @@ type AgentLoop struct {
 	DevicePlatform           string
 	PointerMode              string
 	ToolResultObserver       ToolResultObserver
+	ToolResultPolicy         ToolResultPolicy
 	toolExecutionHookFactory func() toolExecutionHookHandler
 	contextManager           *contextmanager.ContextManager
 }
@@ -75,6 +76,7 @@ func NewAgentLoop(
 		MaxIterations:     maxIterations,
 		Recorder:          recorder,
 		ScreenshotPruning: screenshotPruning,
+		ToolResultPolicy:  NewToolResultPolicy(),
 		contextManager:    contextManager,
 	}
 }
@@ -92,6 +94,9 @@ func (l *AgentLoop) outboundTransforms() []executor.OutboundMessageTransform {
 
 func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
 	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager, l.outboundTransforms()...)
+	if spec := l.Model.Spec(); spec.ContextWindow > 0 {
+		llmExecutor.SetOutboundContentPolicy(NewHardContextGuard(spec))
+	}
 
 	agentTools := l.Profile.Tools
 	toolSpecs := NewToolSpecs(agentTools)
@@ -367,7 +372,27 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		})
 	}
 	toolCallsInIteration++
-	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
+	prepared := PreparedToolResult{
+		Content:  toolExecution.Step.Observation,
+		Complete: true,
+	}
+	if parser == nil || !parser.isVisualObservationTool(toolExecution.Step.Action.Tool) {
+		resultPolicy := l.ToolResultPolicy
+		if resultPolicy == nil {
+			resultPolicy = NewToolResultPolicy()
+		}
+		prepared, err = resultPolicy.Prepare(ctx, ToolResultPrepareInput{
+			Call:           toolExecution.Call,
+			Result:         toolExecution.Result,
+			ContextManager: llmExecutor.ContextManager(),
+			ModelSpec:      l.Model.Spec(),
+			CallOptions:    turnOptions,
+		})
+		if err != nil {
+			return "", iterationContinue, err
+		}
+	}
+	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step, prepared)
 	if toolExecution.Error != nil {
 		if appendErr != nil {
 			return "", iterationContinue, errors.Join(toolExecution.Error, appendErr)
@@ -775,24 +800,26 @@ func roleResponseDebugText(res *llms.ContentResponse) string {
 	return strings.Join(parts, "\n")
 }
 
-func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, step schema.AgentStep) error {
+func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, step schema.AgentStep, prepared PreparedToolResult) error {
 	if llmExecutor == nil {
 		return fmt.Errorf("llm executor is nil")
 	}
 
-	toolContent := step.Observation
+	toolContent := prepared.Content
 	var followups []llms.MessageContent
 	if parser != nil && parser.isVisualObservationTool(step.Action.Tool) {
 		if content, visualFollowups := parser.observationMessagesForStep(step, true); len(visualFollowups) > 0 {
 			toolContent = content
 			followups = visualFollowups
+			prepared = PreparedToolResult{Content: content, Complete: true}
 		}
 	}
+	prepared.Content = toolContent
 
 	if err := llmExecutor.AppendMessage(toolResultMessage(
 		step.Action.ToolID,
 		step.Action.Tool,
-		toolContent,
+		prepared,
 	)); err != nil {
 		return fmt.Errorf("failed to append tool result message: %w", err)
 	}
