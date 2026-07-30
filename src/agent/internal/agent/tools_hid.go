@@ -704,15 +704,15 @@ type KeyboardTapTool struct {
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
 
 func (t *KeyboardTapTool) Description() string {
-	return `Press and release keyboard keys, pressed simultaneously as a chord (e.g. {"keys":["ctrl","c"]}). Prefer quick_action first for semantic platform actions; use keyboard_tap as a low-level fallback or for custom key input.`
+	return `Press and release literal keyboard keys (e.g. {"keys":["enter"]}). Use only for simple keys not represented by quick_action, such as enter, escape, tab, arrows, or an exact physical chord explicitly requested for raw HID testing. For semantic shortcuts—including copy, paste, cut, select_all, undo, redo, find, send, back, home, app switching, and browser actions—always call quick_action with the observed platform, even when the user names a familiar Ctrl/Cmd shortcut. Never translate those actions into ctrl/meta keyboard_tap chords, including as a fallback after quick_action failure or no visible effect; use a listed quick_action alternative or a non-shortcut UI strategy.`
 }
 
 func (t *KeyboardTapTool) ArgsSchema() map[string]any {
-	keysSchema := stringArrayArgSchema("Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"]. "+
+	keysSchema := stringArrayArgSchema("Literal keys pressed simultaneously, e.g. [\"enter\"] or [\"shift\",\"tab\"]. Do not construct ctrl/meta shortcuts for semantic actions covered by quick_action. "+
 		"Standard boot-keyboard keys: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen; modifiers ctrl, shift, alt, meta/super/win/cmd; modifier-only taps allowed. "+
 		"Use backspace for ordinary text deletion before the cursor; delete is forward-delete after the cursor. "+
 		"Android extension keys (hid.usb2) use Android KEYCODE_* aliases (see the Android key guide for the full list; legacy KEY_USAGE_* names are accepted where previously supported), are single-key taps only, and cannot be combined with modifiers/chords. "+
-		"When hid.pointer_mode is absolute, hid.usb2 only supports media, volume, screenshot, and brightness keys: "+absolutePointerModeExtensionKeyList+".", []string{"ctrl", "c"}, []string{"meta"})
+		"When hid.pointer_mode is absolute, hid.usb2 only supports media, volume, screenshot, and brightness keys: "+absolutePointerModeExtensionKeyList+".", []string{"enter"}, []string{"shift", "tab"})
 	keysSchema["minItems"] = 1
 	keysSchema["maxItems"] = 6
 

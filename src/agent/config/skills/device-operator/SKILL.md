@@ -52,14 +52,14 @@ For cross-app tasks that require extracting data from a source app and entering 
 
 Prefer the highest-level reliable tool for the job:
 
-- Use `quick_action` first when a catalog shortcut clearly matches the goal, such as back, home, app switch, search, copy/paste, or browser actions. Always pass both `action` and the observed `platform`. Common actions include back, home, hide_app, quit_app, app_switch, app_switch_back, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, and browser_* actions; use `{"action":"list","platform":"..."}` to see the active catalog.
-  - If `status=reserved` in a list result, or `quick_action` returns `ok=false` or an error, skip it and use direct input tools instead.
+- Use `quick_action` whenever a catalog shortcut matches the goal, such as back, home, app switch, search, copy/paste, or browser actions. Always pass both `action` and the observed `platform`. Common actions include back, home, hide_app, quit_app, app_switch, app_switch_back, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, and browser_* actions; use `{"action":"list","platform":"..."}` to see the active catalog. Do not translate these semantic actions into `ctrl`/`meta` `keyboard_tap` chords.
+  - If `status=reserved` in a list result, or `quick_action` returns `ok=false` or an error, use a listed alternative or a non-shortcut UI strategy. Do not retry the same semantic action through an equivalent `keyboard_tap` modifier chord.
   - If `ok=true` but the screenshot shows no expected change, treat it as ineffective: try `alternative=true` once when alternatives are listed, otherwise switch tools. Never loop on the same binding.
 - Use `touch_gesture` for mobile taps, swipes, drag, back, and home gestures.
 - For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `enter_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
 - Before entering English/ASCII text into any field, inspect the visible keyboard language. If a Chinese IME is active, for example the space bar says `拼音` or candidate/preedit text is shown, first switch to the English/Latin keyboard with the globe/input-method key, then type. Do not use `keyboard_text` while English text remains in Chinese IME preedit/candidate state.
-- Use `keyboard_tap` for enter, escape, tab, arrows, shortcuts, and simple key actions.
+- Use `keyboard_tap` only for literal keys not represented by `quick_action`, such as enter, escape, tab, arrows, backspace, or an exact physical chord explicitly requested for raw HID testing. Never use it to synthesize copy, paste, cut, select-all, undo/redo, find, send, navigation, app-switching, or browser shortcuts, even if the user describes the desired semantic action by naming a familiar Ctrl/Cmd chord.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch-style controls are not appropriate.
 
 If a semantic tool fails, read the message and choose a different approach. Do not retry the same binding unless the tool explicitly offers a distinct alternative.
@@ -103,7 +103,7 @@ Required pattern:
 
 For simple keys:
 
-- Use `keyboard_tap` for submit, enter, escape, tab, arrows, shortcuts, or backspace.
+- Use `keyboard_tap` for literal enter, escape, tab, arrows, or backspace. For semantic submit/send and all platform shortcuts, use `quick_action`; do not construct `ctrl`/`meta` chords yourself.
 - For ordinary deletion in a field, prefer `keyboard_tap` with `{"keys":["backspace"]}`; `delete` is forward-delete.
 
 If text does not appear or appears in the wrong place, stop typing, take a fresh screenshot, re-check focus and field identity, then retry once with corrected focus or input method. If still failing, summarize observed field state and ask for help or use bridge if appropriate.

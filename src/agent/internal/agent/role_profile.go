@@ -16,7 +16,7 @@ func agentRoleRules() []string {
 	rules := []string{
 		"Prefer direct tools that cover the requested operation before UI workarounds.",
 		"For launch-only requests to open an app, URL, or dialer screen, direct tool success is enough unless the user asked to inspect or act inside the opened target.",
-		"For semantic platform actions, use quick_action when a matching action may exist; pass observed_state.platform and the concrete action id when possible, and switch to a low-level fallback after failure/no effect.",
+		"For semantic platform actions such as copy, paste, cut, select all, undo, redo, find, send, back, home, app switching, and browser shortcuts, use quick_action with observed_state.platform. Never recreate a cataloged action as a ctrl/meta keyboard_tap chord, even after quick_action failure or no visible effect; use a listed alternative or a non-shortcut UI strategy.",
 		"Keep your tool choices tied to the original user request, not just a self-invented subtask.",
 		"If the current screenshot clearly identifies the app/page or device platform, use that observed app, page, platform (ios/android/mac), visible text, and dialogs when choosing tools.",
 		"Call request_human_handoff when the task requires credentials, login-method selection, verification, system/app redirect confirmation, permission dialog confirmation, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Ask the user to complete it on the device; do not ask them to send credentials or private verification details in chat.",

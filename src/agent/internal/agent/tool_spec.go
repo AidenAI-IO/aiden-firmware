@@ -86,7 +86,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"keyboard_tap": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"keys":["ctrl","c"]}`,
+		ExampleInput: `{"keys":["enter"]}`,
 	},
 	"enter_text": {
 		Category:     "input",

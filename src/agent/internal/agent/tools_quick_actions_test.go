@@ -152,6 +152,11 @@ func TestQuickActionDescriptionDocumentsListInspection(t *testing.T) {
 	if !strings.Contains(desc, `Always pass action and platform`) {
 		t.Fatalf("description missing required action/platform guidance: %s", desc)
 	}
+	for _, want := range []string{"Always use quick_action", "ctrl/meta", "keyboard_tap"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing semantic shortcut routing guidance %q: %s", want, desc)
+		}
+	}
 	// The reserved/alternative/no-retry behavior playbook now lives in the
 	// device-operator skill, not the tool description.
 }
@@ -177,7 +182,7 @@ func TestQuickActionPlaybookLivesInSkill(t *testing.T) {
 		t.Skipf("device-operator SKILL.md not readable from test cwd: %v", err)
 	}
 	content := string(data)
-	for _, want := range []string{"status=reserved", "alternative=true", "Never loop on the same binding"} {
+	for _, want := range []string{"status=reserved", "alternative=true", "Never loop on the same binding", "Do not translate these semantic actions", "equivalent `keyboard_tap` modifier chord"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("device-operator SKILL.md missing quick_action guidance %q", want)
 		}

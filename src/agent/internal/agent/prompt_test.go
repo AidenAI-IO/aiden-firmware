@@ -305,6 +305,15 @@ func TestRolePromptOmitsRuntimeAndMemoryContext(t *testing.T) {
 	}
 }
 
+func TestRolePromptRoutesPlatformShortcutsThroughQuickAction(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, want := range []string{"copy, paste, cut, select all", "use quick_action", "Never recreate", "ctrl/meta keyboard_tap chord", "non-shortcut UI strategy"} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing shortcut routing guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
 func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 	lastHeartbeat := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
 	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{

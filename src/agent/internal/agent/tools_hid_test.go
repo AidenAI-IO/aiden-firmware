@@ -3408,16 +3408,16 @@ func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 	}
 }
 
-func TestKeyboardTapDescriptionDocumentsQuickActionFallback(t *testing.T) {
+func TestKeyboardTapDescriptionRoutesSemanticShortcutsToQuickAction(t *testing.T) {
 	desc := (&KeyboardTapTool{}).Description()
-	for _, want := range []string{"Prefer quick_action", "custom key input"} {
+	for _, want := range []string{"always call quick_action", "copy", "paste", "select_all", "Never translate", "ctrl/meta", "raw HID testing", "even when the user names a familiar Ctrl/Cmd shortcut"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
 	}
 	// Key mechanics (backspace/forward-delete, modifiers, key list) now live in the keys ArgsSchema field.
 	keysDesc := keyboardTapKeysSchemaDescription(t)
-	for _, want := range []string{"backspace", "forward-delete", "modifier", "modifier-only"} {
+	for _, want := range []string{"backspace", "forward-delete", "modifier", "modifier-only", "Do not construct ctrl/meta shortcuts"} {
 		if !strings.Contains(keysDesc, want) {
 			t.Fatalf("keys schema missing %q:\n%s", want, keysDesc)
 		}
