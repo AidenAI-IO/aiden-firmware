@@ -333,17 +333,17 @@ func (t *QuickActionTool) Name() string { return "quick_action" }
 
 func (t *QuickActionTool) Description() string {
 	return strings.TrimSpace(`Execute a predefined platform shortcut from quick_actions.json. Prefer before keyboard_tap/touch_gesture when a catalog entry matches the goal. ` +
-		`Use {"list":true,"platform":"android"} to inspect available actions; do not pass {"action":"list"}.`)
+		`Always pass action and platform. Use {"action":"list","platform":"android"} to inspect available actions.`)
 }
 
 func (t *QuickActionTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"action":            stringArgSchema(`Action id or alias, for example "back", "copy", or "spotlight_search". Do not use "list" here; set list=true to inspect actions.`),
+		"action":            stringArgSchema(`Required action id or alias, for example "back", "copy", "spotlight_search", or "list" to inspect actions.`),
 		"platform":          stringEnumArgSchema("Target platform inferred from the observed screen or user context.", "ios", "android", "mac"),
-		"list":              boolArgSchema("Set true to list available actions for the platform instead of executing an action."),
+		"list":              boolArgSchema("Legacy alternative to action=list. New calls should always provide action."),
 		"alternative":       boolArgSchema("Set true to execute an alternative binding listed by a previous quick_action result."),
 		"alternative_index": minIntegerArgSchema("1-based alternative binding index; defaults to 1 when alternative=true.", 1),
-	}, "platform")
+	}, "action", "platform")
 }
 
 type quickActionArgs struct {
@@ -402,7 +402,7 @@ func (t *QuickActionTool) call(ctx context.Context, input string) (string, error
 	actionID, ok := globalQuickActions.resolveActionID(args.Action)
 	if !ok {
 		suggestions := globalQuickActions.suggestActionIDs(args.Action, 5)
-		message := fmt.Sprintf("unknown action %q; use {\"list\":true,\"platform\":\"%s\"}", args.Action, platform)
+		message := fmt.Sprintf("unknown action %q; use {\"action\":\"list\",\"platform\":\"%s\"}", args.Action, platform)
 		if len(suggestions) > 0 {
 			message = fmt.Sprintf("%s; suggested actions: %s", message, strings.Join(suggestions, ", "))
 		}

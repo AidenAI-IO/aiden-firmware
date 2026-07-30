@@ -1,5 +1,7 @@
 import base64
+import html
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -18,6 +20,8 @@ class FakeADBAndroidDevice:
         self.height = height
         self.calls: list[tuple] = []
         self.serial = "127.0.0.1:6555"
+        self.last_input_text = ""
+        self.window_text_override: str | None = None
 
     def check_device(self):
         self.calls.append(("check_device",))
@@ -43,6 +47,20 @@ class FakeADBAndroidDevice:
 
     def input_text(self, text):
         self.calls.append(("input_text", text))
+        self.last_input_text = text
+
+    def dump_window_xml(self):
+        self.calls.append(("dump_window_xml",))
+        text = self.window_text_override
+        if text is None:
+            text = self.last_input_text
+        text = html.escape(text, quote=True)
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<hierarchy>'
+            f'<node class="android.widget.EditText" text="{text}" focused="true" focusable="true" />'
+            "</hierarchy>"
+        )
 
     def start_settings(self):
         self.calls.append(("start_settings",))
@@ -130,9 +148,44 @@ def test_setup_with_task_id_takes_ownership_and_is_idempotent(bridge):
     assert status == 200
     assert body["data"]["episode_id"] == "suite:task-1"
     assert server.state.active_task_id == "suite:task-1"
+    status, body = _request(base_url, "/health")
+    assert status == 200
+    assert body["data"]["active_task_id"] == "suite:task-1"
+    assert body["data"]["active_task_lease_state"] == "active"
 
     status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
     assert status == 200
+
+
+def test_health_reports_expired_task_lease_not_active(bridge):
+    server, _, base_url = bridge
+    status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
+    assert status == 200
+    with server.state.lock:
+        server.state.active_task_expires_at = time.monotonic() - 1
+
+    status, body = _request(base_url, "/health")
+
+    assert status == 200
+    assert body["data"]["active_task_id"] == "suite:task-1"
+    assert body["data"]["active_task_lease_state"] == "expired"
+
+
+def test_anonymous_setup_preserves_active_task_lease_expiry(bridge):
+    server, _, base_url = bridge
+    status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
+    assert status == 200
+    expires_at = time.monotonic() + 5
+    with server.state.lock:
+        server.state.active_task_expires_at = expires_at
+
+    status, body = _request(base_url, "/api/setup", method="POST")
+
+    assert status == 200
+    assert body["data"]["episode_id"].startswith("reset-")
+    with server.state.lock:
+        assert server.state.active_task_id == "suite:task-1"
+        assert server.state.active_task_expires_at == expires_at
 
 
 def test_setup_with_different_task_id_returns_429(bridge):
@@ -242,6 +295,8 @@ def test_tools_catalog_lists_expected_tools(bridge):
         "mouse_scroll",
         "quick_action",
     }
+    quick_action = next(tool for tool in body["tools"] if tool["name"] == "quick_action")
+    assert quick_action["args_schema"]["properties"]["platform"]["enum"] == ["android"]
 
 
 def test_request_handler_applies_socket_timeout():

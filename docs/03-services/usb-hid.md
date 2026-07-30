@@ -65,27 +65,28 @@ sudo ./build/bin/example_usb_hid cleanup
 
 ## Global Parameters
 
-| Parameter | Description |
-| --- | --- |
-| `--gadget-root PATH` | configfs gadget root path |
-| `--gadget-name NAME` | gadget name |
-| `--keyboard-dev PATH` | keyboard HID device |
-| `--touch-dev PATH` | touch/mouse HID device |
-| `--state-dir PATH` | state file directory |
-| `--manufacturer TEXT` | USB manufacturer string |
-| `--product-name TEXT` | USB product string |
-| `--serial TEXT` | USB serial string |
-| `--vendor INT` / `--product-id INT` | USB VID/PID |
-| `--udc NAME` | specify UDC |
-| `--width INT` / `--height INT` | coordinate space dimensions |
-| `--duration-ms INT` | input action duration |
-| `--force` | force certain operations |
+| Parameter                           | Description                 |
+| ----------------------------------- | --------------------------- |
+| `--gadget-root PATH`                | configfs gadget root path   |
+| `--gadget-name NAME`                | gadget name                 |
+| `--keyboard-dev PATH`               | keyboard HID device         |
+| `--touch-dev PATH`                  | touch/mouse HID device      |
+| `--state-dir PATH`                  | state file directory        |
+| `--manufacturer TEXT`               | USB manufacturer string     |
+| `--product-name TEXT`               | USB product string          |
+| `--serial TEXT`                     | USB serial string           |
+| `--vendor INT` / `--product-id INT` | USB VID/PID                 |
+| `--udc NAME`                        | specify UDC                 |
+| `--width INT` / `--height INT`      | coordinate space dimensions |
+| `--duration-ms INT`                 | input action duration       |
+| `--force`                           | force certain operations    |
 
 ## Agent HID Configuration
 
 ```toml
 [hid]
 keyboard_device = "/dev/hidg0"
+keyboard_layout = "qwerty"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
@@ -110,7 +111,19 @@ Built-in Agent tools:
 
 It is recommended to use normalized coordinates (`0..1000`, with center at `500,500`) to avoid click position shifts due to display resolution changes.
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center; only explicitly pass `coord_space: "pixel"` when the screenshot pixel coordinates and HID touch coordinates are already calibrated. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
-`keyboard_text` simulates a US keyboard and can only input ASCII typeable characters; Chinese input should be completed through pinyin/English search terms and on-screen candidates, and Chinese character strings cannot be passed directly to the tool.
+`keyboard_layout` must match how the phone interprets the external USB HID keyboard. Supported values are `qwerty` (default), `azerty`, and `qwertz`. The visible soft-keyboard layout is not authoritative: a phone can display an AZERTY soft keyboard while still interpreting Aiden's USB HID reports as QWERTY. Both `keyboard_text` and standard text-like keys in `keyboard_tap` use this mapping. Changing it only requires an Agent restart; it does not change USB descriptors or require a gadget restart.
+
+Select the matching layout under `[hid]` in Config Web (`qwerty`, `azerty`, or `qwertz`). Most users keep the default `qwerty`; only change it if typed characters come out transposed (for example "shape" becomes "shqpe").
+
+A phone running iOS locks its hardware-keyboard layout at the moment the USB keyboard is enumerated, based on the software keyboard that is active at that instant. Switching the on-screen keyboard afterwards does not change the locked interpretation. To align a non-QWERTY layout:
+
+1. On the phone, switch the input language to the matching one (for example French for `azerty`, German for `qwertz`).
+2. Set `keyboard_layout` in Config Web to the target layout and save.
+3. Config Web automatically triggers USB re-enumeration. The phone re-locks the hardware layout based on the language active in step 1.
+
+The order matters: switch the language _before_ saving the configuration, because the layout is locked during enumeration. Re-enumeration happens automatically when `keyboard_layout` changes, so no power-cycling is needed.
+
+`keyboard_text` can only input ASCII typeable characters. For Chinese or other non-ASCII text, use `enter_text` (which leverages the phone's on-screen keyboard and IME candidates) instead of transliterating to pinyin or romanized approximations. The configured layouts cover common ASCII keys, but country-specific punctuation variants may still require device verification.
 
 ## iOS AssistiveTouch modifier isolation
 
@@ -122,7 +135,7 @@ When `hid.pointer_mode = "absolute"`, firmware builds that include
 `/oem/usr/bin/aiden-dynamic-keyboard` automatically isolate keyboard actions
 whose HID reports contain Ctrl, Shift, Option/Alt, or Cmd/Meta. This includes
 `keyboard_text` values containing uppercase letters or symbols that require
-Shift on a US keyboard. Plain key taps, unmodified text, pointer input, and
+Shift or AltGr on the configured keyboard layout. Plain key taps, unmodified text, pointer input, and
 Consumer Control continue to use the normal keyboard + pointer + Consumer
 Control + ECM composite.
 

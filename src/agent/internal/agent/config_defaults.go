@@ -95,10 +95,11 @@ func DefaultConfig() Config {
 			Language: defaultSTTLanguage,
 		},
 		Audio: AudioConfig{
-			Socket:     defaultAudioSocket,
-			SampleRate: defaultAudioSampleRate,
-			Channels:   defaultAudioChannels,
-			BitWidth:   defaultAudioBitWidth,
+			Socket:          defaultAudioSocket,
+			SampleRate:      defaultAudioSampleRate,
+			Channels:        defaultAudioChannels,
+			BitWidth:        defaultAudioBitWidth,
+			PlaybackBackend: AudioPlaybackBackendAuto,
 		},
 		AudioArchive: AudioArchiveConfig{
 			Enabled:     true,
@@ -153,6 +154,7 @@ func DefaultConfig() Config {
 		},
 		HID: HIDConfig{
 			KeyboardDevice:        defaultKeyboardDevice,
+			KeyboardLayout:        defaultKeyboardLayout,
 			MouseDevice:           defaultMouseDevice,
 			AndroidKeyboardDevice: defaultAndroidKeyboardDevice,
 			FrameSocket:           defaultFrameServiceSocket,

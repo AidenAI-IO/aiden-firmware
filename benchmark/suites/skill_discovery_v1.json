@@ -8,7 +8,7 @@
       "skill_name": "device-operator"
     }
   ],
-  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机，不是控制器本机或桌面系统。请完成用户的目标，并根据当前可用能力自行选择操作方式。",
+  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机，不是控制器本机或桌面系统。请完成用户的目标，并根据当前可用能力自行选择操作方式。涉及文本输入时，先从最新截图确认键盘/输入法状态；如果要输入英文或 ASCII（如 hello、Aiden、benchmark），但键盘仍是中文输入法（空格键显示“拼音”或出现候选/预编辑），必须先点地球/输入法键切到英文/Latin 键盘，再输入；不要通过中文 IME 候选词提交英文。",
   "global_reset": {},
   "tasks": [
     {
@@ -60,6 +60,7 @@
     {
       "id": "discover_device_operator_for_mixed_text_entry",
       "category": "multi_step",
+      "platforms": ["ios"],
       "description_for_judge": "The agent should autonomously load the relevant device-operation skill, create a note, and enter mixed Chinese and ASCII text into a visible field.",
       "prompt": "请打开笔记应用，新建一条笔记，并在标题输入框中输入：Aiden测试 benchmark-2026!",
       "rubric": [

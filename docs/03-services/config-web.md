@@ -27,6 +27,7 @@ http://192.168.42.1
 ```
 
 The web interface allows:
+- Opening the browser terminal exposed by WeTTY at `http://192.168.42.1:3000/wetty/`
 - Switching the device language between Simplified Chinese (`zh-CN`) and English (`en-US`); this also controls user-facing Agent responses and `<tts>` content
 - Switching LLM providers (Anthropic, OpenAI, Gemini)
 - Configuring API keys and model names

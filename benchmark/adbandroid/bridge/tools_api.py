@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import time
+import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Callable
 
@@ -210,7 +211,7 @@ class ADBToolsAPIHandler:
             },
             {
                 "name": "enter_text",
-                "description": "Enter target text into an input field on the Android device: taps the focus point, then types via adb input text.",
+                "description": "Enter target text into an input field on the Android device: taps the focus point, types via adb input text, verifies the editable field with Android UIAutomator, and returns a post-action screenshot.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
@@ -262,13 +263,13 @@ class ADBToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute common platform navigation actions such as back, home, or open_settings.",
+                "description": "Execute common Android navigation actions such as back, home, or open_settings.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "action": {"type": "string"},
-                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
+                        "platform": {"type": "string", "enum": ["android"]},
                         "list": {"type": "boolean"},
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
@@ -602,6 +603,12 @@ class ADBToolsAPIHandler:
             return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}", "is_error": True}
 
         action = _quick_action_id(tool_input)
+        if platform != "android":
+            return _adb_reserved_quick_action(
+                action,
+                platform,
+                "adb android benchmark bridge only supports platform=android quick_action bindings",
+            )
         if bool(tool_input.get("list")) or action == "list":
             output = {"ok": True, "platform": platform, "actions": _adb_quick_action_catalog()}
             return {"output": json.dumps(output), "is_error": False}
@@ -727,17 +734,51 @@ class ADBToolsAPIHandler:
                 time.sleep(FOCUS_SETTLE_SEC)
             device.input_text(text)
 
-        result = self._execute_device(
-            enter_text,
+        with self.state.lock:
+            started = time.monotonic()
+            try:
+                enter_text()
+            except ValueError as exc:
+                return {"output": f"error: {exc}", "is_error": True}
+            duration_ms = int((time.monotonic() - started) * 1000)
+            if self.action_settle_sec > 0:
+                time.sleep(self.action_settle_sec)
+            xml_text = ""
+            xml_error = ""
+            try:
+                xml_text = device.dump_window_xml()
+            except (ADBCommandError, AttributeError) as exc:
+                xml_error = str(exc)
+            jpeg, width, height = device.screenshot_jpeg()
+
+        committed, _, wrong_ime, verify_reason, _ = _verify_adb_text_entry(
+            xml_text,
+            text,
+            xml_error=xml_error,
+        )
+        text_output: dict[str, Any] = {"ok": committed}
+        if not committed:
+            suggestion = verify_reason
+            if wrong_ime and "English/Latin keyboard" not in suggestion:
+                suggestion += "; switch to the English/Latin keyboard before retrying"
+            text_output["suggestion"] = suggestion
+        screenshot = encode_screenshot(jpeg, "image/jpeg", width, height)
+        self.state.log_action(
             tool_name="enter_text",
             tool_input=tool_input,
             adb_summary="input text",
+            duration_ms=duration_ms,
+            screenshot=screenshot,
         )
-        if result.get("is_error"):
-            return result
-
-        output = {"ok": True}
-        return {"output": json.dumps(output, ensure_ascii=False), "is_error": False}
+        output_data = {
+            "action_output": json.dumps(text_output, ensure_ascii=False),
+            "data": screenshot["data"],
+            "width": screenshot["width"],
+            "height": screenshot["height"],
+            "format": screenshot.get("format", "jpeg"),
+            "size": screenshot.get("size", 0),
+        }
+        return {"output": json.dumps(output_data, ensure_ascii=False), "is_error": False}
 
     def _call_keyboard_text(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         text = tool_input.get("text", "")
@@ -784,6 +825,8 @@ class ADBToolsAPIHandler:
             "escape": "back",
             "esc": "back",
             "delete_backward": "backspace",
+            "delete": "backspace",
+            "del": "backspace",
         }
         normalized_keys = [alias_map.get(k, k) for k in normalized_keys]
         has_meta = any(k in ("meta", "cmd", "super", "win") for k in normalized_keys)
@@ -1081,6 +1124,145 @@ def _finite_float(value: Any, name: str) -> float:
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
+
+
+def _verify_adb_text_entry(
+    xml_text: str,
+    target_text: str,
+    *,
+    xml_error: str = "",
+) -> tuple[bool, str, bool, str, list[str]]:
+    """Verify adb text entry from Android's focused/editable UIAutomator nodes."""
+    steps: list[str] = []
+    if xml_error:
+        steps.append(f"uiautomator dump failed: {xml_error}")
+        return (
+            False,
+            "",
+            False,
+            "adb input text sent; field verification unavailable, inspect the attached screenshot before retrying or reporting success",
+            steps,
+        )
+
+    editable_texts, visible_texts, parse_error = _uiautomator_texts(xml_text)
+    if parse_error:
+        steps.append(f"uiautomator parse failed: {parse_error}")
+        return (
+            False,
+            "",
+            False,
+            "adb input text sent; field verification unavailable, inspect the attached screenshot before retrying or reporting success",
+            steps,
+        )
+    if not editable_texts:
+        steps.append("uiautomator verification found no focused/editable text field")
+        return (
+            False,
+            "",
+            _looks_like_wrong_ascii_ime(target_text, "", visible_texts),
+            "adb input text sent; no editable field text was available, inspect the attached screenshot before retrying or reporting success",
+            steps,
+        )
+
+    for field_text in editable_texts:
+        if _field_text_matches(field_text, target_text):
+            steps.append(f"uiautomator verified editable field text {field_text!r}")
+            return (
+                True,
+                field_text,
+                False,
+                "adb input text sent; verified in editable field",
+                steps,
+            )
+
+    field_text = _best_observed_field_text(editable_texts, target_text)
+    wrong_ime = _looks_like_wrong_ascii_ime(target_text, field_text, visible_texts)
+    steps.append(f"uiautomator editable field mismatch: field={field_text!r}")
+    reason = "adb input text sent; editable field text did not match target"
+    if wrong_ime:
+        reason += "; Chinese IME may be active, switch to the English/Latin keyboard before retrying"
+    return False, field_text, wrong_ime, reason, steps
+
+
+def _uiautomator_texts(xml_text: str) -> tuple[list[str], list[str], str]:
+    xml_text = _extract_uiautomator_xml(xml_text)
+    if not xml_text:
+        return [], [], "uiautomator output did not contain hierarchy XML"
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        return [], [], str(exc)
+
+    focused_editable: list[str] = []
+    other_editable: list[str] = []
+    visible: list[str] = []
+    for node in root.iter("node"):
+        text = str(node.attrib.get("text", "") or "").strip()
+        content_desc = str(node.attrib.get("content-desc", "") or "").strip()
+        for value in (text, content_desc):
+            if value:
+                visible.append(value)
+        class_name = str(node.attrib.get("class", "") or "")
+        focused = str(node.attrib.get("focused", "") or "").lower() == "true"
+        is_editable = "EditText" in class_name or "AutoCompleteTextView" in class_name
+        if is_editable and text:
+            if focused:
+                focused_editable.append(text)
+            else:
+                other_editable.append(text)
+    return _unique_texts(focused_editable + other_editable), _unique_texts(visible), ""
+
+
+def _extract_uiautomator_xml(raw: str) -> str:
+    raw = str(raw or "")
+    start = raw.find("<?xml")
+    if start < 0:
+        start = raw.find("<hierarchy")
+    if start < 0:
+        return ""
+    end = raw.rfind("</hierarchy>")
+    if end >= 0:
+        return raw[start : end + len("</hierarchy>")]
+    return raw[start:]
+
+
+def _unique_texts(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        value = value.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _field_text_matches(field_text: str, target_text: str) -> bool:
+    field_text = field_text.strip()
+    target_text = target_text.strip()
+    return field_text.lower().endswith(target_text.lower())
+
+
+def _best_observed_field_text(editable_texts: list[str], target_text: str) -> str:
+    target_text = target_text.strip()
+    if not editable_texts:
+        return ""
+    for text in editable_texts:
+        if text and text in target_text:
+            return text
+    return editable_texts[0]
+
+
+def _looks_like_wrong_ascii_ime(target_text: str, field_text: str, visible_texts: list[str]) -> bool:
+    if any(ord(ch) > 127 for ch in target_text):
+        return False
+    if _field_text_matches(field_text, target_text):
+        return False
+    if any(ord(ch) > 127 for ch in field_text):
+        return True
+    indicators = ("拼音", "中文", "简体", "候选")
+    return any(any(indicator in text for indicator in indicators) for text in visible_texts)
 
 
 def _quick_action_id(tool_input: dict[str, Any]) -> str:

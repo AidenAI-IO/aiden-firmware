@@ -127,10 +127,11 @@ func (d sttDTO) transcriptionTestRequest(wavData []byte) agent.STTTranscriptionT
 }
 
 type audioDTO struct {
-	Socket     string `json:"socket"`
-	SampleRate int    `json:"sample_rate"`
-	Channels   int    `json:"channels"`
-	BitWidth   int    `json:"bit_width"`
+	Socket          string `json:"socket"`
+	SampleRate      int    `json:"sample_rate"`
+	Channels        int    `json:"channels"`
+	BitWidth        int    `json:"bit_width"`
+	PlaybackBackend string `json:"playback_backend"`
 }
 
 type audioArchiveDTO struct {
@@ -168,6 +169,7 @@ type otaDTO struct {
 
 type hidDTO struct {
 	KeyboardDevice        string `json:"keyboard_device"`
+	KeyboardLayout        string `json:"keyboard_layout"`
 	MouseDevice           string `json:"mouse_device"`
 	AndroidKeyboardDevice string `json:"android_keyboard_device"`
 	FrameSocket           string `json:"frame_socket"`
@@ -310,10 +312,11 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			EngineModelType: d.STT.EngineModelType,
 		},
 		Audio: agent.AudioConfig{
-			Socket:     d.Audio.Socket,
-			SampleRate: d.Audio.SampleRate,
-			Channels:   d.Audio.Channels,
-			BitWidth:   d.Audio.BitWidth,
+			Socket:          d.Audio.Socket,
+			SampleRate:      d.Audio.SampleRate,
+			Channels:        d.Audio.Channels,
+			BitWidth:        d.Audio.BitWidth,
+			PlaybackBackend: d.Audio.PlaybackBackend,
 		},
 		AudioArchive: agent.AudioArchiveConfig{
 			Enabled:     d.AudioArchive.Enabled,
@@ -342,6 +345,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		},
 		HID: agent.HIDConfig{
 			KeyboardDevice:        d.HID.KeyboardDevice,
+			KeyboardLayout:        d.HID.KeyboardLayout,
 			MouseDevice:           d.HID.MouseDevice,
 			AndroidKeyboardDevice: d.HID.AndroidKeyboardDevice,
 			FrameSocket:           d.HID.FrameSocket,
@@ -462,10 +466,11 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			EngineModelType: cfg.STT.EngineModelType,
 		},
 		Audio: audioDTO{
-			Socket:     cfg.Audio.SocketOrDefault(),
-			SampleRate: cfg.Audio.SampleRateOrDefault(),
-			Channels:   cfg.Audio.ChannelsOrDefault(),
-			BitWidth:   cfg.Audio.BitWidthOrDefault(),
+			Socket:          cfg.Audio.SocketOrDefault(),
+			SampleRate:      cfg.Audio.SampleRateOrDefault(),
+			Channels:        cfg.Audio.ChannelsOrDefault(),
+			BitWidth:        cfg.Audio.BitWidthOrDefault(),
+			PlaybackBackend: cfg.Audio.PlaybackBackendOrDefault(),
 		},
 		AudioArchive: audioArchiveDTO{
 			Enabled:     audioArchive.Enabled,
@@ -494,6 +499,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		},
 		HID: hidDTO{
 			KeyboardDevice:        cfg.HID.KeyboardDeviceOrDefault(),
+			KeyboardLayout:        cfg.HID.KeyboardLayoutOrDefault(),
 			MouseDevice:           cfg.HID.MouseDeviceOrDefault(),
 			AndroidKeyboardDevice: cfg.HID.AndroidKeyboardDeviceOrDefault(),
 			FrameSocket:           cfg.HID.FrameSocketOrDefault(),
@@ -903,6 +909,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "input_mode"
 	} else if strings.Contains(errMsg, "trigger_mode") {
 		field = "trigger_mode"
+	} else if strings.Contains(errMsg, "hid.keyboard_layout") || strings.Contains(errMsg, "keyboard_layout") {
+		field = "hid.keyboard_layout"
 	} else if strings.Contains(errMsg, "hid.pointer_mode") || strings.Contains(errMsg, "pointer_mode") {
 		field = "hid.pointer_mode"
 	} else if strings.Contains(errMsg, "max_iterations") {
@@ -933,6 +941,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "audio.channels"
 	} else if strings.Contains(errMsg, "audio.bit_width") {
 		field = "audio.bit_width"
+	} else if strings.Contains(errMsg, "audio.playback_backend") {
+		field = "audio.playback_backend"
 	} else if strings.Contains(errMsg, "telemetry.base_url") {
 		field = "telemetry.base_url"
 	} else if strings.Contains(errMsg, "telemetry.public_key") {

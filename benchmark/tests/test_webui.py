@@ -32,6 +32,34 @@ def test_list_benchmark_suites_discovers_nested_benchmark(tmp_path: Path):
     assert by_key["nested/memory.json"]["task_count"] == 1
     assert by_key["nested/memory.json"]["categories"] == ["memory"]
     assert by_key["nested/memory.json"]["suite_category"] == "Other"
+    assert by_key["nested/memory.json"]["mock_environment"] is False
+
+
+def test_list_benchmark_suites_marks_task_level_mock_environment(tmp_path: Path):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "mock.json").write_text(
+        json.dumps(
+            {
+                "name": "mock_suite",
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "category": "single_step",
+                        "mock_environment": {
+                            "phone_bridge": {"platform": "ios"},
+                            "tools": {},
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = webui.list_benchmark_suites(suites)
+
+    assert result[0]["mock_environment"] is True
 
 
 def test_resolve_suite_path_rejects_traversal(tmp_path: Path):
@@ -351,6 +379,7 @@ def test_webui_settings_persist_judge_and_device_environments(tmp_path: Path):
     assert saved["judge"] == {
         "enabled": True,
         "model": "anthropic/test-judge",
+        "base_url": webui.DEFAULT_JUDGE_BASE_URL,
         "has_api_key": True,
     }
     assert "api_key" not in saved["judge"]
@@ -707,6 +736,93 @@ def test_start_job_uses_device_endpoint_as_environment_url(tmp_path: Path, monke
     assert job["environment_type"] == "device"
 
 
+def test_start_job_uses_mock_environment_without_device_endpoint(
+    tmp_path: Path,
+    monkeypatch,
+):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "mock.json").write_text(
+        json.dumps(
+            {
+                "name": "mock",
+                "mock_environment": {
+                    "phone_bridge": {"platform": "ios"},
+                    "tools": {},
+                },
+                "tasks": [{"id": "t1", "category": "diagnostic"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(webui.threading, "Thread", FakeThread)
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18080)
+
+    job = app.start_job({"suites": ["mock.json"], "no_judge": True})
+
+    assert job["environment_type"] == "mock"
+    assert job["environment_name"] == "Mock Aiden App environment"
+    assert job["endpoint"] == ""
+    assert job["environment_endpoint"] == ""
+    assert job["agent_url"] == ""
+    assert job["parallel_tasks"] == 1
+
+
+def test_start_job_rejects_mixed_mock_and_external_suites(tmp_path: Path):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "mock.json").write_text(
+        json.dumps(
+            {
+                "name": "mock",
+                "mock_environment": {
+                    "phone_bridge": {"platform": "ios"},
+                    "tools": {},
+                },
+                "tasks": [{"id": "t1", "category": "diagnostic"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (suites / "device.json").write_text(
+        json.dumps(
+            {"name": "device", "tasks": [{"id": "t2", "category": "diagnostic"}]}
+        ),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+
+    with pytest.raises(ValueError, match="separate jobs"):
+        app.start_job(
+            {
+                "endpoint": "http://127.0.0.1:19090",
+                "suites": ["mock.json", "device.json"],
+                "no_judge": True,
+            }
+        )
+
+
 def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatch):
     suites = tmp_path / "suites"
     suites.mkdir()
@@ -733,6 +849,7 @@ def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatc
         state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
         runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
         judge_model="anthropic/test-judge",
+        judge_base_url="https://judge.example.com/v1",
         judge_api_key_set=True,
     )
     app._job_judge_api_keys[job.id] = "sk-judge-secret"
@@ -753,6 +870,8 @@ def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatc
 
     assert "--judge-model" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--judge-model") + 1] == "anthropic/test-judge"
+    assert "--judge-base-url" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--judge-base-url") + 1] == "https://judge.example.com/v1"
     assert "--no-judge" not in captured["cmd"]
     assert captured["env"]["OPENROUTER_API_KEY"] == "sk-judge-secret"
 
@@ -802,6 +921,82 @@ def test_run_suite_passes_mobilegym_environment_url(tmp_path: Path, monkeypatch)
 
     assert "--environment-url" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
+
+
+def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
+    tmp_path: Path, monkeypatch
+):
+    # A device job runs every task through a single daemon. If that daemon and
+    # the runner do not claim the same route id, a bridge that enforces
+    # single-environment ownership answers every tool call with
+    # 429 no_bridge_env_available.
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+            build_daemon_image=False,
+        )
+    )
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    raw_runs_dir.mkdir(parents=True)
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://host.docker.internal:8899",
+        docker_endpoint="http://host.docker.internal:8899",
+        environment_endpoint="http://127.0.0.1:8899",
+        suites=["suite.json"],
+        environment_type="device",
+        agent_url="http://127.0.0.1:18080",
+        config_dir=str(tmp_path / "runs" / "job-test" / "config"),
+        raw_runs_dir=str(raw_runs_dir),
+        state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        daemon_log=str(tmp_path / "runs" / "job-test" / "daemon.log"),
+        no_judge=True,
+    )
+    captured: dict[str, Any] = {}
+
+    class FakeProc:
+        def wait(self):
+            return 0
+
+    def fake_start_daemon_compose(*args, **kwargs):
+        captured["daemon_task_id"] = kwargs.get("benchmark_task_id")
+        return "container-id"
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
+    monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_wait_for_daemon", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_refresh_job_report", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui.subprocess, "Popen", fake_popen)
+    releases: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        webui,
+        "call_environment_release",
+        lambda environment_url, timeout=30, task_id=None: releases.append((environment_url, task_id)),
+    )
+
+    app._run_job(job)
+
+    expected = webui.job_benchmark_task_id("job-test")
+    assert captured["daemon_task_id"] == expected
+    assert captured["cmd"][captured["cmd"].index("--benchmark-task-id") + 1] == expected
+    # A stopped or crashed job must not leave the lease behind: the id is never
+    # reused, so a leak would 429 every later job.
+    assert releases == [("http://127.0.0.1:8899", expected)]
 
 
 def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path, monkeypatch):
@@ -1091,6 +1286,7 @@ def test_refresh_job_report_runs_llm_analysis_by_default_with_webui_judge_key(mo
         runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
         started_at="2026-06-22T00:00:00+00:00",
         judge_model="bytedance-seed/seed-2.0-lite",
+        judge_base_url="https://judge.example.com/v1",
         suite_results=[{"suite": "suite.json", "task_id": "t1", "exit_code": 1, "run_id": "run-a"}],
     )
 
@@ -1100,6 +1296,7 @@ def test_refresh_job_report_runs_llm_analysis_by_default_with_webui_judge_key(mo
     assert calls and calls[0][0] == report_dir
     assert calls[0][2].enabled is True
     assert calls[0][2].model == "bytedance-seed/seed-2.0-lite"
+    assert calls[0][2].base_url == "https://judge.example.com/v1"
     assert calls[0][2].api_key_value == "ui-judge-key"
     html = (report_dir / "report.html").read_text(encoding="utf-8")
     assert "LLM 分析" in html
@@ -1419,7 +1616,10 @@ def test_index_html_exposes_judge_settings_panel():
     assert 'id="confirmRunBtn"' in webui.INDEX_HTML
     assert "document.getElementById('runBtn').onclick = openRunEnvironmentDialog" in webui.INDEX_HTML
     assert "document.getElementById('confirmRunBtn').onclick = confirmRun" in webui.INDEX_HTML
-    assert "document.getElementById('runBtn').disabled = selectedSuites.size === 0" in webui.INDEX_HTML
+    assert "let runEnvBackdropPointerDown = false" in webui.INDEX_HTML
+    assert "runEnvDialog.onpointerdown" in webui.INDEX_HTML
+    assert "e.target === runEnvDialog && runEnvBackdropPointerDown" in webui.INDEX_HTML
+    assert "runButton.disabled = selectedSuites.size === 0 || mode === 'mixed'" in webui.INDEX_HTML
     assert "document.getElementById('runEnvDialog').hidden = false" in webui.INDEX_HTML
     assert "async function startRun(env)" in webui.INDEX_HTML
     assert "if(started) closeRunEnvironmentDialog()" in webui.INDEX_HTML
@@ -1531,7 +1731,9 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     expected_forward_tools = (
         "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
         "enter_text,"
-        "mouse_click,mouse_move,mouse_scroll,quick_action"
+        "search_launch_app,mouse_click,mouse_move,mouse_scroll,quick_action,"
+        "bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,"
+        "bridge_notification"
     )
     assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}" in compose_text
     assert f'AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "{expected_forward_tools}"' in compose_text
@@ -1700,6 +1902,8 @@ def test_adb_android_environment_lifecycle(tmp_path: Path, monkeypatch):
         adb_env_mod, "start_adb_bridge_process", lambda **kwargs: launched.append(kwargs) or FakeProc()
     )
     monkeypatch.setattr(adb_env_mod, "wait_for_http_health", lambda url, timeout: None)
+    monkeypatch.setattr(adb_env_mod, "pid_alive", lambda pid: pid == 6161)
+    monkeypatch.setattr(adb_env_mod, "check_endpoint_health", lambda url, timeout=2.0: True)
     monkeypatch.setattr(adb_env_mod, "terminate_pid", lambda pid, **kwargs: killed.append(pid))
 
     app = webui.BenchmarkWebApp(
@@ -1849,6 +2053,146 @@ def test_start_job_rejects_unknown_environment_type(tmp_path: Path):
                 "suites": ["suite.json"],
             }
         )
+
+
+def test_run_mock_suite_uses_auto_agent_setup_and_updates_task_records(
+    tmp_path: Path,
+    monkeypatch,
+):
+    suites = Path(__file__).resolve().parents[1] / "suites"
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+            build_daemon_image=False,
+        )
+    )
+    job_dir = tmp_path / "runs" / "job-mock"
+    raw_runs_dir = job_dir / "raw"
+    raw_runs_dir.mkdir(parents=True)
+    config_dir = job_dir / "config"
+    config_dir.mkdir()
+    job = webui.Job(
+        id="job-mock",
+        endpoint="",
+        docker_endpoint="",
+        suites=["aiden_app/notes_entry_policy_v1.json"],
+        environment_type="mock",
+        environment_name="Mock Aiden App environment",
+        config_dir=str(config_dir),
+        raw_runs_dir=str(raw_runs_dir),
+        state_file=str(job_dir / "state.json"),
+        runner_log=str(job_dir / "runner.log"),
+        daemon_log=str(job_dir / "daemon.log"),
+        no_judge=True,
+    )
+    seen = {}
+
+    def fake_run_runner_process(run_job, cmd, env):
+        seen["job"] = run_job
+        seen["cmd"] = list(cmd)
+        seen["env"] = dict(env)
+        run_id = cmd[cmd.index("--run-id") + 1]
+        run_dir = raw_runs_dir / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "manifest.json").write_text(
+            json.dumps({"run_id": run_id}),
+            encoding="utf-8",
+        )
+        task_ids = [
+            "ios_pip_notes_already_open",
+            "ios_pip_notes_icon_visible",
+            "ios_pip_notes_icon_missing",
+        ]
+        (run_dir / "results.jsonl").write_text(
+            "".join(
+                json.dumps({"task_id": task_id, "status": "passed"}) + "\n"
+                for task_id in task_ids
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(app, "_run_runner_process", fake_run_runner_process)
+
+    app._run_mock_suite(job, "aiden_app/notes_entry_policy_v1.json")
+
+    cmd = seen["cmd"]
+    assert "--auto-agent-setup" in cmd
+    assert "--no-build-daemon-image" in cmd
+    assert "--no-judge" in cmd
+    assert "--environment-url" not in cmd
+    assert "--agent-url" not in cmd
+    assert cmd[cmd.index("--base-config-dir") + 1] == str(config_dir)
+    assert len(job.task_records) == 3
+    assert {record.status for record in job.task_records} == {"passed"}
+    assert job.suite_results[0]["exit_code"] == 0
+    assert job.suite_results[0]["run_id"].startswith("job-mock-")
+
+
+def test_run_job_mock_mode_skips_shared_agent_daemon(tmp_path: Path, monkeypatch):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    job_dir = tmp_path / "runs" / "job-mock"
+    job_dir.mkdir(parents=True)
+    job = webui.Job(
+        id="job-mock",
+        endpoint="",
+        docker_endpoint="",
+        suites=["mock.json"],
+        environment_type="mock",
+        environment_name="Mock Aiden App environment",
+        config_dir=str(job_dir / "config"),
+        raw_runs_dir=str(job_dir / "raw"),
+        state_file=str(job_dir / "state.json"),
+        runner_log=str(job_dir / "runner.log"),
+        daemon_log=str(job_dir / "daemon.log"),
+        no_judge=True,
+    )
+    app._jobs[job.id] = job
+    calls = []
+
+    monkeypatch.setattr(app, "get_agent_config", lambda: {"content": ""})
+    monkeypatch.setattr(webui, "prepare_run_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        webui,
+        "ensure_daemon_image",
+        lambda *args, **kwargs: pytest.fail("mock mode must not start a shared daemon"),
+    )
+    monkeypatch.setattr(
+        webui,
+        "start_daemon_compose",
+        lambda *args, **kwargs: pytest.fail("mock mode must not start a shared daemon"),
+    )
+
+    def fake_run_mock_suite(run_job, suite_key):
+        calls.append(suite_key)
+        run_job.suite_results.append({"suite": suite_key, "exit_code": 0})
+
+    monkeypatch.setattr(app, "_run_mock_suite", fake_run_mock_suite)
+    monkeypatch.setattr(app, "_refresh_job_report", lambda run_job: None)
+
+    app._run_job(job)
+
+    assert calls == ["mock.json"]
+    assert job.status == "passed"
+
+
+def test_webui_html_exposes_mock_environment_run_mode():
+    assert "Mock Aiden App environment" in webui.INDEX_HTML
+    assert "selectedSuiteEnvironmentMode" in webui.INDEX_HTML
+    assert "Mock suites and external device suites must run in separate jobs" in webui.INDEX_HTML
+
+
+def test_webui_inline_script_has_balanced_braces():
+    script = webui.INDEX_HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+
+    assert script.count("{") == script.count("}")
 
 
 def test_failed_adb_start_does_not_leave_resurrectable_manifest(tmp_path: Path, monkeypatch):

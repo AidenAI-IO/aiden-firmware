@@ -74,6 +74,14 @@ type ConfigMetadata struct {
 	Sections []SectionMeta `json:"sections"`
 }
 
+func keyboardLayoutEnumOptions() []EnumOption {
+	options := make([]EnumOption, 0, len(keyboardLayoutDefinitions))
+	for _, layout := range keyboardLayoutDefinitions {
+		options = append(options, EnumOption{Value: layout.value, Label: layout.label})
+	}
+	return options
+}
+
 // enumOptions builds plain value==label options from raw strings.
 func enumOptions(values ...string) []EnumOption {
 	opts := make([]EnumOption, 0, len(values))
@@ -115,7 +123,7 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(in("model.provider", "openai", "ollama"))},
+						VisibleWhen: all(in("model.provider", "openai", "openrouter", "kimi", "kimi-cn", "ollama"))},
 					// The effective default is model-dependent (resolved at load
 					// time); show the global fallback here as the UI placeholder.
 					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},
@@ -202,6 +210,9 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "sample_rate", Widget: WidgetNumber, Default: defaults.Audio.SampleRate},
 					{Key: "channels", Widget: WidgetNumber, Default: defaults.Audio.Channels},
 					{Key: "bit_width", Widget: WidgetNumber, Default: defaults.Audio.BitWidth},
+					{Key: "playback_backend", Widget: WidgetSelect,
+						Enum:    enumOptions(AudioPlaybackBackendAuto, AudioPlaybackBackendAudioService, AudioPlaybackBackendLocal),
+						Default: defaults.Audio.PlaybackBackend},
 				},
 			},
 			{
@@ -244,6 +255,9 @@ func ConfigMeta() ConfigMetadata {
 			{
 				Name: "hid",
 				Fields: []FieldMeta{
+					{Key: "keyboard_layout", Widget: WidgetSelect,
+						Enum:    keyboardLayoutEnumOptions(),
+						Default: defaults.HID.KeyboardLayoutOrDefault()},
 					{Key: "pointer_mode", Widget: WidgetSelect,
 						Enum:    enumOptions("absolute", "touchscreen"),
 						Default: defaults.HID.PointerMode},

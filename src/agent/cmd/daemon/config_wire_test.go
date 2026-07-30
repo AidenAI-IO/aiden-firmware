@@ -59,6 +59,13 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 			wantInField: "pointer_mode",
 		},
 		{
+			name: "invalid keyboard_layout nested under hid",
+			payload: `{"model":{"provider":"openai","model":"gpt-4"},
+				"search":{"provider":"duckduckgo"},
+				"hid":{"keyboard_layout":"dvorak"},"agent":{}}`,
+			wantInField: "keyboard_layout",
+		},
+		{
 			name: "vad_speech_threshold out of range nested under agent",
 			payload: `{"model":{"provider":"openai","model":"gpt-4"},
 				"search":{"provider":"duckduckgo"},
@@ -97,6 +104,13 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 			payload: `{"model":{"provider":"openai","model":"gpt-4"},
 				"search":{"provider":"google"},"agent":{}}`,
 			wantInField: "search.provider",
+		},
+		{
+			name: "invalid audio playback backend",
+			payload: `{"model":{"provider":"openai","model":"gpt-4"},
+				"search":{"provider":"duckduckgo"},
+				"audio":{"playback_backend":"speaker"},"agent":{}}`,
+			wantInField: "audio.playback_backend",
 		},
 	}
 

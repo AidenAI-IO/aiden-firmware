@@ -850,6 +850,7 @@ func TestBundledDeviceOperatorContainsEmbeddedDevicePlaybooks(t *testing.T) {
 		"derives IME parts and keystrokes internally",
 		"folder/list view",
 		"search_launch_app` success as app-open confirmation only",
+		"English/Latin keyboard",
 		"## App Switching and Launch",
 		"app_switch",
 		"## Scrolling and Picker Controls",

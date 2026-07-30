@@ -391,7 +391,7 @@ func textInputChunkIsPunctuation(chunk textInputChunk) bool {
 // avoiding an unnecessary pinyin/candidate-selection cycle.
 func directTextInputForRune(r rune) (string, bool) {
 	if r <= 0x7f {
-		_, _, ok := charToHIDKey(byte(r))
+		_, ok := keyboardLayoutKeyStroke(defaultKeyboardLayout, byte(r))
 		return string(r), ok
 	}
 	if input, ok := map[rune]string{

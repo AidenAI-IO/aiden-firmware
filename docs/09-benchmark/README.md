@@ -53,6 +53,62 @@ uv run python -m runner run \
 `--auto-agent-setup` ignores `--agent-url`, reads bridge capacity from
 `/api/concurrent`, and starts one isolated agent daemon per active task worker.
 
+### Aiden App Policy Without a Phone
+
+Use suite-level defaults or task-level `mock_environment` fixtures for
+deterministic Phone Bridge strategy tests. The runner simulates platform/app state
+and tool results, so contacts and similar app-side data do not require a physical
+phone or emulator. Task-level fixtures let one suite hold a runtime policy matrix
+without creating a JSON file for every case:
+
+In the WebUI, select one or more mock suites and click `Run selected suites`. The
+run configuration changes to `Mock Aiden App environment`, skips the device
+picker, and starts the task-level fixtures automatically. Mock and external-device
+suites must be run as separate jobs.
+
+```bash
+cd benchmark
+uv run python -m runner run \
+  --suite suites/aiden_app/phone_bridge_data_policy_v1.json \
+  --auto-agent-setup \
+  --no-judge \
+  --verbose
+```
+
+The Aiden App cases are consolidated into two suites:
+
+- `notes_entry_policy_v1.json`: Notes is already open, its icon is visible, or
+  neither is visible. The Agent respectively enters text directly, clicks the
+  visible icon, or uses `search_launch_app`.
+- `phone_bridge_data_policy_v1.json`: contacts, calendar query/create, clipboard
+  read/write, and notification cases for iOS Dynamic Island restoration, iOS PiP,
+  and Android FGS.
+
+For iOS background without PiP, a reachable Dynamic Island return entry keeps the
+data tools visible. The Agent calls the requested `bridge_*` tool directly; the
+tool restores Aiden internally before executing, so the Agent must not click the
+Dynamic Island or call `bridge_open_app`. With iOS PiP or Android FGS enabled,
+background-safe data tools execute directly through the background queue.
+`bridge_open_app` remains excluded because PiP/FGS do not provide background app
+launching.
+
+The Notes cases use a fixed `bridge_contacts` result and require
+`enter_text` without a separate `bridge_clipboard` call. The generated
+screen is retained for runner pre/post artifacts and fixture state transitions;
+the policy tests do not require the Agent to inspect it. Scripted
+`screen_contains` preconditions prevent text entry before the fixture has actually
+reached the Notes editor.
+
+The mock checks that the Agent chooses `enter_text`; it does not run
+the tool's internal paste fallbacks. In the real Go tool the order is Phone Bridge
+clipboard, `quick_action` paste, direct keyboard paste if the action errors,
+visual verification, then long-press Paste/粘贴 if the shortcut had no visible
+effect. Ordinary typing fallback belongs to `enter_text`.
+
+Use real devices separately for iOS PiP/Android FGS lifecycle, USB ECM, native
+permissions, actual background queue delivery, app launch behavior, and HID paste
+validation. Mock suites test policy and tool selection, not OS integration.
+
 ## Reports
 
 Runs write a self-contained report under `benchmark/runs/<run-id>/` or, for the
@@ -115,6 +171,10 @@ Common options:
 - `--repeats N` - Override task repeats.
 - `--state-file PATH` - Write progress JSON for WebUI or scripts.
 - `--verbose` - Print detailed rubric results.
+
+Suites with suite-level or task-level `mock_environment` require
+`--auto-agent-setup` and must not also pass `--environment-url`; the runner starts
+the scripted bridge itself and activates the matching fixture before each task.
 
 ### `rejudge`
 

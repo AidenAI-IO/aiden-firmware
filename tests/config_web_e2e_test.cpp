@@ -226,14 +226,14 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"stt\":{\"provider\":\"openai-whisper\",\"api_key\":\"\",\"model\":\"whisper-1\",\"base_url\":\"\","
         "\"app_id\":\"\",\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"
         "\"audio\":{\"socket\":\"/run/audio_service/audio_service.sock\",\"sample_rate\":16000,"
-        "\"channels\":1,\"bit_width\":16},"
+        "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
         "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
         "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
         "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"storage\":900}}},"
         "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
-        "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
+        "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"keyboard_layout\":\"qwerty\",\"mouse_device\":\"/dev/hidg1\","
         "\"android_keyboard_device\":\"/dev/hidg2\","
         "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"") + search_provider + "\",\"has_api_key\":" +
@@ -358,9 +358,9 @@ struct CapturedHTTPRequest {
     std::string body;
 };
 
-class StubAgentSTTTestServer {
+class StubAgentHTTPServer {
 public:
-    StubAgentSTTTestServer() {
+    StubAgentHTTPServer() {
         fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
         REQUIRE(fd_ >= 0);
         int opt = 1;
@@ -378,7 +378,7 @@ public:
         worker_ = std::thread([this] { serve(); });
     }
 
-    ~StubAgentSTTTestServer() {
+    ~StubAgentHTTPServer() {
         stop_ = true;
         if (fd_ >= 0) {
             ::shutdown(fd_, SHUT_RDWR);
@@ -777,6 +777,10 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     REQUIRE(frame_socket != nullptr);
     REQUIRE(frame_socket->valuestring != nullptr);
     CHECK(std::string(frame_socket->valuestring) == "/run/frame_service/frame_service.sock");
+    cJSON* keyboard_layout = cJSON_GetObjectItem(hid, "keyboard_layout");
+    REQUIRE(keyboard_layout != nullptr);
+    REQUIRE(keyboard_layout->valuestring != nullptr);
+    CHECK(std::string(keyboard_layout->valuestring) == "qwerty");
 
     cJSON* model = cJSON_GetObjectItem(config, "model");
     REQUIRE(model != nullptr);
@@ -1006,6 +1010,27 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("max_files = 123") != std::string::npos);
     CHECK(saved.find("max_size_mb = 45") != std::string::npos);
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only agent") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"hid\":{\"keyboard_layout\":\"azerty\",\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+    CHECK(resp.body.find("\"agent_restart_scheduled\":true") != std::string::npos);
+    CHECK(resp.body.find("\"usbhid_restart_required\":false") != std::string::npos);
+    CHECK(resp.body.find("\"reboot_required\":false") != std::string::npos);
+
+    std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+    REQUIRE(saved_in.good());
+    std::ostringstream saved_buffer;
+    saved_buffer << saved_in.rdbuf();
+    CHECK(saved_buffer.str().find("keyboard_layout = \"azerty\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config omitting temperature clears a saved value") {
@@ -1622,7 +1647,7 @@ TEST_CASE("config_web: tencent stt config test stays green without app_id") {
 }
 
 TEST_CASE("config_web: stt live test proxies start and stop to agent") {
-    StubAgentSTTTestServer agent_server;
+    StubAgentHTTPServer agent_server;
     StubEnv env;
     env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
     auto handle = start_server(env);
@@ -1640,7 +1665,8 @@ TEST_CASE("config_web: stt live test proxies start and stop to agent") {
         "\"socket\":\"/tmp/audio.sock\","
         "\"sample_rate\":16000,"
         "\"channels\":1,"
-        "\"bit_width\":16"
+        "\"bit_width\":16,"
+        "\"playback_backend\":\"audio_service\""
         "}}";
 
     HttpResponse start_resp = http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
@@ -1720,7 +1746,7 @@ TEST_CASE("config_web: GET /api/storage/status reports unavailable without a sta
 }
 
 TEST_CASE("config_web: POST /api/storage/eject proxies to the agent") {
-    StubAgentSTTTestServer agent_server;
+    StubAgentHTTPServer agent_server;
     StubEnv env;
     env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
     auto handle = start_server(env);

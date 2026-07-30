@@ -1,6 +1,6 @@
 import runner.assertions as assertions
 from runner.assertions import evaluate_hard_assertions, AssertionOutcome
-from runner.suite import HardAssertions
+from runner.suite import HardAssertions, RequiredToolCallSpec
 from runner.models import Trace, ToolCall
 
 def make_trace(n: int, response: str = "ok") -> Trace:
@@ -87,6 +87,92 @@ def test_forbidden_tools_fail_when_present():
     assert out.failures[0].id == "forbidden_tools"
     assert out.failures[0].requirement == "Must not call: screenshot."
     assert out.failures[0].actual == "Forbidden calls: screenshot at step 1. Used: screenshot."
+
+
+def test_required_tool_calls_match_nested_input_subset():
+    trace = Trace(
+        tool_calls=[
+            ToolCall(
+                step=1,
+                tool="enter_text",
+                input={
+                    "text": "+1 202-555-0147",
+                    "platform": "ios",
+                    "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
+                },
+            )
+        ],
+        final_response="ok",
+        total_tool_calls=1,
+        total_duration_ms=0,
+    )
+    spec = HardAssertions(
+        required_tool_calls=[
+            RequiredToolCallSpec(
+                tool="enter_text",
+                input_contains={"text": "+1 202-555-0147", "focus": {"x": 500}},
+            )
+        ]
+    )
+
+    out = evaluate_hard_assertions(trace, spec, timed_out=False)
+
+    assert out.all_passed is True
+    assert out.results.required_tool_calls is True
+
+
+def test_required_tool_calls_support_string_contains_matcher():
+    trace = Trace(
+        tool_calls=[
+            ToolCall(
+                step=1,
+                tool="enter_text",
+                input={"text": "Biden: +1 202-555-0147", "platform": "ios"},
+            )
+        ],
+        final_response="ok",
+        total_tool_calls=1,
+        total_duration_ms=0,
+    )
+    spec = HardAssertions(
+        required_tool_calls=[
+            RequiredToolCallSpec(
+                tool="enter_text",
+                input_contains={
+                    "text": {"$contains": "+1 202-555-0147"},
+                    "platform": "ios",
+                },
+            )
+        ]
+    )
+
+    out = evaluate_hard_assertions(trace, spec, timed_out=False)
+
+    assert out.all_passed is True
+    assert out.results.required_tool_calls is True
+
+
+def test_required_tool_calls_report_missing_input_match():
+    trace = Trace(
+        tool_calls=[ToolCall(step=1, tool="bridge_contacts", input={"action": "query", "query": "Alice"})],
+        final_response="ok",
+        total_tool_calls=1,
+        total_duration_ms=0,
+    )
+    spec = HardAssertions(
+        required_tool_calls=[
+            RequiredToolCallSpec(
+                tool="bridge_contacts",
+                input_contains={"action": "query", "query": "Biden"},
+            )
+        ]
+    )
+
+    out = evaluate_hard_assertions(trace, spec, timed_out=False)
+
+    assert out.all_passed is False
+    assert out.results.required_tool_calls is False
+    assert out.failures[0].id == "required_tool_calls"
 
 def test_expected_option_answer_matches_tagged_final_answer():
     result = assertions.evaluate_expected_answer(

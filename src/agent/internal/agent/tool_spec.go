@@ -111,7 +111,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"quick_action": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"list":true,"platform":"ios"}`,
+		ExampleInput: `{"action":"list","platform":"ios"}`,
 	},
 	"recall_device_memory": {
 		Category:     "memory",
@@ -146,7 +146,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"image_diff": {
 		Category:     "observation",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"before":"<base64-jpeg>","after":"<base64-jpeg>"}`,
+		ExampleInput: `{"before":"<screenshot-attachment-id>","after":"<screenshot-attachment-id>"}`,
 	},
 	"shell": {
 		Category:     "system",

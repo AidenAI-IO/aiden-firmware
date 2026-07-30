@@ -139,7 +139,7 @@ func (e *textInputEngine) compositionSegmentsForText(ctx context.Context, text s
 			if r > 0x7f {
 				return nil, fmt.Errorf("IME segment planner returned non-ASCII input %q", segment)
 			}
-			if _, _, ok := charToHIDKey(byte(r)); !ok {
+			if _, ok := keyboardLayoutKeyStroke(defaultKeyboardLayout, byte(r)); !ok {
 				return nil, fmt.Errorf("IME segment planner returned unsupported key %q", r)
 			}
 		}

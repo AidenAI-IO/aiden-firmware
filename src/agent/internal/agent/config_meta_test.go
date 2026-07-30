@@ -176,6 +176,32 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		}
 	}
 
+	keyboardLayoutEnum := enumValues("hid.keyboard_layout")
+	for _, layout := range []string{keyboardLayoutQWERTY, keyboardLayoutAZERTY, keyboardLayoutQWERTZ} {
+		if !contains(keyboardLayoutEnum, layout) {
+			t.Errorf("hid.keyboard_layout enum missing %q", layout)
+		}
+	}
+	for _, layout := range keyboardLayoutEnum {
+		c := Config{HID: HIDConfig{KeyboardLayout: layout}, Model: ModelConfig{Provider: "openai", Model: "x"}}
+		if err := c.Validate(); err != nil {
+			t.Errorf("hid.keyboard_layout enum value %q rejected by Validate: %v", layout, err)
+		}
+	}
+
+	audioPlaybackEnum := enumValues("audio.playback_backend")
+	for _, b := range []string{AudioPlaybackBackendAuto, AudioPlaybackBackendAudioService, AudioPlaybackBackendLocal} {
+		if !contains(audioPlaybackEnum, b) {
+			t.Errorf("audio.playback_backend enum missing %q", b)
+		}
+	}
+	for _, b := range audioPlaybackEnum {
+		c := Config{Audio: AudioConfig{PlaybackBackend: b}, Model: ModelConfig{Provider: "openai", Model: "x"}}
+		if err := c.Validate(); err != nil {
+			t.Errorf("audio.playback_backend enum value %q rejected by Validate: %v", b, err)
+		}
+	}
+
 	// vad_backend enum must match normalizeVADBackend's accepted set.
 	for _, b := range enumValues("agent.vad_backend") {
 		if _, err := normalizeVADBackend(b); err != nil {
@@ -222,12 +248,14 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio.sample_rate", defaults.Audio.SampleRate},
 		{"audio.channels", defaults.Audio.Channels},
 		{"audio.bit_width", defaults.Audio.BitWidth},
+		{"audio.playback_backend", defaults.Audio.PlaybackBackend},
 		{"audio_archive.enabled", defaults.AudioArchive.Enabled},
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
 		{"audio_archive.storage_path", defaults.AudioArchive.StoragePathOrDefault()},
 		{"log.llm_http_retention_days", defaults.Log.LLMHTTPRetentionDaysOrDefault()},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
+		{"hid.keyboard_layout", defaults.HID.KeyboardLayout},
 		{"hid.mouse_device", defaults.HID.MouseDevice},
 		{"hid.android_keyboard_device", defaults.HID.AndroidKeyboardDevice},
 		{"hid.frame_socket", defaults.HID.FrameSocket},

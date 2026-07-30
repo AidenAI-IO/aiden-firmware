@@ -65,3 +65,6 @@ benchmark/mobilegym/config/bridge_token
 benchmark/mobilegym/docker/.env
 benchmark/state.json
 skillopt/runs/
+
+# VPhone local environment (machine-specific paths/hosts; use vphone.env.example)
+benchmark/vphone/vphone.env

@@ -85,6 +85,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.audio.sample_rate = 16000;
     cfg.audio.channels = 1;
     cfg.audio.bit_width = 16;
+    cfg.audio.playback_backend = "local";
 
     cfg.audio_archive.enabled = false;
     cfg.audio_archive.max_files = 42;
@@ -92,6 +93,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.audio_archive.storage_path = "/tmp/audio-archive";
 
     cfg.hid.keyboard_device = "/dev/hidg0";
+    cfg.hid.keyboard_layout = "azerty";
     cfg.hid.mouse_device = "/dev/hidg1";
     cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
     cfg.hid.pointer_mode = "touchscreen";
@@ -203,6 +205,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.audio.sample_rate == 16000);
     CHECK(loaded.audio.channels == 1);
     CHECK(loaded.audio.bit_width == 16);
+    CHECK(loaded.audio.playback_backend == "local");
 
     CHECK(loaded.audio_archive.enabled == false);
     CHECK(loaded.audio_archive.max_files == 42);
@@ -211,6 +214,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.locale == "en-US");
 
     CHECK(loaded.hid.keyboard_device == "/dev/hidg0");
+    CHECK(loaded.hid.keyboard_layout == "azerty");
     CHECK(loaded.hid.mouse_device == "/dev/hidg1");
     CHECK(loaded.hid.android_keyboard_device == "/dev/hidg2");
     CHECK(loaded.hid.frame_socket == "/run/frame_service/frame_service.sock");
@@ -267,6 +271,7 @@ TEST_CASE("agent_toml defaults missing android keyboard device for old configs")
     REQUIRE(aiden::load_agent_toml(path.c_str(), loaded, &err));
     REQUIRE(err.empty());
     CHECK(loaded.hid.android_keyboard_device == "/dev/hidg2");
+    CHECK(loaded.hid.keyboard_layout == "qwerty");
 
     std::remove(path.c_str());
 }

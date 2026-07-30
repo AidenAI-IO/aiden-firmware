@@ -5,6 +5,8 @@ from runner.reset import (
     ResetError,
     call_environment_release,
     call_environment_setup,
+    clear_stale_adb_android_owner,
+    environment_health_endpoint,
     environment_release_endpoint,
     environment_setup_endpoint,
     per_task_setup,
@@ -87,6 +89,19 @@ def test_agent_prompt_setup_can_make_history_clear_explicit():
 
     assert client.calls[-1] == ("clear_history",)
 
+
+def test_agent_prompt_setup_includes_prompt_prefix():
+    client = RecordingSetupClient()
+
+    per_task_setup(
+        client,
+        {"type": "agent_prompt", "prompt": "prepare editor", "timeout_sec": 5},
+        prompt_prefix="ADB benchmark rules",
+    )
+
+    assert client.calls[0] == ("chat", "ADB benchmark rules\n\nprepare editor", 5)
+
+
 def test_environment_setup_endpoint_is_derived_from_environment_endpoint():
     assert environment_setup_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/setup"
     assert environment_setup_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/api/setup"
@@ -99,6 +114,11 @@ def test_environment_release_endpoint_is_derived_from_environment_endpoint():
     assert environment_release_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/api/release"
     assert environment_release_endpoint("http://127.0.0.1:9090/api/release") == "http://127.0.0.1:9090/api/release"
     assert environment_release_endpoint("http://127.0.0.1:9090/api/screen") == "http://127.0.0.1:9090/api/release"
+
+
+def test_environment_health_endpoint_is_derived_from_environment_endpoint():
+    assert environment_health_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/health"
+    assert environment_health_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/health"
 
 
 def test_call_environment_setup_posts_to_api_setup(monkeypatch):
@@ -196,3 +216,108 @@ def test_call_environment_release_sends_benchmark_task_id_header(monkeypatch):
         "body": b"{}",
         "task_id": "clock.CountAlarms",
     }
+
+
+def test_clear_stale_adb_android_owner_releases_expired_owner(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        calls.append((req.full_url, req.get_method(), req.headers.get("Benchmark-task-id"), timeout))
+        if req.full_url.endswith("/health"):
+            return FakeResponse(
+                b'{"ok": true, "data": {"bridge_type": "adb_android", "active_task_id": "suite:old", "active_task_lease_state": "expired"}}'
+            )
+        return FakeResponse(b'{"ok": true, "data": {"released": true}}')
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert clear_stale_adb_android_owner("http://127.0.0.1:9090/api/setup") == "suite:old"
+    assert calls == [
+        ("http://127.0.0.1:9090/health", "GET", None, 2.0),
+        ("http://127.0.0.1:9090/api/release", "POST", "suite:old", 2),
+    ]
+
+
+def test_clear_stale_adb_android_owner_preserves_active_owner(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def read(self):
+            return (
+                b'{"ok": true, "data": {"bridge_type": "adb_android", '
+                b'"active_task_id": "suite:running", "active_task_lease_state": "active"}}'
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        calls.append((req.full_url, req.get_method(), req.headers.get("Benchmark-task-id"), timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert clear_stale_adb_android_owner("http://127.0.0.1:9090") == ""
+    assert calls == [("http://127.0.0.1:9090/health", "GET", None, 2.0)]
+
+
+def test_clear_stale_adb_android_owner_preserves_owner_without_lease_state(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def read(self):
+            return b'{"ok": true, "data": {"bridge_type": "adb_android", "active_task_id": "suite:running"}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        calls.append((req.full_url, req.get_method(), req.headers.get("Benchmark-task-id"), timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert clear_stale_adb_android_owner("http://127.0.0.1:9090") == ""
+    assert calls == [("http://127.0.0.1:9090/health", "GET", None, 2.0)]
+
+
+def test_clear_stale_adb_android_owner_ignores_non_adb_bridge(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def read(self):
+            return b'{"ok": true, "data": {"bridge_type": "mobilegym", "active_task_id": "suite:old"}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        calls.append((req.full_url, req.get_method()))
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert clear_stale_adb_android_owner("http://127.0.0.1:9090") == ""
+    assert calls == [("http://127.0.0.1:9090/health", "GET")]

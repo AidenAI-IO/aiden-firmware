@@ -368,7 +368,7 @@ type TTSConfig struct {
 	//
 	//   [tts.credentials.fish-audio]
 	//   api_key = "<fish-key>"
-	//   voice_id = "<fish-reference-id>"
+	//   reference_id = "<fish-reference-id>"
 	//
 	//   [tts.credentials.cartesia]
 	//   api_key = "<cartesia-key>"
@@ -401,10 +401,11 @@ type STTConfig struct {
 }
 
 type AudioConfig struct {
-	Socket     string `toml:"socket,omitempty"`
-	SampleRate int    `toml:"sample_rate,omitempty"`
-	Channels   int    `toml:"channels,omitempty"`
-	BitWidth   int    `toml:"bit_width,omitempty"`
+	Socket          string `toml:"socket,omitempty"`
+	SampleRate      int    `toml:"sample_rate,omitempty"`
+	Channels        int    `toml:"channels,omitempty"`
+	BitWidth        int    `toml:"bit_width,omitempty"`
+	PlaybackBackend string `toml:"playback_backend,omitempty"`
 }
 
 type ProxyConfig struct {
@@ -496,8 +497,50 @@ func (a AudioConfig) BitWidthOrDefault() int {
 	return defaultAudioBitWidth
 }
 
+const (
+	AudioPlaybackBackendAuto         = "auto"
+	AudioPlaybackBackendAudioService = "audio_service"
+	AudioPlaybackBackendLocal        = "local"
+)
+
+func normalizeAudioPlaybackBackend(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", AudioPlaybackBackendAuto:
+		return AudioPlaybackBackendAuto, nil
+	case AudioPlaybackBackendAudioService, "audio-service", "audioservice":
+		return AudioPlaybackBackendAudioService, nil
+	case AudioPlaybackBackendLocal, "pc", "desktop":
+		return AudioPlaybackBackendLocal, nil
+	default:
+		return "", fmt.Errorf("invalid audio.playback_backend: %s (expected auto, audio_service, or local)", value)
+	}
+}
+
+func (a AudioConfig) PlaybackBackendOrDefault() string {
+	backend, err := normalizeAudioPlaybackBackend(a.PlaybackBackend)
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(a.PlaybackBackend))
+	}
+	return backend
+}
+
+func (c Config) AudioPlaybackBackendOrDefault() string {
+	backend, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend)
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(c.Audio.PlaybackBackend))
+	}
+	if backend != AudioPlaybackBackendAuto {
+		return backend
+	}
+	if c.HID.InputBackendADB() || c.EnvironmentBridge.Enabled {
+		return AudioPlaybackBackendLocal
+	}
+	return AudioPlaybackBackendAudioService
+}
+
 type HIDConfig struct {
 	KeyboardDevice        string `toml:"keyboard_device,omitempty"`
+	KeyboardLayout        string `toml:"keyboard_layout,omitempty"`
 	MouseDevice           string `toml:"mouse_device,omitempty"`
 	AndroidKeyboardDevice string `toml:"android_keyboard_device,omitempty"`
 	FrameSocket           string `toml:"frame_socket,omitempty"`
@@ -528,6 +571,11 @@ func (h HIDConfig) KeyboardDeviceOrDefault() string {
 		return h.KeyboardDevice
 	}
 	return defaultKeyboardDevice
+}
+
+func (h HIDConfig) KeyboardLayoutOrDefault() string {
+	layout, _ := normalizeKeyboardLayout(h.KeyboardLayout)
+	return layout
 }
 
 func (h HIDConfig) MouseDeviceOrDefault() string {
@@ -795,9 +843,9 @@ func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 		cfg.STT.Model = ""
 	}
 
-	// base_url is only honored for openai and ollama providers; every other
-	// provider pins its own endpoint, so drop any stray override to keep runtime
-	// behavior consistent with the config web UI (which hides the field).
+	// base_url is honored for providers whose model builders accept an
+	// OpenAI-compatible endpoint override. Drop stray overrides elsewhere to
+	// keep runtime behavior consistent with the config web UI.
 	clearNonAllowedModelBaseURL(&cfg.Model)
 	clearNonAllowedModelBaseURL(&cfg.ModelText)
 }
@@ -807,9 +855,9 @@ func clearNonAllowedModelBaseURL(m *ModelConfig) {
 		return
 	}
 	provider := strings.ToLower(strings.TrimSpace(m.Provider))
-	// Only openai and ollama support base_url override.
-	// openai: custom gateway/proxy; ollama: local server address
-	if provider != "openai" && provider != "ollama" {
+	switch provider {
+	case "openai", "openrouter", "kimi", "kimi-cn", "ollama":
+	default:
 		m.BaseURL = ""
 	}
 }
@@ -1021,6 +1069,9 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid device.backend: %s (expected hdmi)", c.Device.Backend)
 	}
+	if _, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend); err != nil {
+		return err
+	}
 	if c.Model.MaxResponseTokens < 0 {
 		return fmt.Errorf("model.max_response_tokens must be >= 0, got %d", c.Model.MaxResponseTokens)
 	}
@@ -1154,6 +1205,9 @@ func (c Config) Validate() error {
 		return err
 	}
 
+	if _, ok := normalizeKeyboardLayout(c.HID.KeyboardLayout); !ok {
+		return fmt.Errorf("invalid hid.keyboard_layout: %s (expected %s)", c.HID.KeyboardLayout, keyboardLayoutValuesText())
+	}
 	switch strings.ToLower(strings.TrimSpace(c.HID.PointerMode)) {
 	case "", "absolute", "touchscreen":
 	default:

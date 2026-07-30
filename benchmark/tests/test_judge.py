@@ -27,6 +27,7 @@ def test_judge_uses_configured_api_key_env(monkeypatch):
 
     def fake_urlopen(req, timeout):
         seen["authorization"] = req.headers.get("Authorization")
+        seen["url"] = req.full_url
         seen["timeout"] = timeout
         return FakeResponse()
 
@@ -40,11 +41,15 @@ def test_judge_uses_configured_api_key_env(monkeypatch):
         post_screenshot=None,
         trace={"tool_calls": []},
         final_response="done",
-        cfg=JudgeConfig(api_key_env="JUDGE_API_KEY"),
+        cfg=JudgeConfig(api_key_env="JUDGE_API_KEY", base_url="https://judge.example.com/v1/"),
     )
 
     assert result.verdicts[0].verdict == "yes"
-    assert seen == {"authorization": "Bearer sk-judge", "timeout": 120}
+    assert seen == {
+        "authorization": "Bearer sk-judge",
+        "url": "https://judge.example.com/v1/chat/completions",
+        "timeout": 120,
+    }
 
 
 def test_judge_sends_only_pre_and_post_screenshots(monkeypatch, tmp_path: Path):

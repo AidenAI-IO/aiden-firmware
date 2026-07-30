@@ -377,6 +377,7 @@ void apply_kv(AgentToml& cfg,
         else if (key == "sample_rate") assign_int(&cfg.audio.sample_rate, raw, &sub_err);
         else if (key == "channels") assign_int(&cfg.audio.channels, raw, &sub_err);
         else if (key == "bit_width") assign_int(&cfg.audio.bit_width, raw, &sub_err);
+        else if (key == "playback_backend") assign_string(&cfg.audio.playback_backend, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "audio_archive") {
         if (key == "enabled") assign_bool(&cfg.audio_archive.enabled, raw, &sub_err);
@@ -412,6 +413,7 @@ void apply_kv(AgentToml& cfg,
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "hid") {
         if (key == "keyboard_device") assign_string(&cfg.hid.keyboard_device, raw, &sub_err);
+        else if (key == "keyboard_layout") assign_string(&cfg.hid.keyboard_layout, raw, &sub_err);
         else if (key == "mouse_device") assign_string(&cfg.hid.mouse_device, raw, &sub_err);
         else if (key == "android_keyboard_device") assign_string(&cfg.hid.android_keyboard_device, raw, &sub_err);
         else if (key == "frame_socket") assign_string(&cfg.hid.frame_socket, raw, &sub_err);
@@ -750,6 +752,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.audio.sample_rate != 0) emit_int(out, "sample_rate", cfg.audio.sample_rate);
     if (cfg.audio.channels != 0) emit_int(out, "channels", cfg.audio.channels);
     if (cfg.audio.bit_width != 0) emit_int(out, "bit_width", cfg.audio.bit_width);
+    if (!cfg.audio.playback_backend.empty()) emit_string(out, "playback_backend", cfg.audio.playback_backend);
     out << "\n";
 
     out << "[audio_archive]\n";
@@ -797,6 +800,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
 
     out << "[hid]\n";
     emit_string(out, "keyboard_device", cfg.hid.keyboard_device);
+    emit_string(out, "keyboard_layout", cfg.hid.keyboard_layout);
     emit_string(out, "mouse_device", cfg.hid.mouse_device);
     emit_string(out, "android_keyboard_device", cfg.hid.android_keyboard_device);
     emit_string(out, "frame_socket", cfg.hid.frame_socket);
