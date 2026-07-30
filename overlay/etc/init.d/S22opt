@@ -188,10 +188,18 @@ start() {
 	fi
 
 	# Confirm through mountinfo rather than trusting the exit status: the mount
-	# can succeed and still land somewhere else, e.g. when $PERSISTENT_OPT is a
-	# symlink. Leaving $USERFEEDS_FILE uncreated keeps opkg disabled.
+	# can succeed and still land somewhere else -- if $PERSISTENT_OPT is a
+	# symlink, mount follows it, so /opt can end up bound to a rootfs directory.
+	# Such a mount is writable, so it has to be torn down and replaced by the
+	# seal; leaving it in place would drop the design's second layer of defence
+	# and let anything writing under /opt fill the system partition.
 	if ! opt_is_bound; then
 		echo "S22opt: $OPT_DIR is mounted but not bound from $PERSISTENT_OPT" >&2
+		if ! "$UMOUNT_BIN" "$OPT_DIR"; then
+			echo "S22opt: cannot release the unexpected mount on $OPT_DIR; do not use opkg" >&2
+			return 1
+		fi
+		seal_opt
 		return 1
 	fi
 
