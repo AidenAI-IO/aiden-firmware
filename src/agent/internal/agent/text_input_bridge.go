@@ -11,7 +11,6 @@ import (
 const (
 	textViaBridgePostPasteDelay = 350 * time.Millisecond
 	textViaBridgeMenuDelay      = 450 * time.Millisecond
-	textViaBridgePostSendDelay  = 800 * time.Millisecond
 	textViaBridgePasteAttempts  = 2
 	preparedClipboardMaxAge     = 5 * time.Minute
 	textViaBridgeLongPressMS    = 900
@@ -35,11 +34,10 @@ type pasteMenuResult struct {
 }
 
 type textViaBridgeResult struct {
-	Attempted    bool
-	Committed    bool
-	SendVerified bool
-	FieldText    string
-	Err          error
+	Attempted bool
+	Committed bool
+	FieldText string
+	Err       error
 }
 
 type textInputBridge struct {
@@ -59,32 +57,24 @@ func (t *textInputBridge) runClipboardFirstResult(ctx context.Context, args text
 	bridgeResult := t.runAutomaticClipboardFirstFlow(ctx, platform, args)
 	if !bridgeResult.Attempted {
 		if bridgeResult.Err != nil {
-			return textViaBridgeResultToTextInputResult(bridgeResult, args.SendAfterCommit), true
+			return textViaBridgeResultToTextInputResult(bridgeResult), true
 		}
 		return textInputResult{Reason: "reliable bridge clipboard path unavailable"}, false
 	}
-	return textViaBridgeResultToTextInputResult(bridgeResult, args.SendAfterCommit), true
+	return textViaBridgeResultToTextInputResult(bridgeResult), true
 }
 
-func textViaBridgeResultToTextInputResult(bridgeResult textViaBridgeResult, sendAfterCommit bool) textInputResult {
+func textViaBridgeResultToTextInputResult(bridgeResult textViaBridgeResult) textInputResult {
 	result := textInputResult{}
 	result.Committed = bridgeResult.Committed
-	result.SendVerified = bridgeResult.SendVerified
 	result.FieldText = bridgeResult.FieldText
 	result.OK = bridgeResult.Committed
-	if sendAfterCommit {
-		result.OK = bridgeResult.Committed && bridgeResult.SendVerified
-	}
 	if bridgeResult.Err != nil {
 		result.Reason = bridgeResult.Err.Error()
 		return result
 	}
 	if !bridgeResult.Committed {
 		result.Reason = "bridge clipboard input not verified in field"
-		return result
-	}
-	if sendAfterCommit && !bridgeResult.SendVerified {
-		result.Reason = "field verified but send was not verified"
 		return result
 	}
 	return result
@@ -218,11 +208,6 @@ func (t *textInputBridge) focusPasteVerify(ctx context.Context, engine *textInpu
 		if committed, committedFieldText := evaluateFieldCommit(analysis, args.Text); committed {
 			result.Committed = true
 			result.FieldText = committedFieldText
-			if args.SendAfterCommit {
-				verified, err := t.keyboardSendAndVerify(ctx, engine, platform, args)
-				result.SendVerified = verified
-				result.Err = err
-			}
 			return result
 		} else {
 			result.FieldText = analysis.FieldText
@@ -336,20 +321,6 @@ func (t *textInputBridge) pasteClipboard(ctx context.Context, platform string) (
 	return "keyboard", fallbackReason, nil
 }
 
-func (t *textInputBridge) keyboardSendAndVerify(ctx context.Context, engine *textInputEngine, platform string, args textInputArgs) (bool, error) {
-	if err := t.keyboardTap(ctx, keyboardSendKeys(platform)); err != nil {
-		return false, err
-	}
-	if err := t.sleepAfterSend(ctx); err != nil {
-		return false, err
-	}
-	analysis, _, err := engine.analyzeScreen(ctx, platform, args, nil)
-	if err != nil {
-		return false, err
-	}
-	return sendVerifiedByFieldClearedOrChanged(analysis, args.Text), nil
-}
-
 func (t *textInputBridge) keyboardTap(ctx context.Context, keys []string) error {
 	if t == nil || t.hw == nil || t.hw.keyboardTap == nil {
 		return fmt.Errorf("keyboard_tap is not configured")
@@ -370,48 +341,6 @@ func keyboardPasteKeys(platform string) []string {
 	}
 }
 
-func keyboardSendKeys(_ string) []string {
-	return []string{"enter"}
-}
-
-func sendVerifiedByFieldClearedOrChanged(analysis textInputScreenAnalysis, targetText string) bool {
-	fieldText := strings.TrimSpace(analysis.FieldText)
-	targetText = strings.TrimSpace(targetText)
-	if fieldText == "" || targetText == "" {
-		return fieldText == ""
-	}
-	if committed, _ := evaluateFieldCommit(analysis, targetText); committed {
-		return false
-	}
-	fieldCompact := compactTextForSendVerify(fieldText)
-	targetCompact := compactTextForSendVerify(targetText)
-	if fieldCompact == "" || targetCompact == "" {
-		return fieldCompact == ""
-	}
-	if fieldCompact == targetCompact || strings.Contains(fieldCompact, targetCompact) {
-		return false
-	}
-	if len([]rune(fieldCompact)) >= 8 && strings.Contains(targetCompact, fieldCompact) {
-		return false
-	}
-	return true
-}
-
-func compactTextForSendVerify(text string) string {
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text == "" {
-		return ""
-	}
-	var builder strings.Builder
-	for _, r := range text {
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			continue
-		}
-		builder.WriteRune(r)
-	}
-	return builder.String()
-}
-
 func (t *textInputBridge) sleepAfterPaste(ctx context.Context) error {
 	sleep := sleepWithContext
 	if t != nil && t.sleep != nil {
@@ -426,14 +355,6 @@ func (t *textInputBridge) sleepAfterMenuOpen(ctx context.Context) error {
 		sleep = t.sleep
 	}
 	return sleep(ctx, textViaBridgeMenuDelay)
-}
-
-func (t *textInputBridge) sleepAfterSend(ctx context.Context) error {
-	sleep := sleepWithContext
-	if t != nil && t.sleep != nil {
-		sleep = t.sleep
-	}
-	return sleep(ctx, textViaBridgePostSendDelay)
 }
 
 func (t *textInputBridge) currentBridge() *PhoneBridge {

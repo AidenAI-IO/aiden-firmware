@@ -116,7 +116,7 @@ def test_get_tools_catalog(bridge_server):
     enter_text_props = tools["enter_text"]["args_schema"]["properties"]
     assert tools["enter_text"]["args_schema"]["additionalProperties"] is False
     assert "focus" in enter_text_props
-    assert "send_after_commit" in enter_text_props
+    assert "send_after_commit" not in enter_text_props
     assert "segments" not in enter_text_props
     assert "max_attempts" not in enter_text_props
     assert "platform" not in enter_text_props

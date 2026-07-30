@@ -48,13 +48,11 @@ type textInputArgs struct {
 	Focus            focusPointArgs `json:"focus"`
 	CurrentIMEPart   string         `json:"-"`
 	VerifyTextSuffix bool           `json:"-"`
-	SendAfterCommit  bool           `json:"send_after_commit,omitempty"`
 }
 
 type textInputResult struct {
 	OK                bool   `json:"ok"`
 	Committed         bool   `json:"committed"`
-	SendVerified      bool   `json:"send_verified,omitempty"`
 	FieldText         string `json:"field_text,omitempty"`
 	WrongIMESuspected bool   `json:"wrong_ime_suspected,omitempty"`
 	Reason            string `json:"reason,omitempty"`
@@ -165,7 +163,7 @@ func (e *textInputEngine) RunSegmented(ctx context.Context, args textInputArgs) 
 		lastFieldText = fieldText
 	}
 	result := textInputResult{OK: true, Committed: true, FieldText: lastFieldText}
-	return finalizeTextInputResult(result, args.SendAfterCommit), nil
+	return result, nil
 }
 
 func (e *textInputEngine) partitionIMEChunks(ctx context.Context, chunks []textInputChunk) ([]textInputChunk, error) {

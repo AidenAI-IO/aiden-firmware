@@ -847,7 +847,7 @@ func TestBundledDeviceOperatorContainsEmbeddedDevicePlaybooks(t *testing.T) {
 	deviceContent := string(deviceData)
 	for _, want := range []string{
 		"## Text Entry",
-		"segments",
+		"derives IME parts and keystrokes internally",
 		"folder/list view",
 		"search_launch_app` success as app-open confirmation only",
 		"## App Switching and Launch",

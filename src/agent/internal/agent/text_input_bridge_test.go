@@ -243,56 +243,6 @@ func TestTextInputBridgeReturnsLastObservedFieldTextAfterFailedPasteAttempts(t *
 	}
 }
 
-func TestTextInputBridgeCanPasteSendAndVerify(t *testing.T) {
-	message := "Example Contact number 555-0101 and 555-0102 still active?"
-	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
-		ObservedMode: textInputModeASCII,
-		FieldText:    message,
-	}, {
-		ObservedMode: textInputModeASCII,
-		FieldText:    "",
-	}}}
-	pb := newTestPhoneBridge(t)
-	pb.NoteClipboardWrite(message)
-	pb.platform = "ios"
-	pb.appState = "background"
-	pb.appStateAt = time.Now()
-	keyboardTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
-	tool := &textInputBridge{
-		hw: &textInputHardwareDeps{
-			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
-			touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
-			keyboardTap:  keyboardTap,
-			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
-			quickAction:  quick,
-			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
-		},
-		vision:   vision,
-		bridgeFn: func() *PhoneBridge { return pb },
-		sleep:    testNoWaitSleep,
-	}
-	out, err := callEnterTextBridgeForTest(context.Background(), tool, `{"text":"`+message+`","focus":{"x":400,"y":950,"coord_space":"normalized"},"send_after_commit":true}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		`"ok": true`,
-		`"committed": true`,
-		`"send_verified": true`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("unexpected output, missing %q: %s", want, out)
-		}
-	}
-	if len(quick.calls) != 1 || !strings.Contains(quick.calls[0], `"action": "paste"`) {
-		t.Fatalf("quick_action calls=%v", quick.calls)
-	}
-	if len(keyboardTap.calls) != 1 || !strings.Contains(keyboardTap.calls[0], `"enter"`) {
-		t.Fatalf("keyboard_tap calls=%v, want send only", keyboardTap.calls)
-	}
-}
-
 func TestTextInputBridgeFallsBackToKeyboardPasteWhenQuickActionFails(t *testing.T) {
 	message := "Example Contact number 555-0101 still active?"
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{

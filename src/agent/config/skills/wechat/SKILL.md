@@ -18,7 +18,7 @@ Use this skill when the user asks to open WeChat, find a contact or chat, read m
 - Prefer search over blind scrolling.
 - Verify the chat title before sending anything.
 - Use `enter_text` for the WeChat chat input field.
-- Treat message entry as successful only when `committed:true` and the field text exactly matches the requested message.
+- Treat message entry as successful when `enter_text` returns `ok:true`; inspect its returned screenshot when visual confirmation is needed.
 - Sending a message is a sensitive external action. Do not send unless the user explicitly asked for the final send.
 
 ## Mac

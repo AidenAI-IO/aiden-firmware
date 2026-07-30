@@ -84,19 +84,17 @@ Required pattern:
 ```json
 {
   "text": "你好",
-  "platform": "android",
-  "focus": { "x": 450, "y": 105, "coord_space": "normalized" },
-  "segments": ["ni", "hao"]
+  "focus": { "x": 450, "y": 105, "coord_space": "normalized" }
 }
 ```
 
 - Focus coordinates must come from the latest screenshot.
 - Before calling `enter_text`, the latest screenshot must clearly show the actual editable field or composer, and `focus` must be inside that visible field. An app home screen, folder/list view, blank area, or screen that only shows a create/new button is not input-ready; first create/open the document or message and observe its editor.
 - Treat `search_launch_app` success as app-open confirmation only. It does not prove an in-app editor or input field is ready.
-- Success requires `committed:true` and `field_text` matching the requested text, or a fresh screenshot that visibly confirms the field content.
-- `committed:false` means failure; do not tell the user text was entered.
-- For Chinese/CJK composition, provide `segments` as romanization syllables in typing order, e.g. `"你好"` -> `["ni","hao"]`.
-- If text remains in the IME candidate/preedit area instead of the field, retry once with corrected focus/segments or report the blocker.
+- Treat `ok:true` as successful text entry. When visual confirmation matters, also inspect the screenshot returned with the tool result.
+- `ok:false` includes a next-step suggestion; follow it instead of inferring internal IME state from fields that are not part of the public result.
+- For Chinese/CJK composition, provide only the exact target text. `enter_text` derives IME parts and keystrokes internally.
+- If text remains in the IME candidate/preedit area instead of the field, retry once with corrected focus or follow the returned suggestion.
 
 `enter_text` automatically prefers a usable Phone Bridge clipboard path, then falls back to ordered ASCII and IME runs. If its structured result conflicts with its attached screenshot, treat this as uncertain verification rather than immediate input failure. Call `wait_for_stable_screen` once and compare the requested text with the fresh observation. Preserve the current field while evidence conflicts; do not perform corrective input until the fresh observation identifies a concrete mismatch.
 

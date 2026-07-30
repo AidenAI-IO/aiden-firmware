@@ -466,6 +466,9 @@ func TestEnterTextToolSchemaKeepsIMESegmentsInternal(t *testing.T) {
 	if _, found := props["max_attempts"]; found {
 		t.Fatal("enter_text must not expose max_attempts")
 	}
+	if _, found := props["send_after_commit"]; found {
+		t.Fatal("enter_text must not expose send_after_commit")
+	}
 }
 
 func TestTextInputPlatformUsesHIDPointerMode(t *testing.T) {

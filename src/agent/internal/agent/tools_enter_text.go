@@ -20,9 +20,8 @@ type EnterTextTool struct {
 // enterTextArgs is the public tool payload. textInputArgs adds only the
 // internal state needed while processing an IME part.
 type enterTextArgs struct {
-	Text            string         `json:"text"`
-	Focus           focusPointArgs `json:"focus"`
-	SendAfterCommit bool           `json:"send_after_commit,omitempty"`
+	Text  string         `json:"text"`
+	Focus focusPointArgs `json:"focus"`
 }
 
 type enterTextToolResult struct {
@@ -32,9 +31,8 @@ type enterTextToolResult struct {
 
 func (a enterTextArgs) toEngineArgs() textInputArgs {
 	return textInputArgs{
-		Text:            a.Text,
-		Focus:           a.Focus,
-		SendAfterCommit: a.SendAfterCommit,
+		Text:  a.Text,
+		Focus: a.Focus,
 	}
 }
 
@@ -46,15 +44,14 @@ func (t *EnterTextTool) Description() string {
 		`If Bridge is unavailable, the field must already be focused. The local path holds the pointer-free keyboard isolation profile for the whole operation, probes the current ENG/IME state with a temporary "a", and maintains that state while entering parts in order. ` +
 		`ASCII parts are typed directly in ENG mode without a vision verification step. IME parts are typed in IME mode and use vision-guided candidate selection until the part is committed. The local path never uses mouse input. ` +
 		`Precondition: the latest screenshot must clearly show the editable field or composer, and focus coordinates must identify that field for bridge paste and visual analysis; never use a guessed blank-space coordinate. ` +
-		`Provide the exact original text only: this tool detects ASCII and IME parts and derives required IME keystrokes internally. Set send_after_commit=true only when the user asked to send/submit from an already-open composer. ` +
+		`Provide the exact original text only: this tool detects ASCII and IME parts and derives required IME keystrokes internally. ` +
 		`The result contains only ok, plus a next-step suggestion when ok is false.`
 }
 
 func (t *EnterTextTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"text":              stringArgSchema("Exact text that must appear in the field when done."),
-		"focus":             focusPointArgSchema("Coordinates inside a clearly visible editable field or composer."),
-		"send_after_commit": boolArgSchema("After the exact target is verified, press send/submit and verify it was sent."),
+		"text":  stringArgSchema("Exact text that must appear in the field when done."),
+		"focus": focusPointArgSchema("Coordinates inside a clearly visible editable field or composer."),
 	}, "text", "focus")
 }
 
@@ -154,9 +151,6 @@ func enterTextFailureSuggestion(result textInputResult) string {
 	if result.WrongIMESuspected {
 		return "Switch to the intended IME, refocus the field, then retry enter_text."
 	}
-	if result.Committed && !result.SendVerified {
-		return "Inspect the latest screen and submit the already-entered text manually or retry enter_text with send_after_commit."
-	}
 	if strings.TrimSpace(result.FieldText) != "" {
 		return "Inspect the latest screen and correct or clear the existing field text before retrying enter_text."
 	}
@@ -164,23 +158,6 @@ func enterTextFailureSuggestion(result textInputResult) string {
 		return "Retry enter_text; if it times out again, enter a shorter section at a time."
 	}
 	return "Inspect the latest screen, refocus the target field, then retry enter_text."
-}
-
-func finalizeTextInputResult(result textInputResult, sendAfterCommit bool) textInputResult {
-	if !result.Committed {
-		result.OK = false
-		if result.Reason == "" {
-			result.Reason = "text entry not verified in field"
-		}
-		return result
-	}
-	if sendAfterCommit && !result.SendVerified {
-		result.OK = false
-		result.Reason = "field verified but send was not verified"
-		return result
-	}
-	result.OK = true
-	return result
 }
 
 func (t *EnterTextTool) bridgeAvailable(args textInputArgs) bool {

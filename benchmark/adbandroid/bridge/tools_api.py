@@ -217,7 +217,6 @@ class ADBToolsAPIHandler:
                     "properties": {
                         "text": {"type": "string", "description": "Exact text that must appear in the field."},
                         "focus": enter_text_focus_schema,
-                        "send_after_commit": {"type": "boolean"},
                     },
                     "required": ["text", "focus"],
                 },
