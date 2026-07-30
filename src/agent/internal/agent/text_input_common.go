@@ -23,7 +23,10 @@ const (
 
 	textInputKeystrokeGap           = 60 * time.Millisecond
 	textInputFocusRestoreDelay      = time.Second
-	textInputIMESwitchSettleDelay   = time.Second
+	textInputLocalIMESettleDelay    = 300 * time.Millisecond
+	textInputCandidateSettleDelay   = textInputLocalIMESettleDelay
+	textInputInitialCandidateDelay  = textInputLocalIMESettleDelay
+	textInputIMESwitchSettleDelay   = textInputLocalIMESettleDelay
 	textInputIMESwitchHoldMs        = 200
 	textInputClearBackspaceRepeats  = 32
 	textInputClearBackspaceFallback = 16
@@ -41,8 +44,8 @@ const (
 	textInputIMEPartitionMaxRunes   = 6
 )
 
-var textInputCompositionReadyDelay = 450 * time.Millisecond
-var textInputProbeSettleDelay = 500 * time.Millisecond
+var textInputCompositionReadyDelay = textInputLocalIMESettleDelay
+var textInputProbeSettleDelay = textInputLocalIMESettleDelay
 
 func normalizeTextInputInteractionMode(raw string) textInputInteractionMode {
 	switch strings.ToLower(strings.TrimSpace(raw)) {

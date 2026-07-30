@@ -855,14 +855,34 @@ func TestCompletedCandidateSelectionSkipsPostActionVerification(t *testing.T) {
 	if len(screenshot.calls) != 2 {
 		t.Fatalf("screenshot calls=%d, want no post-selection verification screenshot", len(screenshot.calls))
 	}
-	focusSettleCount := 0
+	initialCandidateSettleCount := 0
 	for _, delay := range sleeps {
-		if delay == textInputFocusRestoreDelay {
-			focusSettleCount++
+		if delay == textInputInitialCandidateDelay {
+			initialCandidateSettleCount++
 		}
 	}
-	if focusSettleCount != 1 {
-		t.Fatalf("focus settle count=%d, want only the pre-candidate settle and none after final selection; sleeps=%v", focusSettleCount, sleeps)
+	if initialCandidateSettleCount != 1 {
+		t.Fatalf("initial candidate settle count=%d, want one pre-candidate settle and none after final selection; sleeps=%v", initialCandidateSettleCount, sleeps)
+	}
+}
+
+func TestCandidateActionSettleDelayIs300Milliseconds(t *testing.T) {
+	if textInputCandidateSettleDelay != 300*time.Millisecond {
+		t.Fatalf("candidate settle delay=%s, want 300ms", textInputCandidateSettleDelay)
+	}
+}
+
+func TestLocalIMEFixedWaitsDoNotExceed300Milliseconds(t *testing.T) {
+	for name, delay := range map[string]time.Duration{
+		"probe":             textInputProbeSettleDelay,
+		"composition_ready": textInputCompositionReadyDelay,
+		"ime_switch":        textInputIMESwitchSettleDelay,
+		"initial_candidate": textInputInitialCandidateDelay,
+		"candidate_action":  textInputCandidateSettleDelay,
+	} {
+		if delay > 300*time.Millisecond {
+			t.Fatalf("%s delay=%s, want at most 300ms", name, delay)
+		}
 	}
 }
 

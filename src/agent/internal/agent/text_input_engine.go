@@ -851,7 +851,7 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 					textInputLogf("candidate selection accepted without post-action verification actions=%d target=%q", candidateActions, truncateForLog(candidateTarget, 120))
 					return true, analysis.FieldText, false, imeSwitches, vlmCalls, steps, nil
 				}
-				if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+				if err := e.sleepFor(ctx, textInputCandidateSettleDelay); err != nil {
 					return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
 				}
 			case textInputCandidateActionExpand:
@@ -865,7 +865,7 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 				}
 				candidateActions++
 				pageAttempts++
-				if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+				if err := e.sleepFor(ctx, textInputCandidateSettleDelay); err != nil {
 					return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
 				}
 			case textInputCandidateActionUp:
@@ -877,7 +877,7 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 				if pageAttempts > 0 {
 					pageAttempts--
 				}
-				if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+				if err := e.sleepFor(ctx, textInputCandidateSettleDelay); err != nil {
 					return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
 				}
 			default:
@@ -1112,7 +1112,7 @@ func (e *textInputEngine) typeCompositionWithCandidateSelection(ctx context.Cont
 	// Do not commit the IME's default candidate blindly. Analyze the live
 	// candidate list first; analyzeActVerify will execute the model-selected
 	// candidate action. A selection that completes the part returns immediately.
-	if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+	if err := e.sleepFor(ctx, textInputInitialCandidateDelay); err != nil {
 		return false, fieldText, false, vlmCalls, steps, err
 	}
 
@@ -1145,7 +1145,7 @@ func (e *textInputEngine) typeCompositionSearch(ctx context.Context, platform st
 	}
 	// Search input follows the same candidate-first rule: inspect and select the
 	// intended candidate instead of accepting the IME's default with Space.
-	if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+	if err := e.sleepFor(ctx, textInputInitialCandidateDelay); err != nil {
 		return false, fieldText, false, vlmCalls, steps, err
 	}
 	var calls int
