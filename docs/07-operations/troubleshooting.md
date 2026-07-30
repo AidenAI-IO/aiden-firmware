@@ -153,6 +153,24 @@ Solution:
   from `POST /api/tools/{tool_name}`;
 - Separate transport failure from tool failure judgement.
 
+## `opkg` reports `Failed to open /etc/opkg/90-userfeeds.conf`
+
+The message names a config file, but the first thing to check is the `/opt`
+mount. `90-userfeeds.conf` is a symlink to `/opt/etc/opkg/userfeeds.conf`; when
+`/opt` is not bound from `/userdata/opt` the symlink dangles, and opkg 0.7.0
+aborts if any `/etc/opkg/*.conf` fragment cannot be opened. That refusal is a
+deliberate guard, not a corrupt config — it keeps packages from being installed
+into the current A/B rootfs, where they would not survive an OTA.
+
+```bash
+/etc/init.d/S22opt status
+```
+
+`opt=bound` is healthy. For `sealed`, `wrong-source` or `unbound`, and for the
+rest of the opkg runbook (enabling a feed, recovering a truncated package
+database, cleaning up before a restore), see
+[opkg Package Management](opkg-package-management.md) §13.
+
 ## Docker build fails
 
 Check:
