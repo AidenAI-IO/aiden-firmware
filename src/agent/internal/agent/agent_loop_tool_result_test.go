@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -23,7 +24,7 @@ func TestAppendToolExecutionMessagesPersistsPreparedContentAndMetadata(t *testin
 	llmExecutor := executor.NewLLMExecutor(nil, manager)
 	prepared := PreparedToolResult{
 		Content:          "[shell] go test ./...\npartial",
-		ArtifactRef:      "artifact://tr_example",
+		ArtifactPath:     "/tmp/tool-results/tr_example",
 		OriginalBytes:    100_000,
 		OriginalChars:    100_000,
 		EstimatedTokens:  25_000,
@@ -43,7 +44,7 @@ func TestAppendToolExecutionMessagesPersistsPreparedContentAndMetadata(t *testin
 	if stored.Content != prepared.Content {
 		t.Fatalf("stored content = %q, want prepared content", stored.Content)
 	}
-	if stored.Meta == nil || stored.Meta.ArtifactRef != prepared.ArtifactRef || stored.Meta.Summary != prepared.Summary {
+	if stored.Meta == nil || stored.Meta.ArtifactPath != prepared.ArtifactPath || stored.Meta.Summary != prepared.Summary {
 		t.Fatalf("stored metadata = %#v", stored.Meta)
 	}
 }
@@ -120,18 +121,18 @@ func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {
 			break
 		}
 	}
-	if stored.Meta == nil || stored.Meta.ArtifactRef == "" || stored.Meta.Complete {
+	if stored.Meta == nil || stored.Meta.ArtifactPath == "" || stored.Meta.Complete {
 		t.Fatalf("stored ToolResult = %#v", stored)
 	}
 	if stored.Content == rawOutput || len(stored.Content) >= len(rawOutput) {
 		t.Fatalf("stored content was not bounded: %d bytes", len(stored.Content))
 	}
-	chunk, err := manager.ReadArtifact(stored.Meta.ArtifactRef, 0, contextmanager.ArtifactReadMaxBytes)
+	data, err := os.ReadFile(stored.Meta.ArtifactPath)
 	if err != nil {
-		t.Fatalf("ReadArtifact() error = %v", err)
+		t.Fatalf("ReadFile() error = %v", err)
 	}
-	if string(chunk.Content) != rawOutput {
-		t.Fatalf("artifact content length = %d, want %d", len(chunk.Content), len(rawOutput))
+	if string(data) != rawOutput {
+		t.Fatalf("artifact content length = %d, want %d", len(data), len(rawOutput))
 	}
 	if len(inner.messages) < 2 {
 		t.Fatalf("model calls = %d, want at least 2", len(inner.messages))

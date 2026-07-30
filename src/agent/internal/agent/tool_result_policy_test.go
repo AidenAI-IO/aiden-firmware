@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -34,8 +36,8 @@ func TestToolResultPolicyKeepsSmallResultInline(t *testing.T) {
 	if !prepared.Complete {
 		t.Fatal("Prepare() complete = false, want true")
 	}
-	if prepared.ArtifactRef != "" {
-		t.Fatalf("Prepare() artifact ref = %q, want empty", prepared.ArtifactRef)
+	if prepared.ArtifactPath != "" {
+		t.Fatalf("Prepare() artifact ref = %q, want empty", prepared.ArtifactPath)
 	}
 	if prepared.Reason != ToolResultReasonInline {
 		t.Fatalf("Prepare() reason = %q, want %q", prepared.Reason, ToolResultReasonInline)
@@ -139,32 +141,41 @@ func TestToolResultPolicyShrinksIntrinsicResultToCurrentBudget(t *testing.T) {
 	if got := estimateTextTokens(prepared.Content); got > available {
 		t.Fatalf("Prepare() content tokens = %d, want <= available %d", got, available)
 	}
-	if prepared.ArtifactRef == "" || !strings.Contains(prepared.Content, prepared.ArtifactRef) {
-		t.Fatalf("Prepare() content lost recovery ref %q:\n%s", prepared.ArtifactRef, prepared.Content)
+	if prepared.ArtifactPath == "" || !strings.Contains(prepared.Content, prepared.ArtifactPath) {
+		t.Fatalf("Prepare() content lost recovery ref %q:\n%s", prepared.ArtifactPath, prepared.Content)
 	}
 }
 
-func TestToolResultPolicyDoesNotRecursivelyArtifactizeArtifactRead(t *testing.T) {
-	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+func TestToolResultPolicyPreservesLongArtifactPathAtMinimumBudget(t *testing.T) {
+	sessionFolder := t.TempDir()
+	for index := 0; index < 6; index++ {
+		sessionFolder = filepath.Join(sessionFolder, fmt.Sprintf("long-session-directory-%02d-%s", index, strings.Repeat("x", 32)))
+	}
+	if err := os.MkdirAll(sessionFolder, 0o700); err != nil {
+		t.Fatalf("MkdirAll(sessionFolder) error = %v", err)
+	}
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, nil)
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
-	output := `{"content":` + mustMarshalJSONString(t, strings.Repeat("detail ", 1_500)) + `,"offset":0,"next_offset":10500,"complete":false}`
 	prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
-		Call:           ToolCall{Spec: ToolSpec{Name: "artifact_read"}, Input: `{"ref":"artifact://tr_example","limit":16384}`},
-		Result:         ToolResult{Output: output},
+		Call:           ToolCall{Spec: ToolSpec{Name: "shell"}, Input: `{"command":"produce-large-output"}`},
+		Result:         ToolResult{Output: strings.Repeat("large-result ", 1_000)},
 		ContextManager: manager,
-		ModelSpec:      model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
-		CallOptions:    []llms.CallOption{llms.WithMaxTokens(1_000)},
+		ModelSpec:      model.ModelSpec{ContextWindow: 128, MaxOutput: 16},
+		CallOptions:    []llms.CallOption{llms.WithMaxTokens(16)},
 	})
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}
-	if !prepared.Complete || prepared.Content != output {
-		t.Fatalf("Prepare() complete=%v content bytes=%d, want full bounded recovery page", prepared.Complete, len(prepared.Content))
+	if prepared.ArtifactPath == "" || len(prepared.ArtifactPath) < 300 {
+		t.Fatalf("Prepare() artifact path = %q, want long path", prepared.ArtifactPath)
 	}
-	if prepared.ArtifactRef != "" {
-		t.Fatalf("Prepare() artifact ref = %q, want no recursive artifact", prepared.ArtifactRef)
+	if !strings.Contains(prepared.Content, "Full result file: "+prepared.ArtifactPath) {
+		t.Fatalf("Prepare() truncated mandatory artifact path:\n%s", prepared.Content)
+	}
+	if !strings.Contains(prepared.Content, "Use shell commands") {
+		t.Fatalf("Prepare() lost shell recovery guidance:\n%s", prepared.Content)
 	}
 }
 
@@ -215,18 +226,21 @@ func TestToolResultPolicyPersistsLargeResultAsArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}
-	if prepared.ArtifactRef == "" || !prepared.ArtifactComplete {
-		t.Fatalf("Prepare() artifact = %q complete=%v", prepared.ArtifactRef, prepared.ArtifactComplete)
+	if prepared.ArtifactPath == "" || !prepared.ArtifactComplete {
+		t.Fatalf("Prepare() artifact path = %q complete=%v", prepared.ArtifactPath, prepared.ArtifactComplete)
 	}
-	if !strings.Contains(prepared.Content, "Full result: "+prepared.ArtifactRef) {
-		t.Fatalf("Prepare() content missing artifact ref: %s", prepared.Content)
+	if !strings.Contains(prepared.Content, "Full result file: "+prepared.ArtifactPath) {
+		t.Fatalf("Prepare() content missing artifact path: %s", prepared.Content)
 	}
-	chunk, err := manager.ReadArtifact(prepared.ArtifactRef, 0, contextmanager.ArtifactReadMaxBytes)
+	if !strings.Contains(prepared.Content, "Use shell") {
+		t.Fatalf("Prepare() content missing shell recovery guidance: %s", prepared.Content)
+	}
+	data, err := os.ReadFile(prepared.ArtifactPath)
 	if err != nil {
-		t.Fatalf("ReadArtifact() error = %v", err)
+		t.Fatalf("ReadFile() error = %v", err)
 	}
-	if string(chunk.Content) != output || !chunk.Complete {
-		t.Fatalf("ReadArtifact() complete=%v bytes=%d, want full %d bytes", chunk.Complete, len(chunk.Content), len(output))
+	if string(data) != output {
+		t.Fatalf("artifact file bytes=%d, want full %d bytes", len(data), len(output))
 	}
 }
 
@@ -250,8 +264,8 @@ func TestToolResultPolicyReportsArtifactPersistenceFailureWithoutRepeatingAction
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}
-	if prepared.ArtifactRef != "" || prepared.ArtifactComplete {
-		t.Fatalf("Prepare() artifact ref=%q complete=%v, want unavailable", prepared.ArtifactRef, prepared.ArtifactComplete)
+	if prepared.ArtifactPath != "" || prepared.ArtifactComplete {
+		t.Fatalf("Prepare() artifact ref=%q complete=%v, want unavailable", prepared.ArtifactPath, prepared.ArtifactComplete)
 	}
 	if !prepared.ActionCompleted || prepared.ObservationComplete {
 		t.Fatalf("Prepare() action_completed=%v observation_complete=%v", prepared.ActionCompleted, prepared.ObservationComplete)

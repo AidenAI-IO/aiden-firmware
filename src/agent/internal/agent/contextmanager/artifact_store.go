@@ -1,13 +1,11 @@
 package contextmanager
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,22 +16,16 @@ import (
 )
 
 const (
-	ArtifactReadDefaultBytes = 8 * 1024
-	ArtifactReadMaxBytes     = 16 * 1024
-	ArtifactSingleMaxBytes   = 8 * 1024 * 1024
-	ArtifactScopeMaxBytes    = 32 * 1024 * 1024
+	ArtifactSingleMaxBytes = 8 * 1024 * 1024
+	ArtifactScopeMaxBytes  = 32 * 1024 * 1024
 
 	artifactDefaultTTL   = 7 * 24 * time.Hour
 	artifactSensitiveTTL = time.Hour
-	artifactRefPrefix    = "artifact://"
 )
 
 var (
-	ErrArtifactTooLarge    = errors.New("artifact exceeds single-artifact size limit")
-	ErrArtifactScopeFull   = errors.New("artifact scope size limit exceeded")
-	ErrArtifactExpired     = errors.New("artifact expired")
-	ErrInvalidArtifactRef  = errors.New("invalid artifact ref")
-	ErrArtifactReadTooWide = errors.New("artifact read exceeds hard limit")
+	ErrArtifactTooLarge  = errors.New("artifact exceeds single-artifact size limit")
+	ErrArtifactScopeFull = errors.New("artifact scope size limit exceeded")
 )
 
 type ArtifactMetadata struct {
@@ -48,21 +40,11 @@ type ArtifactMetadata struct {
 	Complete   bool      `json:"complete"`
 }
 
-type ArtifactRef struct {
-	Ref      string `json:"ref"`
+type ArtifactFile struct {
+	Path     string `json:"path"`
 	Size     int64  `json:"size"`
 	SHA256   string `json:"sha256"`
 	Complete bool   `json:"complete"`
-}
-
-type ArtifactChunk struct {
-	Content    []byte `json:"content"`
-	Offset     int64  `json:"offset"`
-	NextOffset int64  `json:"next_offset"`
-	Complete   bool   `json:"complete"`
-	Found      bool   `json:"found,omitempty"`
-	SHA256     string `json:"sha256"`
-	MIMEType   string `json:"mime_type"`
 }
 
 type artifactStore struct {
@@ -76,7 +58,10 @@ func newArtifactStore(sessionFolder, scopeID string) (*artifactStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	root := filepath.Join(sessionDataDir(sessionFolder, scopeID), "tool-results")
+	root, err := filepath.Abs(filepath.Join(sessionDataDir(sessionFolder, scopeID), "tool-results"))
+	if err != nil {
+		return nil, fmt.Errorf("resolve artifact directory: %w", err)
+	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create artifact directory: %w", err)
 	}
@@ -94,19 +79,18 @@ func validateArtifactScopeID(scopeID string) (string, error) {
 	return trimmed, nil
 }
 
-func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMetadata) (ArtifactRef, error) {
+func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMetadata) (ArtifactFile, error) {
 	if s == nil || strings.TrimSpace(s.root) == "" {
-		return ArtifactRef{}, fmt.Errorf("artifact store is closed")
+		return ArtifactFile{}, fmt.Errorf("artifact store is closed")
 	}
 	if len(data) > ArtifactSingleMaxBytes {
-		return ArtifactRef{}, ErrArtifactTooLarge
+		return ArtifactFile{}, ErrArtifactTooLarge
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	id := "tr_" + uuid.NewString()
-	ref := artifactRefPrefix + id
 	hash := sha256.Sum256(data)
 	metadata.MIMEType = strings.TrimSpace(mimeType)
 	if metadata.MIMEType == "" {
@@ -125,185 +109,31 @@ func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMet
 	metadata.Complete = true
 	metadataData, err := json.Marshal(metadata)
 	if err != nil {
-		return ArtifactRef{}, fmt.Errorf("marshal artifact metadata: %w", err)
+		return ArtifactFile{}, fmt.Errorf("marshal artifact metadata: %w", err)
 	}
 	used, err := artifactScopeBytes(s.root)
 	if err != nil {
-		return ArtifactRef{}, err
+		return ArtifactFile{}, err
 	}
 	if used+int64(len(data))+int64(len(metadataData)) > ArtifactScopeMaxBytes {
-		return ArtifactRef{}, ErrArtifactScopeFull
+		return ArtifactFile{}, ErrArtifactScopeFull
 	}
 
 	dataPath := filepath.Join(s.root, id+".data")
 	if err := writeArtifactFileAtomically(dataPath, data); err != nil {
-		return ArtifactRef{}, err
+		return ArtifactFile{}, err
 	}
 	if err := writeArtifactFileAtomically(filepath.Join(s.root, id+".json"), metadataData); err != nil {
 		_ = os.Remove(dataPath)
-		return ArtifactRef{}, err
+		return ArtifactFile{}, err
 	}
 
-	return ArtifactRef{
-		Ref:      ref,
+	return ArtifactFile{
+		Path:     dataPath,
 		Size:     metadata.Size,
 		SHA256:   metadata.SHA256,
 		Complete: true,
 	}, nil
-}
-
-func (s *artifactStore) read(ref string, offset int64, limit int) (ArtifactChunk, error) {
-	if s == nil || strings.TrimSpace(s.root) == "" {
-		return ArtifactChunk{}, fmt.Errorf("artifact store is closed")
-	}
-	id, err := artifactIDFromRef(ref)
-	if err != nil {
-		return ArtifactChunk{}, err
-	}
-	if offset < 0 {
-		return ArtifactChunk{}, fmt.Errorf("artifact offset must be >= 0")
-	}
-	if limit <= 0 {
-		limit = ArtifactReadDefaultBytes
-	}
-	if limit > ArtifactReadMaxBytes {
-		return ArtifactChunk{}, ErrArtifactReadTooWide
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	metadata, err := s.loadMetadata(id)
-	if err != nil {
-		return ArtifactChunk{}, err
-	}
-	if !metadata.ExpiresAt.IsZero() && time.Now().After(metadata.ExpiresAt) {
-		return ArtifactChunk{}, ErrArtifactExpired
-	}
-	if offset > metadata.Size {
-		return ArtifactChunk{}, fmt.Errorf("artifact offset %d exceeds size %d", offset, metadata.Size)
-	}
-
-	file, err := os.Open(filepath.Join(s.root, id+".data"))
-	if err != nil {
-		return ArtifactChunk{}, fmt.Errorf("open artifact: %w", err)
-	}
-	defer file.Close()
-	if _, err := file.Seek(offset, io.SeekStart); err != nil {
-		return ArtifactChunk{}, fmt.Errorf("seek artifact: %w", err)
-	}
-	remaining := metadata.Size - offset
-	readLen := min(int64(limit), remaining)
-	content := make([]byte, int(readLen))
-	if _, err := io.ReadFull(file, content); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return ArtifactChunk{}, fmt.Errorf("read artifact: %w", err)
-	}
-	nextOffset := offset + int64(len(content))
-	return ArtifactChunk{
-		Content:    content,
-		Offset:     offset,
-		NextOffset: nextOffset,
-		Complete:   nextOffset >= metadata.Size,
-		Found:      true,
-		SHA256:     metadata.SHA256,
-		MIMEType:   metadata.MIMEType,
-	}, nil
-}
-
-func (s *artifactStore) search(ref, query string, offset int64, limit int) (ArtifactChunk, error) {
-	if s == nil || strings.TrimSpace(s.root) == "" {
-		return ArtifactChunk{}, fmt.Errorf("artifact store is closed")
-	}
-	id, err := artifactIDFromRef(ref)
-	if err != nil {
-		return ArtifactChunk{}, err
-	}
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return ArtifactChunk{}, fmt.Errorf("artifact query is empty")
-	}
-	if offset < 0 {
-		return ArtifactChunk{}, fmt.Errorf("artifact offset must be >= 0")
-	}
-	if limit <= 0 {
-		limit = ArtifactReadDefaultBytes
-	}
-	if limit > ArtifactReadMaxBytes {
-		return ArtifactChunk{}, ErrArtifactReadTooWide
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	metadata, err := s.loadMetadata(id)
-	if err != nil {
-		return ArtifactChunk{}, err
-	}
-	if !metadata.ExpiresAt.IsZero() && time.Now().After(metadata.ExpiresAt) {
-		return ArtifactChunk{}, ErrArtifactExpired
-	}
-	if offset > metadata.Size {
-		return ArtifactChunk{}, fmt.Errorf("artifact offset %d exceeds size %d", offset, metadata.Size)
-	}
-	data, err := os.ReadFile(filepath.Join(s.root, id+".data"))
-	if err != nil {
-		return ArtifactChunk{}, fmt.Errorf("read artifact: %w", err)
-	}
-	needle := []byte(query)
-	relativeIndex := bytes.Index(data[offset:], needle)
-	if relativeIndex < 0 {
-		return ArtifactChunk{
-			Offset:     offset,
-			NextOffset: metadata.Size,
-			Complete:   true,
-			Found:      false,
-			SHA256:     metadata.SHA256,
-			MIMEType:   metadata.MIMEType,
-		}, nil
-	}
-	matchOffset := offset + int64(relativeIndex)
-	windowStart := max(int64(0), matchOffset-int64(max(0, limit-len(needle))/3))
-	windowEnd := min(metadata.Size, windowStart+int64(limit))
-	minimumEnd := matchOffset + int64(len(needle))
-	if windowEnd < minimumEnd {
-		windowEnd = minimumEnd
-		windowStart = max(int64(0), windowEnd-int64(limit))
-	}
-	nextOffset := matchOffset + int64(len(needle))
-	hasMore := nextOffset < metadata.Size && bytes.Contains(data[nextOffset:], needle)
-	return ArtifactChunk{
-		Content:    append([]byte(nil), data[windowStart:windowEnd]...),
-		Offset:     windowStart,
-		NextOffset: nextOffset,
-		Complete:   !hasMore,
-		Found:      true,
-		SHA256:     metadata.SHA256,
-		MIMEType:   metadata.MIMEType,
-	}, nil
-}
-
-func (s *artifactStore) loadMetadata(id string) (ArtifactMetadata, error) {
-	data, err := os.ReadFile(filepath.Join(s.root, id+".json"))
-	if err != nil {
-		return ArtifactMetadata{}, fmt.Errorf("read artifact metadata: %w", err)
-	}
-	var metadata ArtifactMetadata
-	if err := json.Unmarshal(data, &metadata); err != nil {
-		return ArtifactMetadata{}, fmt.Errorf("decode artifact metadata: %w", err)
-	}
-	return metadata, nil
-}
-
-func artifactIDFromRef(ref string) (string, error) {
-	trimmed := strings.TrimSpace(ref)
-	if !strings.HasPrefix(trimmed, artifactRefPrefix) {
-		return "", ErrInvalidArtifactRef
-	}
-	id := strings.TrimPrefix(trimmed, artifactRefPrefix)
-	if id == "" || filepath.Base(id) != id || strings.ContainsAny(id, `/\\`) || !strings.HasPrefix(id, "tr_") {
-		return "", ErrInvalidArtifactRef
-	}
-	return id, nil
 }
 
 func artifactScopeBytes(root string) (int64, error) {

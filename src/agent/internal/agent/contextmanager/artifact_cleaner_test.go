@@ -53,14 +53,14 @@ func TestArtifactStoreCleanerRemovesExpiredAndOrphanedArtifacts(t *testing.T) {
 	if freed < uint64(len("expired-result")+len("orphan-result")) {
 		t.Fatalf("Clean() freed = %d, want at least expired and orphan data bytes", freed)
 	}
-	if _, err := manager.ReadArtifact(live.Ref, 0, ArtifactReadDefaultBytes); err != nil {
-		t.Fatalf("live ReadArtifact() error = %v", err)
+	if data, err := os.ReadFile(live.Path); err != nil || string(data) != "live-result" {
+		t.Fatalf("live artifact read = %q, error = %v", data, err)
 	}
-	if _, err := manager.ReadArtifact(expired.Ref, 0, ArtifactReadDefaultBytes); err == nil {
-		t.Fatal("expired ReadArtifact() succeeded after cleanup")
+	if _, err := os.Stat(expired.Path); !os.IsNotExist(err) {
+		t.Fatalf("expired artifact remains after cleanup, stat error = %v", err)
 	}
-	if _, err := orphanStore.read(orphan.Ref, 0, ArtifactReadDefaultBytes); err == nil {
-		t.Fatal("orphan read() succeeded after cleanup")
+	if _, err := os.Stat(orphan.Path); !os.IsNotExist(err) {
+		t.Fatalf("orphan artifact remains after cleanup, stat error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(sessionFolder, "s_orphan", "tool-results")); !os.IsNotExist(err) {
 		t.Fatalf("orphan tool-results directory still exists, stat error = %v", err)
@@ -85,7 +85,7 @@ func TestArtifactStoreCleanerKeepsFreshOrphanScopeDuringGracePeriod(t *testing.T
 	} else if freed != 0 {
 		t.Fatalf("Clean() freed = %d, want 0 during grace period", freed)
 	}
-	if _, err := store.read(stored.Ref, 0, ArtifactReadDefaultBytes); err != nil {
+	if _, err := os.ReadFile(stored.Path); err != nil {
 		t.Fatalf("fresh orphan artifact was removed during grace period: %v", err)
 	}
 }
@@ -109,7 +109,7 @@ func TestArtifactStoreCleanerTreatsLegacyTranscriptAsReferencedScope(t *testing.
 	if _, err := cleaner.Clean(context.Background()); err != nil {
 		t.Fatalf("Clean() error = %v", err)
 	}
-	if _, err := store.read(stored.Ref, 0, ArtifactReadDefaultBytes); err != nil {
+	if _, err := os.ReadFile(stored.Path); err != nil {
 		t.Fatalf("legacy referenced artifact was removed: %v", err)
 	}
 }
@@ -174,7 +174,7 @@ func TestArtifactStoreCleanerKeepsScopeUntilLastRevisionReferenceIsRemoved(t *te
 	if _, err := cleaner.Clean(context.Background()); err != nil {
 		t.Fatalf("Clean() with child revision error = %v", err)
 	}
-	if _, err := revision.ReadArtifact(stored.Ref, 0, ArtifactReadDefaultBytes); err != nil {
+	if _, err := os.ReadFile(stored.Path); err != nil {
 		t.Fatalf("artifact removed while child revision still referenced scope: %v", err)
 	}
 

@@ -431,7 +431,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 				"context_bytes":          prepared.ContextBytes,
 				"context_tokens":         prepared.ContextTokens,
 				"processing_reason":      prepared.Reason,
-				"artifactized":           prepared.ArtifactRef != "",
+				"artifactized":           prepared.ArtifactPath != "",
 				"artifact_complete":      prepared.ArtifactComplete,
 				"artifact_store_error":   prepared.ArtifactStoreError,
 				"processing_duration_ms": prepared.ProcessingDurationMs,

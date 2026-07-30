@@ -68,12 +68,6 @@ type toolSpecMetadata struct {
 }
 
 var builtInToolSpecMetadata = map[string]toolSpecMetadata{
-	"artifact_read": {
-		Category:     "system",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"ref":"artifact://tr_...","offset":0,"limit":8192}`,
-		HTTPExposed:  toolSpecBoolPtr(false),
-	},
 	"audio_volume": {
 		Category:     "audio",
 		InputMode:    toolInputModeJSON,

@@ -276,11 +276,11 @@ func historicalToolResultPlaceholder(result contextmanager.ToolResult, call cont
 			builder.WriteByte('\n')
 		}
 	}
-	if result.Meta != nil && strings.TrimSpace(result.Meta.ArtifactRef) != "" {
+	if result.Meta != nil && strings.TrimSpace(result.Meta.ArtifactPath) != "" {
 		if result.Meta.ArtifactComplete {
-			fmt.Fprintf(&builder, "Full result: %s", result.Meta.ArtifactRef)
+			fmt.Fprintf(&builder, "Full result file: %s", result.Meta.ArtifactPath)
 		} else {
-			fmt.Fprintf(&builder, "Saved partial result: %s", result.Meta.ArtifactRef)
+			fmt.Fprintf(&builder, "Saved partial result file: %s", result.Meta.ArtifactPath)
 		}
 	}
 	return strings.TrimSpace(builder.String())
@@ -299,7 +299,7 @@ func compactHistoricalSummary(content string) string {
 
 type recoverableToolResult struct {
 	ToolName string
-	Ref      string
+	Path     string
 	Complete bool
 	Summary  string
 }
@@ -315,21 +315,21 @@ func collectRecoverableToolResults(messageList []contextmanager.Message) []recov
 			if result.Meta == nil {
 				continue
 			}
-			ref := strings.TrimSpace(result.Meta.ArtifactRef)
-			if ref == "" {
+			path := strings.TrimSpace(result.Meta.ArtifactPath)
+			if path == "" {
 				continue
 			}
-			if _, exists := seen[ref]; exists {
+			if _, exists := seen[path]; exists {
 				continue
 			}
-			seen[ref] = struct{}{}
+			seen[path] = struct{}{}
 			toolName := strings.TrimSpace(result.Name)
 			if toolName == "" {
 				toolName = "tool"
 			}
 			results = append(results, recoverableToolResult{
 				ToolName: toolName,
-				Ref:      ref,
+				Path:     path,
 				Complete: result.Meta.ArtifactComplete,
 				Summary:  truncateRunes(strings.TrimSpace(result.Meta.Summary), 256),
 			})
@@ -411,7 +411,7 @@ func (c *Compactor) formatSummary(summary string, recoverableResults []recoverab
 	}
 	type recoveryRecord struct {
 		Tool         string `json:"tool"`
-		Ref          string `json:"ref"`
+		Path         string `json:"path"`
 		Completeness string `json:"completeness"`
 		Summary      string `json:"summary,omitempty"`
 	}
@@ -425,7 +425,7 @@ func (c *Compactor) formatSummary(summary string, recoverableResults []recoverab
 		}
 		data, err := json.Marshal(recoveryRecord{
 			Tool:         result.ToolName,
-			Ref:          result.Ref,
+			Path:         result.Path,
 			Completeness: completeness,
 			Summary:      sanitizeRecoverableSummary(result.Summary),
 		})
