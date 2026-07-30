@@ -22,44 +22,48 @@ import (
 )
 
 const (
-	DefaultOTAConfigPath             = "/userdata/ota/config.json"
-	DefaultOTAStateDir               = "/userdata/ota"
-	DefaultOTAUpdateLockName         = "update.lock"
-	DefaultReleaseURL                = "https://api.github.com/repos/AidenAI-IO/aiden-firmware/releases/latest"
-	MaxRemoteManifestBytes           = 1 << 20
-	DefaultHTTPRequestLimit          = 30 * time.Minute
-	DefaultHTTPResponseHeaderTimeout = 30 * time.Second
+	DefaultOTAConfigPath               = "/userdata/ota/config.json"
+	DefaultOTAStateDir                 = "/userdata/ota"
+	DefaultOTAUpdateLockName           = "update.lock"
+	DefaultOTAReserveSizeBytes         = 64 << 20
+	DefaultOTAReserveSafetyMarginBytes = 4 << 20
+	DefaultReleaseURL                  = "https://api.github.com/repos/AidenAI-IO/aiden-firmware/releases/latest"
+	MaxRemoteManifestBytes             = 1 << 20
+	DefaultHTTPRequestLimit            = 30 * time.Minute
+	DefaultHTTPResponseHeaderTimeout   = 30 * time.Second
 )
 
 var ErrUpdateAlreadyRunning = errors.New("ota update already running")
 
 type UpdaterConfig struct {
-	ConfigPath             string                       `json:"-"`
-	StateDir               string                       `json:"state_dir,omitempty"`
-	DownloadDir            string                       `json:"download_dir,omitempty"`
-	UpdateLockPath         string                       `json:"update_lock_path,omitempty"`
-	MiscPath               string                       `json:"misc_path,omitempty"`
-	BlockDir               string                       `json:"block_dir,omitempty"`
-	ManifestURL            string                       `json:"manifest_url,omitempty"`
-	ReleaseURL             string                       `json:"-"` // Test override for default release URL
-	PublicKeyPath          string                       `json:"public_key_path,omitempty"`
-	PublicKey              ed25519.PublicKey            `json:"-"`
-	FactoryVersion         string                       `json:"factory_version,omitempty"`
-	FactoryBuildTime       string                       `json:"factory_build_time,omitempty"`
-	FactoryPartitionHashes map[string]map[string]string `json:"factory_partition_hashes,omitempty"`
-	PartitionSizes         map[string]int64             `json:"partition_sizes,omitempty"`
-	GitHubToken            string                       `json:"github_token,omitempty"`
-	GitHubTokenPath        string                       `json:"github_token_path,omitempty"`
-	GitHubProxyURL         string                       `json:"github_proxy_url,omitempty"`
-	SwitchTries            uint8                        `json:"switch_tries,omitempty"`
-	HealthTimeout          time.Duration                `json:"-"`
-	HealthTimeoutSecs      int                          `json:"health_timeout_seconds,omitempty"`
-	HealthPollInterval     time.Duration                `json:"-"`
-	HTTPTimeout            time.Duration                `json:"-"`
-	HTTPTimeoutSecs        int                          `json:"http_timeout_seconds,omitempty"`
-	DryRun                 bool                         `json:"dry_run,omitempty"`
-	TargetSlotOverride     string                       `json:"target_slot_override,omitempty"`
-	Logger                 *log.Logger                  `json:"-"`
+	ConfigPath               string                       `json:"-"`
+	StateDir                 string                       `json:"state_dir,omitempty"`
+	DownloadDir              string                       `json:"download_dir,omitempty"`
+	ReserveSizeBytes         int64                        `json:"reserve_size_bytes,omitempty"`
+	ReserveSafetyMarginBytes int64                        `json:"reserve_safety_margin_bytes,omitempty"`
+	UpdateLockPath           string                       `json:"update_lock_path,omitempty"`
+	MiscPath                 string                       `json:"misc_path,omitempty"`
+	BlockDir                 string                       `json:"block_dir,omitempty"`
+	ManifestURL              string                       `json:"manifest_url,omitempty"`
+	ReleaseURL               string                       `json:"-"` // Test override for default release URL
+	PublicKeyPath            string                       `json:"public_key_path,omitempty"`
+	PublicKey                ed25519.PublicKey            `json:"-"`
+	FactoryVersion           string                       `json:"factory_version,omitempty"`
+	FactoryBuildTime         string                       `json:"factory_build_time,omitempty"`
+	FactoryPartitionHashes   map[string]map[string]string `json:"factory_partition_hashes,omitempty"`
+	PartitionSizes           map[string]int64             `json:"partition_sizes,omitempty"`
+	GitHubToken              string                       `json:"github_token,omitempty"`
+	GitHubTokenPath          string                       `json:"github_token_path,omitempty"`
+	GitHubProxyURL           string                       `json:"github_proxy_url,omitempty"`
+	SwitchTries              uint8                        `json:"switch_tries,omitempty"`
+	HealthTimeout            time.Duration                `json:"-"`
+	HealthTimeoutSecs        int                          `json:"health_timeout_seconds,omitempty"`
+	HealthPollInterval       time.Duration                `json:"-"`
+	HTTPTimeout              time.Duration                `json:"-"`
+	HTTPTimeoutSecs          int                          `json:"http_timeout_seconds,omitempty"`
+	DryRun                   bool                         `json:"dry_run,omitempty"`
+	TargetSlotOverride       string                       `json:"target_slot_override,omitempty"`
+	Logger                   *log.Logger                  `json:"-"`
 }
 
 type UpdateResult struct {
@@ -107,6 +111,21 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 	}
 	if config.DownloadDir == "" {
 		config.DownloadDir = filepath.Join(config.StateDir, "downloads")
+	}
+	if config.ReserveSizeBytes == 0 {
+		config.ReserveSizeBytes = DefaultOTAReserveSizeBytes
+	}
+	if config.ReserveSizeBytes < 0 {
+		return UpdaterConfig{}, fmt.Errorf("reserve_size_bytes must be non-negative")
+	}
+	if config.ReserveSafetyMarginBytes == 0 {
+		config.ReserveSafetyMarginBytes = DefaultOTAReserveSafetyMarginBytes
+	}
+	if config.ReserveSafetyMarginBytes < 0 {
+		return UpdaterConfig{}, fmt.Errorf("reserve_safety_margin_bytes must be non-negative")
+	}
+	if config.ReserveSafetyMarginBytes >= config.ReserveSizeBytes {
+		return UpdaterConfig{}, fmt.Errorf("reserve_safety_margin_bytes must be smaller than reserve_size_bytes")
 	}
 	if config.UpdateLockPath == "" {
 		config.UpdateLockPath = filepath.Join(config.StateDir, DefaultOTAUpdateLockName)
@@ -280,20 +299,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		return UpdateResult{}, err
 	}
 
-	// Step 1: Clean up old download cache before downloading
-	if err := u.cleanupOldDownloadCache(ctx, manifest); err != nil {
-		u.recordError("cleanup", err)
-		return UpdateResult{}, err
-	}
-
-	// Step 2: Check available space before downloading
-	if err := u.checkDownloadSpace(ctx, manifest, target); err != nil {
-		u.recordError("space", err)
-		return UpdateResult{}, err
-	}
-
 	selectedAssets := map[string]ManifestAsset{}
-	downloaded := map[string]string{}
 	for _, part := range manifest.Parts {
 		asset, err := ResolveAsset(part, target)
 		if err != nil {
@@ -305,6 +311,32 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 		selectedAssets[part.Name] = asset
+	}
+
+	if err := u.cleanupOldDownloadCache(selectedAssets, state, target); err != nil {
+		u.recordError("cleanup", err)
+		return UpdateResult{}, err
+	}
+	if err := u.ensureReserveSpace(); err != nil {
+		u.recordError("reserve", err)
+		return UpdateResult{}, err
+	}
+	reserveReleased, err := u.releaseReserveForDownloads(selectedAssets, state, target)
+	if err != nil {
+		u.recordError("reserve", err)
+		return UpdateResult{}, err
+	}
+	defer func() {
+		if reserveReleased {
+			if err := u.ensureReserveSpace(); err != nil {
+				u.logf("ota reserve: restore after failed update: %v", err)
+			}
+		}
+	}()
+
+	downloaded := map[string]string{}
+	for _, part := range manifest.Parts {
+		asset := selectedAssets[part.Name]
 		if targetPartitionHashMatches(state, target, part.Name, asset) {
 			u.logf("ota partition: %s skipped; target slot %s hash matches manifest", part.Name, slotLogName(target))
 			continue
@@ -366,6 +398,13 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 		downloaded[part.Name] = dst
+	}
+	if reserveReleased {
+		if err := u.ensureReserveSpace(); err != nil {
+			u.recordError("reserve", err)
+			return UpdateResult{}, err
+		}
+		reserveReleased = false
 	}
 	if u.config.DryRun {
 		u.logf("ota check: dry-run complete version=%s target_slot=%s", manifest.Version, slotLogName(target))
@@ -645,24 +684,34 @@ func (u *Updater) commitPendingHealth(pending PendingBoot) error {
 
 func (u *Updater) ProcessPendingHealthOnce(ctx context.Context) error {
 	u.logf("ota health: processing pending boot")
-	if err := u.processPendingHealthWithLock(ctx); err != nil {
-		u.logf("ota health: %v", err)
-		if !errors.Is(err, ErrUpdateAlreadyRunning) {
-			u.recordError("health", err)
+	unlock, lockErr := u.acquireUpdateLock()
+	if lockErr != nil {
+		u.logf("ota health: %v", lockErr)
+		if !errors.Is(lockErr, ErrUpdateAlreadyRunning) {
+			u.recordError("health", lockErr)
 		}
-		return err
+		return lockErr
+	}
+	defer unlock()
+
+	healthErr := u.ProcessPendingHealth(ctx)
+	if healthErr != nil {
+		u.logf("ota health: %v", healthErr)
+		u.recordError("health", healthErr)
+	}
+	reserveErr := u.ensureReserveSpace()
+	if reserveErr != nil {
+		u.logf("ota reserve: %v", reserveErr)
+		if healthErr == nil {
+			u.recordError("reserve", reserveErr)
+			return reserveErr
+		}
+	}
+	if healthErr != nil {
+		return healthErr
 	}
 	u.logf("ota health: complete")
 	return nil
-}
-
-func (u *Updater) processPendingHealthWithLock(ctx context.Context) error {
-	unlock, err := u.acquireUpdateLock()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	return u.ProcessPendingHealth(ctx)
 }
 
 func (u *Updater) Status() (State, ABData, error) {
@@ -898,28 +947,23 @@ func (u *Updater) logf(format string, args ...any) {
 	}
 }
 
-// cleanupOldDownloadCache removes files in DownloadDir that are not part of the current manifest.
-// This includes old packages from previous versions and orphaned .part files.
-// Files matching current manifest asset names (with or without .part suffix) are preserved.
-// If DownloadDir does not exist, this is a no-op. Individual file deletion failures are logged
-// but do not fail the entire cleanup (best-effort).
-func (u *Updater) cleanupOldDownloadCache(ctx context.Context, manifest Manifest) error {
+// cleanupOldDownloadCache keeps only verified assets and resumable partials
+// needed for the selected target slot. The reserve file is managed separately.
+func (u *Updater) cleanupOldDownloadCache(selectedAssets map[string]ManifestAsset, state State, target Slot) error {
 	downloadDir := u.config.DownloadDir
 	if downloadDir == "" {
 		return nil
 	}
 
-	// Build set of current asset names from manifest (check all asset fields: Asset, AssetA, AssetB)
-	currentAssets := make(map[string]bool)
-	for _, part := range manifest.Parts {
-		if part.Asset != nil {
-			currentAssets[part.Asset.Name] = true
+	assetsByName := make(map[string]ManifestAsset)
+	validCached := make(map[string]bool)
+	for partName, asset := range selectedAssets {
+		if targetPartitionHashMatches(state, target, partName, asset) {
+			continue
 		}
-		if part.AssetA != nil {
-			currentAssets[part.AssetA.Name] = true
-		}
-		if part.AssetB != nil {
-			currentAssets[part.AssetB.Name] = true
+		assetsByName[asset.Name] = asset
+		if VerifyFile(filepath.Join(downloadDir, asset.Name), asset.Size, asset.SHA256) == nil {
+			validCached[asset.Name] = true
 		}
 	}
 
@@ -939,11 +983,19 @@ func (u *Updater) cleanupOldDownloadCache(ctx context.Context, manifest Manifest
 			continue
 		}
 		name := entry.Name()
-		baseName := strings.TrimSuffix(name, ".part")
-
-		// Keep if matches current manifest (with or without .part)
-		if currentAssets[baseName] {
+		if name == otaReserveFileName {
 			continue
+		}
+		if asset, ok := assetsByName[name]; ok && validCached[asset.Name] {
+			continue
+		}
+		if strings.HasSuffix(name, ".part") {
+			baseName := strings.TrimSuffix(name, ".part")
+			if asset, ok := assetsByName[baseName]; ok && !validCached[baseName] {
+				if info, infoErr := entry.Info(); infoErr == nil && info.Size() <= asset.Size {
+					continue
+				}
+			}
 		}
 
 		// Delete old file
@@ -956,101 +1008,6 @@ func (u *Updater) cleanupOldDownloadCache(ctx context.Context, manifest Manifest
 	}
 
 	return nil
-}
-
-// checkDownloadSpace verifies sufficient space is available before downloading.
-// It calculates the total size of assets that need to be downloaded (excluding
-// those already cached or hash-matched) and compares against available space.
-// Returns an error with detailed space information if insufficient.
-func (u *Updater) checkDownloadSpace(ctx context.Context, manifest Manifest, target Slot) error {
-	downloadDir := u.config.DownloadDir
-	if downloadDir == "" {
-		return nil
-	}
-
-	state, err := u.loadState()
-	if err != nil {
-		return err
-	}
-
-	// Calculate total size needed
-	var totalNeeded int64
-	const safetyMargin = 4 << 20 // 4 MB for filesystem overhead
-
-	for _, part := range manifest.Parts {
-		asset, err := ResolveAsset(part, target)
-		if err != nil {
-			continue
-		}
-
-		// Skip if target partition hash matches
-		if targetPartitionHashMatches(state, target, part.Name, asset) {
-			u.logf("ota space check: %s skipped (hash matches)", asset.Name)
-			continue
-		}
-
-		// Skip if cached download verified
-		dst := filepath.Join(downloadDir, asset.Name)
-		if u.cachedDownloadVerified(dst, asset) {
-			u.logf("ota space check: %s skipped (cached)", asset.Name)
-			continue
-		}
-
-		totalNeeded += asset.Size
-	}
-
-	if totalNeeded == 0 {
-		u.logf("ota space check: no download needed")
-		return nil
-	}
-
-	totalNeeded += safetyMargin
-
-	// Check available space (create dir if needed for statfs to work)
-	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
-		return fmt.Errorf("create download dir: %w", err)
-	}
-
-	available, err := statfsAvailableSpace(downloadDir)
-	if err != nil {
-		return fmt.Errorf("check available space: %w", err)
-	}
-
-	if available < totalNeeded {
-		short := totalNeeded - available
-		return fmt.Errorf("no space for OTA: need %s, free %s after cleanup, short %s. Free up /userdata (logs/audio) or insert an SD card, then retry `ota update`",
-			formatBytesHuman(totalNeeded),
-			formatBytesHuman(available),
-			formatBytesHuman(short))
-	}
-
-	u.logf("ota space check: need %s, available %s", formatBytesHuman(totalNeeded), formatBytesHuman(available))
-	return nil
-}
-
-// statfsAvailableSpace returns available bytes on the filesystem containing path.
-func statfsAvailableSpace(path string) (int64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, err
-	}
-	// Bavail is blocks available to unprivileged users
-	return int64(stat.Bavail) * int64(stat.Bsize), nil
-}
-
-// formatBytesHuman formats bytes as human-readable string (e.g., "26.4 MB").
-func formatBytesHuman(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	units := []string{"KB", "MB", "GB", "TB", "PB"}
-	return fmt.Sprintf("%.1f %s", float64(bytes)/float64(div), units[exp])
 }
 
 var defaultOTAHTTPClient = newOTAHTTPClient()

@@ -38,11 +38,13 @@ Production images use A/B layout:
 3. Download `manifest.json`, remove `signature.value`, and perform canonical JSON Ed25519 signature verification.
 4. Reject downgrades with older `build_time` or different version with same build time.
 5. Select inactive slot and parse corresponding slot assets from manifest.
-6. Download images to `/userdata/ota/downloads`, verify size and SHA256.
-7. Write to inactive `boot_*`, `oem_*`, `rootfs_*`, and fsync.
-8. Delete old `health.ok`, write `/userdata/ota/pending_boot.json`.
-9. Modify `misc`, set target slot as active trial slot with default tries of 3.
-10. Reboot into target slot.
+6. Clean stale download cache, top up the configured OTA reserve, and verify the remaining signed asset sizes fit inside the reserved budget.
+7. Release `<download_dir>/.ota-reserve`, download images, and verify size and SHA256.
+8. Restore the unused reserve budget before writing partitions; verified cache and the reserve file together remain at the configured budget.
+9. Write to inactive `boot_*`, `oem_*`, `rootfs_*`, and fsync.
+10. Delete old `health.ok`, write `/userdata/ota/pending_boot.json`.
+11. Modify `misc`, set target slot as active trial slot with default tries of 3.
+12. Reboot into target slot.
 
 ## Health Confirmation and Rollback
 
@@ -88,6 +90,8 @@ Optional configuration fields:
 - `manifest_url` - directly specify manifest URL (skip GitHub Release API)
 - `public_key_path` - override default public key path (default `/oem/etc/ota_pubkey.pem`)
 - `github_token_path` - GitHub token file path (required for private repositories)
+- `reserve_size_bytes` - total OTA download-cache and reserve budget (default 64 MiB)
+- `reserve_safety_margin_bytes` - download-time filesystem safety margin (default 4 MiB)
 
 Factory baseline must be slot-aware because `boot_a.img` and `boot_b.img` have different hashes. When baseline is missing, OTA initialization must fail; it should not guess current partition versions.
 

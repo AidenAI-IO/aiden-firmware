@@ -1326,14 +1326,16 @@ func newUpdaterTestEnv(t *testing.T) *updaterTestEnv {
 		t.Fatalf("WriteFile(health.ok) error = %v", err)
 	}
 	env.config = UpdaterConfig{
-		StateDir:           env.stateDir,
-		DownloadDir:        env.downloadDir,
-		MiscPath:           env.miscPath,
-		BlockDir:           env.blockDir,
-		PublicKey:          env.pub,
-		SwitchTries:        3,
-		HealthTimeout:      10 * time.Millisecond,
-		HealthPollInterval: time.Millisecond,
+		StateDir:                 env.stateDir,
+		DownloadDir:              env.downloadDir,
+		ReserveSizeBytes:         1024,
+		ReserveSafetyMarginBytes: 64,
+		MiscPath:                 env.miscPath,
+		BlockDir:                 env.blockDir,
+		PublicKey:                env.pub,
+		SwitchTries:              3,
+		HealthTimeout:            10 * time.Millisecond,
+		HealthPollInterval:       time.Millisecond,
 	}
 	return env
 }

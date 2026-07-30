@@ -17,6 +17,7 @@ This project's production OTA uses A/B partitioning, signed manifests, and boot 
 - [OTA Key Management](key-management.md)
 - [Device Acceptance Process](device-acceptance.md)
 - [A/B and `abctl` Verification](verification.md)
+- [OTA Reserved Space](no-space-plan.md)
 
 ### Openness and External Developers
 
@@ -33,7 +34,7 @@ This project's production OTA uses A/B partitioning, signed manifests, and boot 
 
 - OTA does not update `env`, `idblock`, or `uboot`; these are only updated via factory or USB recovery.
 - OTA only writes to `boot_*`, `oem_*`, `rootfs_*` of the inactive slot.
-- `/userdata` is preserved across upgrades and stores OTA configuration, state, download cache, and health markers.
+- `/userdata` is preserved across upgrades and stores OTA configuration, state, download cache, health markers, and the OTA reserved-space file.
 - `boot_a.img` and `boot_b.img` contain different slot bootargs; manifests must use slot-specific boot assets.
 - When factory baseline is missing or manifest signature/hash verification fails, devices must fail closed.
 

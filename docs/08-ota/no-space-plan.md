@@ -1,211 +1,135 @@
-# OTA eMMC 空间不足处理方案
+# OTA 预留空间设计
 
-## Background
+## 背景
 
-`/userdata`（3GB，ext4）是共享分区，OTA 下载缓存与 swap、audio、日志争用空间。
-实测报错：
+`/userdata` 是 3 GiB 的共享 ext4 分区。OTA 下载缓存与 swap、录音、日志等运行时数据共同占用该分区，曾出现：
 
-```
+```text
 write /userdata/ota/downloads/oem.img.tar.gz.part: no space left on device
 ```
 
-### Root causes
+旧方案在每次 OTA 前清理缓存并通过 `statfs` 检查当时的剩余空间。这样能提前报错，但不能保证用户真正开始升级时仍有空间：预检通过后，日志或录音仍可能继续写入并抢占下载额度。
 
-1. **下载缓存从不清理**：升级成功后旧包（如 `oem.img.tar.gz`，~26M）永久残留在
-   `/userdata/ota/downloads/`。`internal/ota/` 内无任何删除下载缓存的逻辑。
-2. **文件名固定、不带版本号**：下新版本时旧包仍占位，需等新包下完 `os.Rename`
-   才被覆盖，瞬时峰值需求翻倍（~52M）。
-3. **下载前无空间预检**：`.img.tar.gz` 连分区大小校验都被 `validateAssetFitsPartition`
-   跳过（`updater.go:796`）；全流程从不调用 statfs。
-4. **ENOSPC 后 `.part` 残留 + 续传死循环**：下载失败刻意保留 `.part` 供续传
-   （`download.go` 无 `os.Remove(part)`），但若失败原因是 ENOSPC，续传会带 Range 头
-   append 续写，在同一处再次撞满，半包白占空间。
+现在改为常驻预留空间。设备在正常运行期间用一个实际写满、占用磁盘块的文件锁住 OTA 预算；只有 OTA 持有更新锁且即将下载时才释放这部分空间。
 
-### 关键事实
+## 默认预算
 
-- 每个包的精确大小在下载前已知且可信：来自已 ed25519 验签的 manifest 的 `asset.Size`，
-  且校验强制 `Size > 0`（`manifest.go:168`）。无需 HEAD 探测。
-- 下载流程是「所有 part 先下完 + 校验，再统一写分区」（`updater.go:285-357` → `383-398`），
-  写分区为流式解压直写块设备，不落地未压缩 `.img`。故峰值占用 = 本次所有待下载压缩包之和。
-- `ota update` 为独立 CLI、手动触发；错误只落 `state.json.LastError`（`recordError`,
-  `updater.go:874`）+ stderr（`main.go:45`）。daemon 不参与，无语音链路。
-- `updater.go` 已 import `syscall`、`errors`，已有 `formatBytes`（`updater.go:945`）可复用。
+- 预留预算：64 MiB。
+- 下载安全余量：4 MiB，覆盖 ext4 元数据、目录项和 `fsync` 波动。
+- 预留文件：`<download_dir>/.ota-reserve`。
+- eMMC 默认路径：`/userdata/ota/downloads/.ota-reserve`。
 
-## Scope
+2026-07-30 的最新正式发布需要为目标槽下载：
 
-- 聚焦 eMMC（`/userdata/ota/downloads/`）。Step 1/2/3 逻辑对 `DownloadDir` 通用，
-  SD 卡路径（`<mount>/aiden/ota-cache`）将来自动受益，本次不专门处理。
-- 不做静态空间预留（与 storage_monitor watermark 迁移冲突，且会被日志/录音吃掉）。
-- 不接 daemon、不做语音播报（语音提示留二期）。
+| 资源 | 大小 |
+| --- | ---: |
+| `boot_b.img.tar.gz`（A/B 二选一） | 约 3.6 MiB |
+| `oem.img.tar.gz` | 约 25.3 MiB |
+| 合计 | 约 28.9 MiB |
 
-## Design
+64 MiB 能覆盖当前约 29 MiB 的下载量和 4 MiB 安全余量，并为包体增长留出空间。OTA 不下载发布中的 `update.img.tar.gz`。
 
-### Step 1 — 下载前清理无关旧缓存
+## 空间模型
 
-进入下载循环前（`updater.go:285` 之前）扫描 `DownloadDir`：
+预留不是一个永远固定为 64 MiB 的单文件，而是一笔固定 OTA 预算：
 
-- 判定依据：当前 manifest 各 asset 的 `Name` 名单。
-- **删除**：名字不在当前 manifest 中的旧包，及其对应的旧版本 `.part`。
-- **保留**：名字匹配当前 manifest 的 `.part` 残包（有效断点续传数据，不误伤续传）。
-- 效果：下新包前腾出旧包，瞬时峰值从 ~52M 压回 ~26M。
-- 目录不存在时静默跳过；删除失败仅记日志，不阻断（尽力而为）。
-
-### Step 2 — 下载前空间预检
-
-Step 1 之后：
-
-- `syscall.Statfs(DownloadDir)` 取可用空间（复用 `storage_manager.go:1201` /
-  `storage_monitor.go:63` 模式：`Bavail * Bsize`）。
-- 需求 = `Σ(本次真正需下载的 asset.Size) + safety margin`。
-  「真正需下载」排除已 hash 命中跳过的 part（`updater.go:296` slot hash 命中、
-  `330` 缓存文件命中）。
-- safety margin：固定余量（建议 2~4 MB，覆盖 ext4 元数据 / 目录项 / fsync 波动）。
-- 不足 → `recordError("space", err)` 返回，**不开始下载**（见 时机 A 提示）。
-- 顺带修复 `validateAssetFitsPartition` 对 `.img.tar.gz` 跳过校验的问题。
-
-### Step 3 — ENOSPC 失败时删残包
-
-`download.go` copyErr 判定处（`110-123`）：
-
-- `errors.Is(copyErr, syscall.ENOSPC)` 为真 → 删掉本次 `.part` 再返回。
-- 其他错误（网断 / 超时 / 服务端断连）→ 保留 `.part` 续传，语义不变
-  （含 `download_test.go` 现有断言）。
-- 理由：空间不足下续传注定再撞墙，半包白占空间，删除是止损。
-
-## 提示（触发时机与文案）
-
-「提示」= 写入 `state.LastError` + 抛到 stderr 的错误信息，无语音、无弹窗。
-
-### 时机 A — 下载前预检未过（主路径）
-
-Step 2 算出可用 < 需求，当场拦截、不下载。信息最完整，带精确数字：
-
-```
-no space for OTA: need 26.4 MB, free 18.1 MB after cleanup, short 8.3 MB.
-Free up /userdata (logs/audio) or insert an SD card, then retry `ota update`.
+```text
+有效下载缓存 + .ota-reserve = reserve_size_bytes
 ```
 
-- 数字用 `formatBytes` 格式化。
-- `need` = Step 2 的需求总量；`free` = statfs 可用（清理后）；`short` = need - free。
-- 通过 `recordError("space", ...)` 落 `state.json`，同时作为 `CheckOnce` 返回 err 抛到 stderr。
+例如已有 20 MiB 的可续传 `.part` 文件时，预留文件补到 44 MiB。这样既保留断点续传，又不会把未使用的 44 MiB 暴露给普通运行时数据。
 
-### 时机 B — 下载中途撞 ENOSPC（兜底，少见）
+预留文件通过实际写零并 `fsync` 创建，不使用会产生稀疏文件的 `truncate` 扩容。因此文件的逻辑大小对应真实占用的文件系统块。
 
-预检通过但下载期间被别的进程（日志/录音）吃满余量。Step 3 删 `.part` 后如实抛出，
-信息较简（无「清理后剩余」完整账），但明确指出空间问题、`.part` 已清、建议腾空间后重试：
+## 生命周期
 
-```
-no space for OTA during download: disk full while writing oem.img.tar.gz, partial file removed.
-Free up /userdata (logs/audio) or insert an SD card, then retry `ota update`.
-```
+### 1. 开机补齐
 
-- 经 `recordError("download", ...)` 落 `state.json` + stderr。
+`S54ota` 每次开机执行 `ota health`。健康处理和预留补齐共用 OTA 更新锁：
 
-## 改动落点
+1. 处理待确认升级、成功提交或回滚。
+2. 统计下载目录内已有缓存和断点文件。
+3. 将 `.ota-reserve` 补到“配置预算减缓存大小”。
 
-| 步骤                      | 文件                                      | 位置                                  |
-| ------------------------- | ----------------------------------------- | ------------------------------------- |
-| 清无关旧缓存              | `internal/ota/updater.go`                 | 下载循环前（`285` 之前）              |
-| 空间预检 + statfs helper  | `internal/ota/updater.go`                 | 同上                                  |
-| 补 `.img.tar.gz` 大小校验 | `internal/ota/updater.go`                 | `validateAssetFitsPartition`（`796`） |
-| ENOSPC 删 `.part`         | `internal/ota/download.go`                | `copyErr` 判定处（`110-123`）         |
-| 时机 A 文案               | `internal/ota/updater.go`                 | 预检失败分支                          |
-| 时机 B 文案               | `internal/ota/download.go` / `updater.go` | ENOSPC 分支                           |
+如果另一个 `ota update` 已持有锁，`ota health` 不会补建预留文件，避免把下载刚释放的空间重新占回去。
 
-## Test plan (TDD)
+### 2. OTA 下载前
 
-- 清理：旧包被删、当前 manifest 的包与其 `.part` 保留、目录不存在不报错。
-- 预检：可用 < 需求时不下载并返回带数字的错误；排除已命中跳过的 part。
-- `.img.tar.gz` 大小校验：超分区大小时拒绝。
-- ENOSPC：模拟 `syscall.ENOSPC` → `.part` 被删；非 ENOSPC → `.part` 保留（保留现有断言）。
-- 提示文案：`state.LastError` 含 need/free/short 数字。
+签名验证、版本策略和分区大小检查通过后：
 
-## 二期增强（可选，暂不实现）
+1. 删除不属于当前目标槽的旧缓存。
+2. 删除名字相同但大小或 SHA256 不匹配的旧完整包。
+3. 保留当前目标资源的有效完整包和大小合法的 `.part` 文件。
+4. 补齐预留预算。
+5. 根据已验签 manifest 的 `asset.size` 计算剩余下载字节数。
+6. 确认“剩余下载 + 4 MiB 安全余量”不超过当前预留文件。
+7. 删除 `.ota-reserve`，开始网络下载。
 
-### 2.1 — 手机端通知
+这里不再用 `statfs` 决定能否升级。OTA 只消费自己预先建立的预算。
 
-当前提示只落 `state.json.LastError` + stderr，用户需手动查看。二期可接入 phone bridge，将空间不足推送到手机 App。
+### 3. 下载结束或失败
 
-**接入点**：在空间不足分支，best-effort `POST http://localhost:8080/api/phone-bridge/commands`，body：
+- 下载成功并完成校验后，在写分区前恢复预留预算。
+- 网络失败时保留 `.part`，并按 `.part` 已占大小补回剩余预留。
+- 发生 `ENOSPC` 时仍删除本次 `.part` 作为兜底，避免无效续传循环，然后尝试恢复预留。
+- 已验证的完整缓存可以保留；它与缩小后的预留文件合计仍为固定预算，下次相同资源可直接复用。
+
+## 配置
+
+`/userdata/ota/config.json` 支持：
 
 ```json
 {
-  "command": {
-    "id": "ota-nospace-<timestamp>",
-    "type": "notification_send",
-    "payload": {
-      "title": "存储空间不足",
-      "body": "OTA 需要 26.4MB，可用 18.1MB。清理日志/录音或插入 SD 卡后重试。",
-      "sound": true
-    }
-  }
+  "reserve_size_bytes": 67108864,
+  "reserve_safety_margin_bytes": 4194304
 }
 ```
 
-**注意事项**：
+| 字段 | 默认值 | 说明 |
+| --- | ---: | --- |
+| `reserve_size_bytes` | 67108864 | 下载缓存和预留文件的总预算，默认 64 MiB |
+| `reserve_safety_margin_bytes` | 4194304 | 释放预留后必须额外留下的下载余量，默认 4 MiB |
 
-- 该端点目前无鉴权且绑 `0.0.0.0`，需收口安全问题（限制到 `127.0.0.1` 或加本地 token）。
-- 依赖 daemon 在运行且端口监听，需 best-effort 处理连接失败（降级到仅 log/state）。
-- 通道支持 WebSocket（App 在线）+ HTTP 队列（5min TTL，App 后台可领取）。
+如果将来的剩余下载量超过当前预留文件，OTA 会在发起资源请求前失败：
 
-详见 phone bridge 调研：`internal/agent/phone_bridge.go:458`（SendCommand）、`phone_bridge_http.go:52`（入队端点）、`tools_phone_bridge_data.go:579`（notification_send 协议）。
-
-### 2.2 — 自动清理日志/录音
-
-当前 Step 2 预检不足时立即报错。二期可先 best-effort `POST /api/storage/cleanup` 触发日志/录音清理，清完重新 statfs 预检，仍不足才提示用户。
-
-**端点**：`POST http://localhost:8080/api/storage/cleanup`（`storage_monitor_http.go:87`），body：
-
-```json
-{
-  "force": false,
-  "targets": ["llm_http_log", "audio_archive", "session_archive"]
-}
+```text
+OTA reserve too small: need 72.0 MiB for remaining downloads and safety margin,
+reserved 64.0 MiB; increase reserve_size_bytes
 ```
 
-**返回**：`{"success": true, "freed_mb": 15, "available_mb": 33.1, ...}`
+这表示发布包已经超过设备预留策略，应调整配置或减小发布资源，而不是让设备临时清理用户数据。
 
-**注意事项**：
+## SD 卡行为
 
-- 同样需处理 daemon 不在线、安全收口问题。
-- 现有 cleaner 只覆盖日志/录音三类（`storage_monitor.go:521`），不清理 OTA 缓存本身（Step 1 已覆盖）。
+预留文件跟随 `download_dir`。当 OTA CLI 根据 StorageManager 状态把下载缓存切换到 `<sd-mount>/aiden/ota-cache` 时，预留也位于该目录；OTA 状态文件仍保留在 eMMC 的 `/userdata/ota`。
 
-### 2.3 — HTTP 空间预检接口
+## 运维检查
 
-daemon 新增 `GET /api/ota/check-space`，供 App 或 config web UI 在用户点"开始升级"前检查空间。
+```bash
+# 查看预留和缓存
+ls -lh /userdata/ota/downloads
+du -h /userdata/ota/downloads/* /userdata/ota/downloads/.ota-reserve 2>/dev/null
 
-**请求**：`GET /api/ota/check-space?manifest_url=<url>`（可选，缺省用 `config.OTA.ManifestURL`）
+# 手动补齐预留（同时处理 pending health）
+/oem/usr/bin/ota health
 
-**返回**：
-
-```json
-{
-  "sufficient": false,
-  "need_mb": 26.4,
-  "available_mb": 18.1,
-  "short_mb": 8.3,
-  "after_cleanup_estimate_mb": 33.1,
-  "download_dir": "/userdata/ota/downloads",
-  "suggestions": ["insert_sd_card", "cleanup_logs"]
-}
+# 查看预留相关日志
+grep 'ota reserve' /var/log/ota/ota.log
 ```
 
-**实现**：
+## 已知边界
 
-1. 读 manifest URL（请求参数或 `config.OTA`）
-2. HTTP GET manifest（几 KB JSON，在内存里验签 + 解析，不落盘）
-3. 遍历 `manifest.Parts`，对每个 `asset.Size` 求和 → `need_mb`
-4. `syscall.Statfs(DownloadDir)` → `available_mb`
-5. 可选：调各 cleaner 的 `EstimateReclaimable` → `after_cleanup_estimate_mb`
-6. 返回 JSON
+- 预留机制只能保护预留成功建立后的升级。旧固件首次升级到包含本机制的版本时，仍由旧 OTA 客户端负责下载。
+- OTA 释放预留到恢复预留之间，其他进程理论上仍可并发写盘；64 MiB 预算中的 4 MiB 安全余量用于降低这类短时波动风险，`ENOSPC` 清残包仍作为最后兜底。
+- 如果开机时磁盘已经过满，预留文件可能无法首次补齐。`ota health` 会返回错误并记录日志，需要先清理空间一次。
 
-**说明**：
+## 验证范围
 
-- Manifest 在内存中处理，不持久化。类比浏览器查询网页 JSON，用完即丢，不占 `/userdata`。
-- 与 Step 2 预检复用同一逻辑，只是通过 HTTP 暴露给前端。
-
-**路由注册**：`internal/agent/server.go:484` 后加 `mux.HandleFunc("/api/ota/check-space", s.handleOTACheckSpace)`。
-
----
-
-**二期三项共享基础设施**：daemon HTTP 端点、best-effort 降级、安全收口（`0.0.0.0` → `127.0.0.1` / token）。建议统一处理。
+- `ota health` 创建真实大小的预留文件。
+- 已有 `.part` 文件时只补齐剩余预算。
+- 未取得 OTA 更新锁时不创建预留文件。
+- 下载请求发生时预留文件已释放。
+- 下载完成后“缓存 + 预留”恢复为配置预算。
+- 旧缓存会在下载前删除。
+- 下载需求超过预留时，在资源请求前拒绝并写入 `state.json` 的 `reserve` 阶段。
+- `ENOSPC` 删除 `.part`，其他网络错误保留 `.part`。
