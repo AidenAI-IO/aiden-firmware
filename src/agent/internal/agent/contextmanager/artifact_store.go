@@ -77,8 +77,11 @@ func newArtifactStore(sessionFolder, scopeID string) (*artifactStore, error) {
 		return nil, err
 	}
 	root := filepath.Join(sessionDataDir(sessionFolder, scopeID), "tool-results")
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create artifact directory: %w", err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		return nil, fmt.Errorf("secure artifact directory: %w", err)
 	}
 	return &artifactStore{root: root}, nil
 }
@@ -102,14 +105,6 @@ func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMet
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	used, err := artifactDataBytes(s.root)
-	if err != nil {
-		return ArtifactRef{}, err
-	}
-	if used+int64(len(data)) > ArtifactScopeMaxBytes {
-		return ArtifactRef{}, ErrArtifactScopeFull
-	}
-
 	id := "tr_" + uuid.NewString()
 	ref := artifactRefPrefix + id
 	hash := sha256.Sum256(data)
@@ -128,15 +123,21 @@ func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMet
 		metadata.ExpiresAt = metadata.CreatedAt.Add(ttl)
 	}
 	metadata.Complete = true
+	metadataData, err := json.Marshal(metadata)
+	if err != nil {
+		return ArtifactRef{}, fmt.Errorf("marshal artifact metadata: %w", err)
+	}
+	used, err := artifactScopeBytes(s.root)
+	if err != nil {
+		return ArtifactRef{}, err
+	}
+	if used+int64(len(data))+int64(len(metadataData)) > ArtifactScopeMaxBytes {
+		return ArtifactRef{}, ErrArtifactScopeFull
+	}
 
 	dataPath := filepath.Join(s.root, id+".data")
 	if err := writeArtifactFileAtomically(dataPath, data); err != nil {
 		return ArtifactRef{}, err
-	}
-	metadataData, err := json.Marshal(metadata)
-	if err != nil {
-		_ = os.Remove(dataPath)
-		return ArtifactRef{}, fmt.Errorf("marshal artifact metadata: %w", err)
 	}
 	if err := writeArtifactFileAtomically(filepath.Join(s.root, id+".json"), metadataData); err != nil {
 		_ = os.Remove(dataPath)
@@ -305,14 +306,14 @@ func artifactIDFromRef(ref string) (string, error) {
 	return id, nil
 }
 
-func artifactDataBytes(root string) (int64, error) {
+func artifactScopeBytes(root string) (int64, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return 0, fmt.Errorf("list artifact directory: %w", err)
 	}
 	var total int64
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".data" {
+		if entry.IsDir() {
 			continue
 		}
 		info, err := entry.Info()
@@ -331,7 +332,7 @@ func writeArtifactFileAtomically(path string, data []byte) error {
 	}
 	tempPath := file.Name()
 	defer os.Remove(tempPath)
-	if err := file.Chmod(0o644); err != nil {
+	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("chmod artifact temp file: %w", err)
 	}

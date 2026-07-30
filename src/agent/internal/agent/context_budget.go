@@ -15,7 +15,18 @@ import (
 const defaultContextWindowFallback = 8_192
 
 type HardContextGuard struct {
-	spec model.ModelSpec
+	spec        model.ModelSpec
+	onTelemetry func(ContextBudgetTelemetry)
+}
+
+type ContextBudgetTelemetry struct {
+	EstimatedPromptTokens int
+	EstimatedInputBudget  int
+	MessageTokens         int
+	ToolSchemaTokens      int
+	ContextWindow         int
+	MaxResponseTokens     int
+	HardGuardRejected     bool
 }
 
 type ContextBudgetExceededError struct {
@@ -40,8 +51,12 @@ func (e *ContextBudgetExceededError) Error() string {
 	)
 }
 
-func NewHardContextGuard(spec model.ModelSpec) HardContextGuard {
-	return HardContextGuard{spec: spec}
+func NewHardContextGuard(spec model.ModelSpec, telemetry ...func(ContextBudgetTelemetry)) HardContextGuard {
+	guard := HardContextGuard{spec: spec}
+	if len(telemetry) > 0 {
+		guard.onTelemetry = telemetry[0]
+	}
+	return guard
 }
 
 func (g HardContextGuard) Apply(_ context.Context, messages []llms.MessageContent, options []llms.CallOption) ([]llms.MessageContent, error) {
@@ -63,8 +78,23 @@ func (g HardContextGuard) Apply(_ context.Context, messages []llms.MessageConten
 	messageTokens := estimateMessagesTokens(messages)
 	toolSchemaTokens := estimateToolSchemaTokens(callOptions)
 	estimatedPromptTokens := messageTokens + toolSchemaTokens
+	telemetry := ContextBudgetTelemetry{
+		EstimatedPromptTokens: estimatedPromptTokens,
+		EstimatedInputBudget:  inputBudget,
+		MessageTokens:         messageTokens,
+		ToolSchemaTokens:      toolSchemaTokens,
+		ContextWindow:         contextWindow,
+		MaxResponseTokens:     maxResponseTokens,
+	}
 	if estimatedPromptTokens <= inputBudget {
+		if g.onTelemetry != nil {
+			g.onTelemetry(telemetry)
+		}
 		return messages, nil
+	}
+	telemetry.HardGuardRejected = true
+	if g.onTelemetry != nil {
+		g.onTelemetry(telemetry)
 	}
 	return nil, &ContextBudgetExceededError{
 		EstimatedPromptTokens: estimatedPromptTokens,
@@ -166,4 +196,24 @@ func estimateJSONTokens(value any) int {
 		return estimateTextTokens(fmt.Sprint(value))
 	}
 	return estimateTextTokens(string(data))
+}
+
+func isProviderContextLengthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"context length",
+		"maximum context",
+		"context window exceeded",
+		"context_window_exceeded",
+		"too many tokens",
+		"prompt is too long",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }

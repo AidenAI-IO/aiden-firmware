@@ -248,6 +248,9 @@ func TestExecuteToolCallValidationFailureEmitsToolCallAndResult(t *testing.T) {
 	if !result.Result.IsError() {
 		t.Fatalf("invalid JSON should be an error result: %#v", result.Result)
 	}
+	if result.ActionCompleted {
+		t.Fatal("validation failure marked action_completed=true")
+	}
 	if len(recorder.calls) != 1 || recorder.calls[0].Input != "not-json" {
 		t.Fatalf("expected one tool_call before validation failure, got %#v", recorder.calls)
 	}
@@ -288,6 +291,9 @@ func TestExecuteToolCallBeforeMayRejectWithToolResult(t *testing.T) {
 	if !result.Result.IsError() || result.Result.Output != "blocked by policy" {
 		t.Fatalf("unexpected rejection result: %#v", result.Result)
 	}
+	if result.ActionCompleted {
+		t.Fatal("rejected tool call marked action_completed=true")
+	}
 	if result.Step.Observation != "blocked by policy" {
 		t.Fatalf("step observation = %q", result.Step.Observation)
 	}
@@ -319,6 +325,9 @@ func TestExecuteToolCallWrapsToolErrorsAndContinues(t *testing.T) {
 	}
 	if result.Step.Observation != "boom" {
 		t.Fatalf("observation = %q", result.Step.Observation)
+	}
+	if !result.ActionCompleted {
+		t.Fatal("invoked tool failure marked action_completed=false")
 	}
 }
 

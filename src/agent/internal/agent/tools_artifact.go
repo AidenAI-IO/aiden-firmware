@@ -21,7 +21,7 @@ func NewArtifactReadTool(managerFn func() *contextmanager.ContextManager) *Artif
 func (t *ArtifactReadTool) Name() string { return "artifact_read" }
 
 func (t *ArtifactReadTool) Description() string {
-	return "Read a bounded page from a large tool-result artifact. Use only when the current bounded observation lacks a detail needed for the task. Prefer a targeted query or a small offset/limit page; do not read the whole artifact by default."
+	return "Read a bounded page from a large tool-result artifact. If the original tool exposes a source file or native pagination API, prefer that original source. Otherwise use artifact_read only when the current bounded observation lacks a needed detail. Prefer a targeted query or a small offset/limit page; do not read the whole artifact by default."
 }
 
 func (t *ArtifactReadTool) ArgsSchema() map[string]any {

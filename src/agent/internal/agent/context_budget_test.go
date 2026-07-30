@@ -70,6 +70,41 @@ func TestHardContextGuardCountsToolSchemaTokens(t *testing.T) {
 	}
 }
 
+func TestHardContextGuardReportsBudgetTelemetry(t *testing.T) {
+	var events []ContextBudgetTelemetry
+	guard := NewHardContextGuard(
+		model.ModelSpec{ContextWindow: 1_000, MaxOutput: 200},
+		func(event ContextBudgetTelemetry) { events = append(events, event) },
+	)
+	_, err := guard.Apply(context.Background(), contextBudgetToolMessages(strings.Repeat("large-result ", 500)), nil)
+	var budgetErr *ContextBudgetExceededError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("Apply() error = %T %v, want ContextBudgetExceededError", err, err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("telemetry events = %d, want 1", len(events))
+	}
+	event := events[0]
+	if !event.HardGuardRejected || event.EstimatedPromptTokens != budgetErr.EstimatedPromptTokens || event.EstimatedInputBudget != budgetErr.InputBudget {
+		t.Fatalf("telemetry event = %#v, budget error = %#v", event, budgetErr)
+	}
+}
+
+func TestProviderContextLengthErrorClassification(t *testing.T) {
+	for _, message := range []string{
+		"maximum context length exceeded",
+		"context_window_exceeded",
+		"prompt is too long for this model",
+	} {
+		if !isProviderContextLengthError(errors.New(message)) {
+			t.Fatalf("isProviderContextLengthError(%q) = false", message)
+		}
+	}
+	if isProviderContextLengthError(errors.New("provider connection reset")) {
+		t.Fatal("connection error classified as context length error")
+	}
+}
+
 func contextBudgetToolMessages(outputs ...string) []llms.MessageContent {
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "system prompt"),
