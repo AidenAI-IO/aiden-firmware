@@ -527,11 +527,6 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		environmentBridge:  environmentBridge,
 		stateManager:       statemanager.NewStateManager(),
 	}
-	if tools != nil {
-		tools.RegisterArtifactReadTool(func() *contextmanager.ContextManager {
-			return rt.contextManager
-		})
-	}
 	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
 		modelManager.SetRawHTTPLogSessionIDProvider(func() string {

@@ -45,6 +45,23 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 	}
 }
 
+func TestRuntimeDoesNotRegisterArtifactReadTool(t *testing.T) {
+	toolSet := &ToolSet{tools: map[string]langtools.Tool{}}
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: t.TempDir()},
+		nil,
+		nil,
+		toolSet,
+		NewSkillIndex(),
+	)
+	if runtime == nil {
+		t.Fatal("NewRuntimeWithDeps() returned nil")
+	}
+	if registered, ok := toolSet.Get("artifact_read"); ok {
+		t.Fatalf("artifact_read tool is still registered: %T", registered)
+	}
+}
+
 func TestRuntimeUsesConfiguredTerminationPolicy(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		{

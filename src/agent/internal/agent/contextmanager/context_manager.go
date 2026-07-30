@@ -1,6 +1,7 @@
 package contextmanager
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -75,7 +76,7 @@ type ToolResult struct {
 }
 
 type ToolResultMeta struct {
-	ArtifactRef         string `json:"artifact_ref,omitempty"`
+	ArtifactPath        string `json:"artifact_path,omitempty"`
 	OriginalBytes       int64  `json:"original_bytes,omitempty"`
 	OriginalChars       int    `json:"original_chars,omitempty"`
 	EstimatedTokens     int    `json:"estimated_tokens,omitempty"`
@@ -87,6 +88,20 @@ type ToolResultMeta struct {
 	ObservationComplete bool   `json:"observation_complete,omitempty"`
 	ProcessingErrorCode string `json:"processing_error_code,omitempty"`
 	ArtifactStoreError  string `json:"artifact_store_error,omitempty"`
+	legacyArtifactRef   string
+}
+
+func (m *ToolResultMeta) UnmarshalJSON(data []byte) error {
+	type alias ToolResultMeta
+	decoded := struct {
+		*alias
+		ArtifactRef string `json:"artifact_ref,omitempty"`
+	}{alias: (*alias)(m)}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	m.legacyArtifactRef = decoded.ArtifactRef
+	return nil
 }
 
 // Attachment tracks file metadata for message attachments. Binary content is stored on disk
@@ -143,6 +158,7 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 	if err != nil {
 		return nil, err
 	}
+	migrateLegacyArtifactRefs(messageList, artifactStore)
 
 	return &ContextManager{
 		sessionID:       sessionID,
@@ -153,6 +169,45 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 		attachmentStore: attachmentStore,
 		artifactStore:   artifactStore,
 	}, nil
+}
+
+func migrateLegacyArtifactRefs(messageList []Message, store *artifactStore) {
+	if store == nil {
+		return
+	}
+	const legacyPrefix = "artifact://"
+	const shellGuidance = "Use shell commands such as grep, sed, dd, jq, or fq to read only the needed ranges or fields."
+	for messageIndex := range messageList {
+		for resultIndex := range messageList[messageIndex].ToolResults {
+			result := &messageList[messageIndex].ToolResults[resultIndex]
+			if result.Meta == nil || result.Meta.ArtifactPath != "" {
+				continue
+			}
+			ref := strings.TrimSpace(result.Meta.legacyArtifactRef)
+			if !strings.HasPrefix(ref, legacyPrefix) {
+				continue
+			}
+			id := strings.TrimPrefix(ref, legacyPrefix)
+			if !strings.HasPrefix(id, "tr_") {
+				continue
+			}
+			if _, err := uuid.Parse(strings.TrimPrefix(id, "tr_")); err != nil {
+				continue
+			}
+
+			result.Meta.ArtifactPath = filepath.Join(store.root, id+".data")
+			result.Meta.legacyArtifactRef = ""
+			result.Content = strings.ReplaceAll(result.Content, "Full result: "+ref, "Full result file: "+result.Meta.ArtifactPath)
+			result.Content = strings.ReplaceAll(result.Content, "Saved partial result: "+ref, "Saved partial result file: "+result.Meta.ArtifactPath)
+			result.Content = strings.ReplaceAll(result.Content, ref, result.Meta.ArtifactPath)
+			if !strings.Contains(result.Content, shellGuidance) {
+				if strings.TrimSpace(result.Content) != "" {
+					result.Content = strings.TrimSpace(result.Content) + "\n"
+				}
+				result.Content += shellGuidance
+			}
+		}
+	}
 }
 
 func LoadContextManagerFromCurrentSession(sessionFolder string) (*ContextManager, error) {
@@ -266,25 +321,11 @@ func (c *ContextManager) GetArtifactScopeID() string {
 	return c.artifactScopeID
 }
 
-func (c *ContextManager) StoreArtifact(mimeType string, data []byte, metadata ArtifactMetadata) (ArtifactRef, error) {
+func (c *ContextManager) StoreArtifact(mimeType string, data []byte, metadata ArtifactMetadata) (ArtifactFile, error) {
 	if c == nil || c.artifactStore == nil {
-		return ArtifactRef{}, fmt.Errorf("artifact store is unavailable")
+		return ArtifactFile{}, fmt.Errorf("artifact store is unavailable")
 	}
 	return c.artifactStore.store(mimeType, data, metadata)
-}
-
-func (c *ContextManager) ReadArtifact(ref string, offset int64, limit int) (ArtifactChunk, error) {
-	if c == nil || c.artifactStore == nil {
-		return ArtifactChunk{}, fmt.Errorf("artifact store is unavailable")
-	}
-	return c.artifactStore.read(ref, offset, limit)
-}
-
-func (c *ContextManager) SearchArtifact(ref, query string, offset int64, limit int) (ArtifactChunk, error) {
-	if c == nil || c.artifactStore == nil {
-		return ArtifactChunk{}, fmt.Errorf("artifact store is unavailable")
-	}
-	return c.artifactStore.search(ref, query, offset, limit)
 }
 
 func (c *ContextManager) appendToList(messages []Message) error {

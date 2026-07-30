@@ -43,7 +43,7 @@ type ToolResultPrepareInput struct {
 
 type PreparedToolResult struct {
 	Content              string
-	ArtifactRef          string
+	ArtifactPath         string
 	OriginalBytes        int64
 	OriginalChars        int
 	EstimatedTokens      int
@@ -88,8 +88,7 @@ func (defaultToolResultPolicy) Prepare(_ context.Context, input ToolResultPrepar
 		ObservationComplete: true,
 		Reason:              ToolResultReasonInline,
 	}
-	recoveryRead := toolResultIsArtifactRead(input.Call)
-	intrinsicLarge := !recoveryRead && (len(output) > toolResultInlineMaxBytes || prepared.EstimatedTokens > toolResultInlineMaxTokens)
+	intrinsicLarge := len(output) > toolResultInlineMaxBytes || prepared.EstimatedTokens > toolResultInlineMaxTokens
 	availableTokens := availableToolResultTokens(input)
 	contextLarge := availableTokens >= 0 && prepared.EstimatedTokens > availableTokens
 	if !intrinsicLarge && !contextLarge {
@@ -110,7 +109,7 @@ func (defaultToolResultPolicy) Prepare(_ context.Context, input ToolResultPrepar
 	previewBudget := min(toolResultPreviewTargetToken, contentBudget)
 	preview, structured := projectToolResultWithKind(input.Call, output, previewBudget)
 	prepared.Summary = boundTextToTokens(preview, 256)
-	if input.ContextManager != nil && !recoveryRead {
+	if input.ContextManager != nil {
 		mimeType := "text/plain"
 		if structured {
 			mimeType = "application/json"
@@ -121,7 +120,7 @@ func (defaultToolResultPolicy) Prepare(_ context.Context, input ToolResultPrepar
 			Sensitive:  toolResultIsSensitive(input.Call.Spec.Name),
 		})
 		if err == nil {
-			prepared.ArtifactRef = stored.Ref
+			prepared.ArtifactPath = stored.Path
 			prepared.ArtifactComplete = stored.Complete
 		} else {
 			prepared.ProcessingErrorCode = "tool_result_persistence_failed"
@@ -141,14 +140,6 @@ func classifyArtifactStoreError(err error) string {
 	default:
 		return "artifact_store_unavailable"
 	}
-}
-
-func toolResultIsArtifactRead(call ToolCall) bool {
-	toolName := strings.TrimSpace(call.Spec.Name)
-	if toolName == "" {
-		toolName = strings.TrimSpace(call.Action.Tool)
-	}
-	return toolName == "artifact_read"
 }
 
 func toolResultIsSensitive(toolName string) bool {
@@ -215,7 +206,7 @@ func boundedToolResultObservation(call ToolCall, prepared PreparedToolResult, pr
 		action = "completed"
 	}
 
-	var builder strings.Builder
+	var optional strings.Builder
 	if prepared.ProcessingErrorCode != "" {
 		failureState, _ := json.Marshal(map[string]any{
 			"status":               "observation_incomplete",
@@ -225,32 +216,70 @@ func boundedToolResultObservation(call ToolCall, prepared PreparedToolResult, pr
 			"artifact_store_error": prepared.ArtifactStoreError,
 			"message":              "Tool action completed, but the full result could not be persisted.",
 		})
-		builder.Write(failureState)
-		builder.WriteByte('\n')
+		optional.Write(failureState)
+		optional.WriteByte('\n')
 	}
-	fmt.Fprintf(&builder, "[%s] %s\n", toolName, action)
+	fmt.Fprintf(&optional, "[%s] %s\n", toolName, action)
 	fmt.Fprintf(
-		&builder,
+		&optional,
 		"Tool action completed; model-visible result is partial (%d chars, %d bytes).\n",
 		prepared.OriginalChars,
 		prepared.OriginalBytes,
 	)
-	if prepared.ArtifactRef != "" {
+
+	var recovery strings.Builder
+	if prepared.ArtifactPath != "" {
 		if prepared.ArtifactComplete {
-			fmt.Fprintf(&builder, "Full result: %s\n", prepared.ArtifactRef)
+			fmt.Fprintf(&recovery, "Full result file: %s\n", prepared.ArtifactPath)
 		} else {
-			fmt.Fprintf(&builder, "Saved partial result: %s\n", prepared.ArtifactRef)
+			fmt.Fprintf(&recovery, "Saved partial result file: %s\n", prepared.ArtifactPath)
 		}
+		recovery.WriteString("Use shell commands such as grep, sed, dd, jq, or fq to read only the needed ranges or fields.\n")
 	} else {
-		builder.WriteString("Full result is unavailable; output was bounded before entering active context.\n")
+		optional.WriteString("Full result is unavailable; output was bounded before entering active context.\n")
 	}
 	if strings.TrimSpace(preview) != "" {
-		builder.WriteString(preview)
+		optional.WriteString(preview)
 		if !strings.HasSuffix(preview, "\n") {
-			builder.WriteByte('\n')
+			optional.WriteByte('\n')
 		}
 	}
-	return strings.TrimSpace(boundTextToTokens(builder.String(), contentTokens))
+
+	mandatory := strings.TrimSpace(recovery.String())
+	if mandatory == "" {
+		return strings.TrimSpace(boundTextToTokens(optional.String(), contentTokens))
+	}
+	return combineMandatoryToolResultText(mandatory, optional.String(), contentTokens)
+}
+
+func combineMandatoryToolResultText(mandatory, optional string, maxTokens int) string {
+	mandatory = strings.TrimSpace(mandatory)
+	optional = strings.TrimSpace(optional)
+	if mandatory == "" || optional == "" {
+		if mandatory != "" {
+			return mandatory
+		}
+		return boundTextToTokens(optional, maxTokens)
+	}
+	if maxTokens <= 0 || estimateTextTokens(mandatory) >= maxTokens {
+		return mandatory
+	}
+
+	runes := []rune(optional)
+	low, high := 0, len(runes)
+	for low < high {
+		mid := (low + high + 1) / 2
+		candidate := mandatory + "\n" + string(runes[:mid])
+		if estimateTextTokens(candidate) <= maxTokens {
+			low = mid
+		} else {
+			high = mid - 1
+		}
+	}
+	if low == 0 {
+		return mandatory
+	}
+	return strings.TrimSpace(mandatory + "\n" + string(runes[:low]))
 }
 
 func summarizeToolAction(call ToolCall) string {

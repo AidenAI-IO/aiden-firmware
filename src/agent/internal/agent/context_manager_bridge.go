@@ -98,7 +98,7 @@ func toolResultMessage(toolCallID, toolName string, prepared PreparedToolResult)
 			Name:       strings.TrimSpace(toolName),
 			Content:    prepared.Content,
 			Meta: &contextmanager.ToolResultMeta{
-				ArtifactRef:         prepared.ArtifactRef,
+				ArtifactPath:        prepared.ArtifactPath,
 				OriginalBytes:       prepared.OriginalBytes,
 				OriginalChars:       prepared.OriginalChars,
 				EstimatedTokens:     prepared.EstimatedTokens,

@@ -28,7 +28,7 @@ Tool Call
   -> Tool Result
   -> ToolResultPolicy
        -> 完整内联
-       -> 有界观察 + artifact ref
+       -> 有界观察 + artifact file path
   -> Context Manager
   -> Context Compactor（达到阈值时）
   -> Hard Context Guard
@@ -74,8 +74,6 @@ available_for_result =
 | 完整内联 token 上限 | 2,000 |
 | Preview 目标 | 1,200 tokens |
 | 最小观察预算 | 96 tokens |
-| Artifact 默认读取 | 8 KiB |
-| Artifact 单次读取硬上限 | 16 KiB |
 | 单 Artifact 上限 | 8 MiB |
 | 单会话作用域上限 | 32 MiB |
 | 普通 Artifact TTL | 7 天 |
@@ -102,7 +100,8 @@ context_large =
 | Artifact 保存失败 | 有界观察，明确结果不可完整恢复 |
 | 最终 Prompt 超硬窗口 | Hard Guard 本地拒绝 |
 
-`artifact_read` 是恢复工具，不按普通 8 KiB 阈值递归生成新 Artifact。它只受当前上下文预算和自身 16 KiB 硬上限约束。
+大结果落盘后直接向模型暴露绝对文件路径。Agent 使用现有 Shell 和系统文件工具按需读取，不注册额外恢复 Tool。
+有 Artifact 时，完整路径和 Shell 恢复提示属于不可截断恢复块；极端情况下该块可以超过 96-token 最小观察预算，Preview 和其他说明优先收缩。
 
 ## 4. 有界观察与 Artifact
 
@@ -115,7 +114,7 @@ context_large =
 - 当前观察是否完整。
 - 原始字符数和字节数。
 - 状态、错误、ID、统计或 Top-K。
-- Artifact 恢复引用。
+- Artifact 恢复文件路径。
 
 示例：
 
@@ -123,7 +122,8 @@ context_large =
 [shell] go test ./...
 Tool action completed; model-visible result is partial
 (84,320 chars, 84,320 bytes).
-Full result: artifact://tr_...
+Full result file: /userdata/agent/sessions/<scope>/tool-results/tr_<uuid>.data
+Use shell commands such as grep, sed, dd, jq, or fq to read only the needed ranges or fields.
 Error: exit status 1
 Stderr:
 FAIL TestPhoneBridgeTimeout
@@ -149,42 +149,39 @@ FAIL TestPhoneBridgeTimeout
 
 ### 4.3 Artifact Store
 
-Artifact ref 采用不可预测的 opaque ID：
+Artifact 使用不可预测的文件名，并直接将绝对路径返回给 Agent：
 
 ```text
-artifact://tr_<uuid>
+/userdata/agent/sessions/<scope>/tool-results/tr_<uuid>.data
 ```
 
 安全与生命周期规则：
 
-- Ref 不包含文件路径或 scope ID。
-- 只能读取当前 Context Manager 所属 scope。
+- 模型可见路径包含当前 Artifact scope；Shell 与 Agent 进程处于同一信任域。
+- 不再通过专用读取 Tool 强制 scope、TTL 或单次读取上限；Agent 可直接使用系统命令读取文件。
 - Context Compactor 创建的新 revision 继承原 scope。
+- 加载旧会话时，将合法的 `artifact://tr_<uuid>` metadata 迁移为当前 scope 下的绝对 `.data` 路径，并同步更新模型可见恢复入口；非法旧 ref 不参与迁移。
 - 保存 MIME、大小、SHA-256、创建时间、过期时间和工具信息。
 - scope 容量统计同时包含原文和 metadata 文件；目录/文件权限分别为 `0700`/`0600`。
 - 单文件原子写入；中断遗留文件由 Storage Cleaner 延迟清理。
 - 未引用 scope 经过 10 分钟 grace period 后才清理，并在删除前重新检查引用。
 - 清空全部会话时同时删除 transcript、metadata 和 artifact scope。
 
-### 4.4 `artifact_read`
+### 4.4 Shell/文件工具恢复
 
-```json
-{
-  "ref": "artifact://tr_...",
-  "offset": 0,
-  "limit": 8192,
-  "query": "failed"
-}
+```sh
+grep -nF 'failed' /userdata/agent/sessions/<scope>/tool-results/tr_<uuid>.data
+sed -n '1,120p' /userdata/agent/sessions/<scope>/tool-results/tr_<uuid>.data
+dd if=/userdata/agent/sessions/<scope>/tool-results/tr_<uuid>.data bs=1 skip=8192 count=8192
+jq '.results[:3]' /userdata/agent/sessions/<scope>/tool-results/tr_<uuid>.data
 ```
 
 规则：
 
-- 无 query 时按 byte offset 分页。
-- 有 query 时执行字面量搜索，不支持正则。
-- 返回 `content`、`offset`、`next_offset`、`complete` 和 `sha256`。
-- 序列化后的整个 Tool Result 不超过 16 KiB。
-- 已有源文件或原生分页 API 时，优先读取原始来源。
-- `artifact_read` 不重新执行原工具；工具描述会提示模型优先使用原工具的分页/源文件能力，Artifact 作为没有原生恢复入口时的稳定快照。
+- 不注册 `artifact_read` 或其他专用 Agent Tool。
+- Agent 优先使用 `grep`、`sed`、`dd`、`jq`、`fq` 等现有命令提取所需片段。
+- Shell 的输出仍经过 `ToolResultPolicy`，所以错误地输出整个大文件也不会无界进入上下文。
+- 原始数据本来就在源文件或原生分页 API 中时，仍优先使用原始来源。
 
 ## 5. Hard Context Guard
 
@@ -231,12 +228,12 @@ token usage >= usable budget * 80%
 - 没有匹配 Tool Call 的异常结果。
 - 当前 tail 中的截图和状态消息。
 
-历史占位是确定性的，并优先使用 Tool Result metadata 中的 summary 与 artifact ref。
+历史占位是确定性的，并优先使用 Tool Result metadata 中的 summary 与 artifact path。
 
 如果历史占位仍不足以降到目标，Conversation Summary 只负责生成对话摘要；
-Artifact 引用会收集到摘要外的确定性 `## Recoverable Tool Results` 块。
-即使摘要模型省略全部引用，完整和部分 Artifact 的恢复入口仍然保留。
-该块使用明确标记的 JSON Lines 数据边界，限制为最多 32 项和 1,200 tokens；超限时优先保留较新的引用并记录省略数量，避免恢复 metadata 反向撑爆上下文。
+Artifact 路径会收集到摘要外的确定性 `## Recoverable Tool Results` 块。
+即使摘要模型省略全部路径，完整和部分 Artifact 的恢复入口仍然保留。
+该块使用明确标记的 JSON Lines 数据边界，限制为最多 32 项和 1,200 tokens；超限时优先保留较新的路径并记录省略数量，避免恢复 metadata 反向撑爆上下文。
 
 压缩会使第一个变化 token 之后的 KV Cache 失效。通过 80%/70% 滞回、批量替换和稳定 revision，将影响控制为每次压缩一次。
 
@@ -257,7 +254,7 @@ type ToolResult struct {
 
 ```go
 type ToolResultMeta struct {
-    ArtifactRef      string
+    ArtifactPath     string
     OriginalBytes    int64
     OriginalChars    int
     EstimatedTokens  int
@@ -291,12 +288,12 @@ type ToolResultMeta struct {
 | 能力 | 状态 |
 | --- | --- |
 | 当前 Tool Result 限幅 | 已完成 |
-| Artifact 保存与有界读取 | 已完成 |
+| Artifact 保存与 Shell 文件恢复 | 已完成 |
 | Scope、TTL、容量和清理 | 已完成 |
 | Hard Context Guard | 已完成 |
 | 通用和高风险工具专属投影 | 已完成 |
 | 历史 Tool Result 压缩 | 已完成 |
-| Summary 后恢复引用保留 | 已完成 |
+| Summary 后恢复路径保留 | 已完成 |
 | Artifact 失败结构化语义 | 已完成 |
 | Telemetry 指标接线 | 已完成 |
 | ARM 真机验证 | 已完成 |
@@ -309,10 +306,10 @@ type ToolResultMeta struct {
 - Shell stderr tail 保留。
 - Clipboard 敏感投影。
 - Artifact 容量、TTL、scope、reload 和 revision 继承。
-- `artifact_read` 分页、搜索和 16 KiB 硬上限。
+- Artifact 绝对路径可由 Shell 直接读取和搜索，运行时不注册 `artifact_read`。
 - Hard Guard 在 Provider 调用前拒绝。
 - 历史结果保护当前 turn，并在不足时继续 Conversation Summary。
-- Conversation Summary 模型省略 ref 时，摘要外仍保留完整/部分 Artifact 引用。
+- Conversation Summary 模型省略路径时，摘要外仍保留完整/部分 Artifact 路径。
 - Artifact 写入失败后，已完成副作用动作不会重复执行。
 - Artifact scope 直到最后一个 revision 引用消失后才清理。
 - Tool Result、Hard Guard、Provider context-length 和历史压缩 Telemetry。
@@ -324,7 +321,7 @@ type ToolResultMeta struct {
 - Shell 原始结果 13,909 bytes / 3,478 estimated tokens。
 - 模型可见内容 3,818 bytes / 955 estimated tokens。
 - `processing_reason=intrinsic_large`、`artifactized=true`、`artifact_complete=true`。
-- `artifact_read` 字面量搜索找到尾标记，返回 `complete=true` 和一致 SHA-256。
+- 隔离验证曾通过恢复通道找到尾标记；当前实现改为直接返回同一落盘文件路径，由 Shell 搜索。
 - Context Budget Telemetry 正常写入，Hard Guard 未误拒绝。
 - 隔离 Agent 测试后已停止，生产 8080 服务保持健康。
 

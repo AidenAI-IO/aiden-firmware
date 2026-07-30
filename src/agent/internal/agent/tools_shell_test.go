@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"aiden-agent/internal/agent/contextmanager"
 )
 
 func skipOnWindows(t *testing.T) {
@@ -27,6 +30,31 @@ func TestShellToolForegroundEcho(t *testing.T) {
 	}
 	if strings.TrimRight(out, "\n") != "hello" {
 		t.Fatalf("Call output = %q, want %q", out, "hello\n")
+	}
+}
+
+func TestShellToolReadsStoredToolResultFileByPath(t *testing.T) {
+	skipOnWindows(t)
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	stored, err := manager.StoreArtifact("text/plain", []byte("prefix\nBOARD_TAIL\nsuffix\n"), contextmanager.ArtifactMetadata{})
+	if err != nil {
+		t.Fatalf("StoreArtifact() error = %v", err)
+	}
+	input, err := json.Marshal(map[string]any{
+		"command": fmt.Sprintf("grep -F BOARD_TAIL %q", stored.Path),
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	out, err := (&ShellTool{}).Call(context.Background(), string(input))
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if strings.TrimSpace(out) != "BOARD_TAIL" {
+		t.Fatalf("Call() output = %q", out)
 	}
 }
 
