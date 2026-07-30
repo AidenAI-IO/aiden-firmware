@@ -125,6 +125,7 @@ func DownloadFileWithOptions(ctx context.Context, url string, dst string, expect
 		return copyErr
 	}
 	if closeErr != nil {
+		handleDownloadError(part, closeErr)
 		return closeErr
 	}
 

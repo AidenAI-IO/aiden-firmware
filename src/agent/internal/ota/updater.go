@@ -39,6 +39,7 @@ type UpdaterConfig struct {
 	ConfigPath               string                       `json:"-"`
 	StateDir                 string                       `json:"state_dir,omitempty"`
 	DownloadDir              string                       `json:"download_dir,omitempty"`
+	DownloadDirConfigured    bool                         `json:"-"`
 	ReserveSizeBytes         int64                        `json:"reserve_size_bytes,omitempty"`
 	ReserveSafetyMarginBytes int64                        `json:"reserve_safety_margin_bytes,omitempty"`
 	UpdateLockPath           string                       `json:"update_lock_path,omitempty"`
@@ -84,18 +85,18 @@ func LoadUpdaterConfig(path string) (UpdaterConfig, error) {
 	if path == "" {
 		path = DefaultOTAConfigPath
 	}
-	config := DefaultUpdaterConfig()
-	config.ConfigPath = path
+	config := UpdaterConfig{ConfigPath: path}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return config, nil
+			return normalizeUpdaterConfig(config)
 		}
 		return UpdaterConfig{}, err
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
 		return UpdaterConfig{}, err
 	}
+	config.DownloadDirConfigured = strings.TrimSpace(config.DownloadDir) != ""
 	config.ConfigPath = path
 	return normalizeUpdaterConfig(config)
 }
@@ -312,8 +313,9 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		}
 		selectedAssets[part.Name] = asset
 	}
+	plan := downloadPlan{assets: selectedAssets, state: state, target: target}
 
-	if err := u.cleanupOldDownloadCache(selectedAssets, state, target); err != nil {
+	if err := u.cleanupOldDownloadCache(plan); err != nil {
 		u.recordError("cleanup", err)
 		return UpdateResult{}, err
 	}
@@ -321,7 +323,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		u.recordError("reserve", err)
 		return UpdateResult{}, err
 	}
-	reserveReleased, err := u.releaseReserveForDownloads(selectedAssets, state, target)
+	reserveReleased, err := u.releaseReserveForDownloads(plan)
 	if err != nil {
 		u.recordError("reserve", err)
 		return UpdateResult{}, err
@@ -372,10 +374,6 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		}
 		dst := filepath.Join(u.config.DownloadDir, asset.Name)
 		if u.cachedDownloadVerified(dst, asset) {
-			if err := u.verifyDownloadedImage(dst, asset); err != nil {
-				u.recordError("verify", err)
-				return UpdateResult{}, err
-			}
 			downloaded[part.Name] = dst
 			continue
 		}
@@ -389,11 +387,13 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 		if err := VerifyFile(dst, asset.Size, asset.SHA256); err != nil {
+			err = u.discardInvalidDownload(dst, err)
 			u.recordError("verify", err)
 			return UpdateResult{}, err
 		}
 		u.logf("ota verify: %s sha256 ok", asset.Name)
 		if err := u.verifyDownloadedImage(dst, asset); err != nil {
+			err = u.discardInvalidDownload(dst, err)
 			u.recordError("verify", err)
 			return UpdateResult{}, err
 		}
@@ -521,7 +521,7 @@ func (u *Updater) acquireUpdateLock() (func(), error) {
 }
 
 func (u *Updater) cachedDownloadVerified(path string, asset ManifestAsset) bool {
-	if err := VerifyFile(path, asset.Size, asset.SHA256); err != nil {
+	if err := u.verifyCachedDownload(path, asset); err != nil {
 		if !os.IsNotExist(err) {
 			u.logf("ota download: %s cached file ignored: %v", asset.Name, err)
 		}
@@ -529,6 +529,21 @@ func (u *Updater) cachedDownloadVerified(path string, asset ManifestAsset) bool 
 	}
 	u.logf("ota download: %s skipped; cached file verified dst=%s", asset.Name, path)
 	return true
+}
+
+func (u *Updater) verifyCachedDownload(path string, asset ManifestAsset) error {
+	if err := VerifyFile(path, asset.Size, asset.SHA256); err != nil {
+		return err
+	}
+	return u.verifyDownloadedImage(path, asset)
+}
+
+func (u *Updater) discardInvalidDownload(path string, verifyErr error) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("%w; remove invalid download %s: %v", verifyErr, filepath.Base(path), err)
+	}
+	u.logf("ota download: removed invalid cached file %s", filepath.Base(path))
+	return verifyErr
 }
 
 func targetPartitionHashMatches(state State, target Slot, partName string, asset ManifestAsset) bool {
@@ -854,16 +869,11 @@ func deriveAssetURL(manifestURL, assetName string) (string, error) {
 }
 
 func (u *Updater) validateAssetFitsPartition(partName string, target Slot, asset ManifestAsset) error {
-	blockName := partitionBlockName(partName, target)
-	max, ok := u.partitionSizes()[blockName]
-	if !ok {
-		return nil // partition size unknown, skip check
+	if isCompressedImageAssetName(asset.Name) {
+		return nil
 	}
-
-	// For compressed assets (.img.tar.gz), the uncompressed size should fit in the partition.
-	// We don't have the uncompressed size in the manifest, but asset.Size (compressed) is
-	// a lower bound - if even the compressed size exceeds the partition, it's definitely wrong.
-	if asset.Size > max {
+	blockName := partitionBlockName(partName, target)
+	if max, ok := u.partitionSizes()[blockName]; ok && asset.Size > max {
 		return fmt.Errorf("asset %s size %d is larger than partition %s size %d", asset.Name, asset.Size, blockName, max)
 	}
 	return nil
@@ -949,7 +959,7 @@ func (u *Updater) logf(format string, args ...any) {
 
 // cleanupOldDownloadCache keeps only verified assets and resumable partials
 // needed for the selected target slot. The reserve file is managed separately.
-func (u *Updater) cleanupOldDownloadCache(selectedAssets map[string]ManifestAsset, state State, target Slot) error {
+func (u *Updater) cleanupOldDownloadCache(plan downloadPlan) error {
 	downloadDir := u.config.DownloadDir
 	if downloadDir == "" {
 		return nil
@@ -957,12 +967,12 @@ func (u *Updater) cleanupOldDownloadCache(selectedAssets map[string]ManifestAsse
 
 	assetsByName := make(map[string]ManifestAsset)
 	validCached := make(map[string]bool)
-	for partName, asset := range selectedAssets {
-		if targetPartitionHashMatches(state, target, partName, asset) {
+	for partName, asset := range plan.assets {
+		if targetPartitionHashMatches(plan.state, plan.target, partName, asset) {
 			continue
 		}
 		assetsByName[asset.Name] = asset
-		if VerifyFile(filepath.Join(downloadDir, asset.Name), asset.Size, asset.SHA256) == nil {
+		if u.verifyCachedDownload(filepath.Join(downloadDir, asset.Name), asset) == nil {
 			validCached[asset.Name] = true
 		}
 	}
@@ -1001,10 +1011,9 @@ func (u *Updater) cleanupOldDownloadCache(selectedAssets map[string]ManifestAsse
 		// Delete old file
 		path := filepath.Join(downloadDir, name)
 		if err := os.Remove(path); err != nil {
-			u.logf("ota cleanup: failed to remove %s: %v", name, err)
-		} else {
-			u.logf("ota cleanup: removed old file %s", name)
+			return fmt.Errorf("remove stale OTA cache %s: %w", name, err)
 		}
+		u.logf("ota cleanup: removed old file %s", name)
 	}
 
 	return nil

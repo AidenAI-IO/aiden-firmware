@@ -165,6 +165,12 @@ func TestUpdaterRejectsTarGzImageSHA256MismatchBeforeWriting(t *testing.T) {
 	if env.reboots != 0 {
 		t.Fatalf("reboots = %d, want 0", env.reboots)
 	}
+	if _, statErr := os.Stat(filepath.Join(env.downloadDir, "boot_b.img.tar.gz")); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid downloaded archive was retained: %v", statErr)
+	}
+	if got := otaCacheBudgetBytes(t, env.downloadDir); got != env.config.ReserveSizeBytes {
+		t.Fatalf("cache plus reserve after verification failure = %d, want %d", got, env.config.ReserveSizeBytes)
+	}
 }
 
 func TestDefaultHTTPTimeoutAllowsLargeImageDownloads(t *testing.T) {

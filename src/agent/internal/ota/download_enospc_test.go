@@ -2,8 +2,8 @@ package ota
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -23,6 +23,11 @@ func TestDownloadENOSPCCleansPartFile(t *testing.T) {
 			expectPartKept: false,
 		},
 		{
+			name:           "wrapped ENOSPC deletes .part file",
+			simulateError:  fmt.Errorf("sync download: %w", syscall.ENOSPC),
+			expectPartKept: false,
+		},
+		{
 			name:           "network error keeps .part file for resume",
 			simulateError:  fmt.Errorf("connection reset"),
 			expectPartKept: true,
@@ -30,6 +35,21 @@ func TestDownloadENOSPCCleansPartFile(t *testing.T) {
 		{
 			name:           "timeout keeps .part file for resume",
 			simulateError:  context.DeadlineExceeded,
+			expectPartKept: true,
+		},
+		{
+			name:           "cancellation keeps .part file for resume",
+			simulateError:  context.Canceled,
+			expectPartKept: true,
+		},
+		{
+			name:           "system timeout keeps .part file for resume",
+			simulateError:  syscall.ETIMEDOUT,
+			expectPartKept: true,
+		},
+		{
+			name:           "EOF keeps .part file for resume",
+			simulateError:  io.EOF,
 			expectPartKept: true,
 		},
 	}
@@ -59,33 +79,5 @@ func TestDownloadENOSPCCleansPartFile(t *testing.T) {
 				t.Errorf(".part file still exists, expected it to be deleted on ENOSPC")
 			}
 		})
-	}
-}
-
-// TestDownloadPreservesPartOnNonENOSPCErrors verifies existing behavior.
-func TestDownloadPreservesPartOnNonENOSPCErrors(t *testing.T) {
-	// This test documents the existing behavior that .part files are kept
-	// on failure for resume capability. Step 3 adds the exception for ENOSPC.
-	tmpDir := t.TempDir()
-	part := filepath.Join(tmpDir, "download.part")
-
-	// Create a .part file
-	if err := os.WriteFile(part, []byte("partial"), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	// Simulate various non-ENOSPC errors
-	nonENOSPCErrors := []error{
-		fmt.Errorf("network unreachable"),
-		context.Canceled,
-		syscall.ETIMEDOUT,
-		errors.New("EOF"),
-	}
-
-	for _, err := range nonENOSPCErrors {
-		handleDownloadError(part, err)
-		if _, statErr := os.Stat(part); statErr != nil {
-			t.Errorf("after error %v, .part file should exist but got stat error: %v", err, statErr)
-		}
 	}
 }

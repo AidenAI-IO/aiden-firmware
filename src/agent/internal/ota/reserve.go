@@ -13,6 +13,12 @@ const (
 	maxInt64           = int64(^uint64(0) >> 1)
 )
 
+type downloadPlan struct {
+	assets map[string]ManifestAsset
+	state  State
+	target Slot
+}
+
 func (u *Updater) reservePath() string {
 	return filepath.Join(u.config.DownloadDir, otaReserveFileName)
 }
@@ -46,8 +52,8 @@ func (u *Updater) ensureReserveSpace() error {
 	return nil
 }
 
-func (u *Updater) releaseReserveForDownloads(selectedAssets map[string]ManifestAsset, state State, target Slot) (bool, error) {
-	needed, err := u.remainingDownloadBytes(selectedAssets, state, target)
+func (u *Updater) releaseReserveForDownloads(plan downloadPlan) (bool, error) {
+	needed, err := u.remainingDownloadBytes(plan)
 	if err != nil {
 		return false, err
 	}
@@ -79,14 +85,14 @@ func (u *Updater) releaseReserveForDownloads(selectedAssets map[string]ManifestA
 	return true, nil
 }
 
-func (u *Updater) remainingDownloadBytes(selectedAssets map[string]ManifestAsset, state State, target Slot) (int64, error) {
+func (u *Updater) remainingDownloadBytes(plan downloadPlan) (int64, error) {
 	var total int64
-	for partName, asset := range selectedAssets {
-		if targetPartitionHashMatches(state, target, partName, asset) {
+	for partName, asset := range plan.assets {
+		if targetPartitionHashMatches(plan.state, plan.target, partName, asset) {
 			continue
 		}
 		dst := filepath.Join(u.config.DownloadDir, asset.Name)
-		if VerifyFile(dst, asset.Size, asset.SHA256) == nil {
+		if u.verifyCachedDownload(dst, asset) == nil {
 			continue
 		}
 		remaining := asset.Size

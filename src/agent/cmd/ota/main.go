@@ -181,7 +181,7 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	// With the SD card mounted, cache downloads there instead of eMMC. An
 	// explicit download_dir in the config JSON or a -state-dir sandbox
 	// (tests, acceptance runs) keeps its own layout.
-	if config.DownloadDir == "" && *stateDir == "" {
+	if !config.DownloadDirConfigured && *stateDir == "" {
 		if dir := sdOTACacheDir(storageStatePath); dir != "" {
 			config.DownloadDir = dir
 		}

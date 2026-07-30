@@ -8,7 +8,7 @@ import (
 
 // storageStatePath is the runtime state mirror written by the agent's
 // StorageManager (docs/04-agent/storage-modes.md).
-const storageStatePath = "/run/aiden/storage.state"
+var storageStatePath = "/run/aiden/storage.state"
 
 // sdOTACacheDir returns the SD-card OTA download cache directory when the
 // agent reports a mounted card, or "" to keep the eMMC default. OTA state

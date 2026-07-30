@@ -62,6 +62,53 @@ func TestSplitCommandAndFlagsConsumesFlagValuesBeforeCommand(t *testing.T) {
 	}
 }
 
+func TestParseConfigFlagsUsesSDCacheWhenDownloadDirIsNotConfigured(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "config.json")
+	if err := os.WriteFile(configPath, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+	statePath := filepath.Join(tmp, "storage.state")
+	if err := os.WriteFile(statePath, []byte("SD_MOUNTED=1\nSD_MOUNTPOINT=/mnt/sdcard\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(storage state) error = %v", err)
+	}
+	previousStatePath := storageStatePath
+	storageStatePath = statePath
+	t.Cleanup(func() { storageStatePath = previousStatePath })
+
+	config, err := parseConfigFlags([]string{"-config", configPath})
+	if err != nil {
+		t.Fatalf("parseConfigFlags() error = %v", err)
+	}
+	want := filepath.Join("/mnt/sdcard", "aiden", "ota-cache")
+	if config.DownloadDir != want {
+		t.Fatalf("DownloadDir = %q, want %q", config.DownloadDir, want)
+	}
+}
+
+func TestParseConfigFlagsPreservesExplicitDownloadDir(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"download_dir":"/custom/ota-cache"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+	statePath := filepath.Join(tmp, "storage.state")
+	if err := os.WriteFile(statePath, []byte("SD_MOUNTED=1\nSD_MOUNTPOINT=/mnt/sdcard\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(storage state) error = %v", err)
+	}
+	previousStatePath := storageStatePath
+	storageStatePath = statePath
+	t.Cleanup(func() { storageStatePath = previousStatePath })
+
+	config, err := parseConfigFlags([]string{"-config", configPath})
+	if err != nil {
+		t.Fatalf("parseConfigFlags() error = %v", err)
+	}
+	if config.DownloadDir != "/custom/ota-cache" {
+		t.Fatalf("DownloadDir = %q, want explicit config path", config.DownloadDir)
+	}
+}
+
 func TestSplitCommandAndFlagsKeepsCheckNowAlias(t *testing.T) {
 	command, rest := splitCommandAndFlags([]string{"--manifest-url", "https://example.com/manifest.json", "check-now"})
 	if command != "check-now" {
