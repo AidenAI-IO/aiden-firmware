@@ -280,6 +280,18 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		return UpdateResult{}, err
 	}
 
+	// Step 1: Clean up old download cache before downloading
+	if err := u.cleanupOldDownloadCache(ctx, manifest); err != nil {
+		u.recordError("cleanup", err)
+		return UpdateResult{}, err
+	}
+
+	// Step 2: Check available space before downloading
+	if err := u.checkDownloadSpace(ctx, manifest, target); err != nil {
+		u.recordError("space", err)
+		return UpdateResult{}, err
+	}
+
 	selectedAssets := map[string]ManifestAsset{}
 	downloaded := map[string]string{}
 	for _, part := range manifest.Parts {
@@ -793,11 +805,16 @@ func deriveAssetURL(manifestURL, assetName string) (string, error) {
 }
 
 func (u *Updater) validateAssetFitsPartition(partName string, target Slot, asset ManifestAsset) error {
-	if isCompressedImageAssetName(asset.Name) {
-		return nil
-	}
 	blockName := partitionBlockName(partName, target)
-	if max, ok := u.partitionSizes()[blockName]; ok && asset.Size > max {
+	max, ok := u.partitionSizes()[blockName]
+	if !ok {
+		return nil // partition size unknown, skip check
+	}
+
+	// For compressed assets (.img.tar.gz), the uncompressed size should fit in the partition.
+	// We don't have the uncompressed size in the manifest, but asset.Size (compressed) is
+	// a lower bound - if even the compressed size exceeds the partition, it's definitely wrong.
+	if asset.Size > max {
 		return fmt.Errorf("asset %s size %d is larger than partition %s size %d", asset.Name, asset.Size, blockName, max)
 	}
 	return nil
@@ -879,6 +896,161 @@ func (u *Updater) logf(format string, args ...any) {
 	if u.config.Logger != nil {
 		u.config.Logger.Printf(format, args...)
 	}
+}
+
+// cleanupOldDownloadCache removes files in DownloadDir that are not part of the current manifest.
+// This includes old packages from previous versions and orphaned .part files.
+// Files matching current manifest asset names (with or without .part suffix) are preserved.
+// If DownloadDir does not exist, this is a no-op. Individual file deletion failures are logged
+// but do not fail the entire cleanup (best-effort).
+func (u *Updater) cleanupOldDownloadCache(ctx context.Context, manifest Manifest) error {
+	downloadDir := u.config.DownloadDir
+	if downloadDir == "" {
+		return nil
+	}
+
+	// Build set of current asset names from manifest (check all asset fields: Asset, AssetA, AssetB)
+	currentAssets := make(map[string]bool)
+	for _, part := range manifest.Parts {
+		if part.Asset != nil {
+			currentAssets[part.Asset.Name] = true
+		}
+		if part.AssetA != nil {
+			currentAssets[part.AssetA.Name] = true
+		}
+		if part.AssetB != nil {
+			currentAssets[part.AssetB.Name] = true
+		}
+	}
+
+	// Read download directory
+	entries, err := os.ReadDir(downloadDir)
+	if os.IsNotExist(err) {
+		// Directory doesn't exist, nothing to clean
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read download dir: %w", err)
+	}
+
+	// Check each file
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		baseName := strings.TrimSuffix(name, ".part")
+
+		// Keep if matches current manifest (with or without .part)
+		if currentAssets[baseName] {
+			continue
+		}
+
+		// Delete old file
+		path := filepath.Join(downloadDir, name)
+		if err := os.Remove(path); err != nil {
+			u.logf("ota cleanup: failed to remove %s: %v", name, err)
+		} else {
+			u.logf("ota cleanup: removed old file %s", name)
+		}
+	}
+
+	return nil
+}
+
+// checkDownloadSpace verifies sufficient space is available before downloading.
+// It calculates the total size of assets that need to be downloaded (excluding
+// those already cached or hash-matched) and compares against available space.
+// Returns an error with detailed space information if insufficient.
+func (u *Updater) checkDownloadSpace(ctx context.Context, manifest Manifest, target Slot) error {
+	downloadDir := u.config.DownloadDir
+	if downloadDir == "" {
+		return nil
+	}
+
+	state, err := u.loadState()
+	if err != nil {
+		return err
+	}
+
+	// Calculate total size needed
+	var totalNeeded int64
+	const safetyMargin = 4 << 20 // 4 MB for filesystem overhead
+
+	for _, part := range manifest.Parts {
+		asset, err := ResolveAsset(part, target)
+		if err != nil {
+			continue
+		}
+
+		// Skip if target partition hash matches
+		if targetPartitionHashMatches(state, target, part.Name, asset) {
+			u.logf("ota space check: %s skipped (hash matches)", asset.Name)
+			continue
+		}
+
+		// Skip if cached download verified
+		dst := filepath.Join(downloadDir, asset.Name)
+		if u.cachedDownloadVerified(dst, asset) {
+			u.logf("ota space check: %s skipped (cached)", asset.Name)
+			continue
+		}
+
+		totalNeeded += asset.Size
+	}
+
+	if totalNeeded == 0 {
+		u.logf("ota space check: no download needed")
+		return nil
+	}
+
+	totalNeeded += safetyMargin
+
+	// Check available space (create dir if needed for statfs to work)
+	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
+		return fmt.Errorf("create download dir: %w", err)
+	}
+
+	available, err := statfsAvailableSpace(downloadDir)
+	if err != nil {
+		return fmt.Errorf("check available space: %w", err)
+	}
+
+	if available < totalNeeded {
+		short := totalNeeded - available
+		return fmt.Errorf("no space for OTA: need %s, free %s after cleanup, short %s. Free up /userdata (logs/audio) or insert an SD card, then retry `ota update`",
+			formatBytesHuman(totalNeeded),
+			formatBytesHuman(available),
+			formatBytesHuman(short))
+	}
+
+	u.logf("ota space check: need %s, available %s", formatBytesHuman(totalNeeded), formatBytesHuman(available))
+	return nil
+}
+
+// statfsAvailableSpace returns available bytes on the filesystem containing path.
+func statfsAvailableSpace(path string) (int64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	// Bavail is blocks available to unprivileged users
+	return int64(stat.Bavail) * int64(stat.Bsize), nil
+}
+
+// formatBytesHuman formats bytes as human-readable string (e.g., "26.4 MB").
+func formatBytesHuman(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	units := []string{"KB", "MB", "GB", "TB", "PB"}
+	return fmt.Sprintf("%.1f %s", float64(bytes)/float64(div), units[exp])
 }
 
 var defaultOTAHTTPClient = newOTAHTTPClient()

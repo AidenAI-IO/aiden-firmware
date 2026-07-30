@@ -203,10 +203,6 @@ func compressedManifestAssetName(name string) string {
 	return name + ".tar.gz"
 }
 
-func isCompressedImageAssetName(name string) bool {
-	return strings.HasSuffix(strings.ToLower(name), ".img.tar.gz")
-}
-
 func partitionSHA256ForAsset(asset ManifestAsset) string {
 	if asset.ImageSHA256 != "" {
 		return asset.ImageSHA256
