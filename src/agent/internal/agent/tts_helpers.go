@@ -75,6 +75,40 @@ func buildTTSProviderConfigFor(cfg Config, provider string) tts.ProviderConfig {
 		extra["reference_id"] = referenceID
 	}
 
+	// Provider-specific parameter cleanup to avoid cross-provider pollution.
+	// Each provider should only receive parameters it actually uses.
+	switch provider {
+	case "fish-audio":
+		// Fish Audio uses reference_id exclusively; clear voice to prevent
+		// inheriting voice_id from other providers (e.g., Minimax, OpenRouter).
+		voice = ""
+		// Fish Audio doesn't use emotion
+		delete(extra, "emotion")
+
+	case "minimax", "minimax-cn":
+		// Minimax uses voice_id and emotion; clear Fish Audio's reference_id
+		delete(extra, "reference_id")
+
+	case "volcengine":
+		// Volcengine uses voice_id (as speaker) and emotion; clear Fish Audio's reference_id
+		delete(extra, "reference_id")
+
+	case "openrouter":
+		// OpenRouter uses voice_id; clear Fish Audio's reference_id and provider-specific emotion
+		delete(extra, "reference_id")
+		delete(extra, "emotion")
+
+	case "alicloud":
+		// Alicloud uses voice_id; clear Fish Audio's reference_id and Minimax's emotion
+		delete(extra, "reference_id")
+		delete(extra, "emotion")
+
+	case "google-cloud":
+		// Google Cloud uses voice_id; clear Fish Audio's reference_id and Minimax's emotion
+		delete(extra, "reference_id")
+		delete(extra, "emotion")
+	}
+
 	proxy := ProxyConfigFromEnvironment()
 	return tts.ProviderConfig{
 		Provider:   provider,

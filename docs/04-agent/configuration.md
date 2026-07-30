@@ -351,8 +351,8 @@ TTS:
 | `provider`     | Required. One of `minimax`, `minimax-cn`, `fish-audio`, `alicloud`, `volcengine`                                           |
 | `api_key`      | Required. The authentication key for each provider; the examples below omit this field to avoid writing keys into the docs |
 | `model`        | Optional. Minimax model name, Fish Audio model header, Alibaba Cloud Realtime model name, Volcengine `X-Api-Resource-Id`   |
-| `voice_id`     | Optional. Minimax voice id, Alibaba Cloud voice, Volcengine speaker; Fish Audio can use it as a reference id               |
-| `reference_id` | Optional. Fish Audio reference id; takes priority over `voice_id` when set                                                 |
+| `voice_id`     | Optional. Minimax voice id, Alibaba Cloud voice, Volcengine speaker. Not used by Fish Audio (see `reference_id`)           |
+| `reference_id` | Required for Fish Audio; the reference id. Ignored by other providers                                                      |
 | `emotion`      | Optional. Minimax emotion; Volcengine passes it through as `audio_params.emotion`, requires voice support                  |
 | `speed`        | Optional. Speech rate, default `1.0`; the supported range varies by provider, refer to the official docs                   |
 
@@ -360,13 +360,13 @@ The config examples below only show non-key fields relevant to adapter behavior;
 
 Common TTS adapter configs:
 
-| Provider     | `model` example            | Voice/reference field                               | Description                                                                                                 |
-| ------------ | -------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `minimax`    | `speech-2.8-hd`            | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimax.io`; `emotion` is passed through to Minimax                              |
-| `minimax-cn` | `speech-2.8-hd`            | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimaxi.com`; `emotion` is passed through to Minimax                            |
-| `fish-audio` | `s2-pro`                   | `reference_id = "98655a12fa944e26b274c535e5e03842"` | WebSocket live TTS; `model` is sent via the handshake header, `reference_id` takes priority over `voice_id` |
-| `alicloud`   | `qwen3-tts-flash-realtime` | `voice_id = "Cherry"`                               | DashScope Realtime; the adapter outputs 24 kHz PCM, automatically resampling when the sample rate differs   |
-| `volcengine` | `seed-tts-2.0`             | `voice_id = "zh_female_vv_uranus_bigtts"`           | `model` maps to `X-Api-Resource-Id`, `voice_id` maps to the speaker, and the two must match                 |
+| Provider     | `model` example            | Voice/reference field                               | Description                                                                                                         |
+| ------------ | -------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `minimax`    | `speech-2.8-hd`            | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimax.io`; `emotion` is passed through to Minimax                                      |
+| `minimax-cn` | `speech-2.8-hd`            | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimaxi.com`; `emotion` is passed through to Minimax                                    |
+| `fish-audio` | `s2-pro`                   | `reference_id = "98655a12fa944e26b274c535e5e03842"` | WebSocket live TTS; `model` is sent via the handshake header, `reference_id` is required and `voice_id` is not used |
+| `alicloud`   | `qwen3-tts-flash-realtime` | `voice_id = "Cherry"`                               | DashScope Realtime; the adapter outputs 24 kHz PCM, automatically resampling when the sample rate differs           |
+| `volcengine` | `seed-tts-2.0`             | `voice_id = "zh_female_vv_uranus_bigtts"`           | `model` maps to `X-Api-Resource-Id`, `voice_id` maps to the speaker, and the two must match                         |
 
 ### Provider examples
 
@@ -391,7 +391,7 @@ reference_id = "98655a12fa944e26b274c535e5e03842"
 speed = 1.0
 ```
 
-Fish Audio `model` defaults to `s2-pro` and is sent as a WebSocket handshake header. `voice_id` is also accepted as the reference id. If both `reference_id` and `voice_id` are set, `reference_id` wins. In some networks, the public Fish Audio endpoint may require `ALL_PROXY` or `HTTPS_PROXY` in `/userdata/system/env`.
+Fish Audio `model` defaults to `s2-pro` and is sent as a WebSocket handshake header. `reference_id` is required and must be configured under `[tts]` or `[tts.credentials.fish-audio]`; `voice_id` is not used by Fish Audio and is ignored (this avoids inheriting a `voice_id` meant for another provider). In some networks, the public Fish Audio endpoint may require `ALL_PROXY` or `HTTPS_PROXY` in `/userdata/system/env`.
 
 Alibaba Cloud Qwen-TTS Realtime:
 

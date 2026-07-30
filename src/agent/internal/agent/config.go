@@ -368,7 +368,7 @@ type TTSConfig struct {
 	//
 	//   [tts.credentials.fish-audio]
 	//   api_key = "<fish-key>"
-	//   voice_id = "<fish-reference-id>"
+	//   reference_id = "<fish-reference-id>"
 	//
 	//   [tts.credentials.cartesia]
 	//   api_key = "<cartesia-key>"
