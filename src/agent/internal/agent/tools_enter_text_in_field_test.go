@@ -50,7 +50,6 @@ func TestEnterTextInFieldDescriptionDocumentsStrategyAndVerification(t *testing.
 		"target-preserving",
 		"do not use this",
 		"call enter_text_via_bridge directly",
-		"reported app_platform",
 		"send_after_commit=true",
 		"enter_text_via_bridge",
 		"committed:true",
@@ -63,6 +62,9 @@ func TestEnterTextInFieldDescriptionDocumentsStrategyAndVerification(t *testing.
 	}
 	// mode and segments mechanics moved to the schema fields.
 	props, _ := (&EnterTextInFieldTool{}).ArgsSchema()["properties"].(map[string]any)
+	if _, found := props["platform"]; found {
+		t.Fatal("enter_text_in_field must infer the platform from HID configuration")
+	}
 	modeSchema, _ := props["mode"].(map[string]any)
 	if modeDesc, _ := modeSchema["description"].(string); !strings.Contains(modeDesc, "search") {
 		t.Fatalf("mode schema missing search semantics:\n%v", modeSchema)
@@ -84,27 +86,27 @@ func TestEnterTextInFieldBridgePreferenceUsesInteractionAndBridgeState(t *testin
 	pb.appStateAt = time.Now()
 	pb.pipBridgeEnabled = true
 	pb.pipBridgeSeen = true
-	tool := &EnterTextInFieldTool{bridgeTool: &EnterTextViaBridgeTool{bridgeFn: func() *PhoneBridge { return pb }}}
+	tool := &EnterTextInFieldTool{bridgeTool: &EnterTextViaBridgeTool{hw: &textInputHardwareDeps{pointerMode: "absolute"}, bridgeFn: func() *PhoneBridge { return pb }}}
 
 	if tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
-		Text: "小红书", Platform: "ios", Mode: "search", SendAfterCommit: true,
+		Text: "小红书", Mode: "search", SendAfterCommit: true,
 	}) {
 		t.Fatal("search input should stay on IME even when PiP clipboard queue is available")
 	}
 	if !tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
-		Text: "桥接测试", Platform: "ios",
+		Text: "桥接测试",
 	}) {
 		t.Fatal("short non-search CJK input should use a fresh target-preserving PiP clipboard route")
 	}
 	if !tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
-		Text: "请确认桥接输入结果。", Platform: "ios", SendAfterCommit: true,
+		Text: "请确认桥接输入结果。", SendAfterCommit: true,
 	}) {
 		t.Fatal("final non-ASCII composer text should use fresh target-preserving PiP clipboard route")
 	}
 
 	pb.appStateAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
 	if tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
-		Text: "请确认桥接输入结果。", Platform: "ios", SendAfterCommit: true,
+		Text: "请确认桥接输入结果。", SendAfterCommit: true,
 	}) {
 		t.Fatal("stale PiP state should not select bridge clipboard route")
 	}
@@ -115,8 +117,8 @@ func TestEnterTextInFieldUsesConnectedAndroidBackgroundClipboardRoute(t *testing
 	pb.connected = true
 	pb.platform = "android"
 	pb.appState = "background"
-	tool := &EnterTextInFieldTool{bridgeTool: &EnterTextViaBridgeTool{bridgeFn: func() *PhoneBridge { return pb }}}
-	args := enterTextInFieldArgs{Text: "桥接测试", Platform: "android"}
+	tool := &EnterTextInFieldTool{bridgeTool: &EnterTextViaBridgeTool{hw: &textInputHardwareDeps{pointerMode: "touchscreen"}, bridgeFn: func() *PhoneBridge { return pb }}}
+	args := enterTextInFieldArgs{Text: "桥接测试"}
 
 	if !tool.shouldPreferBridgeClipboard(args) {
 		t.Fatal("connected Android background bridge should expose clipboard_write as a target-preserving route")
@@ -354,11 +356,10 @@ func TestEnterTextInFieldCompositionSuccess(t *testing.T) {
 			ObservedMode:       textInputModeComposition,
 			FieldText:          "nihao",
 			CompositionPending: true,
-			Candidates:         []textInputCandidateSelection{{Offset: 0, Text: "你好"}},
 		},
 		// after keyboard-confirming candidate: committed
 		{FieldText: "你好"},
-	}}
+	}, actions: []textInputCandidateAction{{Action: textInputCandidateActionSelect, Offset: 0, Text: "你好"}}}
 	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
@@ -525,11 +526,10 @@ func TestEvaluateFieldCommitRejectsCandidateOnly(t *testing.T) {
 	}
 }
 
-func TestShouldSuspectWrongIMESkipsWhenCandidatesVisible(t *testing.T) {
+func TestShouldSuspectWrongIMESkipsDuringCandidateAction(t *testing.T) {
 	analysis := textInputScreenAnalysis{
 		FieldText:          "nihao",
 		CompositionPending: true,
-		Candidates:         []textInputCandidateSelection{{Offset: 0, Text: "你好"}},
 		ObservedMode:       textInputModeASCII,
 	}
 	if shouldSuspectWrongIME(analysis, analysis.FieldText, []string{"ni", "hao"}, textInputModeComposition) {
@@ -593,14 +593,13 @@ func TestEnterTextInFieldRetryWithoutRetype(t *testing.T) {
 	pending := textInputScreenAnalysis{
 		FieldText:          "nihao",
 		CompositionPending: true,
-		Candidates:         []textInputCandidateSelection{{Offset: 0, Text: "你好"}},
 	}
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
 		// attempt 1: before committing, analyze sees the matching candidate
 		pending,
 		// after clicking candidate: committed
 		{FieldText: "你好"},
-	}}
+	}, actions: []textInputCandidateAction{{Action: textInputCandidateActionSelect, Offset: 0, Text: "你好"}}}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	engine := newFastTextInputEngine(textInputHardwareDeps{
@@ -696,17 +695,22 @@ func TestEnterTextInFieldCandidatePaging(t *testing.T) {
 	// then after paging down once, candidate appears and gets clicked, then field committed.
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
 		// first analyze after typing segment "ni"
-		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true, Candidates: nil},
+		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true},
 		// after first page-down: still no match
-		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true, Candidates: nil},
+		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true},
 		// after second page-down: candidate found
-		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true, Candidates: []textInputCandidateSelection{{Offset: 0, Text: "你"}}},
+		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true},
 		// after keyboard-confirming candidate: committed
 		{FieldText: "你"},
 		// second segment "hao" typed, analyze
-		{ObservedMode: textInputModeComposition, FieldText: "你", CompositionPending: true, Candidates: []textInputCandidateSelection{{Offset: 0, Text: "好"}}},
+		{ObservedMode: textInputModeComposition, FieldText: "你", CompositionPending: true},
 		// after keyboard-confirming: committed
 		{FieldText: "你好"},
+	}, actions: []textInputCandidateAction{
+		{Action: textInputCandidateActionExpand},
+		{Action: textInputCandidateActionExpand},
+		{Action: textInputCandidateActionSelect, Offset: 0, Text: "你"},
+		{Action: textInputCandidateActionSelect, Offset: 0, Text: "好"},
 	}}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	engine := newFastTextInputEngine(textInputHardwareDeps{
@@ -742,14 +746,15 @@ func TestCompositionExpandsCandidatesBeforeSelectingHiddenTarget(t *testing.T) {
 		{
 			ObservedMode:       textInputModeComposition,
 			CompositionPending: true,
-			CandidateExpand:    true,
 		},
 		{
 			ObservedMode:       textInputModeComposition,
 			CompositionPending: true,
-			Candidates:         []textInputCandidateSelection{{Offset: 2, Text: "是一个硬件智能"}},
 		},
 		{FieldText: "是一个硬件智能", TargetMatched: true},
+	}, actions: []textInputCandidateAction{
+		{Action: textInputCandidateActionExpand},
+		{Action: textInputCandidateActionSelect, Offset: 2, Text: "是一个硬件智能"},
 	}}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	engine := newFastTextInputEngine(textInputHardwareDeps{
@@ -781,7 +786,7 @@ func TestCompositionExpandsCandidatesBeforeSelectingHiddenTarget(t *testing.T) {
 func TestSelectCandidateByKeyboardUsesLeftForNegativeOffset(t *testing.T) {
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	engine := newFastTextInputEngine(textInputHardwareDeps{keyboardTap: kbTap}, &stubTextInputVision{})
-	if err := engine.selectCandidateByKeyboard(context.Background(), textInputCandidateSelection{Offset: -2, Text: "目标"}); err != nil {
+	if err := engine.selectCandidateByKeyboard(context.Background(), textInputCandidateAction{Action: textInputCandidateActionSelect, Offset: -2, Text: "目标"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(kbTap.calls) != 3 {
@@ -794,20 +799,89 @@ func TestSelectCandidateByKeyboardUsesLeftForNegativeOffset(t *testing.T) {
 	}
 }
 
+func TestCompositionStopsWhenModelReturnsNone(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode:       textInputModeComposition,
+		FieldText:          "mu biao wen ben",
+		CompositionPending: true,
+	}}, actions: []textInputCandidateAction{{Action: textInputCandidateActionNone}}}
+	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	engine := newFastTextInputEngine(textInputHardwareDeps{
+		keyboardTap:  kbTap,
+		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+
+	committed, _, _, _, _, err := engine.typeCompositionWithCandidateSelection(
+		context.Background(),
+		"ios",
+		enterTextInFieldArgs{Text: "目标文本"},
+		[]string{"mu", "biao", "wen", "ben"},
+	)
+	if err != nil {
+		t.Fatalf("typeCompositionWithCandidateSelection() error=%v", err)
+	}
+	if committed {
+		t.Fatal("committed=true, want unresolved candidate state")
+	}
+	for _, call := range kbTap.calls {
+		if strings.Contains(call, "down") {
+			t.Fatalf("keyboard_tap calls=%v, must not press Down when model action is none", kbTap.calls)
+		}
+	}
+}
+
+func TestCandidateSelectionExecutesModelDecisionWithoutPrefixComparison(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode:       textInputModeComposition,
+		FieldText:          "mu biao wen ben",
+		CompositionPending: true,
+	}}, actions: []textInputCandidateAction{{Action: textInputCandidateActionSelect, Offset: 0, Text: "候选"}}}
+	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	engine := newFastTextInputEngine(textInputHardwareDeps{
+		keyboardTap:  kbTap,
+		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+
+	committed, _, _, _, _, err := engine.typeCompositionWithCandidateSelection(
+		context.Background(),
+		"ios",
+		enterTextInFieldArgs{Text: "目标文本"},
+		[]string{"mu", "biao", "wen", "ben"},
+	)
+	if err != nil {
+		t.Fatalf("typeCompositionWithCandidateSelection() error=%v", err)
+	}
+	if committed {
+		t.Fatal("committed=true, want verification after the model-directed selection")
+	}
+	selected := false
+	for _, call := range kbTap.calls {
+		if strings.Contains(call, "space") {
+			selected = true
+		}
+	}
+	if !selected {
+		t.Fatalf("keyboard_tap calls=%v, want the model's select action executed", kbTap.calls)
+	}
+}
+
 func TestCompositionContinuesSelectingWhileCandidateStateRemains(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
 		{
 			ObservedMode:       textInputModeComposition,
 			CompositionPending: true,
-			Candidates:         []textInputCandidateSelection{{Offset: 0, Text: "我们"}},
 		},
 		{
 			ObservedMode:       textInputModeComposition,
 			FieldText:          "我们",
 			CompositionPending: true,
-			Candidates:         []textInputCandidateSelection{{Offset: 1, Text: "大概率"}},
 		},
 		{FieldText: "我们大概率", TargetMatched: true},
+	}, actions: []textInputCandidateAction{
+		{Action: textInputCandidateActionSelect, Offset: 0, Text: "我们"},
+		{Action: textInputCandidateActionSelect, Offset: 1, Text: "大概率"},
 	}}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	engine := newFastTextInputEngine(textInputHardwareDeps{

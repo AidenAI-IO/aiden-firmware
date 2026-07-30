@@ -75,6 +75,9 @@ func TestVisionJSONBoundsOutputTokens(t *testing.T) {
 	if options.MaxTokens != textInputVisionMaxTokens {
 		t.Fatalf("MaxTokens = %d, want %d", options.MaxTokens, textInputVisionMaxTokens)
 	}
+	if options.MaxTokens < 4096 {
+		t.Fatalf("MaxTokens = %d, want at least 4096", options.MaxTokens)
+	}
 }
 
 func TestTextInputAnalysisPromptDescribesLastDirectPart(t *testing.T) {
@@ -95,6 +98,99 @@ func TestTextInputAnalysisPromptDescribesLastDirectPart(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, "candidate_action") {
+		t.Fatalf("general analysis prompt must not include candidate decisions:\n%s", prompt)
+	}
+}
+
+func TestCandidateActionUsesDedicatedPromptAndResponse(t *testing.T) {
+	prompt := buildTextInputCandidateActionPrompt(textInputScreenAnalysisRequest{
+		TargetText:             "前缀目标词",
+		CandidateTargetText:    "目标词",
+		CandidateCommittedText: "目",
+	})
+	for _, want := range []string{
+		"single next keyboard action",
+		`Current IME part: "目标词"`,
+		`Text already selected within the current IME part: "目"`,
+		`{"action":"select","offset":0`,
+		`{"action":"expand"}`,
+		`{"action":"none"}`,
+		"remaining target",
+		"including a single character",
+		"similar pronunciation",
+		"active preedit/composition is not proof",
+		"expand/disclosure control",
+		"no exact-prefix candidate is visible",
+		"use none",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("candidate prompt missing %q:\n%s", want, prompt)
+		}
+	}
+
+	model := &textInputVisionRecordingModel{content: `{"action":"select","offset":0,"text":"你好"}`}
+	vision := &llmTextInputVision{models: model}
+	action, err := vision.DecideCandidateAction(context.Background(), screenshotResult{Data: "ZmFrZQ=="}, textInputScreenAnalysisRequest{TargetText: "你好"})
+	if err != nil {
+		t.Fatalf("DecideCandidateAction() error = %v", err)
+	}
+	if action.Action != textInputCandidateActionSelect || action.Offset != 0 || action.Text != "你好" {
+		t.Fatalf("candidate action = %+v", action)
+	}
+}
+
+func TestTextInputProbeUsesDedicatedPromptAndResponse(t *testing.T) {
+	prompt := buildTextInputProbePrompt("ios", focusPointArgs{X: 500, Y: 300})
+	for _, want := range []string{
+		`"candidate_popup_visible":true`,
+		`"cjk_candidate_visible":true`,
+		`Chinese candidates such as "啊", "爱"`,
+		`Candidate text does not need to match "a"`,
+		"input-mode probe only",
+		"on-screen keyboard may be visible or completely absent",
+		"inline preedit text",
+		"candidate row or popup near the cursor or input field",
+		"Never return unknown merely because an on-screen keyboard is absent",
+		"HIGHEST PRIORITY",
+		`"1 啊"`,
+		"visible text cursor beside",
+		"absence of an underline does not prove ASCII mode",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("probe prompt missing %q:\n%s", want, prompt)
+		}
+	}
+
+	model := &textInputVisionRecordingModel{content: `{"mode":"composition","evidence":"candidate 啊 is visible"}`}
+	vision := &llmTextInputVision{models: model}
+	analysis, err := vision.ProbeInputMode(context.Background(), screenshotResult{Data: "ZmFrZQ=="}, "ios", focusPointArgs{X: 500, Y: 300})
+	if err != nil {
+		t.Fatalf("ProbeInputMode() error = %v", err)
+	}
+	if analysis.Mode != textInputModeComposition || analysis.Evidence != "candidate 啊 is visible" {
+		t.Fatalf("analysis = %+v", analysis)
+	}
+}
+
+func TestTextInputProbeCJKCandidatePopupOverridesASCIIClassification(t *testing.T) {
+	model := &textInputVisionRecordingModel{content: `{
+		"typed_a_visible":true,
+		"inline_preedit_visible":false,
+		"candidate_popup_visible":true,
+		"cjk_candidate_visible":true,
+		"onscreen_keyboard_visible":false,
+		"mode":"ascii",
+		"evidence":"a has a cursor but numbered Chinese candidates are visible below it"
+	}`}
+	vision := &llmTextInputVision{models: model}
+	analysis, err := vision.ProbeInputMode(context.Background(), screenshotResult{Data: "ZmFrZQ=="}, "ios", focusPointArgs{})
+	if err != nil {
+		t.Fatalf("ProbeInputMode() error = %v", err)
+	}
+	if analysis.Mode != textInputModeComposition {
+		t.Fatalf("mode = %s, want composition for visible CJK candidate popup", analysis.Mode)
 	}
 }
 
@@ -179,5 +275,8 @@ func TestPlanCompositionRetriesTruncatedJSONWithLargerTokenBudget(t *testing.T) 
 	}
 	if options.MaxTokens != textInputPlanMaxTokens {
 		t.Fatalf("planner MaxTokens=%d, want %d", options.MaxTokens, textInputPlanMaxTokens)
+	}
+	if options.MaxTokens < 4096 {
+		t.Fatalf("planner MaxTokens=%d, want at least 4096", options.MaxTokens)
 	}
 }

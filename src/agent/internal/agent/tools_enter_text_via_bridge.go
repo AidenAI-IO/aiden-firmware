@@ -65,15 +65,8 @@ type EnterTextViaBridgeTool struct {
 	confirmAppOpenFn     func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
 	findPrevAppFn        func(context.Context, screenshotResult) (previousAppCardResult, error)
 	findPasteMenuFn      func(context.Context, screenshotResult, string) (pasteMenuResult, error)
-	platformFn           func() string
 	sleep                func(context.Context, time.Duration) error
 	iosKeyboardIsolation *iosKeyboardIsolationController
-}
-
-func (t *EnterTextViaBridgeTool) SetPlatformFn(fn func() string) {
-	if t != nil {
-		t.platformFn = fn
-	}
 }
 
 func (t *EnterTextViaBridgeTool) Name() string { return "enter_text_via_bridge" }
@@ -89,7 +82,6 @@ func (t *EnterTextViaBridgeTool) Description() string {
 func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"text":              stringArgSchema("Exact text that must appear in the field when done."),
-		"platform":          stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
 		"focus":             focusPointArgSchema("Coordinates inside an actual editable field or composer that is clearly visible in the latest screenshot; do not use blank space, an app/folder/list page, or a create/new button as the field."),
 		"send_after_commit": boolArgSchema("After field text is verified, press the platform send/submit key and verify the target text is no longer still present in the input field. Set true when the user asked to send, reply, or message and the target chat/composer is already open."),
 	}, "text", "focus")
@@ -113,15 +105,7 @@ func (t *EnterTextViaBridgeTool) call(ctx context.Context, input string) (string
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
 		return fmt.Sprintf("error: invalid input: %v", err), nil
 	}
-	if t.platformFn != nil {
-		if override := strings.TrimSpace(t.platformFn()); override != "" {
-			args.Platform = override
-		}
-	}
-	platform := strings.ToLower(strings.TrimSpace(args.Platform))
-	if platform == "" {
-		platform = "android"
-	}
+	platform := t.hw.platform()
 	result := enterTextInFieldResult{
 		TargetText:   args.Text,
 		RequiredMode: string(requiredTextInputMode(args.Text)),
@@ -146,10 +130,7 @@ func (t *EnterTextViaBridgeTool) runBridgeFlow(ctx context.Context, platform str
 }
 
 func (t *EnterTextViaBridgeTool) runClipboardFirstResult(ctx context.Context, args enterTextInFieldArgs) (enterTextInFieldResult, bool) {
-	platform := strings.ToLower(strings.TrimSpace(args.Platform))
-	if platform == "" {
-		platform = "android"
-	}
+	platform := textInputHardwarePlatform(t.hw)
 	result := enterTextInFieldResult{
 		TargetText:   strings.TrimSpace(args.Text),
 		RequiredMode: string(requiredTextInputMode(args.Text)),
@@ -635,7 +616,7 @@ func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, b
 		searchTerm:       searchTerm,
 		findAppTapFn:     t.findAppTapFn,
 		confirmAppOpenFn: t.confirmAppOpenFn,
-		entryTool:        &EnterTextInFieldTool{engine: newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep), platformFn: t.platformFn},
+		entryTool:        &EnterTextInFieldTool{engine: newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)},
 		launchDelay:      appSearchOpenLaunchDelay,
 		sleep:            t.sleep,
 	})

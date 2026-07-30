@@ -67,6 +67,9 @@ func TestEnterTextViaBridgeDescriptionDocumentsChatClipboardPath(t *testing.T) {
 		}
 	}
 	props, _ := (&EnterTextViaBridgeTool{}).ArgsSchema()["properties"].(map[string]any)
+	if _, found := props["platform"]; found {
+		t.Fatal("enter_text_via_bridge must infer the platform from HID configuration")
+	}
 	focusSchema, _ := props["focus"].(map[string]any)
 	if focusDesc, _ := focusSchema["description"].(string); !strings.Contains(focusDesc, "actual editable field") || !strings.Contains(focusDesc, "blank space") {
 		t.Fatalf("focus schema missing input-readiness guard:\n%v", focusSchema)
@@ -451,7 +454,7 @@ func TestEnterTextViaBridgeSwipesRecentsWhenPreviousAppCardNotInitiallyVisible(t
 
 func TestEnterTextViaBridgeCountsBridgeVisionCalls(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{
-		contentResponse(`{"observed_mode":"ascii","field_text":"hello world","composition_pending":false,"wrong_ime_suspected":false,"suggest_switch_ime":false,"candidates":[],"evidence":["verified"]}`),
+		contentResponse(`{"observed_mode":"ascii","field_text":"hello world","composition_pending":false,"wrong_ime_suspected":false,"suggest_switch_ime":false,"evidence":["verified"]}`),
 	}}
 	resolver := &testModelResolver{model: model}
 	pb := newTestPhoneBridge(t)

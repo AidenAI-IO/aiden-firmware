@@ -24,19 +24,23 @@ const (
 	textInputKeystrokeGap           = 60 * time.Millisecond
 	textInputFocusRestoreDelay      = time.Second
 	textInputIMESwitchSettleDelay   = time.Second
+	textInputIMESwitchHoldMs        = 200
 	textInputClearBackspaceRepeats  = 32
 	textInputClearBackspaceFallback = 16
 	textInputMaxAttempts            = 3
 	textInputCandidatePageMax       = 5
 	textInputCandidateActionMax     = 20
 	textInputCandidateMoveMax       = 20
-	textInputCandidatePageDelay     = 300 * time.Millisecond
 	textInputVisionParseAttempts    = 3
 	textInputPlanAttempts           = 3
-	textInputPlanMaxTokens          = 800
+	textInputModelMaxTokens         = 4096
+	textInputVisionMaxTokens        = textInputModelMaxTokens
+	textInputPlanMaxTokens          = textInputModelMaxTokens
+	textInputPlanConcurrency        = 4
 )
 
 var textInputCompositionReadyDelay = 450 * time.Millisecond
+var textInputProbeSettleDelay = 500 * time.Millisecond
 
 func normalizeTextInputInteractionMode(raw string) textInputInteractionMode {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
@@ -145,13 +149,11 @@ func evaluateFieldCommit(analysis textInputScreenAnalysis, targetText string) (c
 
 func asciiPartNeedsEnter(analysis textInputScreenAnalysis) bool {
 	return analysis.CompositionPending ||
-		analysis.ObservedMode == textInputModeComposition ||
-		len(analysis.Candidates) > 0 ||
-		analysis.CandidateExpand
+		analysis.ObservedMode == textInputModeComposition
 }
 
 func imeCandidateStateActive(analysis textInputScreenAnalysis) bool {
-	return analysis.CompositionPending || len(analysis.Candidates) > 0 || analysis.CandidateExpand
+	return analysis.CompositionPending
 }
 
 func shouldSuspectWrongIME(analysis textInputScreenAnalysis, fieldText string, segments []string, requiredMode textInputMode) bool {
@@ -160,7 +162,7 @@ func shouldSuspectWrongIME(analysis textInputScreenAnalysis, fieldText string, s
 	}
 	if requiredMode == textInputModeASCII {
 		// ASCII text but IME is active (composition pending or candidates visible)
-		if analysis.CompositionPending || len(analysis.Candidates) > 0 {
+		if analysis.CompositionPending {
 			return true
 		}
 		if analysis.ObservedMode == textInputModeComposition {
@@ -169,7 +171,7 @@ func shouldSuspectWrongIME(analysis textInputScreenAnalysis, fieldText string, s
 		return false
 	}
 	// Composition mode checks below
-	if analysis.CompositionPending || len(analysis.Candidates) > 0 {
+	if analysis.CompositionPending {
 		return false
 	}
 	if isRomanizationOnlyField(fieldText, segments) {

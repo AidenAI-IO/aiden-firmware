@@ -17,40 +17,63 @@ type textInputScreenPhase string
 const (
 	textInputPhaseBeforeType textInputScreenPhase = "before_type"
 	textInputPhaseAfterType  textInputScreenPhase = "after_type"
-	// Keep non-streaming vision analysis bounded. Some providers otherwise spend
-	// an unbounded amount of time producing hidden reasoning before returning
-	// the small JSON decision this workflow needs.
-	textInputVisionMaxTokens = 200
 )
 
 type textInputScreenAnalysisRequest struct {
-	Phase            textInputScreenPhase
-	Platform         string
-	TargetText       string
-	Focus            focusPointArgs
-	Segments         []string
-	LastDirectInput  string
-	LastDirectTarget string
+	Phase                  textInputScreenPhase
+	Platform               string
+	TargetText             string
+	CandidateTargetText    string
+	CandidateCommittedText string
+	Focus                  focusPointArgs
+	Segments               []string
+	LastDirectInput        string
+	LastDirectTarget       string
 }
 
-type textInputCandidateSelection struct {
-	Offset int    `json:"offset"`
-	Text   string `json:"text,omitempty"`
+type textInputCandidateActionKind string
+
+const (
+	textInputCandidateActionNone   textInputCandidateActionKind = "none"
+	textInputCandidateActionSelect textInputCandidateActionKind = "select"
+	textInputCandidateActionExpand textInputCandidateActionKind = "expand"
+)
+
+type textInputCandidateAction struct {
+	Action textInputCandidateActionKind `json:"action"`
+	Offset int                          `json:"offset,omitempty"`
+	Text   string                       `json:"text,omitempty"`
 }
 
 type textInputScreenAnalysis struct {
-	ObservedMode       textInputMode                 `json:"observed_mode"`
-	FieldText          string                        `json:"field_text"`
-	TargetMatched      bool                          `json:"target_matched"`
-	CompositionPending bool                          `json:"composition_pending"`
-	WrongIMESuspected  bool                          `json:"wrong_ime_suspected"`
-	SuggestSwitchIME   bool                          `json:"suggest_switch_ime"`
-	Candidates         []textInputCandidateSelection `json:"candidates"`
-	CandidateExpand    bool                          `json:"candidate_expand,omitempty"`
+	ObservedMode       textInputMode `json:"observed_mode"`
+	FieldText          string        `json:"field_text"`
+	TargetMatched      bool          `json:"target_matched"`
+	CompositionPending bool          `json:"composition_pending"`
+	WrongIMESuspected  bool          `json:"wrong_ime_suspected"`
+	SuggestSwitchIME   bool          `json:"suggest_switch_ime"`
 }
 
 type textInputVision interface {
 	AnalyzeScreen(ctx context.Context, screenshot screenshotResult, req textInputScreenAnalysisRequest) (textInputScreenAnalysis, error)
+}
+
+type textInputCandidateVision interface {
+	DecideCandidateAction(ctx context.Context, screenshot screenshotResult, req textInputScreenAnalysisRequest) (textInputCandidateAction, error)
+}
+
+type textInputProbeAnalysis struct {
+	Mode                    textInputMode
+	TypedAVisible           bool
+	InlinePreeditVisible    bool
+	CandidatePopupVisible   bool
+	CJKCandidateVisible     bool
+	OnscreenKeyboardVisible bool
+	Evidence                string
+}
+
+type textInputProbeVision interface {
+	ProbeInputMode(ctx context.Context, screenshot screenshotResult, platform string, focus focusPointArgs) (textInputProbeAnalysis, error)
 }
 
 type llmTextInputVision struct {
@@ -71,14 +94,12 @@ func (v *llmTextInputVision) AnalyzeScreen(ctx context.Context, screenshot scree
 		return textInputScreenAnalysis{}, err
 	}
 	var parsed struct {
-		ObservedMode       string                        `json:"observed_mode"`
-		FieldText          string                        `json:"field_text"`
-		TargetMatched      bool                          `json:"target_matched"`
-		CompositionPending bool                          `json:"composition_pending"`
-		WrongIMESuspected  bool                          `json:"wrong_ime_suspected"`
-		SuggestSwitchIME   bool                          `json:"suggest_switch_ime"`
-		Candidates         []textInputCandidateSelection `json:"candidates"`
-		CandidateExpand    bool                          `json:"candidate_expand"`
+		ObservedMode       string `json:"observed_mode"`
+		FieldText          string `json:"field_text"`
+		TargetMatched      bool   `json:"target_matched"`
+		CompositionPending bool   `json:"composition_pending"`
+		WrongIMESuspected  bool   `json:"wrong_ime_suspected"`
+		SuggestSwitchIME   bool   `json:"suggest_switch_ime"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		return textInputScreenAnalysis{}, fmt.Errorf("parse screen analysis: %w", err)
@@ -94,9 +115,96 @@ func (v *llmTextInputVision) AnalyzeScreen(ctx context.Context, screenshot scree
 		CompositionPending: parsed.CompositionPending,
 		WrongIMESuspected:  parsed.WrongIMESuspected,
 		SuggestSwitchIME:   parsed.SuggestSwitchIME,
-		Candidates:         parsed.Candidates,
-		CandidateExpand:    parsed.CandidateExpand,
 	}, nil
+}
+
+func (v *llmTextInputVision) DecideCandidateAction(ctx context.Context, screenshot screenshotResult, req textInputScreenAnalysisRequest) (textInputCandidateAction, error) {
+	raw, err := v.visionJSON(ctx, buildTextInputCandidateActionPrompt(req), screenshot)
+	if err != nil {
+		return textInputCandidateAction{}, err
+	}
+	var action textInputCandidateAction
+	if err := json.Unmarshal([]byte(raw), &action); err != nil {
+		return textInputCandidateAction{}, fmt.Errorf("parse candidate action: %w", err)
+	}
+	action.Action = textInputCandidateActionKind(strings.ToLower(strings.TrimSpace(string(action.Action))))
+	switch action.Action {
+	case textInputCandidateActionSelect:
+		action.Text = strings.TrimSpace(action.Text)
+	case textInputCandidateActionExpand, textInputCandidateActionNone:
+		action.Offset = 0
+		action.Text = ""
+	default:
+		action = textInputCandidateAction{Action: textInputCandidateActionNone}
+	}
+	return action, nil
+}
+
+func (v *llmTextInputVision) ProbeInputMode(ctx context.Context, screenshot screenshotResult, platform string, focus focusPointArgs) (textInputProbeAnalysis, error) {
+	prompt := buildTextInputProbePrompt(platform, focus)
+	raw, err := v.visionJSON(ctx, prompt, screenshot)
+	if err != nil {
+		textInputLogf("probe vision request failed err=%v", err)
+		return textInputProbeAnalysis{}, err
+	}
+	textInputLogf("probe vision raw response bytes=%d raw=%q", len([]byte(raw)), raw)
+	var parsed struct {
+		Mode                    string `json:"mode"`
+		TypedAVisible           bool   `json:"typed_a_visible"`
+		InlinePreeditVisible    bool   `json:"inline_preedit_visible"`
+		CandidatePopupVisible   bool   `json:"candidate_popup_visible"`
+		CJKCandidateVisible     bool   `json:"cjk_candidate_visible"`
+		OnscreenKeyboardVisible bool   `json:"onscreen_keyboard_visible"`
+		Evidence                string `json:"evidence"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		textInputLogf("probe vision response parse failed bytes=%d raw=%q err=%v", len([]byte(raw)), raw, err)
+		return textInputProbeAnalysis{}, fmt.Errorf("parse input mode probe: %w", err)
+	}
+	mode, err := parseObservedTextInputMode(parsed.Mode)
+	if err != nil {
+		return textInputProbeAnalysis{}, fmt.Errorf("parse input mode probe: %w", err)
+	}
+	// Objective composition evidence wins over a contradictory mode label. This
+	// prevents a cursor beside "a" from being mistaken for committed English
+	// when a desktop-style CJK candidate popup is visibly active below it.
+	if parsed.InlinePreeditVisible || (parsed.CandidatePopupVisible && parsed.CJKCandidateVisible) {
+		mode = textInputModeComposition
+	}
+	return textInputProbeAnalysis{
+		Mode:                    mode,
+		TypedAVisible:           parsed.TypedAVisible,
+		InlinePreeditVisible:    parsed.InlinePreeditVisible,
+		CandidatePopupVisible:   parsed.CandidatePopupVisible,
+		CJKCandidateVisible:     parsed.CJKCandidateVisible,
+		OnscreenKeyboardVisible: parsed.OnscreenKeyboardVisible,
+		Evidence:                strings.TrimSpace(parsed.Evidence),
+	}, nil
+}
+
+func buildTextInputProbePrompt(platform string, focus focusPointArgs) string {
+	return strings.TrimSpace(fmt.Sprintf(`Determine the active keyboard input mode from this screenshot immediately after the automation typed the single lowercase letter "a".
+Platform: %q
+Focused field location (normalized 0-1000): (%.0f, %.0f)
+
+This is an input-mode probe only. Do not judge or transcribe the user's eventual target text.
+The device may use either a desktop-style IME or an on-screen keyboard. An on-screen keyboard may be visible or completely absent; its absence is normal and is never sufficient reason to return unknown.
+
+Return JSON only using exactly this shape:
+{"typed_a_visible":true,"inline_preedit_visible":false,"candidate_popup_visible":true,"cjk_candidate_visible":true,"onscreen_keyboard_visible":false,"mode":"composition","evidence":"short visual reason"}
+
+Classification rules:
+- First inspect the focused input field, text cursor, inline preedit text, underlines/highlights, and any candidate row or popup near the cursor or input field. Use an on-screen keyboard only as optional supporting evidence when one happens to be visible.
+- HIGHEST PRIORITY: if a floating candidate bar near the typed "a" contains any Han/CJK characters, mode MUST be composition. This overrides the presence of a caret, the absence of an underline, and any appearance that "a" is ordinary committed text.
+- A horizontal rounded popup directly below the input containing numbered alternatives such as "1 啊", an emoji, "3 阿", "4 钢", plus a disclosure arrow is a desktop-style CJK IME candidate popup. Set candidate_popup_visible=true, cjk_candidate_visible=true, and mode=composition.
+- mode=composition if the typed "a" is shown as uncommitted inline preedit text, or if any nearby IME candidate row/popup contains Chinese candidates such as "啊", "爱", "阿", or similar characters. Candidate text does not need to match "a".
+- mode=ascii only if the typed "a" is directly committed as ordinary field text and there is no active inline preedit, candidate row, or candidate popup near the input position.
+- mode=unknown only if the focused input position and its surrounding candidate/preedit area are obscured or too unclear to inspect.
+- Never return unknown merely because an on-screen keyboard is absent.
+- A visible text cursor beside "a" does not prove ASCII mode. IME preedit text can also show a cursor.
+- The absence of an underline does not prove ASCII mode. Candidate popup evidence takes priority.
+- Keyboard autocorrect suggestions for already committed English text are not an IME composition state.
+- When a keyboard is visible, distinguish ordinary autocorrect suggestions from an active IME candidate state by also checking the focused input position.`, platform, focus.X, focus.Y))
 }
 
 // PlanComposition turns one non-ASCII text run into the ASCII keystrokes that
@@ -218,9 +326,7 @@ Return JSON only:
   "target_matched": false,
   "composition_pending": false,
   "wrong_ime_suspected": false,
-  "suggest_switch_ime": false,
-  "candidates": [{"offset":2,"text":"你"}],
-  "candidate_expand": false
+  "suggest_switch_ime": false
 }
 
 Rules:
@@ -228,10 +334,36 @@ Rules:
 - target_matched: directly judge whether the committed text visible in the focused field matches Target text. Use visual meaning, not a code-point comparison of your field_text transcription. Treat visually equivalent punctuation forms such as full-width versus half-width comma as matching when the screenshot cannot reliably distinguish them. Return false for missing, extra, reordered, or visibly wrong letters, digits, or words
 - composition_pending: true whenever the just-typed content is still in an IME preedit/candidate state and requires confirmation, including an ASCII part shown with an IME candidate box
 - observed_mode: ascii=direct Latin entry with no active candidate/preedit box; composition=any active IME candidate/preedit state, including a candidate box shown for an ASCII part such as "4k60"
-- candidates: return at most one entry only when the exact intended pending word or phrase is visibly present and selecting it would make the committed field match Target text. offset is the signed number of keyboard moves from the currently highlighted candidate: positive means Right, negative means Left, zero means press Space immediately. Never return the first/default candidate merely because it is first or looks similar; [] if the intended candidate is not visibly present
-- candidate_expand: true when the intended candidate is not visible in the collapsed candidate row and the candidate list should be expanded with the Down key; otherwise false. Do not set it when the intended candidate is already visible
 - wrong_ime_suspected: true when field shows raw romanization instead of target script
 - suggest_switch_ime: true only when confident the wrong keyboard/IME is active`, req.Platform, req.Phase, req.TargetText, segments, req.LastDirectInput, req.LastDirectTarget, req.Focus.X, req.Focus.Y, phaseHint))
+}
+
+func buildTextInputCandidateActionPrompt(req textInputScreenAnalysisRequest) string {
+	candidateTarget := req.CandidateTargetText
+	if candidateTarget == "" {
+		candidateTarget = req.TargetText
+	}
+	return strings.TrimSpace(fmt.Sprintf(`Choose the single next keyboard action for the active IME candidate UI in this screenshot.
+Full target through the current IME part: %q
+Current IME part: %q
+Text already selected within the current IME part: %q
+Focus (normalized 0-1000): (%.0f, %.0f)
+
+Return JSON only in one of these forms:
+{"action":"select","offset":0,"text":"visible candidate text"}
+{"action":"expand"}
+{"action":"none"}
+
+Rules:
+- The remaining target is the suffix of Current IME part after Text already selected within the current IME part
+- Judge actions from the visible candidate bar or candidate list. Text shown in the field as active preedit/composition is not proof that it has been committed
+- select only when a visible candidate exactly matches one or more characters at the start of the remaining target. A shorter exact prefix, including a single character, is valid
+- Do not select a candidate based only on similar pronunciation, related meaning, or likely intent
+- If no exact-prefix candidate is visible and an expand/disclosure control is available, use expand
+- If no exact-prefix candidate is visible and expansion is unavailable or cannot be determined, use none
+- offset is the signed number of moves from the highlighted candidate: positive=Right, negative=Left, zero=select the highlighted candidate
+- text must exactly transcribe the visible candidate selected and is used only for logging
+- When the visible text or its relationship to the remaining target is uncertain, use none`, req.TargetText, candidateTarget, req.CandidateCommittedText, req.Focus.X, req.Focus.Y))
 }
 
 func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, screenshot screenshotResult) (string, error) {
@@ -261,7 +393,19 @@ func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, scre
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("empty vision response")
 	}
-	return stripJSONCodeFence(resp.Choices[0].Content), nil
+	choice := resp.Choices[0]
+	textInputLogf(
+		"vision model response choices=%d content_bytes=%d reasoning_bytes=%d stop_reason=%q llm_stream=%v output_chars=%v finish_reason=%v content=%q",
+		len(resp.Choices),
+		len([]byte(choice.Content)),
+		len([]byte(choice.ReasoningContent)),
+		choice.StopReason,
+		choice.GenerationInfo["llm_stream"],
+		choice.GenerationInfo["llm_output_chars"],
+		choice.GenerationInfo["llm_finish_reason"],
+		choice.Content,
+	)
+	return stripJSONCodeFence(choice.Content), nil
 }
 
 func stripJSONCodeFence(raw string) string {
@@ -274,6 +418,20 @@ func stripJSONCodeFence(raw string) string {
 
 type stubTextInputVision struct {
 	analyses []textInputScreenAnalysis
+	actions  []textInputCandidateAction
+}
+
+func (s *stubTextInputVision) ProbeInputMode(_ context.Context, _ screenshotResult, _ string, _ focusPointArgs) (textInputProbeAnalysis, error) {
+	if len(s.analyses) == 0 {
+		return textInputProbeAnalysis{Mode: textInputModeComposition, Evidence: "stub default"}, nil
+	}
+	out := s.analyses[0]
+	s.analyses = s.analyses[1:]
+	mode := out.ObservedMode
+	if out.CompositionPending {
+		mode = textInputModeComposition
+	}
+	return textInputProbeAnalysis{Mode: mode, InlinePreeditVisible: out.CompositionPending, CandidatePopupVisible: out.CompositionPending, Evidence: "stub analysis"}, nil
 }
 
 func (s *stubTextInputVision) AnalyzeScreen(_ context.Context, _ screenshotResult, req textInputScreenAnalysisRequest) (textInputScreenAnalysis, error) {
@@ -289,4 +447,13 @@ func (s *stubTextInputVision) AnalyzeScreen(_ context.Context, _ screenshotResul
 		out.TargetMatched = true
 	}
 	return out, nil
+}
+
+func (s *stubTextInputVision) DecideCandidateAction(_ context.Context, _ screenshotResult, _ textInputScreenAnalysisRequest) (textInputCandidateAction, error) {
+	if len(s.actions) == 0 {
+		return textInputCandidateAction{Action: textInputCandidateActionNone}, nil
+	}
+	action := s.actions[0]
+	s.actions = s.actions[1:]
+	return action, nil
 }

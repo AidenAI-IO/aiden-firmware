@@ -787,11 +787,14 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		}
 	}
 
+	textInputLogf("keyboard_tap HID begin requested=%v resolved=%v modifier=0x%02x keycodes=%v hold_ms=%d pointer_mode=%s isolation_requested=%t", args.Keys, resolved.Keys, modifier, keys, holdMs, t.pointerModeOrDefault(), modifier != 0)
 	if err := t.iosKeyboardIsolation.withKeyboard(ctx, modifier != 0, func() error {
 		return t.tapKeyboardChord(modifier, keys, holdMs)
 	}); err != nil {
+		textInputLogf("keyboard_tap HID failed requested=%v modifier=0x%02x keycodes=%v err=%v", args.Keys, modifier, keys, err)
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
+	textInputLogf("keyboard_tap HID complete requested=%v modifier=0x%02x keycodes=%v", args.Keys, modifier, keys)
 	return "ok", nil
 }
 

@@ -153,30 +153,44 @@ func (c *iosKeyboardIsolationController) batchFromContext(ctx context.Context) *
 
 func (b *iosKeyboardIsolationBatch) isolate() error {
 	if b == nil || b.controller == nil || b.isolated {
+		if b != nil && b.isolated {
+			textInputLogf("isolation enter skipped reason=already_isolated")
+		}
 		return nil
 	}
 	c := b.controller
+	textInputLogf("isolation enter begin profile=isolate")
 	c.closeHIDDevices()
 	if isolateErr := c.switchProfile("isolate"); isolateErr != nil {
+		textInputLogf("isolation enter failed err=%v; emergency restore begin", isolateErr)
 		restoreErr := c.switchProfile("restore")
 		c.recordRestoreResult(restoreErr)
+		textInputLogf("isolation emergency restore complete err=%v", restoreErr)
 		return errors.Join(isolateErr, restoreErr)
 	}
 	c.needsRestore = true
 	b.isolated = true
+	textInputLogf("isolation enter complete profile=isolate")
 	return nil
 }
 
 func (b *iosKeyboardIsolationBatch) restore() error {
 	if b == nil || b.controller == nil || !b.isolated {
+		if b != nil && !b.isolated {
+			textInputLogf("isolation restore skipped reason=not_isolated")
+		}
 		return nil
 	}
 	c := b.controller
+	textInputLogf("isolation restore begin profile=restore")
 	c.closeHIDDevices()
 	err := c.switchProfile("restore")
 	c.recordRestoreResult(err)
 	if err == nil {
 		b.isolated = false
+		textInputLogf("isolation restore complete profile=restore")
+	} else {
+		textInputLogf("isolation restore failed err=%v", err)
 	}
 	return err
 }
@@ -246,8 +260,10 @@ func (c *iosKeyboardIsolationController) withKeyboard(ctx context.Context, isola
 	}
 	if batch := c.batchFromContext(ctx); batch != nil {
 		if !isolate {
+			textInputLogf("keyboard operation uses current batch isolate_requested=false isolated=%t", batch.isolated)
 			return action()
 		}
+		textInputLogf("keyboard operation requests batch isolation isolated=%t", batch.isolated)
 		if err := batch.isolate(); err != nil {
 			return err
 		}

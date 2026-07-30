@@ -135,6 +135,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture, iosKeyboardIsolation: iosKeyboardIsolation}
 	mouseClick := &MouseClickTool{pc: pointer, screen: screen, adb: adbInput}
 	textInputHW := &textInputHardwareDeps{
+		pointerMode:  hidCfg.PointerModeOrDefault(),
 		mouseClick:   mouseClick,
 		touchGesture: touchGesture,
 		keyboardTap:  keyboardTap,
@@ -200,7 +201,7 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn fu
 		return
 	}
 	engine := newTextInputEngine(*s.textInputHW, newLLMTextInputVision(models))
-	tool := &EnterTextInFieldTool{engine: engine, platformFn: platformFn, iosKeyboardIsolation: s.iosKeyboardIsolation}
+	tool := &EnterTextInFieldTool{engine: engine, iosKeyboardIsolation: s.iosKeyboardIsolation}
 	searchOpenTool := &appSearchOpenTool{
 		hw:                   s.textInputHW,
 		vision:               newLLMTextInputVision(models),
@@ -210,9 +211,9 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn fu
 		iosKeyboardIsolation: s.iosKeyboardIsolation,
 	}
 	s.tools["search_launch_app"] = searchOpenTool
-	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, platformFn: platformFn, iosKeyboardIsolation: s.iosKeyboardIsolation}
+	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, iosKeyboardIsolation: s.iosKeyboardIsolation}
 	tool.bridgeTool = bridgeTool
-	entryTool := &EnterTextTool{engine: engine, bridgeTool: bridgeTool, platformFn: platformFn, iosKeyboardIsolation: s.iosKeyboardIsolation}
+	entryTool := &EnterTextTool{engine: engine, bridgeTool: bridgeTool, iosKeyboardIsolation: s.iosKeyboardIsolation}
 	s.tools["enter_text"] = newPostActionScreenshotTool(entryTool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
 

@@ -10,14 +10,7 @@ import (
 type EnterTextInFieldTool struct {
 	engine               *textInputEngine
 	bridgeTool           *EnterTextViaBridgeTool
-	platformFn           func() string
 	iosKeyboardIsolation *iosKeyboardIsolationController
-}
-
-func (t *EnterTextInFieldTool) SetPlatformFn(fn func() string) {
-	if t != nil {
-		t.platformFn = fn
-	}
 }
 
 func (t *EnterTextInFieldTool) Name() string { return "enter_text_in_field" }
@@ -26,7 +19,7 @@ func (t *EnterTextInFieldTool) Description() string {
 	return `Enter text into a focused input field with automatic strategy selection and verification. ` +
 		`Prefer this over keyboard_text for any input field entry; keyboard_text is ASCII-only and has no field verification. ` +
 		`Precondition: the latest screenshot must clearly show the actual editable field or composer, and focus coordinates must be inside that visible field. Opening an app, folder/list view, or screen that only shows a create/new button is not enough; first create or open the document/message and observe its editor. Never use a guessed blank-space coordinate. ` +
-		`Use this for search fields, contact lookup, short text when no target-preserving Phone Bridge clipboard path is available, and normal IME/pinyin entry. When runtime app_text_entry_strategy is target_preserving_bridge, do not use this for non-search CJK/non-ASCII, multiline, or final composer text; call enter_text_via_bridge directly and pass the reported app_platform. For a user request to send, reply, or message from an already-open composer, set send_after_commit=true. ` +
+		`Use this for search fields, contact lookup, short text when no target-preserving Phone Bridge clipboard path is available, and normal IME/pinyin entry. When runtime app_text_entry_strategy is target_preserving_bridge, do not use this for non-search CJK/non-ASCII, multiline, or final composer text; call enter_text_via_bridge directly. For a user request to send, reply, or message from an already-open composer, set send_after_commit=true. ` +
 		`Returns committed:true only when vision confirms the target text is fully committed in the input field. field_text is diagnostic visual transcription and is not used for code-point equality. ` +
 		`Focus coordinates use the same coord_space system as touch/click tools; prefer normalized coordinates from the latest screenshot.`
 }
@@ -34,7 +27,6 @@ func (t *EnterTextInFieldTool) Description() string {
 func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"text":              stringArgSchema("Exact text that must appear in the field when done."),
-		"platform":          stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
 		"mode":              stringEnumArgSchema("Interaction mode. Use \"search\" for quick handoff in search boxes; omit for normal form entry.", "form", "search"),
 		"focus":             focusPointArgSchema("Coordinates inside an actual editable field or composer that is clearly visible in the latest screenshot; do not use blank space, an app/folder/list page, or a create/new button as the field."),
 		"segments":          stringArrayArgSchema("IME romanization syllables for CJK (e.g. [\"ni\",\"hao\"] for 你好). Pass [] for pure ASCII text."),
@@ -60,11 +52,6 @@ func (t *EnterTextInFieldTool) call(ctx context.Context, input string) (string, 
 	var args enterTextInFieldArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v", err), nil
-	}
-	if t.platformFn != nil {
-		if override := strings.TrimSpace(t.platformFn()); override != "" {
-			args.Platform = override
-		}
 	}
 	if t.shouldPreferBridgeClipboard(args) {
 		bridgeResult, attempted := t.bridgeTool.runClipboardFirstResult(ctx, args)
@@ -142,10 +129,13 @@ func (t *EnterTextInFieldTool) shouldPreferBridgeClipboard(args enterTextInField
 	if t == nil || t.bridgeTool == nil {
 		return false
 	}
-	platform := strings.ToLower(strings.TrimSpace(args.Platform))
-	if platform == "" {
-		platform = "android"
+	var hw *textInputHardwareDeps
+	if t.engine != nil {
+		hw = &t.engine.hw
+	} else if t.bridgeTool != nil {
+		hw = t.bridgeTool.hw
 	}
+	platform := textInputHardwarePlatform(hw)
 	if platform != "ios" && platform != "android" {
 		return false
 	}
