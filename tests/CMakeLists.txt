@@ -179,3 +179,11 @@ if(UTIL_LIBRARY)
 endif()
 
 add_test(NAME aiden_tests COMMAND $<TARGET_FILE:aiden_tests>)
+
+# Shell-level test for the /opt bind mount that opkg installs into. Needs no
+# build artifacts and no board: S22opt reads its paths and its mount/umount
+# binaries from the environment, so the test stubs them out.
+add_test(
+    NAME s22opt_tests
+    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test_s22opt.sh
+)
