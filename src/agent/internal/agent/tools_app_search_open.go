@@ -394,7 +394,7 @@ Rules:
 - tap_point must be inside the visible app result row, using normalized 0-1000 coordinates.
 - Prefer the actual app result row, not the keyboard, search field, or suggestion chip.
 - If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`, searchTerm))
-	raw, err := modelVision.visionJSON(ctx, prompt, shot)
+	raw, err := modelVision.visionJSON(ctx, "app_search", prompt, shot)
 	if err != nil {
 		return bridgeSearchResult{}, 1, err
 	}
@@ -433,7 +433,7 @@ Rules:
 - opened=true only when the screenshot clearly shows the target app screen or a loading transition into that app.
 - opened=false if the screenshot still looks like the system search page, launcher, keyboard search results, or any unrelated app.
 - Keep reason short and concrete.`, searchTerm))
-	raw, err := modelVision.visionJSON(ctx, prompt, shot)
+	raw, err := modelVision.visionJSON(ctx, "app_open_confirmation", prompt, shot)
 	if err != nil {
 		return bridgeAppOpenResult{}, 1, err
 	}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 	"unicode"
@@ -14,7 +13,8 @@ import (
 )
 
 func textInputLogf(format string, args ...any) {
-	log.Printf("[text-input] "+format, args...)
+	// Detailed step-by-step logging is intentionally disabled. enter_text emits
+	// only VLLM timing and aggregate input-speed metrics.
 }
 
 type textInputHardwareDeps struct {

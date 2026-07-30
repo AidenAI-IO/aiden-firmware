@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"strings"
+	"time"
 )
 
 // EnterTextTool is the single public text-entry tool. It prefers Phone Bridge
@@ -61,11 +63,27 @@ func (t *EnterTextTool) ArgsSchema() map[string]any {
 }
 
 func (t *EnterTextTool) Call(ctx context.Context, input string) (string, error) {
+	started := time.Now()
+	ctx, metrics := withTextInputMetrics(ctx)
+	var output string
+	var callErr error
+	defer func() {
+		duration := time.Since(started)
+		characters := metrics.characters.Load()
+		log.Printf(
+			"[text-input] enter_text end ok=%t chars=%d duration=%s time_per_char=%s vllm_calls=%d",
+			enterTextOutputOK(output, callErr),
+			characters,
+			duration,
+			textInputDurationPerCharacter(duration, characters),
+			metrics.vllmCalls.Load(),
+		)
+	}()
 	var controller *iosKeyboardIsolationController
 	if t != nil {
 		controller = t.iosKeyboardIsolation
 	}
-	return withIOSKeyboardIsolationBatchCall(ctx, controller, func(batchCtx context.Context) (string, error) {
+	output, callErr = withIOSKeyboardIsolationBatchCall(ctx, controller, func(batchCtx context.Context) (string, error) {
 		if t == nil || t.engine == nil {
 			return enterTextToolFailure(batchCtx, CodeModuleUnavailable, "Configure enter_text dependencies, then retry."), nil
 		}
@@ -74,6 +92,7 @@ func (t *EnterTextTool) Call(ctx context.Context, input string) (string, error) 
 			textInputLogf("tool invalid arguments err=%v", err)
 			return enterTextToolFailure(batchCtx, CodeInvalidArguments, "Call enter_text again with valid JSON containing text and focus."), nil
 		}
+		metrics.characters.Store(int64(len([]rune(publicArgs.Text))))
 		args := publicArgs.toEngineArgs()
 		if strings.TrimSpace(args.Text) == "" {
 			return enterTextToolFailure(batchCtx, CodeInvalidArguments, "Provide non-empty text, then retry enter_text."), nil
@@ -115,6 +134,18 @@ func (t *EnterTextTool) Call(ctx context.Context, input string) (string, error) 
 		}
 		return enterTextToolResultString(result), nil
 	})
+	return output, callErr
+}
+
+func enterTextOutputOK(output string, callErr error) bool {
+	if callErr != nil {
+		return false
+	}
+	var result enterTextToolResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return false
+	}
+	return result.OK
 }
 
 func enterTextToolResultString(result enterTextInFieldResult) string {

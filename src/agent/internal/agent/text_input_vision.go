@@ -92,7 +92,7 @@ func newLLMTextInputVision(models model.Model) textInputVision {
 
 func (v *llmTextInputVision) AnalyzeScreen(ctx context.Context, screenshot screenshotResult, req textInputScreenAnalysisRequest) (textInputScreenAnalysis, error) {
 	prompt := buildTextInputAnalysisPrompt(req)
-	raw, err := v.visionJSON(ctx, prompt, screenshot)
+	raw, err := v.visionJSON(ctx, "screen_analysis", prompt, screenshot)
 	if err != nil {
 		return textInputScreenAnalysis{}, err
 	}
@@ -122,7 +122,7 @@ func (v *llmTextInputVision) AnalyzeScreen(ctx context.Context, screenshot scree
 }
 
 func (v *llmTextInputVision) DecideCandidateAction(ctx context.Context, screenshot screenshotResult, req textInputScreenAnalysisRequest) (textInputCandidateAction, error) {
-	raw, err := v.visionJSON(ctx, buildTextInputCandidateActionPrompt(req), screenshot)
+	raw, err := v.visionJSON(ctx, "candidate_action", buildTextInputCandidateActionPrompt(req), screenshot)
 	if err != nil {
 		return textInputCandidateAction{}, err
 	}
@@ -146,7 +146,7 @@ func (v *llmTextInputVision) DecideCandidateAction(ctx context.Context, screensh
 
 func (v *llmTextInputVision) ProbeInputMode(ctx context.Context, screenshot screenshotResult, platform string, focus focusPointArgs) (textInputProbeAnalysis, error) {
 	prompt := buildTextInputProbePrompt(platform, focus)
-	raw, err := v.visionJSON(ctx, prompt, screenshot)
+	raw, err := v.visionJSON(ctx, "ime_probe", prompt, screenshot)
 	if err != nil {
 		textInputLogf("probe vision request failed err=%v", err)
 		return textInputProbeAnalysis{}, err
@@ -230,7 +230,7 @@ func (v *llmTextInputVision) PartitionComposition(ctx context.Context, target st
 		if lastErr != nil {
 			attemptPrompt += fmt.Sprintf("\n\nThe previous response was invalid: %s. Return the complete corrected JSON object.", lastErr)
 		}
-		resp, err := v.models.GenerateContent(ctx, []llms.MessageContent{
+		resp, err := v.generateContent(ctx, "ime_partition", []llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, "You split exact IME target text into short semantic input parts. Output JSON only."),
 			llms.TextParts(llms.ChatMessageTypeHuman, attemptPrompt),
 		}, llms.WithJSONMode(), llms.WithMaxTokens(textInputPlanMaxTokens))
@@ -322,7 +322,7 @@ Rules:
 		if lastErr != nil {
 			attemptPrompt += fmt.Sprintf("\n\nThe previous response was invalid: %s. Return the complete JSON object again.", lastErr)
 		}
-		resp, err := v.models.GenerateContent(ctx, []llms.MessageContent{
+		resp, err := v.generateContent(ctx, "ime_plan", []llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, "You plan exact IME keystrokes for text-entry automation. Output JSON only."),
 			llms.TextParts(llms.ChatMessageTypeHuman, attemptPrompt),
 		}, llms.WithJSONMode(), llms.WithMaxTokens(textInputPlanMaxTokens))
@@ -464,7 +464,7 @@ Rules:
 - When the visible text or its relationship to the remaining target is uncertain, use none`, req.TargetText, candidateTarget, req.CandidateCommittedText, req.Focus.X, req.Focus.Y))
 }
 
-func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, screenshot screenshotResult) (string, error) {
+func (v *llmTextInputVision) visionJSON(ctx context.Context, operation, prompt string, screenshot screenshotResult) (string, error) {
 	if strings.TrimSpace(screenshot.Data) == "" {
 		return "", fmt.Errorf("screenshot data missing")
 	}
@@ -481,7 +481,7 @@ func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, scre
 	// Use the model's configured temperature for vision analysis. Previously
 	// hardcoded to 0 for determinism, but that breaks kimi-k3 (requires temp=1)
 	// and the temperature difference has minimal impact on vision text extraction.
-	resp, err := v.models.GenerateContent(ctx, msgs,
+	resp, err := v.generateContent(ctx, operation, msgs,
 		llms.WithJSONMode(),
 		llms.WithMaxTokens(textInputVisionMaxTokens),
 	)
@@ -491,19 +491,14 @@ func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, scre
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("empty vision response")
 	}
-	choice := resp.Choices[0]
-	textInputLogf(
-		"vision model response choices=%d content_bytes=%d reasoning_bytes=%d stop_reason=%q llm_stream=%v output_chars=%v finish_reason=%v content=%q",
-		len(resp.Choices),
-		len([]byte(choice.Content)),
-		len([]byte(choice.ReasoningContent)),
-		choice.StopReason,
-		choice.GenerationInfo["llm_stream"],
-		choice.GenerationInfo["llm_output_chars"],
-		choice.GenerationInfo["llm_finish_reason"],
-		choice.Content,
-	)
-	return stripJSONCodeFence(choice.Content), nil
+	return stripJSONCodeFence(resp.Choices[0].Content), nil
+}
+
+func (v *llmTextInputVision) generateContent(ctx context.Context, operation string, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	finish := beginTextInputVLLMCall(ctx, operation)
+	response, err := v.models.GenerateContent(ctx, messages, options...)
+	finish(err)
+	return response, err
 }
 
 func stripJSONCodeFence(raw string) string {

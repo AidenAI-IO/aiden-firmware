@@ -483,7 +483,7 @@ Rules:
 - Prefer the plain Paste/粘贴 action over unrelated actions such as Select, Look Up, Share, or Autofill.
 - tap_point must be centered inside the visible paste action using normalized 0-1000 coordinates.
 - If no paste action is visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`, platform))
-	raw, err := modelVision.visionJSON(ctx, prompt, shot)
+	raw, err := modelVision.visionJSON(ctx, "paste_menu", prompt, shot)
 	if err != nil {
 		return pasteMenuResult{}, 1, err
 	}
@@ -710,7 +710,7 @@ Rules:
 - Prefer the app card that represents the task immediately before Aiden, not the Aiden card itself.
 - tap_point must be inside the visible app card body using normalized 0-1000 coordinates.
 - If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`)
-	raw, err := modelVision.visionJSON(ctx, prompt, shot)
+	raw, err := modelVision.visionJSON(ctx, "previous_app", prompt, shot)
 	if err != nil {
 		return previousAppCardResult{}, 1, err
 	}

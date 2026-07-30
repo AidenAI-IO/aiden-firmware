@@ -501,6 +501,18 @@ func TestEnterTextResultContainsOnlySuccessStatus(t *testing.T) {
 	}
 }
 
+func TestEnterTextOutputOKReadsCompactResult(t *testing.T) {
+	if !enterTextOutputOK(`{"ok":true}`, nil) {
+		t.Fatal("ok result must be recognized")
+	}
+	if enterTextOutputOK(`{"ok":false,"suggestion":"retry"}`, nil) {
+		t.Fatal("failed result must not be recognized as successful")
+	}
+	if enterTextOutputOK(`{"ok":true}`, context.Canceled) {
+		t.Fatal("call error must override output success")
+	}
+}
+
 func TestEnterTextFailureResultContainsOnlyStatusAndSuggestion(t *testing.T) {
 	encoded := enterTextToolResultString(enterTextInFieldResult{
 		Reason: "internal diagnostic", TargetText: "secret", FieldText: "wrong text", VLMCalls: 9,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	modelpkg "aiden-agent/internal/agent/model"
 
@@ -62,7 +63,7 @@ func (m *textInputVisionRecordingModel) Spec() modelpkg.ModelSpec { return model
 func TestVisionJSONBoundsOutputTokens(t *testing.T) {
 	model := &textInputVisionRecordingModel{}
 	vision := &llmTextInputVision{models: model}
-	if _, err := vision.visionJSON(context.Background(), "return json", screenshotResult{Data: "ZmFrZQ=="}); err != nil {
+	if _, err := vision.visionJSON(context.Background(), "test", "return json", screenshotResult{Data: "ZmFrZQ=="}); err != nil {
 		t.Fatalf("visionJSON() error = %v", err)
 	}
 	options := llms.CallOptions{}
@@ -77,6 +78,27 @@ func TestVisionJSONBoundsOutputTokens(t *testing.T) {
 	}
 	if options.MaxTokens < 4096 {
 		t.Fatalf("MaxTokens = %d, want at least 4096", options.MaxTokens)
+	}
+}
+
+func TestTextInputMetricsCountVLLMCalls(t *testing.T) {
+	ctx, metrics := withTextInputMetrics(context.Background())
+	model := &textInputVisionRecordingModel{content: `{}`}
+	vision := &llmTextInputVision{models: model}
+	if _, err := vision.visionJSON(ctx, "test_operation", "return json", screenshotResult{Data: "ZmFrZQ=="}); err != nil {
+		t.Fatal(err)
+	}
+	if calls := metrics.vllmCalls.Load(); calls != 1 {
+		t.Fatalf("VLLM calls=%d, want 1", calls)
+	}
+}
+
+func TestTextInputDurationPerCharacter(t *testing.T) {
+	if got := textInputDurationPerCharacter(3*time.Second, 6); got != 500*time.Millisecond {
+		t.Fatalf("duration per character=%s, want 500ms", got)
+	}
+	if got := textInputDurationPerCharacter(time.Second, 0); got != 0 {
+		t.Fatalf("zero-character duration=%s, want 0", got)
 	}
 }
 

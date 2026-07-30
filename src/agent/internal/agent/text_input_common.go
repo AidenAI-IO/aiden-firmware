@@ -4,10 +4,57 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
+
+type textInputMetricsContextKey struct{}
+
+type textInputMetrics struct {
+	characters atomic.Int64
+	vllmCalls  atomic.Int64
+}
+
+func withTextInputMetrics(ctx context.Context) (context.Context, *textInputMetrics) {
+	metrics := &textInputMetrics{}
+	return context.WithValue(ctx, textInputMetricsContextKey{}, metrics), metrics
+}
+
+func textInputMetricsFromContext(ctx context.Context) *textInputMetrics {
+	if ctx == nil {
+		return nil
+	}
+	metrics, _ := ctx.Value(textInputMetricsContextKey{}).(*textInputMetrics)
+	return metrics
+}
+
+func beginTextInputVLLMCall(ctx context.Context, operation string) func(error) {
+	metrics := textInputMetricsFromContext(ctx)
+	if metrics == nil {
+		return func(error) {}
+	}
+	call := metrics.vllmCalls.Add(1)
+	started := time.Now()
+	log.Printf("[text-input] vllm begin call=%d operation=%s", call, operation)
+	return func(err error) {
+		duration := time.Since(started)
+		if err != nil {
+			log.Printf("[text-input] vllm end call=%d operation=%s duration=%s ok=false err=%q", call, operation, duration, err)
+			return
+		}
+		log.Printf("[text-input] vllm end call=%d operation=%s duration=%s ok=true", call, operation, duration)
+	}
+}
+
+func textInputDurationPerCharacter(duration time.Duration, characters int64) time.Duration {
+	if characters <= 0 {
+		return 0
+	}
+	return duration / time.Duration(characters)
+}
 
 type textInputMode string
 
