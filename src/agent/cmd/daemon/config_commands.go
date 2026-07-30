@@ -77,23 +77,25 @@ type modelDTO struct {
 }
 
 type ttsDTO struct {
-	Provider string  `json:"provider"`
-	APIKey   string  `json:"api_key"`
-	Model    string  `json:"model"`
-	VoiceID  string  `json:"voice_id"`
-	Emotion  string  `json:"emotion"`
-	Speed    float64 `json:"speed"`
+	Provider    string  `json:"provider"`
+	APIKey      string  `json:"api_key"`
+	Model       string  `json:"model"`
+	VoiceID     string  `json:"voice_id"`
+	ReferenceID string  `json:"reference_id"`
+	Emotion     string  `json:"emotion"`
+	Speed       float64 `json:"speed"`
 }
 
 func (d ttsDTO) playbackTestRequest(text string) agent.TTSPlaybackTestRequest {
 	return agent.TTSPlaybackTestRequest{
-		Provider: d.Provider,
-		APIKey:   d.APIKey,
-		Model:    d.Model,
-		VoiceID:  d.VoiceID,
-		Emotion:  d.Emotion,
-		Speed:    d.Speed,
-		Text:     text,
+		Provider:    d.Provider,
+		APIKey:      d.APIKey,
+		Model:       d.Model,
+		VoiceID:     d.VoiceID,
+		ReferenceID: d.ReferenceID,
+		Emotion:     d.Emotion,
+		Speed:       d.Speed,
+		Text:        text,
 	}
 }
 

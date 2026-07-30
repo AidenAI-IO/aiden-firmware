@@ -694,6 +694,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"tts", "api_key", CONFIG_FIELD_STRING},
         {"tts", "model", CONFIG_FIELD_STRING},
         {"tts", "voice_id", CONFIG_FIELD_STRING},
+        {"tts", "reference_id", CONFIG_FIELD_STRING},
         {"tts", "emotion", CONFIG_FIELD_STRING},
         {"tts", "speed", CONFIG_FIELD_NUMBER},
         {"stt", "provider", CONFIG_FIELD_STRING},
@@ -2537,6 +2538,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(tts, "api_key", config.tts.api_key.c_str());
     cJSON_AddStringToObject(tts, "model", config.tts.model.c_str());
     cJSON_AddStringToObject(tts, "voice_id", config.tts.voice_id.c_str());
+    cJSON_AddStringToObject(tts, "reference_id", config.tts.reference_id.c_str());
     cJSON_AddStringToObject(tts, "emotion", config.tts.emotion.c_str());
     cJSON_AddNumberToObject(tts, "speed", config.tts.speed);
 
@@ -2860,6 +2862,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->tts.api_key, tts, "api_key");
         set_json_str(&config->tts.model, tts, "model");
         set_json_str(&config->tts.voice_id, tts, "voice_id");
+        set_json_str(&config->tts.reference_id, tts, "reference_id");
         set_json_str(&config->tts.emotion, tts, "emotion");
         set_json_double(&config->tts.speed, tts, "speed");
     }
