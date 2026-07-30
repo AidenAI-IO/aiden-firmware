@@ -9,9 +9,13 @@ import (
 )
 
 const (
+	textViaBridgeConnectTimeout = 8 * time.Second
+	textViaBridgePollInterval   = 200 * time.Millisecond
+	textViaBridgePostWriteDelay = 2 * time.Second
 	textViaBridgePostPasteDelay = 350 * time.Millisecond
 	textViaBridgeMenuDelay      = 450 * time.Millisecond
 	textViaBridgePasteAttempts  = 2
+	textViaBridgeRecentsSwipes  = 3
 	preparedClipboardMaxAge     = 5 * time.Minute
 	textViaBridgeLongPressMS    = 900
 )
@@ -25,6 +29,12 @@ type bridgeSearchResult struct {
 type bridgeAppOpenResult struct {
 	Opened bool   `json:"opened"`
 	Reason string `json:"reason,omitempty"`
+}
+
+type previousAppCardResult struct {
+	Found    bool           `json:"found"`
+	TapPoint focusPointArgs `json:"tap_point"`
+	Label    string         `json:"label,omitempty"`
 }
 
 type pasteMenuResult struct {
@@ -45,6 +55,9 @@ type textInputBridge struct {
 	vision           textInputVision
 	bridgeFn         func() *PhoneBridge
 	clipboardWriteFn func(context.Context, *PhoneBridge, string) error
+	findAppTapFn     func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
+	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
+	findPrevAppFn    func(context.Context, screenshotResult) (previousAppCardResult, error)
 	findPasteMenuFn  func(context.Context, screenshotResult, string) (pasteMenuResult, error)
 	sleep            func(context.Context, time.Duration) error
 }
@@ -54,7 +67,7 @@ func (t *textInputBridge) runClipboardFirstResult(ctx context.Context, args text
 	if strings.TrimSpace(args.Text) == "" {
 		return textInputResult{Reason: "text is required"}, false
 	}
-	bridgeResult := t.runAutomaticClipboardFirstFlow(ctx, platform, args)
+	bridgeResult := t.runClipboardFirstFlow(ctx, platform, args)
 	if !bridgeResult.Attempted {
 		if bridgeResult.Err != nil {
 			return textViaBridgeResultToTextInputResult(bridgeResult), true
@@ -62,6 +75,34 @@ func (t *textInputBridge) runClipboardFirstResult(ctx context.Context, args text
 		return textInputResult{Reason: "reliable bridge clipboard path unavailable"}, false
 	}
 	return textViaBridgeResultToTextInputResult(bridgeResult), true
+}
+
+func (t *textInputBridge) runClipboardFirstFlow(ctx context.Context, platform string, args textInputArgs) textViaBridgeResult {
+	bridge := t.currentBridge()
+	if bridge == nil {
+		return textViaBridgeResult{Err: fmt.Errorf("phone bridge is not configured")}
+	}
+	status := bridge.getStatus()
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "ios":
+		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
+		}
+		if phoneBridgeCanUsePiPBackground(status, "clipboard_write") {
+			return t.runBackgroundClipboardQueueFlow(ctx, platform, args)
+		}
+		if phoneBridgeCanRestoreFromReturnEntry(status) || phoneBridgeReadyForCommand(status) {
+			return t.runLegacyBridgeFlow(ctx, platform, args)
+		}
+		return textViaBridgeResult{}
+	case "android":
+		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
+		}
+		return t.runTargetPreservingClipboardFlow(ctx, platform, args)
+	default:
+		return textViaBridgeResult{}
+	}
 }
 
 func textViaBridgeResultToTextInputResult(bridgeResult textViaBridgeResult) textInputResult {
@@ -148,6 +189,36 @@ func (t *textInputBridge) runBackgroundClipboardQueueFlow(ctx context.Context, p
 	return result
 }
 
+func (t *textInputBridge) runLegacyBridgeFlow(ctx context.Context, platform string, args textInputArgs) textViaBridgeResult {
+	bridge := t.currentBridge()
+	if bridge == nil {
+		return textViaBridgeResult{Attempted: true, Err: fmt.Errorf("phone bridge is not configured")}
+	}
+	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
+	if err := t.restoreBridgeAppIfNeeded(ctx, bridge, platform); err != nil {
+		return textViaBridgeResult{Attempted: true, Err: err}
+	}
+	bridge = t.currentBridge()
+	if bridge == nil || !bridge.Connected() {
+		return textViaBridgeResult{Attempted: true, Err: fmt.Errorf("phone bridge did not connect")}
+	}
+	if err := t.writeClipboard(ctx, bridge, args.Text); err != nil {
+		return textViaBridgeResult{Attempted: true, Err: err}
+	}
+	if err := t.sleepAfterClipboardWrite(ctx); err != nil {
+		return textViaBridgeResult{Attempted: true, Err: err}
+	}
+	if _, err := t.callQuickAction(ctx, "app_switch", platform); err != nil {
+		return textViaBridgeResult{Attempted: true, Err: err}
+	}
+	if err := t.returnToPreviousApp(ctx, engine); err != nil {
+		return textViaBridgeResult{Attempted: true, Err: err}
+	}
+	result := t.focusPasteVerify(ctx, engine, platform, args)
+	result.Attempted = true
+	return result
+}
+
 func (t *textInputBridge) canUseClipboardFirst(platform string, text string) bool {
 	bridge := t.currentBridge()
 	if bridge == nil {
@@ -159,7 +230,9 @@ func (t *textInputBridge) canUseClipboardFirst(platform string, text string) boo
 	status := bridge.getStatus()
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "ios":
-		return phoneBridgeCanUsePiPBackground(status, "clipboard_write")
+		return phoneBridgeCanUsePiPBackground(status, "clipboard_write") ||
+			phoneBridgeCanRestoreFromReturnEntry(status) ||
+			phoneBridgeReadyForCommand(status)
 	case "android":
 		return phoneBridgeReadyForCommand(status, "clipboard_write") || phoneBridgeCanUseFGSBackground(status, "clipboard_write")
 	default:
@@ -341,6 +414,150 @@ func keyboardPasteKeys(platform string) []string {
 	}
 }
 
+func (t *textInputBridge) restoreBridgeAppIfNeeded(ctx context.Context, bridge *PhoneBridge, platform string) error {
+	if t == nil || t.hw == nil || t.hw.quickAction == nil || t.hw.keyboardText == nil || t.hw.touchGesture == nil {
+		return fmt.Errorf("bridge recovery tools are not fully configured")
+	}
+	searchTerm := textViaBridgeSearchTerm(platform, bridge.getStatus())
+	localEntry := &EnterTextTool{
+		engine:               newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep),
+		iosKeyboardIsolation: iosKeyboardIsolationControllerFromContext(ctx),
+	}
+	openResult, err := runAppSearchOpenFlow(ctx, appSearchOpenFlowConfig{
+		hw:               t.hw,
+		vision:           t.vision,
+		platform:         platform,
+		searchTerm:       searchTerm,
+		findAppTapFn:     t.findAppTapFn,
+		confirmAppOpenFn: t.confirmAppOpenFn,
+		entryTool:        localEntry,
+		launchDelay:      appSearchOpenLaunchDelay,
+		sleep:            t.sleep,
+	})
+	if err != nil {
+		return err
+	}
+	if !openResult.Opened {
+		if reason := strings.TrimSpace(openResult.Reason); reason != "" {
+			return fmt.Errorf("bridge app did not open: %s", reason)
+		}
+		return fmt.Errorf("bridge app did not open")
+	}
+	return t.waitForBridgeConnection(ctx)
+}
+
+func (t *textInputBridge) tapTouchPoint(ctx context.Context, point focusPointArgs) error {
+	out, err := t.hw.touchGesture.Call(ctx, jsonString(map[string]any{
+		"type":        "tap",
+		"point":       map[string]any{"x": point.X, "y": point.Y},
+		"coord_space": firstNonEmptyString([]string{strings.TrimSpace(point.CoordSpace), "normalized"}),
+	}))
+	if err != nil {
+		return err
+	}
+	return interpretTextInputToolOutput(out)
+}
+
+func (t *textInputBridge) returnToPreviousApp(ctx context.Context, engine *textInputEngine) error {
+	for attempt := 1; attempt <= textViaBridgeRecentsSwipes+1; attempt++ {
+		result, err := t.findPreviousAppCard(ctx, engine)
+		if err != nil {
+			return err
+		}
+		if result.Found {
+			return t.tapTouchPoint(ctx, result.TapPoint)
+		}
+		if attempt > textViaBridgeRecentsSwipes {
+			break
+		}
+		if err := t.swipeRecentsToFindPreviousApp(ctx); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("previous app card not found in app switcher")
+}
+
+func (t *textInputBridge) swipeRecentsToFindPreviousApp(ctx context.Context) error {
+	out, err := t.hw.touchGesture.Call(ctx, jsonString(map[string]any{
+		"type":        "swipe_right",
+		"coord_space": "normalized",
+		"strength":    "medium",
+	}))
+	if err != nil {
+		return err
+	}
+	return interpretTextInputToolOutput(out)
+}
+
+func (t *textInputBridge) findPreviousAppCard(ctx context.Context, engine *textInputEngine) (previousAppCardResult, error) {
+	shot, err := engine.captureScreenshot(ctx)
+	if err != nil {
+		return previousAppCardResult{}, err
+	}
+	if t != nil && t.findPrevAppFn != nil {
+		result, err := t.findPrevAppFn(ctx, shot)
+		return result, err
+	}
+	modelVision, ok := t.vision.(*llmTextInputVision)
+	if !ok || modelVision == nil {
+		return previousAppCardResult{}, fmt.Errorf("previous app selection vision is not configured")
+	}
+	prompt := strings.TrimSpace(`Analyze this device screenshot of the app switcher / recent apps view.
+Find the previous app card that should be tapped to return from the Aiden companion app back to the user's prior task.
+Return JSON only:
+{
+  "found": true,
+  "tap_point": {"x": 180, "y": 290, "coord_space": "normalized"},
+  "label": "Settings"
+}
+
+Rules:
+- Return found=true only when a non-Aiden previous app card is clearly visible and tappable.
+- Prefer the app card that represents the task immediately before Aiden, not the Aiden card itself.
+- tap_point must be inside the visible app card body using normalized 0-1000 coordinates.
+- If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`)
+	raw, err := modelVision.visionJSON(ctx, "previous_app", prompt, shot)
+	if err != nil {
+		return previousAppCardResult{}, err
+	}
+	var result previousAppCardResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return previousAppCardResult{}, fmt.Errorf("parse previous app card: %w", err)
+	}
+	if strings.TrimSpace(result.TapPoint.CoordSpace) == "" {
+		result.TapPoint.CoordSpace = "normalized"
+	}
+	return result, nil
+}
+
+func (t *textInputBridge) waitForBridgeConnection(ctx context.Context) error {
+	deadline := time.NewTimer(textViaBridgeConnectTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(textViaBridgePollInterval)
+	defer ticker.Stop()
+	for {
+		bridge := t.currentBridge()
+		if bridge != nil && bridge.Connected() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("timed out waiting for phone bridge to connect")
+		case <-ticker.C:
+		}
+	}
+}
+
+func (t *textInputBridge) sleepAfterClipboardWrite(ctx context.Context) error {
+	sleep := sleepWithContext
+	if t != nil && t.sleep != nil {
+		sleep = t.sleep
+	}
+	return sleep(ctx, textViaBridgePostWriteDelay)
+}
+
 func (t *textInputBridge) sleepAfterPaste(ctx context.Context) error {
 	sleep := sleepWithContext
 	if t != nil && t.sleep != nil {
@@ -391,4 +608,15 @@ func (t *textInputBridge) writeClipboard(ctx context.Context, bridge *PhoneBridg
 		return te
 	}
 	return interpretTextInputToolOutput(clipOut)
+}
+
+func textViaBridgeSearchTerm(platform string, status PhoneBridgeStatus) string {
+	if strings.EqualFold(strings.TrimSpace(platform), "android") && status.Environment != nil {
+		for _, app := range status.Environment.AvailableApps {
+			if strings.TrimSpace(app.AndroidPackage) == "com.qing.aidenbridgedaily" && strings.TrimSpace(app.Name) != "" {
+				return app.Name
+			}
+		}
+	}
+	return "Aiden"
 }
