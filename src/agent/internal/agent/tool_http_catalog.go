@@ -112,6 +112,8 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 			builder.WriteString("  Successful output JSON includes `width`, `height`, `format`, `size`, and base64 JPEG `data`.\n")
 		} else if descriptor.Name == "wait_for_stable_screen" {
 			builder.WriteString("  Successful output JSON includes `ok`, `stable`, `elapsed_ms`, `screen_changed`, optional `last_diff`, plus `screen_stable`, `stable_wait_ms`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from the captured screenshot.\n")
+		} else if descriptor.Name == "enter_text" {
+			builder.WriteString("  `action_output` contains only `{\"ok\":true}` on success, or `{\"ok\":false,\"suggestion\":\"...\"}` on failure. The outer post-action output also includes `screen_stable`, `stable_wait_ms`, `screen_changed`, `width`, `height`, `format`, `size`, and base64 JPEG `data`.\n")
 		} else if descriptor.Category == "input" {
 			builder.WriteString("  On successful execution, output JSON includes `action_output`, `screen_stable`, `stable_wait_ms`, `screen_changed`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a post-action screenshot. `screen_changed=false` means no visible change was observed during the wait window; `screen_stable=false` is not a failure.\n")
 		}

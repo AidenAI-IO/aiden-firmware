@@ -680,6 +680,10 @@ class ToolsAPIHandler:
         episode_id: str,
     ) -> dict[str, Any]:
         """Execute enter_text through MobileGym's TYPE action."""
+        unknown = sorted(set(tool_input) - {"text", "focus"})
+        if unknown:
+            output = {"ok": False, "suggestion": f"Remove unsupported enter_text arguments: {unknown!r}."}
+            return {"output": json.dumps(output), "is_error": False}
         text = tool_input.get("text", "")
         if not isinstance(text, str):
             return {"output": "error: text must be a string", "is_error": True}
@@ -689,16 +693,21 @@ class ToolsAPIHandler:
 
         action_input: dict[str, Any] = {"text": text}
         focus = tool_input.get("focus")
-        if focus is not None:
-            if not isinstance(focus, dict):
-                return {"output": "error: focus must be an object", "is_error": True}
-            point_input: dict[str, Any] = {"focus": focus}
-            if "coord_space" in focus and "coord_space" not in tool_input:
-                point_input["coord_space"] = focus["coord_space"]
-            try:
-                action_input["point"] = _normalized_point_arg(point_input, field="focus", default_space="normalized")
-            except (TypeError, ValueError) as exc:
-                return {"output": f"error: {exc}", "is_error": True}
+        if not isinstance(focus, dict):
+            output = {"ok": False, "suggestion": "Provide focus as an object with x and y coordinates, then retry enter_text."}
+            return {"output": json.dumps(output), "is_error": False}
+        unknown_focus = sorted(set(focus) - {"x", "y", "coord_space"})
+        if unknown_focus:
+            output = {"ok": False, "suggestion": f"Remove unsupported focus arguments: {unknown_focus!r}."}
+            return {"output": json.dumps(output), "is_error": False}
+        point_input: dict[str, Any] = {"focus": focus}
+        if "coord_space" in focus:
+            point_input["coord_space"] = focus["coord_space"]
+        try:
+            action_input["point"] = _normalized_point_arg(point_input, field="focus", default_space="normalized")
+        except (TypeError, ValueError) as exc:
+            output = {"ok": False, "suggestion": f"Correct the focus coordinates: {exc}"}
+            return {"output": json.dumps(output), "is_error": False}
 
         try:
             action = build_action("type_text", action_input)

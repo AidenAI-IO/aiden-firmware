@@ -547,7 +547,7 @@ func (pb *PhoneBridge) NoteClipboardWrite(text string) {
 	}
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
-	pb.clipboardText = strings.TrimSpace(text)
+	pb.clipboardText = text
 	pb.clipboardAt = time.Now()
 }
 
@@ -561,6 +561,18 @@ func (pb *PhoneBridge) ClipboardRecentlyContains(text string, maxAge time.Durati
 		return false
 	}
 	return strings.TrimSpace(pb.clipboardText) == strings.TrimSpace(text)
+}
+
+func (pb *PhoneBridge) ClipboardRecentlyEquals(text string, maxAge time.Duration) bool {
+	if pb == nil || maxAge <= 0 {
+		return false
+	}
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	if pb.clipboardAt.IsZero() || time.Since(pb.clipboardAt) > maxAge {
+		return false
+	}
+	return pb.clipboardText == text
 }
 
 func (pb *PhoneBridge) currentPhoneID() string {

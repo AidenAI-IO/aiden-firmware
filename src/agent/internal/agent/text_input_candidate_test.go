@@ -121,6 +121,26 @@ func TestCompositionExpandsCandidatesBeforeSelectingHiddenTarget(t *testing.T) {
 	}
 }
 
+func TestCompositionStopsWhenSegmentTypingFails(t *testing.T) {
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: `{"ok":false,"message":"keyboard unavailable"}`}
+	engine := newFastTextInputEngine(textInputHardwareDeps{
+		keyboardText: keyboardText,
+	}, &stubTextInputVision{})
+
+	committed, _, _, _, err := engine.typeCompositionWithCandidateSelection(
+		context.Background(),
+		"ios",
+		textInputArgs{Text: "你好"},
+		[]string{"ni", "hao"},
+	)
+	if err == nil || committed {
+		t.Fatalf("typeCompositionWithCandidateSelection() committed=%v err=%v, want typing failure", committed, err)
+	}
+	if len(keyboardText.calls) != 1 {
+		t.Fatalf("keyboard_text calls=%v, want stop after first failed segment", keyboardText.calls)
+	}
+}
+
 func TestCompositionCanReturnToFirstCandidateRow(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
 		{ObservedMode: textInputModeComposition, CompositionPending: true},

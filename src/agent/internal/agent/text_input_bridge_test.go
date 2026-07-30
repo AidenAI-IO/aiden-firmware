@@ -65,6 +65,20 @@ func TestTextInputBridgeWriteClipboardIsolatesNestedToolError(t *testing.T) {
 	}
 }
 
+func TestTextInputBridgePreparedClipboardRequiresExactText(t *testing.T) {
+	pb := newTestPhoneBridge(t)
+	pb.NoteClipboardWrite("hello")
+	if !pb.ClipboardRecentlyContains(" hello ", preparedClipboardMaxAge) {
+		t.Fatal("legacy contains check should continue ignoring surrounding whitespace")
+	}
+	if pb.ClipboardRecentlyEquals(" hello ", preparedClipboardMaxAge) {
+		t.Fatal("text entry must not reuse clipboard content with different whitespace")
+	}
+	if !pb.ClipboardRecentlyEquals("hello", preparedClipboardMaxAge) {
+		t.Fatal("exact clipboard content should be reusable")
+	}
+}
+
 func TestTextInputBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
 	message := "桥接输入测试"
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
@@ -420,7 +434,11 @@ func TestTextInputBridgeRestoresReconnectsAndReturnsThroughRecents(t *testing.T)
 			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden"}, nil
 		},
 		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
-			time.AfterFunc(10*time.Millisecond, func() { pb.connected = true })
+			time.AfterFunc(10*time.Millisecond, func() {
+				pb.mu.Lock()
+				pb.connected = true
+				pb.mu.Unlock()
+			})
 			return bridgeAppOpenResult{Opened: true, Reason: "Aiden app visible"}, nil
 		},
 		findPrevAppFn: func(context.Context, screenshotResult) (previousAppCardResult, error) {

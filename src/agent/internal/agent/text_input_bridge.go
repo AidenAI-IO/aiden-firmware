@@ -85,7 +85,7 @@ func (t *textInputBridge) runClipboardFirstFlow(ctx context.Context, platform st
 	status := bridge.getStatus()
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "ios":
-		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+		if bridge.ClipboardRecentlyEquals(args.Text, preparedClipboardMaxAge) {
 			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
 		}
 		if phoneBridgeCanUsePiPBackground(status, "clipboard_write") {
@@ -96,7 +96,7 @@ func (t *textInputBridge) runClipboardFirstFlow(ctx context.Context, platform st
 		}
 		return textViaBridgeResult{}
 	case "android":
-		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+		if bridge.ClipboardRecentlyEquals(args.Text, preparedClipboardMaxAge) {
 			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
 		}
 		return t.runTargetPreservingClipboardFlow(ctx, platform, args)
@@ -129,7 +129,7 @@ func (t *textInputBridge) runAutomaticClipboardFirstFlow(ctx context.Context, pl
 	status := bridge.getStatus()
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "ios":
-		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+		if bridge.ClipboardRecentlyEquals(args.Text, preparedClipboardMaxAge) {
 			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
 		}
 		if phoneBridgeCanUsePiPBackground(status, "clipboard_write") {
@@ -137,7 +137,7 @@ func (t *textInputBridge) runAutomaticClipboardFirstFlow(ctx context.Context, pl
 		}
 		return textViaBridgeResult{}
 	case "android":
-		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+		if bridge.ClipboardRecentlyEquals(args.Text, preparedClipboardMaxAge) {
 			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
 		}
 		if !phoneBridgeReadyForCommand(status, "clipboard_write") &&
@@ -224,7 +224,7 @@ func (t *textInputBridge) canUseClipboardFirst(platform string, text string) boo
 	if bridge == nil {
 		return false
 	}
-	if bridge.ClipboardRecentlyContains(text, preparedClipboardMaxAge) {
+	if bridge.ClipboardRecentlyEquals(text, preparedClipboardMaxAge) {
 		return true
 	}
 	status := bridge.getStatus()

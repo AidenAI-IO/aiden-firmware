@@ -512,9 +512,7 @@ def test_invoke_enter_text_focuses_and_types_unicode(bridge_server):
         {
             "input": {
                 "text": "隐私",
-                "platform": "android",
                 "focus": {"coord_space": "normalized", "x": 500, "y": 80},
-                "segments": ["yin", "si"],
             }
         }
     ).encode()
@@ -536,6 +534,30 @@ def test_invoke_enter_text_focuses_and_types_unicode(bridge_server):
         "action_type": "TYPE",
         "data": {"value": "隐私", "point": [500.0, 80.0]},
     }
+
+
+def test_invoke_enter_text_rejects_removed_or_missing_arguments(bridge_server):
+    _server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-enter-text-invalid"
+
+    for tool_input in (
+        {"text": "hello"},
+        {"text": "hello", "focus": {"x": 500, "y": 80}, "platform": "ios"},
+        {"text": "hello", "focus": {"x": 500, "y": 80, "extra": True}},
+    ):
+        request_body = json.dumps({"input": tool_input}).encode()
+        req = Request(
+            f"{base_url}/api/tools/enter_text",
+            data=request_body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+        assert data["is_error"] is False
+        output = json.loads(data["output"])
+        assert output["ok"] is False
+        assert "suggestion" in output
 
 
 def test_invoke_rejects_non_object_json_body(bridge_server):

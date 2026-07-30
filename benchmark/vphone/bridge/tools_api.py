@@ -509,6 +509,10 @@ class VPhoneToolsAPIHandler:
     def _call_enter_text(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         if "keyboard" not in self.state.device.capabilities():
             return _unsupported_keyboard_result()
+        unknown = sorted(set(tool_input) - {"text", "focus"})
+        if unknown:
+            output = {"ok": False, "suggestion": f"Remove unsupported enter_text arguments: {unknown!r}."}
+            return {"output": json.dumps(output), "is_error": False}
         text = tool_input.get("text", "")
         if not isinstance(text, str) or not text:
             return {"output": json.dumps({"ok": False, "suggestion": "Provide non-empty text, then retry enter_text."}), "is_error": False}
@@ -526,7 +530,12 @@ class VPhoneToolsAPIHandler:
             }
         focus = tool_input.get("focus")
         if not isinstance(focus, dict):
-            return {"output": "error: focus must be an object", "is_error": True}
+            output = {"ok": False, "suggestion": "Provide focus as an object with x and y coordinates, then retry enter_text."}
+            return {"output": json.dumps(output), "is_error": False}
+        unknown_focus = sorted(set(focus) - {"x", "y", "coord_space"})
+        if unknown_focus:
+            output = {"ok": False, "suggestion": f"Remove unsupported focus arguments: {unknown_focus!r}."}
+            return {"output": json.dumps(output), "is_error": False}
         point_input = {"focus": focus}
         if focus.get("coord_space"):
             point_input["coord_space"] = focus["coord_space"]
@@ -535,7 +544,8 @@ class VPhoneToolsAPIHandler:
             width, height = self.state.device.screen_size()
             x, y = _to_pixels(point, width, height)
         except (TypeError, ValueError) as exc:
-            return {"output": f"error: {exc}", "is_error": True}
+            output = {"ok": False, "suggestion": f"Correct the focus coordinates: {exc}"}
+            return {"output": json.dumps(output), "is_error": False}
 
         def enter() -> None:
             self.state.device.tap(x, y)
@@ -679,11 +689,11 @@ def _parse_tool_input(raw_input: str, tool_name: str) -> dict[str, Any]:
         return {}
     try:
         parsed = json.loads(raw_input)
-    except json.JSONDecodeError:
-        if tool_name in {"keyboard_text", "enter_text"}:
+    except json.JSONDecodeError as exc:
+        if tool_name == "keyboard_text":
             return {"text": raw_input.strip()}
-        raise ValueError(f"tool input must be valid JSON: {raw_input}")
-    if isinstance(parsed, str) and tool_name in {"keyboard_text", "enter_text"}:
+        raise ValueError(f"tool input must be valid JSON: {raw_input}") from exc
+    if isinstance(parsed, str) and tool_name == "keyboard_text":
         return {"text": parsed}
     if not isinstance(parsed, dict):
         raise ValueError("tool input must be a JSON object")

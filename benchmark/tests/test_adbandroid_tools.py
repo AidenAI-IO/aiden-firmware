@@ -254,6 +254,34 @@ def test_enter_text_verifies_only_the_new_text_suffix(bridge):
     assert output == {"ok": True}
 
 
+def test_enter_text_rejects_non_suffix_match(bridge):
+    _, device, base_url = bridge
+    device.window_text_override = "hello android trailing"
+    status, body = _invoke(
+        base_url,
+        "enter_text",
+        {"text": "hello android", "focus": {"x": 500, "y": 100}},
+    )
+    assert status == 200
+    output, _ = _text_entry_output(body)
+    assert output["ok"] is False
+
+
+def test_enter_text_rejects_removed_or_missing_arguments(bridge):
+    _, device, base_url = bridge
+    for tool_input in (
+        {"text": "hello"},
+        {"text": "hello", "focus": {"x": 500, "y": 100}, "segments": ["hello"]},
+        {"text": "hello", "focus": {"x": 500, "y": 100, "extra": True}},
+    ):
+        status, body = _invoke(base_url, "enter_text", tool_input)
+        assert status == 200
+        output = json.loads(body["output"])
+        assert output["ok"] is False
+        assert "suggestion" in output
+    assert all(call[0] != "input_text" for call in device.calls)
+
+
 def test_enter_text_reports_unsupported_text_without_typing(bridge):
     _, device, base_url = bridge
     status, body = _invoke(

@@ -153,6 +153,24 @@ def test_enter_text(bridge):
     assert "suggestion" in output
 
 
+def test_enter_text_requires_json_focus_and_returns_compact_failures(bridge):
+    _, _, base_url = bridge
+    _, body = invoke(base_url, "enter_text", "plain text")
+    assert body["is_error"] is True
+
+    for tool_input in (
+        {"text": "hello"},
+        {"text": "hello", "focus": {"x": "bad", "y": 100}},
+        {"text": "hello", "focus": {"x": 500, "y": 100}, "platform": "ios"},
+        {"text": "hello", "focus": {"x": 500, "y": 100, "extra": True}},
+    ):
+        _, body = invoke(base_url, "enter_text", tool_input)
+        assert body["is_error"] is False
+        output = json.loads(body["output"])
+        assert output["ok"] is False
+        assert set(output) == {"ok", "suggestion"}
+
+
 def test_quick_actions(bridge):
     _, device, base_url = bridge
     invoke(base_url, "quick_action", {"platform": "ios", "action": "home"})

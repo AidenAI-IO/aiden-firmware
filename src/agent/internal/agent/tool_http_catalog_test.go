@@ -1,11 +1,25 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
+
+func TestHTTPToolSkillDocumentsCompactEnterTextActionOutput(t *testing.T) {
+	markdown := buildHTTPToolSkillMarkdown("tools", "tools", defaultHTTPToolSkillBaseURL, []ToolDescriptor{{
+		Name:        "enter_text",
+		Category:    "input",
+		Description: "Enter text.",
+	}})
+	if !strings.Contains(markdown, "`action_output` contains only") ||
+		!strings.Contains(markdown, `{"ok":true}`) ||
+		!strings.Contains(markdown, `{"ok":false,"suggestion":"..."}`) {
+		t.Fatalf("enter_text compact result guidance missing:\n%s", markdown)
+	}
+}
 
 func toolAgentExposed(name string) bool {
 	return NewToolSpec(&stubTool{name: name, description: name}).AgentExposed

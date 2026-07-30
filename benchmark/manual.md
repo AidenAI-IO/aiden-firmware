@@ -230,8 +230,8 @@ the expected value. The same matcher works in mock responses and
 6. If the shortcut had no visible effect and the field is still empty, long-press
    the field and tap the visible Paste/粘贴 menu action.
 
-It does not fall back to typing the target text itself. HID/IME typing fallback
-belongs to `enter_text`. Because mock suites forward
+The clipboard/paste sub-path does not fall back to typing the target text itself.
+The top-level `enter_text` tool owns the HID/IME typing fallback. Because mock suites forward
 `enter_text` to the scripted environment, they validate the Agent's
 tool selection but not this internal fallback implementation. The Go unit tests
 cover those branches; a real-phone smoke test is still needed for platform paste

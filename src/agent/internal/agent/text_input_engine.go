@@ -666,8 +666,11 @@ func (e *textInputEngine) typeASCIIChunk(ctx context.Context, text string) error
 
 func (e *textInputEngine) typeCompositionWithCandidateSelection(ctx context.Context, platform string, args textInputArgs, segments []string) (committed bool, fieldText string, wrongIME bool, vlmCalls int, err error) {
 	for _, segment := range segments {
-		_, err := callTextInputTool(ctx, e.hw.keyboardText, jsonString(map[string]string{"text": segment}))
+		out, err := callTextInputTool(ctx, e.hw.keyboardText, jsonString(map[string]string{"text": segment}))
 		if err != nil {
+			return false, fieldText, false, vlmCalls, err
+		}
+		if err := interpretTextInputToolOutput(out); err != nil {
 			return false, fieldText, false, vlmCalls, err
 		}
 		if err := e.sleepFor(ctx, textInputKeystrokeGap); err != nil {

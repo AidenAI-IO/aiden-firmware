@@ -696,6 +696,10 @@ class ADBToolsAPIHandler:
 
     def _call_enter_text(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         """Execute enter_text through adb input text."""
+        unknown = sorted(set(tool_input) - {"text", "focus"})
+        if unknown:
+            output = {"ok": False, "suggestion": f"Remove unsupported enter_text arguments: {unknown!r}."}
+            return {"output": json.dumps(output), "is_error": False}
         text = tool_input.get("text", "")
         if not isinstance(text, str):
             return {"output": "error: text must be a string", "is_error": True}
@@ -713,20 +717,25 @@ class ADBToolsAPIHandler:
         device = self.state.device
         focus = tool_input.get("focus")
         focus_pixels: tuple[int, int] | None = None
-        if focus is not None:
-            if not isinstance(focus, dict):
-                return {"output": "error: focus must be an object", "is_error": True}
-            point_input: dict[str, Any] = {"focus": focus}
-            if "coord_space" in focus and "coord_space" not in tool_input:
-                point_input["coord_space"] = focus["coord_space"]
-            try:
-                width, height = device.screen_size()
-                point = _normalized_point_arg(
-                    point_input, field="focus", default_space="normalized", screen_size=(width, height)
-                )
-            except (TypeError, ValueError) as exc:
-                return {"output": f"error: {exc}", "is_error": True}
-            focus_pixels = _to_pixels(point, width, height)
+        if not isinstance(focus, dict):
+            output = {"ok": False, "suggestion": "Provide focus as an object with x and y coordinates, then retry enter_text."}
+            return {"output": json.dumps(output), "is_error": False}
+        unknown_focus = sorted(set(focus) - {"x", "y", "coord_space"})
+        if unknown_focus:
+            output = {"ok": False, "suggestion": f"Remove unsupported focus arguments: {unknown_focus!r}."}
+            return {"output": json.dumps(output), "is_error": False}
+        point_input: dict[str, Any] = {"focus": focus}
+        if "coord_space" in focus:
+            point_input["coord_space"] = focus["coord_space"]
+        try:
+            width, height = device.screen_size()
+            point = _normalized_point_arg(
+                point_input, field="focus", default_space="normalized", screen_size=(width, height)
+            )
+        except (TypeError, ValueError) as exc:
+            output = {"ok": False, "suggestion": f"Correct the focus coordinates: {exc}"}
+            return {"output": json.dumps(output), "is_error": False}
+        focus_pixels = _to_pixels(point, width, height)
 
         def enter_text() -> None:
             if focus_pixels is not None:
