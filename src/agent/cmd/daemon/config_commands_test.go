@@ -260,6 +260,17 @@ func TestWebConfigDTOFromAgentConfigDoesNotInferAudioArchiveEnabled(t *testing.T
 	}
 }
 
+func TestWebConfigDTOMapsTTSReferenceID(t *testing.T) {
+	const referenceID = "fish-reference-id"
+	dto := webConfigDTO{TTS: ttsDTO{Provider: "fish-audio", ReferenceID: referenceID}}
+	if got := dto.toAgentConfig().TTS.ReferenceID; got != referenceID {
+		t.Fatalf("TTS.ReferenceID = %q, want %q", got, referenceID)
+	}
+	if got := webConfigDTOFromAgentConfig(agent.Config{TTS: agent.TTSConfig{Provider: "fish-audio", ReferenceID: referenceID}}).TTS.ReferenceID; got != referenceID {
+		t.Fatalf("round-trip TTS.ReferenceID = %q, want %q", got, referenceID)
+	}
+}
+
 func TestWebConfigDTOFromAgentConfig_RedactsSearchAPIKey(t *testing.T) {
 	dto := webConfigDTOFromAgentConfig(agent.Config{
 		Search: agent.SearchConfig{

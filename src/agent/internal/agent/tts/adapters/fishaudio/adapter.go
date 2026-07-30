@@ -58,13 +58,11 @@ func New(cfg tts.ProviderConfig) (tts.TTSProvider, error) {
 		endpoint = defaultEndpoint
 	}
 	// Fish Audio uses reference_id exclusively. Do not read cfg.Voice to avoid
-	// parameter pollution from other providers (e.g., Minimax voice_id).
-	referenceID := ""
+	// parameter pollution from other providers (e.g., Minimax voice_id). An
+	// empty reference_id uses the same built-in demo voice shown by Config Web.
+	referenceID := tts.DefaultFishAudioReferenceID
 	if extra, ok := cfg.Extra["reference_id"].(string); ok && extra != "" {
 		referenceID = extra
-	}
-	if referenceID == "" {
-		return nil, fmt.Errorf("fish-audio: reference_id is required (configure it in [tts] or [tts.credentials.fish-audio])")
 	}
 	model := defaultModel
 	if extra, ok := cfg.Extra["model"].(string); ok && extra != "" {
