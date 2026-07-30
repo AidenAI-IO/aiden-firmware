@@ -247,13 +247,25 @@ run_s22opt status
 check_status 1 $? "status fails"
 check_contains "$OUTPUT" "opt=wrong-source" "a same-path mount on another device is rejected"
 
-echo "Test 7: a bind that succeeds but lands elsewhere is caught"
+echo "Test 7: a bind that succeeds but lands elsewhere is torn down and sealed"
 new_case bind-lands-wrong
 echo /elsewhere > "$case_dir/bind-root"
 run_s22opt start
 check_status 1 $? "start fails"
 check_contains "$OUTPUT" "not bound from" "the post-mount check catches it"
+check_contains "$MOUNTLOG" "umount $case_dir/opt" "releases the wrong mount"
+check_contains "$MOUNTLOG" "mount -t tmpfs -o ro,size=0 tmpfs $case_dir/opt" \
+	"seals /opt instead of leaving a writable foreign mount"
 check_absent "$case_dir/opt/etc/opkg/userfeeds.conf" "no feed file, so opkg stays disabled"
+
+echo "Test 7b: a wrong landing that cannot be released is reported, not ignored"
+new_case bind-lands-wrong-stuck
+echo /elsewhere > "$case_dir/bind-root"
+: > "$case_dir/fail-umount"
+run_s22opt start
+check_status 1 $? "start fails"
+check_contains "$OUTPUT" "cannot release the unexpected mount" "warns that /opt is unprotected"
+check_absent "$case_dir/opt/etc/opkg/userfeeds.conf" "still creates no feed file"
 
 echo "Test 8: /userdata not mounted seals /opt instead of writing to the rootfs"
 new_case no-userdata

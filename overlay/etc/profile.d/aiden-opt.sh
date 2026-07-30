@@ -17,13 +17,18 @@
 # Core services are not touched at all: they start from absolute paths and do
 # not inherit a login shell's environment.
 
-OPT_HOME=/opt
+# Each directory is probed on its own: something else may already have put
+# /opt/bin on PATH (a user's own profile, or /userdata/system/env, which
+# aiden-env.sh sources), and a single probe would then skip /opt/sbin forever --
+# or append a duplicate when only /opt/sbin was present.
 
-case ":$PATH:" in
-	*":$OPT_HOME/bin:"*) ;;
-	*) PATH="$PATH:$OPT_HOME/bin:$OPT_HOME/sbin" ;;
-esac
+for aiden_opt_dir in /opt/bin /opt/sbin; do
+	case ":$PATH:" in
+		*":$aiden_opt_dir:"*) ;;
+		*) PATH="$PATH:$aiden_opt_dir" ;;
+	esac
+done
 
 export PATH
 
-unset OPT_HOME
+unset aiden_opt_dir

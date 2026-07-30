@@ -193,3 +193,8 @@ add_test(
     NAME s22opt_tests
     COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test_s22opt.sh
 )
+
+add_test(
+    NAME aiden_opt_profile_tests
+    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test_aiden_opt_profile.sh
+)
