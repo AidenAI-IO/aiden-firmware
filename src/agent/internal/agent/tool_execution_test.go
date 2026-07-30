@@ -549,7 +549,7 @@ func TestDefaultAfterToolCallSummarizesScreenshotAndMarksTerminate(t *testing.T)
 }
 
 func TestExecuteToolCallIgnoresNestedToolErrorPollution(t *testing.T) {
-	// Regression from production logs: search_launch_app / enter_text_in_field
+	// Regression from production logs: search_launch_app / enter_text
 	// recover after a nested ClipboardTool SetToolError, but executeToolCall used
 	// to overwrite the parent JSON observation with the leftover bridge error.
 	const parentOutput = `{"ok":false,"error":"app did not open","target":"小红书","steps":["opened system search"]}`

@@ -770,7 +770,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 		status.action = "move_pointer"
 	case "mouse_scroll":
 		status.action = "scroll"
-	case "keyboard_text":
+	case "keyboard_text", "enter_text":
 		status.action = "type_text"
 	case "keyboard_tap":
 		status.action = "press_keys"
@@ -1049,7 +1049,7 @@ func liveActivityToolCallStep(tool string) string {
 		return "Moving pointer"
 	case "mouse_scroll":
 		return "Scrolling"
-	case "keyboard_text":
+	case "keyboard_text", "enter_text":
 		return "Typing text"
 	case "keyboard_tap":
 		return "Pressing keys"
@@ -1090,7 +1090,7 @@ func liveActivityToolResultStep(tool string) string {
 		return "Screen is ready"
 	case toolBridgeOpenApp:
 		return "App opened"
-	case "touch_gesture", "mouse_click", "quick_action", "mouse_move", "mouse_scroll", "keyboard_tap", "keyboard_text":
+	case "touch_gesture", "mouse_click", "quick_action", "mouse_move", "mouse_scroll", "keyboard_tap", "keyboard_text", "enter_text":
 		return "Action sent; checking result"
 	case "request_human_handoff":
 		return "Waiting for user input"

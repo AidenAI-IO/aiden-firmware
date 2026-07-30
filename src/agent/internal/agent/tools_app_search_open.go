@@ -34,7 +34,7 @@ type appSearchOpenTool struct {
 	confirmAppOpenFn     func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
 	afterOpenFn          func() error
 	searchTermFn         func(string) string
-	entryTool            *EnterTextInFieldTool
+	entryTool            *EnterTextTool
 	launchDelay          time.Duration
 	sleep                func(context.Context, time.Duration) error
 	iosKeyboardIsolation *iosKeyboardIsolationController
@@ -149,7 +149,7 @@ type appSearchOpenFlowConfig struct {
 	findAppTapFn     func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
 	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
 	afterOpenFn      func() error
-	entryTool        *EnterTextInFieldTool
+	entryTool        *EnterTextTool
 	launchDelay      time.Duration
 	sleep            func(context.Context, time.Duration) error
 }
@@ -205,14 +205,11 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 	steps = append(steps, "opened system search")
 	engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
 	searchTerms := appSearchFallbackTerms(searchTerm)
-	for idx, term := range searchTerms {
-		entryResult, err := enterSearchQuery(ctx, cfg, term, idx > 0)
-		if err != nil {
+	for index, term := range searchTerms {
+		if err := enterSearchQuery(ctx, cfg, term, index > 0); err != nil {
 			result.Steps = append(steps, "search query entry failed")
 			return result, err
 		}
-		result.VLMCalls += entryResult.VLMCalls
-		steps = append(steps, entryResult.Steps...)
 		steps = append(steps, fmt.Sprintf("searched %q", term))
 		if err := sleep(ctx, appSearchResultSettleDelay); err != nil {
 			result.Steps = append(steps, "wait for search results canceled")
@@ -275,11 +272,6 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 			result.Reason = strings.TrimSpace(opened.Reason)
 			steps = append(steps, "app did not open; retrying")
 		}
-		if !foundForTerm && entryResult.WrongIMESuspected {
-			if err := switchSearchIME(ctx, cfg.hw, platform); err == nil {
-				steps = append(steps, "switched IME for fallback")
-			}
-		}
 		if foundForTerm {
 			break
 		}
@@ -291,28 +283,29 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 	return result, nil
 }
 
-func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term string, clearFirst bool) (enterTextInFieldResult, error) {
+func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term string, clearFirst bool) error {
 	if clearFirst {
 		engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
 		if err := engine.clearField(ctx, cfg.platform); err != nil {
-			return enterTextInFieldResult{}, err
+			return err
 		}
 	}
 	input := map[string]any{
-		"text":       term,
-		"mode":       "search",
-		"skip_focus": !clearFirst,
-		"focus":      map[string]any{"x": 500, "y": 120, "coord_space": "normalized"},
+		"text":  term,
+		"focus": map[string]any{"x": 500, "y": 120, "coord_space": "normalized"},
 	}
 	out, err := cfg.entryTool.Call(ctx, jsonString(input))
 	if err != nil {
-		return enterTextInFieldResult{}, err
+		return err
 	}
-	var result enterTextInFieldResult
+	var result enterTextToolResult
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		return enterTextInFieldResult{}, fmt.Errorf("parse search entry result: %w", err)
+		return fmt.Errorf("parse search entry result: %w", err)
 	}
-	return result, nil
+	if !result.OK {
+		return fmt.Errorf("enter search query: %s", strings.TrimSpace(result.Suggestion))
+	}
+	return nil
 }
 
 func appSearchFallbackTerms(searchTerm string) []string {
@@ -346,25 +339,6 @@ func appSearchFallbackTerms(searchTerm string) []string {
 	return unique
 }
 
-func switchSearchIME(ctx context.Context, hw *textInputHardwareDeps, platform string) error {
-	if hw == nil || hw.keyboardTap == nil {
-		return fmt.Errorf("keyboard_tap is not configured")
-	}
-	keys, err := textInputKeyboardKeysForIMESwitch(platform)
-	if err != nil {
-		return err
-	}
-	out, err := hw.keyboardTap.Call(ctx, jsonString(map[string]any{"keys": keys}))
-	if err != nil {
-		return err
-	}
-	if err := interpretTextInputToolOutput(out); err != nil {
-		return err
-	}
-	time.Sleep(textInputIMESwitchSettleDelay)
-	return nil
-}
-
 func findSearchOpenAppResult(ctx context.Context, cfg appSearchOpenFlowConfig, engine *textInputEngine, searchTerm string) (bridgeSearchResult, int, error) {
 	shot, err := engine.captureScreenshot(ctx)
 	if err != nil {
@@ -395,7 +369,7 @@ Rules:
 - tap_point must be inside the visible app result row, using normalized 0-1000 coordinates.
 - Prefer the actual app result row, not the keyboard, search field, or suggestion chip.
 - If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`, searchTerm))
-	raw, err := modelVision.visionJSON(ctx, prompt, shot)
+	raw, err := modelVision.visionJSON(ctx, "app_search", prompt, shot)
 	if err != nil {
 		return bridgeSearchResult{}, 1, err
 	}
@@ -434,7 +408,7 @@ Rules:
 - opened=true only when the screenshot clearly shows the target app screen or a loading transition into that app.
 - opened=false if the screenshot still looks like the system search page, launcher, keyboard search results, or any unrelated app.
 - Keep reason short and concrete.`, searchTerm))
-	raw, err := modelVision.visionJSON(ctx, prompt, shot)
+	raw, err := modelVision.visionJSON(ctx, "app_open_confirmation", prompt, shot)
 	if err != nil {
 		return bridgeAppOpenResult{}, 1, err
 	}

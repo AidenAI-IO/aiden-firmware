@@ -909,11 +909,11 @@ func (t *KeyboardTextTool) Description() string {
 		`The physical keyboard layout comes from hid.keyboard_layout (qwerty, azerty, or qwertz). ` +
 		`Allowed characters: a-z, A-Z, 0-9, space, and common ASCII punctuation. ` +
 		`For model/tool calls, pass JSON only, for example {"text":"App Store"}; do not pass a bare string. ` +
-		`Do NOT pass non-ASCII text, emoji, or spaced romanization — use enter_text_in_field for input box entry. ` +
-		`Do not transliterate Chinese/CJK targets to pinyin or guessed ASCII keywords; if enter_text_in_field is unavailable, report the blocker instead. ` +
+		`Do NOT pass non-ASCII text, emoji, or spaced romanization — use enter_text for input box entry. ` +
+		`Do not transliterate Chinese/CJK targets to pinyin or guessed ASCII keywords; if enter_text is unavailable, report the blocker instead. ` +
 		`If a Chinese IME is active but the target text is English, switch to the English/Latin keyboard first, commonly with the globe/input-method key; do not leave English text in Chinese IME preedit/candidate state. ` +
 		`Do not use keyboard_text for picker/wheel values, even if tapping the selected row appears to expose edit mode; use wheel_nudge and verify each returned screenshot instead. ` +
-		`keyboard_text remains for simple standalone ASCII typing outside the enter_text_in_field workflow. ` +
+		`keyboard_text remains for simple standalone ASCII typing outside the enter_text workflow. ` +
 		`Bare plain text is accepted only as a legacy compatibility fallback.`
 }
 
@@ -943,12 +943,12 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 		return toolErrorResultf(
 			ctx,
 			CodeInvalidArguments,
-			"keyboard_text supports only ASCII characters available on the configured physical keyboard layout; unsupported characters: %q. Use enter_text_in_field for this target.",
+			"keyboard_text supports only ASCII characters available on the configured physical keyboard layout; unsupported characters: %q. Use enter_text for this target.",
 			string(unsupported),
 		), nil
 	}
 	if looksLikeSpacedRomanizationBlob(text) {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "keyboard_text received spaced romanization; use enter_text_in_field instead."), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "keyboard_text received spaced romanization; use enter_text instead."), nil
 	}
 
 	if t.adb != nil {

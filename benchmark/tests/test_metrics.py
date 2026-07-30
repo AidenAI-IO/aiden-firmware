@@ -14,7 +14,7 @@ def test_aggregate_counts_all_trace_observation_ids():
             rubric=[],
             metrics={
                 "trace_observations": [
-                    {"id": "used_enter_text_in_field", "passed": False},
+                    {"id": "used_enter_text", "passed": False},
                     {"id": "used_search_launch_app", "passed": False},
                 ]
             },
@@ -29,7 +29,7 @@ def test_aggregate_counts_all_trace_observation_ids():
             rubric=[],
             metrics={
                 "trace_observations": [
-                    {"id": "used_enter_text_in_field", "passed": True},
+                    {"id": "used_enter_text", "passed": True},
                     {"id": "used_search_launch_app", "passed": True},
                 ]
             },
@@ -39,6 +39,6 @@ def test_aggregate_counts_all_trace_observation_ids():
     agg = aggregate(results)
 
     assert agg["trace_observations"] == {
-        "used_enter_text_in_field": {"tasks_with_observation": 1, "tasks_observed": 2},
+        "used_enter_text": {"tasks_with_observation": 1, "tasks_observed": 2},
         "used_search_launch_app": {"tasks_with_observation": 1, "tasks_observed": 2},
     }

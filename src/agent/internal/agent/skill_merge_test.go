@@ -847,7 +847,7 @@ func TestBundledDeviceOperatorContainsEmbeddedDevicePlaybooks(t *testing.T) {
 	deviceContent := string(deviceData)
 	for _, want := range []string{
 		"## Text Entry",
-		"segments",
+		"derives IME parts and keystrokes internally",
 		"folder/list view",
 		"search_launch_app` success as app-open confirmation only",
 		"English/Latin keyboard",
@@ -896,9 +896,7 @@ func TestBundledDeviceOperatorAllowedToolsCoverEmbeddedPlaybooks(t *testing.T) {
 		"mouse_move",
 		"mouse_scroll",
 		"keyboard_tap",
-		"keyboard_text",
-		"enter_text_in_field",
-		"enter_text_via_bridge",
+		"enter_text",
 		"search_launch_app",
 		"request_human_handoff",
 		"recall_memory",

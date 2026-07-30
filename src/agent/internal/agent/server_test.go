@@ -3523,11 +3523,9 @@ func TestServerToolInvokeContinuesAfterClientDisconnect(t *testing.T) {
 func TestHTTPToolExecutionSurvivesClientDisconnectForHIDTools(t *testing.T) {
 	for _, toolName := range []string{
 		"keyboard_tap",
-		"keyboard_text",
 		"quick_action",
 		"search_launch_app",
-		"enter_text_in_field",
-		"enter_text_via_bridge",
+		"enter_text",
 		"mouse_click",
 		"mouse_move",
 		"mouse_scroll",

@@ -5,4 +5,3 @@ from .device import VPhoneDevice
 from .server import VPhoneBridgeServer
 
 __all__ = ["VPhoneBridgeServer", "VPhoneDevice", "VPhoneSocketClient", "VPhoneSocketError"]
-

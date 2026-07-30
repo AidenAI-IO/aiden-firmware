@@ -266,12 +266,10 @@ func allowedToolsExist(tools []string) bool {
 
 var knownToolNames = map[string]struct{}{
 	"audio_volume":           {},
+	"enter_text":             {},
 	"forget_memory":          {},
 	"image_diff":             {},
 	"keyboard_tap":           {},
-	"keyboard_text":          {},
-	"enter_text_in_field":    {},
-	"enter_text_via_bridge":  {},
 	"list_scripts":           {},
 	"mouse_click":            {},
 	"mouse_move":             {},

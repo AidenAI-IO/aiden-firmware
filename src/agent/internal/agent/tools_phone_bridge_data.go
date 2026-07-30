@@ -56,7 +56,7 @@ func (t *ClipboardTool) Name() string { return toolBridgeClipboard }
 
 func (t *ClipboardTool) Description() string {
 	return `Read or write the connected phone's system clipboard via the phone bridge. ` +
-		`Use this when the user explicitly wants clipboard read/write or when a separate clipboard state is the goal. For filling a visible input field, use enter_text_in_field or, when runtime Phone Bridge status reports a usable clipboard route, enter_text_via_bridge; do not manually chain bridge_clipboard with quick_action paste. ` +
+		`Use this when the user explicitly wants clipboard read/write or when a separate clipboard state is the goal. For filling a visible input field, use enter_text; do not manually chain bridge_clipboard with quick_action paste. ` +
 		phoneBridgeBackgroundSafeDataToolNote
 }
 

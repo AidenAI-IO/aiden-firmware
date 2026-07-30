@@ -190,7 +190,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_clipboard"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture", "enter_text_via_bridge"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture", "enter_text"],
         "required_tool_calls": [{"tool": "bridge_clipboard", "input_contains": {"action": "write", "text": "PiP clipboard benchmark"}}]
       }
     },
