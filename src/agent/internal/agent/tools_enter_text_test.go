@@ -11,13 +11,31 @@ import (
 
 type plannedTextInputVision struct {
 	*stubTextInputVision
-	plans map[string][]string
+	plans      map[string][]string
+	partitions map[string][]string
 }
 
 type concurrentPartPlanningVision struct {
 	*stubTextInputVision
 	started chan string
 	release chan struct{}
+}
+
+type concurrentPartPartitionVision struct {
+	*stubTextInputVision
+	started chan string
+	release chan struct{}
+}
+
+func (v *concurrentPartPartitionVision) PartitionComposition(ctx context.Context, text string) ([]string, error) {
+	v.started <- text
+	select {
+	case <-v.release:
+		runes := []rune(text)
+		return []string{string(runes[:3]), string(runes[3:])}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (v *concurrentPartPlanningVision) PlanComposition(ctx context.Context, text string) ([]string, error) {
@@ -94,6 +112,35 @@ func TestIMEPartsArePlannedConcurrently(t *testing.T) {
 	}
 }
 
+func TestLongIMEPartsArePartitionedConcurrently(t *testing.T) {
+	vision := &concurrentPartPartitionVision{
+		stubTextInputVision: &stubTextInputVision{},
+		started:             make(chan string, 2),
+		release:             make(chan struct{}),
+	}
+	engine := newTextInputEngine(textInputHardwareDeps{}, vision)
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := engine.partitionIMEChunks(context.Background(), []textInputChunk{
+			{text: "甲乙丙丁戊己"},
+			{text: "，", input: ",", ascii: true},
+			{text: "庚辛壬癸子丑"},
+		}, nil)
+		resultCh <- err
+	}()
+	for index := 0; index < 2; index++ {
+		select {
+		case <-vision.started:
+		case <-time.After(time.Second):
+			t.Fatal("long IME part partitioning did not start concurrently")
+		}
+	}
+	close(vision.release)
+	if err := <-resultCh; err != nil {
+		t.Fatalf("partitionIMEChunks() error = %v", err)
+	}
+}
+
 func TestProbeAndIMEPlanningRunConcurrently(t *testing.T) {
 	vision := &probePlanningConcurrentVision{
 		planStarted:  make(chan struct{}),
@@ -118,6 +165,38 @@ func TestProbeAndIMEPlanningRunConcurrently(t *testing.T) {
 
 func (v *plannedTextInputVision) PlanComposition(_ context.Context, text string) ([]string, error) {
 	return v.plans[text], nil
+}
+
+func (v *plannedTextInputVision) PartitionComposition(_ context.Context, text string) ([]string, error) {
+	if parts, ok := v.partitions[text]; ok {
+		return parts, nil
+	}
+	return []string{text}, nil
+}
+
+func TestLongIMEChunksArePartitionedBeforeCompositionPlanning(t *testing.T) {
+	vision := &plannedTextInputVision{
+		stubTextInputVision: &stubTextInputVision{},
+		partitions: map[string][]string{
+			"经理不是技术出身的": {"经理", "不是", "技术", "出身", "的"},
+		},
+	}
+	chunks, err := splitTextInputChunks("A经理不是技术出身的，B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	partitioned, err := newTextInputEngine(textInputHardwareDeps{}, vision).partitionIMEChunks(context.Background(), chunks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"A", "经理", "不是", "技术", "出身", "的", "，", "B"}
+	got := make([]string, len(partitioned))
+	for index := range partitioned {
+		got[index] = partitioned[index].text
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("partitioned parts=%v, want %v", got, want)
+	}
 }
 
 func TestSplitTextInputChunksPreservesASCIIAndIMERuns(t *testing.T) {
@@ -317,6 +396,35 @@ func TestTextInputEngineRunSegmentedPlansIMESegmentsInternally(t *testing.T) {
 	}
 	if want := []string{jsonString(map[string]string{"text": "a"}), jsonString(map[string]string{"text": "A"}), jsonString(map[string]string{"text": "ni"}), jsonString(map[string]string{"text": "hao"}), jsonString(map[string]string{"text": "B"})}; !reflect.DeepEqual(keyboard.calls, want) {
 		t.Fatalf("keyboard calls = %#v, want %#v", keyboard.calls, want)
+	}
+}
+
+func TestRunSegmentedVerifiesCurrentIMEPartAtCommittedFieldSuffix(t *testing.T) {
+	keyboard := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
+		{ObservedMode: textInputModeComposition, CompositionPending: true},
+		{
+			ObservedMode:       textInputModeComposition,
+			FieldText:          "Aiden 是一个接在手机上的硬件 Agent。它通过 USB 把自己模拟成",
+			CompositionPending: true,
+		},
+		{
+			ObservedMode: textInputModeASCII,
+			FieldText:    "Aiden 是一个接在手机上的硬件 Agent。它通过 USB 把自己模拟成键盘",
+		},
+	}, actions: []textInputCandidateAction{{Action: textInputCandidateActionSelect, Text: "键盘"}}}
+	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
+		pointerMode:  "absolute",
+		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: keyboard,
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision, testNoWaitSleep)
+
+	result, err := engine.RunSegmented(context.Background(), enterTextInFieldArgs{
+		Text: "模拟成键盘", Segments: []string{"mo", "ni", "cheng", "jian", "pan"},
+	})
+	if err != nil || !result.Committed {
+		t.Fatalf("RunSegmented()=%+v err=%v, want suffix verification success", result, err)
 	}
 }
 

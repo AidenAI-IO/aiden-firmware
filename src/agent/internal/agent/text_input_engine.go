@@ -61,6 +61,7 @@ type enterTextInFieldArgs struct {
 	LastDirectInput  string   `json:"-"`
 	LastDirectTarget string   `json:"-"`
 	CurrentIMEPart   string   `json:"-"`
+	VerifyTextSuffix bool     `json:"-"`
 	SendAfterCommit  bool     `json:"send_after_commit,omitempty"`
 	ClearBeforeInput bool     `json:"-"`
 }
@@ -290,23 +291,13 @@ func (e *textInputEngine) RunSegmented(ctx context.Context, args enterTextInFiel
 	if strings.TrimSpace(args.Text) == "" {
 		return enterTextInFieldResult{Reason: "text is required"}, nil
 	}
-	chunks, err := splitTextInputChunks(args.Text)
+	initialChunks, err := splitTextInputChunks(args.Text)
 	if err != nil {
 		return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredTextInputMode(args.Text)), Reason: err.Error()}, nil
 	}
 	platform := e.hw.platform()
-	textInputLogf("local start platform=%s target_len=%d parts=%d", platform, len([]rune(args.Text)), len(chunks))
-	for index, chunk := range chunks {
-		kind := "ime"
-		if chunk.ascii {
-			kind = "ascii"
-			if chunk.text != chunk.input {
-				kind = "ime-direct-punctuation"
-			}
-		}
-		textInputLogf("part planned index=%d/%d kind=%s target=%q input=%q", index+1, len(chunks), kind, truncateForLog(chunk.text, 80), truncateForLog(chunk.input, 80))
-	}
 	type compositionPlanResult struct {
+		chunks   []textInputChunk
 		segments [][]string
 		err      error
 	}
@@ -314,10 +305,16 @@ func (e *textInputEngine) RunSegmented(ctx context.Context, args enterTextInFiel
 	defer cancelPlanning()
 	planResultCh := make(chan compositionPlanResult, 1)
 	go func() {
+		chunks, partitionErr := e.partitionIMEChunks(planCtx, initialChunks, args.Segments)
+		if partitionErr != nil {
+			planResultCh <- compositionPlanResult{err: partitionErr}
+			return
+		}
 		segments, planErr := e.planCompositionSegmentsForChunks(planCtx, chunks, args.Segments)
-		planResultCh <- compositionPlanResult{segments: segments, err: planErr}
+		planResultCh <- compositionPlanResult{chunks: chunks, segments: segments, err: planErr}
 	}()
-	textInputLogf("probe and IME planning started concurrently parts=%d", len(chunks))
+	textInputLogf("local start platform=%s target_len=%d initial_parts=%d", platform, len([]rune(args.Text)), len(initialChunks))
+	textInputLogf("probe and IME partition/planning started concurrently initial_parts=%d", len(initialChunks))
 	currentMode, vlmCalls, probeSteps, err := e.probeTextInputMode(ctx, platform, args)
 	if err != nil {
 		cancelPlanning()
@@ -330,14 +327,23 @@ func (e *textInputEngine) RunSegmented(ctx context.Context, args enterTextInFiel
 	if planResult.err != nil {
 		return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredTextInputMode(args.Text)), Attempts: 1, Reason: planResult.err.Error()}, nil
 	}
+	chunks := planResult.chunks
 	compositionSegments := planResult.segments
-	textInputLogf("IME planning complete parts=%d", len(chunks))
-	steps := append([]string{"split input into direct-input and IME parts"}, probeSteps...)
-	prefix := ""
+	textInputLogf("IME partition and planning complete initial_parts=%d final_parts=%d", len(initialChunks), len(chunks))
+	for index, chunk := range chunks {
+		kind := "ime"
+		if chunk.ascii {
+			kind = "ascii"
+			if chunk.text != chunk.input {
+				kind = "ime-direct-punctuation"
+			}
+		}
+		textInputLogf("part planned index=%d/%d kind=%s target=%q input=%q", index+1, len(chunks), kind, truncateForLog(chunk.text, 80), truncateForLog(chunk.input, 80))
+	}
+	steps := append([]string{"split input into direct-input and partitioned IME parts"}, probeSteps...)
 	lastFieldText := ""
 	imeSwitches := 0
 	for index, chunk := range chunks {
-		prefix += chunk.text
 		if chunk.ascii {
 			targetMode := textInputModeASCII
 			if chunk.text != chunk.input {
@@ -379,8 +385,9 @@ func (e *textInputEngine) RunSegmented(ctx context.Context, args enterTextInFiel
 			return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredTextInputMode(args.Text)), Attempts: 1, VLMCalls: vlmCalls, Reason: err.Error()}, nil
 		}
 		partialArgs := args
-		partialArgs.Text = prefix
+		partialArgs.Text = chunk.text
 		partialArgs.CurrentIMEPart = chunk.text
+		partialArgs.VerifyTextSuffix = true
 		committed, fieldText, wrongIME, calls, notes, err := e.typeCompositionWithCandidateSelection(ctx, platform, partialArgs, compositionSegments[index])
 		vlmCalls += calls
 		steps = append(steps, notes...)
@@ -400,6 +407,89 @@ func (e *textInputEngine) RunSegmented(ctx context.Context, args enterTextInFiel
 	result := enterTextInFieldResult{OK: true, Committed: true, TargetText: args.Text, FieldText: lastFieldText, RequiredMode: string(requiredTextInputMode(args.Text)), Attempts: 1, IMESwitches: imeSwitches, VLMCalls: vlmCalls, Reason: "all text parts entered"}
 	textInputLogf("local complete parts=%d final_mode=%s ime_switches=%d vlm_calls=%d", len(chunks), currentMode, imeSwitches, vlmCalls)
 	return finalizeEnterTextInFieldResult(result, args.SendAfterCommit), nil
+}
+
+func (e *textInputEngine) partitionIMEChunks(ctx context.Context, chunks []textInputChunk, override []string) ([]textInputChunk, error) {
+	if len(normalizeCompositionSegments(override)) > 0 {
+		return chunks, nil
+	}
+	partitioner, ok := e.vision.(textInputCompositionPartitioner)
+	type partResult struct {
+		index int
+		parts []string
+		err   error
+	}
+	partitioned := make([][]string, len(chunks))
+	results := make(chan partResult, len(chunks))
+	semaphore := make(chan struct{}, textInputPlanConcurrency)
+	partitionCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := 0
+	for index, chunk := range chunks {
+		if chunk.ascii || len([]rune(chunk.text)) < textInputIMEPartitionMinRunes {
+			continue
+		}
+		if !ok {
+			return nil, fmt.Errorf("IME partitioner is not configured for %q", chunk.text)
+		}
+		jobs++
+		go func(index int, target string) {
+			select {
+			case semaphore <- struct{}{}:
+			case <-partitionCtx.Done():
+				results <- partResult{index: index, err: partitionCtx.Err()}
+				return
+			}
+			defer func() { <-semaphore }()
+			textInputLogf("IME partition begin index=%d/%d target=%q", index+1, len(chunks), truncateForLog(target, 80))
+			parts, err := partitioner.PartitionComposition(partitionCtx, target)
+			if err == nil {
+				_, err = validateTextInputPartition(target, parts)
+			}
+			if err != nil {
+				textInputLogf("IME partition failed index=%d/%d target=%q err=%v", index+1, len(chunks), truncateForLog(target, 80), err)
+			} else {
+				textInputLogf("IME partition complete index=%d/%d target=%q parts=%d", index+1, len(chunks), truncateForLog(target, 80), len(parts))
+			}
+			results <- partResult{index: index, parts: parts, err: err}
+		}(index, chunk.text)
+	}
+	var firstErr error
+	for completed := 0; completed < jobs; completed++ {
+		part := <-results
+		if part.err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("partition IME part: %w", part.err)
+				cancel()
+			}
+			continue
+		}
+		partitioned[part.index] = part.parts
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	result := make([]textInputChunk, 0, len(chunks)+jobs)
+	for index, chunk := range chunks {
+		if len(partitioned[index]) == 0 {
+			result = append(result, chunk)
+			continue
+		}
+		for _, part := range partitioned[index] {
+			result = append(result, textInputChunk{text: part})
+		}
+	}
+	return result, nil
+}
+
+func validateTextInputPartition(target string, parts []string) ([]string, error) {
+	raw, err := json.Marshal(struct {
+		Parts []string `json:"parts"`
+	}{Parts: parts})
+	if err != nil {
+		return nil, err
+	}
+	return parseTextInputPartition(target, string(raw))
 }
 
 func (e *textInputEngine) planCompositionSegmentsForChunks(ctx context.Context, chunks []textInputChunk, override []string) ([][]string, error) {
@@ -743,7 +833,7 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 				textInputLogf("candidate decision failed action=%d err=%v", candidateActions+1, err)
 				return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
 			}
-			textInputLogf("candidate decision action=%d decision=%s offset=%d text=%q", candidateActions+1, action.Action, action.Offset, truncateForLog(action.Text, 80))
+			textInputLogf("candidate decision action=%d decision=%s offset=%d text=%q completes_part=%t", candidateActions+1, action.Action, action.Offset, truncateForLog(action.Text, 80), action.CompletesPart)
 			switch action.Action {
 			case textInputCandidateActionSelect:
 				if err := e.selectCandidateByKeyboard(ctx, action); err != nil {
@@ -753,6 +843,14 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 				selectedCandidateText += action.Text
 				candidateActions++
 				pageAttempts = 0
+				if action.CompletesPart {
+					candidateTarget := args.CurrentIMEPart
+					if candidateTarget == "" {
+						candidateTarget = args.Text
+					}
+					textInputLogf("candidate selection accepted without post-action verification actions=%d target=%q", candidateActions, truncateForLog(candidateTarget, 120))
+					return true, analysis.FieldText, false, imeSwitches, vlmCalls, steps, nil
+				}
 				if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
 					return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
 				}
@@ -767,6 +865,18 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 				}
 				candidateActions++
 				pageAttempts++
+				if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+					return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
+				}
+			case textInputCandidateActionUp:
+				textInputLogf("candidate model action=%d decision=up", candidateActions+1)
+				if err := e.tapKeys(ctx, []string{"up"}); err != nil {
+					return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
+				}
+				candidateActions++
+				if pageAttempts > 0 {
+					pageAttempts--
+				}
 				if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
 					return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
 				}
@@ -811,6 +921,7 @@ func (e *textInputEngine) analyzeScreen(ctx context.Context, platform string, ar
 		Phase:            textInputPhaseAfterType,
 		Platform:         platform,
 		TargetText:       args.Text,
+		MatchTextSuffix:  args.VerifyTextSuffix,
 		Focus:            args.Focus,
 		Segments:         segments,
 		LastDirectInput:  args.LastDirectInput,
@@ -999,8 +1110,8 @@ func (e *textInputEngine) typeCompositionWithCandidateSelection(ctx context.Cont
 		}
 	}
 	// Do not commit the IME's default candidate blindly. Analyze the live
-	// candidate list first; analyzeActVerify will click the candidate that vision
-	// identified for the current target prefix and then verify the committed text.
+	// candidate list first; analyzeActVerify will execute the model-selected
+	// candidate action. A selection that completes the part returns immediately.
 	if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
 		return false, fieldText, false, vlmCalls, steps, err
 	}

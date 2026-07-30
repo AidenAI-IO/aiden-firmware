@@ -104,6 +104,24 @@ func TestTextInputAnalysisPromptDescribesLastDirectPart(t *testing.T) {
 	}
 }
 
+func TestTextInputAnalysisPromptSupportsCommittedSuffixVerification(t *testing.T) {
+	prompt := buildTextInputAnalysisPrompt(textInputScreenAnalysisRequest{
+		Phase:           textInputPhaseAfterType,
+		TargetText:      "模拟成键盘",
+		MatchTextSuffix: true,
+	})
+	for _, want := range []string{
+		`Verification scope: "committed-suffix"`,
+		"committed text at the END",
+		"Ignore any committed text before that suffix",
+		"followed by extra committed text",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("suffix verification prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestCandidateActionUsesDedicatedPromptAndResponse(t *testing.T) {
 	prompt := buildTextInputCandidateActionPrompt(textInputScreenAnalysisRequest{
 		TargetText:             "前缀目标词",
@@ -115,13 +133,17 @@ func TestCandidateActionUsesDedicatedPromptAndResponse(t *testing.T) {
 		`Current IME part: "目标词"`,
 		`Text already selected within the current IME part: "目"`,
 		`{"action":"select","offset":0`,
+		`"completes_part":true`,
 		`{"action":"expand"}`,
+		`{"action":"up"}`,
 		`{"action":"none"}`,
 		"remaining target",
 		"including a single character",
+		"finishes the entire Current IME part",
 		"similar pronunciation",
 		"active preedit/composition is not proof",
 		"expand/disclosure control",
+		"returning toward the first candidate row",
 		"no exact-prefix candidate is visible",
 		"use none",
 	} {
@@ -138,6 +160,18 @@ func TestCandidateActionUsesDedicatedPromptAndResponse(t *testing.T) {
 	}
 	if action.Action != textInputCandidateActionSelect || action.Offset != 0 || action.Text != "你好" {
 		t.Fatalf("candidate action = %+v", action)
+	}
+}
+
+func TestCandidateActionParsesUpWithoutSelectionFields(t *testing.T) {
+	model := &textInputVisionRecordingModel{content: `{"action":"up","offset":3,"text":"ignored","completes_part":true}`}
+	vision := &llmTextInputVision{models: model}
+	action, err := vision.DecideCandidateAction(context.Background(), screenshotResult{Data: "ZmFrZQ=="}, textInputScreenAnalysisRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Action != textInputCandidateActionUp || action.Offset != 0 || action.Text != "" || action.CompletesPart {
+		t.Fatalf("action=%+v, want clean up action", action)
 	}
 }
 
@@ -191,6 +225,51 @@ func TestTextInputProbeCJKCandidatePopupOverridesASCIIClassification(t *testing.
 	}
 	if analysis.Mode != textInputModeComposition {
 		t.Fatalf("mode = %s, want composition for visible CJK candidate popup", analysis.Mode)
+	}
+}
+
+func TestTextInputPartitionUsesDedicatedPromptAndExactResponse(t *testing.T) {
+	prompt := buildTextInputPartitionPrompt("经理不是技术出身的")
+	for _, want := range []string{
+		"short semantic words or phrases",
+		`{"parts":["自然词语","短语"]}`,
+		"reproduce Target text exactly",
+		"natural word boundaries",
+		"Do not output romanization",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("partition prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "candidate popup") || strings.Contains(prompt, `"mappings"`) {
+		t.Fatalf("partition prompt must be independent from candidate and romanization prompts:\n%s", prompt)
+	}
+
+	model := &textInputVisionRecordingModel{content: `{"parts":["经理","不是","技术","出身","的"]}`}
+	vision := &llmTextInputVision{models: model}
+	parts, err := vision.PartitionComposition(context.Background(), "经理不是技术出身的")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"经理", "不是", "技术", "出身", "的"}
+	if strings.Join(parts, "") != strings.Join(want, "") || len(parts) != len(want) {
+		t.Fatalf("parts=%v, want %v", parts, want)
+	}
+	options := llms.CallOptions{}
+	for _, option := range model.options {
+		option(&options)
+	}
+	if !options.JSONMode || options.MaxTokens < 4096 {
+		t.Fatalf("partition options JSONMode=%t MaxTokens=%d", options.JSONMode, options.MaxTokens)
+	}
+}
+
+func TestTextInputPartitionRejectsLossyOrOversizedParts(t *testing.T) {
+	if _, err := parseTextInputPartition("完整目标", `{"parts":["完整"]}`); err == nil {
+		t.Fatal("lossy partition must be rejected")
+	}
+	if _, err := parseTextInputPartition("一二三四五六七", `{"parts":["一二三四五六七"]}`); err == nil {
+		t.Fatal("oversized partition must be rejected")
 	}
 }
 

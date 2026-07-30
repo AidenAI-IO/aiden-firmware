@@ -37,6 +37,8 @@ const (
 	textInputVisionMaxTokens        = textInputModelMaxTokens
 	textInputPlanMaxTokens          = textInputModelMaxTokens
 	textInputPlanConcurrency        = 4
+	textInputIMEPartitionMinRunes   = 5
+	textInputIMEPartitionMaxRunes   = 6
 )
 
 var textInputCompositionReadyDelay = 450 * time.Millisecond
@@ -91,6 +93,12 @@ func compositionSegmentsForText(text string, segments []string) ([]string, error
 // entry workflow so the main agent never has to construct pinyin/IME segments.
 type textInputCompositionPlanner interface {
 	PlanComposition(ctx context.Context, text string) ([]string, error)
+}
+
+// textInputCompositionPartitioner splits a long IME run into smaller semantic
+// units before romanization planning and candidate selection.
+type textInputCompositionPartitioner interface {
+	PartitionComposition(ctx context.Context, text string) ([]string, error)
 }
 
 func (e *textInputEngine) compositionSegmentsForText(ctx context.Context, text string, override []string) ([]string, error) {

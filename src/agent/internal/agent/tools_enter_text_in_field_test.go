@@ -783,6 +783,89 @@ func TestCompositionExpandsCandidatesBeforeSelectingHiddenTarget(t *testing.T) {
 	}
 }
 
+func TestCompositionCanReturnToFirstCandidateRow(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
+		{ObservedMode: textInputModeComposition, CompositionPending: true},
+		{ObservedMode: textInputModeComposition, CompositionPending: true},
+		{ObservedMode: textInputModeComposition, CompositionPending: true},
+		{FieldText: "经理", TargetMatched: true},
+	}, actions: []textInputCandidateAction{
+		{Action: textInputCandidateActionExpand},
+		{Action: textInputCandidateActionUp},
+		{Action: textInputCandidateActionSelect, Offset: 0, Text: "经理"},
+	}}
+	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	engine := newFastTextInputEngine(textInputHardwareDeps{
+		keyboardTap:  kbTap,
+		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+
+	committed, _, _, _, _, err := engine.typeCompositionWithCandidateSelection(
+		context.Background(),
+		"ios",
+		enterTextInFieldArgs{Text: "经理"},
+		[]string{"jing", "li"},
+	)
+	if err != nil || !committed {
+		t.Fatalf("typeCompositionWithCandidateSelection() committed=%v err=%v", committed, err)
+	}
+	if len(kbTap.calls) != 3 {
+		t.Fatalf("keyboard taps=%v, want Down, Up, Space", kbTap.calls)
+	}
+	for index, want := range []string{"down", "up", "space"} {
+		if !strings.Contains(kbTap.calls[index], want) {
+			t.Fatalf("keyboard tap %d=%q, want %q; all=%v", index, kbTap.calls[index], want, kbTap.calls)
+		}
+	}
+}
+
+func TestCompletedCandidateSelectionSkipsPostActionVerification(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode:       textInputModeComposition,
+		CompositionPending: true,
+	}}, actions: []textInputCandidateAction{{
+		Action:        textInputCandidateActionSelect,
+		Text:          "把自己",
+		CompletesPart: true,
+	}}}
+	screenshot := &recordingTextInputTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
+	var sleeps []time.Duration
+	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
+		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+		screenshot:   screenshot,
+	}, vision, func(_ context.Context, delay time.Duration) error {
+		sleeps = append(sleeps, delay)
+		return nil
+	})
+
+	committed, _, _, vlmCalls, _, err := engine.typeCompositionWithCandidateSelection(
+		context.Background(),
+		"ios",
+		enterTextInFieldArgs{Text: "把自己", CurrentIMEPart: "把自己"},
+		[]string{"ba", "zi", "ji"},
+	)
+	if err != nil || !committed {
+		t.Fatalf("typeCompositionWithCandidateSelection() committed=%v err=%v", committed, err)
+	}
+	if vlmCalls != 2 {
+		t.Fatalf("vlmCalls=%d, want initial analysis plus candidate decision only", vlmCalls)
+	}
+	if len(screenshot.calls) != 2 {
+		t.Fatalf("screenshot calls=%d, want no post-selection verification screenshot", len(screenshot.calls))
+	}
+	focusSettleCount := 0
+	for _, delay := range sleeps {
+		if delay == textInputFocusRestoreDelay {
+			focusSettleCount++
+		}
+	}
+	if focusSettleCount != 1 {
+		t.Fatalf("focus settle count=%d, want only the pre-candidate settle and none after final selection; sleeps=%v", focusSettleCount, sleeps)
+	}
+}
+
 func TestSelectCandidateByKeyboardUsesLeftForNegativeOffset(t *testing.T) {
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	engine := newFastTextInputEngine(textInputHardwareDeps{keyboardTap: kbTap}, &stubTextInputVision{})

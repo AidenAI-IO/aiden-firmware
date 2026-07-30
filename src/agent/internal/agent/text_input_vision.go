@@ -23,6 +23,7 @@ type textInputScreenAnalysisRequest struct {
 	Phase                  textInputScreenPhase
 	Platform               string
 	TargetText             string
+	MatchTextSuffix        bool
 	CandidateTargetText    string
 	CandidateCommittedText string
 	Focus                  focusPointArgs
@@ -37,12 +38,14 @@ const (
 	textInputCandidateActionNone   textInputCandidateActionKind = "none"
 	textInputCandidateActionSelect textInputCandidateActionKind = "select"
 	textInputCandidateActionExpand textInputCandidateActionKind = "expand"
+	textInputCandidateActionUp     textInputCandidateActionKind = "up"
 )
 
 type textInputCandidateAction struct {
-	Action textInputCandidateActionKind `json:"action"`
-	Offset int                          `json:"offset,omitempty"`
-	Text   string                       `json:"text,omitempty"`
+	Action        textInputCandidateActionKind `json:"action"`
+	Offset        int                          `json:"offset,omitempty"`
+	Text          string                       `json:"text,omitempty"`
+	CompletesPart bool                         `json:"completes_part,omitempty"`
 }
 
 type textInputScreenAnalysis struct {
@@ -131,9 +134,10 @@ func (v *llmTextInputVision) DecideCandidateAction(ctx context.Context, screensh
 	switch action.Action {
 	case textInputCandidateActionSelect:
 		action.Text = strings.TrimSpace(action.Text)
-	case textInputCandidateActionExpand, textInputCandidateActionNone:
+	case textInputCandidateActionExpand, textInputCandidateActionUp, textInputCandidateActionNone:
 		action.Offset = 0
 		action.Text = ""
+		action.CompletesPart = false
 	default:
 		action = textInputCandidateAction{Action: textInputCandidateActionNone}
 	}
@@ -205,6 +209,87 @@ Classification rules:
 - The absence of an underline does not prove ASCII mode. Candidate popup evidence takes priority.
 - Keyboard autocorrect suggestions for already committed English text are not an IME composition state.
 - When a keyboard is visible, distinguish ordinary autocorrect suggestions from an active IME candidate state by also checking the focused input position.`, platform, focus.X, focus.Y))
+}
+
+// PartitionComposition splits one long IME run at natural language boundaries.
+// It deliberately uses a dedicated prompt and response contract instead of
+// sharing the romanization planner or candidate-selection prompts.
+func (v *llmTextInputVision) PartitionComposition(ctx context.Context, target string) ([]string, error) {
+	if target == "" {
+		return nil, fmt.Errorf("IME partition target text is required")
+	}
+	if len([]rune(target)) < textInputIMEPartitionMinRunes {
+		return []string{target}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	prompt := buildTextInputPartitionPrompt(target)
+	var lastErr error
+	for attempt := 1; attempt <= textInputPlanAttempts; attempt++ {
+		attemptPrompt := prompt
+		if lastErr != nil {
+			attemptPrompt += fmt.Sprintf("\n\nThe previous response was invalid: %s. Return the complete corrected JSON object.", lastErr)
+		}
+		resp, err := v.models.GenerateContent(ctx, []llms.MessageContent{
+			llms.TextParts(llms.ChatMessageTypeSystem, "You split exact IME target text into short semantic input parts. Output JSON only."),
+			llms.TextParts(llms.ChatMessageTypeHuman, attemptPrompt),
+		}, llms.WithJSONMode(), llms.WithMaxTokens(textInputPlanMaxTokens))
+		if err != nil {
+			return nil, err
+		}
+		if len(resp.Choices) == 0 {
+			lastErr = fmt.Errorf("empty IME partition response")
+			continue
+		}
+		parts, parseErr := parseTextInputPartition(target, resp.Choices[0].Content)
+		if parseErr == nil {
+			return parts, nil
+		}
+		lastErr = parseErr
+	}
+	return nil, fmt.Errorf("IME partition remained invalid after %d attempts: %w", textInputPlanAttempts, lastErr)
+}
+
+func buildTextInputPartitionPrompt(target string) string {
+	return fmt.Sprintf(`Split the following exact IME target text into short semantic words or phrases for separate IME composition and candidate selection.
+Target text: %q
+
+Return JSON only:
+{"parts":["自然词语","短语"]}
+
+Rules:
+- Concatenating every string in parts must reproduce Target text exactly, byte for byte and in the original order.
+- Do not add, remove, normalize, reorder, or rewrite any character.
+- Each part must be non-empty and contain at most %d Unicode characters.
+- Choose natural word boundaries and keep established terms, names, and grammatical units intact when they fit the length limit.
+- Prefer useful multi-character words or short phrases. Use a single-character part only when it is naturally independent or required by the length limit.
+- Do not output romanization, pinyin, candidate choices, punctuation explanations, or any text outside the JSON object.`, target, textInputIMEPartitionMaxRunes)
+}
+
+func parseTextInputPartition(target, raw string) ([]string, error) {
+	var parsed struct {
+		Parts []string `json:"parts"`
+	}
+	if err := json.Unmarshal([]byte(stripJSONCodeFence(raw)), &parsed); err != nil {
+		return nil, fmt.Errorf("parse IME partition: %w", err)
+	}
+	if len(parsed.Parts) == 0 {
+		return nil, fmt.Errorf("IME partition returned no parts")
+	}
+	var joined strings.Builder
+	for index, part := range parsed.Parts {
+		if part == "" {
+			return nil, fmt.Errorf("IME partition part %d is empty", index)
+		}
+		if count := len([]rune(part)); count > textInputIMEPartitionMaxRunes {
+			return nil, fmt.Errorf("IME partition part %d has %d characters, maximum is %d", index, count, textInputIMEPartitionMaxRunes)
+		}
+		joined.WriteString(part)
+	}
+	if joined.String() != target {
+		return nil, fmt.Errorf("IME partition does not reconstruct the exact target")
+	}
+	return parsed.Parts, nil
 }
 
 // PlanComposition turns one non-ASCII text run into the ASCII keystrokes that
@@ -309,10 +394,17 @@ func buildTextInputAnalysisPrompt(req textInputScreenAnalysisRequest) string {
 	if req.Phase == textInputPhaseAfterType {
 		phaseHint = "Typing already happened. Read ONLY the focused target input field for field_text. Do NOT copy IME candidate bar, preedit strip, keyboard suggestions, or inline composition text into field_text. Set composition_pending=true whenever the just-typed content is still in an IME preedit or candidate state and needs confirmation before more text is typed. If a Last direct HID input is given and any IME candidate/preedit box is visible for that ASCII part, observed_mode MUST be composition even when the raw ASCII already appears inside the field. If the direct ASCII part is committed with no active candidate/preedit box, set composition_pending=false and observed_mode=ascii. IME candidate selection is handled separately. If field shows only latin/pinyin segments instead of target characters, set wrong_ime_suspected=true and suggest_switch_ime=true."
 	}
+	verificationScope := "exact-field"
+	targetMatchRule := "target_matched: directly judge whether the complete committed text visible in the focused field matches Target text. Return false for any extra committed prefix or suffix"
+	if req.MatchTextSuffix {
+		verificationScope = "committed-suffix"
+		targetMatchRule = "target_matched: judge only whether the committed text at the END of the focused field matches Target text exactly. Ignore any committed text before that suffix because it may have existed before this operation or been entered by earlier parts. Return false if the target suffix is missing, incomplete, reordered, or followed by extra committed text"
+	}
 	return strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot (Android/iOS/macOS) for text-input automation.
 Platform: %q
 Phase: %q
 Target text: %q
+Verification scope: %q
 Typed segments: %s
 Last direct HID input: %q
 Expected rendered text for that direct part: %q
@@ -331,11 +423,11 @@ Return JSON only:
 
 Rules:
 - field_text: committed text inside the target input box only; exclude IME candidate rows, preedit, and keyboard suggestion chips
-- target_matched: directly judge whether the committed text visible in the focused field matches Target text. Use visual meaning, not a code-point comparison of your field_text transcription. Treat visually equivalent punctuation forms such as full-width versus half-width comma as matching when the screenshot cannot reliably distinguish them. Return false for missing, extra, reordered, or visibly wrong letters, digits, or words
+- %s. Use visual meaning, not a code-point comparison of your field_text transcription. Treat visually equivalent punctuation forms such as full-width versus half-width comma as matching when the screenshot cannot reliably distinguish them
 - composition_pending: true whenever the just-typed content is still in an IME preedit/candidate state and requires confirmation, including an ASCII part shown with an IME candidate box
 - observed_mode: ascii=direct Latin entry with no active candidate/preedit box; composition=any active IME candidate/preedit state, including a candidate box shown for an ASCII part such as "4k60"
 - wrong_ime_suspected: true when field shows raw romanization instead of target script
-- suggest_switch_ime: true only when confident the wrong keyboard/IME is active`, req.Platform, req.Phase, req.TargetText, segments, req.LastDirectInput, req.LastDirectTarget, req.Focus.X, req.Focus.Y, phaseHint))
+- suggest_switch_ime: true only when confident the wrong keyboard/IME is active`, req.Platform, req.Phase, req.TargetText, verificationScope, segments, req.LastDirectInput, req.LastDirectTarget, req.Focus.X, req.Focus.Y, phaseHint, targetMatchRule))
 }
 
 func buildTextInputCandidateActionPrompt(req textInputScreenAnalysisRequest) string {
@@ -344,22 +436,28 @@ func buildTextInputCandidateActionPrompt(req textInputScreenAnalysisRequest) str
 		candidateTarget = req.TargetText
 	}
 	return strings.TrimSpace(fmt.Sprintf(`Choose the single next keyboard action for the active IME candidate UI in this screenshot.
-Full target through the current IME part: %q
+Verification target for the just-entered text: %q
 Current IME part: %q
 Text already selected within the current IME part: %q
 Focus (normalized 0-1000): (%.0f, %.0f)
 
 Return JSON only in one of these forms:
-{"action":"select","offset":0,"text":"visible candidate text"}
+{"action":"select","offset":0,"text":"visible candidate text","completes_part":true}
 {"action":"expand"}
+{"action":"up"}
 {"action":"none"}
 
 Rules:
 - The remaining target is the suffix of Current IME part after Text already selected within the current IME part
 - Judge actions from the visible candidate bar or candidate list. Text shown in the field as active preedit/composition is not proof that it has been committed
 - select only when a visible candidate exactly matches one or more characters at the start of the remaining target. A shorter exact prefix, including a single character, is valid
+- completes_part=true only when selecting this candidate finishes the entire Current IME part and no further candidate selection is needed. Account for any portion of the current part that is already committed or represented by the active preedit in the screenshot
+- completes_part=false when another candidate action will still be required after this selection, or when completion is uncertain
 - Do not select a candidate based only on similar pronunciation, related meaning, or likely intent
 - If no exact-prefix candidate is visible and an expand/disclosure control is available, use expand
+- expand means press Down to open the candidate list or move toward a lower candidate row
+- If the current highlight is on a lower row and the desired candidate is visible on a row above it, use up to press Up once toward that row
+- Use up when returning toward the first candidate row after an earlier Down movement; do not use up when the highlight is already on the first row
 - If no exact-prefix candidate is visible and expansion is unavailable or cannot be determined, use none
 - offset is the signed number of moves from the highlighted candidate: positive=Right, negative=Left, zero=select the highlighted candidate
 - text must exactly transcribe the visible candidate selected and is used only for logging
@@ -434,6 +532,19 @@ func (s *stubTextInputVision) ProbeInputMode(_ context.Context, _ screenshotResu
 	return textInputProbeAnalysis{Mode: mode, InlinePreeditVisible: out.CompositionPending, CandidatePopupVisible: out.CompositionPending, Evidence: "stub analysis"}, nil
 }
 
+func (s *stubTextInputVision) PartitionComposition(_ context.Context, text string) ([]string, error) {
+	runes := []rune(text)
+	parts := make([]string, 0, (len(runes)+textInputIMEPartitionMaxRunes-1)/textInputIMEPartitionMaxRunes)
+	for start := 0; start < len(runes); start += textInputIMEPartitionMaxRunes {
+		end := start + textInputIMEPartitionMaxRunes
+		if end > len(runes) {
+			end = len(runes)
+		}
+		parts = append(parts, string(runes[start:end]))
+	}
+	return parts, nil
+}
+
 func (s *stubTextInputVision) AnalyzeScreen(_ context.Context, _ screenshotResult, req textInputScreenAnalysisRequest) (textInputScreenAnalysis, error) {
 	if len(s.analyses) == 0 {
 		return textInputScreenAnalysis{ObservedMode: textInputModeComposition}, nil
@@ -443,7 +554,7 @@ func (s *stubTextInputVision) AnalyzeScreen(_ context.Context, _ screenshotResul
 	// Existing unit-test fixtures predate target_matched and describe successful
 	// observations through field_text. Preserve that fixture shorthand without
 	// reintroducing string comparison into the production verifier.
-	if !out.TargetMatched && fieldTextExactlyMatches(out.FieldText, req.TargetText) {
+	if !out.TargetMatched && ((req.MatchTextSuffix && strings.HasSuffix(strings.TrimSpace(out.FieldText), strings.TrimSpace(req.TargetText))) || (!req.MatchTextSuffix && fieldTextExactlyMatches(out.FieldText, req.TargetText))) {
 		out.TargetMatched = true
 	}
 	return out, nil
