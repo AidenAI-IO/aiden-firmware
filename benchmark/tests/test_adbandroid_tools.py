@@ -197,18 +197,16 @@ def test_keyboard_text_rejects_non_ascii(bridge):
     assert "US-keyboard ASCII" in body["output"]
 
 
-def test_enter_text_in_field_taps_focus_then_types(bridge):
+def test_enter_text_taps_focus_then_types(bridge):
     _, device, base_url = bridge
     status, body = _invoke(
         base_url,
-        "enter_text_in_field",
+        "enter_text",
         {"text": "hello android", "focus": {"x": 500, "y": 100}},
     )
     assert status == 200
     output = json.loads(body["output"])
-    assert output["ok"] is True and output["committed"] is True
-    assert output["target_text"] == "hello android"
-    assert output["required_mode"] == "ascii"
+    assert output == {"ok": True}
     tap_index = device.calls.index(("tap", 540, 192))
     text_index = device.calls.index(("input_text", "hello android"))
     assert tap_index < text_index
@@ -218,14 +216,14 @@ def test_enter_text_reports_unsupported_text_without_typing(bridge):
     _, device, base_url = bridge
     status, body = _invoke(
         base_url,
-        "enter_text_via_bridge",
+        "enter_text",
         {"text": "你好", "focus": {"x": 500, "y": 100}},
     )
     assert status == 200
     assert body["is_error"] is False
     output = json.loads(body["output"])
-    assert output["ok"] is False and output["committed"] is False
-    assert output["required_mode"] == "composition"
+    assert output["ok"] is False
+    assert "US-keyboard ASCII" in output["suggestion"]
     assert all(call[0] != "input_text" for call in device.calls)
 
 

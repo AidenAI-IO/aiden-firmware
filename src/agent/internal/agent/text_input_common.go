@@ -58,15 +58,10 @@ func textInputDurationPerCharacter(duration time.Duration, characters int64) tim
 
 type textInputMode string
 
-type textInputInteractionMode string
-
 const (
 	textInputModeASCII       textInputMode = "ascii"
 	textInputModeComposition textInputMode = "composition"
 	textInputModeUnknown     textInputMode = "unknown"
-
-	textInputModeForm   textInputInteractionMode = "form"
-	textInputModeSearch textInputInteractionMode = "search"
 
 	textInputKeystrokeGap           = 60 * time.Millisecond
 	textInputFocusRestoreDelay      = time.Second
@@ -77,7 +72,6 @@ const (
 	textInputIMESwitchHoldMs        = 200
 	textInputClearBackspaceRepeats  = 32
 	textInputClearBackspaceFallback = 16
-	textInputMaxAttempts            = 3
 	textInputCandidatePageMax       = 5
 	textInputCandidateActionMax     = 20
 	textInputCandidateMoveMax       = 20
@@ -93,33 +87,6 @@ const (
 
 var textInputCompositionReadyDelay = textInputLocalIMESettleDelay
 var textInputProbeSettleDelay = textInputLocalIMESettleDelay
-
-func normalizeTextInputInteractionMode(raw string) textInputInteractionMode {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", string(textInputModeForm):
-		return textInputModeForm
-	case string(textInputModeSearch):
-		return textInputModeSearch
-	default:
-		return textInputModeForm
-	}
-}
-
-func requiredTextInputMode(text string) textInputMode {
-	if needsCompositionInput(text) {
-		return textInputModeComposition
-	}
-	return textInputModeASCII
-}
-
-func needsCompositionInput(text string) bool {
-	for _, r := range text {
-		if r > 127 {
-			return true
-		}
-	}
-	return false
-}
 
 func containsHanRunes(text string) bool {
 	for _, r := range text {

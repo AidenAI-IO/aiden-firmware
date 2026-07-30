@@ -247,7 +247,7 @@
         },
         {
           "id": "used_input_field",
-          "check": "Trace shows the agent interacted with the search input field (keyboard_text or enter_text_in_field) to type 设置."
+          "check": "Trace shows the agent interacted with the search input field (keyboard_text or enter_text) to type 设置."
         },
         {
           "id": "opened_settings",

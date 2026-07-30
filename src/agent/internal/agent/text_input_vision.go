@@ -12,15 +12,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-type textInputScreenPhase string
-
-const (
-	textInputPhaseBeforeType textInputScreenPhase = "before_type"
-	textInputPhaseAfterType  textInputScreenPhase = "after_type"
-)
-
 type textInputScreenAnalysisRequest struct {
-	Phase                  textInputScreenPhase
 	Platform               string
 	TargetText             string
 	MatchTextSuffix        bool
@@ -28,8 +20,6 @@ type textInputScreenAnalysisRequest struct {
 	CandidateCommittedText string
 	Focus                  focusPointArgs
 	Segments               []string
-	LastDirectInput        string
-	LastDirectTarget       string
 }
 
 type textInputCandidateActionKind string
@@ -148,10 +138,8 @@ func (v *llmTextInputVision) ProbeInputMode(ctx context.Context, screenshot scre
 	prompt := buildTextInputProbePrompt(platform, focus)
 	raw, err := v.visionJSON(ctx, "ime_probe", prompt, screenshot)
 	if err != nil {
-		textInputLogf("probe vision request failed err=%v", err)
 		return textInputProbeAnalysis{}, err
 	}
-	textInputLogf("probe vision raw response bytes=%d raw=%q", len([]byte(raw)), raw)
 	var parsed struct {
 		Mode                    string `json:"mode"`
 		TypedAVisible           bool   `json:"typed_a_visible"`
@@ -162,7 +150,6 @@ func (v *llmTextInputVision) ProbeInputMode(ctx context.Context, screenshot scre
 		Evidence                string `json:"evidence"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		textInputLogf("probe vision response parse failed bytes=%d raw=%q err=%v", len([]byte(raw)), raw, err)
 		return textInputProbeAnalysis{}, fmt.Errorf("parse input mode probe: %w", err)
 	}
 	mode, err := parseObservedTextInputMode(parsed.Mode)
@@ -390,10 +377,7 @@ func buildTextInputAnalysisPrompt(req textInputScreenAnalysisRequest) string {
 	if segments == "" {
 		segments = "(none yet)"
 	}
-	phaseHint := "Typing has NOT started yet. If IME mode is unclear, set observed_mode=unknown and suggest_switch_ime=false."
-	if req.Phase == textInputPhaseAfterType {
-		phaseHint = "Typing already happened. Read ONLY the focused target input field for field_text. Do NOT copy IME candidate bar, preedit strip, keyboard suggestions, or inline composition text into field_text. Set composition_pending=true whenever the just-typed content is still in an IME preedit or candidate state and needs confirmation before more text is typed. If a Last direct HID input is given and any IME candidate/preedit box is visible for that ASCII part, observed_mode MUST be composition even when the raw ASCII already appears inside the field. If the direct ASCII part is committed with no active candidate/preedit box, set composition_pending=false and observed_mode=ascii. IME candidate selection is handled separately. If field shows only latin/pinyin segments instead of target characters, set wrong_ime_suspected=true and suggest_switch_ime=true."
-	}
+	phaseHint := "Typing already happened. Read ONLY the focused target input field for field_text. Do NOT copy IME candidate bar, preedit strip, keyboard suggestions, or inline composition text into field_text. Set composition_pending=true whenever the just-typed content is still in an IME preedit or candidate state and needs confirmation before more text is typed. IME candidate selection is handled separately. If field shows only latin/pinyin segments instead of target characters, set wrong_ime_suspected=true and suggest_switch_ime=true."
 	verificationScope := "exact-field"
 	targetMatchRule := "target_matched: directly judge whether the complete committed text visible in the focused field matches Target text. Return false for any extra committed prefix or suffix"
 	if req.MatchTextSuffix {
@@ -402,12 +386,9 @@ func buildTextInputAnalysisPrompt(req textInputScreenAnalysisRequest) string {
 	}
 	return strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot (Android/iOS/macOS) for text-input automation.
 Platform: %q
-Phase: %q
 Target text: %q
 Verification scope: %q
 Typed segments: %s
-Last direct HID input: %q
-Expected rendered text for that direct part: %q
 Focus (normalized 0-1000): (%.0f, %.0f)
 %s
 
@@ -427,7 +408,7 @@ Rules:
 - composition_pending: true whenever the just-typed content is still in an IME preedit/candidate state and requires confirmation, including an ASCII part shown with an IME candidate box
 - observed_mode: ascii=direct Latin entry with no active candidate/preedit box; composition=any active IME candidate/preedit state, including a candidate box shown for an ASCII part such as "4k60"
 - wrong_ime_suspected: true when field shows raw romanization instead of target script
-- suggest_switch_ime: true only when confident the wrong keyboard/IME is active`, req.Platform, req.Phase, req.TargetText, verificationScope, segments, req.LastDirectInput, req.LastDirectTarget, req.Focus.X, req.Focus.Y, phaseHint, targetMatchRule))
+- suggest_switch_ime: true only when confident the wrong keyboard/IME is active`, req.Platform, req.TargetText, verificationScope, segments, req.Focus.X, req.Focus.Y, phaseHint, targetMatchRule))
 }
 
 func buildTextInputCandidateActionPrompt(req textInputScreenAnalysisRequest) string {

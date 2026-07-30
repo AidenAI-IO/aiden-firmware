@@ -393,7 +393,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	toolSet.RegisterMemoryTools(memoryDir, extractionCfg.SummaryMaxChunks, longTermStore)
-	toolSet.RegisterEnterTextInFieldTool(modelManager, nil) // platformFn set per-request
+	toolSet.RegisterEnterTextTool(modelManager, nil) // platformFn set per-request
 
 	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithStructuredSummarizeFn(structuredSummarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithLongTermMemoryStore(longTermStore), WithMemoryLogger(logger)), toolSet, skillIndex)
 

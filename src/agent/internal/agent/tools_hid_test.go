@@ -1990,7 +1990,7 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 	for _, want := range []string{
 		"ASCII",
 		"Do NOT pass non-ASCII",
-		"enter_text_in_field",
+		"enter_text",
 		"Do not transliterate Chinese/CJK targets to pinyin",
 		`{"text":"App Store"}`,
 		"do not pass a bare string",
@@ -2033,8 +2033,8 @@ func TestDeviceOperatorSkillUsesWheelOnlyForPickers(t *testing.T) {
 	for _, want := range []string{
 		"use `wheel_nudge` directly from the latest screenshot",
 		"Do not tap the selected row to probe for keyboard/edit mode",
-		"do not use `keyboard_text` for picker values",
-		"do not use `keyboard_text` or `keyboard_tap` to change picker values",
+		"do not use `enter_text` for picker values",
+		"do not use `enter_text` or `keyboard_tap` to change picker values",
 		"issue one bounded `wheel_nudge`, then read the returned screenshot",
 	} {
 		if !strings.Contains(content, want) {

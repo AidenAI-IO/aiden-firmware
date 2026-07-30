@@ -607,7 +607,7 @@ def test_tools_api_mobilegym_text_entry_tools_do_not_depend_on_hid_devices():
         status, body = request_json(
             bridge.base_url,
             "POST",
-            "/api/tools/enter_text_in_field",
+            "/api/tools/enter_text",
             {
                 "input": {
                     "text": "微信读书",
@@ -621,7 +621,7 @@ def test_tools_api_mobilegym_text_entry_tools_do_not_depend_on_hid_devices():
         assert status == 200
         assert body["is_error"] is False
         output = json.loads(body["output"])
-        assert output["committed"] is True
+        assert output == {"ok": True}
         assert "hidg" not in body["output"]
         assert action_to_dict(bridge.env.actions[-1]) == {
             "action_type": "TYPE",
@@ -631,7 +631,7 @@ def test_tools_api_mobilegym_text_entry_tools_do_not_depend_on_hid_devices():
         status, body = request_json(
             bridge.base_url,
             "POST",
-            "/api/tools/enter_text_via_bridge",
+            "/api/tools/enter_text",
             {
                 "input": {
                     "text": "Camera note",
@@ -643,7 +643,7 @@ def test_tools_api_mobilegym_text_entry_tools_do_not_depend_on_hid_devices():
         assert status == 200
         assert body["is_error"] is False
         output = json.loads(body["output"])
-        assert output["committed"] is True
+        assert output == {"ok": True}
         assert "hidg" not in body["output"]
         assert action_to_dict(bridge.env.actions[-1]) == {
             "action_type": "TYPE",

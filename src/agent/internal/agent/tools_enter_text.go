@@ -13,17 +13,15 @@ import (
 // local mixed ASCII/IME entry strategy.
 type EnterTextTool struct {
 	engine               *textInputEngine
-	bridgeTool           *EnterTextViaBridgeTool
+	bridgeTool           *textInputBridge
 	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
-// enterTextArgs is deliberately separate from enterTextInFieldArgs. The latter
-// is still reused by internal legacy paths, whereas enter_text accepts only the
-// original target and owns IME planning itself.
+// enterTextArgs is the public tool payload. textInputArgs adds only the
+// internal state needed while processing an IME part.
 type enterTextArgs struct {
 	Text            string         `json:"text"`
 	Focus           focusPointArgs `json:"focus"`
-	MaxAttempts     int            `json:"max_attempts,omitempty"`
 	SendAfterCommit bool           `json:"send_after_commit,omitempty"`
 }
 
@@ -32,11 +30,10 @@ type enterTextToolResult struct {
 	Suggestion string `json:"suggestion,omitempty"`
 }
 
-func (a enterTextArgs) toEngineArgs() enterTextInFieldArgs {
-	return enterTextInFieldArgs{
+func (a enterTextArgs) toEngineArgs() textInputArgs {
+	return textInputArgs{
 		Text:            a.Text,
 		Focus:           a.Focus,
-		MaxAttempts:     a.MaxAttempts,
 		SendAfterCommit: a.SendAfterCommit,
 	}
 }
@@ -57,7 +54,6 @@ func (t *EnterTextTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"text":              stringArgSchema("Exact text that must appear in the field when done."),
 		"focus":             focusPointArgSchema("Coordinates inside a clearly visible editable field or composer."),
-		"max_attempts":      integerArgSchema("Retry attempts for a single-mode local entry (default 3)."),
 		"send_after_commit": boolArgSchema("After the exact target is verified, press send/submit and verify it was sent."),
 	}, "text", "focus")
 }
@@ -89,7 +85,6 @@ func (t *EnterTextTool) Call(ctx context.Context, input string) (string, error) 
 		}
 		var publicArgs enterTextArgs
 		if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &publicArgs); err != nil {
-			textInputLogf("tool invalid arguments err=%v", err)
 			return enterTextToolFailure(batchCtx, CodeInvalidArguments, "Call enter_text again with valid JSON containing text and focus."), nil
 		}
 		metrics.characters.Store(int64(len([]rune(publicArgs.Text))))
@@ -98,38 +93,32 @@ func (t *EnterTextTool) Call(ctx context.Context, input string) (string, error) 
 			return enterTextToolFailure(batchCtx, CodeInvalidArguments, "Provide non-empty text, then retry enter_text."), nil
 		}
 		platform := t.engine.hw.platform()
+		localController := controller
+		if localController == nil {
+			localController = iosKeyboardIsolationControllerFromContext(batchCtx)
+		}
 		bridgeAvailable := t.bridgeAvailable(args)
-		textInputLogf("tool start platform=%s target_len=%d bridge_available=%t isolation_configured=%t", platform, len([]rune(args.Text)), bridgeAvailable, controller != nil)
 		if bridgeAvailable {
-			textInputLogf("bridge path begin")
 			bridgeResult, attempted := t.bridgeTool.runClipboardFirstResult(batchCtx, args)
-			textInputLogf("bridge path result attempted=%t committed=%t ok=%t reason=%q", attempted, bridgeResult.Committed, bridgeResult.OK, truncateForLog(bridgeResult.Reason, 160))
 			if attempted {
 				return enterTextToolResultString(bridgeResult), nil
 			}
 		}
-		if platform == "ios" && controller == nil {
-			textInputLogf("local path refused platform=ios reason=isolation_unavailable")
+		if platform == "ios" && localController == nil {
 			return enterTextToolFailure(batchCtx, CodeModuleUnavailable, "Enable iOS keyboard isolation, then retry enter_text."), nil
 		}
-		var result enterTextInFieldResult
+		var result textInputResult
 		var err error
 		runLocal := func() error {
-			textInputLogf("local path engine begin")
 			result, err = t.engine.RunSegmented(batchCtx, args)
-			textInputLogf("local path engine result committed=%t ok=%t ime_switches=%d vlm_calls=%d reason=%q err=%v", result.Committed, result.OK, result.IMESwitches, result.VLMCalls, truncateForLog(result.Reason, 160), err)
 			return err
 		}
-		if controller != nil {
-			textInputLogf("local path isolation enter requested")
-			err = controller.withKeyboard(batchCtx, true, runLocal)
-			textInputLogf("local path isolation scope returned err=%v", err)
+		if localController != nil {
+			err = localController.withKeyboard(batchCtx, true, runLocal)
 		} else {
-			textInputLogf("local path running without isolation platform=%s", platform)
 			err = runLocal()
 		}
 		if err != nil {
-			textInputLogf("local path execution failed err=%v", err)
 			return enterTextToolFailure(batchCtx, CodeToolExecutionFailed, "Inspect the latest screen, refocus the target field, then retry enter_text."), nil
 		}
 		return enterTextToolResultString(result), nil
@@ -148,7 +137,7 @@ func enterTextOutputOK(output string, callErr error) bool {
 	return result.OK
 }
 
-func enterTextToolResultString(result enterTextInFieldResult) string {
+func enterTextToolResultString(result textInputResult) string {
 	if result.OK {
 		return jsonString(enterTextToolResult{OK: true})
 	}
@@ -161,7 +150,7 @@ func enterTextToolFailure(ctx context.Context, code, suggestion string) string {
 	return output
 }
 
-func enterTextFailureSuggestion(result enterTextInFieldResult) string {
+func enterTextFailureSuggestion(result textInputResult) string {
 	if result.WrongIMESuspected {
 		return "Switch to the intended IME, refocus the field, then retry enter_text."
 	}
@@ -177,7 +166,24 @@ func enterTextFailureSuggestion(result enterTextInFieldResult) string {
 	return "Inspect the latest screen, refocus the target field, then retry enter_text."
 }
 
-func (t *EnterTextTool) bridgeAvailable(args enterTextInFieldArgs) bool {
+func finalizeTextInputResult(result textInputResult, sendAfterCommit bool) textInputResult {
+	if !result.Committed {
+		result.OK = false
+		if result.Reason == "" {
+			result.Reason = "text entry not verified in field"
+		}
+		return result
+	}
+	if sendAfterCommit && !result.SendVerified {
+		result.OK = false
+		result.Reason = "field verified but send was not verified"
+		return result
+	}
+	result.OK = true
+	return result
+}
+
+func (t *EnterTextTool) bridgeAvailable(args textInputArgs) bool {
 	if t == nil || t.bridgeTool == nil {
 		return false
 	}

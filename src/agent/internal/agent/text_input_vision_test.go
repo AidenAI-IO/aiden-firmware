@@ -102,20 +102,15 @@ func TestTextInputDurationPerCharacter(t *testing.T) {
 	}
 }
 
-func TestTextInputAnalysisPromptDescribesLastDirectPart(t *testing.T) {
+func TestTextInputAnalysisPromptDescribesCommittedTextAnalysis(t *testing.T) {
 	prompt := buildTextInputAnalysisPrompt(textInputScreenAnalysisRequest{
-		Phase:            textInputPhaseAfterType,
-		Platform:         "ios",
-		TargetText:       "你好我是Aiden，",
-		LastDirectInput:  "Aiden,",
-		LastDirectTarget: "Aiden，",
+		Platform:   "ios",
+		TargetText: "你好我是Aiden，",
 	})
 	for _, want := range []string{
-		`Last direct HID input: "Aiden,"`,
-		`Expected rendered text for that direct part: "Aiden，"`,
 		`"target_matched": false`,
 		"Use visual meaning, not a code-point comparison",
-		"committed with no active candidate/preedit box, set composition_pending=false",
+		"Typing already happened",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -128,7 +123,6 @@ func TestTextInputAnalysisPromptDescribesLastDirectPart(t *testing.T) {
 
 func TestTextInputAnalysisPromptSupportsCommittedSuffixVerification(t *testing.T) {
 	prompt := buildTextInputAnalysisPrompt(textInputScreenAnalysisRequest{
-		Phase:           textInputPhaseAfterType,
 		TargetText:      "模拟成键盘",
 		MatchTextSuffix: true,
 	})
@@ -301,7 +295,7 @@ func TestAnalyzeScreenRetriesTruncatedVisionJSON(t *testing.T) {
 		screenshot: textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}, vision)
 
-	analysis, calls, _, err := engine.analyzeScreen(context.Background(), "ios", enterTextInFieldArgs{
+	analysis, calls, err := engine.analyzeScreen(context.Background(), "ios", textInputArgs{
 		Text: "你好",
 	}, nil)
 	if err != nil {

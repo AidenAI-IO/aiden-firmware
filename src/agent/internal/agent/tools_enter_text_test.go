@@ -96,7 +96,7 @@ func TestIMEPartsArePlannedConcurrently(t *testing.T) {
 	engine := newTextInputEngine(textInputHardwareDeps{}, vision)
 	resultCh := make(chan error, 1)
 	go func() {
-		_, err := engine.planCompositionSegmentsForChunks(context.Background(), []textInputChunk{{text: "甲"}, {text: "乙"}}, nil)
+		_, err := engine.planCompositionSegmentsForChunks(context.Background(), []textInputChunk{{text: "甲"}, {text: "乙"}})
 		resultCh <- err
 	}()
 	for index := 0; index < 2; index++ {
@@ -125,7 +125,7 @@ func TestLongIMEPartsArePartitionedConcurrently(t *testing.T) {
 			{text: "甲乙丙丁戊己"},
 			{text: "，", input: ",", ascii: true},
 			{text: "庚辛壬癸子丑"},
-		}, nil)
+		})
 		resultCh <- err
 	}()
 	for index := 0; index < 2; index++ {
@@ -157,7 +157,7 @@ func TestProbeAndIMEPlanningRunConcurrently(t *testing.T) {
 	}, vision, testNoWaitSleep)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	result, err := engine.RunSegmented(ctx, enterTextInFieldArgs{Text: "你"})
+	result, err := engine.RunSegmented(ctx, textInputArgs{Text: "你"})
 	if err != nil || !result.Committed {
 		t.Fatalf("RunSegmented() = %+v, %v; want concurrent probe/planning success", result, err)
 	}
@@ -185,7 +185,7 @@ func TestLongIMEChunksArePartitionedBeforeCompositionPlanning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	partitioned, err := newTextInputEngine(textInputHardwareDeps{}, vision).partitionIMEChunks(context.Background(), chunks, nil)
+	partitioned, err := newTextInputEngine(textInputHardwareDeps{}, vision).partitionIMEChunks(context.Background(), chunks)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,13 +213,6 @@ func TestSplitTextInputChunksPreservesASCIIAndIMERuns(t *testing.T) {
 	}
 	if !reflect.DeepEqual(chunks, want) {
 		t.Fatalf("chunks = %#v, want %#v", chunks, want)
-	}
-	segments, err := splitSegmentsForTextChunks(chunks, []string{"ni", "hao", "shi", "jie"})
-	if err != nil {
-		t.Fatalf("splitSegmentsForTextChunks() error = %v", err)
-	}
-	if want := [][]string{nil, {"ni", "hao"}, nil, nil, {"shi", "jie"}}; !reflect.DeepEqual(segments, want) {
-		t.Fatalf("segments = %#v, want %#v", segments, want)
 	}
 }
 
@@ -254,14 +247,11 @@ func TestRunSegmentedTypesSpaceWithoutVisionVerification(t *testing.T) {
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}, vision, testNoWaitSleep)
 
-	result, err := engine.RunSegmented(context.Background(), enterTextInFieldArgs{
+	result, err := engine.RunSegmented(context.Background(), textInputArgs{
 		Text: "hello test", Focus: focusPointArgs{X: 10, Y: 10},
 	})
 	if err != nil || !result.Committed {
 		t.Fatalf("RunSegmented()=%+v err=%v", result, err)
-	}
-	if result.VLMCalls != 1 {
-		t.Fatalf("VLM calls=%d, want only the input-mode probe", result.VLMCalls)
 	}
 	if len(kbText.calls) != 3 || len(kbTap.calls) != 2 || !strings.Contains(kbTap.calls[0], "backspace") || !strings.Contains(kbTap.calls[1], "space") {
 		t.Fatalf("keyboard_text=%v keyboard_tap=%v", kbText.calls, kbTap.calls)
@@ -271,7 +261,7 @@ func TestRunSegmentedTypesSpaceWithoutVisionVerification(t *testing.T) {
 	}
 }
 
-func TestTextInputProbeWaitsFiveHundredMillisecondsBeforeCapture(t *testing.T) {
+func TestTextInputProbeWaitsForConfiguredSettleDelayBeforeCapture(t *testing.T) {
 	var delays []time.Duration
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
 		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
@@ -282,12 +272,12 @@ func TestTextInputProbeWaitsFiveHundredMillisecondsBeforeCapture(t *testing.T) {
 		return nil
 	})
 
-	mode, _, _, err := engine.probeTextInputMode(context.Background(), "ios", enterTextInFieldArgs{})
+	mode, _, err := engine.probeTextInputMode(context.Background(), "ios", focusPointArgs{})
 	if err != nil || mode != textInputModeASCII {
 		t.Fatalf("probeTextInputMode() mode=%s err=%v", mode, err)
 	}
-	if len(delays) == 0 || delays[0] != 500*time.Millisecond {
-		t.Fatalf("probe delays=%v, want first delay 500ms", delays)
+	if len(delays) == 0 || delays[0] != textInputProbeSettleDelay {
+		t.Fatalf("probe delays=%v, want first delay %s", delays, textInputProbeSettleDelay)
 	}
 }
 
@@ -343,11 +333,14 @@ func TestSplitTextInputChunksSeparatesASCIIPunctuation(t *testing.T) {
 
 func TestTextInputEngineRunSegmentedUsesKeyboardAndIMEInOrder(t *testing.T) {
 	keyboard := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
-	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
-		{ObservedMode: textInputModeASCII, FieldText: "a"},
-		{ObservedMode: textInputModeComposition, CompositionPending: true},
-		{ObservedMode: textInputModeComposition, FieldText: "A你好", TargetMatched: true},
-	}, actions: []textInputCandidateAction{{Action: textInputCandidateActionSelect, Offset: 0, Text: "你好"}}}
+	vision := &plannedTextInputVision{
+		stubTextInputVision: &stubTextInputVision{analyses: []textInputScreenAnalysis{
+			{ObservedMode: textInputModeASCII, FieldText: "a"},
+			{ObservedMode: textInputModeComposition, CompositionPending: true},
+			{ObservedMode: textInputModeComposition, FieldText: "A你好", TargetMatched: true},
+		}, actions: []textInputCandidateAction{{Action: textInputCandidateActionSelect, Offset: 0, Text: "你好"}}},
+		plans: map[string][]string{"你好": {"ni", "hao"}},
+	}
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
 		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
@@ -355,14 +348,14 @@ func TestTextInputEngineRunSegmentedUsesKeyboardAndIMEInOrder(t *testing.T) {
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}, vision, testNoWaitSleep)
 
-	result, err := engine.RunSegmented(context.Background(), enterTextInFieldArgs{
-		Text: "A你好B", Focus: focusPointArgs{X: 10, Y: 10}, Segments: []string{"ni", "hao"},
+	result, err := engine.RunSegmented(context.Background(), textInputArgs{
+		Text: "A你好B", Focus: focusPointArgs{X: 10, Y: 10},
 	})
 	if err != nil {
 		t.Fatalf("RunSegmented() error = %v", err)
 	}
-	if !result.Committed || result.FieldText != "A你好" || result.IMESwitches != 2 {
-		t.Fatalf("result = %+v, want ordered input with two maintained mode switches", result)
+	if !result.Committed || result.FieldText != "A你好" {
+		t.Fatalf("result = %+v, want ordered input", result)
 	}
 	wantCalls := []string{jsonString(map[string]string{"text": "a"}), jsonString(map[string]string{"text": "A"}), jsonString(map[string]string{"text": "ni"}), jsonString(map[string]string{"text": "hao"}), jsonString(map[string]string{"text": "B"})}
 	if !reflect.DeepEqual(keyboard.calls, wantCalls) {
@@ -388,7 +381,7 @@ func TestTextInputEngineRunSegmentedPlansIMESegmentsInternally(t *testing.T) {
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}, vision, testNoWaitSleep)
 
-	result, err := engine.RunSegmented(context.Background(), enterTextInFieldArgs{
+	result, err := engine.RunSegmented(context.Background(), textInputArgs{
 		Text: "A你好B", Focus: focusPointArgs{X: 10, Y: 10},
 	})
 	if err != nil || !result.Committed {
@@ -401,18 +394,21 @@ func TestTextInputEngineRunSegmentedPlansIMESegmentsInternally(t *testing.T) {
 
 func TestRunSegmentedVerifiesCurrentIMEPartAtCommittedFieldSuffix(t *testing.T) {
 	keyboard := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
-	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
-		{ObservedMode: textInputModeComposition, CompositionPending: true},
-		{
-			ObservedMode:       textInputModeComposition,
-			FieldText:          "Aiden 是一个接在手机上的硬件 Agent。它通过 USB 把自己模拟成",
-			CompositionPending: true,
-		},
-		{
-			ObservedMode: textInputModeASCII,
-			FieldText:    "Aiden 是一个接在手机上的硬件 Agent。它通过 USB 把自己模拟成键盘",
-		},
-	}, actions: []textInputCandidateAction{{Action: textInputCandidateActionSelect, Text: "键盘"}}}
+	vision := &plannedTextInputVision{
+		stubTextInputVision: &stubTextInputVision{analyses: []textInputScreenAnalysis{
+			{ObservedMode: textInputModeComposition, CompositionPending: true},
+			{
+				ObservedMode:       textInputModeComposition,
+				FieldText:          "Aiden 是一个接在手机上的硬件 Agent。它通过 USB 把自己模拟成",
+				CompositionPending: true,
+			},
+			{
+				ObservedMode: textInputModeASCII,
+				FieldText:    "Aiden 是一个接在手机上的硬件 Agent。它通过 USB 把自己模拟成键盘",
+			},
+		}, actions: []textInputCandidateAction{{Action: textInputCandidateActionSelect, Text: "键盘"}}},
+		plans: map[string][]string{"模拟成键盘": {"mo", "ni", "cheng", "jian", "pan"}},
+	}
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
 		pointerMode:  "absolute",
 		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
@@ -420,8 +416,8 @@ func TestRunSegmentedVerifiesCurrentIMEPartAtCommittedFieldSuffix(t *testing.T) 
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}, vision, testNoWaitSleep)
 
-	result, err := engine.RunSegmented(context.Background(), enterTextInFieldArgs{
-		Text: "模拟成键盘", Segments: []string{"mo", "ni", "cheng", "jian", "pan"},
+	result, err := engine.RunSegmented(context.Background(), textInputArgs{
+		Text: "模拟成键盘",
 	})
 	if err != nil || !result.Committed {
 		t.Fatalf("RunSegmented()=%+v err=%v, want suffix verification success", result, err)
@@ -429,32 +425,30 @@ func TestRunSegmentedVerifiesCurrentIMEPartAtCommittedFieldSuffix(t *testing.T) 
 }
 
 func TestTextInputEngineDoesNotVerifyDirectPartsOrUseMouse(t *testing.T) {
-	waitStable := &recordingTextInputTool{name: "wait_for_stable_screen", out: `{"ok":true,"stable":true}`}
 	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
-	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
-		{ObservedMode: textInputModeComposition, CompositionPending: true},
-		{ObservedMode: textInputModeComposition, FieldText: "你", TargetMatched: true},
-	}}
+	vision := &plannedTextInputVision{
+		stubTextInputVision: &stubTextInputVision{analyses: []textInputScreenAnalysis{
+			{ObservedMode: textInputModeComposition, CompositionPending: true},
+			{ObservedMode: textInputModeComposition, FieldText: "你", TargetMatched: true},
+		}},
+		plans: map[string][]string{"你": {"ni"}},
+	}
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
 		pointerMode:  "absolute",
 		mouseClick:   mouse,
 		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
-		waitStable:   waitStable,
 	}, vision, testNoWaitSleep)
 
-	result, err := engine.RunSegmented(context.Background(), enterTextInFieldArgs{
-		Text: "你A", Focus: focusPointArgs{X: 10, Y: 10}, Segments: []string{"ni"},
+	result, err := engine.RunSegmented(context.Background(), textInputArgs{
+		Text: "你A", Focus: focusPointArgs{X: 10, Y: 10},
 	})
 	if err != nil || !result.Committed {
 		t.Fatalf("RunSegmented() = %+v, %v; want committed result", result, err)
 	}
-	if result.IMESwitches != 1 {
-		t.Fatalf("IME switches = %d, want one switch to ENG for the final ASCII part", result.IMESwitches)
-	}
-	if len(waitStable.calls) != 0 || len(mouse.calls) != 0 {
-		t.Fatalf("waitStable=%v mouse=%v, want neither for direct parts", waitStable.calls, mouse.calls)
+	if len(mouse.calls) != 0 {
+		t.Fatalf("mouse=%v, want no pointer input", mouse.calls)
 	}
 }
 
@@ -469,12 +463,8 @@ func TestEnterTextToolSchemaKeepsIMESegmentsInternal(t *testing.T) {
 	if _, found := props["platform"]; found {
 		t.Fatal("enter_text must infer the platform from HID configuration")
 	}
-	var args enterTextArgs
-	if err := json.Unmarshal([]byte(`{"text":"你好","focus":{"x":1,"y":1},"segments":["ni","hao"]}`), &args); err != nil {
-		t.Fatal(err)
-	}
-	if engineArgs := args.toEngineArgs(); len(engineArgs.Segments) != 0 {
-		t.Fatalf("public JSON must not populate internal segments: %#v", engineArgs.Segments)
+	if _, found := props["max_attempts"]; found {
+		t.Fatal("enter_text must not expose max_attempts")
 	}
 }
 
@@ -488,9 +478,8 @@ func TestTextInputPlatformUsesHIDPointerMode(t *testing.T) {
 }
 
 func TestEnterTextResultContainsOnlySuccessStatus(t *testing.T) {
-	encoded := enterTextToolResultString(enterTextInFieldResult{
-		OK: true, Committed: true, TargetText: "secret", FieldText: "secret",
-		RequiredMode: "composition", Attempts: 3, IMESwitches: 2, VLMCalls: 9,
+	encoded := enterTextToolResultString(textInputResult{
+		OK: true, Committed: true, FieldText: "secret",
 	})
 	var fields map[string]any
 	if err := json.Unmarshal([]byte(encoded), &fields); err != nil {
@@ -514,8 +503,8 @@ func TestEnterTextOutputOKReadsCompactResult(t *testing.T) {
 }
 
 func TestEnterTextFailureResultContainsOnlyStatusAndSuggestion(t *testing.T) {
-	encoded := enterTextToolResultString(enterTextInFieldResult{
-		Reason: "internal diagnostic", TargetText: "secret", FieldText: "wrong text", VLMCalls: 9,
+	encoded := enterTextToolResultString(textInputResult{
+		Reason: "internal diagnostic", FieldText: "wrong text",
 	})
 	var fields map[string]any
 	if err := json.Unmarshal([]byte(encoded), &fields); err != nil {
@@ -533,10 +522,13 @@ func TestEnterTextFailureResultContainsOnlyStatusAndSuggestion(t *testing.T) {
 
 func TestTextInputEngineRunSegmentedUsesProbeStateInsteadOfASCIIVerification(t *testing.T) {
 	keyboardTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
-		{ObservedMode: textInputModeComposition, FieldText: "a", CompositionPending: true},
-		{ObservedMode: textInputModeComposition, FieldText: "A你", TargetMatched: true},
-	}}
+	vision := &plannedTextInputVision{
+		stubTextInputVision: &stubTextInputVision{analyses: []textInputScreenAnalysis{
+			{ObservedMode: textInputModeComposition, FieldText: "a", CompositionPending: true},
+			{ObservedMode: textInputModeComposition, FieldText: "A你", TargetMatched: true},
+		}},
+		plans: map[string][]string{"你": {"ni"}},
+	}
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
 		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  keyboardTap,
@@ -544,14 +536,11 @@ func TestTextInputEngineRunSegmentedUsesProbeStateInsteadOfASCIIVerification(t *
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}, vision, testNoWaitSleep)
 
-	result, err := engine.RunSegmented(context.Background(), enterTextInFieldArgs{
-		Text: "A你", Focus: focusPointArgs{X: 10, Y: 10}, Segments: []string{"ni"},
+	result, err := engine.RunSegmented(context.Background(), textInputArgs{
+		Text: "A你", Focus: focusPointArgs{X: 10, Y: 10},
 	})
 	if err != nil || !result.Committed {
 		t.Fatalf("RunSegmented() = %+v, %v; want committed result", result, err)
-	}
-	if result.IMESwitches != 2 {
-		t.Fatalf("IME switches = %d, want IME->ENG->IME", result.IMESwitches)
 	}
 	if want := []string{
 		jsonString(map[string][]string{"keys": {"backspace"}}),
@@ -564,10 +553,13 @@ func TestTextInputEngineRunSegmentedUsesProbeStateInsteadOfASCIIVerification(t *
 
 func TestTextInputEngineRunSegmentedDoesNotVerifyFinalASCIIPart(t *testing.T) {
 	keyboardTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
-		{ObservedMode: textInputModeComposition, FieldText: "a", CompositionPending: true},
-		{ObservedMode: textInputModeComposition, FieldText: "你", TargetMatched: true},
-	}}
+	vision := &plannedTextInputVision{
+		stubTextInputVision: &stubTextInputVision{analyses: []textInputScreenAnalysis{
+			{ObservedMode: textInputModeComposition, FieldText: "a", CompositionPending: true},
+			{ObservedMode: textInputModeComposition, FieldText: "你", TargetMatched: true},
+		}},
+		plans: map[string][]string{"你": {"ni"}},
+	}
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
 		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  keyboardTap,
@@ -575,14 +567,11 @@ func TestTextInputEngineRunSegmentedDoesNotVerifyFinalASCIIPart(t *testing.T) {
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}, vision, testNoWaitSleep)
 
-	result, err := engine.RunSegmented(context.Background(), enterTextInFieldArgs{
-		Text: "你A", Focus: focusPointArgs{X: 10, Y: 10}, Segments: []string{"ni"},
+	result, err := engine.RunSegmented(context.Background(), textInputArgs{
+		Text: "你A", Focus: focusPointArgs{X: 10, Y: 10},
 	})
 	if err != nil || !result.Committed {
 		t.Fatalf("RunSegmented() = %+v, %v; want committed result", result, err)
-	}
-	if result.VLMCalls != 2 {
-		t.Fatalf("VLM calls = %d, want probe plus IME candidate verification only", result.VLMCalls)
 	}
 	if want := []string{
 		jsonString(map[string][]string{"keys": {"backspace"}}),
@@ -602,12 +591,9 @@ func TestTextInputEngineTypesFullWidthPunctuationInIMEMode(t *testing.T) {
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}, &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}, testNoWaitSleep)
 
-	result, err := engine.RunSegmented(context.Background(), enterTextInFieldArgs{Text: "A，B"})
+	result, err := engine.RunSegmented(context.Background(), textInputArgs{Text: "A，B"})
 	if err != nil || !result.Committed {
 		t.Fatalf("RunSegmented() = %+v, %v", result, err)
-	}
-	if result.IMESwitches != 2 {
-		t.Fatalf("IME switches = %d, want ENG->IME->ENG around full-width punctuation", result.IMESwitches)
 	}
 	if want := []string{
 		jsonString(map[string]string{"text": "a"}),
@@ -626,46 +612,17 @@ func TestTextInputEngineTypesFullWidthPunctuationInIMEMode(t *testing.T) {
 	}
 }
 
-func TestTextInputEngineRunCommitsPureASCIIPreeditOnlyWhenVisionApproves(t *testing.T) {
-	keyboardTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
-		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true},
-		{ObservedMode: textInputModeASCII, FieldText: "10086"},
-	}}
-	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
-		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
-		keyboardTap:  keyboardTap,
-		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
-		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
-	}, vision, testNoWaitSleep)
-
-	result, err := engine.Run(context.Background(), enterTextInFieldArgs{
-		Text: "10086", Focus: focusPointArgs{X: 10, Y: 10},
-	})
-	if err != nil || !result.Committed || result.Attempts != 1 {
-		t.Fatalf("Run() = %+v, %v; want first-attempt committed result", result, err)
-	}
-	if result.IMESwitches != 0 {
-		t.Fatalf("IME switches = %d, want no proactive switch", result.IMESwitches)
-	}
-	if want := []string{
-		jsonString(map[string][]string{"keys": {"enter"}}),
-	}; !reflect.DeepEqual(keyboardTap.calls, want) {
-		t.Fatalf("keyboard_tap calls = %#v, want %#v", keyboardTap.calls, want)
-	}
-}
-
 func TestEnterTextToolPrefersAvailableBridge(t *testing.T) {
 	pb := newTestPhoneBridge(t)
 	pb.platform = "android"
 	pb.connected = true
 	pb.appState = "background"
-	tool := &EnterTextTool{bridgeTool: &EnterTextViaBridgeTool{hw: &textInputHardwareDeps{pointerMode: "touchscreen"}, bridgeFn: func() *PhoneBridge { return pb }}}
-	if !tool.bridgeAvailable(enterTextInFieldArgs{Text: "ASCII is bridged too"}) {
+	tool := &EnterTextTool{bridgeTool: &textInputBridge{hw: &textInputHardwareDeps{pointerMode: "touchscreen"}, bridgeFn: func() *PhoneBridge { return pb }}}
+	if !tool.bridgeAvailable(textInputArgs{Text: "ASCII is bridged too"}) {
 		t.Fatal("available Android bridge should be preferred before local entry")
 	}
 	tool.bridgeTool.hw.pointerMode = "absolute"
-	if tool.bridgeAvailable(enterTextInFieldArgs{Text: "hello"}) {
+	if tool.bridgeAvailable(textInputArgs{Text: "hello"}) {
 		t.Fatal("iOS HID configuration should not select an Android bridge clipboard route")
 	}
 }

@@ -1530,7 +1530,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     )
     expected_forward_tools = (
         "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
-        "enter_text_in_field,enter_text_via_bridge,"
+        "enter_text,"
         "mouse_click,mouse_move,mouse_scroll,quick_action"
     )
     assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}" in compose_text

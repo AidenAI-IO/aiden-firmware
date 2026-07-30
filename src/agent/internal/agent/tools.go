@@ -142,7 +142,6 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		keyboardText: keyboardText,
 		quickAction:  quickAction,
 		screenshot:   screenshot,
-		waitStable:   waitStable,
 	}
 
 	tools := map[string]langtools.Tool{
@@ -196,24 +195,22 @@ func newToolScreenState() *screen.ScreenState {
 	return &screen.ScreenState{}
 }
 
-func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn func() string) {
+func (s *ToolSet) RegisterEnterTextTool(models model.Model, platformFn func() string) {
 	if s == nil || s.textInputHW == nil || models == nil {
 		return
 	}
 	engine := newTextInputEngine(*s.textInputHW, newLLMTextInputVision(models))
-	tool := &EnterTextInFieldTool{engine: engine, iosKeyboardIsolation: s.iosKeyboardIsolation}
+	bridgeTool := &textInputBridge{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }}
+	entryTool := &EnterTextTool{engine: engine, bridgeTool: bridgeTool, iosKeyboardIsolation: s.iosKeyboardIsolation}
 	searchOpenTool := &appSearchOpenTool{
 		hw:                   s.textInputHW,
 		vision:               newLLMTextInputVision(models),
 		platformFn:           platformFn,
-		entryTool:            tool,
+		entryTool:            entryTool,
 		launchDelay:          appSearchOpenLaunchDelay,
 		iosKeyboardIsolation: s.iosKeyboardIsolation,
 	}
 	s.tools["search_launch_app"] = searchOpenTool
-	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, iosKeyboardIsolation: s.iosKeyboardIsolation}
-	tool.bridgeTool = bridgeTool
-	entryTool := &EnterTextTool{engine: engine, bridgeTool: bridgeTool, iosKeyboardIsolation: s.iosKeyboardIsolation}
 	s.tools["enter_text"] = newPostActionScreenshotTool(entryTool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
 

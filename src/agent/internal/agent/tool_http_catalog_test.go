@@ -31,7 +31,7 @@ func toolSpecsForNames(names []string) *ToolSpecs {
 
 func newRuntimeWithTextEntryTools() *Runtime {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	tools.RegisterEnterTextInFieldTool(&testModelResolver{model: &scriptedModel{}}, nil)
+	tools.RegisterEnterTextTool(&testModelResolver{model: &scriptedModel{}}, nil)
 	return NewRuntimeWithDeps(
 		Config{},
 		&testModelResolver{model: &scriptedModel{}},
@@ -198,7 +198,7 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 
 	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
-	for _, want := range []string{"bridge_open_app", "search_launch_app", "enter_text_via_bridge"} {
+	for _, want := range []string{"bridge_open_app", "search_launch_app", "enter_text"} {
 		found := false
 		for _, name := range names {
 			if name == want {
@@ -248,7 +248,7 @@ func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
 		"inspect_episode",
 		"keyboard_tap",
 		"keyboard_text",
-		"enter_text_in_field",
+		"enter_text",
 		"mouse_click",
 		"mouse_move",
 		"mouse_scroll",

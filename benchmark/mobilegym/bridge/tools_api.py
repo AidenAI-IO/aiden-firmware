@@ -193,32 +193,15 @@ class ToolsAPIHandler:
                 },
             },
             {
-                "name": "enter_text_in_field",
-                "description": "Enter target text into an input field in MobileGym using the simulator TYPE action. This MobileGym bridge implementation accepts the Go agent text-entry contract without host HID devices.",
+                "name": "enter_text",
+                "description": "Enter target text into an input field in MobileGym using the simulator TYPE action.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "text": {"type": "string", "description": "Exact text that must appear in the field."},
-                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
-                        "mode": {"type": "string", "enum": ["form", "search"]},
                         "focus": enter_text_focus_schema,
-                        "segments": {"type": "array", "items": {"type": "string"}},
-                        "max_attempts": {"type": "integer", "minimum": 1},
-                    },
-                    "required": ["text", "focus"],
-                },
-            },
-            {
-                "name": "enter_text_via_bridge",
-                "description": "MobileGym-compatible alias for text entry. Uses the simulator TYPE action instead of the physical phone bridge or HID clipboard path.",
-                "args_schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "text": {"type": "string", "description": "Exact text that must appear in the field."},
-                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
-                        "focus": enter_text_focus_schema,
+                        "send_after_commit": {"type": "boolean"},
                     },
                     "required": ["text", "focus"],
                 },
@@ -312,7 +295,7 @@ class ToolsAPIHandler:
                 tool_input = {}
             else:
                 parsed_input = json.loads(raw_input)
-                if tool_name in ("keyboard_text", "enter_text_in_field", "enter_text_via_bridge") and isinstance(parsed_input, str):
+                if tool_name == "keyboard_text" and isinstance(parsed_input, str):
                     tool_input = {"text": parsed_input}
                 elif isinstance(parsed_input, dict):
                     tool_input = parsed_input
@@ -324,7 +307,7 @@ class ToolsAPIHandler:
                     )
                     return
         except json.JSONDecodeError:
-            if tool_name in ("keyboard_text", "enter_text_in_field", "enter_text_via_bridge"):
+            if tool_name == "keyboard_text":
                 tool_input = {"text": raw_input.strip()}
             else:
                 self._send_json(
@@ -467,10 +450,8 @@ class ToolsAPIHandler:
             return self._call_keyboard_text(state, tool_input, episode_id)
         elif tool_name == "keyboard_tap":
             return self._call_keyboard_tap(state, tool_input, episode_id)
-        elif tool_name == "enter_text_in_field":
-            return self._call_enter_text(state, tool_input, episode_id, tool_name="enter_text_in_field")
-        elif tool_name == "enter_text_via_bridge":
-            return self._call_enter_text(state, tool_input, episode_id, tool_name="enter_text_via_bridge")
+        elif tool_name == "enter_text":
+            return self._call_enter_text(state, tool_input, episode_id)
         elif tool_name == "mouse_click":
             return self._call_mouse_click(state, tool_input, episode_id)
         elif tool_name == "mouse_move":
@@ -698,24 +679,13 @@ class ToolsAPIHandler:
         state: BridgeEpisodeState,
         tool_input: dict[str, Any],
         episode_id: str,
-        *,
-        tool_name: str,
     ) -> dict[str, Any]:
-        """Execute Go-agent text-entry tools through MobileGym's TYPE action."""
+        """Execute enter_text through MobileGym's TYPE action."""
         text = tool_input.get("text", "")
         if not isinstance(text, str):
             return {"output": "error: text must be a string", "is_error": True}
         if text == "":
-            output = {
-                "ok": False,
-                "committed": False,
-                "target_text": "",
-                "required_mode": "ascii",
-                "attempts": 1,
-                "ime_switches": 0,
-                "vlm_calls": 0,
-                "reason": "text is required",
-            }
+            output = {"ok": False, "suggestion": "Provide non-empty text, then retry enter_text."}
             return {"output": json.dumps(output), "is_error": False}
 
         action_input: dict[str, Any] = {"text": text}
@@ -736,24 +706,11 @@ class ToolsAPIHandler:
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
 
-        result = self._execute_action(state, action, episode_id, tool_name=tool_name, tool_input=tool_input)
+        result = self._execute_action(state, action, episode_id, tool_name="enter_text", tool_input=tool_input)
         if result.get("is_error"):
             return result
 
-        mode = _text_input_mode(tool_input.get("mode"))
-        output = {
-            "ok": True,
-            "committed": True,
-            "target_text": text,
-            "field_text": text,
-            "required_mode": _required_text_input_mode(text),
-            "mode": mode,
-            "attempts": 1,
-            "ime_switches": 0,
-            "vlm_calls": 0,
-            "reason": "field accepted by MobileGym TYPE action",
-            "steps": ["mobilegym TYPE action"],
-        }
+        output = {"ok": True}
         return {"output": json.dumps(output, ensure_ascii=False), "is_error": False}
 
     def _call_keyboard_text(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
@@ -1026,19 +983,6 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
 
 def _unsupported_keyboard_text_chars(text: str) -> str:
     return "".join(ch for ch in text if ch not in US_KEYBOARD_TEXT_CHARS)
-
-
-def _required_text_input_mode(text: str) -> str:
-    if any(ord(ch) > 127 for ch in text):
-        return "composition"
-    return "ascii"
-
-
-def _text_input_mode(value: Any) -> str:
-    mode = str(value or "").strip().lower()
-    if mode == "search":
-        return "search"
-    return "form"
 
 
 def _quick_action_id(tool_input: dict[str, Any]) -> str:
