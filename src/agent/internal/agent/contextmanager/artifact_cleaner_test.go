@@ -33,6 +33,10 @@ func TestArtifactStoreCleanerRemovesExpiredAndOrphanedArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("orphan store() error = %v", err)
 	}
+	old := time.Now().Add(-artifactOrphanGracePeriod - time.Minute)
+	if err := os.Chtimes(orphanStore.root, old, old); err != nil {
+		t.Fatalf("Chtimes(orphan root) error = %v", err)
+	}
 
 	cleaner := NewArtifactStoreCleaner(sessionFolder, 1)
 	estimate, err := cleaner.EstimateReclaimable(context.Background())
@@ -60,6 +64,29 @@ func TestArtifactStoreCleanerRemovesExpiredAndOrphanedArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(sessionFolder, "s_orphan", "tool-results")); !os.IsNotExist(err) {
 		t.Fatalf("orphan tool-results directory still exists, stat error = %v", err)
+	}
+}
+
+func TestArtifactStoreCleanerKeepsFreshOrphanScopeDuringGracePeriod(t *testing.T) {
+	sessionFolder := t.TempDir()
+	store, err := newArtifactStore(sessionFolder, "s_fresh_orphan")
+	if err != nil {
+		t.Fatalf("newArtifactStore() error = %v", err)
+	}
+	stored, err := store.store("text/plain", []byte("fresh"), ArtifactMetadata{})
+	if err != nil {
+		t.Fatalf("store() error = %v", err)
+	}
+
+	cleaner := NewArtifactStoreCleaner(sessionFolder, 1)
+	cleaner.now = func() time.Time { return time.Now().Add(artifactOrphanGracePeriod / 2) }
+	if freed, err := cleaner.Clean(context.Background()); err != nil {
+		t.Fatalf("Clean() error = %v", err)
+	} else if freed != 0 {
+		t.Fatalf("Clean() freed = %d, want 0 during grace period", freed)
+	}
+	if _, err := store.read(stored.Ref, 0, ArtifactReadDefaultBytes); err != nil {
+		t.Fatalf("fresh orphan artifact was removed during grace period: %v", err)
 	}
 }
 
@@ -113,5 +140,53 @@ func TestArtifactStoreCleanerRemovesStaleUncommittedFiles(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("stale file %s still exists, stat error = %v", filepath.Base(path), err)
 		}
+	}
+}
+
+func TestArtifactStoreCleanerKeepsScopeUntilLastRevisionReferenceIsRemoved(t *testing.T) {
+	sessionFolder := t.TempDir()
+	manager, err := NewContextManagerFromMessageList(sessionFolder, []Message{{Role: MessageRoleSystem, Content: "system"}})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	stored, err := manager.StoreArtifact("text/plain", []byte("lineage-result"), ArtifactMetadata{})
+	if err != nil {
+		t.Fatalf("StoreArtifact() error = %v", err)
+	}
+	revision, err := NewContextManagerRevisionFromMessageList(manager, manager.CloneMessageList())
+	if err != nil {
+		t.Fatalf("NewContextManagerRevisionFromMessageList() error = %v", err)
+	}
+	removeTranscriptRevisionFiles := func(sessionID string) {
+		t.Helper()
+		for _, path := range []string{
+			filepath.Join(sessionFolder, sessionID+".jsonl"),
+			sessionMetadataPath(sessionFolder, sessionID),
+		} {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("Remove(%s) error = %v", filepath.Base(path), err)
+			}
+		}
+	}
+
+	removeTranscriptRevisionFiles(manager.GetSessionID())
+	cleaner := NewArtifactStoreCleaner(sessionFolder, 1)
+	if _, err := cleaner.Clean(context.Background()); err != nil {
+		t.Fatalf("Clean() with child revision error = %v", err)
+	}
+	if _, err := revision.ReadArtifact(stored.Ref, 0, ArtifactReadDefaultBytes); err != nil {
+		t.Fatalf("artifact removed while child revision still referenced scope: %v", err)
+	}
+
+	removeTranscriptRevisionFiles(revision.GetSessionID())
+	old := time.Now().Add(-artifactOrphanGracePeriod - time.Minute)
+	if err := os.Chtimes(filepath.Join(sessionFolder, manager.GetArtifactScopeID(), "tool-results"), old, old); err != nil {
+		t.Fatalf("Chtimes(artifact root) error = %v", err)
+	}
+	if _, err := cleaner.Clean(context.Background()); err != nil {
+		t.Fatalf("Clean() after last revision removal error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sessionFolder, manager.GetArtifactScopeID(), "tool-results")); !os.IsNotExist(err) {
+		t.Fatalf("artifact scope remains after last revision reference removal, stat error = %v", err)
 	}
 }

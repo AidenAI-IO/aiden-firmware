@@ -94,13 +94,14 @@ func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}
+	recorder := &EpisodeRecorder{}
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&staticTool{name: "shell", output: rawOutput}}},
 		nil,
 		4,
 		nil,
-		nil,
+		recorder,
 		ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
@@ -139,4 +140,86 @@ func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {
 	if len(responses) != 1 || responses[0] != stored.Content {
 		t.Fatalf("next model tool result = %#v, want bounded stored content", responses)
 	}
+	var telemetry *TaskEpisodeEvent
+	for i := range recorder.events {
+		if recorder.events[i].Type == runEventToolResultContext {
+			telemetry = &recorder.events[i]
+			break
+		}
+	}
+	if telemetry == nil {
+		t.Fatalf("tool result telemetry event missing: %#v", recorder.events)
+	}
+	for _, key := range []string{
+		"original_bytes", "original_chars", "estimated_tokens", "context_bytes", "context_tokens",
+		"processing_reason", "artifactized", "artifact_complete", "artifact_store_error", "processing_duration_ms",
+	} {
+		if _, ok := telemetry.Metadata[key]; !ok {
+			t.Fatalf("tool result telemetry missing %q: %#v", key, telemetry.Metadata)
+		}
+	}
+}
+
+func TestAgentLoopDoesNotRepeatCompletedActionWhenArtifactPersistenceFails(t *testing.T) {
+	tool := &countingLargeResultTool{
+		name:   "side_effect_tool",
+		output: strings.Repeat("x", contextmanager.ArtifactSingleMaxBytes+1),
+	}
+	inner := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("call_1", tool.name, `{}`),
+		contentResponse("Done without retry"),
+	}}
+	model := &largeContextScriptedModel{scriptedModel: inner}
+	manager, err := freshNewContextManager("system", "perform action once", nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+	loop := NewAgentLoop(
+		model,
+		RoleProfile{Tools: []langtools.Tool{tool}},
+		nil,
+		4,
+		nil,
+		nil,
+		ScreenshotPruningConfig{}.WithDefaults(),
+		manager,
+	)
+	answer, err := loop.Run(context.Background(), "perform action once")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if answer != "Done without retry" || tool.calls != 1 {
+		t.Fatalf("answer=%q tool calls=%d, want one completed action", answer, tool.calls)
+	}
+
+	var stored contextmanager.ToolResult
+	for _, message := range manager.CloneMessageList() {
+		if message.Role == contextmanager.MessageRoleToolResult && len(message.ToolResults) > 0 {
+			stored = message.ToolResults[0]
+			break
+		}
+	}
+	if stored.Meta == nil || stored.Meta.ProcessingErrorCode != "tool_result_persistence_failed" || !stored.Meta.ActionCompleted || stored.Meta.ObservationComplete {
+		t.Fatalf("stored persistence failure metadata = %#v", stored.Meta)
+	}
+	if !strings.Contains(stored.Content, `"action_completed":true`) {
+		t.Fatalf("stored content missing completed-action state: %s", stored.Content)
+	}
+}
+
+type countingLargeResultTool struct {
+	name   string
+	output string
+	calls  int
+}
+
+func (t *countingLargeResultTool) Name() string { return t.name }
+
+func (t *countingLargeResultTool) Description() string {
+	return "Returns one large result after completing an action."
+}
+
+func (t *countingLargeResultTool) Call(context.Context, string) (string, error) {
+	t.calls++
+	return t.output, nil
 }

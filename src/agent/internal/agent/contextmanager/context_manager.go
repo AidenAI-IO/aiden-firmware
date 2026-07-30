@@ -75,14 +75,18 @@ type ToolResult struct {
 }
 
 type ToolResultMeta struct {
-	ArtifactRef      string `json:"artifact_ref,omitempty"`
-	OriginalBytes    int64  `json:"original_bytes,omitempty"`
-	OriginalChars    int    `json:"original_chars,omitempty"`
-	EstimatedTokens  int    `json:"estimated_tokens,omitempty"`
-	Complete         bool   `json:"complete"`
-	ArtifactComplete bool   `json:"artifact_complete"`
-	Reason           string `json:"reason,omitempty"`
-	Summary          string `json:"summary,omitempty"`
+	ArtifactRef         string `json:"artifact_ref,omitempty"`
+	OriginalBytes       int64  `json:"original_bytes,omitempty"`
+	OriginalChars       int    `json:"original_chars,omitempty"`
+	EstimatedTokens     int    `json:"estimated_tokens,omitempty"`
+	Complete            bool   `json:"complete"`
+	ArtifactComplete    bool   `json:"artifact_complete"`
+	Reason              string `json:"reason,omitempty"`
+	Summary             string `json:"summary,omitempty"`
+	ActionCompleted     bool   `json:"action_completed,omitempty"`
+	ObservationComplete bool   `json:"observation_complete,omitempty"`
+	ProcessingErrorCode string `json:"processing_error_code,omitempty"`
+	ArtifactStoreError  string `json:"artifact_store_error,omitempty"`
 }
 
 // Attachment tracks file metadata for message attachments. Binary content is stored on disk

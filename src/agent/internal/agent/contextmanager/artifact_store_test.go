@@ -168,6 +168,58 @@ func TestContextManagerRejectsArtifactWhenScopeIsFull(t *testing.T) {
 	}
 }
 
+func TestContextManagerCountsMetadataTowardArtifactScopeLimit(t *testing.T) {
+	manager, err := NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	existingPath := filepath.Join(manager.artifactStore.root, "existing.json")
+	file, err := os.Create(existingPath)
+	if err != nil {
+		t.Fatalf("os.Create() error = %v", err)
+	}
+	if err := file.Truncate(ArtifactScopeMaxBytes); err != nil {
+		_ = file.Close()
+		t.Fatalf("Truncate() error = %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	_, err = manager.StoreArtifact("text/plain", []byte("x"), ArtifactMetadata{})
+	if !errors.Is(err, ErrArtifactScopeFull) {
+		t.Fatalf("StoreArtifact() error = %v, want %v", err, ErrArtifactScopeFull)
+	}
+}
+
+func TestContextManagerStoresArtifactsWithOwnerOnlyPermissions(t *testing.T) {
+	manager, err := NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	stored, err := manager.StoreArtifact("text/plain", []byte("sensitive"), ArtifactMetadata{Sensitive: true})
+	if err != nil {
+		t.Fatalf("StoreArtifact() error = %v", err)
+	}
+	id, err := artifactIDFromRef(stored.Ref)
+	if err != nil {
+		t.Fatalf("artifactIDFromRef() error = %v", err)
+	}
+	for path, want := range map[string]os.FileMode{
+		manager.artifactStore.root:                            0o700,
+		filepath.Join(manager.artifactStore.root, id+".data"): 0o600,
+		filepath.Join(manager.artifactStore.root, id+".json"): 0o600,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("Stat(%s) error = %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Fatalf("permissions for %s = %o, want %o", path, got, want)
+		}
+	}
+}
+
 func TestContextManagerRejectsExpiredArtifact(t *testing.T) {
 	manager, err := NewContextManagerFromMessageList(t.TempDir(), nil)
 	if err != nil {

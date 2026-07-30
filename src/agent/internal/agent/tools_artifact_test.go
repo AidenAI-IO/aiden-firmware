@@ -123,3 +123,12 @@ func TestRuntimeRegistersArtifactReadTool(t *testing.T) {
 		t.Fatalf("artifact_read tool = %T, want manager-aware ArtifactReadTool", registered)
 	}
 }
+
+func TestArtifactReadToolDescriptionPrefersOriginalPagedSource(t *testing.T) {
+	description := (&ArtifactReadTool{}).Description()
+	for _, want := range []string{"original tool", "source file", "native pagination"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("Description() missing %q: %s", want, description)
+		}
+	}
+}

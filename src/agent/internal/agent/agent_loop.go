@@ -95,7 +95,24 @@ func (l *AgentLoop) outboundTransforms() []executor.OutboundMessageTransform {
 func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
 	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager, l.outboundTransforms()...)
 	if spec := l.Model.Spec(); spec.ContextWindow > 0 {
-		llmExecutor.SetOutboundContentPolicy(NewHardContextGuard(spec))
+		llmExecutor.SetOutboundContentPolicy(NewHardContextGuard(spec, func(event ContextBudgetTelemetry) {
+			if l.Recorder == nil {
+				return
+			}
+			l.Recorder.RecordEvent(TaskEpisodeEvent{
+				Type: runEventContextBudget,
+				Metadata: map[string]interface{}{
+					"estimated_prompt_tokens":       event.EstimatedPromptTokens,
+					"estimated_input_budget":        event.EstimatedInputBudget,
+					"message_tokens":                event.MessageTokens,
+					"tool_schema_tokens":            event.ToolSchemaTokens,
+					"context_window":                event.ContextWindow,
+					"max_response_tokens":           event.MaxResponseTokens,
+					"hard_guard_rejected":           event.HardGuardRejected,
+					"provider_context_length_error": false,
+				},
+			})
+		}))
 	}
 
 	agentTools := l.Profile.Tools
@@ -228,6 +245,14 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
 	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
 	if err != nil {
+		if l.Recorder != nil {
+			l.Recorder.RecordEvent(TaskEpisodeEvent{
+				Type: runEventModelRequestFailure,
+				Metadata: map[string]interface{}{
+					"provider_context_length_error": isProviderContextLengthError(err),
+				},
+			})
+		}
 		l.abortStreamingResponse(ctx)
 		// If LLM was canceled due to interrupt, check for pending steer
 		if errors.Is(err, context.Canceled) || errors.Is(err, errSteerInterruptToolCancel) {
@@ -377,21 +402,42 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		Content:  toolExecution.Step.Observation,
 		Complete: true,
 	}
-	if parser == nil || !parser.isVisualObservationTool(toolExecution.Step.Action.Tool) {
+	isVisualObservation := parser != nil && parser.isVisualObservationTool(toolExecution.Step.Action.Tool)
+	if !isVisualObservation {
 		resultPolicy := l.ToolResultPolicy
 		if resultPolicy == nil {
 			resultPolicy = NewToolResultPolicy()
 		}
 		prepared, err = resultPolicy.Prepare(ctx, ToolResultPrepareInput{
-			Call:           toolExecution.Call,
-			Result:         toolExecution.Result,
-			ContextManager: llmExecutor.ContextManager(),
-			ModelSpec:      l.Model.Spec(),
-			CallOptions:    turnOptions,
+			Call:            toolExecution.Call,
+			Result:          toolExecution.Result,
+			ActionCompleted: toolExecution.ActionCompleted,
+			ContextManager:  llmExecutor.ContextManager(),
+			ModelSpec:       l.Model.Spec(),
+			CallOptions:     turnOptions,
 		})
 		if err != nil {
 			return "", iterationContinue, err
 		}
+	}
+	if l.Recorder != nil && !isVisualObservation {
+		l.Recorder.RecordEvent(TaskEpisodeEvent{
+			Type:     runEventToolResultContext,
+			Role:     "agent",
+			ToolName: toolExecution.Call.Spec.Name,
+			Metadata: map[string]interface{}{
+				"original_bytes":         prepared.OriginalBytes,
+				"original_chars":         prepared.OriginalChars,
+				"estimated_tokens":       prepared.EstimatedTokens,
+				"context_bytes":          prepared.ContextBytes,
+				"context_tokens":         prepared.ContextTokens,
+				"processing_reason":      prepared.Reason,
+				"artifactized":           prepared.ArtifactRef != "",
+				"artifact_complete":      prepared.ArtifactComplete,
+				"artifact_store_error":   prepared.ArtifactStoreError,
+				"processing_duration_ms": prepared.ProcessingDurationMs,
+			},
+		})
 	}
 	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step, prepared)
 	if toolExecution.Error != nil {

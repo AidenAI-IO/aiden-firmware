@@ -80,7 +80,8 @@ func (c *ArtifactStoreCleaner) reclaim(ctx context.Context, remove bool) (uint64
 		}
 		scopeID := entry.Name()
 		artifactRoot := filepath.Join(c.sessionFolder, scopeID, "tool-results")
-		if _, err := os.Stat(artifactRoot); err != nil {
+		artifactRootInfo, err := os.Stat(artifactRoot)
+		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
@@ -88,12 +89,23 @@ func (c *ArtifactStoreCleaner) reclaim(ctx context.Context, remove bool) (uint64
 			continue
 		}
 		if _, referenced := referencedScopes[scopeID]; !referenced {
+			if now.Sub(artifactRootInfo.ModTime()) < artifactOrphanGracePeriod {
+				continue
+			}
 			bytes, err := directoryFileBytes(artifactRoot)
 			if err != nil {
 				cleanupErrors = append(cleanupErrors, err)
 				continue
 			}
 			if remove {
+				latestReferences, err := referencedArtifactScopes(c.sessionFolder)
+				if err != nil {
+					cleanupErrors = append(cleanupErrors, err)
+					continue
+				}
+				if _, referenced := latestReferences[scopeID]; referenced {
+					continue
+				}
 				if err := os.RemoveAll(artifactRoot); err != nil {
 					cleanupErrors = append(cleanupErrors, fmt.Errorf("remove orphan artifact scope %s: %w", scopeID, err))
 					continue

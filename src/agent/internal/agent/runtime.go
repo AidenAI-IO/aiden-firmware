@@ -223,15 +223,19 @@ func (m *RunMetrics) CacheHitRate() float64 {
 }
 
 const (
-	runEventToolCall         = "tool_call"
-	runEventSTTTranscription = "stt_transcription"
-	runEventVoicePromptSound = "voice_prompt_sound"
-	runEventTTSStreamPreopen = "tts_stream_preopen"
-	runEventMemoryRetrieve   = "memory_retrieve"
-	runEventSessionBegin     = "session_begin"
-	runEventIterationStart   = "iteration_start"
-	runEventIterationEnd     = "iteration_end"
-	runEventLoopGuardStop    = "loop_guard_stop"
+	runEventToolCall                       = "tool_call"
+	runEventSTTTranscription               = "stt_transcription"
+	runEventVoicePromptSound               = "voice_prompt_sound"
+	runEventTTSStreamPreopen               = "tts_stream_preopen"
+	runEventMemoryRetrieve                 = "memory_retrieve"
+	runEventSessionBegin                   = "session_begin"
+	runEventIterationStart                 = "iteration_start"
+	runEventIterationEnd                   = "iteration_end"
+	runEventLoopGuardStop                  = "loop_guard_stop"
+	runEventToolResultContext              = "tool_result_context"
+	runEventContextBudget                  = "context_budget"
+	runEventHistoricalToolResultCompaction = "historical_tool_result_compaction"
+	runEventModelRequestFailure            = "model_request_failure"
 )
 
 type RunEvent struct {
@@ -1066,6 +1070,18 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
 		}
 		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
+		if episodeRecorder != nil {
+			stats := compactor.LastStats()
+			episodeRecorder.RecordEvent(TaskEpisodeEvent{
+				Type: runEventHistoricalToolResultCompaction,
+				Metadata: map[string]interface{}{
+					"historical_results_replaced":   stats.HistoricalResultsReplaced,
+					"tokens_before":                 stats.TokensBefore,
+					"tokens_after":                  stats.TokensAfter,
+					"conversation_summary_required": stats.ConversationSummaryRequired,
+				},
+			})
+		}
 		if err != nil {
 			return RunResult{}, err
 		}
