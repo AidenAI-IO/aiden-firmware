@@ -44,7 +44,11 @@ func TestFishAudioOmitsEmptyReferenceIDForDefaultVoice(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := New(tts.ProviderConfig{APIKey: "test-key", Endpoint: "ws" + strings.TrimPrefix(server.URL, "http")})
+	provider, err := New(tts.ProviderConfig{
+		APIKey:   "test-key",
+		Endpoint: "ws" + strings.TrimPrefix(server.URL, "http"),
+		Extra:    map[string]any{"reference_id": "test-ref-id"},
+	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -61,8 +65,8 @@ func TestFishAudioOmitsEmptyReferenceIDForDefaultVoice(t *testing.T) {
 	if !ok {
 		t.Fatalf("request = %#v, want map", msg["request"])
 	}
-	if _, ok := request["reference_id"]; ok {
-		t.Fatalf("reference_id was sent for default voice: %#v", request)
+	if refID, ok := request["reference_id"].(string); !ok || refID != "test-ref-id" {
+		t.Fatalf("reference_id = %#v, want test-ref-id", request["reference_id"])
 	}
 	if request["text"] != "" {
 		t.Fatalf("text = %#v, want empty string", request["text"])
@@ -96,7 +100,11 @@ func TestFishAudioCloseReturnsWhenServerNeverFinishes(t *testing.T) {
 	defer server.Close()
 	defer server.CloseClientConnections()
 
-	provider, err := New(tts.ProviderConfig{APIKey: "test-key", Endpoint: "ws" + strings.TrimPrefix(server.URL, "http")})
+	provider, err := New(tts.ProviderConfig{
+		APIKey:   "test-key",
+		Endpoint: "ws" + strings.TrimPrefix(server.URL, "http"),
+		Extra:    map[string]any{"reference_id": "test-ref-id"},
+	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -148,7 +156,11 @@ func TestFishAudioCloseDoesNotUseConnectTimeoutForPlaybackDrain(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := New(tts.ProviderConfig{APIKey: "test-key", Endpoint: "ws" + strings.TrimPrefix(server.URL, "http")})
+	provider, err := New(tts.ProviderConfig{
+		APIKey:   "test-key",
+		Endpoint: "ws" + strings.TrimPrefix(server.URL, "http"),
+		Extra:    map[string]any{"reference_id": "test-ref-id"},
+	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -170,6 +182,68 @@ func TestFishAudioCloseDoesNotUseConnectTimeoutForPlaybackDrain(t *testing.T) {
 func TestFishAudioSynthesisTimeoutExceedsConnectTimeout(t *testing.T) {
 	if synthesisTimeout <= connectTimeout {
 		t.Fatalf("synthesisTimeout = %s, want greater than connectTimeout %s", synthesisTimeout, connectTimeout)
+	}
+}
+
+// TestFishAudioRequiresReferenceID verifies that Fish Audio adapter
+// requires reference_id and does not fall back to Voice (voice_id).
+// This prevents parameter pollution from other providers.
+func TestFishAudioRequiresReferenceID(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       tts.ProviderConfig
+		wantError string
+	}{
+		{
+			name: "missing reference_id",
+			cfg: tts.ProviderConfig{
+				APIKey: "test-key",
+			},
+			wantError: "reference_id is required",
+		},
+		{
+			name: "voice_id without reference_id should fail",
+			cfg: tts.ProviderConfig{
+				APIKey: "test-key",
+				Voice:  "some-voice-id", // This should NOT be used
+			},
+			wantError: "reference_id is required",
+		},
+		{
+			name: "reference_id in Extra should work",
+			cfg: tts.ProviderConfig{
+				APIKey: "test-key",
+				Extra:  map[string]any{"reference_id": "valid-ref-id"},
+			},
+			wantError: "",
+		},
+		{
+			name: "reference_id takes precedence over Voice",
+			cfg: tts.ProviderConfig{
+				APIKey: "test-key",
+				Voice:  "ignored-voice-id",
+				Extra:  map[string]any{"reference_id": "valid-ref-id"},
+			},
+			wantError: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := New(tt.cfg)
+			if tt.wantError != "" {
+				if err == nil {
+					t.Fatalf("New() expected error containing %q, got nil", tt.wantError)
+				}
+				if !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("New() error = %v, want error containing %q", err, tt.wantError)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("New() unexpected error = %v", err)
+				}
+			}
+		})
 	}
 }
 
