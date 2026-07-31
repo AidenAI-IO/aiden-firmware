@@ -13,7 +13,6 @@ const (
 	textViaBridgePostPasteDelay = 350 * time.Millisecond
 	textViaBridgeMenuDelay      = 450 * time.Millisecond
 	textViaBridgePasteAttempts  = 2
-	textViaBridgeRecentsSwipes  = 3
 	preparedClipboardMaxAge     = 5 * time.Minute
 	textViaBridgeLongPressMS    = 900
 )
@@ -27,12 +26,6 @@ type bridgeSearchResult struct {
 type bridgeAppOpenResult struct {
 	Opened bool   `json:"opened"`
 	Reason string `json:"reason,omitempty"`
-}
-
-type previousAppCardResult struct {
-	Found    bool           `json:"found"`
-	TapPoint focusPointArgs `json:"tap_point"`
-	Label    string         `json:"label,omitempty"`
 }
 
 type pasteMenuResult struct {
@@ -54,7 +47,6 @@ type textInputBridge struct {
 	bridgeFn         func() *PhoneBridge
 	restorer         *PhoneBridgeRestorer
 	clipboardWriteFn func(context.Context, *PhoneBridge, string) error
-	findPrevAppFn    func(context.Context, screenshotResult) (previousAppCardResult, error)
 	findPasteMenuFn  func(context.Context, screenshotResult, string) (pasteMenuResult, error)
 	sleep            func(context.Context, time.Duration) error
 }
@@ -205,10 +197,7 @@ func (t *textInputBridge) runLegacyBridgeFlow(ctx context.Context, platform stri
 	if err := t.sleepAfterClipboardWrite(ctx); err != nil {
 		return textViaBridgeResult{Attempted: true, Err: err}
 	}
-	if _, err := t.callQuickAction(ctx, "app_switch", platform); err != nil {
-		return textViaBridgeResult{Attempted: true, Err: err}
-	}
-	if err := t.returnToPreviousApp(ctx, engine); err != nil {
+	if _, err := t.callQuickAction(ctx, "app_switch_back", platform); err != nil {
 		return textViaBridgeResult{Attempted: true, Err: err}
 	}
 	result := t.focusPasteVerify(ctx, engine, platform, args)
@@ -409,90 +398,6 @@ func keyboardPasteKeys(platform string) []string {
 	default:
 		return []string{"meta", "v"}
 	}
-}
-
-func (t *textInputBridge) tapTouchPoint(ctx context.Context, point focusPointArgs) error {
-	out, err := t.hw.touchGesture.Call(ctx, jsonString(map[string]any{
-		"type":        "tap",
-		"point":       map[string]any{"x": point.X, "y": point.Y},
-		"coord_space": firstNonEmptyString([]string{strings.TrimSpace(point.CoordSpace), "normalized"}),
-	}))
-	if err != nil {
-		return err
-	}
-	return interpretTextInputToolOutput(out)
-}
-
-func (t *textInputBridge) returnToPreviousApp(ctx context.Context, engine *textInputEngine) error {
-	for attempt := 1; attempt <= textViaBridgeRecentsSwipes+1; attempt++ {
-		result, err := t.findPreviousAppCard(ctx, engine)
-		if err != nil {
-			return err
-		}
-		if result.Found {
-			return t.tapTouchPoint(ctx, result.TapPoint)
-		}
-		if attempt > textViaBridgeRecentsSwipes {
-			break
-		}
-		if err := t.swipeRecentsToFindPreviousApp(ctx); err != nil {
-			return err
-		}
-	}
-	return fmt.Errorf("previous app card not found in app switcher")
-}
-
-func (t *textInputBridge) swipeRecentsToFindPreviousApp(ctx context.Context) error {
-	out, err := t.hw.touchGesture.Call(ctx, jsonString(map[string]any{
-		"type":        "swipe_right",
-		"coord_space": "normalized",
-		"strength":    "medium",
-	}))
-	if err != nil {
-		return err
-	}
-	return interpretTextInputToolOutput(out)
-}
-
-func (t *textInputBridge) findPreviousAppCard(ctx context.Context, engine *textInputEngine) (previousAppCardResult, error) {
-	shot, err := engine.captureScreenshot(ctx)
-	if err != nil {
-		return previousAppCardResult{}, err
-	}
-	if t != nil && t.findPrevAppFn != nil {
-		result, err := t.findPrevAppFn(ctx, shot)
-		return result, err
-	}
-	modelVision, ok := t.vision.(*llmTextInputVision)
-	if !ok || modelVision == nil {
-		return previousAppCardResult{}, fmt.Errorf("previous app selection vision is not configured")
-	}
-	prompt := strings.TrimSpace(`Analyze this device screenshot of the app switcher / recent apps view.
-Find the previous app card that should be tapped to return from the Aiden companion app back to the user's prior task.
-Return JSON only:
-{
-  "found": true,
-  "tap_point": {"x": 180, "y": 290, "coord_space": "normalized"},
-  "label": "Settings"
-}
-
-Rules:
-- Return found=true only when a non-Aiden previous app card is clearly visible and tappable.
-- Prefer the app card that represents the task immediately before Aiden, not the Aiden card itself.
-- tap_point must be inside the visible app card body using normalized 0-1000 coordinates.
-- If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`)
-	raw, err := modelVision.visionJSON(ctx, "previous_app", prompt, shot)
-	if err != nil {
-		return previousAppCardResult{}, err
-	}
-	var result previousAppCardResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return previousAppCardResult{}, fmt.Errorf("parse previous app card: %w", err)
-	}
-	if strings.TrimSpace(result.TapPoint.CoordSpace) == "" {
-		result.TapPoint.CoordSpace = "normalized"
-	}
-	return result, nil
 }
 
 func (t *textInputBridge) sleepAfterClipboardWrite(ctx context.Context) error {
