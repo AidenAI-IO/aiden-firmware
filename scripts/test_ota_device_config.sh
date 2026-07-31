@@ -37,6 +37,8 @@ jq -e '
   .repo == "AidenAI-IO/aiden-firmware" and
   .channel == "stable" and
   .storage_mount_point == "/userdata/ota" and
+  .storage_device_path == "/dev/block/by-name/ota" and
+  .storage_filesystem == "ext4" and
   .download_safety_margin_bytes == 16777216 and
   (has("reserve_size_bytes") | not) and
   (has("reserve_safety_margin_bytes") | not) and

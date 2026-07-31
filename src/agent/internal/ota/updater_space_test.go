@@ -23,6 +23,58 @@ func TestUpdaterRejectsNegativeDownloadSafetyMargin(t *testing.T) {
 	}
 }
 
+func TestMountPointIsActiveRequiresExpectedDeviceFilesystemAndRoot(t *testing.T) {
+	tmp := t.TempDir()
+	devicePath := filepath.Join(tmp, "ota-device")
+	deviceAlias := filepath.Join(tmp, "ota-device-alias")
+	if err := os.WriteFile(devicePath, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile(device) error = %v", err)
+	}
+	if err := os.Symlink(devicePath, deviceAlias); err != nil {
+		t.Fatalf("Symlink(device) error = %v", err)
+	}
+
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{
+			name: "expected mount",
+			line: fmt.Sprintf("36 25 179:12 / /userdata/ota rw,relatime - ext4 %s rw\n", deviceAlias),
+			want: true,
+		},
+		{
+			name: "wrong device",
+			line: "36 25 179:12 / /userdata/ota rw,relatime - ext4 /dev/mmcblk0p99 rw\n",
+		},
+		{
+			name: "wrong filesystem",
+			line: fmt.Sprintf("36 25 0:42 / /userdata/ota rw,relatime - tmpfs %s rw\n", devicePath),
+		},
+		{
+			name: "bind mount subtree",
+			line: fmt.Sprintf("36 25 179:12 /downloads /userdata/ota rw,relatime - ext4 %s rw\n", devicePath),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mountInfoPath := filepath.Join(t.TempDir(), "mountinfo")
+			if err := os.WriteFile(mountInfoPath, []byte(test.line), 0o644); err != nil {
+				t.Fatalf("WriteFile(mountinfo) error = %v", err)
+			}
+			got, err := mountPointIsActive(mountInfoPath, "/userdata/ota", devicePath, "ext4")
+			if err != nil {
+				t.Fatalf("mountPointIsActive() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("mountPointIsActive() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestUpdaterFailsClosedWhenDedicatedStorageIsNotMounted(t *testing.T) {
 	storageDir := t.TempDir()
 	mountInfoPath := filepath.Join(t.TempDir(), "mountinfo")

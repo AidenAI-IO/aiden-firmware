@@ -6,6 +6,8 @@ ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 LOG_PATH=${LOG_PATH:-/var/log/ota/ota.log}
 USERDATA_DIR=${USERDATA_DIR:-/userdata}
 OTA_STORAGE_DIR=${OTA_STORAGE_DIR:-$USERDATA_DIR/ota}
+OTA_STORAGE_DEVICE=${OTA_STORAGE_DEVICE:-/dev/block/by-name/ota}
+OTA_STORAGE_FS_TYPE=${OTA_STORAGE_FS_TYPE:-ext4}
 SLEEP_BIN=${SLEEP_BIN:-sleep}
 WAIT_TIMEOUT=${WAIT_TIMEOUT:-}
 USERDATA_REQUIRE_MOUNT=${USERDATA_REQUIRE_MOUNT:-1}
@@ -41,21 +43,33 @@ wait_for_existing_path() {
 
 path_is_mounted() {
     path="$1"
+    expected_device="${2:-}"
+    expected_fs_type="${3:-}"
     [ -r "$MOUNTS_PATH" ] || return 1
-    awk -v target="$path" '
-        $2 == target { found = 1 }
-        END { exit found ? 0 : 1 }
-    ' "$MOUNTS_PATH"
+    mount_record="$(awk -v target="$path" '$2 == target { print $1, $3; exit }' "$MOUNTS_PATH")"
+    [ -n "$mount_record" ] || return 1
+    set -- $mount_record
+    actual_device="$1"
+    actual_fs_type="$2"
+    if [ -n "$expected_fs_type" ] && [ "$actual_fs_type" != "$expected_fs_type" ]; then
+        return 1
+    fi
+    if [ -n "$expected_device" ] && [ "$actual_device" != "$expected_device" ] && ! [ "$actual_device" -ef "$expected_device" ] 2>/dev/null; then
+        return 1
+    fi
+    return 0
 }
 
 wait_for_mount_ready() {
     path="$1"
     description="$2"
     require_mount="$3"
+    expected_device="${4:-}"
+    expected_fs_type="${5:-}"
     wait_for_existing_path "$path" "$description" || return 1
     [ "$require_mount" = "0" ] && return 0
     waited=0
-    while ! path_is_mounted "$path"; do
+    while ! path_is_mounted "$path" "$expected_device" "$expected_fs_type"; do
         if [ -n "$WAIT_TIMEOUT" ] && [ "$waited" -ge "$WAIT_TIMEOUT" ]; then
             echo "[ota] $description mount unavailable after ${WAIT_TIMEOUT}s: $path" >> "$LOG_PATH"
             return 1
@@ -68,11 +82,11 @@ wait_for_mount_ready() {
 }
 
 wait_for_userdata_ready() {
-    wait_for_mount_ready "$USERDATA_DIR" "userdata" "$USERDATA_REQUIRE_MOUNT"
+    wait_for_mount_ready "$USERDATA_DIR" "userdata" "$USERDATA_REQUIRE_MOUNT" "" ""
 }
 
 wait_for_ota_storage_ready() {
-    wait_for_mount_ready "$OTA_STORAGE_DIR" "OTA storage" "$OTA_STORAGE_REQUIRE_MOUNT"
+    wait_for_mount_ready "$OTA_STORAGE_DIR" "OTA storage" "$OTA_STORAGE_REQUIRE_MOUNT" "$OTA_STORAGE_DEVICE" "$OTA_STORAGE_FS_TYPE"
 }
 
 wait_for_executable() {

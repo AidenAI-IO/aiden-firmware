@@ -23,6 +23,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT_DIR/scripts/ota_partition_layout.sh"
 download_safety_margin_bytes="$(aiden_ota_download_safety_margin_bytes)"
 storage_mount_point="$AIDEN_OTA_MOUNT_POINT"
+storage_device_path="$AIDEN_OTA_DEVICE_PATH"
+storage_filesystem="$AIDEN_OTA_FILESYSTEM"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -78,6 +80,8 @@ jq -e -S \
   --arg repo "$repo" \
   --arg channel "$channel" \
   --arg storage_mount_point "$storage_mount_point" \
+  --arg storage_device_path "$storage_device_path" \
+  --arg storage_filesystem "$storage_filesystem" \
   --argjson download_safety_margin_bytes "$download_safety_margin_bytes" \
   '
   def part($name): .parts[] | select(.name == $name);
@@ -105,6 +109,8 @@ jq -e -S \
     repo: $repo,
     channel: $channel,
     storage_mount_point: $storage_mount_point,
+    storage_device_path: $storage_device_path,
+    storage_filesystem: $storage_filesystem,
     download_safety_margin_bytes: $download_safety_margin_bytes,
     factory_version: .version,
     factory_build_time: .build_time,

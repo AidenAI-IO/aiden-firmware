@@ -93,6 +93,8 @@ Optional configuration fields:
 - `public_key_path` - override default public key path (default `/oem/etc/ota_pubkey.pem`)
 - `github_token_path` - GitHub token file path (required for private repositories)
 - `storage_mount_point` - dedicated OTA mount that must be active (default `/userdata/ota`)
+- `storage_device_path` - expected OTA block device (default `/dev/block/by-name/ota`)
+- `storage_filesystem` - expected OTA filesystem type (default `ext4`)
 - `download_safety_margin_bytes` - free bytes retained beyond remaining downloads (default 16 MiB)
 
 Factory baseline must be slot-aware because `boot_a.img` and `boot_b.img` have different hashes. When baseline is missing, OTA initialization must fail; it should not guess current partition versions.

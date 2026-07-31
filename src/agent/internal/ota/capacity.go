@@ -22,17 +22,27 @@ func (u *Updater) ensureStorageReady() error {
 	if u.config.StorageMountPoint == "" {
 		return nil
 	}
-	mounted, err := mountPointIsActive(u.config.MountInfoPath, mountPoint)
+	mounted, err := mountPointIsActive(
+		u.config.MountInfoPath,
+		mountPoint,
+		u.config.StorageDevicePath,
+		u.config.StorageFilesystem,
+	)
 	if err != nil {
 		return fmt.Errorf("inspect dedicated OTA storage mount: %w", err)
 	}
 	if !mounted {
-		return fmt.Errorf("dedicated OTA storage is not mounted at %s", mountPoint)
+		return fmt.Errorf(
+			"dedicated OTA storage is not mounted from %s as %s at %s",
+			u.config.StorageDevicePath,
+			u.config.StorageFilesystem,
+			mountPoint,
+		)
 	}
 	return nil
 }
 
-func mountPointIsActive(mountInfoPath, mountPoint string) (bool, error) {
+func mountPointIsActive(mountInfoPath, mountPoint, devicePath, filesystem string) (bool, error) {
 	f, err := os.Open(mountInfoPath)
 	if err != nil {
 		return false, err
@@ -42,7 +52,23 @@ func mountPointIsActive(mountInfoPath, mountPoint string) (bool, error) {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) >= 5 && filepath.Clean(unescapeMountInfoPath(fields[4])) == mountPoint {
+		if len(fields) < 10 || filepath.Clean(unescapeMountInfoPath(fields[4])) != mountPoint {
+			continue
+		}
+		separator := -1
+		for i := 6; i < len(fields); i++ {
+			if fields[i] == "-" {
+				separator = i
+				break
+			}
+		}
+		if separator < 0 || separator+2 >= len(fields) {
+			continue
+		}
+		if fields[3] != "/" || fields[separator+1] != filesystem {
+			continue
+		}
+		if sameStorageDevice(unescapeMountInfoPath(fields[separator+2]), devicePath) {
 			return true, nil
 		}
 	}
@@ -50,6 +76,21 @@ func mountPointIsActive(mountInfoPath, mountPoint string) (bool, error) {
 		return false, err
 	}
 	return false, nil
+}
+
+func sameStorageDevice(actualPath, expectedPath string) bool {
+	if filepath.Clean(actualPath) == filepath.Clean(expectedPath) {
+		return true
+	}
+	actual, err := os.Stat(actualPath)
+	if err != nil {
+		return false
+	}
+	expected, err := os.Stat(expectedPath)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(actual, expected)
 }
 
 func unescapeMountInfoPath(path string) string {

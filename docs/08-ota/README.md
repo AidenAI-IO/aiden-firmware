@@ -37,7 +37,7 @@ This project's production OTA uses A/B partitioning, signed manifests, and boot 
 - A dedicated 256 MiB `ota` partition is mounted at `/userdata/ota` and stores OTA configuration, state, download cache, and health markers.
 - `boot_a.img` and `boot_b.img` contain different slot bootargs; manifests must use slot-specific boot assets.
 - When factory baseline is missing or manifest signature/hash verification fails, devices must fail closed.
-- OTA commands fail closed unless `/userdata/ota` is a dedicated mount and require actual free bytes for remaining downloads plus a 16 MiB margin.
+- OTA commands fail closed unless `/userdata/ota` is the ext4 mount rooted at `/dev/block/by-name/ota`, and require actual free bytes for remaining downloads plus a 16 MiB margin.
 
 ## Common Commands
 

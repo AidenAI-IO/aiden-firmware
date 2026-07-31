@@ -30,9 +30,10 @@ The SDK-generated `S20linkmount` service mounts `/dev/block/by-name/ota` at
 mount before running health processing.
 
 The Go updater independently checks `/proc/self/mountinfo` before creating its
-lock, state, or download files. If `/userdata/ota` is not an active mount,
-`ota update`, `ota health`, and `ota status` fail instead of writing into the
-underlying userdata directory.
+lock, state, or download files. The mount must be the ext4 filesystem rooted at
+`/dev/block/by-name/ota`; a bind mount or unrelated filesystem at the same path
+is rejected. If the expected mount is not active, `ota update`, `ota health`,
+and `ota status` fail instead of writing into the underlying userdata directory.
 
 There is intentionally no legacy reserve-file fallback and no SD-card OTA
 cache route. The product has not shipped with the previous layout, so factory

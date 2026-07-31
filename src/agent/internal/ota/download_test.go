@@ -149,6 +149,9 @@ func TestDownloadRemovesPartialWhenCloseReportsNoSpaceAfterCopyFailure(t *testin
 	if _, statErr := os.Stat(dst + ".part"); !os.IsNotExist(statErr) {
 		t.Fatalf("part file remains after close-time ENOSPC: %v", statErr)
 	}
+	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+		t.Fatalf("destination remains after failed download: %v", statErr)
+	}
 }
 
 func TestDownloadFailsWhenResumedResponseExceedsExpectedSize(t *testing.T) {

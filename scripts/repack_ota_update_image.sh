@@ -5,8 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_PATH="$ROOT_DIR/pico-sdk/output/out/ota/config.json"
 IMAGE_DIR="$ROOT_DIR/pico-sdk/output/image"
 OTA_DIR="$ROOT_DIR/pico-sdk/output/out/ota"
-BOARD_CONFIG="$ROOT_DIR/pico-sdk/.BoardConfig.mk"
 MKFS_EXT4="$ROOT_DIR/pico-sdk/sysdrv/tools/pc/e2fsprogs/mkfs_ext4.sh"
+
+source "$ROOT_DIR/scripts/ota_partition_layout.sh"
 
 if [ ! -s "$CONFIG_PATH" ]; then
   echo "repack_ota_update_image.sh: missing OTA device config: $CONFIG_PATH" >&2
@@ -18,42 +19,13 @@ if [ ! -d "$OTA_DIR" ]; then
   exit 1
 fi
 
-if [ ! -f "$BOARD_CONFIG" ]; then
-  echo "repack_ota_update_image.sh: missing board config: $BOARD_CONFIG" >&2
-  exit 1
-fi
-
 if [ ! -x "$MKFS_EXT4" ]; then
   echo "repack_ota_update_image.sh: missing mkfs_ext4 tool: $MKFS_EXT4" >&2
   exit 1
 fi
 
-partition_size_bytes() {
-  local name="$1"
-  local entry size suffix number
-  IFS=',' read -ra entries <<< "$RK_PARTITION_CMD_IN_ENV"
-  for entry in "${entries[@]}"; do
-    case "$entry" in
-      *"($name)")
-        size="${entry%%(*}"
-        size="${size%%@*}"
-        suffix="${size: -1}"
-        number="${size%?}"
-        case "$suffix" in
-          K|k) echo $((number * 1024)); return 0 ;;
-          M|m) echo $((number * 1024 * 1024)); return 0 ;;
-          G|g) echo $((number * 1024 * 1024 * 1024)); return 0 ;;
-          *) echo "$size"; return 0 ;;
-        esac
-        ;;
-    esac
-  done
-  return 1
-}
-
-source "$BOARD_CONFIG"
-ota_size="$(partition_size_bytes ota)" || {
-  echo "repack_ota_update_image.sh: OTA partition not found in RK_PARTITION_CMD_IN_ENV" >&2
+ota_size="$(aiden_ota_partition_size_bytes)" || {
+  echo "repack_ota_update_image.sh: cannot determine OTA partition size" >&2
   exit 1
 }
 

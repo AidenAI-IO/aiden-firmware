@@ -25,6 +25,8 @@ const (
 	DefaultOTAConfigPath                = "/userdata/ota/config.json"
 	DefaultOTAStateDir                  = "/userdata/ota"
 	DefaultOTAStorageMountPoint         = "/userdata/ota"
+	DefaultOTAStorageDevicePath         = "/dev/block/by-name/ota"
+	DefaultOTAStorageFilesystem         = "ext4"
 	DefaultOTAMountInfoPath             = "/proc/self/mountinfo"
 	DefaultOTAUpdateLockName            = "update.lock"
 	DefaultOTADownloadSafetyMarginBytes = 16 << 20
@@ -41,6 +43,8 @@ type UpdaterConfig struct {
 	StateDir                  string                       `json:"state_dir,omitempty"`
 	DownloadDir               string                       `json:"download_dir,omitempty"`
 	StorageMountPoint         string                       `json:"storage_mount_point,omitempty"`
+	StorageDevicePath         string                       `json:"storage_device_path,omitempty"`
+	StorageFilesystem         string                       `json:"storage_filesystem,omitempty"`
 	MountInfoPath             string                       `json:"-"`
 	DownloadSafetyMarginBytes int64                        `json:"download_safety_margin_bytes,omitempty"`
 	UpdateLockPath            string                       `json:"update_lock_path,omitempty"`
@@ -118,6 +122,12 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 		config.StorageMountPoint = DefaultOTAStorageMountPoint
 	}
 	if config.StorageMountPoint != "" {
+		if config.StorageDevicePath == "" {
+			config.StorageDevicePath = DefaultOTAStorageDevicePath
+		}
+		if config.StorageFilesystem == "" {
+			config.StorageFilesystem = DefaultOTAStorageFilesystem
+		}
 		if config.MountInfoPath == "" {
 			config.MountInfoPath = DefaultOTAMountInfoPath
 		}
