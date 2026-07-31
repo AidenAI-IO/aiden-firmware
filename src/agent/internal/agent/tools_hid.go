@@ -704,15 +704,15 @@ type KeyboardTapTool struct {
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
 
 func (t *KeyboardTapTool) Description() string {
-	return `Press and release keyboard keys, pressed simultaneously as a chord (e.g. {"keys":["ctrl","c"]}). Prefer quick_action first for semantic platform actions; use keyboard_tap as a low-level fallback or for custom key input.`
+	return `Press and release literal keyboard keys (e.g. {"keys":["enter"]}). Use for simple keys such as enter, escape, tab, or arrows; for exact physical chords explicitly requested by the user; and for app-specific shortcuts not represented by quick_action. For cataloged semantic actions—including copy, paste, cut, select_all, delete_backward, delete_forward, undo, redo, find, send, back, home, app switching, and browser actions—you MUST use quick_action with the observed platform. A ctrl/meta chord fallback is allowed only after a quick_action result in the current run explicitly reports the action as reserved/unavailable before executing a binding. Do not infer unavailability from another tool's failure. Never replay an active quick_action binding as a raw chord after failure or no visible effect.`
 }
 
 func (t *KeyboardTapTool) ArgsSchema() map[string]any {
-	keysSchema := stringArrayArgSchema("Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"]. "+
+	keysSchema := stringArrayArgSchema("Literal keys pressed simultaneously, e.g. [\"enter\"] or [\"shift\",\"tab\"]. Cataloged semantic actions MUST use quick_action. Raw ctrl/meta chords are allowed only for explicitly requested physical input, uncataloged app-specific shortcuts, or after a quick_action result in the current run explicitly reports the matching action as reserved/unavailable before execution. Do not infer unavailability or replay an active binding after failure or no visible effect. "+
 		"Standard boot-keyboard keys: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen; modifiers ctrl, shift, alt, meta/super/win/cmd; modifier-only taps allowed. "+
-		"Use backspace for ordinary text deletion before the cursor; delete is forward-delete after the cursor. "+
+		"backspace is backward-delete before the cursor; delete is forward-delete after the cursor. For semantic deletion, use quick_action delete_backward/delete_forward unless the user explicitly requests the literal physical key or the evidence-gated fallback above applies. "+
 		"Android extension keys (hid.usb2) use Android KEYCODE_* aliases (see the Android key guide for the full list; legacy KEY_USAGE_* names are accepted where previously supported), are single-key taps only, and cannot be combined with modifiers/chords. "+
-		"When hid.pointer_mode is absolute, hid.usb2 only supports media, volume, screenshot, and brightness keys: "+absolutePointerModeExtensionKeyList+".", []string{"ctrl", "c"}, []string{"meta"})
+		"When hid.pointer_mode is absolute, hid.usb2 only supports media, volume, screenshot, and brightness keys: "+absolutePointerModeExtensionKeyList+".", []string{"enter"}, []string{"shift", "tab"})
 	keysSchema["minItems"] = 1
 	keysSchema["maxItems"] = 6
 
@@ -728,7 +728,7 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		HoldMs int      `json:"hold_ms"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"keys\": [\"ctrl\", \"c\"]}. Common mistakes: missing quotes around key names, incorrect comma placement in array", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"keys\": [\"enter\"]}. Common mistakes: missing quotes around key names, incorrect comma placement in array", err), nil
 	}
 	if len(args.Keys) == 0 {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "keys array is required"), nil

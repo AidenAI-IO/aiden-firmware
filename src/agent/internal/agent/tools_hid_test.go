@@ -883,7 +883,11 @@ func TestKeyboardTapSchemaRequiresKeysArray(t *testing.T) {
 		t.Fatalf("keys schema type = %#v, want array", keys["type"])
 	}
 	description, _ := keys["description"].(string)
-	for _, want := range []string{"Use backspace for ordinary text deletion", "delete is forward-delete"} {
+	for _, want := range []string{
+		"backspace is backward-delete",
+		"delete is forward-delete",
+		"For semantic deletion, use quick_action delete_backward/delete_forward",
+	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("keys schema description missing %q: %s", want, description)
 		}
@@ -3408,16 +3412,16 @@ func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 	}
 }
 
-func TestKeyboardTapDescriptionDocumentsQuickActionFallback(t *testing.T) {
+func TestKeyboardTapDescriptionRoutesSemanticShortcutsToQuickAction(t *testing.T) {
 	desc := (&KeyboardTapTool{}).Description()
-	for _, want := range []string{"Prefer quick_action", "custom key input"} {
+	for _, want := range []string{"cataloged semantic actions", "MUST use quick_action", "copy", "paste", "select_all", "delete_backward", "delete_forward", "exact physical chords explicitly requested", "app-specific shortcuts not represented", "current run explicitly reports", "Do not infer unavailability", "Never replay an active quick_action binding"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
 	}
 	// Key mechanics (backspace/forward-delete, modifiers, key list) now live in the keys ArgsSchema field.
 	keysDesc := keyboardTapKeysSchemaDescription(t)
-	for _, want := range []string{"backspace", "forward-delete", "modifier", "modifier-only"} {
+	for _, want := range []string{"backspace", "forward-delete", "semantic deletion", "quick_action delete_backward/delete_forward", "modifier", "modifier-only", "Cataloged semantic actions MUST use quick_action", "explicitly requested physical input", "uncataloged app-specific shortcuts", "current run explicitly reports", "Do not infer unavailability", "replay an active binding"} {
 		if !strings.Contains(keysDesc, want) {
 			t.Fatalf("keys schema missing %q:\n%s", want, keysDesc)
 		}
