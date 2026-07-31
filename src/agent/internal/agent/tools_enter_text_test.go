@@ -562,7 +562,7 @@ func TestTextInputEngineRunSegmentedUsesProbeStateInsteadOfASCIIVerification(t *
 		t.Fatalf("RunSegmented() = %+v, %v; want committed result", result, err)
 	}
 	if want := []string{
-		jsonString(map[string][]string{"keys": {"backspace"}}),
+		jsonString(map[string][]string{"keys": {"meta", "z"}}),
 		jsonString(map[string]any{"keys": []string{"capslock"}, "hold_ms": textInputIMESwitchHoldMs}),
 		jsonString(map[string]any{"keys": []string{"capslock"}, "hold_ms": textInputIMESwitchHoldMs}),
 	}; !reflect.DeepEqual(keyboardTap.calls, want) {
@@ -593,7 +593,7 @@ func TestTextInputEngineRunSegmentedDoesNotVerifyFinalASCIIPart(t *testing.T) {
 		t.Fatalf("RunSegmented() = %+v, %v; want committed result", result, err)
 	}
 	if want := []string{
-		jsonString(map[string][]string{"keys": {"backspace"}}),
+		jsonString(map[string][]string{"keys": {"meta", "z"}}),
 		jsonString(map[string]any{"keys": []string{"capslock"}, "hold_ms": textInputIMESwitchHoldMs}),
 	}; !reflect.DeepEqual(keyboardTap.calls, want) {
 		t.Fatalf("keyboard_tap calls = %#v, want %#v", keyboardTap.calls, want)
@@ -623,7 +623,7 @@ func TestTextInputEngineTypesFullWidthPunctuationInIMEMode(t *testing.T) {
 		t.Fatalf("keyboard_text calls = %#v, want %#v", keyboardText.calls, want)
 	}
 	if want := []string{
-		jsonString(map[string][]string{"keys": {"backspace"}}),
+		jsonString(map[string][]string{"keys": {"meta", "z"}}),
 		jsonString(map[string]any{"keys": []string{"capslock"}, "hold_ms": textInputIMESwitchHoldMs}),
 		jsonString(map[string]any{"keys": []string{"capslock"}, "hold_ms": textInputIMESwitchHoldMs}),
 	}; !reflect.DeepEqual(keyboardTap.calls, want) {
