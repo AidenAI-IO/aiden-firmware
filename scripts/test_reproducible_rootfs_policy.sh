@@ -4,7 +4,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_IMAGE_SH="$ROOT_DIR/build_image.sh"
 INNER_BUILD_IMAGE_SH="$ROOT_DIR/_build_image.sh"
-PICO_SDK="$ROOT_DIR/pico-sdk"
+# Only sysdrv/Makefile and the two Buildroot defconfigs are read below, so PR
+# CI can point this at a sparse checkout of the pinned submodule commit instead
+# of cloning the ~1GB pico-sdk working tree.
+PICO_SDK="${PICO_SDK_DIR:-$ROOT_DIR/pico-sdk}"
+
+if [ ! -f "$PICO_SDK/sysdrv/Makefile" ]; then
+  echo "missing pico-sdk sysdrv/Makefile under $PICO_SDK; set PICO_SDK_DIR or check out the pico-sdk submodule" >&2
+  exit 1
+fi
 
 for script in "$BUILD_IMAGE_SH" "$INNER_BUILD_IMAGE_SH"; do
   if ! grep -q 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH' "$script"; then

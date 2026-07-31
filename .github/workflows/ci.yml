@@ -17,6 +17,45 @@ jobs:
       - name: Verify self-hosted runner safety
         run: bash scripts/test_github_actions_self_hosted_safety.sh
 
+  # The reproducible rootfs policy asserts invariants about pico-sdk's
+  # sysdrv/Makefile. It also runs in build.yml, but that only fires on
+  # schedule/dispatch, so a regression there was invisible until an 80-minute
+  # build failed. Run it on pull requests too, against a sparse checkout of the
+  # pinned submodule commit rather than the ~1GB pico-sdk working tree.
+  buildroot-state-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch pinned pico-sdk policy inputs
+        id: sdk
+        run: |
+          set -euo pipefail
+          sha="$(git ls-tree HEAD pico-sdk | awk '{print $3}')"
+          if [ -z "$sha" ]; then
+            echo "could not resolve the pinned pico-sdk submodule commit" >&2
+            exit 1
+          fi
+          echo "Pinned pico-sdk commit: $sha"
+          url="$(git config -f .gitmodules submodule.pico-sdk.url)"
+          dir="$RUNNER_TEMP/pico-sdk-policy"
+          git init -q "$dir"
+          git -C "$dir" remote add origin "$url"
+          # Restrict to the files the policy test reads. A blobless shallow
+          # sparse fetch of the pinned commit takes seconds and tens of MB.
+          git -C "$dir" sparse-checkout set --no-cone \
+            /sysdrv/Makefile \
+            /sysdrv/tools/board/buildroot/luckfox_pico_defconfig \
+            /sysdrv/tools/board/buildroot/luckfox_pico_w_defconfig
+          git -C "$dir" fetch -q --depth=1 --filter=blob:none origin "$sha"
+          git -C "$dir" checkout -q FETCH_HEAD
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+      - name: Verify reproducible rootfs policy
+        env:
+          PICO_SDK_DIR: ${{ steps.sdk.outputs.dir }}
+        run: bash scripts/test_reproducible_rootfs_policy.sh
+
   run-tests:
     runs-on: ubuntu-latest
     steps:
