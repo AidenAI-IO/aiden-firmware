@@ -40,6 +40,13 @@ func TestQuickActionsResolveAliasAndPlatform(t *testing.T) {
 	if id, ok := table.resolveActionID("quick-switch-left"); !ok || id != "quick_app_switch_left" {
 		t.Fatalf("expected hyphenated alias to resolve to quick_app_switch_left, got %q ok=%v", id, ok)
 	}
+	if id, ok := table.resolveActionID("switch_previous_app"); !ok || id != "app_switch_back" {
+		t.Fatalf("expected previous-app alias to resolve to app_switch_back, got %q ok=%v", id, ok)
+	}
+	_, binding, ok := table.lookup("app_switch_back", "android")
+	if !ok || binding.Status != quickActionStatusActive || binding.Tool != "touch_gesture" {
+		t.Fatalf("Android app_switch_back binding = %#v, found=%v; want active touch_gesture", binding, ok)
+	}
 	if id, ok := table.resolveActionID("退格"); !ok || id != "delete_backward" {
 		t.Fatalf("expected delete-backward alias to resolve to delete_backward, got %q ok=%v", id, ok)
 	}

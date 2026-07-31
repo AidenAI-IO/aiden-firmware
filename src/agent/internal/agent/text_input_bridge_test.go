@@ -401,7 +401,7 @@ type recordingBridgeQuickActionTool struct {
 	onCall func(string)
 }
 
-func TestTextInputBridgeRestoresViaSharedPhoneBridgeRestorerAndReturnsThroughRecents(t *testing.T) {
+func TestTextInputBridgeRestoresViaSharedPhoneBridgeRestorerAndSwitchesBack(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		ObservedMode: textInputModeASCII, FieldText: "hello world", TargetMatched: true,
 	}}}
@@ -425,13 +425,11 @@ func TestTextInputBridgeRestoresViaSharedPhoneBridgeRestorerAndReturnsThroughRec
 
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	quickAction := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
-	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
-	findPrevCalls := 0
 	bridgePath := &textInputBridge{
 		hw: &textInputHardwareDeps{
 			pointerMode:  "absolute",
 			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
-			touchGesture: touch,
+			touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
 			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 			keyboardText: keyboardText,
 			quickAction:  quickAction,
@@ -441,13 +439,6 @@ func TestTextInputBridgeRestoresViaSharedPhoneBridgeRestorerAndReturnsThroughRec
 		bridgeFn: func() *PhoneBridge { return pb },
 		restorer: restorer,
 		sleep:    testNoWaitSleep,
-		findPrevAppFn: func(context.Context, screenshotResult) (previousAppCardResult, error) {
-			findPrevCalls++
-			if findPrevCalls == 1 {
-				return previousAppCardResult{Found: false, TapPoint: focusPointArgs{CoordSpace: "normalized"}}, nil
-			}
-			return previousAppCardResult{Found: true, TapPoint: focusPointArgs{X: 180, Y: 290, CoordSpace: "normalized"}, Label: "Settings"}, nil
-		},
 		clipboardWriteFn: func(_ context.Context, _ *PhoneBridge, text string) error {
 			if text != "hello world" {
 				t.Fatalf("clipboard text = %q", text)
@@ -481,18 +472,10 @@ func TestTextInputBridgeRestoresViaSharedPhoneBridgeRestorerAndReturnsThroughRec
 	if restoreCalls != 1 {
 		t.Fatalf("shared bridge restore calls=%d, want 1", restoreCalls)
 	}
-	if findPrevCalls != 2 {
-		t.Fatalf("find previous app calls=%d, want 2", findPrevCalls)
-	}
 	if len(quickAction.calls) != 2 ||
-		!strings.Contains(quickAction.calls[0], `"action": "app_switch"`) ||
+		!strings.Contains(quickAction.calls[0], `"action": "app_switch_back"`) ||
 		!strings.Contains(quickAction.calls[1], `"action": "paste"`) {
 		t.Fatalf("quick_action calls=%v", quickAction.calls)
-	}
-	if len(touch.calls) != 2 ||
-		!strings.Contains(touch.calls[0], `"type": "swipe_right"`) ||
-		!strings.Contains(touch.calls[1], `"type": "tap"`) {
-		t.Fatalf("touch_gesture calls=%v, want only return-to-target gestures", touch.calls)
 	}
 	if len(keyboardText.calls) != 0 {
 		t.Fatalf("keyboard_text calls=%v, want no Aiden search input", keyboardText.calls)
