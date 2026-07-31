@@ -152,7 +152,7 @@ func TestQuickActionDescriptionDocumentsListInspection(t *testing.T) {
 	if !strings.Contains(desc, `Always pass action and platform`) {
 		t.Fatalf("description missing required action/platform guidance: %s", desc)
 	}
-	for _, want := range []string{"cataloged semantic actions", "physical-key requests", "uncataloged app-specific shortcuts", "keyboard_tap"} {
+	for _, want := range []string{"Cataloged semantic actions MUST use quick_action", "physical-key requests", "uncataloged app-specific shortcuts", "current run", "reserved/unavailable", "keyboard_tap"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing semantic shortcut routing guidance %q: %s", want, desc)
 		}
@@ -182,7 +182,7 @@ func TestQuickActionPlaybookLivesInSkill(t *testing.T) {
 		t.Skipf("device-operator SKILL.md not readable from test cwd: %v", err)
 	}
 	content := string(data)
-	for _, want := range []string{"status=reserved", "alternative=true", "Never loop on the same binding", "known exact platform chord", "active quick action executed", "equivalent `keyboard_tap` modifier chord", "app-specific shortcuts not represented", "system/global search", "semantic backward/forward deletion"} {
+	for _, want := range []string{"MUST use `quick_action`", "current run explicitly reports", "Do not infer that `quick_action` is unavailable", "text-entry failure", "Never replay the same binding", "alternative=true", "Never loop on the same binding", "app-specific shortcuts not represented", "system/global search", "semantic backward/forward deletion"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("device-operator SKILL.md missing quick_action guidance %q", want)
 		}
