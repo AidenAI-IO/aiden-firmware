@@ -23,6 +23,40 @@ func (u *Updater) reservePath() string {
 	return filepath.Join(u.config.DownloadDir, otaReserveFileName)
 }
 
+// cleanupAlternateDownloadDirs enforces one OTA cache budget across eMMC and
+// SD. The CLI only supplies dedicated OTA cache directories, and this runs
+// while the updater holds its process lock, so switching storage cannot leave
+// a second reserve or stale package set consuming another full budget.
+func (u *Updater) cleanupAlternateDownloadDirs() error {
+	selected := filepath.Clean(u.config.DownloadDir)
+	seen := map[string]bool{}
+	for _, rawDir := range u.config.AlternateDownloadDirs {
+		dir := filepath.Clean(rawDir)
+		if rawDir == "" || dir == "." || dir == selected || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read alternate OTA cache %s: %w", dir, err)
+		}
+		for _, entry := range entries {
+			path := filepath.Join(dir, entry.Name())
+			if err := os.RemoveAll(path); err != nil {
+				return fmt.Errorf("remove alternate OTA cache %s: %w", path, err)
+			}
+			u.logf("ota cleanup: removed alternate cache %s", path)
+		}
+		if err := fsyncDirFor(filepath.Join(dir, ".ota-cleanup-sync")); err != nil {
+			return fmt.Errorf("sync alternate OTA cache %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
 // ensureReserveSpace keeps cache files plus the allocated reserve file at the
 // configured OTA budget. Partial and verified downloads therefore remain
 // resumable without giving ordinary workloads access to the unused balance.

@@ -14,32 +14,47 @@ write /userdata/ota/downloads/oem.img.tar.gz.part: no space left on device
 
 ## 默认预算
 
-- 预留预算：64 MiB。
+- 预留预算：200 MiB。
 - 下载安全余量：4 MiB，覆盖 ext4 元数据、目录项和 `fsync` 波动。
 - 预留文件：`<download_dir>/.ota-reserve`。
 - eMMC 默认路径：`/userdata/ota/downloads/.ota-reserve`。
 
-2026-07-30 的最新正式发布需要为目标槽下载：
+对最近 20 个正式发布的 manifest 按目标槽统计，最大下载组合出现在
+`20260730-032204-49de84e`：
 
 | 资源 | 大小 |
 | --- | ---: |
-| `boot_b.img.tar.gz`（A/B 二选一） | 约 3.6 MiB |
-| `oem.img.tar.gz` | 约 25.3 MiB |
-| 合计 | 约 28.9 MiB |
+| `boot_b.img.tar.gz`（A/B 二选一） | 3.45 MiB |
+| `oem.img.tar.gz` | 25.26 MiB |
+| `rootfs.img.tar.gz`（由 manifest 引用前一个 Release） | 97.90 MiB |
+| 合计 | 126.61 MiB |
 
-64 MiB 能覆盖当前约 29 MiB 的下载量和 4 MiB 安全余量，并为包体增长留出空间。OTA 不下载发布中的 `update.img.tar.gz`。
+加上 4 MiB 安全余量后需要 130.61 MiB。200 MiB 预算还剩约 69.39 MiB
+增长空间。设备只下载 manifest 为目标槽选择且哈希不匹配的资源；不会下载另一个
+boot 槽位，也不会下载 Release 中约 254 MiB 的 `update.img.tar.gz`。
 
 ## 空间模型
 
-预留不是一个永远固定为 64 MiB 的单文件，而是一笔固定 OTA 预算：
+预留不是一个永远固定为 200 MiB 的单文件，而是一笔固定 OTA 预算：
 
 ```text
 有效下载缓存 + .ota-reserve = reserve_size_bytes
 ```
 
-例如已有 20 MiB 的可续传 `.part` 文件时，预留文件补到 44 MiB。这样既保留断点续传，又不会把未使用的 44 MiB 暴露给普通运行时数据。
+例如已有 126 MiB 的已验证缓存时，预留文件补到 74 MiB。这样既能复用缓存，又不会把未使用的 74 MiB 暴露给普通运行时数据。
 
 预留文件通过实际写零并 `fsync` 创建，不使用会产生稀疏文件的 `truncate` 扩容。因此文件的逻辑大小对应真实占用的文件系统块。
+
+### 技术原理
+
+文件系统没有“只允许 OTA 使用”的原生容量配额。预留文件用最简单可靠的方式模拟
+这一配额：正常运行时先把预算对应的数据块真实分配给 `.ota-reserve`，其他进程看到的
+可用空间已经扣除了这笔预算，因此日志、录音和会话数据无法占用它。OTA 在持有
+`update.lock` 后删除预留文件，文件系统立即归还这些数据块；下载完成或失败后，再按
+“缓存 + reserve = 200 MiB”补齐。
+
+`.tar.gz` 不会解压到 `/userdata` 临时文件。写分区时流式解压并直接写 inactive block
+device，所以持久存储峰值只计算压缩包、断点文件和预留文件。
 
 ## 生命周期
 
@@ -48,8 +63,9 @@ write /userdata/ota/downloads/oem.img.tar.gz.part: no space left on device
 `S54ota` 每次开机执行 `ota health`。健康处理和预留补齐共用 OTA 更新锁：
 
 1. 处理待确认升级、成功提交或回滚。
-2. 统计下载目录内已有缓存和断点文件。
-3. 将 `.ota-reserve` 补到“配置预算减缓存大小”。
+2. 如果 SD/eMMC 路由发生变化，清空另一侧专用 OTA 缓存目录，保证只有一份预算。
+3. 统计当前下载目录内已有缓存和断点文件。
+4. 将 `.ota-reserve` 补到“配置预算减缓存大小”。
 
 如果另一个 `ota update` 已持有锁，`ota health` 不会补建预留文件，避免把下载刚释放的空间重新占回去。
 
@@ -80,28 +96,59 @@ write /userdata/ota/downloads/oem.img.tar.gz.part: no space left on device
 
 ```json
 {
-  "reserve_size_bytes": 67108864,
+  "reserve_size_bytes": 209715200,
   "reserve_safety_margin_bytes": 4194304
 }
 ```
 
 | 字段 | 默认值 | 说明 |
 | --- | ---: | --- |
-| `reserve_size_bytes` | 67108864 | 下载缓存和预留文件的总预算，默认 64 MiB |
+| `reserve_size_bytes` | 209715200 | 下载缓存和预留文件的总预算，默认 200 MiB |
 | `reserve_safety_margin_bytes` | 4194304 | 释放预留后必须额外留下的下载余量，默认 4 MiB |
 
 如果将来的剩余下载量超过当前预留文件，OTA 会在发起资源请求前失败：
 
 ```text
-OTA reserve too small: need 72.0 MiB for remaining downloads and safety margin,
-reserved 64.0 MiB; increase reserve_size_bytes
+OTA reserve too small: need 204.0 MiB for remaining downloads and safety margin,
+reserved 200.0 MiB; increase reserve_size_bytes
 ```
 
 这表示发布包已经超过设备预留策略，应调整配置或减小发布资源，而不是让设备临时清理用户数据。
 
 ## SD 卡行为
 
-预留文件跟随 `download_dir`。当 OTA CLI 根据 StorageManager 状态把下载缓存切换到 `<sd-mount>/aiden/ota-cache` 时，预留也位于该目录；OTA 状态文件仍保留在 eMMC 的 `/userdata/ota`。
+预留文件跟随 `download_dir`。OTA CLI 只有在 SD 已挂载，且“文件系统实际可用空间 +
+已有 OTA 缓存/reserve”至少能承载完整 200 MiB 预算时，才把下载目录切换到
+`<sd-mount>/aiden/ota-cache`；否则使用 eMMC。OTA 状态文件始终保留在
+`/userdata/ota`。
+
+StorageManager 挂载 SD 时会把卡上已有 OTA 缓存/reserve 计入可恢复容量，避免重启后
+因为 reserve 自己占空间而错误卸载 SD；但只有 SD 的实际剩余空间仍高于通用写入下限时，
+才会继续把音频从 eMMC 迁移到 SD。
+
+OTA 和 eMMC→SD 迁移共用 `/userdata/ota/update.lock` 作为协调信号。OTA 持锁期间不启动
+迁移；已经运行的迁移会在当前文件结束后停止，避免抢占 reserve 释放出的 SD 空间。
+
+## StorageMonitor、清理和提示
+
+预留替代的是“下载前临时 `statfs` 预检”，不是存储治理：
+
+- StorageMonitor 继续监控 `/userdata`，默认 Warning/Critical/Emergency 阈值仍为
+  50/10/5 MiB。reserve 在 eMMC 时会被当作已使用空间，这是预期行为；reserve 在 SD
+  时不会影响 `/userdata` 的监控结果。
+- StorageMonitor 的日志、音频和会话归档清理继续保留。cleaner 不包含 OTA 目录，不会
+  删除 `.ota-reserve`、已验证缓存或 `.part`。
+- OTA 下载前继续删除失效缓存；SD/eMMC 切换时清理另一侧专用 OTA 缓存。这些清理用于
+  保持单一预算和避免错误断点，不能由 reserve 替代。
+- `ENOSPC` 时删除本次 `.part` 的兜底继续保留，防止每次重试都在同一位置撞满；普通网络
+  错误仍保留 `.part` 续传。
+- reserve 建立失败、预算过小和下载失败继续写入 `state.json.LastError` 并输出到 stderr。
+  当前没有新增独立语音或手机弹窗；StorageMonitor 原有告警和降级提示继续生效。
+
+## 发布约束
+
+`generate_ota_manifest.sh` 默认检查 A/B 两个目标槽的最坏下载组合。200 MiB 预算扣除
+4 MiB 安全余量后，manifest 资源总量上限为 196 MiB；超过时 CI 在签名和发布前失败。
 
 ## 运维检查
 
@@ -120,7 +167,8 @@ grep 'ota reserve' /var/log/ota/ota.log
 ## 已知边界
 
 - 预留机制只能保护预留成功建立后的升级。旧固件首次升级到包含本机制的版本时，仍由旧 OTA 客户端负责下载。
-- OTA 释放预留到恢复预留之间，其他进程理论上仍可并发写盘；64 MiB 预算中的 4 MiB 安全余量用于降低这类短时波动风险，`ENOSPC` 清残包仍作为最后兜底。
+- OTA 释放预留到恢复预留之间，非 StorageManager 管理的系统日志仍可能并发写盘；4 MiB
+  安全余量、当前约 69 MiB 的包体增长空间和 `ENOSPC` 清残包共同作为兜底。
 - 如果开机时磁盘已经过满，预留文件可能无法首次补齐。`ota health` 会返回错误并记录日志，需要先清理空间一次。
 
 ## 验证范围
@@ -133,3 +181,7 @@ grep 'ota reserve' /var/log/ota/ota.log
 - 旧缓存会在下载前删除。
 - 下载需求超过预留时，在资源请求前拒绝并写入 `state.json` 的 `reserve` 阶段。
 - `ENOSPC` 删除 `.part`，其他网络错误保留 `.part`。
+- SD 容量不足时回退 eMMC，已有 OTA 缓存/reserve 会计入 SD 容量。
+- SD/eMMC 切换时另一侧 OTA 缓存被清空，不会留下双份预算。
+- OTA 更新锁持有期间不启动 eMMC→SD 音频迁移。
+- 发布 manifest 任一目标槽超过 196 MiB 时生成失败。

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -182,8 +183,13 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	// explicit download_dir in the config JSON or a -state-dir sandbox
 	// (tests, acceptance runs) keeps its own layout.
 	if !config.DownloadDirConfigured && *stateDir == "" {
-		if dir := sdOTACacheDir(storageStatePath); dir != "" {
+		emmcDownloadDir := config.DownloadDir
+		state := readSDStorageState(storageStatePath)
+		if dir := sdOTACacheDir(storageStatePath, config.ReserveSizeBytes); dir != "" {
 			config.DownloadDir = dir
+			config.AlternateDownloadDirs = []string{emmcDownloadDir}
+		} else if state.mounted && state.mountPoint != "" {
+			config.AlternateDownloadDirs = []string{filepath.Join(state.mountPoint, "aiden", "ota-cache")}
 		}
 	}
 	config.Logger = log.New(os.Stderr, "ota: ", log.LstdFlags)

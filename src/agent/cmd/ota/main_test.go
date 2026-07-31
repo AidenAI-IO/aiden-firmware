@@ -64,25 +64,71 @@ func TestSplitCommandAndFlagsConsumesFlagValuesBeforeCommand(t *testing.T) {
 
 func TestParseConfigFlagsUsesSDCacheWhenDownloadDirIsNotConfigured(t *testing.T) {
 	tmp := t.TempDir()
+	mountPoint := filepath.Join(tmp, "sdcard")
+	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
+		t.Fatalf("MkdirAll(mountPoint) error = %v", err)
+	}
 	configPath := filepath.Join(tmp, "config.json")
 	if err := os.WriteFile(configPath, []byte("{}"), 0o644); err != nil {
 		t.Fatalf("WriteFile(config) error = %v", err)
 	}
 	statePath := filepath.Join(tmp, "storage.state")
-	if err := os.WriteFile(statePath, []byte("SD_MOUNTED=1\nSD_MOUNTPOINT=/mnt/sdcard\n"), 0o644); err != nil {
+	if err := os.WriteFile(statePath, []byte("SD_MOUNTED=1\nSD_MOUNTPOINT="+mountPoint+"\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(storage state) error = %v", err)
 	}
 	previousStatePath := storageStatePath
 	storageStatePath = statePath
 	t.Cleanup(func() { storageStatePath = previousStatePath })
+	previousAvailable := availableBytesForPath
+	availableBytesForPath = func(string) (int64, error) { return 300 << 20, nil }
+	t.Cleanup(func() { availableBytesForPath = previousAvailable })
 
 	config, err := parseConfigFlags([]string{"-config", configPath})
 	if err != nil {
 		t.Fatalf("parseConfigFlags() error = %v", err)
 	}
-	want := filepath.Join("/mnt/sdcard", "aiden", "ota-cache")
+	want := filepath.Join(mountPoint, "aiden", "ota-cache")
 	if config.DownloadDir != want {
 		t.Fatalf("DownloadDir = %q, want %q", config.DownloadDir, want)
+	}
+	wantAlternate := filepath.Join(ota.DefaultOTAStateDir, "downloads")
+	if len(config.AlternateDownloadDirs) != 1 || config.AlternateDownloadDirs[0] != wantAlternate {
+		t.Fatalf("AlternateDownloadDirs = %#v, want [%q]", config.AlternateDownloadDirs, wantAlternate)
+	}
+}
+
+func TestParseConfigFlagsFallsBackToEMMCWhenSDCannotHoldBudget(t *testing.T) {
+	tmp := t.TempDir()
+	mountPoint := filepath.Join(tmp, "sdcard")
+	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
+		t.Fatalf("MkdirAll(mountPoint) error = %v", err)
+	}
+	configPath := filepath.Join(tmp, "config.json")
+	if err := os.WriteFile(configPath, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+	statePath := filepath.Join(tmp, "storage.state")
+	if err := os.WriteFile(statePath, []byte("SD_MOUNTED=1\nSD_MOUNTPOINT="+mountPoint+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(storage state) error = %v", err)
+	}
+	previousStatePath := storageStatePath
+	storageStatePath = statePath
+	t.Cleanup(func() { storageStatePath = previousStatePath })
+	previousAvailable := availableBytesForPath
+	availableBytesForPath = func(string) (int64, error) { return 100 << 20, nil }
+	t.Cleanup(func() { availableBytesForPath = previousAvailable })
+
+	config, err := parseConfigFlags([]string{"-config", configPath})
+	if err != nil {
+		t.Fatalf("parseConfigFlags() error = %v", err)
+	}
+	wantDownloadDir := filepath.Join(ota.DefaultOTAStateDir, "downloads")
+	if config.DownloadDir != wantDownloadDir {
+		t.Fatalf("DownloadDir = %q, want eMMC %q", config.DownloadDir, wantDownloadDir)
+	}
+	wantAlternate := filepath.Join(mountPoint, "aiden", "ota-cache")
+	if len(config.AlternateDownloadDirs) != 1 || config.AlternateDownloadDirs[0] != wantAlternate {
+		t.Fatalf("AlternateDownloadDirs = %#v, want [%q]", config.AlternateDownloadDirs, wantAlternate)
 	}
 }
 

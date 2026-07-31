@@ -75,6 +75,8 @@ const (
 // storageStateFileName mirrors runtime state for external processes (cmd/ota).
 const defaultStorageStatePath = "/run/aiden/storage.state"
 
+const otaUpdateLockFileName = "update.lock"
+
 // StorageCardStatus describes the SD card as last observed.
 type StorageCardStatus struct {
 	Present    bool   `json:"present"`
@@ -156,12 +158,13 @@ type storageSysOps interface {
 // directory resolution. It is the only writer of the preference file and the
 // runtime state mirror.
 type StorageManager struct {
-	cfg          StorageConfig
-	logger       *Logger
-	ops          storageSysOps
-	statePath    string // "" disables the state mirror
-	emmcRoot     string
-	pollInterval time.Duration
+	cfg               StorageConfig
+	logger            *Logger
+	ops               storageSysOps
+	statePath         string // "" disables the state mirror
+	emmcRoot          string
+	otaUpdateLockPath string
+	pollInterval      time.Duration
 
 	mu             sync.Mutex
 	card           StorageCardStatus
@@ -206,16 +209,17 @@ func NewStorageManager(cfg StorageConfig, logger *Logger) *StorageManager {
 
 func newStorageManagerWithOps(cfg StorageConfig, ops storageSysOps, statePath, emmcRoot string, logger *Logger) *StorageManager {
 	return &StorageManager{
-		cfg:           cfg,
-		logger:        logger,
-		ops:           ops,
-		statePath:     statePath,
-		emmcRoot:      emmcRoot,
-		pollInterval:  2 * time.Second,
-		lastEffective: StorageModeEMMCOnly,
-		formatJob:     StorageFormatJob{Status: StorageFormatIdle},
-		migration:     StorageMigrationJob{Status: StorageFormatIdle},
-		stop:          make(chan struct{}),
+		cfg:               cfg,
+		logger:            logger,
+		ops:               ops,
+		statePath:         statePath,
+		emmcRoot:          emmcRoot,
+		otaUpdateLockPath: filepath.Join(emmcRoot, "ota", otaUpdateLockFileName),
+		pollInterval:      2 * time.Second,
+		lastEffective:     StorageModeEMMCOnly,
+		formatJob:         StorageFormatJob{Status: StorageFormatIdle},
+		migration:         StorageMigrationJob{Status: StorageFormatIdle},
+		stop:              make(chan struct{}),
 	}
 }
 
@@ -379,6 +383,9 @@ func (m *StorageManager) maybeStartMigrationLocked() {
 		m.migration.Status == StorageFormatRunning {
 		return
 	}
+	if m.card.FreeBytes < int64(m.cfg.MinCardFreeMBOrDefault())*1024*1024 {
+		return
+	}
 	if !m.migrationRetryAt.IsZero() && time.Now().Before(m.migrationRetryAt) {
 		return
 	}
@@ -398,6 +405,28 @@ func (m *StorageManager) maybeStartMigrationLocked() {
 	m.logf("[storage] eMMC free space %.1f%% is below the %d%% watermark; migrating older data to SD until %d%%",
 		freePct, startPct, stopPct)
 	go m.runMigration(m.migrationCancel, m.migrationDone, stopPct)
+}
+
+func (m *StorageManager) otaUpdateInProgress() bool {
+	lockFile, err := os.OpenFile(m.otaUpdateLockPath, os.O_RDWR, 0)
+	if os.IsNotExist(err) {
+		return false
+	}
+	if err != nil {
+		m.warnf("[storage] cannot inspect OTA update lock %s: %v", m.otaUpdateLockPath, err)
+		return false
+	}
+	defer lockFile.Close()
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if err == syscall.EWOULDBLOCK || err == syscall.EAGAIN {
+			return true
+		}
+		m.warnf("[storage] cannot test OTA update lock %s: %v", m.otaUpdateLockPath, err)
+		return false
+	}
+	_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	return false
 }
 
 func (m *StorageManager) emmcFreePct() (float64, error) {
@@ -503,6 +532,10 @@ func (m *StorageManager) runMigration(cancel <-chan struct{}, done chan<- struct
 			finish(StorageFormatSuccess, "canceled", "", false)
 			return
 		default:
+		}
+		if m.otaUpdateInProgress() {
+			finish(StorageFormatSuccess, "paused for OTA update", "", false)
+			return
 		}
 
 		freePct, err := m.emmcFreePct()
@@ -869,7 +902,11 @@ func (m *StorageManager) tick() {
 			m.tryMountLocked()
 		}
 	}
-	m.maybeStartMigrationLocked()
+	if m.otaUpdateInProgress() {
+		m.requestMigrationCancelLocked("OTA update running")
+	} else {
+		m.maybeStartMigrationLocked()
+	}
 	m.finishTransitionLocked()
 }
 
@@ -934,7 +971,14 @@ func (m *StorageManager) tryMountLocked() {
 	m.mountFailed = false
 	m.refreshSpaceLocked()
 	free := int64(m.cfg.MinCardFreeMBOrDefault()) * 1024 * 1024
-	if m.card.FreeBytes < free {
+	usableFree := m.card.FreeBytes
+	otaBytes, otaBytesErr := regularFileBytes(m.sdClassDir(mountPoint, StorageClassOTACache))
+	if otaBytesErr != nil {
+		m.warnf("[storage] cannot count existing SD OTA budget: %v", otaBytesErr)
+	} else if otaBytes > 0 && usableFree <= int64(^uint64(0)>>1)-otaBytes {
+		usableFree += otaBytes
+	}
+	if usableFree < free {
 		reason := fmt.Sprintf("card has %d bytes free, below the %d MB minimum", m.card.FreeBytes, m.cfg.MinCardFreeMBOrDefault())
 		// If the unmount fails the card simply stays mounted (and usable);
 		// only the failed unmount keeps it from being rejected.
@@ -944,6 +988,31 @@ func (m *StorageManager) tryMountLocked() {
 		return
 	}
 	m.logf("[storage] mounted %s at %s (%d bytes free)", dev, mountPoint, m.card.FreeBytes)
+}
+
+func regularFileBytes(dir string) (int64, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return 0, err
+		}
+		if info.Size() > 0 && total > int64(^uint64(0)>>1)-info.Size() {
+			return 0, fmt.Errorf("directory size overflow")
+		}
+		total += info.Size()
+	}
+	return total, nil
 }
 
 // unmountLocked detaches the card. Caller holds m.mu.

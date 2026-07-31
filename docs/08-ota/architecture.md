@@ -90,7 +90,7 @@ Optional configuration fields:
 - `manifest_url` - directly specify manifest URL (skip GitHub Release API)
 - `public_key_path` - override default public key path (default `/oem/etc/ota_pubkey.pem`)
 - `github_token_path` - GitHub token file path (required for private repositories)
-- `reserve_size_bytes` - total OTA download-cache and reserve budget (default 64 MiB)
+- `reserve_size_bytes` - total OTA download-cache and reserve budget (default 200 MiB)
 - `reserve_safety_margin_bytes` - download-time filesystem safety margin (default 4 MiB)
 
 Factory baseline must be slot-aware because `boot_a.img` and `boot_b.img` have different hashes. When baseline is missing, OTA initialization must fail; it should not guess current partition versions.

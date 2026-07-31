@@ -218,6 +218,7 @@ jobs:
           --sign-key "$private_key" \
           --image-dir pico-sdk/output/image \
           "${asset_metadata_args[@]}" \
+          --max-download-bytes 205520896 \
           --output pico-sdk/output/image/manifest.json
 
     - name: Generate OTA device config

@@ -97,6 +97,8 @@ jq -e -S \
   {
     repo: $repo,
     channel: $channel,
+    reserve_size_bytes: 209715200,
+    reserve_safety_margin_bytes: 4194304,
     factory_version: .version,
     factory_build_time: .build_time,
     factory_partition_hashes: {

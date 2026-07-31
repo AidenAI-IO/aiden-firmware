@@ -14,10 +14,10 @@ import (
 	"testing"
 )
 
-func TestDefaultUpdaterConfigUses64MiBReserve(t *testing.T) {
+func TestDefaultUpdaterConfigUses200MiBReserve(t *testing.T) {
 	config := DefaultUpdaterConfig()
-	if config.ReserveSizeBytes != 64<<20 {
-		t.Fatalf("ReserveSizeBytes = %d, want %d", config.ReserveSizeBytes, 64<<20)
+	if config.ReserveSizeBytes != 200<<20 {
+		t.Fatalf("ReserveSizeBytes = %d, want %d", config.ReserveSizeBytes, 200<<20)
 	}
 	if config.ReserveSafetyMarginBytes != 4<<20 {
 		t.Fatalf("ReserveSafetyMarginBytes = %d, want %d", config.ReserveSafetyMarginBytes, 4<<20)
@@ -75,6 +75,40 @@ func TestProcessPendingHealthOnceCountsPartialDownloadAgainstReserve(t *testing.
 	}
 	if info.Size() != 3072 {
 		t.Fatalf("reserve size = %d, want 3072", info.Size())
+	}
+}
+
+func TestProcessPendingHealthOnceClearsAlternateDownloadBudget(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.config.ReserveSizeBytes = 4096
+	alternateDir := filepath.Join(t.TempDir(), "alternate-cache")
+	if err := os.MkdirAll(alternateDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(alternateDir) error = %v", err)
+	}
+	for name, body := range map[string][]byte{
+		otaReserveFileName:       make([]byte, 2048),
+		"rootfs.img.tar.gz":      []byte("cached-rootfs"),
+		"rootfs.img.tar.gz.part": []byte("partial-rootfs"),
+	} {
+		if err := os.WriteFile(filepath.Join(alternateDir, name), body, 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	env.config.AlternateDownloadDirs = []string{alternateDir}
+
+	if err := env.updater().ProcessPendingHealthOnce(context.Background()); err != nil {
+		t.Fatalf("ProcessPendingHealthOnce() error = %v", err)
+	}
+
+	entries, err := os.ReadDir(alternateDir)
+	if err != nil {
+		t.Fatalf("ReadDir(alternateDir) error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("alternate cache entries = %v, want empty", entries)
+	}
+	if _, err := os.Stat(filepath.Join(env.downloadDir, otaReserveFileName)); err != nil {
+		t.Fatalf("selected reserve missing: %v", err)
 	}
 }
 

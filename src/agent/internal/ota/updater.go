@@ -25,7 +25,7 @@ const (
 	DefaultOTAConfigPath               = "/userdata/ota/config.json"
 	DefaultOTAStateDir                 = "/userdata/ota"
 	DefaultOTAUpdateLockName           = "update.lock"
-	DefaultOTAReserveSizeBytes         = 64 << 20
+	DefaultOTAReserveSizeBytes         = 200 << 20
 	DefaultOTAReserveSafetyMarginBytes = 4 << 20
 	DefaultReleaseURL                  = "https://api.github.com/repos/AidenAI-IO/aiden-firmware/releases/latest"
 	MaxRemoteManifestBytes             = 1 << 20
@@ -40,6 +40,7 @@ type UpdaterConfig struct {
 	StateDir                 string                       `json:"state_dir,omitempty"`
 	DownloadDir              string                       `json:"download_dir,omitempty"`
 	DownloadDirConfigured    bool                         `json:"-"`
+	AlternateDownloadDirs    []string                     `json:"-"`
 	ReserveSizeBytes         int64                        `json:"reserve_size_bytes,omitempty"`
 	ReserveSafetyMarginBytes int64                        `json:"reserve_safety_margin_bytes,omitempty"`
 	UpdateLockPath           string                       `json:"update_lock_path,omitempty"`
@@ -197,6 +198,10 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	u.logf("ota check: start")
 	if err := u.ProcessPendingHealth(ctx); err != nil {
 		u.recordError("health", err)
+		return UpdateResult{}, err
+	}
+	if err := u.cleanupAlternateDownloadDirs(); err != nil {
+		u.recordError("cleanup", err)
 		return UpdateResult{}, err
 	}
 
@@ -713,6 +718,16 @@ func (u *Updater) ProcessPendingHealthOnce(ctx context.Context) error {
 	if healthErr != nil {
 		u.logf("ota health: %v", healthErr)
 		u.recordError("health", healthErr)
+	}
+	cleanupErr := u.cleanupAlternateDownloadDirs()
+	if cleanupErr != nil {
+		u.logf("ota cleanup: %v", cleanupErr)
+		if healthErr == nil {
+			u.recordError("cleanup", cleanupErr)
+		} else {
+			return healthErr
+		}
+		return cleanupErr
 	}
 	reserveErr := u.ensureReserveSpace()
 	if reserveErr != nil {

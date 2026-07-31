@@ -37,6 +37,7 @@ This project's production OTA uses A/B partitioning, signed manifests, and boot 
 - `/userdata` is preserved across upgrades and stores OTA configuration, state, download cache, health markers, and the OTA reserved-space file.
 - `boot_a.img` and `boot_b.img` contain different slot bootargs; manifests must use slot-specific boot assets.
 - When factory baseline is missing or manifest signature/hash verification fails, devices must fail closed.
+- The device reserves a 200 MiB download-cache budget. Release generation rejects a target-slot manifest above 196 MiB, leaving the configured 4 MiB filesystem margin.
 
 ## Common Commands
 
