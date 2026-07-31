@@ -317,6 +317,17 @@ func textInputKeyboardKeysForSelectAll(platform string) ([]string, error) {
 	}
 }
 
+func textInputKeyboardKeysForUndo(platform string) ([]string, error) {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "android":
+		return []string{"ctrl", "z"}, nil
+	case "ios", "mac":
+		return []string{"meta", "z"}, nil
+	default:
+		return nil, fmt.Errorf("unsupported platform %q for undo", platform)
+	}
+}
+
 func interpretTextInputToolOutput(out string) error {
 	out = strings.TrimSpace(out)
 	if out == "" {

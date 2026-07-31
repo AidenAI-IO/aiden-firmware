@@ -138,12 +138,15 @@ if grep -q 'scripts/test_build_scripts.sh' "$CI_WORKFLOW"; then
     exit 1
 fi
 
-if grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW"; then
-    echo "CI release script checks must not run submodule-dependent reproducible rootfs policy checks" >&2
-    exit 1
-fi
+# The policy check reads pico-sdk, so it must not share the release-script job,
+# which has no SDK checkout, and any job running it must sparse-fetch rather
+# than check out the multi-GB worktree. Those are per-job structural facts, so
+# they are checked against the parsed workflow: grepping the whole file accepts
+# a marker that appears only in a comment, and cannot attribute a line to a job.
+python3 "$ROOT_DIR/scripts/check_ci_policy_job.py"
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_compress_release_images.sh' "$CI_WORKFLOW" || \

@@ -52,7 +52,7 @@ For cross-app tasks that require extracting data from a source app and entering 
 
 Prefer the highest-level reliable tool for the job:
 
-- Use `quick_action` first when a catalog shortcut clearly matches the goal, such as back, home, app switch, search, copy/paste, or browser actions. Always pass both `action` and the observed `platform`. Common actions include back, home, hide_app, quit_app, app_switch, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, and browser_* actions; use `{"action":"list","platform":"..."}` to see the active catalog.
+- Use `quick_action` first when a catalog shortcut clearly matches the goal, such as back, home, app switch, search, copy/paste, or browser actions. Always pass both `action` and the observed `platform`. Common actions include back, home, hide_app, quit_app, app_switch, app_switch_back, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, and browser_* actions; use `{"action":"list","platform":"..."}` to see the active catalog.
   - If `status=reserved` in a list result, or `quick_action` returns `ok=false` or an error, skip it and use direct input tools instead.
   - If `ok=true` but the screenshot shows no expected change, treat it as ineffective: try `alternative=true` once when alternatives are listed, otherwise switch tools. Never loop on the same binding.
 - Use `touch_gesture` for mobile taps, swipes, drag, back, and home gestures.

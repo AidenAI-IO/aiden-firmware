@@ -288,15 +288,19 @@ func (e *textInputEngine) planCompositionSegmentsForChunks(ctx context.Context, 
 }
 
 func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform string, focus focusPointArgs) (mode textInputMode, vlmCalls int, err error) {
+	undoKeys, err := textInputKeyboardKeysForUndo(platform)
+	if err != nil {
+		return textInputModeUnknown, vlmCalls, err
+	}
 	if err = e.typeASCIIChunk(ctx, "a"); err != nil {
 		return textInputModeUnknown, vlmCalls, fmt.Errorf("input mode probe: type a: %w", err)
 	}
 	defer func() {
-		deleteErr := e.tapKeys(ctx, []string{"backspace"})
-		if deleteErr == nil {
-			deleteErr = e.sleepFor(ctx, textInputKeystrokeGap)
+		undoErr := e.tapKeys(ctx, undoKeys)
+		if undoErr == nil {
+			undoErr = e.sleepFor(ctx, textInputKeystrokeGap)
 		}
-		err = errors.Join(err, deleteErr)
+		err = errors.Join(err, undoErr)
 	}()
 	if err = e.sleepFor(ctx, textInputProbeSettleDelay); err != nil {
 		return textInputModeUnknown, vlmCalls, err
