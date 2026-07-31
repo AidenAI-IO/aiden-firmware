@@ -307,7 +307,7 @@ func TestRolePromptOmitsRuntimeAndMemoryContext(t *testing.T) {
 
 func TestRolePromptRoutesPlatformShortcutsThroughQuickAction(t *testing.T) {
 	profile := testPromptProfile(AgentConfig{})
-	for _, want := range []string{"copy, paste, cut, select all", "use quick_action", "Never recreate", "ctrl/meta keyboard_tap chord", "non-shortcut UI strategy"} {
+	for _, want := range []string{"copy, paste, cut, select all", "use quick_action", "active quick_action binding", "ctrl/meta keyboard_tap chord", "non-shortcut UI strategy", "explicitly asks to press exact physical keys", "app-specific or not cataloged", "unavailable/reserved"} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("system prompt missing shortcut routing guidance %q:\n%s", want, profile.SystemPrompt)
 		}
@@ -330,6 +330,8 @@ func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 		"The phone companion app is connected",
 		"Use bridge_open_app as the primary path",
 		"bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification tools are available",
+		"prefer enter_text_via_bridge",
+		"do not manually chain bridge_clipboard with quick_action",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)

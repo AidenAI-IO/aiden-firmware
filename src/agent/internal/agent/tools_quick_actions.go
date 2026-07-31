@@ -332,7 +332,7 @@ type QuickActionTool struct {
 func (t *QuickActionTool) Name() string { return "quick_action" }
 
 func (t *QuickActionTool) Description() string {
-	return strings.TrimSpace(`Execute a predefined, platform-aware shortcut from quick_actions.json. Always use quick_action for matching semantic actions instead of constructing ctrl/meta chords with keyboard_tap. ` +
+	return strings.TrimSpace(`Execute a predefined, platform-aware shortcut from quick_actions.json. Use quick_action for cataloged semantic actions instead of manually constructing modifier chords. Explicit physical-key requests and uncataloged app-specific shortcuts may use keyboard_tap. ` +
 		`Always pass action and platform. Use {"action":"list","platform":"android"} to inspect available actions.`)
 }
 
@@ -758,8 +758,9 @@ func quickActionBehaviorSummary() string {
 	return strings.Join([]string{
 		"Common actions: back, home, hide_app, quit_app, app_switch, app_switch_back, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, browser_new_tab, browser_close_tab, browser_refresh, browser_address_bar.",
 		"- Infer platform from screenshot/context and pass platform=ios/android/mac.",
-		"- Use quick_action for cataloged semantic actions; never recreate them as ad-hoc ctrl/meta keyboard_tap chords.",
-		"- If status=reserved in a list result or quick_action returns ok=false or an error message: use a listed alternative or a non-shortcut UI strategy instead of the equivalent keyboard chord.",
+		"- Use quick_action when the user's intent is a cataloged semantic action. keyboard_tap remains valid for explicit physical-key requests and uncataloged app-specific shortcuts.",
+		"- If status=reserved or unavailable means no binding can execute: use a listed alternative or a non-shortcut UI strategy first; a known exact platform chord may be used once when it is the intended fallback.",
+		"- If an active binding executed but failed or had no visible effect: do not replay the same binding as a raw keyboard chord.",
 		"- If ok=true but the screenshot shows no expected change or the outcome is wrong: treat as ineffective, try alternative=true once when alternatives are listed, otherwise switch tools.",
 		"- Never loop on the same quick_action binding; change tool or strategy after one failed attempt.",
 	}, "\n")

@@ -3410,14 +3410,14 @@ func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 
 func TestKeyboardTapDescriptionRoutesSemanticShortcutsToQuickAction(t *testing.T) {
 	desc := (&KeyboardTapTool{}).Description()
-	for _, want := range []string{"always call quick_action", "copy", "paste", "select_all", "Never translate", "ctrl/meta", "raw HID testing", "even when the user names a familiar Ctrl/Cmd shortcut"} {
+	for _, want := range []string{"cataloged semantic action", "use quick_action", "copy", "paste", "select_all", "explicitly requested physical chords", "app-specific shortcuts not represented", "active quick_action binding", "ctrl/meta", "unavailable/reserved", "known exact platform chord"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
 	}
 	// Key mechanics (backspace/forward-delete, modifiers, key list) now live in the keys ArgsSchema field.
 	keysDesc := keyboardTapKeysSchemaDescription(t)
-	for _, want := range []string{"backspace", "forward-delete", "modifier", "modifier-only", "Do not construct ctrl/meta shortcuts"} {
+	for _, want := range []string{"backspace", "forward-delete", "modifier", "modifier-only", "explicitly requested physical input", "uncataloged app-specific shortcuts", "unavailable/reserved", "do not replay an active binding"} {
 		if !strings.Contains(keysDesc, want) {
 			t.Fatalf("keys schema missing %q:\n%s", want, keysDesc)
 		}

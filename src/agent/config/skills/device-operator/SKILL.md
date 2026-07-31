@@ -52,14 +52,15 @@ For cross-app tasks that require extracting data from a source app and entering 
 
 Prefer the highest-level reliable tool for the job:
 
-- Use `quick_action` whenever a catalog shortcut matches the goal, such as back, home, app switch, search, copy/paste, or browser actions. Always pass both `action` and the observed `platform`. Common actions include back, home, hide_app, quit_app, app_switch, app_switch_back, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, and browser_* actions; use `{"action":"list","platform":"..."}` to see the active catalog. Do not translate these semantic actions into `ctrl`/`meta` `keyboard_tap` chords.
-  - If `status=reserved` in a list result, or `quick_action` returns `ok=false` or an error, use a listed alternative or a non-shortcut UI strategy. Do not retry the same semantic action through an equivalent `keyboard_tap` modifier chord.
+- Use `quick_action` when the user's intent clearly matches a cataloged semantic action, such as back, home, app switch, system/global search, copy/paste, or browser actions. Always pass both `action` and the observed `platform`. Common actions include back, home, hide_app, quit_app, app_switch, app_switch_back, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, and browser_* actions; use `{"action":"list","platform":"..."}` to see the active catalog. Do not manually translate an active catalog binding into a `ctrl`/`meta` `keyboard_tap` chord.
+  - If `status=reserved` or unavailable means no binding can execute, use a listed alternative or a non-shortcut UI strategy first. A known exact platform chord may be used once when the user explicitly wants the physical keys, the shortcut is not cataloged, or the missing catalog binding makes it the intentional fallback.
+  - If an active quick action executed but returned failure or produced no visible effect, do not replay the same binding through an equivalent `keyboard_tap` modifier chord.
   - If `ok=true` but the screenshot shows no expected change, treat it as ineffective: try `alternative=true` once when alternatives are listed, otherwise switch tools. Never loop on the same binding.
-- Use `touch_gesture` for mobile taps, swipes, drag, back, and home gestures.
+- Use `touch_gesture` for mobile taps, swipes, and drags, and as a listed or non-shortcut fallback for back/home gestures.
 - For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `enter_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
 - Before entering English/ASCII text into any field, inspect the visible keyboard language. If a Chinese IME is active, for example the space bar says `拼音` or candidate/preedit text is shown, first switch to the English/Latin keyboard with the globe/input-method key, then type. Do not use `keyboard_text` while English text remains in Chinese IME preedit/candidate state.
-- Use `keyboard_tap` only for literal keys not represented by `quick_action`, such as enter, escape, tab, arrows, backspace, or an exact physical chord explicitly requested for raw HID testing. Never use it to synthesize copy, paste, cut, select-all, undo/redo, find, send, navigation, app-switching, or browser shortcuts, even if the user describes the desired semantic action by naming a familiar Ctrl/Cmd chord.
+- Use `keyboard_tap` for literal keys such as enter, escape, tab, arrows, and backspace; for exact physical chords the user explicitly asks to press; for app-specific shortcuts not represented by `quick_action`; and for the controlled unavailable/reserved fallback above. When a familiar Ctrl/Cmd chord is merely how the user describes a cataloged semantic goal, prefer `quick_action`.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch-style controls are not appropriate.
 
 If a semantic tool fails, read the message and choose a different approach. Do not retry the same binding unless the tool explicitly offers a distinct alternative.
@@ -103,8 +104,8 @@ Required pattern:
 
 For simple keys:
 
-- Use `keyboard_tap` for literal enter, escape, tab, arrows, or backspace. For semantic submit/send and all platform shortcuts, use `quick_action`; do not construct `ctrl`/`meta` chords yourself.
-- For ordinary deletion in a field, prefer `keyboard_tap` with `{"keys":["backspace"]}`; `delete` is forward-delete.
+- Use `keyboard_tap` for literal enter, escape, tab, arrows, or backspace. If the intent is semantic submit/send, use `quick_action`; if the user explicitly asks to press Enter, use `keyboard_tap` with `{"keys":["enter"]}`.
+- For semantic backward/forward deletion, use `quick_action` with `delete_backward` or `delete_forward`. Use `keyboard_tap` with `backspace` or `delete` only for an explicitly requested literal key press or the controlled unavailable/reserved fallback above; `delete` is forward-delete.
 
 If text does not appear or appears in the wrong place, stop typing, take a fresh screenshot, re-check focus and field identity, then retry once with corrected focus or input method. If still failing, summarize observed field state and ask for help or use bridge if appropriate.
 
