@@ -401,17 +401,27 @@ type recordingBridgeQuickActionTool struct {
 	onCall func(string)
 }
 
-func TestTextInputBridgeRestoresReconnectsAndReturnsThroughRecents(t *testing.T) {
-	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
-		{ObservedMode: textInputModeASCII},
-		{ObservedMode: textInputModeASCII, FieldText: "hello world", TargetMatched: true},
-	}}
+func TestTextInputBridgeRestoresViaSharedPhoneBridgeRestorerAndReturnsThroughRecents(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeASCII, FieldText: "hello world", TargetMatched: true,
+	}}}
 	pb := newTestPhoneBridge(t)
 	pb.platform = "ios"
 	pb.appState = "background"
 	pb.returnEntry = "dynamic_island"
 	pb.returnEntrySeen = true
 	pb.returnEntryOK = true
+	restoreCalls := 0
+	restorer := NewPhoneBridgeRestorer(pb, nil)
+	restorer.waitTimeout = time.Second
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		restoreCalls++
+		pb.mu.Lock()
+		pb.connected = true
+		pb.appState = "active"
+		pb.mu.Unlock()
+		return nil
+	}
 
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	quickAction := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
@@ -429,18 +439,8 @@ func TestTextInputBridgeRestoresReconnectsAndReturnsThroughRecents(t *testing.T)
 		},
 		vision:   vision,
 		bridgeFn: func() *PhoneBridge { return pb },
+		restorer: restorer,
 		sleep:    testNoWaitSleep,
-		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
-			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden"}, nil
-		},
-		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
-			time.AfterFunc(10*time.Millisecond, func() {
-				pb.mu.Lock()
-				pb.connected = true
-				pb.mu.Unlock()
-			})
-			return bridgeAppOpenResult{Opened: true, Reason: "Aiden app visible"}, nil
-		},
 		findPrevAppFn: func(context.Context, screenshotResult) (previousAppCardResult, error) {
 			findPrevCalls++
 			if findPrevCalls == 1 {
@@ -478,23 +478,24 @@ func TestTextInputBridgeRestoresReconnectsAndReturnsThroughRecents(t *testing.T)
 	if !pb.connected {
 		t.Fatal("expected bridge to reconnect before clipboard write")
 	}
+	if restoreCalls != 1 {
+		t.Fatalf("shared bridge restore calls=%d, want 1", restoreCalls)
+	}
 	if findPrevCalls != 2 {
 		t.Fatalf("find previous app calls=%d, want 2", findPrevCalls)
 	}
-	if len(quickAction.calls) != 3 ||
-		!strings.Contains(quickAction.calls[0], `"action": "spotlight_search"`) ||
-		!strings.Contains(quickAction.calls[1], `"action": "app_switch"`) ||
-		!strings.Contains(quickAction.calls[2], `"action": "paste"`) {
+	if len(quickAction.calls) != 2 ||
+		!strings.Contains(quickAction.calls[0], `"action": "app_switch"`) ||
+		!strings.Contains(quickAction.calls[1], `"action": "paste"`) {
 		t.Fatalf("quick_action calls=%v", quickAction.calls)
 	}
-	if len(touch.calls) != 3 ||
-		!strings.Contains(touch.calls[0], `"type": "tap"`) ||
-		!strings.Contains(touch.calls[1], `"type": "swipe_right"`) ||
-		!strings.Contains(touch.calls[2], `"type": "tap"`) {
-		t.Fatalf("touch_gesture calls=%v", touch.calls)
+	if len(touch.calls) != 2 ||
+		!strings.Contains(touch.calls[0], `"type": "swipe_right"`) ||
+		!strings.Contains(touch.calls[1], `"type": "tap"`) {
+		t.Fatalf("touch_gesture calls=%v, want only return-to-target gestures", touch.calls)
 	}
-	if len(keyboardText.calls) < 2 {
-		t.Fatalf("keyboard_text calls=%v, want probe and Aiden search input", keyboardText.calls)
+	if len(keyboardText.calls) != 0 {
+		t.Fatalf("keyboard_text calls=%v, want no Aiden search input", keyboardText.calls)
 	}
 }
 

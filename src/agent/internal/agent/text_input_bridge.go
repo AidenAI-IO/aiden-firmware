@@ -9,8 +9,6 @@ import (
 )
 
 const (
-	textViaBridgeConnectTimeout = 8 * time.Second
-	textViaBridgePollInterval   = 200 * time.Millisecond
 	textViaBridgePostWriteDelay = 2 * time.Second
 	textViaBridgePostPasteDelay = 350 * time.Millisecond
 	textViaBridgeMenuDelay      = 450 * time.Millisecond
@@ -54,9 +52,8 @@ type textInputBridge struct {
 	hw               *textInputHardwareDeps
 	vision           textInputVision
 	bridgeFn         func() *PhoneBridge
+	restorer         *PhoneBridgeRestorer
 	clipboardWriteFn func(context.Context, *PhoneBridge, string) error
-	findAppTapFn     func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
-	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
 	findPrevAppFn    func(context.Context, screenshotResult) (previousAppCardResult, error)
 	findPasteMenuFn  func(context.Context, screenshotResult, string) (pasteMenuResult, error)
 	sleep            func(context.Context, time.Duration) error
@@ -195,7 +192,7 @@ func (t *textInputBridge) runLegacyBridgeFlow(ctx context.Context, platform stri
 		return textViaBridgeResult{Attempted: true, Err: fmt.Errorf("phone bridge is not configured")}
 	}
 	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
-	if err := t.restoreBridgeAppIfNeeded(ctx, bridge, platform); err != nil {
+	if _, err := ensurePhoneBridgeReadyForCommand(ctx, bridge, t.restorer, "clipboard_write"); err != nil {
 		return textViaBridgeResult{Attempted: true, Err: err}
 	}
 	bridge = t.currentBridge()
@@ -414,38 +411,6 @@ func keyboardPasteKeys(platform string) []string {
 	}
 }
 
-func (t *textInputBridge) restoreBridgeAppIfNeeded(ctx context.Context, bridge *PhoneBridge, platform string) error {
-	if t == nil || t.hw == nil || t.hw.quickAction == nil || t.hw.keyboardText == nil || t.hw.touchGesture == nil {
-		return fmt.Errorf("bridge recovery tools are not fully configured")
-	}
-	searchTerm := textViaBridgeSearchTerm(platform, bridge.getStatus())
-	localEntry := &EnterTextTool{
-		engine:               newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep),
-		iosKeyboardIsolation: iosKeyboardIsolationControllerFromContext(ctx),
-	}
-	openResult, err := runAppSearchOpenFlow(ctx, appSearchOpenFlowConfig{
-		hw:               t.hw,
-		vision:           t.vision,
-		platform:         platform,
-		searchTerm:       searchTerm,
-		findAppTapFn:     t.findAppTapFn,
-		confirmAppOpenFn: t.confirmAppOpenFn,
-		entryTool:        localEntry,
-		launchDelay:      appSearchOpenLaunchDelay,
-		sleep:            t.sleep,
-	})
-	if err != nil {
-		return err
-	}
-	if !openResult.Opened {
-		if reason := strings.TrimSpace(openResult.Reason); reason != "" {
-			return fmt.Errorf("bridge app did not open: %s", reason)
-		}
-		return fmt.Errorf("bridge app did not open")
-	}
-	return t.waitForBridgeConnection(ctx)
-}
-
 func (t *textInputBridge) tapTouchPoint(ctx context.Context, point focusPointArgs) error {
 	out, err := t.hw.touchGesture.Call(ctx, jsonString(map[string]any{
 		"type":        "tap",
@@ -530,26 +495,6 @@ Rules:
 	return result, nil
 }
 
-func (t *textInputBridge) waitForBridgeConnection(ctx context.Context) error {
-	deadline := time.NewTimer(textViaBridgeConnectTimeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(textViaBridgePollInterval)
-	defer ticker.Stop()
-	for {
-		bridge := t.currentBridge()
-		if bridge != nil && bridge.Connected() {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			return fmt.Errorf("timed out waiting for phone bridge to connect")
-		case <-ticker.C:
-		}
-	}
-}
-
 func (t *textInputBridge) sleepAfterClipboardWrite(ctx context.Context) error {
 	sleep := sleepWithContext
 	if t != nil && t.sleep != nil {
@@ -608,15 +553,4 @@ func (t *textInputBridge) writeClipboard(ctx context.Context, bridge *PhoneBridg
 		return te
 	}
 	return interpretTextInputToolOutput(clipOut)
-}
-
-func textViaBridgeSearchTerm(platform string, status PhoneBridgeStatus) string {
-	if strings.EqualFold(strings.TrimSpace(platform), "android") && status.Environment != nil {
-		for _, app := range status.Environment.AvailableApps {
-			if strings.TrimSpace(app.AndroidPackage) == "com.qing.aidenbridgedaily" && strings.TrimSpace(app.Name) != "" {
-				return app.Name
-			}
-		}
-	}
-	return "Aiden"
 }
