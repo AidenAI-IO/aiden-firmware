@@ -13,6 +13,7 @@
   --border: oklch(92% 0.005 250);
   --accent: oklch(58% 0.18 255);
   --accent-purple: oklch(58% 0.18 290);
+  --detail-drawer-width: min(560px, 42vw);
   --font-body: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
 }
@@ -78,10 +79,14 @@ body { min-height: 100vh; background: linear-gradient(to bottom, var(--surface),
 .badge.hidden { color: oklch(48% 0.12 75); border-color: color-mix(in oklch, oklch(70% 0.14 75) 34%, var(--border)); background: color-mix(in oklch, oklch(70% 0.14 75) 10%, white) }
 .badge.json { color: oklch(42% 0.13 150); border-color: color-mix(in oklch, oklch(58% 0.16 145) 32%, var(--border)); background: color-mix(in oklch, oklch(58% 0.16 145) 8%, white) }
 .badge.text { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 32%, var(--border)); background: color-mix(in oklch, var(--accent) 8%, white) }
+.badge.image { color: oklch(52% 0.16 28); border-color: color-mix(in oklch, oklch(60% 0.17 28) 32%, var(--border)); background: color-mix(in oklch, oklch(60% 0.17 28) 8%, white) }
 .drawer-backdrop { position: fixed; inset: 0; z-index: 40; background: color-mix(in oklch, var(--fg) 18%, transparent); opacity: 0; pointer-events: none; transition: opacity 180ms ease }
-.drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 50; width: min(720px, 100vw); background: var(--surface); border-left: 1px solid var(--border); box-shadow: -24px 0 80px color-mix(in oklch, var(--fg) 10%, transparent); transform: translateX(100%); transition: transform 220ms ease; display: flex; flex-direction: column }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 50; width: min(720px, 100vw); background: var(--surface); border-left: 1px solid var(--border); box-shadow: -24px 0 80px color-mix(in oklch, var(--fg) 10%, transparent); transform: translateX(100%); transition: transform 220ms ease, right 220ms ease, width 220ms ease; display: flex; flex-direction: column }
+.detail-drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 60; width: var(--detail-drawer-width); background: var(--surface); border-left: 1px solid var(--border); box-shadow: -24px 0 80px color-mix(in oklch, var(--fg) 10%, transparent); transform: translateX(100%); transition: transform 220ms ease; display: flex; flex-direction: column }
 body.open .drawer-backdrop { opacity: 1; pointer-events: auto }
 body.open .drawer { transform: translateX(0) }
+body.detail-open .drawer { right: var(--detail-drawer-width); width: min(720px, calc(100vw - var(--detail-drawer-width))) }
+body.detail-open .detail-drawer { transform: translateX(0) }
 .drawer-top { padding: 18px; border-bottom: 1px solid var(--border); background: linear-gradient(to bottom, color-mix(in oklch, var(--bg) 72%, white), var(--surface)); flex-shrink: 0; position: relative }
 .drawer-top h2 { font-size: 18px; letter-spacing: -0.02em; margin-bottom: 8px; font-family: var(--font-mono); padding-right: 40px; word-break: break-all }
 .drawer-chips { display: flex; flex-wrap: wrap; gap: 6px }
@@ -95,10 +100,29 @@ body.open .drawer { transform: translateX(0) }
 .block-head span { color: var(--muted); font-family: var(--font-mono); font-size: 10px }
 .block-body { padding: 12px 14px; font-size: 13px; line-height: 1.6 }
 pre.block-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 12px; line-height: 1.65; max-height: 600px; overflow-y: auto }
+.image-preview-body { padding: 12px; display: flex; flex-direction: column; gap: 10px }
+.image-preview-frame { min-height: 220px; max-height: min(70vh, 680px); border: 1px solid var(--border); border-radius: 8px; background: color-mix(in oklch, var(--bg) 70%, white); display: flex; align-items: center; justify-content: center; overflow: hidden }
+.image-preview-frame img { display: block; max-width: 100%; max-height: min(66vh, 640px); object-fit: contain }
+.image-preview-error { color: oklch(48% 0.15 28); font-size: 12px }
+.image-preview-note { color: var(--muted); font-size: 12px }
+.content-lines { padding: 0; max-height: 600px; overflow-y: auto; font-family: var(--font-mono); font-size: 12px; line-height: 1.65 }
+.content-line { display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: stretch; min-height: 24px }
+.content-line:nth-child(odd) { background: color-mix(in oklch, var(--bg) 70%, white) }
+.content-line:nth-child(even) { background: color-mix(in oklch, oklch(88% 0.03 250) 38%, white) }
+.content-line-no { padding: 2px 10px; color: var(--muted); text-align: right; border-right: 1px solid var(--border); font-variant-numeric: tabular-nums; user-select: none }
+.content-line-text { padding: 2px 12px; white-space: pre-wrap; word-break: break-word }
+.content-more { padding: 10px 12px; border-top: 1px solid var(--border); background: var(--surface); display: flex; align-items: center; justify-content: space-between; gap: 10px }
+.content-more span { color: var(--muted); font-size: 12px }
+.content-more-btn { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg); cursor: pointer; font-size: 12px; font-weight: 600 }
+.content-more-btn:hover { background: color-mix(in oklch, var(--accent) 4%, white) }
+.screenshot-ref-link { color: var(--accent); text-decoration: none; font-family: inherit; font-size: inherit; font-weight: 650 }
+.screenshot-ref-link:hover { text-decoration: underline }
 .empty-state { padding: 40px; text-align: center; color: var(--muted) }
 @media (max-width: 768px) {
   .summary { grid-template-columns: repeat(2, 1fr) }
   .drawer { width: 100vw }
+  .detail-drawer { width: 100vw }
+  body.detail-open .drawer { right: 0; width: 100vw }
   .page { width: calc(100vw - 24px) }
 }
 </style>
@@ -133,6 +157,14 @@ pre.block-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-
   </div>
   <div class="drawer-body" id="dBody"></div>
 </aside>
+<aside class="detail-drawer" id="detailDrawer" inert aria-hidden="true">
+  <div class="drawer-top">
+    <h2 id="detailTitle">—</h2>
+    <div class="drawer-chips" id="detailChips"></div>
+    <button class="close-btn" id="detailCloseBtn" aria-label="Close screenshot details">&times;</button>
+  </div>
+  <div class="drawer-body" id="detailBody"></div>
+</aside>
 <script>
 const MEMORY_DATA = {{MEMORY_JSON}};
 const SKILLS_DATA = {{SKILLS_JSON}};
@@ -140,6 +172,10 @@ const SKILL_STATE_DATA = {{SKILL_STATE_JSON}};
 
 const backdrop = document.getElementById("backdrop");
 const closeBtn = document.getElementById("closeBtn");
+const detailDrawer = document.getElementById("detailDrawer");
+const detailCloseBtn = document.getElementById("detailCloseBtn");
+const CONTENT_INITIAL_LINE_LIMIT = 500;
+let detailDrawerTrigger = null;
 
 function esc(s) { var d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
 function formatSize(bytes) {
@@ -151,6 +187,235 @@ function formatSize(bytes) {
     unitIdx++;
   }
   return size.toFixed(1) + ' ' + units[unitIdx];
+}
+
+function userFilesPreviewURL(type, file) {
+  return '/user_files/preview?type=' + encodeURIComponent(type) + '&path=' + encodeURIComponent(file.relative_path);
+}
+
+function dataForType(type) {
+  const dataByType = { memory: MEMORY_DATA, skills: SKILLS_DATA, "skill-state": SKILL_STATE_DATA };
+  return dataByType[type] || MEMORY_DATA;
+}
+
+function normalizeRelativePath(path) {
+  const parts = [];
+  String(path || '').replace(/\\/g, '/').split('/').forEach(part => {
+    if (!part || part === '.') return;
+    if (part === '..') {
+      if (parts.length > 0) parts.pop();
+      return;
+    }
+    parts.push(part);
+  });
+  return parts.join('/');
+}
+
+function dirname(path) {
+  const normalized = normalizeRelativePath(path);
+  const idx = normalized.lastIndexOf('/');
+  return idx >= 0 ? normalized.slice(0, idx) : '';
+}
+
+function findFileByRelativePath(type, relativePath) {
+  const data = dataForType(type);
+  const normalized = normalizeRelativePath(relativePath);
+  return (data.files || []).find(file => normalizeRelativePath(file.relative_path) === normalized) || null;
+}
+
+function findScreenshotFile(type, eventFile, screenshotRef) {
+  const data = dataForType(type);
+  const ref = String(screenshotRef || '').trim();
+  if (!ref) return null;
+
+  const candidates = [];
+
+  if (data.path && ref.indexOf(data.path) === 0) {
+    candidates.push(normalizeRelativePath(ref.slice(data.path.length)));
+  }
+
+  const baseDir = dirname(eventFile.relative_path);
+  if (baseDir) {
+    candidates.push(normalizeRelativePath(baseDir + '/' + ref));
+  }
+  const normalizedRef = normalizeRelativePath(ref);
+  if (normalizedRef) candidates.push(normalizedRef);
+
+  for (const candidate of candidates) {
+    const file = findFileByRelativePath(type, candidate);
+    if (file) return file;
+  }
+  return null;
+}
+
+function attachImageErrorHandlers(scope) {
+  const root = scope || document;
+  root.querySelectorAll('.image-preview-img').forEach(img => {
+    const handleError = () => {
+      img.hidden = true;
+      const error = img.parentElement.querySelector('.image-preview-error');
+      if (error) error.hidden = false;
+    };
+    img.addEventListener('error', handleError);
+    if (img.complete && img.naturalWidth === 0) {
+      handleError();
+    }
+  });
+}
+
+function renderImagePreviewBlock(fileType, imageFile) {
+  let html = '<div class="block"><div class="block-head"><strong>Image Preview</strong><span>' + esc(imageFile.mime_type || 'image') + '</span></div>';
+  html += '<div class="image-preview-body">';
+  if (window.location.protocol === 'file:') {
+    html += '<div class="image-preview-note">Image preview is available when this report is opened through the Agent HTTP UI.</div>';
+  } else {
+    html += '<div class="image-preview-frame">';
+    html += '<img class="image-preview-img" src="' + esc(userFilesPreviewURL(fileType, imageFile)) + '" alt="' + esc(imageFile.relative_path) + '">';
+    html += '<div class="image-preview-error" hidden>Image preview failed to load.</div>';
+    html += '</div>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
+function screenshotRefLinkHTML(fileType, file, screenshotRef) {
+  return '<a href="#" class="screenshot-ref-link" data-type="' + esc(fileType) + '" data-file-path="' + esc(file.relative_path) + '" data-screenshot-ref="' + esc(screenshotRef) + '">' + esc(screenshotRef) + '</a>';
+}
+
+function renderContentLineText(fileType, file, text) {
+  const source = String(text || '');
+  const pattern = /(\\"screenshot_ref\\"\s*:\s*\\")([^"\\]+)(\\")|("screenshot_ref"\s*:\s*")([^"]+)(")|(\bscreenshot_ref\s*:\s*)(["']?)([^"'\s,}]+)(["']?)/g;
+  let html = '';
+  let lastIndex = 0;
+  let match;
+
+  while ((match = pattern.exec(source)) !== null) {
+    html += esc(source.slice(lastIndex, match.index));
+    if (match[2] !== undefined) {
+      html += esc(match[1]) + screenshotRefLinkHTML(fileType, file, match[2]) + esc(match[3]);
+    } else if (match[5] !== undefined) {
+      html += esc(match[4]) + screenshotRefLinkHTML(fileType, file, match[5]) + esc(match[6]);
+    } else {
+      html += esc(match[7]) + esc(match[8]) + screenshotRefLinkHTML(fileType, file, match[9]) + esc(match[10]);
+    }
+    lastIndex = pattern.lastIndex;
+  }
+  html += esc(source.slice(lastIndex));
+  return html || '&nbsp;';
+}
+
+function collectContentLines(content, start, limit) {
+  const source = String(content || '');
+  const lines = [];
+  let lineStart = start || 0;
+  for (let i = lineStart; i < source.length; i++) {
+    if (source.charCodeAt(i) !== 10) continue;
+    lines.push(source.slice(lineStart, i));
+    lineStart = i + 1;
+    if (limit > 0 && lines.length >= limit) {
+      return { lines, nextStart: lineStart, hasMore: lineStart < source.length };
+    }
+  }
+  lines.push(source.slice(lineStart));
+  return { lines, nextStart: source.length, hasMore: false };
+}
+
+function renderContentLineElements(fileType, file, lines, startLine) {
+  let html = '';
+  lines.forEach((line, idx) => {
+    html += '<div class="content-line">';
+    html += '<span class="content-line-no">' + String(startLine + idx).padStart(3, '0') + '</span>';
+    html += '<code class="content-line-text">' + renderContentLineText(fileType, file, line) + '</code>';
+    html += '</div>';
+  });
+  return html;
+}
+
+function renderContentLines(fileType, file) {
+  const first = collectContentLines(file.content, 0, CONTENT_INITIAL_LINE_LIMIT);
+  let html = '<div class="block-body content-lines">';
+  html += renderContentLineElements(fileType, file, first.lines, 1);
+  if (first.hasMore) {
+    html += '<div class="content-more">';
+    html += '<span>Showing first ' + first.lines.length + ' lines.</span>';
+    html += '<button class="content-more-btn" data-type="' + esc(fileType) + '" data-file-path="' + esc(file.relative_path) + '" data-next-start="' + first.nextStart + '" data-next-line="' + (first.lines.length + 1) + '">Render remaining lines</button>';
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function attachContentMoreListeners(scope) {
+  const root = scope || document;
+  root.querySelectorAll('.content-more-btn').forEach(btn => {
+    if (btn.dataset.listenerAttached === "true") return;
+    btn.dataset.listenerAttached = "true";
+    btn.addEventListener('click', event => {
+      event.preventDefault();
+      const fileType = btn.dataset.type;
+      const file = findFileByRelativePath(fileType, btn.dataset.filePath);
+      if (!file) return;
+      const start = parseInt(btn.dataset.nextStart, 10);
+      const startLine = parseInt(btn.dataset.nextLine, 10);
+      const remaining = collectContentLines(file.content, Number.isFinite(start) ? start : 0, 0);
+      const wrapper = btn.closest('.content-more');
+      wrapper.insertAdjacentHTML('beforebegin', renderContentLineElements(fileType, file, remaining.lines, Number.isFinite(startLine) ? startLine : 1));
+      wrapper.remove();
+      attachScreenshotRefListeners(root);
+    });
+  });
+}
+
+function attachScreenshotRefListeners(scope) {
+  const root = scope || document;
+  root.querySelectorAll('.screenshot-ref-link').forEach(link => {
+    if (link.dataset.listenerAttached === "true") return;
+    link.dataset.listenerAttached = "true";
+    link.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const fileType = link.dataset.type;
+      const eventFile = findFileByRelativePath(fileType, link.dataset.filePath);
+      openScreenshotDetailDrawer(fileType, eventFile, link.dataset.screenshotRef, link);
+    });
+  });
+}
+
+function openScreenshotDetailDrawer(fileType, eventFile, screenshotRef, trigger) {
+  detailDrawerTrigger = trigger || null;
+  const imageFile = eventFile ? findScreenshotFile(fileType, eventFile, screenshotRef) : null;
+  document.getElementById("detailTitle").textContent = screenshotRef || "Screenshot";
+
+  let chips = '<span class="chip">screenshot_ref</span>';
+  if (imageFile) {
+    chips += '<span class="chip">' + formatSize(imageFile.size) + '</span>';
+    chips += '<span class="chip">' + imageFile.modified + '</span>';
+    if (imageFile.mime_type) chips += '<span class="chip">' + esc(imageFile.mime_type) + '</span>';
+  } else {
+    chips += '<span class="chip">not found</span>';
+  }
+  document.getElementById("detailChips").innerHTML = chips;
+
+  let body = '';
+  body += '<div class="block"><div class="block-head"><strong>Screenshot Ref</strong></div><pre class="block-body">' + esc(screenshotRef) + '</pre></div>';
+  if (eventFile) {
+    body += '<div class="block"><div class="block-head"><strong>Events File</strong></div><pre class="block-body">' + esc(eventFile.relative_path) + '</pre></div>';
+  }
+
+  if (imageFile) {
+    body += '<div class="block"><div class="block-head"><strong>Image File Path</strong></div><pre class="block-body">' + esc(imageFile.path) + '</pre></div>';
+    body += renderImagePreviewBlock(fileType, imageFile);
+  } else {
+    body += '<div class="block"><div class="block-head"><strong>Image File</strong></div><div class="block-body">Referenced screenshot image was not found in this report.</div></div>';
+  }
+
+  const detailBody = document.getElementById("detailBody");
+  detailBody.innerHTML = body;
+  attachImageErrorHandlers(detailBody);
+  detailDrawer.removeAttribute("inert");
+  detailDrawer.removeAttribute("aria-hidden");
+  document.body.classList.add("detail-open");
+  detailCloseBtn.focus({ preventScroll: true });
 }
 
 function renderMemoryContent() {
@@ -209,6 +474,7 @@ function renderMemoryContent() {
       html += '<div><div class="file-name">' + esc(filename);
       if (file.is_hidden) html += '<span class="badge hidden">hidden</span>';
       if (file.type === 'text') html += '<span class="badge text">text</span>';
+      if (file.type === 'image') html += '<span class="badge image">image</span>';
       if (file.json) html += '<span class="badge json">json</span>';
       if (file.jsonl) html += '<span class="badge" style="background:color-mix(in oklch,oklch(58% 0.18 150) 8%,white);border-color:color-mix(in oklch,oklch(58% 0.18 150) 32%,var(--border));color:oklch(58% 0.18 150)">jsonl</span>';
       if (file.references && file.references.length > 0) {
@@ -283,6 +549,7 @@ function renderSkillsContent() {
       html += '<div><div class="file-name">' + esc(filename);
       if (file.is_hidden) html += '<span class="badge hidden">hidden</span>';
       if (file.type === 'text') html += '<span class="badge text">text</span>';
+      if (file.type === 'image') html += '<span class="badge image">image</span>';
       if (file.json) html += '<span class="badge json">json</span>';
       if (file.jsonl) html += '<span class="badge" style="background:color-mix(in oklch,oklch(58% 0.18 150) 8%,white);border-color:color-mix(in oklch,oklch(58% 0.18 150) 32%,var(--border));color:oklch(58% 0.18 150)">jsonl</span>';
       if (file.references && file.references.length > 0) {
@@ -357,6 +624,7 @@ function renderSkillStateContent() {
       html += '<div><div class="file-name">' + esc(filename);
       if (file.is_hidden) html += '<span class="badge hidden">hidden</span>';
       if (file.type === 'text') html += '<span class="badge text">text</span>';
+      if (file.type === 'image') html += '<span class="badge image">image</span>';
       if (file.json) html += '<span class="badge json">json</span>';
       if (file.jsonl) html += '<span class="badge" style="background:color-mix(in oklch,oklch(58% 0.18 150) 8%,white);border-color:color-mix(in oklch,oklch(58% 0.18 150) 32%,var(--border));color:oklch(58% 0.18 150)">jsonl</span>';
       if (file.references && file.references.length > 0) {
@@ -430,8 +698,8 @@ function attachFileListeners() {
 }
 
 function openDrawer(type, idx) {
-  const dataByType = { memory: MEMORY_DATA, skills: SKILLS_DATA, "skill-state": SKILL_STATE_DATA };
-  const data = dataByType[type] || MEMORY_DATA;
+  closeDetailDrawer({ restoreFocus: false });
+  const data = dataForType(type);
   const file = data.files[idx];
 
   document.getElementById("dTitle").textContent = file.relative_path;
@@ -440,10 +708,15 @@ function openDrawer(type, idx) {
   chips += '<span class="chip">' + file.modified + '</span>';
   if (file.is_hidden) chips += '<span class="chip">hidden</span>';
   if (file.type) chips += '<span class="chip">' + file.type + '</span>';
+  if (file.mime_type) chips += '<span class="chip">' + esc(file.mime_type) + '</span>';
   document.getElementById("dChips").innerHTML = chips;
 
   let body = '';
   body += '<div class="block"><div class="block-head"><strong>File Path</strong></div><pre class="block-body">' + esc(file.path) + '</pre></div>';
+
+  if (file.type === 'image') {
+    body += renderImagePreviewBlock(type, file);
+  }
 
   if (file.json) {
     body += '<div class="block"><div class="block-head"><strong>JSON Data</strong><span>parsed</span></div><pre class="block-body">' + esc(JSON.stringify(file.json, null, 2)) + '</pre></div>';
@@ -462,8 +735,8 @@ function openDrawer(type, idx) {
   }
 
   if (file.content) {
-    const lines = file.content.split('\n').length;
-    body += '<div class="block"><div class="block-head"><strong>Content</strong><span>' + lines + ' lines</span></div><pre class="block-body">' + esc(file.content) + '</pre></div>';
+    const contentMeta = file.jsonl_count ? file.jsonl_count + ' parsed lines' : formatSize(file.size);
+    body += '<div class="block"><div class="block-head"><strong>Content</strong><span>' + contentMeta + '</span></div>' + renderContentLines(type, file) + '</div>';
   } else if (file.type === 'binary') {
     body += '<div class="block"><div class="block-head"><strong>Binary File</strong></div><div class="block-body">Cannot display binary content</div></div>';
   }
@@ -492,6 +765,10 @@ function openDrawer(type, idx) {
 
   document.getElementById("dBody").innerHTML = body;
 
+  attachImageErrorHandlers(document.getElementById("dBody"));
+  attachContentMoreListeners(document.getElementById("dBody"));
+  attachScreenshotRefListeners(document.getElementById("dBody"));
+
   // Add event listeners for reference jump buttons
   document.querySelectorAll('.ref-jump-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -507,8 +784,7 @@ function openDrawer(type, idx) {
 function jumpToFile(targetPath) {
   // Try to find matching file in current tab
   const currentTab = document.querySelector('.tab.active').dataset.tab;
-  const dataByType = { memory: MEMORY_DATA, skills: SKILLS_DATA, "skill-state": SKILL_STATE_DATA };
-  const data = dataByType[currentTab] || MEMORY_DATA;
+  const data = dataForType(currentTab);
 
   // Handle wildcard paths like "episodes/*/ep_xxx/*"
   const pathPattern = targetPath.replace(/\*/g, '.*');
@@ -537,7 +813,21 @@ function jumpToFile(targetPath) {
   alert('Referenced file not found in current directory: ' + targetPath);
 }
 
-function closeDrawer() { document.body.classList.remove("open"); }
+function closeDetailDrawer(options) {
+  const restoreFocus = !options || options.restoreFocus !== false;
+  document.body.classList.remove("detail-open");
+  detailDrawer.setAttribute("inert", "");
+  detailDrawer.setAttribute("aria-hidden", "true");
+  if (restoreFocus && detailDrawerTrigger && detailDrawerTrigger.isConnected) {
+    detailDrawerTrigger.focus({ preventScroll: true });
+  }
+  detailDrawerTrigger = null;
+}
+
+function closeDrawer() {
+  closeDetailDrawer({ restoreFocus: false });
+  document.body.classList.remove("open");
+}
 
 // Tab switching
 document.querySelectorAll(".tab").forEach(tab => {
@@ -552,7 +842,15 @@ document.querySelectorAll(".tab").forEach(tab => {
 
 backdrop.addEventListener("click", closeDrawer);
 closeBtn.addEventListener("click", closeDrawer);
-window.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+detailCloseBtn.addEventListener("click", closeDetailDrawer);
+window.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (document.body.classList.contains("detail-open")) {
+    closeDetailDrawer();
+  } else {
+    closeDrawer();
+  }
+});
 
 // Initial render
 try {
