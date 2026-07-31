@@ -210,31 +210,13 @@ class ADBToolsAPIHandler:
                 },
             },
             {
-                "name": "enter_text_in_field",
-                "description": "Enter target text into an input field on the Android device: taps the focus point, types via adb input text, and reports committed:true only when Android UIAutomator confirms the editable field text matches. If verification is unavailable or mismatched, returns committed:false with a post-action screenshot.",
+                "name": "enter_text",
+                "description": "Enter target text into an input field on the Android device: taps the focus point, types via adb input text, verifies the editable field with Android UIAutomator, and returns a post-action screenshot.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "text": {"type": "string", "description": "Exact text that must appear in the field."},
-                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
-                        "mode": {"type": "string", "enum": ["form", "search"]},
-                        "focus": enter_text_focus_schema,
-                        "segments": {"type": "array", "items": {"type": "string"}},
-                        "max_attempts": {"type": "integer", "minimum": 1},
-                    },
-                    "required": ["text", "focus"],
-                },
-            },
-            {
-                "name": "enter_text_via_bridge",
-                "description": "ADB-compatible alias for text entry. Types via adb input text instead of the physical phone bridge or HID clipboard path.",
-                "args_schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "text": {"type": "string", "description": "Exact text that must appear in the field."},
-                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
                         "focus": enter_text_focus_schema,
                     },
                     "required": ["text", "focus"],
@@ -334,7 +316,7 @@ class ADBToolsAPIHandler:
                 tool_input = {}
             else:
                 parsed_input = json.loads(raw_input)
-                if tool_name in ("keyboard_text", "enter_text_in_field", "enter_text_via_bridge") and isinstance(parsed_input, str):
+                if tool_name == "keyboard_text" and isinstance(parsed_input, str):
                     tool_input = {"text": parsed_input}
                 elif isinstance(parsed_input, dict):
                     tool_input = parsed_input
@@ -346,7 +328,7 @@ class ADBToolsAPIHandler:
                     )
                     return
         except json.JSONDecodeError:
-            if tool_name in ("keyboard_text", "enter_text_in_field", "enter_text_via_bridge"):
+            if tool_name == "keyboard_text":
                 tool_input = {"text": raw_input.strip()}
             else:
                 self._send_json(
@@ -437,10 +419,8 @@ class ADBToolsAPIHandler:
             return self._call_keyboard_text(tool_input)
         elif tool_name == "keyboard_tap":
             return self._call_keyboard_tap(tool_input)
-        elif tool_name == "enter_text_in_field":
-            return self._call_enter_text(tool_input, tool_name="enter_text_in_field")
-        elif tool_name == "enter_text_via_bridge":
-            return self._call_enter_text(tool_input, tool_name="enter_text_via_bridge")
+        elif tool_name == "enter_text":
+            return self._call_enter_text(tool_input)
         elif tool_name == "mouse_click":
             return self._call_mouse_click(tool_input)
         elif tool_name == "mouse_move":
@@ -714,63 +694,54 @@ class ADBToolsAPIHandler:
 
         return {"output": f"error: unsupported quick_action: {tool_input.get('action')!r}", "is_error": True}
 
-    def _call_enter_text(self, tool_input: dict[str, Any], *, tool_name: str) -> dict[str, Any]:
-        """Execute Go-agent text-entry tools through adb input text."""
+    def _call_enter_text(self, tool_input: dict[str, Any]) -> dict[str, Any]:
+        """Execute enter_text through adb input text."""
+        unknown = sorted(set(tool_input) - {"text", "focus"})
+        if unknown:
+            output = {"ok": False, "suggestion": f"Remove unsupported enter_text arguments: {unknown!r}."}
+            return {"output": json.dumps(output), "is_error": False}
         text = tool_input.get("text", "")
         if not isinstance(text, str):
             return {"output": "error: text must be a string", "is_error": True}
         if text == "":
-            output = {
-                "ok": False,
-                "committed": False,
-                "target_text": "",
-                "required_mode": "ascii",
-                "attempts": 1,
-                "ime_switches": 0,
-                "vlm_calls": 0,
-                "reason": "text is required",
-            }
+            output = {"ok": False, "suggestion": "Provide non-empty text, then retry enter_text."}
             return {"output": json.dumps(output), "is_error": False}
         unsupported = unsupported_adb_text_chars(text)
         if unsupported:
             output = {
                 "ok": False,
-                "committed": False,
-                "target_text": text,
-                "required_mode": _required_text_input_mode(text),
-                "attempts": 1,
-                "ime_switches": 0,
-                "vlm_calls": 0,
-                "reason": f"adb input text supports only US-keyboard ASCII characters; unsupported: {unsupported!r}",
+                "suggestion": f"adb input text supports only US-keyboard ASCII characters; unsupported: {unsupported!r}",
             }
             return {"output": json.dumps(output, ensure_ascii=False), "is_error": False}
 
         device = self.state.device
-        steps: list[str] = []
         focus = tool_input.get("focus")
         focus_pixels: tuple[int, int] | None = None
-        if focus is not None:
-            if not isinstance(focus, dict):
-                return {"output": "error: focus must be an object", "is_error": True}
-            point_input: dict[str, Any] = {"focus": focus}
-            if "coord_space" in focus and "coord_space" not in tool_input:
-                point_input["coord_space"] = focus["coord_space"]
-            try:
-                width, height = device.screen_size()
-                point = _normalized_point_arg(
-                    point_input, field="focus", default_space="normalized", screen_size=(width, height)
-                )
-            except (TypeError, ValueError) as exc:
-                return {"output": f"error: {exc}", "is_error": True}
-            focus_pixels = _to_pixels(point, width, height)
+        if not isinstance(focus, dict):
+            output = {"ok": False, "suggestion": "Provide focus as an object with x and y coordinates, then retry enter_text."}
+            return {"output": json.dumps(output), "is_error": False}
+        unknown_focus = sorted(set(focus) - {"x", "y", "coord_space"})
+        if unknown_focus:
+            output = {"ok": False, "suggestion": f"Remove unsupported focus arguments: {unknown_focus!r}."}
+            return {"output": json.dumps(output), "is_error": False}
+        point_input: dict[str, Any] = {"focus": focus}
+        if "coord_space" in focus:
+            point_input["coord_space"] = focus["coord_space"]
+        try:
+            width, height = device.screen_size()
+            point = _normalized_point_arg(
+                point_input, field="focus", default_space="normalized", screen_size=(width, height)
+            )
+        except (TypeError, ValueError) as exc:
+            output = {"ok": False, "suggestion": f"Correct the focus coordinates: {exc}"}
+            return {"output": json.dumps(output), "is_error": False}
+        focus_pixels = _to_pixels(point, width, height)
 
         def enter_text() -> None:
             if focus_pixels is not None:
                 device.tap(*focus_pixels)
-                steps.append(f"tap focus {focus_pixels[0]} {focus_pixels[1]}")
                 time.sleep(FOCUS_SETTLE_SEC)
             device.input_text(text)
-            steps.append("adb input text")
 
         with self.state.lock:
             started = time.monotonic()
@@ -789,30 +760,20 @@ class ADBToolsAPIHandler:
                 xml_error = str(exc)
             jpeg, width, height = device.screenshot_jpeg()
 
-        mode = _text_input_mode(tool_input.get("mode"))
-        committed, field_text, wrong_ime, verify_reason, verify_steps = _verify_adb_text_entry(
+        committed, _, wrong_ime, verify_reason, _ = _verify_adb_text_entry(
             xml_text,
             text,
             xml_error=xml_error,
         )
-        steps.extend(verify_steps)
-        text_output = {
-            "ok": committed,
-            "committed": committed,
-            "target_text": text,
-            "field_text": field_text,
-            "required_mode": _required_text_input_mode(text),
-            "mode": mode,
-            "attempts": 1,
-            "ime_switches": 0,
-            "vlm_calls": 0,
-            "wrong_ime_suspected": wrong_ime,
-            "reason": verify_reason,
-            "steps": steps,
-        }
+        text_output: dict[str, Any] = {"ok": committed}
+        if not committed:
+            suggestion = verify_reason
+            if wrong_ime and "English/Latin keyboard" not in suggestion:
+                suggestion += "; switch to the English/Latin keyboard before retrying"
+            text_output["suggestion"] = suggestion
         screenshot = encode_screenshot(jpeg, "image/jpeg", width, height)
         self.state.log_action(
-            tool_name=tool_name,
+            tool_name="enter_text",
             tool_input=tool_input,
             adb_summary="input text",
             duration_ms=duration_ms,
@@ -1174,19 +1135,6 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
-def _required_text_input_mode(text: str) -> str:
-    if any(ord(ch) > 127 for ch in text):
-        return "composition"
-    return "ascii"
-
-
-def _text_input_mode(value: Any) -> str:
-    mode = str(value or "").strip().lower()
-    if mode == "search":
-        return "search"
-    return "form"
-
-
 def _verify_adb_text_entry(
     xml_text: str,
     target_text: str,
@@ -1302,7 +1250,7 @@ def _unique_texts(values: list[str]) -> list[str]:
 def _field_text_matches(field_text: str, target_text: str) -> bool:
     field_text = field_text.strip()
     target_text = target_text.strip()
-    return field_text == target_text or field_text.lower() == target_text.lower()
+    return field_text.lower().endswith(target_text.lower())
 
 
 def _best_observed_field_text(editable_texts: list[str], target_text: str) -> str:
@@ -1316,7 +1264,7 @@ def _best_observed_field_text(editable_texts: list[str], target_text: str) -> st
 
 
 def _looks_like_wrong_ascii_ime(target_text: str, field_text: str, visible_texts: list[str]) -> bool:
-    if _required_text_input_mode(target_text) != "ascii":
+    if any(ord(ch) > 127 for ch in target_text):
         return False
     if _field_text_matches(field_text, target_text):
         return False

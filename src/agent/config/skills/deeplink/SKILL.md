@@ -3,7 +3,7 @@ name: deeplink
 description: Phone app launch guidance. Use semantic bridge_open_app requests; do not pass platform launch targets from the board.
 metadata:
   preferred_model: primary
-  allowed_tools: [bridge_open_app, screenshot, touch_gesture, mouse_click, keyboard_tap, enter_text_in_field]
+  allowed_tools: [bridge_open_app, screenshot, touch_gesture, mouse_click, keyboard_tap, enter_text]
 ---
 
 The board-side `bridge_open_app` tool is semantic. Do not pass iOS URL schemes,

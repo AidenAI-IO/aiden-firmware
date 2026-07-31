@@ -1622,6 +1622,39 @@ TEST_CASE("config_web: tts config test invokes playback of test passed") {
     CHECK(log.find("--section=tts") != std::string::npos);
 }
 
+TEST_CASE("config_web: fish audio TTS test accepts empty reference id and agent logs") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string log_path = tmp + "/config-test.log";
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", log_path);
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_STDERR", "[tts] fish-audio: connected");
+    auto handle = start_server(env);
+
+    const std::string test_body =
+        "{\"section\":\"tts\",\"values\":{"
+        "\"provider\":\"fish-audio\","
+        "\"api_key\":\"tts-test-key\","
+        "\"model\":\"s2-pro\","
+        "\"reference_id\":\"\","
+        "\"speed\":1"
+        "}}";
+
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(test_resp.status == 200);
+    CHECK(test_resp.body.find("\"ok\":true") != std::string::npos);
+    CHECK(test_resp.body.find("\"check\":\"endpoint_reachable\"") != std::string::npos);
+    CHECK(test_resp.body.find("verified by the TTS playback test") != std::string::npos);
+    REQUIRE(wait_for_file_contains(log_path, "\"reference_id\":\"\"", 1000));
+    const std::string log = read_file(log_path);
+    CHECK(log.find("\"provider\":\"fish-audio\"") != std::string::npos);
+    CHECK(log.find("\"model\":\"s2-pro\"") != std::string::npos);
+    CHECK(log.find("\"reference_id\":\"\"") != std::string::npos);
+}
+
 TEST_CASE("config_web: tencent stt config test stays green without app_id") {
     StubEnv env;
     auto handle = start_server(env);

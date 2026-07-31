@@ -37,4 +37,3 @@ def encode_screenshot(
         result["source_width"] = int(source_width)
         result["source_height"] = int(source_height)
     return result
-

@@ -207,18 +207,16 @@ def test_keyboard_text_rejects_non_ascii(bridge):
     assert "US-keyboard ASCII" in body["output"]
 
 
-def test_enter_text_in_field_taps_focus_then_types(bridge):
+def test_enter_text_taps_focus_then_types(bridge):
     _, device, base_url = bridge
     status, body = _invoke(
         base_url,
-        "enter_text_in_field",
+        "enter_text",
         {"text": "hello android", "focus": {"x": 500, "y": 100}},
     )
     assert status == 200
     output, screenshot = _text_entry_output(body)
-    assert output["ok"] is True and output["committed"] is True
-    assert output["target_text"] == "hello android"
-    assert output["required_mode"] == "ascii"
+    assert output == {"ok": True}
     assert screenshot["width"] == 720
     tap_index = device.calls.index(("tap", 540, 192))
     text_index = device.calls.index(("input_text", "hello android"))
@@ -227,36 +225,75 @@ def test_enter_text_in_field_taps_focus_then_types(bridge):
     assert text_index < verify_index
 
 
-def test_enter_text_in_field_does_not_claim_commit_on_mismatch(bridge):
+def test_enter_text_does_not_claim_success_on_mismatch(bridge):
     _, device, base_url = bridge
     device.window_text_override = "hello一"
     status, body = _invoke(
         base_url,
-        "enter_text_in_field",
+        "enter_text",
         {"text": "hello-aiden", "focus": {"x": 500, "y": 100}},
     )
     assert status == 200
     output, screenshot = _text_entry_output(body)
     assert output["ok"] is False
-    assert output["committed"] is False
-    assert output["field_text"] == "hello一"
-    assert output["wrong_ime_suspected"] is True
-    assert "English/Latin keyboard" in output["reason"]
+    assert set(output) == {"ok", "suggestion"}
+    assert "English/Latin keyboard" in output["suggestion"]
     assert screenshot["format"] == "jpeg"
+
+
+def test_enter_text_verifies_only_the_new_text_suffix(bridge):
+    _, device, base_url = bridge
+    device.window_text_override = "existing: hello android"
+    status, body = _invoke(
+        base_url,
+        "enter_text",
+        {"text": "hello android", "focus": {"x": 500, "y": 100}},
+    )
+    assert status == 200
+    output, _ = _text_entry_output(body)
+    assert output == {"ok": True}
+
+
+def test_enter_text_rejects_non_suffix_match(bridge):
+    _, device, base_url = bridge
+    device.window_text_override = "hello android trailing"
+    status, body = _invoke(
+        base_url,
+        "enter_text",
+        {"text": "hello android", "focus": {"x": 500, "y": 100}},
+    )
+    assert status == 200
+    output, _ = _text_entry_output(body)
+    assert output["ok"] is False
+
+
+def test_enter_text_rejects_removed_or_missing_arguments(bridge):
+    _, device, base_url = bridge
+    for tool_input in (
+        {"text": "hello"},
+        {"text": "hello", "focus": {"x": 500, "y": 100}, "segments": ["hello"]},
+        {"text": "hello", "focus": {"x": 500, "y": 100, "extra": True}},
+    ):
+        status, body = _invoke(base_url, "enter_text", tool_input)
+        assert status == 200
+        output = json.loads(body["output"])
+        assert output["ok"] is False
+        assert "suggestion" in output
+    assert all(call[0] != "input_text" for call in device.calls)
 
 
 def test_enter_text_reports_unsupported_text_without_typing(bridge):
     _, device, base_url = bridge
     status, body = _invoke(
         base_url,
-        "enter_text_via_bridge",
+        "enter_text",
         {"text": "你好", "focus": {"x": 500, "y": 100}},
     )
     assert status == 200
     assert body["is_error"] is False
     output = json.loads(body["output"])
-    assert output["ok"] is False and output["committed"] is False
-    assert output["required_mode"] == "composition"
+    assert output["ok"] is False
+    assert "US-keyboard ASCII" in output["suggestion"]
     assert all(call[0] != "input_text" for call in device.calls)
 
 

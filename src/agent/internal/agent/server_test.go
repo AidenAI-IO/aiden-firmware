@@ -29,6 +29,7 @@ import (
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/screen"
+	speechtext "aiden-agent/internal/agent/speech"
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
@@ -739,7 +740,7 @@ func TestStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
 
 	fanout := newStreamFanoutWriter(
 		&webDelta,
-		NewSpeechStreamWriter(&speech),
+		speechtext.NewStreamWriter(&speech),
 	)
 	tracker, ok := fanout.(streamOutputTracker)
 	if !ok {
@@ -2001,7 +2002,7 @@ func TestServerHandleChatCancelStopsRequestScopedStreamingTTSPlayback(t *testing
 
 	writeDone := make(chan error, 1)
 	go func() {
-		_, writeErr := speechStreamWriterForConfig(stream, Config{}).Write([]byte("<tts>streaming final answer</tts>"))
+		_, writeErr := speechtext.NewStreamWriter(stream).Write([]byte("<tts>streaming final answer</tts>"))
 		writeDone <- writeErr
 	}()
 
@@ -3523,11 +3524,9 @@ func TestServerToolInvokeContinuesAfterClientDisconnect(t *testing.T) {
 func TestHTTPToolExecutionSurvivesClientDisconnectForHIDTools(t *testing.T) {
 	for _, toolName := range []string{
 		"keyboard_tap",
-		"keyboard_text",
 		"quick_action",
 		"search_launch_app",
-		"enter_text_in_field",
-		"enter_text_via_bridge",
+		"enter_text",
 		"mouse_click",
 		"mouse_move",
 		"mouse_scroll",

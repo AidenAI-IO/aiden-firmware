@@ -84,8 +84,7 @@ def test_get_tools_catalog(bridge_server):
     assert "touch_gesture" in tools
     assert "keyboard_text" in tools
     assert "keyboard_tap" in tools
-    assert "enter_text_in_field" in tools
-    assert "enter_text_via_bridge" in tools
+    assert "enter_text" in tools
     assert "mouse_click" in tools
     assert "mouse_move" in tools
     assert "mouse_scroll" in tools
@@ -114,13 +113,13 @@ def test_get_tools_catalog(bridge_server):
     assert tools["keyboard_tap"]["args_schema"]["additionalProperties"] is False
     assert "hold_ms" in keyboard_tap_props
 
-    enter_text_props = tools["enter_text_in_field"]["args_schema"]["properties"]
-    assert tools["enter_text_in_field"]["args_schema"]["additionalProperties"] is False
+    enter_text_props = tools["enter_text"]["args_schema"]["properties"]
+    assert tools["enter_text"]["args_schema"]["additionalProperties"] is False
     assert "focus" in enter_text_props
-    assert "segments" in enter_text_props
-    assert tools["enter_text_via_bridge"]["args_schema"]["additionalProperties"] is False
-    assert enter_text_props["platform"]["enum"] == ["ios", "android", "mac"]
-    assert enter_text_props["mode"]["enum"] == ["form", "search"]
+    assert "send_after_commit" not in enter_text_props
+    assert "segments" not in enter_text_props
+    assert "max_attempts" not in enter_text_props
+    assert "platform" not in enter_text_props
     assert enter_text_props["focus"]["additionalProperties"] is False
     assert enter_text_props["focus"]["properties"]["coord_space"]["enum"] == ["auto", "normalized", "absolute"]
 
@@ -301,7 +300,7 @@ def test_invoke_keyboard_text(bridge_server):
     }
 
 
-def test_invoke_enter_text_in_field_maps_to_mobilegym_type_action(bridge_server):
+def test_invoke_enter_text_maps_to_mobilegym_type_action(bridge_server):
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-enter-text"
 
@@ -309,15 +308,12 @@ def test_invoke_enter_text_in_field_maps_to_mobilegym_type_action(bridge_server)
         {
             "input": {
                 "text": "微信读书",
-                "platform": "android",
-                "mode": "search",
                 "focus": {"x": 500, "y": 120, "coord_space": "normalized"},
-                "segments": ["wei", "xin", "du", "shu"],
             }
         }
     ).encode()
     req = Request(
-        f"{base_url}/api/tools/enter_text_in_field",
+        f"{base_url}/api/tools/enter_text",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -330,17 +326,13 @@ def test_invoke_enter_text_in_field_maps_to_mobilegym_type_action(bridge_server)
     assert data["is_error"] is False
     output = json.loads(data["output"])
     assert output["ok"] is True
-    assert output["committed"] is True
-    assert output["target_text"] == "微信读书"
-    assert output["required_mode"] == "composition"
-    assert output["mode"] == "search"
     assert action_to_dict(state.env.last_action) == {
         "action_type": "TYPE",
         "data": {"value": "微信读书", "point": [500.0, 120.0]},
     }
 
 
-def test_invoke_enter_text_via_bridge_aliases_mobilegym_text_entry(bridge_server):
+def test_invoke_enter_text_supports_ascii(bridge_server):
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-enter-text-bridge"
 
@@ -348,13 +340,12 @@ def test_invoke_enter_text_via_bridge_aliases_mobilegym_text_entry(bridge_server
         {
             "input": {
                 "text": "Trip report",
-                "platform": "android",
                 "focus": {"x": 250, "y": 800, "coord_space": "normalized"},
             }
         }
     ).encode()
     req = Request(
-        f"{base_url}/api/tools/enter_text_via_bridge",
+        f"{base_url}/api/tools/enter_text",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -367,9 +358,6 @@ def test_invoke_enter_text_via_bridge_aliases_mobilegym_text_entry(bridge_server
     assert data["is_error"] is False
     output = json.loads(data["output"])
     assert output["ok"] is True
-    assert output["committed"] is True
-    assert output["target_text"] == "Trip report"
-    assert output["required_mode"] == "ascii"
     assert action_to_dict(state.env.last_action) == {
         "action_type": "TYPE",
         "data": {"value": "Trip report", "point": [250.0, 800.0]},
@@ -381,7 +369,7 @@ def test_invoke_enter_text_preserves_exact_whitespace(bridge_server):
     state.active_episode_id = "test-episode-enter-text-whitespace"
 
     req = Request(
-        f"{base_url}/api/tools/enter_text_in_field",
+        f"{base_url}/api/tools/enter_text",
         data=json.dumps({"input": {"text": "  padded  ", "focus": {"x": 500, "y": 120}}}).encode(),
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -393,7 +381,7 @@ def test_invoke_enter_text_preserves_exact_whitespace(bridge_server):
 
     assert data["is_error"] is False
     output = json.loads(data["output"])
-    assert output["target_text"] == "  padded  "
+    assert output == {"ok": True}
     assert action_to_dict(state.env.last_action) == {
         "action_type": "TYPE",
         "data": {"value": "  padded  ", "point": [500.0, 120.0]},
@@ -516,7 +504,7 @@ def test_invoke_keyboard_text_accepts_plain_text_fallback(bridge_server):
     }
 
 
-def test_invoke_enter_text_in_field_focuses_and_types_unicode(bridge_server):
+def test_invoke_enter_text_focuses_and_types_unicode(bridge_server):
     _server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-enter-text"
 
@@ -524,14 +512,12 @@ def test_invoke_enter_text_in_field_focuses_and_types_unicode(bridge_server):
         {
             "input": {
                 "text": "隐私",
-                "platform": "android",
                 "focus": {"coord_space": "normalized", "x": 500, "y": 80},
-                "segments": ["yin", "si"],
             }
         }
     ).encode()
     req = Request(
-        f"{base_url}/api/tools/enter_text_in_field",
+        f"{base_url}/api/tools/enter_text",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -543,14 +529,35 @@ def test_invoke_enter_text_in_field_focuses_and_types_unicode(bridge_server):
 
     assert data["is_error"] is False
     output = json.loads(data["output"])
-    assert output["ok"] is True
-    assert output["committed"] is True
-    assert output["field_text"] == "隐私"
-    assert output["required_mode"] == "composition"
+    assert output == {"ok": True}
     assert action_to_dict(state.env.last_action) == {
         "action_type": "TYPE",
         "data": {"value": "隐私", "point": [500.0, 80.0]},
     }
+
+
+def test_invoke_enter_text_rejects_removed_or_missing_arguments(bridge_server):
+    _server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-enter-text-invalid"
+
+    for tool_input in (
+        {"text": "hello"},
+        {"text": "hello", "focus": {"x": 500, "y": 80}, "platform": "ios"},
+        {"text": "hello", "focus": {"x": 500, "y": 80, "extra": True}},
+    ):
+        request_body = json.dumps({"input": tool_input}).encode()
+        req = Request(
+            f"{base_url}/api/tools/enter_text",
+            data=request_body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+        assert data["is_error"] is False
+        output = json.loads(data["output"])
+        assert output["ok"] is False
+        assert "suggestion" in output
 
 
 def test_invoke_rejects_non_object_json_body(bridge_server):

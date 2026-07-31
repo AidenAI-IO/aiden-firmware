@@ -3,6 +3,8 @@ package agent
 import (
 	"bytes"
 	"testing"
+
+	speechtext "aiden-agent/internal/agent/speech"
 )
 
 // bufferResetRecorder is a fake terminal writer that records whether
@@ -18,7 +20,7 @@ func (r *bufferResetRecorder) ResetBuffer()                { r.resetCalls++ }
 // reset propagates through the TTS-tag wrapper down to the underlying TTS sink.
 func TestResetStreamBufferReachesTerminalThroughTTSWriter(t *testing.T) {
 	terminal := &bufferResetRecorder{}
-	chain := NewTTSTagStreamWriter(terminal)
+	chain := speechtext.NewStreamWriter(terminal)
 
 	resetStreamBuffer(chain)
 
@@ -42,7 +44,7 @@ func TestResetStreamBufferNoopWithoutSupport(t *testing.T) {
 // speech would leak across turns on the streaming chat path.
 func TestResetStreamBufferReachesTerminalThroughFanout(t *testing.T) {
 	terminal := &bufferResetRecorder{}
-	ttsLeg := NewTTSTagStreamWriter(terminal)
+	ttsLeg := speechtext.NewStreamWriter(terminal)
 	// The SSE leg has no buffer to reset and must be skipped cleanly.
 	sseLeg := &bytes.Buffer{}
 	fanout := newStreamFanoutWriter(sseLeg, ttsLeg)

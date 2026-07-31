@@ -4,7 +4,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_IMAGE_SH="$ROOT_DIR/build_image.sh"
 INNER_BUILD_IMAGE_SH="$ROOT_DIR/_build_image.sh"
-PICO_SDK="$ROOT_DIR/pico-sdk"
+# Only sysdrv/Makefile and the two Buildroot defconfigs are read below, so PR
+# CI can point this at a sparse checkout of the pinned submodule commit instead
+# of cloning the ~1GB pico-sdk working tree.
+PICO_SDK="${PICO_SDK_DIR:-$ROOT_DIR/pico-sdk}"
+
+if [ ! -f "$PICO_SDK/sysdrv/Makefile" ]; then
+  echo "missing pico-sdk sysdrv/Makefile under $PICO_SDK; set PICO_SDK_DIR or check out the pico-sdk submodule" >&2
+  exit 1
+fi
 
 for script in "$BUILD_IMAGE_SH" "$INNER_BUILD_IMAGE_SH"; do
   if ! grep -q 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH' "$script"; then
@@ -82,6 +90,76 @@ if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -Fq '$(call buildroo
   echo "pico-sdk Buildroot state refresh must use the shared Buildroot state value" >&2
   exit 1
 fi
+
+# The stamp records which configuration produced the tree in output/, so it must
+# be written by the same define that decides whether to clean -- before packages
+# are built, not after a successful build. Writing it only on success leaves a
+# half-built tree labelled with the previous configuration's hash, so the next
+# build using that configuration sees a match, skips the clean and reuses
+# packages configured for a different one. A branch enabling opkg (which selects
+# BR2_PACKAGE_LIBARCHIVE) left mpv configured with --enable-libarchive in a tree
+# main reused, breaking every main build until the stamp was invalidated.
+if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -Fq '> "$$stamp"'; then
+  echo "pico-sdk Buildroot state refresh must record the configuration that generated output/ in the same step that decides whether to clean, so an interrupted build cannot leave a stale stamp that suppresses the next clean" >&2
+  exit 1
+fi
+
+# Assert the property, not one spelling of it: the stamp must be written where
+# the clean decision is made and nowhere else. Naming a new define, or inlining
+# the write straight into the buildroot recipe, reintroduces the same bug, so
+# check the recipe body rather than only the old define name.
+# Match the target on its name alone. Anchoring on the full "buildroot: prepare"
+# line made an unrelated edit -- adding a prerequisite -- collapse the range to
+# empty and fail this check for a reason that has nothing to do with the stamp.
+buildroot_target="$(sed -n '/^buildroot:[[:space:]]/,/^buildroot_clean:/p' "$PICO_SDK/sysdrv/Makefile")"
+if [ -z "$buildroot_target" ]; then
+  echo "could not locate the buildroot target in pico-sdk sysdrv/Makefile" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$buildroot_target" | grep -Fq '"$$stamp"'; then
+  echo "pico-sdk buildroot target must not write the Buildroot state stamp in its own recipe; the stamp belongs in refresh_buildroot_config_state, beside the clean decision it feeds" >&2
+  exit 1
+fi
+
+# Find every write to the stamp path, wherever it lives and whatever it is
+# called. Scanning only defines whose name contains "stamp" missed a rename to
+# a name like persist_br_state, and matching only the '$$stamp' variable missed
+# a write that spells the path out in full. Both are the same bug, so key off
+# the stamp filename -- the one thing any such write has to mention -- and
+# require every mention to sit inside refresh_buildroot_config_state.
+stamp_basename='.aiden_buildroot_config_state'
+# One awk pass rather than grep|grep|cut: a grep that filters everything out
+# exits 1, and under `set -o pipefail` that aborts the script before the
+# explicit diagnostics below can run. Comment lines are skipped -- prose naming
+# the stamp is not a write.
+stamp_mentions="$(awk -v needle="$stamp_basename" '
+  { line = $0; sub(/^[[:space:]]+/, "", line) }
+  line ~ /^#/ { next }
+  index($0, needle) { print NR }
+' "$PICO_SDK/sysdrv/Makefile")"
+if [ -z "$stamp_mentions" ]; then
+  echo "pico-sdk sysdrv Makefile never mentions $stamp_basename; the Buildroot state stamp must exist to gate the cross-config clean" >&2
+  exit 1
+fi
+
+refresh_start="$(awk '/^define refresh_buildroot_config_state$/ { print NR; exit }' "$PICO_SDK/sysdrv/Makefile")"
+if [ -z "$refresh_start" ]; then
+  echo "could not locate 'define refresh_buildroot_config_state' in pico-sdk sysdrv/Makefile" >&2
+  exit 1
+fi
+refresh_end="$(awk -v start="$refresh_start" 'NR > start && /^endef$/ { print NR; exit }' "$PICO_SDK/sysdrv/Makefile")"
+if [ -z "$refresh_end" ]; then
+  echo "'define refresh_buildroot_config_state' in pico-sdk sysdrv/Makefile is not terminated by endef" >&2
+  exit 1
+fi
+
+for line in $stamp_mentions; do
+  if [ "$line" -lt "$refresh_start" ] || [ "$line" -gt "$refresh_end" ]; then
+    echo "pico-sdk sysdrv Makefile touches $stamp_basename at line $line, outside refresh_buildroot_config_state (lines $refresh_start-$refresh_end); the stamp must be written only beside the clean decision it feeds, since splitting the two is what let them drift apart" >&2
+    exit 1
+  fi
+done
 
 buildroot_config_state_policy="$buildroot_config_state_value
 $refresh_buildroot_config_state"

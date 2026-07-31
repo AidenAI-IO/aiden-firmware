@@ -1,4 +1,4 @@
-package agent
+package speech
 
 import (
 	"strings"
@@ -59,10 +59,25 @@ func TestBuildSpeechTextExtractsTTSTag(t *testing.T) {
 		"</tts>",
 	}, "\n")
 
-	speech := BuildSpeechText(output, Config{})
+	speech := BuildText(output)
 
 	if speech != "已完成设置，请查收。" {
 		t.Fatalf("speech = %q", speech)
+	}
+}
+
+func TestBuildSpeechTextExtractsBracketAndMixedTTSTags(t *testing.T) {
+	for _, tc := range []struct {
+		output string
+		want   string
+	}{
+		{output: "[tts]方括号标签。[/tts]", want: "方括号标签。"},
+		{output: "[tts]混用结束标签。</tts>", want: "混用结束标签。"},
+		{output: "<tts>混用结束标签。[/tts]", want: "混用结束标签。"},
+	} {
+		if got := BuildText(tc.output); got != tc.want {
+			t.Fatalf("BuildSpeechText(%q) = %q, want %q", tc.output, got, tc.want)
+		}
 	}
 }
 
@@ -76,7 +91,7 @@ func TestBuildSpeechTextNormalizesMarkdownInsideTTSTag(t *testing.T) {
 		"</tts>",
 	}, "\n")
 
-	speech := BuildSpeechText(output, Config{})
+	speech := BuildText(output)
 	want := strings.Join([]string{
 		"重点：已完成 audio_service 检查。",
 		"当前音量是 42。",
@@ -91,7 +106,7 @@ func TestBuildSpeechTextNormalizesMarkdownInsideTTSTag(t *testing.T) {
 func TestBuildSpeechTextReturnsEmptyWithoutTTSTag(t *testing.T) {
 	output := "<think>\n需要查当前时间。\n</think>"
 
-	speech := BuildSpeechText(output, Config{})
+	speech := BuildText(output)
 
 	if speech != "" {
 		t.Fatalf("speech = %q, want empty without tts tag", speech)
@@ -105,7 +120,7 @@ func TestBuildSpeechTextJoinsMultipleTTSTags(t *testing.T) {
 		"<tts>第二句。</tts>",
 	}, "\n")
 
-	speech := BuildSpeechText(output, Config{})
+	speech := BuildText(output)
 	want := strings.Join([]string{
 		"第一句。",
 		"第二句。",
@@ -119,7 +134,7 @@ func TestBuildSpeechTextJoinsMultipleTTSTags(t *testing.T) {
 func TestBuildSpeechTextTreatsResponseEndAsUnclosedTTSTagFallback(t *testing.T) {
 	output := "<tts>已经完成。"
 
-	if got := BuildSpeechText(output, Config{}); got != "已经完成。" {
+	if got := BuildText(output); got != "已经完成。" {
 		t.Fatalf("BuildSpeechText() = %q, want unclosed TTS content", got)
 	}
 }
@@ -127,7 +142,7 @@ func TestBuildSpeechTextTreatsResponseEndAsUnclosedTTSTagFallback(t *testing.T) 
 func TestBuildSpeechTextDropsPartialClosingTagAtResponseEnd(t *testing.T) {
 	output := "<tts>已经完成。</tt"
 
-	if got := BuildSpeechText(output, Config{}); got != "已经完成。" {
+	if got := BuildText(output); got != "已经完成。" {
 		t.Fatalf("BuildSpeechText() = %q, want partial closing tag removed", got)
 	}
 }
@@ -135,30 +150,16 @@ func TestBuildSpeechTextDropsPartialClosingTagAtResponseEnd(t *testing.T) {
 func TestBuildSpeechTextMatchesTTSTagsWithByteStableOffsets(t *testing.T) {
 	output := "可见正文 İ K <TTS>K value</TTS> 尾部正文"
 
-	speech := BuildSpeechText(output, Config{})
+	speech := BuildText(output)
 
 	if speech != "K value" {
 		t.Fatalf("speech = %q, want byte-stable TTS extraction", speech)
 	}
 }
 
-func TestRunResultSpokenTextReturnsTTSTag(t *testing.T) {
-	result := RunResult{Output: "完整回答。\n<tts>播报摘要。</tts>"}
-	if got := result.SpokenText(); got != "播报摘要。" {
-		t.Fatalf("SpokenText() = %q", got)
-	}
-}
-
-func TestRunResultSpokenTextForConfigReturnsTTSTag(t *testing.T) {
-	result := RunResult{Output: "完整回答应该显示。\n<tts>播报摘要。</tts>"}
-	if got := result.SpokenTextForConfig(Config{}); got != "播报摘要。" {
-		t.Fatalf("SpokenTextForConfig() = %q", got)
-	}
-}
-
 func TestSpeechStreamWriterExtractsPartialTTSTag(t *testing.T) {
 	var sink strings.Builder
-	writer := NewSpeechStreamWriter(&sink)
+	writer := NewStreamWriter(&sink)
 
 	chunks := []string{
 		"\n<t",
@@ -176,9 +177,29 @@ func TestSpeechStreamWriterExtractsPartialTTSTag(t *testing.T) {
 	}
 }
 
+func TestSpeechStreamWriterExtractsBracketAndMixedTTSTags(t *testing.T) {
+	for _, tc := range []struct {
+		payload string
+		want    string
+	}{
+		{payload: "[tts]方括号标签。[/tts]", want: "方括号标签。"},
+		{payload: "[tts]混用结束标签。</tts>", want: "混用结束标签。"},
+		{payload: "<tts>混用结束标签。[/tts]", want: "混用结束标签。"},
+	} {
+		var sink strings.Builder
+		writer := NewStreamWriter(&sink)
+		if _, err := writer.Write([]byte(tc.payload)); err != nil {
+			t.Fatalf("Write(%q) error = %v", tc.payload, err)
+		}
+		if got := sink.String(); got != tc.want {
+			t.Fatalf("streamed speech = %q, want %q", got, tc.want)
+		}
+	}
+}
+
 func TestSpeechStreamWriterIgnoresTextOutsideTTSTag(t *testing.T) {
 	var sink strings.Builder
-	writer := NewSpeechStreamWriter(&sink)
+	writer := NewStreamWriter(&sink)
 
 	if _, err := writer.Write([]byte("<tts>播报这个。</tts>尾部不播报。")); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -191,7 +212,7 @@ func TestSpeechStreamWriterIgnoresTextOutsideTTSTag(t *testing.T) {
 
 func TestSpeechStreamWriterLeavesTrailingTTSTagForToolEventSpeech(t *testing.T) {
 	sink := &flushingSpeechSink{}
-	writer := NewSpeechStreamWriter(sink)
+	writer := NewStreamWriter(sink)
 
 	if _, err := writer.Write([]byte("正在检查音量。<tts>正在检查音量。</tts>")); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -206,7 +227,7 @@ func TestSpeechStreamWriterLeavesTrailingTTSTagForToolEventSpeech(t *testing.T) 
 
 func TestSpeechStreamWriterFlushesAtClosingTagBeforeTrailingText(t *testing.T) {
 	sink := &flushingSpeechSink{}
-	writer := NewSpeechStreamWriter(sink)
+	writer := NewStreamWriter(sink)
 
 	chunks := []string{
 		"<tts>好的，",
@@ -232,7 +253,7 @@ func TestSpeechStreamWriterFlushesAtClosingTagBeforeTrailingText(t *testing.T) {
 
 func TestSpeechStreamWriterHandlesSplitUTF8Rune(t *testing.T) {
 	var sink strings.Builder
-	writer := NewSpeechStreamWriter(&sink)
+	writer := NewStreamWriter(&sink)
 	payload := []byte(`<tts>好</tts>`)
 	split := strings.Index(string(payload), "好")
 	if split < 0 {
@@ -251,7 +272,7 @@ func TestSpeechStreamWriterHandlesSplitUTF8Rune(t *testing.T) {
 
 func TestSpeechStreamWriterKeepsUTF8BoundaryWhenHoldingEndTagSuffix(t *testing.T) {
 	var sink validatingSpeechChunkSink
-	writer := NewSpeechStreamWriter(&sink)
+	writer := NewStreamWriter(&sink)
 	chunks := []string{
 		"<tts",
 		">上海",
@@ -311,7 +332,7 @@ func TestValidUTF8PrefixLenOnlyTruncatesIncompleteTrailingRune(t *testing.T) {
 
 func TestSpeechStreamWriterFiltersInvalidUTF8BeforeStreaming(t *testing.T) {
 	var sink validatingSpeechChunkSink
-	writer := NewSpeechStreamWriter(&sink)
+	writer := NewStreamWriter(&sink)
 
 	// Write chunk with invalid UTF-8 byte in the middle
 	if _, err := writer.Write([]byte{'<', 't', 't', 's', '>', 'a', 'b', 0xff, 'c', 'd', 'e', 'f'}); err != nil {
@@ -344,7 +365,7 @@ func TestSpeechStreamWriterFiltersInvalidUTF8BeforeStreaming(t *testing.T) {
 
 func TestSpeechStreamWriterStreamsOnlyFirstLeadingTTSTag(t *testing.T) {
 	sink := &flushingSpeechSink{}
-	writer := NewSpeechStreamWriter(sink)
+	writer := NewStreamWriter(sink)
 	payload := `<tts>第一句。</tts> <tts>第二句。</tts>正文`
 	if _, err := writer.Write([]byte(payload)); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -359,7 +380,7 @@ func TestSpeechStreamWriterStreamsOnlyFirstLeadingTTSTag(t *testing.T) {
 
 func TestSpeechStreamWriterFinishResponseAllowsNextLeadingTTSTag(t *testing.T) {
 	sink := &flushingSpeechSink{}
-	writer := NewSpeechStreamWriter(sink)
+	writer := NewStreamWriter(sink)
 
 	if _, err := writer.Write([]byte("<tts>工具进度。</tts>正文")); err != nil {
 		t.Fatalf("Write(tool progress) error = %v", err)
@@ -384,7 +405,7 @@ func TestSpeechStreamWriterFinishResponseAllowsNextLeadingTTSTag(t *testing.T) {
 
 func TestSpeechStreamWriterFinishResponseFlushesUnclosedLeadingTTS(t *testing.T) {
 	sink := &flushingSpeechSink{}
-	writer := NewSpeechStreamWriter(sink)
+	writer := NewStreamWriter(sink)
 
 	if _, err := writer.Write([]byte("<tts>好的，已经完成。")); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -402,7 +423,7 @@ func TestSpeechStreamWriterFinishResponseFlushesUnclosedLeadingTTS(t *testing.T)
 
 func TestSpeechStreamWriterFinishResponseDropsPartialClosingTag(t *testing.T) {
 	sink := &flushingSpeechSink{}
-	writer := NewSpeechStreamWriter(sink)
+	writer := NewStreamWriter(sink)
 
 	if _, err := writer.Write([]byte("<tts>好的，已经完成。</tt")); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -420,7 +441,7 @@ func TestSpeechStreamWriterFinishResponseDropsPartialClosingTag(t *testing.T) {
 
 func TestSpeechStreamWriterResetBufferClearsParserState(t *testing.T) {
 	sink := &resettableSpeechSink{}
-	writer := NewSpeechStreamWriter(sink)
+	writer := NewStreamWriter(sink)
 
 	if _, err := writer.Write([]byte("<tts>stale speech already emitted")); err != nil {
 		t.Fatalf("Write(stale) error = %v", err)
@@ -442,32 +463,5 @@ func TestSpeechStreamWriterResetBufferClearsParserState(t *testing.T) {
 	}
 	if got := sink.String(); got != "fresh" {
 		t.Fatalf("streamed speech after reset = %q, want %q", got, "fresh")
-	}
-}
-
-func TestSpeechStreamWriterDoesNotMarkInterruptedTTSStreamAsEmitted(t *testing.T) {
-	stream := &streamSessionWriter{interrupted: true}
-	writer := NewTTSTagStreamWriter(stream)
-	input := []byte("<tts>Checking volume.</tts>\nChecking volume.")
-
-	n, err := writer.Write(input)
-	if err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-	if n != len(input) {
-		t.Fatalf("Write() = %d, want %d", n, len(input))
-	}
-	if writer.StreamEmitted() {
-		t.Fatal("StreamEmitted() = true for interrupted TTS stream")
-	}
-}
-
-func TestFinalizeAssistantOutputKeepsPlainText(t *testing.T) {
-	raw := "  完整回答。  "
-
-	output := finalizeAssistantOutput(raw)
-
-	if output != "完整回答。" {
-		t.Fatalf("output = %q", output)
 	}
 }

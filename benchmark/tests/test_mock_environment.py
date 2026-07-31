@@ -83,13 +83,12 @@ def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
         assert output["contacts"][0]["phone_numbers"] == ["+1 202-555-0147"]
 
         blocked = _json_request(
-            f"{base_url}/api/tools/enter_text_via_bridge",
+            f"{base_url}/api/tools/enter_text",
             "POST",
             {
                 "input": json.dumps(
                     {
                         "text": "+1 202-555-0147",
-                        "platform": "ios",
                         "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
                     }
                 )
@@ -105,13 +104,12 @@ def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
         assert json.loads(opened["output"])["ok"] is True
 
         entered = _json_request(
-            f"{base_url}/api/tools/enter_text_via_bridge",
+            f"{base_url}/api/tools/enter_text",
             "POST",
             {
                 "input": json.dumps(
                     {
                         "text": "Biden: +1 202-555-0147",
-                        "platform": "ios",
                         "focus": {
                             "x": 500,
                             "y": 360,
@@ -121,10 +119,10 @@ def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
                 )
             },
         )
-        assert json.loads(entered["output"])["committed"] is True
+        assert json.loads(entered["output"]) == {"ok": True}
 
         state = _json_request(f"{base_url}/api/state")
-        assert state["data"]["calls"][-1]["tool"] == "enter_text_via_bridge"
+        assert state["data"]["calls"][-1]["tool"] == "enter_text"
         assert "+1 202-555-0147" in state["data"]["screen_text"]
 
         screen = _json_request(f"{base_url}/api/screen")
@@ -144,13 +142,12 @@ def test_mock_environment_requires_visible_icon_click_before_text_entry():
     base_url = server.start()
     try:
         blocked = _json_request(
-            f"{base_url}/api/tools/enter_text_via_bridge",
+            f"{base_url}/api/tools/enter_text",
             "POST",
             {
                 "input": json.dumps(
                     {
                         "text": "+1 202-555-0147",
-                        "platform": "ios",
                         "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
                     }
                 )
@@ -170,19 +167,18 @@ def test_mock_environment_requires_visible_icon_click_before_text_entry():
         assert json.loads(clicked["output"])["clicked"] is True
 
         entered = _json_request(
-            f"{base_url}/api/tools/enter_text_via_bridge",
+            f"{base_url}/api/tools/enter_text",
             "POST",
             {
                 "input": json.dumps(
                     {
                         "text": "+1 202-555-0147",
-                        "platform": "ios",
                         "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
                     }
                 )
             },
         )
-        assert json.loads(entered["output"])["committed"] is True
+        assert json.loads(entered["output"]) == {"ok": True}
     finally:
         server.stop()
 
@@ -196,19 +192,18 @@ def test_mock_environment_allows_direct_entry_when_notes_is_already_open():
     base_url = server.start()
     try:
         entered = _json_request(
-            f"{base_url}/api/tools/enter_text_via_bridge",
+            f"{base_url}/api/tools/enter_text",
             "POST",
             {
                 "input": json.dumps(
                     {
                         "text": "+1 202-555-0147",
-                        "platform": "ios",
                         "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
                     }
                 )
             },
         )
-        assert json.loads(entered["output"])["committed"] is True
+        assert json.loads(entered["output"]) == {"ok": True}
     finally:
         server.stop()
 

@@ -196,17 +196,13 @@ class VPhoneToolsAPIHandler:
                         },
                     },
                     {
-                        "name": "enter_text_in_field",
+                        "name": "enter_text",
                         "description": "Tap a visible field and enter US-keyboard ASCII text.",
                         "args_schema": {
                             "type": "object", "additionalProperties": False,
                             "properties": {
                                 "text": {"type": "string", "maxLength": 1024},
-                                "platform": {"type": "string", "enum": ["ios"]},
-                                "mode": {"type": "string", "enum": ["form", "search"]},
                                 "focus": focus_schema,
-                                "segments": {"type": "array", "items": {"type": "string"}},
-                                "max_attempts": {"type": "integer", "minimum": 1},
                             },
                             "required": ["text", "focus"],
                         },
@@ -313,8 +309,7 @@ class VPhoneToolsAPIHandler:
             "touch_gesture": self._call_touch_gesture,
             "keyboard_text": self._call_keyboard_text,
             "keyboard_tap": self._call_keyboard_tap,
-            "enter_text_in_field": self._call_enter_text_in_field,
-            "enter_text_via_bridge": self._call_enter_text_via_bridge,
+            "enter_text": self._call_enter_text,
             "mouse_click": self._call_mouse_click,
             "mouse_move": self._call_mouse_move,
             "mouse_scroll": self._call_mouse_scroll,
@@ -511,47 +506,36 @@ class VPhoneToolsAPIHandler:
             lambda: self.state.device.keyboard_key(key), "keyboard_tap", tool_input, f"keyboard_key {key}"
         )
 
-    def _call_enter_text_in_field(self, tool_input: dict[str, Any]) -> dict[str, Any]:
+    def _call_enter_text(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         if "keyboard" not in self.state.device.capabilities():
             return _unsupported_keyboard_result()
-        platform = str(tool_input.get("platform", "ios") or "ios").strip().lower()
-        if platform != "ios":
-            return {"output": f"error: expected iOS platform, got {platform!r}", "is_error": True}
-        if bool(tool_input.get("send_after_commit")):
-            return {
-                "output": "error: VPhone enter_text_in_field cannot verify send_after_commit",
-                "is_error": True,
-                "error": "unsupported",
-            }
-        segments = tool_input.get("segments") or []
-        if not isinstance(segments, list):
-            return {"output": "error: segments must be an array", "is_error": True}
-        if segments:
-            return {
-                "output": "error: VPhone enter_text_in_field does not support IME composition segments",
-                "is_error": True,
-                "error": "unsupported",
-            }
+        unknown = sorted(set(tool_input) - {"text", "focus"})
+        if unknown:
+            output = {"ok": False, "suggestion": f"Remove unsupported enter_text arguments: {unknown!r}."}
+            return {"output": json.dumps(output), "is_error": False}
         text = tool_input.get("text", "")
         if not isinstance(text, str) or not text:
-            return {"output": json.dumps(_text_result(text if isinstance(text, str) else "", False, "text is required")), "is_error": False}
+            return {"output": json.dumps({"ok": False, "suggestion": "Provide non-empty text, then retry enter_text."}), "is_error": False}
         if len(text) > MAX_TEXT_LENGTH:
             return {
-                "output": json.dumps(
-                    _text_result(text, False, f"text exceeds {MAX_TEXT_LENGTH} characters")
-                ),
+                "output": json.dumps({"ok": False, "suggestion": f"Shorten the text to at most {MAX_TEXT_LENGTH} characters, then retry enter_text."}),
                 "is_error": False,
                 "error": "text_too_long",
             }
         unsupported = unsupported_vphone_text_chars(text)
         if unsupported:
             return {
-                "output": json.dumps(_text_result(text, False, f"unsupported characters: {unsupported!r}"), ensure_ascii=False),
+                "output": json.dumps({"ok": False, "suggestion": f"VPhone text entry does not support these characters: {unsupported!r}."}, ensure_ascii=False),
                 "is_error": False,
             }
         focus = tool_input.get("focus")
         if not isinstance(focus, dict):
-            return {"output": "error: focus must be an object", "is_error": True}
+            output = {"ok": False, "suggestion": "Provide focus as an object with x and y coordinates, then retry enter_text."}
+            return {"output": json.dumps(output), "is_error": False}
+        unknown_focus = sorted(set(focus) - {"x", "y", "coord_space"})
+        if unknown_focus:
+            output = {"ok": False, "suggestion": f"Remove unsupported focus arguments: {unknown_focus!r}."}
+            return {"output": json.dumps(output), "is_error": False}
         point_input = {"focus": focus}
         if focus.get("coord_space"):
             point_input["coord_space"] = focus["coord_space"]
@@ -560,35 +544,18 @@ class VPhoneToolsAPIHandler:
             width, height = self.state.device.screen_size()
             x, y = _to_pixels(point, width, height)
         except (TypeError, ValueError) as exc:
-            return {"output": f"error: {exc}", "is_error": True}
-
-        steps: list[str] = []
+            output = {"ok": False, "suggestion": f"Correct the focus coordinates: {exc}"}
+            return {"output": json.dumps(output), "is_error": False}
 
         def enter() -> None:
             self.state.device.tap(x, y)
-            steps.append(f"tap focus {x} {y}")
             time.sleep(FOCUS_SETTLE_SEC)
             self.state.device.keyboard_text(text)
-            steps.append("keyboard_text")
 
-        result = self._execute_device(enter, "enter_text_in_field", tool_input, "focus + keyboard_text")
+        result = self._execute_device(enter, "enter_text", tool_input, "focus + keyboard_text")
         if result.get("is_error"):
             return result
-        output = _text_result(text, True, "keyboard events submitted")
-        output.update({"field_text": text, "mode": _text_input_mode(tool_input.get("mode")), "steps": steps})
-        return {"output": json.dumps(output, ensure_ascii=False), "is_error": False}
-
-    def _call_enter_text_via_bridge(self, tool_input: dict[str, Any]) -> dict[str, Any]:
-        text = tool_input.get("text", "")
-        if not isinstance(text, str):
-            return {"output": "error: text must be a string", "is_error": True}
-        result = _text_result(
-            text,
-            False,
-            "VPhone clipboard paste and visual commit verification are not implemented; use enter_text_in_field for supported ASCII",
-        )
-        result["required_mode"] = "composition" if any(ord(ch) > 127 for ch in text) else "target_preserving_bridge"
-        return {"output": json.dumps(result, ensure_ascii=False), "is_error": False, "error": "unsupported"}
+        return {"output": json.dumps({"ok": True}), "is_error": False}
 
     def _call_quick_action(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         platform = str(tool_input.get("platform", "") or "").strip().lower()
@@ -722,11 +689,11 @@ def _parse_tool_input(raw_input: str, tool_name: str) -> dict[str, Any]:
         return {}
     try:
         parsed = json.loads(raw_input)
-    except json.JSONDecodeError:
-        if tool_name in {"keyboard_text", "enter_text_in_field", "enter_text_via_bridge"}:
+    except json.JSONDecodeError as exc:
+        if tool_name == "keyboard_text":
             return {"text": raw_input.strip()}
-        raise ValueError(f"tool input must be valid JSON: {raw_input}")
-    if isinstance(parsed, str) and tool_name in {"keyboard_text", "enter_text_in_field", "enter_text_via_bridge"}:
+        raise ValueError(f"tool input must be valid JSON: {raw_input}") from exc
+    if isinstance(parsed, str) and tool_name == "keyboard_text":
         return {"text": parsed}
     if not isinstance(parsed, dict):
         raise ValueError("tool input must be a JSON object")
@@ -871,23 +838,6 @@ def _post_action_output(screenshot: dict[str, Any]) -> dict[str, Any]:
         "source_width": screenshot.get("source_width"),
         "source_height": screenshot.get("source_height"),
     }
-
-
-def _text_result(text: str, committed: bool, reason: str) -> dict[str, Any]:
-    return {
-        "ok": committed,
-        "committed": committed,
-        "target_text": text,
-        "required_mode": "composition" if any(ord(ch) > 127 for ch in text) else "ascii",
-        "attempts": 1,
-        "ime_switches": 0,
-        "vlm_calls": 0,
-        "reason": reason,
-    }
-
-
-def _text_input_mode(value: Any) -> str:
-    return "search" if str(value or "").strip().lower() == "search" else "form"
 
 
 def _quick_action_id(tool_input: dict[str, Any]) -> str:

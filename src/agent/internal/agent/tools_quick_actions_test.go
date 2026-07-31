@@ -40,6 +40,13 @@ func TestQuickActionsResolveAliasAndPlatform(t *testing.T) {
 	if id, ok := table.resolveActionID("quick-switch-left"); !ok || id != "quick_app_switch_left" {
 		t.Fatalf("expected hyphenated alias to resolve to quick_app_switch_left, got %q ok=%v", id, ok)
 	}
+	if id, ok := table.resolveActionID("switch_previous_app"); !ok || id != "app_switch_back" {
+		t.Fatalf("expected previous-app alias to resolve to app_switch_back, got %q ok=%v", id, ok)
+	}
+	_, binding, ok := table.lookup("app_switch_back", "android")
+	if !ok || binding.Status != quickActionStatusActive || binding.Tool != "touch_gesture" {
+		t.Fatalf("Android app_switch_back binding = %#v, found=%v; want active touch_gesture", binding, ok)
+	}
 	if id, ok := table.resolveActionID("退格"); !ok || id != "delete_backward" {
 		t.Fatalf("expected delete-backward alias to resolve to delete_backward, got %q ok=%v", id, ok)
 	}
@@ -145,6 +152,11 @@ func TestQuickActionDescriptionDocumentsListInspection(t *testing.T) {
 	if !strings.Contains(desc, `Always pass action and platform`) {
 		t.Fatalf("description missing required action/platform guidance: %s", desc)
 	}
+	for _, want := range []string{"Cataloged semantic actions MUST use quick_action", "physical-key requests", "uncataloged app-specific shortcuts", "current run", "reserved/unavailable", "keyboard_tap"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing semantic shortcut routing guidance %q: %s", want, desc)
+		}
+	}
 	// The reserved/alternative/no-retry behavior playbook now lives in the
 	// device-operator skill, not the tool description.
 }
@@ -170,7 +182,7 @@ func TestQuickActionPlaybookLivesInSkill(t *testing.T) {
 		t.Skipf("device-operator SKILL.md not readable from test cwd: %v", err)
 	}
 	content := string(data)
-	for _, want := range []string{"status=reserved", "alternative=true", "Never loop on the same binding"} {
+	for _, want := range []string{"MUST use `quick_action`", "current run explicitly reports", "Do not infer that `quick_action` is unavailable", "text-entry failure", "Never replay the same binding", "alternative=true", "Never loop on the same binding", "app-specific shortcuts not represented", "system/global search", "semantic backward/forward deletion"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("device-operator SKILL.md missing quick_action guidance %q", want)
 		}

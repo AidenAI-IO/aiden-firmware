@@ -126,54 +126,49 @@ def test_keyboard_tools_and_send_are_unsupported_without_host_capability():
         server.stop()
 
 
-def test_keyboard_hold_and_unverified_text_modes_are_not_silently_ignored(bridge):
+def test_keyboard_hold_is_not_silently_ignored(bridge):
     _, device, base_url = bridge
     _, body = invoke(base_url, "keyboard_tap", {"keys": ["enter"], "hold_ms": 100})
-    assert body["is_error"] is True and body["error"] == "unsupported"
-    _, body = invoke(
-        base_url,
-        "enter_text_in_field",
-        {
-            "text": "hello",
-            "platform": "ios",
-            "focus": {"x": 500, "y": 100},
-            "segments": [],
-            "send_after_commit": True,
-        },
-    )
-    assert body["is_error"] is True and body["error"] == "unsupported"
-    _, body = invoke(
-        base_url,
-        "enter_text_in_field",
-        {
-            "text": "hello",
-            "platform": "ios",
-            "focus": {"x": 500, "y": 100},
-            "segments": ["ni"],
-        },
-    )
     assert body["is_error"] is True and body["error"] == "unsupported"
     assert all(call[0] not in {"keyboard_key", "keyboard_text"} for call in device.calls)
 
 
-def test_enter_text_in_field_and_clipboard_path(bridge):
+def test_enter_text(bridge):
     _, device, base_url = bridge
     status, body = invoke(
         base_url,
-        "enter_text_in_field",
-        {"text": "hello ios", "platform": "ios", "focus": {"x": 500, "y": 100}},
+        "enter_text",
+        {"text": "hello ios", "focus": {"x": 500, "y": 100}},
     )
     output = json.loads(body["output"])
-    assert status == 200 and output["committed"] is True
+    assert status == 200 and output == {"ok": True}
     assert device.calls.index(("tap", 645, 280)) < device.calls.index(("keyboard_text", "hello ios"))
     status, body = invoke(
         base_url,
-        "enter_text_via_bridge",
-        {"text": "你好", "platform": "ios", "focus": {"x": 500, "y": 100}},
+        "enter_text",
+        {"text": "你好", "focus": {"x": 500, "y": 100}},
     )
     output = json.loads(body["output"])
-    assert output["committed"] is False
-    assert output["required_mode"] == "composition"
+    assert output["ok"] is False
+    assert "suggestion" in output
+
+
+def test_enter_text_requires_json_focus_and_returns_compact_failures(bridge):
+    _, _, base_url = bridge
+    _, body = invoke(base_url, "enter_text", "plain text")
+    assert body["is_error"] is True
+
+    for tool_input in (
+        {"text": "hello"},
+        {"text": "hello", "focus": {"x": "bad", "y": 100}},
+        {"text": "hello", "focus": {"x": 500, "y": 100}, "platform": "ios"},
+        {"text": "hello", "focus": {"x": 500, "y": 100, "extra": True}},
+    ):
+        _, body = invoke(base_url, "enter_text", tool_input)
+        assert body["is_error"] is False
+        output = json.loads(body["output"])
+        assert output["ok"] is False
+        assert set(output) == {"ok", "suggestion"}
 
 
 def test_quick_actions(bridge):

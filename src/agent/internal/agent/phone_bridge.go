@@ -547,7 +547,7 @@ func (pb *PhoneBridge) NoteClipboardWrite(text string) {
 	}
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
-	pb.clipboardText = strings.TrimSpace(text)
+	pb.clipboardText = text
 	pb.clipboardAt = time.Now()
 }
 
@@ -561,6 +561,18 @@ func (pb *PhoneBridge) ClipboardRecentlyContains(text string, maxAge time.Durati
 		return false
 	}
 	return strings.TrimSpace(pb.clipboardText) == strings.TrimSpace(text)
+}
+
+func (pb *PhoneBridge) ClipboardRecentlyEquals(text string, maxAge time.Duration) bool {
+	if pb == nil || maxAge <= 0 {
+		return false
+	}
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	if pb.clipboardAt.IsZero() || time.Since(pb.clipboardAt) > maxAge {
+		return false
+	}
+	return pb.clipboardText == text
 }
 
 func (pb *PhoneBridge) currentPhoneID() string {
@@ -928,7 +940,7 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 	} else if status.Connected {
 		builder.WriteString("- The phone companion app is connected. Use bridge_open_app as the primary path for opening apps, webpages, and phone dialer screens before falling back to screenshot/HID navigation.\n")
 		builder.WriteString("- bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
-		builder.WriteString("- For long or non-ASCII text entry, prefer clipboard write through the companion app, switch to the target app, then paste with quick_action/keyboard shortcut instead of typing via HID.\n")
+		builder.WriteString("- For long or non-ASCII text entry into a visible field, prefer enter_text_via_bridge when the runtime reports a usable clipboard route. It owns clipboard write, target-preserving quick_action paste, and field verification; do not manually chain bridge_clipboard with quick_action or construct a ctrl/meta keyboard_tap paste shortcut.\n")
 		builder.WriteString("- If bridge_open_app returns {\"ok\":true}, treat the app launch as complete unless the user requested additional in-app actions.")
 	} else {
 		builder.WriteString("- The phone companion app is not connected. Do not assume bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification tools can control the phone right now.\n")

@@ -22,6 +22,7 @@ import (
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 
+	"aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/tts"
 	_ "aiden-agent/internal/agent/tts/adapters/alicloud"
 	_ "aiden-agent/internal/agent/tts/adapters/fishaudio"
@@ -39,41 +40,44 @@ const (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime              *Runtime
-	addr                 string
-	logger               *Logger
-	userFilesReportPath  string
-	userFilesToolsDir    string
-	mu                   sync.Mutex
-	history              []Message
-	historyStore         *ChatHistoryStore
-	episodeStore         *TaskEpisodeStore
-	sttClient            STTClient
-	ttsManager           *tts.ProviderManager
-	ttsMu                sync.RWMutex
-	audioClient          *AudioServiceClient
-	ttsPlaybackBackend   tts.AudioServiceBackend
-	screenCaptureMu      sync.Mutex
-	screenCaptureClient  *ScreenCaptureClient
-	recordMu             sync.Mutex
-	webRecording         *webAudioRecording
-	sttConfigTestSession *sttConfigTestLiveSession
-	bridge               *PhoneBridge
-	androidADB           androidADBController
-	liveActivity         *LiveActivityManager
-	pendingResults       map[string]*chatPendingResult
-	pendingResultsMu     sync.Mutex
-	activeRuns           map[string]context.CancelFunc
-	activeRunsMu         sync.Mutex
-	terminatedRequests   map[string]struct{}
-	terminatedRequestsMu sync.Mutex
-	activeOutputs        map[string]map[*activeTTSOutput]struct{}
-	activeOutputsMu      sync.Mutex
-	pendingSteers        map[string]pendingSteerMessage
-	steerSignals         map[string]chan struct{}
-	steersMu             sync.Mutex
-	eventBroadcaster     *EventBroadcaster
-	storageMonitor       *StorageMonitor
+	runtime                *Runtime
+	addr                   string
+	logger                 *Logger
+	userFilesReportPath    string
+	userFilesToolsDir      string
+	userFilesMemoryDir     string
+	userFilesSkillsDir     string
+	userFilesSkillStateDir string
+	mu                     sync.Mutex
+	history                []Message
+	historyStore           *ChatHistoryStore
+	episodeStore           *TaskEpisodeStore
+	sttClient              STTClient
+	ttsManager             *tts.ProviderManager
+	ttsMu                  sync.RWMutex
+	audioClient            *AudioServiceClient
+	ttsPlaybackBackend     tts.AudioServiceBackend
+	screenCaptureMu        sync.Mutex
+	screenCaptureClient    *ScreenCaptureClient
+	recordMu               sync.Mutex
+	webRecording           *webAudioRecording
+	sttConfigTestSession   *sttConfigTestLiveSession
+	bridge                 *PhoneBridge
+	androidADB             androidADBController
+	liveActivity           *LiveActivityManager
+	pendingResults         map[string]*chatPendingResult
+	pendingResultsMu       sync.Mutex
+	activeRuns             map[string]context.CancelFunc
+	activeRunsMu           sync.Mutex
+	terminatedRequests     map[string]struct{}
+	terminatedRequestsMu   sync.Mutex
+	activeOutputs          map[string]map[*activeTTSOutput]struct{}
+	activeOutputsMu        sync.Mutex
+	pendingSteers          map[string]pendingSteerMessage
+	steerSignals           map[string]chan struct{}
+	steersMu               sync.Mutex
+	eventBroadcaster       *EventBroadcaster
+	storageMonitor         *StorageMonitor
 }
 
 type webAudioRecording struct {
@@ -354,29 +358,35 @@ type ToolInvokeResponse struct {
 
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
-	s := &Server{
-		runtime:             runtime,
-		addr:                addr,
-		logger:              runtime.logger,
-		userFilesReportPath: "/userdata/agent/files_report.html",
-		userFilesToolsDir:   "/userdata/agent_tools",
-		history:             make([]Message, 0),
-		screenCaptureClient: NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
-		bridge:              runtime.PhoneBridge(),
-		androidADB:          NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
-		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
-		pendingResults:      make(map[string]*chatPendingResult),
-		activeRuns:          make(map[string]context.CancelFunc),
-		terminatedRequests:  make(map[string]struct{}),
-		pendingSteers:       make(map[string]pendingSteerMessage),
-		steerSignals:        make(map[string]chan struct{}),
-		eventBroadcaster:    NewEventBroadcaster(),
-		storageMonitor:      runtime.storageMonitor,
+	userFilesBaseDir := strings.TrimSpace(runtime.config.ConfigDir)
+	if userFilesBaseDir == "" {
+		userFilesBaseDir = "/userdata/agent"
 	}
-	if runtime.config.ConfigDir != "" {
-		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
-		s.historyStore = NewChatHistoryStore(filepath.Join(memoryDir, "chat_history"))
-		s.episodeStore = NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
+	s := &Server{
+		runtime:                runtime,
+		addr:                   addr,
+		logger:                 runtime.logger,
+		userFilesReportPath:    "/userdata/agent/files_report.html",
+		userFilesToolsDir:      "/userdata/agent_tools",
+		userFilesMemoryDir:     filepath.Join(userFilesBaseDir, "memory"),
+		userFilesSkillsDir:     filepath.Join(userFilesBaseDir, "skills"),
+		userFilesSkillStateDir: filepath.Join(userFilesBaseDir, "skill-state"),
+		history:                make([]Message, 0),
+		screenCaptureClient:    NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
+		bridge:                 runtime.PhoneBridge(),
+		androidADB:             NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
+		liveActivity:           NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
+		pendingResults:         make(map[string]*chatPendingResult),
+		activeRuns:             make(map[string]context.CancelFunc),
+		terminatedRequests:     make(map[string]struct{}),
+		pendingSteers:          make(map[string]pendingSteerMessage),
+		steerSignals:           make(map[string]chan struct{}),
+		eventBroadcaster:       NewEventBroadcaster(),
+		storageMonitor:         runtime.storageMonitor,
+	}
+	if s.userFilesMemoryDir != "" {
+		s.historyStore = NewChatHistoryStore(filepath.Join(s.userFilesMemoryDir, "chat_history"))
+		s.episodeStore = NewTaskEpisodeStore(filepath.Join(s.userFilesMemoryDir, "episodes"))
 	}
 	// Connect history store to event broadcaster
 	if s.historyStore != nil {
@@ -492,6 +502,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/keyboard-tap-android-keys", s.handleKeyboardTapAndroidKeys)
 
 	mux.HandleFunc("/user_files", s.handleUserFiles)
+	mux.HandleFunc("/user_files/preview", s.handleUserFilesPreview)
 	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 
 	// Static web UI
@@ -1140,7 +1151,7 @@ func (s *Server) handleChatAsync(
 			})
 		}()
 
-		var speechWriter *TTSTagStreamWriter
+		var speechWriter *speech.StreamWriter
 
 		// Event handler pushes intermediate messages into the pending result
 		// so the client can poll them in near-realtime.
@@ -1158,7 +1169,7 @@ func (s *Server) handleChatAsync(
 				s.liveActivity.UpdateFromRunEvent(requestID, event)
 			}
 
-			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
+			toolSpeechStreamed := event.Type == runEventToolCall && speechWriter.FinalizeResponse()
 			if toolSpeechStreamed && s.logger != nil {
 				s.logger.Info("Tool content TTS already streamed: tool=%s", event.ToolName)
 			}
@@ -1198,7 +1209,7 @@ func (s *Server) handleChatAsync(
 					runReq.OnRunActive = func(context.Context) {
 						unregisterStreamOutput = s.registerActiveOutput(requestID, output)
 					}
-					speechWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+					speechWriter = speech.NewStreamWriter(newStream)
 					runReq.StreamWriter = speechWriter
 				}
 			}
@@ -1209,7 +1220,7 @@ func (s *Server) handleChatAsync(
 
 		result, err := s.runtime.Run(runCtx, runReq)
 		if newStream != nil {
-			finalSpeechStreamed := finishSpeechResponse(speechWriter)
+			finalSpeechStreamed := speechWriter.FinalizeResponse()
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
 				s.logger.Error("new TTS stream failed: %v", closeErr)
@@ -1529,7 +1540,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	steerProvider, steerInterrupt := s.prepareRunSteerCallbacks(req.RequestID)
 	s.logger.Info("Creating run request")
-	var speechWriter *TTSTagStreamWriter
+	var speechWriter *speech.StreamWriter
 	runReq := RunRequest{
 		Input:                   inputText,
 		Attachments:             turnInput.Attachments,
@@ -1550,7 +1561,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
-			toolSpeechStreamed := finishToolCallSpeechStream(event, speechWriter)
+			toolSpeechStreamed := event.Type == runEventToolCall && speechWriter.FinalizeResponse()
 			if toolSpeechStreamed && s.logger != nil {
 				s.logger.Info("Tool content TTS already streamed: tool=%s", event.ToolName)
 			}
@@ -1581,7 +1592,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				runReq.OnRunActive = func(context.Context) {
 					unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
 				}
-				speechWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+				speechWriter = speech.NewStreamWriter(newStream)
 				streamWriters = append(streamWriters, speechWriter)
 			}
 		}
@@ -1595,7 +1606,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("Running runtime")
 	result, err := s.runtime.Run(ctx, runReq)
 	if newStream != nil {
-		finalSpeechStreamed := finishSpeechResponse(speechWriter)
+		finalSpeechStreamed := speechWriter.FinalizeResponse()
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
 			s.logger.Error("new TTS stream failed: %v", closeErr)
@@ -1936,7 +1947,7 @@ func (s *Server) toolCallSpeechText(event RunEvent) string {
 	if s.runtime == nil || !s.runtime.config.VoiceToolCallSpeechOrDefault() {
 		return ""
 	}
-	return BuildSpeechText(event.Content, s.runtime.config)
+	return speech.BuildText(event.Content)
 }
 
 func (s *Server) currentTTSManager() *tts.ProviderManager {
@@ -2953,8 +2964,8 @@ const httpToolExecutionTimeout = 5 * time.Minute
 
 func httpToolExecutionSurvivesClientDisconnect(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
-	case "keyboard_tap", "keyboard_text", "quick_action", "search_launch_app",
-		"enter_text_in_field", "enter_text_via_bridge", "mouse_click", "mouse_move",
+	case "keyboard_tap", "quick_action", "search_launch_app", "enter_text",
+		"mouse_click", "mouse_move",
 		"mouse_scroll", "run_script", "touch_gesture", "wheel_nudge":
 		return true
 	default:

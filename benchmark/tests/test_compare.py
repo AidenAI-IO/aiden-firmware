@@ -74,7 +74,7 @@ def test_compare_runs_summarizes_before_after_quality_efficiency_and_observation
                     "trace_observations": [
                         {"id": "skill_read_device_operator", "passed": True},
                         {"id": "used_old_text_path", "passed": False},
-                        {"id": "used_enter_text_in_field", "passed": True},
+                        {"id": "used_enter_text", "passed": True},
                     ],
                 },
             },
@@ -89,4 +89,4 @@ def test_compare_runs_summarizes_before_after_quality_efficiency_and_observation
     assert "Wall median: 1500ms -> 1150ms (delta -350ms)" in output
     assert "~ type_text#1  failed -> passed" in output
     assert "used_old_text_path: 1/1 -> 0/1 (delta -1)" in output
-    assert "used_enter_text_in_field: 0/0 -> 1/1 (delta +1)" in output
+    assert "used_enter_text: 0/0 -> 1/1 (delta +1)" in output

@@ -2,14 +2,14 @@
   "name": "aiden_app_notes_entry_policy_v1",
   "suite_category": "Aiden App / Phone Bridge Policy",
   "description": "Prompt-conditioned Notes entry policy cases collected in one suite with task-level mock environments.",
-  "prompt_prefix": "这是 Aiden Phone Bridge 工具选择 benchmark。测试环境状态会在每个任务中直接声明；按声明状态选择最直接的 App 进入方式，不要额外猜测屏幕内容。联系人等系统数据必须通过可用的 Phone Bridge 数据工具查询。向可见编辑框写入最终内容时，根据 runtime text-entry strategy 选择输入工具。enter_text_via_bridge 会自行准备剪贴板，不要先调用 bridge_clipboard；写入内容必须包含查询返回的完整原始号码，但允许附带姓名标签。",
+  "prompt_prefix": "这是 Aiden Phone Bridge 工具选择 benchmark。测试环境状态会在每个任务中直接声明；按声明状态选择最直接的 App 进入方式，不要额外猜测屏幕内容。联系人等系统数据必须通过可用的 Phone Bridge 数据工具查询。向可见编辑框写入最终内容时，根据 runtime text-entry strategy 选择输入工具。enter_text 会自行准备剪贴板，不要先调用 bridge_clipboard；写入内容必须包含查询返回的完整原始号码，但允许附带姓名标签。",
   "global_reset": {},
   "tasks": [
     {
       "id": "ios_pip_notes_already_open",
       "category": "multi_step",
       "description_for_judge": "Notes is already open. Query Biden and enter the returned number without reopening or searching for Notes.",
-      "prompt": "测试环境状态：当前已经位于 Apple 备忘录的空白编辑页，正文输入区域中心约为 normalized x=500、y=360。Aiden 在后台，iOS PiP Bridge 已开启。查询通讯录中 Biden 的手机号，直接调用 enter_text_via_bridge 把查询到的手机号写进当前备忘录；不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app。",
+      "prompt": "测试环境状态：当前已经位于 Apple 备忘录的空白编辑页，正文输入区域中心约为 normalized x=500、y=360。Aiden 在后台，iOS PiP Bridge 已开启。查询通讯录中 Biden 的手机号，直接调用 enter_text 把查询到的手机号写进当前备忘录；不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app。",
       "mock_environment": {
         "phone_bridge": {
           "connected": false,
@@ -30,14 +30,13 @@
               "contacts": [{"id": "biden", "name": "Biden", "phone_numbers": ["+1 202-555-0147"]}]
             }
           },
-          "enter_text_via_bridge": {
+          "enter_text": {
             "input_contains": {
               "text": {"$contains": "+1 202-555-0147"},
-              "platform": "ios",
               "focus": {"coord_space": "normalized"}
             },
             "screen_contains": "Apple Notes is already open",
-            "output": {"ok": true, "committed": true, "matched_text": "+1 202-555-0147"},
+            "output": {"ok": true},
             "screen_text": "Apple Notes contains Biden phone number: +1 202-555-0147"
           }
         }
@@ -45,19 +44,19 @@
       "rubric": [
         {"id": "queried_contact", "check": "Calls bridge_contacts with action=query and query=Biden."},
         {"id": "did_not_reopen", "check": "Does not call search_launch_app or bridge_open_app because Notes is already open."},
-        {"id": "entered_number", "check": "Calls enter_text_via_bridge with the returned number and platform=ios."}
+        {"id": "entered_number", "check": "Calls enter_text with the returned number."}
       ],
       "hard_assertions": {
         "min_tool_calls": 2,
         "max_tool_calls": 8,
         "must_complete_within_sec": 180,
-        "required_tools": ["bridge_contacts", "enter_text_via_bridge"],
+        "required_tools": ["bridge_contacts", "enter_text"],
         "forbidden_tools": ["search_launch_app", "bridge_open_app", "bridge_clipboard"],
         "required_tool_calls": [
           {"tool": "bridge_contacts", "input_contains": {"action": "query", "query": "Biden"}},
           {
-            "tool": "enter_text_via_bridge",
-            "input_contains": {"text": {"$contains": "+1 202-555-0147"}, "platform": "ios", "focus": {"coord_space": "normalized"}}
+            "tool": "enter_text",
+            "input_contains": {"text": {"$contains": "+1 202-555-0147"}, "focus": {"coord_space": "normalized"}}
           }
         ]
       }
@@ -66,7 +65,7 @@
       "id": "ios_pip_notes_icon_visible",
       "category": "multi_step",
       "description_for_judge": "The Notes icon is directly visible. Query Biden, click the icon, and enter the returned number without searching.",
-      "prompt": "测试环境状态：当前是 iPhone 主界面，Apple 备忘录图标清晰可见，中心为 normalized x=180、y=310。Aiden 在后台，iOS PiP Bridge 已开启。查询 Biden 的手机号，直接调用 mouse_click 点击该坐标进入备忘录，再调用 enter_text_via_bridge 写入号码；不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app。",
+      "prompt": "测试环境状态：当前是 iPhone 主界面，Apple 备忘录图标清晰可见，中心为 normalized x=180、y=310。Aiden 在后台，iOS PiP Bridge 已开启。查询 Biden 的手机号，直接调用 mouse_click 点击该坐标进入备忘录，再调用 enter_text 写入号码；不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app。",
       "mock_environment": {
         "phone_bridge": {
           "connected": false,
@@ -93,14 +92,13 @@
             "output": {"ok": true, "clicked": true},
             "screen_text": "Apple Notes is open on a blank note editor around normalized x=500, y=360."
           },
-          "enter_text_via_bridge": {
+          "enter_text": {
             "input_contains": {
               "text": {"$contains": "+1 202-555-0147"},
-              "platform": "ios",
               "focus": {"coord_space": "normalized"}
             },
             "screen_contains": "Apple Notes is open",
-            "output": {"ok": true, "committed": true, "matched_text": "+1 202-555-0147"},
+            "output": {"ok": true},
             "screen_text": "Apple Notes contains Biden phone number: +1 202-555-0147"
           }
         }
@@ -108,18 +106,18 @@
       "rubric": [
         {"id": "queried_contact", "check": "Calls bridge_contacts with action=query and query=Biden."},
         {"id": "clicked_visible_icon", "check": "Clicks normalized x=180, y=310 and does not search for Notes."},
-        {"id": "entered_number", "check": "Calls enter_text_via_bridge with the returned number."}
+        {"id": "entered_number", "check": "Calls enter_text with the returned number."}
       ],
       "hard_assertions": {
         "min_tool_calls": 3,
         "max_tool_calls": 10,
         "must_complete_within_sec": 180,
-        "required_tools": ["bridge_contacts", "mouse_click", "enter_text_via_bridge"],
+        "required_tools": ["bridge_contacts", "mouse_click", "enter_text"],
         "forbidden_tools": ["search_launch_app", "bridge_open_app", "bridge_clipboard"],
         "required_tool_calls": [
           {"tool": "bridge_contacts", "input_contains": {"action": "query", "query": "Biden"}},
           {"tool": "mouse_click", "input_contains": {"x": 180, "y": 310, "coord_space": "normalized"}},
-          {"tool": "enter_text_via_bridge", "input_contains": {"text": {"$contains": "+1 202-555-0147"}, "platform": "ios"}}
+          {"tool": "enter_text", "input_contains": {"text": {"$contains": "+1 202-555-0147"}}}
         ]
       }
     },
@@ -127,7 +125,7 @@
       "id": "ios_pip_notes_icon_missing",
       "category": "multi_step",
       "description_for_judge": "Neither Notes nor its icon is visible. Query Biden, use search_launch_app, and enter the returned number.",
-      "prompt": "测试环境状态：当前是 iPhone 主界面，画面中没有打开的备忘录，也看不到备忘录图标。Aiden 在后台，iOS PiP Bridge 已开启。查询 Biden 的手机号，调用 search_launch_app 进入备忘录，再直接调用 enter_text_via_bridge 写入包含完整原始号码的内容；不要调用 bridge_clipboard 或 bridge_open_app。",
+      "prompt": "测试环境状态：当前是 iPhone 主界面，画面中没有打开的备忘录，也看不到备忘录图标。Aiden 在后台，iOS PiP Bridge 已开启。查询 Biden 的手机号，调用 search_launch_app 进入备忘录，再直接调用 enter_text 写入包含完整原始号码的内容；不要调用 bridge_clipboard 或 bridge_open_app。",
       "mock_environment": {
         "phone_bridge": {
           "connected": false,
@@ -160,10 +158,10 @@
               "screen_text": "Apple Notes is open on a blank note editor around normalized x=500, y=360."
             }
           ],
-          "enter_text_via_bridge": {
-            "input_contains": {"text": {"$contains": "+1 202-555-0147"}, "platform": "ios"},
+          "enter_text": {
+            "input_contains": {"text": {"$contains": "+1 202-555-0147"}},
             "screen_contains": "Apple Notes is open",
-            "output": {"ok": true, "committed": true, "matched_text": "+1 202-555-0147"},
+            "output": {"ok": true},
             "screen_text": "Apple Notes contains Biden phone number: +1 202-555-0147"
           }
         }
@@ -171,18 +169,18 @@
       "rubric": [
         {"id": "queried_contact", "check": "Calls bridge_contacts with action=query and query=Biden."},
         {"id": "searched_for_notes", "check": "Calls search_launch_app because Notes and its icon are unavailable."},
-        {"id": "entered_number", "check": "Calls enter_text_via_bridge with the returned number."}
+        {"id": "entered_number", "check": "Calls enter_text with the returned number."}
       ],
       "hard_assertions": {
         "min_tool_calls": 3,
         "max_tool_calls": 12,
         "must_complete_within_sec": 180,
-        "required_tools": ["bridge_contacts", "search_launch_app", "enter_text_via_bridge"],
+        "required_tools": ["bridge_contacts", "search_launch_app", "enter_text"],
         "forbidden_tools": ["bridge_open_app", "bridge_clipboard"],
         "required_tool_calls": [
           {"tool": "bridge_contacts", "input_contains": {"action": "query", "query": "Biden"}},
           {"tool": "search_launch_app"},
-          {"tool": "enter_text_via_bridge", "input_contains": {"text": {"$contains": "+1 202-555-0147"}, "platform": "ios"}}
+          {"tool": "enter_text", "input_contains": {"text": {"$contains": "+1 202-555-0147"}}}
         ]
       }
     }

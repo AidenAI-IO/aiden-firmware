@@ -94,7 +94,7 @@ def test_required_tool_calls_match_nested_input_subset():
         tool_calls=[
             ToolCall(
                 step=1,
-                tool="enter_text_via_bridge",
+                tool="enter_text",
                 input={
                     "text": "+1 202-555-0147",
                     "platform": "ios",
@@ -109,7 +109,7 @@ def test_required_tool_calls_match_nested_input_subset():
     spec = HardAssertions(
         required_tool_calls=[
             RequiredToolCallSpec(
-                tool="enter_text_via_bridge",
+                tool="enter_text",
                 input_contains={"text": "+1 202-555-0147", "focus": {"x": 500}},
             )
         ]
@@ -126,7 +126,7 @@ def test_required_tool_calls_support_string_contains_matcher():
         tool_calls=[
             ToolCall(
                 step=1,
-                tool="enter_text_via_bridge",
+                tool="enter_text",
                 input={"text": "Biden: +1 202-555-0147", "platform": "ios"},
             )
         ],
@@ -137,7 +137,7 @@ def test_required_tool_calls_support_string_contains_matcher():
     spec = HardAssertions(
         required_tool_calls=[
             RequiredToolCallSpec(
-                tool="enter_text_via_bridge",
+                tool="enter_text",
                 input_contains={
                     "text": {"$contains": "+1 202-555-0147"},
                     "platform": "ios",

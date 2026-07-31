@@ -77,23 +77,25 @@ type modelDTO struct {
 }
 
 type ttsDTO struct {
-	Provider string  `json:"provider"`
-	APIKey   string  `json:"api_key"`
-	Model    string  `json:"model"`
-	VoiceID  string  `json:"voice_id"`
-	Emotion  string  `json:"emotion"`
-	Speed    float64 `json:"speed"`
+	Provider    string  `json:"provider"`
+	APIKey      string  `json:"api_key"`
+	Model       string  `json:"model"`
+	VoiceID     string  `json:"voice_id"`
+	ReferenceID string  `json:"reference_id"`
+	Emotion     string  `json:"emotion"`
+	Speed       float64 `json:"speed"`
 }
 
 func (d ttsDTO) playbackTestRequest(text string) agent.TTSPlaybackTestRequest {
 	return agent.TTSPlaybackTestRequest{
-		Provider: d.Provider,
-		APIKey:   d.APIKey,
-		Model:    d.Model,
-		VoiceID:  d.VoiceID,
-		Emotion:  d.Emotion,
-		Speed:    d.Speed,
-		Text:     text,
+		Provider:    d.Provider,
+		APIKey:      d.APIKey,
+		Model:       d.Model,
+		VoiceID:     d.VoiceID,
+		ReferenceID: d.ReferenceID,
+		Emotion:     d.Emotion,
+		Speed:       d.Speed,
+		Text:        text,
 	}
 }
 
@@ -292,12 +294,13 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			ModelMaxOutputTokens: d.ModelText.ModelMaxOutputTokens,
 		},
 		TTS: agent.TTSConfig{
-			Provider: d.TTS.Provider,
-			APIKey:   d.TTS.APIKey,
-			Model:    d.TTS.Model,
-			VoiceID:  d.TTS.VoiceID,
-			Emotion:  d.TTS.Emotion,
-			Speed:    d.TTS.Speed,
+			Provider:    d.TTS.Provider,
+			APIKey:      d.TTS.APIKey,
+			Model:       d.TTS.Model,
+			VoiceID:     d.TTS.VoiceID,
+			ReferenceID: d.TTS.ReferenceID,
+			Emotion:     d.TTS.Emotion,
+			Speed:       d.TTS.Speed,
 		},
 		STT: agent.STTConfig{
 			Provider:        d.STT.Provider,
@@ -446,12 +449,13 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			ModelMaxOutputTokens: cfg.ModelText.ModelMaxOutputTokens,
 		},
 		TTS: ttsDTO{
-			Provider: cfg.TTS.Provider,
-			APIKey:   cfg.TTS.APIKey,
-			Model:    cfg.TTS.Model,
-			VoiceID:  cfg.TTS.VoiceID,
-			Emotion:  cfg.TTS.Emotion,
-			Speed:    cfg.TTS.Speed,
+			Provider:    cfg.TTS.Provider,
+			APIKey:      cfg.TTS.APIKey,
+			Model:       cfg.TTS.Model,
+			VoiceID:     cfg.TTS.VoiceID,
+			ReferenceID: cfg.TTS.ReferenceID,
+			Emotion:     cfg.TTS.Emotion,
+			Speed:       cfg.TTS.Speed,
 		},
 		STT: sttDTO{
 			Provider:        cfg.STT.Provider,

@@ -24,6 +24,7 @@ import (
 	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
+	speechtext "aiden-agent/internal/agent/speech"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -4948,7 +4949,7 @@ func TestRuntimeFinalizesStreamingStateAtEachLLMResponseBoundary(t *testing.T) {
 	)
 
 	var speech strings.Builder
-	writer := NewTTSTagStreamWriter(&speech)
+	writer := speechtext.NewStreamWriter(&speech)
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:        "retry malformed output",
 		StreamWriter: writer,

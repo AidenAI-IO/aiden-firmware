@@ -17,12 +17,69 @@ jobs:
       - name: Verify self-hosted runner safety
         run: bash scripts/test_github_actions_self_hosted_safety.sh
 
+  # The reproducible rootfs policy asserts invariants about pico-sdk's
+  # sysdrv/Makefile. It also runs in build.yml, but that only fires on
+  # schedule/dispatch, so a regression there was invisible until an 80-minute
+  # build failed. Run it on pull requests too, against a sparse checkout of the
+  # pinned submodule commit rather than the ~1GB pico-sdk working tree.
+  buildroot-state-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch pinned pico-sdk policy inputs
+        id: sdk
+        run: |
+          set -euo pipefail
+          sha="$(git ls-tree HEAD pico-sdk | awk '{print $3}')"
+          if [ -z "$sha" ]; then
+            echo "could not resolve the pinned pico-sdk submodule commit" >&2
+            exit 1
+          fi
+          echo "Pinned pico-sdk commit: $sha"
+          url="$(git config -f .gitmodules submodule.pico-sdk.url)"
+          dir="$RUNNER_TEMP/pico-sdk-policy"
+          git init -q "$dir"
+          git -C "$dir" remote add origin "$url"
+          # Restrict to the files the policy test reads. A blobless shallow
+          # sparse fetch of the pinned commit takes seconds and tens of MB.
+          git -C "$dir" sparse-checkout set --no-cone \
+            /sysdrv/Makefile \
+            /sysdrv/tools/board/buildroot/luckfox_pico_defconfig \
+            /sysdrv/tools/board/buildroot/luckfox_pico_w_defconfig
+          git -C "$dir" fetch -q --depth=1 --filter=blob:none origin "$sha"
+          git -C "$dir" checkout -q FETCH_HEAD
+          # Assert what was actually checked out, so a wrong or partial fetch
+          # cannot leave the policy check verifying an unrelated revision.
+          got="$(git -C "$dir" rev-parse HEAD)"
+          if [ "$got" != "$sha" ]; then
+            echo "fetched pico-sdk $got but the submodule pins $sha" >&2
+            exit 1
+          fi
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+      - name: Verify reproducible rootfs policy
+        env:
+          PICO_SDK_DIR: ${{ steps.sdk.outputs.dir }}
+        run: bash scripts/test_reproducible_rootfs_policy.sh
+
   run-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # test_release_ci_scripts.sh checks ci.yml's job structure through a YAML
+      # parser rather than by grepping, so PyYAML has to be present. It ships on
+      # ubuntu-latest today; install it explicitly so a runner image change
+      # cannot turn the structural checks into a skip. Pinned, and allowed to
+      # install into a PEP 668 managed interpreter -- a future runner image
+      # marking the system Python managed would otherwise fail this step.
+      - name: Install workflow parsing dependency
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check \
+            --break-system-packages pyyaml==6.0.2 \
+            || python3 -m pip install --quiet --disable-pip-version-check pyyaml==6.0.2
       - name: Verify release scripts
         run: |
           sh scripts/test_release_ci_scripts.sh
