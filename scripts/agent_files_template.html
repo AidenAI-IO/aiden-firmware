@@ -111,6 +111,10 @@ pre.block-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-
 .content-line:nth-child(even) { background: color-mix(in oklch, oklch(88% 0.03 250) 38%, white) }
 .content-line-no { padding: 2px 10px; color: var(--muted); text-align: right; border-right: 1px solid var(--border); font-variant-numeric: tabular-nums; user-select: none }
 .content-line-text { padding: 2px 12px; white-space: pre-wrap; word-break: break-word }
+.content-more { padding: 10px 12px; border-top: 1px solid var(--border); background: var(--surface); display: flex; align-items: center; justify-content: space-between; gap: 10px }
+.content-more span { color: var(--muted); font-size: 12px }
+.content-more-btn { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg); cursor: pointer; font-size: 12px; font-weight: 600 }
+.content-more-btn:hover { background: color-mix(in oklch, var(--accent) 4%, white) }
 .screenshot-ref-link { color: var(--accent); text-decoration: none; font-family: inherit; font-size: inherit; font-weight: 650 }
 .screenshot-ref-link:hover { text-decoration: underline }
 .empty-state { padding: 40px; text-align: center; color: var(--muted) }
@@ -153,11 +157,11 @@ pre.block-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-
   </div>
   <div class="drawer-body" id="dBody"></div>
 </aside>
-<aside class="detail-drawer" id="detailDrawer">
+<aside class="detail-drawer" id="detailDrawer" inert aria-hidden="true">
   <div class="drawer-top">
     <h2 id="detailTitle">—</h2>
     <div class="drawer-chips" id="detailChips"></div>
-    <button class="close-btn" id="detailCloseBtn">&times;</button>
+    <button class="close-btn" id="detailCloseBtn" aria-label="Close screenshot details">&times;</button>
   </div>
   <div class="drawer-body" id="detailBody"></div>
 </aside>
@@ -168,7 +172,10 @@ const SKILL_STATE_DATA = {{SKILL_STATE_JSON}};
 
 const backdrop = document.getElementById("backdrop");
 const closeBtn = document.getElementById("closeBtn");
+const detailDrawer = document.getElementById("detailDrawer");
 const detailCloseBtn = document.getElementById("detailCloseBtn");
+const CONTENT_INITIAL_LINE_LIMIT = 500;
+let detailDrawerTrigger = null;
 
 function esc(s) { var d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
 function formatSize(bytes) {
@@ -222,16 +229,16 @@ function findScreenshotFile(type, eventFile, screenshotRef) {
   if (!ref) return null;
 
   const candidates = [];
-  const normalizedRef = normalizeRelativePath(ref);
 
   if (data.path && ref.indexOf(data.path) === 0) {
     candidates.push(normalizeRelativePath(ref.slice(data.path.length)));
   }
 
   const baseDir = dirname(eventFile.relative_path);
-  if (baseDir && normalizedRef) {
-    candidates.push(normalizeRelativePath(baseDir + '/' + normalizedRef));
+  if (baseDir) {
+    candidates.push(normalizeRelativePath(baseDir + '/' + ref));
   }
+  const normalizedRef = normalizeRelativePath(ref);
   if (normalizedRef) candidates.push(normalizedRef);
 
   for (const candidate of candidates) {
@@ -244,11 +251,15 @@ function findScreenshotFile(type, eventFile, screenshotRef) {
 function attachImageErrorHandlers(scope) {
   const root = scope || document;
   root.querySelectorAll('.image-preview-img').forEach(img => {
-    img.addEventListener('error', () => {
+    const handleError = () => {
       img.hidden = true;
       const error = img.parentElement.querySelector('.image-preview-error');
       if (error) error.hidden = false;
-    });
+    };
+    img.addEventListener('error', handleError);
+    if (img.complete && img.naturalWidth === 0) {
+      handleError();
+    }
   });
 }
 
@@ -293,32 +304,85 @@ function renderContentLineText(fileType, file, text) {
   return html || '&nbsp;';
 }
 
-function renderContentLines(fileType, file) {
-  const lines = String(file.content || '').split('\n');
-  let html = '<div class="block-body content-lines">';
+function collectContentLines(content, start, limit) {
+  const source = String(content || '');
+  const lines = [];
+  let lineStart = start || 0;
+  for (let i = lineStart; i < source.length; i++) {
+    if (source.charCodeAt(i) !== 10) continue;
+    lines.push(source.slice(lineStart, i));
+    lineStart = i + 1;
+    if (limit > 0 && lines.length >= limit) {
+      return { lines, nextStart: lineStart, hasMore: lineStart < source.length };
+    }
+  }
+  lines.push(source.slice(lineStart));
+  return { lines, nextStart: source.length, hasMore: false };
+}
+
+function renderContentLineElements(fileType, file, lines, startLine) {
+  let html = '';
   lines.forEach((line, idx) => {
     html += '<div class="content-line">';
-    html += '<span class="content-line-no">' + String(idx + 1).padStart(3, '0') + '</span>';
+    html += '<span class="content-line-no">' + String(startLine + idx).padStart(3, '0') + '</span>';
     html += '<code class="content-line-text">' + renderContentLineText(fileType, file, line) + '</code>';
     html += '</div>';
   });
+  return html;
+}
+
+function renderContentLines(fileType, file) {
+  const first = collectContentLines(file.content, 0, CONTENT_INITIAL_LINE_LIMIT);
+  let html = '<div class="block-body content-lines">';
+  html += renderContentLineElements(fileType, file, first.lines, 1);
+  if (first.hasMore) {
+    html += '<div class="content-more">';
+    html += '<span>Showing first ' + first.lines.length + ' lines.</span>';
+    html += '<button class="content-more-btn" data-type="' + esc(fileType) + '" data-file-path="' + esc(file.relative_path) + '" data-next-start="' + first.nextStart + '" data-next-line="' + (first.lines.length + 1) + '">Render remaining lines</button>';
+    html += '</div>';
+  }
   html += '</div>';
   return html;
 }
 
-function attachScreenshotRefListeners() {
-  document.querySelectorAll('.screenshot-ref-link').forEach(link => {
+function attachContentMoreListeners(scope) {
+  const root = scope || document;
+  root.querySelectorAll('.content-more-btn').forEach(btn => {
+    if (btn.dataset.listenerAttached === "true") return;
+    btn.dataset.listenerAttached = "true";
+    btn.addEventListener('click', event => {
+      event.preventDefault();
+      const fileType = btn.dataset.type;
+      const file = findFileByRelativePath(fileType, btn.dataset.filePath);
+      if (!file) return;
+      const start = parseInt(btn.dataset.nextStart, 10);
+      const startLine = parseInt(btn.dataset.nextLine, 10);
+      const remaining = collectContentLines(file.content, Number.isFinite(start) ? start : 0, 0);
+      const wrapper = btn.closest('.content-more');
+      wrapper.insertAdjacentHTML('beforebegin', renderContentLineElements(fileType, file, remaining.lines, Number.isFinite(startLine) ? startLine : 1));
+      wrapper.remove();
+      attachScreenshotRefListeners(root);
+    });
+  });
+}
+
+function attachScreenshotRefListeners(scope) {
+  const root = scope || document;
+  root.querySelectorAll('.screenshot-ref-link').forEach(link => {
+    if (link.dataset.listenerAttached === "true") return;
+    link.dataset.listenerAttached = "true";
     link.addEventListener('click', event => {
       event.preventDefault();
       event.stopPropagation();
       const fileType = link.dataset.type;
       const eventFile = findFileByRelativePath(fileType, link.dataset.filePath);
-      openScreenshotDetailDrawer(fileType, eventFile, link.dataset.screenshotRef);
+      openScreenshotDetailDrawer(fileType, eventFile, link.dataset.screenshotRef, link);
     });
   });
 }
 
-function openScreenshotDetailDrawer(fileType, eventFile, screenshotRef) {
+function openScreenshotDetailDrawer(fileType, eventFile, screenshotRef, trigger) {
+  detailDrawerTrigger = trigger || null;
   const imageFile = eventFile ? findScreenshotFile(fileType, eventFile, screenshotRef) : null;
   document.getElementById("detailTitle").textContent = screenshotRef || "Screenshot";
 
@@ -348,7 +412,10 @@ function openScreenshotDetailDrawer(fileType, eventFile, screenshotRef) {
   const detailBody = document.getElementById("detailBody");
   detailBody.innerHTML = body;
   attachImageErrorHandlers(detailBody);
+  detailDrawer.removeAttribute("inert");
+  detailDrawer.removeAttribute("aria-hidden");
   document.body.classList.add("detail-open");
+  detailCloseBtn.focus({ preventScroll: true });
 }
 
 function renderMemoryContent() {
@@ -631,7 +698,7 @@ function attachFileListeners() {
 }
 
 function openDrawer(type, idx) {
-  closeDetailDrawer();
+  closeDetailDrawer({ restoreFocus: false });
   const data = dataForType(type);
   const file = data.files[idx];
 
@@ -668,8 +735,8 @@ function openDrawer(type, idx) {
   }
 
   if (file.content) {
-    const lines = file.content.split('\n').length;
-    body += '<div class="block"><div class="block-head"><strong>Content</strong><span>' + lines + ' lines</span></div>' + renderContentLines(type, file) + '</div>';
+    const contentMeta = file.jsonl_count ? file.jsonl_count + ' parsed lines' : formatSize(file.size);
+    body += '<div class="block"><div class="block-head"><strong>Content</strong><span>' + contentMeta + '</span></div>' + renderContentLines(type, file) + '</div>';
   } else if (file.type === 'binary') {
     body += '<div class="block"><div class="block-head"><strong>Binary File</strong></div><div class="block-body">Cannot display binary content</div></div>';
   }
@@ -699,7 +766,8 @@ function openDrawer(type, idx) {
   document.getElementById("dBody").innerHTML = body;
 
   attachImageErrorHandlers(document.getElementById("dBody"));
-  attachScreenshotRefListeners();
+  attachContentMoreListeners(document.getElementById("dBody"));
+  attachScreenshotRefListeners(document.getElementById("dBody"));
 
   // Add event listeners for reference jump buttons
   document.querySelectorAll('.ref-jump-btn').forEach(btn => {
@@ -745,12 +813,19 @@ function jumpToFile(targetPath) {
   alert('Referenced file not found in current directory: ' + targetPath);
 }
 
-function closeDetailDrawer() {
+function closeDetailDrawer(options) {
+  const restoreFocus = !options || options.restoreFocus !== false;
   document.body.classList.remove("detail-open");
+  detailDrawer.setAttribute("inert", "");
+  detailDrawer.setAttribute("aria-hidden", "true");
+  if (restoreFocus && detailDrawerTrigger && detailDrawerTrigger.isConnected) {
+    detailDrawerTrigger.focus({ preventScroll: true });
+  }
+  detailDrawerTrigger = null;
 }
 
 function closeDrawer() {
-  closeDetailDrawer();
+  closeDetailDrawer({ restoreFocus: false });
   document.body.classList.remove("open");
 }
 

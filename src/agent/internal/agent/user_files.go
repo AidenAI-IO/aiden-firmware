@@ -70,6 +70,7 @@ func (s *Server) handleUserFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUserFilesPreview(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; sandbox")
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -83,10 +84,6 @@ func (s *Server) handleUserFilesPreview(w http.ResponseWriter, r *http.Request) 
 
 	filePath, err := safeUserFilesPath(root, r.URL.Query().Get("path"))
 	if err != nil {
-		if os.IsNotExist(err) {
-			http.NotFound(w, r)
-			return
-		}
 		http.Error(w, "invalid path", http.StatusBadRequest)
 		return
 	}
@@ -190,6 +187,9 @@ func safeUserFilesPath(root, rel string) (string, error) {
 
 func userFilesImageContentType(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".svg" {
+		return ""
+	}
 	if contentType := mime.TypeByExtension(ext); strings.HasPrefix(strings.ToLower(contentType), "image/") {
 		return contentType
 	}
@@ -210,8 +210,6 @@ func userFilesImageContentType(path string) string {
 		return "image/jpeg"
 	case ".png":
 		return "image/png"
-	case ".svg":
-		return "image/svg+xml"
 	case ".tif", ".tiff":
 		return "image/tiff"
 	case ".webp":

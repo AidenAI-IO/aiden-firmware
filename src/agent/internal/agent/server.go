@@ -384,10 +384,9 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		eventBroadcaster:       NewEventBroadcaster(),
 		storageMonitor:         runtime.storageMonitor,
 	}
-	if runtime.config.ConfigDir != "" {
-		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
-		s.historyStore = NewChatHistoryStore(filepath.Join(memoryDir, "chat_history"))
-		s.episodeStore = NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
+	if s.userFilesMemoryDir != "" {
+		s.historyStore = NewChatHistoryStore(filepath.Join(s.userFilesMemoryDir, "chat_history"))
+		s.episodeStore = NewTaskEpisodeStore(filepath.Join(s.userFilesMemoryDir, "episodes"))
 	}
 	// Connect history store to event broadcaster
 	if s.historyStore != nil {
