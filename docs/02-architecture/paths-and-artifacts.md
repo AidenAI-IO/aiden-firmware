@@ -8,6 +8,7 @@
 | `build/lib/libaiden_image.a` | Image processing static library |
 | `build/lib/libcjson.a` | cJSON static library |
 | `build/bin/` | Application binaries directory |
+| `build/rootfs-cli-tools/` | Verified ARMv7 `fq`, `yq`, and `rg` bundle staged into rootfs |
 | `build-host/tests/aiden_tests` | host-native unit test binary |
 | `pico-sdk/output/image/` | Full firmware build output directory |
 
@@ -31,6 +32,7 @@
 | Path | Description |
 | --- | --- |
 | `/oem/usr/bin/` | Application binary installation directory |
+| `/usr/bin/fq`, `/usr/bin/yq`, `/usr/bin/rg` | Rootfs CLI tools available to Agent shell commands without an OEM-specific PATH |
 | `/oem/usr/model/` | VAD models and weights updated with OEM/OTA |
 | `/userdata/agent/agent.toml` | Agent main configuration |
 | `/userdata/agent/skills/` | Agent skills directory |
