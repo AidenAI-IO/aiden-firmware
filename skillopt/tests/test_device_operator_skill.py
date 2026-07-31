@@ -52,7 +52,7 @@ def test_device_operator_stops_after_repeated_unlock_failures():
 def test_mobilegym_profile_documents_text_entry_fallback():
     profile = _mobilegym_profile()
 
-    assert "enter_text_in_field" in profile
+    assert "enter_text" in profile
     assert "keyboard_text" in profile
     assert "not in the tool catalog" in profile
 

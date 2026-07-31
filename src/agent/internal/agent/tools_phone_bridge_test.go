@@ -166,8 +166,9 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: textInputStubTool{name: "keyboard_tap", out: "ok"}}
+	hw.pointerMode = "touchscreen"
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
-	entryTool := &EnterTextInFieldTool{engine: newFastTextInputEngine(*hw, vision)}
+	entryTool := &EnterTextTool{engine: newFastTextInputEngine(*hw, vision)}
 	called := 0
 	result, err := runAppSearchOpenFlow(context.Background(), appSearchOpenFlowConfig{
 		hw:         hw,
@@ -193,7 +194,7 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 	if called != 1 {
 		t.Fatalf("findAppTapFn calls=%d", called)
 	}
-	if len(quick.calls) != 1 || len(keyboardText.calls) != 1 || len(touch.calls) != 1 {
+	if len(quick.calls) != 1 || len(keyboardText.calls) != 2 || len(touch.calls) != 1 {
 		t.Fatalf("unexpected tool calls: quick=%v keyboard=%v touch=%v", quick.calls, keyboardText.calls, touch.calls)
 	}
 }
@@ -214,7 +215,7 @@ func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T
 	tool := &appSearchOpenTool{
 		hw:                   hw,
 		vision:               vision,
-		entryTool:            &EnterTextInFieldTool{engine: newFastTextInputEngine(*hw, vision)},
+		entryTool:            &EnterTextTool{engine: newFastTextInputEngine(*hw, vision)},
 		sleep:                testNoWaitSleep,
 		iosKeyboardIsolation: newTestIOSKeyboardIsolationController(&[]string{}),
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
@@ -275,7 +276,7 @@ func TestSearchLaunchAppBatchesIOSModifierIsolationAcrossSubtools(t *testing.T) 
 		quickAction:  quickAction,
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}
-	entryTool := &EnterTextInFieldTool{
+	entryTool := &EnterTextTool{
 		engine:               newFastTextInputEngine(*hw, vision),
 		iosKeyboardIsolation: controller,
 	}
@@ -318,8 +319,9 @@ func TestAppSearchOpenFlowFallsBackToShorterTerm(t *testing.T) {
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: kbTap}
+	hw.pointerMode = "touchscreen"
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
-	entryTool := &EnterTextInFieldTool{engine: newFastTextInputEngine(*hw, vision)}
+	entryTool := &EnterTextTool{engine: newFastTextInputEngine(*hw, vision)}
 	terms := []string{}
 	result, err := runAppSearchOpenFlow(context.Background(), appSearchOpenFlowConfig{
 		hw:         hw,
@@ -360,8 +362,9 @@ func TestAppSearchOpenFlowRechecksSameTermBeforeFallback(t *testing.T) {
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: kbTap}
+	hw.pointerMode = "touchscreen"
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
-	entryTool := &EnterTextInFieldTool{engine: newFastTextInputEngine(*hw, vision)}
+	entryTool := &EnterTextTool{engine: newFastTextInputEngine(*hw, vision)}
 	terms := []string{}
 	findCalls := 0
 	result, err := runAppSearchOpenFlow(context.Background(), appSearchOpenFlowConfig{
@@ -395,8 +398,8 @@ func TestAppSearchOpenFlowRechecksSameTermBeforeFallback(t *testing.T) {
 	if len(terms) != 2 || terms[0] != "Aiden Bridge" || terms[1] != "Aiden Bridge" {
 		t.Fatalf("expected same-term recheck before fallback, got terms=%#v", terms)
 	}
-	if len(keyboardText.calls) != 2 {
-		t.Fatalf("expected single spaced query entry, got keyboard_text calls=%v", keyboardText.calls)
+	if len(keyboardText.calls) != 3 {
+		t.Fatalf("expected probe followed by the two ASCII query parts, got keyboard_text calls=%v", keyboardText.calls)
 	}
 	if len(touch.calls) != 1 {
 		t.Fatalf("touch_gesture calls=%v", touch.calls)

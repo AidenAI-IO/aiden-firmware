@@ -89,8 +89,8 @@ Typical scenario:
 The tools the default WebUI Docker daemon forwards include:
 
 ```text
-screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text_in_field,
-enter_text_via_bridge,search_launch_app,mouse_click,mouse_move,mouse_scroll,
+screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,
+search_launch_app,mouse_click,mouse_move,mouse_scroll,
 quick_action,bridge_open_app,bridge_clipboard,bridge_calendar,
 bridge_contacts,bridge_notification
 ```
@@ -135,7 +135,7 @@ benchmark tests policy selection without mixing in visual perception:
 | Notes page/icon not visible | Use `search_launch_app`; do not use `bridge_open_app` | `notes_entry_policy_v1.json` |
 
 All three return the same fixed Biden contact, hide the unavailable
-`bridge_open_app`, require `enter_text_via_bridge`, and forbid a separate
+`bridge_open_app`, require `enter_text`, and forbid a separate
 `bridge_clipboard` staging call.
 
 `phone_bridge_data_policy_v1.json` covers contacts, calendar query/create,
@@ -219,7 +219,7 @@ the expected value. The same matcher works in mock responses and
 `hard_assertions.required_tool_calls`; for example, `{"text": {"$contains":
 "+1 202-555-0147"}}` accepts both the bare number and `Biden: +1 202-555-0147`.
 
-`enter_text_via_bridge` has its own internal decision chain in the real Go tool:
+`enter_text` has its own internal decision chain in the real Go tool:
 
 1. Prepare or reuse the clipboard through the connected/background Phone Bridge
    route.
@@ -230,9 +230,9 @@ the expected value. The same matcher works in mock responses and
 6. If the shortcut had no visible effect and the field is still empty, long-press
    the field and tap the visible Paste/粘贴 menu action.
 
-It does not fall back to typing the target text itself. HID/IME typing fallback
-belongs to `enter_text_in_field`. Because mock suites forward
-`enter_text_via_bridge` to the scripted environment, they validate the Agent's
+The clipboard/paste sub-path does not fall back to typing the target text itself.
+The top-level `enter_text` tool owns the HID/IME typing fallback. Because mock suites forward
+`enter_text` to the scripted environment, they validate the Agent's
 tool selection but not this internal fallback implementation. The Go unit tests
 cover those branches; a real-phone smoke test is still needed for platform paste
 behavior.

@@ -916,7 +916,7 @@ def test_notes_entry_policy_suite_covers_three_screen_states():
     open_task = tasks["ios_pip_notes_already_open"]
     assert "search_launch_app" in open_task.hard_assertions.forbidden_tools
     assert "bridge_open_app" in open_task.hard_assertions.forbidden_tools
-    assert "enter_text_via_bridge" in open_task.hard_assertions.required_tools
+    assert "enter_text" in open_task.hard_assertions.required_tools
     assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in open_task.prompt
 
     icon_task = tasks["ios_pip_notes_icon_visible"]

@@ -96,4 +96,3 @@ class VPhoneBridgeState:
             if len(self.action_log) > ACTION_LOG_LIMIT:
                 del self.action_log[: len(self.action_log) - ACTION_LOG_LIMIT]
         return entry
-

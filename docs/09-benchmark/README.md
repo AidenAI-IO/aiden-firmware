@@ -93,17 +93,17 @@ background-safe data tools execute directly through the background queue.
 launching.
 
 The Notes cases use a fixed `bridge_contacts` result and require
-`enter_text_via_bridge` without a separate `bridge_clipboard` call. The generated
+`enter_text` without a separate `bridge_clipboard` call. The generated
 screen is retained for runner pre/post artifacts and fixture state transitions;
 the policy tests do not require the Agent to inspect it. Scripted
 `screen_contains` preconditions prevent text entry before the fixture has actually
 reached the Notes editor.
 
-The mock checks that the Agent chooses `enter_text_via_bridge`; it does not run
+The mock checks that the Agent chooses `enter_text`; it does not run
 the tool's internal paste fallbacks. In the real Go tool the order is Phone Bridge
 clipboard, `quick_action` paste, direct keyboard paste if the action errors,
 visual verification, then long-press Paste/粘贴 if the shortcut had no visible
-effect. Ordinary typing fallback belongs to `enter_text_in_field`.
+effect. Ordinary typing fallback belongs to `enter_text`.
 
 Use real devices separately for iOS PiP/Android FGS lifecycle, USB ECM, native
 permissions, actual background queue delivery, app launch behavior, and HID paste

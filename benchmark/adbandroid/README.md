@@ -88,7 +88,7 @@ go run ./cmd/daemon \
   -config <your config directory> \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://127.0.0.1:8899 \
-  --environment-bridge-tools "screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text_in_field,enter_text_via_bridge,mouse_click,mouse_move,mouse_scroll,quick_action" \
+  --environment-bridge-tools "screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,mouse_click,mouse_move,mouse_scroll,quick_action" \
   --benchmark-task-id cli-task
 
 # 3. Run the benchmark (same as Option 1 step 3, with --benchmark-task-id cli-task)
@@ -200,7 +200,7 @@ single-env behavior):
 ## Tools and coordinates
 
 The tools match MobileGym: `screenshot` `touch_gesture` `keyboard_text`
-`keyboard_tap` `enter_text_in_field` `enter_text_via_bridge` `mouse_click`
+`keyboard_tap` `enter_text` `mouse_click`
 `mouse_move` `mouse_scroll` `quick_action`.
 
 Coordinate spaces (`coord_space`):
@@ -225,12 +225,12 @@ a gesture on failure). Pass `{"list": true}` to see the full catalog.
   would need a clipboard/IME approach, not yet implemented. For ASCII input, the
   bridge temporarily switches to a known enabled Latin IME when available, then
   restores the previous IME.
-- **Text entry is verified best-effort**: `enter_text_in_field` and
-  `enter_text_via_bridge` report `committed:true` only when Android UIAutomator
+- **Text entry is verified best-effort**: `enter_text` reports `ok:true` only
+  when Android UIAutomator
   exposes matching editable field text after `adb input text`. The bridge dumps
   UIAutomator XML to a temporary device file and reads it back because some
   devices do not emit XML for `/dev/tty`. When verification is unavailable or
-  the field text differs, they return `committed:false` with a post-action
+  the field text differs, it returns `ok:false` with a next-step suggestion and post-action
   screenshot so the agent can inspect the keyboard/IME state before retrying.
 - **Single-device, serial**: one bridge drives one device and does not support
   concurrent tasks. For multiple devices run multiple bridge instances (different

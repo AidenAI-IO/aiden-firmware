@@ -26,6 +26,17 @@ type iosKeyboardIsolationBatch struct {
 	isolated   bool
 }
 
+func iosKeyboardIsolationControllerFromContext(ctx context.Context) *iosKeyboardIsolationController {
+	if ctx == nil {
+		return nil
+	}
+	batch, _ := ctx.Value(iosKeyboardIsolationBatchContextKey{}).(*iosKeyboardIsolationBatch)
+	if batch == nil {
+		return nil
+	}
+	return batch.controller
+}
+
 // iosKeyboardIsolationController serializes access to the three HID devices.
 // Keyboard actions whose HID reports contain modifiers temporarily use a
 // pointer-free USB profile. Unmodified text, pointer input, and Consumer
