@@ -10,6 +10,24 @@ from datetime import datetime
 import html
 import sys
 
+TEXT_SUFFIXES = {'.md', '.txt', '.json', '.jsonl', '.toml', '.yaml', '.yml', ''}
+
+IMAGE_MIME_BY_SUFFIX = {
+    '.avif': 'image/avif',
+    '.bmp': 'image/bmp',
+    '.gif': 'image/gif',
+    '.heic': 'image/heic',
+    '.heif': 'image/heif',
+    '.ico': 'image/x-icon',
+    '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.tif': 'image/tiff',
+    '.tiff': 'image/tiff',
+    '.webp': 'image/webp',
+}
+
 
 def escape(s: str) -> str:
     """HTML escape a string."""
@@ -45,39 +63,47 @@ def scan_directory(base_path: Path, show_hidden: bool = True) -> dict:
                     'is_hidden': item.name.startswith('.'),
                 }
 
-                # Try to read text content
-                try:
-                    if item.suffix in ['.md', '.txt', '.json', '.jsonl', '.toml', '.yaml', '.yml', '']:
-                        content = item.read_text('utf-8')
-                        file_info['content'] = content
-                        file_info['type'] = 'text'
+                suffix = item.suffix.lower()
+                image_mime = IMAGE_MIME_BY_SUFFIX.get(suffix)
+                if image_mime:
+                    file_info['type'] = 'image'
+                    file_info['mime_type'] = image_mime
+                else:
+                    # Try to read text content
+                    try:
+                        if suffix in TEXT_SUFFIXES:
+                            content = item.read_text('utf-8')
+                            file_info['content'] = content
+                            file_info['type'] = 'text'
 
-                        # Parse JSON
-                        if item.suffix == '.json':
-                            try:
-                                file_info['json'] = json.loads(content)
-                            except (json.JSONDecodeError, ValueError):
-                                # Invalid JSON, skip parsing
-                                pass
+                            # Parse JSON
+                            if suffix == '.json':
+                                try:
+                                    file_info['json'] = json.loads(content)
+                                except (json.JSONDecodeError, ValueError):
+                                    # Invalid JSON, skip parsing
+                                    pass
 
-                        # Parse JSONL (JSON Lines)
-                        if item.suffix == '.jsonl':
-                            try:
-                                lines = []
-                                for line in content.strip().split('\n'):
-                                    if line.strip():
-                                        lines.append(json.loads(line))
-                                file_info['jsonl'] = lines
-                                file_info['jsonl_count'] = len(lines)
-                            except (json.JSONDecodeError, ValueError):
-                                # Invalid JSONL, skip parsing
-                                pass
+                            # Parse JSONL (JSON Lines)
+                            if suffix == '.jsonl':
+                                try:
+                                    lines = []
+                                    for line in content.strip().split('\n'):
+                                        if line.strip():
+                                            lines.append(json.loads(line))
+                                    file_info['jsonl'] = lines
+                                    file_info['jsonl_count'] = len(lines)
+                                except (json.JSONDecodeError, ValueError):
+                                    # Invalid JSONL, skip parsing
+                                    pass
 
-                        # Extract references from YAML-like content
-                        file_info['references'] = extract_references(content, str(relative_path))
-                except (UnicodeDecodeError, IOError):
-                    # Binary file or read error, mark as binary
-                    file_info['type'] = 'binary'
+                            # Extract references from YAML-like content
+                            file_info['references'] = extract_references(content, str(relative_path))
+                        else:
+                            file_info['type'] = 'binary'
+                    except (UnicodeDecodeError, IOError):
+                        # Binary file or read error, mark as binary
+                        file_info['type'] = 'binary'
 
                 result['files'].append(file_info)
                 result['total_size'] += file_info['size']

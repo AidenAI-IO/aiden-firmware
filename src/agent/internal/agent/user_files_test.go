@@ -66,3 +66,66 @@ func TestHandleUserFilesRegenerate_RunsAsync(t *testing.T) {
 	}
 	t.Errorf("script did not run within timeout")
 }
+
+func TestHandleUserFilesPreview_ServesImage(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "screens", "frame.png")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("\x89PNG\r\n\x1a\npreview")
+	if err := os.WriteFile(path, want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{userFilesMemoryDir: root}
+	req := httptest.NewRequest(http.MethodGet, "/user_files/preview?type=memory&path=screens/frame.png", nil)
+	rec := httptest.NewRecorder()
+	s.handleUserFilesPreview(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body=%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "image/png") {
+		t.Fatalf("Content-Type = %q, want image/png", got)
+	}
+	if got := rec.Body.Bytes(); string(got) != string(want) {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+func TestHandleUserFilesPreview_RejectsNonImage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{userFilesMemoryDir: root}
+	req := httptest.NewRequest(http.MethodGet, "/user_files/preview?type=memory&path=note.txt", nil)
+	rec := httptest.NewRecorder()
+	s.handleUserFilesPreview(rec, req)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status %d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleUserFilesPreview_RejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.png")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link.png")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	s := &Server{userFilesMemoryDir: root}
+	req := httptest.NewRequest(http.MethodGet, "/user_files/preview?type=memory&path=link.png", nil)
+	rec := httptest.NewRecorder()
+	s.handleUserFilesPreview(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d body=%q", rec.Code, rec.Body.String())
+	}
+}

@@ -2,9 +2,12 @@ package agent
 
 import (
 	"fmt"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -66,6 +69,50 @@ func (s *Server) handleUserFiles(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+func (s *Server) handleUserFilesPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	root := s.userFilesRoot(r.URL.Query().Get("type"))
+	if root == "" {
+		http.Error(w, "invalid file type", http.StatusBadRequest)
+		return
+	}
+
+	filePath, err := safeUserFilesPath(root, r.URL.Query().Get("path"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if info.IsDir() {
+		http.Error(w, "path is a directory", http.StatusBadRequest)
+		return
+	}
+
+	contentType := userFilesImageContentType(filePath)
+	if contentType == "" {
+		http.Error(w, "unsupported preview type", http.StatusUnsupportedMediaType)
+		return
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeFile(w, r, filePath)
+}
+
 func (s *Server) handleUserFilesRegenerate(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		// Reuse the same timeout budget so a hung script cannot pile up
@@ -74,4 +121,102 @@ func (s *Server) handleUserFilesRegenerate(w http.ResponseWriter, r *http.Reques
 	}()
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true,"regenerating":true}`))
+}
+
+func (s *Server) userFilesRoot(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case "memory":
+		if s.userFilesMemoryDir != "" {
+			return s.userFilesMemoryDir
+		}
+		return userFilesRootFromReportPath(s.userFilesReportPath, "memory")
+	case "skills":
+		if s.userFilesSkillsDir != "" {
+			return s.userFilesSkillsDir
+		}
+		return userFilesRootFromReportPath(s.userFilesReportPath, "skills")
+	case "skill-state":
+		if s.userFilesSkillStateDir != "" {
+			return s.userFilesSkillStateDir
+		}
+		return userFilesRootFromReportPath(s.userFilesReportPath, "skill-state")
+	default:
+		return ""
+	}
+}
+
+func userFilesRootFromReportPath(reportPath, name string) string {
+	base := strings.TrimSpace(filepath.Dir(reportPath))
+	if base == "" || base == "." {
+		return ""
+	}
+	return filepath.Join(base, name)
+}
+
+func safeUserFilesPath(root, rel string) (string, error) {
+	root = strings.TrimSpace(root)
+	rel = strings.TrimSpace(rel)
+	if root == "" || rel == "" {
+		return "", fmt.Errorf("empty path")
+	}
+
+	rel = filepath.FromSlash(rel)
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("absolute path")
+	}
+	cleanRel := filepath.Clean(rel)
+	if cleanRel == "." || cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes root")
+	}
+
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	resolvedPath, err := filepath.EvalSymlinks(filepath.Join(resolvedRoot, cleanRel))
+	if err != nil {
+		return "", err
+	}
+
+	relToRoot, err := filepath.Rel(resolvedRoot, resolvedPath)
+	if err != nil {
+		return "", err
+	}
+	if relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) || filepath.IsAbs(relToRoot) {
+		return "", fmt.Errorf("path escapes root")
+	}
+	return resolvedPath, nil
+}
+
+func userFilesImageContentType(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	if contentType := mime.TypeByExtension(ext); strings.HasPrefix(strings.ToLower(contentType), "image/") {
+		return contentType
+	}
+	switch ext {
+	case ".avif":
+		return "image/avif"
+	case ".bmp":
+		return "image/bmp"
+	case ".gif":
+		return "image/gif"
+	case ".heic":
+		return "image/heic"
+	case ".heif":
+		return "image/heif"
+	case ".ico":
+		return "image/x-icon"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".svg":
+		return "image/svg+xml"
+	case ".tif", ".tiff":
+		return "image/tiff"
+	case ".webp":
+		return "image/webp"
+	default:
+		return ""
+	}
 }

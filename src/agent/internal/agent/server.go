@@ -40,41 +40,44 @@ const (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime              *Runtime
-	addr                 string
-	logger               *Logger
-	userFilesReportPath  string
-	userFilesToolsDir    string
-	mu                   sync.Mutex
-	history              []Message
-	historyStore         *ChatHistoryStore
-	episodeStore         *TaskEpisodeStore
-	sttClient            STTClient
-	ttsManager           *tts.ProviderManager
-	ttsMu                sync.RWMutex
-	audioClient          *AudioServiceClient
-	ttsPlaybackBackend   tts.AudioServiceBackend
-	screenCaptureMu      sync.Mutex
-	screenCaptureClient  *ScreenCaptureClient
-	recordMu             sync.Mutex
-	webRecording         *webAudioRecording
-	sttConfigTestSession *sttConfigTestLiveSession
-	bridge               *PhoneBridge
-	androidADB           androidADBController
-	liveActivity         *LiveActivityManager
-	pendingResults       map[string]*chatPendingResult
-	pendingResultsMu     sync.Mutex
-	activeRuns           map[string]context.CancelFunc
-	activeRunsMu         sync.Mutex
-	terminatedRequests   map[string]struct{}
-	terminatedRequestsMu sync.Mutex
-	activeOutputs        map[string]map[*activeTTSOutput]struct{}
-	activeOutputsMu      sync.Mutex
-	pendingSteers        map[string]pendingSteerMessage
-	steerSignals         map[string]chan struct{}
-	steersMu             sync.Mutex
-	eventBroadcaster     *EventBroadcaster
-	storageMonitor       *StorageMonitor
+	runtime                *Runtime
+	addr                   string
+	logger                 *Logger
+	userFilesReportPath    string
+	userFilesToolsDir      string
+	userFilesMemoryDir     string
+	userFilesSkillsDir     string
+	userFilesSkillStateDir string
+	mu                     sync.Mutex
+	history                []Message
+	historyStore           *ChatHistoryStore
+	episodeStore           *TaskEpisodeStore
+	sttClient              STTClient
+	ttsManager             *tts.ProviderManager
+	ttsMu                  sync.RWMutex
+	audioClient            *AudioServiceClient
+	ttsPlaybackBackend     tts.AudioServiceBackend
+	screenCaptureMu        sync.Mutex
+	screenCaptureClient    *ScreenCaptureClient
+	recordMu               sync.Mutex
+	webRecording           *webAudioRecording
+	sttConfigTestSession   *sttConfigTestLiveSession
+	bridge                 *PhoneBridge
+	androidADB             androidADBController
+	liveActivity           *LiveActivityManager
+	pendingResults         map[string]*chatPendingResult
+	pendingResultsMu       sync.Mutex
+	activeRuns             map[string]context.CancelFunc
+	activeRunsMu           sync.Mutex
+	terminatedRequests     map[string]struct{}
+	terminatedRequestsMu   sync.Mutex
+	activeOutputs          map[string]map[*activeTTSOutput]struct{}
+	activeOutputsMu        sync.Mutex
+	pendingSteers          map[string]pendingSteerMessage
+	steerSignals           map[string]chan struct{}
+	steersMu               sync.Mutex
+	eventBroadcaster       *EventBroadcaster
+	storageMonitor         *StorageMonitor
 }
 
 type webAudioRecording struct {
@@ -355,24 +358,31 @@ type ToolInvokeResponse struct {
 
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
+	userFilesBaseDir := strings.TrimSpace(runtime.config.ConfigDir)
+	if userFilesBaseDir == "" {
+		userFilesBaseDir = "/userdata/agent"
+	}
 	s := &Server{
-		runtime:             runtime,
-		addr:                addr,
-		logger:              runtime.logger,
-		userFilesReportPath: "/userdata/agent/files_report.html",
-		userFilesToolsDir:   "/userdata/agent_tools",
-		history:             make([]Message, 0),
-		screenCaptureClient: NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
-		bridge:              runtime.PhoneBridge(),
-		androidADB:          NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
-		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
-		pendingResults:      make(map[string]*chatPendingResult),
-		activeRuns:          make(map[string]context.CancelFunc),
-		terminatedRequests:  make(map[string]struct{}),
-		pendingSteers:       make(map[string]pendingSteerMessage),
-		steerSignals:        make(map[string]chan struct{}),
-		eventBroadcaster:    NewEventBroadcaster(),
-		storageMonitor:      runtime.storageMonitor,
+		runtime:                runtime,
+		addr:                   addr,
+		logger:                 runtime.logger,
+		userFilesReportPath:    "/userdata/agent/files_report.html",
+		userFilesToolsDir:      "/userdata/agent_tools",
+		userFilesMemoryDir:     filepath.Join(userFilesBaseDir, "memory"),
+		userFilesSkillsDir:     filepath.Join(userFilesBaseDir, "skills"),
+		userFilesSkillStateDir: filepath.Join(userFilesBaseDir, "skill-state"),
+		history:                make([]Message, 0),
+		screenCaptureClient:    NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
+		bridge:                 runtime.PhoneBridge(),
+		androidADB:             NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
+		liveActivity:           NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
+		pendingResults:         make(map[string]*chatPendingResult),
+		activeRuns:             make(map[string]context.CancelFunc),
+		terminatedRequests:     make(map[string]struct{}),
+		pendingSteers:          make(map[string]pendingSteerMessage),
+		steerSignals:           make(map[string]chan struct{}),
+		eventBroadcaster:       NewEventBroadcaster(),
+		storageMonitor:         runtime.storageMonitor,
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -493,6 +503,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/keyboard-tap-android-keys", s.handleKeyboardTapAndroidKeys)
 
 	mux.HandleFunc("/user_files", s.handleUserFiles)
+	mux.HandleFunc("/user_files/preview", s.handleUserFilesPreview)
 	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 
 	// Static web UI
