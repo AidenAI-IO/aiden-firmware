@@ -58,3 +58,9 @@ remove_stale_path() {
 # Bundled Aiden share assets ship in OEM. Old dev branches can still leave these
 # files in the shared self-hosted runner rootfs overlay workspace.
 remove_stale_path "usr/share/aiden"
+
+# Rootfs CLI tools are generated for each image build. Remove stale binaries
+# before staging the freshly verified bundle.
+remove_stale_path "usr/bin/fq"
+remove_stale_path "usr/bin/yq"
+remove_stale_path "usr/bin/rg"

@@ -64,4 +64,4 @@ overlay/
     └── wpa_supplicant.conf
 ```
 
-`_build_image.sh` copies the application binaries to `overlay/oem/usr/bin/`, injects the VAD model into the OEM partition along with `overlay/oem/usr/model/`, and syncs/injects the overlay into the `pico-sdk` output image.
+`_build_image.sh` copies the application binaries to `overlay/oem/usr/bin/`, injects the VAD model into the OEM partition along with `overlay/oem/usr/model/`, and syncs/injects the overlay into the `pico-sdk` output image. It also builds pinned ARMv7 releases of `fq` and `yq`, verifies the pinned official `rg` archive, and stages all three in the Buildroot overlay so they ship in rootfs under `/usr/bin`.

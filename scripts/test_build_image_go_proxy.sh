@@ -16,6 +16,13 @@ cleanup() { rm -rf "$test_dir"; }
 trap cleanup EXIT
 
 mkdir -p "$test_dir/bin"
+mkdir -p "$test_dir/.toolchains/go1.26.0.linux-amd64/bin"
+printf 'go1.26.0\n' > "$test_dir/.toolchains/go1.26.0.linux-amd64/VERSION"
+cat > "$test_dir/.toolchains/go1.26.0.linux-amd64/bin/go" <<'SH'
+#!/bin/sh
+echo 'go version go1.26.0 linux/amd64'
+SH
+chmod +x "$test_dir/.toolchains/go1.26.0.linux-amd64/bin/go"
 docker_args_log="$test_dir/docker-args.log"
 cat > "$test_dir/bin/docker" <<EOF
 #!/bin/sh

@@ -90,6 +90,11 @@ if ! grep -q 'SOURCE_DATE_EPOCH' "$DOCKER_BUILD_SCRIPT" || \
     exit 1
 fi
 
+if ! grep -q "go-version: '1.26.0'" "$WORKFLOW"; then
+    echo "firmware release builds must pin Go 1.26.0 for reproducible rootfs CLI binaries" >&2
+    exit 1
+fi
+
 if grep -Fq 'rm -rf pico-sdk/output/out' "$WORKFLOW"; then
     echo "build workflow must preserve pico-sdk/output/out so unchanged SDK code can reuse SDK-managed build outputs" >&2
     exit 1
@@ -145,6 +150,8 @@ fi
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_build_rootfs_cli_tools.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_stage_rootfs_cli_tools.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_compress_release_images.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_ota_manifest_generation.sh' "$CI_WORKFLOW" || \
@@ -194,6 +201,27 @@ fi
 if ! grep -Fq '"usr/ko/insmod_wifi.sh"' "$BUILD_IMAGE_SCRIPT" || \
    grep -Fq '"usr/ko"' "$BUILD_IMAGE_SCRIPT"; then
     echo "_build_image.sh must clean only Aiden-managed usr/ko overrides, not the SDK module directory" >&2
+    exit 1
+fi
+
+rootfs_cleanup_line=$(grep -nF 'scripts/clean_rootfs_overlay_staging.sh" --dest-overlay "$DEST_OVERLAY"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+rootfs_cli_build_line=$(grep -nF 'scripts/build_rootfs_cli_tools.sh"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+rootfs_cli_stage_line=$(grep -nF 'scripts/stage_rootfs_cli_tools.sh"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+sysdrv_line=$(grep -nF './build.sh sysdrv "$@"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+if [ -z "$rootfs_cleanup_line" ] || [ -z "$rootfs_cli_build_line" ] || \
+   [ -z "$rootfs_cli_stage_line" ] || [ -z "$sysdrv_line" ] || \
+   [ "$rootfs_cleanup_line" -ge "$rootfs_cli_build_line" ] || \
+   [ "$rootfs_cli_build_line" -ge "$rootfs_cli_stage_line" ] || \
+   [ "$rootfs_cli_stage_line" -ge "$sysdrv_line" ]; then
+    echo "_build_image.sh must clean, build, and stage rootfs CLI tools before the Buildroot sysdrv build" >&2
+    exit 1
+fi
+if ! grep -Fq 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "_build_image.sh must verify fq, yq, and rg inside the final rootfs image" >&2
+    exit 1
+fi
+if ! grep -Fq 'ROOTFS_CLI_CACHE_DIR="$SCRIPT_DIR/.cache/rootfs-cli-tools"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "rootfs CLI cache must live outside build/, which _build.sh recreates on every image build" >&2
     exit 1
 fi
 

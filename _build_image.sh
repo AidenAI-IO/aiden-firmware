@@ -68,6 +68,9 @@ AIDEN_GENERATED_BINARIES=(
     trigger
 )
 GENERATED_BINARY_MANIFEST="$SCRIPT_DIR/build/aiden-generated-binaries.sha256"
+ROOTFS_CLI_TOOLS=(fq yq rg)
+ROOTFS_CLI_BUILD_DIR="$SCRIPT_DIR/build/rootfs-cli-tools"
+ROOTFS_CLI_CACHE_DIR="$SCRIPT_DIR/.cache/rootfs-cli-tools"
 
 clean_generated_binaries() {
     local bin_dir="$1"
@@ -535,6 +538,17 @@ verify_oem_generated_binaries_in_image() {
     echo "  ✓ Verified $verified generated OEM binaries in $(basename "$image_path")"
 }
 
+verify_rootfs_cli_tools_in_image() {
+    local image_path="$1"
+    local staged_root="$2"
+    local tool
+
+    for tool in "${ROOTFS_CLI_TOOLS[@]}"; do
+        verify_ext4_image_file_matches "$image_path" "$staged_root" "usr/bin/$tool"
+    done
+    echo "  ✓ Verified ${#ROOTFS_CLI_TOOLS[@]} CLI tools in $(basename "$image_path")"
+}
+
 rebuild_ext4_image() {
     local name="$1"
     local src_dir="$2"
@@ -645,6 +659,13 @@ if [ ! -d "$DEST_OVERLAY" ]; then
 fi
 
 "$SCRIPT_DIR/scripts/clean_rootfs_overlay_staging.sh" --dest-overlay "$DEST_OVERLAY"
+
+"$SCRIPT_DIR/scripts/build_rootfs_cli_tools.sh" \
+    --output-dir "$ROOTFS_CLI_BUILD_DIR" \
+    --cache-dir "$ROOTFS_CLI_CACHE_DIR"
+"$SCRIPT_DIR/scripts/stage_rootfs_cli_tools.sh" \
+    --source-dir "$ROOTFS_CLI_BUILD_DIR" \
+    --dest-overlay "$DEST_OVERLAY"
 
 # 只复制 etc 目录到 buildroot overlay
 if [ -d "$OVERLAY/etc" ]; then
@@ -759,6 +780,7 @@ cd "$PICO_SDK/project"
 echo "  → Rebuilding oem.img..."
 rebuild_ext4_image oem "$RK_PROJECT_PACKAGE_OEM_DIR"
 verify_oem_generated_binaries_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"
+verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY"
 
 echo "  → Rebuilding userdata.img..."
 rebuild_ext4_image userdata "$RK_PROJECT_PACKAGE_USERDATA_DIR"

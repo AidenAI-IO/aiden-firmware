@@ -27,6 +27,8 @@ jobs:
         run: |
           sh scripts/test_release_ci_scripts.sh
           bash scripts/test_clean_rootfs_overlay_staging.sh
+          sh scripts/test_build_rootfs_cli_tools.sh
+          sh scripts/test_stage_rootfs_cli_tools.sh
           bash scripts/test_compress_release_images.sh
           bash scripts/test_ota_manifest_generation.sh
           bash scripts/test_github_release_upload.sh
