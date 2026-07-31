@@ -72,9 +72,14 @@ jobs:
       # test_release_ci_scripts.sh checks ci.yml's job structure through a YAML
       # parser rather than by grepping, so PyYAML has to be present. It ships on
       # ubuntu-latest today; install it explicitly so a runner image change
-      # cannot turn the structural checks into a skip.
+      # cannot turn the structural checks into a skip. Pinned, and allowed to
+      # install into a PEP 668 managed interpreter -- a future runner image
+      # marking the system Python managed would otherwise fail this step.
       - name: Install workflow parsing dependency
-        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check \
+            --break-system-packages pyyaml==6.0.2 \
+            || python3 -m pip install --quiet --disable-pip-version-check pyyaml==6.0.2
       - name: Verify release scripts
         run: |
           sh scripts/test_release_ci_scripts.sh

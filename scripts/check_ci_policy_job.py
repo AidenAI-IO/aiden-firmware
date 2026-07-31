@@ -44,6 +44,26 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+def workflow_triggers(workflow: dict) -> object:
+    """Return ci.yml's trigger block.
+
+    YAML 1.1 parses the bare key `on` as the boolean True, so a plain
+    workflow["on"] lookup silently misses it.
+    """
+    for key in ("on", True):
+        if key in workflow:
+            return workflow[key]
+    return None
+
+
+def triggers_on_pull_request(triggers: object) -> bool:
+    if isinstance(triggers, dict):
+        return "pull_request" in triggers
+    if isinstance(triggers, list):
+        return "pull_request" in triggers
+    return triggers == "pull_request"
+
+
 def strip_comments(text: str) -> str:
     """Drop whole-line comments so a mention in prose cannot satisfy a check.
 
@@ -101,6 +121,14 @@ def main() -> None:
     if not isinstance(jobs, dict) or not jobs:
         fail("ci.yml declares no jobs")
 
+    # The policy check has to reach pull requests. Asserting the trigger keeps
+    # the per-job checks below meaningful: a job that never fires proves nothing.
+    if not triggers_on_pull_request(workflow_triggers(workflow)):
+        fail(
+            "ci.yml must run on pull_request so the reproducible rootfs policy "
+            "check reaches pull requests"
+        )
+
     policy_jobs = {}
     release_jobs = set()
     for name, job in jobs.items():
@@ -112,14 +140,17 @@ def main() -> None:
         if RELEASE_SCRIPT_MARKER in text:
             release_jobs.add(name)
 
+    # An absent job is the regression this checker exists to catch, not a
+    # tolerable state. Running only in build.yml is what kept the stamp
+    # regression invisible until an 80-minute scheduled build failed, so a
+    # missing policy job has to fail rather than print a note and pass.
     if not policy_jobs:
-        # Not an error: the check still runs in build.yml. Say so, because a
-        # silent absence is how it stopped running on pull requests before.
-        print(
-            "note: ci.yml does not run the reproducible rootfs policy check; "
-            "it runs only in the scheduled build"
+        fail(
+            "ci.yml does not run the reproducible rootfs policy check; add a "
+            f"job that runs {POLICY_SCRIPT} against a blobless sparse checkout "
+            "of the pinned pico-sdk commit. Running it only in the scheduled "
+            "build hides regressions until an 80-minute build fails."
         )
-        return
 
     for name in sorted(policy_jobs):
         text = policy_jobs[name]

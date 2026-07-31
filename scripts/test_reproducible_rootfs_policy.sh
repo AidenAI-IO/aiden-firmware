@@ -108,7 +108,10 @@ fi
 # the clean decision is made and nowhere else. Naming a new define, or inlining
 # the write straight into the buildroot recipe, reintroduces the same bug, so
 # check the recipe body rather than only the old define name.
-buildroot_target="$(sed -n '/^buildroot: prepare$/,/^buildroot_clean:/p' "$PICO_SDK/sysdrv/Makefile")"
+# Match the target on its name alone. Anchoring on the full "buildroot: prepare"
+# line made an unrelated edit -- adding a prerequisite -- collapse the range to
+# empty and fail this check for a reason that has nothing to do with the stamp.
+buildroot_target="$(sed -n '/^buildroot:[[:space:]]/,/^buildroot_clean:/p' "$PICO_SDK/sysdrv/Makefile")"
 if [ -z "$buildroot_target" ]; then
   echo "could not locate the buildroot target in pico-sdk sysdrv/Makefile" >&2
   exit 1
@@ -119,18 +122,44 @@ if printf '%s\n' "$buildroot_target" | grep -Fq '"$$stamp"'; then
   exit 1
 fi
 
-for stamp_writer in $(sed -n 's/^define \(.*stamp.*\)$/\1/p' "$PICO_SDK/sysdrv/Makefile"); do
-  case "$stamp_writer" in
-    refresh_buildroot_config_state|refresh_boardtools_config_state) continue ;;
-  esac
-  echo "pico-sdk sysdrv Makefile defines '$stamp_writer', a separate Buildroot state stamp step; writing the stamp anywhere other than beside the clean decision is what let the two drift apart" >&2
-  exit 1
-done
-
-if grep -q 'write_buildroot_config_state_stamp' "$PICO_SDK/sysdrv/Makefile"; then
-  echo "pico-sdk sysdrv Makefile must not write the Buildroot state stamp in a separate post-build step; that is what let the stamp and the clean decision drift apart" >&2
+# Find every write to the stamp path, wherever it lives and whatever it is
+# called. Scanning only defines whose name contains "stamp" missed a rename to
+# a name like persist_br_state, and matching only the '$$stamp' variable missed
+# a write that spells the path out in full. Both are the same bug, so key off
+# the stamp filename -- the one thing any such write has to mention -- and
+# require every mention to sit inside refresh_buildroot_config_state.
+stamp_basename='.aiden_buildroot_config_state'
+# One awk pass rather than grep|grep|cut: a grep that filters everything out
+# exits 1, and under `set -o pipefail` that aborts the script before the
+# explicit diagnostics below can run. Comment lines are skipped -- prose naming
+# the stamp is not a write.
+stamp_mentions="$(awk -v needle="$stamp_basename" '
+  { line = $0; sub(/^[[:space:]]+/, "", line) }
+  line ~ /^#/ { next }
+  index($0, needle) { print NR }
+' "$PICO_SDK/sysdrv/Makefile")"
+if [ -z "$stamp_mentions" ]; then
+  echo "pico-sdk sysdrv Makefile never mentions $stamp_basename; the Buildroot state stamp must exist to gate the cross-config clean" >&2
   exit 1
 fi
+
+refresh_start="$(awk '/^define refresh_buildroot_config_state$/ { print NR; exit }' "$PICO_SDK/sysdrv/Makefile")"
+if [ -z "$refresh_start" ]; then
+  echo "could not locate 'define refresh_buildroot_config_state' in pico-sdk sysdrv/Makefile" >&2
+  exit 1
+fi
+refresh_end="$(awk -v start="$refresh_start" 'NR > start && /^endef$/ { print NR; exit }' "$PICO_SDK/sysdrv/Makefile")"
+if [ -z "$refresh_end" ]; then
+  echo "'define refresh_buildroot_config_state' in pico-sdk sysdrv/Makefile is not terminated by endef" >&2
+  exit 1
+fi
+
+for line in $stamp_mentions; do
+  if [ "$line" -lt "$refresh_start" ] || [ "$line" -gt "$refresh_end" ]; then
+    echo "pico-sdk sysdrv Makefile touches $stamp_basename at line $line, outside refresh_buildroot_config_state (lines $refresh_start-$refresh_end); the stamp must be written only beside the clean decision it feeds, since splitting the two is what let them drift apart" >&2
+    exit 1
+  fi
+done
 
 buildroot_config_state_policy="$buildroot_config_state_value
 $refresh_buildroot_config_state"
