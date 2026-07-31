@@ -147,6 +147,9 @@ if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_compress_release_images.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_ota_partition_layout.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_ota_device_config.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_ota_init.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_ota_manifest_generation.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_reusable_rootfs_release_asset.sh' "$CI_WORKFLOW"; then
     echo "CI must run repo-only release workflow and upload script tests" >&2

@@ -168,9 +168,6 @@ func TestUpdaterRejectsTarGzImageSHA256MismatchBeforeWriting(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(env.downloadDir, "boot_b.img.tar.gz")); !os.IsNotExist(statErr) {
 		t.Fatalf("invalid downloaded archive was retained: %v", statErr)
 	}
-	if got := otaCacheBudgetBytes(t, env.downloadDir); got != env.config.ReserveSizeBytes {
-		t.Fatalf("cache plus reserve after verification failure = %d, want %d", got, env.config.ReserveSizeBytes)
-	}
 }
 
 func TestDefaultHTTPTimeoutAllowsLargeImageDownloads(t *testing.T) {
@@ -1332,16 +1329,15 @@ func newUpdaterTestEnv(t *testing.T) *updaterTestEnv {
 		t.Fatalf("WriteFile(health.ok) error = %v", err)
 	}
 	env.config = UpdaterConfig{
-		StateDir:                 env.stateDir,
-		DownloadDir:              env.downloadDir,
-		ReserveSizeBytes:         1024,
-		ReserveSafetyMarginBytes: 64,
-		MiscPath:                 env.miscPath,
-		BlockDir:                 env.blockDir,
-		PublicKey:                env.pub,
-		SwitchTries:              3,
-		HealthTimeout:            10 * time.Millisecond,
-		HealthPollInterval:       time.Millisecond,
+		StateDir:                  env.stateDir,
+		DownloadDir:               env.downloadDir,
+		DownloadSafetyMarginBytes: 64,
+		MiscPath:                  env.miscPath,
+		BlockDir:                  env.blockDir,
+		PublicKey:                 env.pub,
+		SwitchTries:               3,
+		HealthTimeout:             10 * time.Millisecond,
+		HealthPollInterval:        time.Millisecond,
 	}
 	return env
 }

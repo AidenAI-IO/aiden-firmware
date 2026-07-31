@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/generate_ota_device_config.sh --manifest manifest.json --repo OWNER/REPO --channel CHANNEL --output config.json
 
-Generate the device-side OTA config seeded into userdata.img during factory image builds.
+Generate the device-side OTA config seeded into ota.img during factory image builds.
 USAGE
 }
 
@@ -18,6 +18,11 @@ manifest=""
 repo=""
 channel=""
 output=""
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/ota_partition_layout.sh"
+download_safety_margin_bytes="$(aiden_ota_download_safety_margin_bytes)"
+storage_mount_point="$AIDEN_OTA_MOUNT_POINT"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -72,6 +77,8 @@ trap 'rm -f "$tmp"' EXIT
 jq -e -S \
   --arg repo "$repo" \
   --arg channel "$channel" \
+  --arg storage_mount_point "$storage_mount_point" \
+  --argjson download_safety_margin_bytes "$download_safety_margin_bytes" \
   '
   def part($name): .parts[] | select(.name == $name);
   def partition_hash($asset):
@@ -97,8 +104,8 @@ jq -e -S \
   {
     repo: $repo,
     channel: $channel,
-    reserve_size_bytes: 209715200,
-    reserve_safety_margin_bytes: 4194304,
+    storage_mount_point: $storage_mount_point,
+    download_safety_margin_bytes: $download_safety_margin_bytes,
     factory_version: .version,
     factory_build_time: .build_time,
     factory_partition_hashes: {

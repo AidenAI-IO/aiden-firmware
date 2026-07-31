@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_PATH="$ROOT_DIR/pico-sdk/output/out/userdata/ota/config.json"
+CONFIG_PATH="$ROOT_DIR/pico-sdk/output/out/ota/config.json"
 IMAGE_DIR="$ROOT_DIR/pico-sdk/output/image"
-USERDATA_DIR="$ROOT_DIR/pico-sdk/output/out/userdata"
+OTA_DIR="$ROOT_DIR/pico-sdk/output/out/ota"
 BOARD_CONFIG="$ROOT_DIR/pico-sdk/.BoardConfig.mk"
 MKFS_EXT4="$ROOT_DIR/pico-sdk/sysdrv/tools/pc/e2fsprogs/mkfs_ext4.sh"
 
@@ -13,8 +13,8 @@ if [ ! -s "$CONFIG_PATH" ]; then
   exit 1
 fi
 
-if [ ! -d "$USERDATA_DIR" ]; then
-  echo "repack_ota_update_image.sh: missing userdata staging directory: $USERDATA_DIR" >&2
+if [ ! -d "$OTA_DIR" ]; then
+  echo "repack_ota_update_image.sh: missing OTA staging directory: $OTA_DIR" >&2
   exit 1
 fi
 
@@ -52,18 +52,18 @@ partition_size_bytes() {
 }
 
 source "$BOARD_CONFIG"
-userdata_size="$(partition_size_bytes userdata)" || {
-  echo "repack_ota_update_image.sh: userdata partition not found in RK_PARTITION_CMD_IN_ENV" >&2
+ota_size="$(partition_size_bytes ota)" || {
+  echo "repack_ota_update_image.sh: OTA partition not found in RK_PARTITION_CMD_IN_ENV" >&2
   exit 1
 }
 
-chown -hR 0:0 "$USERDATA_DIR"
-"$MKFS_EXT4" "$USERDATA_DIR" "$IMAGE_DIR/userdata.img" "$userdata_size"
+chown -hR 0:0 "$OTA_DIR"
+"$MKFS_EXT4" "$OTA_DIR" "$IMAGE_DIR/ota.img" "$ota_size"
 
 cd "$ROOT_DIR/pico-sdk/project"
 ./build.sh updateimg
 
-for img in userdata.img update.img; do
+for img in ota.img update.img; do
   if [ ! -s "$IMAGE_DIR/$img" ]; then
     echo "repack_ota_update_image.sh: missing rebuilt image: $IMAGE_DIR/$img" >&2
     exit 1

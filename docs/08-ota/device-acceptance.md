@@ -6,7 +6,7 @@ Before enabling production OTA rollout, the following acceptance tests should be
 
 - The production image is built with the production Ed25519 public key.
 - GitHub Release contains `manifest.json` plus compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`, `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`.
-- The `update.img` inside `update.img.tar.gz` has `/userdata/ota/config.json` embedded.
+- The `update.img` inside `update.img.tar.gz` contains the dedicated `ota` partition image with `/config.json`.
 - When UART is available, it is recommended to record SPL rollback logs simultaneously.
 
 `S54ota` only handles `/userdata/ota/pending_boot.json` health at startup, does not perform network or GitHub update checks. Manual updates must be triggered via `ota update`.
@@ -25,6 +25,8 @@ After device boots, check:
 ```bash
 cat /proc/cmdline
 mount | grep ' /oem '
+mount | grep ' /userdata/ota '
+df -h /userdata /userdata/ota
 /oem/usr/bin/abctl read /dev/block/by-name/misc
 /oem/usr/bin/ota status
 ```
@@ -34,6 +36,7 @@ Expected:
 - Factory boot is in slot A.
 - `/proc/cmdline` contains `aiden.slot_suffix=_a` and `root=PARTLABEL=rootfs_a`.
 - `/oem` is mounted from `/dev/block/by-name/oem_a`.
+- `/userdata/ota` is mounted from `/dev/block/by-name/ota` and reports an independent filesystem from `/userdata`.
 - `misc` metadata can be parsed normally from byte offset `2048`, slot A is successful.
 - `/userdata/ota/config.json` exists, `ota status` does not report missing factory baseline.
 
@@ -139,5 +142,7 @@ At least cover the following failure scenarios:
 | Health marker missing or mismatched | Target slot not marked successful, rollback after tries consumed |
 | Inactive boot image corrupted | SPL should not hang, should fall back to previous successful slot |
 | Download interrupted | Do not switch slot; can retry or re-download after network recovery |
+| Dedicated OTA partition unmounted | `ota status`, `ota health`, and `ota update` fail without creating files under the userdata mount point |
+| OTA partition lacks remaining download capacity | Reject before requesting any partition asset; keep the inactive slot unchanged |
 
 Power interruption during partition write should be done via controlled power supply or HIL rig; manual random power disconnection is not recommended.

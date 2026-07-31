@@ -26,7 +26,7 @@ Optional:
                   Takes precedence over --asset-url and --base-url for the named file
   --max-download-bytes
                   Maximum compressed download bytes for either target slot
-                  (default 205520896 = 196 MiB; use 0 to disable)
+                  (default 0 = disabled; release CI derives this from ota.img capacity)
 
 Required images:
   boot_a.img and boot_b.img are always required.
@@ -46,7 +46,7 @@ sign_key=""
 image_dir=""
 output=""
 base_url=""
-max_download_bytes=205520896
+max_download_bytes=0
 asset_url_files=()
 asset_url_values=()
 asset_metadata_files=()

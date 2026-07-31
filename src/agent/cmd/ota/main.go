@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -147,6 +146,8 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 		config.StateDir = *stateDir
 		config.DownloadDir = ""
 		config.UpdateLockPath = ""
+		config.StorageMountPoint = ""
+		config.MountInfoPath = ""
 	}
 	if *miscPath != "" {
 		config.MiscPath = *miscPath
@@ -178,19 +179,6 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	config.DryRun = config.DryRun || *dryRun
 	if *testMode {
 		config.HealthTimeout = time.Second
-	}
-	// With the SD card mounted, cache downloads there instead of eMMC. An
-	// explicit download_dir in the config JSON or a -state-dir sandbox
-	// (tests, acceptance runs) keeps its own layout.
-	if !config.DownloadDirConfigured && *stateDir == "" {
-		emmcDownloadDir := config.DownloadDir
-		state := readSDStorageState(storageStatePath)
-		if dir := sdOTACacheDir(storageStatePath, config.ReserveSizeBytes); dir != "" {
-			config.DownloadDir = dir
-			config.AlternateDownloadDirs = []string{emmcDownloadDir}
-		} else if state.mounted && state.mountPoint != "" {
-			config.AlternateDownloadDirs = []string{filepath.Join(state.mountPoint, "aiden", "ota-cache")}
-		}
 	}
 	config.Logger = log.New(os.Stderr, "ota: ", log.LstdFlags)
 	return config, nil

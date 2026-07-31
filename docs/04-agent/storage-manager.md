@@ -78,18 +78,17 @@ The Storage Manager does not delete:
 
 It also does not manage RAM, CPU, temperature, battery pressure, or volatile /tmp usage.
 
-### OTA Reserved-Space Interaction
+### OTA Partition Interaction
 
-The OTA client maintains a 200 MiB `cache + .ota-reserve` budget on the
-filesystem selected for downloads. When that filesystem is `/userdata`,
-StorageMonitor's `statfs` sample correctly treats the reserve as used space;
-the 50/10/5 MiB alert thresholds are not raised to compensate. When downloads
-are routed to SD, the reserve does not affect the `/userdata` sample.
+OTA uses a dedicated 256 MiB ext4 partition mounted at `/userdata/ota`.
+StorageMonitor still samples the `/userdata` filesystem, so OTA downloads do
+not reduce the available-byte value used by the 50/10/5 MiB thresholds.
 
-StorageMonitor cleaners never target the OTA cache directory. The separate
-StorageManager SD migrator also pauses while `/userdata/ota/update.lock` is
-held, so audio migration cannot consume SD blocks released for an OTA
-download. See [OTA Reserved Space](../08-ota/no-space-plan.md).
+StorageMonitor cleaners do not target OTA paths. The SD-card StorageManager
+does not route or migrate OTA downloads and has no OTA lock or capacity
+coupling. Existing cleanup stages and user-facing storage notifications remain
+necessary for the non-OTA data stored on `/userdata`. See
+[OTA Dedicated Storage Partition](../08-ota/no-space-plan.md).
 
 ## Runtime Flow
 

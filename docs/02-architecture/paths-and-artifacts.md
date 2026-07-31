@@ -36,7 +36,7 @@
 | `/userdata/agent/skills/` | Agent skills directory |
 | `/userdata/agent/memory/` | Agent memory persistence directory |
 | `/userdata/system/env` | Device-wide environment file loaded by service launchers and SSH login shells |
-| `/userdata/ota/` | OTA configuration, state, download cache and health marker |
+| `/userdata/ota/` | Mount point for the dedicated OTA partition; configuration, state, download cache, and health marker |
 | `/oem/etc/ota_pubkey.pem` | OTA manifest Ed25519 public key |
 | `/userdata/wpa_supplicant.conf` | Wi-Fi configuration |
 | `/run/frame_service/frame_service.sock` | Frame Service socket |

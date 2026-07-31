@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -679,21 +678,6 @@ func migrationSpaceFn(t *testing.T, m *StorageManager, srcDir string, base, init
 	}
 }
 
-func newMigrationReadyStorageManager(t *testing.T) (*StorageManager, string) {
-	t.Helper()
-	ops := &fakeStorageOps{present: true, healthy: true}
-	m := newTestStorageManager(t, ops)
-	srcDir := filepath.Join(m.emmcRoot, "audio")
-	writeAgedFile(t, filepath.Join(srcDir, "a.wav"), 100, time.Hour)
-	ops.spaceFn = func(path string) (int64, int64, error) {
-		if path == m.emmcRoot {
-			return 50, 1000, nil
-		}
-		return 1 << 30, 1 << 31, nil
-	}
-	return m, srcDir
-}
-
 func TestStorageManagerMigratesOldestFilesUntilStopWatermark(t *testing.T) {
 	ops := &fakeStorageOps{present: true, healthy: true}
 	// Pin watermarks (start 10 / stop 30) so the arithmetic below is
@@ -827,133 +811,6 @@ func TestStorageManagerNoMigrationAboveWatermark(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(srcDir, "a.wav")); err != nil {
 		t.Fatalf("file moved despite healthy free space: %v", err)
-	}
-}
-
-func TestStorageManagerDoesNotMigrateWhileOTAUpdateLockIsHeld(t *testing.T) {
-	ops := &fakeStorageOps{present: true, healthy: true}
-	m := newTestStorageManager(t, ops)
-	srcDir := filepath.Join(m.emmcRoot, "audio")
-	writeAgedFile(t, filepath.Join(srcDir, "a.wav"), 100, time.Hour)
-	ops.spaceFn = func(path string) (int64, int64, error) {
-		if path == m.emmcRoot {
-			return 50, 1000, nil
-		}
-		return 1 << 30, 1 << 31, nil
-	}
-
-	if err := os.MkdirAll(filepath.Dir(m.otaUpdateLockPath), 0o755); err != nil {
-		t.Fatalf("MkdirAll(update lock dir) error = %v", err)
-	}
-	lockFile, err := os.OpenFile(m.otaUpdateLockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatalf("OpenFile(update lock) error = %v", err)
-	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = lockFile.Close()
-		t.Fatalf("Flock(update lock) error = %v", err)
-	}
-	t.Cleanup(func() {
-		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-		_ = lockFile.Close()
-	})
-
-	tickN(m, 3)
-	if job := m.Status().Migration; job.Status != StorageFormatIdle {
-		t.Fatalf("migration ran during OTA update: %+v", job)
-	}
-	if _, err := os.Stat(filepath.Join(srcDir, "a.wav")); err != nil {
-		t.Fatalf("audio moved during OTA update: %v", err)
-	}
-}
-
-func TestStorageManagerHoldsSharedOTALockAcrossFileMigration(t *testing.T) {
-	m, _ := newMigrationReadyStorageManager(t)
-
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	originalMigrate := m.migrateFile
-	m.migrateFile = func(src, dst string) (int64, error) {
-		close(entered)
-		<-release
-		return originalMigrate(src, dst)
-	}
-
-	tickN(m, 2)
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("migration did not enter per-file transaction")
-	}
-
-	lockFile, err := os.OpenFile(m.otaUpdateLockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		close(release)
-		t.Fatalf("OpenFile(update lock) error = %v", err)
-	}
-	lockErr := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-	if lockErr == nil {
-		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-	}
-	_ = lockFile.Close()
-	close(release)
-
-	if !errors.Is(lockErr, syscall.EWOULDBLOCK) && !errors.Is(lockErr, syscall.EAGAIN) {
-		t.Fatalf("exclusive OTA lock during migration error = %v, want would-block", lockErr)
-	}
-	if job := waitForMigration(t, m); job.Status != StorageFormatSuccess {
-		t.Fatalf("migration job = %+v, want success", job)
-	}
-}
-
-func TestStorageManagerFailsClosedWhenOTALockCannotBeOpened(t *testing.T) {
-	m, srcDir := newMigrationReadyStorageManager(t)
-	if err := os.MkdirAll(m.otaUpdateLockPath, 0o755); err != nil {
-		t.Fatalf("MkdirAll(update lock path) error = %v", err)
-	}
-
-	tickN(m, 3)
-	if job := m.Status().Migration; job.Status != StorageFormatIdle {
-		t.Fatalf("migration ran when OTA lock could not be opened: %+v", job)
-	}
-	if _, err := os.Stat(filepath.Join(srcDir, "a.wav")); err != nil {
-		t.Fatalf("audio moved when OTA lock could not be opened: %v", err)
-	}
-}
-
-func TestStorageManagerCreditsExistingOTABudgetWithoutMigratingIntoLowFreeSD(t *testing.T) {
-	ops := &fakeStorageOps{present: true, healthy: true}
-	m := newTestStorageManager(t, ops)
-	m.cfg.MinCardFreeMB = 1
-	otaCacheDir := filepath.Join(m.cfg.MountPointOrDefault(), storageSDSubdir, string(StorageClassOTACache))
-	if err := os.MkdirAll(otaCacheDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(otaCacheDir) error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(otaCacheDir, ".ota-reserve"), make([]byte, 600<<10), 0o600); err != nil {
-		t.Fatalf("WriteFile(reserve) error = %v", err)
-	}
-	srcDir := filepath.Join(m.emmcRoot, "audio")
-	writeAgedFile(t, filepath.Join(srcDir, "a.wav"), 100, time.Hour)
-	ops.spaceFn = func(path string) (int64, int64, error) {
-		switch path {
-		case m.cfg.MountPointOrDefault():
-			return 512 << 10, 1 << 30, nil
-		case m.emmcRoot:
-			return 50, 1000, nil
-		default:
-			return 1 << 30, 1 << 31, nil
-		}
-	}
-
-	tickN(m, 3)
-	if m.EffectiveMode() != StorageModeDual {
-		t.Fatalf("effective mode = %d, want mounted card credited for its OTA budget", m.EffectiveMode())
-	}
-	if job := m.Status().Migration; job.Status != StorageFormatIdle {
-		t.Fatalf("migration ran with less than the SD free-space floor: %+v", job)
-	}
-	if _, err := os.Stat(filepath.Join(srcDir, "a.wav")); err != nil {
-		t.Fatalf("audio moved into low-free SD: %v", err)
 	}
 }
 

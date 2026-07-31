@@ -7,7 +7,7 @@ OTA is accomplished through three layers: `pico-sdk` generates A/B images and fa
 Production images use A/B layout:
 
 ```text
-32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata)
+32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),256M(ota)
 ```
 
 | Partition | A/B | OTA Behavior |
@@ -19,7 +19,8 @@ Production images use A/B layout:
 | `boot` | Yes | Write to inactive `boot_a` or `boot_b` |
 | `oem` | Yes | Write to inactive `oem_a` or `oem_b` |
 | `rootfs` | Yes | Write to inactive `rootfs_a` or `rootfs_b` |
-| `userdata` | No | Preserved across upgrades, stores configuration and runtime state |
+| `userdata` | No | Preserved across upgrades, stores non-OTA persistent data |
+| `ota` | No | Dedicated OTA config, state, health markers, and download cache; factory flash only |
 
 ## Boot Process
 
@@ -28,8 +29,9 @@ Production images use A/B layout:
 3. SPL selects the slot with highest priority and bootable status, loading `boot_a` or `boot_b`.
 4. Slot-specific FIT boot image provides `root=PARTLABEL=rootfs_a|rootfs_b` and `aiden.slot_suffix=_a|_b`.
 5. Linux mounts the matching `rootfs_*`.
-6. `S20oemslot` mounts `/dev/block/by-name/oem_a|oem_b` to `/oem` based on `aiden.slot_suffix`.
-7. `S54ota` runs `ota health` once, handles pending health, and exits.
+6. SDK `S20linkmount` mounts `/dev/block/by-name/ota` at `/userdata/ota`.
+7. `S20oemslot` mounts `/dev/block/by-name/oem_a|oem_b` to `/oem` based on `aiden.slot_suffix`.
+8. `S54ota` verifies the dedicated OTA mount, runs `ota health` once, and exits.
 
 ## Update Process
 
@@ -38,9 +40,9 @@ Production images use A/B layout:
 3. Download `manifest.json`, remove `signature.value`, and perform canonical JSON Ed25519 signature verification.
 4. Reject downgrades with older `build_time` or different version with same build time.
 5. Select inactive slot and parse corresponding slot assets from manifest.
-6. Clean stale download cache, top up the configured OTA reserve, and verify the remaining signed asset sizes fit inside the reserved budget.
-7. Release `<download_dir>/.ota-reserve`, download images, and verify size and SHA256.
-8. Restore the unused reserve budget before writing partitions; verified cache and the reserve file together remain at the configured budget.
+6. Clean stale download cache and calculate the remaining bytes after verified cache and resumable partials.
+7. Read actual available bytes from the dedicated OTA filesystem and require the remaining downloads plus the configured safety margin.
+8. Download images and verify archive size, SHA256, extracted image hash, and target partition size.
 9. Write to inactive `boot_*`, `oem_*`, `rootfs_*`, and fsync.
 10. Delete old `health.ok`, write `/userdata/ota/pending_boot.json`.
 11. Modify `misc`, set target slot as active trial slot with default tries of 3.
@@ -76,7 +78,7 @@ For `.img.tar.gz` assets, `size` and `sha256` describe the downloaded archive. T
 
 ## Factory Baseline
 
-Release `update.img` must embed `/userdata/ota/config.json`. After generating the signed manifest, CI calls `scripts/generate_ota_device_config.sh` to generate this file, then rebuilds only `userdata.img` and `update.img` via `scripts/repack_ota_update_image.sh`.
+Release `update.img` must include `ota.img`, which provides `/userdata/ota/config.json` after mounting. After generating the signed manifest, CI calls `scripts/generate_ota_device_config.sh` to generate this file, then rebuilds only `ota.img` and `update.img` via `scripts/repack_ota_update_image.sh`.
 
 `config.json` must contain at least:
 
@@ -90,8 +92,8 @@ Optional configuration fields:
 - `manifest_url` - directly specify manifest URL (skip GitHub Release API)
 - `public_key_path` - override default public key path (default `/oem/etc/ota_pubkey.pem`)
 - `github_token_path` - GitHub token file path (required for private repositories)
-- `reserve_size_bytes` - total OTA download-cache and reserve budget (default 200 MiB)
-- `reserve_safety_margin_bytes` - download-time filesystem safety margin (default 4 MiB)
+- `storage_mount_point` - dedicated OTA mount that must be active (default `/userdata/ota`)
+- `download_safety_margin_bytes` - free bytes retained beyond remaining downloads (default 16 MiB)
 
 Factory baseline must be slot-aware because `boot_a.img` and `boot_b.img` have different hashes. When baseline is missing, OTA initialization must fail; it should not guess current partition versions.
 

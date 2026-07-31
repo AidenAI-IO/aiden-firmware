@@ -28,6 +28,9 @@ jobs:
           sh scripts/test_release_ci_scripts.sh
           bash scripts/test_clean_rootfs_overlay_staging.sh
           bash scripts/test_compress_release_images.sh
+          bash scripts/test_ota_partition_layout.sh
+          sh scripts/test_ota_device_config.sh
+          sh scripts/test_ota_init.sh
           bash scripts/test_ota_manifest_generation.sh
           bash scripts/test_github_release_upload.sh
           bash scripts/test_reusable_rootfs_release_asset.sh

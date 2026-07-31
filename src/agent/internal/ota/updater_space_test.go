@@ -10,140 +10,97 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 )
 
-func TestDefaultUpdaterConfigUses200MiBReserve(t *testing.T) {
-	config := DefaultUpdaterConfig()
-	if config.ReserveSizeBytes != 200<<20 {
-		t.Fatalf("ReserveSizeBytes = %d, want %d", config.ReserveSizeBytes, 200<<20)
-	}
-	if config.ReserveSafetyMarginBytes != 4<<20 {
-		t.Fatalf("ReserveSafetyMarginBytes = %d, want %d", config.ReserveSafetyMarginBytes, 4<<20)
-	}
-}
-
-func TestNewUpdaterRejectsReserveMarginAtLeastBudget(t *testing.T) {
-	_, err := NewUpdater(UpdaterConfig{ReserveSizeBytes: 1024, ReserveSafetyMarginBytes: 1024}, nil)
-	if err == nil || !strings.Contains(err.Error(), "smaller than reserve_size_bytes") {
-		t.Fatalf("NewUpdater() error = %v, want reserve margin validation", err)
+func TestUpdaterRejectsNegativeDownloadSafetyMargin(t *testing.T) {
+	_, err := NewUpdater(UpdaterConfig{
+		StateDir:                  t.TempDir(),
+		DownloadSafetyMarginBytes: -1,
+	}, func() error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "download_safety_margin_bytes must be non-negative") {
+		t.Fatalf("NewUpdater() error = %v, want safety margin validation", err)
 	}
 }
 
-func TestProcessPendingHealthOnceCreatesOTAReserve(t *testing.T) {
-	env := newUpdaterTestEnv(t)
-	env.config.ReserveSizeBytes = 4096
-
-	if err := env.updater().ProcessPendingHealthOnce(context.Background()); err != nil {
-		t.Fatalf("ProcessPendingHealthOnce() error = %v", err)
+func TestUpdaterFailsClosedWhenDedicatedStorageIsNotMounted(t *testing.T) {
+	storageDir := t.TempDir()
+	mountInfoPath := filepath.Join(t.TempDir(), "mountinfo")
+	if err := os.WriteFile(mountInfoPath, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile(mountinfo) error = %v", err)
 	}
-
-	info, err := os.Stat(filepath.Join(env.downloadDir, otaReserveFileName))
+	lockPath := filepath.Join(storageDir, DefaultOTAUpdateLockName)
+	updater, err := NewUpdater(UpdaterConfig{
+		StateDir:          storageDir,
+		DownloadDir:       filepath.Join(storageDir, "downloads"),
+		StorageMountPoint: storageDir,
+		MountInfoPath:     mountInfoPath,
+		UpdateLockPath:    lockPath,
+	}, func() error { return nil })
 	if err != nil {
-		t.Fatalf("Stat(reserve) error = %v", err)
+		t.Fatalf("NewUpdater() error = %v", err)
 	}
-	if info.Size() != env.config.ReserveSizeBytes {
-		t.Fatalf("reserve size = %d, want %d", info.Size(), env.config.ReserveSizeBytes)
+
+	_, err = updater.CheckOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "dedicated OTA storage is not mounted") {
+		t.Fatalf("CheckOnce() error = %v, want dedicated mount failure", err)
 	}
-	var stat syscall.Stat_t
-	if err := syscall.Stat(filepath.Join(env.downloadDir, otaReserveFileName), &stat); err != nil {
-		t.Fatalf("Stat_t(reserve) error = %v", err)
-	}
-	if allocated := int64(stat.Blocks) * 512; allocated < env.config.ReserveSizeBytes {
-		t.Fatalf("reserve allocated bytes = %d, want at least %d", allocated, env.config.ReserveSizeBytes)
+	if _, statErr := os.Stat(lockPath); !os.IsNotExist(statErr) {
+		t.Fatalf("OTA lock was created on the underlying filesystem: %v", statErr)
 	}
 }
 
-func TestProcessPendingHealthOnceCountsPartialDownloadAgainstReserve(t *testing.T) {
-	env := newUpdaterTestEnv(t)
-	env.config.ReserveSizeBytes = 4096
-	if err := os.MkdirAll(env.downloadDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(downloadDir) error = %v", err)
+func TestUpdaterHealthAndStatusFailClosedWhenDedicatedStorageIsNotMounted(t *testing.T) {
+	storageDir := t.TempDir()
+	mountInfoPath := filepath.Join(t.TempDir(), "mountinfo")
+	if err := os.WriteFile(mountInfoPath, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile(mountinfo) error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(env.downloadDir, "oem.img.tar.gz.part"), make([]byte, 1024), 0o644); err != nil {
-		t.Fatalf("WriteFile(part) error = %v", err)
-	}
-
-	if err := env.updater().ProcessPendingHealthOnce(context.Background()); err != nil {
-		t.Fatalf("ProcessPendingHealthOnce() error = %v", err)
-	}
-
-	info, err := os.Stat(filepath.Join(env.downloadDir, otaReserveFileName))
+	updater, err := NewUpdater(UpdaterConfig{
+		StateDir:          storageDir,
+		DownloadDir:       filepath.Join(storageDir, "downloads"),
+		StorageMountPoint: storageDir,
+		MountInfoPath:     mountInfoPath,
+	}, func() error { return nil })
 	if err != nil {
-		t.Fatalf("Stat(reserve) error = %v", err)
+		t.Fatalf("NewUpdater() error = %v", err)
 	}
-	if info.Size() != 3072 {
-		t.Fatalf("reserve size = %d, want 3072", info.Size())
+
+	if err := updater.ProcessPendingHealthOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "dedicated OTA storage is not mounted") {
+		t.Fatalf("ProcessPendingHealthOnce() error = %v, want dedicated mount failure", err)
+	}
+	if _, _, err := updater.Status(); err == nil || !strings.Contains(err.Error(), "dedicated OTA storage is not mounted") {
+		t.Fatalf("Status() error = %v, want dedicated mount failure", err)
 	}
 }
 
-func TestProcessPendingHealthOnceClearsAlternateDownloadBudget(t *testing.T) {
-	env := newUpdaterTestEnv(t)
-	env.config.ReserveSizeBytes = 4096
-	alternateDir := filepath.Join(t.TempDir(), "alternate-cache")
-	if err := os.MkdirAll(alternateDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(alternateDir) error = %v", err)
-	}
-	for name, body := range map[string][]byte{
-		otaReserveFileName:       make([]byte, 2048),
-		"rootfs.img.tar.gz":      []byte("cached-rootfs"),
-		"rootfs.img.tar.gz.part": []byte("partial-rootfs"),
-	} {
-		if err := os.WriteFile(filepath.Join(alternateDir, name), body, 0o600); err != nil {
-			t.Fatalf("WriteFile(%s) error = %v", name, err)
-		}
-	}
-	env.config.AlternateDownloadDirs = []string{alternateDir}
-
-	if err := env.updater().ProcessPendingHealthOnce(context.Background()); err != nil {
-		t.Fatalf("ProcessPendingHealthOnce() error = %v", err)
-	}
-
-	entries, err := os.ReadDir(alternateDir)
-	if err != nil {
-		t.Fatalf("ReadDir(alternateDir) error = %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("alternate cache entries = %v, want empty", entries)
-	}
-	if _, err := os.Stat(filepath.Join(env.downloadDir, otaReserveFileName)); err != nil {
-		t.Fatalf("selected reserve missing: %v", err)
+func TestUpdaterRejectsDownloadDirectoryOutsideDedicatedStorage(t *testing.T) {
+	storageDir := t.TempDir()
+	_, err := NewUpdater(UpdaterConfig{
+		StateDir:          storageDir,
+		DownloadDir:       filepath.Join(t.TempDir(), "downloads"),
+		StorageMountPoint: storageDir,
+	}, func() error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "download_dir must be inside storage_mount_point") {
+		t.Fatalf("NewUpdater() error = %v, want dedicated storage path validation", err)
 	}
 }
 
-func TestProcessPendingHealthOnceDoesNotAllocateReserveWithoutUpdateLock(t *testing.T) {
-	env := newUpdaterTestEnv(t)
-	env.config.ReserveSizeBytes = 4096
-	if err := os.MkdirAll(env.stateDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(stateDir) error = %v", err)
-	}
-	lockPath := filepath.Join(env.stateDir, DefaultOTAUpdateLockName)
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatalf("OpenFile(lock) error = %v", err)
-	}
-	t.Cleanup(func() {
-		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-		_ = lockFile.Close()
-	})
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		t.Fatalf("Flock(lock) error = %v", err)
-	}
-
-	err = env.updater().ProcessPendingHealthOnce(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "ota update already running") {
-		t.Fatalf("ProcessPendingHealthOnce() error = %v, want update lock error", err)
-	}
-	if _, statErr := os.Stat(filepath.Join(env.downloadDir, otaReserveFileName)); !os.IsNotExist(statErr) {
-		t.Fatalf("reserve was allocated without update lock: %v", statErr)
+func TestUpdaterRejectsUpdateLockOutsideDedicatedStorage(t *testing.T) {
+	storageDir := t.TempDir()
+	_, err := NewUpdater(UpdaterConfig{
+		StateDir:          storageDir,
+		DownloadDir:       filepath.Join(storageDir, "downloads"),
+		StorageMountPoint: storageDir,
+		UpdateLockPath:    filepath.Join(t.TempDir(), "update.lock"),
+	}, func() error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "update_lock_path must be inside storage_mount_point") {
+		t.Fatalf("NewUpdater() error = %v, want dedicated lock path validation", err)
 	}
 }
 
-func TestUpdaterReleasesReserveDuringDownloadAndRestoresBudget(t *testing.T) {
+func TestUpdaterChecksActualCapacityBeforeAssetDownload(t *testing.T) {
 	env := newUpdaterTestEnv(t)
-	env.config.ReserveSizeBytes = 4096
-	env.config.ReserveSafetyMarginBytes = 64
 	assets := map[string][]byte{
 		"boot_a.img": []byte("boot-a-v2"),
 		"boot_b.img": []byte("boot-b-v2"),
@@ -152,16 +109,7 @@ func TestUpdaterReleasesReserveDuringDownloadAndRestoresBudget(t *testing.T) {
 		"rootfs.img": []byte("rootfs-v2"),
 	}
 	manifest := env.signedManifest(assets, nil)
-	reservePath := filepath.Join(env.downloadDir, otaReserveFileName)
-	if err := env.updater().ProcessPendingHealthOnce(context.Background()); err != nil {
-		t.Fatalf("ProcessPendingHealthOnce() error = %v", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(env.downloadDir, "stale.img"), []byte("stale"), 0o644); err != nil {
-		t.Fatalf("WriteFile(stale cache) error = %v", err)
-	}
-
-	var reserveReleased atomic.Bool
+	var assetRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
 			var release struct {
@@ -178,11 +126,9 @@ func TestUpdaterReleasesReserveDuringDownloadAndRestoresBudget(t *testing.T) {
 			_, _ = w.Write(manifest)
 			return
 		}
+		assetRequests.Add(1)
 		name := strings.TrimPrefix(r.URL.Path, "/assets/")
 		if body, ok := assets[name]; ok {
-			if _, err := os.Stat(reservePath); os.IsNotExist(err) {
-				reserveReleased.Store(true)
-			}
 			w.Header().Set("Content-Length", fmt.Sprint(len(body)))
 			_, _ = w.Write(body)
 			return
@@ -191,201 +137,27 @@ func TestUpdaterReleasesReserveDuringDownloadAndRestoresBudget(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
+	env.config.DownloadSafetyMarginBytes = 64
+	updater := env.updater()
+	updater.availableBytes = func(string) (int64, error) { return 64, nil }
 
-	if _, err := env.updater().CheckOnce(context.Background()); err != nil {
-		t.Fatalf("CheckOnce() error = %v", err)
+	_, err := updater.CheckOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "insufficient OTA download space") {
+		t.Fatalf("CheckOnce() error = %v, want actual capacity rejection", err)
 	}
-	if !reserveReleased.Load() {
-		t.Fatal("reserve file still existed while assets were downloading")
-	}
-	if _, err := os.Stat(filepath.Join(env.downloadDir, "stale.img")); !os.IsNotExist(err) {
-		t.Fatalf("stale cache still exists after update: %v", err)
-	}
-
-	if got := otaCacheBudgetBytes(t, env.downloadDir); got != env.config.ReserveSizeBytes {
-		t.Fatalf("cache plus reserve = %d, want %d", got, env.config.ReserveSizeBytes)
-	}
-}
-
-func TestUpdaterRejectsDownloadLargerThanReserveBeforeAssetRequest(t *testing.T) {
-	env := newUpdaterTestEnv(t)
-	env.config.ReserveSizeBytes = 32
-	env.config.ReserveSafetyMarginBytes = 8
-	bootBody := []byte(strings.Repeat("b", 40))
-	assets := map[string][]byte{
-		"boot_a.img": []byte("boot-a-v2"),
-		"boot_b.img": bootBody,
-		"oem_a.img":  []byte("oem-a-v2"),
-		"oem_b.img":  []byte("oem-b-v2"),
-		"rootfs.img": []byte("rootfs-v2"),
-	}
-	manifest := env.signedManifest(assets, nil)
-	assetRequests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
-			_ = json.NewEncoder(w).Encode(struct {
-				Assets []githubAsset `json:"assets"`
-			}{Assets: []githubAsset{
-				{Name: "manifest.json", BrowserDownloadURL: "http://" + r.Host + "/assets/manifest.json"},
-				{Name: "boot_b.img", BrowserDownloadURL: "http://" + r.Host + "/assets/boot_b.img"},
-				{Name: "oem_b.img", BrowserDownloadURL: "http://" + r.Host + "/assets/oem_b.img"},
-				{Name: "rootfs.img", BrowserDownloadURL: "http://" + r.Host + "/assets/rootfs.img"},
-			}})
-			return
-		}
-		if r.URL.Path == "/assets/manifest.json" {
-			_, _ = w.Write(manifest)
-			return
-		}
-		if r.URL.Path == "/assets/boot_b.img" {
-			assetRequests++
-			_, _ = w.Write(bootBody)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	t.Cleanup(server.Close)
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
-
-	_, err := env.updater().CheckOnce(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "OTA reserve too small") {
-		t.Fatalf("CheckOnce() error = %v, want reserve capacity error", err)
-	}
-	if assetRequests != 0 {
-		t.Fatalf("assetRequests = %d, want 0", assetRequests)
+	if got := assetRequests.Load(); got != 0 {
+		t.Fatalf("asset requests = %d, want 0 before capacity succeeds", got)
 	}
 	state, loadErr := LoadState(filepath.Join(env.stateDir, "state.json"))
 	if loadErr != nil {
 		t.Fatalf("LoadState() error = %v", loadErr)
 	}
-	if state.Phase != "reserve" {
-		t.Fatalf("state phase = %q, want reserve", state.Phase)
+	if state.Phase != "space" {
+		t.Fatalf("state phase = %q, want space", state.Phase)
 	}
 }
 
-func TestUpdaterRestoresReserveBudgetAfterInterruptedDownload(t *testing.T) {
-	env := newUpdaterTestEnv(t)
-	env.config.ReserveSizeBytes = 4096
-	env.config.ReserveSafetyMarginBytes = 64
-	assets := map[string][]byte{
-		"boot_a.img": []byte("boot-a-v2"),
-		"boot_b.img": []byte(strings.Repeat("b", 128)),
-		"oem_a.img":  []byte("oem-a-v2"),
-		"oem_b.img":  []byte("oem-b-v2"),
-		"rootfs.img": []byte("rootfs-v2"),
-	}
-	manifest := env.signedManifest(assets, nil)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
-			var release struct {
-				Assets []githubAsset `json:"assets"`
-			}
-			release.Assets = append(release.Assets, githubAsset{Name: "manifest.json", BrowserDownloadURL: "http://" + r.Host + "/assets/manifest.json"})
-			for name := range assets {
-				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "http://" + r.Host + "/assets/" + name})
-			}
-			_ = json.NewEncoder(w).Encode(release)
-			return
-		}
-		if r.URL.Path == "/assets/manifest.json" {
-			_, _ = w.Write(manifest)
-			return
-		}
-		name := strings.TrimPrefix(r.URL.Path, "/assets/")
-		body, ok := assets[name]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
-		if name == "boot_b.img" {
-			_, _ = w.Write(body[:len(body)/2])
-			return
-		}
-		_, _ = w.Write(body)
-	}))
-	t.Cleanup(server.Close)
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
-
-	if _, err := env.updater().CheckOnce(context.Background()); err == nil {
-		t.Fatal("CheckOnce() error = nil, want interrupted download failure")
-	}
-	partPath := filepath.Join(env.downloadDir, "boot_b.img.part")
-	if info, err := os.Stat(partPath); err != nil {
-		t.Fatalf("Stat(part) error = %v", err)
-	} else if info.Size() == 0 || info.Size() >= int64(len(assets["boot_b.img"])) {
-		t.Fatalf("part size = %d, want interrupted partial", info.Size())
-	}
-	if got := otaCacheBudgetBytes(t, env.downloadDir); got != env.config.ReserveSizeBytes {
-		t.Fatalf("cache plus reserve after failure = %d, want %d", got, env.config.ReserveSizeBytes)
-	}
-}
-
-func TestUpdaterRecordsDeferredReserveRestorationFailure(t *testing.T) {
-	env := newUpdaterTestEnv(t)
-	env.config.ReserveSizeBytes = 4096
-	env.config.ReserveSafetyMarginBytes = 64
-	assets := map[string][]byte{
-		"boot_a.img": []byte("boot-a-v2"),
-		"boot_b.img": []byte("boot-b-v2"),
-		"oem_a.img":  []byte("oem-a-v2"),
-		"oem_b.img":  []byte("oem-b-v2"),
-		"rootfs.img": []byte("rootfs-v2"),
-	}
-	manifest := env.signedManifest(assets, nil)
-	var sabotaged atomic.Bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
-			var release struct {
-				Assets []githubAsset `json:"assets"`
-			}
-			release.Assets = append(release.Assets, githubAsset{Name: "manifest.json", BrowserDownloadURL: "http://" + r.Host + "/assets/manifest.json"})
-			for name := range assets {
-				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "http://" + r.Host + "/assets/" + name})
-			}
-			_ = json.NewEncoder(w).Encode(release)
-			return
-		}
-		if r.URL.Path == "/assets/manifest.json" {
-			_, _ = w.Write(manifest)
-			return
-		}
-		name := strings.TrimPrefix(r.URL.Path, "/assets/")
-		body, ok := assets[name]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		if sabotaged.CompareAndSwap(false, true) {
-			if err := os.RemoveAll(env.downloadDir); err != nil {
-				t.Errorf("RemoveAll(downloadDir) error = %v", err)
-			}
-			if err := os.WriteFile(env.downloadDir, []byte("block reserve restoration"), 0o644); err != nil {
-				t.Errorf("WriteFile(downloadDir) error = %v", err)
-			}
-		}
-		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
-		_, _ = w.Write(body)
-	}))
-	t.Cleanup(server.Close)
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
-
-	if _, err := env.updater().CheckOnce(context.Background()); err == nil {
-		t.Fatal("CheckOnce() error = nil, want download failure")
-	}
-	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
-	if err != nil {
-		t.Fatalf("LoadState() error = %v", err)
-	}
-	if state.Phase != "reserve" {
-		t.Fatalf("state phase = %q, want reserve", state.Phase)
-	}
-	if !strings.Contains(state.LastError, "not a directory") {
-		t.Fatalf("state last_error = %q, want reserve restoration failure", state.LastError)
-	}
-}
-
-func TestUpdaterFailsWhenStaleCacheCannotBeRemoved(t *testing.T) {
+func TestUpdaterCapacityCreditsResumablePartialDownload(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	assets := map[string][]byte{
 		"boot_a.img": []byte("boot-a-v2"),
@@ -395,52 +167,58 @@ func TestUpdaterFailsWhenStaleCacheCannotBeRemoved(t *testing.T) {
 		"rootfs.img": []byte("rootfs-v2"),
 	}
 	manifest := env.signedManifest(assets, nil)
-	server := env.releaseServer(t, manifest, map[string][]byte{
-		"boot_b.img": assets["boot_b.img"],
-		"oem_b.img":  assets["oem_b.img"],
-		"rootfs.img": assets["rootfs.img"],
-	})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 	if err := os.MkdirAll(env.downloadDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(downloadDir) error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(env.downloadDir, "stale.img"), []byte("stale"), 0o644); err != nil {
-		t.Fatalf("WriteFile(stale) error = %v", err)
+	partial := assets["boot_b.img"][:5]
+	if err := os.WriteFile(filepath.Join(env.downloadDir, "boot_b.img.part"), partial, 0o644); err != nil {
+		t.Fatalf("WriteFile(partial) error = %v", err)
 	}
-	if err := os.Chmod(env.downloadDir, 0o555); err != nil {
-		t.Fatalf("Chmod(downloadDir) error = %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(env.downloadDir, 0o755) })
 
-	_, err := env.updater().CheckOnce(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "remove stale OTA cache") {
-		t.Fatalf("CheckOnce() error = %v, want stale-cache removal failure", err)
-	}
-	state, loadErr := LoadState(filepath.Join(env.stateDir, "state.json"))
-	if loadErr != nil {
-		t.Fatalf("LoadState() error = %v", loadErr)
-	}
-	if state.Phase != "cleanup" {
-		t.Fatalf("state phase = %q, want cleanup", state.Phase)
-	}
-}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
+			var release struct {
+				Assets []githubAsset `json:"assets"`
+			}
+			release.Assets = append(release.Assets, githubAsset{Name: "manifest.json", BrowserDownloadURL: "http://" + r.Host + "/assets/manifest.json"})
+			for name := range assets {
+				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "http://" + r.Host + "/assets/" + name})
+			}
+			_ = json.NewEncoder(w).Encode(release)
+			return
+		}
+		if r.URL.Path == "/assets/manifest.json" {
+			_, _ = w.Write(manifest)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/assets/")
+		body, ok := assets[name]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if name == "boot_b.img" && r.Header.Get("Range") == "bytes=5-" {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes 5-%d/%d", len(body)-1, len(body)))
+			w.Header().Set("Content-Length", fmt.Sprint(len(body)-5))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(body[5:])
+			return
+		}
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
+	env.config.DownloadSafetyMarginBytes = 64
+	remaining := int64(len(assets["boot_b.img"]) - len(partial) + len(assets["oem_b.img"]) + len(assets["rootfs.img"]))
+	updater := env.updater()
+	updater.availableBytes = func(string) (int64, error) { return remaining + 64, nil }
 
-func otaCacheBudgetBytes(t *testing.T, downloadDir string) int64 {
-	t.Helper()
-	entries, err := os.ReadDir(downloadDir)
+	result, err := updater.CheckOnce(context.Background())
 	if err != nil {
-		t.Fatalf("ReadDir(downloadDir) error = %v", err)
+		t.Fatalf("CheckOnce() error = %v", err)
 	}
-	var total int64
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			t.Fatalf("Info(%s) error = %v", entry.Name(), err)
-		}
-		total += info.Size()
+	if !result.Updated {
+		t.Fatalf("CheckOnce() = %+v, want update", result)
 	}
-	return total
 }
