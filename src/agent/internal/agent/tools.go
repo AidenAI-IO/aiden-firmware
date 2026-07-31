@@ -201,7 +201,12 @@ func (s *ToolSet) RegisterEnterTextTool(models model.Model, platformFn func() st
 		return
 	}
 	engine := newTextInputEngine(*s.textInputHW, newLLMTextInputVision(models))
-	bridgeTool := &textInputBridge{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }}
+	bridgeTool := &textInputBridge{
+		hw:       s.textInputHW,
+		vision:   newLLMTextInputVision(models),
+		bridgeFn: func() *PhoneBridge { return s.phoneBridge },
+		restorer: s.phoneBridgeRestorer,
+	}
 	entryTool := &EnterTextTool{engine: engine, bridgeTool: bridgeTool, iosKeyboardIsolation: s.iosKeyboardIsolation}
 	searchOpenTool := &appSearchOpenTool{
 		hw:                   s.textInputHW,
