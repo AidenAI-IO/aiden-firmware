@@ -29,6 +29,7 @@ import (
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/screen"
+	speechtext "aiden-agent/internal/agent/speech"
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
@@ -739,7 +740,7 @@ func TestStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
 
 	fanout := newStreamFanoutWriter(
 		&webDelta,
-		NewSpeechStreamWriter(&speech),
+		speechtext.NewStreamWriter(&speech),
 	)
 	tracker, ok := fanout.(streamOutputTracker)
 	if !ok {
@@ -2001,7 +2002,7 @@ func TestServerHandleChatCancelStopsRequestScopedStreamingTTSPlayback(t *testing
 
 	writeDone := make(chan error, 1)
 	go func() {
-		_, writeErr := speechStreamWriterForConfig(stream, Config{}).Write([]byte("<tts>streaming final answer</tts>"))
+		_, writeErr := speechtext.NewStreamWriter(stream).Write([]byte("<tts>streaming final answer</tts>"))
 		writeDone <- writeErr
 	}()
 

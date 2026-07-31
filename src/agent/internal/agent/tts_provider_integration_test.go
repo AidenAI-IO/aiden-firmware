@@ -16,6 +16,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
 
+	speechtext "aiden-agent/internal/agent/speech"
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
@@ -425,7 +426,7 @@ func TestRuntimeRunStreamsTTSTaggedChunksToWriter(t *testing.T) {
 
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:        "hello",
-		StreamWriter: NewTTSTagStreamWriter(&stream),
+		StreamWriter: speechtext.NewStreamWriter(&stream),
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
