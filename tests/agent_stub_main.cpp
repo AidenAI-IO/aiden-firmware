@@ -23,6 +23,7 @@
 //                                    stdin for assertions.
 //   AIDEN_AGENT_STUB_CONFIG_TEST_FILE path to stdout payload for `config-test`.
 //                                    If unset, prints a passing TTS result.
+//   AIDEN_AGENT_STUB_CONFIG_TEST_STDERR text emitted before the JSON result.
 //   AIDEN_AGENT_STUB_CONFIG_TEST_EXIT integer exit code for `config-test`
 //                                    (default 0).
 //   AIDEN_AGENT_STUB_SLEEP_MS    if set, sleep this many ms before producing
@@ -197,6 +198,11 @@ int main(int argc, char** argv) {
         }
         maybe_write_config_test_log(argc, argv, body.str());
         maybe_sleep();
+        const char* stderr_text = std::getenv("AIDEN_AGENT_STUB_CONFIG_TEST_STDERR");
+        if (stderr_text && stderr_text[0] != '\0') {
+            std::fprintf(stderr, "%s\n", stderr_text);
+            std::fflush(stderr);
+        }
         if (!write_file_contents("AIDEN_AGENT_STUB_CONFIG_TEST_FILE", kDefaultConfigTest)) {
             return 1;
         }

@@ -438,6 +438,25 @@ bool json_is_bool(cJSON* item) {
     return json_is_type(item, cJSON_True) || json_is_type(item, cJSON_False);
 }
 
+cJSON* parse_config_test_result(const std::string& output) {
+    size_t offset = 0;
+    while ((offset = output.find('{', offset)) != std::string::npos) {
+        cJSON* root = cJSON_ParseWithOpts(output.c_str() + offset, NULL, 0);
+        if (json_is_object(root)) {
+            cJSON* ok = cJSON_GetObjectItem(root, "ok");
+            cJSON* results = cJSON_GetObjectItem(root, "results");
+            if (json_is_bool(ok) && json_is_array(results)) {
+                return root;
+            }
+        }
+        if (root) {
+            cJSON_Delete(root);
+        }
+        ++offset;
+    }
+    return NULL;
+}
+
 std::string json_type_name(cJSON* item) {
     if (!item) {
         return "missing";
@@ -694,6 +713,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"tts", "api_key", CONFIG_FIELD_STRING},
         {"tts", "model", CONFIG_FIELD_STRING},
         {"tts", "voice_id", CONFIG_FIELD_STRING},
+        {"tts", "reference_id", CONFIG_FIELD_STRING},
         {"tts", "emotion", CONFIG_FIELD_STRING},
         {"tts", "speed", CONFIG_FIELD_NUMBER},
         {"stt", "provider", CONFIG_FIELD_STRING},
@@ -1990,7 +2010,7 @@ ApiResponse run_agent_stt_config_test(const Options& options,
         return make_json_error(503, "agent config-test timed out");
     }
 
-    cJSON* root = cJSON_Parse(cr.output.c_str());
+    cJSON* root = parse_config_test_result(cr.output);
     if (!json_is_object(root)) {
         if (root) {
             cJSON_Delete(root);
@@ -2537,6 +2557,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(tts, "api_key", config.tts.api_key.c_str());
     cJSON_AddStringToObject(tts, "model", config.tts.model.c_str());
     cJSON_AddStringToObject(tts, "voice_id", config.tts.voice_id.c_str());
+    cJSON_AddStringToObject(tts, "reference_id", config.tts.reference_id.c_str());
     cJSON_AddStringToObject(tts, "emotion", config.tts.emotion.c_str());
     cJSON_AddNumberToObject(tts, "speed", config.tts.speed);
 
@@ -2860,6 +2881,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->tts.api_key, tts, "api_key");
         set_json_str(&config->tts.model, tts, "model");
         set_json_str(&config->tts.voice_id, tts, "voice_id");
+        set_json_str(&config->tts.reference_id, tts, "reference_id");
         set_json_str(&config->tts.emotion, tts, "emotion");
         set_json_double(&config->tts.speed, tts, "speed");
     }
@@ -6001,6 +6023,12 @@ static bool is_tencent_asr_provider(const std::string& provider) {
     return provider == "tencent-asr" || provider == "tencent" || provider == "tencent_asr";
 }
 
+static bool is_streaming_tts_provider(const std::string& provider) {
+    return provider == "minimax" || provider == "minimax-cn" ||
+           provider == "fish-audio" || provider == "alicloud" ||
+           provider == "volcengine";
+}
+
 std::string provider_default_url(const std::string& provider, const std::string& section = "") {
     if (provider == "openrouter") return "https://openrouter.ai/api/v1";
     if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
@@ -6107,7 +6135,10 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
 
         cJSON* r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "endpoint_reachable");
-        if (url.empty()) {
+        if (section == "tts" && is_streaming_tts_provider(provider)) {
+            cJSON_AddBoolToObject(r, "passed", 1);
+            cJSON_AddStringToObject(r, "detail", "streaming endpoint is verified by the TTS playback test");
+        } else if (url.empty()) {
             cJSON_AddBoolToObject(r, "passed", 0);
             cJSON_AddStringToObject(r, "detail", "no URL to test (provider unknown and base_url empty)");
             all_passed = false;
@@ -6271,7 +6302,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
 
                 bool appended_cli_result = false;
                 bool cli_passed = cr.exit_code == 0 && !cr.timed_out;
-                cJSON* cli_root = cJSON_Parse(cr.output.c_str());
+                cJSON* cli_root = parse_config_test_result(cr.output);
                 if (cli_root) {
                     cJSON* ok_item = cJSON_GetObjectItem(cli_root, "ok");
                     if (!json_is_type(ok_item, cJSON_True)) {

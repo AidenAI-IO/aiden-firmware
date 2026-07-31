@@ -1,5 +1,7 @@
 package agent
 
+import "aiden-agent/internal/agent/tts"
+
 // This file is the single source of truth for config field metadata consumed
 // by the config web UI (via the `agent config-meta` CLI subcommand). It
 // describes how each field is rendered and defaulted, and the conditions under
@@ -18,11 +20,13 @@ const (
 	WidgetList     Widget = "list"
 )
 
-// EnumOption is a single choice for a select widget. Label may differ from
-// Value (e.g. an empty value shown as "langfuse (default)").
+// EnumOption is a single predefined choice. Label may differ from Value (e.g.
+// an empty value shown as "langfuse (default)"). Text widgets may also carry
+// choices when SelectWhen conditionally renders them as a select.
 type EnumOption struct {
-	Value string `json:"value"`
-	Label string `json:"label,omitempty"`
+	Value     string   `json:"value"`
+	Label     string   `json:"label,omitempty"`
+	Providers []string `json:"providers,omitempty"`
 }
 
 // Range describes the bounds for a numeric field. When a number field also
@@ -50,16 +54,26 @@ type VisibleRule struct {
 	Any []Condition `json:"any,omitempty"`
 }
 
+// ConditionalPlaceholder supplies a provider/model-specific placeholder when
+// its condition matches. It documents the runtime recommendation without
+// writing the example value into the user's configuration.
+type ConditionalPlaceholder struct {
+	When  VisibleRule `json:"when"`
+	Value interface{} `json:"value"`
+}
+
 // FieldMeta describes a single configurable field.
 type FieldMeta struct {
-	Key         string       `json:"key"`
-	Widget      Widget       `json:"widget"`
-	Enum        []EnumOption `json:"enum,omitempty"`
-	Range       *Range       `json:"range,omitempty"`
-	Default     interface{}  `json:"default,omitempty"`
-	Secret      bool         `json:"secret,omitempty"`
-	Nullable    bool         `json:"nullable,omitempty"` // For number fields: empty input means unset (omit key), not 0
-	VisibleWhen *VisibleRule `json:"visibleWhen,omitempty"`
+	Key             string                   `json:"key"`
+	Widget          Widget                   `json:"widget"`
+	Enum            []EnumOption             `json:"enum,omitempty"`
+	Range           *Range                   `json:"range,omitempty"`
+	Default         interface{}              `json:"default,omitempty"`
+	PlaceholderWhen []ConditionalPlaceholder `json:"placeholderWhen,omitempty"`
+	Secret          bool                     `json:"secret,omitempty"`
+	Nullable        bool                     `json:"nullable,omitempty"` // For number fields: empty input means unset (omit key), not 0
+	VisibleWhen     *VisibleRule             `json:"visibleWhen,omitempty"`
+	SelectWhen      *VisibleRule             `json:"selectWhen,omitempty"`
 }
 
 // SectionMeta groups fields under a UI section. Section names match the JSON
@@ -103,6 +117,10 @@ func notIn(field string, vs ...string) Condition {
 }
 
 func all(conds ...Condition) *VisibleRule { return &VisibleRule{All: conds} }
+
+func placeholderWhen(value interface{}, conds ...Condition) ConditionalPlaceholder {
+	return ConditionalPlaceholder{When: VisibleRule{All: conds}, Value: value}
+}
 
 // ConfigMeta returns the full field metadata for the config web UI. Defaults
 // here are the canonical defaults for the device's agent.toml. Free-text
@@ -149,15 +167,47 @@ func ConfigMeta() ConfigMetadata {
 						Enum:    enumOptions("minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter", "google-cloud"),
 						Default: defaults.TTS.Provider},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
-					{Key: "model", Widget: WidgetSelect,
+					{Key: "model", Widget: WidgetText,
 						Enum: []EnumOption{
-							{Value: "google/gemini-3.1-flash-tts-preview", Label: "Google Gemini TTS"},
-							{Value: "hexgrad/kokoro-82m", Label: "Hexgrad Kokoro"},
-							{Value: "microsoft/mai-voice-2", Label: "Microsoft MAI Voice 2"},
+							{Value: "speech-2.8-hd", Label: "MiniMax speech-2.8-hd", Providers: []string{"minimax", "minimax-cn"}},
+							{Value: "s2-pro", Label: "Fish Audio s2-pro", Providers: []string{"fish-audio"}},
+							{Value: "qwen-tts-realtime", Label: "Alibaba Cloud qwen-tts-realtime", Providers: []string{"alicloud"}},
+							{Value: "qwen3-tts-flash-realtime", Label: "Alibaba Cloud qwen3-tts-flash-realtime", Providers: []string{"alicloud"}},
+							{Value: "seed-tts-2.0", Label: "Volcengine seed-tts-2.0", Providers: []string{"volcengine"}},
+							{Value: "google/gemini-3.1-flash-tts-preview", Label: "Google Gemini TTS", Providers: []string{"openrouter"}},
+							{Value: "hexgrad/kokoro-82m", Label: "Hexgrad Kokoro", Providers: []string{"openrouter"}},
+							{Value: "microsoft/mai-voice-2", Label: "Microsoft MAI Voice 2", Providers: []string{"openrouter"}},
 						},
-						VisibleWhen: all(in("tts.provider", "openrouter"))},
-					{Key: "voice_id", Widget: WidgetText, Default: defaults.TTS.VoiceID},
+						PlaceholderWhen: []ConditionalPlaceholder{
+							placeholderWhen("speech-2.8-hd", in("tts.provider", "minimax", "minimax-cn")),
+							placeholderWhen("s2-pro", in("tts.provider", "fish-audio")),
+							placeholderWhen("qwen-tts-realtime", in("tts.provider", "alicloud")),
+							placeholderWhen("seed-tts-2.0", in("tts.provider", "volcengine")),
+							placeholderWhen("google/gemini-3.1-flash-tts-preview", in("tts.provider", "openrouter")),
+						},
+						SelectWhen:  all(in("tts.provider", "openrouter")),
+						VisibleWhen: all(in("tts.provider", "minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter"))},
+					{Key: "voice_id", Widget: WidgetText, Default: defaults.TTS.VoiceID,
+						PlaceholderWhen: []ConditionalPlaceholder{
+							placeholderWhen("Kore", eq("tts.provider", "openrouter"), eq("tts.model", "google/gemini-3.1-flash-tts-preview")),
+							placeholderWhen("af_heart", eq("tts.provider", "openrouter"), eq("tts.model", "hexgrad/kokoro-82m")),
+							placeholderWhen("en-US-AndrewMultilingualNeural", eq("tts.provider", "openrouter"), eq("tts.model", "microsoft/mai-voice-2")),
+							placeholderWhen("alloy", in("tts.provider", "openrouter")),
+							placeholderWhen("male-qn-qingse", in("tts.provider", "minimax", "minimax-cn")),
+							placeholderWhen("Cherry", in("tts.provider", "alicloud")),
+							placeholderWhen("zh_female_vv_uranus_bigtts", in("tts.provider", "volcengine")),
+							placeholderWhen("en-US-Neural2-C", in("tts.provider", "google-cloud")),
+						},
+						VisibleWhen: all(in("tts.provider", "minimax", "minimax-cn", "alicloud", "volcengine", "openrouter", "google-cloud"))},
+					{Key: "reference_id", Widget: WidgetText,
+						PlaceholderWhen: []ConditionalPlaceholder{
+							placeholderWhen(tts.DefaultFishAudioReferenceID, in("tts.provider", "fish-audio")),
+						},
+						VisibleWhen: all(in("tts.provider", "fish-audio"))},
 					{Key: "emotion", Widget: WidgetText, Default: defaults.TTS.Emotion,
+						PlaceholderWhen: []ConditionalPlaceholder{
+							placeholderWhen("happy", in("tts.provider", "minimax", "minimax-cn")),
+						},
 						VisibleWhen: all(in("tts.provider", "minimax", "minimax-cn", "volcengine"))},
 					{Key: "speed", Widget: WidgetSelect, Default: defaults.TTS.Speed,
 						Range: &Range{Min: 0.5, Max: 2, Step: 0.1, Precision: 1}},

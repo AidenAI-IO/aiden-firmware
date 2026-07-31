@@ -74,14 +74,24 @@ func TestConfigMeta_Valid(t *testing.T) {
 			if f.Widget == WidgetSelect && len(f.Enum) == 0 && f.Range == nil {
 				t.Errorf("%s: select widget without enum or range", path)
 			}
-			// enum only makes sense on select widgets.
-			if len(f.Enum) > 0 && f.Widget != WidgetSelect {
+			// enum only makes sense on select widgets or text widgets that
+			// conditionally become selects.
+			if len(f.Enum) > 0 && f.Widget != WidgetSelect && f.SelectWhen == nil {
 				t.Errorf("%s: enum present on non-select widget %q", path, f.Widget)
+			}
+			if f.SelectWhen != nil && (f.Widget != WidgetText || len(f.Enum) == 0) {
+				t.Errorf("%s: selectWhen requires a text widget with enum options", path)
 			}
 
 			rules := []VisibleRule{}
 			if f.VisibleWhen != nil {
 				rules = append(rules, *f.VisibleWhen)
+			}
+			if f.SelectWhen != nil {
+				rules = append(rules, *f.SelectWhen)
+			}
+			for _, conditionalPlaceholder := range f.PlaceholderWhen {
+				rules = append(rules, conditionalPlaceholder.When)
 			}
 			for _, rule := range rules {
 				conds := append(append([]Condition{}, rule.All...), rule.Any...)
@@ -303,18 +313,98 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 	}
 }
 
-func TestConfigMeta_TTSModelHiddenForMinimaxProviders(t *testing.T) {
+func TestConfigMeta_TTSFieldsFollowProviderCapabilities(t *testing.T) {
 	idx := fieldIndex(t)
+	hasPlaceholder := func(field FieldMeta, value interface{}, when VisibleRule) bool {
+		for _, candidate := range field.PlaceholderWhen {
+			if reflect.DeepEqual(candidate.Value, value) && reflect.DeepEqual(candidate.When, when) {
+				return true
+			}
+		}
+		return false
+	}
+
+	referenceID, ok := idx["tts.reference_id"]
+	if !ok {
+		t.Fatal("missing tts.reference_id metadata")
+	}
+	if referenceID.Widget != WidgetText {
+		t.Fatalf("tts.reference_id widget = %q, want %q", referenceID.Widget, WidgetText)
+	}
+	wantReferenceVisibility := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "in", Values: []string{"fish-audio"}}}}
+	if referenceID.VisibleWhen == nil || !reflect.DeepEqual(*referenceID.VisibleWhen, wantReferenceVisibility) {
+		t.Fatalf("tts.reference_id visibleWhen = %#v, want %#v", referenceID.VisibleWhen, wantReferenceVisibility)
+	}
+	if !hasPlaceholder(referenceID, "98655a12fa944e26b274c535e5e03842", wantReferenceVisibility) {
+		t.Fatalf("tts.reference_id missing Fish Audio conditional placeholder: %#v", referenceID.PlaceholderWhen)
+	}
+
 	model, ok := idx["tts.model"]
 	if !ok {
 		t.Fatal("missing tts.model metadata")
 	}
+	if model.Widget != WidgetText {
+		t.Fatalf("tts.model widget = %q, want %q", model.Widget, WidgetText)
+	}
+	wantModelSelect := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "in", Values: []string{"openrouter"}}}}
+	if model.SelectWhen == nil || !reflect.DeepEqual(*model.SelectWhen, wantModelSelect) {
+		t.Fatalf("tts.model selectWhen = %#v, want %#v", model.SelectWhen, wantModelSelect)
+	}
 	if model.VisibleWhen == nil {
 		t.Fatal("tts.model has no visibleWhen rule")
 	}
-	want := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "in", Values: []string{"openrouter"}}}}
-	if !reflect.DeepEqual(*model.VisibleWhen, want) {
-		t.Fatalf("tts.model visibleWhen = %#v, want %#v", *model.VisibleWhen, want)
+	wantModelVisibility := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "in", Values: []string{
+		"minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter",
+	}}}}
+	if !reflect.DeepEqual(*model.VisibleWhen, wantModelVisibility) {
+		t.Fatalf("tts.model visibleWhen = %#v, want %#v", *model.VisibleWhen, wantModelVisibility)
+	}
+
+	wantModelProviders := map[string][]string{
+		"speech-2.8-hd":                       {"minimax", "minimax-cn"},
+		"s2-pro":                              {"fish-audio"},
+		"qwen-tts-realtime":                   {"alicloud"},
+		"qwen3-tts-flash-realtime":            {"alicloud"},
+		"seed-tts-2.0":                        {"volcengine"},
+		"google/gemini-3.1-flash-tts-preview": {"openrouter"},
+	}
+	for value, wantProviders := range wantModelProviders {
+		t.Run("model_"+value, func(t *testing.T) {
+			for _, option := range model.Enum {
+				if option.Value == value {
+					if !reflect.DeepEqual(option.Providers, wantProviders) {
+						t.Fatalf("model %q providers = %#v, want %#v", value, option.Providers, wantProviders)
+					}
+					return
+				}
+			}
+			t.Fatalf("missing tts.model option %q", value)
+		})
+	}
+
+	voice := idx["tts.voice_id"]
+	voiceDefaults := []struct {
+		value string
+		when  VisibleRule
+	}{
+		{"male-qn-qingse", VisibleRule{All: []Condition{in("tts.provider", "minimax", "minimax-cn")}}},
+		{"Cherry", VisibleRule{All: []Condition{in("tts.provider", "alicloud")}}},
+		{"zh_female_vv_uranus_bigtts", VisibleRule{All: []Condition{in("tts.provider", "volcengine")}}},
+		{"en-US-Neural2-C", VisibleRule{All: []Condition{in("tts.provider", "google-cloud")}}},
+		{"Kore", VisibleRule{All: []Condition{eq("tts.provider", "openrouter"), eq("tts.model", "google/gemini-3.1-flash-tts-preview")}}},
+		{"af_heart", VisibleRule{All: []Condition{eq("tts.provider", "openrouter"), eq("tts.model", "hexgrad/kokoro-82m")}}},
+		{"en-US-AndrewMultilingualNeural", VisibleRule{All: []Condition{eq("tts.provider", "openrouter"), eq("tts.model", "microsoft/mai-voice-2")}}},
+	}
+	for _, want := range voiceDefaults {
+		if !hasPlaceholder(voice, want.value, want.when) {
+			t.Errorf("tts.voice_id missing conditional placeholder %q for %#v", want.value, want.when)
+		}
+	}
+
+	emotion := idx["tts.emotion"]
+	minimaxEmotion := VisibleRule{All: []Condition{in("tts.provider", "minimax", "minimax-cn")}}
+	if !hasPlaceholder(emotion, "happy", minimaxEmotion) {
+		t.Errorf("tts.emotion missing MiniMax placeholder")
 	}
 }
 
@@ -401,7 +491,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	}
 	sections := []sectionType{
 		{"model", reflect.TypeOf(ModelConfig{}), map[string]bool{"responses": true}},
-		{"tts", reflect.TypeOf(TTSConfig{}), map[string]bool{"reference_id": true, "credentials": true}},
+		{"tts", reflect.TypeOf(TTSConfig{}), map[string]bool{"credentials": true}},
 		{"stt", reflect.TypeOf(STTConfig{}), nil},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
 		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},

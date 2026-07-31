@@ -955,6 +955,9 @@ TEST_CASE("config web renders finite choice fields as selects") {
         CHECK_MESSAGE(html.find(input_marker) == std::string::npos, select_ids[i]);
     }
 
+    CHECK(html.find("<input id=\\\"tts_model\\\"") != std::string::npos);
+    CHECK(html.find("<select id=\\\"tts_model\\\"") == std::string::npos);
+
     CHECK(html.find("input,select,textarea") != std::string::npos);
     CHECK(html.find("input:focus,select:focus,textarea:focus") != std::string::npos);
     CHECK(html.find("input:disabled,select:disabled,textarea:disabled") != std::string::npos);
@@ -966,6 +969,14 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("loadConfigMeta") != std::string::npos);
     CHECK(html.find("'/api/config/meta'") != std::string::npos);
     CHECK(html.find("hydrateSelectOptions") != std::string::npos);
+    CHECK(html.find("filterSelectOptions") != std::string::npos);
+    CHECK(html.find("option.providers") != std::string::npos);
+    CHECK(html.find("conditionalSelectRules") != std::string::npos);
+    CHECK(html.find("syncConditionalSelectFields") != std::string::npos);
+    CHECK(html.find("field.selectWhen") != std::string::npos);
+    CHECK(html.find("conditionalPlaceholderRules") != std::string::npos);
+    CHECK(html.find("applyConditionalPlaceholders") != std::string::npos);
+    CHECK(html.find("field.placeholderWhen") != std::string::npos);
     CHECK(html.find("ensureSelectOption") != std::string::npos);
     CHECK(html.find("let fieldDefaults=") != std::string::npos);
     CHECK(html.find("function fieldDefaultPlaceholder") != std::string::npos);
@@ -1224,17 +1235,17 @@ TEST_CASE("config web updates dependent field visibility from selected values") 
 
     CHECK(html.find(".field.hidden{display:none}") != std::string::npos);
     CHECK(html.find("function setFieldVisible(section,key,visible)") != std::string::npos);
-    CHECK(html.find("function applyFieldVisibility()") != std::string::npos);
+    CHECK(html.find("function applyFieldVisibility(preserveUnknown,changedPath)") != std::string::npos);
     // Visibility is now driven by declarative rules from config-meta
     // (visibleWhen), evaluated generically rather than hard-coded per field.
     CHECK(html.find("visibilityRules.forEach") != std::string::npos);
     CHECK(html.find("function evalCondition(cond)") != std::string::npos);
     CHECK(html.find("function evalRule(rule)") != std::string::npos);
     CHECK(html.find("function bindFieldVisibility()") != std::string::npos);
-    CHECK(html.find("watchedFields.forEach") != std::string::npos);
-    CHECK(html.find("addEventListener('change',function(){applyFieldVisibility();})") != std::string::npos);
+    CHECK(html.find("document.addEventListener('change',function(event)") != std::string::npos);
+    CHECK(html.find("applyFieldVisibility(false,path)") != std::string::npos);
     CHECK(html.find("fillConfigForm(config){Object.keys(sectionFields).forEach") != std::string::npos);
-    CHECK(html.find("applyFieldVisibility();}") != std::string::npos);
+    CHECK(html.find("applyFieldVisibility(true);}") != std::string::npos);
     // The legacy imperative visibility chain must be gone.
     CHECK(html.find("setFieldVisible('model','base_url',modelProvider!=='openrouter')") == std::string::npos);
     CHECK(html.find("const sttTencent=sttProvider==='tencent'") == std::string::npos);

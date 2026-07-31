@@ -15,7 +15,7 @@ import (
 	"aiden-agent/internal/agent/tts"
 )
 
-func TestFishAudioOmitsEmptyReferenceIDForDefaultVoice(t *testing.T) {
+func TestFishAudioUsesDefaultReferenceIDWhenEmpty(t *testing.T) {
 	startMsg := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("model") != "s2-pro" {
@@ -47,7 +47,7 @@ func TestFishAudioOmitsEmptyReferenceIDForDefaultVoice(t *testing.T) {
 	provider, err := New(tts.ProviderConfig{
 		APIKey:   "test-key",
 		Endpoint: "ws" + strings.TrimPrefix(server.URL, "http"),
-		Extra:    map[string]any{"reference_id": "test-ref-id"},
+		Extra:    map[string]any{"reference_id": ""},
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -65,8 +65,8 @@ func TestFishAudioOmitsEmptyReferenceIDForDefaultVoice(t *testing.T) {
 	if !ok {
 		t.Fatalf("request = %#v, want map", msg["request"])
 	}
-	if refID, ok := request["reference_id"].(string); !ok || refID != "test-ref-id" {
-		t.Fatalf("reference_id = %#v, want test-ref-id", request["reference_id"])
+	if refID, ok := request["reference_id"].(string); !ok || refID != tts.DefaultFishAudioReferenceID {
+		t.Fatalf("reference_id = %#v, want default %q", request["reference_id"], tts.DefaultFishAudioReferenceID)
 	}
 	if request["text"] != "" {
 		t.Fatalf("text = %#v, want empty string", request["text"])
@@ -185,29 +185,30 @@ func TestFishAudioSynthesisTimeoutExceedsConnectTimeout(t *testing.T) {
 	}
 }
 
-// TestFishAudioRequiresReferenceID verifies that Fish Audio adapter
-// requires reference_id and does not fall back to Voice (voice_id).
-// This prevents parameter pollution from other providers.
-func TestFishAudioRequiresReferenceID(t *testing.T) {
+// TestFishAudioReferenceIDResolution verifies that an empty reference_id uses
+// the built-in demo voice while voice_id remains ignored. This prevents
+// cross-provider parameter pollution without making Config Web placeholders
+// lie about the effective runtime value.
+func TestFishAudioReferenceIDResolution(t *testing.T) {
 	tests := []struct {
-		name      string
-		cfg       tts.ProviderConfig
-		wantError string
+		name          string
+		cfg           tts.ProviderConfig
+		wantReference string
 	}{
 		{
 			name: "missing reference_id",
 			cfg: tts.ProviderConfig{
 				APIKey: "test-key",
 			},
-			wantError: "reference_id is required",
+			wantReference: tts.DefaultFishAudioReferenceID,
 		},
 		{
-			name: "voice_id without reference_id should fail",
+			name: "voice_id without reference_id still uses default",
 			cfg: tts.ProviderConfig{
 				APIKey: "test-key",
 				Voice:  "some-voice-id", // This should NOT be used
 			},
-			wantError: "reference_id is required",
+			wantReference: tts.DefaultFishAudioReferenceID,
 		},
 		{
 			name: "reference_id in Extra should work",
@@ -215,7 +216,7 @@ func TestFishAudioRequiresReferenceID(t *testing.T) {
 				APIKey: "test-key",
 				Extra:  map[string]any{"reference_id": "valid-ref-id"},
 			},
-			wantError: "",
+			wantReference: "valid-ref-id",
 		},
 		{
 			name: "reference_id takes precedence over Voice",
@@ -224,24 +225,19 @@ func TestFishAudioRequiresReferenceID(t *testing.T) {
 				Voice:  "ignored-voice-id",
 				Extra:  map[string]any{"reference_id": "valid-ref-id"},
 			},
-			wantError: "",
+			wantReference: "valid-ref-id",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := New(tt.cfg)
-			if tt.wantError != "" {
-				if err == nil {
-					t.Fatalf("New() expected error containing %q, got nil", tt.wantError)
-				}
-				if !strings.Contains(err.Error(), tt.wantError) {
-					t.Fatalf("New() error = %v, want error containing %q", err, tt.wantError)
-				}
-			} else {
-				if err != nil {
-					t.Fatalf("New() unexpected error = %v", err)
-				}
+			provider, err := New(tt.cfg)
+			if err != nil {
+				t.Fatalf("New() unexpected error = %v", err)
+			}
+			adapter := provider.(*Adapter)
+			if adapter.referenceID != tt.wantReference {
+				t.Fatalf("referenceID = %q, want %q", adapter.referenceID, tt.wantReference)
 			}
 		})
 	}

@@ -357,6 +357,7 @@ void apply_kv(AgentToml& cfg,
         else if (key == "api_key") assign_string(&cfg.tts.api_key, raw, &sub_err);
         else if (key == "model") assign_string(&cfg.tts.model, raw, &sub_err);
         else if (key == "voice_id") assign_string(&cfg.tts.voice_id, raw, &sub_err);
+        else if (key == "reference_id") assign_string(&cfg.tts.reference_id, raw, &sub_err);
         else if (key == "emotion") assign_string(&cfg.tts.emotion, raw, &sub_err);
         else if (key == "speed") assign_double(&cfg.tts.speed, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
@@ -730,6 +731,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     emit_string(out, "api_key", cfg.tts.api_key);
     if (!cfg.tts.model.empty()) emit_string(out, "model", cfg.tts.model);
     emit_string(out, "voice_id", cfg.tts.voice_id);
+    if (!cfg.tts.reference_id.empty()) emit_string(out, "reference_id", cfg.tts.reference_id);
     emit_string(out, "emotion", cfg.tts.emotion);
     emit_double(out, "speed", cfg.tts.speed);
     out << "\n";

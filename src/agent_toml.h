@@ -25,6 +25,7 @@ struct TTSToml {
     std::string api_key;
     std::string model;
     std::string voice_id;
+    std::string reference_id;
     std::string emotion;
     double speed = 1.0;
 };
