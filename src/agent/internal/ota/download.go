@@ -13,6 +13,10 @@ import (
 
 const defaultProgressInterval = 5 * time.Second
 
+var closeDownloadFile = func(f *os.File) error {
+	return f.Close()
+}
+
 type DownloadOptions struct {
 	BearerToken      string
 	GitHubProxyURL   string
@@ -119,13 +123,15 @@ func DownloadFileWithOptions(ctx context.Context, url string, dst string, expect
 	if copyErr == nil {
 		copyErr = f.Sync()
 	}
-	closeErr := f.Close()
+	closeErr := closeDownloadFile(f)
+	if closeErr != nil {
+		handleDownloadError(part, closeErr)
+	}
 	if copyErr != nil {
 		handleDownloadError(part, copyErr)
 		return copyErr
 	}
 	if closeErr != nil {
-		handleDownloadError(part, closeErr)
 		return closeErr
 	}
 

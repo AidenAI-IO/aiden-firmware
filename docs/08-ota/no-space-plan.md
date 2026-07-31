@@ -125,7 +125,7 @@ When mounting an SD card, StorageManager credits existing OTA cache and reserve 
 
 Audio migration from eMMC continues only when the SD card's actual remaining space stays above the general write floor.
 
-OTA and eMMC-to-SD migration coordinate through `/userdata/ota/update.lock`. StorageManager does not start migration while OTA holds the lock.
+OTA and eMMC-to-SD migration coordinate through `/userdata/ota/update.lock`. OTA holds an exclusive lock for the update. StorageManager takes a shared lock for each complete per-file migration transaction and holds it through copy, verification, rename, and source deletion. Migration pauses when OTA already owns the lock, and lock open or acquisition errors fail closed instead of allowing an uncoordinated move.
 
 An active migration stops after finishing its current file, preventing it from consuming SD blocks released for an OTA download.
 
@@ -179,5 +179,5 @@ grep 'ota reserve' /var/log/ota/ota.log
 - `ENOSPC` removes `.part`; ordinary network failures retain it.
 - OTA falls back to eMMC when the SD card cannot hold the budget, while existing OTA cache and reserve count toward SD capacity.
 - Switching between SD and eMMC clears the inactive OTA cache so a second budget is not left allocated.
-- eMMC-to-SD audio migration does not start while the OTA update lock is held.
+- eMMC-to-SD audio migration does not start while the OTA update lock is held, and OTA cannot acquire its exclusive lock during a per-file migration transaction.
 - Manifest generation fails when either target slot exceeds 196 MiB.

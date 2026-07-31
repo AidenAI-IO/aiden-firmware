@@ -321,6 +321,70 @@ func TestUpdaterRestoresReserveBudgetAfterInterruptedDownload(t *testing.T) {
 	}
 }
 
+func TestUpdaterRecordsDeferredReserveRestorationFailure(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.config.ReserveSizeBytes = 4096
+	env.config.ReserveSafetyMarginBytes = 64
+	assets := map[string][]byte{
+		"boot_a.img": []byte("boot-a-v2"),
+		"boot_b.img": []byte("boot-b-v2"),
+		"oem_a.img":  []byte("oem-a-v2"),
+		"oem_b.img":  []byte("oem-b-v2"),
+		"rootfs.img": []byte("rootfs-v2"),
+	}
+	manifest := env.signedManifest(assets, nil)
+	var sabotaged atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
+			var release struct {
+				Assets []githubAsset `json:"assets"`
+			}
+			release.Assets = append(release.Assets, githubAsset{Name: "manifest.json", BrowserDownloadURL: "http://" + r.Host + "/assets/manifest.json"})
+			for name := range assets {
+				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "http://" + r.Host + "/assets/" + name})
+			}
+			_ = json.NewEncoder(w).Encode(release)
+			return
+		}
+		if r.URL.Path == "/assets/manifest.json" {
+			_, _ = w.Write(manifest)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/assets/")
+		body, ok := assets[name]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if sabotaged.CompareAndSwap(false, true) {
+			if err := os.RemoveAll(env.downloadDir); err != nil {
+				t.Errorf("RemoveAll(downloadDir) error = %v", err)
+			}
+			if err := os.WriteFile(env.downloadDir, []byte("block reserve restoration"), 0o644); err != nil {
+				t.Errorf("WriteFile(downloadDir) error = %v", err)
+			}
+		}
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
+
+	if _, err := env.updater().CheckOnce(context.Background()); err == nil {
+		t.Fatal("CheckOnce() error = nil, want download failure")
+	}
+	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+	if state.Phase != "reserve" {
+		t.Fatalf("state phase = %q, want reserve", state.Phase)
+	}
+	if !strings.Contains(state.LastError, "not a directory") {
+		t.Fatalf("state last_error = %q, want reserve restoration failure", state.LastError)
+	}
+}
+
 func TestUpdaterFailsWhenStaleCacheCannotBeRemoved(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	assets := map[string][]byte{

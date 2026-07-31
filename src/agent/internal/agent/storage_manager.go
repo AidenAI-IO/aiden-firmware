@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -76,6 +77,8 @@ const (
 const defaultStorageStatePath = "/run/aiden/storage.state"
 
 const otaUpdateLockFileName = "update.lock"
+
+var errOTAUpdateLockBusy = errors.New("OTA update lock busy")
 
 // StorageCardStatus describes the SD card as last observed.
 type StorageCardStatus struct {
@@ -183,6 +186,7 @@ type StorageManager struct {
 	migrationCancel  chan struct{} // non-nil while a migration run is active
 	migrationDone    chan struct{} // closed when the migration worker exits
 	migrationRetryAt time.Time     // cooldown after a failed/exhausted run
+	migrateFile      func(src, dst string) (int64, error)
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -208,7 +212,7 @@ func NewStorageManager(cfg StorageConfig, logger *Logger) *StorageManager {
 }
 
 func newStorageManagerWithOps(cfg StorageConfig, ops storageSysOps, statePath, emmcRoot string, logger *Logger) *StorageManager {
-	return &StorageManager{
+	m := &StorageManager{
 		cfg:               cfg,
 		logger:            logger,
 		ops:               ops,
@@ -221,6 +225,8 @@ func newStorageManagerWithOps(cfg StorageConfig, ops storageSysOps, statePath, e
 		migration:         StorageMigrationJob{Status: StorageFormatIdle},
 		stop:              make(chan struct{}),
 	}
+	m.migrateFile = m.migrateOneFile
+	return m
 }
 
 // Start launches the polling loop. Safe to call once.
@@ -408,25 +414,36 @@ func (m *StorageManager) maybeStartMigrationLocked() {
 }
 
 func (m *StorageManager) otaUpdateInProgress() bool {
-	lockFile, err := os.OpenFile(m.otaUpdateLockPath, os.O_RDWR, 0)
-	if os.IsNotExist(err) {
-		return false
-	}
+	unlock, err := m.acquireOTAMigrationLock()
 	if err != nil {
-		m.warnf("[storage] cannot inspect OTA update lock %s: %v", m.otaUpdateLockPath, err)
-		return false
-	}
-	defer lockFile.Close()
-
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if err == syscall.EWOULDBLOCK || err == syscall.EAGAIN {
-			return true
+		if !errors.Is(err, errOTAUpdateLockBusy) {
+			m.warnf("[storage] cannot inspect OTA update lock %s: %v", m.otaUpdateLockPath, err)
 		}
-		m.warnf("[storage] cannot test OTA update lock %s: %v", m.otaUpdateLockPath, err)
-		return false
+		return true
 	}
-	_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	unlock()
 	return false
+}
+
+func (m *StorageManager) acquireOTAMigrationLock() (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(m.otaUpdateLockPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create OTA update lock directory: %w", err)
+	}
+	lockFile, err := os.OpenFile(m.otaUpdateLockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open OTA update lock: %w", err)
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		_ = lockFile.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, fmt.Errorf("%w: %s", errOTAUpdateLockBusy, m.otaUpdateLockPath)
+		}
+		return nil, fmt.Errorf("lock OTA update lock: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}, nil
 }
 
 func (m *StorageManager) emmcFreePct() (float64, error) {
@@ -555,7 +572,17 @@ func (m *StorageManager) runMigration(cancel <-chan struct{}, done chan<- struct
 			return
 		}
 
-		size, err := m.migrateOneFile(filepath.Join(srcDir, candidate), filepath.Join(dstDir, candidate))
+		unlockOTA, err := m.acquireOTAMigrationLock()
+		if err != nil {
+			if errors.Is(err, errOTAUpdateLockBusy) {
+				finish(StorageFormatSuccess, "paused for OTA update", "", false)
+				return
+			}
+			finish(StorageFormatFailed, "cannot acquire OTA update lock before migrating "+candidate, err.Error(), true)
+			return
+		}
+		size, err := m.migrateFile(filepath.Join(srcDir, candidate), filepath.Join(dstDir, candidate))
+		unlockOTA()
 		if err != nil {
 			failedFiles++
 			m.warnf("[storage] migrate %s -> %s failed: %v", filepath.Join(srcDir, candidate), dstDir, err)

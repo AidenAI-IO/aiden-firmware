@@ -337,6 +337,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		if reserveReleased {
 			if err := u.ensureReserveSpace(); err != nil {
 				u.logf("ota reserve: restore after failed update: %v", err)
+				u.recordError("reserve", err)
 			}
 		}
 	}()
