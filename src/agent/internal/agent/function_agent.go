@@ -126,7 +126,7 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 
 	return nil, &schema.AgentFinish{
 		ReturnValues: map[string]any{
-			a.OutputKey: finalizeAssistantOutput(choice.Content),
+			a.OutputKey: strings.TrimSpace(choice.Content),
 		},
 		Log: choice.Content,
 	}, nil

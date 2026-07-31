@@ -21,6 +21,7 @@ import (
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/statemanager"
 	"aiden-agent/internal/util"
 
@@ -168,14 +169,14 @@ func recordPreRunEpisodeEvents(recorder *EpisodeRecorder, events []TaskEpisodeEv
 }
 
 func (r RunResult) SpokenText() string {
-	return BuildSpeechText(r.Output, Config{})
+	return speech.BuildText(r.Output)
 }
 
 func (r RunResult) SpokenTextForConfig(cfg Config) string {
 	if r.WaitForWakeupRequested {
 		return ""
 	}
-	return BuildSpeechText(r.Output, cfg)
+	return speech.BuildText(r.Output)
 }
 
 type RunSteerMessage struct {
@@ -1118,7 +1119,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	output = finalizeAssistantOutput(output)
+	output = strings.TrimSpace(output)
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	if r.logger != nil && metrics.PromptTokens > 0 {
 		r.logger.Info("LLM usage: prompt_tokens=%d completion_tokens=%d total_tokens=%d cached_tokens=%d cache_hit_rate=%.1f%%",
@@ -1738,7 +1739,7 @@ func (h *runtimeCallbackHandler) persistSessionEventBestEffort(event SessionEven
 }
 
 func (h *runtimeCallbackHandler) HandleAssistantOutput(ctx context.Context, content string) {
-	content = finalizeAssistantOutput(content)
+	content = strings.TrimSpace(content)
 	if content == "" {
 		return
 	}

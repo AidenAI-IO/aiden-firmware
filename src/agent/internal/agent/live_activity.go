@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"aiden-agent/internal/agent/speech"
 )
 
 const (
@@ -692,14 +694,14 @@ type liveActivityToolStatus struct {
 }
 
 func liveActivityPhaseFromRole(content string) string {
-	if extractTTSText(content) != "" {
+	if speech.ExtractText(content) != "" {
 		return LiveActivityPhaseAnswering
 	}
 	return LiveActivityPhasePlanning
 }
 
 func liveActivityActionFromRole(content string) string {
-	if extractTTSText(content) != "" {
+	if speech.ExtractText(content) != "" {
 		return "answer"
 	}
 	return "think"
