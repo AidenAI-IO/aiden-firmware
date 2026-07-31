@@ -50,6 +50,13 @@ jobs:
             /sysdrv/tools/board/buildroot/luckfox_pico_w_defconfig
           git -C "$dir" fetch -q --depth=1 --filter=blob:none origin "$sha"
           git -C "$dir" checkout -q FETCH_HEAD
+          # Assert what was actually checked out, so a wrong or partial fetch
+          # cannot leave the policy check verifying an unrelated revision.
+          got="$(git -C "$dir" rev-parse HEAD)"
+          if [ "$got" != "$sha" ]; then
+            echo "fetched pico-sdk $got but the submodule pins $sha" >&2
+            exit 1
+          fi
           echo "dir=$dir" >> "$GITHUB_OUTPUT"
       - name: Verify reproducible rootfs policy
         env:
@@ -62,6 +69,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # test_release_ci_scripts.sh checks ci.yml's job structure through a YAML
+      # parser rather than by grepping, so PyYAML has to be present. It ships on
+      # ubuntu-latest today; install it explicitly so a runner image change
+      # cannot turn the structural checks into a skip.
+      - name: Install workflow parsing dependency
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
       - name: Verify release scripts
         run: |
           sh scripts/test_release_ci_scripts.sh

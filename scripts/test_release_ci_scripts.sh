@@ -138,24 +138,12 @@ if grep -q 'scripts/test_build_scripts.sh' "$CI_WORKFLOW"; then
     exit 1
 fi
 
-if grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW"; then
-    # The policy check reads pico-sdk, so it must never share the release-script
-    # job, which has no SDK checkout. It may run in its own CI job provided that
-    # job sparse-fetches only the files the check reads: a blobless shallow fetch
-    # of the pinned commit costs seconds, while a full checkout is ~1GB. The
-    # submodule guard above still forbids the expensive path.
-    if ! grep -q 'filter=blob:none' "$CI_WORKFLOW" || \
-       ! grep -q 'sparse-checkout' "$CI_WORKFLOW"; then
-        echo "CI must fetch pico-sdk policy inputs with a blobless sparse checkout rather than a full submodule checkout" >&2
-        exit 1
-    fi
-
-    if sed -n '/^  run-tests:/,/^  [a-z]/p' "$CI_WORKFLOW" | \
-       grep -q 'scripts/test_reproducible_rootfs_policy.sh'; then
-        echo "CI release script checks must not run submodule-dependent reproducible rootfs policy checks" >&2
-        exit 1
-    fi
-fi
+# The policy check reads pico-sdk, so it must not share the release-script job,
+# which has no SDK checkout, and any job running it must sparse-fetch rather
+# than check out the multi-GB worktree. Those are per-job structural facts, so
+# they are checked against the parsed workflow: grepping the whole file accepts
+# a marker that appears only in a comment, and cannot attribute a line to a job.
+python3 "$ROOT_DIR/scripts/check_ci_policy_job.py"
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \

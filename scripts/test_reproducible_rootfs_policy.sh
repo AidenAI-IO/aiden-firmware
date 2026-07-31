@@ -104,6 +104,29 @@ if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -Fq '> "$$stamp"'; t
   exit 1
 fi
 
+# Assert the property, not one spelling of it: the stamp must be written where
+# the clean decision is made and nowhere else. Naming a new define, or inlining
+# the write straight into the buildroot recipe, reintroduces the same bug, so
+# check the recipe body rather than only the old define name.
+buildroot_target="$(sed -n '/^buildroot: prepare$/,/^buildroot_clean:/p' "$PICO_SDK/sysdrv/Makefile")"
+if [ -z "$buildroot_target" ]; then
+  echo "could not locate the buildroot target in pico-sdk sysdrv/Makefile" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$buildroot_target" | grep -Fq '"$$stamp"'; then
+  echo "pico-sdk buildroot target must not write the Buildroot state stamp in its own recipe; the stamp belongs in refresh_buildroot_config_state, beside the clean decision it feeds" >&2
+  exit 1
+fi
+
+for stamp_writer in $(sed -n 's/^define \(.*stamp.*\)$/\1/p' "$PICO_SDK/sysdrv/Makefile"); do
+  case "$stamp_writer" in
+    refresh_buildroot_config_state|refresh_boardtools_config_state) continue ;;
+  esac
+  echo "pico-sdk sysdrv Makefile defines '$stamp_writer', a separate Buildroot state stamp step; writing the stamp anywhere other than beside the clean decision is what let the two drift apart" >&2
+  exit 1
+done
+
 if grep -q 'write_buildroot_config_state_stamp' "$PICO_SDK/sysdrv/Makefile"; then
   echo "pico-sdk sysdrv Makefile must not write the Buildroot state stamp in a separate post-build step; that is what let the stamp and the clean decision drift apart" >&2
   exit 1
