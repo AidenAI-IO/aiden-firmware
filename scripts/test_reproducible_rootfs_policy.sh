@@ -83,6 +83,24 @@ if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -Fq '$(call buildroo
   exit 1
 fi
 
+# The stamp records which configuration produced the tree in output/, so it must
+# be written by the same define that decides whether to clean -- before packages
+# are built, not after a successful build. Writing it only on success leaves a
+# half-built tree labelled with the previous configuration's hash, so the next
+# build using that configuration sees a match, skips the clean and reuses
+# packages configured for a different one. A branch enabling opkg (which selects
+# BR2_PACKAGE_LIBARCHIVE) left mpv configured with --enable-libarchive in a tree
+# main reused, breaking every main build until the stamp was invalidated.
+if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -Fq '> "$$stamp"'; then
+  echo "pico-sdk Buildroot state refresh must record the configuration that generated output/ in the same step that decides whether to clean, so an interrupted build cannot leave a stale stamp that suppresses the next clean" >&2
+  exit 1
+fi
+
+if grep -q 'write_buildroot_config_state_stamp' "$PICO_SDK/sysdrv/Makefile"; then
+  echo "pico-sdk sysdrv Makefile must not write the Buildroot state stamp in a separate post-build step; that is what let the stamp and the clean decision drift apart" >&2
+  exit 1
+fi
+
 buildroot_config_state_policy="$buildroot_config_state_value
 $refresh_buildroot_config_state"
 if ! printf '%s\n' "$buildroot_config_state_policy" | grep -q 'SOURCE_DATE_EPOCH'; then
