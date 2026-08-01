@@ -25,7 +25,13 @@ After device boots, check:
 ```bash
 cat /proc/cmdline
 mount | grep ' /oem '
-mount | grep ' /userdata/ota '
+ota_device="$(readlink -f /dev/block/by-name/ota)"
+ota_mount_device="$(awk '$2 == "/userdata/ota" && $3 == "ext4" { print $1 }' /proc/mounts)"
+userdata_mount_device="$(awk '$2 == "/userdata" { print $1 }' /proc/mounts)"
+test -n "$ota_mount_device"
+test "$(readlink -f "$ota_mount_device")" = "$ota_device"
+test -n "$userdata_mount_device"
+test "$(readlink -f "$userdata_mount_device")" != "$ota_device"
 df -h /userdata /userdata/ota
 /oem/usr/bin/abctl read /dev/block/by-name/misc
 /oem/usr/bin/ota status
@@ -36,7 +42,7 @@ Expected:
 - Factory boot is in slot A.
 - `/proc/cmdline` contains `aiden.slot_suffix=_a` and `root=PARTLABEL=rootfs_a`.
 - `/oem` is mounted from `/dev/block/by-name/oem_a`.
-- `/userdata/ota` is mounted from `/dev/block/by-name/ota` and reports an independent filesystem from `/userdata`.
+- `/userdata/ota` is an ext4 mount whose source resolves to `/dev/block/by-name/ota`, and it reports an independent filesystem from `/userdata`.
 - `misc` metadata can be parsed normally from byte offset `2048`, slot A is successful.
 - `/userdata/ota/config.json` exists, `ota status` does not report missing factory baseline.
 

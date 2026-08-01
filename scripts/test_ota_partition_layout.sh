@@ -34,8 +34,8 @@ if [ "$(aiden_ota_download_safety_margin_bytes)" != "16777216" ]; then
   echo "OTA download safety margin must be 16 MiB" >&2
   exit 1
 fi
-if [ "$(aiden_ota_manifest_max_download_bytes)" != "234881024" ]; then
-  echo "OTA manifest limit must derive to 224 MiB" >&2
+if [ "$(aiden_ota_manifest_max_download_bytes)" != "226492416" ]; then
+  echo "OTA manifest limit must derive to 216 MiB" >&2
   exit 1
 fi
 

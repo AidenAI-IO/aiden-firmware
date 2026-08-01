@@ -213,4 +213,15 @@ if ! grep -q 'scripts/compress_release_images.sh' "$WORKFLOW"; then
     exit 1
 fi
 
+if grep -Fq 'echo "max_download_bytes=$(aiden_ota_manifest_max_download_bytes)"' "$WORKFLOW"; then
+    echo "build workflow must not mask OTA download-limit resolution failures inside echo" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'max_download_bytes="$(aiden_ota_manifest_max_download_bytes)" || {' "$WORKFLOW" || \
+   ! grep -Fq "printf 'max_download_bytes=%s\\n' \"\$max_download_bytes\" >> \"\$GITHUB_OUTPUT\"" "$WORKFLOW"; then
+    echo "build workflow must resolve and validate the OTA download limit before publishing it" >&2
+    exit 1
+fi
+
 echo "release CI script tests passed"

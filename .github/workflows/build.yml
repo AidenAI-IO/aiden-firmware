@@ -200,7 +200,11 @@ jobs:
       shell: bash
       run: |
         source scripts/ota_partition_layout.sh
-        echo "max_download_bytes=$(aiden_ota_manifest_max_download_bytes)" >> "$GITHUB_OUTPUT"
+        max_download_bytes="$(aiden_ota_manifest_max_download_bytes)" || {
+          echo "Failed to resolve OTA partition download limit" >&2
+          exit 1
+        }
+        printf 'max_download_bytes=%s\n' "$max_download_bytes" >> "$GITHUB_OUTPUT"
 
     - name: Generate OTA manifest
       env:

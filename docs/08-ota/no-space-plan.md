@@ -66,12 +66,14 @@ Release CI also rejects an impossible target-slot download set. Its limit is
 derived from the shared partition layout:
 
 ```text
-256 MiB partition - 16 MiB ext4 overhead allowance - 16 MiB runtime margin
-= 224 MiB maximum compressed target-slot download set
+256 MiB partition - 24 MiB ext4 unavailable-space allowance - 16 MiB runtime margin
+= 216 MiB maximum compressed target-slot download set
 ```
 
-The runtime `statfs` check remains authoritative because filesystem metadata,
-cached assets, and partial downloads vary by device.
+The 24 MiB allowance covers ext4 metadata and reserved blocks; a freshly
+formatted production partition exposes about 232.4 MiB through `statfs` on the
+validated board. The runtime `statfs` check remains authoritative because
+filesystem metadata, cached assets, and partial downloads vary by device.
 
 ## Factory Image Flow
 
