@@ -7,7 +7,7 @@ OTA is accomplished through three layers: `pico-sdk` generates A/B images and fa
 Production images use A/B layout:
 
 ```text
-32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),256M(ota)
+32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)
 ```
 
 | Partition | A/B | OTA Behavior |
@@ -98,8 +98,8 @@ Optional configuration fields:
 - `download_safety_margin_bytes` - free bytes retained beyond remaining downloads (default 16 MiB)
 
 Release CI derives its target-slot download limit from the same layout contract.
-The current 256 MiB partition reserves a conservative 24 MiB for ext4 metadata
-and reserved blocks plus the 16 MiB runtime safety margin, producing a 216 MiB
+The current 300 MiB partition reserves a conservative 30 MiB for ext4 metadata
+and reserved blocks plus the 16 MiB runtime safety margin, producing a 254 MiB
 maximum compressed download set.
 
 Factory baseline must be slot-aware because `boot_a.img` and `boot_b.img` have different hashes. When baseline is missing, OTA initialization must fail; it should not guess current partition versions.

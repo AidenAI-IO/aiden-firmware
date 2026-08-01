@@ -80,7 +80,7 @@ It also does not manage RAM, CPU, temperature, battery pressure, or volatile /tm
 
 ### OTA Partition Interaction
 
-OTA uses a dedicated 256 MiB ext4 partition mounted at `/userdata/ota`.
+OTA uses a dedicated 300 MiB ext4 partition mounted at `/userdata/ota`.
 StorageMonitor still samples the `/userdata` filesystem, so OTA downloads do
 not reduce the available-byte value used by the 50/10/5 MiB thresholds.
 

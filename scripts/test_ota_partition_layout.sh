@@ -15,27 +15,27 @@ trap 'rm -rf "$tmp_dir"' EXIT
 board_path="$tmp_dir/BoardConfig.mk"
 
 printf '%s\n' \
-  'export RK_PARTITION_CMD_IN_ENV="32K(env),3G(userdata),256M(ota)"' \
+  'export RK_PARTITION_CMD_IN_ENV="32K(env),3G(userdata),300M(ota)"' \
   'export RK_PARTITION_FS_TYPE_CFG=rootfs_a@IGNORE@ext4,userdata@/userdata@ext4,ota@/userdata/ota@ext4' \
   > "$board_path"
 
 AIDEN_OTA_BOARD_CONFIG_PATH="$board_path"
 source "$layout_script"
 
-if [ "$(aiden_ota_partition_size_mib)" != "256" ]; then
+if [ "$(aiden_ota_partition_size_mib)" != "300" ]; then
   echo "OTA partition size must be read from the SDK board config" >&2
   exit 1
 fi
-if [ "$(aiden_ota_partition_size_bytes)" != "268435456" ]; then
-  echo "OTA partition size must be 256 MiB" >&2
+if [ "$(aiden_ota_partition_size_bytes)" != "314572800" ]; then
+  echo "OTA partition size must be 300 MiB" >&2
   exit 1
 fi
 if [ "$(aiden_ota_download_safety_margin_bytes)" != "16777216" ]; then
   echo "OTA download safety margin must be 16 MiB" >&2
   exit 1
 fi
-if [ "$(aiden_ota_manifest_max_download_bytes)" != "226492416" ]; then
-  echo "OTA manifest limit must derive to 216 MiB" >&2
+if [ "$(aiden_ota_manifest_max_download_bytes)" != "266338304" ]; then
+  echo "OTA manifest limit must derive to 254 MiB" >&2
   exit 1
 fi
 

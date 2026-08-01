@@ -34,10 +34,10 @@ This project's production OTA uses A/B partitioning, signed manifests, and boot 
 
 - OTA does not update `env`, `idblock`, or `uboot`; these are only updated via factory or USB recovery.
 - OTA only writes to `boot_*`, `oem_*`, `rootfs_*` of the inactive slot.
-- A dedicated 256 MiB `ota` partition is mounted at `/userdata/ota` and stores OTA configuration, state, download cache, and health markers.
+- A dedicated 300 MiB `ota` partition is mounted at `/userdata/ota` and stores OTA configuration, state, download cache, and health markers.
 - `boot_a.img` and `boot_b.img` contain different slot bootargs; manifests must use slot-specific boot assets.
 - When factory baseline is missing or manifest signature/hash verification fails, devices must fail closed.
-- OTA commands fail closed unless `/userdata/ota` is the ext4 mount rooted at `/dev/block/by-name/ota`, and require actual free bytes for remaining downloads plus a 16 MiB margin. For the current 256 MiB partition, release CI additionally caps a target-slot download set at 216 MiB.
+- OTA commands fail closed unless `/userdata/ota` is the ext4 mount rooted at `/dev/block/by-name/ota`, and require actual free bytes for remaining downloads plus a 16 MiB margin. For the current 300 MiB partition, release CI additionally caps a target-slot download set at 254 MiB.
 
 ## Common Commands
 

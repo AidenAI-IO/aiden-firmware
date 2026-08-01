@@ -2,7 +2,7 @@
 
 ## Purpose
 
-OTA downloads, state, and health markers live on a dedicated 256 MiB ext4
+OTA downloads, state, and health markers live on a dedicated 300 MiB ext4
 partition. This replaces the former reserve-file design on `/userdata`.
 Ordinary logs, recordings, swap, and Agent state cannot consume OTA capacity,
 and OTA activity cannot make `/userdata` appear artificially full.
@@ -10,7 +10,7 @@ and OTA activity cannot make `/userdata` appear artificially full.
 The production layout appends the partition without shrinking userdata:
 
 ```text
-...,1536M(rootfs_b),3G(userdata),256M(ota)
+...,1536M(rootfs_b),3G(userdata),300M(ota)
 ```
 
 The partition is mounted at `/userdata/ota`, preserving the existing OTA
@@ -21,7 +21,7 @@ runtime paths while placing them on a separate filesystem.
 The `aiden-sdk` board configuration defines:
 
 ```text
-256M(ota)
+300M(ota)
 ota@/userdata/ota@ext4
 ```
 
@@ -66,14 +66,15 @@ Release CI also rejects an impossible target-slot download set. Its limit is
 derived from the shared partition layout:
 
 ```text
-256 MiB partition - 24 MiB ext4 unavailable-space allowance - 16 MiB runtime margin
-= 216 MiB maximum compressed target-slot download set
+300 MiB partition - 30 MiB ext4 unavailable-space allowance - 16 MiB runtime margin
+= 254 MiB maximum compressed target-slot download set
 ```
 
-The 24 MiB allowance covers ext4 metadata and reserved blocks; a freshly
-formatted production partition exposes about 232.4 MiB through `statfs` on the
-validated board. The runtime `statfs` check remains authoritative because
-filesystem metadata, cached assets, and partial downloads vary by device.
+The 30 MiB allowance conservatively budgets 10% of the partition for ext4
+metadata and reserved blocks, based on the validated 256 MiB image exposing
+about 232.4 MiB through `statfs`. The runtime `statfs` check remains
+authoritative because filesystem metadata, cached assets, and partial downloads
+vary by device.
 
 ## Factory Image Flow
 
