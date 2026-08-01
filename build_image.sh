@@ -80,7 +80,7 @@ restore_docker_output_ownership() {
   fi
 
   paths=()
-  for path in build overlay/oem overlay/userdata pico-sdk/output; do
+  for path in build .cache/rootfs-cli-tools overlay/oem overlay/userdata pico-sdk/output; do
     if [ -e "$path" ]; then
       paths+=("$path")
     fi
@@ -89,6 +89,13 @@ restore_docker_output_ownership() {
   if [ "${#paths[@]}" -gt 0 ]; then
     # Errors here must not mask the original docker exit status, hence `|| true`.
     sudo chown -R "$(id -u):$(id -g)" "${paths[@]}" || true
+  fi
+
+  # Go module downloads are intentionally extracted read-only. Restore write
+  # permission after the root container exits so actions/checkout can clean a
+  # self-hosted workspace on the next run.
+  if [ -d .cache/rootfs-cli-tools/go-mod ]; then
+    chmod -R u+w .cache/rootfs-cli-tools/go-mod || true
   fi
 }
 
