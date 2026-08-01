@@ -42,9 +42,9 @@ type UpdaterConfig struct {
 	ConfigPath                string                       `json:"-"`
 	StateDir                  string                       `json:"state_dir,omitempty"`
 	DownloadDir               string                       `json:"download_dir,omitempty"`
-	StorageMountPoint         string                       `json:"storage_mount_point,omitempty"`
-	StorageDevicePath         string                       `json:"storage_device_path,omitempty"`
-	StorageFilesystem         string                       `json:"storage_filesystem,omitempty"`
+	StorageMountPoint         string                       `json:"-"` // Fixed in production; tests may override before NewUpdater.
+	StorageDevicePath         string                       `json:"-"` // Fixed in production; tests may override before NewUpdater.
+	StorageFilesystem         string                       `json:"-"` // Fixed in production; tests may override before NewUpdater.
 	MountInfoPath             string                       `json:"-"`
 	DownloadSafetyMarginBytes int64                        `json:"download_safety_margin_bytes,omitempty"`
 	UpdateLockPath            string                       `json:"update_lock_path,omitempty"`
@@ -118,25 +118,23 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 	if config.DownloadDir == "" {
 		config.DownloadDir = filepath.Join(config.StateDir, "downloads")
 	}
-	if config.StorageMountPoint == "" && config.StateDir == DefaultOTAStateDir {
+	if config.StorageMountPoint == "" {
 		config.StorageMountPoint = DefaultOTAStorageMountPoint
 	}
-	if config.StorageMountPoint != "" {
-		if config.StorageDevicePath == "" {
-			config.StorageDevicePath = DefaultOTAStorageDevicePath
-		}
-		if config.StorageFilesystem == "" {
-			config.StorageFilesystem = DefaultOTAStorageFilesystem
-		}
-		if config.MountInfoPath == "" {
-			config.MountInfoPath = DefaultOTAMountInfoPath
-		}
-		if !pathIsWithin(config.StorageMountPoint, config.StateDir) {
-			return UpdaterConfig{}, fmt.Errorf("state_dir must be inside storage_mount_point")
-		}
-		if !pathIsWithin(config.StorageMountPoint, config.DownloadDir) {
-			return UpdaterConfig{}, fmt.Errorf("download_dir must be inside storage_mount_point")
-		}
+	if config.StorageDevicePath == "" {
+		config.StorageDevicePath = DefaultOTAStorageDevicePath
+	}
+	if config.StorageFilesystem == "" {
+		config.StorageFilesystem = DefaultOTAStorageFilesystem
+	}
+	if config.MountInfoPath == "" {
+		config.MountInfoPath = DefaultOTAMountInfoPath
+	}
+	if !pathIsWithin(config.StorageMountPoint, config.StateDir) {
+		return UpdaterConfig{}, fmt.Errorf("state_dir must be inside the dedicated OTA storage mount")
+	}
+	if !pathIsWithin(config.StorageMountPoint, config.DownloadDir) {
+		return UpdaterConfig{}, fmt.Errorf("download_dir must be inside the dedicated OTA storage mount")
 	}
 	if config.DownloadSafetyMarginBytes == 0 {
 		config.DownloadSafetyMarginBytes = DefaultOTADownloadSafetyMarginBytes
@@ -147,8 +145,8 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 	if config.UpdateLockPath == "" {
 		config.UpdateLockPath = filepath.Join(config.StateDir, DefaultOTAUpdateLockName)
 	}
-	if config.StorageMountPoint != "" && !pathIsWithin(config.StorageMountPoint, config.UpdateLockPath) {
-		return UpdaterConfig{}, fmt.Errorf("update_lock_path must be inside storage_mount_point")
+	if !pathIsWithin(config.StorageMountPoint, config.UpdateLockPath) {
+		return UpdaterConfig{}, fmt.Errorf("update_lock_path must be inside the dedicated OTA storage mount")
 	}
 	if config.MiscPath == "" {
 		config.MiscPath = "/dev/block/by-name/misc"
@@ -337,7 +335,11 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		}
 		selectedAssets[part.Name] = asset
 	}
-	plan := downloadPlan{assets: selectedAssets, state: state, target: target}
+	plan, err := u.buildDownloadPlan(selectedAssets, state, target)
+	if err != nil {
+		u.recordError("cleanup", err)
+		return UpdateResult{}, err
+	}
 
 	if err := u.cleanupOldDownloadCache(plan); err != nil {
 		u.recordError("cleanup", err)
@@ -350,8 +352,9 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 
 	downloaded := map[string]string{}
 	for _, part := range manifest.Parts {
-		asset := selectedAssets[part.Name]
-		if targetPartitionHashMatches(state, target, part.Name, asset) {
+		planned := plan.assets[part.Name]
+		asset := planned.asset
+		if planned.targetMatches {
 			u.logf("ota partition: %s skipped; target slot %s hash matches manifest", part.Name, slotLogName(target))
 			continue
 		}
@@ -384,8 +387,9 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			u.logf("ota asset: %s using URL from release API", asset.Name)
 			assetToken = token
 		}
-		dst := filepath.Join(u.config.DownloadDir, asset.Name)
-		if u.cachedDownloadVerified(dst, asset) {
+		dst := planned.path
+		if planned.cachedVerified {
+			u.logf("ota download: %s skipped; cached file verified dst=%s", asset.Name, dst)
 			downloaded[part.Name] = dst
 			continue
 		}
@@ -523,17 +527,6 @@ func (u *Updater) acquireUpdateLock() (func(), error) {
 		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 		_ = lockFile.Close()
 	}, nil
-}
-
-func (u *Updater) cachedDownloadVerified(path string, asset ManifestAsset) bool {
-	if err := u.verifyCachedDownload(path, asset); err != nil {
-		if !os.IsNotExist(err) {
-			u.logf("ota download: %s cached file ignored: %v", asset.Name, err)
-		}
-		return false
-	}
-	u.logf("ota download: %s skipped; cached file verified dst=%s", asset.Name, path)
-	return true
 }
 
 func (u *Updater) verifyCachedDownload(path string, asset ManifestAsset) error {
@@ -967,15 +960,13 @@ func (u *Updater) cleanupOldDownloadCache(plan downloadPlan) error {
 		return nil
 	}
 
-	assetsByName := make(map[string]ManifestAsset)
-	validCached := make(map[string]bool)
-	for partName, asset := range plan.assets {
-		if targetPartitionHashMatches(plan.state, plan.target, partName, asset) {
-			continue
+	keepFiles := make(map[string]bool)
+	for _, planned := range plan.assets {
+		if planned.cachedVerified {
+			keepFiles[planned.asset.Name] = true
 		}
-		assetsByName[asset.Name] = asset
-		if u.verifyCachedDownload(filepath.Join(downloadDir, asset.Name), asset) == nil {
-			validCached[asset.Name] = true
+		if planned.partialPresent {
+			keepFiles[planned.asset.Name+".part"] = true
 		}
 	}
 
@@ -995,16 +986,8 @@ func (u *Updater) cleanupOldDownloadCache(plan downloadPlan) error {
 			continue
 		}
 		name := entry.Name()
-		if asset, ok := assetsByName[name]; ok && validCached[asset.Name] {
+		if keepFiles[name] {
 			continue
-		}
-		if strings.HasSuffix(name, ".part") {
-			baseName := strings.TrimSuffix(name, ".part")
-			if asset, ok := assetsByName[baseName]; ok && !validCached[baseName] {
-				if info, infoErr := entry.Info(); infoErr == nil && info.Size() <= asset.Size {
-					continue
-				}
-			}
 		}
 
 		// Delete old file

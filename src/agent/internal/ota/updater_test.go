@@ -1328,9 +1328,22 @@ func newUpdaterTestEnv(t *testing.T) *updaterTestEnv {
 	if err := os.WriteFile(filepath.Join(env.stateDir, "health.ok"), []byte("stale"), 0o644); err != nil {
 		t.Fatalf("WriteFile(health.ok) error = %v", err)
 	}
+	storageDevicePath := filepath.Join(tmp, "ota-device")
+	if err := os.WriteFile(storageDevicePath, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile(ota-device) error = %v", err)
+	}
+	mountInfoPath := filepath.Join(tmp, "mountinfo")
+	mountInfo := fmt.Sprintf("36 25 179:12 / %s rw,relatime - ext4 %s rw\n", tmp, storageDevicePath)
+	if err := os.WriteFile(mountInfoPath, []byte(mountInfo), 0o644); err != nil {
+		t.Fatalf("WriteFile(mountinfo) error = %v", err)
+	}
 	env.config = UpdaterConfig{
 		StateDir:                  env.stateDir,
 		DownloadDir:               env.downloadDir,
+		StorageMountPoint:         tmp,
+		StorageDevicePath:         storageDevicePath,
+		StorageFilesystem:         "ext4",
+		MountInfoPath:             mountInfoPath,
 		DownloadSafetyMarginBytes: 64,
 		MiscPath:                  env.miscPath,
 		BlockDir:                  env.blockDir,

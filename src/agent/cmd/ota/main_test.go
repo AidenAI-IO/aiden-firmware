@@ -123,9 +123,7 @@ func TestUpdateRunsManualCheckWhenNoUpdate(t *testing.T) {
 		"--misc", fixture.miscPath,
 		"--manifest-url", fixture.manifestURL,
 		"--public-key", fixture.keyPath,
-	}, &out, func(config *ota.UpdaterConfig) {
-		config.MountInfoPath = fixture.mountInfoPath
-	})
+	}, &out, fixture.configureStorage)
 	if err != nil {
 		t.Fatalf("run(update) error = %v", err)
 	}
@@ -147,9 +145,7 @@ func TestUpdateReturnsManualCheckFailure(t *testing.T) {
 		"--misc", fixture.miscPath,
 		"--manifest-url", badServer.URL + "/manifest.json",
 		"--public-key", fixture.keyPath,
-	}, &bytes.Buffer{}, func(config *ota.UpdaterConfig) {
-		config.MountInfoPath = fixture.mountInfoPath
-	})
+	}, &bytes.Buffer{}, fixture.configureStorage)
 	if err == nil {
 		t.Fatalf("run(update) error = nil, want manifest failure")
 	}
@@ -158,10 +154,21 @@ func TestUpdateReturnsManualCheckFailure(t *testing.T) {
 type noUpdateFixture struct {
 	configPath    string
 	mountInfoPath string
+	storageDevice string
 	stateDir      string
 	miscPath      string
 	keyPath       string
 	manifestURL   string
+}
+
+func (f noUpdateFixture) configureStorage(config *ota.UpdaterConfig) {
+	config.StateDir = f.stateDir
+	config.DownloadDir = filepath.Join(f.stateDir, "downloads")
+	config.UpdateLockPath = filepath.Join(f.stateDir, ota.DefaultOTAUpdateLockName)
+	config.StorageMountPoint = f.stateDir
+	config.StorageDevicePath = f.storageDevice
+	config.StorageFilesystem = "ext4"
+	config.MountInfoPath = f.mountInfoPath
 }
 
 func newNoUpdateFixture(t *testing.T) noUpdateFixture {
@@ -206,12 +213,7 @@ func newNoUpdateFixture(t *testing.T) noUpdateFixture {
 	if err := os.WriteFile(mountInfoPath, []byte(mountInfo), 0o644); err != nil {
 		t.Fatalf("WriteFile(mountinfo) error = %v", err)
 	}
-	configBytes, err := json.Marshal(ota.UpdaterConfig{
-		StateDir:          stateDir,
-		StorageMountPoint: stateDir,
-		StorageDevicePath: storageDevicePath,
-		StorageFilesystem: "ext4",
-	})
+	configBytes, err := json.Marshal(ota.UpdaterConfig{})
 	if err != nil {
 		t.Fatalf("Marshal(config) error = %v", err)
 	}
@@ -251,6 +253,7 @@ func newNoUpdateFixture(t *testing.T) noUpdateFixture {
 	return noUpdateFixture{
 		configPath:    configPath,
 		mountInfoPath: mountInfoPath,
+		storageDevice: storageDevicePath,
 		stateDir:      stateDir,
 		miscPath:      miscPath,
 		keyPath:       keyPath,
@@ -264,7 +267,7 @@ func TestStateDirOverrideDoesNotDisableDedicatedMountValidation(t *testing.T) {
 		"--config", filepath.Join(t.TempDir(), "missing.json"),
 		"--state-dir", t.TempDir(),
 	}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "state_dir must be inside storage_mount_point") {
+	if err == nil || !strings.Contains(err.Error(), "state_dir must be inside the dedicated OTA storage mount") {
 		t.Fatalf("run(status) error = %v, want dedicated storage validation", err)
 	}
 }

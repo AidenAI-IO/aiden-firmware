@@ -12,16 +12,60 @@ import (
 const maxInt64 = int64(^uint64(0) >> 1)
 
 type downloadPlan struct {
-	assets map[string]ManifestAsset
-	state  State
-	target Slot
+	assets map[string]plannedDownloadAsset
+}
+
+type plannedDownloadAsset struct {
+	asset          ManifestAsset
+	path           string
+	targetMatches  bool
+	cachedVerified bool
+	partialPresent bool
+	remainingBytes int64
+}
+
+func (u *Updater) buildDownloadPlan(assets map[string]ManifestAsset, state State, target Slot) (downloadPlan, error) {
+	plan := downloadPlan{
+		assets: make(map[string]plannedDownloadAsset, len(assets)),
+	}
+	for partName, asset := range assets {
+		planned := plannedDownloadAsset{
+			asset:         asset,
+			path:          filepath.Join(u.config.DownloadDir, asset.Name),
+			targetMatches: targetPartitionHashMatches(state, target, partName, asset),
+		}
+		if planned.targetMatches {
+			plan.assets[partName] = planned
+			continue
+		}
+		if err := u.verifyCachedDownload(planned.path, asset); err == nil {
+			planned.cachedVerified = true
+			plan.assets[partName] = planned
+			continue
+		} else if !os.IsNotExist(err) {
+			u.logf("ota download: %s cached file ignored: %v", asset.Name, err)
+		}
+
+		planned.remainingBytes = asset.Size
+		info, err := os.Stat(planned.path + ".part")
+		if err == nil {
+			if info.Size() <= asset.Size {
+				planned.partialPresent = true
+				planned.remainingBytes -= info.Size()
+			}
+		} else if !os.IsNotExist(err) {
+			return downloadPlan{}, fmt.Errorf("stat partial download %s: %w", asset.Name, err)
+		}
+		plan.assets[partName] = planned
+	}
+	return plan, nil
 }
 
 func (u *Updater) ensureStorageReady() error {
-	mountPoint := filepath.Clean(u.config.StorageMountPoint)
 	if u.config.StorageMountPoint == "" {
-		return nil
+		return fmt.Errorf("dedicated OTA storage mount point is not configured")
 	}
+	mountPoint := filepath.Clean(u.config.StorageMountPoint)
 	mounted, err := mountPointIsActive(
 		u.config.MountInfoPath,
 		mountPoint,
@@ -153,26 +197,11 @@ func (u *Updater) ensureDownloadCapacity(plan downloadPlan) error {
 
 func (u *Updater) remainingDownloadBytes(plan downloadPlan) (int64, error) {
 	var total int64
-	for partName, asset := range plan.assets {
-		if targetPartitionHashMatches(plan.state, plan.target, partName, asset) {
-			continue
-		}
-		dst := filepath.Join(u.config.DownloadDir, asset.Name)
-		if u.verifyCachedDownload(dst, asset) == nil {
-			continue
-		}
-		remaining := asset.Size
-		if info, err := os.Stat(dst + ".part"); err == nil {
-			if info.Size() <= asset.Size {
-				remaining -= info.Size()
-			}
-		} else if !os.IsNotExist(err) {
-			return 0, fmt.Errorf("stat partial download %s: %w", asset.Name, err)
-		}
-		if total > maxInt64-remaining {
+	for _, asset := range plan.assets {
+		if total > maxInt64-asset.remainingBytes {
 			return 0, fmt.Errorf("OTA download size overflow")
 		}
-		total += remaining
+		total += asset.remainingBytes
 	}
 	return total, nil
 }

@@ -21,12 +21,12 @@ type fakeStorageOps struct {
 	prepareBlock   chan struct{}
 	prepareEntered chan struct{}
 	prepareOnce    sync.Once
-	free           int64
-	total          int64
-	spaceErr       error
-	formatErr      error
-	unmountErr     error
-	blank          bool
+	free       int64
+	total      int64
+	spaceErr   error
+	formatErr  error
+	unmountErr error
+	blank      bool
 	// spaceFn, when set, answers SpaceInfo per path (used by migration
 	// tests to model eMMC free space changing as files move).
 	spaceFn func(path string) (int64, int64, error)

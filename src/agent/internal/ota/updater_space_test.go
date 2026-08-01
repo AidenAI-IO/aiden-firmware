@@ -14,12 +14,50 @@ import (
 )
 
 func TestUpdaterRejectsNegativeDownloadSafetyMargin(t *testing.T) {
+	storageDir := t.TempDir()
 	_, err := NewUpdater(UpdaterConfig{
-		StateDir:                  t.TempDir(),
+		StateDir:                  storageDir,
+		StorageMountPoint:         storageDir,
 		DownloadSafetyMarginBytes: -1,
 	}, func() error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "download_safety_margin_bytes must be non-negative") {
 		t.Fatalf("NewUpdater() error = %v, want safety margin validation", err)
+	}
+}
+
+func TestUpdaterRejectsStateDirectoryOutsideDedicatedStorageByDefault(t *testing.T) {
+	_, err := NewUpdater(UpdaterConfig{StateDir: t.TempDir()}, func() error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "state_dir must be inside the dedicated OTA storage mount") {
+		t.Fatalf("NewUpdater() error = %v, want fixed dedicated storage validation", err)
+	}
+}
+
+func TestUpdaterIgnoresStorageIdentityFromJSON(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	data := []byte(`{
+		"storage_mount_point":"/userdata",
+		"storage_device_path":"/dev/block/by-name/userdata",
+		"storage_filesystem":"xfs"
+	}`)
+	if err := os.WriteFile(configPath, data, 0o644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+	config, err := LoadUpdaterConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadUpdaterConfig() error = %v", err)
+	}
+	updater, err := NewUpdater(config, func() error { return nil })
+	if err != nil {
+		t.Fatalf("NewUpdater() error = %v", err)
+	}
+	if updater.config.StorageMountPoint != DefaultOTAStorageMountPoint ||
+		updater.config.StorageDevicePath != DefaultOTAStorageDevicePath ||
+		updater.config.StorageFilesystem != DefaultOTAStorageFilesystem {
+		t.Fatalf("storage identity = %q %q %q, want fixed production defaults",
+			updater.config.StorageMountPoint,
+			updater.config.StorageDevicePath,
+			updater.config.StorageFilesystem,
+		)
 	}
 }
 
@@ -133,7 +171,7 @@ func TestUpdaterRejectsDownloadDirectoryOutsideDedicatedStorage(t *testing.T) {
 		DownloadDir:       filepath.Join(t.TempDir(), "downloads"),
 		StorageMountPoint: storageDir,
 	}, func() error { return nil })
-	if err == nil || !strings.Contains(err.Error(), "download_dir must be inside storage_mount_point") {
+	if err == nil || !strings.Contains(err.Error(), "download_dir must be inside the dedicated OTA storage mount") {
 		t.Fatalf("NewUpdater() error = %v, want dedicated storage path validation", err)
 	}
 }
@@ -146,7 +184,7 @@ func TestUpdaterRejectsUpdateLockOutsideDedicatedStorage(t *testing.T) {
 		StorageMountPoint: storageDir,
 		UpdateLockPath:    filepath.Join(t.TempDir(), "update.lock"),
 	}, func() error { return nil })
-	if err == nil || !strings.Contains(err.Error(), "update_lock_path must be inside storage_mount_point") {
+	if err == nil || !strings.Contains(err.Error(), "update_lock_path must be inside the dedicated OTA storage mount") {
 		t.Fatalf("NewUpdater() error = %v, want dedicated lock path validation", err)
 	}
 }

@@ -98,7 +98,7 @@ The production image uses an A/B partition layout:
 | `rootfs_a` | 1536 MB | Slot A root filesystem |
 | `rootfs_b` | 1536 MB | Slot B root filesystem |
 | `userdata` | 3 GB | Shared non-OTA persistent data |
-| `ota` | 256 MB | Dedicated OTA configuration, state, health markers, and download cache |
+| `ota` | 300 MiB | Dedicated OTA configuration, state, health markers, and download cache |
 
 `upgrade_tool` supports updating individual partitions; a full upgrade generally uses `uf update.img`.
 

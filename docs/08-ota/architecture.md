@@ -92,10 +92,12 @@ Optional configuration fields:
 - `manifest_url` - directly specify manifest URL (skip GitHub Release API)
 - `public_key_path` - override default public key path (default `/oem/etc/ota_pubkey.pem`)
 - `github_token_path` - GitHub token file path (required for private repositories)
-- `storage_mount_point` - dedicated OTA mount that must be active (default `/userdata/ota`)
-- `storage_device_path` - expected OTA block device (default `/dev/block/by-name/ota`)
-- `storage_filesystem` - expected OTA filesystem type (default `ext4`)
 - `download_safety_margin_bytes` - free bytes retained beyond remaining downloads (default 16 MiB)
+
+The dedicated storage identity is not configurable: production OTA always
+requires `/dev/block/by-name/ota` mounted as an ext4 filesystem rooted at `/`
+on `/userdata/ota`. Test code can inject synthetic mount information without
+exposing a device-side configuration bypass.
 
 Release CI derives its target-slot download limit from the same layout contract.
 The current 300 MiB partition reserves a conservative 30 MiB for ext4 metadata
