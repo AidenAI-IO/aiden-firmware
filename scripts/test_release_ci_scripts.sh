@@ -105,8 +105,15 @@ if ! grep -Eq 'pico-sdk/output/image/\*\.img([[:space:]\\]|$)' "$WORKFLOW"; then
     exit 1
 fi
 
-if ! grep -Fq 'chmod -R u+w "$GITHUB_WORKSPACE/build/.cache/go-mod"' "$WORKFLOW"; then
-    echo "self-hosted workspace reclaim must unlock stale read-only Go module cache directories before checkout" >&2
+if ! grep -Fq '"$GITHUB_WORKSPACE/.cache/rootfs-cli-tools/go-mod"' "$WORKFLOW" || \
+   ! grep -Fq 'chmod -R u+w "$go_mod_cache"' "$WORKFLOW"; then
+    echo "self-hosted workspace reclaim must unlock the rootfs CLI Go module cache before checkout" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'for path in build .cache/rootfs-cli-tools overlay/oem overlay/userdata pico-sdk/output' "$DOCKER_BUILD_SCRIPT" || \
+   ! grep -Fq 'chmod -R u+w .cache/rootfs-cli-tools/go-mod' "$DOCKER_BUILD_SCRIPT"; then
+    echo "Docker image builds must restore ownership and write permission for the rootfs CLI cache" >&2
     exit 1
 fi
 
