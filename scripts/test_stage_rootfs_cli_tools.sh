@@ -12,6 +12,7 @@ source_dir="$tmpdir/source"
 dest_overlay="$tmpdir/dest-overlay"
 preserve_overlay="$tmpdir/preserve-overlay"
 catalog="$tmpdir/tools.catalog"
+managed_state="$tmpdir/managed-tools.list"
 mkdir -p "$source_dir" "$dest_overlay/etc/init.d"
 mkdir -p "$preserve_overlay"
 printf 'service\n' > "$dest_overlay/etc/init.d/S53agent"
@@ -20,7 +21,7 @@ cat > "$catalog" <<'EOF'
 # name|version|kind|source|target|source_sha256|artifact_path|strip_policy
 fq|v0.17.0|go|github.com/wader/fq@v0.17.0|linux/arm/v7|-|-|preserve
 yq|v4.53.3|go|github.com/mikefarah/yq/v4@v4.53.3|linux/arm/v7|-|-|preserve
-rg|15.2.0|archive|https://example.com/rg.tar.gz|armv7-linux-musleabihf|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|rg/rg|preserve
+rg|15.2.0|tar_gz|https://example.com/rg.tar.gz|armv7-unknown-linux-musleabihf|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|rg/rg|preserve
 fx|v1.0.0|go|example.com/fx@v1.0.0|linux/arm/v7|-|-|normal
 EOF
 
@@ -50,7 +51,7 @@ if [ ! -x "$STAGE_SCRIPT" ]; then
     exit 1
 fi
 
-"$STAGE_SCRIPT" --catalog "$catalog" --source-dir "$source_dir" --dest-overlay "$dest_overlay"
+"$STAGE_SCRIPT" --catalog "$catalog" --managed-state "$managed_state" --source-dir "$source_dir" --dest-overlay "$dest_overlay"
 
 for tool in fq yq rg fx; do
     staged="$dest_overlay/usr/bin/$tool"
@@ -63,6 +64,10 @@ for tool in fq yq rg fx; do
         exit 1
     fi
 done
+if [ "$(paste -sd ' ' "$managed_state")" != "fq yq rg fx" ]; then
+    echo "staging must persist the complete managed tool list after a successful install" >&2
+    exit 1
+fi
 
 "$STAGE_SCRIPT" --catalog "$catalog" --policy preserve --source-dir "$source_dir" --dest-overlay "$preserve_overlay"
 for tool in fq yq rg; do
@@ -102,7 +107,7 @@ if ! grep -q 'not an ARM32 ELF executable' "$tmpdir/arch.err"; then
     exit 1
 fi
 
-"$CLEAN_SCRIPT" --catalog "$catalog" --dest-overlay "$dest_overlay"
+"$CLEAN_SCRIPT" --catalog "$catalog" --managed-state "$managed_state" --dest-overlay "$dest_overlay"
 for tool in fq yq rg fx; do
     if [ -e "$dest_overlay/usr/bin/$tool" ]; then
         echo "cleanup must remove stale rootfs tool: $tool" >&2

@@ -11,7 +11,8 @@ source "$CATALOG_LIB"
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  clean_rootfs_overlay_staging.sh [--catalog FILE] --dest-overlay DIR
+  clean_rootfs_overlay_staging.sh [--catalog FILE] [--managed-state FILE]
+                                  --dest-overlay DIR
 
 Remove stale generated files from the pico-sdk rootfs overlay staging tree.
 USAGE
@@ -27,6 +28,7 @@ die() {
 }
 
 catalog_path="$DEFAULT_CATALOG"
+managed_state=""
 dest_overlay=""
 
 while [ "$#" -gt 0 ]; do
@@ -37,6 +39,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --dest-overlay)
       dest_overlay="${2:-}"
+      shift 2
+      ;;
+    --managed-state)
+      managed_state="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -53,7 +59,7 @@ done
 [ -n "$catalog_path" ] || die "missing --catalog value"
 [ -n "$dest_overlay" ] || die "missing --dest-overlay"
 [ -d "$dest_overlay" ] || die "missing destination rootfs overlay: $dest_overlay"
-catalog_records="$(rootfs_cli_catalog_records "$catalog_path")" || exit 1
+catalog_names="$(rootfs_cli_catalog_names "$catalog_path")" || exit 1
 
 remove_stale_path() {
   local relative_path="$1"
@@ -74,7 +80,17 @@ remove_stale_path() {
 remove_stale_path "usr/share/aiden"
 
 # Rootfs CLI tools are generated for each image build. Remove stale binaries
-# before staging the freshly verified bundle.
-while IFS='|' read -r name version kind source target source_sha256 artifact_path strip_policy; do
+# from both the previous successful staging run and the current catalog before
+# staging the freshly verified bundle.
+if [ -n "$managed_state" ] && [ -f "$managed_state" ]; then
+  while IFS= read -r name; do
+    case "$name" in
+      "") continue ;;
+      [!A-Za-z0-9]*|*[!A-Za-z0-9._+-]*) die "invalid managed rootfs CLI tool name: $name" ;;
+    esac
+    remove_stale_path "usr/bin/$name"
+  done < "$managed_state"
+fi
+while IFS= read -r name; do
   remove_stale_path "usr/bin/$name"
-done <<< "$catalog_records"
+done <<< "$catalog_names"

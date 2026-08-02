@@ -41,7 +41,7 @@ This requires an x86_64 Linux + Docker environment, or a compatible environment 
 
 The CLI tools are installed in rootfs as `/usr/bin/fq`, `/usr/bin/yq`, and `/usr/bin/rg`. Because `/usr/bin` is part of the default service and login-shell `PATH`, Agent shell calls do not need an OEM-specific PATH override.
 
-Add future tools through `scripts/rootfs_cli_tools.catalog`. Entries with `strip_policy=preserve` are restored after the SDK release-strip pass and verified byte-for-byte in the final rootfs image. Entries with `strip_policy=normal` keep the SDK-stripped bytes and are verified against the final package staging tree.
+Add future tools through `scripts/rootfs_cli_tools.catalog`. Go modules use `kind=go`; checksum-pinned `.tar.gz` releases use `kind=tar_gz`. Entries with `strip_policy=preserve` are restored after the SDK release-strip pass and verified byte-for-byte in the final rootfs image. Entries with `strip_policy=normal` keep the SDK-stripped bytes and are verified against the final package staging tree. A sidecar managed-tool list next to the Buildroot overlay ensures removed or renamed catalog entries are also deleted from reused staging without placing that state file in rootfs.
 
 After the build completes, the images are located in:
 

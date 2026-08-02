@@ -14,6 +14,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 dest_overlay="$tmpdir/dest-overlay"
 catalog="$tmpdir/tools.catalog"
+managed_state="$tmpdir/managed-tools.list"
 mkdir -p "$dest_overlay/etc/init.d"
 mkdir -p "$dest_overlay/usr/share/aiden/skills/planner"
 mkdir -p "$dest_overlay/usr/share/aiden/skills/device-operator"
@@ -25,12 +26,14 @@ printf 'planner\n' > "$dest_overlay/usr/share/aiden/skills/planner/SKILL.md"
 printf 'operator\n' > "$dest_overlay/usr/share/aiden/skills/device-operator/SKILL.md"
 mkdir -p "$dest_overlay/usr/bin"
 printf 'tool\n' > "$dest_overlay/usr/bin/fx"
+printf 'retired\n' > "$dest_overlay/usr/bin/retired-tool"
+printf 'retired-tool\n' > "$managed_state"
 
 cat > "$catalog" <<'EOF'
 fx|v1.0.0|go|example.com/fx@v1.0.0|linux/arm/v7|-|-|normal
 EOF
 
-"$CLEAN_SCRIPT" --catalog "$catalog" --dest-overlay "$dest_overlay"
+"$CLEAN_SCRIPT" --catalog "$catalog" --managed-state "$managed_state" --dest-overlay "$dest_overlay"
 
 if [ -e "$dest_overlay/usr/share/aiden" ]; then
     echo "cleanup script must remove legacy rootfs bundled Aiden share staging" >&2
@@ -45,8 +48,12 @@ if [ -e "$dest_overlay/usr/bin/fx" ]; then
     echo "cleanup script must remove every tool declared by the catalog" >&2
     exit 1
 fi
+if [ -e "$dest_overlay/usr/bin/retired-tool" ]; then
+    echo "cleanup script must remove tools recorded by the previous managed state" >&2
+    exit 1
+fi
 
-if "$CLEAN_SCRIPT" --catalog "$catalog" --dest-overlay "$tmpdir/missing" 2>"$tmpdir/missing.err"; then
+if "$CLEAN_SCRIPT" --catalog "$catalog" --managed-state "$managed_state" --dest-overlay "$tmpdir/missing" 2>"$tmpdir/missing.err"; then
     echo "cleanup script must fail for a missing destination overlay" >&2
     exit 1
 fi

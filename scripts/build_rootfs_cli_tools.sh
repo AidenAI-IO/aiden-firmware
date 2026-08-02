@@ -151,7 +151,7 @@ build_go_tool() {
   cp "$built_path" "$work_dir/bin/$name"
 }
 
-build_archive_tool() {
+build_tar_gz_tool() {
   local name="$1"
   local url="$2"
   local expected_sha="$3"
@@ -188,7 +188,7 @@ build_archive_tool() {
 while IFS='|' read -r name version kind source target source_sha256 artifact_path strip_policy; do
   case "$kind" in
     go) build_go_tool "$name" "$source" "$target" ;;
-    archive) build_archive_tool "$name" "$source" "$source_sha256" "$artifact_path" ;;
+    tar_gz) build_tar_gz_tool "$name" "$source" "$source_sha256" "$artifact_path" ;;
   esac
 
   tool_path="$work_dir/bin/$name"

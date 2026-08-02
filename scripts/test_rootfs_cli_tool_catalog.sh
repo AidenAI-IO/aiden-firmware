@@ -36,7 +36,7 @@ custom_catalog="$tmpdir/custom.catalog"
 cat > "$custom_catalog" <<'EOF'
 # name|version|kind|source|target|source_sha256|artifact_path|strip_policy
 alpha|v1.0.0|go|example.com/alpha@v1.0.0|linux/arm/v7|-|-|preserve
-beta|2.0.0|archive|https://example.com/beta.tar.gz|armv7-linux-musleabihf|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|beta-2.0.0/beta|normal
+beta|2.0.0|tar_gz|https://example.com/beta.tar.gz|armv7-unknown-linux-musleabihf|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|beta-2.0.0/beta|normal
 EOF
 
 custom_names="$(rootfs_cli_catalog_names "$custom_catalog" | paste -sd ' ' -)"
@@ -74,6 +74,32 @@ if rootfs_cli_catalog_records "$invalid_policy_catalog" >"$tmpdir/policy.out" 2>
 fi
 if ! grep -q 'invalid strip policy for alpha: sometimes' "$tmpdir/policy.err"; then
     echo "strip policy errors must identify the tool and invalid value" >&2
+    exit 1
+fi
+
+ambiguous_kind_catalog="$tmpdir/ambiguous-kind.catalog"
+cat > "$ambiguous_kind_catalog" <<'EOF'
+alpha|v1.0.0|archive|https://example.com/alpha.tar.gz|armv7-unknown-linux-musleabihf|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|alpha/alpha|preserve
+EOF
+if rootfs_cli_catalog_records "$ambiguous_kind_catalog" >"$tmpdir/kind.out" 2>"$tmpdir/kind.err"; then
+    echo "catalog must reject the ambiguous archive build kind" >&2
+    exit 1
+fi
+if ! grep -q 'invalid build kind for alpha: archive' "$tmpdir/kind.err"; then
+    echo "build kind errors must identify the tool and invalid value" >&2
+    exit 1
+fi
+
+unsupported_target_catalog="$tmpdir/unsupported-target.catalog"
+cat > "$unsupported_target_catalog" <<'EOF'
+alpha|v1.0.0|tar_gz|https://example.com/alpha.tar.gz|armv6-unknown-linux-musleabihf|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|alpha/alpha|preserve
+EOF
+if rootfs_cli_catalog_records "$unsupported_target_catalog" >"$tmpdir/target.out" 2>"$tmpdir/target.err"; then
+    echo "catalog must reject unsupported archive targets" >&2
+    exit 1
+fi
+if ! grep -q 'unsupported tar_gz target for alpha: armv6-unknown-linux-musleabihf' "$tmpdir/target.err"; then
+    echo "target errors must identify the tool and unsupported target" >&2
     exit 1
 fi
 

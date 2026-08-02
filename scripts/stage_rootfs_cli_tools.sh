@@ -12,6 +12,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage:
   stage_rootfs_cli_tools.sh [--catalog FILE] [--policy all|preserve|normal]
+                            [--managed-state FILE]
                             --source-dir DIR --dest-overlay DIR
 
 Verify the catalog-selected ARM32 CLI bundle and install it into the rootfs
@@ -36,6 +37,7 @@ sha256_file() {
 
 catalog_path="$DEFAULT_CATALOG"
 selected_policy="all"
+managed_state=""
 source_dir=""
 dest_overlay=""
 
@@ -47,6 +49,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --policy)
       selected_policy="${2:-}"
+      shift 2
+      ;;
+    --managed-state)
+      managed_state="${2:-}"
       shift 2
       ;;
     --source-dir)
@@ -72,6 +78,9 @@ case "$selected_policy" in
   all|preserve|normal) ;;
   *) die "invalid --policy: $selected_policy" ;;
 esac
+if [ -n "$managed_state" ] && [ "$selected_policy" != "all" ]; then
+  die "--managed-state may only be updated when --policy is all"
+fi
 [ -n "$catalog_path" ] || die "missing --catalog value"
 [ -n "$source_dir" ] || die "missing --source-dir"
 [ -n "$dest_overlay" ] || die "missing --dest-overlay"
@@ -80,10 +89,10 @@ esac
 [ -f "$source_dir/manifest.sha256" ] || die "missing checksum manifest: $source_dir/manifest.sha256"
 command -v file >/dev/null 2>&1 || die "file is required to verify target architecture"
 
-catalog_records="$(rootfs_cli_catalog_records "$catalog_path")" || exit 1
+name_policy_records="$(rootfs_cli_catalog_name_policy_records "$catalog_path")" || exit 1
 selected_names=""
 selected_count=0
-while IFS='|' read -r name version kind source target source_sha256 artifact_path strip_policy; do
+while IFS='|' read -r name strip_policy; do
   if [ "$selected_policy" != "all" ] && [ "$selected_policy" != "$strip_policy" ]; then
     continue
   fi
@@ -106,15 +115,22 @@ while IFS='|' read -r name version kind source target source_sha256 artifact_pat
 
   selected_names="${selected_names}${selected_names:+ }$name"
   selected_count=$((selected_count + 1))
-done <<< "$catalog_records"
+done <<< "$name_policy_records"
 
 mkdir -p "$dest_overlay/usr/bin"
-while IFS='|' read -r name version kind source target source_sha256 artifact_path strip_policy; do
+while IFS='|' read -r name strip_policy; do
   if [ "$selected_policy" != "all" ] && [ "$selected_policy" != "$strip_policy" ]; then
     continue
   fi
   cp "$source_dir/$name" "$dest_overlay/usr/bin/$name"
   chmod 0755 "$dest_overlay/usr/bin/$name"
-done <<< "$catalog_records"
+done <<< "$name_policy_records"
+
+if [ -n "$managed_state" ]; then
+  mkdir -p "$(dirname "$managed_state")"
+  managed_state_tmp="$(mktemp "${managed_state}.tmp.XXXXXX")"
+  rootfs_cli_catalog_names "$catalog_path" > "$managed_state_tmp"
+  mv "$managed_state_tmp" "$managed_state"
+fi
 
 printf 'Staged %s rootfs CLI tool(s) in %s/usr/bin: %s\n' "$selected_count" "$dest_overlay" "$selected_names"

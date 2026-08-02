@@ -218,7 +218,7 @@ if ! grep -Fq '"usr/ko/insmod_wifi.sh"' "$BUILD_IMAGE_SCRIPT" || \
     exit 1
 fi
 
-rootfs_cleanup_line=$(grep -nF 'scripts/clean_rootfs_overlay_staging.sh" --dest-overlay "$DEST_OVERLAY"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+rootfs_cleanup_line=$(grep -nF 'scripts/clean_rootfs_overlay_staging.sh"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
 rootfs_cli_build_line=$(grep -nF 'scripts/build_rootfs_cli_tools.sh"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
 rootfs_cli_stage_line=$(grep -nF 'scripts/stage_rootfs_cli_tools.sh"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
 sysdrv_line=$(grep -nF './build.sh sysdrv "$@"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
@@ -252,7 +252,7 @@ if [ -z "$firmware_package_line" ] || [ -z "$rootfs_cli_restage_line" ] || \
     exit 1
 fi
 if ! grep -Fq 'ROOTFS_CLI_TOOL_CATALOG="$SCRIPT_DIR/scripts/rootfs_cli_tools.catalog"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq 'rootfs_cli_catalog_records "$ROOTFS_CLI_TOOL_CATALOG"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq 'rootfs_cli_catalog_name_policy_records "$ROOTFS_CLI_TOOL_CATALOG"' "$BUILD_IMAGE_SCRIPT" || \
    ! grep -Fq 'for tool in "${ROOTFS_CLI_PRESERVE_TOOLS[@]}"' "$BUILD_IMAGE_SCRIPT" || \
    ! grep -Fq -- '-path "$target_dir/usr/bin/$tool"' "$BUILD_IMAGE_SCRIPT"; then
     echo "release builds must derive rootfs CLI tool and preserve lists from the shared catalog" >&2
@@ -264,7 +264,9 @@ if grep -Fq 'ROOTFS_CLI_TOOLS=(fq yq rg)' "$BUILD_IMAGE_SCRIPT" || \
     exit 1
 fi
 if ! grep -Fq -- '--catalog "$ROOTFS_CLI_TOOL_CATALOG"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq -- '--policy preserve' "$BUILD_IMAGE_SCRIPT"; then
+   ! grep -Fq -- '--policy preserve' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq 'ROOTFS_CLI_MANAGED_STATE="${DEST_OVERLAY}.aiden-rootfs-cli-tools.list"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq -- '--managed-state "$ROOTFS_CLI_MANAGED_STATE"' "$BUILD_IMAGE_SCRIPT"; then
     echo "rootfs CLI build, staging, and post-strip restore must use the shared catalog policy" >&2
     exit 1
 fi

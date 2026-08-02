@@ -5,18 +5,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OVERLAY="$SCRIPT_DIR/overlay"
 PICO_SDK="$SCRIPT_DIR/pico-sdk"
 DEST_OVERLAY="$PICO_SDK/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden"
+ROOTFS_CLI_MANAGED_STATE="${DEST_OVERLAY}.aiden-rootfs-cli-tools.list"
 ROOTFS_CLI_TOOL_CATALOG="$SCRIPT_DIR/scripts/rootfs_cli_tools.catalog"
 ROOTFS_CLI_CATALOG_LIB="$SCRIPT_DIR/scripts/rootfs_cli_tool_catalog.sh"
 
 # shellcheck source=/dev/null
 source "$ROOTFS_CLI_CATALOG_LIB"
-ROOTFS_CLI_CATALOG_RECORDS="$(rootfs_cli_catalog_records "$ROOTFS_CLI_TOOL_CATALOG")" || exit 1
+ROOTFS_CLI_NAME_POLICY_RECORDS="$(rootfs_cli_catalog_name_policy_records "$ROOTFS_CLI_TOOL_CATALOG")" || exit 1
 ROOTFS_CLI_PRESERVE_TOOLS=()
-while IFS='|' read -r tool version kind source target source_sha256 artifact_path strip_policy; do
+while IFS='|' read -r tool strip_policy; do
     if [ "$strip_policy" = "preserve" ]; then
         ROOTFS_CLI_PRESERVE_TOOLS+=("$tool")
     fi
-done <<< "$ROOTFS_CLI_CATALOG_RECORDS"
+done <<< "$ROOTFS_CLI_NAME_POLICY_RECORDS"
 
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
     # Keep image metadata stable without relying on every package treating epoch 0
@@ -562,17 +563,17 @@ verify_rootfs_cli_tools_in_image() {
     local image_path="$1"
     local original_root="$2"
     local packaged_root="$3"
-    local tool version kind source target source_sha256 artifact_path strip_policy expected_root verified
+    local tool strip_policy expected_root verified
 
     verified=0
-    while IFS='|' read -r tool version kind source target source_sha256 artifact_path strip_policy; do
+    while IFS='|' read -r tool strip_policy; do
         expected_root="$packaged_root"
         if [ "$strip_policy" = "preserve" ]; then
             expected_root="$original_root"
         fi
         verify_ext4_image_file_matches "$image_path" "$expected_root" "usr/bin/$tool"
         verified=$((verified + 1))
-    done <<< "$ROOTFS_CLI_CATALOG_RECORDS"
+    done <<< "$ROOTFS_CLI_NAME_POLICY_RECORDS"
     echo "  ✓ Verified $verified catalog CLI tools in $(basename "$image_path")"
 }
 
@@ -689,7 +690,10 @@ if [ ! -d "$DEST_OVERLAY" ]; then
     exit 1
 fi
 
-"$SCRIPT_DIR/scripts/clean_rootfs_overlay_staging.sh" --dest-overlay "$DEST_OVERLAY" --catalog "$ROOTFS_CLI_TOOL_CATALOG"
+"$SCRIPT_DIR/scripts/clean_rootfs_overlay_staging.sh" \
+    --catalog "$ROOTFS_CLI_TOOL_CATALOG" \
+    --managed-state "$ROOTFS_CLI_MANAGED_STATE" \
+    --dest-overlay "$DEST_OVERLAY"
 
 "$SCRIPT_DIR/scripts/build_rootfs_cli_tools.sh" \
     --catalog "$ROOTFS_CLI_TOOL_CATALOG" \
@@ -697,6 +701,7 @@ fi
     --cache-dir "$ROOTFS_CLI_CACHE_DIR"
 "$SCRIPT_DIR/scripts/stage_rootfs_cli_tools.sh" \
     --catalog "$ROOTFS_CLI_TOOL_CATALOG" \
+    --managed-state "$ROOTFS_CLI_MANAGED_STATE" \
     --source-dir "$ROOTFS_CLI_BUILD_DIR" \
     --dest-overlay "$DEST_OVERLAY"
 
