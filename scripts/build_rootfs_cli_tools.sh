@@ -50,12 +50,35 @@ download_file() {
 verify_arm32_elf() {
   local name="$1"
   local path="$2"
-  local description
+  local kind="$3"
+  local target="$4"
+  local description attributes program_headers
 
   description="$(file -b "$path")"
   case "$description" in
-    *"ELF 32-bit LSB"*"ARM"*) ;;
-    *) die "$name is not an ARM32 ELF executable: $description" ;;
+    *"ELF 32-bit LSB"*"ARM"*"EABI5"*"statically linked"*) ;;
+    *) die "$name is not a static ARM EABI5 executable for $target: $description" ;;
+  esac
+
+  if [ "$kind" != "tar_gz" ]; then
+    return 0
+  fi
+
+  attributes="$("$elf_reader" -A "$path")" || die "failed to read ARM attributes from $name"
+  case "$attributes" in
+    *"Tag_CPU_arch: v7"*|*"Description: ARM v7"*) ;;
+    *) die "$name does not declare ARMv7 attributes for $target" ;;
+  esac
+  case "$attributes" in
+    *"Tag_ABI_VFP_args: VFP registers"*|*"Description: AAPCS VFP"*) ;;
+    *) die "$name does not declare the hard-float VFP ABI for $target" ;;
+  esac
+
+  program_headers="$("$elf_reader" -l "$path")" || die "failed to read program headers from $name"
+  case "$program_headers" in
+    *"INTERP"*|*"Requesting program interpreter"*)
+      die "$name must be static for $target, but declares a dynamic interpreter"
+      ;;
   esac
 }
 
@@ -97,9 +120,12 @@ if [ -z "$cache_dir" ]; then
 fi
 
 needs_go=0
+needs_elf_reader=0
 while IFS='|' read -r name version kind source target source_sha256 artifact_path strip_policy; do
   if [ "$kind" = "go" ]; then
     needs_go=1
+  elif [ "$kind" = "tar_gz" ]; then
+    needs_elf_reader=1
   fi
 done <<< "$catalog_records"
 
@@ -112,6 +138,16 @@ if [ "$needs_go" -eq 1 ]; then
   esac
 fi
 command -v file >/dev/null 2>&1 || die "file is required to verify target architecture"
+elf_reader=""
+if [ "$needs_elf_reader" -eq 1 ]; then
+  if command -v readelf >/dev/null 2>&1; then
+    elf_reader="$(command -v readelf)"
+  elif command -v llvm-readelf >/dev/null 2>&1; then
+    elf_reader="$(command -v llvm-readelf)"
+  else
+    die "readelf or llvm-readelf is required to verify tar_gz target attributes"
+  fi
+fi
 
 mkdir -p "$output_dir" "$cache_dir"
 output_dir="$(cd "$output_dir" && pwd)"
@@ -194,7 +230,7 @@ while IFS='|' read -r name version kind source target source_sha256 artifact_pat
   tool_path="$work_dir/bin/$name"
   [ -f "$tool_path" ] || die "build did not produce $tool_path"
   chmod 0755 "$tool_path"
-  verify_arm32_elf "$name" "$tool_path"
+  verify_arm32_elf "$name" "$tool_path" "$kind" "$target"
 done <<< "$catalog_records"
 
 # Remove files managed by the previous and current bundle manifests without

@@ -102,6 +102,33 @@ esac
 SH
 chmod +x "$fake_bin/sha256sum"
 
+cat > "$fake_bin/file" <<'SH'
+#!/bin/sh
+set -eu
+printf 'ELF 32-bit LSB executable, ARM, EABI5 version 1 (SYSV), statically linked, stripped\n'
+SH
+chmod +x "$fake_bin/file"
+
+cat > "$fake_bin/readelf" <<'SH'
+#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${FAKE_READELF_LOG:?}"
+case "${1:-}" in
+  -A)
+    cat <<'EOF'
+Attribute Section: aeabi
+  Tag_CPU_arch: v7
+  Tag_ABI_VFP_args: VFP registers
+EOF
+    ;;
+  -l)
+    printf 'Elf file type is EXEC (Executable file)\n'
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$fake_bin/readelf"
+
 if [ ! -x "$BUILD_SCRIPT" ]; then
     echo "missing executable rootfs CLI build script: $BUILD_SCRIPT" >&2
     exit 1
@@ -111,6 +138,7 @@ PATH="$fake_bin:$PATH" \
 FAKE_ARM_ELF="$tmpdir/fake-arm-elf" \
 FAKE_GO_LOG="$tmpdir/go.log" \
 FAKE_CURL_LOG="$tmpdir/curl.log" \
+FAKE_READELF_LOG="$tmpdir/readelf.log" \
 "$BUILD_SCRIPT" --output-dir "$output_dir" --cache-dir "$cache_dir"
 
 for tool in fq yq rg; do
@@ -136,11 +164,17 @@ if [ "$(wc -l < "$tmpdir/curl.log" | tr -d ' ')" -ne 1 ]; then
     echo "ripgrep archive must be downloaded exactly once" >&2
     exit 1
 fi
+if ! grep -q -- '^-A .*\/rg$' "$tmpdir/readelf.log" || \
+   ! grep -q -- '^-l .*\/rg$' "$tmpdir/readelf.log"; then
+    echo "tar_gz tools must be checked for ARMv7 attributes and dynamic interpreters" >&2
+    exit 1
+fi
 
 PATH="$fake_bin:$PATH" \
 FAKE_ARM_ELF="$tmpdir/fake-arm-elf" \
 FAKE_GO_LOG="$tmpdir/go.log" \
 FAKE_CURL_LOG="$tmpdir/curl.log" \
+FAKE_READELF_LOG="$tmpdir/readelf.log" \
 "$BUILD_SCRIPT" --output-dir "$output_dir" --cache-dir "$cache_dir"
 
 if [ "$(wc -l < "$tmpdir/curl.log" | tr -d ' ')" -ne 1 ]; then
@@ -154,6 +188,7 @@ fi
     FAKE_ARM_ELF="$tmpdir/fake-arm-elf" \
     FAKE_GO_LOG="$tmpdir/go.log" \
     FAKE_CURL_LOG="$tmpdir/curl.log" \
+    FAKE_READELF_LOG="$tmpdir/readelf.log" \
     "$BUILD_SCRIPT" --output-dir relative-output --cache-dir relative-cache
 )
 if [ ! -x "$tmpdir/relative-output/fq" ]; then
@@ -174,6 +209,7 @@ PATH="$fake_bin:$PATH" \
 FAKE_ARM_ELF="$tmpdir/fake-arm-elf" \
 FAKE_GO_LOG="$tmpdir/go.log" \
 FAKE_CURL_LOG="$tmpdir/curl.log" \
+FAKE_READELF_LOG="$tmpdir/readelf.log" \
 "$BUILD_SCRIPT" --catalog "$custom_catalog" --output-dir "$custom_output" --cache-dir "$cache_dir"
 if [ ! -x "$custom_output/fx" ]; then
     echo "adding a Go tool catalog record must add its executable to the bundle" >&2
