@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_CATALOG="$SCRIPT_DIR/rootfs_cli_tools.catalog"
+CATALOG_LIB="$SCRIPT_DIR/rootfs_cli_tool_catalog.sh"
+
+# shellcheck source=/dev/null
+source "$CATALOG_LIB"
+
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  clean_rootfs_overlay_staging.sh --dest-overlay DIR
+  clean_rootfs_overlay_staging.sh [--catalog FILE] --dest-overlay DIR
 
 Remove stale generated files from the pico-sdk rootfs overlay staging tree.
 USAGE
@@ -19,10 +26,15 @@ die() {
   exit 1
 }
 
+catalog_path="$DEFAULT_CATALOG"
 dest_overlay=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --catalog)
+      catalog_path="${2:-}"
+      shift 2
+      ;;
     --dest-overlay)
       dest_overlay="${2:-}"
       shift 2
@@ -38,8 +50,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+[ -n "$catalog_path" ] || die "missing --catalog value"
 [ -n "$dest_overlay" ] || die "missing --dest-overlay"
 [ -d "$dest_overlay" ] || die "missing destination rootfs overlay: $dest_overlay"
+catalog_records="$(rootfs_cli_catalog_records "$catalog_path")" || exit 1
 
 remove_stale_path() {
   local relative_path="$1"
@@ -61,6 +75,6 @@ remove_stale_path "usr/share/aiden"
 
 # Rootfs CLI tools are generated for each image build. Remove stale binaries
 # before staging the freshly verified bundle.
-remove_stale_path "usr/bin/fq"
-remove_stale_path "usr/bin/yq"
-remove_stale_path "usr/bin/rg"
+while IFS='|' read -r name version kind source target source_sha256 artifact_path strip_policy; do
+  remove_stale_path "usr/bin/$name"
+done <<< "$catalog_records"

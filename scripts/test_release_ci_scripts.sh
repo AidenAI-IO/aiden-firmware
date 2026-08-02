@@ -159,6 +159,7 @@ python3 "$ROOT_DIR/scripts/check_ci_policy_job.py"
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_rootfs_cli_tool_catalog.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_build_rootfs_cli_tools.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_stage_rootfs_cli_tools.sh' "$CI_WORKFLOW" || \
@@ -229,14 +230,14 @@ if [ -z "$rootfs_cleanup_line" ] || [ -z "$rootfs_cli_build_line" ] || \
     echo "_build_image.sh must clean, build, and stage rootfs CLI tools before the Buildroot sysdrv build" >&2
     exit 1
 fi
-if ! grep -Fq 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY"' "$BUILD_IMAGE_SCRIPT"; then
-    echo "_build_image.sh must verify fq, yq, and rg inside the final rootfs image" >&2
+if ! grep -Fq 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY" "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "_build_image.sh must verify every catalog tool inside the final rootfs image" >&2
     exit 1
 fi
 rootfs_cli_restage_line=$(grep -nF -- '--dest-overlay "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | tail -n 1)
 firmware_package_line=$(grep -nF './build.sh firmware "$@"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
 rootfs_rebuild_line=$(grep -nF 'rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
-rootfs_cli_verify_line=$(grep -nF 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+rootfs_cli_verify_line=$(grep -nF 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY" "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
 if ! grep -Fq 'RK_PROJECT_PACKAGE_ROOTFS_DIR="${RK_PROJECT_OUTPUT}/rootfs_${RK_LIBC_TPYE}_${RK_CHIP}"' "$BUILD_IMAGE_SCRIPT"; then
     echo "_build_image.sh must define the SDK rootfs staging directory before restaging CLI tools" >&2
     exit 1
@@ -250,10 +251,21 @@ if [ -z "$firmware_package_line" ] || [ -z "$rootfs_cli_restage_line" ] || \
     echo "_build_image.sh must package firmware, restage CLI tools, rebuild rootfs.img, then verify it" >&2
     exit 1
 fi
-if ! grep -Fq -- '-path "$target_dir/usr/bin/fq"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq -- '-path "$target_dir/usr/bin/yq"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq -- '-path "$target_dir/usr/bin/rg"' "$BUILD_IMAGE_SCRIPT"; then
-    echo "release stripping must preserve the pinned rootfs CLI tool bytes" >&2
+if ! grep -Fq 'ROOTFS_CLI_TOOL_CATALOG="$SCRIPT_DIR/scripts/rootfs_cli_tools.catalog"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq 'rootfs_cli_catalog_records "$ROOTFS_CLI_TOOL_CATALOG"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq 'for tool in "${ROOTFS_CLI_PRESERVE_TOOLS[@]}"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq -- '-path "$target_dir/usr/bin/$tool"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "release builds must derive rootfs CLI tool and preserve lists from the shared catalog" >&2
+    exit 1
+fi
+if grep -Fq 'ROOTFS_CLI_TOOLS=(fq yq rg)' "$BUILD_IMAGE_SCRIPT" || \
+   grep -Fq -- '-path "$target_dir/usr/bin/fq"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "release builds must not hardcode rootfs CLI tool names" >&2
+    exit 1
+fi
+if ! grep -Fq -- '--catalog "$ROOTFS_CLI_TOOL_CATALOG"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq -- '--policy preserve' "$BUILD_IMAGE_SCRIPT"; then
+    echo "rootfs CLI build, staging, and post-strip restore must use the shared catalog policy" >&2
     exit 1
 fi
 if ! grep -Fq 'ROOTFS_CLI_CACHE_DIR="$SCRIPT_DIR/.cache/rootfs-cli-tools"' "$BUILD_IMAGE_SCRIPT"; then

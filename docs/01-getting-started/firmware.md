@@ -34,12 +34,14 @@ This requires an x86_64 Linux + Docker environment, or a compatible environment 
 
 1. Compile the application: `./_build.sh`;
 2. Copy `build/bin/` to `overlay/oem/usr/bin/`;
-3. Build and verify the pinned ARMv7 `fq` v0.17.0, `yq` v4.53.3, and `rg` 15.2.0 bundle, then stage it with `overlay/etc/` in the `pico-sdk` Buildroot overlay;
+3. Read `scripts/rootfs_cli_tools.catalog`, build or download every pinned ARMv7 CLI tool, verify the resulting bundle, then stage it with `overlay/etc/` in the `pico-sdk` Buildroot overlay;
 4. Run `pico-sdk/build.sh all`;
 5. Inject `overlay/oem` and `overlay/userdata` into the output directory; the VAD model is located in `overlay/oem/usr/model/` and is included in OTA along with the OEM partition;
 6. Generate the A/B partition images and the full USB first-flash package.
 
 The CLI tools are installed in rootfs as `/usr/bin/fq`, `/usr/bin/yq`, and `/usr/bin/rg`. Because `/usr/bin` is part of the default service and login-shell `PATH`, Agent shell calls do not need an OEM-specific PATH override.
+
+Add future tools through `scripts/rootfs_cli_tools.catalog`. Entries with `strip_policy=preserve` are restored after the SDK release-strip pass and verified byte-for-byte in the final rootfs image. Entries with `strip_policy=normal` keep the SDK-stripped bytes and are verified against the final package staging tree.
 
 After the build completes, the images are located in:
 

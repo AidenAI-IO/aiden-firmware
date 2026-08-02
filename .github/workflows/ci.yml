@@ -83,6 +83,7 @@ jobs:
       - name: Verify release scripts
         run: |
           sh scripts/test_release_ci_scripts.sh
+          bash scripts/test_rootfs_cli_tool_catalog.sh
           bash scripts/test_clean_rootfs_overlay_staging.sh
           sh scripts/test_build_rootfs_cli_tools.sh
           sh scripts/test_stage_rootfs_cli_tools.sh

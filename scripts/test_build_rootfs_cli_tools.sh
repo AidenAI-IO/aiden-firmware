@@ -43,6 +43,7 @@ esac
 case "$module" in
   github.com/mikefarah/yq/v4@v4.53.3) tool=yq ;;
   github.com/wader/fq@v0.17.0) tool=fq ;;
+  example.com/fx@v1.0.0) tool=fx ;;
   *)
     echo "unexpected module: $module" >&2
     exit 2
@@ -157,6 +158,33 @@ fi
 )
 if [ ! -x "$tmpdir/relative-output/fq" ]; then
     echo "build must accept relative output and cache directories" >&2
+    exit 1
+fi
+
+custom_catalog="$tmpdir/custom.catalog"
+cat > "$custom_catalog" <<'EOF'
+# name|version|kind|source|target|source_sha256|artifact_path|strip_policy
+fq|v0.17.0|go|github.com/wader/fq@v0.17.0|linux/arm/v7|-|-|preserve
+yq|v4.53.3|go|github.com/mikefarah/yq/v4@v4.53.3|linux/arm/v7|-|-|preserve
+rg|15.2.0|archive|https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-armv7-unknown-linux-musleabihf.tar.gz|armv7-unknown-linux-musleabihf|0332b481aa007969a54d5c19e793208e73405c48d38f226bdee56b9ed085cdde|ripgrep-15.2.0-armv7-unknown-linux-musleabihf/rg|preserve
+fx|v1.0.0|go|example.com/fx@v1.0.0|linux/arm/v7|-|-|normal
+EOF
+custom_output="$tmpdir/custom-output"
+PATH="$fake_bin:$PATH" \
+FAKE_ARM_ELF="$tmpdir/fake-arm-elf" \
+FAKE_GO_LOG="$tmpdir/go.log" \
+FAKE_CURL_LOG="$tmpdir/curl.log" \
+"$BUILD_SCRIPT" --catalog "$custom_catalog" --output-dir "$custom_output" --cache-dir "$cache_dir"
+if [ ! -x "$custom_output/fx" ]; then
+    echo "adding a Go tool catalog record must add its executable to the bundle" >&2
+    exit 1
+fi
+if ! grep -Eq '^[0-9a-f]{64}  fx$' "$custom_output/manifest.sha256"; then
+    echo "adding a tool catalog record must add it to the checksum manifest" >&2
+    exit 1
+fi
+if ! grep -q '^fx v1.0.0 linux/arm/v7 normal$' "$custom_output/versions.txt"; then
+    echo "adding a tool catalog record must add its version and policy metadata" >&2
     exit 1
 fi
 

@@ -9,6 +9,7 @@
 | `build/lib/libcjson.a` | cJSON static library |
 | `build/bin/` | Application binaries directory |
 | `build/rootfs-cli-tools/` | Verified ARMv7 `fq`, `yq`, and `rg` bundle staged into rootfs |
+| `scripts/rootfs_cli_tools.catalog` | Single source of truth for rootfs CLI versions, sources, targets, checksums, archive paths, and strip policy |
 | `build-host/tests/aiden_tests` | host-native unit test binary |
 | `pico-sdk/output/image/` | Full firmware build output directory |
 
