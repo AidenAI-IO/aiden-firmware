@@ -233,6 +233,25 @@ if ! grep -Fq 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs
     echo "_build_image.sh must verify fq, yq, and rg inside the final rootfs image" >&2
     exit 1
 fi
+rootfs_cli_restage_line=$(grep -nF -- '--dest-overlay "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | tail -n 1)
+firmware_package_line=$(grep -nF './build.sh firmware "$@"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+rootfs_rebuild_line=$(grep -nF 'rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+rootfs_cli_verify_line=$(grep -nF 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+if [ -z "$firmware_package_line" ] || [ -z "$rootfs_cli_restage_line" ] || \
+   [ -z "$rootfs_rebuild_line" ] || \
+   [ -z "$rootfs_cli_verify_line" ] || \
+   [ "$firmware_package_line" -ge "$rootfs_cli_restage_line" ] || \
+   [ "$rootfs_cli_restage_line" -ge "$rootfs_rebuild_line" ] || \
+   [ "$rootfs_rebuild_line" -ge "$rootfs_cli_verify_line" ]; then
+    echo "_build_image.sh must package firmware, restage CLI tools, rebuild rootfs.img, then verify it" >&2
+    exit 1
+fi
+if ! grep -Fq -- '-path "$target_dir/usr/bin/fq"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq -- '-path "$target_dir/usr/bin/yq"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq -- '-path "$target_dir/usr/bin/rg"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "release stripping must preserve the pinned rootfs CLI tool bytes" >&2
+    exit 1
+fi
 if ! grep -Fq 'ROOTFS_CLI_CACHE_DIR="$SCRIPT_DIR/.cache/rootfs-cli-tools"' "$BUILD_IMAGE_SCRIPT"; then
     echo "rootfs CLI cache must live outside build/, which _build.sh recreates on every image build" >&2
     exit 1

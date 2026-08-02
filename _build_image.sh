@@ -163,7 +163,9 @@ strip_release_files() {
     find "$target_dir" \( -name "lib*.la" -o -name "lib*.a" \) -exec rm -rf {} +
     find "$target_dir" -type d -name pkgconfig -exec rm -rf {} +
     find "$target_dir" -type f \( -perm /111 -o -name '*.so*' \) \
-        -not \( -name 'libpthread*.so*' -o -name 'ld-*.so*' -o -name '*.ko' \) -print0 |
+        -not \( -name 'libpthread*.so*' -o -name 'ld-*.so*' -o -name '*.ko' \) \
+        -not \( -path "$target_dir/usr/bin/fq" -o -path "$target_dir/usr/bin/yq" -o -path "$target_dir/usr/bin/rg" \) \
+        -print0 |
         xargs -0 "$strip_tool" 2>/dev/null || true
     find "$target_dir" -type f -name '*.ko' -print0 |
         xargs -0 "$strip_tool" --strip-debug 2>/dev/null || true
@@ -795,6 +797,18 @@ cd "$PICO_SDK/project"
 echo "  → Rebuilding oem.img..."
 rebuild_ext4_image oem "$RK_PROJECT_PACKAGE_OEM_DIR"
 verify_oem_generated_binaries_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"
+
+# The SDK firmware packager strips every executable in the assembled rootfs,
+# including already-minimized static Go/Rust tools copied from the Buildroot
+# overlay. Restore the checksum-verified bundle after that generic strip pass,
+# then rebuild rootfs.img while excluding only these pinned tools from the
+# second release strip pass.
+echo "  → Restaging rootfs CLI tools after SDK release strip..."
+"$SCRIPT_DIR/scripts/stage_rootfs_cli_tools.sh" \
+    --source-dir "$ROOTFS_CLI_BUILD_DIR" \
+    --dest-overlay "$RK_PROJECT_PACKAGE_ROOTFS_DIR"
+echo "  → Rebuilding rootfs.img..."
+rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR"
 verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY"
 
 echo "  → Rebuilding userdata.img..."
