@@ -231,6 +231,10 @@ rootfs_cli_restage_line=$(grep -nF -- '--dest-overlay "$RK_PROJECT_PACKAGE_ROOTF
 firmware_package_line=$(grep -nF './build.sh firmware "$@"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
 rootfs_rebuild_line=$(grep -nF 'rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
 rootfs_cli_verify_line=$(grep -nF 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+if ! grep -Fq 'RK_PROJECT_PACKAGE_ROOTFS_DIR="${RK_PROJECT_OUTPUT}/rootfs_${RK_LIBC_TPYE}_${RK_CHIP}"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "_build_image.sh must define the SDK rootfs staging directory before restaging CLI tools" >&2
+    exit 1
+fi
 if [ -z "$firmware_package_line" ] || [ -z "$rootfs_cli_restage_line" ] || \
    [ -z "$rootfs_rebuild_line" ] || \
    [ -z "$rootfs_cli_verify_line" ] || \
