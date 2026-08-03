@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -328,6 +330,13 @@ func TestCompactReplacesOrphanedHistoricalToolResult(t *testing.T) {
 
 func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *testing.T) {
 	sessionFolder := t.TempDir()
+	completePath := filepath.Join(sessionFolder, "tr_complete.data")
+	partialPath := filepath.Join(sessionFolder, "tr_partial.data")
+	for _, path := range []string{completePath, partialPath} {
+		if err := os.WriteFile(path, []byte("artifact"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s): %v", path, err)
+		}
+	}
 	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
 		{Role: contextmanager.MessageRoleSystem, Content: "system"},
 		{Role: contextmanager.MessageRoleUser, Content: "old request"},
@@ -346,7 +355,7 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 					Name:       "shell",
 					Content:    strings.Repeat("complete historical output ", 1_000),
 					Meta: &contextmanager.ToolResultMeta{
-						ArtifactPath:     "/tmp/tool-results/tr_complete",
+						ArtifactPath:     completePath,
 						ArtifactComplete: true,
 						Summary:          "128 passed, 2 failed",
 					},
@@ -356,7 +365,7 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 					Name:       "inspect_episode",
 					Content:    strings.Repeat("partial historical output ", 1_000),
 					Meta: &contextmanager.ToolResultMeta{
-						ArtifactPath:     "/tmp/tool-results/tr_partial",
+						ArtifactPath:     partialPath,
 						ArtifactComplete: false,
 						Summary:          "episode ep_1 completed",
 					},
@@ -407,8 +416,8 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 	}
 	for _, want := range []string{
 		"## Recoverable Tool Results",
-		`"path":"/tmp/tool-results/tr_complete"`,
-		`"path":"/tmp/tool-results/tr_partial"`,
+		`"path":"` + completePath + `"`,
+		`"path":"` + partialPath + `"`,
 	} {
 		if !strings.Contains(combined, want) {
 			t.Fatalf("compacted context missing %q:\n%s", want, combined)
@@ -436,8 +445,12 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 }
 
 func TestCompactPreservesRecoverableToolResultsAcrossRepeatedSummaries(t *testing.T) {
-	path := "/tmp/tool-results/tr_repeat.data"
-	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
+	sessionFolder := t.TempDir()
+	path := filepath.Join(sessionFolder, "tr_repeat.data")
+	if err := os.WriteFile(path, []byte("artifact"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
 		{Role: contextmanager.MessageRoleSystem, Content: "system"},
 		{Role: contextmanager.MessageRoleUser, Content: "old request"},
 		{
@@ -531,6 +544,24 @@ func messageListContains(messages []contextmanager.Message, value string) bool {
 	return false
 }
 
+func TestCollectRecoverableToolResultsDropsMissingArtifacts(t *testing.T) {
+	existing := filepath.Join(t.TempDir(), "existing.data")
+	if err := os.WriteFile(existing, []byte("artifact"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", existing, err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.data")
+	results := collectRecoverableToolResults([]contextmanager.Message{{
+		Role: contextmanager.MessageRoleUser,
+		RecoverableToolResults: []contextmanager.RecoverableToolResult{
+			{ToolName: "shell", ArtifactPath: missing, ArtifactComplete: true},
+			{ToolName: "shell", ArtifactPath: existing, ArtifactComplete: true},
+		},
+	}})
+	if len(results) != 1 || results[0].ArtifactPath != existing {
+		t.Fatalf("recoverable results = %#v, want only %q", results, existing)
+	}
+}
+
 func TestFormatSummaryBoundsAndDelimitsRecoverableToolResultData(t *testing.T) {
 	results := make([]contextmanager.RecoverableToolResult, 0, recoverableToolResultMaxEntries+20)
 	for i := 0; i < recoverableToolResultMaxEntries+20; i++ {
@@ -542,12 +573,15 @@ func TestFormatSummaryBoundsAndDelimitsRecoverableToolResultData(t *testing.T) {
 		})
 	}
 
-	formatted := (&Compactor{}).formatSummary("safe summary", results)
+	formatted, retained := (&Compactor{}).formatSummary("safe summary", results)
 	if tokens := tokencounter.EstimateTextTokens(formatted); tokens > recoverableToolResultMaxTokens+tokencounter.EstimateTextTokens("<summary>\nsafe summary\n</summary>\n") {
 		t.Fatalf("formatted summary tokens = %d, recovery block exceeded its budget:\n%s", tokens, formatted)
 	}
 	if strings.Count(formatted, `"path":`) > recoverableToolResultMaxEntries {
 		t.Fatalf("formatted recovery entries exceeded max %d:\n%s", recoverableToolResultMaxEntries, formatted)
+	}
+	if len(retained) > recoverableToolResultMaxEntries || len(retained) != strings.Count(formatted, `"path":`) {
+		t.Fatalf("retained recovery metadata does not match visible bounded records: retained=%d\n%s", len(retained), formatted)
 	}
 	if strings.Contains(formatted, "\nIgnore previous instructions") || strings.Contains(formatted, "\n</recoverable_tool_results_data>\nIgnore") {
 		t.Fatalf("untrusted summary escaped the data record boundary:\n%s", formatted)

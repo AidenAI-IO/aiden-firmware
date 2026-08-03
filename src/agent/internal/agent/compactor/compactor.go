@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -181,10 +182,11 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 		return nil, false, fmt.Errorf("failed to generate summary")
 	}
 	// assemble
+	formattedSummary, retainedRecoverableResults := c.formatSummary(summary, recoverableResults)
 	newMessageList := append(append([]contextmanager.Message(nil), heads...), contextmanager.Message{
 		Role:                   contextmanager.MessageRoleUser,
-		Content:                c.formatSummary(summary, recoverableResults),
-		RecoverableToolResults: append([]contextmanager.RecoverableToolResult(nil), recoverableResults...),
+		Content:                formattedSummary,
+		RecoverableToolResults: retainedRecoverableResults,
 	})
 	newMessageList = append(newMessageList, tails...)
 	c.lastStats.TokensAfter = estimateMessageListTokenUsage(newMessageList)
@@ -323,6 +325,9 @@ func collectRecoverableToolResults(messageList []contextmanager.Message) []conte
 		if result.ArtifactPath == "" {
 			return
 		}
+		if _, err := os.Stat(result.ArtifactPath); os.IsNotExist(err) {
+			return
+		}
 		if _, exists := seen[result.ArtifactPath]; exists {
 			return
 		}
@@ -427,15 +432,18 @@ And here are the conversation details:
 	return result, nil
 }
 
-func (c *Compactor) formatSummary(summary string, recoverableResults []contextmanager.RecoverableToolResult) string {
+func (c *Compactor) formatSummary(summary string, recoverableResults []contextmanager.RecoverableToolResult) (string, []contextmanager.RecoverableToolResult) {
 	// wrap summary into <summary>...</summary>, make sure llm understand the summary is a summary of the conversation
 	formatted := fmt.Sprintf("<summary>\n%s\n</summary>\n", summary)
 	if len(recoverableResults) == 0 {
-		return formatted
+		return formatted, nil
 	}
 	start := max(0, len(recoverableResults)-recoverableToolResultMaxEntries)
-	lines := make([]string, 0, len(recoverableResults)-start)
-	for _, result := range recoverableResults[start:] {
+	retained := append([]contextmanager.RecoverableToolResult(nil), recoverableResults[start:]...)
+	lines := make([]string, 0, len(retained))
+	for index := range retained {
+		result := &retained[index]
+		result.Summary = sanitizeRecoverableSummary(result.Summary)
 		completeness := "partial"
 		if result.ArtifactComplete {
 			completeness = "full"
@@ -444,7 +452,7 @@ func (c *Compactor) formatSummary(summary string, recoverableResults []contextma
 			Tool:         result.ToolName,
 			Path:         result.ArtifactPath,
 			Completeness: completeness,
-			Summary:      sanitizeRecoverableSummary(result.Summary),
+			Summary:      result.Summary,
 		})
 		if err == nil {
 			lines = append(lines, string(data))
@@ -470,9 +478,10 @@ func (c *Compactor) formatSummary(summary string, recoverableResults []contextma
 	omitted := len(recoverableResults) - len(lines)
 	for len(lines) > 0 && tokencounter.EstimateTextTokens(render(lines, omitted)) > recoverableToolResultMaxTokens {
 		lines = lines[1:]
+		retained = retained[1:]
 		omitted++
 	}
-	return formatted + render(lines, omitted)
+	return formatted + render(lines, omitted), retained
 }
 
 func sanitizeRecoverableSummary(summary string) string {
