@@ -514,9 +514,13 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) Start() error {
 	handler := s.Handler()
 
+	// Milestone: the agent Web UI (http://192.168.42.1:8080) is about to accept
+	// connections. Stamped with kernel uptime so it can be lined up against the
+	// init-script timeline in /var/log/aiden_boot_timeline.log.
 	if s.logger != nil {
-		s.logger.Info("Starting HTTP server on %s", s.addr)
+		s.logger.Info("Starting HTTP server on %s%s", s.addr, bootUptimeLogSuffix())
 	}
+	MarkBootTimeline("agent:listening")
 
 	srv := &http.Server{
 		Addr:              s.addr,

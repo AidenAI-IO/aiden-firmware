@@ -10,11 +10,18 @@ STORAGE_LEVEL_PATH=${STORAGE_LEVEL_PATH:-/run/agent/storage_level}
 PID_FILE=/run/agent/agent.pid
 WATCHDOG_PID_FILE=/run/agent/agent_watchdog.pid
 BOOT_CONF=/etc/aiden_boot.conf
+BOOT_TIMELINE_HELPER=${BOOT_TIMELINE_HELPER:-/etc/aiden_boot_timeline.sh}
 
 if [ -f "$BOOT_CONF" ]; then
     . "$BOOT_CONF"
 fi
 : "${ENABLE_AGENT:=1}"
+
+mark() {
+    [ -x "$BOOT_TIMELINE_HELPER" ] || return 0
+    "$BOOT_TIMELINE_HELPER" mark "$@" 2>/dev/null || true
+    return 0
+}
 LOG_PATH=${LOG_PATH:-$CONFIG_DIR/log/agent.log}
 
 configured_agent_log_max_mb() {
@@ -139,6 +146,7 @@ start() {
                 continue
             fi
 
+            mark agent:spawn
             echo "[agent] starting $AGENT_BIN -config $CONFIG_DIR -addr $ADDR" >> "$LOG_PATH"
             "$ENV_RUN_BIN" "$AGENT_BIN" -config "$CONFIG_DIR" -addr "$ADDR" >> "$LOG_PATH" 2>&1 &
             child="$!"
