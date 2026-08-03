@@ -9,8 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/tmc/langchaingo/llms"
@@ -320,12 +320,13 @@ type recoveryRecord struct {
 func collectRecoverableToolResults(messageList []contextmanager.Message) []contextmanager.RecoverableToolResult {
 	results := make([]contextmanager.RecoverableToolResult, 0)
 	seen := make(map[string]struct{})
+	now := time.Now()
 	appendResult := func(result contextmanager.RecoverableToolResult) {
 		result.ArtifactPath = strings.TrimSpace(result.ArtifactPath)
 		if result.ArtifactPath == "" {
 			return
 		}
-		if _, err := os.Stat(result.ArtifactPath); os.IsNotExist(err) {
+		if !contextmanager.ArtifactPathRecoverable(result.ArtifactPath, now) {
 			return
 		}
 		if _, exists := seen[result.ArtifactPath]; exists {

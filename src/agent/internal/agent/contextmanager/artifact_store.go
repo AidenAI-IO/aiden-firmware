@@ -52,6 +52,33 @@ type artifactStore struct {
 	mu   sync.Mutex
 }
 
+// ArtifactPathRecoverable reports whether an artifact data path still has a
+// readable, unexpired metadata pair. Missing, malformed, or expired metadata
+// fails closed so compaction does not keep advertising an unusable path.
+func ArtifactPathRecoverable(dataPath string, now time.Time) bool {
+	dataPath = strings.TrimSpace(dataPath)
+	if dataPath == "" || !strings.HasSuffix(dataPath, ".data") {
+		return false
+	}
+	info, err := os.Stat(dataPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	metadataPath := strings.TrimSuffix(dataPath, ".data") + ".json"
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return false
+	}
+	var metadata ArtifactMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return false
+	}
+	if metadata.ExpiresAt.IsZero() {
+		return false
+	}
+	return metadata.ExpiresAt.After(now.UTC())
+}
+
 func newArtifactStore(sessionFolder, scopeID string) (*artifactStore, error) {
 	var err error
 	scopeID, err = validateArtifactScopeID(scopeID)

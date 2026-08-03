@@ -2,12 +2,14 @@ package compactor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
@@ -333,9 +335,7 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 	completePath := filepath.Join(sessionFolder, "tr_complete.data")
 	partialPath := filepath.Join(sessionFolder, "tr_partial.data")
 	for _, path := range []string{completePath, partialPath} {
-		if err := os.WriteFile(path, []byte("artifact"), 0o600); err != nil {
-			t.Fatalf("WriteFile(%s): %v", path, err)
-		}
+		writeTestArtifact(t, path, time.Now().Add(time.Hour))
 	}
 	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
 		{Role: contextmanager.MessageRoleSystem, Content: "system"},
@@ -447,9 +447,7 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 func TestCompactPreservesRecoverableToolResultsAcrossRepeatedSummaries(t *testing.T) {
 	sessionFolder := t.TempDir()
 	path := filepath.Join(sessionFolder, "tr_repeat.data")
-	if err := os.WriteFile(path, []byte("artifact"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%s): %v", path, err)
-	}
+	writeTestArtifact(t, path, time.Now().Add(time.Hour))
 	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
 		{Role: contextmanager.MessageRoleSystem, Content: "system"},
 		{Role: contextmanager.MessageRoleUser, Content: "old request"},
@@ -546,19 +544,41 @@ func messageListContains(messages []contextmanager.Message, value string) bool {
 
 func TestCollectRecoverableToolResultsDropsMissingArtifacts(t *testing.T) {
 	existing := filepath.Join(t.TempDir(), "existing.data")
-	if err := os.WriteFile(existing, []byte("artifact"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%s): %v", existing, err)
-	}
+	writeTestArtifact(t, existing, time.Now().Add(time.Hour))
 	missing := filepath.Join(t.TempDir(), "missing.data")
+	expired := filepath.Join(t.TempDir(), "expired.data")
+	writeTestArtifact(t, expired, time.Now().Add(-time.Hour))
 	results := collectRecoverableToolResults([]contextmanager.Message{{
 		Role: contextmanager.MessageRoleUser,
 		RecoverableToolResults: []contextmanager.RecoverableToolResult{
 			{ToolName: "shell", ArtifactPath: missing, ArtifactComplete: true},
+			{ToolName: "shell", ArtifactPath: expired, ArtifactComplete: true},
 			{ToolName: "shell", ArtifactPath: existing, ArtifactComplete: true},
 		},
 	}})
 	if len(results) != 1 || results[0].ArtifactPath != existing {
 		t.Fatalf("recoverable results = %#v, want only %q", results, existing)
+	}
+}
+
+func writeTestArtifact(t *testing.T, dataPath string, expiresAt time.Time) {
+	t.Helper()
+	if err := os.WriteFile(dataPath, []byte("artifact"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", dataPath, err)
+	}
+	metadata, err := json.Marshal(contextmanager.ArtifactMetadata{
+		MIMEType:  "text/plain",
+		Size:      int64(len("artifact")),
+		CreatedAt: time.Now().Add(-time.Hour),
+		ExpiresAt: expiresAt,
+		Complete:  true,
+	})
+	if err != nil {
+		t.Fatalf("Marshal artifact metadata: %v", err)
+	}
+	metadataPath := strings.TrimSuffix(dataPath, ".data") + ".json"
+	if err := os.WriteFile(metadataPath, metadata, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", metadataPath, err)
 	}
 }
 
