@@ -113,7 +113,7 @@ func (defaultToolResultPolicy) Prepare(_ context.Context, input ToolResultPrepar
 	previewBudget := min(toolResultPreviewTargetToken, contentBudget)
 	preview, structured := projectToolResultWithKind(input.Call, output, previewBudget)
 	prepared.Summary = boundTextToTokens(preview, 256)
-	sensitive := toolResultIsSensitive(input.Call.Spec.Name)
+	sensitive := toolResultIsSensitive(toolCallName(input.Call))
 	if input.ContextManager != nil && !sensitive {
 		mimeType := "text/plain"
 		if structured {
@@ -184,6 +184,13 @@ func toolResultIsSensitive(toolName string) bool {
 	}
 }
 
+func toolCallName(call ToolCall) string {
+	if name := strings.TrimSpace(call.Spec.Name); name != "" {
+		return name
+	}
+	return strings.TrimSpace(call.Action.Tool)
+}
+
 func availableToolResultTokens(input ToolResultPrepareInput) int {
 	contextWindow := input.ModelSpec.ContextWindow
 	if contextWindow <= 0 {
@@ -236,10 +243,7 @@ func boundedToolResultObservation(call ToolCall, prepared PreparedToolResult, pr
 	if contentTokens <= 0 {
 		contentTokens = toolResultMinimumObservation
 	}
-	toolName := strings.TrimSpace(call.Spec.Name)
-	if toolName == "" {
-		toolName = strings.TrimSpace(call.Action.Tool)
-	}
+	toolName := toolCallName(call)
 	if toolName == "" {
 		toolName = "tool"
 	}
@@ -325,10 +329,7 @@ func combineMandatoryToolResultText(mandatory, optional string, maxTokens int) s
 }
 
 func summarizeToolAction(call ToolCall) string {
-	toolName := strings.TrimSpace(call.Spec.Name)
-	if toolName == "" {
-		toolName = strings.TrimSpace(call.Action.Tool)
-	}
+	toolName := toolCallName(call)
 	var input map[string]any
 	_ = json.Unmarshal([]byte(strings.TrimSpace(call.Input)), &input)
 	switch toolName {
@@ -362,10 +363,7 @@ func projectToolResultWithKind(call ToolCall, output string, maxTokens int) (str
 	if maxTokens <= 0 || output == "" {
 		return "", false
 	}
-	toolName := strings.TrimSpace(call.Spec.Name)
-	if toolName == "" {
-		toolName = strings.TrimSpace(call.Action.Tool)
-	}
+	toolName := toolCallName(call)
 	if toolName == toolBridgeClipboard {
 		if projected, ok := projectClipboardToolResult(output, maxTokens); ok {
 			return projected, true
@@ -401,10 +399,7 @@ func projectToolResultWithKind(call ToolCall, output string, maxTokens int) (str
 }
 
 func projectToolSpecificJSONResult(call ToolCall, output string, maxTokens int) (string, bool) {
-	toolName := strings.TrimSpace(call.Spec.Name)
-	if toolName == "" {
-		toolName = strings.TrimSpace(call.Action.Tool)
-	}
+	toolName := toolCallName(call)
 	var requestFields []string
 	switch toolName {
 	case "recall_memory", "recall_session_chunks", "recall_device_memory":
@@ -531,10 +526,7 @@ func projectSkillReadToolResult(call ToolCall, output string, maxTokens int) (st
 }
 
 func projectWebToolResult(call ToolCall, output string, maxTokens int) (string, bool) {
-	toolName := strings.TrimSpace(call.Spec.Name)
-	if toolName == "" {
-		toolName = strings.TrimSpace(call.Action.Tool)
-	}
+	toolName := toolCallName(call)
 	request := selectedToolInput(call.Input, "query", "url")
 	if len(request) == 0 {
 		trimmedInput := strings.TrimSpace(call.Input)

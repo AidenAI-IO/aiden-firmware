@@ -435,6 +435,91 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 	}
 }
 
+func TestCompactPreservesRecoverableToolResultsAcrossRepeatedSummaries(t *testing.T) {
+	path := "/tmp/tool-results/tr_repeat.data"
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
+		{Role: contextmanager.MessageRoleSystem, Content: "system"},
+		{Role: contextmanager.MessageRoleUser, Content: "old request"},
+		{
+			Role: contextmanager.MessageRoleToolCall,
+			ToolCalls: []contextmanager.ToolCall{{
+				ID:        "old_call",
+				Name:      "shell",
+				Arguments: `{"command":"generate-report"}`,
+			}},
+		},
+		{
+			Role: contextmanager.MessageRoleToolResult,
+			ToolResults: []contextmanager.ToolResult{{
+				ToolCallID: "old_call",
+				Name:       "shell",
+				Content:    strings.Repeat("large historical output ", 1_000),
+				Meta: &contextmanager.ToolResultMeta{
+					ArtifactPath:     path,
+					ArtifactComplete: true,
+					Summary:          "report generated",
+				},
+			}},
+		},
+		{Role: contextmanager.MessageRoleAssistant, Content: strings.Repeat("old answer ", 500)},
+		{Role: contextmanager.MessageRoleUser, Content: "current request"},
+		{Role: contextmanager.MessageRoleAssistant, Content: "current answer"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+
+	model := &promptCapturingModel{reply: "summary deliberately omits every artifact reference"}
+	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
+	compactor.SetHistoricalToolResultTarget(1)
+	first, compacted, err := compactor.Compact(context.Background(), manager)
+	if err != nil {
+		t.Fatalf("first Compact() error = %v", err)
+	}
+	if !compacted || first == nil {
+		t.Fatal("first Compact() did not create a compacted manager")
+	}
+	if !messageListContains(first.CloneMessageList(), path) {
+		t.Fatalf("first compacted context lost recovery path %q", path)
+	}
+
+	secondInput := append(first.CloneMessageList(),
+		contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "next request"},
+		contextmanager.Message{Role: contextmanager.MessageRoleAssistant, Content: "next answer"},
+	)
+	secondManager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), secondInput)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList(second) error = %v", err)
+	}
+	second, compacted, err := compactor.Compact(context.Background(), secondManager)
+	if err != nil {
+		t.Fatalf("second Compact() error = %v", err)
+	}
+	if !compacted || second == nil {
+		t.Fatal("second Compact() did not create a compacted manager")
+	}
+	if !messageListContains(second.CloneMessageList(), path) {
+		t.Fatalf("second compacted context lost recovery path %q: %#v", path, second.CloneMessageList())
+	}
+	if len(model.prompts) != 2 {
+		t.Fatalf("summary model calls = %d, want 2", len(model.prompts))
+	}
+}
+
+func messageListContains(messages []contextmanager.Message, value string) bool {
+	for _, message := range messages {
+		if strings.Contains(message.Content, value) {
+			return true
+		}
+		for _, result := range message.ToolResults {
+			if strings.Contains(result.Content, value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestFormatSummaryBoundsAndDelimitsRecoverableToolResultData(t *testing.T) {
 	results := make([]recoverableToolResult, 0, recoverableToolResultMaxEntries+20)
 	for i := 0; i < recoverableToolResultMaxEntries+20; i++ {
