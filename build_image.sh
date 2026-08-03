@@ -3,6 +3,33 @@ set -euo pipefail
 
 docker_go_args=()
 cached_linux_go_root="${AIDEN_GO_ROOT:-$(pwd)/.toolchains/go1.26.0.linux-amd64}"
+cached_linux_go_report="not checked"
+
+cached_linux_go_valid() {
+  local binary="$cached_linux_go_root/bin/go"
+  if [ ! -x "$binary" ] || [ ! -f "$cached_linux_go_root/VERSION" ] || \
+     ! grep -qx 'go1.26.0' "$cached_linux_go_root/VERSION"; then
+    cached_linux_go_report="missing binary or pinned VERSION file"
+    return 1
+  fi
+
+  if command -v go >/dev/null 2>&1; then
+    cached_linux_go_report=$(go version "$binary" 2>&1 || true)
+    [ "$cached_linux_go_report" = "go version go1.26.0 linux/amd64" ]
+    return
+  fi
+
+  if command -v file >/dev/null 2>&1; then
+    cached_linux_go_report="go1.26.0; $(file -b "$binary" 2>&1 || true)"
+    case "$cached_linux_go_report" in
+      *"ELF 64-bit"*"x86-64"*) return 0 ;;
+    esac
+  else
+    cached_linux_go_report="cannot inspect cached binary because both go and file are unavailable"
+  fi
+  return 1
+}
+
 if command -v go >/dev/null 2>&1; then
   host_goroot=$(go env GOROOT)
   host_goos=$(go env GOHOSTOS)
@@ -11,21 +38,18 @@ if command -v go >/dev/null 2>&1; then
   if [ -d "$host_goroot" ] && [ "$host_goos" = linux ] && [ "$host_goarch" = amd64 ] && \
      [ "$host_goversion" = go1.26.0 ]; then
     docker_go_args=(-v "${host_goroot}:/usr/local/go:ro")
-  elif [ -x "$cached_linux_go_root/bin/go" ] && \
-       [ -f "$cached_linux_go_root/VERSION" ] && \
-       grep -qx 'go1.26.0' "$cached_linux_go_root/VERSION"; then
+  elif cached_linux_go_valid; then
     docker_go_args=(-v "${cached_linux_go_root}:/usr/local/go:ro")
   else
-    echo "Host Go toolchain must be go1.26.0 linux/amd64; detected $host_goversion $host_goos/$host_goarch, and cached Go 1.26.0 is unavailable: $cached_linux_go_root" >&2
+    echo "Host Go toolchain must be go1.26.0 linux/amd64; detected $host_goversion $host_goos/$host_goarch." >&2
+    echo "Cached Go validation failed at $cached_linux_go_root: $cached_linux_go_report" >&2
     echo "Run ./build.sh once to provision the pinned Linux toolchain before building an image." >&2
     exit 1
   fi
-elif [ -x "$cached_linux_go_root/bin/go" ] && \
-     [ -f "$cached_linux_go_root/VERSION" ] && \
-     grep -qx 'go1.26.0' "$cached_linux_go_root/VERSION"; then
+elif cached_linux_go_valid; then
   docker_go_args=(-v "${cached_linux_go_root}:/usr/local/go:ro")
 else
-  echo "Go is unavailable and cached Go 1.26.0 is missing: $cached_linux_go_root" >&2
+  echo "Go is unavailable and cached Go validation failed at $cached_linux_go_root: $cached_linux_go_report" >&2
   echo "Run ./build.sh once to provision the pinned Linux toolchain before building an image." >&2
   exit 1
 fi
