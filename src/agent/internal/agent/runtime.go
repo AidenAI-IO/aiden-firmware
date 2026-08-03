@@ -262,7 +262,14 @@ type usageTrackingModel struct {
 func (m *usageTrackingModel) CallOptions() []chains.ChainCallOption { return m.inner.CallOptions() }
 
 func (m *usageTrackingModel) Spec() model.ModelSpec {
-	return m.inner.Spec()
+	if m == nil || m.inner == nil {
+		return model.ModelSpec{}
+	}
+	spec := m.inner.Spec()
+	if spec.ContextWindow <= 0 {
+		spec.ContextWindow = m.contextWindow()
+	}
+	return spec
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {

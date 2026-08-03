@@ -11,6 +11,7 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/model"
 
+	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -82,6 +83,67 @@ type largeContextScriptedModel struct {
 
 func (m *largeContextScriptedModel) Spec() model.ModelSpec {
 	return model.ModelSpec{Provider: "fake", Name: "large-context", ContextWindow: 32_000, MaxOutput: 1_000}
+}
+
+type unknownContextScriptedModel struct {
+	*scriptedModel
+}
+
+func (m *unknownContextScriptedModel) Spec() model.ModelSpec {
+	return model.ModelSpec{Provider: "openai", Name: "qwen3.6-35b"}
+}
+
+func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.T) {
+	rawOutput := strings.Repeat("0123456789", 736)
+	if len(rawOutput) >= toolResultInlineMaxBytes || estimateTextTokens(rawOutput) >= toolResultInlineMaxTokens {
+		t.Fatal("test setup output must be intrinsically small")
+	}
+	inner := &unknownContextScriptedModel{scriptedModel: &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("call_1", "shell", `{"command":"produce-current-result"}`),
+		contentResponse("Done"),
+	}}}
+	tracked := &usageTrackingModel{
+		inner:   inner,
+		metrics: &RunMetrics{ContextWindow: 10_000},
+	}
+	manager, err := freshNewContextManager(strings.Repeat("context ", 2_500), "run the tool", nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+	loop := NewAgentLoop(
+		tracked,
+		RoleProfile{Tools: []langtools.Tool{&staticTool{name: "shell", output: rawOutput}}},
+		nil,
+		4,
+		nil,
+		nil,
+		ScreenshotPruningConfig{}.WithDefaults(),
+		manager,
+	)
+	answer, err := loop.Run(context.Background(), "run the tool", chains.WithMaxTokens(1_000))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if answer != "Done" {
+		t.Fatalf("Run() answer = %q, want Done", answer)
+	}
+
+	var stored contextmanager.ToolResult
+	for _, message := range manager.CloneMessageList() {
+		if message.Role == contextmanager.MessageRoleToolResult && len(message.ToolResults) > 0 {
+			stored = message.ToolResults[0]
+			break
+		}
+	}
+	if stored.Meta == nil {
+		t.Fatal("stored ToolResult metadata is nil")
+	}
+	if stored.Meta.Reason != ToolResultReasonContextLarge || stored.Meta.ArtifactPath == "" {
+		t.Fatalf("stored ToolResult = %#v, want context_large artifact", stored)
+	}
+	if stored.Content == rawOutput {
+		t.Fatal("current tool result stayed inline despite the runtime fallback context budget")
+	}
 }
 
 func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {
