@@ -50,7 +50,17 @@ short_sleep() {
 
 PORT=${PORT:-80}
 PROC_NET_TCP=${PROC_NET_TCP:-/proc/net/tcp}
-STARTUP_TIMEOUT_TICKS=${STARTUP_TIMEOUT_TICKS:-40}
+STARTUP_TIMEOUT_TICKS=${STARTUP_TIMEOUT_TICKS:-60}
+
+# Liveness only — deliberately weaker than is_running(). The launcher is a shell
+# that execs into config_web, so for the first few milliseconds after the fork
+# /proc/<pid>/exe still points at the shell and is_running() is legitimately
+# false. Only a pid that is actually gone means startup failed.
+pid_alive() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
 
 # /proc/net/tcp lists local_address as HEX_IP:HEX_PORT and state 0A = LISTEN.
 port_is_listening() {
@@ -71,10 +81,10 @@ wait_until_ready() {
     i=0
     while [ "$i" -lt "$STARTUP_TIMEOUT_TICKS" ]; do
         pid="$(current_pid)"
-        if ! is_running "$pid"; then
+        if ! pid_alive "$pid"; then
             return 1
         fi
-        if port_is_listening; then
+        if is_running "$pid" && port_is_listening; then
             return 0
         fi
         short_sleep

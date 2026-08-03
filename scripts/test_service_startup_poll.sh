@@ -64,6 +64,54 @@ probe_port 80 "$TCP_OTHER_PORT" && fail "port 80 matched a socket on port 8080"
 probe_port 8080 "$TCP_OTHER_PORT" || fail "port 8080 (0x1F90) not detected"
 probe_port 80 "$TMP_DIR/no-such-file" && fail "reported listening with no /proc/net/tcp"
 
+# --- S56config_web: the exec race must not be read as a failed start -------
+# Regression: aiden-env-run is a shell that execs into config_web, so for the
+# first few milliseconds /proc/<pid>/exe still points at the shell and
+# is_running() is legitimately false. Treating that as failure made
+# S56config_web report rc=1 and delete its pidfile while the portal was in fact
+# coming up fine.
+LIVE_PID_FILE="$TMP_DIR/live.pid"
+echo $$ > "$LIVE_PID_FILE"
+
+sh -c '
+        . "$1"
+        PID_FILE="$2"
+        STARTUP_TIMEOUT_TICKS=40
+        polls=0
+        # Not config_web yet, and no socket, for the first few polls.
+        is_running() { polls=$((polls + 1)); [ "$polls" -ge 5 ]; }
+        port_is_listening() { [ "$polls" -ge 5 ]; }
+        wait_until_ready
+    ' _ "$WEB_FUNCS" "$LIVE_PID_FILE" 2>/dev/null \
+    || fail "wait_until_ready gave up during the launcher exec window"
+
+# A pid that is genuinely gone must still fail fast.
+DEAD_PID_FILE="$TMP_DIR/dead.pid"
+echo 999999 > "$DEAD_PID_FILE"
+start_s=$(date +%s)
+if sh -c '
+        . "$1"
+        PID_FILE="$2"
+        STARTUP_TIMEOUT_TICKS=40
+        wait_until_ready
+    ' _ "$WEB_FUNCS" "$DEAD_PID_FILE" 2>/dev/null; then
+    fail "wait_until_ready succeeded for a dead pid"
+fi
+elapsed=$(( $(date +%s) - start_s ))
+[ "$elapsed" -le 2 ] || fail "dead pid took ${elapsed}s to detect; must fail fast"
+
+# A live process that never opens the port must still be reported as started
+# rather than torn down.
+sh -c '
+        . "$1"
+        PID_FILE="$2"
+        STARTUP_TIMEOUT_TICKS=3
+        is_running() { [ -n "$1" ]; }
+        port_is_listening() { return 1; }
+        wait_until_ready
+    ' _ "$WEB_FUNCS" "$LIVE_PID_FILE" 2>/dev/null \
+    || fail "a live process with no socket must fall back to the liveness check"
+
 # --- S55aiden_usb_dhcp: poll must bail out on a dead daemon ---------------
 # wait_until_running must not spin for its whole budget when the pid is gone;
 # with a stale pid file it should fail fast.
