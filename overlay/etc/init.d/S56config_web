@@ -42,6 +42,50 @@ current_pid() {
     echo "$pid"
 }
 
+# busybox sleep supports fractional seconds only when built with FANCY_SLEEP;
+# fall back to a whole second so the poll still terminates either way.
+short_sleep() {
+    sleep 0.05 2>/dev/null || sleep 1
+}
+
+PORT=${PORT:-80}
+PROC_NET_TCP=${PROC_NET_TCP:-/proc/net/tcp}
+STARTUP_TIMEOUT_TICKS=${STARTUP_TIMEOUT_TICKS:-40}
+
+# /proc/net/tcp lists local_address as HEX_IP:HEX_PORT and state 0A = LISTEN.
+port_is_listening() {
+    [ -r "$PROC_NET_TCP" ] || return 1
+    port_hex="$(printf '%04X' "$PORT" 2>/dev/null)" || return 1
+    awk -v ph="$port_hex" '
+        BEGIN { pat = ":" ph "$" }
+        $4 == "0A" && $2 ~ pat { found = 1 }
+        END { exit found ? 0 : 1 }
+    ' "$PROC_NET_TCP" 2>/dev/null
+}
+
+# Poll until the portal is actually accepting connections rather than sleeping a
+# flat second. config_web binds before its accept loop, so this normally returns
+# in tens of milliseconds — and unlike a sleep it verifies the socket is really
+# up, not merely that the process has not exited yet.
+wait_until_ready() {
+    i=0
+    while [ "$i" -lt "$STARTUP_TIMEOUT_TICKS" ]; do
+        pid="$(current_pid)"
+        if ! is_running "$pid"; then
+            return 1
+        fi
+        if port_is_listening; then
+            return 0
+        fi
+        short_sleep
+        i=$((i + 1))
+    done
+    # The socket never showed up, but a live process is still better than
+    # tearing it down: fall back to the pre-poll liveness check.
+    pid="$(current_pid)"
+    is_running "$pid"
+}
+
 start() {
     pid="$(current_pid)"
     if is_running "$pid"; then
@@ -61,18 +105,17 @@ start() {
 
     mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SYSTEM_ENV_PATH")"
 
-    "$ENV_RUN_BIN" "$BIN" --bind=0.0.0.0 --port=80 --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" &
+    "$ENV_RUN_BIN" "$BIN" --bind=0.0.0.0 --port="$PORT" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" &
     child_pid=$!
     echo "$child_pid" > "$PID_FILE"
-    sleep 1
 
-    pid="$(current_pid)"
-    if ! is_running "$pid"; then
+    if ! wait_until_ready; then
         rm -f "$PID_FILE"
         echo "Failed to start config_web"
         return 1
     fi
 
+    pid="$(current_pid)"
     # Milestone: http://192.168.42.1 (the settings portal) is now accepting
     # connections. This is one of the two numbers users actually wait on.
     mark config_web:listening

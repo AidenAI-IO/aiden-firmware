@@ -16,7 +16,8 @@ for expected in \
     'SWAP_MOUNT_POINT:=/userdata' \
     'SWAP_REQUIRE_MOUNT:=1' \
     'SWAP_SIZE_MB:=256' \
-    'SWAP_SWAPPINESS:=15'; do
+    'SWAP_SWAPPINESS:=15' \
+    'SWAP_BACKGROUND:=1'; do
     if ! grep -q "$expected" "$CONFIG"; then
         echo "swap config missing default: $expected" >&2
         exit 1
@@ -74,8 +75,12 @@ mv "$tmp" "$MOCK_PROC_SWAPS"
 EOF
 chmod +x "$MOCK_BIN/mkswap" "$MOCK_BIN/swapon" "$MOCK_BIN/swapoff"
 
+# Activation is backgrounded by default (see SWAP_BACKGROUND); pin it to
+# synchronous here so these assertions stay deterministic. The background path
+# has its own coverage at the end of this file.
 run_swap() {
     SWAP_CONFIG_FILE="$TMP_DIR/missing.conf" \
+    SWAP_BACKGROUND=0 \
     ENABLE_SWAP=1 \
     SWAP_FILE="$SWAP_FILE" \
     SWAP_MOUNT_POINT="$(dirname "$SWAP_FILE")" \
@@ -205,5 +210,77 @@ if ! grep -q 'swap mount point is not mounted' "$TMP_DIR/unmounted.err"; then
     cat "$TMP_DIR/unmounted.err" >&2
     exit 1
 fi
+
+# --- background activation (the default) ----------------------------------
+# swapon must not block rcS: start() returns immediately and the swapfile is
+# activated by a background worker.
+printf '/dev/test %s ext4 rw 0 0\n' "$(dirname "$SWAP_FILE")" > "$MOUNTS_PATH"
+printf 'Filename Type Size Used Priority\n' > "$PROC_SWAPS"
+rm -f "$SWAP_FILE"
+: > "$COMMAND_LOG"
+
+run_swap_bg() {
+    SWAP_CONFIG_FILE="$TMP_DIR/missing.conf" \
+    SWAP_BACKGROUND=1 \
+    ENABLE_SWAP=1 \
+    SWAP_FILE="$SWAP_FILE" \
+    SWAP_MOUNT_POINT="$(dirname "$SWAP_FILE")" \
+    SWAP_REQUIRE_MOUNT=1 \
+    SWAP_SIZE_MB=1 \
+    SWAP_SWAPPINESS=15 \
+    PROC_SWAPS="$PROC_SWAPS" \
+    MOUNTS_PATH="$MOUNTS_PATH" \
+    SWAPPINESS_PATH="$SWAPPINESS_PATH" \
+    MKSWAP_BIN="$MOCK_BIN/mkswap" \
+    SWAPON_BIN="$MOCK_BIN/swapon" \
+    SWAPOFF_BIN="$MOCK_BIN/swapoff" \
+    BOOT_TIMELINE_HELPER="$TMP_DIR/no-timeline.sh" \
+    COMMAND_LOG="$COMMAND_LOG" \
+    MOCK_PROC_SWAPS="$PROC_SWAPS" \
+    sh "$SCRIPT" "$1"
+}
+
+bg_output="$(run_swap_bg start)"
+case "$bg_output" in
+    *"in background"*) ;;
+    *)
+        echo "background start must say so: $bg_output" >&2
+        exit 1
+        ;;
+esac
+
+# Swappiness is applied up front, not deferred to the worker.
+if [ "$(cat "$SWAPPINESS_PATH")" != "15" ]; then
+    echo "background start must still configure swappiness synchronously" >&2
+    exit 1
+fi
+
+# The worker finishes shortly after; poll rather than assuming a fixed delay.
+activated=0
+i=0
+while [ "$i" -lt 100 ]; do
+    if grep -q "^$SWAP_FILE " "$PROC_SWAPS"; then
+        activated=1
+        break
+    fi
+    sleep 0.1 2>/dev/null || sleep 1
+    i=$((i + 1))
+done
+if [ "$activated" != "1" ]; then
+    echo "background worker never activated the swapfile" >&2
+    cat "$COMMAND_LOG" >&2
+    exit 1
+fi
+if [ "$(wc -c < "$SWAP_FILE" | tr -d '[:space:]')" != "1048576" ]; then
+    echo "background worker did not allocate the requested size" >&2
+    exit 1
+fi
+
+# A disabled background flag must remain synchronous for operators who need
+# swap guaranteed before later services start.
+grep -q 'SWAP_BACKGROUND' "$SCRIPT" || {
+    echo "S51swap must honour SWAP_BACKGROUND" >&2
+    exit 1
+}
 
 echo "swap init tests passed"

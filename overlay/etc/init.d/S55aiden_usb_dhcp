@@ -27,6 +27,30 @@ current_pid() {
 	echo "$pid"
 }
 
+# busybox sleep supports fractional seconds only when built with FANCY_SLEEP;
+# fall back to a whole second so the poll still terminates either way.
+short_sleep() {
+	sleep 0.05 2>/dev/null || sleep 1
+}
+
+# Poll for the daemon instead of sleeping a flat second: dnsmasq is up in a few
+# tens of milliseconds, and rcS is sequential so the wait is dead time.
+# STARTUP_TIMEOUT_TICKS x 0.05s bounds the wait at the original ~1s budget.
+STARTUP_TIMEOUT_TICKS=${STARTUP_TIMEOUT_TICKS:-20}
+
+wait_until_running() {
+	i=0
+	while [ "$i" -lt "$STARTUP_TIMEOUT_TICKS" ]; do
+		pid="$(current_pid)"
+		if is_running "$pid"; then
+			return 0
+		fi
+		short_sleep
+		i=$((i + 1))
+	done
+	return 1
+}
+
 start() {
 	pid="$(current_pid)"
 	if is_running "$pid"; then
@@ -64,13 +88,12 @@ start() {
 		--keep-in-foreground &
 	child_pid=$!
 	echo "$child_pid" > "$PID_FILE"
-	sleep 1
-	pid="$(current_pid)"
-	if ! is_running "$pid"; then
+	if ! wait_until_running; then
 		rm -f "$PID_FILE"
 		echo "Failed to start aiden_usb_dhcp"
 		return 1
 	fi
+	pid="$(current_pid)"
 	echo "Started aiden_usb_dhcp (pid $pid)"
 }
 
