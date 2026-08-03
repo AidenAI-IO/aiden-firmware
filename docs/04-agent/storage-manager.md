@@ -78,6 +78,18 @@ The Storage Manager does not delete:
 
 It also does not manage RAM, CPU, temperature, battery pressure, or volatile /tmp usage.
 
+### OTA Partition Interaction
+
+OTA uses a dedicated 300 MiB ext4 partition mounted at `/userdata/ota`.
+StorageMonitor still samples the `/userdata` filesystem, so OTA downloads do
+not reduce the available-byte value used by the 50/10/5 MiB thresholds.
+
+StorageMonitor cleaners do not target OTA paths. The SD-card StorageManager
+does not route or migrate OTA downloads and has no OTA lock or capacity
+coupling. Existing cleanup stages and user-facing storage notifications remain
+necessary for the non-OTA data stored on `/userdata`. See
+[OTA Dedicated Storage Partition](../08-ota/no-space-plan.md).
+
 ## Runtime Flow
 
 ~~~text

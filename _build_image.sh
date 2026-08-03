@@ -541,8 +541,12 @@ rebuild_ext4_image() {
     local image_path="$RK_PROJECT_OUTPUT_IMAGE/${name}.img"
     local size_bytes fs_type
 
-    if [ ! -d "$src_dir" ] || [ -z "$(ls -A "$src_dir" 2>/dev/null)" ]; then
+    if [ ! -d "$src_dir" ]; then
         echo "  ✗ Error: missing staged content for ${name}.img: $src_dir" >&2
+        exit 1
+    fi
+    if [ "$name" != "ota" ] && [ -z "$(ls -A "$src_dir" 2>/dev/null)" ]; then
+        echo "  ✗ Error: empty staged content for ${name}.img: $src_dir" >&2
         exit 1
     fi
 
@@ -679,6 +683,7 @@ RK_PROJECT_OUTPUT="${SDK_ROOT_DIR}/output/out"
 RK_PROJECT_OUTPUT_IMAGE="${SDK_ROOT_DIR}/output/image"
 RK_PROJECT_PACKAGE_OEM_DIR="${RK_PROJECT_OUTPUT}/oem"
 RK_PROJECT_PACKAGE_USERDATA_DIR="${RK_PROJECT_OUTPUT}/userdata"
+RK_PROJECT_PACKAGE_OTA_DIR="${RK_PROJECT_OUTPUT}/ota"
 
 cd "$PICO_SDK/project"
 echo "  → Running base firmware packaging..."
@@ -745,11 +750,21 @@ if [ -d "$OVERLAY/userdata" ] && [ "$(ls -A "$OVERLAY/userdata" 2>/dev/null)" ];
         "agent/benchmark" \
         "agent/model" \
         "agent_tools" \
+        "ota" \
         "system/env" \
         "wpa_supplicant.conf"
     rsync -a "$OVERLAY/userdata/" "$RK_PROJECT_PACKAGE_USERDATA_DIR/"
     echo "  ✓ USERDATA content copied"
 fi
+
+# The dedicated OTA filesystem mounts beneath /userdata, so userdata.img must
+# contain the empty mount point but no OTA state or configuration files.
+mkdir -p "$RK_PROJECT_PACKAGE_USERDATA_DIR/ota"
+
+# OTA owns the complete partition. Start each full build from an empty staging
+# directory; CI seeds config.json later and repacks only ota.img + update.img.
+rm -rf "$RK_PROJECT_PACKAGE_OTA_DIR"
+mkdir -p "$RK_PROJECT_PACKAGE_OTA_DIR"
 
 # Step 6: Rebuild Aiden-managed images. Do not call firmware again here:
 # SDK __PACKAGE_OEM regenerates usr/ko and would overwrite the Aiden overlay.
@@ -762,6 +777,9 @@ verify_oem_generated_binaries_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_P
 
 echo "  → Rebuilding userdata.img..."
 rebuild_ext4_image userdata "$RK_PROJECT_PACKAGE_USERDATA_DIR"
+
+echo "  → Rebuilding ota.img..."
+rebuild_ext4_image ota "$RK_PROJECT_PACKAGE_OTA_DIR"
 
 echo "  → Rebuilding update.img..."
 ./build.sh updateimg "$@"
@@ -779,7 +797,7 @@ ls -lh "$RK_PROJECT_OUTPUT_IMAGE"/*.img 2>/dev/null | awk '{print "  " $9 " (" $
 echo ""
 
 missing=0
-for img in misc.img boot_a.img boot_b.img oem.img rootfs.img userdata.img update.img; do
+for img in misc.img boot_a.img boot_b.img oem.img rootfs.img userdata.img ota.img update.img; do
     if [ ! -s "$RK_PROJECT_OUTPUT_IMAGE/$img" ]; then
         echo "  ✗ Missing expected image: $RK_PROJECT_OUTPUT_IMAGE/$img" >&2
         missing=1

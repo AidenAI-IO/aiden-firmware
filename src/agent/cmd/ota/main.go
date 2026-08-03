@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,6 +24,10 @@ func main() {
 }
 
 func run(args []string, out io.Writer) error {
+	return runWithConfig(args, out, nil)
+}
+
+func runWithConfig(args []string, out io.Writer, configure func(*ota.UpdaterConfig)) error {
 	command, args := splitCommandAndFlags(args)
 	positional := flagArgs(args)
 	if (command == "health" || command == "update" || command == "check-now" || command == "status") && len(positional) != 0 {
@@ -31,6 +36,9 @@ func run(args []string, out io.Writer) error {
 	config, err := parseConfigFlags(args)
 	if err != nil {
 		return err
+	}
+	if configure != nil {
+		configure(&config)
 	}
 	updater, err := ota.NewUpdater(config, rebootForConfig(config))
 	if err != nil {
@@ -144,8 +152,8 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	}
 	if *stateDir != "" {
 		config.StateDir = *stateDir
-		config.DownloadDir = ""
-		config.UpdateLockPath = ""
+		config.DownloadDir = filepath.Join(*stateDir, "downloads")
+		config.UpdateLockPath = filepath.Join(*stateDir, ota.DefaultOTAUpdateLockName)
 	}
 	if *miscPath != "" {
 		config.MiscPath = *miscPath
@@ -177,14 +185,6 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	config.DryRun = config.DryRun || *dryRun
 	if *testMode {
 		config.HealthTimeout = time.Second
-	}
-	// With the SD card mounted, cache downloads there instead of eMMC. An
-	// explicit download_dir in the config JSON or a -state-dir sandbox
-	// (tests, acceptance runs) keeps its own layout.
-	if config.DownloadDir == "" && *stateDir == "" {
-		if dir := sdOTACacheDir(storageStatePath); dir != "" {
-			config.DownloadDir = dir
-		}
 	}
 	config.Logger = log.New(os.Stderr, "ota: ", log.LstdFlags)
 	return config, nil

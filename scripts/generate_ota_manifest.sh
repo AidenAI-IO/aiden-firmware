@@ -24,6 +24,9 @@ Optional:
   --asset-metadata
                   Exact manifest asset JSON in FILE=JSON form; may be repeated
                   Takes precedence over --asset-url and --base-url for the named file
+  --max-download-bytes
+                  Maximum compressed download bytes for either target slot
+                  (default 0 = disabled; release CI derives this from ota.img capacity)
 
 Required images:
   boot_a.img and boot_b.img are always required.
@@ -43,6 +46,7 @@ sign_key=""
 image_dir=""
 output=""
 base_url=""
+max_download_bytes=0
 asset_url_files=()
 asset_url_values=()
 asset_metadata_files=()
@@ -121,6 +125,14 @@ while [ "$#" -gt 0 ]; do
       esac
       asset_metadata_files+=("$asset_metadata_file")
       asset_metadata_values+=("$asset_metadata_value")
+      shift 2
+      ;;
+    --max-download-bytes)
+      [ "$#" -ge 2 ] || die "--max-download-bytes requires a value"
+      max_download_bytes="$2"
+      case "$max_download_bytes" in
+        ''|*[!0-9]*) die "--max-download-bytes must be a non-negative integer" ;;
+      esac
       shift 2
       ;;
     *)
@@ -358,6 +370,26 @@ jq -n \
   --argjson rootfs "$rootfs_part" \
   '{schema_version:1,channel:$channel,version:$version,build_time:$build_time,parts:[$boot,$oem,$rootfs],signature:{algorithm:"ed25519"}}' \
   > "$unsigned"
+
+if [ "$max_download_bytes" -gt 0 ]; then
+  for target_slot in a b; do
+    target_download_bytes="$(jq -r --arg slot "$target_slot" '
+      [
+        .parts[] |
+        if .asset != null then
+          .asset.size
+        elif $slot == "a" then
+          .asset_a.size
+        else
+          .asset_b.size
+        end
+      ] | add
+    ' "$unsigned")"
+    if [ "$target_download_bytes" -gt "$max_download_bytes" ]; then
+      die "target slot $target_slot download size $target_download_bytes bytes exceeds limit $max_download_bytes bytes"
+    fi
+  done
+fi
 
 jq -cS 'del(.signature.value)' "$unsigned" | tr -d '\n' > "$canonical"
 openssl pkeyutl -sign -rawin -inkey "$sign_key" -in "$canonical" -out "$signature"

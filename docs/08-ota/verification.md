@@ -7,7 +7,7 @@
 - A/B metadata is located at `misc` partition byte offset `2048`.
 - Data structure is 32 bytes, compatible with Android AVB A/B layout version `1.0`.
 - CRC32 uses big-endian IEEE, covering metadata bytes `0..27`.
-- Reserved bytes remain reserved. Application OTA state is only saved in `/userdata/ota`, not written to `misc` reserved bytes.
+- Reserved bytes remain reserved. Application OTA state is saved on the dedicated partition mounted at `/userdata/ota`, not written to `misc` reserved bytes.
 - Factory `misc.img` initial state: slot A priority 15, successful; slot B disabled.
 
 ## Host Image Check
