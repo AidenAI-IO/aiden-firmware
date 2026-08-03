@@ -34,9 +34,11 @@ short_sleep() {
 }
 
 # Poll for the daemon instead of sleeping a flat second: dnsmasq is up in a few
-# tens of milliseconds, and rcS is sequential so the wait is dead time.
-# STARTUP_TIMEOUT_TICKS x 0.05s bounds the wait at the original ~1s budget.
-STARTUP_TIMEOUT_TICKS=${STARTUP_TIMEOUT_TICKS:-20}
+# tens of milliseconds, and rcS is sequential so the wait is dead time. The
+# budget is generous (60 x 0.05s = 3s) because the loop exits as soon as the
+# daemon is up — dnsmasq is also launched via a shell that execs into it, so
+# the first polls legitimately see the wrapper rather than dnsmasq.
+STARTUP_TIMEOUT_TICKS=${STARTUP_TIMEOUT_TICKS:-60}
 
 wait_until_running() {
 	i=0
