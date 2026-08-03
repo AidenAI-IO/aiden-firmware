@@ -27,16 +27,6 @@ read_pointer_mode() {
 	esac
 }
 
-reenumerate_composite() {
-	# iOS can retain a stale external-keyboard session when the phone is already
-	# attached during boot. Force a clean host-visible reconnect after the final
-	# HID descriptors are bound.
-	echo "Re-enumerating Aiden USB composite gadget..."
-	echo "" > "$GADGET_DIR/UDC" 2>/dev/null
-	sleep 1
-	echo "$UDC" > "$GADGET_DIR/UDC"
-}
-
 start() {
 	echo "Setting up Aiden USB composite gadget (HID + ECM)..."
 
@@ -100,9 +90,9 @@ start() {
 	echo 500 > "$GADGET_DIR/configs/c.1/MaxPower"
 
 	# Keyboard HID function (8-byte boot keyboard report).
-	# Keep the boot subclass/protocol for broad host compatibility. iOS modifier
-	# failures are caused by stale host-side HID sessions; force a clean
-	# re-enumeration after binding instead of changing the advertised protocol.
+	# Keep the boot subclass/protocol for broad host compatibility. Bind the
+	# completed composite only once: a same-identity soft disconnect/reconnect can
+	# leave iOS with mismatched keyboard and AssistiveTouch pointer session state.
 	mkdir -p "$GADGET_DIR/functions/hid.usb0"
 	echo 1 > "$GADGET_DIR/functions/hid.usb0/protocol"
 	echo 1 > "$GADGET_DIR/functions/hid.usb0/subclass"
@@ -149,8 +139,6 @@ start() {
 	ln -s "$GADGET_DIR/functions/ecm.usb0" "$GADGET_DIR/configs/c.1/ecm.usb0" 2>/dev/null
 
 	echo "$UDC" > "$GADGET_DIR/UDC"
-	sleep 1
-	reenumerate_composite
 
 	# Bring up usb0 with a static address once the kernel netdev appears.
 	for i in $(seq 1 20); do

@@ -23,7 +23,7 @@ This script will:
 3. Load the `libcomposite` module;
 4. Call `example_usb_hid setup composite`.
 
-On the firmware image, `overlay/etc/init.d/S49usbhid` is the authoritative startup path. It also brings up `usb0` at `192.168.42.1` for the config page and local USB networking.
+On the firmware image, `overlay/etc/init.d/S49usbhid` is the authoritative startup path. It also brings up `usb0` at `192.168.42.1` for the config page and local USB networking. The completed keyboard + pointer + Consumer Control + ECM composite is bound to the UDC exactly once. Do not add a same-identity startup unbind/rebind: while the cable remains attached, iOS can retain the physical USB session but rebuild the HID interfaces with inconsistent external-keyboard and AssistiveTouch pointer state, leaving the cursor operational while the on-screen keyboard stays suppressed. A physical unplug/replug fully tears down that host session, which is why it can recover the symptom.
 
 ## example_usb_hid Usage
 
