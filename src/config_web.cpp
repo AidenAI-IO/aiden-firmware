@@ -3548,8 +3548,8 @@ bool schedule_ota_update(std::string* error) {
     return true;
 }
 
-void schedule_poweroff() {
-    int rc = system("(PATH=/sbin:/bin:/usr/sbin:/usr/bin; sync; sleep 1; poweroff) >/dev/null 2>&1 &");
+void schedule_reboot() {
+    int rc = system("(PATH=/sbin:/bin:/usr/sbin:/usr/bin; sync; sleep 1; reboot) >/dev/null 2>&1 &");
     (void)rc;
 }
 
@@ -5844,13 +5844,13 @@ ApiResponse handle_put_config_locale(const Options& options, const std::string& 
     return make_json_ok(response);
 }
 
-ApiResponse handle_post_poweroff() {
-    schedule_poweroff();
+ApiResponse handle_post_reboot() {
+    schedule_reboot();
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "message", "poweroff scheduled");
-    cJSON_AddBoolToObject(response, "poweroff_scheduled", 1);
+    cJSON_AddStringToObject(response, "message", "reboot scheduled");
+    cJSON_AddBoolToObject(response, "reboot_scheduled", 1);
     return make_json_ok(response);
 }
 
@@ -6926,8 +6926,8 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return handle_post_system_env(options, request.body);
     }
 
-    if (request.method == "POST" && request.path == "/api/poweroff") {
-        return handle_post_poweroff();
+    if (request.method == "POST" && request.path == "/api/reboot") {
+        return handle_post_reboot();
     }
 
     if (request.method == "POST" && request.path == "/api/wifi/scan") {

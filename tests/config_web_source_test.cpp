@@ -1167,7 +1167,7 @@ TEST_CASE("config web hides successful forget details but reports runtime apply 
     const std::string::size_type forget_start =
         html.find("async function forgetWifi(ssid)");
     const std::string::size_type forget_end =
-        html.find("async function poweroffDevice()", forget_start);
+        html.find("async function rebootDevice()", forget_start);
     REQUIRE(forget_start != std::string::npos);
     REQUIRE(forget_end != std::string::npos);
     const std::string forget_source =
@@ -1779,8 +1779,8 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("usbhid_restart_scheduled") != std::string::npos);
     CHECK(source.find("usbhid_restart_required") != std::string::npos);
     CHECK(source.find("reboot_required") != std::string::npos);
-    CHECK(source.find("schedule_poweroff") != std::string::npos);
-    CHECK(source.find("\"/api/poweroff\"") != std::string::npos);
+    CHECK(source.find("schedule_reboot") != std::string::npos);
+    CHECK(source.find("\"/api/reboot\"") != std::string::npos);
     CHECK(source.find("config-check --stdin --format=json") != std::string::npos);
     CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);
     // config metadata endpoint: agent CLI is the single source of field metadata.
@@ -1795,10 +1795,10 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(html.find("hid_pointer_mode") == std::string::npos);
     CHECK(html.find("hid_keyboard_layout") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_keyboard_layout\\\"") != std::string::npos);
-    CHECK(html.find("device_type requires power off and restart to take effect") != std::string::npos);
+    CHECK(html.find("device_type requires reboot to take effect") != std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
-    CHECK(html.find("/api/poweroff") != std::string::npos);
-    CHECK(html.find("poweroff command sent") != std::string::npos);
+    CHECK(html.find("/api/reboot") != std::string::npos);
+    CHECK(html.find("reboot command sent") != std::string::npos);
 }
 
 TEST_CASE("config web usbhid init script does not orchestrate dependent service restarts") {
@@ -1819,7 +1819,7 @@ TEST_CASE("config web usbhid init script does not orchestrate dependent service 
     CHECK(script.find("AIDEN_USBHID_ALLOW_HOT_REBIND") == std::string::npos);
     CHECK(script.find("force-restart") == std::string::npos);
     CHECK(script.find("USB HID hot restart is unsafe") != std::string::npos);
-    CHECK(script.find("use poweroff") != std::string::npos);
+    CHECK(script.find("use reboot") != std::string::npos);
     CHECK(script.find("restart|reload) restart") != std::string::npos);
     CHECK(script.find("restart|reload) stop; start") == std::string::npos);
     CHECK(script.find("[device]") != std::string::npos);

@@ -195,7 +195,7 @@ stop() {
 }
 
 restart() {
-	echo "USB HID hot restart is unsafe; use poweroff and reconnect power to apply changes." >&2
+	echo "USB HID hot restart is unsafe; use reboot to apply changes." >&2
 	exit 1
 }
 

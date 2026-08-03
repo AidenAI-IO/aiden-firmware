@@ -359,7 +359,7 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 
 | Field         | Default | Description |
 | ------------- | ------- | ----------- |
-| `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Changing it requires a power off and restart so USB descriptors are re-enumerated. |
+| `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Changing it requires a reboot so USB descriptors are re-enumerated. |
 
 ## `[hid]`
 
