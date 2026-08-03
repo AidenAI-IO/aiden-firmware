@@ -2448,29 +2448,18 @@ ApiResponse handle_stt_test_stop(const Options& options, const std::string& body
     return proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
 }
 
-// Shell script that unbinds and rebinds the USB gadget UDC to force the host
-// to re-enumerate the device. Fails loudly if either transition does not
-// succeed so callers can distinguish a real re-enumeration from a no-op.
+// Route USB session refresh through the watchdog so iOS absolute-pointer mode
+// uses the pointer-free -> normal profile transition instead of rebinding an
+// identical keyboard + pointer composite. Other modes keep the watchdog's
+// direct composite reset fallback.
 static const char* kUsbReenumerateScript =
     "#!/bin/sh\n"
-    "UDC=$(ls /sys/class/udc/ 2>/dev/null | head -n1)\n"
-    "GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid\n"
-    "if [ -z \"$UDC\" ] || [ ! -d \"$GADGET_DIR\" ]; then\n"
-    "  echo 'Error: UDC device or gadget directory not found' >&2\n"
+    "REFRESH_CONTROL=/etc/init.d/S60usb_ecm_watchdog\n"
+    "if [ ! -x \"$REFRESH_CONTROL\" ]; then\n"
+    "  echo 'Error: USB session refresh controller not found' >&2\n"
     "  exit 1\n"
     "fi\n"
-    "# Unbind\n"
-    "if ! echo \"\" > \"$GADGET_DIR/UDC\" 2>/dev/null; then\n"
-    "  echo 'Error: Failed to unbind UDC' >&2\n"
-    "  exit 2\n"
-    "fi\n"
-    "sleep 1\n"
-    "# Rebind\n"
-    "if ! echo \"$UDC\" > \"$GADGET_DIR/UDC\" 2>/dev/null; then\n"
-    "  echo 'Error: Failed to rebind UDC' >&2\n"
-    "  exit 3\n"
-    "fi\n"
-    "echo 'USB re-enumeration completed successfully'\n";
+    "exec \"$REFRESH_CONTROL\" refresh\n";
 
 // Kick off USB re-enumeration without blocking the caller. Used from the
 // config-save path, where the agent restart is also backgrounded: the toggle
@@ -2491,7 +2480,7 @@ void schedule_usb_reenumerate(int delay_seconds) {
 }
 
 ApiResponse handle_usb_reenumerate(const Options& options) {
-    CommandResult result = run_command_with_stdin("sh -s", kUsbReenumerateScript, 5000);
+    CommandResult result = run_command_with_stdin("sh -s", kUsbReenumerateScript, 15000);
 
     if (result.exit_code != 0) {
         std::string error_msg = result.output.empty()

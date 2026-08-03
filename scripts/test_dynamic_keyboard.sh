@@ -65,6 +65,17 @@ grep -Fq 'mv -f "$grace_tmp" "$WATCHDOG_GRACE_FILE"' "$CONTROL_SCRIPT" ||
 	fail "profile switching must refresh watchdog grace before and after re-enumeration"
 grep -Fq 'wait_for_configuration "$udc"' "$CONTROL_SCRIPT" ||
 	fail "profile switching must wait for iOS to configure the gadget"
+grep -Fq 'cycle) cycle_profiles ;;' "$CONTROL_SCRIPT" ||
+	fail "profile controller must expose an atomic restore-oriented cycle command"
+cycle_branch=$(awk '/cycle_profiles\(\)/,/^}/' "$CONTROL_SCRIPT")
+printf '%s\n' "$cycle_branch" | grep -Fq '"$0" isolate' ||
+	fail "profile cycle must enter the pointer-free profile first"
+printf '%s\n' "$cycle_branch" | grep -Fq '"$0" restore' ||
+	fail "profile cycle must always attempt to restore the normal profile"
+if [ "$(printf '%s\n' "$cycle_branch" | grep -n '"$0" isolate' | cut -d: -f1)" -ge \
+	 "$(printf '%s\n' "$cycle_branch" | grep -n '"$0" restore' | cut -d: -f1)" ]; then
+	fail "profile cycle must isolate before restoring"
+fi
 
 normal_pid=$(sed -n 's/^DYNAMIC_KEYBOARD_NORMAL_ID_PRODUCT=//p' "$CONF_FILE")
 isolated_pid=$(sed -n 's/^DYNAMIC_KEYBOARD_ISOLATED_ID_PRODUCT=//p' "$CONF_FILE")

@@ -97,7 +97,7 @@ When starting with the firmware, the main service relationships are as follows:
 1. `S43wlan_guard` monitors WLAN connectivity and recovers automatically;
 2. `S49ntp` starts `ntpd` in daemon mode, using direct IP connection to NTP server (bypassing DNS startup order);
 3. `S50ntp_watchdog` periodically checks clock sync status, triggers `S49ntp step` to force sync when not synced, exits after sync;
-4. `S49usbhid` / `S50usbdevice` configures USB gadget;
+4. `S49usbhid` / `S50usbdevice` configures the USB gadget, then `S50ios_hid_session` establishes the iOS pointer-free -> normal AssistiveTouch session when absolute-pointer mode is active;
 5. `S52frame_service` exclusively uses `/dev/video0` and provides screenshot/frame service;
 6. `S53adb_server` waits 3 seconds, then runs `adb start-server` once so adb-based Android capture is ready;
 7. `S53audio_service` provides audio recording/playback service;

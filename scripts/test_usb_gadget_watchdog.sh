@@ -23,6 +23,15 @@ grep -Fq 'write_refresh_state()' "$WATCHDOG" ||
 grep -Fq 'reset_composite()' "$WATCHDOG" ||
     fail "watchdog must recover by resetting the composite gadget"
 
+grep -Fq 'IOS_SESSION_CONTROL=/etc/init.d/S50ios_hid_session' "$WATCHDOG" ||
+    fail "watchdog must route iOS session rebuilds through the pointer-free bootstrap"
+
+grep -Fq 'refresh_ios_hid_session()' "$WATCHDOG" ||
+    fail "watchdog must define the iOS pointer-free session refresh path"
+
+grep -Fq 'refresh_ios_hid_session "$reason"' "$WATCHDOG" ||
+    fail "watchdog resets must use the iOS session refresh when available"
+
 grep -Fq 'GADGET_SWITCH_LOCK_DIR=/run/aiden_dynamic_keyboard.lock' "$WATCHDOG" ||
     fail "watchdog and iOS keyboard isolation must share the gadget switch lock"
 
@@ -62,17 +71,14 @@ grep -Fq 'reset_composite "ECM stall"' "$WATCHDOG" ||
 grep -Fq 'UDC state changed:' "$WATCHDOG" ||
     fail "watchdog_main must track host UDC state transitions"
 
-grep -Fq 'watchdog started while UDC already configured; leaving HID session intact' "$WATCHDOG" ||
-    fail "watchdog_main must preserve an already configured HID session on startup"
+grep -Fq 'watchdog found an uninitialized iOS HID session; applying pointer-free bootstrap' "$WATCHDOG" ||
+    fail "watchdog startup must repair an iOS session missed by the boot service"
 
 grep -Fq 'UDC configured transition observed; leaving HID session intact' "$WATCHDOG" ||
     fail "watchdog_main must preserve healthy host-configured HID transitions"
 
-if grep -Fq 'configured_refresh_pending=1' "$WATCHDOG" ||
-    grep -Fq 'HOST_CONFIG_REFRESH_DELAY=' "$WATCHDOG" ||
-    grep -Fq 'reset_composite "host configured"' "$WATCHDOG"; then
-    fail "watchdog must not automatically refresh the composite gadget after healthy host configuration"
-fi
+grep -Fq 'reset_composite "host configured"' "$WATCHDOG" ||
+    fail "a newly attached iOS host session must receive the pointer-free bootstrap"
 
 grep -Fq 'refresh) reset_composite "manual refresh" ;;' "$WATCHDOG" ||
     fail "watchdog must expose a manual refresh command for stale HID sessions"

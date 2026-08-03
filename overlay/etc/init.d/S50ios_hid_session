@@ -1,0 +1,79 @@
+#!/bin/sh
+# Establish the iOS AssistiveTouch HID session after S49usbhid has safely
+# brought up the normal composite. The pointer-free -> normal transition makes
+# iOS reapply its on-screen-keyboard policy when the pointer appears.
+
+CONTROL=/oem/usr/bin/aiden-dynamic-keyboard
+AGENT_TOML=/userdata/agent/agent.toml
+UDC_STATE=/sys/class/udc/ffb00000.usb/state
+READY_FILE=/run/aiden_ios_hid_session.ready
+LOG_FILE=/var/log/aiden_ios_hid_session.log
+CONFIGURE_TIMEOUT_TENTHS=100
+
+log() {
+	printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+}
+
+read_pointer_mode() {
+	POINTER_MODE=absolute
+	[ -f "$AGENT_TOML" ] || return 0
+	line=$(grep -E '^[[:space:]]*pointer_mode[[:space:]]*=' "$AGENT_TOML" | tail -n1)
+	case "$line" in
+		*\"touchscreen\"*|*\'touchscreen\'*|*touchscreen*) POINTER_MODE=touchscreen ;;
+		*\"absolute\"*|*\'absolute\'*|*absolute*) POINTER_MODE=absolute ;;
+	esac
+}
+
+wait_for_configuration() {
+	i=0
+	while [ "$i" -lt "$CONFIGURE_TIMEOUT_TENTHS" ]; do
+		[ "$(cat "$UDC_STATE" 2>/dev/null)" = configured ] && return 0
+		i=$((i + 1))
+		sleep 0.1
+	done
+	return 1
+}
+
+refresh_session() {
+	require_configured=$1
+	read_pointer_mode
+	[ "$POINTER_MODE" = absolute ] || {
+		log "pointer_mode=$POINTER_MODE; iOS HID session bootstrap skipped"
+		return 0
+	}
+	[ -x "$CONTROL" ] || {
+		log "missing executable profile controller: $CONTROL"
+		return 1
+	}
+	if ! wait_for_configuration; then
+		log "UDC was not configured within timeout"
+		[ "$require_configured" -eq 0 ] && return 0
+		return 1
+	fi
+
+	log "starting pointer-free -> normal HID session refresh"
+	if "$CONTROL" cycle >> "$LOG_FILE" 2>&1; then
+		: > "$READY_FILE"
+		log "HID session refresh completed"
+		return 0
+	else
+		status=$?
+		log "HID session refresh failed with status $status"
+		return "$status"
+	fi
+}
+
+case "${1:-}" in
+	start) refresh_session 0 ;;
+	refresh) refresh_session 1 ;;
+	status)
+		if [ -f "$READY_FILE" ]; then
+			echo "ready"
+		else
+			echo "not-ready"
+			exit 1
+		fi
+		;;
+	stop) rm -f "$READY_FILE" ;;
+	*) echo "Usage: $0 {start|stop|refresh|status}" >&2; exit 1 ;;
+esac
