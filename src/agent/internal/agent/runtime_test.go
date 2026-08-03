@@ -490,6 +490,47 @@ func TestRuntimeRunStopsPointerModeMismatchContentBeforeRetryToolCall(t *testing
 	}
 }
 
+func TestRuntimeRunStopsPointerModeMismatchForBracketedDeviceTypeOnly(t *testing.T) {
+	stopMessage := `touch_gesture produced no visible screen change. The connected platform is Android but [device].device_type is configured for iOS. Stop operation here because the touch mode likely does not match the target.`
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponseWithContent("call_1", "touch_gesture", `{"type":"tap","point":{"x":500,"y":500}}`, stopMessage),
+		contentResponse("should not be used"),
+	}}
+	tool := &stubTool{
+		name:        "touch_gesture",
+		description: "Touch.",
+		output:      `{"screen_changed":false}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+			Device:      DeviceConfig{DeviceType: "iOS"},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"touch_gesture": tool}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "tap the screen",
+		DeviceEnvironment: &PhoneEnvironment{Platform: "android"},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(result.Output, `[device].device_type to "Android"`) {
+		t.Fatalf("output missing pointer mode guidance: %q", result.Output)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want stop before second model call", model.callCount)
+	}
+	if len(tool.inputs) != 0 {
+		t.Fatalf("touch_gesture calls = %d, want 0", len(tool.inputs))
+	}
+}
+
 func TestRuntimeRunDoesNotStopPointerModeMismatchContentForOtherTool(t *testing.T) {
 	stopMessage := `touch_gesture produced no visible screen change, and the connected platform is Android while [device].device_type derives hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch [device].device_type to "Android", restart the agent, and retry.`
 	model := &scriptedModel{responses: []*llms.ContentResponse{

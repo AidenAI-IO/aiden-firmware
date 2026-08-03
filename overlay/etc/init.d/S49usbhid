@@ -29,8 +29,15 @@ read_pointer_mode() {
 			print
 			exit
 		}
-	' "$AGENT_TOML" 2>/dev/null)
-	device_line_lc=$(printf '%s' "$device_line" | tr '[:upper:]' '[:lower:]')
+		' "$AGENT_TOML" 2>/dev/null)
+	device_line_lc=$(printf '%s' "$device_line" | awk '
+		{
+			sub(/^[^=]*=/, "")
+			sub(/[[:space:]]*#.*/, "")
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+			print
+		}
+	' | tr '[:upper:]' '[:lower:]')
 	case "$device_line_lc" in
 		*\"android\"*|*\'android\'*|*android*) POINTER_MODE=touchscreen; return ;;
 		*\"ios\"*|*\'ios\'*|*ios*|*\"macos\"*|*\'macos\'*|*macos*|*\"windows\"*|*\'windows\'*|*windows*|*\"linux\"*|*\'linux\'*|*linux*) POINTER_MODE=absolute; return ;;

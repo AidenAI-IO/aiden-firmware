@@ -1087,6 +1087,39 @@ TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only
     CHECK(saved_buffer.str().find("keyboard_layout = \"azerty\"") != std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config uses default_platform to infer legacy device type") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"agent\":{\"default_platform\":\"android\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[device]") != std::string::npos);
+    CHECK(saved.find("device_type = \"Android\"") != std::string::npos);
+    CHECK(saved.find("default_platform = \"android\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config device type change reports reboot message") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"device\":{\"device_type\":\"Android\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+    CHECK(resp.body.find("\"message\":\"config saved; USB HID device_type configuration changed; reboot required\"") != std::string::npos);
+    CHECK(resp.body.find("\"agent_restart_scheduled\":false") != std::string::npos);
+    CHECK(resp.body.find("\"usbhid_restart_required\":true") != std::string::npos);
+    CHECK(resp.body.find("\"reboot_required\":true") != std::string::npos);
+}
+
 TEST_CASE("config_web: POST /api/config omitting temperature clears a saved value") {
     // Regression test: update_model_from_json() applies JSON as a patch onto the
     // config pre-loaded from disk. Omitting the temperature key must clear the
@@ -2064,6 +2097,18 @@ TEST_CASE("config_web: POST /api/config rejects non-object termination_policy") 
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 400);
     CHECK(resp.body.find("termination_policy: expected object") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config rejects non-object device section") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"device\":123,"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("device: expected object") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config legacy wifi fields update saved networks") {

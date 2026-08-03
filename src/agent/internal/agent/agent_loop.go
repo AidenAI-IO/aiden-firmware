@@ -932,7 +932,9 @@ func (l *AgentLoop) touchPointerModeMismatchContentFinalAnswer(contentResp *llms
 		return ""
 	}
 	lower := strings.ToLower(content)
-	if !strings.Contains(lower, "hid.pointer_mode") && !strings.Contains(lower, "device.device_type") {
+	if !strings.Contains(lower, "hid.pointer_mode") &&
+		!strings.Contains(lower, "device.device_type") &&
+		!strings.Contains(lower, "[device].device_type") {
 		return ""
 	}
 	if !strings.Contains(lower, "stop operation here") && !strings.Contains(lower, "touch mode likely does not match") {

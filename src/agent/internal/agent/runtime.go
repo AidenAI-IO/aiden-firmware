@@ -452,7 +452,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	rt.screenState = screenState
 	rt.phoneBridge = NewPhoneBridge(logger)
-	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
 	rt.stateManager.RegisterUpdater(screenState)
 	rt.stateManager.RegisterUpdater(rt.phoneBridge)
 

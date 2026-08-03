@@ -403,10 +403,27 @@ std::string pointer_mode_for_device_type(const std::string& device_type) {
     return normalize_device_type(device_type) == "Android" ? "touchscreen" : "absolute";
 }
 
+std::string device_type_from_platform(const std::string& value) {
+    std::string platform = trim_copy(value);
+    for (size_t i = 0; i < platform.size(); ++i) {
+        platform[i] = static_cast<char>(tolower(static_cast<unsigned char>(platform[i])));
+    }
+    if (platform == "ios" || platform == "iphone" || platform == "ipad" || platform == "ipados") return "iOS";
+    if (platform == "android") return "Android";
+    if (platform == "macos" || platform == "mac" || platform == "darwin") return "macOS";
+    if (platform == "windows" || platform == "win") return "windows";
+    if (platform == "linux") return "linux";
+    return "";
+}
+
 std::string effective_device_type(const aiden::AgentToml& config) {
     std::string configured = trim_copy(config.device.device_type);
     if (!configured.empty()) {
         return normalize_device_type(configured);
+    }
+    std::string platform_device_type = device_type_from_platform(config.default_platform);
+    if (!platform_device_type.empty()) {
+        return platform_device_type;
     }
     return normalize_pointer_mode(config.hid.pointer_mode) == "touchscreen" ? "Android" : "iOS";
 }
@@ -1661,7 +1678,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model", "model_text", "tts", "stt", "audio", "audio_archive", "voice_notifications",
-        "log", "ota", "hid", "search", "telemetry", "termination_policy",
+        "log", "ota", "device", "hid", "search", "telemetry", "termination_policy",
         "live_activity", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
@@ -5738,7 +5755,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON_AddBoolToObject(response, "ok", 1);
     cJSON_AddStringToObject(response, "message",
                             usbhid_restart_scheduled
-                                ? "config saved; reboot required for usb hid device_type"
+                                ? "config saved; USB HID device_type configuration changed; reboot required"
                                 : (usb_reenumeration_scheduled
                                    ? "config saved; agent restarting and USB re-enumerating"
                                    : "config saved; agent restarting"));

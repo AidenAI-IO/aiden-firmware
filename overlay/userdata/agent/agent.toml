@@ -45,8 +45,9 @@ trigger_mode = "wakeup"
 
 # Target device configuration.
 # Android derives HID pointer_mode = "touchscreen"; iOS, macOS, windows, and linux derive "absolute".
+# Accepted device_type values: "iOS", "Android", "macOS", "windows", or "linux".
 [device]
-device_type = "iOS" # "iOS", "Android", "macOS", "windows", or "linux"
+device_type = "iOS"
 
 # Tiered loop guard and termination policy. Zero-valued numeric fields use defaults.
 [termination_policy]
