@@ -1,6 +1,7 @@
 package contextmanager
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
@@ -346,6 +348,65 @@ func TestContextManagerUsesShortTTLForSensitiveArtifact(t *testing.T) {
 	}
 	if got := metadata.ExpiresAt.Sub(metadata.CreatedAt); got != artifactSensitiveTTL {
 		t.Fatalf("sensitive TTL = %v, want %v", got, artifactSensitiveTTL)
+	}
+}
+
+func TestArtifactPathRecoverableRejectsUnsafeMetadataSidecars(t *testing.T) {
+	root := t.TempDir()
+	dataPath := filepath.Join(root, "tr_safe.data")
+	metadataPath := filepath.Join(root, "tr_safe.json")
+	if err := os.WriteFile(dataPath, []byte("artifact"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", dataPath, err)
+	}
+	validMetadata, err := json.Marshal(ArtifactMetadata{
+		MIMEType:  "text/plain",
+		Size:      int64(len("artifact")),
+		CreatedAt: time.Now().Add(-time.Minute),
+		ExpiresAt: time.Now().Add(time.Hour),
+		Complete:  true,
+	})
+	if err != nil {
+		t.Fatalf("Marshal metadata: %v", err)
+	}
+	if err := os.WriteFile(metadataPath, validMetadata, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", metadataPath, err)
+	}
+	if !ArtifactPathRecoverable(dataPath, time.Now()) {
+		t.Fatal("valid artifact metadata was rejected")
+	}
+
+	if err := os.Remove(metadataPath); err != nil {
+		t.Fatalf("Remove(%s): %v", metadataPath, err)
+	}
+	targetPath := filepath.Join(root, "target.json")
+	if err := os.WriteFile(targetPath, validMetadata, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", targetPath, err)
+	}
+	if err := os.Symlink(targetPath, metadataPath); err == nil {
+		if ArtifactPathRecoverable(dataPath, time.Now()) {
+			t.Fatal("symlink metadata sidecar was accepted")
+		}
+		if err := os.Remove(metadataPath); err != nil {
+			t.Fatalf("Remove symlink(%s): %v", metadataPath, err)
+		}
+	}
+
+	if err := os.Mkdir(metadataPath, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", metadataPath, err)
+	}
+	if ArtifactPathRecoverable(dataPath, time.Now()) {
+		t.Fatal("non-regular metadata sidecar was accepted")
+	}
+	if err := os.Remove(metadataPath); err != nil {
+		t.Fatalf("Remove directory(%s): %v", metadataPath, err)
+	}
+
+	oversized := bytes.Repeat([]byte("x"), artifactMetadataMaxBytes+1)
+	if err := os.WriteFile(metadataPath, oversized, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", metadataPath, err)
+	}
+	if ArtifactPathRecoverable(dataPath, time.Now()) {
+		t.Fatal("oversized metadata sidecar was accepted")
 	}
 }
 

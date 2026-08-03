@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,8 +17,9 @@ import (
 )
 
 const (
-	ArtifactSingleMaxBytes = 8 * 1024 * 1024
-	ArtifactScopeMaxBytes  = 32 * 1024 * 1024
+	ArtifactSingleMaxBytes   = 8 * 1024 * 1024
+	ArtifactScopeMaxBytes    = 32 * 1024 * 1024
+	artifactMetadataMaxBytes = 64 * 1024
 
 	artifactDefaultTTL   = 7 * 24 * time.Hour
 	artifactSensitiveTTL = time.Hour
@@ -65,8 +67,21 @@ func ArtifactPathRecoverable(dataPath string, now time.Time) bool {
 		return false
 	}
 	metadataPath := strings.TrimSuffix(dataPath, ".data") + ".json"
-	data, err := os.ReadFile(metadataPath)
+	pathInfo, err := os.Lstat(metadataPath)
+	if err != nil || !pathInfo.Mode().IsRegular() || pathInfo.Size() > artifactMetadataMaxBytes {
+		return false
+	}
+	file, err := os.Open(metadataPath)
 	if err != nil {
+		return false
+	}
+	defer file.Close()
+	openInfo, err := file.Stat()
+	if err != nil || !openInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openInfo) || openInfo.Size() > artifactMetadataMaxBytes {
+		return false
+	}
+	data, err := io.ReadAll(io.LimitReader(file, artifactMetadataMaxBytes+1))
+	if err != nil || len(data) > artifactMetadataMaxBytes {
 		return false
 	}
 	var metadata ArtifactMetadata
