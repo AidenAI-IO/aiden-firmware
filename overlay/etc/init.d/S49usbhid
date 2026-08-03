@@ -15,6 +15,16 @@ USB0_NETMASK=255.255.255.0
 ECM_HOST_MAC=02:aa:bb:cc:dd:01
 ECM_DEV_MAC=02:aa:bb:cc:dd:02
 
+BOOT_TIMELINE_HELPER=${BOOT_TIMELINE_HELPER:-/etc/aiden_boot_timeline.sh}
+
+# This script holds several fixed sleeps and two polling waits, so it is worth
+# timing from the inside rather than only as a whole.
+mark() {
+	[ -x "$BOOT_TIMELINE_HELPER" ] || return 0
+	"$BOOT_TIMELINE_HELPER" mark "$@" 2>/dev/null || true
+	return 0
+}
+
 read_pointer_mode() {
 	POINTER_MODE=absolute
 	if [ ! -f "$AGENT_TOML" ]; then
@@ -59,15 +69,18 @@ start() {
 		return
 	fi
 
+	mark usbhid:udc-wait-begin
 	for i in $(seq 1 30); do
 		UDC=$(ls /sys/class/udc/ 2>/dev/null | head -n1)
 		[ -n "$UDC" ] && break
 		sleep 1
 	done
 	if [ -z "$UDC" ]; then
+		mark usbhid:udc-wait-timeout
 		echo "No UDC found"
 		return
 	fi
+	mark usbhid:udc-ready
 
 	mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
 	modprobe dwc2 2>/dev/null
@@ -75,6 +88,7 @@ start() {
 	modprobe usb_f_hid 2>/dev/null
 	modprobe usb_f_ecm 2>/dev/null
 	sleep 1
+	mark usbhid:modules-loaded
 
 	# Clean up stale instance
 	if [ -d "$GADGET_DIR" ]; then
@@ -162,6 +176,7 @@ start() {
 	ln -s "$GADGET_DIR/functions/ecm.usb0" "$GADGET_DIR/configs/c.1/ecm.usb0" 2>/dev/null
 
 	echo "$UDC" > "$GADGET_DIR/UDC"
+	mark usbhid:udc-bound
 
 	# Bring up usb0 with a static address once the kernel netdev appears.
 	for i in $(seq 1 20); do
@@ -170,11 +185,13 @@ start() {
 	done
 	if [ -d /sys/class/net/usb0 ]; then
 		if ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up; then
+			mark usbhid:usb0-up
 			echo "usb0 up at $USB0_ADDR/$USB0_NETMASK"
 		else
 			echo "usb0 ifconfig failed"
 		fi
 	else
+		mark usbhid:usb0-missing
 		echo "usb0 did not appear; ECM may not be bound"
 	fi
 

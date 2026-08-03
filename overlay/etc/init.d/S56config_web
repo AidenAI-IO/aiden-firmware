@@ -9,11 +9,18 @@ CONFIG_DIR=${CONFIG_DIR:-/userdata/agent}
 WIFI_CONFIG_PATH=/userdata/wpa_supplicant.conf
 SYSTEM_ENV_PATH=${SYSTEM_ENV_PATH:-/userdata/system/env}
 BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
+BOOT_TIMELINE_HELPER=${BOOT_TIMELINE_HELPER:-/etc/aiden_boot_timeline.sh}
 
 if [ -f "$BOOT_CONF" ]; then
     . "$BOOT_CONF"
 fi
 CONFIG_PATH=${CONFIG_PATH:-$CONFIG_DIR/agent.toml}
+
+mark() {
+    [ -x "$BOOT_TIMELINE_HELPER" ] || return 0
+    "$BOOT_TIMELINE_HELPER" mark "$@" 2>/dev/null || true
+    return 0
+}
 
 is_running() {
     pid="$1"
@@ -66,6 +73,9 @@ start() {
         return 1
     fi
 
+    # Milestone: http://192.168.42.1 (the settings portal) is now accepting
+    # connections. This is one of the two numbers users actually wait on.
+    mark config_web:listening
     echo "Started config_web (pid $pid)"
 }
 
