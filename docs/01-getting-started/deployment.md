@@ -6,9 +6,6 @@ The recommended production deployment method is to build or download a complete 
 
 ```text
 /oem/usr/bin/                  # Application binaries
-/usr/bin/fq                    # Structured/binary data query tool
-/usr/bin/yq                    # YAML/JSON query tool
-/usr/bin/rg                    # Recursive text search tool
 /etc/init.d/S43wlan_guard      # WLAN connectivity guard
 /etc/init.d/S49ntp             # ntpd daemon
 /etc/init.d/S49usbhid          # USB HID gadget initialization

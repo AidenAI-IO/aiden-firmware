@@ -7,14 +7,16 @@ if command -v go >/dev/null 2>&1; then
   host_goroot=$(go env GOROOT)
   host_goos=$(go env GOHOSTOS)
   host_goarch=$(go env GOHOSTARCH)
-  if [ -d "$host_goroot" ] && [ "$host_goos" = linux ] && [ "$host_goarch" = amd64 ]; then
+  host_goversion=$(go env GOVERSION)
+  if [ -d "$host_goroot" ] && [ "$host_goos" = linux ] && [ "$host_goarch" = amd64 ] && \
+     [ "$host_goversion" = go1.26.0 ]; then
     docker_go_args=(-v "${host_goroot}:/usr/local/go:ro")
   elif [ -x "$cached_linux_go_root/bin/go" ] && \
        [ -f "$cached_linux_go_root/VERSION" ] && \
        grep -qx 'go1.26.0' "$cached_linux_go_root/VERSION"; then
     docker_go_args=(-v "${cached_linux_go_root}:/usr/local/go:ro")
   else
-    echo "Host Go toolchain is not linux/amd64 and cached Go 1.26.0 is unavailable: $cached_linux_go_root" >&2
+    echo "Host Go toolchain must be go1.26.0 linux/amd64; detected $host_goversion $host_goos/$host_goarch, and cached Go 1.26.0 is unavailable: $cached_linux_go_root" >&2
     echo "Run ./build.sh once to provision the pinned Linux toolchain before building an image." >&2
     exit 1
   fi

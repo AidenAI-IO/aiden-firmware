@@ -68,4 +68,40 @@ if grep -Eq '^(GOPRIVATE|GONOPROXY|ALL_PROXY)=$' "$docker_args_log"; then
     exit 1
 fi
 
+# A host linux/amd64 Go installation must also match the pinned version. A
+# mismatched host toolchain should fail before Docker starts when no valid
+# cached toolchain is available.
+: > "$docker_args_log"
+mkdir -p "$test_dir/host-go"
+cat > "$test_dir/bin/go" <<EOF
+#!/bin/sh
+case "\$1:\$2" in
+    env:GOROOT) printf '%s\n' '$test_dir/host-go' ;;
+    env:GOHOSTOS) printf '%s\n' 'linux' ;;
+    env:GOHOSTARCH) printf '%s\n' 'amd64' ;;
+    env:GOVERSION) printf '%s\n' 'go1.25.0' ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$test_dir/bin/go"
+
+if (
+    cd "$test_dir"
+    AIDEN_GO_ROOT="$test_dir/missing-go-cache" \
+        PATH="$test_dir/bin:$PATH" \
+        "$BUILD_IMAGE_SH"
+) > "$test_dir/wrong-go.log" 2>&1; then
+    echo "build_image.sh accepted a mismatched host Go version" >&2
+    exit 1
+fi
+if [ -s "$docker_args_log" ]; then
+    echo "build_image.sh invoked Docker before rejecting a mismatched host Go version" >&2
+    exit 1
+fi
+if ! grep -Fq 'detected go1.25.0 linux/amd64' "$test_dir/wrong-go.log"; then
+    echo "build_image.sh did not report the mismatched host Go version clearly" >&2
+    cat "$test_dir/wrong-go.log" >&2
+    exit 1
+fi
+
 echo "build_image.sh Go proxy forwarding test passed"
