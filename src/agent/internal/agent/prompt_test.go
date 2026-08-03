@@ -74,8 +74,16 @@ func TestStateHookDoesNotInjectResponseLocale(t *testing.T) {
 	}
 
 	messages := manager.MessageListDump().Messages
-	if len(messages) != 1 || messages[0].Role != contextmanager.MessageRoleUser {
-		t.Fatalf("messages = %#v, want only the user message", messages)
+	if len(messages) != 2 ||
+		messages[0].Role != contextmanager.MessageRoleState ||
+		messages[1].Role != contextmanager.MessageRoleUser {
+		t.Fatalf("messages = %#v, want device state followed by the user message", messages)
+	}
+	if strings.Contains(messages[0].Content, "response locale") || strings.Contains(messages[0].Content, "en-US") {
+		t.Fatalf("state message injected response locale: %q", messages[0].Content)
+	}
+	if !strings.Contains(messages[0].Content, "device_type") {
+		t.Fatalf("state message missing device state: %q", messages[0].Content)
 	}
 }
 

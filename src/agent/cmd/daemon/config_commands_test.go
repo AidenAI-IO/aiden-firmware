@@ -192,8 +192,11 @@ llm_http_retention_days = 14
 	if dto.Model.Provider != "openai" || dto.Model.Model != "gpt-4o-mini" {
 		t.Fatalf("model overlay = provider %q model %q", dto.Model.Provider, dto.Model.Model)
 	}
+	if dto.Device.DeviceType != "Android" {
+		t.Fatalf("device.device_type = %q, want Android inferred from legacy hid.pointer_mode", dto.Device.DeviceType)
+	}
 	if dto.HID.PointerMode != "touchscreen" {
-		t.Fatalf("hid.pointer_mode = %q, want touchscreen", dto.HID.PointerMode)
+		t.Fatalf("derived hid.pointer_mode = %q, want touchscreen", dto.HID.PointerMode)
 	}
 	if dto.HID.KeyboardLayout != "azerty" {
 		t.Fatalf("hid.keyboard_layout = %q, want azerty", dto.HID.KeyboardLayout)
@@ -233,6 +236,9 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	if defaults.AudioArchive.Enabled || defaults.AudioArchive.StoragePath == "" ||
 		defaults.AudioArchive.MaxFiles == 0 || defaults.AudioArchive.MaxSizeMB == 0 {
 		t.Fatalf("audio archive zero config conversion = %+v, want disabled with path and retention defaults", defaults.AudioArchive)
+	}
+	if defaults.Device.DeviceType == "" {
+		t.Fatalf("device defaults were not populated: %+v", defaults.Device)
 	}
 	if defaults.HID.FrameSocket == "" || defaults.HID.KeyboardDevice == "" ||
 		defaults.HID.MouseDevice == "" || defaults.HID.AndroidKeyboardDevice == "" ||
@@ -651,7 +657,7 @@ func TestConfigCheck_UnlimitedMaxIterations(t *testing.T) {
 	}
 }
 
-func TestConfigCheck_InvalidPointerMode(t *testing.T) {
+func TestConfigCheck_InvalidDeviceType(t *testing.T) {
 	invalidConfig := agent.Config{
 		Model: agent.ModelConfig{
 			Provider: "openai",
@@ -660,14 +666,14 @@ func TestConfigCheck_InvalidPointerMode(t *testing.T) {
 		Search: agent.SearchConfig{
 			Provider: "duckduckgo",
 		},
-		HID: agent.HIDConfig{
-			PointerMode: "joystick", // Invalid: must be absolute or touchscreen
+		Device: agent.DeviceConfig{
+			DeviceType: "blackberry",
 		},
 	}
 
 	err := invalidConfig.Validate()
 	if err == nil {
-		t.Fatal("expected validation error for invalid hid.pointer_mode, got nil")
+		t.Fatal("expected validation error for invalid device.device_type, got nil")
 	}
 
 	errors := parseValidationErrors(err)
@@ -676,15 +682,15 @@ func TestConfigCheck_InvalidPointerMode(t *testing.T) {
 	}
 
 	errorMsg := errors[0].Message
-	if !strings.Contains(errorMsg, "pointer_mode") {
-		t.Errorf("expected error message to mention pointer_mode, got: %s", errorMsg)
+	if !strings.Contains(errorMsg, "device_type") {
+		t.Errorf("expected error message to mention device_type, got: %s", errorMsg)
 	}
 
-	t.Logf("Invalid pointer_mode error: %s", errorMsg)
+	t.Logf("Invalid device_type error: %s", errorMsg)
 }
 
-func TestConfigCheck_ValidPointerModes(t *testing.T) {
-	for _, mode := range []string{"", "absolute", "touchscreen", "Absolute", "TOUCHSCREEN"} {
+func TestConfigCheck_ValidDeviceTypes(t *testing.T) {
+	for _, deviceType := range []string{"", "iOS", "Android", "macOS", "windows", "linux", "ios", "ANDROID", "darwin"} {
 		validConfig := agent.Config{
 			Model: agent.ModelConfig{
 				Provider: "openai",
@@ -693,13 +699,13 @@ func TestConfigCheck_ValidPointerModes(t *testing.T) {
 			Search: agent.SearchConfig{
 				Provider: "duckduckgo",
 			},
-			HID: agent.HIDConfig{
-				PointerMode: mode,
+			Device: agent.DeviceConfig{
+				DeviceType: deviceType,
 			},
 		}
 
 		if err := validConfig.Validate(); err != nil {
-			t.Errorf("pointer_mode=%q should be valid, got: %v", mode, err)
+			t.Errorf("device_type=%q should be valid, got: %v", deviceType, err)
 		}
 	}
 }

@@ -452,6 +452,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	rt.screenState = screenState
 	rt.phoneBridge = NewPhoneBridge(logger)
+	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
 	rt.stateManager.RegisterUpdater(screenState)
 	rt.stateManager.RegisterUpdater(rt.phoneBridge)
 
@@ -551,6 +552,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, LoadMemoryExtractionConfig(cfg.ConfigDir), nil, WithMemoryPlaneLongTermStore(longTermStore))
 		rt.markInterruptedEpisodesBestEffort()
 	}
+	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
 	rt.sessionManager = newMemoryManagerSessionManager(memories, func() BoundaryEpisodeContext {
 		return recentEpisodeContext(rt.memoryPlane)
 	})
@@ -1007,7 +1009,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	// Apply default platform from config if not set by bridge app
 	deviceEnv := req.DeviceEnvironment
-	defaultPlatform := strings.TrimSpace(r.config.DefaultPlatform)
+	defaultPlatform := strings.TrimSpace(r.config.DevicePlatformOrDefault())
 	if deviceEnv == nil {
 		if defaultPlatform != "" {
 			deviceEnv = &PhoneEnvironment{Platform: defaultPlatform}
@@ -1117,7 +1119,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.SteerWaiter = req.SteerWaiter
 	agentLoop.TerminationPolicy = NewTerminationPolicy(r.config.TerminationPolicy)
 	agentLoop.DevicePlatform = platformFn()
-	agentLoop.PointerMode = r.config.HID.PointerModeOrDefault()
+	agentLoop.PointerMode = r.config.PointerModeOrDefault()
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
 	if err != nil {

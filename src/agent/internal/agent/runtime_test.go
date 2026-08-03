@@ -388,22 +388,22 @@ func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 
 func TestRuntimeRunStopsTouchGestureOnPointerModeMismatch(t *testing.T) {
 	tests := []struct {
-		name        string
-		platform    string
-		pointerMode string
-		want        string
+		name       string
+		platform   string
+		deviceType string
+		want       string
 	}{
 		{
-			name:        "android absolute",
-			platform:    "android",
-			pointerMode: "absolute",
-			want:        `hid.pointer_mode to "touchscreen"`,
+			name:       "android absolute",
+			platform:   "android",
+			deviceType: "iOS",
+			want:       `[device].device_type to "Android"`,
 		},
 		{
-			name:        "ios touchscreen",
-			platform:    "ios",
-			pointerMode: "touchscreen",
-			want:        `hid.pointer_mode to "absolute"`,
+			name:       "ios touchscreen",
+			platform:   "ios",
+			deviceType: "Android",
+			want:       `[device].device_type to "iOS"`,
 		},
 	}
 	for _, tc := range tests {
@@ -416,10 +416,9 @@ func TestRuntimeRunStopsTouchGestureOnPointerModeMismatch(t *testing.T) {
 			}
 			runtime := NewRuntimeWithDeps(
 				withTestConfigDir(t, Config{
-					Model:           ModelConfig{Provider: "fake"},
-					Instruction:     "Use tools.",
-					DefaultPlatform: tc.platform,
-					HID:             HIDConfig{PointerMode: tc.pointerMode},
+					Model:       ModelConfig{Provider: "fake"},
+					Instruction: "Use tools.",
+					Device:      DeviceConfig{DeviceType: tc.deviceType},
 				}),
 				&testModelResolver{model: model},
 				NewMemoryManager(""),
@@ -427,7 +426,10 @@ func TestRuntimeRunStopsTouchGestureOnPointerModeMismatch(t *testing.T) {
 				NewSkillIndex(),
 			)
 
-			result, err := runtime.Run(context.Background(), RunRequest{Input: "tap the screen"})
+			result, err := runtime.Run(context.Background(), RunRequest{
+				Input:             "tap the screen",
+				DeviceEnvironment: &PhoneEnvironment{Platform: tc.platform},
+			})
 			if err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
@@ -448,7 +450,7 @@ func TestRuntimeRunStopsTouchGestureOnPointerModeMismatch(t *testing.T) {
 }
 
 func TestRuntimeRunStopsPointerModeMismatchContentBeforeRetryToolCall(t *testing.T) {
-	stopMessage := `touch_gesture produced no visible screen change, and the device is configured as Android with hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch hid.pointer_mode to "touchscreen", restart the agent, and retry.`
+	stopMessage := `touch_gesture produced no visible screen change, and the connected platform is Android while [device].device_type derives hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch [device].device_type to "Android", restart the agent, and retry.`
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		toolCallResponseWithContent("call_1", "touch_gesture", `{"type":"long_press","point":{"x":500,"y":500}}`, stopMessage),
 		contentResponse("should not be used"),
@@ -460,10 +462,9 @@ func TestRuntimeRunStopsPointerModeMismatchContentBeforeRetryToolCall(t *testing
 	}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{
-			Model:           ModelConfig{Provider: "fake"},
-			Instruction:     "Use tools.",
-			DefaultPlatform: "android",
-			HID:             HIDConfig{PointerMode: "absolute"},
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+			Device:      DeviceConfig{DeviceType: "iOS"},
 		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
@@ -471,7 +472,10 @@ func TestRuntimeRunStopsPointerModeMismatchContentBeforeRetryToolCall(t *testing
 		NewSkillIndex(),
 	)
 
-	result, err := runtime.Run(context.Background(), RunRequest{Input: "tap the screen"})
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "tap the screen",
+		DeviceEnvironment: &PhoneEnvironment{Platform: "android"},
+	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -487,7 +491,7 @@ func TestRuntimeRunStopsPointerModeMismatchContentBeforeRetryToolCall(t *testing
 }
 
 func TestRuntimeRunDoesNotStopPointerModeMismatchContentForOtherTool(t *testing.T) {
-	stopMessage := `touch_gesture produced no visible screen change, and the device is configured as Android with hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch hid.pointer_mode to "touchscreen", restart the agent, and retry.`
+	stopMessage := `touch_gesture produced no visible screen change, and the connected platform is Android while [device].device_type derives hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch [device].device_type to "Android", restart the agent, and retry.`
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		toolCallResponseWithContent("call_1", "screenshot", `{}`, stopMessage),
 		contentResponse("continued after screenshot"),
@@ -499,10 +503,9 @@ func TestRuntimeRunDoesNotStopPointerModeMismatchContentForOtherTool(t *testing.
 	}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{
-			Model:           ModelConfig{Provider: "fake"},
-			Instruction:     "Use tools.",
-			DefaultPlatform: "android",
-			HID:             HIDConfig{PointerMode: "absolute"},
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+			Device:      DeviceConfig{DeviceType: "iOS"},
 		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
@@ -510,7 +513,10 @@ func TestRuntimeRunDoesNotStopPointerModeMismatchContentForOtherTool(t *testing.
 		NewSkillIndex(),
 	)
 
-	result, err := runtime.Run(context.Background(), RunRequest{Input: "take a screenshot"})
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "take a screenshot",
+		DeviceEnvironment: &PhoneEnvironment{Platform: "android"},
+	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -534,10 +540,9 @@ func TestRuntimeRunContinuesTouchGestureWhenPointerModeMatches(t *testing.T) {
 	}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{
-			Model:           ModelConfig{Provider: "fake"},
-			Instruction:     "Use tools.",
-			DefaultPlatform: "android",
-			HID:             HIDConfig{PointerMode: "touchscreen"},
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+			Device:      DeviceConfig{DeviceType: "Android"},
 		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
@@ -545,7 +550,10 @@ func TestRuntimeRunContinuesTouchGestureWhenPointerModeMatches(t *testing.T) {
 		NewSkillIndex(),
 	)
 
-	result, err := runtime.Run(context.Background(), RunRequest{Input: "tap the screen"})
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "tap the screen",
+		DeviceEnvironment: &PhoneEnvironment{Platform: "android"},
+	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}

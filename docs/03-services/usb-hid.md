@@ -84,6 +84,9 @@ sudo ./build/bin/example_usb_hid cleanup
 ## Agent HID Configuration
 
 ```toml
+[device]
+device_type = "iOS"
+
 [hid]
 keyboard_device = "/dev/hidg0"
 keyboard_layout = "qwerty"
@@ -93,12 +96,12 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
 The firmware also binds `hid.usb2` as `/dev/hidg2`. This second keyboard-like
-interface advertises Consumer Control usages. In `pointer_mode = "touchscreen"`
-(Android mode), it is used for Android extension keys such as Back, Home, App
-Switch, Search, Power, and Volume. In `pointer_mode = "absolute"` (iOS cursor
-mode), it is exposed as a smaller bitmap media-key interface that advertises
-only volume mute/up/down, media playback controls, screenshot, and brightness
-up/down.
+interface advertises Consumer Control usages. When `[device].device_type =
+"Android"` derives `pointer_mode = "touchscreen"`, it is used for Android
+extension keys such as Back, Home, App Switch, Search, Power, and Volume. Other
+device types derive `pointer_mode = "absolute"` and expose a smaller bitmap
+media-key interface that advertises only volume mute/up/down, media playback
+controls, screenshot, and brightness up/down.
 
 Built-in Agent tools:
 
@@ -131,7 +134,7 @@ On iOS, AssistiveTouch can make modifier routing unstable when an external
 keyboard and pointer are advertised by the same USB composite. Plain key input
 may work while shortcuts such as `Cmd+A` or `Cmd+V` are ignored.
 
-When `hid.pointer_mode = "absolute"`, firmware builds that include
+When `[device].device_type` derives `pointer_mode = "absolute"`, firmware builds that include
 `/oem/usr/bin/aiden-dynamic-keyboard` automatically isolate keyboard actions
 whose HID reports contain Ctrl, Shift, Option/Alt, or Cmd/Meta. This includes
 `keyboard_text` values containing uppercase letters or symbols that require

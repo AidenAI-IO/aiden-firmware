@@ -43,6 +43,11 @@ trigger_mode = "wakeup"
 # voice_progress_speech_enabled = true
 # voice_max_response_tokens = 300
 
+# Target device configuration.
+# Android derives HID pointer_mode = "touchscreen"; iOS, macOS, windows, and linux derive "absolute".
+[device]
+device_type = "iOS" # "iOS", "Android", "macOS", "windows", or "linux"
+
 # Tiered loop guard and termination policy. Zero-valued numeric fields use defaults.
 [termination_policy]
 # enabled = true
@@ -192,8 +197,6 @@ speed = 1.0                   # Speech speed: 0.5 - 2.0
 # mouse_device = "/dev/hidg1"
 # android_keyboard_device = "/dev/hidg2"  # hid.usb2 Consumer Control keys; Android nav keys in touchscreen mode, media/volume/brightness/screenshot keys in absolute mode
 # frame_socket = "/run/frame_service/frame_service.sock"
-# pointer_mode = "absolute"     # default, iOS AssistiveTouch / absolute mouse
-# pointer_mode = "touchscreen"  # Android HID touch screen / digitizer + full hid.usb2 Android extension keys
 # input_backend = "hid"         # "hid" writes USB HID reports; "adb" uses adb shell input for Android taps/keys/text
 
 # Web search tool configuration

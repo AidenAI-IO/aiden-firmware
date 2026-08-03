@@ -952,8 +952,8 @@ TEST_CASE("config web renders finite choice fields as selects") {
         "tts_provider",
         "tts_speed",
         "stt_provider",
+        "device_device_type",
         "hid_keyboard_layout",
-        "hid_pointer_mode",
         "search_provider",
         "telemetry_provider",
         NULL,
@@ -1766,6 +1766,9 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     toml_source_buffer << toml_source_in.rdbuf();
     const std::string toml_source = toml_source_buffer.str();
 
+    CHECK(toml_header.find("device_type") != std::string::npos);
+    CHECK(toml_source.find("\"device_type\"") != std::string::npos);
+    CHECK(source.find("\"device_type\"") != std::string::npos);
     CHECK(toml_header.find("pointer_mode") != std::string::npos);
     CHECK(toml_source.find("\"pointer_mode\"") != std::string::npos);
     CHECK(toml_header.find("keyboard_layout") != std::string::npos);
@@ -1787,11 +1790,12 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("cannot load config defaults") == std::string::npos);
     CHECK(source.find("\"/api/config/meta\"") != std::string::npos);
     CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
-    CHECK(html.find("hid_pointer_mode") != std::string::npos);
-    CHECK(html.find("<select id=\\\"hid_pointer_mode\\\"") != std::string::npos);
+    CHECK(html.find("device_device_type") != std::string::npos);
+    CHECK(html.find("<select id=\\\"device_device_type\\\"") != std::string::npos);
+    CHECK(html.find("hid_pointer_mode") == std::string::npos);
     CHECK(html.find("hid_keyboard_layout") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_keyboard_layout\\\"") != std::string::npos);
-    CHECK(html.find("pointer_mode requires power off and restart to take effect") != std::string::npos);
+    CHECK(html.find("device_type requires power off and restart to take effect") != std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
     CHECK(html.find("/api/poweroff") != std::string::npos);
     CHECK(html.find("poweroff command sent") != std::string::npos);
@@ -1818,6 +1822,8 @@ TEST_CASE("config web usbhid init script does not orchestrate dependent service 
     CHECK(script.find("use poweroff") != std::string::npos);
     CHECK(script.find("restart|reload) restart") != std::string::npos);
     CHECK(script.find("restart|reload) stop; start") == std::string::npos);
+    CHECK(script.find("[device]") != std::string::npos);
+    CHECK(script.find("device_type") != std::string::npos);
 }
 
 TEST_CASE("config web resolved config validation keeps required fields and type guards") {
