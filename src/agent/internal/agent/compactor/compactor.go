@@ -182,8 +182,9 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	}
 	// assemble
 	newMessageList := append(append([]contextmanager.Message(nil), heads...), contextmanager.Message{
-		Role:    contextmanager.MessageRoleUser,
-		Content: c.formatSummary(summary, recoverableResults),
+		Role:                   contextmanager.MessageRoleUser,
+		Content:                c.formatSummary(summary, recoverableResults),
+		RecoverableToolResults: append([]contextmanager.RecoverableToolResult(nil), recoverableResults...),
 	})
 	newMessageList = append(newMessageList, tails...)
 	c.lastStats.TokensAfter = estimateMessageListTokenUsage(newMessageList)
@@ -307,13 +308,6 @@ func compactHistoricalSummary(content string) string {
 	return fmt.Sprintf("%s\n... %d chars omitted ...\n%s", string(runes[:head]), len(runes)-maxRunes, string(runes[len(runes)-tail:]))
 }
 
-type recoverableToolResult struct {
-	ToolName string
-	Path     string
-	Complete bool
-	Summary  string
-}
-
 type recoveryRecord struct {
 	Tool         string `json:"tool"`
 	Path         string `json:"path"`
@@ -321,18 +315,18 @@ type recoveryRecord struct {
 	Summary      string `json:"summary,omitempty"`
 }
 
-func collectRecoverableToolResults(messageList []contextmanager.Message) []recoverableToolResult {
-	results := make([]recoverableToolResult, 0)
+func collectRecoverableToolResults(messageList []contextmanager.Message) []contextmanager.RecoverableToolResult {
+	results := make([]contextmanager.RecoverableToolResult, 0)
 	seen := make(map[string]struct{})
-	appendResult := func(result recoverableToolResult) {
-		result.Path = strings.TrimSpace(result.Path)
-		if result.Path == "" {
+	appendResult := func(result contextmanager.RecoverableToolResult) {
+		result.ArtifactPath = strings.TrimSpace(result.ArtifactPath)
+		if result.ArtifactPath == "" {
 			return
 		}
-		if _, exists := seen[result.Path]; exists {
+		if _, exists := seen[result.ArtifactPath]; exists {
 			return
 		}
-		seen[result.Path] = struct{}{}
+		seen[result.ArtifactPath] = struct{}{}
 		result.ToolName = strings.TrimSpace(result.ToolName)
 		if result.ToolName == "" {
 			result.ToolName = "tool"
@@ -341,8 +335,10 @@ func collectRecoverableToolResults(messageList []contextmanager.Message) []recov
 		results = append(results, result)
 	}
 	for _, message := range messageList {
-		for _, result := range parseRecoverableToolResults(message.Content) {
-			appendResult(result)
+		if message.Role == contextmanager.MessageRoleUser {
+			for _, result := range message.RecoverableToolResults {
+				appendResult(result)
+			}
 		}
 		if message.Role != contextmanager.MessageRoleToolResult {
 			continue
@@ -355,55 +351,15 @@ func collectRecoverableToolResults(messageList []contextmanager.Message) []recov
 			if path == "" {
 				continue
 			}
-			appendResult(recoverableToolResult{
-				ToolName: result.Name,
-				Path:     path,
-				Complete: result.Meta.ArtifactComplete,
-				Summary:  result.Meta.Summary,
+			appendResult(contextmanager.RecoverableToolResult{
+				ToolName:         result.Name,
+				ArtifactPath:     path,
+				ArtifactComplete: result.Meta.ArtifactComplete,
+				Summary:          result.Meta.Summary,
 			})
 		}
 	}
 	return results
-}
-
-func parseRecoverableToolResults(content string) []recoverableToolResult {
-	results := make([]recoverableToolResult, 0)
-	for {
-		start := strings.Index(content, recoverableToolResultsStartTag)
-		if start < 0 {
-			return results
-		}
-		content = content[start+len(recoverableToolResultsStartTag):]
-		end := strings.Index(content, recoverableToolResultsEndTag)
-		if end < 0 {
-			return results
-		}
-		for _, line := range strings.Split(content[:end], "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			var record recoveryRecord
-			if err := json.Unmarshal([]byte(line), &record); err != nil || strings.TrimSpace(record.Path) == "" {
-				continue
-			}
-			complete := false
-			switch record.Completeness {
-			case "full":
-				complete = true
-			case "partial":
-			default:
-				continue
-			}
-			results = append(results, recoverableToolResult{
-				ToolName: record.Tool,
-				Path:     record.Path,
-				Complete: complete,
-				Summary:  record.Summary,
-			})
-		}
-		content = content[end+len(recoverableToolResultsEndTag):]
-	}
 }
 
 func truncateRunes(text string, maxRunes int) string {
@@ -471,7 +427,7 @@ And here are the conversation details:
 	return result, nil
 }
 
-func (c *Compactor) formatSummary(summary string, recoverableResults []recoverableToolResult) string {
+func (c *Compactor) formatSummary(summary string, recoverableResults []contextmanager.RecoverableToolResult) string {
 	// wrap summary into <summary>...</summary>, make sure llm understand the summary is a summary of the conversation
 	formatted := fmt.Sprintf("<summary>\n%s\n</summary>\n", summary)
 	if len(recoverableResults) == 0 {
@@ -481,12 +437,12 @@ func (c *Compactor) formatSummary(summary string, recoverableResults []recoverab
 	lines := make([]string, 0, len(recoverableResults)-start)
 	for _, result := range recoverableResults[start:] {
 		completeness := "partial"
-		if result.Complete {
+		if result.ArtifactComplete {
 			completeness = "full"
 		}
 		data, err := json.Marshal(recoveryRecord{
 			Tool:         result.ToolName,
-			Path:         result.Path,
+			Path:         result.ArtifactPath,
 			Completeness: completeness,
 			Summary:      sanitizeRecoverableSummary(result.Summary),
 		})

@@ -47,11 +47,12 @@ func (r MessageRole) ToStandardRole() llms.ChatMessageType {
 }
 
 type Message struct {
-	Role        MessageRole  `json:"role"`
-	Content     string       `json:"content"`
-	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResults []ToolResult `json:"tool_results,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
+	Role                   MessageRole             `json:"role"`
+	Content                string                  `json:"content"`
+	ToolCalls              []ToolCall              `json:"tool_calls,omitempty"`
+	ToolResults            []ToolResult            `json:"tool_results,omitempty"`
+	RecoverableToolResults []RecoverableToolResult `json:"recoverable_tool_results,omitempty"`
+	Attachments            []Attachment            `json:"attachments,omitempty"`
 }
 
 type AppendMessageHook func(Message) AppendMessageHookResult
@@ -89,6 +90,16 @@ type ToolResultMeta struct {
 	ProcessingErrorCode string `json:"processing_error_code,omitempty"`
 	ArtifactStoreError  string `json:"artifact_store_error,omitempty"`
 	legacyArtifactRef   string
+}
+
+// RecoverableToolResult carries trusted recovery metadata across compaction
+// revisions. It is persisted with the context message but is not sent to the
+// model separately from the bounded recovery block in Message.Content.
+type RecoverableToolResult struct {
+	ToolName         string `json:"tool_name"`
+	ArtifactPath     string `json:"artifact_path"`
+	ArtifactComplete bool   `json:"artifact_complete"`
+	Summary          string `json:"summary,omitempty"`
 }
 
 func (m *ToolResultMeta) UnmarshalJSON(data []byte) error {
@@ -523,6 +534,9 @@ func cloneMessage(msg Message) Message {
 			meta := *msg.ToolResults[i].Meta
 			cloned.ToolResults[i].Meta = &meta
 		}
+	}
+	if len(msg.RecoverableToolResults) > 0 {
+		cloned.RecoverableToolResults = append([]RecoverableToolResult(nil), msg.RecoverableToolResults...)
 	}
 	if len(msg.Attachments) > 0 {
 		cloned.Attachments = append([]Attachment(nil), msg.Attachments...)
