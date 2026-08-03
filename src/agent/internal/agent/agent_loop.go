@@ -408,7 +408,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		if resultPolicy == nil {
 			resultPolicy = NewToolResultPolicy()
 		}
-		prepared, err = resultPolicy.Prepare(ctx, ToolResultPrepareInput{
+		preparedResult, prepareErr := resultPolicy.Prepare(ctx, ToolResultPrepareInput{
 			Call:            toolExecution.Call,
 			Result:          toolExecution.Result,
 			ActionCompleted: toolExecution.ActionCompleted,
@@ -416,8 +416,11 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			ModelSpec:       l.Model.Spec(),
 			CallOptions:     turnOptions,
 		})
-		if err != nil {
-			return "", iterationContinue, err
+		if prepareErr != nil {
+			log.Printf("[tool_result] preparation failed for %s: %v\n", toolExecution.Call.Spec.Name, prepareErr)
+			prepared = failedPreparedToolResult(toolExecution.Result, toolExecution.ActionCompleted)
+		} else {
+			prepared = preparedResult
 		}
 	}
 	if l.Recorder != nil && !isVisualObservation {

@@ -607,6 +607,19 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 	}
 }
 
+func TestRuntimeStorageMonitorSkipsArtifactCleanerWithoutConfigDir(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ConfigDir = ""
+	cfg.AudioArchive.StoragePath = t.TempDir()
+	monitor := newRuntimeStorageMonitor(cfg, nil, nil)
+
+	for _, cleaner := range monitor.cleaners {
+		if cleaner.Name() == "tool_result_artifacts" {
+			t.Fatal("artifact cleaner registered without an absolute config directory")
+		}
+	}
+}
+
 func TestLLMHTTPLogCleaner(t *testing.T) {
 	// Create temp directory
 	tmpDir := t.TempDir()

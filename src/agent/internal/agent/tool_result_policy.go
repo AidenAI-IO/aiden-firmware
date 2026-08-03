@@ -20,17 +20,21 @@ const (
 	ToolResultReasonInline         = "inline"
 	ToolResultReasonIntrinsicLarge = "intrinsic_large"
 	ToolResultReasonContextLarge   = "context_large"
+	ToolResultReasonProcessingFail = "processing_failed"
 
 	toolResultInlineMaxBytes     = 8 * 1024
 	toolResultInlineMaxTokens    = 2_000
 	toolResultPreviewTargetToken = 1_200
 	toolResultMinimumObservation = 96
 	toolResultSoftLimitPercent   = 80
+	toolResultCompactionTarget   = 70
 	toolResultProjectionTopK     = 3
 	toolResultProjectionFields   = 24
 	toolResultProjectionDepth    = 5
 	toolResultProjectionRunes    = 256
 )
+
+var ErrToolResultRecoveryTextTooLarge = errors.New("tool result recovery text exceeds context budget")
 
 type ToolResultPrepareInput struct {
 	Call            ToolCall
@@ -109,7 +113,8 @@ func (defaultToolResultPolicy) Prepare(_ context.Context, input ToolResultPrepar
 	previewBudget := min(toolResultPreviewTargetToken, contentBudget)
 	preview, structured := projectToolResultWithKind(input.Call, output, previewBudget)
 	prepared.Summary = boundTextToTokens(preview, 256)
-	if input.ContextManager != nil {
+	sensitive := toolResultIsSensitive(input.Call.Spec.Name)
+	if input.ContextManager != nil && !sensitive {
 		mimeType := "text/plain"
 		if structured {
 			mimeType = "application/json"
@@ -117,7 +122,7 @@ func (defaultToolResultPolicy) Prepare(_ context.Context, input ToolResultPrepar
 		stored, err := input.ContextManager.StoreArtifact(mimeType, []byte(output), contextmanager.ArtifactMetadata{
 			ToolName:   input.Call.Spec.Name,
 			ToolCallID: input.Call.Action.ToolID,
-			Sensitive:  toolResultIsSensitive(input.Call.Spec.Name),
+			Sensitive:  false,
 		})
 		if err == nil {
 			prepared.ArtifactPath = stored.Path
@@ -127,7 +132,12 @@ func (defaultToolResultPolicy) Prepare(_ context.Context, input ToolResultPrepar
 			prepared.ArtifactStoreError = classifyArtifactStoreError(err)
 		}
 	}
-	prepared.Content = boundedToolResultObservation(input.Call, prepared, preview, contentBudget)
+	content := boundedToolResultObservation(input.Call, prepared, preview, contentBudget)
+	if estimateTextTokens(content) > contentBudget {
+		prepared.Content = ""
+		return prepared, fmt.Errorf("%w: budget=%d", ErrToolResultRecoveryTextTooLarge, contentBudget)
+	}
+	prepared.Content = content
 	return prepared, nil
 }
 
@@ -139,6 +149,29 @@ func classifyArtifactStoreError(err error) string {
 		return "artifact_scope_full"
 	default:
 		return "artifact_store_unavailable"
+	}
+}
+
+func failedPreparedToolResult(result ToolResult, actionCompleted bool) PreparedToolResult {
+	content := `{"status":"observation_incomplete","code":"tool_result_processing_failed","action_completed":true,"observation_complete":false,"message":"Tool action completed, but the result could not be prepared."}`
+	completed := actionCompleted || result.Error == nil
+	if !completed {
+		content = `{"status":"observation_incomplete","code":"tool_result_processing_failed","action_completed":false,"observation_complete":false,"message":"The tool result could not be prepared."}`
+	}
+	content = boundTextToTokens(content, toolResultMinimumObservation)
+	return PreparedToolResult{
+		Content:             content,
+		OriginalBytes:       int64(len(result.Output)),
+		OriginalChars:       utf8.RuneCountInString(result.Output),
+		EstimatedTokens:     estimateTextTokens(result.Output),
+		Complete:            false,
+		Reason:              ToolResultReasonProcessingFail,
+		Summary:             "tool result preparation failed",
+		ActionCompleted:     completed,
+		ObservationComplete: false,
+		ProcessingErrorCode: "tool_result_processing_failed",
+		ContextBytes:        len(content),
+		ContextTokens:       estimateTextTokens(content),
 	}
 }
 
@@ -188,6 +221,15 @@ func toolResultUsableInputBudget(contextWindow, maxResponseTokens int) int {
 
 func toolResultSoftInputLimit(contextWindow, maxResponseTokens int) int {
 	return toolResultUsableInputBudget(contextWindow, maxResponseTokens) * toolResultSoftLimitPercent / 100
+}
+
+func toolResultCompactionBudgets(usableInputBudget int) (trigger int, target int, enabled bool) {
+	if usableInputBudget <= 0 {
+		return 0, 0, false
+	}
+	return usableInputBudget * toolResultSoftLimitPercent / 100,
+		usableInputBudget * toolResultCompactionTarget / 100,
+		true
 }
 
 func boundedToolResultObservation(call ToolCall, prepared PreparedToolResult, preview string, contentTokens int) string {

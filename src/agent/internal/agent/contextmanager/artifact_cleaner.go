@@ -60,10 +60,7 @@ func (c *ArtifactStoreCleaner) reclaim(ctx context.Context, remove bool) (uint64
 		}
 		return 0, fmt.Errorf("list context sessions for artifact cleanup: %w", err)
 	}
-	referencedScopes, err := referencedArtifactScopes(c.sessionFolder)
-	if err != nil {
-		return 0, err
-	}
+	referencedScopes, referencesComplete, referenceErr := referencedArtifactScopes(c.sessionFolder)
 	now := time.Now()
 	if c.now != nil {
 		now = c.now()
@@ -71,6 +68,9 @@ func (c *ArtifactStoreCleaner) reclaim(ctx context.Context, remove bool) (uint64
 
 	var reclaimed uint64
 	var cleanupErrors []error
+	if referenceErr != nil {
+		cleanupErrors = append(cleanupErrors, referenceErr)
+	}
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return reclaimed, err
@@ -88,6 +88,12 @@ func (c *ArtifactStoreCleaner) reclaim(ctx context.Context, remove bool) (uint64
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("stat artifact scope %s: %w", scopeID, err))
 			continue
 		}
+		if !referencesComplete {
+			bytes, errs := reclaimExpiredArtifacts(ctx, artifactRoot, now, remove)
+			reclaimed += bytes
+			cleanupErrors = append(cleanupErrors, errs...)
+			continue
+		}
 		if _, referenced := referencedScopes[scopeID]; !referenced {
 			if now.Sub(artifactRootInfo.ModTime()) < artifactOrphanGracePeriod {
 				continue
@@ -98,9 +104,11 @@ func (c *ArtifactStoreCleaner) reclaim(ctx context.Context, remove bool) (uint64
 				continue
 			}
 			if remove {
-				latestReferences, err := referencedArtifactScopes(c.sessionFolder)
+				latestReferences, latestComplete, err := referencedArtifactScopes(c.sessionFolder)
 				if err != nil {
 					cleanupErrors = append(cleanupErrors, err)
+				}
+				if !latestComplete {
 					continue
 				}
 				if _, referenced := latestReferences[scopeID]; referenced {
@@ -122,20 +130,26 @@ func (c *ArtifactStoreCleaner) reclaim(ctx context.Context, remove bool) (uint64
 	return reclaimed, errors.Join(cleanupErrors...)
 }
 
-func referencedArtifactScopes(sessionFolder string) (map[string]struct{}, error) {
+func referencedArtifactScopes(sessionFolder string) (map[string]struct{}, bool, error) {
 	referenced := make(map[string]struct{})
 	metadataFiles, err := filepath.Glob(filepath.Join(sessionFolder, "*.meta.json"))
 	if err != nil {
-		return nil, fmt.Errorf("list context session metadata: %w", err)
+		return nil, false, fmt.Errorf("list context session metadata: %w", err)
 	}
+	referencesComplete := true
+	var referenceErrors []error
 	for _, metadataPath := range metadataFiles {
 		data, err := os.ReadFile(metadataPath)
 		if err != nil {
-			return nil, fmt.Errorf("read context session metadata %s: %w", filepath.Base(metadataPath), err)
+			referencesComplete = false
+			referenceErrors = append(referenceErrors, fmt.Errorf("read context session metadata %s: %w", filepath.Base(metadataPath), err))
+			continue
 		}
 		var metadata sessionMetadata
 		if err := json.Unmarshal(data, &metadata); err != nil {
-			return nil, fmt.Errorf("decode context session metadata %s: %w", filepath.Base(metadataPath), err)
+			referencesComplete = false
+			referenceErrors = append(referenceErrors, fmt.Errorf("decode context session metadata %s: %w", filepath.Base(metadataPath), err))
+			continue
 		}
 		sessionID := strings.TrimSuffix(filepath.Base(metadataPath), ".meta.json")
 		scopeID := strings.TrimSpace(metadata.ArtifactScopeID)
@@ -143,25 +157,29 @@ func referencedArtifactScopes(sessionFolder string) (map[string]struct{}, error)
 			scopeID = sessionID
 		}
 		if _, err := validateArtifactScopeID(scopeID); err != nil {
-			return nil, fmt.Errorf("invalid artifact scope ID %q in %s", scopeID, filepath.Base(metadataPath))
+			referencesComplete = false
+			referenceErrors = append(referenceErrors, fmt.Errorf("invalid artifact scope ID %q in %s", scopeID, filepath.Base(metadataPath)))
+			continue
 		}
 		referenced[scopeID] = struct{}{}
 	}
 
 	legacyTranscripts, err := filepath.Glob(filepath.Join(sessionFolder, "*.jsonl"))
 	if err != nil {
-		return nil, fmt.Errorf("list context session transcripts: %w", err)
+		return nil, false, fmt.Errorf("list context session transcripts: %w", err)
 	}
 	for _, transcriptPath := range legacyTranscripts {
 		sessionID := strings.TrimSuffix(filepath.Base(transcriptPath), ".jsonl")
 		if _, err := os.Stat(sessionMetadataPath(sessionFolder, sessionID)); err == nil {
 			continue
 		} else if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("stat context session metadata %s: %w", sessionID, err)
+			referencesComplete = false
+			referenceErrors = append(referenceErrors, fmt.Errorf("stat context session metadata %s: %w", sessionID, err))
+			continue
 		}
 		referenced[sessionID] = struct{}{}
 	}
-	return referenced, nil
+	return referenced, referencesComplete, errors.Join(referenceErrors...)
 }
 
 func reclaimExpiredArtifacts(ctx context.Context, root string, now time.Time, remove bool) (uint64, []error) {

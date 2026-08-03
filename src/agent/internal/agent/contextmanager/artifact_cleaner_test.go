@@ -67,6 +67,50 @@ func TestArtifactStoreCleanerRemovesExpiredAndOrphanedArtifacts(t *testing.T) {
 	}
 }
 
+func TestArtifactStoreCleanerExpiresArtifactsButKeepsOrphansWhenMetadataIsInvalid(t *testing.T) {
+	sessionFolder := t.TempDir()
+	manager, err := NewContextManagerFromMessageList(sessionFolder, nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	expired, err := manager.StoreArtifact("text/plain", []byte("expired-result"), ArtifactMetadata{
+		ExpiresAt: time.Now().Add(-time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("StoreArtifact(expired) error = %v", err)
+	}
+	orphanStore, err := newArtifactStore(sessionFolder, "s_orphan_invalid_metadata")
+	if err != nil {
+		t.Fatalf("newArtifactStore(orphan) error = %v", err)
+	}
+	orphan, err := orphanStore.store("text/plain", []byte("orphan-result"), ArtifactMetadata{})
+	if err != nil {
+		t.Fatalf("orphan store() error = %v", err)
+	}
+	old := time.Now().Add(-artifactOrphanGracePeriod - time.Minute)
+	if err := os.Chtimes(orphanStore.root, old, old); err != nil {
+		t.Fatalf("Chtimes(orphan root) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionFolder, "broken.meta.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("WriteFile(invalid metadata) error = %v", err)
+	}
+
+	cleaner := NewArtifactStoreCleaner(sessionFolder, 1)
+	freed, err := cleaner.Clean(context.Background())
+	if err == nil {
+		t.Fatal("Clean() error = nil, want invalid metadata reported")
+	}
+	if freed < uint64(len("expired-result")) {
+		t.Fatalf("Clean() freed = %d, want expired artifact bytes", freed)
+	}
+	if _, err := os.Stat(expired.Path); !os.IsNotExist(err) {
+		t.Fatalf("expired artifact remains after cleanup, stat error = %v", err)
+	}
+	if data, err := os.ReadFile(orphan.Path); err != nil || string(data) != "orphan-result" {
+		t.Fatalf("orphan artifact was removed with incomplete references: data=%q error=%v", data, err)
+	}
+}
+
 func TestArtifactStoreCleanerKeepsFreshOrphanScopeDuringGracePeriod(t *testing.T) {
 	sessionFolder := t.TempDir()
 	store, err := newArtifactStore(sessionFolder, "s_fresh_orphan")

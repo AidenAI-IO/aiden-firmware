@@ -1056,11 +1056,12 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		maxResponseTokens = req.MaxTokens
 	}
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
-	compactionTrigger := usableInputBudget * toolResultSoftLimitPercent / 100
-	compactionTarget := usableInputBudget * 70 / 100
-	compactor.SetHistoricalToolResultTarget(compactionTarget)
+	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
+	if compactionEnabled {
+		compactor.SetHistoricalToolResultTarget(compactionTarget)
+	}
 	tokenUsage := compactor.EstimateTokenUsage(r.contextManager)
-	if tokenUsage > compactionTrigger {
+	if compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
 		}
@@ -1074,6 +1075,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 					"tokens_before":                 stats.TokensBefore,
 					"tokens_after":                  stats.TokensAfter,
 					"conversation_summary_required": stats.ConversationSummaryRequired,
+					"compacted":                     compacted,
+					"success":                       err == nil,
 				},
 			})
 		}

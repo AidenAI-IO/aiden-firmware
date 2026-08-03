@@ -243,6 +243,89 @@ func TestCompactShrinksHistoricalToolResultsBeforeCallingSummaryModel(t *testing
 	}
 }
 
+func TestCompactCommitsPartialHistoricalReplacementWhenSummaryWindowIsFullyProtected(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
+		{Role: contextmanager.MessageRoleSystem, Content: strings.Repeat("system ", 200)},
+		{
+			Role: contextmanager.MessageRoleToolCall,
+			ToolCalls: []contextmanager.ToolCall{{
+				ID:        "old_call",
+				Name:      "shell",
+				Arguments: `{"command":"generate-report"}`,
+			}},
+		},
+		{
+			Role: contextmanager.MessageRoleToolResult,
+			ToolResults: []contextmanager.ToolResult{{
+				ToolCallID: "old_call",
+				Name:       "shell",
+				Content:    strings.Repeat("large historical output ", 1_000),
+				Meta:       &contextmanager.ToolResultMeta{Summary: "report generated"},
+			}},
+		},
+		{Role: contextmanager.MessageRoleUser, Content: "current request"},
+		{Role: contextmanager.MessageRoleAssistant, Content: "current draft"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	model := &promptCapturingModel{reply: "summary should not be called"}
+	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
+	compactor.SetHistoricalToolResultTarget(1)
+
+	newManager, compacted, err := compactor.Compact(context.Background(), manager)
+	if err != nil {
+		t.Fatalf("Compact() error = %v", err)
+	}
+	if !compacted || newManager == nil {
+		t.Fatal("Compact() discarded a partial historical replacement")
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("summary model calls = %d, want 0 for fully protected window", len(model.prompts))
+	}
+	result := newManager.CloneMessageList()[2].ToolResults[0]
+	if result.Meta == nil || result.Meta.Reason != "historical_compaction" || !strings.Contains(result.Content, "report generated") {
+		t.Fatalf("committed historical result = %#v", result)
+	}
+	stats := compactor.LastStats()
+	if stats.HistoricalResultsReplaced != 1 || stats.ConversationSummaryRequired || stats.TokensBefore <= stats.TokensAfter {
+		t.Fatalf("compaction stats = %#v", stats)
+	}
+}
+
+func TestCompactReplacesOrphanedHistoricalToolResult(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
+		{Role: contextmanager.MessageRoleSystem, Content: "system"},
+		{
+			Role: contextmanager.MessageRoleToolResult,
+			ToolResults: []contextmanager.ToolResult{{
+				ToolCallID: "missing_call",
+				Name:       "shell",
+				Content:    strings.Repeat("orphaned historical output ", 1_000),
+			}},
+		},
+		{Role: contextmanager.MessageRoleUser, Content: "current request"},
+		{Role: contextmanager.MessageRoleAssistant, Content: "current response"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	compactor := NewCompactor(DefaultProtectRule, &testModel{})
+	compactor.SetHistoricalToolResultTarget(500)
+
+	newManager, compacted, err := compactor.Compact(context.Background(), manager)
+	if err != nil {
+		t.Fatalf("Compact() error = %v", err)
+	}
+	if !compacted || newManager == nil {
+		t.Fatal("Compact() did not replace orphaned historical result")
+	}
+	result := newManager.CloneMessageList()[1].ToolResults[0]
+	if result.Meta == nil || result.Meta.Reason != "historical_compaction" || !strings.Contains(result.Content, "[shell] historical result compressed") {
+		t.Fatalf("orphaned historical result = %#v", result)
+	}
+}
+
 func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *testing.T) {
 	sessionFolder := t.TempDir()
 	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{

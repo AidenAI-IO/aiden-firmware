@@ -152,6 +152,33 @@ func TestLoadContextManagerMigratesLegacyArtifactRefToShellReadablePath(t *testi
 	}
 }
 
+func TestLoadContextManagerKeepsLegacyArtifactRefWhenFileIsMissing(t *testing.T) {
+	sessionFolder := t.TempDir()
+	sessionID := "s_legacy_missing"
+	scopeID := "s_legacy_missing_scope"
+	artifactID := "tr_" + uuid.NewString()
+	if err := saveSessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
+		t.Fatalf("saveSessionMetadata() error = %v", err)
+	}
+	legacyRef := "artifact://" + artifactID
+	line := fmt.Sprintf(`{"role":"tool_result","tool_results":[{"tool_call_id":"call_legacy","name":"shell","content":"Full result: %s","meta":{"artifact_ref":"%s","complete":false,"artifact_complete":true}}]}`+"\n", legacyRef, legacyRef)
+	if err := os.WriteFile(filepath.Join(sessionFolder, sessionID+".jsonl"), []byte(line), 0o600); err != nil {
+		t.Fatalf("WriteFile(session) error = %v", err)
+	}
+
+	manager, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
+	if err != nil {
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
+	}
+	result := manager.CloneMessageList()[0].ToolResults[0]
+	if result.Meta == nil || result.Meta.ArtifactPath != "" || result.Meta.legacyArtifactRef != legacyRef {
+		t.Fatalf("missing artifact metadata = %#v, want legacy ref preserved", result.Meta)
+	}
+	if !strings.Contains(result.Content, legacyRef) || strings.Contains(result.Content, "Full result file:") {
+		t.Fatalf("missing artifact content was migrated: %q", result.Content)
+	}
+}
+
 func TestLoadContextManagerIgnoresUnsafeLegacyArtifactRef(t *testing.T) {
 	sessionFolder := t.TempDir()
 	sessionID := "s_legacy_unsafe"
@@ -323,13 +350,17 @@ func TestContextManagerUsesShortTTLForSensitiveArtifact(t *testing.T) {
 }
 
 func TestLoadContextManagerRejectsArtifactScopePathTraversal(t *testing.T) {
-	sessionFolder := t.TempDir()
-	sessionID := "s_session"
-	if err := saveSessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: "../outside"}); err != nil {
-		t.Fatalf("saveSessionMetadata() error = %v", err)
-	}
-	if _, err := LoadContextManagerFromSessionID(sessionFolder, sessionID); err == nil {
-		t.Fatal("LoadContextManagerFromSessionID() succeeded with traversal scope")
+	for _, scopeID := range []string{"../outside", ".", ".."} {
+		t.Run(scopeID, func(t *testing.T) {
+			sessionFolder := t.TempDir()
+			sessionID := "s_session"
+			if err := saveSessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
+				t.Fatalf("saveSessionMetadata() error = %v", err)
+			}
+			if _, err := LoadContextManagerFromSessionID(sessionFolder, sessionID); err == nil {
+				t.Fatalf("LoadContextManagerFromSessionID() succeeded with scope %q", scopeID)
+			}
+		})
 	}
 }
 

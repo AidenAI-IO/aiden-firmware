@@ -93,6 +93,7 @@ func TestHardContextGuardReportsBudgetTelemetry(t *testing.T) {
 func TestProviderContextLengthErrorClassification(t *testing.T) {
 	for _, message := range []string{
 		"maximum context length exceeded",
+		"context_length_exceeded",
 		"context_window_exceeded",
 		"prompt is too long for this model",
 	} {

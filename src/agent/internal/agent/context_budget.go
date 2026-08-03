@@ -205,6 +205,7 @@ func isProviderContextLengthError(err error) bool {
 	message := strings.ToLower(err.Error())
 	for _, marker := range []string{
 		"context length",
+		"context_length_exceeded",
 		"maximum context",
 		"context window exceeded",
 		"context_window_exceeded",

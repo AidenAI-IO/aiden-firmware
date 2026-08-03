@@ -73,7 +73,7 @@ func newArtifactStore(sessionFolder, scopeID string) (*artifactStore, error) {
 
 func validateArtifactScopeID(scopeID string) (string, error) {
 	trimmed := strings.TrimSpace(scopeID)
-	if trimmed == "" || filepath.Base(trimmed) != trimmed || strings.ContainsAny(trimmed, `/\\`) {
+	if trimmed == "" || trimmed == "." || trimmed == ".." || filepath.Base(trimmed) != trimmed || strings.ContainsAny(trimmed, `/\\`) {
 		return "", fmt.Errorf("invalid artifact scope ID")
 	}
 	return trimmed, nil

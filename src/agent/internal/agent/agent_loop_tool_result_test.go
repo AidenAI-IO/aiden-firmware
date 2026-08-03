@@ -208,6 +208,60 @@ func TestAgentLoopDoesNotRepeatCompletedActionWhenArtifactPersistenceFails(t *te
 	}
 }
 
+func TestAgentLoopPersistsBoundedToolResultWhenPolicyFails(t *testing.T) {
+	tool := &countingLargeResultTool{name: "side_effect_tool", output: strings.Repeat("raw-secret-", 2_000)}
+	inner := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("call_1", tool.name, `{}`),
+		contentResponse("Done after fallback"),
+	}}
+	model := &largeContextScriptedModel{scriptedModel: inner}
+	manager, err := freshNewContextManager("system", "perform action once", nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+	loop := NewAgentLoop(
+		model,
+		RoleProfile{Tools: []langtools.Tool{tool}},
+		nil,
+		4,
+		nil,
+		nil,
+		ScreenshotPruningConfig{}.WithDefaults(),
+		manager,
+	)
+	loop.ToolResultPolicy = failingToolResultPolicy{err: errors.New("policy unavailable")}
+
+	answer, err := loop.Run(context.Background(), "perform action once")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if answer != "Done after fallback" || tool.calls != 1 {
+		t.Fatalf("answer=%q tool calls=%d, want one completed action", answer, tool.calls)
+	}
+
+	var stored contextmanager.ToolResult
+	for _, message := range manager.CloneMessageList() {
+		if message.Role == contextmanager.MessageRoleToolResult && len(message.ToolResults) > 0 {
+			stored = message.ToolResults[0]
+			break
+		}
+	}
+	if stored.ToolCallID != "call_1" || stored.Meta == nil || stored.Meta.ProcessingErrorCode != "tool_result_processing_failed" {
+		t.Fatalf("stored fallback result = %#v", stored)
+	}
+	if strings.Contains(stored.Content, "raw-secret-") || estimateTextTokens(stored.Content) > toolResultMinimumObservation {
+		t.Fatalf("stored fallback was not bounded: %q", stored.Content)
+	}
+}
+
+type failingToolResultPolicy struct {
+	err error
+}
+
+func (p failingToolResultPolicy) Prepare(context.Context, ToolResultPrepareInput) (PreparedToolResult, error) {
+	return PreparedToolResult{}, p.err
+}
+
 type countingLargeResultTool struct {
 	name   string
 	output string

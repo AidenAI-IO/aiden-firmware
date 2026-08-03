@@ -195,7 +195,11 @@ func migrateLegacyArtifactRefs(messageList []Message, store *artifactStore) {
 				continue
 			}
 
-			result.Meta.ArtifactPath = filepath.Join(store.root, id+".data")
+			artifactPath := filepath.Join(store.root, id+".data")
+			if _, err := os.Stat(artifactPath); err != nil {
+				continue
+			}
+			result.Meta.ArtifactPath = artifactPath
 			result.Meta.legacyArtifactRef = ""
 			result.Content = strings.ReplaceAll(result.Content, "Full result: "+ref, "Full result file: "+result.Meta.ArtifactPath)
 			result.Content = strings.ReplaceAll(result.Content, "Saved partial result: "+ref, "Saved partial result file: "+result.Meta.ArtifactPath)

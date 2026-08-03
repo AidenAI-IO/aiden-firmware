@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,6 +42,16 @@ func TestToolResultPolicyKeepsSmallResultInline(t *testing.T) {
 	}
 	if prepared.Reason != ToolResultReasonInline {
 		t.Fatalf("Prepare() reason = %q, want %q", prepared.Reason, ToolResultReasonInline)
+	}
+}
+
+func TestToolResultCompactionBudgetsRequirePositiveUsableInput(t *testing.T) {
+	if trigger, target, ok := toolResultCompactionBudgets(0); ok || trigger != 0 || target != 0 {
+		t.Fatalf("toolResultCompactionBudgets(0) = %d, %d, %v; want disabled", trigger, target, ok)
+	}
+	trigger, target, ok := toolResultCompactionBudgets(10_000)
+	if !ok || trigger != 8_000 || target != 7_000 {
+		t.Fatalf("toolResultCompactionBudgets(10000) = %d, %d, %v; want 8000, 7000, true", trigger, target, ok)
 	}
 }
 
@@ -146,7 +157,7 @@ func TestToolResultPolicyShrinksIntrinsicResultToCurrentBudget(t *testing.T) {
 	}
 }
 
-func TestToolResultPolicyPreservesLongArtifactPathAtMinimumBudget(t *testing.T) {
+func TestToolResultPolicyRejectsRecoveryTextThatExceedsMinimumBudget(t *testing.T) {
 	sessionFolder := t.TempDir()
 	for index := 0; index < 6; index++ {
 		sessionFolder = filepath.Join(sessionFolder, fmt.Sprintf("long-session-directory-%02d-%s", index, strings.Repeat("x", 32)))
@@ -165,21 +176,22 @@ func TestToolResultPolicyPreservesLongArtifactPathAtMinimumBudget(t *testing.T) 
 		ModelSpec:      model.ModelSpec{ContextWindow: 128, MaxOutput: 16},
 		CallOptions:    []llms.CallOption{llms.WithMaxTokens(16)},
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error = %v", err)
+	if !errors.Is(err, ErrToolResultRecoveryTextTooLarge) {
+		t.Fatalf("Prepare() error = %v, want %v", err, ErrToolResultRecoveryTextTooLarge)
 	}
 	if prepared.ArtifactPath == "" || len(prepared.ArtifactPath) < 300 {
 		t.Fatalf("Prepare() artifact path = %q, want long path", prepared.ArtifactPath)
 	}
-	if !strings.Contains(prepared.Content, "Full result file: "+prepared.ArtifactPath) {
-		t.Fatalf("Prepare() truncated mandatory artifact path:\n%s", prepared.Content)
-	}
-	if !strings.Contains(prepared.Content, "Use shell commands") {
-		t.Fatalf("Prepare() lost shell recovery guidance:\n%s", prepared.Content)
+	if prepared.Content != "" {
+		t.Fatalf("Prepare() content = %q, want empty on oversized recovery text", prepared.Content)
 	}
 }
 
 func TestToolResultPolicyUsesClipboardProjection(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
 	clipboardText := "VISIBLE_PREFIX_" + strings.Repeat("secret-value-", 800) + "TAIL_SECRET"
 	output := `{"ok":true,"text":` + mustMarshalJSONString(t, clipboardText) + `}`
 	policy := NewToolResultPolicy()
@@ -188,9 +200,10 @@ func TestToolResultPolicyUsesClipboardProjection(t *testing.T) {
 			Spec:  ToolSpec{Name: toolBridgeClipboard},
 			Input: `{"action":"read"}`,
 		},
-		Result:      ToolResult{Output: output},
-		ModelSpec:   model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
-		CallOptions: []llms.CallOption{llms.WithMaxTokens(1_000)},
+		Result:         ToolResult{Output: output},
+		ContextManager: manager,
+		ModelSpec:      model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+		CallOptions:    []llms.CallOption{llms.WithMaxTokens(1_000)},
 	})
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
@@ -202,6 +215,9 @@ func TestToolResultPolicyUsesClipboardProjection(t *testing.T) {
 	}
 	if strings.Contains(prepared.Content, "TAIL_SECRET") {
 		t.Fatalf("Prepare() leaked clipboard tail into active context: %s", prepared.Content)
+	}
+	if prepared.ArtifactPath != "" || strings.Contains(prepared.Content, "Full result file:") {
+		t.Fatalf("Prepare() exposed a sensitive artifact path: path=%q content=%s", prepared.ArtifactPath, prepared.Content)
 	}
 }
 

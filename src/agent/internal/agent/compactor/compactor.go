@@ -107,16 +107,17 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 		return nil, false, nil
 	}
 	messageList := session.CloneMessageList()
+	tokensBefore := estimateMessageListTokenUsage(messageList)
 	c.lastStats = CompactionStats{
-		TokensBefore: estimateMessageListTokenUsage(messageList),
-		TokensAfter:  estimateMessageListTokenUsage(messageList),
+		TokensBefore: tokensBefore,
+		TokensAfter:  tokensBefore,
 	}
 	if c.HistoricalToolResultTarget > 0 {
 		var replaced int
 		messageList, replaced = compactHistoricalToolResults(messageList, c.HistoricalToolResultTarget)
 		c.lastStats.HistoricalResultsReplaced = replaced
 		c.lastStats.TokensAfter = estimateMessageListTokenUsage(messageList)
-		if replaced > 0 && estimateMessageListTokenUsage(messageList) <= c.HistoricalToolResultTarget {
+		if replaced > 0 && c.lastStats.TokensAfter <= c.HistoricalToolResultTarget {
 			newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, messageList)
 			if err != nil {
 				return nil, false, err
@@ -154,6 +155,13 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	}
 
 	if HeadN+TailN >= len(messageList) {
+		if c.lastStats.HistoricalResultsReplaced > 0 {
+			newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, messageList)
+			if err != nil {
+				return nil, false, err
+			}
+			return newManager, true, nil
+		}
 		return nil, false, nil
 	}
 
@@ -201,6 +209,7 @@ func compactHistoricalToolResults(messageList []contextmanager.Message, targetTo
 	}
 
 	replaced := 0
+	currentTokens := estimateMessageListTokenUsage(messageList)
 	for messageIndex := 0; messageIndex < latestUserIndex; messageIndex++ {
 		message := &messageList[messageIndex]
 		if message.Role != contextmanager.MessageRoleToolResult {
@@ -211,10 +220,7 @@ func compactHistoricalToolResults(messageList []contextmanager.Message, targetTo
 			if result.Meta != nil && result.Meta.Reason == "historical_compaction" {
 				continue
 			}
-			call, ok := findHistoricalToolCall(messageList, result.ToolCallID, messageIndex)
-			if !ok {
-				continue
-			}
+			call, _ := findHistoricalToolCall(messageList, result.ToolCallID, messageIndex)
 			meta := result.Meta
 			if meta == nil {
 				meta = &contextmanager.ToolResultMeta{
@@ -226,11 +232,13 @@ func compactHistoricalToolResults(messageList []contextmanager.Message, targetTo
 				}
 				result.Meta = meta
 			}
+			beforeTokens := tokencounter.EstimateTextTokens(result.Content)
 			result.Content = historicalToolResultPlaceholder(*result, call)
+			currentTokens += tokencounter.EstimateTextTokens(result.Content) - beforeTokens
 			meta.Complete = false
 			meta.Reason = "historical_compaction"
 			replaced++
-			if estimateMessageListTokenUsage(messageList) <= targetTokens {
+			if currentTokens <= targetTokens {
 				return messageList, replaced
 			}
 		}
