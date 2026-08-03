@@ -12,8 +12,10 @@ fi
 TMP_DIR=$(mktemp -d)
 LATE_TMP_DIR=
 MOUNT_TMP_DIR=
+OTA_MOUNT_TMP_DIR=
+STRICT_MOUNT_TMP_DIR=
 PENDING_TMP_DIR=
-trap 'rm -rf "$TMP_DIR" "$LATE_TMP_DIR" "$MOUNT_TMP_DIR" "$PENDING_TMP_DIR"' EXIT INT TERM
+trap 'rm -rf "$TMP_DIR" "$LATE_TMP_DIR" "$MOUNT_TMP_DIR" "$OTA_MOUNT_TMP_DIR" "$STRICT_MOUNT_TMP_DIR" "$PENDING_TMP_DIR"' EXIT INT TERM
 
 OTA_BIN="$TMP_DIR/ota"
 LOG_PATH="$TMP_DIR/ota.log"
@@ -28,12 +30,15 @@ EOF
 chmod +x "$OTA_BIN"
 
 mkdir -p "$USERDATA_DIR"
+mkdir -p "$USERDATA_DIR/ota"
 
 OTA_BIN="$OTA_BIN" \
 ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
 LOG_PATH="$LOG_PATH" \
 USERDATA_DIR="$USERDATA_DIR" \
 USERDATA_REQUIRE_MOUNT=0 \
+OTA_STORAGE_DIR="$USERDATA_DIR/ota" \
+OTA_STORAGE_REQUIRE_MOUNT=0 \
 LOCK_DIR="$LOCK_DIR" \
 OTA_DAEMON_LOG="$TMP_DIR/daemon.args" \
 SLEEP_BIN=":" \
@@ -91,6 +96,7 @@ PENDING_LOCK_DIR="$PENDING_TMP_DIR/ota-health.lock"
 PENDING_SLEEP_BIN="$PENDING_TMP_DIR/sleep"
 PENDING_SLEEP_LOG="$PENDING_TMP_DIR/sleep.ppids"
 mkdir -p "$PENDING_USERDATA_DIR"
+mkdir -p "$PENDING_USERDATA_DIR/ota"
 cat > "$PENDING_SLEEP_BIN" <<'EOF'
 #!/bin/sh
 echo "$PPID" >> "$PENDING_SLEEP_LOG"
@@ -103,6 +109,8 @@ ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
 LOG_PATH="$PENDING_LOG_PATH" \
 USERDATA_DIR="$PENDING_USERDATA_DIR" \
 USERDATA_REQUIRE_MOUNT=0 \
+OTA_STORAGE_DIR="$PENDING_USERDATA_DIR/ota" \
+OTA_STORAGE_REQUIRE_MOUNT=0 \
 LOCK_DIR="$PENDING_LOCK_DIR" \
 SLEEP_BIN="$PENDING_SLEEP_BIN" \
 WAIT_TIMEOUT=5 \
@@ -124,6 +132,8 @@ ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
 LOG_PATH="$PENDING_LOG_PATH" \
 USERDATA_DIR="$PENDING_USERDATA_DIR" \
 USERDATA_REQUIRE_MOUNT=0 \
+OTA_STORAGE_DIR="$PENDING_USERDATA_DIR/ota" \
+OTA_STORAGE_REQUIRE_MOUNT=0 \
 LOCK_DIR="$PENDING_LOCK_DIR" \
 SLEEP_BIN="$PENDING_SLEEP_BIN" \
 WAIT_TIMEOUT=5 \
@@ -191,18 +201,109 @@ if [ -e "$MOUNT_TMP_DIR/daemon.args" ]; then
     exit 1
 fi
 
+OTA_MOUNT_TMP_DIR=$(mktemp -d)
+OTA_MOUNT_OTA_BIN="$OTA_MOUNT_TMP_DIR/ota-bin"
+OTA_MOUNT_LOG_PATH="$OTA_MOUNT_TMP_DIR/ota.log"
+OTA_MOUNT_USERDATA_DIR="$OTA_MOUNT_TMP_DIR/userdata"
+OTA_MOUNT_STORAGE_DIR="$OTA_MOUNT_USERDATA_DIR/ota"
+OTA_MOUNT_MOUNTS_PATH="$OTA_MOUNT_TMP_DIR/mounts"
+OTA_MOUNT_LOCK_DIR="$OTA_MOUNT_TMP_DIR/ota-health.lock"
+cat > "$OTA_MOUNT_OTA_BIN" <<'EOF'
+#!/bin/sh
+echo "$@" >> "$OTA_DAEMON_LOG"
+exit 0
+EOF
+chmod +x "$OTA_MOUNT_OTA_BIN"
+mkdir -p "$OTA_MOUNT_STORAGE_DIR"
+printf '/dev/mmcblk0p11 %s ext4 rw 0 0\n' "$OTA_MOUNT_USERDATA_DIR" > "$OTA_MOUNT_MOUNTS_PATH"
+printf '/dev/mmcblk0p99 %s ext4 rw 0 0\n' "$OTA_MOUNT_STORAGE_DIR" >> "$OTA_MOUNT_MOUNTS_PATH"
+
+OTA_BIN="$OTA_MOUNT_OTA_BIN" \
+ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
+LOG_PATH="$OTA_MOUNT_LOG_PATH" \
+USERDATA_DIR="$OTA_MOUNT_USERDATA_DIR" \
+OTA_STORAGE_DIR="$OTA_MOUNT_STORAGE_DIR" \
+OTA_STORAGE_DEVICE=/dev/mmcblk0p12 \
+MOUNTS_PATH="$OTA_MOUNT_MOUNTS_PATH" \
+LOCK_DIR="$OTA_MOUNT_LOCK_DIR" \
+OTA_DAEMON_LOG="$OTA_MOUNT_TMP_DIR/daemon.args" \
+SLEEP_BIN=":" \
+WAIT_TIMEOUT=1 \
+"$SCRIPT" start >/dev/null
+
+deadline=$(( $(date +%s) + 5 ))
+while ! { [ -f "$OTA_MOUNT_LOG_PATH" ] && grep -q 'OTA storage mount unavailable after 1s' "$OTA_MOUNT_LOG_PATH"; }; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "ota health did not fail closed for an unmounted OTA partition" >&2
+        [ -f "$OTA_MOUNT_LOG_PATH" ] && cat "$OTA_MOUNT_LOG_PATH" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+if [ -e "$OTA_MOUNT_TMP_DIR/daemon.args" ]; then
+    echo "ota health ran with the wrong device mounted as OTA storage" >&2
+    cat "$OTA_MOUNT_TMP_DIR/daemon.args" >&2
+    exit 1
+fi
+
+STRICT_MOUNT_TMP_DIR=$(mktemp -d)
+STRICT_MOUNT_OTA_BIN="$STRICT_MOUNT_TMP_DIR/ota-bin"
+STRICT_MOUNT_LOG_PATH="$STRICT_MOUNT_TMP_DIR/ota.log"
+STRICT_MOUNT_USERDATA_DIR="$STRICT_MOUNT_TMP_DIR/userdata"
+STRICT_MOUNT_STORAGE_DIR="$STRICT_MOUNT_USERDATA_DIR/ota"
+STRICT_MOUNT_DEVICE="$STRICT_MOUNT_TMP_DIR/ota-device"
+STRICT_MOUNT_MOUNTS_PATH="$STRICT_MOUNT_TMP_DIR/mounts"
+STRICT_MOUNT_LOCK_DIR="$STRICT_MOUNT_TMP_DIR/ota-health.lock"
+cat > "$STRICT_MOUNT_OTA_BIN" <<'EOF'
+#!/bin/sh
+echo "$@" >> "$OTA_DAEMON_LOG"
+exit 0
+EOF
+chmod +x "$STRICT_MOUNT_OTA_BIN"
+mkdir -p "$STRICT_MOUNT_STORAGE_DIR"
+: > "$STRICT_MOUNT_DEVICE"
+printf '/dev/mmcblk0p11 %s ext4 rw 0 0\n' "$STRICT_MOUNT_USERDATA_DIR" > "$STRICT_MOUNT_MOUNTS_PATH"
+printf '%s %s ext4 rw 0 0\n' "$STRICT_MOUNT_DEVICE" "$STRICT_MOUNT_STORAGE_DIR" >> "$STRICT_MOUNT_MOUNTS_PATH"
+
+OTA_BIN="$STRICT_MOUNT_OTA_BIN" \
+ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
+LOG_PATH="$STRICT_MOUNT_LOG_PATH" \
+USERDATA_DIR="$STRICT_MOUNT_USERDATA_DIR" \
+OTA_STORAGE_DIR="$STRICT_MOUNT_STORAGE_DIR" \
+OTA_STORAGE_DEVICE="$STRICT_MOUNT_DEVICE" \
+MOUNTS_PATH="$STRICT_MOUNT_MOUNTS_PATH" \
+LOCK_DIR="$STRICT_MOUNT_LOCK_DIR" \
+OTA_DAEMON_LOG="$STRICT_MOUNT_TMP_DIR/daemon.args" \
+SLEEP_BIN=":" \
+WAIT_TIMEOUT=1 \
+"$SCRIPT" start >/dev/null
+
+deadline=$(( $(date +%s) + 5 ))
+while [ ! -s "$STRICT_MOUNT_TMP_DIR/daemon.args" ]; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "ota health did not run with the expected OTA device and filesystem" >&2
+        [ -f "$STRICT_MOUNT_LOG_PATH" ] && cat "$STRICT_MOUNT_LOG_PATH" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
 LATE_TMP_DIR=$(mktemp -d)
 LATE_OTA_BIN="$LATE_TMP_DIR/ota"
 LATE_LOG_PATH="$LATE_TMP_DIR/ota.log"
 LATE_USERDATA_DIR="$LATE_TMP_DIR/userdata"
 LATE_LOCK_DIR="$LATE_TMP_DIR/ota-health.lock"
 mkdir -p "$LATE_USERDATA_DIR"
+mkdir -p "$LATE_USERDATA_DIR/ota"
 
 OTA_BIN="$LATE_OTA_BIN" \
 ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
 LOG_PATH="$LATE_LOG_PATH" \
 USERDATA_DIR="$LATE_USERDATA_DIR" \
 USERDATA_REQUIRE_MOUNT=0 \
+OTA_STORAGE_DIR="$LATE_USERDATA_DIR/ota" \
+OTA_STORAGE_REQUIRE_MOUNT=0 \
 LOCK_DIR="$LATE_LOCK_DIR" \
 OTA_DAEMON_LOG="$LATE_TMP_DIR/daemon.args" \
 SLEEP_BIN="sleep" \

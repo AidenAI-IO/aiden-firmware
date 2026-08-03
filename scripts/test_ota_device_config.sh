@@ -36,6 +36,12 @@ bash "$GENERATOR" \
 jq -e '
   .repo == "AidenAI-IO/aiden-firmware" and
   .channel == "stable" and
+  .download_safety_margin_bytes == 16777216 and
+  (has("storage_mount_point") | not) and
+  (has("storage_device_path") | not) and
+  (has("storage_filesystem") | not) and
+  (has("reserve_size_bytes") | not) and
+  (has("reserve_safety_margin_bytes") | not) and
   .factory_version == "20260523-120000-abcdef0" and
   .factory_build_time == "2026-05-23T12:00:00Z" and
   .factory_partition_hashes.a.boot == "boot-a-hash" and

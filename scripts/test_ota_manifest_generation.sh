@@ -111,4 +111,21 @@ if ! jq -e \
   exit 1
 fi
 
+if "$repo_root/scripts/generate_ota_manifest.sh" \
+  --version "over-budget" \
+  --channel "test" \
+  --build-time "2026-01-01T00:00:00Z" \
+  --sign-key "$private_key" \
+  --image-dir "$image_dir" \
+  --max-download-bytes 1 \
+  --output "$tmp_dir/over-budget.json" >"$tmp_dir/over-budget.stdout" 2>"$tmp_dir/over-budget.stderr"; then
+  echo "manifest generation must reject a target-slot download above the configured OTA budget" >&2
+  exit 1
+fi
+if ! grep -q 'target slot .* download size .* exceeds limit' "$tmp_dir/over-budget.stderr"; then
+  echo "manifest over-budget failure must explain the target slot and limit" >&2
+  cat "$tmp_dir/over-budget.stderr" >&2
+  exit 1
+fi
+
 echo "OTA manifest generation test passed (neutral resources correctly used)."

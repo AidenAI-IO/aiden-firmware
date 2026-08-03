@@ -2,14 +2,20 @@ package ota
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"syscall"
 	"time"
 )
 
 const defaultProgressInterval = 5 * time.Second
+
+var closeDownloadFile = func(f *os.File) error {
+	return f.Close()
+}
 
 type DownloadOptions struct {
 	BearerToken      string
@@ -117,8 +123,12 @@ func DownloadFileWithOptions(ctx context.Context, url string, dst string, expect
 	if copyErr == nil {
 		copyErr = f.Sync()
 	}
-	closeErr := f.Close()
+	closeErr := closeDownloadFile(f)
+	if closeErr != nil {
+		handleDownloadError(part, closeErr)
+	}
 	if copyErr != nil {
+		handleDownloadError(part, copyErr)
 		return copyErr
 	}
 	if closeErr != nil {
@@ -222,4 +232,25 @@ func reportDownloadProgress(progress func(DownloadProgress), url string, path st
 		ResumedFrom: resumedFrom,
 		Complete:    complete,
 	})
+}
+
+// handleDownloadError handles download errors, specifically cleaning up .part files on ENOSPC.
+// For ENOSPC (no space left on device), the partial file is deleted because resume would fail
+// at the same point. For other errors (network, timeout), the .part file is preserved for resume.
+func handleDownloadError(partPath string, err error) {
+	if err == nil {
+		return
+	}
+
+	// Check if error is ENOSPC
+	if errors.Is(err, syscall.ENOSPC) {
+		// Delete .part file - resume would fail anyway
+		if removeErr := os.Remove(partPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			// Log failure but don't propagate - we're already in error path
+			fmt.Fprintf(os.Stderr, "ota: failed to remove %s after ENOSPC: %v\n", partPath, removeErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "ota: removed partial file %s after ENOSPC\n", partPath)
+		}
+	}
+	// For all other errors, preserve .part file for resume (existing behavior)
 }

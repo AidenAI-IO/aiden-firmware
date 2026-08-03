@@ -195,6 +195,17 @@ jobs:
           --image-dir pico-sdk/output/image \
           --assets "$manifest_image_assets"
 
+    - name: Resolve OTA partition download limit
+      id: ota_storage
+      shell: bash
+      run: |
+        source scripts/ota_partition_layout.sh
+        max_download_bytes="$(aiden_ota_manifest_max_download_bytes)" || {
+          echo "Failed to resolve OTA partition download limit" >&2
+          exit 1
+        }
+        printf 'max_download_bytes=%s\n' "$max_download_bytes" >> "$GITHUB_OUTPUT"
+
     - name: Generate OTA manifest
       env:
         OTA_ED25519_PRIVATE_KEY: ${{ secrets.OTA_ED25519_PRIVATE_KEY }}
@@ -218,6 +229,7 @@ jobs:
           --sign-key "$private_key" \
           --image-dir pico-sdk/output/image \
           "${asset_metadata_args[@]}" \
+          --max-download-bytes "${{ steps.ota_storage.outputs.max_download_bytes }}" \
           --output pico-sdk/output/image/manifest.json
 
     - name: Generate OTA device config
@@ -226,7 +238,7 @@ jobs:
           --manifest pico-sdk/output/image/manifest.json \
           --repo "$GITHUB_REPOSITORY" \
           --channel "${{ steps.release_info.outputs.channel }}" \
-          --output pico-sdk/output/out/userdata/ota/config.json
+          --output pico-sdk/output/out/ota/config.json
 
     - name: Repack update image with OTA config
       run: ./build_image.sh bash ./scripts/repack_ota_update_image.sh

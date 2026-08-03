@@ -99,6 +99,10 @@ Runtime directory:
 └── health.ok            # health confirmation marker written after the app is ready
 ```
 
+`/userdata/ota` is a dedicated 300 MiB ext4 partition mounted by the
+SDK-generated `S20linkmount` service. `S54ota` fails closed until that mount is
+active.
+
 For more details see [OTA Overview](../08-ota/README.md).
 
 ## Config Web

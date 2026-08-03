@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -116,13 +117,13 @@ func TestUpdateRunsManualCheckWhenNoUpdate(t *testing.T) {
 	fixture := newNoUpdateFixture(t)
 
 	var out bytes.Buffer
-	err := run([]string{
+	err := runWithConfig([]string{
 		"update",
-		"--state-dir", fixture.stateDir,
+		"--config", fixture.configPath,
 		"--misc", fixture.miscPath,
 		"--manifest-url", fixture.manifestURL,
 		"--public-key", fixture.keyPath,
-	}, &out)
+	}, &out, fixture.configureStorage)
 	if err != nil {
 		t.Fatalf("run(update) error = %v", err)
 	}
@@ -138,23 +139,36 @@ func TestUpdateReturnsManualCheckFailure(t *testing.T) {
 	}))
 	t.Cleanup(badServer.Close)
 
-	err := run([]string{
+	err := runWithConfig([]string{
 		"update",
-		"--state-dir", fixture.stateDir,
+		"--config", fixture.configPath,
 		"--misc", fixture.miscPath,
 		"--manifest-url", badServer.URL + "/manifest.json",
 		"--public-key", fixture.keyPath,
-	}, &bytes.Buffer{})
+	}, &bytes.Buffer{}, fixture.configureStorage)
 	if err == nil {
 		t.Fatalf("run(update) error = nil, want manifest failure")
 	}
 }
 
 type noUpdateFixture struct {
-	stateDir    string
-	miscPath    string
-	keyPath     string
-	manifestURL string
+	configPath    string
+	mountInfoPath string
+	storageDevice string
+	stateDir      string
+	miscPath      string
+	keyPath       string
+	manifestURL   string
+}
+
+func (f noUpdateFixture) configureStorage(config *ota.UpdaterConfig) {
+	config.StateDir = f.stateDir
+	config.DownloadDir = filepath.Join(f.stateDir, "downloads")
+	config.UpdateLockPath = filepath.Join(f.stateDir, ota.DefaultOTAUpdateLockName)
+	config.StorageMountPoint = f.stateDir
+	config.StorageDevicePath = f.storageDevice
+	config.StorageFilesystem = "ext4"
+	config.MountInfoPath = f.mountInfoPath
 }
 
 func newNoUpdateFixture(t *testing.T) noUpdateFixture {
@@ -162,6 +176,9 @@ func newNoUpdateFixture(t *testing.T) noUpdateFixture {
 
 	tmp := t.TempDir()
 	stateDir := filepath.Join(tmp, "state")
+	configPath := filepath.Join(tmp, "config.json")
+	mountInfoPath := filepath.Join(tmp, "mountinfo")
+	storageDevicePath := filepath.Join(tmp, "ota-device")
 	miscPath := filepath.Join(tmp, "misc.img")
 	keyPath := filepath.Join(tmp, "ota_pubkey.pem")
 	version := "20260521-120000-abcdef0"
@@ -188,6 +205,20 @@ func newNoUpdateFixture(t *testing.T) noUpdateFixture {
 	}
 	if err := ota.SaveState(filepath.Join(stateDir, "state.json"), state); err != nil {
 		t.Fatalf("SaveState() error = %v", err)
+	}
+	if err := os.WriteFile(storageDevicePath, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile(storage device) error = %v", err)
+	}
+	mountInfo := fmt.Sprintf("36 25 179:12 / %s rw,relatime - ext4 %s rw\n", stateDir, storageDevicePath)
+	if err := os.WriteFile(mountInfoPath, []byte(mountInfo), 0o644); err != nil {
+		t.Fatalf("WriteFile(mountinfo) error = %v", err)
+	}
+	configBytes, err := json.Marshal(ota.UpdaterConfig{})
+	if err != nil {
+		t.Fatalf("Marshal(config) error = %v", err)
+	}
+	if err := os.WriteFile(configPath, configBytes, 0o644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
 	}
 
 	manifest := ota.Manifest{
@@ -220,10 +251,24 @@ func newNoUpdateFixture(t *testing.T) noUpdateFixture {
 	t.Cleanup(server.Close)
 
 	return noUpdateFixture{
-		stateDir:    stateDir,
-		miscPath:    miscPath,
-		keyPath:     keyPath,
-		manifestURL: server.URL + "/manifest.json",
+		configPath:    configPath,
+		mountInfoPath: mountInfoPath,
+		storageDevice: storageDevicePath,
+		stateDir:      stateDir,
+		miscPath:      miscPath,
+		keyPath:       keyPath,
+		manifestURL:   server.URL + "/manifest.json",
+	}
+}
+
+func TestStateDirOverrideDoesNotDisableDedicatedMountValidation(t *testing.T) {
+	err := run([]string{
+		"status",
+		"--config", filepath.Join(t.TempDir(), "missing.json"),
+		"--state-dir", t.TempDir(),
+	}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "state_dir must be inside the dedicated OTA storage mount") {
+		t.Fatalf("run(status) error = %v, want dedicated storage validation", err)
 	}
 }
 

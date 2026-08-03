@@ -1,0 +1,147 @@
+# OTA Dedicated Storage Partition
+
+## Purpose
+
+OTA downloads, state, and health markers live on a dedicated 300 MiB ext4
+partition. This replaces the former reserve-file design on `/userdata`.
+Ordinary logs, recordings, swap, and Agent state cannot consume OTA capacity,
+and OTA activity cannot make `/userdata` appear artificially full.
+
+The production layout appends the partition without shrinking userdata:
+
+```text
+...,1536M(rootfs_b),3G(userdata),300M(ota)
+```
+
+The partition is mounted at `/userdata/ota`, preserving the existing OTA
+runtime paths while placing them on a separate filesystem.
+
+## Boot and Fail-Closed Behavior
+
+The `aiden-sdk` board configuration defines:
+
+```text
+300M(ota)
+ota@/userdata/ota@ext4
+```
+
+The SDK-generated `S20linkmount` service mounts `/dev/block/by-name/ota` at
+`/userdata/ota`. `S54ota` waits for both `/userdata` and the dedicated OTA
+mount before running health processing.
+
+The Go updater independently checks `/proc/self/mountinfo` before creating its
+lock, state, or download files. The mount must be the ext4 filesystem rooted at
+`/dev/block/by-name/ota`; a bind mount or unrelated filesystem at the same path
+is rejected. If the expected mount is not active, `ota update`, `ota health`,
+and `ota status` fail instead of writing into the underlying userdata directory.
+
+There is intentionally no legacy reserve-file fallback and no SD-card OTA
+cache route. The product has not shipped with the previous layout, so factory
+images can move directly to the partition design.
+
+## Capacity Model
+
+The runtime decision is based on actual filesystem availability:
+
+```text
+required = remaining signed asset bytes + download safety margin
+```
+
+Before downloading partition assets, the updater:
+
+1. Selects only the assets needed for the inactive slot.
+2. Skips target partitions whose recorded hash already matches.
+3. Removes stale cache entries while preserving verified assets and valid
+   resumable `.part` files.
+4. Subtracts bytes already present in valid partial downloads.
+5. Reads `statfs(...).Bavail` from the dedicated OTA filesystem.
+6. Rejects the update before the first asset request when available bytes are
+   below the requirement.
+
+The default `download_safety_margin_bytes` is 16 MiB. It covers filesystem
+metadata, directory updates, and sync overhead; it is not a reserved file and
+does not reduce capacity while the device is idle.
+
+Release CI also rejects an impossible target-slot download set. Its limit is
+derived from the shared partition layout:
+
+```text
+300 MiB partition - 30 MiB ext4 unavailable-space allowance - 16 MiB runtime margin
+= 254 MiB maximum compressed target-slot download set
+```
+
+The 30 MiB allowance conservatively budgets 10% of the partition for ext4
+metadata and reserved blocks, based on the validated 256 MiB image exposing
+about 232.4 MiB through `statfs`. The runtime `statfs` check remains
+authoritative because filesystem metadata, cached assets, and partial downloads
+vary by device.
+
+## Factory Image Flow
+
+`_build_image.sh` generates `ota.img` and includes it in `update.img`.
+`userdata.img` contains only the empty `/userdata/ota` mount point.
+
+After the signed manifest is generated, CI writes the factory baseline to:
+
+```text
+pico-sdk/output/out/ota/config.json
+```
+
+`scripts/repack_ota_update_image.sh` then rebuilds only `ota.img` and
+`update.img`. The OTA partition itself is not an online OTA target; online
+updates continue to write only the inactive `boot`, `oem`, and `rootfs`
+partitions.
+
+## Existing Protections That Remain
+
+- Stale download-cache cleanup.
+- Resumable `.part` downloads for network interruption.
+- `.part` removal after ENOSPC, because retrying the same full filesystem
+  position cannot succeed.
+- Downloaded archive size and SHA256 verification.
+- Extracted image hash verification for compressed images.
+- Extracted image size checks against the target partition.
+- A single OTA update lock for concurrent OTA commands.
+- Existing StorageMonitor cleanup and user-facing storage notifications for
+  `/userdata`.
+
+No reserve allocation, release, restoration, SD routing, or StorageManager
+migration coordination remains.
+
+## StorageMonitor and SD Migration
+
+StorageMonitor samples `/userdata`. Because `/userdata/ota` is a separate
+mounted filesystem, OTA downloads do not reduce the `statfs` availability
+reported for `/userdata`. Its existing cleanup stages and notifications still
+protect Agent logs, audio archives, and session archives and should remain.
+
+The SD-card StorageManager continues to mount cards and migrate eligible audio
+data based on the existing eMMC watermarks. It neither hosts OTA downloads nor
+shares capacity or locks with OTA, so SD insertion, removal, formatting, and
+migration do not change OTA capacity.
+
+## Diagnostics
+
+```bash
+mount | grep ' /userdata/ota '
+df -h /userdata /userdata/ota
+du -h /userdata/ota/downloads/* /userdata/ota/downloads/*.part 2>/dev/null
+/oem/usr/bin/ota status
+tail -n 100 /var/log/ota/ota.log
+```
+
+Expected mount source:
+
+```text
+/dev/block/by-name/ota on /userdata/ota type ext4
+```
+
+## Acceptance Criteria
+
+- Full image builds produce `ota.img` and package it in `update.img`.
+- `/userdata/ota/config.json` comes from `ota.img`, not `userdata.img`.
+- OTA commands fail closed when the dedicated mount is missing.
+- Insufficient capacity is rejected before any partition asset request.
+- Valid partial downloads reduce the remaining required bytes.
+- Network failures retain resumable partial files; ENOSPC removes them.
+- StorageMonitor and SD migration behavior remain independent of OTA.

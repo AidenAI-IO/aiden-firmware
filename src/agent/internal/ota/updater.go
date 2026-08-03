@@ -22,44 +22,54 @@ import (
 )
 
 const (
-	DefaultOTAConfigPath             = "/userdata/ota/config.json"
-	DefaultOTAStateDir               = "/userdata/ota"
-	DefaultOTAUpdateLockName         = "update.lock"
-	DefaultReleaseURL                = "https://api.github.com/repos/AidenAI-IO/aiden-firmware/releases/latest"
-	MaxRemoteManifestBytes           = 1 << 20
-	DefaultHTTPRequestLimit          = 30 * time.Minute
-	DefaultHTTPResponseHeaderTimeout = 30 * time.Second
+	DefaultOTAConfigPath                = "/userdata/ota/config.json"
+	DefaultOTAStateDir                  = "/userdata/ota"
+	DefaultOTAStorageMountPoint         = "/userdata/ota"
+	DefaultOTAStorageDevicePath         = "/dev/block/by-name/ota"
+	DefaultOTAStorageFilesystem         = "ext4"
+	DefaultOTAMountInfoPath             = "/proc/self/mountinfo"
+	DefaultOTAUpdateLockName            = "update.lock"
+	DefaultOTADownloadSafetyMarginBytes = 16 << 20
+	DefaultReleaseURL                   = "https://api.github.com/repos/AidenAI-IO/aiden-firmware/releases/latest"
+	MaxRemoteManifestBytes              = 1 << 20
+	DefaultHTTPRequestLimit             = 30 * time.Minute
+	DefaultHTTPResponseHeaderTimeout    = 30 * time.Second
 )
 
 var ErrUpdateAlreadyRunning = errors.New("ota update already running")
 
 type UpdaterConfig struct {
-	ConfigPath             string                       `json:"-"`
-	StateDir               string                       `json:"state_dir,omitempty"`
-	DownloadDir            string                       `json:"download_dir,omitempty"`
-	UpdateLockPath         string                       `json:"update_lock_path,omitempty"`
-	MiscPath               string                       `json:"misc_path,omitempty"`
-	BlockDir               string                       `json:"block_dir,omitempty"`
-	ManifestURL            string                       `json:"manifest_url,omitempty"`
-	ReleaseURL             string                       `json:"-"` // Test override for default release URL
-	PublicKeyPath          string                       `json:"public_key_path,omitempty"`
-	PublicKey              ed25519.PublicKey            `json:"-"`
-	FactoryVersion         string                       `json:"factory_version,omitempty"`
-	FactoryBuildTime       string                       `json:"factory_build_time,omitempty"`
-	FactoryPartitionHashes map[string]map[string]string `json:"factory_partition_hashes,omitempty"`
-	PartitionSizes         map[string]int64             `json:"partition_sizes,omitempty"`
-	GitHubToken            string                       `json:"github_token,omitempty"`
-	GitHubTokenPath        string                       `json:"github_token_path,omitempty"`
-	GitHubProxyURL         string                       `json:"github_proxy_url,omitempty"`
-	SwitchTries            uint8                        `json:"switch_tries,omitempty"`
-	HealthTimeout          time.Duration                `json:"-"`
-	HealthTimeoutSecs      int                          `json:"health_timeout_seconds,omitempty"`
-	HealthPollInterval     time.Duration                `json:"-"`
-	HTTPTimeout            time.Duration                `json:"-"`
-	HTTPTimeoutSecs        int                          `json:"http_timeout_seconds,omitempty"`
-	DryRun                 bool                         `json:"dry_run,omitempty"`
-	TargetSlotOverride     string                       `json:"target_slot_override,omitempty"`
-	Logger                 *log.Logger                  `json:"-"`
+	ConfigPath                string                       `json:"-"`
+	StateDir                  string                       `json:"state_dir,omitempty"`
+	DownloadDir               string                       `json:"download_dir,omitempty"`
+	StorageMountPoint         string                       `json:"-"` // Fixed in production; tests may override before NewUpdater.
+	StorageDevicePath         string                       `json:"-"` // Fixed in production; tests may override before NewUpdater.
+	StorageFilesystem         string                       `json:"-"` // Fixed in production; tests may override before NewUpdater.
+	MountInfoPath             string                       `json:"-"`
+	DownloadSafetyMarginBytes int64                        `json:"download_safety_margin_bytes,omitempty"`
+	UpdateLockPath            string                       `json:"update_lock_path,omitempty"`
+	MiscPath                  string                       `json:"misc_path,omitempty"`
+	BlockDir                  string                       `json:"block_dir,omitempty"`
+	ManifestURL               string                       `json:"manifest_url,omitempty"`
+	ReleaseURL                string                       `json:"-"` // Test override for default release URL
+	PublicKeyPath             string                       `json:"public_key_path,omitempty"`
+	PublicKey                 ed25519.PublicKey            `json:"-"`
+	FactoryVersion            string                       `json:"factory_version,omitempty"`
+	FactoryBuildTime          string                       `json:"factory_build_time,omitempty"`
+	FactoryPartitionHashes    map[string]map[string]string `json:"factory_partition_hashes,omitempty"`
+	PartitionSizes            map[string]int64             `json:"partition_sizes,omitempty"`
+	GitHubToken               string                       `json:"github_token,omitempty"`
+	GitHubTokenPath           string                       `json:"github_token_path,omitempty"`
+	GitHubProxyURL            string                       `json:"github_proxy_url,omitempty"`
+	SwitchTries               uint8                        `json:"switch_tries,omitempty"`
+	HealthTimeout             time.Duration                `json:"-"`
+	HealthTimeoutSecs         int                          `json:"health_timeout_seconds,omitempty"`
+	HealthPollInterval        time.Duration                `json:"-"`
+	HTTPTimeout               time.Duration                `json:"-"`
+	HTTPTimeoutSecs           int                          `json:"http_timeout_seconds,omitempty"`
+	DryRun                    bool                         `json:"dry_run,omitempty"`
+	TargetSlotOverride        string                       `json:"target_slot_override,omitempty"`
+	Logger                    *log.Logger                  `json:"-"`
 }
 
 type UpdateResult struct {
@@ -70,22 +80,22 @@ type UpdateResult struct {
 }
 
 type Updater struct {
-	config      UpdaterConfig
-	reboot      func() error
-	writeABData func(ABData) error
-	currentSlot func() (Slot, bool, error)
+	config         UpdaterConfig
+	reboot         func() error
+	writeABData    func(ABData) error
+	currentSlot    func() (Slot, bool, error)
+	availableBytes func(string) (int64, error)
 }
 
 func LoadUpdaterConfig(path string) (UpdaterConfig, error) {
 	if path == "" {
 		path = DefaultOTAConfigPath
 	}
-	config := DefaultUpdaterConfig()
-	config.ConfigPath = path
+	config := UpdaterConfig{ConfigPath: path}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return config, nil
+			return normalizeUpdaterConfig(config)
 		}
 		return UpdaterConfig{}, err
 	}
@@ -108,8 +118,35 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 	if config.DownloadDir == "" {
 		config.DownloadDir = filepath.Join(config.StateDir, "downloads")
 	}
+	if config.StorageMountPoint == "" {
+		config.StorageMountPoint = DefaultOTAStorageMountPoint
+	}
+	if config.StorageDevicePath == "" {
+		config.StorageDevicePath = DefaultOTAStorageDevicePath
+	}
+	if config.StorageFilesystem == "" {
+		config.StorageFilesystem = DefaultOTAStorageFilesystem
+	}
+	if config.MountInfoPath == "" {
+		config.MountInfoPath = DefaultOTAMountInfoPath
+	}
+	if !pathIsWithin(config.StorageMountPoint, config.StateDir) {
+		return UpdaterConfig{}, fmt.Errorf("state_dir must be inside the dedicated OTA storage mount")
+	}
+	if !pathIsWithin(config.StorageMountPoint, config.DownloadDir) {
+		return UpdaterConfig{}, fmt.Errorf("download_dir must be inside the dedicated OTA storage mount")
+	}
+	if config.DownloadSafetyMarginBytes == 0 {
+		config.DownloadSafetyMarginBytes = DefaultOTADownloadSafetyMarginBytes
+	}
+	if config.DownloadSafetyMarginBytes < 0 {
+		return UpdaterConfig{}, fmt.Errorf("download_safety_margin_bytes must be non-negative")
+	}
 	if config.UpdateLockPath == "" {
 		config.UpdateLockPath = filepath.Join(config.StateDir, DefaultOTAUpdateLockName)
+	}
+	if !pathIsWithin(config.StorageMountPoint, config.UpdateLockPath) {
+		return UpdaterConfig{}, fmt.Errorf("update_lock_path must be inside the dedicated OTA storage mount")
 	}
 	if config.MiscPath == "" {
 		config.MiscPath = "/dev/block/by-name/misc"
@@ -155,15 +192,20 @@ func NewUpdater(config UpdaterConfig, reboot func() error) (*Updater, error) {
 		return nil, err
 	}
 	u := &Updater{
-		config:      config,
-		reboot:      reboot,
-		currentSlot: currentSlotFromProcCmdline,
+		config:         config,
+		reboot:         reboot,
+		currentSlot:    currentSlotFromProcCmdline,
+		availableBytes: filesystemAvailableBytes,
 	}
 	u.writeABData = u.writeABDataFile
 	return u, nil
 }
 
 func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
+	if err := u.ensureStorageReady(); err != nil {
+		u.logf("ota check: %v", err)
+		return UpdateResult{}, err
+	}
 	unlock, err := u.acquireUpdateLock()
 	if err != nil {
 		u.logf("ota check: %v", err)
@@ -281,7 +323,6 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	}
 
 	selectedAssets := map[string]ManifestAsset{}
-	downloaded := map[string]string{}
 	for _, part := range manifest.Parts {
 		asset, err := ResolveAsset(part, target)
 		if err != nil {
@@ -293,7 +334,27 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 		selectedAssets[part.Name] = asset
-		if targetPartitionHashMatches(state, target, part.Name, asset) {
+	}
+	plan, err := u.buildDownloadPlan(selectedAssets, state, target)
+	if err != nil {
+		u.recordError("cleanup", err)
+		return UpdateResult{}, err
+	}
+
+	if err := u.cleanupOldDownloadCache(plan); err != nil {
+		u.recordError("cleanup", err)
+		return UpdateResult{}, err
+	}
+	if err := u.ensureDownloadCapacity(plan); err != nil {
+		u.recordError("space", err)
+		return UpdateResult{}, err
+	}
+
+	downloaded := map[string]string{}
+	for _, part := range manifest.Parts {
+		planned := plan.assets[part.Name]
+		asset := planned.asset
+		if planned.targetMatches {
 			u.logf("ota partition: %s skipped; target slot %s hash matches manifest", part.Name, slotLogName(target))
 			continue
 		}
@@ -326,12 +387,9 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			u.logf("ota asset: %s using URL from release API", asset.Name)
 			assetToken = token
 		}
-		dst := filepath.Join(u.config.DownloadDir, asset.Name)
-		if u.cachedDownloadVerified(dst, asset) {
-			if err := u.verifyDownloadedImage(dst, asset); err != nil {
-				u.recordError("verify", err)
-				return UpdateResult{}, err
-			}
+		dst := planned.path
+		if planned.cachedVerified {
+			u.logf("ota download: %s skipped; cached file verified dst=%s", asset.Name, dst)
 			downloaded[part.Name] = dst
 			continue
 		}
@@ -345,11 +403,13 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 		if err := VerifyFile(dst, asset.Size, asset.SHA256); err != nil {
+			err = u.discardInvalidDownload(dst, err)
 			u.recordError("verify", err)
 			return UpdateResult{}, err
 		}
 		u.logf("ota verify: %s sha256 ok", asset.Name)
 		if err := u.verifyDownloadedImage(dst, asset); err != nil {
+			err = u.discardInvalidDownload(dst, err)
 			u.recordError("verify", err)
 			return UpdateResult{}, err
 		}
@@ -469,15 +529,19 @@ func (u *Updater) acquireUpdateLock() (func(), error) {
 	}, nil
 }
 
-func (u *Updater) cachedDownloadVerified(path string, asset ManifestAsset) bool {
+func (u *Updater) verifyCachedDownload(path string, asset ManifestAsset) error {
 	if err := VerifyFile(path, asset.Size, asset.SHA256); err != nil {
-		if !os.IsNotExist(err) {
-			u.logf("ota download: %s cached file ignored: %v", asset.Name, err)
-		}
-		return false
+		return err
 	}
-	u.logf("ota download: %s skipped; cached file verified dst=%s", asset.Name, path)
-	return true
+	return u.verifyDownloadedImage(path, asset)
+}
+
+func (u *Updater) discardInvalidDownload(path string, verifyErr error) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("%w; remove invalid download %s: %v", verifyErr, filepath.Base(path), err)
+	}
+	u.logf("ota download: removed invalid cached file %s", filepath.Base(path))
+	return verifyErr
 }
 
 func targetPartitionHashMatches(state State, target Slot, partName string, asset ManifestAsset) bool {
@@ -633,6 +697,10 @@ func (u *Updater) commitPendingHealth(pending PendingBoot) error {
 
 func (u *Updater) ProcessPendingHealthOnce(ctx context.Context) error {
 	u.logf("ota health: processing pending boot")
+	if err := u.ensureStorageReady(); err != nil {
+		u.logf("ota health: %v", err)
+		return err
+	}
 	if err := u.processPendingHealthWithLock(ctx); err != nil {
 		u.logf("ota health: %v", err)
 		if !errors.Is(err, ErrUpdateAlreadyRunning) {
@@ -654,6 +722,9 @@ func (u *Updater) processPendingHealthWithLock(ctx context.Context) error {
 }
 
 func (u *Updater) Status() (State, ABData, error) {
+	if err := u.ensureStorageReady(); err != nil {
+		return State{}, ABData{}, err
+	}
 	state, stateErr := u.loadState()
 	ab, abErr := u.readABData()
 	if stateErr != nil && !os.IsNotExist(stateErr) {
@@ -879,6 +950,55 @@ func (u *Updater) logf(format string, args ...any) {
 	if u.config.Logger != nil {
 		u.config.Logger.Printf(format, args...)
 	}
+}
+
+// cleanupOldDownloadCache keeps only verified assets and resumable partials
+// needed for the selected target slot.
+func (u *Updater) cleanupOldDownloadCache(plan downloadPlan) error {
+	downloadDir := u.config.DownloadDir
+	if downloadDir == "" {
+		return nil
+	}
+
+	keepFiles := make(map[string]bool)
+	for _, planned := range plan.assets {
+		if planned.cachedVerified {
+			keepFiles[planned.asset.Name] = true
+		}
+		if planned.partialPresent {
+			keepFiles[planned.asset.Name+".part"] = true
+		}
+	}
+
+	// Read download directory
+	entries, err := os.ReadDir(downloadDir)
+	if os.IsNotExist(err) {
+		// Directory doesn't exist, nothing to clean
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read download dir: %w", err)
+	}
+
+	// Check each file
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if keepFiles[name] {
+			continue
+		}
+
+		// Delete old file
+		path := filepath.Join(downloadDir, name)
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove stale OTA cache %s: %w", name, err)
+		}
+		u.logf("ota cleanup: removed old file %s", name)
+	}
+
+	return nil
 }
 
 var defaultOTAHTTPClient = newOTAHTTPClient()

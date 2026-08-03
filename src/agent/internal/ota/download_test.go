@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -122,6 +123,34 @@ func TestDownloadFailsWhenResponseExceedsExpectedSize(t *testing.T) {
 		t.Fatalf("stat part error = %v", statErr)
 	} else if info.Size() > 6 {
 		t.Fatalf("part size = %d, want bounded write", info.Size())
+	}
+}
+
+func TestDownloadRemovesPartialWhenCloseReportsNoSpaceAfterCopyFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("12"))
+	}))
+	defer server.Close()
+
+	originalClose := closeDownloadFile
+	closeDownloadFile = func(f *os.File) error {
+		if err := f.Close(); err != nil {
+			return err
+		}
+		return syscall.ENOSPC
+	}
+	t.Cleanup(func() { closeDownloadFile = originalClose })
+
+	dst := filepath.Join(t.TempDir(), "image.img")
+	err := DownloadFile(context.Background(), server.URL, dst, 1)
+	if err == nil || !strings.Contains(err.Error(), "download size exceeds expected") {
+		t.Fatalf("error = %v, want original copy-size failure", err)
+	}
+	if _, statErr := os.Stat(dst + ".part"); !os.IsNotExist(statErr) {
+		t.Fatalf("part file remains after close-time ENOSPC: %v", statErr)
+	}
+	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+		t.Fatalf("destination remains after failed download: %v", statErr)
 	}
 }
 

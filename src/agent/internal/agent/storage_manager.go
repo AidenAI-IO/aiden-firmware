@@ -30,9 +30,8 @@ const (
 type StorageDataClass string
 
 const (
-	StorageClassAudio    StorageDataClass = "audio"
-	StorageClassLogs     StorageDataClass = "logs"
-	StorageClassOTACache StorageDataClass = "ota-cache"
+	StorageClassAudio StorageDataClass = "audio"
+	StorageClassLogs  StorageDataClass = "logs"
 )
 
 // storageSDSubdir is the dedicated subtree on the card; the card's own
@@ -72,7 +71,7 @@ const (
 	migrationPartialSuffix = ".aiden-partial"       // in-flight copy marker on SD
 )
 
-// storageStateFileName mirrors runtime state for external processes (cmd/ota).
+// storageStateFileName mirrors runtime state for external consumers.
 const defaultStorageStatePath = "/run/aiden/storage.state"
 
 // StorageCardStatus describes the SD card as last observed.
@@ -795,8 +794,6 @@ func (m *StorageManager) emmcClassDir(class StorageDataClass) string {
 		return filepath.Join(m.emmcRoot, "audio")
 	case StorageClassLogs:
 		return filepath.Join(m.emmcRoot, "agent", "log")
-	case StorageClassOTACache:
-		return filepath.Join(m.emmcRoot, "ota", "downloads")
 	default:
 		return filepath.Join(m.emmcRoot, string(class))
 	}
