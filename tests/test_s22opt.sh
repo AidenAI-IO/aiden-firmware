@@ -210,8 +210,13 @@ check_status 1 $? "start fails"
 check_contains "$MOUNTLOG" "mount -t tmpfs -o ro,size=0 tmpfs $case_dir/opt" \
 	"seals /opt with a read-only tmpfs"
 check_contains "$OUTPUT" "sealed read-only" "says /opt was sealed"
+# No feed file means no src line anywhere, so opkg cannot resolve any package.
+# Note this is NOT because opkg refuses to start on a dangling config symlink --
+# uClibc-ng's glob() silently drops it. Keeping the only src line inside /opt is
+# what makes a failed mount safe, which is why the default source is seeded here
+# and not shipped as a rootfs fragment (§6.5.1).
 check_absent "$case_dir/opt/etc/opkg/userfeeds.conf" \
-	"leaves the feed symlink target missing, so opkg refuses to run"
+	"creates no feed file, so no source is reachable"
 run_s22opt status
 check_status 1 $? "status fails while sealed"
 check_contains "$OUTPUT" "opt=sealed" "status reports the seal"
@@ -317,6 +322,69 @@ new_case usage
 run_s22opt bogus
 check_status 1 $? "an unknown subcommand fails"
 check_contains "$OUTPUT" "Usage:" "prints usage"
+
+echo "Test 13: a freshly created feed file is seeded with the default source (§6.5.1)"
+new_case seed-default
+run_s22opt start
+check_status 0 $? "start succeeds"
+UF=$case_dir/opt/etc/opkg/userfeeds.conf
+check_contains "$UF" "src/gz entware https://bin.entware.net/armv7sf-k3.2" \
+	"the default source is written"
+# Exactly one source line: comments are fine, a second src line would mean
+# opkg reports "Duplicate src declaration" (§13.1.1).
+if [ "$(grep -c '^src' "$UF")" -eq 1 ]; then
+	pass "exactly one src line"
+else
+	fail "expected 1 src line, got $(grep -c '^src' "$UF")"
+fi
+if [ -n "$(find "$case_dir/opt/etc/opkg" -name '.userfeeds.conf.*' 2>/dev/null)" ]; then
+	fail "a temporary file was left behind"
+else
+	pass "no temporary file left behind"
+fi
+
+echo "Test 14: seeding happens only on creation -- a user who deletes the source keeps it deleted"
+new_case respect-deletion
+mkdir -p "$case_dir/opt/etc/opkg"
+# The realistic shape after someone removes the seeded line: comments remain,
+# no src line. The file exists, so it must not be touched.
+printf '# I do not want a third-party feed\n' > "$case_dir/opt/etc/opkg/userfeeds.conf"
+preset_opt_mount "$USERDATA_DEV" /opt
+run_s22opt start
+check_status 0 $? "start succeeds"
+if grep -q '^src' "$case_dir/opt/etc/opkg/userfeeds.conf"; then
+	fail "the default source was re-seeded over the user's choice"
+else
+	pass "no source is re-added"
+fi
+check_contains "$case_dir/opt/etc/opkg/userfeeds.conf" "I do not want" \
+	"the user's content is untouched"
+
+echo "Test 14b: an existing *empty* feed file is also left alone"
+new_case respect-empty
+mkdir -p "$case_dir/opt/etc/opkg"
+: > "$case_dir/opt/etc/opkg/userfeeds.conf"
+preset_opt_mount "$USERDATA_DEV" /opt
+run_s22opt start
+check_status 0 $? "start succeeds"
+if [ -s "$case_dir/opt/etc/opkg/userfeeds.conf" ]; then
+	fail "an existing empty file was seeded"
+else
+	pass "an existing empty file stays empty"
+fi
+
+echo "Test 15: DEFAULT_FEED= builds an image with no default source"
+new_case no-default-feed
+export DEFAULT_FEED=
+run_s22opt start
+unset DEFAULT_FEED
+check_status 0 $? "start succeeds"
+check_present "$case_dir/opt/etc/opkg/userfeeds.conf" "the feed file is still created"
+if [ -s "$case_dir/opt/etc/opkg/userfeeds.conf" ]; then
+	fail "a source was seeded despite DEFAULT_FEED being empty"
+else
+	pass "the file is empty"
+fi
 
 echo ""
 if [ "$failures" -eq 0 ]; then
