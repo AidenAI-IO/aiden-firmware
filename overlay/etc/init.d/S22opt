@@ -24,6 +24,11 @@ OPT_DIR=${OPT_DIR:-/opt}
 USERDATA_DIR=${USERDATA_DIR:-/userdata}
 PERSISTENT_OPT=${PERSISTENT_OPT:-$USERDATA_DIR/opt}
 USERFEEDS_FILE=${USERFEEDS_FILE:-$OPT_DIR/etc/opkg/userfeeds.conf}
+# Source seeded into a freshly created userfeeds.conf. Expanded with "-" rather
+# than ":-" on purpose: DEFAULT_FEED= (explicitly empty) must produce a source
+# less image, which is what the tests use and what an image that does not want
+# to endorse a third-party feed would set.
+DEFAULT_FEED=${DEFAULT_FEED-src/gz entware https://bin.entware.net/armv7sf-k3.2}
 LOCK_DIR=${LOCK_DIR:-/run/lock}
 MOUNT_BIN=${MOUNT_BIN:-mount}
 UMOUNT_BIN=${UMOUNT_BIN:-umount}
@@ -125,6 +130,41 @@ seal_opt() {
 	return 1
 }
 
+# Write a fresh userfeeds.conf. Only ever called when the file does not exist.
+#
+# Written via a temporary file and mv so a failure part way through (a full
+# /userdata is the realistic one) cannot leave a half-written source line that
+# opkg would then try to parse. mv within the same directory is atomic.
+write_default_userfeeds() {
+	_uf_dir=${USERFEEDS_FILE%/*}
+	_uf_tmp=$_uf_dir/.userfeeds.conf.$$
+
+	if [ -n "$DEFAULT_FEED" ]; then
+		{
+			echo "# opkg package sources, one 'src/gz <name> <url>' per line."
+			echo "#"
+			echo "# This file lives on /userdata and survives reboots and OTA."
+			echo "# A full flash erases /userdata; the default below is then"
+			echo "# written again on the next boot."
+			echo "#"
+			echo "# Edit or delete these lines freely -- an existing file is"
+			echo "# never rewritten, so your choice is kept."
+			echo "$DEFAULT_FEED"
+		} > "$_uf_tmp" 2>/dev/null || { rm -f "$_uf_tmp"; unset _uf_dir _uf_tmp; return 1; }
+	else
+		: > "$_uf_tmp" 2>/dev/null || { rm -f "$_uf_tmp"; unset _uf_dir _uf_tmp; return 1; }
+	fi
+
+	if ! mv "$_uf_tmp" "$USERFEEDS_FILE"; then
+		rm -f "$_uf_tmp"
+		unset _uf_dir _uf_tmp
+		return 1
+	fi
+
+	unset _uf_dir _uf_tmp
+	return 0
+}
+
 ensure_opt_layout() {
 	# opkg's lock_file lives under /run, which is a tmpfs and starts empty.
 	mkdir -p "$LOCK_DIR" 2>/dev/null || true
@@ -142,10 +182,24 @@ ensure_opt_layout() {
 	fi
 
 	# Create when absent, never truncate: this file holds the user's feed
-	# selection and is expected to survive reboots and OTA (§6.4).
-	if [ ! -e "$USERFEEDS_FILE" ] && ! touch "$USERFEEDS_FILE"; then
-		echo "S22opt: cannot create $USERFEEDS_FILE" >&2
-		return 1
+	# selection and is expected to survive reboots and OTA (§6.4). A full flash
+	# does erase /userdata, and this is where the default source comes back.
+	#
+	# Seeding here rather than shipping the source as a rootfs fragment is the
+	# whole point (§6.5.1). When /opt fails to mount, the only thing standing
+	# between that and packages landing in the A/B rootfs is that no source is
+	# reachable -- opkg does NOT refuse to run on a dangling config symlink the
+	# way §6.2.1 first assumed, because uClibc-ng's glob() silently drops it.
+	# Keeping every src line inside /opt is what preserves that property; a
+	# rootfs fragment would destroy it.
+	#
+	# Only the absent case is touched, so a user who deletes the seeded line
+	# keeps their choice: the file still exists and is left alone.
+	if [ ! -e "$USERFEEDS_FILE" ]; then
+		if ! write_default_userfeeds; then
+			echo "S22opt: cannot create $USERFEEDS_FILE" >&2
+			return 1
+		fi
 	fi
 
 	return 0
