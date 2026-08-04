@@ -25,20 +25,26 @@ type OpenAppTool struct {
 	bridge     *PhoneBridge
 	bridgeOpen langtools.Tool
 	searchOpen langtools.Tool
+	logf       func(string, ...any)
 }
 
 func NewOpenAppTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer, searchOpen langtools.Tool) *OpenAppTool {
-	return &OpenAppTool{
+	tool := &OpenAppTool{
 		bridge:     bridge,
 		bridgeOpen: NewBridgeOpenAppTool(bridge, restorer),
 		searchOpen: searchOpen,
 	}
+	if bridge != nil && bridge.logger != nil {
+		tool.logf = bridge.logger.Info
+	}
+	return tool
 }
 
 func (t *OpenAppTool) Name() string { return toolOpenApp }
 
 func (t *OpenAppTool) Description() string {
 	return `Open an app by semantic app name. The tool automatically uses Phone Bridge when the companion app is ready, otherwise it searches for and opens the app through the visible system UI. ` +
+		`If the Phone Bridge launch fails, the tool retries through visible system search. ` +
 		`Use open_url for HTTP or HTTPS webpages. ` +
 		`Returns ok:true when the selected launch path reports success. After launch, inspect the opened screen before performing in-app navigation or text entry.`
 }
@@ -78,18 +84,56 @@ func parseRoutedOpenAppArgs(input string) (routedOpenAppArgs, *ToolError) {
 	return args, nil
 }
 
-func callNestedTool(ctx context.Context, tool langtools.Tool, input string) (string, error) {
+func callNestedTool(ctx context.Context, tool langtools.Tool, input string) (string, *ToolError, error) {
 	if tool == nil {
 		te := NewToolError(CodeToolExecutionFailed, "app launch route is not configured")
-		SetToolError(ctx, te)
-		return toolErrorString(te), nil
+		return toolErrorString(te), te, nil
 	}
 	toolCtx, _ := WithToolError(ctx)
 	out, err := tool.Call(toolCtx, input)
-	if te := ToolErrorFromContext(toolCtx); te != nil && (strings.TrimSpace(out) == "" || out == te.Message) {
+	return out, ToolErrorFromContext(toolCtx), err
+}
+
+func returnNestedToolResult(ctx context.Context, out string, te *ToolError, err error) (string, error) {
+	if te != nil && (strings.TrimSpace(out) == "" || out == te.Message) {
 		SetToolError(ctx, te)
 	}
 	return out, err
+}
+
+func (t *OpenAppTool) logRoute(format string, args ...any) {
+	if t != nil && t.logf != nil {
+		t.logf("open_app route: "+format, args...)
+	}
+}
+
+func openAppSearchRouteReason(tool *OpenAppTool, status PhoneBridgeStatus) string {
+	if tool == nil || tool.bridge == nil {
+		return "phone_bridge_unavailable"
+	}
+	if phoneBridgePiPBackgroundEnabled(status) {
+		return "ios_pip_background"
+	}
+	if phoneBridgeFGSBackgroundEnabled(status) {
+		return "android_fgs_background"
+	}
+	if !status.Connected {
+		return "phone_bridge_disconnected"
+	}
+	if phoneBridgeAppNeedsForeground(status) {
+		return "companion_app_background"
+	}
+	return "phone_bridge_not_ready"
+}
+
+func openAppBridgeFailureDetails(te *ToolError, err error) (string, string) {
+	if te != nil {
+		return te.Code, te.Message
+	}
+	if err != nil {
+		return "", err.Error()
+	}
+	return "", "unknown bridge failure"
 }
 
 func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
@@ -99,17 +143,41 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 		return toolErrorString(te), nil
 	}
 
-	if t != nil && t.bridge != nil && phoneBridgeCanUseDirectOpenApp(t.bridge.getStatus()) {
-		bridgeInput, _ := json.Marshal(map[string]string{"app": args.App})
-		return callNestedTool(ctx, t.bridgeOpen, string(bridgeInput))
-	}
-
 	searchInput := map[string]string{"app": args.App}
 	if args.Platform != "" {
 		searchInput["platform"] = args.Platform
 	}
 	rawSearchInput, _ := json.Marshal(searchInput)
-	return callNestedTool(ctx, t.searchOpen, string(rawSearchInput))
+
+	status := PhoneBridgeStatus{}
+	if t != nil && t.bridge != nil {
+		status = t.bridge.getStatus()
+	}
+	if t != nil && t.bridge != nil && phoneBridgeCanUseDirectOpenApp(status) {
+		t.logRoute("selected=bridge_open_app app=%q requested_platform=%q connected=%t bridge_platform=%q app_state=%q pip=%t fgs=%t",
+			args.App, args.Platform, status.Connected, status.Platform, status.AppState,
+			status.PipBridgeEnabled != nil && *status.PipBridgeEnabled,
+			status.FgsBridgeEnabled != nil && *status.FgsBridgeEnabled)
+		bridgeInput, _ := json.Marshal(map[string]string{"app": args.App})
+		bridgeOut, bridgeTE, bridgeErr := callNestedTool(ctx, t.bridgeOpen, string(bridgeInput))
+		if bridgeErr == nil && bridgeTE == nil {
+			return bridgeOut, nil
+		}
+		if ctx.Err() != nil {
+			return returnNestedToolResult(ctx, bridgeOut, bridgeTE, bridgeErr)
+		}
+		bridgeErrorCode, bridgeError := openAppBridgeFailureDetails(bridgeTE, bridgeErr)
+		t.logRoute("selected=search_launch_app reason=bridge_failed previous=bridge_open_app app=%q requested_platform=%q bridge_error_code=%q bridge_error=%q",
+			args.App, args.Platform, bridgeErrorCode, bridgeError)
+	} else {
+		t.logRoute("selected=search_launch_app reason=%s app=%q requested_platform=%q connected=%t bridge_platform=%q app_state=%q pip=%t fgs=%t",
+			openAppSearchRouteReason(t, status), args.App, args.Platform, status.Connected, status.Platform, status.AppState,
+			status.PipBridgeEnabled != nil && *status.PipBridgeEnabled,
+			status.FgsBridgeEnabled != nil && *status.FgsBridgeEnabled)
+	}
+
+	searchOut, searchTE, searchErr := callNestedTool(ctx, t.searchOpen, string(rawSearchInput))
+	return returnNestedToolResult(ctx, searchOut, searchTE, searchErr)
 }
 
 func phoneBridgeCanUseDirectOpenApp(status PhoneBridgeStatus) bool {

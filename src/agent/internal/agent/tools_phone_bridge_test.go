@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -397,6 +398,10 @@ func TestOpenAppMissingArgsReturnsInvalidArguments(t *testing.T) {
 func TestOpenAppDisconnectedRoutesToSearchLaunchApp(t *testing.T) {
 	search := &recordingTextInputTool{name: toolSearchLaunchApp, out: `{"ok":true,"target":"小红书"}`}
 	tool := NewOpenAppTool(nil, nil, search)
+	var logs []string
+	tool.logf = func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
 	ctx, _ := WithToolError(context.Background())
 	out, err := tool.Call(ctx, `{"app":"小红书"}`)
 	if err != nil {
@@ -410,6 +415,9 @@ func TestOpenAppDisconnectedRoutesToSearchLaunchApp(t *testing.T) {
 	}
 	if len(search.calls) != 1 || !strings.Contains(search.calls[0], `"app":"小红书"`) {
 		t.Fatalf("search calls = %#v, want semantic app", search.calls)
+	}
+	if got := strings.Join(logs, "\n"); !strings.Contains(got, "selected=search_launch_app") || !strings.Contains(got, "reason=phone_bridge_unavailable") {
+		t.Fatalf("route logs = %q, want direct search route and reason", got)
 	}
 }
 
@@ -439,6 +447,51 @@ func TestOpenAppConnectedForegroundRoutesToBridge(t *testing.T) {
 	var result map[string]any
 	if err := json.Unmarshal([]byte(out), &result); err != nil || result["ok"] != true || result["method"] != "open_app" {
 		t.Fatalf("output = %s, want bridge app result: %v", out, err)
+	}
+}
+
+func TestOpenAppBridgeFailureFallsBackToSearchLaunchApp(t *testing.T) {
+	var sent BridgeCommand
+	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+		sent = cmd
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeToolExecutionFailed, "bridge launch failed"),
+		}
+	})
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "active"
+	bridge.mu.Unlock()
+	search := &recordingTextInputTool{name: toolSearchLaunchApp, out: `{"ok":true,"target":"微信"}`}
+	tool := NewOpenAppTool(bridge, nil, search)
+	var logs []string
+	tool.logf = func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"app":"微信","platform":"ios"}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	if sent.Type != "open_app" || sent.App != "微信" {
+		t.Fatalf("sent command = %#v, want failed semantic bridge launch", sent)
+	}
+	if len(search.calls) != 1 || !strings.Contains(search.calls[0], `"app":"微信"`) || !strings.Contains(search.calls[0], `"platform":"ios"`) {
+		t.Fatalf("search calls = %#v, want one semantic fallback call", search.calls)
+	}
+	if out != search.out {
+		t.Fatalf("output = %s, want search fallback output %s", out, search.out)
+	}
+	if te := ToolErrorFromContext(ctx); te != nil {
+		t.Fatalf("successful search fallback retained bridge ToolError: %+v", te)
+	}
+	if got := strings.Join(logs, "\n"); !strings.Contains(got, "selected=bridge_open_app") ||
+		!strings.Contains(got, "selected=search_launch_app") ||
+		!strings.Contains(got, "reason=bridge_failed") ||
+		!strings.Contains(got, `bridge_error_code="tool_execution_failed"`) {
+		t.Fatalf("route logs = %q, want bridge selection and search fallback details", got)
 	}
 }
 
