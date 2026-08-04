@@ -901,32 +901,12 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		DeviceID:     defaultMemoryDeviceID,
 		CurrentHints: currentHints,
 	}
-	memoryContext := MemoryContext{}
-	var memoryRetrieveEvent *TaskEpisodeEvent
+	// Memories are no longer retrieved up front. The agent pulls what it needs
+	// on demand through the recall tools, which record the referenced IDs on the
+	// episode recorder so outcome-based confidence updates only touch memories
+	// the agent actually saw.
 	if r.memoryPlane != nil {
-		retrieveStart := time.Now()
-		retrieved, retrieveErr := r.memoryPlane.Retrieve(ctx, retrieveReq)
-		retrieveDuration := time.Since(retrieveStart).Milliseconds()
-
-		if retrieveErr != nil {
-			if r.logger != nil {
-				r.logger.Warn("[memory] retrieve failed: %v", retrieveErr)
-			}
-		} else {
-			memoryContext = retrieved
-		}
-		memoryRetrieveEvent = &TaskEpisodeEvent{
-			Type:       runEventMemoryRetrieve,
-			Ts:         retrieveStart.Format(time.RFC3339Nano),
-			DurationMs: &retrieveDuration,
-			Metadata: map[string]interface{}{
-				"tool_count": len(toolNamesFromTools(availableTools)),
-				"success":    retrieveErr == nil,
-			},
-		}
-	}
-	if r.memoryPlane != nil {
-		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
+		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
 		if episodeRecorder != nil {
 			episodeRecorder.setStartedAtIfEarlier(episodeStartTimeWithEvents(startTime.UTC(), preRunEvents))
 			if err := episodeRecorder.Start(ctx); err != nil && r.logger != nil {
@@ -934,9 +914,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			}
 			recordPreRunEpisodeEvents(episodeRecorder, preRunEvents)
 			episodeRecorder.RecordEvent(sessionBeginEvent)
-			if memoryRetrieveEvent != nil {
-				episodeRecorder.RecordEvent(*memoryRetrieveEvent)
-			}
 		}
 	}
 	if episodeRecorder != nil {
@@ -1611,22 +1588,6 @@ func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langt
 		availableTools,
 		agentRoleRules(),
 	)
-}
-
-func (r *Runtime) memoryContextForPrompt() string {
-	if r.config.ConfigDir == "" {
-		return ""
-	}
-	var parts []string
-	sessionSummary, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "session", "summary.md"))
-	if len(sessionSummary) > 0 {
-		parts = append(parts, string(sessionSummary))
-	}
-	profile, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "long_term", "profile.md"))
-	if len(profile) > 0 {
-		parts = append(parts, string(profile))
-	}
-	return strings.Join(parts, "\n\n")
 }
 
 // runtimeCallbackHandler implements callbacks.Handler for streaming output and

@@ -124,16 +124,37 @@ type episodeIndexEntry struct {
 }
 
 type EpisodeRecorder struct {
-	mu        sync.Mutex
-	id        string
-	startedAt time.Time
-	request   MemoryRetrieveRequest
-	retrieved MemoryContext
-	events    []TaskEpisodeEvent
-	counter   int
-	store     *TaskEpisodeStore
-	started   bool
-	startErr  error
+	mu           sync.Mutex
+	id           string
+	startedAt    time.Time
+	request      MemoryRetrieveRequest
+	retrieved    MemoryContext
+	recalledRefs []string
+	events       []TaskEpisodeEvent
+	counter      int
+	store        *TaskEpisodeStore
+	started      bool
+	startErr     error
+}
+
+type episodeRecorderCtxKey struct{}
+
+// WithEpisodeRecorder attaches the active EpisodeRecorder to ctx so tools (e.g.
+// recall_memory) can record which memories they surfaced during a run.
+func WithEpisodeRecorder(ctx context.Context, recorder *EpisodeRecorder) context.Context {
+	if recorder == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, episodeRecorderCtxKey{}, recorder)
+}
+
+// EpisodeRecorderFromContext returns the EpisodeRecorder attached to ctx, or nil
+// when none was installed.
+func EpisodeRecorderFromContext(ctx context.Context) *EpisodeRecorder {
+	if recorder, ok := ctx.Value(episodeRecorderCtxKey{}).(*EpisodeRecorder); ok {
+		return recorder
+	}
+	return nil
 }
 
 func NewTaskEpisodeStore(rootDir string) *TaskEpisodeStore {
@@ -378,13 +399,32 @@ func (r *EpisodeRecorder) baseEpisodeLocked(status string, endedAt time.Time) Ta
 		StartedAt:           r.startedAt.Format(time.RFC3339Nano),
 		UserGoal:            strings.TrimSpace(r.request.Input),
 		DeviceScope:         r.deviceScope(),
-		RetrievedMemoryRefs: r.retrieved.ReferenceIDs(),
+		RetrievedMemoryRefs: r.referencedMemoryIDsLocked(),
 		Events:              append([]TaskEpisodeEvent(nil), r.events...),
 	}
 	if !endedAt.IsZero() {
 		episode.EndedAt = endedAt.Format(time.RFC3339Nano)
 	}
 	return episode
+}
+
+// referencedMemoryIDsLocked returns memory IDs the agent actually recalled at
+// runtime via recall tools. The caller must hold r.mu. These IDs drive
+// confidence/outcome feedback in updateReferencedMemoryOutcomes.
+func (r *EpisodeRecorder) referencedMemoryIDsLocked() []string {
+	return uniqueNonEmpty(r.recalledRefs)
+}
+
+// RecordMemoryRecall records long-term or device memory IDs that a recall tool
+// surfaced to the agent during this run. The IDs feed outcome-based confidence
+// updates once the episode completes.
+func (r *EpisodeRecorder) RecordMemoryRecall(memoryIDs []string) {
+	if r == nil || len(memoryIDs) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recalledRefs = append(r.recalledRefs, memoryIDs...)
 }
 
 func (r *EpisodeRecorder) deviceScope() map[string]string {

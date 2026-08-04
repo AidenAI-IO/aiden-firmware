@@ -83,10 +83,7 @@ func TestRuntimeSharedStoreConcurrentAccess(t *testing.T) {
 	tools.RegisterMemoryTools(memoryDir, 0, store)
 
 	runtime := NewRuntimeWithDeps(Config{ConfigDir: configDir}, nil, manager, tools, nil)
-	plane, ok := runtime.memoryPlane.(*FilesystemMemoryPlane)
-	if !ok {
-		t.Fatalf("memory plane type = %T, want *FilesystemMemoryPlane", runtime.memoryPlane)
-	}
+	_ = runtime // Keep alive for test setup
 
 	ctx := context.Background()
 
@@ -125,10 +122,10 @@ func TestRuntimeSharedStoreConcurrentAccess(t *testing.T) {
 						errors <- fmt.Errorf("store.Search[%d]: %w", id, err)
 					}
 				case 1:
-					// Read via plane.searchLongTerm
-					_, err := plane.searchLongTerm(ctx, memorySearchQuery{Limit: 5})
+					// Read via store.Search with a filtered query
+					_, err := store.Search(ctx, MemoryQuery{Tags: []string{"any"}, Limit: 5})
 					if err != nil {
-						errors <- fmt.Errorf("plane.searchLongTerm[%d]: %w", id, err)
+						errors <- fmt.Errorf("store.Search(filtered)[%d]: %w", id, err)
 					}
 				case 2:
 					// Read via store.loadIndex
