@@ -1780,6 +1780,8 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("usbhid_restart_required") != std::string::npos);
     CHECK(source.find("reboot_required") != std::string::npos);
     CHECK(source.find("schedule_reboot") != std::string::npos);
+    CHECK(source.find("command -v reboot") != std::string::npos);
+    CHECK(source.find("make_json_error(503, error.empty() ? \"failed to schedule reboot\" : error)") != std::string::npos);
     CHECK(source.find("\"/api/reboot\"") != std::string::npos);
     CHECK(source.find("config-check --stdin --format=json") != std::string::npos);
     CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);

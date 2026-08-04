@@ -1558,6 +1558,48 @@ TEST_CASE("config_web: device config test derives pointer mode") {
     CHECK((invalid_type_passed->type & 0xff) == cJSON_False);
     CHECK(required_json_string(invalid_type, "detail") == "must be iOS, Android, macOS, windows, or linux");
     cJSON_Delete(invalid_json);
+
+    const std::string missing_body =
+        "{\"section\":\"device\",\"values\":{"
+        "}}";
+
+    HttpResponse missing_resp = http_request(handle->port, "POST", "/api/config/test", missing_body);
+    REQUIRE(missing_resp.status == 200);
+    cJSON* missing_json = cJSON_Parse(missing_resp.body.c_str());
+    REQUIRE(missing_json != nullptr);
+    cJSON* missing_ok = cJSON_GetObjectItem(missing_json, "ok");
+    REQUIRE(missing_ok != nullptr);
+    CHECK((missing_ok->type & 0xff) == cJSON_True);
+    cJSON* missing_type = required_test_result(missing_json, "device_type");
+    REQUIRE(missing_type != nullptr);
+    cJSON* missing_type_passed = cJSON_GetObjectItem(missing_type, "passed");
+    REQUIRE(missing_type_passed != nullptr);
+    CHECK((missing_type_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(missing_type, "detail") == "effective pointer_mode: absolute");
+    cJSON_Delete(missing_json);
+
+    const std::vector<std::string> non_string_bodies = {
+        "{\"section\":\"device\",\"values\":{\"device_type\":null}}",
+        "{\"section\":\"device\",\"values\":{\"device_type\":123}}",
+        "{\"section\":\"device\",\"values\":{\"device_type\":{}}}"
+    };
+
+    for (size_t i = 0; i < non_string_bodies.size(); ++i) {
+        HttpResponse non_string_resp = http_request(handle->port, "POST", "/api/config/test", non_string_bodies[i]);
+        REQUIRE(non_string_resp.status == 200);
+        cJSON* non_string_json = cJSON_Parse(non_string_resp.body.c_str());
+        REQUIRE(non_string_json != nullptr);
+        cJSON* non_string_ok = cJSON_GetObjectItem(non_string_json, "ok");
+        REQUIRE(non_string_ok != nullptr);
+        CHECK((non_string_ok->type & 0xff) == cJSON_False);
+        cJSON* non_string_type = required_test_result(non_string_json, "device_type");
+        REQUIRE(non_string_type != nullptr);
+        cJSON* non_string_type_passed = cJSON_GetObjectItem(non_string_type, "passed");
+        REQUIRE(non_string_type_passed != nullptr);
+        CHECK((non_string_type_passed->type & 0xff) == cJSON_False);
+        CHECK(required_json_string(non_string_type, "detail") == "must be a string");
+        cJSON_Delete(non_string_json);
+    }
 }
 
 TEST_CASE("config_web: hid config test requires extension keyboard device") {

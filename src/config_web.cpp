@@ -3548,9 +3548,36 @@ bool schedule_ota_update(std::string* error) {
     return true;
 }
 
-void schedule_reboot() {
+bool schedule_reboot(std::string* error) {
+    CommandResult lookup = run_shell_command("PATH=/sbin:/bin:/usr/sbin:/usr/bin; command -v reboot >/dev/null 2>&1");
+    if (lookup.exit_code != 0) {
+        if (error) {
+            *error = "reboot command not found";
+        }
+        return false;
+    }
+
     int rc = system("(PATH=/sbin:/bin:/usr/sbin:/usr/bin; sync; sleep 1; reboot) >/dev/null 2>&1 &");
-    (void)rc;
+    if (rc == -1) {
+        if (error) {
+            *error = std::string("launch reboot command: ") + strerror(errno);
+        }
+        return false;
+    }
+    if (!WIFEXITED(rc) || WEXITSTATUS(rc) != 0) {
+        if (error) {
+            std::ostringstream msg;
+            msg << "launch reboot command failed";
+            if (WIFEXITED(rc)) {
+                msg << " (exit " << WEXITSTATUS(rc) << ")";
+            } else if (WIFSIGNALED(rc)) {
+                msg << " (signal " << WTERMSIG(rc) << ")";
+            }
+            *error = msg.str();
+        }
+        return false;
+    }
+    return true;
 }
 
 CommandResult apply_wifi_config(const Options& options, bool force_restart = false) {
@@ -5845,7 +5872,10 @@ ApiResponse handle_put_config_locale(const Options& options, const std::string& 
 }
 
 ApiResponse handle_post_reboot() {
-    schedule_reboot();
+    std::string error;
+    if (!schedule_reboot(&error)) {
+        return make_json_error(503, error.empty() ? "failed to schedule reboot" : error);
+    }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
@@ -6488,14 +6518,24 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         cJSON_AddItemToArray(results, r);
     } else if (section == "device") {
         cJSON* device_type_item = cJSON_GetObjectItem(values, "device_type");
-        std::string device_type = json_is_string(device_type_item) ? normalize_device_type(device_type_item->valuestring) : "iOS";
+        bool string_value = true;
+        std::string device_type = "iOS";
+        if (device_type_item != NULL) {
+            if (json_is_string(device_type_item)) {
+                device_type = normalize_device_type(device_type_item->valuestring);
+            } else {
+                string_value = false;
+            }
+        }
         cJSON* r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "device_type");
-        bool valid = device_type == "iOS" || device_type == "Android" || device_type == "macOS" ||
-                     device_type == "windows" || device_type == "linux";
+        bool valid = string_value &&
+                     (device_type == "iOS" || device_type == "Android" || device_type == "macOS" ||
+                      device_type == "windows" || device_type == "linux");
         cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
         std::string detail = valid ? "effective pointer_mode: " + pointer_mode_for_device_type(device_type)
-                                   : "must be iOS, Android, macOS, windows, or linux";
+                                   : (string_value ? "must be iOS, Android, macOS, windows, or linux"
+                                                   : "must be a string");
         cJSON_AddStringToObject(r, "detail", detail.c_str());
         if (!valid) all_passed = false;
         cJSON_AddItemToArray(results, r);
