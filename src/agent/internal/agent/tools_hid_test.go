@@ -3387,7 +3387,7 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
 	// The description keeps only the load-bearing quick_action disambiguation and swipe-direction rule.
-	for _, want := range []string{"Prefer quick_action", "finger movement"} {
+	for _, want := range []string{"Prefer quick_action", `quick_action with {"action":"home"} first`, `touch_gesture {"type":"home"} only as a fallback`, "finger movement"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
@@ -3396,7 +3396,7 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	props, _ := (&TouchGestureTool{}).ArgsSchema()["properties"].(map[string]any)
 	typeSchema, _ := props["type"].(map[string]any)
 	typeDesc, _ := typeSchema["description"].(string)
-	for _, want := range []string{"back", "home", "x=1", "y=999"} {
+	for _, want := range []string{"back", "home", "x=1", "y=999", `quick_action {"action":"home"}`, "fallback alternatives"} {
 		if !strings.Contains(typeDesc, want) {
 			t.Fatalf("type schema missing %q:\n%s", want, typeDesc)
 		}

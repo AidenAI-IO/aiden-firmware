@@ -46,13 +46,36 @@ type textInputBridge struct {
 	vision           textInputVision
 	bridgeFn         func() *PhoneBridge
 	restorer         *PhoneBridgeRestorer
+	platformFn       func() string
 	clipboardWriteFn func(context.Context, *PhoneBridge, string) error
 	findPasteMenuFn  func(context.Context, screenshotResult, string) (pasteMenuResult, error)
 	sleep            func(context.Context, time.Duration) error
 }
 
+func (t *textInputBridge) SetPlatformFn(fn func() string) {
+	if t == nil {
+		return
+	}
+	t.platformFn = fn
+	if t.hw != nil {
+		t.hw.platformFn = fn
+	}
+}
+
+func (t *textInputBridge) platform() string {
+	if t == nil {
+		return "android"
+	}
+	if t.platformFn != nil {
+		if platform := normalizeTextInputPlatform(t.platformFn()); platform != "" {
+			return platform
+		}
+	}
+	return textInputHardwarePlatform(t.hw)
+}
+
 func (t *textInputBridge) runClipboardFirstResult(ctx context.Context, args textInputArgs) (textInputResult, bool) {
-	platform := textInputHardwarePlatform(t.hw)
+	platform := t.platform()
 	if strings.TrimSpace(args.Text) == "" {
 		return textInputResult{Reason: "text is required"}, false
 	}

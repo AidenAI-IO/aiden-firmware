@@ -1126,14 +1126,14 @@ type TouchGestureTool struct {
 func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
-	return `Perform a custom touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for tap/swipe/drag and other freehand screen gestures. ` +
+	return `Perform a custom touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for tap/swipe/drag and other freehand screen gestures. For go-home/home-screen requests such as 回到桌面, call quick_action with {"action":"home"} first; use touch_gesture {"type":"home"} only as a fallback. ` +
 		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Swipe direction names describe finger movement, not content scroll. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"type":           stringEnumArgSchema("Gesture type. Edge aliases use real edges: back starts at x=1, home starts at y=999.", "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"),
+		"type":           stringEnumArgSchema("Gesture type. Edge aliases use real edges: back starts at x=1, home starts at y=999. For semantic home/back requests, prefer quick_action first, especially quick_action {\"action\":\"home\"} for go-home/home-screen requests; use back/home here only as fallback alternatives.", "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"),
 		"point":          pointSchema("Point for tap, double_tap, or long_press."),
 		"start":          pointSchema("Start point for swipe or drag."),
 		"end":            pointSchema("End point for swipe or drag."),
@@ -1486,7 +1486,7 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 			start,
 			end,
 			button,
-			intOrDefault(args.DurationMs, defaultSwipeDurationMs),
+			intOrDefault(args.DurationMs, 200),
 			intOrDefault(args.HoldBeforeMs, defaultSwipeHoldBeforeMs),
 			intOrDefault(args.HoldAfterMs, defaultSwipeHoldAfterMs),
 			positiveIntOrDefault(args.Steps, defaultSwipeSteps),

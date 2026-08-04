@@ -398,29 +398,63 @@ func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunStopsTouchGestureOnPointerModeMismatch(t *testing.T) {
+func TestRuntimeRunUsesDeviceTypeStateForRuntimePlatform(t *testing.T) {
+	model := &scriptedModel{responses: roleToolResponses("enter_text", `{"text":"hello","focus":{"x":500,"y":500}}`, "done")}
+	tool := &platformCaptureTool{
+		stubTool: stubTool{
+			name:        "enter_text",
+			description: "Enter text.",
+			output:      `{"ok":true}`,
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Use tools.",
+			DefaultPlatform: "ios",
+			Device:          DeviceConfig{DeviceType: "Android"},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"enter_text": tool}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "enter text",
+		DeviceEnvironment: &PhoneEnvironment{Platform: "ios"},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("output = %q, want final answer", result.Output)
+	}
+	if len(tool.platforms) != 1 || tool.platforms[0] != "android" {
+		t.Fatalf("runtime platform = %v, want [android] from device_type state", tool.platforms)
+	}
+}
+
+func TestRuntimeRunDoesNotUsePhoneEnvironmentPlatformForPointerModeMismatch(t *testing.T) {
 	tests := []struct {
 		name       string
 		platform   string
 		deviceType string
-		want       string
 	}{
 		{
 			name:       "android absolute",
 			platform:   "android",
 			deviceType: "iOS",
-			want:       `[device].device_type to "Android"`,
 		},
 		{
 			name:       "ios touchscreen",
 			platform:   "ios",
 			deviceType: "Android",
-			want:       `[device].device_type to "iOS"`,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			model := &scriptedModel{responses: roleToolResponses("touch_gesture", `{"type":"tap","point":{"x":500,"y":500}}`, "should not be used")}
+			model := &scriptedModel{responses: roleToolResponses("touch_gesture", `{"type":"tap","point":{"x":500,"y":500}}`, "continued with device_type state")}
 			tool := &stubTool{
 				name:        "touch_gesture",
 				description: "Touch.",
@@ -445,14 +479,11 @@ func TestRuntimeRunStopsTouchGestureOnPointerModeMismatch(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
-			if !strings.Contains(result.Output, "touch_gesture produced no visible screen change") {
-				t.Fatalf("output missing no-change stop reason: %q", result.Output)
+			if result.Output != "continued with device_type state" {
+				t.Fatalf("output = %q, want model final answer after using device_type state", result.Output)
 			}
-			if !strings.Contains(result.Output, tc.want) {
-				t.Fatalf("output missing pointer mode guidance %q: %q", tc.want, result.Output)
-			}
-			if model.callCount != 1 {
-				t.Fatalf("model call count = %d, want stop before second model call", model.callCount)
+			if model.callCount != 2 {
+				t.Fatalf("model call count = %d, want second model call", model.callCount)
 			}
 			if len(tool.inputs) != 1 {
 				t.Fatalf("touch_gesture calls = %d, want 1", len(tool.inputs))
@@ -461,11 +492,11 @@ func TestRuntimeRunStopsTouchGestureOnPointerModeMismatch(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunStopsPointerModeMismatchContentBeforeRetryToolCall(t *testing.T) {
+func TestRuntimeRunDoesNotStopMismatchContentFromPhoneEnvironmentPlatform(t *testing.T) {
 	stopMessage := `touch_gesture produced no visible screen change, and the connected platform is Android while [device].device_type derives hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch [device].device_type to "Android", restart the agent, and retry.`
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		toolCallResponseWithContent("call_1", "touch_gesture", `{"type":"long_press","point":{"x":500,"y":500}}`, stopMessage),
-		contentResponse("should not be used"),
+		contentResponse("continued with device_type state"),
 	}}
 	tool := &stubTool{
 		name:        "touch_gesture",
@@ -491,22 +522,22 @@ func TestRuntimeRunStopsPointerModeMismatchContentBeforeRetryToolCall(t *testing
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if result.Output != stopMessage {
-		t.Fatalf("output = %q, want stop message", result.Output)
+	if result.Output != "continued with device_type state" {
+		t.Fatalf("output = %q, want model final answer after using device_type state", result.Output)
 	}
-	if model.callCount != 1 {
-		t.Fatalf("model call count = %d, want stop before second model call", model.callCount)
+	if model.callCount != 2 {
+		t.Fatalf("model call count = %d, want second model call", model.callCount)
 	}
-	if len(tool.inputs) != 0 {
-		t.Fatalf("touch_gesture calls = %d, want 0", len(tool.inputs))
+	if len(tool.inputs) != 1 {
+		t.Fatalf("touch_gesture calls = %d, want 1", len(tool.inputs))
 	}
 }
 
-func TestRuntimeRunStopsPointerModeMismatchForBracketedDeviceTypeOnly(t *testing.T) {
+func TestRuntimeRunDoesNotStopBracketedMismatchContentFromPhoneEnvironmentPlatform(t *testing.T) {
 	stopMessage := `touch_gesture produced no visible screen change. The connected platform is Android but [device].device_type is configured for iOS. Stop operation here because the touch mode likely does not match the target.`
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		toolCallResponseWithContent("call_1", "touch_gesture", `{"type":"tap","point":{"x":500,"y":500}}`, stopMessage),
-		contentResponse("should not be used"),
+		contentResponse("continued with device_type state"),
 	}}
 	tool := &stubTool{
 		name:        "touch_gesture",
@@ -532,14 +563,14 @@ func TestRuntimeRunStopsPointerModeMismatchForBracketedDeviceTypeOnly(t *testing
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if !strings.Contains(result.Output, `[device].device_type to "Android"`) {
-		t.Fatalf("output missing pointer mode guidance: %q", result.Output)
+	if result.Output != "continued with device_type state" {
+		t.Fatalf("output = %q, want model final answer after using device_type state", result.Output)
 	}
-	if model.callCount != 1 {
-		t.Fatalf("model call count = %d, want stop before second model call", model.callCount)
+	if model.callCount != 2 {
+		t.Fatalf("model call count = %d, want second model call", model.callCount)
 	}
-	if len(tool.inputs) != 0 {
-		t.Fatalf("touch_gesture calls = %d, want 0", len(tool.inputs))
+	if len(tool.inputs) != 1 {
+		t.Fatalf("touch_gesture calls = %d, want 1", len(tool.inputs))
 	}
 }
 
@@ -2599,6 +2630,25 @@ func (t *stubTool) Call(ctx context.Context, input string) (string, error) {
 		return "", t.err
 	}
 	return t.output, nil
+}
+
+type platformCaptureTool struct {
+	stubTool
+	platformFn func() string
+	platforms  []string
+}
+
+func (t *platformCaptureTool) SetPlatformFn(fn func() string) {
+	t.platformFn = fn
+}
+
+func (t *platformCaptureTool) Call(ctx context.Context, input string) (string, error) {
+	if t.platformFn != nil {
+		t.platforms = append(t.platforms, t.platformFn())
+	} else {
+		t.platforms = append(t.platforms, "")
+	}
+	return t.stubTool.Call(ctx, input)
 }
 
 type blockingTool struct {
