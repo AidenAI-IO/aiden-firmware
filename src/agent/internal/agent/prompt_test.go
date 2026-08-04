@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/base64"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -9,6 +12,9 @@ import (
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/screen"
+
+	"github.com/tmc/langchaingo/llms"
+	langtools "github.com/tmc/langchaingo/tools"
 )
 
 func testPromptProfile(cfg AgentConfig) RoleProfile {
@@ -61,6 +67,7 @@ func TestRolePromptIncludesConfiguredResponseLocaleInSystemPrompt(t *testing.T) 
 func TestStateHookDoesNotInjectResponseLocale(t *testing.T) {
 	runtime := NewRuntimeWithDeps(Config{Locale: "en-US"}, nil, nil, nil, NewSkillIndex())
 	manager := newPromptTestContextManager(t)
+	runtime.contextManager = manager
 	manager.AddAppendMessageHook(runtime.getStateHook())
 	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
@@ -69,6 +76,82 @@ func TestStateHookDoesNotInjectResponseLocale(t *testing.T) {
 	messages := manager.MessageListDump().Messages
 	if len(messages) != 1 || messages[0].Role != contextmanager.MessageRoleUser {
 		t.Fatalf("messages = %#v, want only the user message", messages)
+	}
+}
+
+func TestStateHookAttachesFreshScreenshotToUserTurn(t *testing.T) {
+	imageData := []byte("current screenshot")
+	screenshot := &stubTool{
+		name:        "screenshot",
+		description: "Capture screenshot.",
+		output: `{"width":390,"height":844,"format":"jpeg","size":18,"data":"` +
+			base64.StdEncoding.EncodeToString(imageData) + `"}`,
+	}
+	runtime := NewRuntimeWithDeps(Config{}, nil, nil, &ToolSet{tools: map[string]langtools.Tool{
+		"screenshot": screenshot,
+	}}, NewSkillIndex())
+	manager := newPromptTestContextManager(t)
+	runtime.contextManager = manager
+	manager.AddAppendMessageHook(runtime.getStateHook())
+
+	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	messages := manager.MessageListDump().Messages
+	if len(messages) != 2 || messages[0].Role != contextmanager.MessageRoleState || messages[1].Role != contextmanager.MessageRoleUser {
+		t.Fatalf("messages = %#v, want state screenshot followed by user message", messages)
+	}
+	if len(messages[0].Attachments) != 1 {
+		t.Fatalf("state attachments = %#v, want one screenshot", messages[0].Attachments)
+	}
+	attachment := messages[0].Attachments[0]
+	if attachment.MIMEType != "image/jpeg" || attachment.Source != contextmanager.AttachmentSourceScreenshotObservation {
+		t.Fatalf("state screenshot attachment = %#v", attachment)
+	}
+
+	standard := contextmanager.ConvertMessageList(messages)
+	foundImage := false
+	for _, part := range standard[0].Parts {
+		if binary, ok := part.(llms.BinaryContent); ok && binary.MIMEType == "image/jpeg" && bytes.Equal(binary.Data, imageData) {
+			foundImage = true
+		}
+	}
+	if !foundImage {
+		t.Fatalf("converted state message has no screenshot binary: %#v", standard[0].Parts)
+	}
+	if len(screenshot.inputs) != 1 || screenshot.inputs[0] != "{}" {
+		t.Fatalf("screenshot inputs = %#v, want one empty-object call", screenshot.inputs)
+	}
+}
+
+func TestStateHookKeepsTextStateWhenScreenshotFails(t *testing.T) {
+	screenshot := &stubTool{
+		name:        "screenshot",
+		description: "Capture screenshot.",
+		err:         errors.New("capture unavailable"),
+	}
+	runtime := NewRuntimeWithDeps(Config{}, nil, nil, &ToolSet{tools: map[string]langtools.Tool{
+		"screenshot": screenshot,
+	}}, NewSkillIndex())
+	runtime.stateManager.SetState("device", "connected")
+	manager := newPromptTestContextManager(t)
+	runtime.contextManager = manager
+	manager.AddAppendMessageHook(runtime.getStateHook())
+
+	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	messages := manager.MessageListDump().Messages
+	if len(messages) != 2 || messages[0].Role != contextmanager.MessageRoleState {
+		t.Fatalf("messages = %#v, want text state followed by user message", messages)
+	}
+	if !strings.Contains(messages[0].Content, "device: connected") {
+		t.Fatalf("state content = %q, want device state", messages[0].Content)
+	}
+	if len(messages[0].Attachments) != 0 {
+		t.Fatalf("state attachments = %#v, want none after screenshot failure", messages[0].Attachments)
 	}
 }
 
