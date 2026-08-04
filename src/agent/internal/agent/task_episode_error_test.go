@@ -84,13 +84,15 @@ func TestEpisodeRecorderDoesNotPersistSensitiveToolResultContent(t *testing.T) {
 		t.Fatal("missing sensitive tool_result event")
 	}
 
+	filesScanned := 0
 	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if info.IsDir() {
+		if !info.Mode().IsRegular() {
 			return nil
 		}
+		filesScanned++
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -102,6 +104,9 @@ func TestEpisodeRecorderDoesNotPersistSensitiveToolResultContent(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walk episode store: %v", err)
+	}
+	if filesScanned == 0 {
+		t.Fatal("expected persisted episode files")
 	}
 }
 

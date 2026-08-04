@@ -169,6 +169,9 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 	if err != nil {
 		return nil, err
 	}
+	// Keep legacy reference migration in memory here. Session JSONL files are
+	// append-only, so flushFull would duplicate every loaded message instead of
+	// rewriting them. A later session revision persists the migrated messages.
 	migrateLegacyArtifactRefs(messageList, artifactStore)
 
 	return &ContextManager{
