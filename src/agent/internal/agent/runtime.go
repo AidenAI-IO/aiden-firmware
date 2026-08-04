@@ -1200,7 +1200,15 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 		// ...
 		var formated strings.Builder
 		for _, entry := range entries {
+			if strings.TrimSpace(entry.Value) == "" {
+				continue
+			}
 			fmt.Fprintf(&formated, "%s: %s\n", entry.Key, entry.Value)
+		}
+		if formated.Len() == 0 && attachment == nil {
+			return contextmanager.AppendMessageHookResult{
+				Message: &message,
+			}
 		}
 		tagged := ""
 		if formated.Len() > 0 {

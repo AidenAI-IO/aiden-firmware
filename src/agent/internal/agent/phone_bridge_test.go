@@ -7,6 +7,28 @@ import (
 	"time"
 )
 
+func TestPhoneBridgeUpdateStateDoesNotExposeUnknownValues(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+
+	state := bridge.UpdateState()
+	for _, key := range []string{"app_connected", "app_pip_enabled", "app_fgs_enabled"} {
+		if got := state[key]; got != "false" {
+			t.Errorf("%s = %q, want false", key, got)
+		}
+	}
+	for _, key := range []string{"app_state", "app_platform"} {
+		if got := state[key]; got != "" {
+			t.Errorf("%s = %q, want empty", key, got)
+		}
+	}
+	for key, value := range state {
+		if value == "unknown" {
+			t.Errorf("%s exposes unknown value", key)
+		}
+	}
+}
+
 func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()

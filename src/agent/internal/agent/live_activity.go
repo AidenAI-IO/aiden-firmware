@@ -723,14 +723,20 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 	case "wait_for_stable_screen":
 		status.phase = LiveActivityPhaseObserving
 		status.action = "wait_for_screen"
-	case toolBridgeOpenApp:
-		status.phase = LiveActivityPhasePhoneBridge
+	case toolOpenApp:
 		status.action = "open_app"
-		status.requiresApp = true
 		status.app = liveActivityAppFromToolCall(event)
 		if status.step == "" {
 			status.step = "Opening app"
 		}
+		if target != "" {
+			status.step = "Opening " + target
+		}
+	case toolOpenURL:
+		status.phase = LiveActivityPhasePhoneBridge
+		status.action = "open_url"
+		status.requiresApp = true
+		status.app = "Browser"
 		if target != "" {
 			status.step = "Opening " + target
 		}
@@ -791,7 +797,7 @@ func liveActivityToolResultPhase(tool string) string {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "screenshot", "wait_for_stable_screen", "image_diff":
 		return LiveActivityPhaseVerifying
-	case toolBridgeOpenApp, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
+	case toolOpenURL, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
 		return LiveActivityPhasePhoneBridge
 	case "request_human_handoff":
 		return LiveActivityPhaseWaitingUser
@@ -862,7 +868,7 @@ func liveActivityResultNeedsApp(event RunEvent, errText string) bool {
 
 func liveActivityToolRequiresApp(tool string) bool {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
-	case toolBridgeOpenApp, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
+	case toolOpenURL, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
 		return true
 	default:
 		return false
@@ -902,12 +908,10 @@ func liveActivityTargetFromToolCall(event RunEvent) string {
 		return ""
 	}
 	switch strings.ToLower(strings.TrimSpace(event.ToolName)) {
-	case toolBridgeOpenApp:
-		return firstNonEmptyString([]string{
-			liveActivityString(payload, "app"),
-			liveActivityString(payload, "url"),
-			liveActivityString(payload, "phone_number"),
-		})
+	case toolOpenApp:
+		return firstNonEmptyString([]string{liveActivityString(payload, "app"), liveActivityString(payload, "name")})
+	case toolOpenURL:
+		return liveActivityString(payload, "url")
 	case toolBridgeCalendar:
 		return firstNonEmptyString([]string{
 			liveActivityString(payload, "title"),
@@ -1043,8 +1047,10 @@ func liveActivityToolCallStep(tool string) string {
 		return "Checking the screen"
 	case "wait_for_stable_screen":
 		return "Waiting for the screen"
-	case toolBridgeOpenApp:
+	case toolOpenApp:
 		return "Opening app"
+	case toolOpenURL:
+		return "Opening webpage"
 	case "touch_gesture", "mouse_click", "quick_action":
 		return "Controlling the phone"
 	case "mouse_move":
@@ -1090,8 +1096,10 @@ func liveActivityToolResultStep(tool string) string {
 		return "Screen checked"
 	case "wait_for_stable_screen":
 		return "Screen is ready"
-	case toolBridgeOpenApp:
+	case toolOpenApp:
 		return "App opened"
+	case toolOpenURL:
+		return "Webpage opened"
 	case "touch_gesture", "mouse_click", "quick_action", "mouse_move", "mouse_scroll", "keyboard_tap", "keyboard_text", "enter_text":
 		return "Action sent; checking result"
 	case "request_human_handoff":
@@ -1112,7 +1120,8 @@ func liveActivityToolErrorStep(tool string) string {
 }
 
 func liveActivityAppFromToolCall(event RunEvent) string {
-	if strings.ToLower(strings.TrimSpace(event.ToolName)) != toolBridgeOpenApp {
+	tool := strings.ToLower(strings.TrimSpace(event.ToolName))
+	if tool != toolOpenApp && tool != toolOpenURL {
 		return ""
 	}
 	var payload map[string]interface{}
@@ -1124,11 +1133,13 @@ func liveActivityAppFromToolCall(event RunEvent) string {
 			return value
 		}
 	}
+	if value, ok := payload["name"].(string); ok {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
 	if value, ok := payload["url"].(string); ok && strings.TrimSpace(value) != "" {
 		return "Browser"
-	}
-	if value, ok := payload["phone_number"].(string); ok && strings.TrimSpace(value) != "" {
-		return "Phone"
 	}
 	return ""
 }

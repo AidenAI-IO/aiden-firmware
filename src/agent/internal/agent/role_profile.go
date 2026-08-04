@@ -12,16 +12,20 @@ type RoleProfile struct {
 	Tools        []langtools.Tool
 }
 
+const phoneBridgeDataToolStateRule = "Before calling bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification, inspect the latest <state>. Call a bridge data tool when app_connected:true with app_state absent or active, app_platform:ios with app_pip_enabled:true, app_platform:android with app_fgs_enabled:true, or a visible iOS Dynamic Island return entry can restore Aiden."
+
 func agentRoleRules() []string {
 	rules := []string{
-		"Prefer direct tools that cover the requested operation before UI workarounds.",
-		"For launch-only requests to open an app, URL, or dialer screen, direct tool success is enough unless the user asked to inspect or act inside the opened target.",
+		"Prefer direct tools that cover the requested operation only when the latest state satisfies their preconditions. A direct tool that is unavailable in the latest state is not preferred over a usable UI fallback.",
+		"For app launch requests, call open_app with a semantic app name; it selects Phone Bridge or visible system search internally. For HTTP or HTTPS webpage requests, call open_url.",
+		"For launch-only requests to open an app or URL, success from the matching direct tool is enough unless the user asked to inspect or act inside the opened target.",
 		"When the user's intent is a cataloged semantic platform action such as copy, paste, cut, select all, delete backward/forward, undo, redo, find, send, back, home, app switching, or a browser shortcut, you MUST use quick_action with observed_state.platform. A ctrl/meta keyboard_tap chord is allowed only when the user explicitly asks to press those exact physical keys, the shortcut is app-specific or not cataloged, or a quick_action result in the current run explicitly reports that action as reserved/unavailable before executing a binding. Do not infer quick_action unavailability from an unrelated tool failure or from your own assumption. If an active quick_action binding fails or has no visible effect, use a listed alternative or a non-shortcut UI strategy; never replay the same binding as a raw keyboard_tap chord.",
 		"Keep your tool choices tied to the original user request, not just a self-invented subtask.",
 		"If the current screenshot clearly identifies the app/page or device platform, use that observed app, page, platform (ios/android/mac), visible text, and dialogs when choosing tools.",
 		"Call request_human_handoff when the task requires credentials, login-method selection, verification, system/app redirect confirmation, permission dialog confirmation, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Ask the user to complete it on the device; do not ask them to send credentials or private verification details in chat.",
 		"Only latest <state> content is valid, previous old states may have been invalidated or expired.",
-		"For launch-only app, URL, or dialer requests, bridge_open_app ok=true is enough unless the user asked to inspect or act inside the opened target.",
+		phoneBridgeDataToolStateRule,
+		"When open_app or open_url returns ok=true, treat the launch as complete unless the user requested additional actions inside the opened target.",
 	}
 	return rules
 }

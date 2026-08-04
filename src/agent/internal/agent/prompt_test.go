@@ -155,6 +155,30 @@ func TestStateHookKeepsTextStateWhenScreenshotFails(t *testing.T) {
 	}
 }
 
+func TestStateHookOmitsEmptyStateValues(t *testing.T) {
+	runtime := NewRuntimeWithDeps(Config{}, nil, nil, nil, NewSkillIndex())
+	runtime.stateManager.SetState("app_connected", "false")
+	runtime.stateManager.SetState("app_platform", "")
+	manager := newPromptTestContextManager(t)
+	runtime.contextManager = manager
+	manager.AddAppendMessageHook(runtime.getStateHook())
+
+	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	messages := manager.MessageListDump().Messages
+	if len(messages) != 2 || messages[0].Role != contextmanager.MessageRoleState {
+		t.Fatalf("messages = %#v, want filtered state followed by user message", messages)
+	}
+	if !strings.Contains(messages[0].Content, "app_connected: false") {
+		t.Fatalf("state content = %q, want app_connected", messages[0].Content)
+	}
+	if strings.Contains(messages[0].Content, "app_platform") {
+		t.Fatalf("state content = %q, want empty app_platform omitted", messages[0].Content)
+	}
+}
+
 func TestRolePromptsIncludeRealHostRuntimeInfo(t *testing.T) {
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -397,6 +421,22 @@ func TestRolePromptRoutesPlatformShortcutsThroughQuickAction(t *testing.T) {
 	}
 }
 
+func TestRolePromptRoutesAppLaunchInsideOpenApp(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, want := range []string{
+		"call open_app with a semantic app name",
+		"selects Phone Bridge or visible system search internally",
+		"call open_url",
+		"Before calling bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification",
+		"app_platform:ios with app_pip_enabled:true",
+		"app_platform:android with app_fgs_enabled:true",
+	} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing Phone Bridge routing guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
 func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 	lastHeartbeat := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
 	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
@@ -411,7 +451,9 @@ func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 		"- platform: ios",
 		"- last_heartbeat_at: 2026-06-01T02:03:04Z",
 		"The phone companion app is connected",
-		"Use bridge_open_app as the primary path",
+		"Use open_app for semantic app launches",
+		"open_url for HTTP or HTTPS webpages",
+		"selects Phone Bridge or visible system search internally",
 		"bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification tools are available",
 		"prefer enter_text_via_bridge",
 		"do not manually chain bridge_clipboard with quick_action",
@@ -440,7 +482,8 @@ func TestPhoneBridgeRuntimeContextBackgroundAppGuidesDynamicIslandRecovery(t *te
 		"- app_state: background",
 		"- return_entry: dynamic_island available=true",
 		"The Aiden companion app is backgrounded or inactive",
-		"will first tap the Aiden Dynamic Island entry",
+		"open_url and the bridge data tools can first tap the Aiden Dynamic Island entry",
+		"open_app selects visible system search",
 		"then send the command",
 		"For lock-screen Live Activity entries, use screenshot/HID fallback",
 	} {
@@ -448,8 +491,8 @@ func TestPhoneBridgeRuntimeContextBackgroundAppGuidesDynamicIslandRecovery(t *te
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "Use bridge_open_app as the primary path") {
-		t.Fatalf("backgrounded app context should not present direct bridge_open_app as immediately available:\n%s", got)
+	if strings.Contains(got, "Use open_app for semantic app launches") {
+		t.Fatalf("backgrounded app context should not present foreground launch context:\n%s", got)
 	}
 }
 
@@ -480,7 +523,7 @@ func TestPhoneBridgeRuntimeContextPiPBackgroundDisablesOpenApp(t *testing.T) {
 	}
 	for _, notWant := range []string{
 		"will first tap the Aiden Dynamic Island entry",
-		"Use bridge_open_app as the primary path",
+		"Use open_app for semantic app launches",
 		"bridge_open_app is intentionally unavailable",
 		"Use bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification only",
 	} {
@@ -571,7 +614,7 @@ func TestPhoneBridgeRuntimeContextDisconnectedBackgroundAppGuidesRecovery(t *tes
 		"return_entry=dynamic_island",
 		"For lock-screen Live Activity entries, use screenshot/HID fallback",
 		"call screenshot first",
-		"then try search_launch_app",
+		"visible app search or suitable HID/touch tools",
 		"request_human_handoff only after",
 	} {
 		if !strings.Contains(got, want) {
@@ -589,9 +632,10 @@ func TestPhoneBridgeRuntimeContextDisconnectedAndroidAvoidsIOSRecovery(t *testin
 	for _, want := range []string{
 		"- connected: false",
 		"- platform: android",
-		"Keep Aiden open in the foreground",
+		"open_app will use visible system search",
+		"Keep Aiden open in the foreground and wait for Phone Bridge to reconnect before retrying open_url",
 		"call screenshot first",
-		"then try search_launch_app",
+		"visible app search or suitable HID/touch tools",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)

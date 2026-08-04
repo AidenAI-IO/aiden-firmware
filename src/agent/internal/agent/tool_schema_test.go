@@ -21,7 +21,8 @@ func TestAgentExposedToolsDoNotExposeLegacyArg1Schema(t *testing.T) {
 		NewSkillReadTool(t.TempDir()),
 		NewSkillMarkUsedTool(t.TempDir(), ""),
 		NewSkillManageTool(t.TempDir(), ""),
-		NewOpenAppTool(nil, nil),
+		NewOpenAppTool(nil, nil, nil),
+		NewOpenURLTool(nil, nil),
 		NewClipboardTool(nil, nil),
 		NewCalendarTool(nil, nil),
 		NewContactsTool(nil, nil),
@@ -192,4 +193,3 @@ func TestRangedIntegerArgSchema_PreservesMinMax(t *testing.T) {
 		t.Errorf("unexpected examples: %v", examples)
 	}
 }
-

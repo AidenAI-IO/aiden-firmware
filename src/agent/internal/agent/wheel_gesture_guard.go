@@ -638,7 +638,7 @@ func wheelToolCallKey(call ToolCall) string {
 func isWheelNavigationToolCall(call ToolCall) bool {
 	toolName := strings.ToLower(strings.TrimSpace(call.Spec.Name))
 	switch toolName {
-	case toolBridgeOpenApp, "search_launch_app":
+	case toolOpenApp, toolOpenURL, toolBridgeOpenApp, toolSearchLaunchApp:
 		return true
 	case "quick_action":
 		var args quickActionArgs

@@ -62,12 +62,12 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 
 	state = manager.UpdateFromRunEvent("req-1", RunEvent{
 		Type:      runEventToolCall,
-		ToolName:  "bridge_open_app",
+		ToolName:  "open_app",
 		ToolInput: `{"app":"Maps"}`,
 		Timestamp: time.Now(),
 	})
-	if state == nil || state.CurrentStep != "Opening Maps" || state.CurrentApp != "Maps" || state.Phase != LiveActivityPhasePhoneBridge {
-		t.Fatalf("bridge_open_app step = %#v, want targeted app step and current app", state)
+	if state == nil || state.CurrentStep != "Opening Maps" || state.CurrentApp != "Maps" || state.Phase != LiveActivityPhaseActing || state.RequiresApp {
+		t.Fatalf("open_app step = %#v, want targeted app step and current app", state)
 	}
 
 	state = manager.UpdateFromRunEvent("req-1", RunEvent{

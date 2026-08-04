@@ -2964,7 +2964,7 @@ const httpToolExecutionTimeout = 5 * time.Minute
 
 func httpToolExecutionSurvivesClientDisconnect(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
-	case "keyboard_tap", "quick_action", "search_launch_app", "enter_text",
+	case "keyboard_tap", "quick_action", toolOpenApp, toolSearchLaunchApp, "enter_text",
 		"mouse_click", "mouse_move",
 		"mouse_scroll", "run_script", "touch_gesture", "wheel_nudge":
 		return true

@@ -111,8 +111,8 @@ func TestSingleAgentDoesNotRunDefaultFinalVerifierReview(t *testing.T) {
 	}
 }
 
-func TestSingleAgentUsesUIFallbackAfterDisconnectedOpenApp(t *testing.T) {
-	model := &disconnectedOpenAppFallbackModel{}
+func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) {
+	model := &routedOpenAppModel{}
 	bridge := NewPhoneBridge(nil)
 	bridge.mu.Lock()
 	bridge.platform = "ios"
@@ -135,10 +135,9 @@ func TestSingleAgentUsesUIFallbackAfterDisconnectedOpenApp(t *testing.T) {
 	toolSet := &ToolSet{
 		phoneBridge: bridge,
 		tools: map[string]langtools.Tool{
-			"bridge_open_app":       NewOpenAppTool(bridge, nil),
+			"open_app":              NewOpenAppTool(bridge, nil, searchLaunch),
 			"request_human_handoff": NewHumanHandoffTool(),
 			"screenshot":            screenshot,
-			"search_launch_app":     searchLaunch,
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -153,41 +152,35 @@ func TestSingleAgentUsesUIFallbackAfterDisconnectedOpenApp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if result.Output != "已通过屏幕搜索继续打开小红书。" {
-		t.Fatalf("Output = %q, want UI fallback completion", result.Output)
+	if result.Output != "已打开小红书。" {
+		t.Fatalf("Output = %q, want routed completion", result.Output)
 	}
-	if model.callCount != 4 {
-		t.Fatalf("model calls = %d, want open_app failure, screenshot, UI fallback, and completion", model.callCount)
+	if model.callCount != 2 {
+		t.Fatalf("model calls = %d, want open_app plus completion", model.callCount)
 	}
-	if len(screenshot.inputs) != 2 || len(searchLaunch.inputs) != 1 {
-		t.Fatalf("fallback calls: screenshot=%v search_launch_app=%v", screenshot.inputs, searchLaunch.inputs)
+	if len(screenshot.inputs) != 1 || len(searchLaunch.inputs) != 1 {
+		t.Fatalf("routed calls: screenshot=%v search_launch_app=%v", screenshot.inputs, searchLaunch.inputs)
 	}
 }
 
-type disconnectedOpenAppFallbackModel struct {
+type routedOpenAppModel struct {
 	callCount int
 }
 
-func (m *disconnectedOpenAppFallbackModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+func (m *routedOpenAppModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
 	m.callCount++
 	switch m.callCount {
 	case 1:
-		return toolCallResponse("call_open", "bridge_open_app", `{"app":"小红书"}`), nil
+		return toolCallResponse("call_open", "open_app", `{"app":"小红书","platform":"ios"}`), nil
 	case 2:
-		if modelMessagesContain(messages, "call screenshot first") {
-			return toolCallResponse("call_screen", "screenshot", `{}`), nil
+		if modelMessagesContainToolResult(messages, "open_app") {
+			return contentResponse("已打开小红书。"), nil
 		}
-	case 3:
-		if modelMessagesContainToolResult(messages, "screenshot") {
-			return toolCallResponse("call_search", "search_launch_app", `{"app":"小红书","platform":"ios"}`), nil
-		}
-	case 4:
-		return contentResponse("已通过屏幕搜索继续打开小红书。"), nil
 	}
-	return contentResponse("手机连接断开，无法继续。"), nil
+	return contentResponse("未完成。"), nil
 }
 
-func (m *disconnectedOpenAppFallbackModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+func (m *routedOpenAppModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
 	panic("unexpected Call invocation")
 }
 
