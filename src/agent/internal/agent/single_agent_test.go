@@ -159,7 +159,7 @@ func TestSingleAgentUsesUIFallbackAfterDisconnectedOpenApp(t *testing.T) {
 	if model.callCount != 4 {
 		t.Fatalf("model calls = %d, want open_app failure, screenshot, UI fallback, and completion", model.callCount)
 	}
-	if len(screenshot.inputs) != 1 || len(searchLaunch.inputs) != 1 {
+	if len(screenshot.inputs) != 2 || len(searchLaunch.inputs) != 1 {
 		t.Fatalf("fallback calls: screenshot=%v search_launch_app=%v", screenshot.inputs, searchLaunch.inputs)
 	}
 }

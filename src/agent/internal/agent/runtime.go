@@ -1162,9 +1162,10 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 				Message: &message,
 			}
 		}
+		attachment := r.captureStateScreenshot()
 		entries := r.stateManager.GetAllStates()
-		// if no state entries, just skip
-		if len(entries) == 0 {
+		// If neither runtime state nor a screenshot is available, just skip.
+		if len(entries) == 0 && attachment == nil {
 			return contextmanager.AppendMessageHookResult{
 				Message: &message,
 			}
@@ -1178,11 +1179,17 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 		for _, entry := range entries {
 			fmt.Fprintf(&formated, "%s: %s\n", entry.Key, entry.Value)
 		}
-		tagged := util.STag("state", formated.String())
+		tagged := ""
+		if formated.Len() > 0 {
+			tagged = util.STag("state", formated.String())
+		}
 		// create a new StateMessage
 		stateMessage := contextmanager.Message{
 			Role:    contextmanager.MessageRoleState,
 			Content: tagged,
+		}
+		if attachment != nil {
+			stateMessage.Attachments = []contextmanager.Attachment{*attachment}
 		}
 		return contextmanager.AppendMessageHookResult{
 			Before:  []contextmanager.Message{stateMessage},
@@ -1190,6 +1197,40 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 			After:   []contextmanager.Message{},
 		}
 	}
+}
+
+func (r *Runtime) captureStateScreenshot() *contextmanager.Attachment {
+	if r == nil || r.tools == nil || r.contextManager == nil {
+		return nil
+	}
+	screenshotTool, ok := r.tools.Get("screenshot")
+	if !ok || screenshotTool == nil {
+		return nil
+	}
+
+	output, err := screenshotTool.Call(context.Background(), "{}")
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Debug("[state] screenshot unavailable: %v", err)
+		}
+		return nil
+	}
+	observation, ok := parseScreenshotObservation(output)
+	if !ok {
+		if r.logger != nil {
+			r.logger.Debug("[state] screenshot output is not a valid visual observation")
+		}
+		return nil
+	}
+	attachment, err := r.contextManager.StoreAttachment(observation.MIMEType, observation.ImageBytes)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Debug("[state] failed to store screenshot attachment: %v", err)
+		}
+		return nil
+	}
+	attachment.Source = contextmanager.AttachmentSourceScreenshotObservation
+	return &attachment
 }
 
 func (r *Runtime) beginSession(ctx context.Context, req SessionBeginRequest) (SessionBeginResult, error) {
