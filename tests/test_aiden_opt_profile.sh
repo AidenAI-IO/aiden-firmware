@@ -150,13 +150,16 @@ else
 	fail "existing TERMINFO_DIRS mishandled: $actual"
 fi
 
-# No /opt database installed -> the variable must be left completely alone,
-# otherwise every shell would carry a search path pointing at nothing.
-actual=$(terminfo_dirs unset "$TI_TMP/does-not-exist")
-if [ "$actual" = "unset" ]; then
-	pass "leaves TERMINFO_DIRS unset when no /opt database is installed"
+# The regression that motivated dropping the directory-exists guard: a shell
+# that logs in BEFORE any package is installed must still export the path, or
+# "ssh in; opkg install htop; htop" fails in that same session and only a
+# re-login fixes it. ncurses skips search entries that do not exist.
+missing="$TI_TMP/does-not-exist"
+actual=$(terminfo_dirs unset "$missing")
+if [ "$actual" = "$SYS_TI:$missing" ]; then
+	pass "sets the path even before the /opt database exists"
 else
-	fail "TERMINFO_DIRS was set to '$actual' with no /opt database"
+	fail "expected '$SYS_TI:$missing', got '$actual'"
 fi
 
 # TERMINFO names a single directory and would hide the rootfs database.
