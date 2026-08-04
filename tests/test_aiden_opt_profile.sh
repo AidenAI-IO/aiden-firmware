@@ -108,6 +108,75 @@ else
 	fail "aiden_opt_dir leaked as '$leaked'"
 fi
 
+echo "TERMINFO_DIRS: Entware's terminfo database must be findable (§6.7)"
+
+# The script reads both terminfo directories from the environment so this runs
+# on a host with no /opt at all. OPT_TI is created; SYS_TI merely has to be a
+# distinguishable string.
+TI_TMP=$(mktemp -d "${TMPDIR:-/tmp}/aiden-terminfo.XXXXXX")
+trap 'rm -rf "$TI_TMP"' EXIT
+OPT_TI="$TI_TMP/opt-terminfo"
+SYS_TI="$TI_TMP/sys-terminfo"
+mkdir -p "$OPT_TI" "$SYS_TI"
+
+terminfo_dirs() {
+	# terminfo_dirs <incoming TERMINFO_DIRS, or the literal "unset"> [opt dir]
+	AIDEN_OPT_TERMINFO=${2-$OPT_TI} AIDEN_SYS_TERMINFO=$SYS_TI TD=$1 \
+		"$SH" -c '
+			if [ "$TD" = unset ]; then unset TERMINFO_DIRS; else TERMINFO_DIRS=$TD; fi
+			. "$1"
+			printf "%s\n" "${TERMINFO_DIRS-unset}"
+		' sh "$PROFILE"
+}
+
+actual=$(terminfo_dirs unset)
+if [ "$actual" = "$SYS_TI:$OPT_TI" ]; then
+	pass "sets a search list with the rootfs database first"
+else
+	fail "unexpected TERMINFO_DIRS: got '$actual', want '$SYS_TI:$OPT_TI'"
+fi
+
+actual=$(terminfo_dirs "$SYS_TI:$OPT_TI")
+if [ "$actual" = "$SYS_TI:$OPT_TI" ]; then
+	pass "re-sourcing does not duplicate the /opt database"
+else
+	fail "re-sourcing changed TERMINFO_DIRS: $actual"
+fi
+
+actual=$(terminfo_dirs "/home/me/.terminfo")
+if [ "$actual" = "/home/me/.terminfo:$OPT_TI" ]; then
+	pass "an existing TERMINFO_DIRS is preserved and appended to"
+else
+	fail "existing TERMINFO_DIRS mishandled: $actual"
+fi
+
+# No /opt database installed -> the variable must be left completely alone,
+# otherwise every shell would carry a search path pointing at nothing.
+actual=$(terminfo_dirs unset "$TI_TMP/does-not-exist")
+if [ "$actual" = "unset" ]; then
+	pass "leaves TERMINFO_DIRS unset when no /opt database is installed"
+else
+	fail "TERMINFO_DIRS was set to '$actual' with no /opt database"
+fi
+
+# TERMINFO names a single directory and would hide the rootfs database.
+ti=$(AIDEN_OPT_TERMINFO=$OPT_TI AIDEN_SYS_TERMINFO=$SYS_TI "$SH" -c \
+	'. "$1"; printf "%s\n" "${TERMINFO-unset}"' sh "$PROFILE")
+if [ "$ti" = "unset" ]; then
+	pass "TERMINFO itself is never set"
+else
+	fail "TERMINFO was set to '$ti', which would hide the rootfs database"
+fi
+
+leaked=$(AIDEN_OPT_TERMINFO=$OPT_TI AIDEN_SYS_TERMINFO=$SYS_TI "$SH" -c \
+	'. "$1"; printf "%s|%s\n" "${aiden_opt_terminfo-unset}" "${aiden_sys_terminfo-unset}"' \
+	sh "$PROFILE")
+if [ "$leaked" = "unset|unset" ]; then
+	pass "terminfo helper variables do not leak"
+else
+	fail "terminfo helper variables leaked: $leaked"
+fi
+
 echo "LD_LIBRARY_PATH is deliberately left alone (§6.7)"
 ld=$(PATH_IN=/bin "$SH" -c \
 	'PATH=$PATH_IN; . "$1"; printf "%s\n" "${LD_LIBRARY_PATH-unset}"' sh "$PROFILE")
