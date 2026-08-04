@@ -55,6 +55,23 @@ unset aiden_opt_dir
 # and not prepended -- an installed package fills gaps, it does not redefine
 # terminals that already work.
 #
+# Set unconditionally -- deliberately NOT guarded on the directory existing.
+#
+# An earlier version only acted when /opt/share/terminfo was already there. That
+# is wrong for the flow everybody actually uses:
+#
+#     ssh in            <- nothing installed yet, so the guard did nothing
+#     opkg install htop <- terminfo arrives now
+#     htop              <- same shell: TERMINFO_DIRS still unset -> still fails
+#
+# The variable is read by ncurses at program start, so it has to be right for
+# shells that logged in before the package existed. Only the next login would
+# have picked it up, which makes the fix useless exactly when it is needed.
+#
+# Naming a directory that does not exist costs nothing: ncurses skips missing
+# entries in the search list (verified on the board with both orderings), and
+# $HOME/.terminfo is still searched independently of this variable.
+#
 # The two directories are read from the environment purely so this file stays
 # testable on a host that has no /opt (same approach as S22opt); nothing sets
 # them in production. They grant no capability a user does not already have by
@@ -62,14 +79,12 @@ unset aiden_opt_dir
 aiden_opt_terminfo=${AIDEN_OPT_TERMINFO:-/opt/share/terminfo}
 aiden_sys_terminfo=${AIDEN_SYS_TERMINFO:-/usr/share/terminfo}
 
-if [ -d "$aiden_opt_terminfo" ]; then
-	case ":${TERMINFO_DIRS-}:" in
-		*":$aiden_opt_terminfo:"*) ;;
-		*)
-			TERMINFO_DIRS="${TERMINFO_DIRS:-$aiden_sys_terminfo}:$aiden_opt_terminfo"
-			export TERMINFO_DIRS
-			;;
-	esac
-fi
+case ":${TERMINFO_DIRS-}:" in
+	*":$aiden_opt_terminfo:"*) ;;
+	*)
+		TERMINFO_DIRS="${TERMINFO_DIRS:-$aiden_sys_terminfo}:$aiden_opt_terminfo"
+		export TERMINFO_DIRS
+		;;
+esac
 
 unset aiden_opt_terminfo aiden_sys_terminfo
