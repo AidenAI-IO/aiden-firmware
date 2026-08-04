@@ -55,6 +55,18 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	"moonshotai/kimi-k3": {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low")},
 	"kimi-k3":            {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low")},
 
+	// ByteDance Doubao Seed 2.1 Pro on Volcengine Ark (vision + tool calling),
+	// reached through Ark's OpenAI-compatible endpoint. The window and output cap
+	// come from the published model directory listings (256K context / 128K
+	// output); the Ark console is the authority, so set context_window and
+	// model_max_output_tokens explicitly if a dated release differs. Ark supports
+	// reasoning_effort minimal/low/medium/high and treats an omitted value as
+	// "high", which delays the first streamed token by seconds; pin "low" so
+	// voice interactions stay responsive. A user-set model.reasoning_effort still
+	// overrides. Ark places no constraint on temperature, so no default is set.
+	// Other dated releases need their own entry, keyed by the exact Ark model id.
+	"doubao-seed-2-1-pro-260628": {ContextWindow: 262_144, MaxOutput: 131_072, DefaultReasoningEffort: stringPtr("low")},
+
 	// Existing entries retained for back-compat with dev/staging configs.
 	"anthropic/claude-3.5-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},
 	"anthropic/claude-3.7-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},

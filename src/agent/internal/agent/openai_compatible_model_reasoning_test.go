@@ -111,6 +111,93 @@ func TestReasoningPolicyWithTools(t *testing.T) {
 	}
 }
 
+// captureReasoningRequest runs one GenerateContent against a stub endpoint and
+// returns the decoded request body, letting the reasoning-field tests below vary
+// only the model options.
+func captureReasoningRequest(t *testing.T, opts ...openAICompatibleModelOption) compatibleChatRequest {
+	t.Helper()
+
+	var capturedRequest compatibleChatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedRequest); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "token", server.Client(), opts...)
+	if _, err := model.GenerateContent(
+		context.Background(),
+		[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "test message")},
+	); err != nil {
+		t.Fatalf("GenerateContent failed: %v", err)
+	}
+	return capturedRequest
+}
+
+func TestReasoningEffortWithoutOpenRouterOmitsNestedReasoning(t *testing.T) {
+	// Direct providers (Volcengine Ark, OpenAI, Moonshot) only accept the
+	// standard reasoning_effort field. The nested `reasoning` object is an
+	// OpenRouter extension and must not leak into their requests.
+	req := captureReasoningRequest(t, withOpenAICompatibleReasoningEffort("low"))
+
+	if req.ReasoningEffort != "low" {
+		t.Errorf("reasoning_effort = %q, want \"low\"", req.ReasoningEffort)
+	}
+	if req.Reasoning != nil {
+		t.Errorf("reasoning = %+v, want nil for non-OpenRouter providers", req.Reasoning)
+	}
+}
+
+func TestReasoningEffortMinimalPassesThroughVerbatim(t *testing.T) {
+	// "minimal" is Ark's no-thinking level; it must reach the provider as-is
+	// rather than being normalized into one of the OpenRouter levels.
+	req := captureReasoningRequest(t, withOpenAICompatibleReasoningEffort("minimal"))
+
+	if req.ReasoningEffort != "minimal" {
+		t.Errorf("reasoning_effort = %q, want \"minimal\"", req.ReasoningEffort)
+	}
+	if req.Reasoning != nil {
+		t.Errorf("reasoning = %+v, want nil for non-OpenRouter providers", req.Reasoning)
+	}
+}
+
+func TestReasoningEffortWithOpenRouterSendsNestedReasoning(t *testing.T) {
+	req := captureReasoningRequest(t,
+		withOpenAICompatibleReasoningEffort("low"),
+		withOpenAICompatibleOpenRouterReasoning(),
+	)
+
+	if req.ReasoningEffort != "low" {
+		t.Errorf("reasoning_effort = %q, want \"low\"", req.ReasoningEffort)
+	}
+	if req.Reasoning == nil {
+		t.Fatal("reasoning = nil, want the nested object for OpenRouter")
+	}
+	if req.Reasoning.Effort != "low" {
+		t.Errorf("reasoning.effort = %q, want \"low\"", req.Reasoning.Effort)
+	}
+	if req.Reasoning.Exclude {
+		t.Error("reasoning.exclude = true, want false for effort \"low\"")
+	}
+}
+
+func TestReasoningEffortNoneExcludesReasoningForOpenRouter(t *testing.T) {
+	req := captureReasoningRequest(t,
+		withOpenAICompatibleReasoningEffort("none"),
+		withOpenAICompatibleOpenRouterReasoning(),
+	)
+
+	if req.Reasoning == nil {
+		t.Fatal("reasoning = nil, want the nested object for OpenRouter")
+	}
+	if !req.Reasoning.Exclude {
+		t.Error("reasoning.exclude = false, want true for effort \"none\"")
+	}
+}
+
 func TestReasoningTokensParsing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

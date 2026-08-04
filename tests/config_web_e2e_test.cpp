@@ -1012,6 +1012,60 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config keeps model base_url for providers that allow it") {
+    // Regression test: update_model_from_json()'s base_url whitelist must match
+    // the Go runtime's (clearNonAllowedModelBaseURL). It only listed openai and
+    // ollama while the runtime accepted openrouter/kimi/kimi-cn too, so a
+    // base_url entered for those providers passed validation and appeared to
+    // save, but was stripped before ever reaching agent.toml. volcengine (Ark)
+    // is in the same whitelist and must survive the same round trip.
+    struct Case {
+        const char* provider;
+        const char* base_url;
+    };
+    const Case cases[] = {
+        {"openai", "https://gateway.example.com/v1"},
+        {"openrouter", "https://openrouter.example.com/api/v1"},
+        {"kimi", "https://moonshot.example.com/v1"},
+        {"kimi-cn", "https://moonshot-cn.example.com/v1"},
+        {"volcengine", "https://ark.example.com/api/v3"},
+        {"ollama", "http://127.0.0.1:11434"},
+    };
+
+    for (const Case& c : cases) {
+        StubEnv env;
+        auto handle = start_server(env);
+
+        const std::string body =
+            std::string("{\"config\":{\"model\":{\"provider\":\"") + c.provider +
+            "\",\"model\":\"x\",\"api_key\":\"k\",\"base_url\":\"" + c.base_url + "\"},"
+            "\"hid\":{\"pointer_mode\":\"absolute\"},"
+            "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK(resp.status == 200);
+
+        const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+        CHECK_MESSAGE(saved.find(std::string("base_url = \"") + c.base_url + "\"") != std::string::npos,
+                      c.provider);
+    }
+}
+
+TEST_CASE("config_web: POST /api/config drops model base_url for providers that pin their endpoint") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"fake\",\"model\":\"x\",\"api_key\":\"k\","
+        "\"base_url\":\"https://gateway.example.com/v1\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("gateway.example.com") == std::string::npos);
+}
+
 TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only agent") {
     StubEnv env;
     auto handle = start_server(env);

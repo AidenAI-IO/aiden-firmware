@@ -75,6 +75,18 @@ api_key = "OPENAI_API_KEY"
 # model = "kimi-k3"
 # api_key = "MOONSHOT_API_KEY"
 
+# For Volcengine Ark (Doubao), use the "volcengine" provider. It has a built-in
+# OpenAI-compatible base_url, so only model + api_key are needed. Set base_url
+# only to override it (e.g. a proxy, or the Agent Plan endpoint
+# https://ark.cn-beijing.volces.com/api/plan/v3).
+# provider = "volcengine"  # https://ark.cn-beijing.volces.com/api/v3
+# model = "doubao-seed-2-1-pro-260628"
+# api_key = "ARK_API_KEY"
+# Ark treats an omitted reasoning_effort as "high", which delays the first
+# streamed token; the registry pins "low" for the model above. Ark accepts
+# minimal/low/medium/high ("none" is not an Ark level).
+# reasoning_effort = "minimal"
+
 # Audio service configuration
 [audio]
 # socket = "/run/audio_service/audio_service.sock"

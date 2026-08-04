@@ -170,6 +170,8 @@ func TestLoadRuntimeConfigClearsBaseURLOnlyForProvidersWithoutOverrides(t *testi
 		{"openrouter keeps base_url", "openrouter", "https://gateway.example.com/v1"},
 		{"kimi keeps base_url", "kimi", "https://gateway.example.com/v1"},
 		{"kimi-cn keeps base_url", "kimi-cn", "https://gateway.example.com/v1"},
+		{"volcengine keeps base_url", "volcengine", "https://gateway.example.com/v1"},
+		{"Volcengine case insensitive keeps base_url", "Volcengine", "https://gateway.example.com/v1"},
 		{"ollama keeps base_url", "ollama", "https://gateway.example.com/v1"},
 		{"Ollama case insensitive keeps base_url", "Ollama", "https://gateway.example.com/v1"},
 		{"fake drops base_url", "fake", ""},
@@ -315,6 +317,17 @@ func TestLoadRuntimeConfigResolvesModelReasoningEffortDefault(t *testing.T) {
 			model:   "kimi-k3",
 			explSet: `reasoning_effort = "high"`,
 			want:    "high",
+		},
+		{
+			name:  "doubao-seed-2.1-pro without explicit reasoning_effort pins model default",
+			model: "doubao-seed-2-1-pro-260628",
+			want:  "low",
+		},
+		{
+			name:    "explicit minimal overrides doubao model default",
+			model:   "doubao-seed-2-1-pro-260628",
+			explSet: `reasoning_effort = "minimal"`,
+			want:    "minimal",
 		},
 		{
 			name:  "unknown model without explicit reasoning_effort stays auto (empty)",

@@ -234,12 +234,13 @@ The three stall-score thresholds must satisfy
 
 | Field                     | Description                                                                                                                                                                                                                                          |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider`                | `openai`, `openrouter`, `kimi`, `kimi-cn`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); both accept a `base_url` override. |
+| `provider`                | `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). All three accept a `base_url` override. |
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
-| `base_url`                | Custom OpenAI-compatible endpoint. Optional for `kimi`/`kimi-cn` (each has a built-in default).                                                                                                                                                      |
+| `base_url`                | Custom OpenAI-compatible endpoint. Optional for `kimi`/`kimi-cn`/`volcengine` (each has a built-in default). Only `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, and `ollama` accept it; other providers pin their endpoint and a stored value is dropped on load. |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
 | `token_env`               | Read the API key from the specified environment variable; only supported by `[model]`                                                                                                                                                                |
 | `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
+| `reasoning_effort`        | Thinking budget. Unset is auto: the field is omitted and the provider decides, except that reasoning is disabled for no-tool requests. `low`/`medium`/`high` work everywhere; `minimal` is Volcengine Ark only; `none` is accepted by the others but not by Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
 | `max_response_tokens`     | Maximum output tokens passed to the model on request                                                                                                                                                                                                 |
 | `context_window`          | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback.                                                                        |
 | `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry.                                                                                                                     |
@@ -264,6 +265,45 @@ api_key = "MOONSHOT_API_KEY"
 # base_url is optional for kimi/kimi-cn; set it only to override the default
 # (e.g. a proxy or self-hosted gateway).
 ```
+
+### Volcengine Ark (Doubao)
+
+Use the `volcengine` provider. It targets Ark's OpenAI-compatible endpoint
+(`https://ark.cn-beijing.volces.com/api/v3`), so only `model` and the API key are
+required. `model` is the Ark model ID, and `api_key` is an Ark API key.
+
+```toml
+[model]
+provider = "volcengine"
+model = "doubao-seed-2-1-pro-260628"
+api_key = "ARK_API_KEY"
+
+# Or read the key from the environment instead of writing it here:
+# token_env = "ARK_API_KEY"
+
+# base_url is optional; set it to route through a proxy, or to use the
+# subscription Agent Plan endpoint (https://ark.cn-beijing.volces.com/api/plan/v3),
+# which requires a plan-specific API key.
+```
+
+Ark also exposes an Anthropic-protocol endpoint at `/api/compatible`. This agent
+always speaks the OpenAI-compatible protocol, so use the `/api/v3` path above.
+
+`reasoning_effort` accepts `minimal` (no thinking), `low`, `medium`, and `high`.
+Ark treats an omitted value as `high`, which delays the first streamed token by
+several seconds; the built-in registry therefore pins `low` as the default for
+`doubao-seed-2-1-pro-260628` so voice replies stay responsive. Set the field
+explicitly to override. Note that `none` is not an Ark level — use `minimal`.
+
+The context window and max output for `doubao-seed-2-1-pro-260628` are in the
+built-in registry, so the metadata overrides can stay unset. Other dated releases
+are not registered; for those, set `context_window` and
+`model_max_output_tokens` explicitly, or add a registry entry keyed by the exact
+Ark model ID.
+
+The `[tts]` section has an unrelated provider that is also named `volcengine`. It
+speaks a separate WebSocket protocol with its own host and credentials, so an Ark
+API key and base URL do not carry over to it.
 
 ## `[log]`
 
