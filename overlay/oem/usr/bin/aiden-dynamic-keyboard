@@ -203,20 +203,9 @@ status() {
 	ls -la "$CONFIG_DIR" 2>/dev/null | awk '$1 ~ /^l/ { print $9 " -> " $11 }'
 }
 
-cycle_profiles() {
-	isolate_status=0
-	"$0" isolate || isolate_status=$?
-	restore_status=0
-	"$0" restore || restore_status=$?
-	[ "$restore_status" -eq 0 ] || return "$restore_status"
-	[ "$isolate_status" -eq 0 ] || return "$isolate_status"
-	echo "profile cycle normal"
-}
-
 case "${1:-}" in
 	isolate) switch_mode isolated ;;
 	restore) switch_mode normal ;;
-	cycle) cycle_profiles ;;
 	status) status ;;
-	*) echo "Usage: $0 {isolate|restore|cycle|status}" >&2; exit 1 ;;
+	*) echo "Usage: $0 {isolate|restore|status}" >&2; exit 1 ;;
 esac

@@ -21,9 +21,6 @@ STATE_FILE=/run/aiden_usb_ecm_watchdog.state
 LEASE_FILE=/tmp/dnsmasq.leases
 GADGET_SWITCH_LOCK_DIR=/run/aiden_dynamic_keyboard.lock
 PLANNED_SWITCH_GRACE_FILE=/run/aiden_dynamic_keyboard.grace
-IOS_SESSION_CONTROL=/etc/init.d/S50ios_hid_session
-IOS_SESSION_READY_FILE=/run/aiden_ios_hid_session.ready
-AGENT_TOML=/userdata/agent/agent.toml
 USB0_ADDR=192.168.42.1
 USB0_NETMASK=255.255.255.0
 
@@ -134,19 +131,6 @@ planned_switch_grace_active() {
     [ "$planned_grace_until" -gt "$planned_grace_now" ]
 }
 
-is_ios_absolute_mode() {
-    [ -f "$AGENT_TOML" ] || return 0
-    line=$(grep -E '^[[:space:]]*pointer_mode[[:space:]]*=' "$AGENT_TOML" | tail -n1)
-    case "$line" in
-        *\"touchscreen\"*|*\'touchscreen\'*|*touchscreen*) return 1 ;;
-        *) return 0 ;;
-    esac
-}
-
-can_refresh_ios_hid_session() {
-    is_ios_absolute_mode && [ -x "$IOS_SESSION_CONTROL" ]
-}
-
 acquire_gadget_switch_lock() {
     if mkdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null; then
         echo "$$" > "$GADGET_SWITCH_LOCK_DIR/pid"
@@ -233,37 +217,8 @@ reset_composite_locked() {
     write_refresh_state "$reason" "ok" "$started_at" "duration=${duration}s"
 }
 
-refresh_ios_hid_session() {
-    reason="$1"
-    started_at=$(date +%s)
-    log "refreshing iOS HID session through pointer-free profile: $reason"
-    log_snapshot "before iOS HID session refresh ($reason)"
-    write_refresh_state "$reason" "started" "$started_at" "pointer-free -> normal refresh started"
-
-    if ! "$IOS_SESSION_CONTROL" refresh >>"$LOG_FILE" 2>&1; then
-        log "iOS HID session refresh failed: $reason"
-        write_refresh_state "$reason" "failed" "$started_at" "pointer-free -> normal refresh failed"
-        return 1
-    fi
-
-    finished_at=$(date +%s)
-    duration=$((finished_at - started_at))
-    log "iOS HID session refresh complete (reason=$reason duration=${duration}s)"
-    log_snapshot "after iOS HID session refresh ($reason)"
-    write_refresh_state "$reason" "ok" "$started_at" "pointer-free -> normal duration=${duration}s"
-}
-
 reset_composite() {
     reason="$1"
-    if can_refresh_ios_hid_session; then
-        if planned_switch_grace_active; then
-            log "iOS HID session refresh skipped during planned profile switch grace (reason=$reason until=$planned_grace_until)"
-            [ "$reason" = "manual refresh" ] && return 0
-            return 2
-        fi
-        refresh_ios_hid_session "$reason"
-        return $?
-    fi
     acquire_gadget_switch_lock || return 1
     if planned_switch_grace_active; then
         log "USB composite reset skipped during planned profile switch grace (reason=$reason until=$planned_grace_until)"
@@ -291,12 +246,7 @@ watchdog_main() {
 
     log_snapshot "watchdog loop start"
     if [ "$last_udc_state" = "configured" ]; then
-        if can_refresh_ios_hid_session && [ ! -f "$IOS_SESSION_READY_FILE" ]; then
-            log "watchdog found an uninitialized iOS HID session; applying pointer-free bootstrap"
-            reset_composite "watchdog startup" || true
-        else
-            log "watchdog started while UDC already configured; leaving HID session intact"
-        fi
+        log "watchdog started while UDC already configured; leaving HID session intact"
     fi
 
     while :; do
@@ -307,15 +257,7 @@ watchdog_main() {
         if [ "$state" != "$last_udc_state" ]; then
             log "UDC state changed: ${last_udc_state:-unknown} -> ${state:-unknown}"
             if [ "$state" = "configured" ]; then
-                if can_refresh_ios_hid_session && [ ! -f "$IOS_SESSION_READY_FILE" ] && ! planned_switch_grace_active; then
-                    log "new iOS host session configured; applying pointer-free bootstrap"
-                    reset_composite "host configured" || true
-                else
-                    log "UDC configured transition observed; leaving HID session intact"
-                fi
-            elif can_refresh_ios_hid_session && ! planned_switch_grace_active; then
-                rm -f "$IOS_SESSION_READY_FILE"
-                log "iOS host session detached; cleared bootstrap readiness"
+                log "UDC configured transition observed; leaving HID session intact"
             fi
             last_udc_state="$state"
         fi

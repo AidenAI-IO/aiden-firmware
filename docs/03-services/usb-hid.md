@@ -25,8 +25,6 @@ This script will:
 
 On the firmware image, `overlay/etc/init.d/S49usbhid` is the authoritative startup path. It also brings up `usb0` at `192.168.42.1` for the config page and local USB networking. The completed keyboard + pointer + Consumer Control + ECM composite is bound to the UDC exactly once. Do not add a same-identity startup unbind/rebind: while the cable remains attached, iOS can retain the physical USB session but rebuild the HID interfaces with inconsistent external-keyboard and AssistiveTouch pointer state, leaving the cursor operational while the on-screen keyboard stays suppressed. A physical unplug/replug fully tears down that host session, which is why it can recover the symptom.
 
-After the safe initial bind, `S50ios_hid_session` waits for the host to configure the gadget and then runs one pointer-free -> normal profile cycle in absolute-pointer mode. This makes the pointer arrive as an explicit second profile event, which causes AssistiveTouch to apply its Show Onscreen Keyboard policy reliably. The service publishes `/run/aiden_ios_hid_session.ready` after success. The ECM watchdog retries the bootstrap if startup missed it, clears readiness after a real host detach, applies it to the next configured host session, and routes manual, Config Web, and ECM-stall refreshes through the same profile cycle. Android touchscreen mode keeps the direct composite reset path.
-
 ## example_usb_hid Usage
 
 ```text

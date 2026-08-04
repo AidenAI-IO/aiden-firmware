@@ -10,7 +10,6 @@ Firmware integration is done through scripts in `overlay/etc/init.d/`. Most long
 | `S43wlan_guard` | WLAN connectivity guard |
 | `S49ntp` | Start the `ntpd` daemon; periodic sync is triggered by `S50ntp_watchdog` |
 | `S49usbhid` | Initialize the USB HID gadget |
-| `S50ios_hid_session` | In iOS absolute-pointer mode, establish the AssistiveTouch session through a pointer-free -> normal profile cycle |
 | `S50ntp_watchdog` | Periodically check clock sync status, and trigger `S49ntp step` when not synced |
 | `S50usbdevice` | USB device related initialization |
 | `S52frame_service` | Start and supervise the HDMI frame service |
