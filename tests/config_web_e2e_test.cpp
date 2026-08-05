@@ -2209,7 +2209,8 @@ TEST_CASE("config_web: failed manual OTA update releases launch lock even if a c
 
     HttpResponse first = http_request(handle->port, "POST", "/api/ota/update");
     REQUIRE(first.status == 200);
-    REQUIRE(wait_for_file_contains(log_path, "[config_web] ota update exited rc=1", 2000));
+    REQUIRE(wait_for_file_contains(log_path,
+                                   "[config_web] [ota] update_exited exit_code=1", 2000));
 
     HttpResponse retry;
     bool accepted = false;
@@ -2338,8 +2339,8 @@ TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate")
     const std::string update_log_path = tmp + "/config_web_ota_update.log";
     const std::string health_log_path = tmp + "/ota_health.log";
     const std::string update_log =
-        "[config_web] ota update requested\n"
-        "[config_web] ota update exited rc=1\n";
+        "2026-08-05T06:22:02Z [INFO] [config_web] [ota] update_requested\n"
+        "2026-08-05T06:22:03Z [ERROR] [config_web] [ota] update_exited exit_code=1\n";
     std::ostringstream health_log;
     for (int i = 0; i < 5000; ++i) {
         health_log << "ota health previous boot line " << i << "\n";
@@ -2365,12 +2366,13 @@ TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate")
 
     CHECK(required_json_string(update, "path") == update_log_path);
     CHECK(required_json_int(update, "size_bytes") == static_cast<int>(update_log.size()));
-    CHECK(required_json_string(update, "log").find("[config_web] ota update exited rc=1") != std::string::npos);
+    CHECK(required_json_string(update, "log").find(
+              "[config_web] [ota] update_exited exit_code=1") != std::string::npos);
     CHECK(required_json_string(update, "log").find("health timeout") == std::string::npos);
 
     CHECK(required_json_string(health, "path") == health_log_path);
     CHECK(required_json_string(health, "log").find("health timeout waiting for /userdata/ota/health.ok") != std::string::npos);
-    CHECK(required_json_string(health, "log").find("[config_web] ota update") == std::string::npos);
+    CHECK(required_json_string(health, "log").find("[config_web] [ota]") == std::string::npos);
     cJSON_Delete(parsed);
 }
 
