@@ -1,25 +1,29 @@
-# Model Display 功能文档
+# Model Display
 
-## 概述
+## Overview
 
-Model Display 功能为 config_web UI 提供了按 provider 分组的模型列表，支持中英文双语描述，方便用户在配置界面选择合适的模型。
+Model display provides the config web UI with a per-provider model list carrying
+bilingual descriptions, so the configuration page can offer a pick list instead
+of a free-text model field.
 
-## 设计原则
+## Design principles
 
-1. **名称即 ID**：模型的显示名称与配置 ID 完全一致，减少理解成本
-2. **多语言支持**：描述信息支持中英文，与 aiden 的 locale 系统对齐（`zh-CN`、`en-US`）
-3. **推荐标识**：为每个 provider 标记推荐的模型
-4. **按 provider 分组**：模型列表按 provider 组织，便于 UI 展示
+1. **The name is the ID.** A model's display name is exactly its config value,
+   so there is nothing to map back.
+2. **Localized descriptions.** Descriptions cover the locales aiden already
+   supports (`zh-CN`, `en-US`).
+3. **Recommended models.** Each provider marks a recommended model.
+4. **Grouped by provider.** The list is organized by provider for the UI.
 
-## 数据结构
+## Data structures
 
 ### ModelDisplayInfo
 
 ```go
 type ModelDisplayInfo struct {
-    ID           string            // 模型 ID（同时作为显示名称）
+    ID           string            // model ID, also the display name
     Descriptions map[string]string // locale -> description
-    Recommended  bool              // 是否推荐
+    Recommended  bool
 }
 ```
 
@@ -27,54 +31,57 @@ type ModelDisplayInfo struct {
 
 ```go
 type LocalizedModelInfo struct {
-    ID          string // 模型 ID
-    Description string // 本地化后的描述
-    Recommended bool   // 是否推荐
+    ID          string // model ID
+    Description string // description for the requested locale
+    Recommended bool
 }
 ```
 
-## API 接口
+## API
 
 ### GetDisplayModelsForProvider
 
-获取指定 provider 的原始模型列表：
+Returns the raw model list for a provider:
 
 ```go
 models := GetDisplayModelsForProvider("openai")
-// 返回：[]ModelDisplayInfo
+// []ModelDisplayInfo
 ```
 
 ### GetLocalizedModelsForProvider
 
-获取指定 provider 的本地化模型列表：
+Returns the localized model list for a provider:
 
 ```go
 models := GetLocalizedModelsForProvider("openai", "zh-CN")
-// 返回：[]LocalizedModelInfo，描述已本地化
+// []LocalizedModelInfo, descriptions already resolved
 ```
 
 ### ModelDisplayInfo.Localized
 
-将单个模型信息本地化：
+Localizes a single entry:
 
 ```go
 model := ModelDisplayInfo{...}
 localized := model.Localized("zh-CN")
-// 返回：LocalizedModelInfo
+// LocalizedModelInfo
 ```
 
-## 使用示例
+## Usage
 
-### 在 Config Web API 中使用
+### From the config web API
+
+`GET /api/models?provider=<name>&locale=<locale>` is served by `handleModels`.
+When `locale` is omitted it falls back to the configured locale, and then to
+`en-US`:
 
 ```go
 func handleGetModels(w http.ResponseWriter, r *http.Request) {
     provider := r.URL.Query().Get("provider")
-    locale := r.Header.Get("Accept-Language") // 或从配置获取
-    
-    // 获取本地化的模型列表
+    locale := r.URL.Query().Get("locale")
+
     models := GetLocalizedModelsForProvider(provider, locale)
-    
+
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(map[string]interface{}{
         "provider": provider,
@@ -83,7 +90,10 @@ func handleGetModels(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-**返回示例（zh-CN）：**
+An unknown provider returns an empty list rather than an error.
+
+**Response for `locale=zh-CN`:**
+
 ```json
 {
   "provider": "openai",
@@ -102,7 +112,8 @@ func handleGetModels(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-**返回示例（en-US）：**
+**Response for `locale=en-US`:**
+
 ```json
 {
   "provider": "openai",
@@ -121,7 +132,10 @@ func handleGetModels(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-### 在前端 UI 中使用
+The Chinese strings above are sample data, not documentation prose: they are the
+`zh-CN` descriptions this endpoint actually returns.
+
+### From the frontend
 
 ```html
 <select id="provider" onchange="loadModels()">
@@ -131,17 +145,16 @@ func handleGetModels(w http.ResponseWriter, r *http.Request) {
 </select>
 
 <div id="models">
-  <!-- 动态加载 -->
+  <!-- populated dynamically -->
 </div>
 
 <script>
 async function loadModels() {
   const provider = document.getElementById('provider').value;
-  const locale = 'zh-CN'; // 从配置获取
-  
+
   const response = await fetch(`/api/models?provider=${provider}`);
   const data = await response.json();
-  
+
   const modelsDiv = document.getElementById('models');
   modelsDiv.innerHTML = data.models.map(m => `
     <label>
@@ -154,20 +167,13 @@ async function loadModels() {
 </script>
 ```
 
-**渲染效果：**
-```
-○ gpt-5.5 ⭐
-  最新旗舰模型，100万+ 上下文
+Omitting `locale` lets the server apply the configured one, which is usually
+what the UI wants.
 
-○ gpt-5.4-mini
-  快速且经济的小模型
-
-○ 自定义输入: [_________________]
-```
-
-## 当前支持的 Provider
+## Currently listed models
 
 ### openai
+
 - gpt-5.5 ⭐
 - gpt-5.4
 - gpt-5.4-mini
@@ -176,33 +182,37 @@ async function loadModels() {
 - gpt-4o-mini
 
 ### kimi / kimi-cn
+
 - kimi-k3 ⭐
 
 ### volcengine
+
 - doubao-seed-2-1-pro-260628 ⭐
 
 ### openrouter
+
 - anthropic/claude-opus-4.8 ⭐
 - anthropic/claude-sonnet-4.6
 - google/gemini-3.5-pro
 - google/gemini-3.5-flash
 
 ### ollama
+
 - qwen2.5:14b ⭐
 - qwen2.5:7b
 - llama3.1:8b
 - llama3.1:70b
 
-## 添加新模型
+## Adding a model
 
-在 `model_display.go` 的 `displayModelsByProvider` 中添加：
+Add an entry to `displayModelsByProvider` in `model_display.go`:
 
 ```go
 var displayModelsByProvider = map[string][]ModelDisplayInfo{
     "openai": {
-        // ... 现有模型 ...
+        // ... existing models ...
         {
-            ID: "gpt-6.0", // 新模型
+            ID: "gpt-6.0",
             Descriptions: map[string]string{
                 localeEnglishUS:         "Next generation model",
                 localeSimplifiedChinese: "下一代模型",
@@ -213,32 +223,40 @@ var displayModelsByProvider = map[string][]ModelDisplayInfo{
 }
 ```
 
-## 测试
+The `Descriptions` map holds user-facing copy per locale, so the
+`localeSimplifiedChinese` value is Chinese by definition.
 
-运行测试验证：
+## Tests
 
 ```bash
 go test -v -run TestModelDisplay ./internal/agent/
 ```
 
-测试覆盖：
-- ✅ 按 provider 获取模型列表
-- ✅ 多语言描述获取和回退
-- ✅ 模型本地化
-- ✅ 所有模型都有英文描述
-- ✅ 每个 provider 都有推荐模型
+Covered:
 
-## 注意事项
+- Fetching the model list per provider
+- Description lookup and locale fallback
+- Localizing a single entry
+- Every model has an English description
+- Every provider has a recommended model
 
-1. **名称一致性**：模型 ID 必须与配置文件中使用的值完全一致
-2. **英文描述必填**：所有模型必须提供英文描述（作为回退）
-3. **中文描述推荐**：建议为所有模型提供中文描述
-4. **推荐标识**：每个 provider 至少应有一个推荐模型
-5. **不强制一致性**：display 列表与 modelSpecRegistry 独立维护，不做强制校验
+## Notes
 
-## 与 modelSpecRegistry 的关系
+1. **Name consistency.** A model ID must match the value used in the config file
+   exactly.
+2. **English description required.** It is the fallback for any unknown locale.
+3. **Chinese description recommended.** Preferred for every model.
+4. **Recommended flag.** Each provider should mark at least one model.
+5. **No enforced consistency.** The display list and `modelSpecRegistry` are
+   maintained independently and not cross-validated.
 
-- `modelSpecRegistry`：存储模型的技术规格（上下文窗口、最大输出等），用于运行时
-- `displayModelsByProvider`：存储模型的 UI 展示信息（描述、推荐），用于 config_web
+## Relationship to modelSpecRegistry
 
-两者独立维护，没有强制一致性要求。如果用户在 UI 中选择了不在 `modelSpecRegistry` 中的模型，系统会使用默认值或配置的覆盖值。
+- `modelSpecRegistry` holds technical specs (context window, max output) used at
+  runtime.
+- `displayModelsByProvider` holds UI copy (description, recommended) used by the
+  config web.
+
+The two are maintained independently, with no enforced consistency. If a model
+absent from `modelSpecRegistry` is selected, the runtime falls back to defaults
+or to the overrides set in the config.

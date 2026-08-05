@@ -1,23 +1,26 @@
-# Model Provider 多配置支持
+# Named Model Providers
 
-## 概述
+## Overview
 
-从此版本开始，agent.toml 支持预配置多个 model provider，并通过修改一行配置快速切换。
+`agent.toml` supports pre-configuring several model providers and switching
+between them by editing a single line.
 
-## 设计理念
+## Design
 
-**关注点分离：**
-- `[providers]` 部分：定义可用的服务提供商（包含认证信息、endpoint 等）
-- `[model]` 部分：选择使用哪个 provider 和配置模型参数
+**Separation of concerns:**
 
-类似于 Git 的 remote 或 Docker 的 registry，先定义可用的服务，再选择使用哪个。
+- `[providers]` sections: define the available services (credentials, endpoint)
+- `[model]` section: pick which provider to use and set model parameters
 
-## 配置结构
+This mirrors Git remotes or Docker registries: declare the available services
+first, then choose one.
 
-### 基本用法
+## Configuration
+
+### Basic usage
 
 ```toml
-# 1. 定义多个 providers
+# 1. Define several providers
 [providers.my-openai]
 provider = "openai"
 api_key = "sk-xxx"
@@ -30,41 +33,39 @@ api_key = "sk-yyy"
 provider = "ollama"
 base_url = "http://localhost:11434"
 
-# 2. 选择使用哪个 provider
+# 2. Pick one
 [model]
-provider = "my-openai"  # 引用上面定义的 provider
+provider = "my-openai"  # references [providers.my-openai] above
 model = "gpt-4o"
 temperature = 0.7
 ```
 
-### Provider 配置字段
+### Provider fields
 
-每个 provider 支持以下字段：
+| Field | Required | Description | Example |
+|-------|----------|-------------|---------|
+| `provider` | Yes | Provider type | `"openai"`, `"kimi"`, `"ollama"`, ... |
+| `api_key` | No | API key | `"sk-xxx"` |
+| `token_env` | No | Environment variable holding the API key | `"OPENAI_API_KEY"` |
+| `base_url` | No | Custom endpoint; honored only for `openai` and `ollama` | `"https://api.openai.com/v1"` |
 
-| 字段 | 必填 | 说明 | 示例 |
-|------|------|------|------|
-| `provider` | 是 | Provider 类型 | `"openai"`, `"kimi"`, `"ollama"` 等 |
-| `api_key` | 否 | API 密钥 | `"sk-xxx"` |
-| `token_env` | 否 | API 密钥的环境变量名 | `"OPENAI_API_KEY"` |
-| `base_url` | 否 | 自定义 API endpoint，仅 `openai` 和 `ollama` 生效 | `"https://api.openai.com/v1"` |
+The `base_url` whitelist matches `[model]`: only `openai` and `ollama` accept an
+override. For any other type the value is dropped at load, whether it is set on
+`[providers.<name>]` or directly on `[model]`.
 
-`base_url` 的白名单和 `[model]` 一致：只有 `openai` 和 `ollama` 接受覆盖，
-其他类型即使写了也会在加载时被丢弃（无论写在 `[providers.<name>]` 还是
-`[model]` 上）。
+### Supported provider types
 
-### 支持的 Provider 类型
-
-- `openai` - OpenAI 官方 API
-- `kimi` - Moonshot AI (国际版)
-- `kimi-cn` - Moonshot AI (中国版)
-- `volcengine` - 火山引擎 (豆包)
+- `openai` - OpenAI official API
+- `kimi` - Moonshot AI (international)
+- `kimi-cn` - Moonshot AI (China)
+- `volcengine` - Volcengine (Doubao)
 - `openrouter` - OpenRouter
-- `ollama` - Ollama 本地模型
-- `fake` - 测试用假 provider
+- `ollama` - Ollama local models
+- `fake` - fake provider for tests
 
-## 使用场景
+## Use cases
 
-### 场景 1: 工作/个人账号切换
+### Work and personal accounts
 
 ```toml
 [providers.work]
@@ -76,13 +77,13 @@ provider = "openai"
 api_key = "sk-personal-xxx"
 
 [model]
-provider = "work"      # 工作时间
+provider = "work"
 model = "gpt-4o"
 
-# 下班后改成: provider = "personal"
+# Off the clock, change to: provider = "personal"
 ```
 
-### 场景 2: 多供应商快速切换
+### Switching vendors
 
 ```toml
 [providers.primary]
@@ -98,13 +99,13 @@ provider = "ollama"
 base_url = "http://localhost:11434"
 
 [model]
-provider = "primary"   # 主力：kimi
+provider = "primary"   # kimi as the main provider
 model = "moonshot-v1-32k"
 
-# 需要时改成: provider = "backup" 或 "local"
+# When needed, change to: provider = "backup" or "local"
 ```
 
-### 场景 3: 开发/测试/生产环境
+### Development, staging, production
 
 ```toml
 [providers.dev]
@@ -120,13 +121,13 @@ provider = "openai"
 api_key = "sk-prod-xxx"
 
 [model]
-provider = "dev"       # 开发环境用本地
+provider = "dev"       # local models while developing
 model = "qwen2.5:14b"
 
-# 部署时改成: provider = "prod"
+# On deploy, change to: provider = "prod"
 ```
 
-### 场景 4: model 和 model_text 使用不同 provider
+### Different providers for voice and text
 
 ```toml
 [providers.openai-main]
@@ -138,36 +139,37 @@ provider = "kimi"
 api_key = "sk-kimi-xxx"
 
 [model]
-provider = "openai-main"  # 语音模式用 OpenAI
+provider = "openai-main"  # voice mode uses OpenAI
 model = "gpt-4o"
 
 [model_text]
-provider = "kimi-fast"    # 文字模式用 Kimi
+provider = "kimi-fast"    # text mode uses Kimi
 model = "moonshot-v1-8k"
 ```
 
-## 解析规则
+## Resolution rules
 
-`[model].provider` 的取值按以下顺序解析：
+`[model].provider` resolves in this order:
 
-1. 如果匹配某个 `[providers.<name>]` 的名字，就使用该 section；
-2. 否则当作 provider 类型处理（向后兼容旧配置）；
-3. 两者都不匹配则报错 —— 拼错的名字或删掉 section 后残留的引用会在加载时
-   被拒绝，而不是等到真正调用模型时才失败。
+1. If it matches the name of a `[providers.<name>]` section, that section is used.
+2. Otherwise it is treated as a provider type (keeps older configs working).
+3. If it matches neither, loading fails. A misspelled name, or a reference left
+   behind after its section was deleted, is rejected at load instead of failing
+   later when the model client is built.
 
-两条需要注意的边界：
+Two edge cases worth knowing:
 
-- **名字遮蔽类型**：section 名和内置类型同名时，section 优先。
-  `[providers.openai] provider = "ollama"` 会让 `[model] provider = "openai"`
-  解析成 **ollama**。不建议这样命名。
-- **section 名不能嵌套**：只支持 `[providers.<name>]` 一层，且名字限于
-  `[A-Za-z0-9_-]`。
+- **A section name shadows a provider type.** When a section is named after a
+  built-in type, the section wins: `[providers.openai] provider = "ollama"`
+  makes `[model] provider = "openai"` resolve to **ollama**. Avoid such names.
+- **Section names cannot nest.** Only a single level, `[providers.<name>]`, is
+  supported, and names are limited to `[A-Za-z0-9_-]`.
 
-## 高级用法
+## Advanced usage
 
-### 覆盖 Provider 配置
+### Overriding provider fields
 
-model 配置中的字段会覆盖 provider 中的配置：
+Fields set on the model section win over the ones inherited from the provider:
 
 ```toml
 [providers.my-openai]
@@ -178,75 +180,71 @@ base_url = "https://api.openai.com/v1"
 [model]
 provider = "my-openai"
 model = "gpt-4o"
-api_key = "sk-override-key"  # 覆盖 provider 中的 api_key
-# base_url 仍使用 provider 中的配置
+api_key = "sk-override-key"  # overrides the provider's api_key
+# base_url is still inherited from the provider
 ```
 
-### 使用环境变量
+### Reading keys from the environment
 
 ```toml
 [providers.my-openai]
 provider = "openai"
-token_env = "OPENAI_API_KEY"  # 从环境变量读取
+token_env = "OPENAI_API_KEY"  # read from the environment
 
 [model]
 provider = "my-openai"
 model = "gpt-4o"
 ```
 
-## 向后兼容
+## Backward compatibility
 
-旧的配置方式仍然有效，不需要定义 providers：
+The older style still works; defining providers is optional:
 
 ```toml
-# 传统方式（不使用 providers）
+# Traditional form, no [providers] sections
 [model]
-provider = "openai"     # 直接指定 provider 类型
+provider = "openai"     # a provider type directly
 model = "gpt-4o"
 api_key = "sk-xxx"
 ```
 
-## 切换步骤
+## Switching providers
 
-要切换 provider，只需：
-
-1. 修改 `agent.toml` 中的 `provider` 字段
-2. 根据需要修改 `model` 字段
-3. 重启 agent 服务
+1. Edit the `provider` field in `agent.toml`
+2. Adjust `model` if needed
+3. Restart the agent service
 
 ```bash
-# 编辑配置
 vi /root/agent.toml
-
-# 重启服务
 /etc/init.d/S99agent restart
 ```
 
-## 验证配置
-
-启动后检查日志确认使用的 provider：
+## Verifying the active provider
 
 ```bash
 tail -f /var/log/agent/agent.log | grep provider
 ```
 
-## 错误处理
+## Errors
 
-### Provider 不存在
+### Provider reference does not resolve
 
 ```toml
 [model]
-provider = "non-existent"  # 这个 provider 没有定义
+provider = "non-existent"  # neither a section name nor a provider type
 model = "gpt-4o"
 ```
 
-**行为：** 当作直接的 provider 类型（向后兼容），如果类型也不支持则报错。
+**Error:** `model.provider: unknown provider "non-existent"`
 
-### Provider 缺少必填字段
+When other providers are configured, the message also lists them, so a typo is
+easy to spot. `model_text` reports the same way under `model_text.provider`.
+
+### Provider is missing its type
 
 ```toml
 [providers.broken]
-# 缺少 provider 字段
+# no provider field
 api_key = "sk-xxx"
 
 [model]
@@ -254,9 +252,9 @@ provider = "broken"
 model = "gpt-4o"
 ```
 
-**错误：** `model: provider "broken" has no provider type specified`
+**Error:** `providers.broken: provider type is required`
 
-### 不支持的 Provider 类型
+### Unsupported provider type
 
 ```toml
 [providers.invalid]
@@ -268,37 +266,36 @@ provider = "invalid"
 model = "gpt-4o"
 ```
 
-**错误：** `providers.invalid: unsupported provider type "unknown-provider"`
+**Error:** `providers.invalid: unsupported provider type "unknown-provider"`
 
-## 最佳实践
+## Best practices
 
-1. **命名规范：** 使用描述性的 provider 名称
-   - ✅ `openai-work`, `kimi-main`, `ollama-local`
-   - ❌ `p1`, `test`, `xxx`
+1. **Naming:** use descriptive provider names
+   - Good: `openai-work`, `kimi-main`, `ollama-local`
+   - Avoid: `p1`, `test`, `xxx`
 
-2. **密钥管理：** 敏感信息建议使用环境变量
+2. **Credentials:** prefer environment variables for keys
    ```toml
    [providers.secure]
    provider = "openai"
    token_env = "OPENAI_API_KEY"
    ```
 
-3. **注释说明：** 为每个 provider 添加注释
+3. **Comments:** annotate each provider
    ```toml
    [providers.work]
    provider = "openai"
    api_key = "sk-xxx"
-   # 工作账号，配额：10M tokens/月
+   # Work account, quota: 10M tokens/month
    ```
 
-4. **备份配置：** 切换前备份当前配置
+4. **Backups:** save the config before switching
    ```bash
    cp /root/agent.toml /root/agent.toml.bak
    ```
 
-## 未来规划
+## Planned work
 
-后续版本将支持：
-- Config Web UI 中的可视化 provider 切换
-- 运行时动态切换（无需重启）
-- Provider 使用统计和成本跟踪
+- Visual provider switching in the config web UI
+- Runtime switching without a restart
+- Per-provider usage and cost tracking
