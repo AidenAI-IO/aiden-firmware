@@ -1335,6 +1335,29 @@ TEST_CASE("config_web: POST /api/config keeps a submitted api_key that contains 
     CHECK(saved.find("sk-stub-secret-1234") == std::string::npos);
 }
 
+// The provider select leads with an empty placeholder so the add shortcut can
+// never become the value a fresh config falls back to. That makes an empty
+// model.provider reachable from the UI for the first time, so the backend has to
+// reject it with a message naming the field rather than writing a config the
+// agent would refuse to start on.
+TEST_CASE("config_web: POST /api/config rejects an empty model provider") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string before = read_file(handle->tmp_dir + "/agent.toml");
+
+    const std::string body =
+        "{\"config\":{\"providers\":{},"
+        "\"model\":{\"provider\":\"\",\"model\":\"x\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("model.provider") != std::string::npos);
+
+    // A rejected save must leave the on-disk config untouched.
+    CHECK(read_file(handle->tmp_dir + "/agent.toml") == before);
+}
+
 TEST_CASE("config_web: POST /api/config rejects a malformed providers section") {
     StubEnv env;
     auto handle = start_server(env);

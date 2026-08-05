@@ -1692,6 +1692,17 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
         }
     }
 
+    // A patch may omit any field, but it may not blank model.provider: the agent
+    // requires it (Config.Validate: "model.provider is required"), so accepting
+    // an empty value writes an agent.toml that loads here but refuses to start.
+    // The provider select leads with an empty placeholder, which is how a save
+    // can carry one. model_text.provider is exempt -- empty means "inherit".
+    cJSON* model_section = cJSON_GetObjectItem(root, "model");
+    if (json_is_object(model_section) && cJSON_GetObjectItem(model_section, "provider")
+        && !validate_required_string(model_section, "model", "provider", false, error)) {
+        return false;
+    }
+
     return validate_known_config_field_types(root, error);
 }
 
