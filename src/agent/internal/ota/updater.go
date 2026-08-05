@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"aiden-agent/internal/logging"
 	"aiden-agent/internal/netproxy"
 )
 
@@ -905,7 +906,7 @@ func (u *Updater) fetchBytesWithTokenLimit(parent context.Context, url string, t
 	// Apply GitHub proxy if configured
 	fetchURL := ApplyGitHubProxy(url, u.config.GitHubProxyURL)
 	if fetchURL != url {
-		fmt.Fprintf(os.Stderr, "ota: using GitHub proxy for manifest download\n")
+		_ = logging.LogEvent(logging.Info, "ota", "manifest", "proxy_enabled")
 	}
 
 	return fetchBytesWithTokenLimit(ctx, fetchURL, token, limit)

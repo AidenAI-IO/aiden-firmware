@@ -10,12 +10,22 @@ STORAGE_LEVEL_PATH=${STORAGE_LEVEL_PATH:-/run/agent/storage_level}
 PID_FILE=/run/agent/agent.pid
 WATCHDOG_PID_FILE=/run/agent/agent_watchdog.pid
 BOOT_CONF=/etc/aiden_boot.conf
+AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
+[ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
+. "$AIDEN_LOG_HELPER"
 
 if [ -f "$BOOT_CONF" ]; then
     . "$BOOT_CONF"
 fi
 : "${ENABLE_AGENT:=1}"
 LOG_PATH=${LOG_PATH:-$CONFIG_DIR/log/agent.log}
+
+supervisor_log() {
+    level="$1"
+    event="$2"
+    shift 2
+    aiden_log_to_file "$LOG_PATH" "$level" agent supervisor "$event" "$*"
+}
 
 configured_agent_log_max_mb() {
     config_path="$CONFIG_DIR/agent.toml"
@@ -133,13 +143,14 @@ start() {
         trap 'exit 0' INT TERM
         while true; do
             if [ ! -x "$AGENT_BIN" ]; then
-                echo "[agent] waiting for $AGENT_BIN" >> "$LOG_PATH"
+                supervisor_log WARN binary_wait "waiting for $AGENT_BIN"
                 trim_agent_log
                 sleep 5
                 continue
             fi
 
-            echo "[agent] starting $AGENT_BIN -config $CONFIG_DIR -addr $ADDR" >> "$LOG_PATH"
+            supervisor_log INFO process_starting \
+                "starting $AGENT_BIN -config $CONFIG_DIR -addr $ADDR"
             "$ENV_RUN_BIN" "$AGENT_BIN" -config "$CONFIG_DIR" -addr "$ADDR" >> "$LOG_PATH" 2>&1 &
             child="$!"
             echo "$child" > "$PID_FILE"
@@ -150,7 +161,8 @@ start() {
             wait "$child"
             status="$?"
             rm -f "$PID_FILE"
-            echo "[agent] exited with status $status; restarting in 2s" >> "$LOG_PATH"
+            supervisor_log WARN process_exited \
+                "exited with status $status; restarting in 2s"
             trim_agent_log
             sleep 2
         done

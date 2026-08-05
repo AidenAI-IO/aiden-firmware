@@ -1,6 +1,7 @@
 package contextmanager
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -46,11 +47,12 @@ func (r MessageRole) ToStandardRole() llms.ChatMessageType {
 }
 
 type Message struct {
-	Role        MessageRole  `json:"role"`
-	Content     string       `json:"content"`
-	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResults []ToolResult `json:"tool_results,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
+	Role                   MessageRole             `json:"role"`
+	Content                string                  `json:"content"`
+	ToolCalls              []ToolCall              `json:"tool_calls,omitempty"`
+	ToolResults            []ToolResult            `json:"tool_results,omitempty"`
+	RecoverableToolResults []RecoverableToolResult `json:"recoverable_tool_results,omitempty"`
+	Attachments            []Attachment            `json:"attachments,omitempty"`
 }
 
 type AppendMessageHook func(Message) AppendMessageHookResult
@@ -68,9 +70,49 @@ type ToolCall struct {
 }
 
 type ToolResult struct {
-	ToolCallID string `json:"tool_call_id"`
-	Name       string `json:"name"`
-	Content    string `json:"content"`
+	ToolCallID string          `json:"tool_call_id"`
+	Name       string          `json:"name"`
+	Content    string          `json:"content"`
+	Meta       *ToolResultMeta `json:"meta,omitempty"`
+}
+
+type ToolResultMeta struct {
+	ArtifactPath        string `json:"artifact_path,omitempty"`
+	OriginalBytes       int64  `json:"original_bytes,omitempty"`
+	OriginalChars       int    `json:"original_chars,omitempty"`
+	EstimatedTokens     int    `json:"estimated_tokens,omitempty"`
+	Complete            bool   `json:"complete"`
+	ArtifactComplete    bool   `json:"artifact_complete"`
+	Reason              string `json:"reason,omitempty"`
+	Summary             string `json:"summary,omitempty"`
+	ActionCompleted     bool   `json:"action_completed,omitempty"`
+	ObservationComplete bool   `json:"observation_complete,omitempty"`
+	ProcessingErrorCode string `json:"processing_error_code,omitempty"`
+	ArtifactStoreError  string `json:"artifact_store_error,omitempty"`
+	legacyArtifactRef   string
+}
+
+// RecoverableToolResult carries trusted recovery metadata across compaction
+// revisions. It is persisted with the context message but is not sent to the
+// model separately from the bounded recovery block in Message.Content.
+type RecoverableToolResult struct {
+	ToolName         string `json:"tool_name"`
+	ArtifactPath     string `json:"artifact_path"`
+	ArtifactComplete bool   `json:"artifact_complete"`
+	Summary          string `json:"summary,omitempty"`
+}
+
+func (m *ToolResultMeta) UnmarshalJSON(data []byte) error {
+	type alias ToolResultMeta
+	decoded := struct {
+		*alias
+		ArtifactRef string `json:"artifact_ref,omitempty"`
+	}{alias: (*alias)(m)}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	m.legacyArtifactRef = decoded.ArtifactRef
+	return nil
 }
 
 // Attachment tracks file metadata for message attachments. Binary content is stored on disk
@@ -92,6 +134,7 @@ type ContextManager struct {
 	messageList     []Message
 	appendHooks     []AppendMessageHook
 	attachmentStore *attachmentStore
+	artifactStore   *artifactStore
 	mu              sync.RWMutex
 	sessionFolder   string
 }
@@ -106,11 +149,34 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 	if err != nil {
 		return nil, err
 	}
+	metadata, found, err := loadSessionMetadata(sessionFolder, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	legacyArtifactSessionID := sessionID
+	if found && strings.TrimSpace(metadata.ArtifactScopeID) != "" {
+		legacyArtifactSessionID, err = validateArtifactSessionID(metadata.ArtifactScopeID)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	attachmentStore, err := newAttachmentStore(sessionFolder, sessionID)
 	if err != nil {
 		return nil, err
 	}
+	artifactStore, err := newArtifactStore(sessionFolder, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	// Keep legacy reference migration in memory here. Session JSONL files are
+	// append-only, so flushFull would duplicate every loaded message instead of
+	// rewriting them. A later session revision persists the migrated messages.
+	legacyArtifactRoot, err := artifactStoreRoot(sessionFolder, legacyArtifactSessionID)
+	if err != nil {
+		return nil, err
+	}
+	migrateLegacyArtifactRefs(messageList, legacyArtifactRoot)
 
 	return &ContextManager{
 		sessionID:       sessionID,
@@ -118,7 +184,51 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 		mu:              sync.RWMutex{},
 		sessionFolder:   sessionFolder,
 		attachmentStore: attachmentStore,
+		artifactStore:   artifactStore,
 	}, nil
+}
+
+func migrateLegacyArtifactRefs(messageList []Message, artifactRoot string) {
+	if strings.TrimSpace(artifactRoot) == "" {
+		return
+	}
+	const legacyPrefix = "artifact://"
+	const shellGuidance = "Use shell commands such as grep, sed, dd, jq, or fq to read only the needed ranges or fields."
+	for messageIndex := range messageList {
+		for resultIndex := range messageList[messageIndex].ToolResults {
+			result := &messageList[messageIndex].ToolResults[resultIndex]
+			if result.Meta == nil || result.Meta.ArtifactPath != "" {
+				continue
+			}
+			ref := strings.TrimSpace(result.Meta.legacyArtifactRef)
+			if !strings.HasPrefix(ref, legacyPrefix) {
+				continue
+			}
+			id := strings.TrimPrefix(ref, legacyPrefix)
+			if !strings.HasPrefix(id, "tr_") {
+				continue
+			}
+			if _, err := uuid.Parse(strings.TrimPrefix(id, "tr_")); err != nil {
+				continue
+			}
+
+			artifactPath := filepath.Join(artifactRoot, id+".data")
+			if _, err := os.Stat(artifactPath); err != nil {
+				continue
+			}
+			result.Meta.ArtifactPath = artifactPath
+			result.Meta.legacyArtifactRef = ""
+			result.Content = strings.ReplaceAll(result.Content, "Full result: "+ref, "Full result file: "+result.Meta.ArtifactPath)
+			result.Content = strings.ReplaceAll(result.Content, "Saved partial result: "+ref, "Saved partial result file: "+result.Meta.ArtifactPath)
+			result.Content = strings.ReplaceAll(result.Content, ref, result.Meta.ArtifactPath)
+			if !strings.Contains(result.Content, shellGuidance) {
+				if strings.TrimSpace(result.Content) != "" {
+					result.Content = strings.TrimSpace(result.Content) + "\n"
+				}
+				result.Content += shellGuidance
+			}
+		}
+	}
 }
 
 func LoadContextManagerFromCurrentSession(sessionFolder string) (*ContextManager, error) {
@@ -154,16 +264,32 @@ func NewContextManager(sessionFolder string, systemPrompt string) (*ContextManag
 
 func NewContextManagerFromMessageList(sessionFolder string, messageList []Message) (*ContextManager, error) {
 	newSessionID := newSessionID()
-	attachmentStore, err := newAttachmentStore(sessionFolder, newSessionID)
+	return newContextManagerFromMessageList(sessionFolder, newSessionID, messageList)
+}
+
+func NewContextManagerRevisionFromMessageList(parent *ContextManager, messageList []Message) (*ContextManager, error) {
+	if parent == nil {
+		return nil, fmt.Errorf("parent context manager is nil")
+	}
+	return newContextManagerFromMessageList(parent.GetSessionFolder(), newSessionID(), messageList)
+}
+
+func newContextManagerFromMessageList(sessionFolder, sessionID string, messageList []Message) (*ContextManager, error) {
+	attachmentStore, err := newAttachmentStore(sessionFolder, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	artifactStore, err := newArtifactStore(sessionFolder, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	manager := &ContextManager{
 		sessionFolder:   sessionFolder,
-		sessionID:       newSessionID,
-		messageList:     messageList,
+		sessionID:       sessionID,
+		messageList:     cloneMessages(messageList),
 		mu:              sync.RWMutex{},
 		attachmentStore: attachmentStore,
+		artifactStore:   artifactStore,
 	}
 	if err := manager.flushFull(); err != nil {
 		return nil, err
@@ -197,6 +323,13 @@ func (c *ContextManager) GetSessionID() string {
 	return c.sessionID
 }
 
+func (c *ContextManager) StoreArtifact(mimeType string, data []byte, metadata ArtifactMetadata) (ArtifactFile, error) {
+	if c == nil || c.artifactStore == nil {
+		return ArtifactFile{}, fmt.Errorf("artifact store is unavailable")
+	}
+	return c.artifactStore.store(mimeType, data, metadata)
+}
+
 func (c *ContextManager) appendToList(messages []Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -219,9 +352,6 @@ func (c *ContextManager) flushFull() error {
 	c.mu.RLock()
 	messages := cloneMessages(c.messageList)
 	c.mu.RUnlock()
-	if len(messages) == 0 {
-		return nil
-	}
 	return appendSession(c.sessionFolder, c.sessionID, messages)
 }
 
@@ -381,6 +511,16 @@ func cloneMessage(msg Message) Message {
 	}
 	if len(msg.ToolResults) > 0 {
 		cloned.ToolResults = append([]ToolResult(nil), msg.ToolResults...)
+		for i := range cloned.ToolResults {
+			if msg.ToolResults[i].Meta == nil {
+				continue
+			}
+			meta := *msg.ToolResults[i].Meta
+			cloned.ToolResults[i].Meta = &meta
+		}
+	}
+	if len(msg.RecoverableToolResults) > 0 {
+		cloned.RecoverableToolResults = append([]RecoverableToolResult(nil), msg.RecoverableToolResults...)
 	}
 	if len(msg.Attachments) > 0 {
 		cloned.Attachments = append([]Attachment(nil), msg.Attachments...)

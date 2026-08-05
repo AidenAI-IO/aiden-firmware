@@ -6,9 +6,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"aiden-agent/internal/logging"
 )
 
 // Logger provides structured logging to stdout/stderr
@@ -19,24 +22,24 @@ type Logger struct {
 	storageMonitor *StorageMonitor
 }
 
+type LogField = logging.Field
+
 // NewLogger creates a new logger that writes to stdout/stderr
 // The init script redirects output to <config_dir>/log/agent.log.
 func NewLogger(configDir string, llmHTTPRetentionDays int) (*Logger, error) {
-	logger := log.New(os.Stderr, "", log.LstdFlags)
-	log.SetOutput(os.Stderr)
-	log.SetFlags(log.LstdFlags)
+	logger := log.New(os.Stderr, "", 0)
+	logging.InstallStandard("agent", os.Stderr)
+	result := &Logger{logger: logger}
 
 	// Cleanup old llm-http logs in configDir if set
 	if configDir != "" {
 		llmLogDir := filepath.Join(configDir, "log")
 		if err := cleanupOldLogFiles(llmLogDir, time.Now(), llmHTTPRetentionDays); err != nil {
-			logger.Printf("[WARN] log cleanup failed: %v", err)
+			result.Warn("[logger] log cleanup failed: %v", err)
 		}
 	}
 
-	return &Logger{
-		logger: logger,
-	}, nil
+	return result, nil
 }
 
 func cleanupOldLogFiles(logDir string, now time.Time, llmHTTPRetentionDays int) error {
@@ -101,8 +104,7 @@ func logFileTime(name string, modTime time.Time) time.Time {
 }
 
 func (l *Logger) Close() error {
-	log.SetOutput(os.Stderr)
-	log.SetFlags(log.LstdFlags)
+	logging.InstallStandard("agent", os.Stderr)
 	return nil
 }
 
@@ -120,6 +122,22 @@ func (l *Logger) Debug(format string, args ...interface{}) {
 
 func (l *Logger) Warn(format string, args ...interface{}) {
 	l.write("WARN", format, args...)
+}
+
+func (l *Logger) InfoEvent(component, event string, fields ...LogField) {
+	l.writeEvent(logging.Info, component, event, fields...)
+}
+
+func (l *Logger) WarnEvent(component, event string, fields ...LogField) {
+	l.writeEvent(logging.Warn, component, event, fields...)
+}
+
+func (l *Logger) ErrorEvent(component, event string, fields ...LogField) {
+	l.writeEvent(logging.Error, component, event, fields...)
+}
+
+func (l *Logger) DebugEvent(component, event string, fields ...LogField) {
+	l.writeEvent(logging.Debug, component, event, fields...)
 }
 
 func (l *Logger) SetStorageMonitor(monitor *StorageMonitor) {
@@ -141,9 +159,45 @@ func (l *Logger) write(level string, format string, args ...interface{}) {
 		l.mu.Unlock()
 		return
 	}
-	err := l.logger.Output(3, fmt.Sprintf("[%s] %s", level, fmt.Sprintf(format, args...)))
+	callerComponent := loggerCallerComponent()
+	record := logging.FormatLegacyfAt(
+		time.Now(),
+		logging.Level(level),
+		"agent",
+		callerComponent,
+		format,
+		args...,
+	)
+	err := l.logger.Output(2, record)
 	l.mu.Unlock()
 	if err != nil && monitor != nil {
 		monitor.HandleWriteError(err)
 	}
+}
+
+func (l *Logger) writeEvent(level logging.Level, component, event string, fields ...LogField) {
+	if l == nil || l.logger == nil {
+		return
+	}
+	l.mu.Lock()
+	monitor := l.storageMonitor
+	if monitor != nil && !monitor.AllowWrite(StorageCapabilityAgentLog) {
+		l.mu.Unlock()
+		return
+	}
+	record := logging.FormatEventAt(time.Now(), level, "agent", component, event, fields...)
+	err := l.logger.Output(2, record)
+	l.mu.Unlock()
+	if err != nil && monitor != nil {
+		monitor.HandleWriteError(err)
+	}
+}
+
+func loggerCallerComponent() string {
+	_, file, _, ok := runtime.Caller(3)
+	if !ok {
+		return "runtime"
+	}
+	name := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+	return logging.NormalizeIdentifier(name, "runtime")
 }

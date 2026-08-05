@@ -1,0 +1,620 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/model"
+
+	"github.com/tmc/langchaingo/llms"
+	"github.com/tmc/langchaingo/schema"
+)
+
+func TestToolResultPolicyKeepsSmallResultInline(t *testing.T) {
+	policy := NewToolResultPolicy()
+	prepared, err := policy.Prepare(context.Background(), ToolResultPrepareInput{
+		Call: ToolCall{
+			Spec:  ToolSpec{Name: "shell"},
+			Input: `{"command":"pwd"}`,
+		},
+		Result:      ToolResult{Output: "/workspace\n"},
+		ModelSpec:   model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+		CallOptions: []llms.CallOption{llms.WithMaxTokens(1_000)},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if prepared.Content != "/workspace\n" {
+		t.Fatalf("Prepare() content = %q, want raw output", prepared.Content)
+	}
+	if !prepared.Complete {
+		t.Fatal("Prepare() complete = false, want true")
+	}
+	if prepared.ArtifactPath != "" {
+		t.Fatalf("Prepare() artifact ref = %q, want empty", prepared.ArtifactPath)
+	}
+	if prepared.Reason != ToolResultReasonInline {
+		t.Fatalf("Prepare() reason = %q, want %q", prepared.Reason, ToolResultReasonInline)
+	}
+}
+
+func TestToolResultCompactionBudgetsRequirePositiveUsableInput(t *testing.T) {
+	if trigger, target, ok := toolResultCompactionBudgets(0); ok || trigger != 0 || target != 0 {
+		t.Fatalf("toolResultCompactionBudgets(0) = %d, %d, %v; want disabled", trigger, target, ok)
+	}
+	trigger, target, ok := toolResultCompactionBudgets(10_000)
+	if !ok || trigger != 8_000 || target != 7_000 {
+		t.Fatalf("toolResultCompactionBudgets(10000) = %d, %d, %v; want 8000, 7000, true", trigger, target, ok)
+	}
+}
+
+func TestToolResultPolicyBoundsResultWhenCurrentContextIsFull(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
+		{Role: contextmanager.MessageRoleSystem, Content: strings.Repeat("context ", 3_650)},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	output := strings.Repeat("result ", 400)
+	if len(output) >= toolResultInlineMaxBytes || estimateTextTokens(output) >= toolResultInlineMaxTokens {
+		t.Fatal("test setup output must be intrinsically small")
+	}
+
+	policy := NewToolResultPolicy()
+	prepared, err := policy.Prepare(context.Background(), ToolResultPrepareInput{
+		Call: ToolCall{
+			Spec:  ToolSpec{Name: "recall_memory"},
+			Input: `{"tags":["context"]}`,
+		},
+		Result:         ToolResult{Output: output},
+		ContextManager: manager,
+		ModelSpec:      model.ModelSpec{ContextWindow: 10_000, MaxOutput: 1_000},
+		CallOptions:    []llms.CallOption{llms.WithMaxTokens(1_000)},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if prepared.Reason != ToolResultReasonContextLarge {
+		t.Fatalf("Prepare() reason = %q, want %q", prepared.Reason, ToolResultReasonContextLarge)
+	}
+	if prepared.Complete {
+		t.Fatal("Prepare() complete = true, want false")
+	}
+	if got := estimateTextTokens(prepared.Content); got >= estimateTextTokens(output) {
+		t.Fatalf("Prepare() content tokens = %d, want less than raw result", got)
+	}
+}
+
+func TestToolResultPolicyBoundsIntrinsicallyLargeResult(t *testing.T) {
+	output := "HEAD_MARKER\n" + strings.Repeat("0123456789", 1_200) + "\nTAIL_MARKER"
+	policy := NewToolResultPolicy()
+	prepared, err := policy.Prepare(context.Background(), ToolResultPrepareInput{
+		Call: ToolCall{
+			Spec:  ToolSpec{Name: "shell"},
+			Input: `{"command":"pwd"}`,
+		},
+		Result:      ToolResult{Output: output},
+		ModelSpec:   model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+		CallOptions: []llms.CallOption{llms.WithMaxTokens(1_000)},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if prepared.Complete {
+		t.Fatal("Prepare() complete = true, want false")
+	}
+	if prepared.Reason != ToolResultReasonIntrinsicLarge {
+		t.Fatalf("Prepare() reason = %q, want %q", prepared.Reason, ToolResultReasonIntrinsicLarge)
+	}
+	for _, want := range []string{"[shell] pwd", "HEAD_MARKER", "TAIL_MARKER", "chars"} {
+		if !strings.Contains(prepared.Content, want) {
+			t.Fatalf("Prepare() content missing %q:\n%s", want, prepared.Content)
+		}
+	}
+	if strings.Contains(prepared.Content, "tool result omitted") {
+		t.Fatalf("Prepare() used opaque omission text: %s", prepared.Content)
+	}
+	if got := estimateTextTokens(prepared.Content); got > toolResultInlineMaxTokens {
+		t.Fatalf("Prepare() tokens = %d, want <= %d", got, toolResultInlineMaxTokens)
+	}
+}
+
+func TestToolResultPolicyShrinksIntrinsicResultToCurrentBudget(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
+		{Role: contextmanager.MessageRoleSystem, Content: strings.Repeat("context ", 3_000)},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	output := strings.Repeat("large-result ", 1_000)
+	input := ToolResultPrepareInput{
+		Call:           ToolCall{Spec: ToolSpec{Name: "shell"}, Input: `{"command":"go test ./..."}`},
+		Result:         ToolResult{Output: output},
+		ContextManager: manager,
+		ModelSpec:      model.ModelSpec{ContextWindow: 10_000, MaxOutput: 1_000},
+		CallOptions:    []llms.CallOption{llms.WithMaxTokens(1_000)},
+	}
+	available := availableToolResultTokens(input)
+	if available <= toolResultMinimumObservation || available >= toolResultPreviewTargetToken {
+		t.Fatalf("test setup available tokens = %d, want constrained positive budget", available)
+	}
+	prepared, err := NewToolResultPolicy().Prepare(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if got := estimateTextTokens(prepared.Content); got > available {
+		t.Fatalf("Prepare() content tokens = %d, want <= available %d", got, available)
+	}
+	if prepared.ArtifactPath == "" || !strings.Contains(prepared.Content, prepared.ArtifactPath) {
+		t.Fatalf("Prepare() content lost recovery ref %q:\n%s", prepared.ArtifactPath, prepared.Content)
+	}
+}
+
+func TestToolResultPolicyRejectsRecoveryTextThatExceedsMinimumBudget(t *testing.T) {
+	sessionFolder := t.TempDir()
+	for index := 0; index < 6; index++ {
+		sessionFolder = filepath.Join(sessionFolder, fmt.Sprintf("long-session-directory-%02d-%s", index, strings.Repeat("x", 32)))
+	}
+	if err := os.MkdirAll(sessionFolder, 0o700); err != nil {
+		t.Fatalf("MkdirAll(sessionFolder) error = %v", err)
+	}
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
+		Call:           ToolCall{Spec: ToolSpec{Name: "shell"}, Input: `{"command":"produce-large-output"}`},
+		Result:         ToolResult{Output: strings.Repeat("large-result ", 1_000)},
+		ContextManager: manager,
+		ModelSpec:      model.ModelSpec{ContextWindow: 128, MaxOutput: 16},
+		CallOptions:    []llms.CallOption{llms.WithMaxTokens(16)},
+	})
+	if !errors.Is(err, ErrToolResultRecoveryTextTooLarge) {
+		t.Fatalf("Prepare() error = %v, want %v", err, ErrToolResultRecoveryTextTooLarge)
+	}
+	if prepared.ArtifactPath == "" || len(prepared.ArtifactPath) < 300 {
+		t.Fatalf("Prepare() artifact path = %q, want long path", prepared.ArtifactPath)
+	}
+	if prepared.Content != "" {
+		t.Fatalf("Prepare() content = %q, want empty on oversized recovery text", prepared.Content)
+	}
+}
+
+func TestToolResultPolicyUsesClipboardProjection(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	clipboardText := "VISIBLE_PREFIX_" + strings.Repeat("secret-value-", 800) + "TAIL_SECRET"
+	output := `{"ok":true,"text":` + mustMarshalJSONString(t, clipboardText) + `}`
+	policy := NewToolResultPolicy()
+	prepared, err := policy.Prepare(context.Background(), ToolResultPrepareInput{
+		Call: ToolCall{
+			Spec:  ToolSpec{Name: toolBridgeClipboard},
+			Input: `{"action":"read"}`,
+		},
+		Result:         ToolResult{Output: output},
+		ContextManager: manager,
+		ModelSpec:      model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+		CallOptions:    []llms.CallOption{llms.WithMaxTokens(1_000)},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	for _, want := range []string{"[bridge_clipboard] read", `"ok":true`, `"text_chars":`, "VISIBLE_PREFIX_"} {
+		if !strings.Contains(prepared.Content, want) {
+			t.Fatalf("Prepare() content missing %q:\n%s", want, prepared.Content)
+		}
+	}
+	if strings.Contains(prepared.Content, "TAIL_SECRET") {
+		t.Fatalf("Prepare() leaked clipboard tail into active context: %s", prepared.Content)
+	}
+	if prepared.ArtifactPath != "" || strings.Contains(prepared.Content, "Full result file:") {
+		t.Fatalf("Prepare() exposed a sensitive artifact path: path=%q content=%s", prepared.ArtifactPath, prepared.Content)
+	}
+}
+
+func TestToolResultPolicyPersistsLargeResultAsArtifact(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	output := "HEAD\n" + strings.Repeat("large-output-", 1_000) + "\nTAIL"
+	policy := NewToolResultPolicy()
+	prepared, err := policy.Prepare(context.Background(), ToolResultPrepareInput{
+		Call: ToolCall{
+			Spec:   ToolSpec{Name: "shell"},
+			Action: schema.AgentAction{ToolID: "call_1", Tool: "shell"},
+			Input:  `{"command":"go test ./..."}`,
+		},
+		Result:         ToolResult{Output: output},
+		ContextManager: manager,
+		ModelSpec:      model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+		CallOptions:    []llms.CallOption{llms.WithMaxTokens(1_000)},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if prepared.ArtifactPath == "" || !prepared.ArtifactComplete {
+		t.Fatalf("Prepare() artifact path = %q complete=%v", prepared.ArtifactPath, prepared.ArtifactComplete)
+	}
+	if !strings.Contains(prepared.Content, "Full result file: "+prepared.ArtifactPath) {
+		t.Fatalf("Prepare() content missing artifact path: %s", prepared.Content)
+	}
+	if !strings.Contains(prepared.Content, "Use shell") {
+		t.Fatalf("Prepare() content missing shell recovery guidance: %s", prepared.Content)
+	}
+	data, err := os.ReadFile(prepared.ArtifactPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != output {
+		t.Fatalf("artifact file bytes=%d, want full %d bytes", len(data), len(output))
+	}
+}
+
+func TestToolResultPolicyReportsArtifactPersistenceFailureWithoutRepeatingAction(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	output := strings.Repeat("x", contextmanager.ArtifactSingleMaxBytes+1)
+	prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
+		Call: ToolCall{
+			Spec:   ToolSpec{Name: "shell"},
+			Action: schema.AgentAction{ToolID: "call_side_effect", Tool: "shell"},
+			Input:  `{"command":"apply-side-effect"}`,
+		},
+		Result:         ToolResult{Output: output},
+		ContextManager: manager,
+		ModelSpec:      model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+		CallOptions:    []llms.CallOption{llms.WithMaxTokens(1_000)},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if prepared.ArtifactPath != "" || prepared.ArtifactComplete {
+		t.Fatalf("Prepare() artifact ref=%q complete=%v, want unavailable", prepared.ArtifactPath, prepared.ArtifactComplete)
+	}
+	if !prepared.ActionCompleted || prepared.ObservationComplete {
+		t.Fatalf("Prepare() action_completed=%v observation_complete=%v", prepared.ActionCompleted, prepared.ObservationComplete)
+	}
+	if prepared.ProcessingErrorCode != "tool_result_persistence_failed" || prepared.ArtifactStoreError != "artifact_too_large" {
+		t.Fatalf("Prepare() error code=%q artifact error=%q", prepared.ProcessingErrorCode, prepared.ArtifactStoreError)
+	}
+	for _, want := range []string{
+		`"code":"tool_result_persistence_failed"`,
+		`"action_completed":true`,
+		`"observation_complete":false`,
+		`"artifact_store_error":"artifact_too_large"`,
+	} {
+		if !strings.Contains(prepared.Content, want) {
+			t.Fatalf("Prepare() content missing %q:\n%s", want, prepared.Content)
+		}
+	}
+	if strings.Contains(prepared.Content, `"ok":false`) {
+		t.Fatalf("persistence failure incorrectly reported the tool action as failed:\n%s", prepared.Content)
+	}
+	if got := estimateTextTokens(prepared.Content); got > toolResultInlineMaxTokens {
+		t.Fatalf("Prepare() tokens = %d, want <= %d", got, toolResultInlineMaxTokens)
+	}
+
+	message := toolResultMessage("call_side_effect", "shell", prepared)
+	meta := message.ToolResults[0].Meta
+	if meta == nil || !meta.ActionCompleted || meta.ObservationComplete || meta.ProcessingErrorCode != prepared.ProcessingErrorCode || meta.ArtifactStoreError != prepared.ArtifactStoreError {
+		t.Fatalf("persisted metadata = %#v", meta)
+	}
+}
+
+func TestToolResultPolicyPreservesStructuredStatusOutsideHeadTail(t *testing.T) {
+	output := `{"output":"` + strings.Repeat("A", 6_000) + `","exit_code":7,"exit_error":"tests failed","padding":"` + strings.Repeat("Z", 6_000) + `"}`
+	prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
+		Call:        ToolCall{Spec: ToolSpec{Name: "shell"}, Input: `{"action":"poll","session_id":"sh_1"}`},
+		Result:      ToolResult{Output: output},
+		ModelSpec:   model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+		CallOptions: []llms.CallOption{llms.WithMaxTokens(1_000)},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	for _, want := range []string{`"exit_code":7`, `"exit_error":"tests failed"`} {
+		if !strings.Contains(prepared.Content, want) {
+			t.Fatalf("Prepare() content missing %q:\n%s", want, prepared.Content)
+		}
+	}
+}
+
+func TestToolResultPolicyPreservesShellStderrTail(t *testing.T) {
+	output := "Error: exit status 1\nStderr:\nFAIL TestPhoneBridge\n" + strings.Repeat("stderr-detail ", 600) + "STDERR_TAIL\nStdout:\n" + strings.Repeat("stdout-detail ", 600)
+	prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
+		Call:        ToolCall{Spec: ToolSpec{Name: "shell"}, Input: `{"command":"go test ./..."}`},
+		Result:      ToolResult{Output: output},
+		ModelSpec:   model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+		CallOptions: []llms.CallOption{llms.WithMaxTokens(1_000)},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	for _, want := range []string{"Error: exit status 1", "FAIL TestPhoneBridge", "STDERR_TAIL", "Stderr:", "Stdout:"} {
+		if !strings.Contains(prepared.Content, want) {
+			t.Fatalf("Prepare() content missing %q:\n%s", want, prepared.Content)
+		}
+	}
+}
+
+func TestToolResultPolicyPreservesShellTestFailuresOutsideHeadTail(t *testing.T) {
+	output := "Stdout:\nHEAD\n" + strings.Repeat("setup detail\n", 500) +
+		"--- FAIL: TestCalendarLargePayload (0.20s)\n" +
+		"--- FAIL: TestContactsLargePayload (0.10s)\n" +
+		strings.Repeat("cleanup detail\n", 500) +
+		"FAIL\nexit status 1\n"
+	prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
+		Call:        ToolCall{Spec: ToolSpec{Name: "shell"}, Input: `{"command":"go test ./..."}`},
+		Result:      ToolResult{Output: output},
+		ModelSpec:   model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+		CallOptions: []llms.CallOption{llms.WithMaxTokens(1_000)},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	for _, want := range []string{"Key status:", "--- FAIL: TestCalendarLargePayload", "--- FAIL: TestContactsLargePayload", "exit status 1"} {
+		if !strings.Contains(prepared.Content, want) {
+			t.Fatalf("Prepare() content missing %q:\n%s", want, prepared.Content)
+		}
+	}
+}
+
+func TestToolResultPolicyProjectsCollectionCountAndTopK(t *testing.T) {
+	results := make([]map[string]any, 100)
+	for i := range results {
+		results[i] = map[string]any{
+			"id":      fmt.Sprintf("memory_%03d", i+1),
+			"title":   fmt.Sprintf("Memory %03d", i+1),
+			"content": strings.Repeat("detail ", 20),
+		}
+	}
+	data, err := json.Marshal(map[string]any{
+		"results":  results,
+		"has_more": true,
+		"cursor":   "cursor_2",
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
+		Call:        ToolCall{Spec: ToolSpec{Name: "recall_memory"}, Input: `{"tags":["test"]}`},
+		Result:      ToolResult{Output: string(data)},
+		ModelSpec:   model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+		CallOptions: []llms.CallOption{llms.WithMaxTokens(1_000)},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	for _, want := range []string{`"results_total":100`, `"has_more":true`, `"cursor":"cursor_2"`, `"id":"memory_001"`} {
+		if !strings.Contains(prepared.Content, want) {
+			t.Fatalf("Prepare() content missing %q:\n%s", want, prepared.Content)
+		}
+	}
+	if strings.Contains(prepared.Content, "memory_100") {
+		t.Fatalf("Prepare() included collection tail instead of Top-K: %s", prepared.Content)
+	}
+}
+
+func TestToolResultPolicyUsesMemoryAndEpisodeProjections(t *testing.T) {
+	tests := []struct {
+		name   string
+		call   ToolCall
+		output string
+		wants  []string
+	}{
+		{
+			name: "memory recall keeps query and ids",
+			call: ToolCall{Spec: ToolSpec{Name: "recall_memory"}, Input: `{"tags":["verification"],"entities":["Aiden"],"limit":100}`},
+			output: mustMarshalToolResultJSON(t, map[string]any{
+				"results": []map[string]any{
+					{"id": "memory_1", "title": "First", "content": strings.Repeat("detail ", 800)},
+					{"id": "memory_2", "title": "Second", "content": strings.Repeat("detail ", 800)},
+					{"id": "memory_3", "title": "Third", "content": strings.Repeat("detail ", 800)},
+					{"id": "memory_4", "title": "Fourth", "content": strings.Repeat("detail ", 800)},
+				},
+			}),
+			wants: []string{`"query":{"entities":["Aiden"],"limit":100,"tags":["verification"]}`, `"results_total":4`, `"id":"memory_1"`},
+		},
+		{
+			name: "episode keeps identity outcome and event count",
+			call: ToolCall{Spec: ToolSpec{Name: "inspect_episode"}, Input: `{"id":"ep_123"}`},
+			output: mustMarshalToolResultJSON(t, map[string]any{
+				"episode": map[string]any{
+					"id":      "ep_123",
+					"status":  "completed",
+					"outcome": "success",
+					"events": []map[string]any{
+						{"type": "tool_call", "id": "call_1", "payload": strings.Repeat("detail ", 1_000)},
+						{"type": "tool_result", "id": "call_1", "payload": strings.Repeat("detail ", 1_000)},
+					},
+				},
+			}),
+			wants: []string{`"episode_id":"ep_123"`, `"status":"completed"`, `"outcome":"success"`, `"events_total":2`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
+				Call:        tt.call,
+				Result:      ToolResult{Output: tt.output},
+				ModelSpec:   model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+				CallOptions: []llms.CallOption{llms.WithMaxTokens(1_000)},
+			})
+			if err != nil {
+				t.Fatalf("Prepare() error = %v", err)
+			}
+			for _, want := range tt.wants {
+				if !strings.Contains(prepared.Content, want) {
+					t.Fatalf("Prepare() content missing %q:\n%s", want, prepared.Content)
+				}
+			}
+		})
+	}
+}
+
+func TestToolResultPolicyUsesPhoneBridgeDataProjections(t *testing.T) {
+	tests := []struct {
+		name   string
+		call   ToolCall
+		output string
+		wants  []string
+	}{
+		{
+			name: "calendar query",
+			call: ToolCall{Spec: ToolSpec{Name: toolBridgeCalendar}, Input: `{"action":"query","from":"2026-07-01T00:00:00+08:00","to":"2026-08-01T00:00:00+08:00"}`},
+			output: mustMarshalToolResultJSON(t, map[string]any{
+				"ok": true,
+				"events": []map[string]any{
+					{"event_id": "event_1", "title": "First", "start_at": "2026-07-02T10:00:00+08:00", "notes": strings.Repeat("detail ", 600)},
+					{"event_id": "event_2", "title": "Second", "start_at": "2026-07-03T10:00:00+08:00", "notes": strings.Repeat("detail ", 600)},
+					{"event_id": "event_3", "title": "Third", "start_at": "2026-07-04T10:00:00+08:00", "notes": strings.Repeat("detail ", 600)},
+					{"event_id": "event_4", "title": "Fourth", "start_at": "2026-07-05T10:00:00+08:00", "notes": strings.Repeat("detail ", 600)},
+				},
+			}),
+			wants: []string{`"action":"query"`, `"from":"2026-07-01T00:00:00+08:00"`, `"to":"2026-08-01T00:00:00+08:00"`, `"events_total":4`, `"event_id":"event_1"`},
+		},
+		{
+			name: "contacts query",
+			call: ToolCall{Spec: ToolSpec{Name: toolBridgeContacts}, Input: `{"action":"query","query":"Alice","limit":50}`},
+			output: mustMarshalToolResultJSON(t, map[string]any{
+				"ok":                true,
+				"permission_status": "authorized",
+				"contacts": []map[string]any{
+					{"contact_id": "contact_1", "name": "Alice", "notes": strings.Repeat("detail ", 1_000)},
+					{"contact_id": "contact_2", "name": "Alice B", "notes": strings.Repeat("detail ", 1_000)},
+				},
+			}),
+			wants: []string{`"action":"query"`, `"query":"Alice"`, `"contacts_total":2`, `"contact_id":"contact_1"`, `"permission_status":"authorized"`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
+				Call:        tt.call,
+				Result:      ToolResult{Output: tt.output},
+				ModelSpec:   model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+				CallOptions: []llms.CallOption{llms.WithMaxTokens(1_000)},
+			})
+			if err != nil {
+				t.Fatalf("Prepare() error = %v", err)
+			}
+			for _, want := range tt.wants {
+				if !strings.Contains(prepared.Content, want) {
+					t.Fatalf("Prepare() content missing %q:\n%s", want, prepared.Content)
+				}
+			}
+		})
+	}
+}
+
+func TestToolResultPolicyPrioritizesPhoneResourceIDsAndPermissionStatus(t *testing.T) {
+	contact := map[string]any{
+		"contact_id": "contact_critical",
+		"name":       "Alice",
+	}
+	for i := 0; i < toolResultProjectionFields+10; i++ {
+		contact[fmt.Sprintf("a_padding_%02d", i)] = strings.Repeat("detail", 100)
+	}
+	payload := map[string]any{
+		"permission_status": "authorized",
+		"contacts":          []map[string]any{contact},
+	}
+	for i := 0; i < toolResultProjectionFields+10; i++ {
+		payload[fmt.Sprintf("a_root_padding_%02d", i)] = strings.Repeat("detail", 100)
+	}
+	prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
+		Call:        ToolCall{Spec: ToolSpec{Name: toolBridgeContacts}, Input: `{"action":"query","query":"Alice"}`},
+		Result:      ToolResult{Output: mustMarshalToolResultJSON(t, payload)},
+		ModelSpec:   model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+		CallOptions: []llms.CallOption{llms.WithMaxTokens(1_000)},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	for _, want := range []string{`"permission_status":"authorized"`, `"contacts_total":1`, `"contact_id":"contact_critical"`} {
+		if !strings.Contains(prepared.Content, want) {
+			t.Fatalf("Prepare() content missing high-priority field %q:\n%s", want, prepared.Content)
+		}
+	}
+}
+
+func TestToolResultPolicyUsesSkillAndWebProjections(t *testing.T) {
+	skillOutput := "# Tool Result Protection\nintro\n" + strings.Repeat("details\n", 1_500) + "\n## Recovery Rules\nbody\n### Pagination\nbody"
+	webOutput := "Answer: current answer\n\n[1] First result\nhttps://one.example.com\n" + strings.Repeat("description ", 900) + "\n\n[2] Second result\nhttps://two.example.com\nsecond"
+	tests := []struct {
+		name   string
+		call   ToolCall
+		output string
+		wants  []string
+	}{
+		{
+			name:   "skill read",
+			call:   ToolCall{Spec: ToolSpec{Name: "skill_read"}, Input: `{"name":"tool-result-protection","file_path":"SKILL.md"}`},
+			output: skillOutput,
+			wants:  []string{`"skill":"tool-result-protection"`, `"file":"SKILL.md"`, `"bytes":`, `"headings":["# Tool Result Protection","## Recovery Rules","### Pagination"]`},
+		},
+		{
+			name:   "web search",
+			call:   ToolCall{Spec: ToolSpec{Name: "web_search"}, Input: `{"query":"large tool results"}`},
+			output: webOutput,
+			wants:  []string{`"query":"large tool results"`, `"source":"web_search"`, "https://one.example.com", "https://two.example.com"},
+		},
+		{
+			name:   "wikipedia",
+			call:   ToolCall{Spec: ToolSpec{Name: "wikipedia"}, Input: `{"query":"Raspberry Pi"}`},
+			output: webOutput,
+			wants:  []string{`"query":"Raspberry Pi"`, `"source":"wikipedia"`, "https://one.example.com"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
+				Call:        tt.call,
+				Result:      ToolResult{Output: tt.output},
+				ModelSpec:   model.ModelSpec{ContextWindow: 32_000, MaxOutput: 1_000},
+				CallOptions: []llms.CallOption{llms.WithMaxTokens(1_000)},
+			})
+			if err != nil {
+				t.Fatalf("Prepare() error = %v", err)
+			}
+			for _, want := range tt.wants {
+				if !strings.Contains(prepared.Content, want) {
+					t.Fatalf("Prepare() content missing %q:\n%s", want, prepared.Content)
+				}
+			}
+		})
+	}
+}
+
+func mustMarshalJSONString(t *testing.T, value string) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return string(data)
+}
+
+func mustMarshalToolResultJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return string(data)
+}

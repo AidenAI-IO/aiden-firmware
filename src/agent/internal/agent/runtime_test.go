@@ -45,6 +45,23 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 	}
 }
 
+func TestRuntimeDoesNotRegisterArtifactReadTool(t *testing.T) {
+	toolSet := &ToolSet{tools: map[string]langtools.Tool{}}
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: t.TempDir()},
+		nil,
+		nil,
+		toolSet,
+		NewSkillIndex(),
+	)
+	if runtime == nil {
+		t.Fatal("NewRuntimeWithDeps() returned nil")
+	}
+	if registered, ok := toolSet.Get("artifact_read"); ok {
+		t.Fatalf("artifact_read tool is still registered: %T", registered)
+	}
+}
+
 func TestRuntimeUsesConfiguredTerminationPolicy(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		{
@@ -2192,7 +2209,7 @@ func (m *scriptedModel) Spec() model.ModelSpec {
 	return model.ModelSpec{
 		Provider:      "fake",
 		Name:          "scripted",
-		ContextWindow: 100,
+		ContextWindow: 32_000,
 	}
 }
 
@@ -2205,8 +2222,8 @@ func contentResponse(content string) *llms.ContentResponse {
 func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
-	// Runtime compaction uses a minimum context window of 8192 tokens, so this
-	// fixture must comfortably exceed the ~80% threshold to force compaction.
+	// This fixture must comfortably exceed the 8192-token model's ~80% input
+	// threshold to force compaction.
 	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
 		{Role: contextmanager.MessageRoleSystem, Content: "Answer directly."},
 		{Role: contextmanager.MessageRoleUser, Content: strings.Repeat("user ", 1600)},
@@ -2248,7 +2265,7 @@ func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 		},
 		&testModelResolver{
 			model: llmModel,
-			spec:  model.ModelSpec{ContextWindow: 100},
+			spec:  model.ModelSpec{ContextWindow: 8_192},
 		},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},

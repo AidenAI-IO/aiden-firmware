@@ -1058,30 +1058,30 @@ TEST_CASE("config_web: POST /api/config keeps model base_url for providers that 
 
         const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
         CHECK_MESSAGE(saved.find(std::string("base_url = \"") + c.base_url + "\"") != std::string::npos,
-                      c.provider);
+                      std::string(c.provider));
     }
 }
 
 TEST_CASE("config_web: POST /api/config drops model base_url for providers that pin their endpoint") {
     // openrouter, kimi, kimi-cn and volcengine each use a built-in endpoint, so
     // a base_url for them is dead config and must not reach agent.toml.
-    const char* providers[] = {"openrouter", "kimi", "kimi-cn", "volcengine", "fake", NULL};
+    const char* providers[] = {"openrouter", "kimi", "kimi-cn", "volcengine", "fake"};
 
-    for (int i = 0; providers[i]; ++i) {
+    for (const char* provider : providers) {
         StubEnv env;
         auto handle = start_server(env);
 
+        const std::string base_url = "https://gateway.example.com/v1";
         const std::string body =
-            std::string("{\"config\":{\"model\":{\"provider\":\"") + providers[i] +
-            "\",\"model\":\"x\",\"api_key\":\"k\","
-            "\"base_url\":\"https://gateway.example.com/v1\"},"
+            std::string("{\"config\":{\"model\":{\"provider\":\"") + provider +
+            "\",\"model\":\"x\",\"api_key\":\"k\",\"base_url\":\"" + base_url + "\"},"
             "\"hid\":{\"pointer_mode\":\"absolute\"},"
             "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
         HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
-        CHECK_MESSAGE(resp.status == 200, providers[i]);
+        CHECK_MESSAGE(resp.status == 200, std::string(provider));
 
         const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-        CHECK_MESSAGE(saved.find("gateway.example.com") == std::string::npos, providers[i]);
+        CHECK_MESSAGE(saved.find(base_url) == std::string::npos, std::string(provider));
     }
 }
 
@@ -2373,7 +2373,8 @@ TEST_CASE("config_web: failed manual OTA update releases launch lock even if a c
 
     HttpResponse first = http_request(handle->port, "POST", "/api/ota/update");
     REQUIRE(first.status == 200);
-    REQUIRE(wait_for_file_contains(log_path, "[config_web] ota update exited rc=1", 2000));
+    REQUIRE(wait_for_file_contains(log_path,
+                                   "[config_web] [ota] update_exited exit_code=1", 2000));
 
     HttpResponse retry;
     bool accepted = false;
@@ -2400,8 +2401,8 @@ TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate")
     const std::string update_log_path = tmp + "/config_web_ota_update.log";
     const std::string health_log_path = tmp + "/ota_health.log";
     const std::string update_log =
-        "[config_web] ota update requested\n"
-        "[config_web] ota update exited rc=1\n";
+        "2026-08-05T06:22:02Z [INFO] [config_web] [ota] update_requested\n"
+        "2026-08-05T06:22:03Z [ERROR] [config_web] [ota] update_exited exit_code=1\n";
     std::ostringstream health_log;
     for (int i = 0; i < 5000; ++i) {
         health_log << "ota health previous boot line " << i << "\n";
@@ -2427,12 +2428,13 @@ TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate")
 
     CHECK(required_json_string(update, "path") == update_log_path);
     CHECK(required_json_int(update, "size_bytes") == static_cast<int>(update_log.size()));
-    CHECK(required_json_string(update, "log").find("[config_web] ota update exited rc=1") != std::string::npos);
+    CHECK(required_json_string(update, "log").find(
+              "[config_web] [ota] update_exited exit_code=1") != std::string::npos);
     CHECK(required_json_string(update, "log").find("health timeout") == std::string::npos);
 
     CHECK(required_json_string(health, "path") == health_log_path);
     CHECK(required_json_string(health, "log").find("health timeout waiting for /userdata/ota/health.ok") != std::string::npos);
-    CHECK(required_json_string(health, "log").find("[config_web] ota update") == std::string::npos);
+    CHECK(required_json_string(health, "log").find("[config_web] [ota]") == std::string::npos);
     cJSON_Delete(parsed);
 }
 
