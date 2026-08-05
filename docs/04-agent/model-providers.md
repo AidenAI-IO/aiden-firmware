@@ -231,13 +231,20 @@ key, an optional base URL, and the name, in that order.
 
 ### From the web UI
 
-The `provider` dropdown in the Model section lists every configured
-`[providers.*]` section ahead of the built-in provider types, labelled
-`name (type)`. Pick one, save, and restart the agent. Selecting a named
-provider also reloads the model list for its underlying type.
+The `provider` dropdown in the Model section lists your configured
+`[providers.*]` sections, labelled `name (type)`, and nothing else: a bare
+provider type carries no credentials, so it is not offered. Pick one, save, and
+restart the agent. Selecting a provider also reloads the model list for its
+underlying type.
 
-If a named provider shares its name with a built-in type, only the named entry
-is offered, matching how the agent resolves the reference.
+The last entry is **+ Add Provider...**, which opens the same Add Provider
+dialog as the Model Providers card. Save it and the new provider is selected for
+you, so a first-time setup is one trip through the dropdown. Adding a provider
+from the card's own button leaves your current selection alone.
+
+If a config already points `[model] provider` at a bare type (the traditional
+form above), that value stays in the dropdown so the config round-trips
+untouched. Switch it to a named provider when you want credentials attached.
 
 The model list is served by the agent daemon. While the agent is stopped the
 selector shows a notice and you can still type a model ID by hand.
