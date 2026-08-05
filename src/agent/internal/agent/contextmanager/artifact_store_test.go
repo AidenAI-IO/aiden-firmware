@@ -15,6 +15,28 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+func writeLegacySessionMetadata(sessionFolder, sessionID string, metadata sessionMetadata) error {
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	return writeArtifactFileAtomically(sessionMetadataPath(sessionFolder, sessionID), data)
+}
+
+func TestNewContextManagerStoresArtifactsBySessionWithoutMetadataSidecar(t *testing.T) {
+	sessionFolder := t.TempDir()
+	manager, err := NewContextManagerFromMessageList(sessionFolder, nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	if filepath.Base(filepath.Dir(manager.artifactStore.root)) != manager.GetSessionID() {
+		t.Fatalf("artifact root = %q, want session %q", manager.artifactStore.root, manager.GetSessionID())
+	}
+	if _, err := os.Stat(sessionMetadataPath(sessionFolder, manager.GetSessionID())); !os.IsNotExist(err) {
+		t.Fatalf("new session metadata sidecar exists, stat error = %v", err)
+	}
+}
+
 func TestContextManagerReturnsReadableArtifactFilePath(t *testing.T) {
 	manager, err := NewContextManagerFromMessageList(t.TempDir(), nil)
 	if err != nil {
@@ -113,8 +135,8 @@ func TestLoadContextManagerMigratesLegacyArtifactRefToShellReadablePath(t *testi
 	sessionID := "s_legacy"
 	scopeID := "s_legacy_scope"
 	artifactID := "tr_" + uuid.NewString()
-	if err := saveSessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
-		t.Fatalf("saveSessionMetadata() error = %v", err)
+	if err := writeLegacySessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
+		t.Fatalf("writeLegacySessionMetadata() error = %v", err)
 	}
 	store, err := newArtifactStore(sessionFolder, scopeID)
 	if err != nil {
@@ -159,8 +181,8 @@ func TestLoadContextManagerKeepsLegacyArtifactRefWhenFileIsMissing(t *testing.T)
 	sessionID := "s_legacy_missing"
 	scopeID := "s_legacy_missing_scope"
 	artifactID := "tr_" + uuid.NewString()
-	if err := saveSessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
-		t.Fatalf("saveSessionMetadata() error = %v", err)
+	if err := writeLegacySessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
+		t.Fatalf("writeLegacySessionMetadata() error = %v", err)
 	}
 	legacyRef := "artifact://" + artifactID
 	line := fmt.Sprintf(`{"role":"tool_result","tool_results":[{"tool_call_id":"call_legacy","name":"shell","content":"Full result: %s","meta":{"artifact_ref":"%s","complete":false,"artifact_complete":true}}]}`+"\n", legacyRef, legacyRef)
@@ -184,8 +206,8 @@ func TestLoadContextManagerKeepsLegacyArtifactRefWhenFileIsMissing(t *testing.T)
 func TestLoadContextManagerIgnoresUnsafeLegacyArtifactRef(t *testing.T) {
 	sessionFolder := t.TempDir()
 	sessionID := "s_legacy_unsafe"
-	if err := saveSessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: sessionID}); err != nil {
-		t.Fatalf("saveSessionMetadata() error = %v", err)
+	if err := writeLegacySessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: sessionID}); err != nil {
+		t.Fatalf("writeLegacySessionMetadata() error = %v", err)
 	}
 	line := `{"role":"tool_result","tool_results":[{"tool_call_id":"call_legacy","name":"shell","content":"legacy","meta":{"artifact_ref":"artifact://tr_../../outside","complete":false,"artifact_complete":true}}]}` + "\n"
 	if err := os.WriteFile(filepath.Join(sessionFolder, sessionID+".jsonl"), []byte(line), 0o600); err != nil {
@@ -201,7 +223,7 @@ func TestLoadContextManagerIgnoresUnsafeLegacyArtifactRef(t *testing.T) {
 	}
 }
 
-func TestContextManagerRevisionInheritsArtifactScope(t *testing.T) {
+func TestContextManagerRevisionPreservesArtifactPathWithoutSharingStore(t *testing.T) {
 	sessionFolder := t.TempDir()
 	manager, err := NewContextManagerFromMessageList(sessionFolder, []Message{
 		{Role: MessageRoleSystem, Content: "system"},
@@ -216,6 +238,17 @@ func TestContextManagerRevisionInheritsArtifactScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StoreArtifact() error = %v", err)
 	}
+	if err := manager.AppendMessage(Message{
+		Role: MessageRoleToolResult,
+		ToolResults: []ToolResult{{
+			ToolCallID: "call_1",
+			Name:       "shell",
+			Content:    "bounded result",
+			Meta:       &ToolResultMeta{ArtifactPath: stored.Path, ArtifactComplete: true},
+		}},
+	}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
 
 	revision, err := NewContextManagerRevisionFromMessageList(manager, manager.CloneMessageList())
 	if err != nil {
@@ -224,8 +257,15 @@ func TestContextManagerRevisionInheritsArtifactScope(t *testing.T) {
 	if revision.GetSessionID() == manager.GetSessionID() {
 		t.Fatal("revision reused transcript session ID")
 	}
-	if revision.GetArtifactScopeID() != manager.GetArtifactScopeID() {
-		t.Fatalf("revision artifact scope = %q, want %q", revision.GetArtifactScopeID(), manager.GetArtifactScopeID())
+	if revision.artifactStore.root == manager.artifactStore.root {
+		t.Fatalf("revision artifact store = %q, want independent session store", revision.artifactStore.root)
+	}
+	revisionStored, err := revision.StoreArtifact("text/plain", []byte("revision-result"), ArtifactMetadata{ToolName: "shell"})
+	if err != nil {
+		t.Fatalf("revision StoreArtifact() error = %v", err)
+	}
+	if filepath.Dir(revisionStored.Path) != revision.artifactStore.root || filepath.Base(filepath.Dir(revision.artifactStore.root)) != revision.GetSessionID() {
+		t.Fatalf("revision artifact path = %q, want revision-owned directory %q", revisionStored.Path, revision.artifactStore.root)
 	}
 	if data, err := os.ReadFile(stored.Path); err != nil || string(data) != "persisted-result" {
 		t.Fatalf("revision artifact file read = %q, error = %v", data, err)
@@ -235,8 +275,12 @@ func TestContextManagerRevisionInheritsArtifactScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
-	if reloaded.GetArtifactScopeID() != manager.GetArtifactScopeID() {
-		t.Fatalf("reloaded artifact scope = %q, want %q", reloaded.GetArtifactScopeID(), manager.GetArtifactScopeID())
+	result := reloaded.CloneMessageList()[1].ToolResults[0]
+	if result.Meta == nil || result.Meta.ArtifactPath != stored.Path {
+		t.Fatalf("reloaded artifact path = %#v, want %q", result.Meta, stored.Path)
+	}
+	if reloaded.artifactStore.root == manager.artifactStore.root {
+		t.Fatalf("reloaded artifact store = %q, want revision-owned store", reloaded.artifactStore.root)
 	}
 	data, err := os.ReadFile(stored.Path)
 	if err != nil || string(data) != "persisted-result" {
@@ -255,7 +299,7 @@ func TestContextManagerRejectsArtifactAboveSingleLimit(t *testing.T) {
 	}
 }
 
-func TestContextManagerRejectsArtifactWhenScopeIsFull(t *testing.T) {
+func TestContextManagerRejectsArtifactWhenSessionStoreIsFull(t *testing.T) {
 	manager, err := NewContextManagerFromMessageList(t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
@@ -265,7 +309,7 @@ func TestContextManagerRejectsArtifactWhenScopeIsFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Create() error = %v", err)
 	}
-	if err := file.Truncate(ArtifactScopeMaxBytes); err != nil {
+	if err := file.Truncate(ArtifactSessionMaxBytes); err != nil {
 		_ = file.Close()
 		t.Fatalf("Truncate() error = %v", err)
 	}
@@ -274,12 +318,12 @@ func TestContextManagerRejectsArtifactWhenScopeIsFull(t *testing.T) {
 	}
 
 	_, err = manager.StoreArtifact("text/plain", []byte("x"), ArtifactMetadata{})
-	if !errors.Is(err, ErrArtifactScopeFull) {
-		t.Fatalf("StoreArtifact() error = %v, want %v", err, ErrArtifactScopeFull)
+	if !errors.Is(err, ErrArtifactSessionFull) {
+		t.Fatalf("StoreArtifact() error = %v, want %v", err, ErrArtifactSessionFull)
 	}
 }
 
-func TestContextManagerCountsMetadataTowardArtifactScopeLimit(t *testing.T) {
+func TestContextManagerCountsMetadataTowardArtifactSessionLimit(t *testing.T) {
 	manager, err := NewContextManagerFromMessageList(t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
@@ -289,7 +333,7 @@ func TestContextManagerCountsMetadataTowardArtifactScopeLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Create() error = %v", err)
 	}
-	if err := file.Truncate(ArtifactScopeMaxBytes); err != nil {
+	if err := file.Truncate(ArtifactSessionMaxBytes); err != nil {
 		_ = file.Close()
 		t.Fatalf("Truncate() error = %v", err)
 	}
@@ -298,8 +342,8 @@ func TestContextManagerCountsMetadataTowardArtifactScopeLimit(t *testing.T) {
 	}
 
 	_, err = manager.StoreArtifact("text/plain", []byte("x"), ArtifactMetadata{})
-	if !errors.Is(err, ErrArtifactScopeFull) {
-		t.Fatalf("StoreArtifact() error = %v, want %v", err, ErrArtifactScopeFull)
+	if !errors.Is(err, ErrArtifactSessionFull) {
+		t.Fatalf("StoreArtifact() error = %v, want %v", err, ErrArtifactSessionFull)
 	}
 }
 
@@ -415,8 +459,8 @@ func TestLoadContextManagerRejectsArtifactScopePathTraversal(t *testing.T) {
 		t.Run(scopeID, func(t *testing.T) {
 			sessionFolder := t.TempDir()
 			sessionID := "s_session"
-			if err := saveSessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
-				t.Fatalf("saveSessionMetadata() error = %v", err)
+			if err := writeLegacySessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
+				t.Fatalf("writeLegacySessionMetadata() error = %v", err)
 			}
 			if _, err := LoadContextManagerFromSessionID(sessionFolder, sessionID); err == nil {
 				t.Fatalf("LoadContextManagerFromSessionID() succeeded with scope %q", scopeID)
@@ -425,7 +469,7 @@ func TestLoadContextManagerRejectsArtifactScopePathTraversal(t *testing.T) {
 	}
 }
 
-func TestClearAllSessionsRemovesEmptySessionArtifactScope(t *testing.T) {
+func TestClearAllSessionsRemovesSessionArtifactDirectory(t *testing.T) {
 	sessionFolder := t.TempDir()
 	manager, err := NewContextManagerFromMessageList(sessionFolder, nil)
 	if err != nil {
@@ -437,10 +481,7 @@ func TestClearAllSessionsRemovesEmptySessionArtifactScope(t *testing.T) {
 	if err := ClearAllSessions(sessionFolder); err != nil {
 		t.Fatalf("ClearAllSessions() error = %v", err)
 	}
-	if _, err := os.Stat(sessionMetadataPath(sessionFolder, manager.GetSessionID())); !os.IsNotExist(err) {
-		t.Fatalf("session metadata still exists, stat error = %v", err)
-	}
-	if _, err := os.Stat(sessionDataDir(sessionFolder, manager.GetArtifactScopeID())); !os.IsNotExist(err) {
-		t.Fatalf("artifact scope still exists, stat error = %v", err)
+	if _, err := os.Stat(sessionDataDir(sessionFolder, manager.GetSessionID())); !os.IsNotExist(err) {
+		t.Fatalf("session data directory still exists, stat error = %v", err)
 	}
 }

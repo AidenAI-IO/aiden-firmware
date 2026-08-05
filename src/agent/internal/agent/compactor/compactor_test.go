@@ -226,8 +226,8 @@ func TestCompactShrinksHistoricalToolResultsBeforeCallingSummaryModel(t *testing
 	if len(model.prompts) != 0 {
 		t.Fatalf("summary model calls = %d, want 0", len(model.prompts))
 	}
-	if newManager.GetArtifactScopeID() != manager.GetArtifactScopeID() {
-		t.Fatalf("artifact scope = %q, want %q", newManager.GetArtifactScopeID(), manager.GetArtifactScopeID())
+	if newManager.GetSessionID() == manager.GetSessionID() {
+		t.Fatalf("compacted manager reused session ID %q", manager.GetSessionID())
 	}
 
 	messages := newManager.CloneMessageList()

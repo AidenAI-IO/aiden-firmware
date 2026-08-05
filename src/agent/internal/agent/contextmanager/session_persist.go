@@ -10,6 +10,9 @@ import (
 	"strings"
 )
 
+// sessionMetadata is read only for compatibility with builds that stored a
+// shared artifact_scope_id for compacted revisions. New sessions persist the
+// concrete artifact_path in their messages and do not create this sidecar.
 type sessionMetadata struct {
 	ArtifactScopeID string `json:"artifact_scope_id"`
 }
@@ -50,17 +53,6 @@ func loadSessionMetadata(sessionFolder, sessionID string) (sessionMetadata, bool
 		return sessionMetadata{}, false, fmt.Errorf("decode session metadata: %w", err)
 	}
 	return metadata, true, nil
-}
-
-func saveSessionMetadata(sessionFolder, sessionID string, metadata sessionMetadata) error {
-	data, err := json.Marshal(metadata)
-	if err != nil {
-		return fmt.Errorf("marshal session metadata: %w", err)
-	}
-	if err := writeArtifactFileAtomically(sessionMetadataPath(sessionFolder, sessionID), data); err != nil {
-		return fmt.Errorf("write session metadata: %w", err)
-	}
-	return nil
 }
 
 func appendSession(sessionFolder string, sessionID string, messages []Message) error {

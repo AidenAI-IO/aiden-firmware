@@ -18,7 +18,7 @@ import (
 
 const (
 	ArtifactSingleMaxBytes   = 8 * 1024 * 1024
-	ArtifactScopeMaxBytes    = 32 * 1024 * 1024
+	ArtifactSessionMaxBytes  = 32 * 1024 * 1024
 	artifactMetadataMaxBytes = 64 * 1024
 
 	artifactDefaultTTL   = 7 * 24 * time.Hour
@@ -26,8 +26,8 @@ const (
 )
 
 var (
-	ErrArtifactTooLarge  = errors.New("artifact exceeds single-artifact size limit")
-	ErrArtifactScopeFull = errors.New("artifact scope size limit exceeded")
+	ErrArtifactTooLarge    = errors.New("artifact exceeds single-artifact size limit")
+	ErrArtifactSessionFull = errors.New("session artifact size limit exceeded")
 )
 
 type ArtifactMetadata struct {
@@ -94,15 +94,10 @@ func ArtifactPathRecoverable(dataPath string, now time.Time) bool {
 	return metadata.ExpiresAt.After(now.UTC())
 }
 
-func newArtifactStore(sessionFolder, scopeID string) (*artifactStore, error) {
-	var err error
-	scopeID, err = validateArtifactScopeID(scopeID)
+func newArtifactStore(sessionFolder, sessionID string) (*artifactStore, error) {
+	root, err := artifactStoreRoot(sessionFolder, sessionID)
 	if err != nil {
 		return nil, err
-	}
-	root, err := filepath.Abs(filepath.Join(sessionDataDir(sessionFolder, scopeID), "tool-results"))
-	if err != nil {
-		return nil, fmt.Errorf("resolve artifact directory: %w", err)
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create artifact directory: %w", err)
@@ -113,10 +108,22 @@ func newArtifactStore(sessionFolder, scopeID string) (*artifactStore, error) {
 	return &artifactStore{root: root}, nil
 }
 
-func validateArtifactScopeID(scopeID string) (string, error) {
-	trimmed := strings.TrimSpace(scopeID)
+func artifactStoreRoot(sessionFolder, sessionID string) (string, error) {
+	sessionID, err := validateArtifactSessionID(sessionID)
+	if err != nil {
+		return "", err
+	}
+	root, err := filepath.Abs(filepath.Join(sessionDataDir(sessionFolder, sessionID), "tool-results"))
+	if err != nil {
+		return "", fmt.Errorf("resolve artifact directory: %w", err)
+	}
+	return root, nil
+}
+
+func validateArtifactSessionID(sessionID string) (string, error) {
+	trimmed := strings.TrimSpace(sessionID)
 	if trimmed == "" || trimmed == "." || trimmed == ".." || filepath.Base(trimmed) != trimmed || strings.ContainsAny(trimmed, `/\\`) {
-		return "", fmt.Errorf("invalid artifact scope ID")
+		return "", fmt.Errorf("invalid artifact session ID")
 	}
 	return trimmed, nil
 }
@@ -153,12 +160,12 @@ func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMet
 	if err != nil {
 		return ArtifactFile{}, fmt.Errorf("marshal artifact metadata: %w", err)
 	}
-	used, err := artifactScopeBytes(s.root)
+	used, err := artifactSessionBytes(s.root)
 	if err != nil {
 		return ArtifactFile{}, err
 	}
-	if used+int64(len(data))+int64(len(metadataData)) > ArtifactScopeMaxBytes {
-		return ArtifactFile{}, ErrArtifactScopeFull
+	if used+int64(len(data))+int64(len(metadataData)) > ArtifactSessionMaxBytes {
+		return ArtifactFile{}, ErrArtifactSessionFull
 	}
 
 	dataPath := filepath.Join(s.root, id+".data")
@@ -178,7 +185,7 @@ func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMet
 	}, nil
 }
 
-func artifactScopeBytes(root string) (int64, error) {
+func artifactSessionBytes(root string) (int64, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return 0, fmt.Errorf("list artifact directory: %w", err)

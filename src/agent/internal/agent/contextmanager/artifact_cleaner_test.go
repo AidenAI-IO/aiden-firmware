@@ -187,7 +187,7 @@ func TestArtifactStoreCleanerRemovesStaleUncommittedFiles(t *testing.T) {
 	}
 }
 
-func TestArtifactStoreCleanerKeepsScopeUntilLastRevisionReferenceIsRemoved(t *testing.T) {
+func TestArtifactStoreCleanerKeepsReferencedSessionArtifactsUntilLastRevisionIsRemoved(t *testing.T) {
 	sessionFolder := t.TempDir()
 	manager, err := NewContextManagerFromMessageList(sessionFolder, []Message{{Role: MessageRoleSystem, Content: "system"}})
 	if err != nil {
@@ -196,6 +196,17 @@ func TestArtifactStoreCleanerKeepsScopeUntilLastRevisionReferenceIsRemoved(t *te
 	stored, err := manager.StoreArtifact("text/plain", []byte("lineage-result"), ArtifactMetadata{})
 	if err != nil {
 		t.Fatalf("StoreArtifact() error = %v", err)
+	}
+	if err := manager.AppendMessage(Message{
+		Role: MessageRoleToolResult,
+		ToolResults: []ToolResult{{
+			ToolCallID: "call_lineage",
+			Name:       "shell",
+			Content:    "bounded lineage result",
+			Meta:       &ToolResultMeta{ArtifactPath: stored.Path, ArtifactComplete: true},
+		}},
+	}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
 	}
 	revision, err := NewContextManagerRevisionFromMessageList(manager, manager.CloneMessageList())
 	if err != nil {
@@ -219,18 +230,18 @@ func TestArtifactStoreCleanerKeepsScopeUntilLastRevisionReferenceIsRemoved(t *te
 		t.Fatalf("Clean() with child revision error = %v", err)
 	}
 	if _, err := os.ReadFile(stored.Path); err != nil {
-		t.Fatalf("artifact removed while child revision still referenced scope: %v", err)
+		t.Fatalf("artifact removed while child revision still referenced its path: %v", err)
 	}
 
 	removeTranscriptRevisionFiles(revision.GetSessionID())
 	old := time.Now().Add(-artifactOrphanGracePeriod - time.Minute)
-	if err := os.Chtimes(filepath.Join(sessionFolder, manager.GetArtifactScopeID(), "tool-results"), old, old); err != nil {
+	if err := os.Chtimes(filepath.Join(sessionFolder, manager.GetSessionID(), "tool-results"), old, old); err != nil {
 		t.Fatalf("Chtimes(artifact root) error = %v", err)
 	}
 	if _, err := cleaner.Clean(context.Background()); err != nil {
 		t.Fatalf("Clean() after last revision removal error = %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(sessionFolder, manager.GetArtifactScopeID(), "tool-results")); !os.IsNotExist(err) {
-		t.Fatalf("artifact scope remains after last revision reference removal, stat error = %v", err)
+	if _, err := os.Stat(filepath.Join(sessionFolder, manager.GetSessionID(), "tool-results")); !os.IsNotExist(err) {
+		t.Fatalf("artifact session directory remains after last revision reference removal, stat error = %v", err)
 	}
 }

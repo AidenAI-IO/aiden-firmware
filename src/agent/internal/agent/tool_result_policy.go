@@ -145,8 +145,8 @@ func classifyArtifactStoreError(err error) string {
 	switch {
 	case errors.Is(err, contextmanager.ErrArtifactTooLarge):
 		return "artifact_too_large"
-	case errors.Is(err, contextmanager.ErrArtifactScopeFull):
-		return "artifact_scope_full"
+	case errors.Is(err, contextmanager.ErrArtifactSessionFull):
+		return "artifact_session_full"
 	default:
 		return "artifact_store_unavailable"
 	}

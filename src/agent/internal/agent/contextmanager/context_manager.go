@@ -131,7 +131,6 @@ const AttachmentSourceScreenshotObservation = "screenshot_observation"
 // SessionID is the id of the session, it is used to identify the session of the agent. Conversation in a same session are shared the same context.
 type ContextManager struct {
 	sessionID       string
-	artifactScopeID string
 	messageList     []Message
 	appendHooks     []AppendMessageHook
 	attachmentStore *attachmentStore
@@ -154,9 +153,10 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 	if err != nil {
 		return nil, err
 	}
-	if !found || strings.TrimSpace(metadata.ArtifactScopeID) == "" {
-		metadata.ArtifactScopeID = sessionID
-		if err := saveSessionMetadata(sessionFolder, sessionID, metadata); err != nil {
+	legacyArtifactSessionID := sessionID
+	if found && strings.TrimSpace(metadata.ArtifactScopeID) != "" {
+		legacyArtifactSessionID, err = validateArtifactSessionID(metadata.ArtifactScopeID)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -165,18 +165,21 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 	if err != nil {
 		return nil, err
 	}
-	artifactStore, err := newArtifactStore(sessionFolder, metadata.ArtifactScopeID)
+	artifactStore, err := newArtifactStore(sessionFolder, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	// Keep legacy reference migration in memory here. Session JSONL files are
 	// append-only, so flushFull would duplicate every loaded message instead of
 	// rewriting them. A later session revision persists the migrated messages.
-	migrateLegacyArtifactRefs(messageList, artifactStore)
+	legacyArtifactRoot, err := artifactStoreRoot(sessionFolder, legacyArtifactSessionID)
+	if err != nil {
+		return nil, err
+	}
+	migrateLegacyArtifactRefs(messageList, legacyArtifactRoot)
 
 	return &ContextManager{
 		sessionID:       sessionID,
-		artifactScopeID: metadata.ArtifactScopeID,
 		messageList:     messageList,
 		mu:              sync.RWMutex{},
 		sessionFolder:   sessionFolder,
@@ -185,8 +188,8 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 	}, nil
 }
 
-func migrateLegacyArtifactRefs(messageList []Message, store *artifactStore) {
-	if store == nil {
+func migrateLegacyArtifactRefs(messageList []Message, artifactRoot string) {
+	if strings.TrimSpace(artifactRoot) == "" {
 		return
 	}
 	const legacyPrefix = "artifact://"
@@ -209,7 +212,7 @@ func migrateLegacyArtifactRefs(messageList []Message, store *artifactStore) {
 				continue
 			}
 
-			artifactPath := filepath.Join(store.root, id+".data")
+			artifactPath := filepath.Join(artifactRoot, id+".data")
 			if _, err := os.Stat(artifactPath); err != nil {
 				continue
 			}
@@ -261,40 +264,28 @@ func NewContextManager(sessionFolder string, systemPrompt string) (*ContextManag
 
 func NewContextManagerFromMessageList(sessionFolder string, messageList []Message) (*ContextManager, error) {
 	newSessionID := newSessionID()
-	return newContextManagerFromMessageList(sessionFolder, newSessionID, newSessionID, messageList)
+	return newContextManagerFromMessageList(sessionFolder, newSessionID, messageList)
 }
 
 func NewContextManagerRevisionFromMessageList(parent *ContextManager, messageList []Message) (*ContextManager, error) {
 	if parent == nil {
 		return nil, fmt.Errorf("parent context manager is nil")
 	}
-	return newContextManagerFromMessageList(
-		parent.GetSessionFolder(),
-		newSessionID(),
-		parent.GetArtifactScopeID(),
-		messageList,
-	)
+	return newContextManagerFromMessageList(parent.GetSessionFolder(), newSessionID(), messageList)
 }
 
-func newContextManagerFromMessageList(sessionFolder, sessionID, artifactScopeID string, messageList []Message) (*ContextManager, error) {
-	if strings.TrimSpace(artifactScopeID) == "" {
-		artifactScopeID = sessionID
-	}
-	if err := saveSessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: artifactScopeID}); err != nil {
-		return nil, err
-	}
+func newContextManagerFromMessageList(sessionFolder, sessionID string, messageList []Message) (*ContextManager, error) {
 	attachmentStore, err := newAttachmentStore(sessionFolder, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	artifactStore, err := newArtifactStore(sessionFolder, artifactScopeID)
+	artifactStore, err := newArtifactStore(sessionFolder, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	manager := &ContextManager{
 		sessionFolder:   sessionFolder,
 		sessionID:       sessionID,
-		artifactScopeID: artifactScopeID,
 		messageList:     cloneMessages(messageList),
 		mu:              sync.RWMutex{},
 		attachmentStore: attachmentStore,
@@ -332,13 +323,6 @@ func (c *ContextManager) GetSessionID() string {
 	return c.sessionID
 }
 
-func (c *ContextManager) GetArtifactScopeID() string {
-	if c == nil {
-		return ""
-	}
-	return c.artifactScopeID
-}
-
 func (c *ContextManager) StoreArtifact(mimeType string, data []byte, metadata ArtifactMetadata) (ArtifactFile, error) {
 	if c == nil || c.artifactStore == nil {
 		return ArtifactFile{}, fmt.Errorf("artifact store is unavailable")
@@ -368,9 +352,6 @@ func (c *ContextManager) flushFull() error {
 	c.mu.RLock()
 	messages := cloneMessages(c.messageList)
 	c.mu.RUnlock()
-	if len(messages) == 0 {
-		return nil
-	}
 	return appendSession(c.sessionFolder, c.sessionID, messages)
 }
 
