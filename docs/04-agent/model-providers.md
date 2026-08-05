@@ -46,7 +46,7 @@ temperature = 0.7
 |-------|----------|-------------|---------|
 | `provider` | Yes | Provider type | `"openai"`, `"kimi"`, `"ollama"`, ... |
 | `api_key` | No | API key | `"sk-xxx"` |
-| `token_env` | No | Environment variable holding the API key | `"OPENAI_API_KEY"` |
+| `token_env` | No | Environment variable holding the API key. Provider-only: `[model]` has no `token_env` | `"OPENAI_API_KEY"` |
 | `base_url` | No | Custom endpoint; honored only for `openai` and `ollama` | `"https://api.openai.com/v1"` |
 
 The `base_url` whitelist matches `[model]`: only `openai` and `ollama` accept an
@@ -184,6 +184,9 @@ api_key = "sk-override-key"  # overrides the provider's api_key
 # base_url is still inherited from the provider
 ```
 
+`token_env` is not overridable this way: it exists only on the provider, so
+the provider's value always applies.
+
 ### Reading keys from the environment
 
 ```toml
@@ -207,6 +210,22 @@ provider = "openai"     # a provider type directly
 model = "gpt-4o"
 api_key = "sk-xxx"
 ```
+
+## Adding providers from the web UI
+
+The Model Providers card's **Add Provider** dialog asks for the provider, the API
+key, an optional base URL, and the name, in that order.
+
+- **Name** is filled in for you: the provider you pick, or the host label of the
+  base URL when `openai` runs against a custom endpoint (`https://api.deepseek.com/v1`
+  becomes `deepseek`). Edit it and your value sticks.
+- Adding a second entry for a provider you already have suffixes the name
+  (`openai`, `openai-2`, `openai-3`), so several keys for one provider coexist.
+- **API Key** doubles as the environment-variable field: a value starting with
+  `$` is stored as `token_env`, so `$OPENAI_API_KEY` reads the key from that
+  variable at runtime. Anything else is stored as `api_key`.
+- Renaming an existing provider rewrites the `provider` reference in `[model]`
+  and `[model_text]` in the same save, so the reference cannot dangle.
 
 ## Switching providers
 

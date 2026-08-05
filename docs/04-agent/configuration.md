@@ -47,7 +47,7 @@ The firmware starts `config_web` on port 80.
 The page fields cover the following config sections (all detailed later on this page). The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
 - `agent`: `locale`, `input_mode`, `trigger_mode`, VAD params, `load_all_tools`, `max_iterations`, `custom_instruction`, `additional_prompt`
-- `model`: provider, token_env, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
+- `model`: provider, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, playback_backend
@@ -69,10 +69,13 @@ screenshot_keep_n = 3
 screenshot_prune_interval = 2
 input_mode = "text"
 
+[providers.openrouter]
+provider = "openrouter"
+token_env = "OPENROUTER_API_KEY"
+
 [model]
 provider = "openrouter"
 model = "bytedance-seed/seed-2.0-lite"
-token_env = "OPENROUTER_API_KEY"
 temperature = 0.2
 max_response_tokens = 1000
 # Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
@@ -97,7 +100,7 @@ android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
-> `token_env` means the key is read from an environment variable. Overlay example configs may also write the `api_key` field directly; for production, prefer environment variables or a device-side secure injection method.
+> `token_env` lives on a named provider (`[providers.<name>]`), not on `[model]`, and means the key is read from that environment variable. In Config Web, type `$VAR_NAME` into the provider's API Key box to set it. Overlay example configs may also write the `api_key` field directly; for production, prefer environment variables or a device-side secure injection method.
 
 ### STT voice mode
 
@@ -122,10 +125,13 @@ voice_tool_call_speech = true
 voice_progress_speech_enabled = true
 voice_max_response_tokens = 400
 
+[providers.openrouter]
+provider = "openrouter"
+token_env = "OPENROUTER_API_KEY"
+
 [model]
 provider = "openrouter"
 model = "bytedance-seed/seed-2.0-lite"
-token_env = "OPENROUTER_API_KEY"
 
 [stt]
 provider = "openrouter"
@@ -261,7 +267,8 @@ model = "gpt-5.5"
 On load, a `provider` value that names a section under `[providers]` is replaced
 by that section's provider type, and its `api_key`, `token_env` and `base_url`
 fill in any field the model section leaves empty — values set directly on
-`[model]` always win. A `provider` that matches no section is treated as a
+`[model]` always win. `token_env` is the exception: it exists only on a named
+provider, so the provider's value always applies. A `provider` that matches no section is treated as a
 provider type, so existing configs keep working unchanged.
 
 A `provider` that is neither a section name nor a known provider type is
@@ -278,7 +285,6 @@ See `docs/04-agent/model-providers.md`.
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
 | `base_url`                | Custom OpenAI-compatible endpoint. Only `openai` and `ollama` accept a `base_url` override; other providers use their built-in endpoints and a stored value is dropped on load. |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
-| `token_env`               | Read the API key from the specified environment variable; only supported by `[model]`                                                                                                                                                                |
 | `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
 | `reasoning_effort`        | Thinking budget. Unset is auto: the field is omitted and the provider decides, except that reasoning is disabled for no-tool requests. `low`/`medium`/`high` work everywhere; `minimal` is Volcengine Ark only; `none` is accepted by the others but not by Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
 | `max_response_tokens`     | Maximum output tokens passed to the model on request                                                                                                                                                                                                 |
@@ -314,9 +320,19 @@ required. `model` is the Ark model ID, and `api_key` is an Ark API key.
 provider = "volcengine"
 model = "doubao-seed-2-1-pro-260628"
 api_key = "ARK_API_KEY"
+```
 
-# Or read the key from the environment instead of writing it here:
-# token_env = "ARK_API_KEY"
+To read the key from the environment instead of writing it here, put it on a
+named provider and reference that:
+
+```toml
+[providers.ark]
+provider = "volcengine"
+token_env = "ARK_API_KEY"
+
+[model]
+provider = "ark"
+model = "doubao-seed-2-1-pro-260628"
 ```
 
 Ark also exposes an Anthropic-protocol endpoint at `/api/compatible`. This agent

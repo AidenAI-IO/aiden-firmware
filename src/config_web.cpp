@@ -711,7 +711,6 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"model", "model", CONFIG_FIELD_STRING},
         {"model", "api_key", CONFIG_FIELD_STRING},
         {"model", "base_url", CONFIG_FIELD_STRING},
-        {"model", "token_env", CONFIG_FIELD_STRING},
         {"model", "reasoning_effort", CONFIG_FIELD_STRING},
         {"model", "temperature", CONFIG_FIELD_NUMBER},
         {"model", "max_response_tokens", CONFIG_FIELD_NUMBER},
@@ -721,7 +720,6 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"model_text", "model", CONFIG_FIELD_STRING},
         {"model_text", "api_key", CONFIG_FIELD_STRING},
         {"model_text", "base_url", CONFIG_FIELD_STRING},
-        {"model_text", "token_env", CONFIG_FIELD_STRING},
         {"model_text", "reasoning_effort", CONFIG_FIELD_STRING},
         {"model_text", "temperature", CONFIG_FIELD_NUMBER},
         {"model_text", "max_response_tokens", CONFIG_FIELD_NUMBER},
@@ -2657,7 +2655,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
     cJSON_AddStringToObject(model, "model", config.model.model.c_str());
     cJSON_AddStringToObject(model, "base_url", config.model.base_url.c_str());
-    cJSON_AddStringToObject(model, "token_env", config.model.token_env.c_str());
     cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
     if (config.model.has_temperature) {
         cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
@@ -2671,7 +2668,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(model_text, "api_key", config.model_text.api_key.c_str());
     cJSON_AddStringToObject(model_text, "model", config.model_text.model.c_str());
     cJSON_AddStringToObject(model_text, "base_url", config.model_text.base_url.c_str());
-    cJSON_AddStringToObject(model_text, "token_env", config.model_text.token_env.c_str());
     if (config.model_text.has_temperature) {
         cJSON_AddNumberToObject(model_text, "temperature", config.model_text.temperature);
     }
@@ -2978,7 +2974,6 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_str(&m->model, obj, "model");
     set_json_str(&m->base_url, obj, "base_url");
     set_json_str(&m->api_key, obj, "api_key");
-    set_json_str(&m->token_env, obj, "token_env");
     set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
     // Temperature is nullable: presence of the key sets has_temperature, and
     // its absence clears it. This function applies JSON as a patch onto an

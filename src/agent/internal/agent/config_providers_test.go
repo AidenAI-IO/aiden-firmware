@@ -469,8 +469,9 @@ api_key = "sk-x"
 }
 
 // TestProviderReferencePrecedence pins that an explicit value on [model] wins
-// over the referenced provider's for every inherited field. Only api_key was
-// covered before; applyProviderToModel has an identical empty-check per field.
+// over the referenced provider's for every inherited field. token_env is the
+// exception: it is no longer a [model] key, so the provider's value always
+// applies (see ModelConfig.TokenEnv).
 func TestProviderReferencePrecedence(t *testing.T) {
 	cfg, err := loadProviderConfig(t, `
 [providers.p]
@@ -483,7 +484,6 @@ base_url = "https://provider.example.com/v1"
 provider = "p"
 model = "gpt-4o"
 api_key = "sk-explicit"
-token_env = "EXPLICIT_ENV"
 base_url = "https://explicit.example.com/v1"
 `)
 	if err != nil {
@@ -492,11 +492,29 @@ base_url = "https://explicit.example.com/v1"
 	if cfg.Model.APIKey != "sk-explicit" {
 		t.Errorf("api_key = %q, want sk-explicit", cfg.Model.APIKey)
 	}
-	if cfg.Model.TokenEnv != "EXPLICIT_ENV" {
-		t.Errorf("token_env = %q, want EXPLICIT_ENV", cfg.Model.TokenEnv)
+	if cfg.Model.TokenEnv != "PROVIDER_ENV" {
+		t.Errorf("token_env = %q, want the provider's PROVIDER_ENV", cfg.Model.TokenEnv)
 	}
 	if cfg.Model.BaseURL != "https://explicit.example.com/v1" {
 		t.Errorf("base_url = %q, want the explicit value", cfg.Model.BaseURL)
+	}
+}
+
+// TestModelTokenEnvIsNotAConfigKey pins that token_env only exists on a named
+// provider. A stale [model] token_env from an older config must not resolve a
+// credential, so upgrades cannot keep reading a variable the UI no longer shows.
+func TestModelTokenEnvIsNotAConfigKey(t *testing.T) {
+	cfg, err := loadProviderConfig(t, `
+[model]
+provider = "openai"
+model = "gpt-4o"
+token_env = "STALE_ENV"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Model.TokenEnv != "" {
+		t.Errorf("token_env = %q, want it ignored on [model]", cfg.Model.TokenEnv)
 	}
 }
 

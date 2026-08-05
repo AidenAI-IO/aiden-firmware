@@ -640,7 +640,10 @@ type ModelConfig struct {
 	Model    string `toml:"model"`
 	BaseURL  string `toml:"base_url,omitempty"`
 	APIKey   string `toml:"api_key,omitempty"`
-	TokenEnv string `toml:"token_env,omitempty"`
+	// TokenEnv is runtime-only: credentials live in [providers.<name>], and
+	// applyProviderToModel copies the referenced provider's token_env here.
+	// It is never read from or written to a [model] section.
+	TokenEnv string `toml:"-"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
 	// (see applyModelTemperatureDefault); an explicit value, including 0, is

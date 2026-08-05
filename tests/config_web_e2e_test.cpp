@@ -219,9 +219,9 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"providers\":{\"stub-openai\":{\"provider\":\"openai\",\"api_key\":\"sk-stub-secret-1234\"},"
         "\"stub-ollama\":{\"provider\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
         "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
-        "\"base_url\":\"\",\"token_env\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+        "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
         "\"context_window\":0,\"model_max_output_tokens\":0},"
-        "\"model_text\":{\"provider\":\"\",\"api_key\":\"\",\"model\":\"\",\"base_url\":\"\",\"token_env\":\"\","
+        "\"model_text\":{\"provider\":\"\",\"api_key\":\"\",\"model\":\"\",\"base_url\":\"\","
         "\"temperature\":0,\"max_response_tokens\":0,\"context_window\":0,\"model_max_output_tokens\":0},"
         "\"tts\":{\"provider\":\"minimax-cn\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
         "\"emotion\":\"happy\",\"speed\":1},"
@@ -1104,6 +1104,79 @@ TEST_CASE("config_web: POST /api/config writes named providers") {
     CHECK(saved.find("api_key = \"sk-plain-secret-1234\"") != std::string::npos);
     CHECK(saved.find("[providers.my-ollama]") != std::string::npos);
     CHECK(saved.find("base_url = \"http://127.0.0.1:11434\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config writes a provider token_env without an api_key") {
+    // The dialog folds both into one box: a $-prefixed value arrives as
+    // token_env with an empty api_key, so the env var must survive the round
+    // trip and no empty api_key line should shadow it.
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"providers\":{"
+        "\"my-openai\":{\"provider\":\"openai\",\"api_key\":\"\",\"token_env\":\"OPENAI_API_KEY\"}},"
+        "\"model\":{\"provider\":\"my-openai\",\"model\":\"x\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[providers.my-openai]") != std::string::npos);
+    CHECK(saved.find("token_env = \"OPENAI_API_KEY\"") != std::string::npos);
+    // An empty api_key must not be written alongside it.
+    CHECK(saved.find("api_key = \"\"\ntoken_env") == std::string::npos);
+}
+
+TEST_CASE("config_web: GET /api/config reports a provider token_env") {
+    // The dialog renders a stored token_env back as $VAR, so the read path has
+    // to surface it. Secrets are masked here, but an env var name is not one.
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"providers\":{\"env-openai\":{\"provider\":\"openai\",\"api_key\":\"\","
+               "\"token_env\":\"OPENAI_API_KEY\"}},"
+               "\"model\":{\"provider\":\"env-openai\",\"api_key\":\"\",\"model\":\"gpt-4o\","
+               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config", "");
+    REQUIRE(resp.status == 200);
+    CHECK(resp.body.find("\"token_env\":\"OPENAI_API_KEY\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config renames a provider with its model reference") {
+    // Renaming in the dialog posts the new providers map plus the rewritten
+    // model sections in one request. The old section must be gone and the model
+    // must point at the new name, or the reference resolves to nothing.
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string create =
+        "{\"config\":{\"providers\":{"
+        "\"openai\":{\"provider\":\"openai\",\"api_key\":\"sk-plain-secret-1234\"}},"
+        "\"model\":{\"provider\":\"openai\",\"model\":\"x\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    CHECK(http_request(handle->port, "POST", "/api/config", create).status == 200);
+
+    const std::string rename =
+        "{\"config\":{\"providers\":{"
+        "\"openai-work\":{\"provider\":\"openai\",\"api_key\":\"sk-plain-secret-1234\"}},"
+        "\"model\":{\"provider\":\"openai-work\",\"model\":\"x\"}},\"apply_wifi\":false}";
+    CHECK(http_request(handle->port, "POST", "/api/config", rename).status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[providers.openai-work]") != std::string::npos);
+    CHECK(saved.find("[providers.openai]\n") == std::string::npos);
+    CHECK(saved.find("provider = \"openai-work\"") != std::string::npos);
+    // The key rides along instead of being re-entered.
+    CHECK(saved.find("api_key = \"sk-plain-secret-1234\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config drops named provider base_url for types that pin their endpoint") {

@@ -69,7 +69,6 @@ type modelDTO struct {
 	APIKey               string   `json:"api_key"`
 	Model                string   `json:"model"`
 	BaseURL              string   `json:"base_url"`
-	TokenEnv             string   `json:"token_env"`
 	ReasoningEffort      string   `json:"reasoning_effort"`
 	Temperature          *float64 `json:"temperature,omitempty"`
 	MaxResponseTokens    int      `json:"max_response_tokens"`
@@ -288,7 +287,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			APIKey:               d.Model.APIKey,
 			Model:                d.Model.Model,
 			BaseURL:              d.Model.BaseURL,
-			TokenEnv:             d.Model.TokenEnv,
 			Temperature:          d.Model.Temperature,
 			MaxResponseTokens:    d.Model.MaxResponseTokens,
 			ContextWindow:        d.Model.ContextWindow,
@@ -299,7 +297,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			APIKey:               d.ModelText.APIKey,
 			Model:                d.ModelText.Model,
 			BaseURL:              d.ModelText.BaseURL,
-			TokenEnv:             d.ModelText.TokenEnv,
 			Temperature:          d.ModelText.Temperature,
 			MaxResponseTokens:    d.ModelText.MaxResponseTokens,
 			ContextWindow:        d.ModelText.ContextWindow,
@@ -474,7 +471,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			APIKey:               cfg.Model.APIKey,
 			Model:                cfg.Model.Model,
 			BaseURL:              cfg.Model.BaseURL,
-			TokenEnv:             cfg.Model.TokenEnv,
 			ReasoningEffort:      cfg.Model.ReasoningEffort,
 			Temperature:          cfg.Model.Temperature,
 			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
@@ -486,7 +482,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			APIKey:               cfg.ModelText.APIKey,
 			Model:                cfg.ModelText.Model,
 			BaseURL:              cfg.ModelText.BaseURL,
-			TokenEnv:             cfg.ModelText.TokenEnv,
 			ReasoningEffort:      cfg.ModelText.ReasoningEffort,
 			Temperature:          cfg.ModelText.Temperature,
 			MaxResponseTokens:    cfg.ModelText.MaxResponseTokens,

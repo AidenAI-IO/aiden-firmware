@@ -137,7 +137,6 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "provider", Widget: WidgetSelect,
 						Enum:    enumOptions("openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake"),
 						Default: defaults.Model.Provider},
-					{Key: "token_env", Widget: WidgetText},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,

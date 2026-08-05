@@ -654,7 +654,7 @@ TEST_CASE("config web exposes audio archive switch") {
     CHECK(html.find("save STT voice recording WAV") != std::string::npos);
 }
 
-TEST_CASE("config web docs list token_env in model fields") {
+TEST_CASE("config web docs list the model fields") {
     const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/04-agent/configuration.md";
     std::ifstream doc_in(doc_path.c_str());
     REQUIRE(doc_in.good());
@@ -665,7 +665,6 @@ TEST_CASE("config web docs list token_env in model fields") {
 
     const char* model_fields[] = {
         "provider",
-        "token_env",
         "model",
         "api_key",
         "base_url",
@@ -2082,11 +2081,11 @@ TEST_CASE("config web html degrades model selector when the agent is offline") {
     CHECK(js.find("'" + notice + "':'") != std::string::npos);
 }
 
-// A named provider is identified by its type, so asking for a separate name is
-// a field the user has to invent a value for. The dialog derives the name from
-// the selected type instead, which keeps [providers.<type>] sections addressable
-// by the same string the provider select already offers.
-TEST_CASE("config web html derives the provider name from the provider type") {
+// The name is what the model provider select shows, so the dialog fills it in
+// from the provider type (or the base_url host for a custom OpenAI endpoint) and
+// suffixes duplicates. It stays editable so several keys of one provider can
+// coexist under distinct names.
+TEST_CASE("config web html auto-fills the provider name and keeps it editable") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
     REQUIRE(html_in.good());
@@ -2101,29 +2100,105 @@ TEST_CASE("config web html derives the provider name from the provider type") {
     REQUIRE(save_at != std::string::npos);
     const std::string dialog_body = js.substr(dialog_at, save_at - dialog_at);
 
-    // The name input and its validation hint are gone.
-    CHECK(dialog_body.find("id=\"providerName\"") == std::string::npos);
-    CHECK(js.find("Provider Name") == std::string::npos);
-    CHECK(js.find("Letters, numbers, hyphens, underscores only") == std::string::npos);
-    CHECK(js.find("e.g., openai-work") == std::string::npos);
-    // Focus has to move to the type select now that no name input precedes it.
-    CHECK(dialog_body.find("'#providerName'") == std::string::npos);
-    CHECK(dialog_body.find("dialog.querySelector('#providerType')") != std::string::npos);
+    // Name is present and last, after the key and the base_url.
+    const size_t name_at = dialog_body.find("id=\"providerName\"");
+    const size_t key_at = dialog_body.find("id=\"providerApiKey\"");
+    const size_t base_at = dialog_body.find("id=\"providerBaseUrl\"");
+    REQUIRE(name_at != std::string::npos);
+    REQUIRE(key_at != std::string::npos);
+    REQUIRE(base_at != std::string::npos);
+    CHECK(key_at < name_at);
+    CHECK(base_at < name_at);
+    // Editing the name pins it so later auto-fills cannot overwrite the choice.
+    CHECK(dialog_body.find("ProvidersManager.onProviderNameInput()") != std::string::npos);
+    // The select is relabeled: it is the provider, not a separate "type".
+    CHECK(dialog_body.find("<label>Provider</label>") != std::string::npos);
+    CHECK(js.find("Provider Type") == std::string::npos);
+    // Opening the dialog seeds the name before the user touches anything.
+    CHECK(dialog_body.find("this.autoFillProviderName()") != std::string::npos);
 
-    const size_t save_end = js.find("saveProviders: async function", save_at);
+    const size_t save_end = js.find("modelRefPatch: function", save_at);
     REQUIRE(save_end != std::string::npos);
     const std::string save_body = js.substr(save_at, save_end - save_at);
-    // The provider type is the name; editing keeps the existing key so a stored
-    // provider is never duplicated under a second name.
-    CHECK(save_body.find("const name = editName || type;") != std::string::npos);
-    CHECK(save_body.find("getElementById('providerName')") == std::string::npos);
-    // Validating a name the user can no longer type is dead code.
-    CHECK(js.find("Provider name is required") == std::string::npos);
-    CHECK(js.find("Provider name can only contain letters") == std::string::npos);
-    // Type stays required: it is the only thing identifying the provider.
-    CHECK(save_body.find("Provider type is required") != std::string::npos);
-    // A duplicate check still applies when adding.
-    CHECK(save_body.find("!editName && this.providers[name]") != std::string::npos);
+    // The typed name wins; an empty one falls back to the derived default.
+    CHECK(save_body.find("getElementById('providerName')") != std::string::npos);
+    CHECK(save_body.find("this.uniqueProviderName(this.providerBaseName(type, baseUrl)") !=
+          std::string::npos);
+    CHECK(save_body.find("Provider is required") != std::string::npos);
+    // A collision is only an error when it targets a different existing entry.
+    CHECK(save_body.find("name !== editName && Object.prototype.hasOwnProperty.call(this.providers, name)") !=
+          std::string::npos);
+    // Renaming has to carry the model references across, or they dangle.
+    CHECK(save_body.find("this.modelRefPatch(renamedFrom, name)") != std::string::npos);
+
+    // Suffixes start at -2 so the first entry keeps the bare provider name.
+    const size_t unique_at = js.find("uniqueProviderName: function");
+    REQUIRE(unique_at != std::string::npos);
+    const std::string unique_body = js.substr(unique_at, 400);
+    CHECK(unique_body.find("for (let i = 2;") != std::string::npos);
+
+    // A custom OpenAI endpoint names itself after its host label.
+    const size_t base_name_at = js.find("providerBaseName: function");
+    REQUIRE(base_name_at != std::string::npos);
+    const std::string base_name_body = js.substr(base_name_at, 400);
+    CHECK(base_name_body.find("cleanType === 'openai' && url") != std::string::npos);
+    CHECK(base_name_body.find("this.hostLabel(url)") != std::string::npos);
+
+    // Every user-visible string needs a zh-CN entry; the page defaults to zh-CN.
+    const char* localized[] = {
+        "Provider",
+        "Name",
+        "Provider is required",
+        "Name is required",
+        "Environment variable name is required after $",
+    };
+    for (size_t i = 0; i < sizeof(localized) / sizeof(localized[0]); ++i) {
+        CHECK(js.find("'" + std::string(localized[i]) + "':'") != std::string::npos);
+    }
+}
+
+// token_env and api_key are two ways to say the same thing, so the dialog offers
+// one box: a leading $ means the rest names an environment variable. Keeping the
+// split in agent.toml lets the runtime resolve it without new parsing rules.
+TEST_CASE("config web html folds token_env into the api key box") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    // The separate env-var input is gone.
+    CHECK(js.find("id=\"providerTokenEnv\"") == std::string::npos);
+    CHECK(js.find("Token Environment Variable") == std::string::npos);
+
+    const size_t save_at = js.find("saveProviderDialog: function");
+    REQUIRE(save_at != std::string::npos);
+    const size_t save_end = js.find("modelRefPatch: function", save_at);
+    REQUIRE(save_end != std::string::npos);
+    const std::string save_body = js.substr(save_at, save_end - save_at);
+    // $FOO stores token_env and clears any literal key left behind.
+    CHECK(save_body.find("apiKeyRaw.charAt(0) === '$'") != std::string::npos);
+    CHECK(save_body.find("provider.token_env = env; provider.api_key = '';") != std::string::npos);
+    // A bare $ names no variable, so it must not save silently.
+    CHECK(save_body.find("Environment variable name is required after $") != std::string::npos);
+
+    // Reopening the dialog shows a stored token_env back as $FOO.
+    const size_t dialog_at = js.find("showProviderDialog: function");
+    REQUIRE(dialog_at != std::string::npos);
+    const std::string dialog_head = js.substr(dialog_at, 400);
+    CHECK(dialog_head.find("provider.token_env ? '$' + provider.token_env") != std::string::npos);
+
+    // The card shows the same one-line form instead of a separate row.
+    const size_t card_at = js.find("createProviderCard: function");
+    REQUIRE(card_at != std::string::npos);
+    const size_t card_end = js.find("addProvider: function", card_at);
+    REQUIRE(card_end != std::string::npos);
+    const std::string card_body = js.substr(card_at, card_end - card_at);
+    CHECK(card_body.find("Token Env:") == std::string::npos);
+    CHECK(card_body.find("provider.token_env ? '$' + provider.token_env : provider.api_key") !=
+          std::string::npos);
 }
 
 // Only openai and ollama accept a base_url override; every other provider pins
