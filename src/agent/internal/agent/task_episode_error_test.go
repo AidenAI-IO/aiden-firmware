@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,7 +11,7 @@ import (
 
 func TestEpisodeRecorderRecordsStructuredToolError(t *testing.T) {
 	recorder := NewEpisodeRecorder(MemoryRetrieveRequest{}, MemoryContext{})
-	action := schema.AgentAction{Tool: "bridge_contacts", ToolInput: `{"action":"query"}`}
+	action := schema.AgentAction{Tool: "non_sensitive_tool", ToolInput: `{"action":"query"}`}
 	step := schema.AgentStep{Action: action, Observation: "contacts permission denied"}
 	toolErr := NewToolError(CodePermissionDenied, "contacts permission denied")
 
@@ -37,6 +38,76 @@ func TestEpisodeRecorderRecordsStructuredToolError(t *testing.T) {
 		return
 	}
 	t.Fatal("missing tool_result event")
+}
+
+func TestEpisodeRecorderDoesNotPersistSensitiveToolResultContent(t *testing.T) {
+	root := t.TempDir()
+	recorder := NewPersistentEpisodeRecorder(
+		MemoryRetrieveRequest{Input: "read clipboard"},
+		MemoryContext{},
+		NewTaskEpisodeStore(root),
+	)
+	secret := "SENSITIVE_EPISODE_MARKER_8f2d"
+	action := schema.AgentAction{Tool: toolBridgeClipboard, ToolInput: `{"action":"get"}`}
+	recorder.RecordExecution(ToolCallExecutionResult{
+		Call: ToolCall{
+			Spec:   ToolSpec{Name: toolBridgeClipboard},
+			Action: action,
+		},
+		Step: schema.AgentStep{Action: action, Observation: secret},
+		Result: ToolResult{
+			Output:  secret,
+			Summary: secret,
+			Error: NewToolErrorWithDetails(
+				CodeToolExecutionFailed,
+				secret,
+				map[string]any{"raw": secret},
+			),
+		},
+	})
+	episode := recorder.Finish("", nil, nil, nil, nil)
+
+	foundRedactedResult := false
+	for _, event := range episode.Events {
+		if event.Type != "tool_result" {
+			continue
+		}
+		foundRedactedResult = true
+		if event.Content != sensitiveToolResultRedaction || event.RawObservation != "" {
+			t.Fatalf("sensitive tool result event = %#v", event)
+		}
+		if event.ToolError == nil || event.ToolError.Message != sensitiveToolResultRedaction || len(event.ToolError.Details) != 0 {
+			t.Fatalf("sensitive tool error = %#v", event.ToolError)
+		}
+	}
+	if !foundRedactedResult {
+		t.Fatal("missing sensitive tool_result event")
+	}
+
+	filesScanned := 0
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		filesScanned++
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), secret) {
+			t.Fatalf("sensitive marker persisted in %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk episode store: %v", err)
+	}
+	if filesScanned == 0 {
+		t.Fatal("expected persisted episode files")
+	}
 }
 
 func TestMaterializeEventArtifactUsesExistingReference(t *testing.T) {

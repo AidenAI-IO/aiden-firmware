@@ -563,6 +563,7 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 	monitor := newRuntimeStorageMonitor(cfg, nil, NewMemoryManager(filepath.Join(cfg.ConfigDir, "memory")))
 
 	wantNames := []string{
+		"tool_result_artifacts",
 		"llm_http_log_7d",
 		"llm_http_log_3d",
 		"llm_http_log_1d",
@@ -573,6 +574,7 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 		"audio_archive_keep_0",
 	}
 	wantLevels := []StorageLevel{
+		StorageLevelNormal,
 		StorageLevelNormal,
 		StorageLevelWarning,
 		StorageLevelCritical,
@@ -598,10 +600,23 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 			t.Errorf("cleaner %q minimum level = %v, want %v", cleaner.Name(), leveled.MinimumLevel(), wantLevels[index])
 		}
 	}
-	firstAudio := monitor.cleaners[3].(leveledStorageCleaner).StorageCleaner.(*AudioArchiveCleaner)
-	secondAudio := monitor.cleaners[4].(leveledStorageCleaner).StorageCleaner.(*AudioArchiveCleaner)
+	firstAudio := monitor.cleaners[4].(leveledStorageCleaner).StorageCleaner.(*AudioArchiveCleaner)
+	secondAudio := monitor.cleaners[5].(leveledStorageCleaner).StorageCleaner.(*AudioArchiveCleaner)
 	if firstAudio.maxFiles != 10 || secondAudio.maxFiles != 3 {
 		t.Fatalf("audio max files = %d/%d, want 10/3", firstAudio.maxFiles, secondAudio.maxFiles)
+	}
+}
+
+func TestRuntimeStorageMonitorSkipsArtifactCleanerWithoutConfigDir(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ConfigDir = ""
+	cfg.AudioArchive.StoragePath = t.TempDir()
+	monitor := newRuntimeStorageMonitor(cfg, nil, nil)
+
+	for _, cleaner := range monitor.cleaners {
+		if cleaner.Name() == "tool_result_artifacts" {
+			t.Fatal("artifact cleaner registered without an absolute config directory")
+		}
 	}
 }
 

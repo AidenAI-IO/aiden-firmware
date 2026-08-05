@@ -48,6 +48,7 @@ type ToolCallExecutionResult struct {
 	Step               schema.AgentStep
 	Error              error
 	InterruptedBySteer bool
+	ActionCompleted    bool
 }
 
 type BeforeToolCallHook func(context.Context, ToolCall) (ToolResult, bool)
@@ -108,7 +109,7 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		emitToolStart(ctx, execution.Callback, call)
 		result := invalidToolResult(call)
 		emitToolResult(ctx, execution.Callback, call, result)
-		return resultForToolCall(call, result, nil)
+		return resultForToolCall(call, result, nil, false)
 	}
 
 	input := spec.NormalizeInput(action.ToolInput)
@@ -128,7 +129,7 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		result.Duration = time.Since(call.StartedAt)
 		result = runAfterToolCallHook(ctx, execution, call, result)
 		emitToolResult(ctx, execution.Callback, call, result)
-		return resultForToolCall(call, result, nil)
+		return resultForToolCall(call, result, nil, false)
 	}
 
 	if err := spec.ValidateInput(input); err != nil {
@@ -140,7 +141,7 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		}
 		result = runAfterToolCallHook(ctx, execution, call, result)
 		emitToolResult(ctx, execution.Callback, call, result)
-		return resultForToolCall(call, result, nil)
+		return resultForToolCall(call, result, nil, false)
 	}
 
 	// If environment bridge is enabled, forward the call to the bridge. When the
@@ -168,7 +169,7 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 			}
 			result = runAfterToolCallHook(ctx, execution, call, result)
 			emitToolResult(ctx, execution.Callback, call, result)
-			return resultForToolCall(call, result, err)
+			return resultForToolCall(call, result, err, false)
 		}
 		result := *remote
 		result.Duration = time.Since(call.StartedAt)
@@ -183,11 +184,11 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 			result.Output = result.Error.Message
 			result = runAfterToolCallHook(ctx, execution, call, result)
 			emitToolResult(ctx, execution.Callback, call, result)
-			return resultForToolCall(call, result, ctxErr)
+			return resultForToolCall(call, result, ctxErr, true)
 		}
 		result = runAfterToolCallHook(ctx, execution, call, result)
 		emitToolResult(ctx, execution.Callback, call, result)
-		return resultForToolCall(call, result, nil)
+		return resultForToolCall(call, result, nil, true)
 	}
 
 	ctx2, _ := WithToolError(ctx)
@@ -235,13 +236,13 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		if hardErr != nil {
 			result = runAfterToolCallHook(ctx, execution, call, result)
 			emitToolResult(ctx, execution.Callback, call, result)
-			return resultForToolCall(call, result, hardErr)
+			return resultForToolCall(call, result, hardErr, true)
 		}
 	}
 
 	result = runAfterToolCallHook(ctx, execution, call, result)
 	emitToolResult(ctx, execution.Callback, call, result)
-	return resultForToolCall(call, result, nil)
+	return resultForToolCall(call, result, nil, true)
 }
 
 func invalidToolCall(action schema.AgentAction, startedAt time.Time) ToolCall {
@@ -335,7 +336,7 @@ func normalizeToolResult(result ToolResult) ToolResult {
 	return result
 }
 
-func resultForToolCall(call ToolCall, result ToolResult, err error) ToolCallExecutionResult {
+func resultForToolCall(call ToolCall, result ToolResult, err error, actionCompleted bool) ToolCallExecutionResult {
 	stepOutput := result.Output
 	return ToolCallExecutionResult{
 		Call:   call,
@@ -344,7 +345,8 @@ func resultForToolCall(call ToolCall, result ToolResult, err error) ToolCallExec
 			Action:      call.Action,
 			Observation: stepOutput,
 		},
-		Error: err,
+		Error:           err,
+		ActionCompleted: actionCompleted,
 	}
 }
 

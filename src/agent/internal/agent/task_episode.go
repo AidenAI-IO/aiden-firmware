@@ -92,6 +92,8 @@ type TaskEpisodeEvent struct {
 	Metadata           map[string]interface{} `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
+const sensitiveToolResultRedaction = "[sensitive tool result omitted]"
+
 type EpisodeQuery struct {
 	Terms          []string `json:"terms,omitempty"`
 	Tags           []string `json:"tags,omitempty"`
@@ -285,26 +287,37 @@ func (r *EpisodeRecorder) RecordExecution(result ToolCallExecutionResult) {
 		return
 	}
 
+	toolName := toolCallName(result.Call)
 	input := normalizeToolInput(result.Call.Action.ToolInput)
 	callEvent := TaskEpisodeEvent{
 		Type:      runEventToolCall,
 		Role:      "agent",
-		ToolName:  result.Call.Action.Tool,
+		ToolName:  toolName,
 		ToolInput: input,
 		Content:   toolContentFromAction(result.Call.Action),
 	}
 	r.append(callEvent)
 
 	output := result.Result.EventOutput()
+	rawObservation := result.Step.Observation
+	toolError := cloneToolError(result.Result.Error)
+	if toolResultIsSensitive(toolName) {
+		output = sensitiveToolResultRedaction
+		rawObservation = ""
+		if toolError != nil {
+			toolError.Message = sensitiveToolResultRedaction
+			toolError.Details = nil
+		}
+	}
 	resultEvent := TaskEpisodeEvent{
 		Type:           "tool_result",
 		Role:           "agent",
-		ToolName:       result.Call.Action.Tool,
+		ToolName:       toolName,
 		ToolInput:      input,
 		Content:        output,
-		RawObservation: result.Step.Observation,
+		RawObservation: rawObservation,
 		IsError:        result.Result.IsError(),
-		ToolError:      cloneToolError(result.Result.Error),
+		ToolError:      toolError,
 	}
 	if result.Result.Duration > 0 {
 		durationMs := result.Result.Duration.Milliseconds()

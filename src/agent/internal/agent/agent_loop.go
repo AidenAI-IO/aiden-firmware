@@ -50,6 +50,7 @@ type AgentLoop struct {
 	DevicePlatform           string
 	PointerMode              string
 	ToolResultObserver       ToolResultObserver
+	ToolResultPolicy         ToolResultPolicy
 	toolExecutionHookFactory func() toolExecutionHookHandler
 	contextManager           *contextmanager.ContextManager
 }
@@ -75,6 +76,7 @@ func NewAgentLoop(
 		MaxIterations:     maxIterations,
 		Recorder:          recorder,
 		ScreenshotPruning: screenshotPruning,
+		ToolResultPolicy:  NewToolResultPolicy(),
 		contextManager:    contextManager,
 	}
 }
@@ -221,8 +223,20 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	turnOptions := append([]llms.CallOption{}, callOptions...)
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
-	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
+	var contentResp *llms.ContentResponse
+	err := l.checkOutboundContextBudget(turnOptions)
+	if err == nil {
+		contentResp, err = llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
+	}
 	if err != nil {
+		if l.Recorder != nil {
+			l.Recorder.RecordEvent(TaskEpisodeEvent{
+				Type: runEventModelRequestFailure,
+				Metadata: map[string]interface{}{
+					"provider_context_length_error": isProviderContextLengthError(err),
+				},
+			})
+		}
 		l.abortStreamingResponse(ctx)
 		// If LLM was canceled due to interrupt, check for pending steer
 		if errors.Is(err, context.Canceled) || errors.Is(err, errSteerInterruptToolCancel) {
@@ -368,7 +382,51 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		})
 	}
 	toolCallsInIteration++
-	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
+	prepared := PreparedToolResult{
+		Content:  toolExecution.Step.Observation,
+		Complete: true,
+	}
+	isVisualObservation := parser != nil && parser.isVisualObservationTool(toolExecution.Step.Action.Tool)
+	if !isVisualObservation {
+		resultPolicy := l.ToolResultPolicy
+		if resultPolicy == nil {
+			resultPolicy = NewToolResultPolicy()
+		}
+		preparedResult, prepareErr := resultPolicy.Prepare(ctx, ToolResultPrepareInput{
+			Call:            toolExecution.Call,
+			Result:          toolExecution.Result,
+			ActionCompleted: toolExecution.ActionCompleted,
+			ContextManager:  llmExecutor.ContextManager(),
+			ModelSpec:       l.Model.Spec(),
+			CallOptions:     turnOptions,
+		})
+		if prepareErr != nil {
+			log.Printf("[tool_result] preparation failed for %s: %v\n", toolExecution.Call.Spec.Name, prepareErr)
+			prepared = failedPreparedToolResult(toolExecution.Result, toolExecution.ActionCompleted)
+		} else {
+			prepared = preparedResult
+		}
+	}
+	if l.Recorder != nil && !isVisualObservation {
+		l.Recorder.RecordEvent(TaskEpisodeEvent{
+			Type:     runEventToolResultContext,
+			Role:     "agent",
+			ToolName: toolExecution.Call.Spec.Name,
+			Metadata: map[string]interface{}{
+				"original_bytes":         prepared.OriginalBytes,
+				"original_chars":         prepared.OriginalChars,
+				"estimated_tokens":       prepared.EstimatedTokens,
+				"context_bytes":          prepared.ContextBytes,
+				"context_tokens":         prepared.ContextTokens,
+				"processing_reason":      prepared.Reason,
+				"artifactized":           prepared.ArtifactPath != "",
+				"artifact_complete":      prepared.ArtifactComplete,
+				"artifact_store_error":   prepared.ArtifactStoreError,
+				"processing_duration_ms": prepared.ProcessingDurationMs,
+			},
+		})
+	}
+	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step, prepared)
 	if toolExecution.Error != nil {
 		if appendErr != nil {
 			return "", iterationContinue, errors.Join(toolExecution.Error, appendErr)
@@ -463,6 +521,41 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	l.applyLoopGuardDecision(decision)
 
 	return "", iterationContinue, nil
+}
+
+func (l *AgentLoop) checkOutboundContextBudget(options []llms.CallOption) error {
+	if l == nil || l.Model == nil || l.contextManager == nil {
+		return nil
+	}
+	spec := l.Model.Spec()
+	if spec.ContextWindow <= 0 {
+		return nil
+	}
+	messages := l.contextManager.CloneMessageList()
+	for _, transform := range l.outboundTransforms() {
+		if transform == nil {
+			continue
+		}
+		messages = transform.Transform(messages)
+	}
+	return checkHardContextBudget(spec, contextmanager.ConvertMessageList(messages), options, func(event ContextBudgetTelemetry) {
+		if l.Recorder == nil {
+			return
+		}
+		l.Recorder.RecordEvent(TaskEpisodeEvent{
+			Type: runEventContextBudget,
+			Metadata: map[string]interface{}{
+				"estimated_prompt_tokens":       event.EstimatedPromptTokens,
+				"estimated_input_budget":        event.EstimatedInputBudget,
+				"message_tokens":                event.MessageTokens,
+				"tool_schema_tokens":            event.ToolSchemaTokens,
+				"context_window":                event.ContextWindow,
+				"max_response_tokens":           event.MaxResponseTokens,
+				"hard_guard_rejected":           event.HardGuardRejected,
+				"provider_context_length_error": false,
+			},
+		})
+	})
 }
 
 func (l *AgentLoop) finishStopDecision(ctx context.Context, policy *TerminationPolicy, decision TerminationDecision) (string, iterationOutcome, error) {
@@ -776,24 +869,26 @@ func roleResponseDebugText(res *llms.ContentResponse) string {
 	return strings.Join(parts, "\n")
 }
 
-func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, step schema.AgentStep) error {
+func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, step schema.AgentStep, prepared PreparedToolResult) error {
 	if llmExecutor == nil {
 		return fmt.Errorf("llm executor is nil")
 	}
 
-	toolContent := step.Observation
+	toolContent := prepared.Content
 	var followups []llms.MessageContent
 	if parser != nil && parser.isVisualObservationTool(step.Action.Tool) {
 		if content, visualFollowups := parser.observationMessagesForStep(step, true); len(visualFollowups) > 0 {
 			toolContent = content
 			followups = visualFollowups
+			prepared = PreparedToolResult{Content: content, Complete: true}
 		}
 	}
+	prepared.Content = toolContent
 
 	if err := llmExecutor.AppendMessage(toolResultMessage(
 		step.Action.ToolID,
 		step.Action.Tool,
-		toolContent,
+		prepared,
 	)); err != nil {
 		return fmt.Errorf("failed to append tool result message: %w", err)
 	}

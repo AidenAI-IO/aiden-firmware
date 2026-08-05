@@ -223,15 +223,19 @@ func (m *RunMetrics) CacheHitRate() float64 {
 }
 
 const (
-	runEventToolCall         = "tool_call"
-	runEventSTTTranscription = "stt_transcription"
-	runEventVoicePromptSound = "voice_prompt_sound"
-	runEventTTSStreamPreopen = "tts_stream_preopen"
-	runEventMemoryRetrieve   = "memory_retrieve"
-	runEventSessionBegin     = "session_begin"
-	runEventIterationStart   = "iteration_start"
-	runEventIterationEnd     = "iteration_end"
-	runEventLoopGuardStop    = "loop_guard_stop"
+	runEventToolCall                       = "tool_call"
+	runEventSTTTranscription               = "stt_transcription"
+	runEventVoicePromptSound               = "voice_prompt_sound"
+	runEventTTSStreamPreopen               = "tts_stream_preopen"
+	runEventMemoryRetrieve                 = "memory_retrieve"
+	runEventSessionBegin                   = "session_begin"
+	runEventIterationStart                 = "iteration_start"
+	runEventIterationEnd                   = "iteration_end"
+	runEventLoopGuardStop                  = "loop_guard_stop"
+	runEventToolResultContext              = "tool_result_context"
+	runEventContextBudget                  = "context_budget"
+	runEventHistoricalToolResultCompaction = "historical_tool_result_compaction"
+	runEventModelRequestFailure            = "model_request_failure"
 )
 
 type RunEvent struct {
@@ -258,7 +262,14 @@ type usageTrackingModel struct {
 func (m *usageTrackingModel) CallOptions() []chains.ChainCallOption { return m.inner.CallOptions() }
 
 func (m *usageTrackingModel) Spec() model.ModelSpec {
-	return m.inner.Spec()
+	if m == nil || m.inner == nil {
+		return model.ModelSpec{}
+	}
+	spec := m.inner.Spec()
+	if spec.ContextWindow <= 0 {
+		spec.ContextWindow = m.contextWindow()
+	}
+	return spec
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -1040,13 +1051,42 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	compactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
+	budgetContextWindow := contextWindow
+	if budgetContextWindow <= 0 {
+		budgetContextWindow = defaultContextWindowFallback
+	}
+	maxResponseTokens := r.models.Spec().MaxOutput
+	if r.config.Model.MaxResponseTokens > 0 {
+		maxResponseTokens = r.config.Model.MaxResponseTokens
+	}
+	if req.MaxTokens > 0 {
+		maxResponseTokens = req.MaxTokens
+	}
+	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
+	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
+	if compactionEnabled {
+		compactor.SetHistoricalToolResultTarget(compactionTarget)
+	}
 	tokenUsage := compactor.EstimateTokenUsage(r.contextManager)
-	// TODO: make this configurable
-	if tokenUsage > int(float64(max(contextWindow, 8192))*0.8) {
+	if compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
-			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, contextWindow: %d", tokenUsage, contextWindow)
+			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
 		}
 		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
+		if episodeRecorder != nil {
+			stats := compactor.LastStats()
+			episodeRecorder.RecordEvent(TaskEpisodeEvent{
+				Type: runEventHistoricalToolResultCompaction,
+				Metadata: map[string]interface{}{
+					"historical_results_replaced":   stats.HistoricalResultsReplaced,
+					"tokens_before":                 stats.TokensBefore,
+					"tokens_after":                  stats.TokensAfter,
+					"conversation_summary_required": stats.ConversationSummaryRequired,
+					"compacted":                     compacted,
+					"success":                       err == nil,
+				},
+			})
+		}
 		if err != nil {
 			return RunResult{}, err
 		}
