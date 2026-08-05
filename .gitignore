@@ -16,6 +16,7 @@ AGENTS.md
 !/overlay/oem/usr/bin/RkLunch.sh
 /overlay/oem/usr/lib/*
 !/overlay/oem/usr/lib/librknnmrt.so
+!/overlay/oem/usr/lib/aiden-log.sh
 .env
 
 # Cross-compiled agent binary

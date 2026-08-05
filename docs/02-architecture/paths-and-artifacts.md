@@ -63,6 +63,7 @@
 | `overlay/etc/init.d/S99rtcinit` | RTC invalid-date calibration script replacing the SDK default |
 | `overlay/etc/profile.d/aiden-env.sh` | SSH/login shell environment loader snippet |
 | `overlay/oem/usr/bin/aiden-env-run` | Service environment launcher |
+| `overlay/oem/usr/lib/aiden-log.sh` | Shared UTC event logger for first-party init/watchdog scripts |
 | `overlay/oem/usr/model/` | VAD models and weights, updated with OEM partition |
 | `overlay/oem/usr/share/aiden/audio/voice-notifications/` | Bundled Chinese and English PCM WAV fallback played when final TTS is unavailable |
 | `overlay/userdata/agent/agent.toml` | Agent default configuration template |
@@ -119,12 +120,9 @@ The path follows the runtime config directory: `<CONFIG_DIR>/log/agent.log`. The
 
 When StorageMonitor reports `critical` or `emergency`, `S53agent` trims this file to the configured `storage.degraded_mode.max_agent_log_mb` limit while preserving the newest content.
 
-**Session separator marker**:
+**Session start event**:
 ```
-2026/06/20 15:06:16 [INFO] ========================================
-2026/06/20 15:06:16 [INFO] NEW SESSION STARTED
-2026/06/20 15:06:16 [INFO] Session ID: abc123def456
-2026/06/20 15:06:16 [INFO] ========================================
+2026-08-05T06:30:00Z [INFO] [agent] [session] session_started session_id=abc123def456 reason=time_gap_long
 ```
 
 ### /userdata/agent/log/llm-http-{YYYYMMDDHHMMSSmmm}.log

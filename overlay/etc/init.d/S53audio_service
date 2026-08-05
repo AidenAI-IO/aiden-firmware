@@ -6,6 +6,9 @@
 
 CONFIG_FILE=/etc/aiden_audio_service.conf
 BOOT_CONF=/etc/aiden_boot.conf
+AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
+[ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
+. "$AIDEN_LOG_HELPER"
 
 AUDIO_SERVICE_BIN=/oem/usr/bin/audio_service
 ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
@@ -23,6 +26,13 @@ if [ -f "$BOOT_CONF" ]; then
 fi
 : "${ENABLE_AUDIO_SERVICE:=1}"
 : "${VOLUME_STATE_PATH:=/userdata/audio_service/playback_volume}"
+
+supervisor_log() {
+    level="$1"
+    event="$2"
+    shift 2
+    aiden_log_to_file "$LOG_PATH" "$level" audio_service supervisor "$event" "$*"
+}
 
 is_running() {
     pid="$1"
@@ -97,19 +107,21 @@ start() {
         trap 'exit 0' INT TERM
         while true; do
             if [ ! -x "$AUDIO_SERVICE_BIN" ]; then
-                echo "[audio_service] waiting for $AUDIO_SERVICE_BIN" >> "$LOG_PATH"
+                supervisor_log WARN binary_wait "waiting for $AUDIO_SERVICE_BIN"
                 sleep 5
                 continue
             fi
 
-            echo "[audio_service] starting $AUDIO_SERVICE_BIN --socket $SOCKET_PATH --volume-state $VOLUME_STATE_PATH" >> "$LOG_PATH"
+            supervisor_log INFO process_starting \
+                "starting $AUDIO_SERVICE_BIN --socket $SOCKET_PATH --volume-state $VOLUME_STATE_PATH"
             "$ENV_RUN_BIN" "$AUDIO_SERVICE_BIN" --socket "$SOCKET_PATH" --volume-state "$VOLUME_STATE_PATH" >> "$LOG_PATH" 2>&1 &
             child="$!"
             echo "$child" > "$PID_FILE"
             wait "$child"
             status="$?"
             rm -f "$PID_FILE" "$SOCKET_PATH"
-            echo "[audio_service] exited with status $status; restarting in 2s" >> "$LOG_PATH"
+            supervisor_log WARN process_exited \
+                "exited with status $status; restarting in 2s"
             sleep 2
         done
     ) &

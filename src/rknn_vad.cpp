@@ -1,3 +1,4 @@
+#include "aiden_log.h"
 #include "rknn_api_minimal.h"
 #include "vad_common.h"
 
@@ -745,9 +746,9 @@ private:
         const int retry_ret = rknn_set_io_mem(ctx_, mem, &retry_attr);
         if (retry_ret == RKNN_SUCC) {
             *attr = retry_attr;
-            std::cerr << "[rknn_vad] " << label << "[" << attr->index << "] name="
-                      << attr->name << " bound with pass_through="
-                      << static_cast<int>(attr->pass_through) << std::endl;
+            AIDEN_LOG_INFO("model", "io_memory_retry_succeeded",
+                           "tensor_group=%s index=%u name=%s pass_through=%d", label,
+                           attr->index, attr->name, static_cast<int>(attr->pass_through));
             return true;
         }
 
@@ -866,26 +867,20 @@ private:
         rknn_sdk_version version;
         std::memset(&version, 0, sizeof(version));
         if (rknn_query(ctx_, RKNN_QUERY_SDK_VERSION, &version, sizeof(version)) == RKNN_SUCC) {
-            std::cerr << "[rknn_vad] api_version=" << version.api_version
-                      << " drv_version=" << version.drv_version << std::endl;
+            AIDEN_LOG_INFO("runtime", "sdk_version", "api_version=%s driver_version=%s",
+                           version.api_version, version.drv_version);
         }
     }
 
     void log_attr(const char* label, const rknn_tensor_attr& attr) const {
-        std::cerr << "[rknn_vad] " << label
-                  << "[" << attr.index << "] name=" << attr.name
-                  << " dims=" << dims_string(attr)
-                  << " elems=" << attr.n_elems
-                  << " size=" << attr.size
-                  << " stride_size=" << attr.size_with_stride
-                  << " fmt=" << tensor_format_name(attr.fmt)
-                  << " type=" << tensor_type_name(attr.type)
-                  << " qnt=" << tensor_qnt_type_name(attr.qnt_type)
-                  << " zp=" << attr.zp
-                  << " scale=" << attr.scale
-                  << " fl=" << static_cast<int>(attr.fl)
-                  << " pass_through=" << static_cast<int>(attr.pass_through)
-                  << std::endl;
+        const std::string dims = dims_string(attr);
+        AIDEN_LOG_DEBUG("model", "tensor_discovered",
+                        "tensor_group=%s index=%u name=%s dims=%s elements=%u size=%u stride_size=%u format=%s type=%s quantization=%s zero_point=%d scale=%g fractional_length=%d pass_through=%d",
+                        label, attr.index, attr.name, dims.c_str(), attr.n_elems, attr.size,
+                        attr.size_with_stride, tensor_format_name(attr.fmt),
+                        tensor_type_name(attr.type), tensor_qnt_type_name(attr.qnt_type),
+                        attr.zp, attr.scale, static_cast<int>(attr.fl),
+                        static_cast<int>(attr.pass_through));
     }
 
     rknn_context ctx_ = 0;
@@ -1022,14 +1017,12 @@ private:
         output_attr_.index = 0;
         rknn_query(encoder_ctx_, RKNN_QUERY_OUTPUT_ATTR, &output_attr_, sizeof(output_attr_));
 
-        std::cerr << "[split_vad] input: elems=" << input_attr_.n_elems
-                  << " type=" << tensor_type_name(input_attr_.type)
-                  << " scale=" << input_attr_.scale
-                  << " zp=" << input_attr_.zp << std::endl;
-        std::cerr << "[split_vad] output: elems=" << output_attr_.n_elems
-                  << " type=" << tensor_type_name(output_attr_.type)
-                  << " scale=" << output_attr_.scale
-                  << " zp=" << output_attr_.zp << std::endl;
+        AIDEN_LOG_DEBUG("split_encoder", "input_tensor_discovered",
+                        "elements=%u type=%s scale=%g zero_point=%d", input_attr_.n_elems,
+                        tensor_type_name(input_attr_.type), input_attr_.scale, input_attr_.zp);
+        AIDEN_LOG_DEBUG("split_encoder", "output_tensor_discovered",
+                        "elements=%u type=%s scale=%g zero_point=%d", output_attr_.n_elems,
+                        tensor_type_name(output_attr_.type), output_attr_.scale, output_attr_.zp);
 
         input_attr_.pass_through = 1;
         uint32_t in_bytes = tensor_storage_bytes(input_attr_);
@@ -1190,6 +1183,7 @@ bool run_benchmark(Vad* vad, const Args& args, const std::string& label, std::st
 }  // namespace
 
 int main(int argc, char** argv) {
+    aiden::set_log_service("rknn_vad");
     Args args = parse_args(argc, argv);
     if (args.model_path.empty()) {
         protocol_error("missing --model path");

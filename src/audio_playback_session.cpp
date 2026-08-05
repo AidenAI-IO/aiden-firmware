@@ -1,4 +1,5 @@
 #include "audio_playback_session.h"
+#include "aiden_log.h"
 #include <chrono>
 #include <stdio.h>
 #include <thread>
@@ -19,8 +20,8 @@ bool AudioPlaybackSession::start() {
     cfg.bit_width   = static_cast<int>(fmt_.bit_width);
 
     if (!player_.init(cfg)) {
-        fprintf(stderr, "[audio_service] playback session %llu: AudioPlayer init failed\n",
-                static_cast<unsigned long long>(session_id_));
+        AIDEN_LOG_ERROR("playback", "player_init_failed", "session_id=%llu",
+                        static_cast<unsigned long long>(session_id_));
         return false;
     }
 
@@ -87,9 +88,8 @@ void AudioPlaybackSession::playback_loop() {
             });
 
             if (stopped_.load()) {
-                fprintf(stderr,
-                        "[audio_service] playback session %llu interrupted before drain completed\n",
-                        static_cast<unsigned long long>(session_id_));
+                AIDEN_LOG_INFO("playback", "interrupted_before_drain", "session_id=%llu",
+                               static_cast<unsigned long long>(session_id_));
                 player_.stop();
                 return;
             }
@@ -111,15 +111,13 @@ void AudioPlaybackSession::playback_loop() {
                          playback_tail_drain_grace(fmt_, last_played_chunk_bytes),
                          [this] { return stopped_.load(); });
             if (stopped_.load()) {
-                fprintf(stderr,
-                        "[audio_service] playback session %llu interrupted during final drain\n",
-                        static_cast<unsigned long long>(session_id_));
+                AIDEN_LOG_INFO("playback", "interrupted_during_final_drain", "session_id=%llu",
+                               static_cast<unsigned long long>(session_id_));
                 player_.stop();
                 return;
             }
-            fprintf(stderr,
-                    "[audio_service] playback session %llu drained and completed\n",
-                    static_cast<unsigned long long>(session_id_));
+            AIDEN_LOG_INFO("playback", "drain_completed", "session_id=%llu",
+                           static_cast<unsigned long long>(session_id_));
             break;
         }
 
@@ -135,9 +133,8 @@ void AudioPlaybackSession::playback_loop() {
     }
 
     if (stopped_.load()) {
-        fprintf(stderr,
-                "[audio_service] playback session %llu interrupted\n",
-                static_cast<unsigned long long>(session_id_));
+        AIDEN_LOG_INFO("playback", "interrupted", "session_id=%llu",
+                       static_cast<unsigned long long>(session_id_));
     }
 
     // Tear down hardware from the same thread that called SendFrame — safe.

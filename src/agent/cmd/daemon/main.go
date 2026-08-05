@@ -10,12 +10,14 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/logging"
 	"aiden-agent/internal/ota"
 )
 
@@ -51,6 +53,7 @@ func main() {
 			os.Exit(runConfigTest(os.Args[2:]))
 		}
 	}
+	logging.InstallStandard("agent", os.Stderr)
 
 	// Default: run as daemon
 	var (
@@ -65,13 +68,16 @@ func main() {
 	flag.Parse()
 
 	if *configDir == "" {
-		fmt.Fprintln(os.Stderr, "missing -config flag: must specify config directory")
+		_ = logging.LogEvent(logging.Error, "agent", "startup", "config_directory_missing")
 		os.Exit(1)
 	}
 
 	cfg, err := agent.LoadRuntimeConfigFromDir(*configDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		_ = logging.LogEvent(logging.Error, "agent", "startup", "config_load_failed",
+			logging.Field{Key: "config_dir", Value: *configDir},
+			logging.Field{Key: "error", Value: err},
+		)
 		os.Exit(1)
 	}
 
@@ -82,12 +88,12 @@ func main() {
 			cfg.EnvironmentBridge.Endpoint = *environmentBridgeEndpoint
 		}
 		if cfg.EnvironmentBridge.Endpoint == "" {
-			fmt.Fprintln(os.Stderr, "environment-bridge-mode requires --environment-bridge-endpoint")
+			_ = logging.LogEvent(logging.Error, "agent", "startup", "environment_bridge_endpoint_missing")
 			os.Exit(1)
 		}
 		cfg.EnvironmentBridge.Tools = parseCommaSeparated(*environmentBridgeTools)
 		if len(cfg.EnvironmentBridge.Tools) == 0 {
-			fmt.Fprintln(os.Stderr, "environment-bridge-mode requires --environment-bridge-tools (comma-separated tool names or glob patterns, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\" to forward all)")
+			_ = logging.LogEvent(logging.Error, "agent", "startup", "environment_bridge_tools_missing")
 			os.Exit(1)
 		}
 		cfg.EnvironmentBridge.BenchmarkTaskID = strings.TrimSpace(*benchmarkTaskID)
@@ -95,26 +101,33 @@ func main() {
 	if strings.TrimSpace(*benchmarkTokenFile) != "" {
 		data, err := os.ReadFile(strings.TrimSpace(*benchmarkTokenFile))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "read benchmark token: %v\n", err)
+			_ = logging.LogEvent(logging.Error, "agent", "startup", "benchmark_token_read_failed",
+				logging.Field{Key: "path", Value: strings.TrimSpace(*benchmarkTokenFile)},
+				logging.Field{Key: "error", Value: err},
+			)
 			os.Exit(1)
 		}
 		cfg.Benchmark.Token = strings.TrimSpace(string(data))
 		if cfg.Benchmark.Token == "" {
-			fmt.Fprintln(os.Stderr, "benchmark token file is empty")
+			_ = logging.LogEvent(logging.Error, "agent", "startup", "benchmark_token_empty")
 			os.Exit(1)
 		}
 	}
 
 	proxyConfig := agent.ProxyConfigFromEnvironment()
 	if err := proxyConfig.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "proxy environment: %v\n", err)
+		_ = logging.LogEvent(logging.Error, "agent", "startup", "proxy_environment_invalid",
+			logging.Field{Key: "error", Value: err},
+		)
 		os.Exit(1)
 	}
 	cfg.SkillMergeModel = agent.NewLLMSkillMergeModel(agent.NewModelManager(cfg.Model, proxyConfig))
 
 	runtime, err := agent.NewRuntime(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "create runtime: %v\n", err)
+		_ = logging.LogEvent(logging.Error, "agent", "startup", "runtime_create_failed",
+			logging.Field{Key: "error", Value: err},
+		)
 		os.Exit(1)
 	}
 	defer runtime.Close()
@@ -136,17 +149,24 @@ func main() {
 	// during voice (audio/stt) interactions.
 	server := agent.NewServer(runtime, *addr)
 
-	fmt.Printf("🚀 Aiden Agent daemon starting on %s\n", *addr)
-	fmt.Printf("📂 Config directory: %s\n", *configDir)
+	_ = logging.LogEvent(logging.Info, "agent", "startup", "daemon_starting",
+		logging.Field{Key: "addr", Value: *addr},
+		logging.Field{Key: "config_dir", Value: *configDir},
+	)
 	if cfg.EnvironmentBridge.Enabled {
-		fmt.Printf("🔀 Environment bridge mode: forwarding to %s\n", cfg.EnvironmentBridge.Endpoint)
-		fmt.Printf("   Environment bridge tools: %v\n", cfg.EnvironmentBridge.Tools)
-		if cfg.EnvironmentBridge.BenchmarkTaskID != "" {
-			fmt.Printf("   Benchmark task id: %s\n", cfg.EnvironmentBridge.BenchmarkTaskID)
+		fields := []logging.Field{
+			{Key: "endpoint", Value: cfg.EnvironmentBridge.Endpoint},
+			{Key: "tools", Value: cfg.EnvironmentBridge.Tools},
 		}
+		if cfg.EnvironmentBridge.BenchmarkTaskID != "" {
+			fields = append(fields, logging.Field{Key: "benchmark_task_id", Value: cfg.EnvironmentBridge.BenchmarkTaskID})
+		}
+		_ = logging.LogEvent(logging.Info, "agent", "environment_bridge", "bridge_enabled", fields...)
 	}
 	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
-		fmt.Printf("🌐 Web UI: http://localhost:%s\n", port)
+		_ = logging.LogEvent(logging.Info, "agent", "http", "web_ui_available",
+			logging.Field{Key: "url", Value: "http://localhost:" + port},
+		)
 		if cfg.HID.InputBackendADB() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := agent.EnsureADBReverse(ctx, port, port); err != nil {
@@ -157,7 +177,9 @@ func main() {
 			cancel()
 		}
 	}
-	fmt.Printf("📝 Logs: %s/log/\n", *configDir)
+	_ = logging.LogEvent(logging.Info, "agent", "startup", "log_directory_configured",
+		logging.Field{Key: "path", Value: filepath.Join(*configDir, "log")},
+	)
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -176,14 +198,18 @@ func main() {
 		}
 		log.Printf("[manual] stdin is not interactive; console audio loop disabled, HTTP audio controls remain available")
 		if err := <-serverErr; err != nil {
-			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+			_ = logging.LogEvent(logging.Error, "agent", "http", "server_failed",
+				logging.Field{Key: "error", Value: err},
+			)
 			os.Exit(1)
 		}
 		return
 	}
 
 	if err := <-serverErr; err != nil {
-		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		_ = logging.LogEvent(logging.Error, "agent", "http", "server_failed",
+			logging.Field{Key: "error", Value: err},
+		)
 		os.Exit(1)
 	}
 }
@@ -207,7 +233,9 @@ func shouldRunConsoleAudioLoop(cfg agent.Config, stdinInteractive bool) bool {
 func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server) {
 	dialog, err := agent.NewAudioDialog(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "create audio dialog: %v\n", err)
+		_ = logging.LogEvent(logging.Error, "agent", "audio", "dialog_create_failed",
+			logging.Field{Key: "error", Value: err},
+		)
 		os.Exit(1)
 	}
 	dialog.SetHistoryAppender(server.AppendHistory)

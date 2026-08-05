@@ -1,4 +1,5 @@
 #include "camera_frame_utils.h"
+#include "aiden_log.h"
 #include "frame_camera_capture_source.h"
 #include "frame_capture_manager.h"
 #include "frame_service_defaults.h"
@@ -124,11 +125,13 @@ bool parse_options(int argc, char** argv, Options* options) {
 int lock_video_device(const char* device) {
     int fd = open(device, O_RDONLY);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open %s for lock: %s\n", device, strerror(errno));
+        AIDEN_LOG_ERROR("camera", "device_lock_open_failed",
+                        "device=%s error=%s", device, strerror(errno));
         return -1;
     }
     if (flock(fd, LOCK_EX | LOCK_NB) < 0) {
-        fprintf(stderr, "Failed to lock %s: %s\n", device, strerror(errno));
+        AIDEN_LOG_ERROR("camera", "device_lock_failed",
+                        "device=%s error=%s", device, strerror(errno));
         close(fd);
         return -1;
     }
@@ -144,6 +147,8 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    aiden::set_log_service("frame_service");
+
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
@@ -154,7 +159,8 @@ int main(int argc, char** argv) {
 
     aiden::FrameServiceServer server(options.socket_path.c_str(), options.ring_size);
     if (server.start() != aiden::FrameServiceStatus::OK) {
-        fprintf(stderr, "Failed to start frame service socket at %s\n", options.socket_path.c_str());
+        AIDEN_LOG_ERROR("server", "socket_start_failed",
+                        "socket_path=%s", options.socket_path.c_str());
         close(lock_fd);
         return 1;
     }
@@ -170,13 +176,14 @@ int main(int argc, char** argv) {
     aiden::FrameCaptureManager manager(&source, &server, manager_options);
     server.set_restart_handler([&manager]() { manager.request_restart(); });
     if (!manager.start()) {
-        fprintf(stderr, "Failed to start frame capture manager\n");
+        AIDEN_LOG_ERROR("capture", "manager_start_failed", "device=%s",
+                        options.camera.device_name);
         server.stop();
         close(lock_fd);
         return 1;
     }
 
-    printf("frame_service listening on %s\n", options.socket_path.c_str());
+    AIDEN_LOG_INFO("server", "listening", "socket_path=%s", options.socket_path.c_str());
     while (!g_quit) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
@@ -184,5 +191,6 @@ int main(int argc, char** argv) {
     manager.stop();
     server.stop();
     close(lock_fd);
+    AIDEN_LOG_INFO("server", "stopped", "socket_path=%s", options.socket_path.c_str());
     return 0;
 }

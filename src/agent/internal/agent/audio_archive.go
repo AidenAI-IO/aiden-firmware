@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"aiden-agent/internal/logging"
+
 	"github.com/google/uuid"
 )
 
@@ -117,8 +119,9 @@ func (m *AudioArchiveManager) SaveAudio(samples []int16, sampleRate int) (string
 
 	// Cleanup old files if needed
 	if err := m.cleanup(); err != nil {
-		// Log but don't fail
-		fmt.Fprintf(os.Stderr, "[audio_archive] cleanup warning: %v\n", err)
+		_ = logging.LogEvent(logging.Warn, "agent", "audio_archive", "cleanup_failed",
+			logging.Field{Key: "error", Value: err},
+		)
 	}
 
 	return filePath, durationMs, nil
@@ -206,8 +209,13 @@ func (m *AudioArchiveManager) cleanupDir(storagePath string) error {
 		totalSize -= oldest.size
 	}
 	if removedFiles > 0 {
-		fmt.Fprintf(os.Stderr, "[audio_archive] evicted %d oldest recordings (%d bytes) from %s to stay within max_files=%d/max_size_mb=%d\n",
-			removedFiles, removedBytes, storagePath, maxFiles, m.config.MaxSizeMBOrDefault())
+		_ = logging.LogEvent(logging.Info, "agent", "audio_archive", "recordings_evicted",
+			logging.Field{Key: "files", Value: removedFiles},
+			logging.Field{Key: "size_bytes", Value: removedBytes},
+			logging.Field{Key: "path", Value: storagePath},
+			logging.Field{Key: "max_files", Value: maxFiles},
+			logging.Field{Key: "max_size_mb", Value: m.config.MaxSizeMBOrDefault()},
+		)
 	}
 
 	return nil

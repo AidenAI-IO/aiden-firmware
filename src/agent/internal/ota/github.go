@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
+
+	"aiden-agent/internal/logging"
 )
 
 type githubRelease struct {
@@ -25,8 +26,9 @@ func FetchLatestReleaseAssetsWithProxy(ctx context.Context, baseAPIURL string, b
 	// Apply GitHub proxy if configured
 	apiURL := ApplyGitHubProxy(baseAPIURL, githubProxyURL)
 	if apiURL != baseAPIURL {
-		// Log proxy usage for diagnostics
-		fmt.Fprintf(os.Stderr, "ota: using GitHub proxy for API request\n")
+		_ = logging.LogEvent(logging.Info, "ota", "github", "proxy_enabled",
+			logging.Field{Key: "request", Value: "release_api"},
+		)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)

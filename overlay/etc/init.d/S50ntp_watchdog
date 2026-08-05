@@ -26,9 +26,15 @@ esac
 
 PIDFILE=/run/aiden_ntp_watchdog.pid
 LOGFILE=/var/log/aiden_ntp_watchdog.log
+AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
+[ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
+. "$AIDEN_LOG_HELPER"
 
 log() {
-	printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOGFILE"
+	level="$1"
+	event="$2"
+	shift 2
+	aiden_log_to_file "$LOGFILE" "$level" ntp_watchdog watchdog "$event" "$*"
 }
 
 # Check if ntpd has synchronized the system clock. We consider the clock
@@ -48,16 +54,17 @@ is_clock_synced() {
 }
 
 watchdog_main() {
-	log "watchdog starting (interval=${NTP_WATCHDOG_INTERVAL}s timeout=${NTP_WATCHDOG_TIMEOUT}s)"
+	log INFO started \
+		"watchdog starting (interval=${NTP_WATCHDOG_INTERVAL}s timeout=${NTP_WATCHDOG_TIMEOUT}s)"
 	elapsed=0
 
 	while [ "$elapsed" -lt "$NTP_WATCHDOG_TIMEOUT" ]; do
 		if is_clock_synced; then
-			log "clock synced; exiting"
+			log INFO clock_synchronized "clock synced; exiting"
 			return 0
 		fi
 
-		log "clock not synced; triggering step"
+		log WARN sync_step_requested "clock not synced; triggering step"
 		if [ -x /etc/init.d/S49ntp ]; then
 			/etc/init.d/S49ntp step >/dev/null 2>&1 || true
 		fi
@@ -66,7 +73,7 @@ watchdog_main() {
 		elapsed=$((elapsed + NTP_WATCHDOG_INTERVAL))
 	done
 
-	log "timeout after ${elapsed}s; exiting"
+	log ERROR timeout "timeout after ${elapsed}s; exiting"
 	return 1
 }
 

@@ -747,7 +747,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("otaLogStartSize:0") != std::string::npos);
     CHECK(html.find("otaLogHasNewProgress") != std::string::npos);
     CHECK(html.find("extractOtaExitCode") != std::string::npos);
-    CHECK(html.find("[config_web] ota update exited rc=") != std::string::npos);
+    CHECK(html.find("[config_web] [ota] update_exited exit_code=") != std::string::npos);
     CHECK(html.find("OTA update failed (rc=") != std::string::npos);
     CHECK(html.find("Recent OTA log:\\\\n") != std::string::npos);
     CHECK(html.find("setOtaLogPending") != std::string::npos);
