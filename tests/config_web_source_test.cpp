@@ -1254,7 +1254,12 @@ TEST_CASE("config web updates dependent field visibility from selected values") 
     CHECK(html.find("document.addEventListener('change',function(event)") != std::string::npos);
     CHECK(html.find("applyFieldVisibility(false,path)") != std::string::npos);
     CHECK(html.find("fillConfigForm(config){Object.keys(sectionFields).forEach") != std::string::npos);
-    CHECK(html.find("applyFieldVisibility(true);}") != std::string::npos);
+    // Filling the form has to re-evaluate visibility, or a loaded config shows
+    // fields its own values should have hidden. Scoped to fillConfigForm's body
+    // rather than anchored on its closing brace, which is not part of the rule.
+    const size_t fill_form_at = html.find("fillConfigForm(config){Object.keys(sectionFields).forEach");
+    REQUIRE(fill_form_at != std::string::npos);
+    CHECK(html.substr(fill_form_at, 400).find("applyFieldVisibility(true)") != std::string::npos);
     // The legacy imperative visibility chain must be gone.
     CHECK(html.find("setFieldVisible('model','base_url',modelProvider!=='openrouter')") == std::string::npos);
     CHECK(html.find("const sttTencent=sttProvider==='tencent'") == std::string::npos);
@@ -2091,7 +2096,7 @@ TEST_CASE("config web html turns the provider add option into the provider dialo
           std::string::npos);
     // Any real pick has to be remembered, or restoring after a cancelled add
     // would fall back to a stale provider.
-    CHECK(listener_body.find("lastModelProviderValue = e.target.value") != std::string::npos);
+    CHECK(listener_body.find("rememberModelProvider()") != std::string::npos);
 
     // A provider added from the select is selected once the save round-trips.
     CHECK(js.find("if (selectIntoModel) { selectModelProvider(selectIntoModel); }") !=
@@ -2108,6 +2113,61 @@ TEST_CASE("config web html turns the provider add option into the provider dialo
     // Defence in depth: even if the sentinel were somehow current at save time,
     // readSection must not persist it as model.provider.
     CHECK(js.find("if(section==='model'&&key==='provider'&&raw===ADD_PROVIDER_OPTION)") !=
+          std::string::npos);
+}
+
+// The remembered provider backs the sentinel restore. Paths that repopulate the
+// select without firing a change event (snapshot restore on cancel, refill from
+// the save response) have to update it, or picking the add option restores the
+// provider the user abandoned instead of the live one. Keeping one writer that
+// reads the DOM is what makes that hold for every such path.
+TEST_CASE("config web html keeps the remembered provider in sync with the select") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    CHECK(js.find("function rememberModelProvider(){") != std::string::npos);
+    // The sentinel must never be what gets remembered.
+    const size_t remember_at = js.find("function rememberModelProvider(){");
+    REQUIRE(remember_at != std::string::npos);
+    const std::string remember_body = js.substr(remember_at, 200);
+    CHECK(remember_body.find("el.value!==ADD_PROVIDER_OPTION") != std::string::npos);
+
+    // One writer: nothing else may assign the remembered value directly. Count
+    // real assignments only -- `lastModelProviderValue===` is a comparison, and
+    // the page has two of those (restore and the readSection guard).
+    size_t assignments = 0;
+    const std::string name("lastModelProviderValue");
+    for (size_t at = js.find(name); at != std::string::npos; at = js.find(name, at + 1)) {
+        size_t after = at + name.size();
+        while (after < js.size() && js[after] == ' ') {
+            ++after;
+        }
+        if (after >= js.size() || js[after] != '=') {
+            continue;  // a read
+        }
+        if (after + 1 < js.size() && js[after + 1] == '=') {
+            continue;  // == or ===, a comparison
+        }
+        ++assignments;
+    }
+    // Exactly two: the `let` declaration and the write inside the writer.
+    CHECK(assignments == 2);
+
+    // Both event-free repopulate paths have to call it.
+    const size_t fill_at = js.find("function fillConfigForm(config){");
+    REQUIRE(fill_at != std::string::npos);
+    CHECK(js.substr(fill_at, 400).find("rememberModelProvider()") != std::string::npos);
+
+    const size_t cancel_at = js.find("function cancelEditSection(section){");
+    REQUIRE(cancel_at != std::string::npos);
+    const size_t cancel_end = js.find("function enterSystemEnvEdit(", cancel_at);
+    REQUIRE(cancel_end != std::string::npos);
+    CHECK(js.substr(cancel_at, cancel_end - cancel_at).find("rememberModelProvider()") !=
           std::string::npos);
 }
 
@@ -2228,7 +2288,7 @@ TEST_CASE("config web html auto-fills the provider name and keeps it editable") 
     CHECK(patch_body.find("ensureSelectOption(select, newName); select.value = newName;") !=
           std::string::npos);
     // The remembered value backs sentinel restore, so it has to follow too.
-    CHECK(patch_body.find("lastModelProviderValue = newName") != std::string::npos);
+    CHECK(patch_body.find("rememberModelProvider()") != std::string::npos);
 
     // Suffixes start at -2 so the first entry keeps the bare provider name.
     const size_t unique_at = js.find("uniqueProviderName: function");
