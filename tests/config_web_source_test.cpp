@@ -2015,3 +2015,69 @@ TEST_CASE("config web html defines provider ui symbols on executable lines") {
                       "definition is commented out on its line: " << needle);
     }
 }
+
+// The config metadata enum for model.provider only lists built-in provider
+// types, so named [providers.*] sections have to be merged into the select at
+// runtime or quick switching is impossible from the web UI.
+TEST_CASE("config web html merges named providers into the provider select") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    CHECK(js.find("function injectNamedProviderOptions()") != std::string::npos);
+    // syncProvidersFromConfig must call it, otherwise the select never updates.
+    const size_t sync_at = js.find("function syncProvidersFromConfig(");
+    REQUIRE(sync_at != std::string::npos);
+    const size_t sync_end = js.find("const ProvidersManager", sync_at);
+    REQUIRE(sync_end != std::string::npos);
+    const std::string sync_body = js.substr(sync_at, sync_end - sync_at);
+    CHECK(sync_body.find("injectNamedProviderOptions()") != std::string::npos);
+    // Clearing the manager on an empty config keeps stale cards from lingering.
+    CHECK(sync_body.find("ProvidersManager.loadProviders({})") != std::string::npos);
+
+    const size_t inject_at = js.find("function injectNamedProviderOptions()");
+    const std::string inject_body = js.substr(inject_at, 900);
+    // Named entries must shadow a built-in type of the same name, matching the
+    // agent's applyProviderRef which looks up cfg.Providers before the type.
+    CHECK(inject_body.find("shadowed[optionValue(option)]") != std::string::npos);
+    // The pristine enum has to be snapshotted or repeated syncs compound.
+    CHECK(inject_body.find("baseProviderOptions") != std::string::npos);
+    CHECK(js.find("selectFieldOptions={};baseProviderOptions=null;") != std::string::npos);
+}
+
+// A stopped agent daemon makes the /api/models proxy return 503. That is a
+// normal state, not a configuration error, so the model selector degrades to
+// the custom-model input instead of a red failure box the user cannot act on.
+TEST_CASE("config web html degrades model selector when the agent is offline") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    const size_t load_at = js.find("loadModels: async function");
+    REQUIRE(load_at != std::string::npos);
+    const size_t load_end = js.find("renderModelSelector: function", load_at);
+    REQUIRE(load_end != std::string::npos);
+    const std::string load_body = js.substr(load_at, load_end - load_at);
+    CHECK(load_body.find("response.status === 503") != std::string::npos);
+    CHECK(load_body.find("this.renderModelSelector(true)") != std::string::npos);
+    // Non-503 failures must still surface as errors.
+    CHECK(load_body.find("model-selector-error") != std::string::npos);
+
+    const std::string render_body = js.substr(load_end, 1200);
+    CHECK(render_body.find("renderModelSelector: function(agentOffline)") != std::string::npos);
+    // Offline must not short-circuit before the custom-model row is emitted.
+    CHECK(render_body.find("this.availableModels.length === 0 && !agentOffline") != std::string::npos);
+
+    const std::string notice = "Model list needs a running agent. Enter the model ID manually.";
+    CHECK(js.find(notice) != std::string::npos);
+    // Every user-visible string needs a zh-CN entry; the page defaults to zh-CN.
+    CHECK(js.find("'" + notice + "':'") != std::string::npos);
+}

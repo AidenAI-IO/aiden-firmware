@@ -210,6 +210,21 @@ api_key = "sk-xxx"
 
 ## Switching providers
 
+### From the web UI
+
+The `provider` dropdown in the Model section lists every configured
+`[providers.*]` section ahead of the built-in provider types, labelled
+`name (type)`. Pick one, save, and restart the agent. Selecting a named
+provider also reloads the model list for its underlying type.
+
+If a named provider shares its name with a built-in type, only the named entry
+is offered, matching how the agent resolves the reference.
+
+The model list is served by the agent daemon. While the agent is stopped the
+selector shows a notice and you can still type a model ID by hand.
+
+### By editing agent.toml
+
 1. Edit the `provider` field in `agent.toml`
 2. Adjust `model` if needed
 3. Restart the agent service
