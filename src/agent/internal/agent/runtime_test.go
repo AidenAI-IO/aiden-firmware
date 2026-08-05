@@ -123,7 +123,19 @@ func (r *testModelResolver) CallOptions() []chains.ChainCallOption {
 }
 
 func (r *testModelResolver) Spec() model.ModelSpec {
-	return r.spec
+	if r.spec.ContextWindow > 0 || r.spec.MaxOutput > 0 {
+		return r.spec
+	}
+	if provider, ok := r.model.(interface{ Spec() model.ModelSpec }); ok {
+		if spec := provider.Spec(); spec.ContextWindow > 0 || spec.MaxOutput > 0 {
+			return spec
+		}
+	}
+	return model.ModelSpec{
+		Provider:      "fake",
+		Name:          "test",
+		ContextWindow: 1_000_000,
+	}
 }
 
 func TestRuntimeRun(t *testing.T) {
@@ -2258,7 +2270,7 @@ func (m *scriptedModel) Spec() model.ModelSpec {
 	return model.ModelSpec{
 		Provider:      "fake",
 		Name:          "scripted",
-		ContextWindow: 32_000,
+		ContextWindow: 1_000_000,
 	}
 }
 
@@ -3749,6 +3761,7 @@ func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 		t.Fatalf("NewRuntime() error = %v", err)
 	}
 	defer runtime.Close()
+	runtime.tools = nil
 
 	inputs := []string{
 		"我是硬件产品经理，平时用中文沟通，关注开发板 agent 端到端行为。",
