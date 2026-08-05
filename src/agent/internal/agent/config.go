@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -263,7 +264,7 @@ func (c OTAConfig) Validate() error {
 
 // Provider defines a model service provider configuration.
 type Provider struct {
-	Provider string `toml:"provider"`          // Provider type: openai, kimi, ollama, etc.
+	Provider string `toml:"provider"` // Provider type: openai, kimi, ollama, etc.
 	APIKey   string `toml:"api_key,omitempty"`
 	TokenEnv string `toml:"token_env,omitempty"`
 	BaseURL  string `toml:"base_url,omitempty"`
@@ -761,10 +762,21 @@ func LoadRuntimeConfig(path string) (Config, error) {
 
 	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
 
-	// Apply provider references to model configurations
+	// Apply provider references to model configurations. This must run before
+	// the base_url whitelist below: until the reference is expanded, Provider
+	// still holds a [providers] section name rather than a provider type, so
+	// the whitelist would compare against the wrong value in both directions.
 	if err := applyRuntimeModelProviders(&cfg); err != nil {
 		return Config{}, err
 	}
+
+	// base_url is honored for providers whose model builders accept an
+	// OpenAI-compatible endpoint override. Drop stray overrides elsewhere to
+	// keep runtime behavior consistent with the config web UI. Applies to a
+	// base_url inherited from a [providers] section as well as one set
+	// directly on the model.
+	clearNonAllowedModelBaseURL(&cfg.Model)
+	clearNonAllowedModelBaseURL(&cfg.ModelText)
 
 	applyRuntimeModelTemperatureDefaults(&cfg)
 	applyRuntimeModelReasoningEffortDefaults(&cfg)
@@ -925,12 +937,6 @@ func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 	} else if !usesDefaultSTTModel(cfg.STT.Provider) && !metadata.IsDefined("stt", "model") {
 		cfg.STT.Model = ""
 	}
-
-	// base_url is honored for providers whose model builders accept an
-	// OpenAI-compatible endpoint override. Drop stray overrides elsewhere to
-	// keep runtime behavior consistent with the config web UI.
-	clearNonAllowedModelBaseURL(&cfg.Model)
-	clearNonAllowedModelBaseURL(&cfg.ModelText)
 }
 
 func clearNonAllowedModelBaseURL(m *ModelConfig) {
@@ -1119,11 +1125,24 @@ func legacyModelMaxTokens(raw map[string]interface{}, section string) (int, erro
 }
 
 func (c Config) Validate() error {
-	// Validate providers
-	for name, provider := range c.Providers {
-		if err := validateProvider(name, provider); err != nil {
+	// Validate providers. Iterate in sorted order so a config with several
+	// broken sections reports the same error every run.
+	providerNames := make([]string, 0, len(c.Providers))
+	for name := range c.Providers {
+		providerNames = append(providerNames, name)
+	}
+	sort.Strings(providerNames)
+	for _, name := range providerNames {
+		if err := validateProvider(name, c.Providers[name]); err != nil {
 			return err
 		}
+	}
+
+	if err := validateModelProviderRef("model", c.Providers, c.Model.Provider); err != nil {
+		return err
+	}
+	if err := validateModelProviderRef("model_text", c.Providers, c.ModelText.Provider); err != nil {
+		return err
 	}
 
 	locale := strings.TrimSpace(c.Locale)
@@ -1322,6 +1341,17 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// isKnownProviderType reports whether the value names a built-in model
+// provider type (as opposed to a [providers] section name).
+func isKnownProviderType(providerType string) bool {
+	switch strings.ToLower(strings.TrimSpace(providerType)) {
+	case "openai", "kimi", "kimi-cn", "volcengine", "openrouter", "ollama", "fake":
+		return true
+	default:
+		return false
+	}
+}
+
 // validateProvider validates a single provider configuration.
 func validateProvider(name string, p Provider) error {
 	if strings.TrimSpace(name) == "" {
@@ -1333,15 +1363,39 @@ func validateProvider(name string, p Provider) error {
 		return fmt.Errorf("providers.%s: provider type is required", name)
 	}
 
-	// Validate provider type is supported
-	switch strings.ToLower(providerType) {
-	case "openai", "kimi", "kimi-cn", "volcengine", "openrouter", "ollama", "fake":
-		// Valid provider types
-	default:
+	if !isKnownProviderType(providerType) {
 		return fmt.Errorf("providers.%s: unsupported provider type %q", name, providerType)
 	}
 
 	return nil
+}
+
+// validateModelProviderRef checks that a model's provider field resolves: it
+// must either name a [providers] section or be a built-in provider type. A
+// typo, or a reference left behind after the section was deleted, otherwise
+// passes validation and only fails later when the model client is built.
+// section is the config section being validated, e.g. "model".
+func validateModelProviderRef(section string, providers map[string]Provider, provider string) error {
+	ref := strings.TrimSpace(provider)
+	if ref == "" {
+		return nil
+	}
+	if _, exists := providers[ref]; exists {
+		return nil
+	}
+	if isKnownProviderType(ref) {
+		return nil
+	}
+	if len(providers) == 0 {
+		return fmt.Errorf("%s.provider: unknown provider %q", section, ref)
+	}
+	names := make([]string, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("%s.provider: unknown provider %q (not a provider type, and no [providers.%s] section; configured: %s)",
+		section, ref, ref, strings.Join(names, ", "))
 }
 
 func (c Config) LocaleOrDefault() string {

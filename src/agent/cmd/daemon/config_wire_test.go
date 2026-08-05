@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -373,4 +374,88 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 			t.Fatalf("expected valid=true, got errors: %+v", result.Errors)
 		}
 	})
+}
+
+// TestWebConfigDTOTopLevelSectionsAreCovered pins the set of top-level sections
+// that `agent config --format=json` emits.
+//
+// config_web.cpp builds its AgentToml from this payload, so a section the Go DTO
+// does not emit does not exist as far as the C++ read path is concerned. That is
+// exactly how the `providers` bug worked: the field was missing here, so the
+// config page always showed zero providers AND every save of an unrelated
+// section started from an empty map and erased them from agent.toml.
+//
+// The C++ fixtures (tests/agent_stub_main.cpp and the resolved_config_json()
+// helper in tests/config_web_e2e_test.cpp) are hand-maintained copies of this
+// payload, so they cannot catch drift on the Go side. This test can: when a
+// section is added to webConfigDTO, this list must be updated, which is the
+// prompt to update the C++ fixtures and the AgentToml struct in the same change.
+func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
+	want := []string{
+		"agent",
+		"audio",
+		"audio_archive",
+		"hid",
+		"live_activity",
+		"log",
+		"model",
+		"model_text",
+		"ota",
+		"providers",
+		"search",
+		"stt",
+		"telemetry",
+		"termination_policy",
+		"tts",
+		"voice_notifications",
+	}
+
+	dtoType := reflect.TypeOf(webConfigDTO{})
+	got := make([]string, 0, dtoType.NumField())
+	for i := 0; i < dtoType.NumField(); i++ {
+		tag := dtoType.Field(i).Tag.Get("json")
+		if tag == "" || tag == "-" {
+			t.Errorf("field %s has no json tag; the C++ side keys off these names",
+				dtoType.Field(i).Name)
+			continue
+		}
+		got = append(got, strings.Split(tag, ",")[0])
+	}
+
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("webConfigDTO top-level sections drifted.\n got: %v\nwant: %v\n"+
+			"If this is intentional, update this list AND the C++ fixtures in "+
+			"tests/agent_stub_main.cpp and tests/config_web_e2e_test.cpp, plus "+
+			"AgentToml in src/agent_toml.h.", got, want)
+	}
+}
+
+// TestWebConfigDTOProvidersOmittedWhenEmpty documents that `providers` carries
+// omitempty, so a config with no providers omits the key entirely rather than
+// emitting {}. The C++ read path must treat a missing key as "no providers"
+// rather than as an error.
+func TestWebConfigDTOProvidersOmittedWhenEmpty(t *testing.T) {
+	cfg := agent.Config{
+		Model: agent.ModelConfig{Provider: "openai", Model: "gpt-4o", APIKey: "sk-x"},
+	}
+	payload, err := json.Marshal(webConfigDTOFromAgentConfig(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(payload), `"providers"`) {
+		t.Errorf("expected providers to be omitted when empty, got: %s", payload)
+	}
+
+	// And with a provider present the key must appear.
+	cfg.Providers = map[string]agent.Provider{
+		"work": {Provider: "openai", APIKey: "sk-work"},
+	}
+	payload, err = json.Marshal(webConfigDTOFromAgentConfig(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(payload), `"providers"`) {
+		t.Errorf("expected providers in the payload, got: %s", payload)
+	}
 }

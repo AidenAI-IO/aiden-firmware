@@ -262,8 +262,14 @@ On load, a `provider` value that names a section under `[providers]` is replaced
 by that section's provider type, and its `api_key`, `token_env` and `base_url`
 fill in any field the model section leaves empty — values set directly on
 `[model]` always win. A `provider` that matches no section is treated as a
-provider type, so existing configs keep working unchanged. See
-`docs/04-agent/model-providers.md` and the examples in `docs/config-examples/`.
+provider type, so existing configs keep working unchanged.
+
+A `provider` that is neither a section name nor a known provider type is
+rejected at load, so a typo or a reference left behind after deleting a section
+fails with a clear error instead of surfacing later when the model client is
+built. When a section is named exactly like a provider type, the section wins.
+See `docs/04-agent/model-providers.md` and the examples in
+`docs/config-examples/`.
 
 ## `[model]`
 

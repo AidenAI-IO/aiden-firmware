@@ -46,7 +46,11 @@ temperature = 0.7
 | `provider` | 是 | Provider 类型 | `"openai"`, `"kimi"`, `"ollama"` 等 |
 | `api_key` | 否 | API 密钥 | `"sk-xxx"` |
 | `token_env` | 否 | API 密钥的环境变量名 | `"OPENAI_API_KEY"` |
-| `base_url` | 否 | 自定义 API endpoint | `"https://api.openai.com/v1"` |
+| `base_url` | 否 | 自定义 API endpoint，仅 `openai` 和 `ollama` 生效 | `"https://api.openai.com/v1"` |
+
+`base_url` 的白名单和 `[model]` 一致：只有 `openai` 和 `ollama` 接受覆盖，
+其他类型即使写了也会在加载时被丢弃（无论写在 `[providers.<name>]` 还是
+`[model]` 上）。
 
 ### 支持的 Provider 类型
 
@@ -141,6 +145,23 @@ model = "gpt-4o"
 provider = "kimi-fast"    # 文字模式用 Kimi
 model = "moonshot-v1-8k"
 ```
+
+## 解析规则
+
+`[model].provider` 的取值按以下顺序解析：
+
+1. 如果匹配某个 `[providers.<name>]` 的名字，就使用该 section；
+2. 否则当作 provider 类型处理（向后兼容旧配置）；
+3. 两者都不匹配则报错 —— 拼错的名字或删掉 section 后残留的引用会在加载时
+   被拒绝，而不是等到真正调用模型时才失败。
+
+两条需要注意的边界：
+
+- **名字遮蔽类型**：section 名和内置类型同名时，section 优先。
+  `[providers.openai] provider = "ollama"` 会让 `[model] provider = "openai"`
+  解析成 **ollama**。不建议这样命名。
+- **section 名不能嵌套**：只支持 `[providers.<name>]` 一层，且名字限于
+  `[A-Za-z0-9_-]`。
 
 ## 高级用法
 

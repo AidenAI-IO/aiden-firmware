@@ -31,12 +31,12 @@ func TestHandleModels(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		queryParams    string
-		wantStatus     int
-		wantProvider   string
-		checkModels    bool
-		wantMinModels  int
+		name          string
+		queryParams   string
+		wantStatus    int
+		wantProvider  string
+		checkModels   bool
+		wantMinModels int
 	}{
 		{
 			name:          "get openai models in Chinese",
@@ -164,5 +164,114 @@ func TestHandleModels_WrongMethod(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+// decodeModelsResponse issues a GET /api/models and returns the decoded models.
+func decodeModelsResponse(t *testing.T, server *Server, query string) []LocalizedModelInfo {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/models?"+query, nil)
+	w := httptest.NewRecorder()
+	server.handleModels(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+	var response struct {
+		Provider string               `json:"provider"`
+		Models   []LocalizedModelInfo `json:"models"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return response.Models
+}
+
+// newModelsTestServer builds a Server whose config carries the given locale.
+func newModelsTestServer(t *testing.T, locale string) *Server {
+	t.Helper()
+	runtime, err := NewRuntime(Config{
+		Locale: locale,
+		Model:  ModelConfig{Provider: "openai", Model: "gpt-4o", APIKey: "test"},
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	logger, err := NewLogger(t.TempDir(), 7)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	return &Server{runtime: runtime, logger: logger}
+}
+
+// TestHandleModelsLocaleSelectsDescription pins that the locale parameter
+// actually changes the returned text. The original test asserted only that a
+// description field was PRESENT, so ignoring the locale entirely still passed.
+func TestHandleModelsLocaleSelectsDescription(t *testing.T) {
+	server := newModelsTestServer(t, localeSimplifiedChinese)
+
+	zh := decodeModelsResponse(t, server, "provider=openai&locale=zh-CN")
+	en := decodeModelsResponse(t, server, "provider=openai&locale=en-US")
+	if len(zh) == 0 || len(en) == 0 {
+		t.Fatal("expected openai to return models for both locales")
+	}
+	if zh[0].Description == en[0].Description {
+		t.Errorf("zh-CN and en-US descriptions are identical (%q); locale is being ignored", zh[0].Description)
+	}
+	// The ids are locale-independent and must line up.
+	if zh[0].ID != en[0].ID {
+		t.Errorf("model ids differ across locales: %q vs %q", zh[0].ID, en[0].ID)
+	}
+}
+
+// TestHandleModelsLocaleFallsBackToConfig pins the fallback path: with no
+// locale in the query, the configured locale must be used. Deleting the
+// fallback used to go unnoticed because English is also the default.
+func TestHandleModelsLocaleFallsBackToConfig(t *testing.T) {
+	zhServer := newModelsTestServer(t, localeSimplifiedChinese)
+	enServer := newModelsTestServer(t, localeEnglishUS)
+
+	fromZhConfig := decodeModelsResponse(t, zhServer, "provider=openai")
+	fromEnConfig := decodeModelsResponse(t, enServer, "provider=openai")
+	if len(fromZhConfig) == 0 || len(fromEnConfig) == 0 {
+		t.Fatal("expected openai to return models")
+	}
+	if fromZhConfig[0].Description == fromEnConfig[0].Description {
+		t.Errorf("config locale is not honored: both returned %q", fromZhConfig[0].Description)
+	}
+
+	// And an explicit query locale must win over the configured one.
+	explicit := decodeModelsResponse(t, zhServer, "provider=openai&locale=en-US")
+	if explicit[0].Description != fromEnConfig[0].Description {
+		t.Errorf("explicit locale ignored: got %q, want %q",
+			explicit[0].Description, fromEnConfig[0].Description)
+	}
+}
+
+// TestHandleModelsUnknownProviderReturnsEmpty replaces an assertion that could
+// not fail (len(models) < 0). An unknown provider must yield an empty list, not
+// a fabricated entry.
+func TestHandleModelsUnknownProviderReturnsEmpty(t *testing.T) {
+	server := newModelsTestServer(t, localeSimplifiedChinese)
+	models := decodeModelsResponse(t, server, "provider=unknown-provider&locale=zh-CN")
+	if len(models) != 0 {
+		t.Errorf("got %d models for an unknown provider, want 0", len(models))
+	}
+}
+
+// TestHandleModelsNilRuntime covers the locale fallback when the server has no
+// runtime attached: it must not panic.
+func TestHandleModelsNilRuntime(t *testing.T) {
+	logger, err := NewLogger(t.TempDir(), 7)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	server := &Server{logger: logger}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/models?provider=openai", nil)
+	w := httptest.NewRecorder()
+	server.handleModels(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
 	}
 }

@@ -9,14 +9,14 @@ import (
 
 func TestProviderReferences(t *testing.T) {
 	tests := []struct {
-		name           string
-		config         string
-		wantProvider   string // Expected resolved provider type
-		wantAPIKey     string
-		wantBaseURL    string
-		wantModel      string
-		wantErr        bool
-		errContains    string
+		name         string
+		config       string
+		wantProvider string // Expected resolved provider type
+		wantAPIKey   string
+		wantBaseURL  string
+		wantModel    string
+		wantErr      bool
+		errContains  string
 	}{
 		{
 			name: "provider reference resolves correctly",
@@ -299,5 +299,227 @@ func TestProviderValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// loadProviderConfig writes body to a temp agent.toml and loads it as the
+// daemon would.
+func loadProviderConfig(t *testing.T, body string) (Config, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return LoadRuntimeConfig(path)
+}
+
+// TestProviderReferenceBaseURLWhitelist covers the interaction between
+// provider-reference expansion and the base_url whitelist (openai and ollama
+// only). Regression test: clearNonAllowedModelBaseURL used to run BEFORE the
+// reference was expanded, so it compared the whitelist against a [providers]
+// section NAME instead of a provider type. That broke both directions -- a
+// legitimate override was dropped, and a disallowed one survived.
+func TestProviderReferenceBaseURLWhitelist(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      string
+		wantBaseURL string
+	}{
+		{
+			// The name "my-openai" is not in the whitelist, so the early
+			// clear discarded a base_url that openai actually accepts.
+			name: "model base_url survives a named openai provider",
+			config: `
+[providers.my-openai]
+provider = "openai"
+api_key = "sk-x"
+
+[model]
+provider = "my-openai"
+model = "gpt-4o"
+base_url = "https://gateway.example.com/v1"
+`,
+			wantBaseURL: "https://gateway.example.com/v1",
+		},
+		{
+			name: "provider base_url survives for ollama",
+			config: `
+[providers.local]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+
+[model]
+provider = "local"
+model = "qwen2.5:7b"
+`,
+			wantBaseURL: "http://127.0.0.1:11434",
+		},
+		{
+			// The mirror image: the clear ran before expansion, so a
+			// base_url inherited from the section was never checked at all.
+			name: "provider base_url is dropped for openrouter",
+			config: `
+[providers.my-router]
+provider = "openrouter"
+api_key = "sk-x"
+base_url = "https://sneaky.example.com/v1"
+
+[model]
+provider = "my-router"
+model = "anthropic/claude-opus-4.8"
+`,
+			wantBaseURL: "",
+		},
+		{
+			name: "model base_url is dropped for a named volcengine provider",
+			config: `
+[providers.ark]
+provider = "volcengine"
+api_key = "sk-x"
+
+[model]
+provider = "ark"
+model = "doubao-seed-2-1-pro-260628"
+base_url = "https://gateway.example.com/v1"
+`,
+			wantBaseURL: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := loadProviderConfig(t, tt.config)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.Model.BaseURL != tt.wantBaseURL {
+				t.Errorf("base_url = %q, want %q", cfg.Model.BaseURL, tt.wantBaseURL)
+			}
+		})
+	}
+}
+
+// TestDanglingProviderReferenceRejected is the regression test for a [model]
+// provider that names no [providers] section and is not a provider type --
+// a typo, or a reference left behind after the section was deleted. It used to
+// fall through as a "direct provider type" and pass both LoadRuntimeConfig and
+// Validate(), only failing later when the model client was built. The config
+// web UI could produce exactly this state, so it must be caught at load.
+func TestDanglingProviderReferenceRejected(t *testing.T) {
+	t.Run("model provider naming a missing section", func(t *testing.T) {
+		_, err := loadProviderConfig(t, `
+[providers.exists]
+provider = "openai"
+api_key = "sk-x"
+
+[model]
+provider = "gone-provider"
+model = "gpt-4o"
+`)
+		if err == nil {
+			t.Fatal("expected a dangling provider reference to be rejected")
+		}
+		// The message should name the offending value and list what is
+		// configured, so the user can see the typo.
+		for _, want := range []string{"model.provider", "gone-provider", "exists"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not mention %q", err.Error(), want)
+			}
+		}
+	})
+
+	t.Run("model_text provider naming a missing section", func(t *testing.T) {
+		_, err := loadProviderConfig(t, `
+[providers.exists]
+provider = "openai"
+api_key = "sk-x"
+
+[model]
+provider = "exists"
+model = "gpt-4o"
+
+[model_text]
+provider = "typo-here"
+model = "gpt-4o"
+`)
+		if err == nil {
+			t.Fatal("expected a dangling model_text provider reference to be rejected")
+		}
+		if !strings.Contains(err.Error(), "model_text.provider") {
+			t.Errorf("error %q does not mention model_text.provider", err.Error())
+		}
+	})
+
+	t.Run("bare provider type with no providers section still loads", func(t *testing.T) {
+		// Backward compatibility: configs predating [providers] must keep
+		// working, so a known type is never treated as a dangling reference.
+		cfg, err := loadProviderConfig(t, `
+[model]
+provider = "openai"
+model = "gpt-4o"
+api_key = "sk-x"
+`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Model.Provider != "openai" {
+			t.Errorf("provider = %q, want openai", cfg.Model.Provider)
+		}
+	})
+}
+
+// TestProviderReferencePrecedence pins that an explicit value on [model] wins
+// over the referenced provider's for every inherited field. Only api_key was
+// covered before; applyProviderToModel has an identical empty-check per field.
+func TestProviderReferencePrecedence(t *testing.T) {
+	cfg, err := loadProviderConfig(t, `
+[providers.p]
+provider = "openai"
+api_key = "sk-from-provider"
+token_env = "PROVIDER_ENV"
+base_url = "https://provider.example.com/v1"
+
+[model]
+provider = "p"
+model = "gpt-4o"
+api_key = "sk-explicit"
+token_env = "EXPLICIT_ENV"
+base_url = "https://explicit.example.com/v1"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Model.APIKey != "sk-explicit" {
+		t.Errorf("api_key = %q, want sk-explicit", cfg.Model.APIKey)
+	}
+	if cfg.Model.TokenEnv != "EXPLICIT_ENV" {
+		t.Errorf("token_env = %q, want EXPLICIT_ENV", cfg.Model.TokenEnv)
+	}
+	if cfg.Model.BaseURL != "https://explicit.example.com/v1" {
+		t.Errorf("base_url = %q, want the explicit value", cfg.Model.BaseURL)
+	}
+}
+
+// TestProviderNameShadowingProviderType documents the resolution order when a
+// section is named exactly like a built-in provider type: the named section
+// wins. Locked so the precedence cannot change silently.
+func TestProviderNameShadowingProviderType(t *testing.T) {
+	cfg, err := loadProviderConfig(t, `
+[providers.openai]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+
+[model]
+provider = "openai"
+model = "qwen2.5:7b"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Model.Provider != "ollama" {
+		t.Errorf("provider = %q, want ollama (the named section must win)", cfg.Model.Provider)
+	}
+	if cfg.Model.BaseURL != "http://127.0.0.1:11434" {
+		t.Errorf("base_url = %q, want the section's value", cfg.Model.BaseURL)
 	}
 }
