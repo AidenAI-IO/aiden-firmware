@@ -60,7 +60,7 @@ func TestAppSearchResultPromptPrefersTopmostMatchingResult(t *testing.T) {
 
 func TestOpenAppDescriptionOwnsRouting(t *testing.T) {
 	description := NewOpenAppTool(nil, nil, nil).Description()
-	for _, want := range []string{"automatically uses Phone Bridge", "otherwise it searches", "Use open_url"} {
+	for _, want := range []string{"automatically uses Phone Bridge", "otherwise it searches"} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("open_app description missing %q: %s", want, description)
 		}
@@ -85,6 +85,22 @@ func TestPhoneBridgeToolDescriptionsOmitSharedStateRouting(t *testing.T) {
 	}
 }
 
+func TestOpenURLDescriptionDocumentsSupportedFormats(t *testing.T) {
+	description := NewOpenURLTool(nil, nil).Description()
+	for _, want := range []string{
+		"https://example.com",
+		"http://example.com",
+		"sms:<phone_number>?body=<message>",
+		"mailto:<email_address>?subject=<subject>",
+		"tel:<phone_number>",
+		"Percent-encode",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("open_url description missing %q: %s", want, description)
+		}
+	}
+}
+
 func TestParseRoutedOpenAppArgsKeepsSemanticAlias(t *testing.T) {
 	args, te := parseRoutedOpenAppArgs(`{"app":" weixin "}`)
 	if te != nil {
@@ -105,25 +121,27 @@ func TestParseRoutedOpenAppArgsAcceptsNameAlias(t *testing.T) {
 	}
 }
 
-func TestParseRoutedOpenAppArgsRejectsURL(t *testing.T) {
-	if _, te := parseRoutedOpenAppArgs(`{"app":"https://example.org"}`); te == nil {
-		t.Fatal("parseRoutedOpenAppArgs returned nil error, want URL rejected")
+func TestParseOpenURLArgsAcceptsSupportedSchemes(t *testing.T) {
+	for _, value := range []string{
+		"http://example.com/path",
+		"https://example.com/path?q=1",
+		"sms:+15551234567?body=example",
+		"mailto:user@example.com?subject=example",
+		"tel:+15551234567",
+	} {
+		args, te := parseOpenURLArgs(jsonString(map[string]string{"url": " " + value + " "}))
+		if te != nil {
+			t.Fatalf("parseOpenURLArgs(%q) returned error: %v", value, te)
+		}
+		if args.URL != value {
+			t.Fatalf("url = %q, want %q", args.URL, value)
+		}
 	}
 }
 
-func TestParseOpenURLArgs(t *testing.T) {
-	args, te := parseOpenURLArgs(`{"url":" https://example.com/path?q=1 "}`)
-	if te != nil {
-		t.Fatalf("parseOpenURLArgs returned error: %v", te)
-	}
-	if args.URL != "https://example.com/path?q=1" {
-		t.Fatalf("url = %q, want trimmed URL", args.URL)
-	}
-}
-
-func TestParseOpenURLArgsRejectsNonHTTPURL(t *testing.T) {
+func TestParseOpenURLArgsRejectsUnsupportedScheme(t *testing.T) {
 	if _, te := parseOpenURLArgs(`{"url":"weixin://scan"}`); te == nil {
-		t.Fatal("parseOpenURLArgs returned nil error, want non-HTTP URL rejected")
+		t.Fatal("parseOpenURLArgs returned nil error, want unsupported URL rejected")
 	}
 }
 
@@ -571,15 +589,16 @@ func TestOpenURLSendsURLTarget(t *testing.T) {
 	bridge.mu.Unlock()
 	tool := NewOpenURLTool(bridge, nil)
 
-	out, err := tool.Call(context.Background(), `{"url":"https://example.com/path"}`)
+	const target = "sms:+15551234567?body=example"
+	out, err := tool.Call(context.Background(), jsonString(map[string]string{"url": target}))
 	if err != nil {
 		t.Fatalf("Call returned err: %v", err)
 	}
-	if sent.Type != "open_app" || sent.URL != "https://example.com/path" || sent.App != "" {
+	if sent.Type != "open_app" || sent.URL != target || sent.App != "" {
 		t.Fatalf("sent command = %#v, want URL-only bridge command", sent)
 	}
 	var result map[string]any
-	if err := json.Unmarshal([]byte(out), &result); err != nil || result["method"] != "open_url" || result["target"] != "https://example.com/path" {
+	if err := json.Unmarshal([]byte(out), &result); err != nil || result["method"] != "open_url" || result["target"] != target {
 		t.Fatalf("output = %s, want open_url result: %v", out, err)
 	}
 	properties := NewOpenURLTool(nil, nil).ArgsSchema()["properties"].(map[string]any)

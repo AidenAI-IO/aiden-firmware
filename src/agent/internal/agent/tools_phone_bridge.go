@@ -45,7 +45,6 @@ func (t *OpenAppTool) Name() string { return toolOpenApp }
 func (t *OpenAppTool) Description() string {
 	return `Open an app by semantic app name. The tool automatically uses Phone Bridge when the companion app is ready, otherwise it searches for and opens the app through the visible system UI. ` +
 		`If the Phone Bridge launch fails, the tool retries through visible system search. ` +
-		`Use open_url for HTTP or HTTPS webpages. ` +
 		`Returns ok:true when the selected launch path reports success. After launch, inspect the opened screen before performing in-app navigation or text entry.`
 }
 
@@ -77,9 +76,6 @@ func parseRoutedOpenAppArgs(input string) (routedOpenAppArgs, *ToolError) {
 	args.Platform = strings.ToLower(strings.TrimSpace(args.Platform))
 	if args.App == "" {
 		return args, NewToolError(CodeInvalidArguments, "app is required")
-	}
-	if isHTTPURL(args.App) {
-		return args, NewToolError(CodeInvalidArguments, "app must be an app name or alias; use open_url for HTTP/HTTPS URLs")
 	}
 	return args, nil
 }
@@ -227,21 +223,23 @@ func parseBridgeOpenAppArgs(input string) (bridgeOpenAppArgs, *ToolError) {
 	if args.App == "" {
 		return args, NewToolError(CodeInvalidArguments, "app is required")
 	}
-	if isHTTPURL(args.App) {
-		return args, NewToolError(CodeInvalidArguments, "app must be an app name or alias; use open_url for HTTP/HTTPS URLs")
-	}
 	return args, nil
 }
 
-func isHTTPURL(value string) bool {
+func isSupportedOpenURL(value string) bool {
 	value = strings.ToLower(strings.TrimSpace(value))
-	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+	for _, prefix := range []string{"http://", "https://", "sms:", "mailto:", "tel:"} {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeOpenURL(value string) (string, *ToolError) {
 	value = strings.TrimSpace(value)
-	if !isHTTPURL(value) {
-		return "", NewToolError(CodeInvalidArguments, "url must start with http:// or https://")
+	if !isSupportedOpenURL(value) {
+		return "", NewToolError(CodeInvalidArguments, "url must use http, https, sms, mailto, or tel")
 	}
 	return value, nil
 }
@@ -258,13 +256,15 @@ func NewOpenURLTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *OpenURL
 func (t *OpenURLTool) Name() string { return toolOpenURL }
 
 func (t *OpenURLTool) Description() string {
-	return `Open an HTTP or HTTPS webpage on the connected phone through Phone Bridge. ` +
+	return `Open an HTTP/HTTPS webpage, SMS composer, email composer, or telephone link on the connected phone through Phone Bridge. ` +
+		`Supported formats: https://example.com, http://example.com, sms:<phone_number>?body=<message>, mailto:<email_address>?subject=<subject>, and tel:<phone_number>. ` +
+		`Percent-encode spaces and reserved characters in SMS body and email subject query values. ` +
 		`Use open_app to launch a browser without navigating to a fixed URL.`
 }
 
 func (t *OpenURLTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"url": stringArgSchema("HTTP or HTTPS URL to open."),
+		"url": stringArgSchema("URL to open using http, https, sms, mailto, or tel."),
 	}, "url")
 }
 

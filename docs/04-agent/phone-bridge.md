@@ -268,9 +268,9 @@ Reply:
 }
 ```
 
-App-side `method` represents the underlying mechanism (for example `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, or `open_url`). The public `open_app` tool routes semantic app launches to the internal Phone Bridge launcher or visible system search. The public `open_url` tool sends fixed HTTP/HTTPS webpages through Phone Bridge. Their results normalize task semantics into `method:"open_app"` or `method:"open_url"`, while the underlying app-side method is returned as `mechanism`.
+App-side `method` represents the underlying mechanism (for example `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, or `open_url`). The public `open_app` tool routes semantic app launches to the internal Phone Bridge launcher or visible system search. The public `open_url` tool sends `http`, `https`, `sms`, `mailto`, and `tel` URLs through Phone Bridge. Their results normalize task semantics into `method:"open_app"` or `method:"open_url"`, while the underlying app-side method is returned as `mechanism`.
 
-Browser semantics and fixed webpage semantics are separated: call `open_app` with `{"app":"browser"}` to launch the browser itself, and call `open_url` with `{"url":"https://example.com"}` to open a fixed webpage. The companion app owns platform-specific URL/package/intent mapping.
+App-launch and URL semantics are separated: call `open_app` with `{"app":"browser"}` to launch the browser itself, and call `open_url` with a supported URL such as `{"url":"https://example.com"}` or `{"url":"tel:+15551234567"}`. The companion app owns platform-specific URL/package/intent mapping.
 
 ##### 2. `clipboard_read` — Read Clipboard
 

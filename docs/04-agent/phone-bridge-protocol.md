@@ -40,7 +40,7 @@ The board records `last_heartbeat_at` timestamp; no heartbeat for more than 60 s
 
   // Following fields used based on type
   app?: string;                  // open_app semantic app name or alias
-  url?: string;                  // open_app HTTP/HTTPS URL, sent by public open_url
+  url?: string;                  // open_app URL using http, https, sms, mailto, or tel, sent by public open_url
   payload?: object;              // JSON payload for other command types
 }
 ```
@@ -158,7 +158,7 @@ Open specified app or URL.
 **iOS implementation**: Resolve the semantic app or URL request inside the companion app, then open the matching iOS URL scheme or system URL.
 **Android implementation**: Resolve the semantic app or URL request inside the companion app, then launch the matching package, intent URI, or system URL.
 
-The board sends semantic launch targets and the companion app resolves platform details. The internal BridgeOpenApp route sends `app` (for example `"微信"` or `"weixin"`), while `open_url` sends `url`. Each command sets one target field.
+The board sends semantic launch targets and the companion app resolves platform details. The internal BridgeOpenApp route sends `app` (for example `"微信"` or `"weixin"`), while `open_url` sends an `http`, `https`, `sms`, `mailto`, or `tel` URL. Each command sets one target field.
 
 **Response**:
 ```json
@@ -169,7 +169,7 @@ The board sends semantic launch targets and the companion app resolves platform 
 }
 ```
 
-`method` indicates the underlying mechanism used by the app side, with common values including `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, and `open_url`. Here `open_url` indicates an explicit webpage URL.
+`method` indicates the underlying mechanism used by the app side, with common values including `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, and `open_url`. Here `open_url` indicates an explicit supported URL.
 The Agent's exposed `open_app` and `open_url` tools normalize underlying companion-app mechanisms into task-oriented `method` values and place the underlying value in the `mechanism` field.
 
 On failure:
