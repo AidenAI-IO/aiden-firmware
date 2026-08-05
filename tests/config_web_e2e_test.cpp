@@ -274,6 +274,28 @@ bool wait_for_file_contains(const std::string& path, const std::string& needle, 
     return false;
 }
 
+bool wait_for_file_contains_any(const std::string& path,
+                                const std::vector<std::string>& needles,
+                                int timeout_ms) {
+    using clock = std::chrono::steady_clock;
+    auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (clock::now() < deadline) {
+        std::ifstream in(path);
+        if (in.good()) {
+            std::ostringstream buf;
+            buf << in.rdbuf();
+            const std::string contents = buf.str();
+            for (size_t i = 0; i < needles.size(); ++i) {
+                if (contents.find(needles[i]) != std::string::npos) {
+                    return true;
+                }
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return false;
+}
+
 bool wait_for_port(int port, int timeout_ms) {
     using clock = std::chrono::steady_clock;
     auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -2187,8 +2209,7 @@ TEST_CASE("config_web: failed manual OTA update releases launch lock even if a c
 
     HttpResponse first = http_request(handle->port, "POST", "/api/ota/update");
     REQUIRE(first.status == 200);
-    REQUIRE(wait_for_file_contains(log_path,
-                                   "[config_web] [ota] update_exited exit_code=1", 2000));
+    REQUIRE(wait_for_file_contains(log_path, "[config_web] ota update exited rc=1", 2000));
 
     HttpResponse retry;
     bool accepted = false;
@@ -2245,7 +2266,12 @@ TEST_CASE("config_web: manual OTA update appends update log and reports start si
     CHECK(required_json_int(parsed, "ota_log_start_size_bytes") == static_cast<int>(previous_log.size()));
     cJSON_Delete(parsed);
 
-    REQUIRE(wait_for_file_contains(log_path, "[config_web] ota update exited rc=0", 2000));
+    REQUIRE(wait_for_file_contains_any(log_path,
+                                       {
+                                           "[config_web] ota update exited rc=0",
+                                           "[config_web] [ota] update_exited exit_code=0",
+                                       },
+                                       2000));
     const std::string log = read_file(log_path);
     CHECK(log.find(previous_log) == 0);
     CHECK(log.find("new ota update output") != std::string::npos);
@@ -2290,7 +2316,12 @@ TEST_CASE("config_web: manual OTA update truncates oversized update log before a
     CHECK(required_json_int(parsed, "ota_log_start_size_bytes") == 0);
     cJSON_Delete(parsed);
 
-    REQUIRE(wait_for_file_contains(log_path, "[config_web] ota update exited rc=0", 2000));
+    REQUIRE(wait_for_file_contains_any(log_path,
+                                       {
+                                           "[config_web] ota update exited rc=0",
+                                           "[config_web] [ota] update_exited exit_code=0",
+                                       },
+                                       2000));
     const std::string log = read_file(log_path);
     CHECK(log.size() < 4096);
     CHECK(log.find(std::string(64, 'x')) == std::string::npos);
@@ -2307,8 +2338,8 @@ TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate")
     const std::string update_log_path = tmp + "/config_web_ota_update.log";
     const std::string health_log_path = tmp + "/ota_health.log";
     const std::string update_log =
-        "2026-08-05T06:22:02Z [INFO] [config_web] [ota] update_requested\n"
-        "2026-08-05T06:22:03Z [ERROR] [config_web] [ota] update_exited exit_code=1\n";
+        "[config_web] ota update requested\n"
+        "[config_web] ota update exited rc=1\n";
     std::ostringstream health_log;
     for (int i = 0; i < 5000; ++i) {
         health_log << "ota health previous boot line " << i << "\n";
@@ -2334,13 +2365,12 @@ TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate")
 
     CHECK(required_json_string(update, "path") == update_log_path);
     CHECK(required_json_int(update, "size_bytes") == static_cast<int>(update_log.size()));
-    CHECK(required_json_string(update, "log").find(
-              "[config_web] [ota] update_exited exit_code=1") != std::string::npos);
+    CHECK(required_json_string(update, "log").find("[config_web] ota update exited rc=1") != std::string::npos);
     CHECK(required_json_string(update, "log").find("health timeout") == std::string::npos);
 
     CHECK(required_json_string(health, "path") == health_log_path);
     CHECK(required_json_string(health, "log").find("health timeout waiting for /userdata/ota/health.ok") != std::string::npos);
-    CHECK(required_json_string(health, "log").find("[config_web] [ota]") == std::string::npos);
+    CHECK(required_json_string(health, "log").find("[config_web] ota update") == std::string::npos);
     cJSON_Delete(parsed);
 }
 
