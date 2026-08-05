@@ -1,12 +1,30 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestLogVADHelperStderrPreservesStructuredLines(t *testing.T) {
+	structured := "2026-08-05T06:22:03Z [ERROR] [rknn_vad] [inference] run_failed error=timeout"
+	var output bytes.Buffer
+	logVADHelperStderrTo("rknn", strings.NewReader(structured+"\nraw diagnostic\n"), &output)
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("output lines = %d, want 2: %q", len(lines), output.String())
+	}
+	if lines[0] != structured {
+		t.Fatalf("structured line = %q, want unchanged %q", lines[0], structured)
+	}
+	if !strings.Contains(lines[1], " [INFO] [agent] [vad_rknn] helper_stderr message=\"raw diagnostic\"") {
+		t.Fatalf("wrapped line = %q", lines[1])
+	}
+}
 
 func TestAudioVADEndsUtteranceFromRKNNProbabilities(t *testing.T) {
 	vad := newTestAudioVAD(t, false, []float64{0.9, 0.8, 0.1, 0.1, 0.1})

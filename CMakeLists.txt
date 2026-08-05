@@ -162,11 +162,11 @@ target_link_libraries(audio_stream PRIVATE aiden)
 add_executable(rknn_vad src/rknn_vad.cpp src/aiden_log.cpp)
 target_include_directories(rknn_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_directories(rknn_vad PRIVATE ${RKNNMRT_LINK_DIR})
-target_link_libraries(rknn_vad PRIVATE rknnmrt m)
+target_link_libraries(rknn_vad PRIVATE rknnmrt pthread m)
 
 add_executable(cpu_vad src/cpu_vad.cpp src/aiden_log.cpp)
 target_include_directories(cpu_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(cpu_vad PRIVATE m)
+target_link_libraries(cpu_vad PRIVATE pthread m)
 
 foreach(_vad_target rknn_vad cpu_vad)
     target_compile_options(${_vad_target} PRIVATE -O3)
@@ -192,4 +192,4 @@ add_executable(config_web
     src/system_env_parser.cpp
     src/wifi_config.cpp
 )
-target_link_libraries(config_web PRIVATE cjson)
+target_link_libraries(config_web PRIVATE cjson pthread)

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -34,6 +35,10 @@ var outputState = struct {
 	sync.Mutex
 	writer io.Writer
 }{writer: os.Stderr}
+
+var structuredLinePattern = regexp.MustCompile(
+	`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[(DEBUG|INFO|WARN|ERROR)\] \[[a-z0-9_]+\] \[[a-z0-9_]+\] [a-z0-9_]+(?: |$)`,
+)
 
 // SetOutput changes the destination used by direct structured logging helpers.
 // It returns a restore function intended for tests and temporary redirection.
@@ -118,16 +123,10 @@ func (w *legacyWriter) Write(p []byte) (int, error) {
 // FormatLegacyfAt formats a printf-style legacy call. The event is derived
 // from the stable format template while the message contains rendered values.
 func FormatLegacyfAt(now time.Time, level Level, service, component, format string, args ...any) string {
-	templateMeta := parseLegacy(level, service, component, format)
-	renderedMeta := parseLegacy(level, service, component, fmt.Sprintf(format, args...))
-	if renderedMeta.level == Info && templateMeta.level != Info {
-		renderedMeta.level = templateMeta.level
-	}
-	if renderedMeta.component == NormalizeIdentifier(component, "runtime") && templateMeta.component != "" {
-		renderedMeta.component = templateMeta.component
-	}
-	event := deriveEvent(templateMeta.message, renderedMeta.level)
-	return formatMessageRecord(now, renderedMeta.level, service, renderedMeta.component, event, renderedMeta.message)
+	meta := parseLegacy(level, service, component, format)
+	event := deriveEvent(meta.message, meta.level)
+	message := fmt.Sprintf(meta.message, args...)
+	return formatMessageRecord(now, meta.level, service, meta.component, event, message)
 }
 
 // FormatLegacyAt formats an already rendered legacy message.
@@ -135,6 +134,11 @@ func FormatLegacyAt(now time.Time, level Level, service, component, message stri
 	meta := parseLegacy(level, service, component, message)
 	event := deriveEvent(meta.message, meta.level)
 	return formatMessageRecord(now, meta.level, service, meta.component, event, meta.message)
+}
+
+// IsStructuredLine reports whether line already uses the common event format.
+func IsStructuredLine(line string) bool {
+	return structuredLinePattern.MatchString(line)
 }
 
 // FormatEventAt formats an event with explicit structured fields.
@@ -171,6 +175,7 @@ func parseLegacy(defaultLevel Level, service, fallbackComponent, input string) l
 	component := NormalizeIdentifier(fallbackComponent, "runtime")
 	message := sanitizeMessage(input)
 
+	componentFromTag := false
 	for strings.HasPrefix(message, "[") {
 		end := strings.IndexByte(message, ']')
 		if end <= 1 {
@@ -183,21 +188,25 @@ func parseLegacy(defaultLevel Level, service, fallbackComponent, input string) l
 			continue
 		}
 		component = NormalizeIdentifier(tag, component)
+		componentFromTag = true
+		break
 	}
 
-	normalizedService := NormalizeIdentifier(service, "unknown")
-	lowerMessage := strings.ToLower(message)
-	if strings.HasPrefix(lowerMessage, normalizedService+":") {
-		message = strings.TrimSpace(message[len(normalizedService)+1:])
-	} else if strings.HasPrefix(lowerMessage, normalizedService+" ") {
-		message = strings.TrimSpace(message[len(normalizedService):])
-	}
+	if !componentFromTag {
+		normalizedService := NormalizeIdentifier(service, "unknown")
+		lowerMessage := strings.ToLower(message)
+		if strings.HasPrefix(lowerMessage, normalizedService+":") {
+			message = strings.TrimSpace(message[len(normalizedService)+1:])
+		} else if strings.HasPrefix(lowerMessage, normalizedService+" ") {
+			message = strings.TrimSpace(message[len(normalizedService):])
+		}
 
-	if colon := strings.IndexByte(message, ':'); colon > 0 {
-		candidate := strings.TrimSpace(message[:colon])
-		if isLegacyComponentPrefix(candidate) {
-			component = NormalizeIdentifier(candidate, component)
-			message = strings.TrimSpace(message[colon+1:])
+		if colon := strings.IndexByte(message, ':'); colon > 0 {
+			candidate := strings.TrimSpace(message[:colon])
+			if isLegacyComponentPrefix(candidate) {
+				component = NormalizeIdentifier(candidate, component)
+				message = strings.TrimSpace(message[colon+1:])
+			}
 		}
 	}
 	if level == Info {

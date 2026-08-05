@@ -4558,9 +4558,25 @@ std::string recent_agent_startup_log(const Options& options) {
         return "";
     }
 
-    size_t marker = log.rfind("[agent] [supervisor] process_starting ");
+    const auto rfind_event = [&log](const std::string& event) {
+        size_t marker = log.rfind(event);
+        while (marker != std::string::npos) {
+            const size_t boundary = marker + event.size();
+            if (boundary == log.size() || log[boundary] == ' ' ||
+                log[boundary] == '\n' || log[boundary] == '\r') {
+                return marker;
+            }
+            if (marker == 0) {
+                break;
+            }
+            marker = log.rfind(event, marker - 1);
+        }
+        return std::string::npos;
+    };
+
+    size_t marker = rfind_event("[agent] [supervisor] process_starting");
     if (marker == std::string::npos) {
-        marker = log.rfind("[agent] [supervisor] binary_wait ");
+        marker = rfind_event("[agent] [supervisor] binary_wait");
     }
     // Preserve compatibility with logs written before the common format was deployed.
     if (marker == std::string::npos) {

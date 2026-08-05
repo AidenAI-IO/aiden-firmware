@@ -12,6 +12,7 @@ import (
 
 	"aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/tts"
+	"aiden-agent/internal/logging"
 )
 
 const (
@@ -1221,7 +1222,8 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 	if text == "" {
 		return nil
 	}
-	log.Printf("[reply] %s\n", text)
+	_ = logging.LogEvent(logging.Info, "agent", "reply", "assistant_output",
+		logging.Field{Key: "message", Value: text})
 	if d.ttsManager == nil && !allowFallback {
 		return nil
 	}
@@ -1334,7 +1336,8 @@ func (d *AudioDialog) playPromptSoundUninterruptible(kind promptSoundKind, label
 // ProcessTextInput processes text input and speaks the response
 func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime *Runtime) error {
 	ctx = d.ConfigureRuntimeTools(ctx, runtime)
-	log.Printf("[text] %s\n", text)
+	_ = logging.LogEvent(logging.Info, "agent", "text", "user_input",
+		logging.Field{Key: "message", Value: text})
 	d.playPromptSoundAsyncWithWait(promptSoundAgentSend, "agent send", false)
 
 	// Send to LLM
@@ -1414,7 +1417,8 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, nil)
 		}
 	} else if result.Output != "" {
-		log.Printf("[reply] %s\n", result.Output)
+		_ = logging.LogEvent(logging.Info, "agent", "reply", "assistant_output",
+			logging.Field{Key: "message", Value: result.Output})
 	}
 
 	return nil

@@ -40,6 +40,21 @@ log() {
     aiden_log_to_file "$LOG_FILE" "$level" usb_ecm_watchdog watchdog "$event" "$*"
 }
 
+CAPTURED_ERROR=
+run_with_error_capture() {
+    error_file="${STATE_FILE}.stderr.$$"
+    : > "$error_file"
+    if "$@" 2> "$error_file"; then
+        CAPTURED_ERROR=
+        rm -f "$error_file"
+        return 0
+    fi
+    CAPTURED_ERROR=$(cat "$error_file" 2>/dev/null)
+    rm -f "$error_file"
+    [ -n "$CAPTURED_ERROR" ] || CAPTURED_ERROR="command failed without stderr"
+    return 1
+}
+
 is_configured() {
     state=$(read_udc_state)
     [ "$state" = "configured" ]
@@ -184,18 +199,21 @@ reset_composite_locked() {
 
     cur_udc=$(cat "$GADGET_UDC" 2>/dev/null)
     if [ -n "$cur_udc" ]; then
-        if ! echo "" > "$GADGET_UDC" 2>/dev/null; then
-            log ERROR udc_unbind_failed "UDC unbind failed"
-            write_refresh_state "$reason" "failed" "$started_at" "UDC unbind failed"
+        if ! run_with_error_capture sh -c 'printf "\n" > "$1"' sh "$GADGET_UDC"; then
+            log ERROR udc_unbind_failed "UDC unbind failed: $CAPTURED_ERROR"
+            write_refresh_state "$reason" "failed" "$started_at" \
+                "UDC unbind failed: $CAPTURED_ERROR"
             return 1
         fi
     fi
 
     sleep 1
 
-    if ! echo "$UDC_NAME" > "$GADGET_UDC" 2>/dev/null; then
-        log ERROR udc_rebind_failed "UDC rebind failed"
-        write_refresh_state "$reason" "failed" "$started_at" "UDC rebind failed"
+    if ! run_with_error_capture sh -c 'printf "%s\n" "$1" > "$2"' \
+        sh "$UDC_NAME" "$GADGET_UDC"; then
+        log ERROR udc_rebind_failed "UDC rebind failed: $CAPTURED_ERROR"
+        write_refresh_state "$reason" "failed" "$started_at" \
+            "UDC rebind failed: $CAPTURED_ERROR"
         return 1
     fi
 
@@ -216,8 +234,10 @@ reset_composite_locked() {
     fi
 
     if [ -d /sys/class/net/usb0 ]; then
-        ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up 2>/dev/null || \
-            log ERROR interface_config_failed "usb0 ifconfig failed after composite reset"
+        if ! run_with_error_capture ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up; then
+            log ERROR interface_config_failed \
+                "usb0 ifconfig failed after composite reset: $CAPTURED_ERROR"
+        fi
     fi
 
     finished_at=$(date +%s)

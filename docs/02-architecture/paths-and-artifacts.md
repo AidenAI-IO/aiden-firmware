@@ -121,7 +121,7 @@ The path follows the runtime config directory: `<CONFIG_DIR>/log/agent.log`. The
 When StorageMonitor reports `critical` or `emergency`, `S53agent` trims this file to the configured `storage.degraded_mode.max_agent_log_mb` limit while preserving the newest content.
 
 **Session start event**:
-```
+```text
 2026-08-05T06:30:00Z [INFO] [agent] [session] session_started session_id=abc123def456 reason=time_gap_long
 ```
 

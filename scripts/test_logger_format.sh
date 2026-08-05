@@ -9,13 +9,16 @@ sh -n "$HELPER"
 
 message='status=1 detail="first line"
 second line'
-line="$(aiden_log WARN Agent 'Process Supervisor' 'Process Exited' "$message")"
+LINE_FILE="$(mktemp "${TMPDIR:-/tmp}/aiden-logger-format.XXXXXX")"
+trap 'rm -f "$LINE_FILE"' 0 HUP INT TERM
+aiden_log WARN Agent 'Process Supervisor' 'Process Exited' "$message" > "$LINE_FILE"
 
-printf '%s\n' "$line" | grep -Eq \
-    '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[WARN\] \[agent\] \[process_supervisor\] process_exited message=".*"$'
+grep -Eq \
+    '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[WARN\] \[agent\] \[process_supervisor\] process_exited message=".*"$' \
+    "$LINE_FILE"
 
-[ "$(printf '%s\n' "$line" | wc -l | tr -d ' ')" = "1" ]
-printf '%s\n' "$line" | grep -Fq 'detail=\"first line\"\nsecond line'
+[ "$(wc -l < "$LINE_FILE" | tr -d ' ')" = "1" ]
+grep -Fq 'detail=\"first line\"\nsecond line' "$LINE_FILE"
 
 for script in \
     overlay/etc/init.d/S53agent \
@@ -27,7 +30,7 @@ for script in \
     overlay/etc/init.d/S60usb_ecm_watchdog \
     overlay/oem/usr/bin/wlan_guard.sh; do
     sh -n "$ROOT_DIR/$script"
-    grep -Fq 'aiden-log.sh' "$ROOT_DIR/$script"
+    grep -Eq 'aiden_log(_to_file)?[[:space:]]' "$ROOT_DIR/$script"
 done
 
 echo "logger format checks passed"
