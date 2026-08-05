@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"aiden-agent/internal/logging"
 )
 
 // SessionArchiveCleaner cleans up old session archives
@@ -72,8 +74,10 @@ func (c *SessionArchiveCleaner) collectArchives() ([]sessionArchiveInfo, error) 
 		dirPath := filepath.Join(c.archiveDir, entry.Name())
 		size, err := calculateDirSize(dirPath)
 		if err != nil {
-			// Log but continue
-			fmt.Fprintf(os.Stderr, "[storage_cleanup] failed to calculate size for %s: %v\n", entry.Name(), err)
+			_ = logging.LogEvent(logging.Warn, "agent", "storage_cleanup", "session_archive_size_failed",
+				logging.Field{Key: "archive", Value: entry.Name()},
+				logging.Field{Key: "error", Value: err},
+			)
 			size = 0
 		}
 
@@ -193,8 +197,10 @@ func (c *SessionArchiveCleaner) Clean(ctx context.Context) (uint64, error) {
 	}
 
 	if deletedCount > 0 {
-		fmt.Fprintf(os.Stderr, "[storage_cleanup] deleted %d session archives, freed %d MB\n",
-			deletedCount, totalFreed/(1024*1024))
+		_ = logging.LogEvent(logging.Info, "agent", "storage_cleanup", "session_archives_deleted",
+			logging.Field{Key: "archives", Value: deletedCount},
+			logging.Field{Key: "freed_bytes", Value: totalFreed},
+		)
 	}
 
 	return totalFreed, nil

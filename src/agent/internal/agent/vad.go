@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"aiden-agent/internal/logging"
 )
 
 const (
@@ -503,12 +505,25 @@ func readHelperLineWithTimeout(cmd *exec.Cmd, reader *bufio.Reader, operation st
 }
 
 func logVADHelperStderr(backend string, stderr io.Reader) {
+	logVADHelperStderrTo(backend, stderr, os.Stderr)
+}
+
+func logVADHelperStderrTo(backend string, stderr io.Reader, output io.Writer) {
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
-		log.Printf("[vad:%s] %s\n", backend, scanner.Text())
+		line := scanner.Text()
+		if logging.IsStructuredLine(line) {
+			_, _ = io.WriteString(output, line+"\n")
+			continue
+		}
+		record := logging.FormatEventAt(time.Now(), logging.Info, "agent", "vad_"+backend,
+			"helper_stderr", logging.Field{Key: "message", Value: line})
+		_, _ = io.WriteString(output, record+"\n")
 	}
 	if err := scanner.Err(); err != nil {
-		log.Printf("[vad:%s] %s\n", backend, err)
+		record := logging.FormatEventAt(time.Now(), logging.Error, "agent", "vad_"+backend,
+			"stderr_read_failed", logging.Field{Key: "error", Value: err})
+		_, _ = io.WriteString(output, record+"\n")
 	}
 }
 

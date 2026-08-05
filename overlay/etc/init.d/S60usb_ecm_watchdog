@@ -29,9 +29,30 @@ PROBE_FAIL_THRESHOLD=2 # reset after N consecutive probe failures
 ARPING_COUNT=2         # ARP requests per probe
 ARPING_TIMEOUT=2       # seconds to wait for ARP reply
 COOLDOWN=30            # minimum seconds between resets
+AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
+[ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
+. "$AIDEN_LOG_HELPER"
 
 log() {
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+    level="$1"
+    event="$2"
+    shift 2
+    aiden_log_to_file "$LOG_FILE" "$level" usb_ecm_watchdog watchdog "$event" "$*"
+}
+
+CAPTURED_ERROR=
+run_with_error_capture() {
+    error_file="${STATE_FILE}.stderr.$$"
+    : > "$error_file"
+    if "$@" 2> "$error_file"; then
+        CAPTURED_ERROR=
+        rm -f "$error_file"
+        return 0
+    fi
+    CAPTURED_ERROR=$(cat "$error_file" 2>/dev/null)
+    rm -f "$error_file"
+    [ -n "$CAPTURED_ERROR" ] || CAPTURED_ERROR="command failed without stderr"
+    return 1
 }
 
 is_configured() {
@@ -102,7 +123,8 @@ write_refresh_state() {
 
 log_snapshot() {
     label="$1"
-    log "$label: udc_state=$(read_udc_state) gadget_udc=$(read_gadget_udc) hid_keyboard=($(describe_hid_keyboard)) usb0=($(describe_usb0)) ecm_hosts=($(describe_ecm_hosts))"
+    aiden_log_to_file "$LOG_FILE" INFO usb_ecm_watchdog snapshot state_snapshot \
+        "$label: udc_state=$(read_udc_state) gadget_udc=$(read_gadget_udc) hid_keyboard=($(describe_hid_keyboard)) usb0=($(describe_usb0)) ecm_hosts=($(describe_ecm_hosts))"
 }
 
 probe_ecm_connectivity() {
@@ -152,7 +174,8 @@ acquire_gadget_switch_lock() {
             ;;
     esac
 
-    log "USB composite reset deferred; gadget switch lock is busy (owner=${owner:-unknown})"
+    log WARN reset_deferred \
+        "USB composite reset deferred; gadget switch lock is busy (owner=${owner:-unknown})"
     return 1
 }
 
@@ -164,30 +187,33 @@ release_gadget_switch_lock() {
 reset_composite_locked() {
     reason="$1"
     started_at=$(date +%s)
-    log "resetting USB composite gadget: $reason"
+    log WARN reset_started "resetting USB composite gadget: $reason"
     log_snapshot "before reset ($reason)"
     write_refresh_state "$reason" "started" "$started_at" "reset started"
 
     if [ ! -f "$GADGET_UDC" ]; then
-        log "UDC control file missing: $GADGET_UDC"
+        log ERROR udc_control_missing "UDC control file missing: $GADGET_UDC"
         write_refresh_state "$reason" "failed" "$started_at" "UDC control file missing"
         return 1
     fi
 
     cur_udc=$(cat "$GADGET_UDC" 2>/dev/null)
     if [ -n "$cur_udc" ]; then
-        if ! echo "" > "$GADGET_UDC" 2>>"$LOG_FILE"; then
-            log "UDC unbind failed"
-            write_refresh_state "$reason" "failed" "$started_at" "UDC unbind failed"
+        if ! run_with_error_capture sh -c 'printf "\n" > "$1"' sh "$GADGET_UDC"; then
+            log ERROR udc_unbind_failed "UDC unbind failed: $CAPTURED_ERROR"
+            write_refresh_state "$reason" "failed" "$started_at" \
+                "UDC unbind failed: $CAPTURED_ERROR"
             return 1
         fi
     fi
 
     sleep 1
 
-    if ! echo "$UDC_NAME" > "$GADGET_UDC" 2>>"$LOG_FILE"; then
-        log "UDC rebind failed"
-        write_refresh_state "$reason" "failed" "$started_at" "UDC rebind failed"
+    if ! run_with_error_capture sh -c 'printf "%s\n" "$1" > "$2"' \
+        sh "$UDC_NAME" "$GADGET_UDC"; then
+        log ERROR udc_rebind_failed "UDC rebind failed: $CAPTURED_ERROR"
+        write_refresh_state "$reason" "failed" "$started_at" \
+            "UDC rebind failed: $CAPTURED_ERROR"
         return 1
     fi
 
@@ -201,18 +227,23 @@ reset_composite_locked() {
     done
 
     if [ "$configured" -ne 1 ]; then
-        log "UDC did not reach configured state after composite reset (udc state=$(cat "$UDC_STATE" 2>/dev/null))"
+        log ERROR configured_timeout \
+            "UDC did not reach configured state after composite reset (udc state=$(cat "$UDC_STATE" 2>/dev/null))"
         write_refresh_state "$reason" "failed" "$started_at" "UDC did not reach configured"
         return 1
     fi
 
     if [ -d /sys/class/net/usb0 ]; then
-        ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up 2>>"$LOG_FILE" || log "usb0 ifconfig failed after composite reset"
+        if ! run_with_error_capture ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up; then
+            log ERROR interface_config_failed \
+                "usb0 ifconfig failed after composite reset: $CAPTURED_ERROR"
+        fi
     fi
 
     finished_at=$(date +%s)
     duration=$((finished_at - started_at))
-    log "USB composite reset complete (reason=$reason duration=${duration}s udc state=$(cat "$UDC_STATE" 2>/dev/null))"
+    log INFO reset_completed \
+        "USB composite reset complete (reason=$reason duration=${duration}s udc state=$(cat "$UDC_STATE" 2>/dev/null))"
     log_snapshot "after reset ($reason)"
     write_refresh_state "$reason" "ok" "$started_at" "duration=${duration}s"
 }
@@ -221,7 +252,8 @@ reset_composite() {
     reason="$1"
     acquire_gadget_switch_lock || return 1
     if planned_switch_grace_active; then
-        log "USB composite reset skipped during planned profile switch grace (reason=$reason until=$planned_grace_until)"
+        log INFO reset_skipped \
+            "USB composite reset skipped during planned profile switch grace (reason=$reason until=$planned_grace_until)"
         release_gadget_switch_lock
         # HIDDevice uses the refresh command after an ENXIO open. Treat a
         # planned-switch skip as successful so it waits briefly and retries the
@@ -246,7 +278,8 @@ watchdog_main() {
 
     log_snapshot "watchdog loop start"
     if [ "$last_udc_state" = "configured" ]; then
-        log "watchdog started while UDC already configured; leaving HID session intact"
+        log INFO started_configured \
+            "watchdog started while UDC already configured; leaving HID session intact"
     fi
 
     while :; do
@@ -255,16 +288,19 @@ watchdog_main() {
         state=$(read_udc_state)
 
         if [ "$state" != "$last_udc_state" ]; then
-            log "UDC state changed: ${last_udc_state:-unknown} -> ${state:-unknown}"
+            log INFO udc_state_changed \
+                "UDC state changed: ${last_udc_state:-unknown} -> ${state:-unknown}"
             if [ "$state" = "configured" ]; then
-                log "UDC configured transition observed; leaving HID session intact"
+                log INFO configured_transition \
+                    "UDC configured transition observed; leaving HID session intact"
             fi
             last_udc_state="$state"
         fi
 
         if [ "$state" != "configured" ]; then
             if [ "$ecm_fail_count" -ne 0 ]; then
-                log "UDC not configured; clearing ECM failure count"
+                log INFO failure_count_cleared \
+                    "UDC not configured; clearing ECM failure count"
             fi
             ecm_fail_count=0
             continue
@@ -272,23 +308,27 @@ watchdog_main() {
 
         if planned_switch_grace_active; then
             if [ "$planned_grace_until" != "$last_planned_grace_until" ]; then
-                log "planned profile switch grace active until $planned_grace_until; skipping ECM probe"
+                log INFO probe_skipped \
+                    "planned profile switch grace active until $planned_grace_until; skipping ECM probe"
             fi
             if [ "$ecm_fail_count" -ne 0 ]; then
-                log "planned profile switch grace active; clearing ECM failure count"
+                log INFO failure_count_cleared \
+                    "planned profile switch grace active; clearing ECM failure count"
             fi
             ecm_fail_count=0
             last_planned_grace_until=$planned_grace_until
             continue
         fi
         if [ "$last_planned_grace_until" -ne 0 ]; then
-            log "planned profile switch grace ended; resuming ECM probes"
+            log INFO probe_resumed \
+                "planned profile switch grace ended; resuming ECM probes"
             last_planned_grace_until=0
         fi
 
         if probe_ecm_connectivity; then
             if [ "$ecm_fail_count" -ne 0 ]; then
-                log "ECM probe recovered after $ecm_fail_count failure(s)"
+                log INFO probe_recovered \
+                    "ECM probe recovered after $ecm_fail_count failure(s)"
             fi
             ecm_fail_count=0
             continue
@@ -297,21 +337,23 @@ watchdog_main() {
         # The profile switch may begin while arping is already in flight. Check
         # the grace marker again before counting that expected interruption.
         if planned_switch_grace_active; then
-            log "ECM probe interrupted by planned profile switch; ignoring failure until $planned_grace_until"
+            log INFO probe_interrupted \
+                "ECM probe interrupted by planned profile switch; ignoring failure until $planned_grace_until"
             ecm_fail_count=0
             last_planned_grace_until=$planned_grace_until
             continue
         fi
 
         ecm_fail_count=$((ecm_fail_count + 1))
-        log "ECM probe failed ($ecm_fail_count/$PROBE_FAIL_THRESHOLD hosts=$(describe_ecm_hosts))"
+        log WARN probe_failed \
+            "ECM probe failed ($ecm_fail_count/$PROBE_FAIL_THRESHOLD hosts=$(describe_ecm_hosts))"
 
         if [ $ecm_fail_count -ge $PROBE_FAIL_THRESHOLD ]; then
             if [ $((now - last_reset)) -lt $COOLDOWN ]; then
                 continue
             fi
 
-            log "ECM stall detected; resetting composite gadget"
+            log WARN stall_detected "ECM stall detected; resetting composite gadget"
             if reset_composite "ECM stall"; then
                 last_reset=$now
                 ecm_fail_count=0
@@ -342,7 +384,8 @@ start() {
     fi
 
     mkdir -p "$(dirname "$LOG_FILE")"
-    log "starting (interval=${PROBE_INTERVAL}s threshold=${PROBE_FAIL_THRESHOLD} cooldown=${COOLDOWN}s)"
+    log INFO starting \
+        "starting (interval=${PROBE_INTERVAL}s threshold=${PROBE_FAIL_THRESHOLD} cooldown=${COOLDOWN}s)"
     log_snapshot "start command"
     "$0" _watchdog </dev/null >/dev/null 2>&1 &
     pid=$!
@@ -358,7 +401,7 @@ stop() {
         fi
         rm -f "$PID_FILE"
     fi
-    log "stopped"
+    log INFO stopped "stopped"
 }
 
 case "$1" in

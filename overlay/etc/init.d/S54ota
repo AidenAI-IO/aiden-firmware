@@ -14,6 +14,16 @@ USERDATA_REQUIRE_MOUNT=${USERDATA_REQUIRE_MOUNT:-1}
 OTA_STORAGE_REQUIRE_MOUNT=${OTA_STORAGE_REQUIRE_MOUNT:-1}
 MOUNTS_PATH=${MOUNTS_PATH:-/proc/mounts}
 LOCK_DIR=${LOCK_DIR:-/run/ota-health.lock}
+AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
+[ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
+. "$AIDEN_LOG_HELPER"
+
+ota_log() {
+    level="$1"
+    event="$2"
+    shift 2
+    aiden_log_to_file "$LOG_PATH" "$level" ota health "$event" "$*"
+}
 
 prepare_lock_parent() {
     dir="$(dirname "$LOCK_DIR")"
@@ -31,10 +41,11 @@ wait_for_existing_path() {
     waited=0
     while [ ! -e "$path" ]; do
         if [ -n "$WAIT_TIMEOUT" ] && [ "$waited" -ge "$WAIT_TIMEOUT" ]; then
-            echo "[ota] $description unavailable after ${WAIT_TIMEOUT}s: $path" >> "$LOG_PATH"
+            ota_log ERROR dependency_unavailable \
+                "$description unavailable after ${WAIT_TIMEOUT}s: $path"
             return 1
         fi
-        echo "[ota] waiting for $path" >> "$LOG_PATH"
+        ota_log INFO dependency_wait "waiting for $path"
         "$SLEEP_BIN" 1
         waited=$((waited + 1))
     done
@@ -71,10 +82,11 @@ wait_for_mount_ready() {
     waited=0
     while ! path_is_mounted "$path" "$expected_device" "$expected_fs_type"; do
         if [ -n "$WAIT_TIMEOUT" ] && [ "$waited" -ge "$WAIT_TIMEOUT" ]; then
-            echo "[ota] $description mount unavailable after ${WAIT_TIMEOUT}s: $path" >> "$LOG_PATH"
+            ota_log ERROR mount_unavailable \
+                "$description mount unavailable after ${WAIT_TIMEOUT}s: $path"
             return 1
         fi
-        echo "[ota] waiting for $description mount: $path" >> "$LOG_PATH"
+        ota_log INFO mount_wait "waiting for $description mount: $path"
         "$SLEEP_BIN" 1
         waited=$((waited + 1))
     done
@@ -95,10 +107,11 @@ wait_for_executable() {
     waited=0
     while [ ! -x "$path" ]; do
         if [ -n "$WAIT_TIMEOUT" ] && [ "$waited" -ge "$WAIT_TIMEOUT" ]; then
-            echo "[ota] $description unavailable after ${WAIT_TIMEOUT}s: $path" >> "$LOG_PATH"
+            ota_log ERROR executable_unavailable \
+                "$description unavailable after ${WAIT_TIMEOUT}s: $path"
             return 1
         fi
-        echo "[ota] waiting for $path" >> "$LOG_PATH"
+        ota_log INFO executable_wait "waiting for $path"
         "$SLEEP_BIN" 1
         waited=$((waited + 1))
     done
@@ -115,10 +128,14 @@ run_health_once() {
     wait_for_executable "$ENV_RUN_BIN" "environment launcher" || return 1
     wait_for_executable "$OTA_BIN" "ota binary" || return 1
 
-    echo "[ota] processing pending health" >> "$LOG_PATH"
+    ota_log INFO processing_started "processing pending health"
     "$ENV_RUN_BIN" "$OTA_BIN" health >> "$LOG_PATH" 2>&1
     status="$?"
-    echo "[ota] health processing exited with status $status" >> "$LOG_PATH"
+    if [ "$status" -eq 0 ]; then
+        ota_log INFO processing_exited "health processing exited with status $status"
+    else
+        ota_log ERROR processing_exited "health processing exited with status $status"
+    fi
     return "$status"
 }
 
@@ -126,11 +143,11 @@ run_health_worker() {
     trap cleanup_lock EXIT INT TERM
 
     if run_health_once; then
-        echo "[ota] one-shot health complete" >> "$LOG_PATH"
+        ota_log INFO completed "one-shot health complete"
         exit 0
     else
         status="$?"
-        echo "[ota] one-shot health failed with status $status" >> "$LOG_PATH"
+        ota_log ERROR failed "one-shot health failed with status $status"
         exit "$status"
     fi
 }

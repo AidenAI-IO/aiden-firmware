@@ -160,17 +160,17 @@ func logProminentSessionStart(logger *Logger, rotation SessionRotationResult, re
 	if logger == nil || rotation.ActiveSessionID == "" {
 		return
 	}
-	logger.Info("========================================")
-	logger.Info("NEW SESSION STARTED")
-	logger.Info("Session ID: %s", rotation.ActiveSessionID)
-	logger.Info("Reason: %s", reason)
+	fields := []LogField{
+		{Key: "session_id", Value: rotation.ActiveSessionID},
+		{Key: "reason", Value: reason},
+	}
 	if rotation.ClosedSessionID != "" {
-		logger.Info("Closed Session ID: %s", rotation.ClosedSessionID)
+		fields = append(fields, LogField{Key: "closed_session_id", Value: rotation.ClosedSessionID})
 	}
 	if rotation.ArchiveDir != "" {
-		logger.Info("Archive: %s", filepath.Base(rotation.ArchiveDir))
+		fields = append(fields, LogField{Key: "archive", Value: filepath.Base(rotation.ArchiveDir)})
 	}
-	logger.Info("========================================")
+	logger.InfoEvent("session", "session_started", fields...)
 }
 
 func (m memoryManagerSessionManager) CommitRun(ctx context.Context, req SessionCommitRequest) (SessionCommitResult, error) {

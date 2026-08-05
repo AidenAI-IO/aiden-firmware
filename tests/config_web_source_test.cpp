@@ -231,6 +231,12 @@ TEST_CASE("config web exposes agent runtime status") {
     CHECK(html.find("agentPortStatus") != std::string::npos);
     CHECK(html.find("renderAgentStatus") != std::string::npos);
     CHECK(html.find("startup_error") != std::string::npos);
+    CHECK(source.find("rfind_event(\"[agent] [supervisor] process_starting\")") !=
+          std::string::npos);
+    CHECK(source.find("rfind_event(\"[agent] [supervisor] binary_wait\")") !=
+          std::string::npos);
+    CHECK(source.find("boundary == log.size() || log[boundary] == ' '") !=
+          std::string::npos);
 }
 
 TEST_CASE("config web listens on all interfaces by default") {
@@ -327,6 +333,10 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("/api/logs/export") != std::string::npos);
     CHECK(html.find("aiden-logs.tar.gz") != std::string::npos);
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
+    CHECK(html.find("const severity=text.match(/^\\\\d{4}-") != std::string::npos);
+    CHECK(html.find("if(severity[1]==='ERROR')return 'log-error'") != std::string::npos);
+    CHECK(html.find("if(severity[1]==='WARN')return 'log-warn'") != std::string::npos);
+    CHECK(html.find("if(text.indexOf(' [ERROR] ')") == std::string::npos);
 }
 
 TEST_CASE("config web links to wetty browser terminal") {
@@ -747,7 +757,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("otaLogStartSize:0") != std::string::npos);
     CHECK(html.find("otaLogHasNewProgress") != std::string::npos);
     CHECK(html.find("extractOtaExitCode") != std::string::npos);
-    CHECK(html.find("[config_web] ota update exited rc=") != std::string::npos);
+    CHECK(html.find("[config_web] [ota] update_exited exit_code=") != std::string::npos);
     CHECK(html.find("OTA update failed (rc=") != std::string::npos);
     CHECK(html.find("Recent OTA log:\\\\n") != std::string::npos);
     CHECK(html.find("setOtaLogPending") != std::string::npos);
