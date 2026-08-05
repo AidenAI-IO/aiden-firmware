@@ -38,6 +38,26 @@ func TestSearchLaunchAppDescriptionRequiresFollowUpNavigation(t *testing.T) {
 	}
 }
 
+func TestAppSearchResultPromptPrefersTopmostMatchingResult(t *testing.T) {
+	prompt := buildAppSearchResultPrompt("WeChat")
+	for _, want := range []string{
+		`query "WeChat"`,
+		"direct app-launch result",
+		`localized "Best Search Result" heading`,
+		"localized Settings section",
+		"Settings gear badge",
+		`localized "Search in App" action`,
+		"discard every result that is not a direct app launch",
+		"scan from top to bottom and choose the topmost one",
+		"actual app icon or its directly associated app-launch tile",
+		"Do not use the center of the screen",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("app search result prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestOpenAppDescriptionOwnsRouting(t *testing.T) {
 	description := NewOpenAppTool(nil, nil, nil).Description()
 	for _, want := range []string{"automatically uses Phone Bridge", "otherwise it searches", "Use open_url"} {

@@ -355,20 +355,7 @@ func findSearchOpenAppResult(ctx context.Context, cfg appSearchOpenFlowConfig, e
 	if !ok || modelVision == nil {
 		return bridgeSearchResult{}, 0, fmt.Errorf("app search vision is not configured")
 	}
-	prompt := strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot of a system search results page.
-Find the visible search result row that launches the requested app for query %q.
-Return JSON only:
-{
-  "found": true,
-  "tap_point": {"x": 500, "y": 220, "coord_space": "normalized"},
-  "label": "App"
-}
-
-Rules:
-- Return found=true only when the app result is clearly visible and tappable.
-- tap_point must be inside the visible app result row, using normalized 0-1000 coordinates.
-- Prefer the actual app result row, not the keyboard, search field, or suggestion chip.
-- If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`, searchTerm))
+	prompt := buildAppSearchResultPrompt(searchTerm)
 	raw, err := modelVision.visionJSON(ctx, "app_search", prompt, shot)
 	if err != nil {
 		return bridgeSearchResult{}, 1, err
@@ -381,6 +368,25 @@ Rules:
 		result.TapPoint.CoordSpace = "normalized"
 	}
 	return result, 1, nil
+}
+
+func buildAppSearchResultPrompt(searchTerm string) string {
+	return strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot of a system search results page.
+Find the visible direct app-launch result for query %q.
+Return JSON only:
+{
+  "found": true,
+  "tap_point": {"x": 180, "y": 180, "coord_space": "normalized"},
+  "label": "App"
+}
+
+Rules:
+- A valid result must directly launch the requested app itself. On iOS this is commonly the standalone app icon/tile under a localized "Best Search Result" heading or an Apps section.
+- Do not select a result from a localized Settings section, a result with a Settings gear badge, an app settings page, a localized "Search in App" action, a web suggestion, or content from another app even when it contains the exact query text or app icon.
+- First discard every result that is not a direct app launch. If multiple valid direct app-launch results remain, scan from top to bottom and choose the topmost one.
+- tap_point must be centered inside the actual app icon or its directly associated app-launch tile, using normalized 0-1000 coordinates. Do not use the center of the screen or a large container's empty area.
+- Return found=true only when the direct app-launch result is clearly identifiable and tappable. If it cannot be distinguished from Settings or content results, return found=false.
+- If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`, searchTerm))
 }
 
 func confirmSearchOpenApp(ctx context.Context, cfg appSearchOpenFlowConfig, engine *textInputEngine, searchTerm string) (bridgeAppOpenResult, int, error) {
