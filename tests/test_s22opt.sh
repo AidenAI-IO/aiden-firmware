@@ -312,6 +312,17 @@ if grep -q "mount -t tmpfs" "$MOUNTLOG"; then
 else
 	pass "does not re-seal"
 fi
+# "no second tmpfs" on its own would also pass if the seal had been torn down
+# and never replaced, which is the outcome that actually matters. Assert both
+# that nothing was unmounted and that /opt is still sealed afterwards.
+if grep -q "^umount" "$MOUNTLOG"; then
+	fail "unmounted the existing seal"
+else
+	pass "does not unmount the existing seal"
+fi
+run_s22opt status
+check_status 1 $? "status still fails"
+check_contains "$OUTPUT" "opt=sealed" "the original seal is still in place"
 check_absent "$case_dir/opt/etc/opkg/userfeeds.conf" "creates no feed file"
 
 echo "Test 9: restart recovers from a seal once the bind can succeed"

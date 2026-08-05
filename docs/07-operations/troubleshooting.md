@@ -155,7 +155,7 @@ Solution:
 
 ## `opkg update` prints nothing, and no package can be found
 
-```
+```text
 # opkg update
 # opkg install htop
 error: opkg_prepare_url_for_install: Couldn't find anything to satisfy 'htop'.
