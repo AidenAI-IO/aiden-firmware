@@ -162,3 +162,63 @@ func TestBuildKimiProvidersResolveBaseURL(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildVolcengineProviderResolvesBaseURL(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		baseURL     string
+		wantBaseURL string
+	}{
+		{"volcengine default ark", "volcengine", "", arkBeijingBaseURL},
+		{"volcengine case insensitive", "Volcengine", "", arkBeijingBaseURL},
+		{"volcengine custom base url", "volcengine", "https://gateway.example.com/v3", "https://gateway.example.com/v3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := NewModelManager(ModelConfig{
+				Provider: tt.provider,
+				Model:    "doubao-seed-2-1-pro-260628",
+				APIKey:   "test-key",
+				BaseURL:  tt.baseURL,
+			}, ProxyConfig{})
+
+			model, err := mgr.build(mgr.config)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			compatible, ok := model.(*openAICompatibleModel)
+			if !ok {
+				t.Fatalf("model type = %T, want *openAICompatibleModel", model)
+			}
+			if compatible.baseURL != tt.wantBaseURL {
+				t.Errorf("baseURL = %q, want %q", compatible.baseURL, tt.wantBaseURL)
+			}
+			// The OpenRouter-only nested reasoning object must stay off for Ark:
+			// the Ark endpoint only accepts the standard reasoning_effort field.
+			if compatible.openRouterReasoning {
+				t.Error("openRouterReasoning = true, want false for the volcengine provider")
+			}
+		})
+	}
+}
+
+func TestBuildOpenRouterEnablesNestedReasoning(t *testing.T) {
+	mgr := NewModelManager(ModelConfig{
+		Provider: "openrouter",
+		Model:    "google/gemini-3.5-flash",
+		APIKey:   "test-key",
+	}, ProxyConfig{})
+
+	model, err := mgr.build(mgr.config)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	compatible, ok := model.(*openAICompatibleModel)
+	if !ok {
+		t.Fatalf("model type = %T, want *openAICompatibleModel", model)
+	}
+	if !compatible.openRouterReasoning {
+		t.Error("openRouterReasoning = false, want true for the openrouter provider")
+	}
+}

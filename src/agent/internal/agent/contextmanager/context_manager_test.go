@@ -235,6 +235,16 @@ func TestNewContextManagerFromMessageListPersistsMessages(t *testing.T) {
 	want := []Message{
 		{Role: MessageRoleSystem, Content: "system prompt"},
 		{
+			Role:    MessageRoleUser,
+			Content: "compacted summary",
+			RecoverableToolResults: []RecoverableToolResult{{
+				ToolName:         "shell",
+				ArtifactPath:     "/tmp/tool-results/tr_persisted.data",
+				ArtifactComplete: true,
+				Summary:          "tests passed",
+			}},
+		},
+		{
 			Role:    MessageRoleToolCall,
 			Content: "checking",
 			ToolCalls: []ToolCall{{

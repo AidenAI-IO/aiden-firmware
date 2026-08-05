@@ -29,6 +29,12 @@ type openAICompatibleModel struct {
 	explicitPromptCache bool
 	routerMetadata      bool
 	reasoningEffort     string
+	// openRouterReasoning enables the nested `reasoning` object alongside the
+	// standard reasoning_effort field. That object is an OpenRouter extension
+	// (it carries `exclude` to drop reasoning from the response), so only the
+	// OpenRouter provider sets it; direct endpoints such as Volcengine Ark,
+	// OpenAI, and Moonshot receive reasoning_effort alone.
+	openRouterReasoning bool
 	temperature         *float64
 	// sessionIDProvider, when set, supplies the value for the x-session-id
 	// request header. It is only wired up for the OpenRouter provider, whose
@@ -109,6 +115,15 @@ func withOpenAICompatibleRouterMetadata() openAICompatibleModelOption {
 func withOpenAICompatibleReasoningEffort(effort string) openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.reasoningEffort = strings.TrimSpace(effort)
+	}
+}
+
+// withOpenAICompatibleOpenRouterReasoning sends OpenRouter's nested `reasoning`
+// object in addition to the standard reasoning_effort field. Leave it unset for
+// direct provider endpoints, which only understand reasoning_effort.
+func withOpenAICompatibleOpenRouterReasoning() openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.openRouterReasoning = true
 	}
 }
 
@@ -496,12 +511,16 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	// Apply reasoning policy: only include reasoning fields when explicitly configured.
 	// Empty string = auto mode = omit from request (let model/provider decide).
 	// This prevents sending unsupported parameters to providers that don't support reasoning.
+	// The effort value is passed through verbatim so provider-specific levels
+	// (e.g. Ark's "minimal") reach the endpoint unchanged.
 	if m.reasoningEffort != "" {
-		reqPayload.Reasoning = &reasoningConfig{
-			Effort:  m.reasoningEffort,
-			Exclude: m.reasoningEffort == "none",
-		}
 		reqPayload.ReasoningEffort = m.reasoningEffort
+		if m.openRouterReasoning {
+			reqPayload.Reasoning = &reasoningConfig{
+				Effort:  m.reasoningEffort,
+				Exclude: m.reasoningEffort == "none",
+			}
+		}
 	}
 	generationInfo["llm_request_prepare_ms"] = time.Since(requestPrepareStart).Milliseconds()
 

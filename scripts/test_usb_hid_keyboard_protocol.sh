@@ -18,38 +18,63 @@ grep -Fq 'echo 1 > "$GADGET_DIR/functions/hid.usb0/protocol"' "$INIT_SCRIPT" ||
 grep -Fq 'echo 1 > "$GADGET_DIR/functions/hid.usb0/subclass"' "$INIT_SCRIPT" ||
     fail "S49usbhid must keep keyboard HID boot subclass=1 for host compatibility"
 
-grep -Fq 'reenumerate_composite()' "$INIT_SCRIPT" ||
-    fail "S49usbhid must define startup composite re-enumeration for iOS HID session refresh"
-
-awk -v unbind="echo \"\" > \"\$GADGET_DIR/UDC\" 2>/dev/null" \
-    -v rebind="echo \"\$UDC\" > \"\$GADGET_DIR/UDC\"" '
-    /^reenumerate_composite\(\)[[:space:]]*\{/ { in_fn=1; next }
-    in_fn && /^\}/ { done=1; exit }
-    in_fn && index($0, unbind) { found_unbind=1 }
-    in_fn && index($0, rebind) { found_rebind=1 }
-    END { exit(done && found_unbind && found_rebind ? 0 : 1) }
-' "$INIT_SCRIPT" ||
-    fail "S49usbhid startup re-enumeration must unbind and rebind the UDC in reenumerate_composite"
-
-awk -v bind="echo \"\$UDC\" > \"\$GADGET_DIR/UDC\"" '
+awk \
+    -v bind='echo "$UDC" > "$GADGET_DIR/UDC"' \
+    -v unbind='echo "" > "$GADGET_DIR/UDC"' \
+    -v udc_write='> "$GADGET_DIR/UDC"' \
+    -v function_link='ln -s "$GADGET_DIR/functions/' '
     /^start\(\)[[:space:]]*\{/ { in_start=1; next }
-    in_start && /^\}/ { exit }
-    !in_start { next }
-    index($0, bind) { after_bind=1; step=0; next }
-    after_bind && $0 ~ /^[[:space:]]*(#.*)?$/ { next }
-    after_bind {
-        step++
-        if (step == 1 && $0 !~ /^[[:space:]]*sleep[[:space:]]+1[[:space:]]*$/) {
-            exit
+    /^stop\(\)[[:space:]]*\{/ { in_stop=1; next }
+    in_start && /^\}/ { in_start=0; next }
+    in_stop && /^\}/ { in_stop=0; next }
+
+    in_start && index($0, function_link) {
+        if (bound) {
+            print "function link found after UDC bind: " $0 > "/dev/stderr"
+            invalid=1
         }
-        if (step == 2) {
-            found=($0 ~ /^[[:space:]]*reenumerate_composite[[:space:]]*$/)
-            exit
-        }
+        link_count++
+        next
     }
-    END { exit(found ? 0 : 1) }
+
+    index($0, udc_write) {
+        if (in_start && index($0, bind)) {
+            bind_count++
+            if (bind_count > 1) {
+                print "multiple UDC binds found in start(): " $0 > "/dev/stderr"
+                invalid=1
+            }
+            bound=1
+            next
+        }
+        if (in_start && index($0, unbind)) {
+            if (bound) {
+                print "UDC unbind found after initial bind: " $0 > "/dev/stderr"
+                invalid=1
+            }
+            next
+        }
+        if (in_stop && index($0, unbind)) {
+            next
+        }
+
+        print "unexpected UDC write outside initial bind or cleanup: " $0 > "/dev/stderr"
+        invalid=1
+    }
+
+    END {
+        if (link_count != 4) {
+            print "expected four function links before UDC bind, found " link_count > "/dev/stderr"
+            invalid=1
+        }
+        if (bind_count != 1) {
+            print "expected exactly one UDC bind in start(), found " bind_count > "/dev/stderr"
+            invalid=1
+        }
+        exit(invalid ? 1 : 0)
+    }
 ' "$INIT_SCRIPT" ||
-    fail "S49usbhid must re-enumerate the composite gadget immediately after initial bind"
+    fail "S49usbhid must link the completed composite before one startup bind and never re-enumerate it"
 
 grep -Fq 'write_text_file(function_path + "/protocol", "1");' "$EXAMPLE_SRC" ||
     fail "example_usb_hid setup must keep keyboard HID boot protocol=1"

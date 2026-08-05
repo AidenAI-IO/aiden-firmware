@@ -2835,6 +2835,16 @@ void set_json_string_vector(std::vector<std::string>* dst, cJSON* obj, const cha
     }
 }
 
+// model_base_url_allowed mirrors the agent runtime's whitelist
+// (clearNonAllowedModelBaseURL in src/agent/internal/agent/config.go). Providers
+// listed here accept a base_url override: openai for custom gateways, ollama for
+// a local server address. Anything else pins its endpoint, so a stored base_url
+// would be dead config. Keep both lists in sync.
+bool model_base_url_allowed(const std::string& provider) {
+    const std::string normalized = lowercase_copy(trim_copy(provider));
+    return normalized == "openai" || normalized == "ollama";
+}
+
 void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     if (!json_is_object(obj) || !m) return;
     set_json_str(&m->provider, obj, "provider");
@@ -2860,9 +2870,7 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_int(&m->model_max_output_tokens, obj, "model_max_output_tokens");
 
     // Clear base_url for non-whitelisted providers to keep config file clean.
-    // Only openai and ollama support base_url override.
-    std::string provider_lower = lowercase_copy(trim_copy(m->provider));
-    if (!m->base_url.empty() && provider_lower != "openai" && provider_lower != "ollama") {
+    if (!m->base_url.empty() && !model_base_url_allowed(m->provider)) {
         m->base_url.clear();
     }
 }
@@ -6038,6 +6046,12 @@ std::string provider_default_url(const std::string& provider, const std::string&
     if (provider == "google-cloud") {
         if (section == "tts") return "https://texttospeech.googleapis.com";
         return "https://speech.googleapis.com";  // STT default
+    }
+    // Volcengine Ark's OpenAI-compatible endpoint, for [model] only. The [tts]
+    // provider of the same name speaks a separate WebSocket protocol with its own
+    // host and auth, so it must not inherit this URL.
+    if (provider == "volcengine" && section == "model") {
+        return "https://ark.cn-beijing.volces.com/api/v3";
     }
     return "";
 }

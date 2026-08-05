@@ -148,6 +148,14 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		}
 	}
 
+	// model.provider enum must include every provider ModelManager.build accepts.
+	modelEnum := enumValues("model.provider")
+	for _, p := range []string{"openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake"} {
+		if !contains(modelEnum, p) {
+			t.Errorf("model.provider enum missing provider %q", p)
+		}
+	}
+
 	ttsEnum := enumValues("tts.provider")
 	for _, p := range []string{"minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine"} {
 		if !contains(ttsEnum, p) {
@@ -405,6 +413,56 @@ func TestConfigMeta_TTSFieldsFollowProviderCapabilities(t *testing.T) {
 	minimaxEmotion := VisibleRule{All: []Condition{in("tts.provider", "minimax", "minimax-cn")}}
 	if !hasPlaceholder(emotion, "happy", minimaxEmotion) {
 		t.Errorf("tts.emotion missing MiniMax placeholder")
+	}
+}
+
+func TestConfigMeta_ModelReasoningEffortProviderScoping(t *testing.T) {
+	idx := fieldIndex(t)
+
+	field, ok := idx["model.reasoning_effort"]
+	if !ok {
+		t.Fatal("missing model.reasoning_effort metadata")
+	}
+
+	options := map[string]EnumOption{}
+	for _, option := range field.Enum {
+		options[option.Value] = option
+	}
+
+	// auto plus the three levels every reasoning provider understands must stay
+	// unscoped so they render for any provider.
+	for _, value := range []string{"", "low", "medium", "high"} {
+		option, ok := options[value]
+		if !ok {
+			t.Errorf("model.reasoning_effort enum missing option %q", value)
+			continue
+		}
+		if len(option.Providers) != 0 {
+			t.Errorf("option %q providers = %#v, want unscoped (all providers)", value, option.Providers)
+		}
+	}
+
+	// "minimal" is supported by OpenRouter and Volcengine Ark.
+	minimal, ok := options["minimal"]
+	if !ok {
+		t.Fatal("model.reasoning_effort enum missing option \"minimal\"")
+	}
+	if !reflect.DeepEqual(minimal.Providers, []string{"openrouter", "volcengine"}) {
+		t.Errorf("option \"minimal\" providers = %#v, want [openrouter volcengine]", minimal.Providers)
+	}
+
+	// "none" is not an Ark level; offering it there would produce a 400.
+	none, ok := options["none"]
+	if !ok {
+		t.Fatal("model.reasoning_effort enum missing option \"none\"")
+	}
+	if len(none.Providers) == 0 {
+		t.Fatal("option \"none\" is unscoped, want it hidden for the volcengine provider")
+	}
+	for _, provider := range none.Providers {
+		if provider == "volcengine" {
+			t.Error("option \"none\" is offered for volcengine, which rejects it")
+		}
 	}
 }
 

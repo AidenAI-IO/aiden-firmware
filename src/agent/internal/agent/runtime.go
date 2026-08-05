@@ -223,15 +223,19 @@ func (m *RunMetrics) CacheHitRate() float64 {
 }
 
 const (
-	runEventToolCall         = "tool_call"
-	runEventSTTTranscription = "stt_transcription"
-	runEventVoicePromptSound = "voice_prompt_sound"
-	runEventTTSStreamPreopen = "tts_stream_preopen"
-	runEventMemoryRetrieve   = "memory_retrieve"
-	runEventSessionBegin     = "session_begin"
-	runEventIterationStart   = "iteration_start"
-	runEventIterationEnd     = "iteration_end"
-	runEventLoopGuardStop    = "loop_guard_stop"
+	runEventToolCall                       = "tool_call"
+	runEventSTTTranscription               = "stt_transcription"
+	runEventVoicePromptSound               = "voice_prompt_sound"
+	runEventTTSStreamPreopen               = "tts_stream_preopen"
+	runEventMemoryRetrieve                 = "memory_retrieve"
+	runEventSessionBegin                   = "session_begin"
+	runEventIterationStart                 = "iteration_start"
+	runEventIterationEnd                   = "iteration_end"
+	runEventLoopGuardStop                  = "loop_guard_stop"
+	runEventToolResultContext              = "tool_result_context"
+	runEventContextBudget                  = "context_budget"
+	runEventHistoricalToolResultCompaction = "historical_tool_result_compaction"
+	runEventModelRequestFailure            = "model_request_failure"
 )
 
 type RunEvent struct {
@@ -258,7 +262,14 @@ type usageTrackingModel struct {
 func (m *usageTrackingModel) CallOptions() []chains.ChainCallOption { return m.inner.CallOptions() }
 
 func (m *usageTrackingModel) Spec() model.ModelSpec {
-	return m.inner.Spec()
+	if m == nil || m.inner == nil {
+		return model.ModelSpec{}
+	}
+	spec := m.inner.Spec()
+	if spec.ContextWindow <= 0 {
+		spec.ContextWindow = m.contextWindow()
+	}
+	return spec
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -901,32 +912,12 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		DeviceID:     defaultMemoryDeviceID,
 		CurrentHints: currentHints,
 	}
-	memoryContext := MemoryContext{}
-	var memoryRetrieveEvent *TaskEpisodeEvent
+	// Memories are no longer retrieved up front. The agent pulls what it needs
+	// on demand through the recall tools, which record the referenced IDs on the
+	// episode recorder so outcome-based confidence updates only touch memories
+	// the agent actually saw.
 	if r.memoryPlane != nil {
-		retrieveStart := time.Now()
-		retrieved, retrieveErr := r.memoryPlane.Retrieve(ctx, retrieveReq)
-		retrieveDuration := time.Since(retrieveStart).Milliseconds()
-
-		if retrieveErr != nil {
-			if r.logger != nil {
-				r.logger.Warn("[memory] retrieve failed: %v", retrieveErr)
-			}
-		} else {
-			memoryContext = retrieved
-		}
-		memoryRetrieveEvent = &TaskEpisodeEvent{
-			Type:       runEventMemoryRetrieve,
-			Ts:         retrieveStart.Format(time.RFC3339Nano),
-			DurationMs: &retrieveDuration,
-			Metadata: map[string]interface{}{
-				"tool_count": len(toolNamesFromTools(availableTools)),
-				"success":    retrieveErr == nil,
-			},
-		}
-	}
-	if r.memoryPlane != nil {
-		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
+		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
 		if episodeRecorder != nil {
 			episodeRecorder.setStartedAtIfEarlier(episodeStartTimeWithEvents(startTime.UTC(), preRunEvents))
 			if err := episodeRecorder.Start(ctx); err != nil && r.logger != nil {
@@ -934,9 +925,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			}
 			recordPreRunEpisodeEvents(episodeRecorder, preRunEvents)
 			episodeRecorder.RecordEvent(sessionBeginEvent)
-			if memoryRetrieveEvent != nil {
-				episodeRecorder.RecordEvent(*memoryRetrieveEvent)
-			}
 		}
 	}
 	if episodeRecorder != nil {
@@ -1063,13 +1051,42 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	compactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
+	budgetContextWindow := contextWindow
+	if budgetContextWindow <= 0 {
+		budgetContextWindow = defaultContextWindowFallback
+	}
+	maxResponseTokens := r.models.Spec().MaxOutput
+	if r.config.Model.MaxResponseTokens > 0 {
+		maxResponseTokens = r.config.Model.MaxResponseTokens
+	}
+	if req.MaxTokens > 0 {
+		maxResponseTokens = req.MaxTokens
+	}
+	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
+	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
+	if compactionEnabled {
+		compactor.SetHistoricalToolResultTarget(compactionTarget)
+	}
 	tokenUsage := compactor.EstimateTokenUsage(r.contextManager)
-	// TODO: make this configurable
-	if tokenUsage > int(float64(max(contextWindow, 8192))*0.8) {
+	if compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
-			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, contextWindow: %d", tokenUsage, contextWindow)
+			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
 		}
 		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
+		if episodeRecorder != nil {
+			stats := compactor.LastStats()
+			episodeRecorder.RecordEvent(TaskEpisodeEvent{
+				Type: runEventHistoricalToolResultCompaction,
+				Metadata: map[string]interface{}{
+					"historical_results_replaced":   stats.HistoricalResultsReplaced,
+					"tokens_before":                 stats.TokensBefore,
+					"tokens_after":                  stats.TokensAfter,
+					"conversation_summary_required": stats.ConversationSummaryRequired,
+					"compacted":                     compacted,
+					"success":                       err == nil,
+				},
+			})
+		}
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -1660,22 +1677,6 @@ func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langt
 		availableTools,
 		agentRoleRules(),
 	)
-}
-
-func (r *Runtime) memoryContextForPrompt() string {
-	if r.config.ConfigDir == "" {
-		return ""
-	}
-	var parts []string
-	sessionSummary, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "session", "summary.md"))
-	if len(sessionSummary) > 0 {
-		parts = append(parts, string(sessionSummary))
-	}
-	profile, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "long_term", "profile.md"))
-	if len(profile) > 0 {
-		parts = append(parts, string(profile))
-	}
-	return strings.Join(parts, "\n\n")
 }
 
 // runtimeCallbackHandler implements callbacks.Handler for streaming output and

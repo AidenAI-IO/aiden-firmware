@@ -1012,6 +1012,58 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config keeps model base_url for providers that allow it") {
+    // Keep this whitelist aligned with clearNonAllowedModelBaseURL in the Go
+    // runtime. Only OpenAI custom gateways and local Ollama servers accept an
+    // endpoint override; all other providers use their built-in endpoints.
+    struct Case {
+        const char* provider;
+        const char* base_url;
+    };
+    const Case cases[] = {
+        {"openai", "https://gateway.example.com/v1"},
+        {"ollama", "http://127.0.0.1:11434"},
+    };
+
+    for (const Case& c : cases) {
+        StubEnv env;
+        auto handle = start_server(env);
+
+        const std::string body =
+            std::string("{\"config\":{\"model\":{\"provider\":\"") + c.provider +
+            "\",\"model\":\"x\",\"api_key\":\"k\",\"base_url\":\"" + c.base_url + "\"},"
+            "\"hid\":{\"pointer_mode\":\"absolute\"},"
+            "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK(resp.status == 200);
+
+        const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+        CHECK_MESSAGE(saved.find(std::string("base_url = \"") + c.base_url + "\"") != std::string::npos,
+                      std::string(c.provider));
+    }
+}
+
+TEST_CASE("config_web: POST /api/config drops model base_url for providers that pin their endpoint") {
+    const char* providers[] = {"openrouter", "kimi", "kimi-cn", "volcengine", "fake"};
+
+    for (const char* provider : providers) {
+        StubEnv env;
+        auto handle = start_server(env);
+
+        const std::string base_url = "https://gateway.example.com/v1";
+        const std::string body =
+            std::string("{\"config\":{\"model\":{\"provider\":\"") + provider +
+            "\",\"model\":\"x\",\"api_key\":\"k\",\"base_url\":\"" + base_url + "\"},"
+            "\"hid\":{\"pointer_mode\":\"absolute\"},"
+            "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK(resp.status == 200);
+
+        const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+        CHECK_MESSAGE(saved.find(base_url) == std::string::npos, std::string(provider));
+    }
+}
+
 TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only agent") {
     StubEnv env;
     auto handle = start_server(env);

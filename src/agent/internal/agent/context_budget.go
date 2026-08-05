@@ -4,98 +4,92 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
+
+	"aiden-agent/internal/agent/model"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
-type contextWindowModel interface {
-	contextWindow() int
+const defaultContextWindowFallback = 8_192
+
+type ContextBudgetTelemetry struct {
+	EstimatedPromptTokens int
+	EstimatedInputBudget  int
+	MessageTokens         int
+	ToolSchemaTokens      int
+	ContextWindow         int
+	MaxResponseTokens     int
+	HardGuardRejected     bool
 }
 
-type toolResponseBudgetCandidate struct {
-	MessageIndex  int
-	PartIndex     int
-	ToolCallID    string
-	ToolName      string
-	Content       string
-	ContentTokens int
+type ContextBudgetExceededError struct {
+	EstimatedPromptTokens int
+	MessageTokens         int
+	ToolSchemaTokens      int
+	InputBudget           int
+	ContextWindow         int
+	MaxResponseTokens     int
 }
 
-type toolResponseBudgetCandidateKey struct {
-	MessageIndex int
-	PartIndex    int
-}
-
-func (c toolResponseBudgetCandidate) key() toolResponseBudgetCandidateKey {
-	return toolResponseBudgetCandidateKey{
-		MessageIndex: c.MessageIndex,
-		PartIndex:    c.PartIndex,
+func (e *ContextBudgetExceededError) Error() string {
+	if e == nil {
+		return "context budget exceeded"
 	}
+	return fmt.Sprintf(
+		"context budget exceeded: estimated prompt tokens %d exceed input budget %d (context window %d, max response %d)",
+		e.EstimatedPromptTokens,
+		e.InputBudget,
+		e.ContextWindow,
+		e.MaxResponseTokens,
+	)
 }
 
-func guardMessagesWithinContextWindow(model llms.Model, messages []llms.MessageContent, options []llms.CallOption) []llms.MessageContent {
-	if model == nil {
-		return messages
-	}
-	windowProvider, ok := model.(contextWindowModel)
-	if !ok {
-		return messages
-	}
-	contextWindow := windowProvider.contextWindow()
+func checkHardContextBudget(spec model.ModelSpec, messages []llms.MessageContent, options []llms.CallOption, onTelemetry func(ContextBudgetTelemetry)) error {
+	contextWindow := spec.ContextWindow
 	if contextWindow <= 0 {
-		return messages
+		return nil
 	}
-
 	var callOptions llms.CallOptions
 	for _, option := range options {
-		option(&callOptions)
+		if option != nil {
+			option(&callOptions)
+		}
 	}
-	inputBudget := inputContextBudget(contextWindow, callOptions.MaxTokens)
-	if inputBudget <= 0 {
-		return messages
+	maxResponseTokens := spec.MaxOutput
+	if callOptions.MaxTokens > 0 {
+		maxResponseTokens = callOptions.MaxTokens
 	}
-
+	inputBudget := inputContextBudget(contextWindow, maxResponseTokens)
+	messageTokens := estimateMessagesTokens(messages)
 	toolSchemaTokens := estimateToolSchemaTokens(callOptions)
-	if estimateMessagesTokens(messages)+toolSchemaTokens <= inputBudget {
-		return messages
+	estimatedPromptTokens := messageTokens + toolSchemaTokens
+	telemetry := ContextBudgetTelemetry{
+		EstimatedPromptTokens: estimatedPromptTokens,
+		EstimatedInputBudget:  inputBudget,
+		MessageTokens:         messageTokens,
+		ToolSchemaTokens:      toolSchemaTokens,
+		ContextWindow:         contextWindow,
+		MaxResponseTokens:     maxResponseTokens,
 	}
-
-	candidates := collectToolResponseBudgetCandidates(messages)
-	if len(candidates) == 0 {
-		return messages
-	}
-
-	sanitized := cloneMessageContents(messages)
-	omitted := make(map[toolResponseBudgetCandidateKey]struct{})
-	for _, candidate := range candidates {
-		singlePromptTokens := estimateSingleToolResponsePromptTokens(messages, candidate) + toolSchemaTokens
-		if singlePromptTokens <= inputBudget {
-			continue
+	if estimatedPromptTokens <= inputBudget {
+		if onTelemetry != nil {
+			onTelemetry(telemetry)
 		}
-		replaceToolResponsePart(sanitized, candidate, omittedToolResultMessage(candidate))
-		omitted[candidate.key()] = struct{}{}
+		return nil
 	}
-
-	if estimateMessagesTokens(sanitized)+toolSchemaTokens <= inputBudget {
-		return sanitized
+	telemetry.HardGuardRejected = true
+	if onTelemetry != nil {
+		onTelemetry(telemetry)
 	}
-
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].ContentTokens > candidates[j].ContentTokens
-	})
-	for _, candidate := range candidates {
-		if isToolResponseAlreadyOmitted(omitted, candidate) {
-			continue
-		}
-		replaceToolResponsePart(sanitized, candidate, omittedToolResultMessage(candidate))
-		omitted[candidate.key()] = struct{}{}
-		if estimateMessagesTokens(sanitized)+toolSchemaTokens <= inputBudget {
-			break
-		}
+	return &ContextBudgetExceededError{
+		EstimatedPromptTokens: estimatedPromptTokens,
+		MessageTokens:         messageTokens,
+		ToolSchemaTokens:      toolSchemaTokens,
+		InputBudget:           inputBudget,
+		ContextWindow:         contextWindow,
+		MaxResponseTokens:     maxResponseTokens,
 	}
-	return sanitized
 }
 
 func inputContextBudget(contextWindow, maxResponseTokens int) int {
@@ -109,102 +103,6 @@ func inputContextBudget(contextWindow, maxResponseTokens int) int {
 		return 1
 	}
 	return contextWindow - maxResponseTokens
-}
-
-func collectToolResponseBudgetCandidates(messages []llms.MessageContent) []toolResponseBudgetCandidate {
-	var candidates []toolResponseBudgetCandidate
-	for messageIndex, message := range messages {
-		for partIndex, part := range message.Parts {
-			response, ok := part.(llms.ToolCallResponse)
-			if !ok {
-				continue
-			}
-			content := strings.TrimSpace(response.Content)
-			candidates = append(candidates, toolResponseBudgetCandidate{
-				MessageIndex:  messageIndex,
-				PartIndex:     partIndex,
-				ToolCallID:    response.ToolCallID,
-				ToolName:      response.Name,
-				Content:       response.Content,
-				ContentTokens: estimateTextTokens(content),
-			})
-		}
-	}
-	return candidates
-}
-
-func estimateSingleToolResponsePromptTokens(messages []llms.MessageContent, candidate toolResponseBudgetCandidate) int {
-	matchingCallIndex := findMatchingToolCallMessageIndex(messages, candidate.ToolCallID, candidate.MessageIndex)
-	total := 0
-	for i, message := range messages {
-		switch {
-		case i == candidate.MessageIndex:
-			total += estimateMessageTokens(llms.MessageContent{
-				Role:  message.Role,
-				Parts: []llms.ContentPart{message.Parts[candidate.PartIndex]},
-			})
-		case i == matchingCallIndex:
-			total += estimateMessageTokens(message)
-		case message.Role == llms.ChatMessageTypeSystem || message.Role == llms.ChatMessageTypeHuman:
-			total += estimateMessageTokens(message)
-		}
-	}
-	return total
-}
-
-func findMatchingToolCallMessageIndex(messages []llms.MessageContent, toolCallID string, before int) int {
-	if strings.TrimSpace(toolCallID) == "" {
-		return -1
-	}
-	for i := before - 1; i >= 0; i-- {
-		for _, part := range messages[i].Parts {
-			call, ok := part.(llms.ToolCall)
-			if ok && call.ID == toolCallID {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
-func cloneMessageContents(messages []llms.MessageContent) []llms.MessageContent {
-	cloned := append([]llms.MessageContent(nil), messages...)
-	for i := range cloned {
-		cloned[i].Parts = append([]llms.ContentPart(nil), messages[i].Parts...)
-	}
-	return cloned
-}
-
-func replaceToolResponsePart(messages []llms.MessageContent, candidate toolResponseBudgetCandidate, content string) {
-	if candidate.MessageIndex < 0 || candidate.MessageIndex >= len(messages) {
-		return
-	}
-	parts := messages[candidate.MessageIndex].Parts
-	if candidate.PartIndex < 0 || candidate.PartIndex >= len(parts) {
-		return
-	}
-	response, ok := parts[candidate.PartIndex].(llms.ToolCallResponse)
-	if !ok {
-		return
-	}
-	response.Content = content
-	parts[candidate.PartIndex] = response
-}
-
-func isToolResponseAlreadyOmitted(omitted map[toolResponseBudgetCandidateKey]struct{}, candidate toolResponseBudgetCandidate) bool {
-	_, ok := omitted[candidate.key()]
-	return ok
-}
-
-func omittedToolResultMessage(candidate toolResponseBudgetCandidate) string {
-	toolName := strings.TrimSpace(candidate.ToolName)
-	if toolName == "" {
-		toolName = "tool"
-	}
-	return fmt.Sprintf(
-		"note: %s tool result omitted because including it would exceed the model context window. The tool call already completed, but its raw output was not inserted into the next model call.",
-		toolName,
-	)
 }
 
 func estimateMessagesTokens(messages []llms.MessageContent) int {
@@ -284,4 +182,25 @@ func estimateJSONTokens(value any) int {
 		return estimateTextTokens(fmt.Sprint(value))
 	}
 	return estimateTextTokens(string(data))
+}
+
+func isProviderContextLengthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"context length",
+		"context_length_exceeded",
+		"maximum context",
+		"context window exceeded",
+		"context_window_exceeded",
+		"too many tokens",
+		"prompt is too long",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }

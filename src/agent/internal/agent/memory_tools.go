@@ -137,7 +137,25 @@ func (t *RecallMemoryTool) Call(ctx context.Context, input string) (string, erro
 	if err != nil {
 		return "", err
 	}
+	recordRecalledMemoryIDs(ctx, results, func(r MemoryResult) string { return r.ID })
 	return encodeToolJSON(map[string]any{"results": results})
+}
+
+// recordRecalledMemoryIDs reports the IDs of memories surfaced by a recall tool
+// to the active episode recorder, so outcome-based confidence updates only
+// touch memories the agent actually saw.
+func recordRecalledMemoryIDs[T any](ctx context.Context, results []T, id func(T) string) {
+	recorder := EpisodeRecorderFromContext(ctx)
+	if recorder == nil || len(results) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(results))
+	for _, r := range results {
+		if v := strings.TrimSpace(id(r)); v != "" {
+			ids = append(ids, v)
+		}
+	}
+	recorder.RecordMemoryRecall(ids)
 }
 
 func encodeToolJSON(value any) (string, error) {
@@ -301,6 +319,7 @@ func (t *RecallDeviceMemoryTool) Call(ctx context.Context, input string) (string
 	if err != nil {
 		return "", err
 	}
+	recordRecalledMemoryIDs(ctx, results, func(h MemoryHit) string { return h.ID })
 	return encodeToolJSON(map[string]any{"results": results})
 }
 
