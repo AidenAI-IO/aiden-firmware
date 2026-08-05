@@ -341,13 +341,12 @@ func (t *QuickActionTool) SetPlatformFn(fn func() string) {
 func (t *QuickActionTool) Description() string {
 	return strings.TrimSpace(`Execute a predefined, platform-aware shortcut from quick_actions.json. Cataloged semantic actions MUST use quick_action instead of manually constructed modifier chords. Explicit physical-key requests and uncataloged app-specific shortcuts may use keyboard_tap; a cataloged chord fallback requires a quick_action result in the current run that explicitly reports reserved/unavailable before execution. ` +
 		`For go-home/home-screen requests such as 回到桌面, call {"action":"home"} first; on Android this delegates to keyboard_tap {"keys":["KEYCODE_HOME"]}, while touch_gesture {"type":"home"} remains a fallback alternative. ` +
-		`The runtime selects platform from global device_type state; platform remains a compatibility input when calling this tool directly. Use {"action":"list"} to inspect actions for the configured device_type.`)
+		`The runtime selects platform from global device_type state. Use {"action":"list"} to inspect actions for the configured device_type.`)
 }
 
 func (t *QuickActionTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"action":            stringArgSchema(`Required action id or alias, for example "back", "copy", "spotlight_search", or "list" to inspect actions.`),
-		"platform":          stringEnumArgSchema("Compatibility target platform; runtime device_type state takes precedence when available.", "ios", "android", "mac"),
 		"list":              boolArgSchema("Legacy alternative to action=list. New calls should always provide action."),
 		"alternative":       boolArgSchema("Set true to execute an alternative binding listed by a previous quick_action result."),
 		"alternative_index": minIntegerArgSchema("1-based alternative binding index; defaults to 1 when alternative=true.", 1),
@@ -416,7 +415,7 @@ func (t *QuickActionTool) call(ctx context.Context, input string) (string, error
 	actionID, ok := globalQuickActions.resolveActionID(args.Action)
 	if !ok {
 		suggestions := globalQuickActions.suggestActionIDs(args.Action, 5)
-		message := fmt.Sprintf("unknown action %q; use {\"action\":\"list\",\"platform\":\"%s\"}", args.Action, platform)
+		message := fmt.Sprintf("unknown action %q; use {\"action\":\"list\"}", args.Action)
 		if len(suggestions) > 0 {
 			message = fmt.Sprintf("%s; suggested actions: %s", message, strings.Join(suggestions, ", "))
 		}

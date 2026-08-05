@@ -37,6 +37,20 @@ func TestSearchLaunchAppDescriptionRequiresFollowUpNavigation(t *testing.T) {
 	}
 }
 
+func TestSearchLaunchAppSchemaInfersPlatformFromDeviceState(t *testing.T) {
+	schema := (&appSearchOpenTool{}).ArgsSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing properties: %#v", schema)
+	}
+	if props["app"] == nil || props["name"] == nil {
+		t.Fatalf("search_launch_app schema missing expected fields: %#v", props)
+	}
+	if _, found := props["platform"]; found {
+		t.Fatalf("search_launch_app schema must infer platform from runtime device state: %#v", props)
+	}
+}
+
 func TestResolveOpenAppTargetsAppAliasStaysSemantic(t *testing.T) {
 	args := openAppArgs{App: " weixin "}
 
@@ -248,8 +262,8 @@ func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T
 	if err := json.Unmarshal([]byte(quick.calls[0]), &quickArgs); err != nil {
 		t.Fatalf("decode quick_action input: %v", err)
 	}
-	if quickArgs.Platform != "android" {
-		t.Fatalf("quick_action platform = %q, want android", quickArgs.Platform)
+	if quickArgs.Action != "spotlight_search" || quickArgs.Platform != "" {
+		t.Fatalf("quick_action input = %#v, want action only", quickArgs)
 	}
 }
 

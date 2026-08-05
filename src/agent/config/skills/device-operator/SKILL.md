@@ -52,7 +52,7 @@ For cross-app tasks that require extracting data from a source app and entering 
 
 Prefer the highest-level reliable tool for the job:
 
-- When the user's intent clearly matches a cataloged semantic action, you MUST use `quick_action`. This includes back, home, app switching or switching back, system/global search, copy, paste, cut, select all, semantic backward/forward deletion, undo/redo, find, send, and browser actions. Always pass both `action` and the observed `platform`; use `{"action":"list","platform":"..."}` to inspect the catalog when availability is uncertain.
+- When the user's intent clearly matches a cataloged semantic action, you MUST use `quick_action`. This includes back, home, app switching or switching back, system/global search, copy, paste, cut, select all, semantic backward/forward deletion, undo/redo, find, send, and browser actions. Pass only the `action`; runtime selects the platform from global `[device].device_type`. Use `{"action":"list"}` to inspect the configured device catalog when availability is uncertain.
   - A `ctrl`/`meta` `keyboard_tap` chord is allowed only when the user explicitly asks to press those exact physical keys, the shortcut is app-specific or not cataloged, or a `quick_action` result in the current run explicitly reports the matching action as `reserved`/unavailable before executing a binding.
   - Do not infer that `quick_action` is unavailable from an unrelated tool failure, text-entry failure, stale screenshot, HID problem, or your own assumption.
   - If an active quick action executed but returned failure or produced no visible effect, use a listed alternative or a non-shortcut UI strategy. Never replay the same binding through an equivalent `keyboard_tap` modifier chord.
@@ -117,7 +117,7 @@ If `enter_text` reports missing HID devices such as `/dev/hidg0` or `/dev/hidg1`
 Use this flow for app switcher, recents, returning to Aiden, and cross-app navigation workflows.
 
 1. Observe the screen.
-2. If platform is known, try `quick_action` for `app_switch`, home, back, or app search before manual gestures.
+2. Try `quick_action` for `app_switch`, home, back, or app search before manual gestures.
 3. Use `search_launch_app` when opening a target app via system search is the clearest path.
 4. Verify the result with a screenshot before continuing.
 

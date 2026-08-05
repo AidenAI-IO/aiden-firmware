@@ -63,12 +63,11 @@ func TestQuickActionExposesStructuredSchema(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing properties: %#v", schema)
 	}
-	if props["action"] == nil || props["platform"] == nil || props["list"] == nil {
+	if props["action"] == nil || props["list"] == nil {
 		t.Fatalf("quick_action schema missing expected fields: %#v", props)
 	}
-	platform := props["platform"].(map[string]any)
-	if platform["type"] != "string" {
-		t.Fatalf("platform type = %#v, want string", platform["type"])
+	if _, found := props["platform"]; found {
+		t.Fatalf("quick_action schema must infer platform from runtime device state: %#v", props)
 	}
 	// quick_action exposes only the actions defined in quick_actions.json; it
 	// carries no transport for bridge-invented capabilities such as open_url.

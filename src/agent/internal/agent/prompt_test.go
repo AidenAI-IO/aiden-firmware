@@ -398,9 +398,14 @@ func TestRolePromptOmitsRuntimeAndMemoryContext(t *testing.T) {
 
 func TestRolePromptRoutesPlatformShortcutsThroughQuickAction(t *testing.T) {
 	profile := testPromptProfile(AgentConfig{})
-	for _, want := range []string{"copy, paste, cut, select all, delete backward/forward", "MUST use quick_action", `quick_action with {"action":"home"} first`, "KEYCODE_HOME", `touch_gesture {"type":"home"} remains only a fallback`, "current run explicitly reports", "Do not infer quick_action unavailability", "unrelated tool failure", "never replay the same binding", "explicitly asks to press those exact physical keys", "app-specific or not cataloged"} {
+	for _, want := range []string{"copy, paste, cut, select all, delete backward/forward", "MUST use quick_action", "global device_type state", `quick_action with {"action":"home"} first`, "KEYCODE_HOME", `touch_gesture {"type":"home"} remains only a fallback`, "current run explicitly reports", "Do not infer quick_action unavailability", "unrelated tool failure", "never replay the same binding", "explicitly asks to press those exact physical keys", "app-specific or not cataloged"} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("system prompt missing shortcut routing guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+	for _, notWant := range []string{"observed_state.platform", `quick_action {"action":"back","platform":"android"}`, `{"action":"list","platform"`} {
+		if strings.Contains(profile.SystemPrompt, notWant) {
+			t.Fatalf("system prompt should not ask tools to receive platform %q:\n%s", notWant, profile.SystemPrompt)
 		}
 	}
 }
