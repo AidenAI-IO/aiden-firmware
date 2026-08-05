@@ -2015,10 +2015,11 @@ TEST_CASE("config web html defines provider ui symbols on executable lines") {
     }
 }
 
-// The config metadata enum for model.provider only lists built-in provider
-// types, so named [providers.*] sections have to be merged into the select at
-// runtime or quick switching is impossible from the web UI.
-TEST_CASE("config web html merges named providers into the provider select") {
+// The [model] provider select offers configured [providers.*] entries only,
+// plus an add shortcut. A bare provider type carries no credentials, so
+// offering the metadata enum let the user pick a provider that cannot
+// authenticate; the type now lives in the Add Provider dialog instead.
+TEST_CASE("config web html lists only configured providers in the provider select") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
     REQUIRE(html_in.good());
@@ -2037,15 +2038,100 @@ TEST_CASE("config web html merges named providers into the provider select") {
     CHECK(sync_body.find("injectNamedProviderOptions()") != std::string::npos);
     // Clearing the manager on an empty config keeps stale cards from lingering.
     CHECK(sync_body.find("ProvidersManager.loadProviders({})") != std::string::npos);
+    // Provider-scoped options (reasoning_effort) are hydrated from the resolved
+    // provider type, which is only knowable once the providers map is loaded.
+    // Without this re-apply, loading a config that references a named provider
+    // dropped minimal/none from reasoning_effort until the user re-picked.
+    const size_t inject_call = sync_body.find("injectNamedProviderOptions()");
+    const size_t visibility_call = sync_body.find("applyFieldVisibility(true)");
+    CHECK(visibility_call != std::string::npos);
+    CHECK(inject_call < visibility_call);
 
     const size_t inject_at = js.find("function injectNamedProviderOptions()");
-    const std::string inject_body = js.substr(inject_at, 900);
-    // Named entries must shadow a built-in type of the same name, matching the
-    // agent's applyProviderRef which looks up cfg.Providers before the type.
-    CHECK(inject_body.find("shadowed[optionValue(option)]") != std::string::npos);
-    // The pristine enum has to be snapshotted or repeated syncs compound.
-    CHECK(inject_body.find("baseProviderOptions") != std::string::npos);
-    CHECK(js.find("selectFieldOptions={};baseProviderOptions=null;") != std::string::npos);
+    const size_t inject_end = js.find("function restoreModelProviderValue()", inject_at);
+    REQUIRE(inject_end != std::string::npos);
+    const std::string inject_body = js.substr(inject_at, inject_end - inject_at);
+    // Options come from the configured providers, never from the metadata enum.
+    CHECK(inject_body.find("namedProviderOptions()") != std::string::npos);
+    CHECK(inject_body.find("baseProviderOptions") == std::string::npos);
+    // The provider the config already references has to stay selectable, or
+    // loading an existing agent.toml would silently retarget the model.
+    CHECK(inject_body.find("!known[current]") != std::string::npos);
+    // An empty placeholder must lead so the add sentinel is never the value a
+    // fresh config falls back to.
+    CHECK(inject_body.find("options.unshift({value:'',label:'-- Select Provider --'") !=
+          std::string::npos);
+    CHECK(inject_body.find("options.push({value:ADD_PROVIDER_OPTION,label:'+ Add Provider...'") !=
+          std::string::npos);
+    // The sentinel has to be a value the backend rejects as a provider name so
+    // it can never be mistaken for a real [providers.*] key.
+    CHECK(js.find("const ADD_PROVIDER_OPTION='+ add-provider';") != std::string::npos);
+    // Both new option labels need a zh-CN entry; the page defaults to zh-CN.
+    CHECK(js.find("'+ Add Provider...':'") != std::string::npos);
+    CHECK(js.find("'-- Select Provider --':'") != std::string::npos);
+}
+
+// Picking the add shortcut must not leave the sentinel sitting in the select
+// (it would be saved as model.provider) and must open the Add Provider dialog.
+TEST_CASE("config web html turns the provider add option into the provider dialog") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    const size_t listener_at = js.find("document.addEventListener('change', (e) => { if (e.target.id !== 'model_provider')");
+    REQUIRE(listener_at != std::string::npos);
+    const std::string listener_body = js.substr(listener_at, 400);
+    CHECK(listener_body.find("e.target.value === ADD_PROVIDER_OPTION") != std::string::npos);
+    CHECK(listener_body.find("restoreModelProviderValue()") != std::string::npos);
+    CHECK(listener_body.find("ProvidersManager.addProvider({selectIntoModel: true})") !=
+          std::string::npos);
+    // Any real pick has to be remembered, or restoring after a cancelled add
+    // would fall back to a stale provider.
+    CHECK(listener_body.find("lastModelProviderValue = e.target.value") != std::string::npos);
+
+    // A provider added from the select is selected once the save round-trips.
+    CHECK(js.find("if (selectIntoModel) { selectModelProvider(selectIntoModel); }") !=
+          std::string::npos);
+    CHECK(js.find("saveProviders: async function(extraConfig, selectIntoModel)") !=
+          std::string::npos);
+    // The Add Provider card button must not inherit that auto-select.
+    CHECK(js.find("addProvider: function(options) { this.pendingModelSelect = "
+                  "!!(options && options.selectIntoModel);") != std::string::npos);
+    // Editing an existing provider is not an add, so it never auto-selects.
+    CHECK(js.find("const selectInto = this.pendingModelSelect && !editName ? name : ''") !=
+          std::string::npos);
+
+    // Defence in depth: even if the sentinel were somehow current at save time,
+    // readSection must not persist it as model.provider.
+    CHECK(js.find("if(section==='model'&&key==='provider'&&raw===ADD_PROVIDER_OPTION)") !=
+          std::string::npos);
+}
+
+// reasoning_effort scopes its levels to built-in provider types. With the
+// select now offering named references, the filter has to resolve the
+// reference to its type or every named provider would lose minimal/none.
+TEST_CASE("config web html resolves named providers when filtering option scopes") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    CHECK(js.find("function resolveProviderType(value)") != std::string::npos);
+    const size_t filter_at = js.find("function providerFilterValue(section)");
+    REQUIRE(filter_at != std::string::npos);
+    const std::string filter_body = js.substr(filter_at, 260);
+    // Only [model] holds a provider reference; tts/stt/search providers are
+    // plain types and must not be resolved through [providers.*].
+    CHECK(filter_body.find("section==='model'?resolveProviderType(raw):raw") != std::string::npos);
+    CHECK(js.find("function filterSelectOptions(section,options){const provider=providerFilterValue(section);") !=
+          std::string::npos);
 }
 
 // A stopped agent daemon makes the /api/models proxy return 503. That is a
@@ -2130,6 +2216,19 @@ TEST_CASE("config web html auto-fills the provider name and keeps it editable") 
           std::string::npos);
     // Renaming has to carry the model references across, or they dangle.
     CHECK(save_body.find("this.modelRefPatch(renamedFrom, name)") != std::string::npos);
+
+    // The select only lists configured providers, so retargeting it to the new
+    // name has to add that option first -- assigning an absent value silently
+    // reset the select to the placeholder and lost the reference.
+    const size_t patch_at = js.find("modelRefPatch: function");
+    REQUIRE(patch_at != std::string::npos);
+    const size_t patch_end = js.find("saveProviders: async function", patch_at);
+    REQUIRE(patch_end != std::string::npos);
+    const std::string patch_body = js.substr(patch_at, patch_end - patch_at);
+    CHECK(patch_body.find("ensureSelectOption(select, newName); select.value = newName;") !=
+          std::string::npos);
+    // The remembered value backs sentinel restore, so it has to follow too.
+    CHECK(patch_body.find("lastModelProviderValue = newName") != std::string::npos);
 
     // Suffixes start at -2 so the first entry keeps the bare provider name.
     const size_t unique_at = js.find("uniqueProviderName: function");
