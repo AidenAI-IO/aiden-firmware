@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -21,8 +22,11 @@ func TestLogVADHelperStderrPreservesStructuredLines(t *testing.T) {
 	if lines[0] != structured {
 		t.Fatalf("structured line = %q, want unchanged %q", lines[0], structured)
 	}
-	if !strings.Contains(lines[1], " [INFO] [agent] [vad_rknn] helper_stderr message=\"raw diagnostic\"") {
-		t.Fatalf("wrapped line = %q", lines[1])
+	wrappedPattern := regexp.MustCompile(
+		`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[INFO\] \[agent\] \[vad_rknn\] helper_stderr message="raw diagnostic"$`,
+	)
+	if !wrappedPattern.MatchString(lines[1]) {
+		t.Fatalf("wrapped line = %q, want complete structured helper_stderr record", lines[1])
 	}
 }
 
