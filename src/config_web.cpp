@@ -56,7 +56,10 @@ struct Options {
 
 struct HttpRequest {
     std::string method;
+    // path holds the request target with any query string stripped, so routes
+    // can compare it for equality. The raw query lives in `query`.
     std::string path;
+    std::string query;
     std::string body;
     std::string body_file_path;
     size_t body_size = 0;
@@ -265,6 +268,9 @@ bool resolve_agent_http_target(const Options& options,
 ApiResponse proxy_agent_json_request(const Options& options,
                                          const std::string& agent_path,
                                          const std::string& body);
+ApiResponse proxy_agent_get_request(const Options& options,
+                                     const std::string& agent_path_with_query);
+ApiResponse handle_api_models(const Options& options, const std::string& query_string);
 ApiResponse handle_usb_reenumerate(const Options& options);
 void schedule_usb_reenumerate(int delay_seconds);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
@@ -1221,6 +1227,17 @@ std::string trim_trailing_newlines(const std::string& text) {
     return text.substr(0, end);
 }
 
+std::string mask_secret(const std::string& secret) {
+    if (secret.empty()) {
+        return "";
+    }
+    if (secret.length() <= 8) {
+        return "***";
+    }
+    // Show first 4 and last 4 characters, mask the middle
+    return secret.substr(0, 4) + "***" + secret.substr(secret.length() - 4);
+}
+
 std::vector<std::string> split_lines(const std::string& text) {
     std::vector<std::string> lines;
     std::istringstream input(text);
@@ -1519,6 +1536,7 @@ HttpRequest parse_request(int client_fd, const Options& options) {
         }
         size_t query_pos = req.path.find('?');
         if (query_pos != std::string::npos) {
+            req.query = req.path.substr(query_pos + 1);
             req.path = req.path.substr(0, query_pos);
         }
     } else {
@@ -1633,9 +1651,9 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
     }
 
     const char* sections[] = {
-        "model", "model_text", "tts", "stt", "audio", "audio_archive", "voice_notifications",
-        "log", "ota", "hid", "search", "telemetry", "termination_policy",
-        "live_activity", "agent", NULL,
+        "providers", "model", "model_text", "tts", "stt", "audio", "audio_archive",
+        "voice_notifications", "log", "ota", "hid", "search", "telemetry",
+        "termination_policy", "live_activity", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
@@ -1643,6 +1661,27 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
             return config_schema_error(error, sections[i], "object", section);
         }
     }
+
+    // "providers" is a map of name -> provider object rather than a flat
+    // section, so its entries need their own type check: a non-object entry
+    // would otherwise be skipped silently and the provider dropped on save.
+    cJSON* providers = cJSON_GetObjectItem(root, "providers");
+    if (json_is_object(providers)) {
+        for (cJSON* item = providers->child; item; item = item->next) {
+            const std::string name = item->string ? item->string : "";
+            if (!json_is_object(item)) {
+                return config_schema_error(error, "providers." + name, "object", item);
+            }
+            if (!is_valid_bare_toml_key(name)) {
+                if (error) {
+                    *error = "agent config invalid provider name \"" + name
+                           + "\": expected letters, digits, '-' or '_'";
+                }
+                return false;
+            }
+        }
+    }
+
     return validate_known_config_field_types(root, error);
 }
 
@@ -2448,6 +2487,135 @@ ApiResponse handle_stt_test_stop(const Options& options, const std::string& body
     return proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
 }
 
+// GET request proxy to agent (similar to proxy_agent_json_request but for GET)
+ApiResponse proxy_agent_get_request(const Options& options,
+                                     const std::string& agent_path_with_query) {
+    AgentHttpTarget target;
+    std::string target_error;
+    if (!resolve_agent_http_target(options, &target, &target_error)) {
+        return make_json_error(503, target_error.empty() ? "resolve agent HTTP target failed" : target_error);
+    }
+
+    std::string connect_error;
+    int fd = connect_tcp_host(target.host, target.port, 2000, &connect_error);
+    if (fd < 0) {
+        return make_json_error(503, connect_error.empty() ? "connect failed" : connect_error);
+    }
+
+    if (!set_socket_recv_timeout(fd, kClientReadTimeoutSeconds)) {
+        close(fd);
+        return make_json_error(503, std::string("set socket timeout failed: ") + strerror(errno));
+    }
+
+    std::string request_path = join_url_path(target.base_path, agent_path_with_query);
+    if (request_path.empty()) {
+        request_path = "/";
+    }
+
+    // Build GET request
+    std::ostringstream request;
+    request << "GET " << request_path << " HTTP/1.1\r\n";
+    request << "Host: " << target.host << "\r\n";
+    request << "Accept: application/json\r\n";
+    request << "Connection: close\r\n";
+    request << "\r\n";
+
+    std::string request_str = request.str();
+    if (write(fd, request_str.data(), request_str.size()) < 0) {
+        close(fd);
+        return make_json_error(503, std::string("write failed: ") + strerror(errno));
+    }
+
+    // Read response headers
+    std::string headers;
+    ReadStatus header_status = read_until(fd, "\r\n\r\n", kMaxHttpHeaderSize, &headers);
+    if (header_status != READ_STATUS_OK) {
+        close(fd);
+        return make_json_error(503, "read headers failed or timed out");
+    }
+
+    // Parse status line
+    std::istringstream header_stream(headers);
+    std::string line;
+    if (!std::getline(header_stream, line)) {
+        close(fd);
+        return make_json_error(503, "agent HTTP response missing status line");
+    }
+    line = trim_copy(line);
+    std::istringstream status_stream(line);
+    std::string http_version;
+    int status_code = 0;
+    status_stream >> http_version >> status_code;
+    std::string status_text;
+    std::getline(status_stream, status_text);
+    status_text = trim_copy(status_text);
+    if (status_code <= 0) {
+        close(fd);
+        return make_json_error(503, "agent HTTP response has invalid status code");
+    }
+
+    // Parse headers for Content-Length and Content-Type
+    size_t content_length = 0;
+    std::string content_type;
+    while (std::getline(header_stream, line)) {
+        line = trim_copy(line);
+        if (line.empty()) break;
+
+        size_t colon = line.find(':');
+        if (colon != std::string::npos) {
+            std::string key = trim_copy(line.substr(0, colon));
+            std::string value = trim_copy(line.substr(colon + 1));
+
+            if (strcasecmp(key.c_str(), "Content-Length") == 0) {
+                content_length = std::stoul(value);
+            } else if (strcasecmp(key.c_str(), "Content-Type") == 0) {
+                content_type = value;
+            }
+        }
+    }
+
+    // Read response body
+    std::string body;
+    if (content_length > 0 && content_length < 10 * 1024 * 1024) {
+        body.resize(content_length);
+        size_t total_read = 0;
+        while (total_read < content_length) {
+            ssize_t n = read(fd, &body[total_read], content_length - total_read);
+            if (n <= 0) break;
+            total_read += n;
+        }
+        body.resize(total_read);
+    } else {
+        // Read until EOF
+        char buffer[4096];
+        while (true) {
+            ssize_t n = read(fd, buffer, sizeof(buffer));
+            if (n <= 0) break;
+            body.append(buffer, n);
+        }
+    }
+
+    close(fd);
+
+    ApiResponse response;
+    response.status_code = status_code;
+    response.status_text = status_text.empty() ? "OK" : status_text;
+    response.content_type = content_type.empty() ? "application/json; charset=utf-8" : content_type;
+    response.body = body;
+    return response;
+}
+
+// Handle GET /api/models?provider=xxx&locale=xxx
+ApiResponse handle_api_models(const Options& options, const std::string& query_string) {
+    // Build agent path with query string
+    std::string agent_path = "/api/models";
+    if (!query_string.empty()) {
+        agent_path += "?" + query_string;
+    }
+
+    return proxy_agent_get_request(options, agent_path);
+}
+
 // Shell script that unbinds and rebinds the USB gadget UDC to force the host
 // to re-enumerate the device. Fails loudly if either transition does not
 // succeed so callers can distinguish a real re-enumeration from a no-op.
@@ -2524,6 +2692,34 @@ void load_current_wifi_config(const Options& options,
 
 cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = false) {
     cJSON* root = cJSON_CreateObject();
+
+    // Add providers
+    cJSON* providers = cJSON_CreateObject();
+    for (const auto& item : config.providers) {
+        const std::string& provider_name = item.first;
+        const aiden::ProviderToml& provider = item.second;
+
+        cJSON* provider_obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(provider_obj, "provider", provider.provider.c_str());
+
+        // Mask API key unless include_secrets is true
+        if (include_secrets) {
+            cJSON_AddStringToObject(provider_obj, "api_key", provider.api_key.c_str());
+        } else {
+            std::string masked_key = mask_secret(provider.api_key);
+            cJSON_AddStringToObject(provider_obj, "api_key", masked_key.c_str());
+        }
+
+        if (!provider.token_env.empty()) {
+            cJSON_AddStringToObject(provider_obj, "token_env", provider.token_env.c_str());
+        }
+        if (!provider.base_url.empty()) {
+            cJSON_AddStringToObject(provider_obj, "base_url", provider.base_url.c_str());
+        }
+
+        cJSON_AddItemToObject(providers, provider_name.c_str(), provider_obj);
+    }
+    cJSON_AddItemToObject(root, "providers", providers);
 
     cJSON* model = add_object(root, "model");
     cJSON_AddStringToObject(model, "provider", config.model.provider.c_str());
@@ -2878,6 +3074,59 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
 void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     if (!root || !config) {
         return;
+    }
+
+    // Update providers. The payload is authoritative: a provider absent from
+    // it was deleted in the UI. Snapshot the current map first so masked
+    // api_key values ("sk-a***1234") can still resolve to the stored secret --
+    // reading back from `config->providers` after clearing it would always
+    // miss and silently wipe the key.
+    cJSON* providers = cJSON_GetObjectItem(root, "providers");
+    if (json_is_object(providers)) {
+        const std::map<std::string, aiden::ProviderToml> previous_providers = config->providers;
+        config->providers.clear();
+
+        for (cJSON* item = providers->child; item; item = item->next) {
+            if (!item->string) continue;
+
+            std::string provider_name = item->string;
+            if (!json_is_object(item)) continue;
+
+            aiden::ProviderToml provider;
+
+            cJSON* provider_type = cJSON_GetObjectItem(item, "provider");
+            if (json_is_string(provider_type)) {
+                provider.provider = provider_type->valuestring;
+            }
+
+            cJSON* api_key = cJSON_GetObjectItem(item, "api_key");
+            if (json_is_string(api_key)) {
+                std::string key = api_key->valuestring;
+                // A key containing "***" is the masked value we handed the UI;
+                // keep the stored secret instead of persisting the mask.
+                if (key.find("***") != std::string::npos) {
+                    std::map<std::string, aiden::ProviderToml>::const_iterator it =
+                        previous_providers.find(provider_name);
+                    if (it != previous_providers.end()) {
+                        provider.api_key = it->second.api_key;
+                    }
+                } else {
+                    provider.api_key = key;
+                }
+            }
+
+            cJSON* token_env = cJSON_GetObjectItem(item, "token_env");
+            if (json_is_string(token_env)) {
+                provider.token_env = token_env->valuestring;
+            }
+
+            cJSON* base_url = cJSON_GetObjectItem(item, "base_url");
+            if (json_is_string(base_url)) {
+                provider.base_url = base_url->valuestring;
+            }
+
+            config->providers[provider_name] = provider;
+        }
     }
 
     update_model_from_json(cJSON_GetObjectItem(root, "model"), &config->model);
@@ -6822,6 +7071,11 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "GET" && request.path == "/api/config") {
         return handle_get_config(options);
+    }
+
+    // Handle /api/models?provider=xxx&locale=xxx
+    if (request.method == "GET" && request.path == "/api/models") {
+        return handle_api_models(options, request.query);
     }
 
     if (request.method == "GET" &&

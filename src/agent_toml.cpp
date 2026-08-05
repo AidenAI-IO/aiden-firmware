@@ -470,6 +470,20 @@ void apply_kv(AgentToml& cfg,
             cfg.live_activity.has_private_key_pem = !cfg.live_activity.private_key_pem.empty();
         } else if (key == "timeout_sec") assign_non_negative_int(&cfg.live_activity.timeout_sec, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section.find("providers.") == 0) {
+        // Handle [providers.xxx] sections
+        std::string provider_name = section.substr(10); // Skip "providers."
+        if (provider_name.empty()) {
+            fail("empty provider name in section [" + section + "]");
+        }
+
+        ProviderToml& provider = cfg.providers[provider_name];
+
+        if (key == "provider") assign_string(&provider.provider, raw, &sub_err);
+        else if (key == "api_key") assign_string(&provider.api_key, raw, &sub_err);
+        else if (key == "token_env") assign_string(&provider.token_env, raw, &sub_err);
+        else if (key == "base_url") assign_string(&provider.base_url, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     }
     // Unknown sections / keys are ignored.
 }
@@ -720,6 +734,27 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.screen_stable_diff_threshold > 0.0) emit_double(out, "screen_stable_diff_threshold", cfg.screen_stable_diff_threshold);
     if (!cfg.default_platform.empty()) emit_string(out, "default_platform", cfg.default_platform);
     out << "\n";
+
+    // Write [providers.xxx] sections
+    for (const auto& item : cfg.providers) {
+        const std::string& provider_name = item.first;
+        const ProviderToml& provider = item.second;
+
+        // Validate provider name
+        if (!is_valid_bare_toml_key(provider_name)) {
+            if (error) {
+                *error = "invalid provider name: " + provider_name;
+            }
+            return false;
+        }
+
+        out << "[providers." << provider_name << "]\n";
+        if (!provider.provider.empty()) emit_string(out, "provider", provider.provider);
+        if (!provider.api_key.empty()) emit_string(out, "api_key", provider.api_key);
+        if (!provider.token_env.empty()) emit_string(out, "token_env", provider.token_env);
+        if (!provider.base_url.empty()) emit_string(out, "base_url", provider.base_url);
+        out << "\n";
+    }
 
     emit_model(out, "model", cfg.model);
     if (!cfg.model_text.provider.empty() || !cfg.model_text.model.empty()) {

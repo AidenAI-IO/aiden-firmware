@@ -230,11 +230,46 @@ parse_failure_limit = 3
 The three stall-score thresholds must satisfy
 `soft_notice_stall_score < restrict_tools_stall_score < terminate_stall_score`.
 
+## `[providers.<name>]`
+
+Optional named provider configurations. Each section holds the credentials for
+one endpoint, and `[model]`/`[model_text]` reference it by putting the name in
+their own `provider` field. This lets several providers stay configured at once
+so switching is a one-line change instead of a re-entry of keys.
+
+| Field       | Description                                                                                        |
+| ----------- | -------------------------------------------------------------------------------------------------- |
+| `provider`  | Required provider type: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`   |
+| `api_key`   | API key written directly                                                                           |
+| `token_env` | Read the API key from the specified environment variable                                            |
+| `base_url`  | Custom OpenAI-compatible endpoint; same `openai`/`ollama` restriction as `[model]`                  |
+
+```toml
+[providers.openai-work]
+provider = "openai"
+api_key = "sk-..."
+
+[providers.ollama-local]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+
+[model]
+provider = "openai-work"   # references [providers.openai-work]
+model = "gpt-5.5"
+```
+
+On load, a `provider` value that names a section under `[providers]` is replaced
+by that section's provider type, and its `api_key`, `token_env` and `base_url`
+fill in any field the model section leaves empty — values set directly on
+`[model]` always win. A `provider` that matches no section is treated as a
+provider type, so existing configs keep working unchanged. See
+`docs/04-agent/model-providers.md` and the examples in `docs/config-examples/`.
+
 ## `[model]`
 
 | Field                     | Description                                                                                                                                                                                                                                          |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider`                | `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
+| `provider`                | A provider type, or the name of a `[providers.<name>]` section. Types: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
 | `base_url`                | Custom OpenAI-compatible endpoint. Only `openai` and `ollama` accept a `base_url` override; other providers use their built-in endpoints and a stored value is dropped on load. |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |

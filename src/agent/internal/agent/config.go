@@ -261,7 +261,16 @@ func (c OTAConfig) Validate() error {
 	return nil
 }
 
+// Provider defines a model service provider configuration.
+type Provider struct {
+	Provider string `toml:"provider"`          // Provider type: openai, kimi, ollama, etc.
+	APIKey   string `toml:"api_key,omitempty"`
+	TokenEnv string `toml:"token_env,omitempty"`
+	BaseURL  string `toml:"base_url,omitempty"`
+}
+
 type Config struct {
+	Providers                  map[string]Provider      `toml:"providers,omitempty"` // Named provider configurations
 	Model                      ModelConfig              `toml:"model"`
 	ModelText                  ModelConfig              `toml:"model_text,omitempty"` // Override for STT-then-text mode
 	TTS                        TTSConfig                `toml:"tts,omitempty"`
@@ -751,6 +760,12 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	}
 
 	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
+
+	// Apply provider references to model configurations
+	if err := applyRuntimeModelProviders(&cfg); err != nil {
+		return Config{}, err
+	}
+
 	applyRuntimeModelTemperatureDefaults(&cfg)
 	applyRuntimeModelReasoningEffortDefaults(&cfg)
 	applyRuntimeInstructionDefault(&cfg)
@@ -822,6 +837,74 @@ func applyModelReasoningEffortDefault(m *ModelConfig) {
 	if spec, ok := LookupModelSpec(m.Provider, m.Model); ok && spec.DefaultReasoningEffort != nil {
 		m.ReasoningEffort = *spec.DefaultReasoningEffort
 	}
+}
+
+// applyRuntimeModelProviders resolves provider references in model configurations.
+// If model.provider refers to a named provider in [providers], apply that provider's
+// configuration. Otherwise, treat it as a direct provider type (backward compatibility).
+func applyRuntimeModelProviders(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+
+	if err := resolveModelProvider(cfg, &cfg.Model); err != nil {
+		return fmt.Errorf("model: %w", err)
+	}
+
+	// model_text is optional; only resolve if provider is specified
+	if strings.TrimSpace(cfg.ModelText.Provider) != "" {
+		if err := resolveModelProvider(cfg, &cfg.ModelText); err != nil {
+			return fmt.Errorf("model_text: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// resolveModelProvider resolves a single model's provider reference.
+func resolveModelProvider(cfg *Config, m *ModelConfig) error {
+	if m == nil {
+		return nil
+	}
+
+	providerRef := strings.TrimSpace(m.Provider)
+	if providerRef == "" {
+		return errors.New("provider is required")
+	}
+
+	// Check if this is a reference to a named provider in [providers]
+	if cfg.Providers != nil {
+		if provider, exists := cfg.Providers[providerRef]; exists {
+			return applyProviderToModel(provider, providerRef, m)
+		}
+	}
+
+	// Not a reference, treat as direct provider type (backward compatibility)
+	return nil
+}
+
+// applyProviderToModel applies a provider configuration to a model config.
+func applyProviderToModel(provider Provider, originalRef string, m *ModelConfig) error {
+	providerType := strings.TrimSpace(provider.Provider)
+	if providerType == "" {
+		return fmt.Errorf("provider %q has no provider type specified", originalRef)
+	}
+
+	// Replace the reference with the actual provider type
+	m.Provider = providerType
+
+	// Apply provider's configuration if not overridden in model config
+	if m.APIKey == "" && provider.APIKey != "" {
+		m.APIKey = provider.APIKey
+	}
+	if m.TokenEnv == "" && provider.TokenEnv != "" {
+		m.TokenEnv = provider.TokenEnv
+	}
+	if m.BaseURL == "" && provider.BaseURL != "" {
+		m.BaseURL = provider.BaseURL
+	}
+
+	return nil
 }
 
 func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
@@ -1036,6 +1119,13 @@ func legacyModelMaxTokens(raw map[string]interface{}, section string) (int, erro
 }
 
 func (c Config) Validate() error {
+	// Validate providers
+	for name, provider := range c.Providers {
+		if err := validateProvider(name, provider); err != nil {
+			return err
+		}
+	}
+
 	locale := strings.TrimSpace(c.Locale)
 	switch locale {
 	case "", localeSimplifiedChinese, localeEnglishUS:
@@ -1227,6 +1317,28 @@ func (c Config) Validate() error {
 	}
 	if err := c.OTA.Validate(); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// validateProvider validates a single provider configuration.
+func validateProvider(name string, p Provider) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("provider name cannot be empty")
+	}
+
+	providerType := strings.TrimSpace(p.Provider)
+	if providerType == "" {
+		return fmt.Errorf("providers.%s: provider type is required", name)
+	}
+
+	// Validate provider type is supported
+	switch strings.ToLower(providerType) {
+	case "openai", "kimi", "kimi-cn", "volcengine", "openrouter", "ollama", "fake":
+		// Valid provider types
+	default:
+		return fmt.Errorf("providers.%s: unsupported provider type %q", name, providerType)
 	}
 
 	return nil

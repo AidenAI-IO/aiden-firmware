@@ -20,6 +20,13 @@ struct ModelToml {
     int model_max_output_tokens = 0;
 };
 
+struct ProviderToml {
+    std::string provider;
+    std::string api_key;
+    std::string token_env;
+    std::string base_url;
+};
+
 struct TTSToml {
     std::string provider;
     std::string api_key;
@@ -144,6 +151,7 @@ struct TerminationPolicyToml {
 };
 
 struct AgentToml {
+    std::map<std::string, ProviderToml> providers;
     ModelToml model;
     ModelToml model_text;
     TTSToml tts;

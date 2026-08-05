@@ -216,6 +216,8 @@ std::string replace_all(std::string text, const std::string& needle, const std::
 std::string resolved_config_json(const std::string& search_provider, bool search_has_api_key) {
     return std::string(
         "{"
+        "\"providers\":{\"stub-openai\":{\"provider\":\"openai\",\"api_key\":\"sk-stub-secret-1234\"},"
+        "\"stub-ollama\":{\"provider\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
         "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
         "\"base_url\":\"\",\"token_env\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
         "\"context_window\":0,\"model_max_output_tokens\":0},"
@@ -398,6 +400,21 @@ public:
 
 private:
     static std::string build_response(const std::string& path) {
+        // Echo the request target back so callers can assert the query string
+        // survived the proxy hop: config_web strips the query off the path when
+        // parsing the request line and must forward it from the saved copy.
+        if (path.compare(0, 12, "/api/models?") == 0 || path == "/api/models") {
+            const std::string body =
+                std::string("{\"request_target\":\"") + path + "\",\"models\":[]}";
+            std::ostringstream out;
+            out << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Connection: close\r\n"
+                << "\r\n"
+                << body;
+            return out.str();
+        }
         if (path == "/api/config-test/stt/start") {
             const std::string body = "{\"ok\":true,\"status\":\"recording\",\"sample_rate\":16000}";
             std::ostringstream out;
@@ -1014,21 +1031,16 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
 
 TEST_CASE("config_web: POST /api/config keeps model base_url for providers that allow it") {
     // Regression test: update_model_from_json()'s base_url whitelist must match
-    // the Go runtime's (clearNonAllowedModelBaseURL). It only listed openai and
-    // ollama while the runtime accepted openrouter/kimi/kimi-cn too, so a
-    // base_url entered for those providers passed validation and appeared to
-    // save, but was stripped before ever reaching agent.toml. volcengine (Ark)
-    // is in the same whitelist and must survive the same round trip.
+    // the Go runtime's (clearNonAllowedModelBaseURL), or a base_url entered in
+    // the UI passes validation and appears to save while being stripped before
+    // it ever reaches agent.toml. Only openai (custom gateways) and ollama
+    // (local server) accept an override; the rest pin their endpoint.
     struct Case {
         const char* provider;
         const char* base_url;
     };
     const Case cases[] = {
         {"openai", "https://gateway.example.com/v1"},
-        {"openrouter", "https://openrouter.example.com/api/v1"},
-        {"kimi", "https://moonshot.example.com/v1"},
-        {"kimi-cn", "https://moonshot-cn.example.com/v1"},
-        {"volcengine", "https://ark.example.com/api/v3"},
         {"ollama", "http://127.0.0.1:11434"},
     };
 
@@ -1051,19 +1063,146 @@ TEST_CASE("config_web: POST /api/config keeps model base_url for providers that 
 }
 
 TEST_CASE("config_web: POST /api/config drops model base_url for providers that pin their endpoint") {
+    // openrouter, kimi, kimi-cn and volcengine each use a built-in endpoint, so
+    // a base_url for them is dead config and must not reach agent.toml.
+    const char* providers[] = {"openrouter", "kimi", "kimi-cn", "volcengine", "fake", NULL};
+
+    for (int i = 0; providers[i]; ++i) {
+        StubEnv env;
+        auto handle = start_server(env);
+
+        const std::string body =
+            std::string("{\"config\":{\"model\":{\"provider\":\"") + providers[i] +
+            "\",\"model\":\"x\",\"api_key\":\"k\","
+            "\"base_url\":\"https://gateway.example.com/v1\"},"
+            "\"hid\":{\"pointer_mode\":\"absolute\"},"
+            "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK_MESSAGE(resp.status == 200, providers[i]);
+
+        const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+        CHECK_MESSAGE(saved.find("gateway.example.com") == std::string::npos, providers[i]);
+    }
+}
+
+TEST_CASE("config_web: POST /api/config writes named providers") {
     StubEnv env;
     auto handle = start_server(env);
 
     const std::string body =
-        "{\"config\":{\"model\":{\"provider\":\"fake\",\"model\":\"x\",\"api_key\":\"k\","
-        "\"base_url\":\"https://gateway.example.com/v1\"},"
+        "{\"config\":{\"providers\":{"
+        "\"my-openai\":{\"provider\":\"openai\",\"api_key\":\"sk-plain-secret-1234\"},"
+        "\"my-ollama\":{\"provider\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
+        "\"model\":{\"provider\":\"my-openai\",\"model\":\"x\"},"
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("gateway.example.com") == std::string::npos);
+    CHECK(saved.find("[providers.my-openai]") != std::string::npos);
+    CHECK(saved.find("api_key = \"sk-plain-secret-1234\"") != std::string::npos);
+    CHECK(saved.find("[providers.my-ollama]") != std::string::npos);
+    CHECK(saved.find("base_url = \"http://127.0.0.1:11434\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: GET /api/config returns providers from the resolved config") {
+    // Read path regression: config_to_json() serializes providers from the
+    // AgentToml struct, but that struct is populated from `agent config
+    // --format=json`. The Go webConfigDTO originally had no top-level
+    // "providers" field, so the resolved JSON omitted it entirely and the UI
+    // always rendered "No providers configured yet" no matter what agent.toml
+    // held. This exercises the read path only -- it must not depend on a
+    // preceding POST.
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config", "");
+    REQUIRE(resp.status == 200);
+    CHECK(resp.body.find("\"stub-openai\"") != std::string::npos);
+    CHECK(resp.body.find("\"stub-ollama\"") != std::string::npos);
+    CHECK(resp.body.find("\"base_url\":\"http://127.0.0.1:11434\"") != std::string::npos);
+    // Secrets are masked on the read path.
+    CHECK(resp.body.find("sk-stub-secret-1234") == std::string::npos);
+    CHECK(resp.body.find("sk-s***1234") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config preserves providers when saving another section") {
+    // Regression test: handle_post_config() pre-loads the current config via
+    // the agent CLI and applies the request body as a patch onto it. When the
+    // resolved JSON omitted providers, every save of an unrelated section
+    // started from an empty provider map and silently erased all of them,
+    // leaving model.provider pointing at a provider that no longer existed.
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"hid\":{\"keyboard_layout\":\"azerty\",\"pointer_mode\":\"absolute\"}},"
+        "\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("keyboard_layout = \"azerty\"") != std::string::npos);
+    CHECK(saved.find("[providers.stub-openai]") != std::string::npos);
+    CHECK(saved.find("api_key = \"sk-stub-secret-1234\"") != std::string::npos);
+    CHECK(saved.find("[providers.stub-ollama]") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config keeps the stored provider api_key when masked") {
+    // The read path hands the UI a masked key ("sk-s***1234"); posting it back
+    // unchanged must keep the stored secret. The masked-key branch originally
+    // looked the name up in the map it had just cleared, so it always missed
+    // and wrote an empty api_key, destroying the real key.
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"providers\":{"
+        "\"stub-openai\":{\"provider\":\"openai\",\"api_key\":\"sk-s***1234\"}},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("api_key = \"sk-stub-secret-1234\"") != std::string::npos);
+    CHECK(saved.find("sk-s***1234") == std::string::npos);
+    // Omitting stub-ollama from the payload deletes it: the posted map is
+    // authoritative for which providers exist.
+    CHECK(saved.find("[providers.stub-ollama]") == std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config rejects a malformed providers section") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    struct Case {
+        const char* providers;
+        const char* expected_fragment;
+    };
+    const Case cases[] = {
+        {"\"not-an-object\"", "providers"},
+        {"{\"x\":\"not-an-object\"}", "providers.x"},
+        {"{\"bad name!\":{\"provider\":\"openai\"}}", "bad name!"},
+    };
+
+    for (const Case& c : cases) {
+        const std::string body =
+            std::string("{\"config\":{\"providers\":") + c.providers +
+            "},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK_MESSAGE(resp.status == 400, c.providers);
+        CHECK_MESSAGE(resp.body.find(c.expected_fragment) != std::string::npos, c.providers);
+    }
 }
 
 TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only agent") {
@@ -1731,6 +1870,24 @@ TEST_CASE("config_web: tencent stt config test stays green without app_id") {
     CHECK(test_resp.body.find("\"ok\":true") != std::string::npos);
     CHECK(test_resp.body.find("\"check\":\"streaming_app_id\"") != std::string::npos);
     CHECK(test_resp.body.find("one-shot upload") != std::string::npos);
+}
+
+TEST_CASE("config_web: GET /api/models forwards the query string to the agent") {
+    // Regression test: the request line parser strips the query off
+    // HttpRequest::path so routes can compare it for equality. The /api/models
+    // route then searched that already-stripped path for '?', always came up
+    // empty, and proxied a bare /api/models -- which the agent rejects with
+    // 400 "provider parameter is required", so the model picker could never
+    // load any models.
+    StubAgentHTTPServer agent_server;
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    auto handle = start_server(env);
+
+    HttpResponse resp =
+        http_request(handle->port, "GET", "/api/models?provider=openai&locale=zh-CN", "");
+    REQUIRE(resp.status == 200);
+    CHECK(resp.body.find("/api/models?provider=openai&locale=zh-CN") != std::string::npos);
 }
 
 TEST_CASE("config_web: stt live test proxies start and stop to agent") {

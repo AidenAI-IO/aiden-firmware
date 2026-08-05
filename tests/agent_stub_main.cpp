@@ -54,6 +54,8 @@ const char* kDefaultCheck = "{\"valid\":true,\"errors\":[]}\n";
 
 const char* kDefaultConfig =
     "{"
+    "\"providers\":{\"stub-openai\":{\"provider\":\"openai\",\"api_key\":\"sk-stub-secret-1234\"},"
+    "\"stub-ollama\":{\"provider\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
     "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
     "\"base_url\":\"\",\"token_env\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
     "\"context_window\":0,\"model_max_output_tokens\":0},"

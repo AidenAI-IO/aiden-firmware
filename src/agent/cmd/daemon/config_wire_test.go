@@ -1,10 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"aiden-agent/internal/agent"
 )
 
 // These tests exercise the real config_web <-> agent wire contract: the JSON
@@ -272,4 +276,101 @@ func TestConfigCheckPath_RejectsInvalidTOML(t *testing.T) {
 	if len(result.Errors) == 0 || !strings.Contains(result.Errors[0].Message, "TOML") {
 		t.Fatalf("expected TOML decode error, got: %+v", result.Errors)
 	}
+}
+
+// TestConfigWire_ProvidersRoundTrip guards the sync point that broke the
+// provider feature end to end: webConfigDTO had no top-level "providers" field,
+// so `agent config --format=json` never emitted the section. config_web.cpp
+// builds its AgentToml from that output, which made GET /api/config report zero
+// providers and made every save of an unrelated section erase them from
+// agent.toml. Validation was skipped for the same reason.
+func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
+	t.Run("providers survive config -> DTO -> config", func(t *testing.T) {
+		cfg := agent.Config{
+			Providers: map[string]agent.Provider{
+				"my-openai": {Provider: "openai", APIKey: "sk-secret", TokenEnv: "OPENAI_KEY"},
+				"my-ollama": {Provider: "ollama", BaseURL: "http://127.0.0.1:11434"},
+			},
+			Model: agent.ModelConfig{Provider: "my-openai", Model: "gpt-4"},
+		}
+
+		dto := webConfigDTOFromAgentConfig(cfg)
+		if len(dto.Providers) != 2 {
+			t.Fatalf("dto.Providers = %#v, want 2 entries", dto.Providers)
+		}
+		if got := dto.Providers["my-openai"]; got.Provider != "openai" ||
+			got.APIKey != "sk-secret" || got.TokenEnv != "OPENAI_KEY" {
+			t.Errorf("dto.Providers[my-openai] = %#v", got)
+		}
+		if got := dto.Providers["my-ollama"].BaseURL; got != "http://127.0.0.1:11434" {
+			t.Errorf("dto.Providers[my-ollama].BaseURL = %q", got)
+		}
+
+		back := dto.toAgentConfig()
+		if !reflect.DeepEqual(back.Providers, cfg.Providers) {
+			t.Errorf("round-tripped providers = %#v, want %#v", back.Providers, cfg.Providers)
+		}
+	})
+
+	t.Run("wire payload marshals a providers key", func(t *testing.T) {
+		dto := webConfigDTOFromAgentConfig(agent.Config{
+			Providers: map[string]agent.Provider{"my-openai": {Provider: "openai"}},
+			Model:     agent.ModelConfig{Provider: "my-openai", Model: "gpt-4"},
+		})
+		encoded, err := json.Marshal(dto)
+		if err != nil {
+			t.Fatalf("marshal dto: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"providers":{"my-openai":{"provider":"openai"}}`) {
+			t.Errorf("encoded payload missing providers section: %s", encoded)
+		}
+	})
+
+	t.Run("unsupported provider type is rejected through the wire decoder", func(t *testing.T) {
+		payload := `{
+			"providers":{"zz":{"provider":"nonsense"}},
+			"model":{"provider":"zz","model":"gpt-4"},
+			"search":{"provider":"duckduckgo"},
+			"agent":{},
+			"hid":{"pointer_mode":"absolute"}
+		}`
+		result := checkWire(t, payload)
+		if result.Valid {
+			t.Fatal("expected an unsupported provider type to be rejected")
+		}
+		if len(result.Errors) == 0 || !strings.Contains(result.Errors[0].Message, "providers.zz") {
+			t.Fatalf("expected providers.zz error, got: %+v", result.Errors)
+		}
+	})
+
+	t.Run("provider entry without a type is rejected", func(t *testing.T) {
+		payload := `{
+			"providers":{"empty-one":{"api_key":"k"}},
+			"model":{"provider":"empty-one","model":"gpt-4"},
+			"search":{"provider":"duckduckgo"},
+			"agent":{},
+			"hid":{"pointer_mode":"absolute"}
+		}`
+		result := checkWire(t, payload)
+		if result.Valid {
+			t.Fatal("expected a provider without a type to be rejected")
+		}
+	})
+
+	t.Run("valid named providers pass", func(t *testing.T) {
+		payload := `{
+			"providers":{
+				"my-openai":{"provider":"openai","api_key":"sk-x"},
+				"my-ollama":{"provider":"ollama","base_url":"http://127.0.0.1:11434"}
+			},
+			"model":{"provider":"my-openai","model":"gpt-4"},
+			"search":{"provider":"duckduckgo"},
+			"agent":{},
+			"hid":{"pointer_mode":"absolute"}
+		}`
+		result := checkWire(t, payload)
+		if !result.Valid {
+			t.Fatalf("expected valid=true, got errors: %+v", result.Errors)
+		}
+	})
 }

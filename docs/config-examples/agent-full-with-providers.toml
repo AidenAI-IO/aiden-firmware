@@ -1,0 +1,115 @@
+# Aiden Agent Configuration with Multiple Providers
+# 这是一个完整的配置示例，展示如何配置和切换多个 model provider
+
+# ========================================
+# Providers 配置
+# ========================================
+# 定义所有可用的 model provider
+# 切换时只需修改 [model] 中的 provider 字段
+
+# OpenAI 官方 API
+[providers.openai-main]
+provider = "openai"
+api_key = "sk-your-openai-key"
+
+# Moonshot AI (Kimi) - 国际版
+[providers.kimi-global]
+provider = "kimi"
+api_key = "sk-your-kimi-key"
+
+# Moonshot AI (Kimi) - 中国版
+[providers.kimi-cn]
+provider = "kimi-cn"
+api_key = "sk-your-kimi-cn-key"
+
+# 火山引擎豆包
+[providers.doubao]
+provider = "volcengine"
+api_key = "your-volcengine-key"
+base_url = "https://ark.cn-beijing.volces.com/api/v3"
+
+# OpenRouter (支持多模型聚合)
+[providers.openrouter]
+provider = "openrouter"
+api_key = "sk-or-your-key"
+
+# Ollama 本地模型
+[providers.local]
+provider = "ollama"
+base_url = "http://localhost:11434"
+
+# ========================================
+# Model 配置
+# ========================================
+[model]
+# 选择要使用的 provider（引用上面定义的 provider 名称）
+# 快速切换：只需修改这一行
+provider = "openai-main"
+
+# 模型名称
+model = "gpt-4o"
+
+# 可选配置
+temperature = 0.7
+max_response_tokens = 4096
+# log_raw_http = true  # 开启调试日志
+
+# ========================================
+# Model Text 配置（可选）
+# ========================================
+# 为 text 模式单独配置 provider
+[model_text]
+provider = "kimi-global"
+model = "moonshot-v1-8k"
+
+# ========================================
+# TTS 配置
+# ========================================
+[tts]
+provider = "minimax-cn"
+api_key = "your-minimax-key"
+voice_id = "male-qn-qingse"
+emotion = "happy"
+
+# ========================================
+# STT 配置
+# ========================================
+[stt]
+provider = "openai-whisper"
+api_key = "sk-your-openai-key"
+model = "whisper-1"
+language = "zh"
+
+# ========================================
+# 基础配置
+# ========================================
+[device]
+backend = "hdmi"
+
+[hid]
+pointer_mode = "absolute"
+
+[audio]
+sample_rate = 16000
+channels = 1
+bit_width = 16
+
+# ========================================
+# 快速切换示例
+# ========================================
+#
+# 切换到 Kimi:
+#   provider = "kimi-global"
+#   model = "moonshot-v1-32k"
+#
+# 切换到本地 Ollama:
+#   provider = "local"
+#   model = "qwen2.5:14b"
+#
+# 切换到豆包:
+#   provider = "doubao"
+#   model = "doubao-pro-32k"
+#
+# 切换到 OpenRouter:
+#   provider = "openrouter"
+#   model = "anthropic/claude-3.5-sonnet"

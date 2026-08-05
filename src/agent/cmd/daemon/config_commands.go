@@ -46,6 +46,7 @@ type ConfigTestCheck struct {
 // Keep this struct in lockstep with config_to_json(); the round-trip is covered
 // by TestConfigCheck_WireFormatContract.
 type webConfigDTO struct {
+	Providers          map[string]providerDTO        `json:"providers,omitempty"`
 	Model              modelDTO                      `json:"model"`
 	ModelText          modelDTO                      `json:"model_text"`
 	TTS                ttsDTO                        `json:"tts"`
@@ -74,6 +75,16 @@ type modelDTO struct {
 	MaxResponseTokens    int      `json:"max_response_tokens"`
 	ContextWindow        int      `json:"context_window"`
 	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
+}
+
+// providerDTO mirrors a single [providers.<name>] section. Named providers hold
+// the credentials; a model section references one by putting the provider name
+// in its own "provider" field.
+type providerDTO struct {
+	Provider string `json:"provider"`
+	APIKey   string `json:"api_key,omitempty"`
+	TokenEnv string `json:"token_env,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
 }
 
 type ttsDTO struct {
@@ -271,6 +282,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 	}
 
 	return agent.Config{
+		Providers: d.providersToAgentConfig(),
 		Model: agent.ModelConfig{
 			Provider:             d.Model.Provider,
 			APIKey:               d.Model.APIKey,
@@ -420,10 +432,43 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
+func providerDTOsFromConfig(providers map[string]agent.Provider) map[string]providerDTO {
+	if len(providers) == 0 {
+		return nil
+	}
+	result := make(map[string]providerDTO, len(providers))
+	for name, provider := range providers {
+		result[name] = providerDTO{
+			Provider: provider.Provider,
+			APIKey:   provider.APIKey,
+			TokenEnv: provider.TokenEnv,
+			BaseURL:  provider.BaseURL,
+		}
+	}
+	return result
+}
+
+func (d webConfigDTO) providersToAgentConfig() map[string]agent.Provider {
+	if len(d.Providers) == 0 {
+		return nil
+	}
+	result := make(map[string]agent.Provider, len(d.Providers))
+	for name, provider := range d.Providers {
+		result[name] = agent.Provider{
+			Provider: provider.Provider,
+			APIKey:   provider.APIKey,
+			TokenEnv: provider.TokenEnv,
+			BaseURL:  provider.BaseURL,
+		}
+	}
+	return result
+}
+
 func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 	audioArchive := cfg.AudioArchive
 
 	return webConfigDTO{
+		Providers: providerDTOsFromConfig(cfg.Providers),
 		Model: modelDTO{
 			Provider:             cfg.Model.Provider,
 			APIKey:               cfg.Model.APIKey,
