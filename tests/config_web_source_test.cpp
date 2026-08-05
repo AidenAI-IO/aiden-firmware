@@ -2267,6 +2267,30 @@ TEST_CASE("config web html resolves named providers when filtering option scopes
     CHECK(filter_body.find("section==='model'?resolveProviderType(raw):raw") != std::string::npos);
     CHECK(js.find("function filterSelectOptions(section,options){const provider=providerFilterValue(section);") !=
           std::string::npos);
+
+    // The two readers of model.provider must disagree, deliberately:
+    //
+    //   - Option scoping (above) resolves the named reference to its type, or a
+    //     named provider loses reasoning_effort's minimal/none.
+    //   - Field visibility matches the RAW value, which is what keeps
+    //     [model] base_url hidden for a named reference. That is correct: the
+    //     backend clears a model base_url for any named ref, and the
+    //     [providers.*] entry's own base_url is inherited instead
+    //     (applyProviderToModel), so offering the field would only ever produce
+    //     dead config. A legacy bare provider type still matches the rule and
+    //     still shows the field.
+    //
+    // Routing evalCondition through resolveProviderType would read as a natural
+    // unification of the two, and would silently start offering base_url for
+    // named providers.
+    const size_t eval_at = js.find("function evalCondition(cond){");
+    REQUIRE(eval_at != std::string::npos);
+    const size_t eval_end = js.find("function evalRule(rule){", eval_at);
+    REQUIRE(eval_end != std::string::npos);
+    const std::string eval_body = js.substr(eval_at, eval_end - eval_at);
+    CHECK(eval_body.find("fieldValue(parts[0]") != std::string::npos);
+    CHECK(eval_body.find("resolveProviderType") == std::string::npos);
+    CHECK(eval_body.find("providerFilterValue") == std::string::npos);
 }
 
 // A stopped agent daemon makes the /api/models proxy return 503. That is a
