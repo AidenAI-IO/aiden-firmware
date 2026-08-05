@@ -856,7 +856,7 @@ func clearNonAllowedModelBaseURL(m *ModelConfig) {
 	}
 	provider := strings.ToLower(strings.TrimSpace(m.Provider))
 	switch provider {
-	case "openai", "openrouter", "kimi", "kimi-cn", "volcengine", "ollama":
+	case "openai", "ollama":
 	default:
 		m.BaseURL = ""
 	}
