@@ -294,7 +294,7 @@ func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term str
 		"text":  term,
 		"focus": map[string]any{"x": 500, "y": 120, "coord_space": "normalized"},
 	}
-	out, err := cfg.entryTool.Call(ctx, jsonString(input))
+	out, err := cfg.entryTool.enterTextInner(ctx, jsonString(input), true)
 	if err != nil {
 		return err
 	}

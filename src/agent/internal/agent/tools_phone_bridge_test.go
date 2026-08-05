@@ -189,6 +189,50 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 	}
 }
 
+func TestSearchLaunchAppTextEntryDisablesBridgePath(t *testing.T) {
+	pb := newTestPhoneBridge(t)
+	pb.platform = "android"
+	pb.connected = true
+	pb.appState = "background"
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	hw := &textInputHardwareDeps{
+		pointerMode:  "touchscreen",
+		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: keyboardText,
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}
+	bridgeWrites := 0
+	entryTool := &EnterTextTool{
+		engine: newFastTextInputEngine(*hw, vision),
+		bridgeTool: &textInputBridge{
+			hw:       hw,
+			vision:   vision,
+			bridgeFn: func() *PhoneBridge { return pb },
+			clipboardWriteFn: func(context.Context, *PhoneBridge, string) error {
+				bridgeWrites++
+				return context.Canceled
+			},
+		},
+	}
+
+	err := enterSearchQuery(context.Background(), appSearchOpenFlowConfig{
+		hw:        hw,
+		vision:    vision,
+		platform:  "android",
+		entryTool: entryTool,
+	}, "Aiden", false)
+	if err != nil {
+		t.Fatalf("enterSearchQuery() error = %v", err)
+	}
+	if bridgeWrites != 0 {
+		t.Fatalf("bridge writes = %d, want search_launch_app text entry to disable Bridge", bridgeWrites)
+	}
+	if len(keyboardText.calls) == 0 {
+		t.Fatal("keyboard_text was not called; want local text-entry path")
+	}
+}
+
 func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T) {
 	vision := &stubTextInputVision{}
 	quick := &recordingTextInputTool{name: "quick_action", out: "ok"}
