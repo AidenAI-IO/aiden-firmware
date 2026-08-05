@@ -765,6 +765,39 @@ TEST_CASE("config_web: setup page exposes an immediate persisted locale switch")
     CHECK(resp.body.find("window.confirm(localizedText(") != std::string::npos);
 }
 
+// The provider-select behaviour is asserted against config_web_html.h by
+// decoding its string literals. That decoding is a test-side reimplementation of
+// what the C++ compiler does, so a disagreement over an escape would pass those
+// assertions while the device served broken JavaScript. Serving the page from
+// the real binary is what proves the strings survive compilation intact.
+TEST_CASE("config_web: setup page serves the configured-only provider select") {
+    StubEnv env;
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/");
+    CHECK(resp.status == 200);
+
+    // The add sentinel and its placeholder, with the exact quoting the page
+    // needs -- a mangled escape here would break the whole <script> block.
+    CHECK(resp.body.find("const ADD_PROVIDER_OPTION='+ add-provider';") != std::string::npos);
+    CHECK(resp.body.find("label:'-- Select Provider --'") != std::string::npos);
+    CHECK(resp.body.find("label:'+ Add Provider...'") != std::string::npos);
+    // zh-CN entries for both, since the page defaults to zh-CN.
+    CHECK(resp.body.find("'+ Add Provider...':'+ 添加提供商…'") != std::string::npos);
+    CHECK(resp.body.find("'-- Select Provider --':'-- 选择提供商 --'") != std::string::npos);
+
+    // The functions the flow depends on, on executable (non-commented) lines.
+    CHECK(resp.body.find("function injectNamedProviderOptions()") != std::string::npos);
+    CHECK(resp.body.find("function rememberModelProvider()") != std::string::npos);
+    CHECK(resp.body.find("function restoreModelProviderValue()") != std::string::npos);
+    CHECK(resp.body.find("function selectModelProvider(name)") != std::string::npos);
+    CHECK(resp.body.find("function resolveProviderType(value)") != std::string::npos);
+    CHECK(resp.body.find("ProvidersManager.addProvider({selectIntoModel: true})") !=
+          std::string::npos);
+
+    // The metadata enum must no longer be the source of the select's options.
+    CHECK(resp.body.find("baseProviderOptions") == std::string::npos);
+}
+
 TEST_CASE("config_web: GET /api/config/meta returns 200 + parseable JSON when stub agent works") {
     StubEnv env;  // defaults: meta returns minimal valid JSON
     auto handle = start_server(env);
