@@ -1723,7 +1723,7 @@ TEST_CASE("config web clears legacy wifi fields for explicit empty network lists
     CHECK(source.find("aiden::sync_legacy_wifi_fields(wifi);") != std::string::npos);
 }
 
-TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {
+TEST_CASE("config web requires reboot for USB HID configuration changes") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -1763,9 +1763,9 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("\"keyboard_layout\"") != std::string::npos);
     CHECK(source.find("kUsbHidInitScript = \"/etc/init.d/S49usbhid\"") == std::string::npos);
     CHECK(source.find("schedule_usbhid_restart") == std::string::npos);
-    CHECK(source.find("usbhid_restart_scheduled") != std::string::npos);
     CHECK(source.find("usbhid_restart_required") != std::string::npos);
     CHECK(source.find("reboot_required") != std::string::npos);
+    CHECK(source.find("schedule_usb_reenumerate") == std::string::npos);
     CHECK(source.find("schedule_poweroff") != std::string::npos);
     CHECK(source.find("\"/api/poweroff\"") != std::string::npos);
     CHECK(source.find("config-check --stdin --format=json") != std::string::npos);
@@ -1781,7 +1781,9 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(html.find("<select id=\\\"hid_pointer_mode\\\"") != std::string::npos);
     CHECK(html.find("hid_keyboard_layout") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_keyboard_layout\\\"") != std::string::npos);
-    CHECK(html.find("pointer_mode requires power off and restart to take effect") != std::string::npos);
+    CHECK(html.find("USB HID configuration saved. Power off and restart the board for it to take effect") != std::string::npos);
+    CHECK(html.find("USB HID settings saved, requires power off and restart to take effect") != std::string::npos);
+    CHECK(html.find("USB will re-enumerate automatically") == std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
     CHECK(html.find("/api/poweroff") != std::string::npos);
     CHECK(html.find("poweroff command sent") != std::string::npos);

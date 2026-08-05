@@ -266,7 +266,6 @@ ApiResponse proxy_agent_json_request(const Options& options,
                                          const std::string& agent_path,
                                          const std::string& body);
 ApiResponse handle_usb_reenumerate(const Options& options);
-void schedule_usb_reenumerate(int delay_seconds);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
@@ -2471,24 +2470,6 @@ static const char* kUsbReenumerateScript =
     "  exit 3\n"
     "fi\n"
     "echo 'USB re-enumeration completed successfully'\n";
-
-// Kick off USB re-enumeration without blocking the caller. Used from the
-// config-save path, where the agent restart is also backgrounded: the toggle
-// waits a few seconds so the restart settles first, then runs detached so a
-// slow or hung UDC transition can never stall POST /api/config. Failures are
-// logged to the system log; callers that need the outcome synchronously should
-// use handle_usb_reenumerate() (POST /api/hid/usb-reenumerate) instead.
-void schedule_usb_reenumerate(int delay_seconds) {
-    std::string script(kUsbReenumerateScript);
-    // Run the script detached in the background after a settle delay. Logging
-    // to `logger` keeps a trace without a synchronous result.
-    std::string cmd =
-        "( sleep " + std::to_string(delay_seconds) + "; "
-        "printf '%s' " + shell_quote(script) + " | sh -s "
-        "2>&1 | logger -t config_web_usb_reenumerate ) &";
-    int rc = system(cmd.c_str());
-    (void)rc;
-}
 
 ApiResponse handle_usb_reenumerate(const Options& options) {
     CommandResult result = run_command_with_stdin("sh -s", kUsbReenumerateScript, 5000);
@@ -5639,8 +5620,13 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON_Delete(root);
     config.hid.pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
     config.hid.input_backend = normalize_input_backend(config.hid.input_backend);
-    bool usbhid_restart_scheduled = original_pointer_mode != config.hid.pointer_mode;
-    bool keyboard_layout_changed = original_keyboard_layout != config.hid.keyboard_layout;
+    // pointer_mode changes the HID report format. keyboard_layout changes the
+    // Agent's key mapping, but iOS also pins its hardware layout at USB
+    // enumeration. A same-identity UDC bounce can leave iOS with inconsistent
+    // keyboard and pointer state, so both changes require a clean board restart.
+    bool usbhid_restart_required =
+        original_pointer_mode != config.hid.pointer_mode ||
+        original_keyboard_layout != config.hid.keyboard_layout;
 
     std::string save_error;
     if (!aiden::save_agent_toml(options.agent_config_path.c_str(), config, &save_error)) {
@@ -5652,35 +5638,22 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         return make_json_error(500, save_error);
     }
 
-    bool agent_restart_scheduled = !usbhid_restart_scheduled;
+    bool agent_restart_scheduled = !usbhid_restart_required;
     if (agent_restart_scheduled) {
         schedule_agent_restart();
-    }
-
-    // Schedule USB re-enumeration in the background when keyboard_layout
-    // changes. It runs detached after a short settle delay so the backgrounded
-    // agent restart (scheduled above) lands first and the synchronous UDC
-    // toggle never blocks this response. The outcome is reported to the caller
-    // as "scheduled"; clients that need a definitive result can call
-    // POST /api/hid/usb-reenumerate, which propagates unbind/rebind failures.
-    bool usb_reenumeration_scheduled = keyboard_layout_changed && !usbhid_restart_scheduled;
-    if (usb_reenumeration_scheduled) {
-        schedule_usb_reenumerate(3);
     }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
     cJSON_AddStringToObject(response, "message",
-                            usbhid_restart_scheduled
-                                ? "config saved; reboot required for usb hid pointer_mode"
-                                : (usb_reenumeration_scheduled
-                                   ? "config saved; agent restarting and USB re-enumerating"
-                                   : "config saved; agent restarting"));
+                            usbhid_restart_required
+                                ? "config saved; reboot required for usb hid configuration"
+                                : "config saved; agent restarting");
     cJSON_AddBoolToObject(response, "agent_restart_scheduled", agent_restart_scheduled ? 1 : 0);
-    cJSON_AddBoolToObject(response, "usb_reenumeration_scheduled", usb_reenumeration_scheduled ? 1 : 0);
+    cJSON_AddBoolToObject(response, "usb_reenumeration_scheduled", 0);
     cJSON_AddBoolToObject(response, "usbhid_restart_scheduled", 0);
-    cJSON_AddBoolToObject(response, "usbhid_restart_required", usbhid_restart_scheduled ? 1 : 0);
-    cJSON_AddBoolToObject(response, "reboot_required", usbhid_restart_scheduled ? 1 : 0);
+    cJSON_AddBoolToObject(response, "usbhid_restart_required", usbhid_restart_required ? 1 : 0);
+    cJSON_AddBoolToObject(response, "reboot_required", usbhid_restart_required ? 1 : 0);
     cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
     cJSON_AddItemToObject(response, "config", config_to_json(config));
 

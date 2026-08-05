@@ -1066,7 +1066,7 @@ TEST_CASE("config_web: POST /api/config drops model base_url for providers that 
     CHECK(saved.find("gateway.example.com") == std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only agent") {
+TEST_CASE("config_web: POST /api/config writes keyboard layout and requires reboot") {
     StubEnv env;
     auto handle = start_server(env);
 
@@ -1076,9 +1076,10 @@ TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
-    CHECK(resp.body.find("\"agent_restart_scheduled\":true") != std::string::npos);
-    CHECK(resp.body.find("\"usbhid_restart_required\":false") != std::string::npos);
-    CHECK(resp.body.find("\"reboot_required\":false") != std::string::npos);
+    CHECK(resp.body.find("\"agent_restart_scheduled\":false") != std::string::npos);
+    CHECK(resp.body.find("\"usb_reenumeration_scheduled\":false") != std::string::npos);
+    CHECK(resp.body.find("\"usbhid_restart_required\":true") != std::string::npos);
+    CHECK(resp.body.find("\"reboot_required\":true") != std::string::npos);
 
     std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
     REQUIRE(saved_in.good());
