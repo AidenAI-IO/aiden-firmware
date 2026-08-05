@@ -60,7 +60,6 @@ Prefer the highest-level reliable tool for the job:
 - Use `touch_gesture` for mobile taps, swipes, and drags, and as a listed or non-shortcut fallback for back/home gestures.
 - For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `enter_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
-- Before entering English/ASCII text into any field, inspect the visible keyboard language. If a Chinese IME is active, for example the space bar says `拼音` or candidate/preedit text is shown, first switch to the English/Latin keyboard with the globe/input-method key, then type. Do not use `keyboard_text` while English text remains in Chinese IME preedit/candidate state.
 - Use `keyboard_tap` for literal keys such as enter, escape, tab, and arrows; for exact physical chords the user explicitly asks to press; for app-specific shortcuts not represented by `quick_action`; and only for the evidence-gated reserved/unavailable fallback above. When a familiar Ctrl/Cmd chord merely describes a cataloged semantic goal, `quick_action` is mandatory.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch-style controls are not appropriate.
 
@@ -116,19 +115,13 @@ If `enter_text` reports missing HID devices such as `/dev/hidg0` or `/dev/hidg1`
 
 Use this flow for app switcher, recents, returning to Aiden, and cross-app navigation workflows.
 
-1. Observe the screen.
-2. Try `quick_action` for `app_switch`, home, back, or app search before manual gestures.
-3. Use `search_launch_app` when opening a target app via system search is the clearest path.
-4. Verify the result with a screenshot before continuing.
+1. Use global `[device].device_type` as the platform authority. Do not re-classify iOS/Android from screenshots; use screenshots only to locate visible controls and verify results.
+2. Observe the screen.
+3. Try `quick_action` for `app_switch`, home, back, or app search before manual gestures.
+4. Use `search_launch_app` when opening a target app via system search is the clearest path.
+5. Verify the result with a screenshot before continuing.
 
-Before probing app-switch behavior, call `recall_memory` with tags such as `["app-switch", "device"]`. If a matching calibration exists for this device/platform, use it directly.
-
-Platform clues:
-
-- iOS/iPadOS: home bar at bottom, no Android navigation buttons.
-- Android gesture navigation: thin gesture bar, no 3-button nav.
-- Android 3-button navigation: visible Back / Home / Recents buttons.
-- Unknown: treat as gesture navigation and probe conservatively.
+Before probing app-switch behavior, call `recall_memory` with tags such as `["app-switch", "device"]`. If a matching calibration exists for the configured `[device].device_type`, use it directly.
 
 If no known quick action or cached method works:
 
@@ -145,7 +138,7 @@ Selecting an app:
 - If still not found, dismiss the switcher and use `search_launch_app`, system search, or the home/app drawer.
 - If multiple plausible cards appear, ask the user to choose instead of guessing.
 
-After successfully opening the switcher via a non-obvious method, call `save_memory` with device/platform, method, gesture coordinates, and tags `["app-switch", "device"]`.
+After successfully opening the switcher via a non-obvious method, call `save_memory` with the configured `[device].device_type`, method, gesture coordinates, and tags `["app-switch", "device"]`.
 
 On iOS, if Phone Bridge context says the Aiden companion app is backgrounded/inactive and `return_entry=dynamic_island`, treat Dynamic Island as the fastest way back to Aiden. Do not blind-tap lock-screen Live Activity cards; use screenshot/HID fallback or visual confirmation for those cases. Opening Aiden restores the companion app shortcut channel.
 
