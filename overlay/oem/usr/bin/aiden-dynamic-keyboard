@@ -77,21 +77,19 @@ unlink_functions() {
 	rm -f "$CONFIG_DIR"/hid.* "$CONFIG_DIR"/ecm.* 2>/dev/null || true
 }
 
-link_keyboard_ecm_profile() {
-	ln -s "$KEYBOARD_FUNC" "$CONFIG_DIR/hid.usb0"
-	ln -s "$EXTRA_KEYS_FUNC" "$CONFIG_DIR/hid.usb2"
-	ln -s "$ECM_FUNC" "$CONFIG_DIR/ecm.usb0"
-}
-
 link_normal_profile() {
-	link_keyboard_ecm_profile
-	# Match S49usbhid: make the pointer the final host-visible interface while
-	# retaining one composite enumeration for this profile.
+	ln -s "$KEYBOARD_FUNC" "$CONFIG_DIR/hid.usb0"
 	ln -s "$POINTER_FUNC" "$CONFIG_DIR/hid.usb1"
+	ln -s "$EXTRA_KEYS_FUNC" "$CONFIG_DIR/hid.usb2"
 }
 
 link_isolated_profile() {
-	link_keyboard_ecm_profile
+	ln -s "$KEYBOARD_FUNC" "$CONFIG_DIR/hid.usb0"
+	ln -s "$EXTRA_KEYS_FUNC" "$CONFIG_DIR/hid.usb2"
+}
+
+link_ecm() {
+	ln -s "$ECM_FUNC" "$CONFIG_DIR/ecm.usb0"
 }
 
 set_identity() {
@@ -185,6 +183,7 @@ switch_mode() {
 	else
 		link_normal_profile
 	fi
+	link_ecm
 	echo "$udc" > "$UDC_PATH"
 	restore_usb0
 

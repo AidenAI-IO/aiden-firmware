@@ -132,14 +132,11 @@ start() {
 	echo "$ECM_HOST_MAC" > "$GADGET_DIR/functions/ecm.usb0/host_addr"
 	echo "$ECM_DEV_MAC"  > "$GADGET_DIR/functions/ecm.usb0/dev_addr"
 
-	# Link all functions, THEN bind UDC (configfs requires this order).
-	# Keep the pointer last in the host-visible configuration so iOS establishes
-	# the external-keyboard and ECM services before AssistiveTouch attaches its
-	# pointer service. This preserves one UDC bind and does not interrupt ECM.
+	# Link all functions, THEN bind UDC (configfs requires this order)
 	ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0" 2>/dev/null
+	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1" 2>/dev/null
 	ln -s "$GADGET_DIR/functions/hid.usb2" "$GADGET_DIR/configs/c.1/hid.usb2" 2>/dev/null
 	ln -s "$GADGET_DIR/functions/ecm.usb0" "$GADGET_DIR/configs/c.1/ecm.usb0" 2>/dev/null
-	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1" 2>/dev/null
 
 	echo "$UDC" > "$GADGET_DIR/UDC"
 
