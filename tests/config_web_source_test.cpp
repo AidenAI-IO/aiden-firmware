@@ -1901,3 +1901,117 @@ TEST_CASE("config web rendered config controls are registered in field type guar
                       "rendered config field is missing from validate_known_config_field_types: " << field);
     }
 }
+
+// Decodes the C++ string literals in config_web_html.h into the JavaScript the
+// browser actually receives, so tests can reason about emitted lines rather
+// than about the escaped source. Only the escapes the header uses are handled.
+std::string decode_html_header_literals(const std::string& header) {
+    std::string js;
+    bool in_literal = false;
+    for (size_t i = 0; i < header.size(); ++i) {
+        const char c = header[i];
+        if (!in_literal) {
+            if (c == '"') {
+                in_literal = true;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_literal = false;
+            continue;
+        }
+        if (c != '\\' || i + 1 >= header.size()) {
+            js.push_back(c);
+            continue;
+        }
+        const char esc = header[++i];
+        switch (esc) {
+            case 'n': js.push_back('\n'); break;
+            case 'r': js.push_back('\r'); break;
+            case 't': js.push_back('\t'); break;
+            default: js.push_back(esc); break;
+        }
+    }
+    return js;
+}
+
+// A `//` comment runs to the end of its line, so any JavaScript sharing a line
+// with one never reaches the browser. The page is emitted as minified one-liners,
+// which makes it easy to append code to a commented line and silently delete it:
+// that is how ProvidersManager and syncProvidersFromConfig were once dropped,
+// leaving the page stuck on "Page initialization failed."
+TEST_CASE("config web html keeps javascript off line-comment lines") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+    REQUIRE(js.find("syncProvidersFromConfig") != std::string::npos);
+
+    const char* code_markers[] = {
+        "function ", "const ", "let ", "var ", "();", NULL,
+    };
+
+    std::istringstream js_in(js);
+    std::string line;
+    int line_number = 0;
+    while (std::getline(js_in, line)) {
+        ++line_number;
+        size_t comment = 0;
+        while ((comment = line.find("//", comment)) != std::string::npos) {
+            // Skip URL schemes such as https:// that are not comments at all.
+            if (comment > 0 && line[comment - 1] == ':') {
+                comment += 2;
+                continue;
+            }
+            break;
+        }
+        if (comment == std::string::npos) {
+            continue;
+        }
+        const std::string commented_out = line.substr(comment + 2);
+        for (int i = 0; code_markers[i]; ++i) {
+            CHECK_MESSAGE(commented_out.find(code_markers[i]) == std::string::npos,
+                          "emitted JS line " << line_number << " hides code after a // comment: "
+                                             << code_markers[i] << " in: "
+                                             << commented_out.substr(0, 80));
+        }
+    }
+}
+
+// loadConfig() calls syncProvidersFromConfig(), which drives ProvidersManager and
+// ModelSelector. Each must be defined on a line the browser can execute, or page
+// init throws a ReferenceError that the init try/catch turns into a banner.
+TEST_CASE("config web html defines provider ui symbols on executable lines") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    const char* definitions[] = {
+        "function syncProvidersFromConfig(",
+        "const ProvidersManager = {",
+        "const ModelSelector = {",
+        "ProvidersManager.init();",
+        "ModelSelector.init();",
+        NULL,
+    };
+
+    for (int i = 0; definitions[i]; ++i) {
+        const std::string needle(definitions[i]);
+        const size_t at = js.find(needle);
+        CHECK_MESSAGE(at != std::string::npos, "missing definition: " << needle);
+        if (at == std::string::npos) {
+            continue;
+        }
+        const size_t line_start = js.rfind('\n', at) == std::string::npos ? 0 : js.rfind('\n', at) + 1;
+        const std::string prefix = js.substr(line_start, at - line_start);
+        CHECK_MESSAGE(prefix.find("//") == std::string::npos,
+                      "definition is commented out on its line: " << needle);
+    }
+}
