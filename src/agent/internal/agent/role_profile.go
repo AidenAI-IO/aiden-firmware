@@ -12,7 +12,24 @@ type RoleProfile struct {
 	Tools        []langtools.Tool
 }
 
-const phoneBridgeToolStateRule = "Before calling open_url, bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification, inspect the latest <state>. Call open_url when app_connected:true with app_state absent or active, or when a visible iOS Dynamic Island return entry can restore Aiden. Call a bridge data tool when app_connected:true with app_state absent or active, app_platform:ios with app_pip_enabled:true, app_platform:android with app_fgs_enabled:true, or a visible iOS Dynamic Island return entry can restore Aiden."
+const phoneBridgeToolStateRule = `Before calling open_url or a bridge data tool, inspect the latest <state>.
+
+open_url_available =
+    (app_connected:true AND
+        (app_state is absent OR app_state:active))
+    OR visible_ios_dynamic_island_return_entry
+
+bridge_data_tool_available =
+    (app_connected:true AND
+        (app_platform:android
+         OR app_state is absent
+         OR app_state:active))
+    OR (app_platform:ios AND app_pip_enabled:true)
+    OR (app_platform:android AND app_fgs_enabled:true)
+    OR visible_ios_dynamic_island_return_entry
+
+Bridge data tools are:
+bridge_clipboard, bridge_calendar, bridge_contacts, bridge_notification.`
 
 func agentRoleRules() []string {
 	rules := []string{
