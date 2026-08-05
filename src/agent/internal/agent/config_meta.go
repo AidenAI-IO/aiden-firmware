@@ -135,22 +135,28 @@ func ConfigMeta() ConfigMetadata {
 				Name: "model",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("openrouter", "openai", "kimi", "kimi-cn", "ollama", "fake"),
+						Enum:    enumOptions("openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake"),
 						Default: defaults.Model.Provider},
 					{Key: "token_env", Widget: WidgetText},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(in("model.provider", "openai", "openrouter", "kimi", "kimi-cn", "ollama"))},
+						VisibleWhen: all(in("model.provider", "openai", "openrouter", "kimi", "kimi-cn", "volcengine", "ollama"))},
 					// The effective default is model-dependent (resolved at load
 					// time); show the global fallback here as the UI placeholder.
 					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},
 					{Key: "max_response_tokens", Widget: WidgetNumber, Default: defaults.Model.MaxResponseTokens},
 					{Key: "log_raw_http", Widget: WidgetBoolean, Default: defaults.Model.LogRawHTTP},
+					// Reasoning levels differ per provider: "minimal" is supported by
+					// OpenRouter and Volcengine Ark; "none" is the OpenAI-style off
+					// switch that Ark does not recognize. Scope each to the providers
+					// that accept it so the UI cannot save a value the endpoint
+					// rejects; auto plus low/medium/high stay unscoped.
 					{Key: "reasoning_effort", Widget: WidgetSelect,
 						Enum: []EnumOption{
 							{Value: "", Label: "auto (default)"},
-							{Value: "none", Label: "none"},
+							{Value: "minimal", Label: "minimal (no thinking)", Providers: []string{"openrouter", "volcengine"}},
+							{Value: "none", Label: "none", Providers: []string{"openrouter", "openai", "kimi", "kimi-cn", "ollama", "fake"}},
 							{Value: "low", Label: "low"},
 							{Value: "medium", Label: "medium"},
 							{Value: "high", Label: "high"},

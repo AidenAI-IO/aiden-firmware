@@ -29,6 +29,13 @@ const (
 	moonshotCNBaseURL     = "https://api.moonshot.cn/v1"
 )
 
+// Volcengine Ark (火山方舟) OpenAI-compatible endpoint for the Doubao models.
+// Ark also exposes an Anthropic-protocol endpoint at /api/compatible, which this
+// repo does not use: every Ark model here is reached through the shared
+// openAICompatibleModel. The provider accepts a base_url override for proxies
+// and for the Agent Plan endpoints (/api/plan/v3).
+const arkBeijingBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
+
 type ModelManager struct {
 	config ModelConfig
 	proxy  ProxyConfig
@@ -196,6 +203,12 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 			baseURL = moonshotCNBaseURL
 		}
 		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
+	case "volcengine":
+		baseURL := cfg.BaseURL
+		if baseURL == "" {
+			baseURL = arkBeijingBaseURL
+		}
+		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
 	case "openrouter":
 		token := resolveToken(cfg)
 		if token == "" {
@@ -205,7 +218,10 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		if baseURL == "" {
 			baseURL = "https://openrouter.ai/api/v1"
 		}
-		opts := append(m.openAICompatibleOptions(cfg), withOpenAICompatibleSessionSticky(m.activeSessionID), withOpenAICompatibleRouterMetadata())
+		opts := append(m.openAICompatibleOptions(cfg),
+			withOpenAICompatibleSessionSticky(m.activeSessionID),
+			withOpenAICompatibleRouterMetadata(),
+			withOpenAICompatibleOpenRouterReasoning())
 		if m.cachedOpenRouterPromptCachePolicy().UsesExplicitCacheControl() {
 			opts = append(opts, withOpenAICompatibleExplicitPromptCache())
 		}

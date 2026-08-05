@@ -170,6 +170,8 @@ func TestLoadRuntimeConfigClearsBaseURLOnlyForProvidersWithoutOverrides(t *testi
 		{"openrouter keeps base_url", "openrouter", "https://gateway.example.com/v1"},
 		{"kimi keeps base_url", "kimi", "https://gateway.example.com/v1"},
 		{"kimi-cn keeps base_url", "kimi-cn", "https://gateway.example.com/v1"},
+		{"volcengine keeps base_url", "volcengine", "https://gateway.example.com/v1"},
+		{"Volcengine case insensitive keeps base_url", "Volcengine", "https://gateway.example.com/v1"},
 		{"ollama keeps base_url", "ollama", "https://gateway.example.com/v1"},
 		{"Ollama case insensitive keeps base_url", "Ollama", "https://gateway.example.com/v1"},
 		{"fake drops base_url", "fake", ""},
@@ -300,32 +302,53 @@ func TestLoadResolvedConfigKeepsTemperatureUnset(t *testing.T) {
 
 func TestLoadRuntimeConfigResolvesModelReasoningEffortDefault(t *testing.T) {
 	tests := []struct {
-		name    string
-		model   string
-		explSet string // explicit reasoning_effort line, empty means unset
-		want    string
+		name     string
+		provider string
+		model    string
+		explSet  string // explicit reasoning_effort line, empty means unset
+		want     string
 	}{
 		{
-			name:  "kimi-k3 without explicit reasoning_effort pins model default",
-			model: "kimi-k3",
-			want:  "low",
+			name:     "kimi-k3 without explicit reasoning_effort pins model default",
+			provider: "openai",
+			model:    "kimi-k3",
+			want:     "low",
 		},
 		{
-			name:    "explicit reasoning_effort overrides kimi-k3 model default",
-			model:   "kimi-k3",
-			explSet: `reasoning_effort = "high"`,
-			want:    "high",
+			name:     "explicit reasoning_effort overrides kimi-k3 model default",
+			provider: "openai",
+			model:    "kimi-k3",
+			explSet:  `reasoning_effort = "high"`,
+			want:     "high",
 		},
 		{
-			name:  "unknown model without explicit reasoning_effort stays auto (empty)",
-			model: "gpt-5.5",
-			want:  "",
+			name:     "doubao-seed-2.1-pro without explicit reasoning_effort pins model default",
+			provider: "volcengine",
+			model:    "doubao-seed-2-1-pro-260628",
+			want:     "low",
+		},
+		{
+			name:     "explicit minimal overrides doubao model default",
+			provider: "volcengine",
+			model:    "doubao-seed-2-1-pro-260628",
+			explSet:  `reasoning_effort = "minimal"`,
+			want:     "minimal",
+		},
+		{
+			name:     "unknown model without explicit reasoning_effort stays auto (empty)",
+			provider: "openai",
+			model:    "gpt-5.5",
+			want:     "",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "agent.toml")
-			contents := "[model]\nprovider = \"openai\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
+			provider := tt.provider
+			if provider == "" {
+				provider = "openai"
+			}
+			contents := "[model]\nprovider = \"" + provider + "\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
 			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
 			}

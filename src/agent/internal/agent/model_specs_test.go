@@ -54,6 +54,7 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 		{"gemini 3.5 pro bare", "google", "gemini-3.5-pro", 1_048_576, 65_536},
 		{"kimi k3 bare", "openai", "kimi-k3", 1_048_576, 131_072},
 		{"kimi k3 prefixed", "openrouter", "moonshotai/kimi-k3", 1_048_576, 131_072},
+		{"doubao seed 2.1 pro", "volcengine", "doubao-seed-2-1-pro-260628", 262_144, 131_072},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -68,6 +69,26 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 				t.Errorf("MaxOutput = %d, want %d", spec.MaxOutput, tt.wantMaxOutput)
 			}
 		})
+	}
+}
+
+func TestLookupModelSpecDoubaoSeedDefaults(t *testing.T) {
+	spec, ok := LookupModelSpec("volcengine", "doubao-seed-2-1-pro-260628")
+	if !ok {
+		t.Fatalf("LookupModelSpec: expected ok for doubao-seed-2-1-pro-260628")
+	}
+	// Ark defaults to "high" effort when reasoning_effort is omitted, which
+	// stalls streaming before the first content token. Pin a lighter default so
+	// voice stays responsive; an explicit model.reasoning_effort still wins.
+	if spec.DefaultReasoningEffort == nil {
+		t.Fatal("DefaultReasoningEffort = nil, want \"low\"")
+	}
+	if *spec.DefaultReasoningEffort != "low" {
+		t.Errorf("DefaultReasoningEffort = %q, want \"low\"", *spec.DefaultReasoningEffort)
+	}
+	// Unlike Kimi K3, Ark accepts any temperature, so the global default applies.
+	if spec.DefaultTemperature != nil {
+		t.Errorf("DefaultTemperature = %v, want nil (no model-imposed requirement)", *spec.DefaultTemperature)
 	}
 }
 

@@ -1384,6 +1384,29 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
     CHECK(html.find("<div class=\\\"card section-card\\\" id=\\\"section-system_env\\\"") != std::string::npos);
 }
 
+TEST_CASE("config web documents provider-specific reasoning effort levels") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    // The hint must mention that minimal is OpenRouter and Ark, and that Ark
+    // does not support none. The select options themselves come from config-meta
+    // and are filtered per provider.
+    const std::string hint =
+        "Empty = auto (disable reasoning only for no-tool requests). "
+        "Levels are provider-specific: minimal is OpenRouter and Volcengine Ark only, "
+        "none is not supported by Ark.";
+    CHECK(html.find(hint) != std::string::npos);
+
+    // The zh-CN dictionary is keyed by the English source string, so the key
+    // must be updated in lockstep with the hint text above.
+    CHECK(html.find("'" + hint + "':'") != std::string::npos);
+}
+
 TEST_CASE("config web exposes telemetry settings section") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
