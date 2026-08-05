@@ -94,26 +94,6 @@ func (l *AgentLoop) outboundTransforms() []executor.OutboundMessageTransform {
 
 func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
 	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager, l.outboundTransforms()...)
-	if spec := l.Model.Spec(); spec.ContextWindow > 0 {
-		llmExecutor.SetOutboundContentPolicy(NewHardContextGuard(spec, func(event ContextBudgetTelemetry) {
-			if l.Recorder == nil {
-				return
-			}
-			l.Recorder.RecordEvent(TaskEpisodeEvent{
-				Type: runEventContextBudget,
-				Metadata: map[string]interface{}{
-					"estimated_prompt_tokens":       event.EstimatedPromptTokens,
-					"estimated_input_budget":        event.EstimatedInputBudget,
-					"message_tokens":                event.MessageTokens,
-					"tool_schema_tokens":            event.ToolSchemaTokens,
-					"context_window":                event.ContextWindow,
-					"max_response_tokens":           event.MaxResponseTokens,
-					"hard_guard_rejected":           event.HardGuardRejected,
-					"provider_context_length_error": false,
-				},
-			})
-		}))
-	}
 
 	agentTools := l.Profile.Tools
 	toolSpecs := NewToolSpecs(agentTools)
@@ -243,7 +223,11 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	turnOptions := append([]llms.CallOption{}, callOptions...)
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
-	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
+	var contentResp *llms.ContentResponse
+	err := l.checkOutboundContextBudget(turnOptions)
+	if err == nil {
+		contentResp, err = llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
+	}
 	if err != nil {
 		if l.Recorder != nil {
 			l.Recorder.RecordEvent(TaskEpisodeEvent{
@@ -537,6 +521,41 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	l.applyLoopGuardDecision(decision)
 
 	return "", iterationContinue, nil
+}
+
+func (l *AgentLoop) checkOutboundContextBudget(options []llms.CallOption) error {
+	if l == nil || l.Model == nil || l.contextManager == nil {
+		return nil
+	}
+	spec := l.Model.Spec()
+	if spec.ContextWindow <= 0 {
+		return nil
+	}
+	messages := l.contextManager.CloneMessageList()
+	for _, transform := range l.outboundTransforms() {
+		if transform == nil {
+			continue
+		}
+		messages = transform.Transform(messages)
+	}
+	return checkHardContextBudget(spec, contextmanager.ConvertMessageList(messages), options, func(event ContextBudgetTelemetry) {
+		if l.Recorder == nil {
+			return
+		}
+		l.Recorder.RecordEvent(TaskEpisodeEvent{
+			Type: runEventContextBudget,
+			Metadata: map[string]interface{}{
+				"estimated_prompt_tokens":       event.EstimatedPromptTokens,
+				"estimated_input_budget":        event.EstimatedInputBudget,
+				"message_tokens":                event.MessageTokens,
+				"tool_schema_tokens":            event.ToolSchemaTokens,
+				"context_window":                event.ContextWindow,
+				"max_response_tokens":           event.MaxResponseTokens,
+				"hard_guard_rejected":           event.HardGuardRejected,
+				"provider_context_length_error": false,
+			},
+		})
+	})
 }
 
 func (l *AgentLoop) finishStopDecision(ctx context.Context, policy *TerminationPolicy, decision TerminationDecision) (string, iterationOutcome, error) {

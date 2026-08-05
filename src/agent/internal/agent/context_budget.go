@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -13,11 +12,6 @@ import (
 )
 
 const defaultContextWindowFallback = 8_192
-
-type HardContextGuard struct {
-	spec        model.ModelSpec
-	onTelemetry func(ContextBudgetTelemetry)
-}
 
 type ContextBudgetTelemetry struct {
 	EstimatedPromptTokens int
@@ -51,18 +45,10 @@ func (e *ContextBudgetExceededError) Error() string {
 	)
 }
 
-func NewHardContextGuard(spec model.ModelSpec, telemetry ...func(ContextBudgetTelemetry)) HardContextGuard {
-	guard := HardContextGuard{spec: spec}
-	if len(telemetry) > 0 {
-		guard.onTelemetry = telemetry[0]
-	}
-	return guard
-}
-
-func (g HardContextGuard) Apply(_ context.Context, messages []llms.MessageContent, options []llms.CallOption) ([]llms.MessageContent, error) {
-	contextWindow := g.spec.ContextWindow
+func checkHardContextBudget(spec model.ModelSpec, messages []llms.MessageContent, options []llms.CallOption, onTelemetry func(ContextBudgetTelemetry)) error {
+	contextWindow := spec.ContextWindow
 	if contextWindow <= 0 {
-		return messages, nil
+		return nil
 	}
 	var callOptions llms.CallOptions
 	for _, option := range options {
@@ -70,7 +56,7 @@ func (g HardContextGuard) Apply(_ context.Context, messages []llms.MessageConten
 			option(&callOptions)
 		}
 	}
-	maxResponseTokens := g.spec.MaxOutput
+	maxResponseTokens := spec.MaxOutput
 	if callOptions.MaxTokens > 0 {
 		maxResponseTokens = callOptions.MaxTokens
 	}
@@ -87,16 +73,16 @@ func (g HardContextGuard) Apply(_ context.Context, messages []llms.MessageConten
 		MaxResponseTokens:     maxResponseTokens,
 	}
 	if estimatedPromptTokens <= inputBudget {
-		if g.onTelemetry != nil {
-			g.onTelemetry(telemetry)
+		if onTelemetry != nil {
+			onTelemetry(telemetry)
 		}
-		return messages, nil
+		return nil
 	}
 	telemetry.HardGuardRejected = true
-	if g.onTelemetry != nil {
-		g.onTelemetry(telemetry)
+	if onTelemetry != nil {
+		onTelemetry(telemetry)
 	}
-	return nil, &ContextBudgetExceededError{
+	return &ContextBudgetExceededError{
 		EstimatedPromptTokens: estimatedPromptTokens,
 		MessageTokens:         messageTokens,
 		ToolSchemaTokens:      toolSchemaTokens,

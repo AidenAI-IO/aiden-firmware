@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,25 +16,16 @@ func TestHardContextGuardAllowsRequestWithinBudget(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeSystem, "system"),
 		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
 	}
-	guard := NewHardContextGuard(model.ModelSpec{ContextWindow: 4_000, MaxOutput: 500})
-	got, err := guard.Apply(context.Background(), messages, nil)
+	err := checkHardContextBudget(model.ModelSpec{ContextWindow: 4_000, MaxOutput: 500}, messages, nil, nil)
 	if err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	if len(got) != len(messages) {
-		t.Fatalf("Apply() messages = %d, want %d", len(got), len(messages))
+		t.Fatalf("checkHardContextBudget() error = %v", err)
 	}
 }
 
 func TestHardContextGuardRejectsOverBudgetWithoutOmittingToolResults(t *testing.T) {
 	rawResult := strings.Repeat("large-result ", 500)
 	messages := contextBudgetToolMessages(rawResult)
-	guard := NewHardContextGuard(model.ModelSpec{ContextWindow: 1_000, MaxOutput: 200})
-
-	got, err := guard.Apply(context.Background(), messages, nil)
-	if got != nil {
-		t.Fatalf("Apply() messages = %#v, want nil on rejection", got)
-	}
+	err := checkHardContextBudget(model.ModelSpec{ContextWindow: 1_000, MaxOutput: 200}, messages, nil, nil)
 	var budgetErr *ContextBudgetExceededError
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("Apply() error = %T %v, want ContextBudgetExceededError", err, err)
@@ -59,8 +49,7 @@ func TestHardContextGuardCountsToolSchemaTokens(t *testing.T) {
 			Parameters:  map[string]any{"type": "object"},
 		},
 	}})}
-	guard := NewHardContextGuard(model.ModelSpec{ContextWindow: 1_200, MaxOutput: 200})
-	_, err := guard.Apply(context.Background(), messages, options)
+	err := checkHardContextBudget(model.ModelSpec{ContextWindow: 1_200, MaxOutput: 200}, messages, options, nil)
 	var budgetErr *ContextBudgetExceededError
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("Apply() error = %T %v, want ContextBudgetExceededError", err, err)
@@ -72,11 +61,12 @@ func TestHardContextGuardCountsToolSchemaTokens(t *testing.T) {
 
 func TestHardContextGuardReportsBudgetTelemetry(t *testing.T) {
 	var events []ContextBudgetTelemetry
-	guard := NewHardContextGuard(
+	err := checkHardContextBudget(
 		model.ModelSpec{ContextWindow: 1_000, MaxOutput: 200},
+		contextBudgetToolMessages(strings.Repeat("large-result ", 500)),
+		nil,
 		func(event ContextBudgetTelemetry) { events = append(events, event) },
 	)
-	_, err := guard.Apply(context.Background(), contextBudgetToolMessages(strings.Repeat("large-result ", 500)), nil)
 	var budgetErr *ContextBudgetExceededError
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("Apply() error = %T %v, want ContextBudgetExceededError", err, err)

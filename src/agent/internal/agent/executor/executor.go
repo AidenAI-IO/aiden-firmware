@@ -44,14 +44,9 @@ func (e *LLMCallError) Unwrap() error {
 func (e *LLMCallError) IsLLMTurnFailureSource() {}
 
 type LLMExecutor struct {
-	model                 llms.Model
-	contextManager        *contextmanager.ContextManager
-	transforms            []OutboundMessageTransform
-	outboundContentPolicy OutboundContentPolicy
-}
-
-type OutboundContentPolicy interface {
-	Apply(context.Context, []llms.MessageContent, []llms.CallOption) ([]llms.MessageContent, error)
+	model          llms.Model
+	contextManager *contextmanager.ContextManager
+	transforms     []OutboundMessageTransform
 }
 
 func NewLLMExecutor(model llms.Model, contextManager *contextmanager.ContextManager, transforms ...OutboundMessageTransform) *LLMExecutor {
@@ -70,13 +65,6 @@ func (e *LLMExecutor) AppendMessage(message contextmanager.Message) error {
 	return e.contextManager.AppendMessage(message)
 }
 
-func (e *LLMExecutor) SetOutboundContentPolicy(policy OutboundContentPolicy) {
-	if e == nil {
-		return
-	}
-	e.outboundContentPolicy = policy
-}
-
 func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	messages := e.contextManager.CloneMessageList()
 	for _, transform := range e.transforms {
@@ -86,13 +74,6 @@ func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallO
 		messages = transform.Transform(messages)
 	}
 	standard := contextmanager.ConvertMessageList(messages)
-	if e.outboundContentPolicy != nil {
-		var err error
-		standard, err = e.outboundContentPolicy.Apply(ctx, standard, options)
-		if err != nil {
-			return nil, err
-		}
-	}
 	contentResponse, err := e.model.GenerateContent(ctx, standard, options...)
 	if err != nil {
 		return nil, MarkLLMCallError(err)
