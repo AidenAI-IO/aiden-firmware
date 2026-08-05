@@ -385,7 +385,12 @@ func (s *ToolSet) refreshOpenAppTool() {
 	if s.searchOpenTool == nil {
 		return
 	}
-	s.tools[toolOpenApp] = NewOpenAppTool(s.phoneBridge, s.phoneBridgeRestorer, s.searchOpenTool)
+	openApp := NewOpenAppTool(s.phoneBridge, s.phoneBridgeRestorer, s.searchOpenTool)
+	if screenshot, ok := s.tools["screenshot"]; ok && screenshot != nil {
+		s.tools[toolOpenApp] = newPostActionScreenshotTool(openApp, screenshot, postActionScreenshotDelay)
+		return
+	}
+	s.tools[toolOpenApp] = openApp
 }
 
 func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
