@@ -90,6 +90,11 @@ if ! grep -q 'SOURCE_DATE_EPOCH' "$DOCKER_BUILD_SCRIPT" || \
     exit 1
 fi
 
+if ! grep -q "go-version: '1.26.0'" "$WORKFLOW"; then
+    echo "firmware release builds must pin Go 1.26.0 for reproducible rootfs CLI binaries" >&2
+    exit 1
+fi
+
 if grep -Fq 'rm -rf pico-sdk/output/out' "$WORKFLOW"; then
     echo "build workflow must preserve pico-sdk/output/out so unchanged SDK code can reuse SDK-managed build outputs" >&2
     exit 1
@@ -100,8 +105,15 @@ if ! grep -Eq 'pico-sdk/output/image/\*\.img([[:space:]\\]|$)' "$WORKFLOW"; then
     exit 1
 fi
 
-if ! grep -Fq 'chmod -R u+w "$GITHUB_WORKSPACE/build/.cache/go-mod"' "$WORKFLOW"; then
-    echo "self-hosted workspace reclaim must unlock stale read-only Go module cache directories before checkout" >&2
+if ! grep -Fq '"$GITHUB_WORKSPACE/.cache/rootfs-cli-tools/go-mod"' "$WORKFLOW" || \
+   ! grep -Fq 'chmod -R u+w "$go_mod_cache"' "$WORKFLOW"; then
+    echo "self-hosted workspace reclaim must unlock the rootfs CLI Go module cache before checkout" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'for path in build .cache/rootfs-cli-tools overlay/oem overlay/userdata pico-sdk/output' "$DOCKER_BUILD_SCRIPT" || \
+   ! grep -Fq 'chmod -R u+w .cache/rootfs-cli-tools/go-mod' "$DOCKER_BUILD_SCRIPT"; then
+    echo "Docker image builds must restore ownership and write permission for the rootfs CLI cache" >&2
     exit 1
 fi
 
@@ -147,7 +159,10 @@ python3 "$ROOT_DIR/scripts/check_ci_policy_job.py"
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_rootfs_cli_tool_catalog.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_build_rootfs_cli_tools.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_stage_rootfs_cli_tools.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_compress_release_images.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_ota_partition_layout.sh' "$CI_WORKFLOW" || \
@@ -200,6 +215,63 @@ fi
 if ! grep -Fq '"usr/ko/insmod_wifi.sh"' "$BUILD_IMAGE_SCRIPT" || \
    grep -Fq '"usr/ko"' "$BUILD_IMAGE_SCRIPT"; then
     echo "_build_image.sh must clean only Aiden-managed usr/ko overrides, not the SDK module directory" >&2
+    exit 1
+fi
+
+rootfs_cleanup_line=$(grep -nF 'scripts/clean_rootfs_overlay_staging.sh"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+rootfs_cli_build_line=$(grep -nF 'scripts/build_rootfs_cli_tools.sh"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+rootfs_cli_stage_line=$(grep -nF 'scripts/stage_rootfs_cli_tools.sh"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+sysdrv_line=$(grep -nF './build.sh sysdrv "$@"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+if [ -z "$rootfs_cleanup_line" ] || [ -z "$rootfs_cli_build_line" ] || \
+   [ -z "$rootfs_cli_stage_line" ] || [ -z "$sysdrv_line" ] || \
+   [ "$rootfs_cleanup_line" -ge "$rootfs_cli_build_line" ] || \
+   [ "$rootfs_cli_build_line" -ge "$rootfs_cli_stage_line" ] || \
+   [ "$rootfs_cli_stage_line" -ge "$sysdrv_line" ]; then
+    echo "_build_image.sh must clean, build, and stage rootfs CLI tools before the Buildroot sysdrv build" >&2
+    exit 1
+fi
+if ! grep -Fq 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY" "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "_build_image.sh must verify every catalog tool inside the final rootfs image" >&2
+    exit 1
+fi
+rootfs_cli_restage_line=$(grep -nF -- '--dest-overlay "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | tail -n 1)
+firmware_package_line=$(grep -nF './build.sh firmware "$@"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+rootfs_rebuild_line=$(grep -nF 'rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+rootfs_cli_verify_line=$(grep -nF 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY" "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+if ! grep -Fq 'RK_PROJECT_PACKAGE_ROOTFS_DIR="${RK_PROJECT_OUTPUT}/rootfs_${RK_LIBC_TPYE}_${RK_CHIP}"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "_build_image.sh must define the SDK rootfs staging directory before restaging CLI tools" >&2
+    exit 1
+fi
+if [ -z "$firmware_package_line" ] || [ -z "$rootfs_cli_restage_line" ] || \
+   [ -z "$rootfs_rebuild_line" ] || \
+   [ -z "$rootfs_cli_verify_line" ] || \
+   [ "$firmware_package_line" -ge "$rootfs_cli_restage_line" ] || \
+   [ "$rootfs_cli_restage_line" -ge "$rootfs_rebuild_line" ] || \
+   [ "$rootfs_rebuild_line" -ge "$rootfs_cli_verify_line" ]; then
+    echo "_build_image.sh must package firmware, restage CLI tools, rebuild rootfs.img, then verify it" >&2
+    exit 1
+fi
+if ! grep -Fq 'ROOTFS_CLI_TOOL_CATALOG="$SCRIPT_DIR/scripts/rootfs_cli_tools.catalog"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq 'rootfs_cli_catalog_name_policy_records "$ROOTFS_CLI_TOOL_CATALOG"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq 'for tool in "${ROOTFS_CLI_PRESERVE_TOOLS[@]}"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq -- '-path "$target_dir/usr/bin/$tool"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "release builds must derive rootfs CLI tool and preserve lists from the shared catalog" >&2
+    exit 1
+fi
+if grep -Fq 'ROOTFS_CLI_TOOLS=(fq yq rg)' "$BUILD_IMAGE_SCRIPT" || \
+   grep -Fq -- '-path "$target_dir/usr/bin/fq"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "release builds must not hardcode rootfs CLI tool names" >&2
+    exit 1
+fi
+if ! grep -Fq -- '--catalog "$ROOTFS_CLI_TOOL_CATALOG"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq -- '--policy preserve' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq 'ROOTFS_CLI_MANAGED_STATE="${DEST_OVERLAY}.aiden-rootfs-cli-tools.list"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq -- '--managed-state "$ROOTFS_CLI_MANAGED_STATE"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "rootfs CLI build, staging, and post-strip restore must use the shared catalog policy" >&2
+    exit 1
+fi
+if ! grep -Fq 'ROOTFS_CLI_CACHE_DIR="$SCRIPT_DIR/.cache/rootfs-cli-tools"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "rootfs CLI cache must live outside build/, which _build.sh recreates on every image build" >&2
     exit 1
 fi
 
