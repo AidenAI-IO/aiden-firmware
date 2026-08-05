@@ -302,43 +302,53 @@ func TestLoadResolvedConfigKeepsTemperatureUnset(t *testing.T) {
 
 func TestLoadRuntimeConfigResolvesModelReasoningEffortDefault(t *testing.T) {
 	tests := []struct {
-		name    string
-		model   string
-		explSet string // explicit reasoning_effort line, empty means unset
-		want    string
+		name     string
+		provider string
+		model    string
+		explSet  string // explicit reasoning_effort line, empty means unset
+		want     string
 	}{
 		{
-			name:  "kimi-k3 without explicit reasoning_effort pins model default",
-			model: "kimi-k3",
-			want:  "low",
+			name:     "kimi-k3 without explicit reasoning_effort pins model default",
+			provider: "openai",
+			model:    "kimi-k3",
+			want:     "low",
 		},
 		{
-			name:    "explicit reasoning_effort overrides kimi-k3 model default",
-			model:   "kimi-k3",
-			explSet: `reasoning_effort = "high"`,
-			want:    "high",
+			name:     "explicit reasoning_effort overrides kimi-k3 model default",
+			provider: "openai",
+			model:    "kimi-k3",
+			explSet:  `reasoning_effort = "high"`,
+			want:     "high",
 		},
 		{
-			name:  "doubao-seed-2.1-pro without explicit reasoning_effort pins model default",
-			model: "doubao-seed-2-1-pro-260628",
-			want:  "low",
+			name:     "doubao-seed-2.1-pro without explicit reasoning_effort pins model default",
+			provider: "volcengine",
+			model:    "doubao-seed-2-1-pro-260628",
+			want:     "low",
 		},
 		{
-			name:    "explicit minimal overrides doubao model default",
-			model:   "doubao-seed-2-1-pro-260628",
-			explSet: `reasoning_effort = "minimal"`,
-			want:    "minimal",
+			name:     "explicit minimal overrides doubao model default",
+			provider: "volcengine",
+			model:    "doubao-seed-2-1-pro-260628",
+			explSet:  `reasoning_effort = "minimal"`,
+			want:     "minimal",
 		},
 		{
-			name:  "unknown model without explicit reasoning_effort stays auto (empty)",
-			model: "gpt-5.5",
-			want:  "",
+			name:     "unknown model without explicit reasoning_effort stays auto (empty)",
+			provider: "openai",
+			model:    "gpt-5.5",
+			want:     "",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "agent.toml")
-			contents := "[model]\nprovider = \"openai\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
+			provider := tt.provider
+			if provider == "" {
+				provider = "openai"
+			}
+			contents := "[model]\nprovider = \"" + provider + "\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
 			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
 			}
