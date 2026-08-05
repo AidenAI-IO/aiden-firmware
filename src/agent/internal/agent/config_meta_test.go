@@ -442,13 +442,13 @@ func TestConfigMeta_ModelReasoningEffortProviderScoping(t *testing.T) {
 		}
 	}
 
-	// "minimal" is Ark's no-thinking level and only exists there.
+	// "minimal" is supported by OpenRouter and Volcengine Ark.
 	minimal, ok := options["minimal"]
 	if !ok {
 		t.Fatal("model.reasoning_effort enum missing option \"minimal\"")
 	}
-	if !reflect.DeepEqual(minimal.Providers, []string{"volcengine"}) {
-		t.Errorf("option \"minimal\" providers = %#v, want [volcengine]", minimal.Providers)
+	if !reflect.DeepEqual(minimal.Providers, []string{"openrouter", "volcengine"}) {
+		t.Errorf("option \"minimal\" providers = %#v, want [openrouter volcengine]", minimal.Providers)
 	}
 
 	// "none" is not an Ark level; offering it there would produce a 400.

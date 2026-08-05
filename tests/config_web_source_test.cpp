@@ -1393,11 +1393,12 @@ TEST_CASE("config web documents provider-specific reasoning effort levels") {
     html_buffer << html_in.rdbuf();
     const std::string html = html_buffer.str();
 
-    // The hint must mention Ark's no-thinking level; the select options
-    // themselves come from config-meta and are filtered per provider.
+    // The hint must mention that minimal is OpenRouter and Ark, and that Ark
+    // does not support none. The select options themselves come from config-meta
+    // and are filtered per provider.
     const std::string hint =
         "Empty = auto (disable reasoning only for no-tool requests). "
-        "Levels are provider-specific: minimal is Volcengine Ark only, "
+        "Levels are provider-specific: minimal is OpenRouter and Volcengine Ark only, "
         "none is not supported by Ark.";
     CHECK(html.find(hint) != std::string::npos);
 

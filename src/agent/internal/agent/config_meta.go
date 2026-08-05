@@ -147,15 +147,15 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},
 					{Key: "max_response_tokens", Widget: WidgetNumber, Default: defaults.Model.MaxResponseTokens},
 					{Key: "log_raw_http", Widget: WidgetBoolean, Default: defaults.Model.LogRawHTTP},
-					// Reasoning levels differ per provider: "minimal" is Ark's
-					// no-thinking level and "none" is the OpenRouter/OpenAI-style
-					// off switch. Scope each to the providers that accept it so the
-					// UI cannot save a value the endpoint rejects; auto plus
-					// low/medium/high stay unscoped.
+					// Reasoning levels differ per provider: "minimal" is supported by
+					// OpenRouter and Volcengine Ark; "none" is the OpenAI-style off
+					// switch that Ark does not recognize. Scope each to the providers
+					// that accept it so the UI cannot save a value the endpoint
+					// rejects; auto plus low/medium/high stay unscoped.
 					{Key: "reasoning_effort", Widget: WidgetSelect,
 						Enum: []EnumOption{
 							{Value: "", Label: "auto (default)"},
-							{Value: "minimal", Label: "minimal (no thinking)", Providers: []string{"volcengine"}},
+							{Value: "minimal", Label: "minimal (no thinking)", Providers: []string{"openrouter", "volcengine"}},
 							{Value: "none", Label: "none", Providers: []string{"openrouter", "openai", "kimi", "kimi-cn", "ollama", "fake"}},
 							{Value: "low", Label: "low"},
 							{Value: "medium", Label: "medium"},
