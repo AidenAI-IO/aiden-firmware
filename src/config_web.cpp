@@ -2838,14 +2838,11 @@ void set_json_string_vector(std::vector<std::string>* dst, cJSON* obj, const cha
 // model_base_url_allowed mirrors the agent runtime's whitelist
 // (clearNonAllowedModelBaseURL in src/agent/internal/agent/config.go). Providers
 // listed here accept a base_url override: openai for custom gateways, ollama for
-// a local server address, and openrouter/kimi/kimi-cn/volcengine for proxies in
-// front of their built-in endpoints. Anything else pins its endpoint, so a
-// stored base_url would be dead config. Keep both lists in sync.
+// a local server address. Anything else pins its endpoint, so a stored base_url
+// would be dead config. Keep both lists in sync.
 bool model_base_url_allowed(const std::string& provider) {
     const std::string normalized = lowercase_copy(trim_copy(provider));
-    return normalized == "openai" || normalized == "openrouter" ||
-           normalized == "kimi" || normalized == "kimi-cn" ||
-           normalized == "volcengine" || normalized == "ollama";
+    return normalized == "openai" || normalized == "ollama";
 }
 
 void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {

@@ -234,9 +234,9 @@ The three stall-score thresholds must satisfy
 
 | Field                     | Description                                                                                                                                                                                                                                          |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider`                | `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). All three accept a `base_url` override. |
+| `provider`                | `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
-| `base_url`                | Custom OpenAI-compatible endpoint. Optional for `kimi`/`kimi-cn`/`volcengine` (each has a built-in default). Only `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, and `ollama` accept it; other providers pin their endpoint and a stored value is dropped on load. |
+| `base_url`                | Custom OpenAI-compatible endpoint. Only `openai` and `ollama` accept a `base_url` override; other providers use their built-in endpoints and a stored value is dropped on load. |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
 | `token_env`               | Read the API key from the specified environment variable; only supported by `[model]`                                                                                                                                                                |
 | `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
@@ -247,7 +247,7 @@ The three stall-score thresholds must satisfy
 
 ### Moonshot Kimi K3
 
-Use the dedicated `kimi` (global) or `kimi-cn` (mainland China) provider. Each has a built-in Moonshot OpenAI-compatible `base_url`, so only `model` and the API key are required. The `kimi-k3` context window and max output are in the built-in registry, so the metadata overrides can stay unset.
+Use the dedicated `kimi` (global) or `kimi-cn` (mainland China) provider. Each has a built-in Moonshot OpenAI-compatible endpoint, so only `model` and the API key are required. The `kimi-k3` context window and max output are in the built-in registry, so the metadata overrides can stay unset.
 
 ```toml
 # Global site (https://api.moonshot.ai/v1)
@@ -261,9 +261,6 @@ api_key = "MOONSHOT_API_KEY"
 # provider = "kimi-cn"
 # model = "kimi-k3"
 # api_key = "MOONSHOT_API_KEY"
-
-# base_url is optional for kimi/kimi-cn; set it only to override the default
-# (e.g. a proxy or self-hosted gateway).
 ```
 
 ### Volcengine Ark (Doubao)
@@ -280,10 +277,6 @@ api_key = "ARK_API_KEY"
 
 # Or read the key from the environment instead of writing it here:
 # token_env = "ARK_API_KEY"
-
-# base_url is optional; set it to route through a proxy, or to use the
-# subscription Agent Plan endpoint (https://ark.cn-beijing.volces.com/api/plan/v3),
-# which requires a plan-specific API key.
 ```
 
 Ark also exposes an Anthropic-protocol endpoint at `/api/compatible`. This agent
