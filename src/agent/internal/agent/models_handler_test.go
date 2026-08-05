@@ -214,12 +214,20 @@ func TestHandleModelsLocaleSelectsDescription(t *testing.T) {
 	if len(zh) == 0 || len(en) == 0 {
 		t.Fatal("expected openai to return models for both locales")
 	}
-	if zh[0].Description == en[0].Description {
-		t.Errorf("zh-CN and en-US descriptions are identical (%q); locale is being ignored", zh[0].Description)
-	}
 	// The ids are locale-independent and must line up.
 	if zh[0].ID != en[0].ID {
 		t.Errorf("model ids differ across locales: %q vs %q", zh[0].ID, en[0].ID)
+	}
+	// Descriptions should reflect the requested locale unless a translation is
+	// missing. Lookup the expected translation from the registry.
+	firstModel := GetDisplayModelsForProvider("openai")[0]
+	expectedZh := firstModel.GetDescription(localeSimplifiedChinese)
+	expectedEn := firstModel.GetDescription(localeEnglishUS)
+	if zh[0].Description != expectedZh {
+		t.Errorf("zh-CN description = %q, want %q", zh[0].Description, expectedZh)
+	}
+	if en[0].Description != expectedEn {
+		t.Errorf("en-US description = %q, want %q", en[0].Description, expectedEn)
 	}
 }
 

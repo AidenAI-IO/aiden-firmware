@@ -543,3 +543,67 @@ TEST_CASE("agent_toml rejects negative model response token limits") {
         std::remove(path.c_str());
     }
 }
+
+TEST_CASE("agent_toml loads named providers") {
+    std::string path = make_temp_path("providers.toml");
+    {
+        std::ofstream out(path);
+        out << "[providers.openai-work]\n"
+            << "provider = \"openai\"\n"
+            << "api_key = \"sk-work\"\n"
+            << "[providers.ollama_local]\n"
+            << "provider = \"ollama\"\n"
+            << "base_url = \"http://127.0.0.1:11434\"\n"
+            << "token_env = \"OLLAMA_TOKEN\"\n"
+            << "[model]\n"
+            << "provider = \"openai-work\"\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    REQUIRE(err.empty());
+    REQUIRE(cfg.providers.size() == 2);
+    CHECK(cfg.providers["openai-work"].provider == "openai");
+    CHECK(cfg.providers["openai-work"].api_key == "sk-work");
+    CHECK(cfg.providers["ollama_local"].provider == "ollama");
+    CHECK(cfg.providers["ollama_local"].base_url == "http://127.0.0.1:11434");
+    CHECK(cfg.providers["ollama_local"].token_env == "OLLAMA_TOKEN");
+    CHECK(cfg.model.provider == "openai-work");
+
+    std::remove(path.c_str());
+}
+
+// A provider name that save_agent_toml would refuse must be rejected at load
+// time too. Accepting it would produce a config that loads cleanly but fails
+// every later save with "invalid provider name", and the empty-name case used
+// to insert a providers[""] entry into the caller's struct.
+TEST_CASE("agent_toml rejects provider names it cannot write back") {
+    struct Case {
+        const char* leaf;
+        const char* section;
+        const char* expected;
+    };
+    const Case cases[] = {
+        {"empty_provider_name.toml", "providers.", "empty provider name"},
+        {"dotted_provider_name.toml", "providers.a.b", "invalid provider name"},
+        {"spaced_provider_name.toml", "providers.my provider", "invalid provider name"},
+    };
+
+    for (const auto& tc : cases) {
+        std::string path = make_temp_path(tc.leaf);
+        {
+            std::ofstream out(path);
+            out << "[" << tc.section << "]\n"
+                << "provider = \"openai\"\n";
+        }
+
+        aiden::AgentToml cfg;
+        std::string err;
+        CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+        CHECK(err.find(tc.expected) != std::string::npos);
+        CHECK(cfg.providers.empty());
+
+        std::remove(path.c_str());
+    }
+}

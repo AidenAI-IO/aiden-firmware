@@ -1181,6 +1181,33 @@ TEST_CASE("config_web: POST /api/config keeps the stored provider api_key when m
     CHECK(saved.find("[providers.stub-ollama]") == std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config keeps a submitted api_key that contains the mask marker") {
+    // Only the exact mask for that provider means "unchanged". Treating any
+    // value containing "***" as the mask dropped a real key that happens to
+    // contain it, and for a provider name absent from the previous config it
+    // wrote an empty key while still answering 200.
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"providers\":{"
+        // Same provider as the stored one, but not its mask: must be written.
+        "\"stub-openai\":{\"provider\":\"openai\",\"api_key\":\"sk-a***b-real-key\"},"
+        // Provider the previous config never had: the submitted key must survive.
+        "\"brand-new\":{\"provider\":\"openai\",\"api_key\":\"sk-n***w-other-key\"}},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("api_key = \"sk-a***b-real-key\"") != std::string::npos);
+    CHECK(saved.find("api_key = \"sk-n***w-other-key\"") != std::string::npos);
+    CHECK(saved.find("sk-stub-secret-1234") == std::string::npos);
+}
+
 TEST_CASE("config_web: POST /api/config rejects a malformed providers section") {
     StubEnv env;
     auto handle = start_server(env);

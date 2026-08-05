@@ -473,8 +473,15 @@ void apply_kv(AgentToml& cfg,
     } else if (section.find("providers.") == 0) {
         // Handle [providers.xxx] sections
         std::string provider_name = section.substr(10); // Skip "providers."
-        if (provider_name.empty()) {
-            fail("empty provider name in section [" + section + "]");
+        // Reject here what save_agent_toml would refuse to write. Accepting a
+        // name that cannot be serialized back would make every later save fail
+        // with "invalid provider name" on a config that loaded cleanly.
+        if (!is_valid_bare_toml_key(provider_name)) {
+            fail(provider_name.empty()
+                     ? "empty provider name"
+                     : "invalid provider name \"" + provider_name +
+                           "\": only letters, digits, '-' and '_' are allowed");
+            return;
         }
 
         ProviderToml& provider = cfg.providers[provider_name];

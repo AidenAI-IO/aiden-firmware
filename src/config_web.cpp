@@ -258,6 +258,12 @@ bool parse_http_base_url(const std::string& base_url,
                          std::string* error);
 std::string join_url_path(const std::string& base_path, const std::string& path);
 int connect_tcp_host(const std::string& host, int port, int timeout_ms, std::string* error);
+bool send_agent_http_request(const AgentHttpTarget& target,
+                             const char* method,
+                             const std::string& path,
+                             const std::string& body,
+                             bool send_body,
+                             AgentHttpResponse* response);
 bool post_agent_http_json(const AgentHttpTarget& target,
                           const std::string& path,
                           const std::string& body,
@@ -265,6 +271,11 @@ bool post_agent_http_json(const AgentHttpTarget& target,
 bool resolve_agent_http_target(const Options& options,
                                AgentHttpTarget* target,
                                std::string* error);
+ApiResponse proxy_agent_request(const Options& options,
+                                const char* method,
+                                const std::string& agent_path,
+                                const std::string& body,
+                                bool send_body);
 ApiResponse proxy_agent_json_request(const Options& options,
                                          const std::string& agent_path,
                                          const std::string& body);
@@ -2280,10 +2291,18 @@ ReadStatus read_to_eof(int fd, std::string* out, size_t max_size) {
     }
 }
 
-bool post_agent_http_json(const AgentHttpTarget& target,
-                          const std::string& path,
-                          const std::string& body,
-                          AgentHttpResponse* response) {
+// Sends one HTTP/1.1 request to the agent and reads the whole response.
+// Both the POST and the GET proxy go through here: keeping a single copy of the
+// socket setup, status-line parsing and body reading is what stops one path
+// from silently losing a size cap or a short-write guard.
+// `send_body` separates a POST that carries an (possibly empty) JSON body from a
+// GET, which must not announce Content-Type or Content-Length at all.
+bool send_agent_http_request(const AgentHttpTarget& target,
+                             const char* method,
+                             const std::string& path,
+                             const std::string& body,
+                             bool send_body,
+                             AgentHttpResponse* response) {
     if (response) {
         *response = AgentHttpResponse();
     }
@@ -2311,12 +2330,17 @@ bool post_agent_http_json(const AgentHttpTarget& target,
     }
 
     std::ostringstream request;
-    request << "POST " << request_path << " HTTP/1.1\r\n";
+    request << method << " " << request_path << " HTTP/1.1\r\n";
     request << "Host: " << target.host << ":" << target.port << "\r\n";
-    request << "Content-Type: application/json\r\n";
-    request << "Content-Length: " << body.size() << "\r\n";
+    request << "Accept: application/json\r\n";
+    if (send_body) {
+        request << "Content-Type: application/json\r\n";
+        request << "Content-Length: " << body.size() << "\r\n";
+    }
     request << "Connection: close\r\n\r\n";
-    request << body;
+    if (send_body) {
+        request << body;
+    }
     std::string request_text = request.str();
     if (!write_all(fd, request_text.data(), request_text.size())) {
         if (response) {
@@ -2430,6 +2454,13 @@ bool post_agent_http_json(const AgentHttpTarget& target,
     return true;
 }
 
+bool post_agent_http_json(const AgentHttpTarget& target,
+                          const std::string& path,
+                          const std::string& body,
+                          AgentHttpResponse* response) {
+    return send_agent_http_request(target, "POST", path, body, true, response);
+}
+
 bool resolve_agent_http_target(const Options& options,
                                AgentHttpTarget* target,
                                std::string* error) {
@@ -2455,9 +2486,14 @@ bool resolve_agent_http_target(const Options& options,
     return true;
 }
 
-ApiResponse proxy_agent_json_request(const Options& options,
-                                         const std::string& agent_path,
-                                         const std::string& body) {
+// Resolves the agent endpoint, forwards one request to it and translates the
+// upstream reply into an ApiResponse. `agent_path` may already carry a query
+// string; it is forwarded verbatim.
+ApiResponse proxy_agent_request(const Options& options,
+                                const char* method,
+                                const std::string& agent_path,
+                                const std::string& body,
+                                bool send_body) {
     AgentHttpTarget target;
     std::string target_error;
     if (!resolve_agent_http_target(options, &target, &target_error)) {
@@ -2465,7 +2501,7 @@ ApiResponse proxy_agent_json_request(const Options& options,
     }
 
     AgentHttpResponse upstream;
-    if (!post_agent_http_json(target, agent_path, body, &upstream)) {
+    if (!send_agent_http_request(target, method, agent_path, body, send_body, &upstream)) {
         return make_json_error(503, upstream.error.empty() ? "agent HTTP request failed" : upstream.error);
     }
 
@@ -2479,6 +2515,12 @@ ApiResponse proxy_agent_json_request(const Options& options,
     return response;
 }
 
+ApiResponse proxy_agent_json_request(const Options& options,
+                                         const std::string& agent_path,
+                                         const std::string& body) {
+    return proxy_agent_request(options, "POST", agent_path, body, true);
+}
+
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body) {
     return proxy_agent_json_request(options, "/api/config-test/stt/start", body);
 }
@@ -2487,122 +2529,10 @@ ApiResponse handle_stt_test_stop(const Options& options, const std::string& body
     return proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
 }
 
-// GET request proxy to agent (similar to proxy_agent_json_request but for GET)
+// GET request proxy to agent. `agent_path_with_query` keeps its query string.
 ApiResponse proxy_agent_get_request(const Options& options,
                                      const std::string& agent_path_with_query) {
-    AgentHttpTarget target;
-    std::string target_error;
-    if (!resolve_agent_http_target(options, &target, &target_error)) {
-        return make_json_error(503, target_error.empty() ? "resolve agent HTTP target failed" : target_error);
-    }
-
-    std::string connect_error;
-    int fd = connect_tcp_host(target.host, target.port, 2000, &connect_error);
-    if (fd < 0) {
-        return make_json_error(503, connect_error.empty() ? "connect failed" : connect_error);
-    }
-
-    if (!set_socket_recv_timeout(fd, kClientReadTimeoutSeconds)) {
-        close(fd);
-        return make_json_error(503, std::string("set socket timeout failed: ") + strerror(errno));
-    }
-
-    std::string request_path = join_url_path(target.base_path, agent_path_with_query);
-    if (request_path.empty()) {
-        request_path = "/";
-    }
-
-    // Build GET request
-    std::ostringstream request;
-    request << "GET " << request_path << " HTTP/1.1\r\n";
-    request << "Host: " << target.host << "\r\n";
-    request << "Accept: application/json\r\n";
-    request << "Connection: close\r\n";
-    request << "\r\n";
-
-    std::string request_str = request.str();
-    if (write(fd, request_str.data(), request_str.size()) < 0) {
-        close(fd);
-        return make_json_error(503, std::string("write failed: ") + strerror(errno));
-    }
-
-    // Read response headers
-    std::string headers;
-    ReadStatus header_status = read_until(fd, "\r\n\r\n", kMaxHttpHeaderSize, &headers);
-    if (header_status != READ_STATUS_OK) {
-        close(fd);
-        return make_json_error(503, "read headers failed or timed out");
-    }
-
-    // Parse status line
-    std::istringstream header_stream(headers);
-    std::string line;
-    if (!std::getline(header_stream, line)) {
-        close(fd);
-        return make_json_error(503, "agent HTTP response missing status line");
-    }
-    line = trim_copy(line);
-    std::istringstream status_stream(line);
-    std::string http_version;
-    int status_code = 0;
-    status_stream >> http_version >> status_code;
-    std::string status_text;
-    std::getline(status_stream, status_text);
-    status_text = trim_copy(status_text);
-    if (status_code <= 0) {
-        close(fd);
-        return make_json_error(503, "agent HTTP response has invalid status code");
-    }
-
-    // Parse headers for Content-Length and Content-Type
-    size_t content_length = 0;
-    std::string content_type;
-    while (std::getline(header_stream, line)) {
-        line = trim_copy(line);
-        if (line.empty()) break;
-
-        size_t colon = line.find(':');
-        if (colon != std::string::npos) {
-            std::string key = trim_copy(line.substr(0, colon));
-            std::string value = trim_copy(line.substr(colon + 1));
-
-            if (strcasecmp(key.c_str(), "Content-Length") == 0) {
-                content_length = std::stoul(value);
-            } else if (strcasecmp(key.c_str(), "Content-Type") == 0) {
-                content_type = value;
-            }
-        }
-    }
-
-    // Read response body
-    std::string body;
-    if (content_length > 0 && content_length < 10 * 1024 * 1024) {
-        body.resize(content_length);
-        size_t total_read = 0;
-        while (total_read < content_length) {
-            ssize_t n = read(fd, &body[total_read], content_length - total_read);
-            if (n <= 0) break;
-            total_read += n;
-        }
-        body.resize(total_read);
-    } else {
-        // Read until EOF
-        char buffer[4096];
-        while (true) {
-            ssize_t n = read(fd, buffer, sizeof(buffer));
-            if (n <= 0) break;
-            body.append(buffer, n);
-        }
-    }
-
-    close(fd);
-
-    ApiResponse response;
-    response.status_code = status_code;
-    response.status_text = status_text.empty() ? "OK" : status_text;
-    response.content_type = content_type.empty() ? "application/json; charset=utf-8" : content_type;
-    response.body = body;
-    return response;
+    return proxy_agent_request(options, "GET", agent_path_with_query, std::string(), false);
 }
 
 // Handle GET /api/models?provider=xxx&locale=xxx
@@ -3102,14 +3032,16 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
             cJSON* api_key = cJSON_GetObjectItem(item, "api_key");
             if (json_is_string(api_key)) {
                 std::string key = api_key->valuestring;
-                // A key containing "***" is the masked value we handed the UI;
-                // keep the stored secret instead of persisting the mask.
-                if (key.find("***") != std::string::npos) {
-                    std::map<std::string, aiden::ProviderToml>::const_iterator it =
-                        previous_providers.find(provider_name);
-                    if (it != previous_providers.end()) {
-                        provider.api_key = it->second.api_key;
-                    }
+                // Keep the stored secret only when the submitted value is
+                // exactly the mask we handed the UI for this provider. Testing
+                // for a "***" substring instead would drop a real key that
+                // happens to contain it, and would blank the key for a provider
+                // the previous config did not have.
+                std::map<std::string, aiden::ProviderToml>::const_iterator it =
+                    previous_providers.find(provider_name);
+                if (it != previous_providers.end() && !it->second.api_key.empty() &&
+                    key == mask_secret(it->second.api_key)) {
+                    provider.api_key = it->second.api_key;
                 } else {
                     provider.api_key = key;
                 }

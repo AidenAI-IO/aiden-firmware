@@ -296,6 +296,5 @@ model = "gpt-4o"
 
 ## Planned work
 
-- Visual provider switching in the config web UI
 - Runtime switching without a restart
 - Per-provider usage and cost tracking

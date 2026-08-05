@@ -20,10 +20,11 @@ api_key = "sk-kimi-xxx"
 provider = "kimi-cn"
 api_key = "sk-kimi-cn-xxx"
 
+# Volcengine uses its built-in endpoint; base_url is only honored for
+# provider = "openai" and provider = "ollama".
 [providers.volcengine]
 provider = "volcengine"
 api_key = "volcengine-xxx"
-base_url = "https://ark.cn-beijing.volces.com/api/v3"
 
 [providers.ollama-local]
 provider = "ollama"
@@ -57,7 +58,7 @@ model = "moonshot-v1-8k"
 # And set: model = "qwen2.5:14b"
 
 # Example 3: Switch to Kimi (China)
-# Just change: provider = "kimi-main"
+# Just change: provider = "kimi-cn"
 # And set: model = "moonshot-v1-32k"
 
 # Example 4: Override provider settings in model config
