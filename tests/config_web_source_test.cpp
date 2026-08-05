@@ -1781,8 +1781,9 @@ TEST_CASE("config web requires reboot for USB HID configuration changes") {
     CHECK(html.find("<select id=\\\"hid_pointer_mode\\\"") != std::string::npos);
     CHECK(html.find("hid_keyboard_layout") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_keyboard_layout\\\"") != std::string::npos);
-    CHECK(html.find("USB HID configuration saved. Power off and restart the board for it to take effect") != std::string::npos);
-    CHECK(html.find("USB HID settings saved, requires power off and restart to take effect") != std::string::npos);
+    CHECK(html.find("Power off the board, then disconnect and reconnect power") != std::string::npos);
+    CHECK(html.find("After shutdown, disconnect and reconnect power to restart the board") != std::string::npos);
+    CHECK(html.find("Wait for shutdown, then disconnect and reconnect power") != std::string::npos);
     CHECK(html.find("USB will re-enumerate automatically") == std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
     CHECK(html.find("/api/poweroff") != std::string::npos);
