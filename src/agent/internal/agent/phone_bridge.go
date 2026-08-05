@@ -605,11 +605,11 @@ func (pb *PhoneBridge) UpdateState() map[string]string {
 	// the model-facing <state> message by the state hook.
 	ret["app_state"] = strings.TrimSpace(status.AppState)
 
-	// Unknown capability flags are not usable routes, so expose them as false
-	// instead of adding a third state for the model to reason about.
-	ret["app_pip_enabled"] = fmt.Sprintf("%t", status.PipBridgeEnabled != nil && *status.PipBridgeEnabled)
-
-	ret["app_fgs_enabled"] = fmt.Sprintf("%t", status.FgsBridgeEnabled != nil && *status.FgsBridgeEnabled)
+	// Expose only currently usable background bridge modes. Raw capability flags
+	// can outlive the companion app's HTTP polling, while command routing rejects
+	// background state after phoneBridgeBackgroundStateMaxAge.
+	ret["app_pip_enabled"] = fmt.Sprintf("%t", phoneBridgeCanUsePiPBackground(status, "clipboard_read"))
+	ret["app_fgs_enabled"] = fmt.Sprintf("%t", phoneBridgeCanUseFGSBackground(status, "clipboard_read"))
 
 	platform := strings.ToLower(strings.TrimSpace(status.Platform))
 	if platform == "ios" || platform == "android" {

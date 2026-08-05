@@ -815,7 +815,7 @@ func TestClipboardReadUsesPiPBackgroundQueueWhenActive(t *testing.T) {
 	}
 }
 
-func TestPhoneBridgeDataToolsRestoreFromDynamicIslandBeforeCommand(t *testing.T) {
+func TestPhoneBridgeToolsRestoreFromDynamicIslandBeforeCommand(t *testing.T) {
 	tests := []struct {
 		name        string
 		commandType string
@@ -823,6 +823,14 @@ func TestPhoneBridgeDataToolsRestoreFromDynamicIslandBeforeCommand(t *testing.T)
 		response    json.RawMessage
 		newTool     func(*PhoneBridge, *PhoneBridgeRestorer) langtools.Tool
 	}{
+		{
+			name:        "open URL",
+			commandType: "open_app",
+			input:       `{"url":"https://example.com"}`,
+			newTool: func(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) langtools.Tool {
+				return NewOpenURLTool(bridge, restorer)
+			},
+		},
 		{
 			name:        "clipboard read",
 			commandType: "clipboard_read",

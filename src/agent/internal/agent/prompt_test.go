@@ -425,7 +425,9 @@ func TestRolePromptRoutesAppLaunchInsideOpenApp(t *testing.T) {
 		"call open_app with a semantic app name",
 		"selects Phone Bridge or visible system search internally",
 		"call open_url",
-		"Before calling bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification",
+		"Before calling open_url, bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification",
+		"Call open_url when app_connected:true with app_state absent or active",
+		"visible iOS Dynamic Island return entry can restore Aiden",
 		"app_platform:ios with app_pip_enabled:true",
 		"app_platform:android with app_fgs_enabled:true",
 	} {

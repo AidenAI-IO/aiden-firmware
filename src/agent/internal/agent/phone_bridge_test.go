@@ -29,6 +29,47 @@ func TestPhoneBridgeUpdateStateDoesNotExposeUnknownValues(t *testing.T) {
 	}
 }
 
+func TestPhoneBridgeUpdateStateExpiresBackgroundBridgeModes(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.appStateAt = time.Now()
+	bridge.pipBridgeEnabled = true
+	bridge.pipBridgeSeen = true
+	bridge.mu.Unlock()
+	if got := bridge.UpdateState()["app_pip_enabled"]; got != "true" {
+		t.Fatalf("fresh app_pip_enabled = %q, want true", got)
+	}
+
+	bridge.mu.Lock()
+	bridge.appStateAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
+	bridge.mu.Unlock()
+	if got := bridge.UpdateState()["app_pip_enabled"]; got != "false" {
+		t.Fatalf("stale app_pip_enabled = %q, want false", got)
+	}
+
+	bridge.mu.Lock()
+	bridge.platform = "android"
+	bridge.appStateAt = time.Now()
+	bridge.fgsBridgeEnabled = true
+	bridge.fgsBridgeSeen = true
+	bridge.fgsBridgeAt = time.Now()
+	bridge.mu.Unlock()
+	if got := bridge.UpdateState()["app_fgs_enabled"]; got != "true" {
+		t.Fatalf("fresh app_fgs_enabled = %q, want true", got)
+	}
+
+	bridge.mu.Lock()
+	bridge.fgsBridgeAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
+	bridge.mu.Unlock()
+	if got := bridge.UpdateState()["app_fgs_enabled"]; got != "false" {
+		t.Fatalf("stale app_fgs_enabled = %q, want false", got)
+	}
+}
+
 func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
