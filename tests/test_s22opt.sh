@@ -280,6 +280,40 @@ check_status 1 $? "start fails"
 check_contains "$OUTPUT" "is not mounted" "names the missing /userdata"
 check_contains "$MOUNTLOG" "mount -t tmpfs" "seals /opt anyway"
 
+echo "Test 8b: a writable foreign mount on /opt is never mistaken for a seal"
+new_case no-userdata-foreign-opt
+# /userdata is gone AND something else already holds /opt, writable. Treating
+# "already mounted" as "already sealed" would report protection that does not
+# exist, and an opkg install would land in that foreign mount.
+: > "$MOUNTINFO"
+preset_opt_mount 0:99 / ext4 rw,relatime
+run_s22opt start
+check_status 1 $? "start fails"
+check_contains "$OUTPUT" "cannot be sealed" "says the seal could not be applied"
+if grep -q "mount -t tmpfs" "$MOUNTLOG"; then
+	fail "stacked a tmpfs on top of a foreign mount"
+else
+	pass "does not stack a seal on a foreign mount"
+fi
+if grep -q "^umount" "$MOUNTLOG"; then
+	fail "unmounted a mount it did not create"
+else
+	pass "does not unmount a foreign mount"
+fi
+
+echo "Test 8c: an already-sealed /opt is still recognised as sealed"
+new_case no-userdata-already-sealed
+: > "$MOUNTINFO"
+preset_opt_mount 0:42 / tmpfs ro,relatime
+run_s22opt start
+check_status 1 $? "start still fails (no /userdata)"
+if grep -q "mount -t tmpfs" "$MOUNTLOG"; then
+	fail "re-sealed an already sealed /opt"
+else
+	pass "does not re-seal"
+fi
+check_absent "$case_dir/opt/etc/opkg/userfeeds.conf" "creates no feed file"
+
 echo "Test 9: restart recovers from a seal once the bind can succeed"
 new_case recover
 preset_opt_mount 0:42 / tmpfs ro,relatime

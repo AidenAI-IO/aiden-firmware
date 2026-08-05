@@ -66,8 +66,45 @@ check_path \
 
 check_path \
 	"/usr/bin:/opt/sbin" \
-	"/usr/bin:/opt/sbin:/opt/bin" \
-	"adds /opt/bin without duplicating /opt/sbin"
+	"/usr/bin:/opt/bin:/opt/sbin" \
+	"an existing /opt/sbin is relocated into canonical order, not duplicated"
+
+# The reachable violation this guards: profile.d is sourced alphabetically, so
+# aiden-env.sh (which sources /userdata/system/env with "set -a") has already
+# run. A PATH=/opt/bin:$PATH there would otherwise survive, leaving package
+# binaries ahead of the system tools.
+check_path \
+	"/opt/bin:/usr/bin:/bin" \
+	"/usr/bin:/bin:/opt/bin:/opt/sbin" \
+	"an /opt entry placed ahead of the system directories is moved behind them"
+
+check_path \
+	"/opt/sbin:/opt/bin:/usr/bin" \
+	"/usr/bin:/opt/bin:/opt/sbin" \
+	"both /opt entries are relocated when they lead the PATH"
+
+check_path \
+	"/opt/bin:/usr/bin:/opt/bin" \
+	"/usr/bin:/opt/bin:/opt/sbin" \
+	"repeated /opt entries collapse to one"
+
+check_path \
+	"/opt/bin" \
+	"/opt/bin:/opt/sbin" \
+	"a PATH containing nothing else does not gain an empty component"
+
+# An empty PATH component means "the current directory". Whatever one thinks of
+# that, rewriting it behind the user's back would be a separate bug -- and it is
+# exactly what IFS-based splitting does to a trailing one.
+check_path \
+	"/usr/bin::/bin" \
+	"/usr/bin::/bin:/opt/bin:/opt/sbin" \
+	"an interior empty component is preserved"
+
+check_path \
+	"/usr/bin:" \
+	"/usr/bin::/opt/bin:/opt/sbin" \
+	"a trailing empty component is preserved"
 
 # Substring traps: neither of these is /opt/bin, so both must still be added.
 check_path \

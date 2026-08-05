@@ -17,21 +17,47 @@
 # Core services are not touched at all: they start from absolute paths and do
 # not inherit a login shell's environment.
 
-# Each directory is probed on its own: something else may already have put
-# /opt/bin on PATH (a user's own profile, or /userdata/system/env, which
-# aiden-env.sh sources), and a single probe would then skip /opt/sbin forever --
-# or append a duplicate when only /opt/sbin was present.
-
+# Existing /opt entries are removed first, then both are appended, so the result
+# does not depend on what ran before this file.
+#
+# Merely probing "is it already there?" is not enough. profile.d is sourced in
+# alphabetical order, so aiden-env.sh -- which sources /userdata/system/env with
+# "set -a" -- has already run by the time we get here. A PATH=/opt/bin:$PATH in
+# that file would leave /opt/bin ahead of /usr/bin, and a probe would see it
+# present and leave it there, quietly breaking the ordering guarantee above.
+#
+# Scope, stated honestly: this only fixes login shells. Core services are
+# started through aiden-env-run, which sources the same /userdata/system/env and
+# is not affected by this file at all -- so this is not a security boundary, it
+# is a predictable default. A user who really wants /opt first can still do it
+# in ~/.profile, which runs after /etc/profile.d.
+#
+# Done with string surgery rather than IFS splitting because splitting silently
+# drops a trailing empty PATH component, and an empty component means "the
+# current directory" -- changing that behind the user's back is its own bug.
+aiden_opt_path=":$PATH:"
 for aiden_opt_dir in /opt/bin /opt/sbin; do
-	case ":$PATH:" in
-		*":$aiden_opt_dir:"*) ;;
-		*) PATH="$PATH:$aiden_opt_dir" ;;
-	esac
+	while :; do
+		case $aiden_opt_path in
+			*":$aiden_opt_dir:"*)
+				aiden_opt_path="${aiden_opt_path%%":$aiden_opt_dir:"*}:${aiden_opt_path#*":$aiden_opt_dir:"}"
+				;;
+			*)
+				break
+				;;
+		esac
+	done
 done
+aiden_opt_path=${aiden_opt_path#:}
+aiden_opt_path=${aiden_opt_path%:}
+
+# The :+ guard matters: without it an emptied PATH would yield a leading ":",
+# which is an empty component, i.e. the current directory on PATH.
+PATH="${aiden_opt_path:+$aiden_opt_path:}/opt/bin:/opt/sbin"
 
 export PATH
 
-unset aiden_opt_dir
+unset aiden_opt_dir aiden_opt_path
 
 # Let ncurses programs find Entware's terminfo database.
 #

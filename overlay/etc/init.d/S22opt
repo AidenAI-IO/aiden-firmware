@@ -15,10 +15,17 @@
 #
 # What happens when the bind fails: /opt is sealed with a read-only tmpfs so
 # writes fail with EROFS instead of silently landing in the current A/B rootfs,
-# where they would neither persist nor be accounted for (§6.2.1). That is only
-# the first guard -- /etc/opkg/90-userfeeds.conf is a symlink into /opt, and
-# opkg 0.7.0 aborts when any /etc/opkg/*.conf fragment cannot be opened, so a
-# failed mount also stops opkg from running at all.
+# where they would neither persist nor be accounted for (§6.2.1). That seal is
+# the only thing actually enforced.
+#
+# A second, weaker effect backs it up: every "src" line lives in
+# /opt/etc/opkg/userfeeds.conf, so a failed mount leaves opkg with no package
+# source and nothing to install. Note this is NOT because opkg refuses to run --
+# /etc/opkg/90-userfeeds.conf is then a dangling symlink, and uClibc-ng's glob()
+# silently drops those, so opkg never even tries to open it and starts normally.
+# The protection comes purely from keeping every source inside /opt, which is
+# also why the default feed is seeded there rather than shipped as a rootfs
+# fragment (§6.5.1).
 
 OPT_DIR=${OPT_DIR:-/opt}
 USERDATA_DIR=${USERDATA_DIR:-/userdata}
@@ -114,8 +121,20 @@ opt_is_sealed() {
 }
 
 seal_opt() {
-	if path_is_mounted "$OPT_DIR"; then
+	# Already sealed by an earlier attempt: nothing to do.
+	if opt_is_sealed; then
 		return 0
+	fi
+
+	# Mounted, but not by us and not read-only. Reporting success here would be
+	# a lie: the caller would believe /opt is protected while it is in fact
+	# writable, so an opkg install would land in whatever that mount is. Do not
+	# stack a tmpfs on top either -- start() deliberately refuses to touch a
+	# foreign mount, and unmounting something this script did not create could
+	# pull the rug from under whoever did.
+	if path_is_mounted "$OPT_DIR"; then
+		echo "S22opt: $OPT_DIR carries an unexpected writable mount and cannot be sealed; do not use opkg" >&2
+		return 1
 	fi
 
 	mkdir -p "$OPT_DIR" 2>/dev/null || true
