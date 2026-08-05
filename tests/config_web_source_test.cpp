@@ -2081,3 +2081,86 @@ TEST_CASE("config web html degrades model selector when the agent is offline") {
     // Every user-visible string needs a zh-CN entry; the page defaults to zh-CN.
     CHECK(js.find("'" + notice + "':'") != std::string::npos);
 }
+
+// A named provider is identified by its type, so asking for a separate name is
+// a field the user has to invent a value for. The dialog derives the name from
+// the selected type instead, which keeps [providers.<type>] sections addressable
+// by the same string the provider select already offers.
+TEST_CASE("config web html derives the provider name from the provider type") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    const size_t dialog_at = js.find("showProviderDialog: function");
+    REQUIRE(dialog_at != std::string::npos);
+    const size_t save_at = js.find("saveProviderDialog: function", dialog_at);
+    REQUIRE(save_at != std::string::npos);
+    const std::string dialog_body = js.substr(dialog_at, save_at - dialog_at);
+
+    // The name input and its validation hint are gone.
+    CHECK(dialog_body.find("id=\"providerName\"") == std::string::npos);
+    CHECK(js.find("Provider Name") == std::string::npos);
+    CHECK(js.find("Letters, numbers, hyphens, underscores only") == std::string::npos);
+    CHECK(js.find("e.g., openai-work") == std::string::npos);
+    // Focus has to move to the type select now that no name input precedes it.
+    CHECK(dialog_body.find("'#providerName'") == std::string::npos);
+    CHECK(dialog_body.find("dialog.querySelector('#providerType')") != std::string::npos);
+
+    const size_t save_end = js.find("saveProviders: async function", save_at);
+    REQUIRE(save_end != std::string::npos);
+    const std::string save_body = js.substr(save_at, save_end - save_at);
+    // The provider type is the name; editing keeps the existing key so a stored
+    // provider is never duplicated under a second name.
+    CHECK(save_body.find("const name = editName || type;") != std::string::npos);
+    CHECK(save_body.find("getElementById('providerName')") == std::string::npos);
+    // Validating a name the user can no longer type is dead code.
+    CHECK(js.find("Provider name is required") == std::string::npos);
+    CHECK(js.find("Provider name can only contain letters") == std::string::npos);
+    // Type stays required: it is the only thing identifying the provider.
+    CHECK(save_body.find("Provider type is required") != std::string::npos);
+    // A duplicate check still applies when adding.
+    CHECK(save_body.find("!editName && this.providers[name]") != std::string::npos);
+}
+
+// Only openai and ollama accept a base_url override; every other provider pins
+// its endpoint, so the field is dead config there. The backend already strips it
+// (model_base_url_allowed), and the dialog must not offer it in the first place.
+TEST_CASE("config web html shows the provider base url only where it applies") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    // The whitelist has to be a single source the dialog consults, mirroring the
+    // C++ and Go lists.
+    CHECK(js.find("const PROVIDER_BASE_URL_TYPES = ['openai', 'ollama'];") != std::string::npos);
+    CHECK(js.find("function providerBaseUrlAllowed(type)") != std::string::npos);
+
+    const size_t dialog_at = js.find("showProviderDialog: function");
+    REQUIRE(dialog_at != std::string::npos);
+    const size_t save_at = js.find("saveProviderDialog: function", dialog_at);
+    REQUIRE(save_at != std::string::npos);
+    const std::string dialog_body = js.substr(dialog_at, save_at - dialog_at);
+
+    // The row is addressable and starts hidden or shown to match the type the
+    // dialog opened with, so editing a kimi provider never flashes the field.
+    CHECK(dialog_body.find("id=\"providerBaseUrlField\"") != std::string::npos);
+    CHECK(dialog_body.find("providerBaseUrlAllowed(provider.provider)") != std::string::npos);
+    // Changing the type toggles it without reopening the dialog.
+    CHECK(dialog_body.find("syncProviderBaseUrlVisibility") != std::string::npos);
+    CHECK(js.find("syncProviderBaseUrlVisibility: function") != std::string::npos);
+
+    const size_t save_end = js.find("saveProviders: async function", save_at);
+    REQUIRE(save_end != std::string::npos);
+    const std::string save_body = js.substr(save_at, save_end - save_at);
+    // A base_url left over from a previous type must not be saved once the type
+    // no longer accepts one.
+    CHECK(save_body.find("providerBaseUrlAllowed(type)") != std::string::npos);
+}

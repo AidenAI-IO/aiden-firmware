@@ -1106,6 +1106,60 @@ TEST_CASE("config_web: POST /api/config writes named providers") {
     CHECK(saved.find("base_url = \"http://127.0.0.1:11434\"") != std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config drops named provider base_url for types that pin their endpoint") {
+    // A [providers.*] base_url is inherited by any model referencing it
+    // (applyProviderRef), and the runtime then clears it for non-whitelisted
+    // types. Storing one is dead config, so the same whitelist the model path
+    // uses has to apply to named providers too -- the UI hides the field for
+    // these types and must not be the only thing enforcing it.
+    const char* types[] = {"openrouter", "kimi", "kimi-cn", "volcengine", "fake"};
+
+    for (const char* type : types) {
+        StubEnv env;
+        auto handle = start_server(env);
+
+        const std::string base_url = "https://gateway.example.com/v1";
+        const std::string body =
+            "{\"config\":{\"providers\":{\"named-" + std::string(type) + "\":{\"provider\":\"" +
+            type + "\",\"api_key\":\"k\",\"base_url\":\"" + base_url + "\"}},"
+            "\"hid\":{\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        REQUIRE_MESSAGE(resp.status == 200, type);
+
+        const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+        CHECK_MESSAGE(saved.find(std::string("[providers.named-") + type + "]") != std::string::npos,
+                      type);
+        CHECK_MESSAGE(saved.find(base_url) == std::string::npos, type);
+    }
+}
+
+TEST_CASE("config_web: POST /api/config keeps named provider base_url for types that allow it") {
+    struct Case {
+        const char* type;
+        const char* base_url;
+    };
+    const Case cases[] = {
+        {"openai", "https://gateway.example.com/v1"},
+        {"ollama", "http://127.0.0.1:11434"},
+    };
+
+    for (const Case& c : cases) {
+        StubEnv env;
+        auto handle = start_server(env);
+
+        const std::string body =
+            "{\"config\":{\"providers\":{\"named-" + std::string(c.type) + "\":{\"provider\":\"" +
+            c.type + "\",\"api_key\":\"k\",\"base_url\":\"" + c.base_url + "\"}},"
+            "\"hid\":{\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        REQUIRE_MESSAGE(resp.status == 200, c.type);
+
+        const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+        CHECK_MESSAGE(saved.find(std::string("base_url = \"") + c.base_url + "\"") != std::string::npos,
+                      c.type);
+    }
+}
+
 TEST_CASE("config_web: GET /api/config returns providers from the resolved config") {
     // Read path regression: config_to_json() serializes providers from the
     // AgentToml struct, but that struct is populated from `agent config

@@ -3054,7 +3054,11 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
             }
 
             cJSON* base_url = cJSON_GetObjectItem(item, "base_url");
-            if (json_is_string(base_url)) {
+            // A named provider's base_url is inherited by every model that
+            // references it (applyProviderRef), where the runtime then drops it
+            // for types that pin their endpoint. Applying the same whitelist
+            // here keeps agent.toml free of config that can never take effect.
+            if (json_is_string(base_url) && model_base_url_allowed(provider.provider)) {
                 provider.base_url = base_url->valuestring;
             }
 
