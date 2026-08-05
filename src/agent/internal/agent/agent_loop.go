@@ -338,7 +338,8 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			return toolExecutionHooks.AfterToolCall(ctx, call, result)
 		}
 	}
-	toolExecution := l.executeToolCall(ctx, ToolCallExecution{
+	toolCtx := WithEpisodeRecorder(ctx, l.Recorder)
+	toolExecution := l.executeToolCall(toolCtx, ToolCallExecution{
 		Specs:  toolSpecs,
 		Action: action,
 		Before: func(ctx context.Context, call ToolCall) (ToolResult, bool) {

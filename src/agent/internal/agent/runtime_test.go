@@ -849,10 +849,6 @@ func newBlockingEpisodeMaintenancePlane() *blockingEpisodeMaintenancePlane {
 	}
 }
 
-func (p *blockingEpisodeMaintenancePlane) Retrieve(context.Context, MemoryRetrieveRequest) (MemoryContext, error) {
-	return MemoryContext{}, nil
-}
-
 func (p *blockingEpisodeMaintenancePlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
 	return NewEpisodeRecorder(req, retrieved)
 }
@@ -922,15 +918,7 @@ func TestRuntimeRunAsyncEpisodeMaintenanceDoesNotBlock(t *testing.T) {
 }
 
 type capturingEpisodePlane struct {
-	episode       TaskEpisode
-	retrieveDelay time.Duration
-}
-
-func (p *capturingEpisodePlane) Retrieve(context.Context, MemoryRetrieveRequest) (MemoryContext, error) {
-	if p.retrieveDelay > 0 {
-		time.Sleep(p.retrieveDelay)
-	}
-	return MemoryContext{}, nil
+	episode TaskEpisode
 }
 
 func (p *capturingEpisodePlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
@@ -943,7 +931,7 @@ func (p *capturingEpisodePlane) CommitEpisode(_ context.Context, episode TaskEpi
 }
 
 func TestRuntimeRunCommitsTimingEventsBeforeEpisodeCommit(t *testing.T) {
-	plane := &capturingEpisodePlane{retrieveDelay: 20 * time.Millisecond}
+	plane := &capturingEpisodePlane{}
 	model := &scriptedModel{responses: roleToolResponses("echo", `{"__arg1":"hello"}`, "ok")}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", MaxIterations: 3}),
@@ -965,17 +953,14 @@ func TestRuntimeRunCommitsTimingEventsBeforeEpisodeCommit(t *testing.T) {
 	}
 
 	var (
-		hasSessionBegin   bool
-		hasMemoryRetrieve bool
-		startByIteration  = map[int]int{}
-		endByIteration    = map[int]int{}
+		hasSessionBegin  bool
+		startByIteration = map[int]int{}
+		endByIteration   = map[int]int{}
 	)
 	for index, event := range plane.episode.Events {
 		switch event.Type {
 		case runEventSessionBegin:
 			hasSessionBegin = true
-		case runEventMemoryRetrieve:
-			hasMemoryRetrieve = true
 		case runEventIterationStart:
 			startByIteration[eventMetadataInt(event, "iteration")] = index
 		case runEventIterationEnd:
@@ -984,9 +969,6 @@ func TestRuntimeRunCommitsTimingEventsBeforeEpisodeCommit(t *testing.T) {
 	}
 	if !hasSessionBegin {
 		t.Fatal("committed episode missing session_begin event")
-	}
-	if !hasMemoryRetrieve {
-		t.Fatal("committed episode missing memory_retrieve event")
 	}
 	if _, ok := startByIteration[1]; !ok {
 		t.Fatalf("committed episode missing iteration 1 start: %#v", plane.episode.Events)
@@ -1010,7 +992,7 @@ func TestRuntimeRunCommitsTimingEventsBeforeEpisodeCommit(t *testing.T) {
 	}
 	for _, event := range plane.episode.Events {
 		switch event.Type {
-		case runEventSessionBegin, runEventMemoryRetrieve:
+		case runEventSessionBegin:
 			eventTime := parseEpisodeTime(event.Ts, time.Time{})
 			if eventTime.Before(episodeStart) {
 				t.Fatalf("%s event time %s is before episode start %s", event.Type, eventTime.Format(time.RFC3339Nano), episodeStart.Format(time.RFC3339Nano))
@@ -4532,49 +4514,6 @@ func TestRuntimeRunOmitsMemoryFilesFromSystemPrompt(t *testing.T) {
 		if strings.Contains(systemText.String(), unexpected) {
 			t.Fatalf("system message should not include memory file %q:\n%s", unexpected, systemText.String())
 		}
-	}
-}
-
-func TestRuntimeMemoryContextIgnoresArchivedSessionSummary(t *testing.T) {
-	configDir := ensureTestConfigDir(t, t.TempDir())
-	memoryDir := filepath.Join(configDir, "memory")
-	archiveSummary := "ARCHIVED SESSION SUMMARY SENTINEL"
-	profile := "PROFILE STILL ACTIVE"
-
-	archiveDir := filepath.Join(memoryDir, "session_archive", "closed-session")
-	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll archive: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(archiveDir, "summary.md"), []byte(archiveSummary), 0o644); err != nil {
-		t.Fatalf("WriteFile archive summary.md: %v", err)
-	}
-	longTermDir := filepath.Join(memoryDir, "long_term")
-	if err := os.MkdirAll(longTermDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll long_term: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(longTermDir, "profile.md"), []byte(profile), 0o644); err != nil {
-		t.Fatalf("WriteFile profile.md: %v", err)
-	}
-
-	runtime := &Runtime{config: Config{ConfigDir: configDir}}
-	promptContext := runtime.memoryContextForPrompt()
-	if strings.Contains(promptContext, archiveSummary) {
-		t.Fatalf("memoryContextForPrompt leaked archived summary:\n%s", promptContext)
-	}
-	if !strings.Contains(promptContext, profile) {
-		t.Fatalf("memoryContextForPrompt missing active profile:\n%s", promptContext)
-	}
-
-	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
-	retrieved, err := plane.Retrieve(context.Background(), MemoryRetrieveRequest{Input: "hello"})
-	if err != nil {
-		t.Fatalf("Retrieve() error = %v", err)
-	}
-	if strings.Contains(retrieved.Common.SessionSummary, archiveSummary) {
-		t.Fatalf("Retrieve() leaked archived summary: %q", retrieved.Common.SessionSummary)
-	}
-	if retrieved.Common.Profile != profile {
-		t.Fatalf("Retrieve() profile = %q, want %q", retrieved.Common.Profile, profile)
 	}
 }
 

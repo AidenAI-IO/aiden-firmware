@@ -24,13 +24,8 @@ const (
 )
 
 type sessionMetadata struct {
-	SessionID string        `json:"session_id"`
-	CreatedAt string        `json:"created_at"`
-	State     *sessionState `json:"state,omitempty"`
-}
-
-type sessionState struct {
-	RetrievedDeviceExperience *sessionPlannerExperienceSnapshot `json:"retrieved_device_experience,omitempty"`
+	SessionID string `json:"session_id"`
+	CreatedAt string `json:"created_at"`
 }
 
 type SessionRotationResult struct {
