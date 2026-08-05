@@ -119,7 +119,7 @@ A phone running iOS locks its hardware-keyboard layout at the moment the USB key
 
 1. On the phone, switch the input language to the matching one (for example French for `azerty`, German for `qwertz`).
 2. Set `keyboard_layout` in Config Web to the target layout and save.
-3. Accept the Config Web poweroff prompt, wait for shutdown to complete, then physically disconnect and reconnect power. After the board starts and USB reconnects, the phone locks the hardware layout based on the language active in step 1.
+3. Accept the Config Web power-off prompt, wait for shutdown to complete, then physically disconnect and reconnect power. After the board starts and USB reconnects, the phone locks the hardware layout based on the language active in step 1.
 
 The order matters: switch the language _before_ saving the configuration, because the layout is locked during enumeration. The Config Web save flow does not hot-reload or soft re-enumerate the same USB identity: iOS can retain an inconsistent keyboard and pointer session across that transition. If immediate shutdown is cancelled, power off the board later and physically disconnect and reconnect power before verifying the new layout.
 
