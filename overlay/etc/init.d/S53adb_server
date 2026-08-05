@@ -8,6 +8,16 @@ ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 LOG_PATH=${LOG_PATH:-/var/log/adb/adb-startup.log}
 PID_FILE=${PID_FILE:-/run/adb/adb_start_server.pid}
 DELAY_SEC=${DELAY_SEC:-3}
+AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
+[ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
+. "$AIDEN_LOG_HELPER"
+
+adb_log() {
+    level="$1"
+    event="$2"
+    shift 2
+    aiden_log_to_file "$LOG_PATH" "$level" adb_server supervisor "$event" "$*"
+}
 
 is_running() {
     pid="$1"
@@ -71,19 +81,23 @@ start() {
     (
         trap 'rm -f "$PID_FILE"; exit 0' INT TERM EXIT
 
-        echo "[adb] delaying start-server by ${DELAY_SEC}s" >> "$LOG_PATH"
+        adb_log INFO startup_delayed "delaying start-server by ${DELAY_SEC}s"
         sleep "$DELAY_SEC"
 
         adb_path="$(resolve_adb_bin)"
         if [ -z "$adb_path" ]; then
-            echo "[adb] adb binary not found: $ADB_BIN" >> "$LOG_PATH"
+            adb_log ERROR binary_not_found "adb binary not found: $ADB_BIN"
             exit 1
         fi
 
-        echo "[adb] starting adb server via $adb_path" >> "$LOG_PATH"
+        adb_log INFO server_starting "starting adb server via $adb_path"
         run_adb_start_server "$adb_path" >> "$LOG_PATH" 2>&1
         status="$?"
-        echo "[adb] adb start-server exited with status $status" >> "$LOG_PATH"
+        if [ "$status" -eq 0 ]; then
+            adb_log INFO server_exited "adb start-server exited with status $status"
+        else
+            adb_log ERROR server_exited "adb start-server exited with status $status"
+        fi
         exit "$status"
     ) &
     echo "$!" > "$PID_FILE"

@@ -80,11 +80,20 @@ grep -Fq 'refresh) reset_composite "manual refresh" ;;' "$WATCHDOG" ||
 grep -Fq 'snapshot) log_snapshot "manual snapshot"; cat "$STATE_FILE" 2>/dev/null || true ;;' "$WATCHDOG" ||
     fail "watchdog must expose a non-refreshing snapshot command for incident capture"
 
-grep -Fq 'echo "" > "$GADGET_UDC"' "$WATCHDOG" ||
+grep -Fq 'run_with_error_capture sh -c' "$WATCHDOG" ||
+    fail "watchdog must capture composite recovery stderr"
+
+grep -Fq 'printf "\n" > "$1"' "$WATCHDOG" ||
     fail "watchdog must unbind the UDC during composite recovery"
 
-grep -Fq 'echo "$UDC_NAME" > "$GADGET_UDC"' "$WATCHDOG" ||
+grep -Fq 'printf "%s\n" "$1" > "$2"' "$WATCHDOG" ||
     fail "watchdog must rebind the UDC during composite recovery"
+
+grep -Fq 'run_with_error_capture ifconfig usb0' "$WATCHDOG" ||
+    fail "watchdog must capture usb0 restore errors"
+
+grep -Fq 'CAPTURED_ERROR' "$WATCHDOG" ||
+    fail "watchdog must include captured command errors in structured logs"
 
 grep -Fq 'UDC did not reach configured state after composite reset' "$WATCHDOG" ||
     fail "watchdog reset must fail when the gadget never reaches configured"

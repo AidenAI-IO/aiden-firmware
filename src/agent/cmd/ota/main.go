@@ -6,13 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"aiden-agent/internal/logging"
 	"aiden-agent/internal/ota"
 )
 
@@ -186,7 +186,7 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	if *testMode {
 		config.HealthTimeout = time.Second
 	}
-	config.Logger = log.New(os.Stderr, "ota: ", log.LstdFlags)
+	config.Logger = logging.NewLegacyLogger(os.Stderr, "ota", "updater", logging.Info)
 	return config, nil
 }
 

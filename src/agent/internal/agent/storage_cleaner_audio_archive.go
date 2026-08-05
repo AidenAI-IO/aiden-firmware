@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"aiden-agent/internal/logging"
 )
 
 // AudioArchiveCleaner cleans up old audio archive files
@@ -135,8 +137,7 @@ func (c *AudioArchiveCleaner) Clean(context.Context) (uint64, error) {
 			deletedCount++
 		}
 		if deletedCount > 0 {
-			fmt.Fprintf(os.Stderr, "[storage_cleanup] deleted %d audio files, freed %d MB\n",
-				deletedCount, totalFreed/(1024*1024))
+			logAudioCleanupResult(deletedCount, totalFreed)
 		}
 		return totalFreed, nil
 	}
@@ -180,11 +181,17 @@ func (c *AudioArchiveCleaner) Clean(context.Context) (uint64, error) {
 	}
 
 	if deletedCount > 0 {
-		fmt.Fprintf(os.Stderr, "[storage_cleanup] deleted %d audio files, freed %d MB\n",
-			deletedCount, totalFreed/(1024*1024))
+		logAudioCleanupResult(deletedCount, totalFreed)
 	}
 
 	return totalFreed, nil
+}
+
+func logAudioCleanupResult(deletedCount int, totalFreed uint64) {
+	_ = logging.LogEvent(logging.Info, "agent", "storage_cleanup", "audio_files_deleted",
+		logging.Field{Key: "files", Value: deletedCount},
+		logging.Field{Key: "freed_bytes", Value: totalFreed},
+	)
 }
 
 func (c *AudioArchiveCleaner) ForceClean(ctx context.Context) (uint64, error) {

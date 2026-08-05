@@ -1,4 +1,5 @@
 #include "audio_service_server.h"
+#include "aiden_log.h"
 #include "audio_service_protocol.h"
 #include "cJSON/cJSON.h"
 #include "uds_message.h"
@@ -69,7 +70,7 @@ void AudioServiceServer::handle_request(const UdsMessage& req, int fd) {
     if (op == "get_playback_volume"){ handle_get_playback_volume(fd);     return; }
     if (op == "health")             { handle_health(fd);                  return; }
 
-    fprintf(stderr, "[audio_service] unknown op: %s\n", op.c_str());
+    AIDEN_LOG_WARN("server", "unknown_operation", "operation=%s", op.c_str());
     send_response(fd, AidenServiceStatus::INTERNAL_ERROR);
 }
 
@@ -147,8 +148,8 @@ void AudioServiceServer::handle_write_play_chunk(const UdsMessage& req, int fd) 
 
 void AudioServiceServer::handle_stop_playback(const UdsMessage& req, int fd) {
     uint64_t session_id = audio_json_u64(req.header_json.c_str(), "session_id");
-    fprintf(stderr, "[audio_service] stop_playback requested for session %llu\n",
-            static_cast<unsigned long long>(session_id));
+    AIDEN_LOG_INFO("playback", "stop_requested", "session_id=%llu",
+                   static_cast<unsigned long long>(session_id));
     AidenServiceStatus status = manager_.stop_playback(session_id);
     send_response(fd, status);
 }

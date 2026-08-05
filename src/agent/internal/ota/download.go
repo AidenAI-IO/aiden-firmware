@@ -9,6 +9,8 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"aiden-agent/internal/logging"
 )
 
 const defaultProgressInterval = 5 * time.Second
@@ -68,8 +70,7 @@ func DownloadFileWithOptions(ctx context.Context, url string, dst string, expect
 	// Apply GitHub proxy if configured
 	downloadURL := ApplyGitHubProxy(url, options.GitHubProxyURL)
 	if downloadURL != url && resumeAt == 0 {
-		// Log proxy usage for diagnostics (only log once per download, not on resume)
-		fmt.Fprintf(os.Stderr, "ota: using GitHub proxy for download\n")
+		_ = logging.LogEvent(logging.Info, "ota", "download", "proxy_enabled")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
@@ -246,10 +247,16 @@ func handleDownloadError(partPath string, err error) {
 	if errors.Is(err, syscall.ENOSPC) {
 		// Delete .part file - resume would fail anyway
 		if removeErr := os.Remove(partPath); removeErr != nil && !os.IsNotExist(removeErr) {
-			// Log failure but don't propagate - we're already in error path
-			fmt.Fprintf(os.Stderr, "ota: failed to remove %s after ENOSPC: %v\n", partPath, removeErr)
+			_ = logging.LogEvent(logging.Warn, "ota", "download", "partial_remove_failed",
+				logging.Field{Key: "path", Value: partPath},
+				logging.Field{Key: "reason", Value: "enospc"},
+				logging.Field{Key: "error", Value: removeErr},
+			)
 		} else {
-			fmt.Fprintf(os.Stderr, "ota: removed partial file %s after ENOSPC\n", partPath)
+			_ = logging.LogEvent(logging.Info, "ota", "download", "partial_removed",
+				logging.Field{Key: "path", Value: partPath},
+				logging.Field{Key: "reason", Value: "enospc"},
+			)
 		}
 	}
 	// For all other errors, preserve .part file for resume (existing behavior)

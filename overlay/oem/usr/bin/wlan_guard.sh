@@ -8,11 +8,17 @@ PING_TIMEOUT="${WLAN_GUARD_PING_TIMEOUT:-1}"
 RECOVER_COOLDOWN="${WLAN_GUARD_RECOVER_COOLDOWN:-20}"
 PIDFILE="/tmp/wlan_guard.pid"
 LOGFILE="/tmp/wlan_guard.log"
+AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
+[ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../lib/aiden-log.sh"
+. "$AIDEN_LOG_HELPER"
 
 log() {
-	msg="wlan_guard: $*"
-	logger -t wlan_guard "$*" 2>/dev/null || true
-	printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$msg" >> "$LOGFILE"
+	level="$1"
+	event="$2"
+	shift 2
+	line="$(aiden_log "$level" wlan_guard watchdog "$event" "$*")"
+	logger -t wlan_guard "$line" 2>/dev/null || true
+	printf '%s\n' "$line" >> "$LOGFILE"
 }
 
 strip_leading_zeroes() {
@@ -44,7 +50,7 @@ sanitize_positive_int() {
 
 	case "$value" in
 		''|*[!0-9]*)
-			log "invalid $name=$value; using default $default_value"
+			log WARN config_defaulted "invalid $name=$value; using default $default_value"
 			echo "$default_value"
 			return
 			;;
@@ -52,7 +58,7 @@ sanitize_positive_int() {
 
 	value="$(strip_leading_zeroes "$value")"
 	if [ "$value" = "0" ] || greater_than "$value" "$max_value"; then
-		log "invalid $name=$2; using default $default_value"
+		log WARN config_defaulted "invalid $name=$2; using default $default_value"
 		echo "$default_value"
 		return
 	fi
@@ -129,7 +135,7 @@ target_reachable() {
 		host="$(target_host)"
 	fi
 	if [ -z "$host" ]; then
-		log "no default gateway for $IFACE"
+		log WARN gateway_missing "no default gateway for $IFACE"
 		return 1
 	fi
 
@@ -137,17 +143,18 @@ target_reachable() {
 }
 
 recover_wlan() {
-	log "recovering $IFACE after connectivity failures"
+	log WARN recovery_started "recovering $IFACE after connectivity failures"
 	tune_radio
 	wpa_cli -i "$IFACE" reassociate >/dev/null 2>&1 || true
 	sleep 8
 
 	if target_reachable; then
-		log "connectivity recovered after reassociate"
+		log INFO recovery_succeeded "connectivity recovered after reassociate"
 		return 0
 	fi
 
-	log "reassociate did not recover connectivity; cycling $IFACE"
+	log WARN interface_cycle_started \
+		"reassociate did not recover connectivity; cycling $IFACE"
 	ifconfig "$IFACE" down >/dev/null 2>&1 || true
 	sleep 2
 	ifconfig "$IFACE" up >/dev/null 2>&1 || true
@@ -163,9 +170,10 @@ watch_loop() {
 	tune_radio
 	initial_target="$(target_host)"
 	if [ -n "$initial_target" ]; then
-		log "watchdog started for $IFACE via $initial_target"
+		log INFO started "watchdog started for $IFACE via $initial_target"
 	else
-		log "watchdog started for $IFACE without default gateway"
+		log WARN started_without_gateway \
+			"watchdog started for $IFACE without default gateway"
 	fi
 	fail_count=0
 	wait_reason=""
@@ -173,7 +181,7 @@ watch_loop() {
 	while true; do
 		if ! wlan_associated; then
 			if [ "$wait_reason" != "not_associated" ]; then
-				log "wlan not associated; waiting"
+				log WARN association_wait "wlan not associated; waiting"
 			fi
 			wait_reason="not_associated"
 			fail_count=0
@@ -181,21 +189,22 @@ watch_loop() {
 			host="$(target_host)"
 			if [ -z "$host" ]; then
 				if [ "$wait_reason" != "no_gateway" ]; then
-					log "no default gateway for $IFACE; waiting"
+					log WARN gateway_wait "no default gateway for $IFACE; waiting"
 				fi
 				wait_reason="no_gateway"
 				fail_count=0
 			elif target_reachable "$host"; then
 				wait_reason=""
 				if [ "$fail_count" -ne 0 ]; then
-					log "connectivity healthy again"
+					log INFO connectivity_recovered "connectivity healthy again"
 				fi
 				fail_count=0
 				send_gratuitous_arp
 			else
 				wait_reason=""
 				fail_count=$((fail_count + 1))
-				log "gateway $host unreachable ($fail_count/$FAIL_THRESHOLD)"
+				log WARN gateway_unreachable \
+					"gateway $host unreachable ($fail_count/$FAIL_THRESHOLD)"
 				if [ "$fail_count" -ge "$FAIL_THRESHOLD" ]; then
 					recover_wlan
 					fail_count=0

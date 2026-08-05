@@ -1,4 +1,5 @@
 #include "audio_record_session.h"
+#include "aiden_log.h"
 #include <chrono>
 #include <cmath>
 #include <stdio.h>
@@ -110,8 +111,8 @@ bool AudioRecordSession::start() {
     cfg.bit_width   = static_cast<int>(fmt_.bit_width);
 
     if (!capture_.init(cfg)) {
-        fprintf(stderr, "[audio_service] record session %llu: AudioCapture init failed\n",
-                static_cast<unsigned long long>(session_id_));
+        AIDEN_LOG_ERROR("recording", "capture_init_failed", "session_id=%llu",
+                        static_cast<unsigned long long>(session_id_));
         return false;
     }
 
@@ -167,10 +168,10 @@ void AudioRecordSession::maybe_update_hw_sample_rate(uint64_t timestamp_us,
     int snapped = snap_sample_rate(observed);
     int diff = std::abs(snapped - hw_sample_rate_);
     if (diff > hw_sample_rate_ / 10) {
-        fprintf(stderr,
-                "[audio_service] adjust hw_sample_rate %d -> %d (observed=%d, frame_samples=%zu, dt=%lluus)\n",
-                hw_sample_rate_, snapped, observed, frame_samples_per_channel,
-                static_cast<unsigned long long>(delta_us));
+        AIDEN_LOG_WARN("recording", "sample_rate_adjusted",
+                       "previous_rate=%d sample_rate=%d observed_rate=%d frame_samples=%zu delta_us=%llu",
+                       hw_sample_rate_, snapped, observed, frame_samples_per_channel,
+                       static_cast<unsigned long long>(delta_us));
         hw_sample_rate_ = snapped;
     }
 }
@@ -183,19 +184,18 @@ void AudioRecordSession::capture_loop() {
         if (!capture_.get_frame(frame)) {
             consecutive_failures++;
             if (consecutive_failures >= 5) {
-                fprintf(stderr,
-                        "[audio_service] record session %llu: get_frame failed %d times, restarting capture\n",
-                        static_cast<unsigned long long>(session_id_),
-                        consecutive_failures);
+                AIDEN_LOG_WARN("recording", "capture_restart_requested",
+                               "session_id=%llu consecutive_failures=%d",
+                               static_cast<unsigned long long>(session_id_),
+                               consecutive_failures);
                 capture_.stop();
                 AudioConfig cfg;
                 cfg.sample_rate = static_cast<int>(fmt_.sample_rate);
                 cfg.channels    = static_cast<int>(fmt_.channels);
                 cfg.bit_width   = static_cast<int>(fmt_.bit_width);
                 if (!capture_.init(cfg)) {
-                    fprintf(stderr,
-                            "[audio_service] record session %llu: capture re-init failed\n",
-                            static_cast<unsigned long long>(session_id_));
+                    AIDEN_LOG_ERROR("recording", "capture_reinit_failed", "session_id=%llu",
+                                    static_cast<unsigned long long>(session_id_));
                     usleep(20000);
                 } else {
                     consecutive_failures = 0;

@@ -66,6 +66,7 @@ add_library(cjson STATIC src/cJSON/cJSON.c)
 target_include_directories(cjson PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
 add_library(aiden STATIC
+    src/aiden_log.cpp
     src/aiden_sdk.cpp
     src/service_status.cpp
     src/uds_message.cpp
@@ -158,14 +159,14 @@ target_link_libraries(audio_service_cli PRIVATE aiden)
 add_executable(audio_stream src/audio_stream.cpp)
 target_link_libraries(audio_stream PRIVATE aiden)
 
-add_executable(rknn_vad src/rknn_vad.cpp)
+add_executable(rknn_vad src/rknn_vad.cpp src/aiden_log.cpp)
 target_include_directories(rknn_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_directories(rknn_vad PRIVATE ${RKNNMRT_LINK_DIR})
-target_link_libraries(rknn_vad PRIVATE rknnmrt m)
+target_link_libraries(rknn_vad PRIVATE rknnmrt pthread m)
 
-add_executable(cpu_vad src/cpu_vad.cpp)
+add_executable(cpu_vad src/cpu_vad.cpp src/aiden_log.cpp)
 target_include_directories(cpu_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(cpu_vad PRIVATE m)
+target_link_libraries(cpu_vad PRIVATE pthread m)
 
 foreach(_vad_target rknn_vad cpu_vad)
     target_compile_options(${_vad_target} PRIVATE -O3)
@@ -179,6 +180,7 @@ foreach(_vad_target rknn_vad cpu_vad)
 endforeach()
 
 add_executable(config_web
+    src/aiden_log.cpp
     src/config_web.cpp
     src/agent_toml.cpp
     src/audio_service_client.cpp
@@ -190,4 +192,4 @@ add_executable(config_web
     src/system_env_parser.cpp
     src/wifi_config.cpp
 )
-target_link_libraries(config_web PRIVATE cjson)
+target_link_libraries(config_web PRIVATE cjson pthread)

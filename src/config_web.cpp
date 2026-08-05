@@ -1,4 +1,5 @@
 #include "agent_toml.h"
+#include "aiden_log.h"
 #include "audio_service_client.h"
 #include "config_web_html.h"
 #include "config_web_llm_html.h"
@@ -1677,8 +1678,8 @@ bool load_agent_config_via_cli(const Options& options,
         if (error) {
             *error = std::string("agent config unavailable: agent binary not found at ") + agent_bin;
         }
-        std::cerr << "[config] agent binary not found at " << agent_bin
-                  << ", cannot load agent config\n";
+        AIDEN_LOG_ERROR("agent_config", "binary_not_found", "path=%s operation=load",
+                        agent_bin);
         return false;
     }
 
@@ -1695,8 +1696,8 @@ bool load_agent_config_via_cli(const Options& options,
         if (error) {
             *error = "agent config load failed";
         }
-        std::cerr << "[config] agent config exited " << result.exit_code
-                  << ": " << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "load_failed", "exit_code=%d output=%s",
+                        result.exit_code, result.output.c_str());
         return false;
     }
 
@@ -1705,8 +1706,8 @@ bool load_agent_config_via_cli(const Options& options,
         if (error) {
             *error = "agent config returned an unexpected response";
         }
-        std::cerr << "[config] agent config returned invalid JSON: "
-                  << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "invalid_json", "operation=load output=%s",
+                        result.output.c_str());
         return false;
     }
 
@@ -1715,9 +1716,9 @@ bool load_agent_config_via_cli(const Options& options,
         if (error) {
             *error = schema_error.empty() ? "agent config invalid schema" : schema_error;
         }
-        std::cerr << "[config] agent config returned invalid schema: "
-                  << (schema_error.empty() ? "unknown schema error" : schema_error) << "\n"
-                  << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "invalid_schema", "error=%s output=%s",
+                        schema_error.empty() ? "unknown_schema_error" : schema_error.c_str(),
+                        result.output.c_str());
         cJSON_Delete(resolved);
         return false;
     }
@@ -3091,7 +3092,8 @@ ValidationResult parse_agent_config_validation_result(const CommandResult& resul
         // CLI produced unparseable output. We cannot tell if the config is
         // valid; fail closed but as UNAVAILABLE so the UI distinguishes a
         // broken validator from a rejected user input.
-        std::cerr << "[config] agent config-check returned invalid JSON: " << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "config_check_invalid_json", "output=%s",
+                        result.output.c_str());
         return ValidationResult::unavailable(
                 "config validation failed: validator returned an unexpected response");
     }
@@ -3172,8 +3174,8 @@ ValidationResult validate_agent_config_for_save(const aiden::AgentToml& config) 
     // rather than persist a config we cannot validate.
     const char* agent_bin = agent_bin_path();
     if (!file_exists(agent_bin)) {
-        std::cerr << "[config] agent binary not found at " << agent_bin
-                  << ", refusing to save unvalidated config\n";
+        AIDEN_LOG_ERROR("agent_config", "binary_not_found",
+                        "path=%s operation=validate_json_save", agent_bin);
         return ValidationResult::unavailable(
                 "config validation unavailable: agent binary not found");
     }
@@ -3425,7 +3427,9 @@ std::string build_ota_update_command(const std::string& log_path) {
         "else "
         + shell_quote(ota_bin) + " update; "
         "fi; "
-        "rc=$?; echo \"[config_web] ota update exited rc=$rc\"; exit $rc"
+        "rc=$?; level=INFO; [ \"$rc\" -eq 0 ] || level=ERROR; "
+        "printf '%s [%s] [config_web] [ota] update_exited exit_code=%s\\n' "
+        "\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\" \"$level\" \"$rc\"; exit $rc"
         ") >> " + shell_quote(log_path) + " 2>&1";
     return cmd;
 }
@@ -4155,8 +4159,8 @@ ValidationResult validate_agent_toml_content_for_save(const std::string& content
                                                        const std::string& config_path) {
     const char* agent_bin = agent_bin_path();
     if (!file_exists(agent_bin)) {
-        std::cerr << "[config] agent binary not found at " << agent_bin
-                  << ", refusing to save unvalidated config\n";
+        AIDEN_LOG_ERROR("agent_config", "binary_not_found",
+                        "path=%s operation=validate_toml_save", agent_bin);
         return ValidationResult::unavailable(
                 "config validation unavailable: agent binary not found");
     }
@@ -4594,19 +4598,44 @@ std::string recent_agent_startup_log(const Options& options) {
         return "";
     }
 
-    size_t marker = log.rfind("[agent] starting ");
+    const auto rfind_event = [&log](const std::string& event) {
+        size_t marker = log.rfind(event);
+        while (marker != std::string::npos) {
+            const size_t boundary = marker + event.size();
+            if (boundary == log.size() || log[boundary] == ' ' ||
+                log[boundary] == '\n' || log[boundary] == '\r') {
+                return marker;
+            }
+            if (marker == 0) {
+                break;
+            }
+            marker = log.rfind(event, marker - 1);
+        }
+        return std::string::npos;
+    };
+
+    size_t marker = rfind_event("[agent] [supervisor] process_starting");
+    if (marker == std::string::npos) {
+        marker = rfind_event("[agent] [supervisor] binary_wait");
+    }
+    // Preserve compatibility with logs written before the common format was deployed.
+    if (marker == std::string::npos) {
+        marker = log.rfind("[agent] starting ");
+    }
     if (marker == std::string::npos) {
         marker = log.rfind("[agent] waiting for ");
     }
     if (marker != std::string::npos) {
-        log = log.substr(marker);
+        size_t line_start = log.rfind('\n', marker);
+        log = log.substr(line_start == std::string::npos ? 0 : line_start + 1);
     }
     return trim_for_display(log, kAgentStatusLogDisplaySize);
 }
 
 bool log_excerpt_looks_like_startup_failure(const std::string& log) {
     std::string lower = lowercase_copy(log);
-    return lower.find("exited with status") != std::string::npos ||
+    return lower.find(" [error] ") != std::string::npos ||
+           lower.find("exited with status") != std::string::npos ||
            lower.find("error") != std::string::npos ||
            lower.find("failed") != std::string::npos ||
            lower.find("not found") != std::string::npos ||
@@ -4916,8 +4945,8 @@ ApiResponse handle_get_config(const Options& options) {
 ApiResponse handle_get_config_meta() {
     const char* agent_bin = agent_bin_path();
     if (!file_exists(agent_bin)) {
-        std::cerr << "[config] agent binary not found at " << agent_bin
-                  << ", cannot serve config metadata\n";
+        AIDEN_LOG_ERROR("agent_config", "binary_not_found",
+                        "path=%s operation=config_metadata", agent_bin);
         return make_json_error(503, "config metadata unavailable: agent binary not found");
     }
 
@@ -4928,15 +4957,16 @@ ApiResponse handle_get_config_meta() {
         return make_json_error(503, "config metadata timed out");
     }
     if (result.exit_code != 0) {
-        std::cerr << "[config] agent config-meta exited " << result.exit_code
-                  << ": " << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "metadata_generation_failed",
+                        "exit_code=%d output=%s", result.exit_code, result.output.c_str());
         return make_json_error(503, "config metadata generation failed");
     }
 
     // Validate the payload is well-formed JSON before forwarding it verbatim.
     cJSON* parsed = cJSON_Parse(result.output.c_str());
     if (!parsed) {
-        std::cerr << "[config] agent config-meta returned invalid JSON: " << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "metadata_invalid_json", "output=%s",
+                        result.output.c_str());
         return make_json_error(503, "config metadata returned an unexpected response");
     }
     cJSON_Delete(parsed);
@@ -5666,9 +5696,9 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
 
     ValidationResult validation = validate_agent_config_for_save(config);
     if (validation.outcome != ValidationOutcome::OK) {
-        std::cerr << "Refusing to save agent config ("
-                  << (validation.outcome == ValidationOutcome::UNAVAILABLE ? "unavailable" : "invalid")
-                  << "): " << validation.message << "\n";
+        AIDEN_LOG_WARN("agent_config", "save_rejected", "outcome=%s error=%s",
+                       validation.outcome == ValidationOutcome::UNAVAILABLE ? "unavailable" : "invalid",
+                       validation.message.c_str());
         cJSON_Delete(root);
         // 503 when the validator itself is missing/broken: a server-side
         // dependency outage, not a user input error. 400 only when the
@@ -6986,10 +7016,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    aiden::set_log_service("config_web");
+
     if (!is_allowed_bind_address(options.bind_address)) {
-        std::cerr << "Refusing to bind config_web to " << options.bind_address
-                  << "; allowed addresses are " << kAnyBindAddress
-                  << ", " << kUsbBindAddress << " and " << kLoopbackBindAddress << std::endl;
+        AIDEN_LOG_ERROR("server", "bind_address_rejected", "bind_address=%s",
+                        options.bind_address.c_str());
         return 1;
     }
 
@@ -7005,7 +7036,7 @@ int main(int argc, char** argv) {
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
-        std::cerr << "Failed to create socket" << std::endl;
+        AIDEN_LOG_ERROR("server", "socket_create_failed", "error=%s", strerror(errno));
         return 1;
     }
 
@@ -7019,29 +7050,30 @@ int main(int argc, char** argv) {
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<uint16_t>(options.port));
     if (inet_pton(AF_INET, options.bind_address.c_str(), &addr.sin_addr) != 1) {
-        std::cerr << "Invalid bind address: " << options.bind_address << std::endl;
+        AIDEN_LOG_ERROR("server", "bind_address_invalid", "bind_address=%s",
+                        options.bind_address.c_str());
         close(server_fd);
         return 1;
     }
 
     if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        std::cerr << "Failed to bind to " << options.bind_address << ":" << options.port
-                  << ": " << strerror(errno) << std::endl;
+        AIDEN_LOG_ERROR("server", "bind_failed", "bind_address=%s port=%d error=%s",
+                        options.bind_address.c_str(), options.port, strerror(errno));
         close(server_fd);
         return 1;
     }
 
     if (listen(server_fd, 10) < 0) {
-        std::cerr << "Failed to listen: " << strerror(errno) << std::endl;
+        AIDEN_LOG_ERROR("server", "listen_failed", "error=%s", strerror(errno));
         close(server_fd);
         return 1;
     }
 
-    std::cout << "Config server running on http://" << options.bind_address << ":"
-              << options.port << std::endl;
-    std::cout << "agent.toml -> " << options.agent_config_path << std::endl;
-    std::cout << "wifi.conf  -> " << options.wifi_config_path << std::endl;
-    std::cout << "system env -> " << options.system_env_path << std::endl;
+    AIDEN_LOG_INFO("server", "listening",
+                   "bind_address=%s port=%d agent_config=%s wifi_config=%s system_env=%s",
+                   options.bind_address.c_str(), options.port,
+                   options.agent_config_path.c_str(), options.wifi_config_path.c_str(),
+                   options.system_env_path.c_str());
 
     while (!g_should_stop) {
         sockaddr_in client_addr;
@@ -7068,6 +7100,8 @@ int main(int argc, char** argv) {
     }
 
     close(server_fd);
+    AIDEN_LOG_INFO("server", "stopped", "bind_address=%s port=%d",
+                   options.bind_address.c_str(), options.port);
     return 0;
 }
 #endif  // AIDEN_CONFIG_WEB_NO_MAIN
