@@ -76,6 +76,18 @@ awk \
 ' "$INIT_SCRIPT" ||
     fail "S49usbhid must link the completed composite before one startup bind and never re-enumerate it"
 
+awk '
+    /ln -s .*functions\/hid\.usb0.*configs\/c\.1\/hid\.usb0/ { keyboard=NR }
+    /ln -s .*functions\/hid\.usb2.*configs\/c\.1\/hid\.usb2/ { extra_keys=NR }
+    /ln -s .*functions\/ecm\.usb0.*configs\/c\.1\/ecm\.usb0/ { ecm=NR }
+    /ln -s .*functions\/hid\.usb1.*configs\/c\.1\/hid\.usb1/ { pointer=NR }
+    END {
+        exit(keyboard && extra_keys && ecm && pointer &&
+             keyboard < extra_keys && extra_keys < ecm && ecm < pointer ? 0 : 1)
+    }
+' "$INIT_SCRIPT" ||
+    fail "S49usbhid must enumerate keyboard, Consumer Control, ECM, then pointer"
+
 grep -Fq 'write_text_file(function_path + "/protocol", "1");' "$EXAMPLE_SRC" ||
     fail "example_usb_hid setup must keep keyboard HID boot protocol=1"
 

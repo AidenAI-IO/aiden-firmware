@@ -23,14 +23,20 @@ grep -Fq "trap 'exit 130' INT" "$CONTROL_SCRIPT" ||
 grep -Fq "trap 'exit 143' TERM" "$CONTROL_SCRIPT" ||
 	fail "TERM must terminate before releasing the gadget switch lock"
 
-isolated_branch=$(awk '/link_isolated_profile\(\)/,/^}/' "$CONTROL_SCRIPT")
-printf '%s\n' "$isolated_branch" | grep -Fq 'hid.usb0' ||
-	fail "isolated profile must keep the standard keyboard"
-printf '%s\n' "$isolated_branch" | grep -Fq 'hid.usb2' ||
-	fail "isolated profile must keep the Consumer Control function"
-if printf '%s\n' "$isolated_branch" | grep -Fq 'hid.usb1'; then
-	fail "isolated profile must omit only the pointer function"
+keyboard_ecm_branch=$(awk '/link_keyboard_ecm_profile\(\)/,/^}/' "$CONTROL_SCRIPT")
+printf '%s\n' "$keyboard_ecm_branch" | grep -Fq 'hid.usb0' ||
+	fail "base profile must keep the standard keyboard"
+printf '%s\n' "$keyboard_ecm_branch" | grep -Fq 'hid.usb2' ||
+	fail "base profile must keep the Consumer Control function"
+printf '%s\n' "$keyboard_ecm_branch" | grep -Fq 'ecm.usb0' ||
+	fail "base profile must keep ECM"
+if printf '%s\n' "$keyboard_ecm_branch" | grep -Fq 'hid.usb1'; then
+	fail "base profile must omit the pointer"
 fi
+
+isolated_branch=$(awk '/link_isolated_profile\(\)/,/^}/' "$CONTROL_SCRIPT")
+printf '%s\n' "$isolated_branch" | grep -Fq 'link_keyboard_ecm_profile' ||
+	fail "isolated profile must use the keyboard + Consumer Control + ECM base"
 
 current_mode_branch=$(awk '/current_mode\(\)/,/^}/' "$CONTROL_SCRIPT")
 if printf '%s\n' "$current_mode_branch" | grep -Fq '[ ! -L "$CONFIG_DIR/hid.usb2" ]'; then
@@ -38,13 +44,11 @@ if printf '%s\n' "$current_mode_branch" | grep -Fq '[ ! -L "$CONFIG_DIR/hid.usb2
 fi
 
 normal_branch=$(awk '/link_normal_profile\(\)/,/^}/' "$CONTROL_SCRIPT")
-for function_name in hid.usb0 hid.usb1 hid.usb2; do
-	printf '%s\n' "$normal_branch" | grep -Fq "$function_name" ||
-		fail "normal profile must restore $function_name"
-done
+printf '%s\n' "$normal_branch" | grep -Fq 'link_keyboard_ecm_profile' ||
+	fail "normal profile must restore the keyboard + Consumer Control + ECM base first"
+printf '%s\n' "$normal_branch" | grep -Fq 'hid.usb1' ||
+	fail "normal profile must restore the pointer last"
 
-grep -Fq 'link_ecm' "$CONTROL_SCRIPT" ||
-	fail "both profiles must restore ECM"
 grep -Fq 'echo "" > "$UDC_PATH"' "$CONTROL_SCRIPT" ||
 	fail "profile switching must unbind the single UDC"
 grep -Fq 'detach_seconds=0.1' "$CONTROL_SCRIPT" ||

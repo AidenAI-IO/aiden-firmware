@@ -23,7 +23,7 @@ This script will:
 3. Load the `libcomposite` module;
 4. Call `example_usb_hid setup composite`.
 
-On the firmware image, `overlay/etc/init.d/S49usbhid` is the authoritative startup path. It also brings up `usb0` at `192.168.42.1` for the config page and local USB networking. The completed keyboard + pointer + Consumer Control + ECM composite is bound to the UDC exactly once. Do not add a same-identity startup unbind/rebind: while the cable remains attached, iOS can retain the physical USB session but rebuild the HID interfaces with inconsistent external-keyboard and AssistiveTouch pointer state, leaving the cursor operational while the on-screen keyboard stays suppressed. A physical unplug/replug fully tears down that host session, which is why it can recover the symptom.
+On the firmware image, `overlay/etc/init.d/S49usbhid` is the authoritative startup path. It also brings up `usb0` at `192.168.42.1` for the config page and local USB networking. The completed keyboard + Consumer Control + ECM + pointer composite is bound to the UDC exactly once, with the pointer linked last so iOS can establish its external-keyboard policy before AssistiveTouch attaches the pointer service. Do not add a same-identity startup unbind/rebind: while the cable remains attached, iOS can retain the physical USB session but rebuild the HID interfaces with inconsistent external-keyboard and AssistiveTouch pointer state, leaving the cursor operational while the on-screen keyboard stays suppressed.
 
 ## example_usb_hid Usage
 
@@ -172,7 +172,9 @@ does not count the planned ECM interruption toward its stall threshold. Normal
 watchdog probes resume after the grace window and still recover persistent ECM
 failures. HID node open recovery also honors this deadline: a transient
 `/dev/hidg*` `ENXIO` waits and retries instead of forcing another composite
-refresh during the planned switch.
+refresh during the planned switch. Restoring the normal profile uses the same
+keyboard + Consumer Control + ECM + pointer order as startup, with the pointer
+last, so a necessary restore does not reintroduce the startup ordering race.
 
 Inspect or exercise the profiles manually with:
 
