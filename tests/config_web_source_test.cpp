@@ -1734,7 +1734,7 @@ TEST_CASE("config web clears legacy wifi fields for explicit empty network lists
     CHECK(source.find("aiden::sync_legacy_wifi_fields(wifi);") != std::string::npos);
 }
 
-TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {
+TEST_CASE("config web requires reboot for USB HID configuration changes") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -1777,9 +1777,9 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("\"keyboard_layout\"") != std::string::npos);
     CHECK(source.find("kUsbHidInitScript = \"/etc/init.d/S49usbhid\"") == std::string::npos);
     CHECK(source.find("schedule_usbhid_restart") == std::string::npos);
-    CHECK(source.find("usbhid_restart_scheduled") != std::string::npos);
     CHECK(source.find("usbhid_restart_required") != std::string::npos);
     CHECK(source.find("reboot_required") != std::string::npos);
+    CHECK(source.find("schedule_usb_reenumerate") == std::string::npos);
     CHECK(source.find("schedule_reboot") != std::string::npos);
     CHECK(source.find("command -v reboot") != std::string::npos);
     CHECK(source.find("make_json_error(503, error.empty() ? \"failed to schedule reboot\" : error)") != std::string::npos);
@@ -1798,7 +1798,10 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(html.find("hid_pointer_mode") == std::string::npos);
     CHECK(html.find("hid_keyboard_layout") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_keyboard_layout\\\"") != std::string::npos);
-    CHECK(html.find("device_type requires reboot to take effect") != std::string::npos);
+    CHECK(html.find("USB HID configuration saved. Reboot the board for it to take effect") != std::string::npos);
+    CHECK(html.find("USB HID settings saved, requires reboot to take effect. Reboot now?") != std::string::npos);
+    CHECK(html.find("Cancelled immediate reboot. Please reboot manually later, then verify USB HID after reboot") != std::string::npos);
+    CHECK(html.find("USB will re-enumerate automatically") == std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
     CHECK(html.find("/api/reboot") != std::string::npos);
     CHECK(html.find("reboot command sent") != std::string::npos);
