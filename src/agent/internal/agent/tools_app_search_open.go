@@ -62,9 +62,8 @@ func (t *appSearchOpenTool) Description() string {
 
 func (t *appSearchOpenTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"app":      stringArgSchema("App name to search for and open."),
-		"name":     stringArgSchema("Alias for app."),
-		"platform": stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
+		"app":  stringArgSchema("App name to search for and open."),
+		"name": stringArgSchema("Alias for app."),
 	}, "app")
 }
 
@@ -176,10 +175,6 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 	if searchTerm == "" {
 		return result, fmt.Errorf("search term is required")
 	}
-	platform := strings.ToLower(strings.TrimSpace(cfg.platform))
-	if platform == "" {
-		platform = "android"
-	}
 	launchDelay := cfg.launchDelay
 	if launchDelay <= 0 {
 		launchDelay = appSearchOpenLaunchDelay
@@ -193,7 +188,7 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 	}
 	steps := make([]string, 0, 12)
 	callQuickAction := func(action string) error {
-		out, err := cfg.hw.quickAction.Call(ctx, jsonString(map[string]any{"action": action, "platform": platform}))
+		out, err := cfg.hw.quickAction.Call(ctx, jsonString(map[string]any{"action": action}))
 		if err != nil {
 			return err
 		}

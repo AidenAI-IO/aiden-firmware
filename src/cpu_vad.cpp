@@ -1,3 +1,4 @@
+#include "aiden_log.h"
 #include "vad_common.h"
 
 #include <algorithm>
@@ -51,7 +52,8 @@ Args parse_args(int argc, char** argv) {
     Args args;
     const auto parse_or_exit = [](const char* flag, const std::string& raw, int* value) {
         if (!parse_positive_int(raw, value)) {
-            std::cerr << "invalid value for " << flag << ": " << raw << std::endl;
+            AIDEN_LOG_ERROR("arguments", "invalid_value", "flag=%s value=%s", flag,
+                            raw.c_str());
             std::exit(2);
         }
     };
@@ -155,6 +157,7 @@ bool run_benchmark(SileroCPUVAD* vad, const Args& args, std::string* err) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    aiden::set_log_service("cpu_vad");
     Args args = parse_args(argc, argv);
     std::string err;
     std::vector<int16_t> frame(aiden_vad::kFrameSamples);

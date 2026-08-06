@@ -551,6 +551,8 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, LoadMemoryExtractionConfig(cfg.ConfigDir), nil, WithMemoryPlaneLongTermStore(longTermStore))
 		rt.markInterruptedEpisodesBestEffort()
 	}
+	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
+	rt.tools.SetRuntimePlatformFn(rt.devicePlatformFromState)
 	rt.sessionManager = newMemoryManagerSessionManager(memories, func() BoundaryEpisodeContext {
 		return recentEpisodeContext(rt.memoryPlane)
 	})
@@ -566,6 +568,31 @@ func (r *Runtime) initRunGate() {
 		r.runGate = make(chan struct{}, 1)
 		r.runGate <- struct{}{}
 	})
+}
+
+func (r *Runtime) deviceTypeFromState() string {
+	if r != nil && r.stateManager != nil {
+		for _, entry := range r.stateManager.GetAllStates() {
+			if entry.Key != "device_type" {
+				continue
+			}
+			if deviceType, ok := normalizeDeviceType(entry.Value); ok {
+				return deviceType
+			}
+		}
+	}
+	if r != nil {
+		return r.config.DeviceTypeOrDefault()
+	}
+	return defaultDeviceType
+}
+
+func (r *Runtime) devicePlatformFromState() string {
+	return deviceTypePlatform(r.deviceTypeFromState())
+}
+
+func (r *Runtime) devicePointerModeFromState() string {
+	return DeviceConfig{DeviceType: r.deviceTypeFromState()}.PointerModeOrDefault()
 }
 
 func (r *Runtime) lockRun(ctx context.Context) (func(), error) {
@@ -1005,27 +1032,9 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	// Apply default platform from config if not set by bridge app
-	deviceEnv := req.DeviceEnvironment
-	defaultPlatform := strings.TrimSpace(r.config.DefaultPlatform)
-	if deviceEnv == nil {
-		if defaultPlatform != "" {
-			deviceEnv = &PhoneEnvironment{Platform: defaultPlatform}
-		}
-	} else if strings.TrimSpace(deviceEnv.Platform) == "" {
-		if defaultPlatform != "" {
-			deviceEnv.Platform = defaultPlatform
-		}
-	}
-
-	// Set platformFn for platform-aware tools (bridge > config > LLM).
+	// Runtime target-platform decisions come from global device_type state.
 	platformFn := func() string {
-		if deviceEnv != nil {
-			if p := strings.TrimSpace(deviceEnv.Platform); p != "" {
-				return p
-			}
-		}
-		return defaultPlatform
+		return r.devicePlatformFromState()
 	}
 	r.tools.SetRuntimePlatformFn(platformFn)
 
@@ -1117,7 +1126,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.SteerWaiter = req.SteerWaiter
 	agentLoop.TerminationPolicy = NewTerminationPolicy(r.config.TerminationPolicy)
 	agentLoop.DevicePlatform = platformFn()
-	agentLoop.PointerMode = r.config.HID.PointerModeOrDefault()
+	agentLoop.PointerMode = r.devicePointerModeFromState()
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
 	if err != nil {

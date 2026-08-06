@@ -1,4 +1,5 @@
 #include "agent_toml.h"
+#include "aiden_log.h"
 #include "audio_service_client.h"
 #include "config_web_html.h"
 #include "config_web_llm_html.h"
@@ -385,6 +386,48 @@ std::string normalize_pointer_mode(const std::string& value) {
     return mode.empty() ? "absolute" : mode;
 }
 
+std::string normalize_device_type(const std::string& value) {
+    std::string device_type = trim_copy(value);
+    for (size_t i = 0; i < device_type.size(); ++i) {
+        device_type[i] = static_cast<char>(tolower(static_cast<unsigned char>(device_type[i])));
+    }
+    if (device_type.empty() || device_type == "ios") return "iOS";
+    if (device_type == "android") return "Android";
+    if (device_type == "macos" || device_type == "mac" || device_type == "darwin") return "macOS";
+    if (device_type == "windows" || device_type == "win") return "windows";
+    if (device_type == "linux") return "linux";
+    return device_type;
+}
+
+std::string pointer_mode_for_device_type(const std::string& device_type) {
+    return normalize_device_type(device_type) == "Android" ? "touchscreen" : "absolute";
+}
+
+std::string device_type_from_platform(const std::string& value) {
+    std::string platform = trim_copy(value);
+    for (size_t i = 0; i < platform.size(); ++i) {
+        platform[i] = static_cast<char>(tolower(static_cast<unsigned char>(platform[i])));
+    }
+    if (platform == "ios" || platform == "iphone" || platform == "ipad" || platform == "ipados") return "iOS";
+    if (platform == "android") return "Android";
+    if (platform == "macos" || platform == "mac" || platform == "darwin") return "macOS";
+    if (platform == "windows" || platform == "win") return "windows";
+    if (platform == "linux") return "linux";
+    return "";
+}
+
+std::string effective_device_type(const aiden::AgentToml& config) {
+    std::string configured = trim_copy(config.device.device_type);
+    if (!configured.empty()) {
+        return normalize_device_type(configured);
+    }
+    std::string platform_device_type = device_type_from_platform(config.default_platform);
+    if (!platform_device_type.empty()) {
+        return platform_device_type;
+    }
+    return normalize_pointer_mode(config.hid.pointer_mode) == "touchscreen" ? "Android" : "iOS";
+}
+
 std::string normalize_input_backend(const std::string& value) {
     std::string backend = trim_copy(value);
     for (size_t i = 0; i < backend.size(); ++i) {
@@ -741,12 +784,13 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"voice_notifications", "expiration", CONFIG_FIELD_OBJECT},
         {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
         {"ota", "github_proxy_url", CONFIG_FIELD_STRING},
+        {"device", "backend", CONFIG_FIELD_STRING},
+        {"device", "device_type", CONFIG_FIELD_STRING},
         {"hid", "keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "keyboard_layout", CONFIG_FIELD_STRING},
         {"hid", "mouse_device", CONFIG_FIELD_STRING},
         {"hid", "android_keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "frame_socket", CONFIG_FIELD_STRING},
-        {"hid", "pointer_mode", CONFIG_FIELD_STRING},
         {"hid", "input_backend", CONFIG_FIELD_STRING},
         {"search", "provider", CONFIG_FIELD_STRING},
         {"search", "api_key", CONFIG_FIELD_STRING},
@@ -1634,7 +1678,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model", "model_text", "tts", "stt", "audio", "audio_archive", "voice_notifications",
-        "log", "ota", "hid", "search", "telemetry", "termination_policy",
+        "log", "ota", "device", "hid", "search", "telemetry", "termination_policy",
         "live_activity", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
@@ -1673,8 +1717,8 @@ bool load_agent_config_via_cli(const Options& options,
         if (error) {
             *error = std::string("agent config unavailable: agent binary not found at ") + agent_bin;
         }
-        std::cerr << "[config] agent binary not found at " << agent_bin
-                  << ", cannot load agent config\n";
+        AIDEN_LOG_ERROR("agent_config", "binary_not_found", "path=%s operation=load",
+                        agent_bin);
         return false;
     }
 
@@ -1691,8 +1735,8 @@ bool load_agent_config_via_cli(const Options& options,
         if (error) {
             *error = "agent config load failed";
         }
-        std::cerr << "[config] agent config exited " << result.exit_code
-                  << ": " << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "load_failed", "exit_code=%d output=%s",
+                        result.exit_code, result.output.c_str());
         return false;
     }
 
@@ -1701,8 +1745,8 @@ bool load_agent_config_via_cli(const Options& options,
         if (error) {
             *error = "agent config returned an unexpected response";
         }
-        std::cerr << "[config] agent config returned invalid JSON: "
-                  << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "invalid_json", "operation=load output=%s",
+                        result.output.c_str());
         return false;
     }
 
@@ -1711,9 +1755,9 @@ bool load_agent_config_via_cli(const Options& options,
         if (error) {
             *error = schema_error.empty() ? "agent config invalid schema" : schema_error;
         }
-        std::cerr << "[config] agent config returned invalid schema: "
-                  << (schema_error.empty() ? "unknown schema error" : schema_error) << "\n"
-                  << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "invalid_schema", "error=%s output=%s",
+                        schema_error.empty() ? "unknown_schema_error" : schema_error.c_str(),
+                        result.output.c_str());
         cJSON_Delete(resolved);
         return false;
     }
@@ -2525,6 +2569,10 @@ void load_current_wifi_config(const Options& options,
 cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = false) {
     cJSON* root = cJSON_CreateObject();
 
+    cJSON* device = add_object(root, "device");
+    cJSON_AddStringToObject(device, "backend", config.device.backend.c_str());
+    cJSON_AddStringToObject(device, "device_type", effective_device_type(config).c_str());
+
     cJSON* model = add_object(root, "model");
     cJSON_AddStringToObject(model, "provider", config.model.provider.c_str());
     cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
@@ -2612,7 +2660,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
     cJSON_AddStringToObject(hid, "android_keyboard_device", config.hid.android_keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
-    cJSON_AddStringToObject(hid, "pointer_mode", normalize_pointer_mode(config.hid.pointer_mode).c_str());
     cJSON_AddStringToObject(hid, "input_backend", normalize_input_backend(config.hid.input_backend).c_str());
 
     cJSON* search = add_object(root, "search");
@@ -2962,6 +3009,12 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->ota.github_proxy_url, ota, "github_proxy_url");
     }
 
+    cJSON* device = cJSON_GetObjectItem(root, "device");
+    if (json_is_object(device)) {
+        set_json_str(&config->device.backend, device, "backend");
+        set_json_str(&config->device.device_type, device, "device_type");
+    }
+
     cJSON* hid = cJSON_GetObjectItem(root, "hid");
     if (json_is_object(hid)) {
         set_json_str(&config->hid.keyboard_device, hid, "keyboard_device");
@@ -2969,7 +3022,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->hid.mouse_device, hid, "mouse_device");
         set_json_str(&config->hid.android_keyboard_device, hid, "android_keyboard_device");
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");
-        set_json_str(&config->hid.pointer_mode, hid, "pointer_mode");
         set_json_str(&config->hid.input_backend, hid, "input_backend");
     }
 
@@ -3087,7 +3139,8 @@ ValidationResult parse_agent_config_validation_result(const CommandResult& resul
         // CLI produced unparseable output. We cannot tell if the config is
         // valid; fail closed but as UNAVAILABLE so the UI distinguishes a
         // broken validator from a rejected user input.
-        std::cerr << "[config] agent config-check returned invalid JSON: " << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "config_check_invalid_json", "output=%s",
+                        result.output.c_str());
         return ValidationResult::unavailable(
                 "config validation failed: validator returned an unexpected response");
     }
@@ -3168,8 +3221,8 @@ ValidationResult validate_agent_config_for_save(const aiden::AgentToml& config) 
     // rather than persist a config we cannot validate.
     const char* agent_bin = agent_bin_path();
     if (!file_exists(agent_bin)) {
-        std::cerr << "[config] agent binary not found at " << agent_bin
-                  << ", refusing to save unvalidated config\n";
+        AIDEN_LOG_ERROR("agent_config", "binary_not_found",
+                        "path=%s operation=validate_json_save", agent_bin);
         return ValidationResult::unavailable(
                 "config validation unavailable: agent binary not found");
     }
@@ -3421,7 +3474,9 @@ std::string build_ota_update_command(const std::string& log_path) {
         "else "
         + shell_quote(ota_bin) + " update; "
         "fi; "
-        "rc=$?; echo \"[config_web] ota update exited rc=$rc\"; exit $rc"
+        "rc=$?; level=INFO; [ \"$rc\" -eq 0 ] || level=ERROR; "
+        "printf '%s [%s] [config_web] [ota] update_exited exit_code=%s\\n' "
+        "\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\" \"$level\" \"$rc\"; exit $rc"
         ") >> " + shell_quote(log_path) + " 2>&1";
     return cmd;
 }
@@ -3493,9 +3548,36 @@ bool schedule_ota_update(std::string* error) {
     return true;
 }
 
-void schedule_poweroff() {
-    int rc = system("(PATH=/sbin:/bin:/usr/sbin:/usr/bin; sync; sleep 1; poweroff) >/dev/null 2>&1 &");
-    (void)rc;
+bool schedule_reboot(std::string* error) {
+    CommandResult lookup = run_shell_command("PATH=/sbin:/bin:/usr/sbin:/usr/bin; command -v reboot >/dev/null 2>&1");
+    if (lookup.exit_code != 0) {
+        if (error) {
+            *error = "reboot command not found";
+        }
+        return false;
+    }
+
+    int rc = system("(PATH=/sbin:/bin:/usr/sbin:/usr/bin; sync; sleep 1; reboot) >/dev/null 2>&1 &");
+    if (rc == -1) {
+        if (error) {
+            *error = std::string("launch reboot command: ") + strerror(errno);
+        }
+        return false;
+    }
+    if (!WIFEXITED(rc) || WEXITSTATUS(rc) != 0) {
+        if (error) {
+            std::ostringstream msg;
+            msg << "launch reboot command failed";
+            if (WIFEXITED(rc)) {
+                msg << " (exit " << WEXITSTATUS(rc) << ")";
+            } else if (WIFSIGNALED(rc)) {
+                msg << " (signal " << WTERMSIG(rc) << ")";
+            }
+            *error = msg.str();
+        }
+        return false;
+    }
+    return true;
 }
 
 CommandResult apply_wifi_config(const Options& options, bool force_restart = false) {
@@ -4115,8 +4197,8 @@ ValidationResult validate_agent_toml_content_for_save(const std::string& content
                                                        const std::string& config_path) {
     const char* agent_bin = agent_bin_path();
     if (!file_exists(agent_bin)) {
-        std::cerr << "[config] agent binary not found at " << agent_bin
-                  << ", refusing to save unvalidated config\n";
+        AIDEN_LOG_ERROR("agent_config", "binary_not_found",
+                        "path=%s operation=validate_toml_save", agent_bin);
         return ValidationResult::unavailable(
                 "config validation unavailable: agent binary not found");
     }
@@ -4554,19 +4636,44 @@ std::string recent_agent_startup_log(const Options& options) {
         return "";
     }
 
-    size_t marker = log.rfind("[agent] starting ");
+    const auto rfind_event = [&log](const std::string& event) {
+        size_t marker = log.rfind(event);
+        while (marker != std::string::npos) {
+            const size_t boundary = marker + event.size();
+            if (boundary == log.size() || log[boundary] == ' ' ||
+                log[boundary] == '\n' || log[boundary] == '\r') {
+                return marker;
+            }
+            if (marker == 0) {
+                break;
+            }
+            marker = log.rfind(event, marker - 1);
+        }
+        return std::string::npos;
+    };
+
+    size_t marker = rfind_event("[agent] [supervisor] process_starting");
+    if (marker == std::string::npos) {
+        marker = rfind_event("[agent] [supervisor] binary_wait");
+    }
+    // Preserve compatibility with logs written before the common format was deployed.
+    if (marker == std::string::npos) {
+        marker = log.rfind("[agent] starting ");
+    }
     if (marker == std::string::npos) {
         marker = log.rfind("[agent] waiting for ");
     }
     if (marker != std::string::npos) {
-        log = log.substr(marker);
+        size_t line_start = log.rfind('\n', marker);
+        log = log.substr(line_start == std::string::npos ? 0 : line_start + 1);
     }
     return trim_for_display(log, kAgentStatusLogDisplaySize);
 }
 
 bool log_excerpt_looks_like_startup_failure(const std::string& log) {
     std::string lower = lowercase_copy(log);
-    return lower.find("exited with status") != std::string::npos ||
+    return lower.find(" [error] ") != std::string::npos ||
+           lower.find("exited with status") != std::string::npos ||
            lower.find("error") != std::string::npos ||
            lower.find("failed") != std::string::npos ||
            lower.find("not found") != std::string::npos ||
@@ -4876,8 +4983,8 @@ ApiResponse handle_get_config(const Options& options) {
 ApiResponse handle_get_config_meta() {
     const char* agent_bin = agent_bin_path();
     if (!file_exists(agent_bin)) {
-        std::cerr << "[config] agent binary not found at " << agent_bin
-                  << ", cannot serve config metadata\n";
+        AIDEN_LOG_ERROR("agent_config", "binary_not_found",
+                        "path=%s operation=config_metadata", agent_bin);
         return make_json_error(503, "config metadata unavailable: agent binary not found");
     }
 
@@ -4888,15 +4995,16 @@ ApiResponse handle_get_config_meta() {
         return make_json_error(503, "config metadata timed out");
     }
     if (result.exit_code != 0) {
-        std::cerr << "[config] agent config-meta exited " << result.exit_code
-                  << ": " << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "metadata_generation_failed",
+                        "exit_code=%d output=%s", result.exit_code, result.output.c_str());
         return make_json_error(503, "config metadata generation failed");
     }
 
     // Validate the payload is well-formed JSON before forwarding it verbatim.
     cJSON* parsed = cJSON_Parse(result.output.c_str());
     if (!parsed) {
-        std::cerr << "[config] agent config-meta returned invalid JSON: " << result.output << "\n";
+        AIDEN_LOG_ERROR("agent_config", "metadata_invalid_json", "output=%s",
+                        result.output.c_str());
         return make_json_error(503, "config metadata returned an unexpected response");
     }
     cJSON_Delete(parsed);
@@ -5598,7 +5706,8 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     std::string ignore_error;
     load_current_agent_config(options, &config, &ignore_error);
     load_current_wifi_config(options, &wifi, &ignore_error);
-    std::string original_pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
+    std::string original_device_type = effective_device_type(config);
+    std::string original_pointer_mode = pointer_mode_for_device_type(original_device_type);
     std::string original_keyboard_layout = config.hid.keyboard_layout;
 
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
@@ -5625,9 +5734,9 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
 
     ValidationResult validation = validate_agent_config_for_save(config);
     if (validation.outcome != ValidationOutcome::OK) {
-        std::cerr << "Refusing to save agent config ("
-                  << (validation.outcome == ValidationOutcome::UNAVAILABLE ? "unavailable" : "invalid")
-                  << "): " << validation.message << "\n";
+        AIDEN_LOG_WARN("agent_config", "save_rejected", "outcome=%s error=%s",
+                       validation.outcome == ValidationOutcome::UNAVAILABLE ? "unavailable" : "invalid",
+                       validation.message.c_str());
         cJSON_Delete(root);
         // 503 when the validator itself is missing/broken: a server-side
         // dependency outage, not a user input error. 400 only when the
@@ -5637,7 +5746,8 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     }
 
     cJSON_Delete(root);
-    config.hid.pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
+    config.device.device_type = effective_device_type(config);
+    config.hid.pointer_mode = pointer_mode_for_device_type(config.device.device_type);
     config.hid.input_backend = normalize_input_backend(config.hid.input_backend);
     bool usbhid_restart_scheduled = original_pointer_mode != config.hid.pointer_mode;
     bool keyboard_layout_changed = original_keyboard_layout != config.hid.keyboard_layout;
@@ -5672,7 +5782,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON_AddBoolToObject(response, "ok", 1);
     cJSON_AddStringToObject(response, "message",
                             usbhid_restart_scheduled
-                                ? "config saved; reboot required for usb hid pointer_mode"
+                                ? "config saved; USB HID device_type configuration changed; reboot required"
                                 : (usb_reenumeration_scheduled
                                    ? "config saved; agent restarting and USB re-enumerating"
                                    : "config saved; agent restarting"));
@@ -5761,13 +5871,16 @@ ApiResponse handle_put_config_locale(const Options& options, const std::string& 
     return make_json_ok(response);
 }
 
-ApiResponse handle_post_poweroff() {
-    schedule_poweroff();
+ApiResponse handle_post_reboot() {
+    std::string error;
+    if (!schedule_reboot(&error)) {
+        return make_json_error(503, error.empty() ? "failed to schedule reboot" : error);
+    }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "message", "poweroff scheduled");
-    cJSON_AddBoolToObject(response, "poweroff_scheduled", 1);
+    cJSON_AddStringToObject(response, "message", "reboot scheduled");
+    cJSON_AddBoolToObject(response, "reboot_scheduled", 1);
     return make_json_ok(response);
 }
 
@@ -6403,9 +6516,30 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             all_passed = false;
         }
         cJSON_AddItemToArray(results, r);
+    } else if (section == "device") {
+        cJSON* device_type_item = cJSON_GetObjectItem(values, "device_type");
+        bool string_value = true;
+        std::string device_type = "iOS";
+        if (device_type_item != NULL) {
+            if (json_is_string(device_type_item)) {
+                device_type = normalize_device_type(device_type_item->valuestring);
+            } else {
+                string_value = false;
+            }
+        }
+        cJSON* r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "check", "device_type");
+        bool valid = string_value &&
+                     (device_type == "iOS" || device_type == "Android" || device_type == "macOS" ||
+                      device_type == "windows" || device_type == "linux");
+        cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
+        std::string detail = valid ? "effective pointer_mode: " + pointer_mode_for_device_type(device_type)
+                                   : (string_value ? "must be iOS, Android, macOS, windows, or linux"
+                                                   : "must be a string");
+        cJSON_AddStringToObject(r, "detail", detail.c_str());
+        if (!valid) all_passed = false;
+        cJSON_AddItemToArray(results, r);
     } else if (section == "hid") {
-        cJSON* pointer_item = cJSON_GetObjectItem(values, "pointer_mode");
-        std::string pointer_mode = json_is_string(pointer_item) ? normalize_pointer_mode(pointer_item->valuestring) : "absolute";
         cJSON* backend_item = cJSON_GetObjectItem(values, "input_backend");
         std::string input_backend = json_is_string(backend_item) ? normalize_input_backend(backend_item->valuestring) : "hid";
         const char* dev_keys[] = {"keyboard_device", "mouse_device", "android_keyboard_device", NULL};
@@ -6433,19 +6567,10 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             cJSON_AddItemToArray(results, r);
         }
         cJSON* r = cJSON_CreateObject();
-        cJSON_AddStringToObject(r, "check", "pointer_mode");
-        bool valid = pointer_mode == "absolute" || pointer_mode == "touchscreen";
-        cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
-        std::string detail = valid ? "effective mode: " + pointer_mode : "must be absolute or touchscreen";
-        cJSON_AddStringToObject(r, "detail", detail.c_str());
-        if (!valid) all_passed = false;
-        cJSON_AddItemToArray(results, r);
-
-        r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "input_backend");
-        valid = input_backend == "hid" || input_backend == "adb";
+        bool valid = input_backend == "hid" || input_backend == "adb";
         cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
-        detail = valid ? "effective backend: " + input_backend : "must be hid or adb";
+        std::string detail = valid ? "effective backend: " + input_backend : "must be hid or adb";
         cJSON_AddStringToObject(r, "detail", detail.c_str());
         if (!valid) all_passed = false;
         cJSON_AddItemToArray(results, r);
@@ -6841,8 +6966,8 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return handle_post_system_env(options, request.body);
     }
 
-    if (request.method == "POST" && request.path == "/api/poweroff") {
-        return handle_post_poweroff();
+    if (request.method == "POST" && request.path == "/api/reboot") {
+        return handle_post_reboot();
     }
 
     if (request.method == "POST" && request.path == "/api/wifi/scan") {
@@ -6945,10 +7070,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    aiden::set_log_service("config_web");
+
     if (!is_allowed_bind_address(options.bind_address)) {
-        std::cerr << "Refusing to bind config_web to " << options.bind_address
-                  << "; allowed addresses are " << kAnyBindAddress
-                  << ", " << kUsbBindAddress << " and " << kLoopbackBindAddress << std::endl;
+        AIDEN_LOG_ERROR("server", "bind_address_rejected", "bind_address=%s",
+                        options.bind_address.c_str());
         return 1;
     }
 
@@ -6964,7 +7090,7 @@ int main(int argc, char** argv) {
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
-        std::cerr << "Failed to create socket" << std::endl;
+        AIDEN_LOG_ERROR("server", "socket_create_failed", "error=%s", strerror(errno));
         return 1;
     }
 
@@ -6978,29 +7104,30 @@ int main(int argc, char** argv) {
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<uint16_t>(options.port));
     if (inet_pton(AF_INET, options.bind_address.c_str(), &addr.sin_addr) != 1) {
-        std::cerr << "Invalid bind address: " << options.bind_address << std::endl;
+        AIDEN_LOG_ERROR("server", "bind_address_invalid", "bind_address=%s",
+                        options.bind_address.c_str());
         close(server_fd);
         return 1;
     }
 
     if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        std::cerr << "Failed to bind to " << options.bind_address << ":" << options.port
-                  << ": " << strerror(errno) << std::endl;
+        AIDEN_LOG_ERROR("server", "bind_failed", "bind_address=%s port=%d error=%s",
+                        options.bind_address.c_str(), options.port, strerror(errno));
         close(server_fd);
         return 1;
     }
 
     if (listen(server_fd, 10) < 0) {
-        std::cerr << "Failed to listen: " << strerror(errno) << std::endl;
+        AIDEN_LOG_ERROR("server", "listen_failed", "error=%s", strerror(errno));
         close(server_fd);
         return 1;
     }
 
-    std::cout << "Config server running on http://" << options.bind_address << ":"
-              << options.port << std::endl;
-    std::cout << "agent.toml -> " << options.agent_config_path << std::endl;
-    std::cout << "wifi.conf  -> " << options.wifi_config_path << std::endl;
-    std::cout << "system env -> " << options.system_env_path << std::endl;
+    AIDEN_LOG_INFO("server", "listening",
+                   "bind_address=%s port=%d agent_config=%s wifi_config=%s system_env=%s",
+                   options.bind_address.c_str(), options.port,
+                   options.agent_config_path.c_str(), options.wifi_config_path.c_str(),
+                   options.system_env_path.c_str());
 
     while (!g_should_stop) {
         sockaddr_in client_addr;
@@ -7027,6 +7154,8 @@ int main(int argc, char** argv) {
     }
 
     close(server_fd);
+    AIDEN_LOG_INFO("server", "stopped", "bind_address=%s port=%d",
+                   options.bind_address.c_str(), options.port);
     return 0;
 }
 #endif  // AIDEN_CONFIG_WEB_NO_MAIN

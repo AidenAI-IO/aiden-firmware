@@ -96,7 +96,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.hid.keyboard_layout = "azerty";
     cfg.hid.mouse_device = "/dev/hidg1";
     cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
-    cfg.hid.pointer_mode = "touchscreen";
+    cfg.device.device_type = "Android";
 
     cfg.search.provider = "duckduckgo";
     cfg.search.api_key = "tvly-test";
@@ -138,6 +138,9 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
         std::string contents((std::istreambuf_iterator<char>(saved_in)), std::istreambuf_iterator<char>());
         CHECK(contents.find("locale = \"en-US\"") != std::string::npos);
         CHECK(contents.find("custom_instruction = \"Hello \\\"world\\\"\"") != std::string::npos);
+        CHECK(contents.find("[device]") != std::string::npos);
+        CHECK(contents.find("device_type = \"Android\"") != std::string::npos);
+        CHECK(contents.find("pointer_mode") == std::string::npos);
         CHECK(contents.rfind("instruction =", 0) != 0);
         CHECK(contents.find("\ninstruction =") == std::string::npos);
     }
@@ -218,7 +221,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.hid.mouse_device == "/dev/hidg1");
     CHECK(loaded.hid.android_keyboard_device == "/dev/hidg2");
     CHECK(loaded.hid.frame_socket == "/run/frame_service/frame_service.sock");
-    CHECK(loaded.hid.pointer_mode == "touchscreen");
+    CHECK(loaded.device.device_type == "Android");
 
     CHECK(loaded.search.provider == "duckduckgo");
     CHECK(loaded.search.api_key == "tvly-test");

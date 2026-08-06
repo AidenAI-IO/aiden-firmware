@@ -117,7 +117,7 @@ func TestModelManagerSpecUsesConfig(t *testing.T) {
 		t.Errorf("ModelManager.Spec().ContextWindow = %d, want 1_048_576", got)
 	}
 
-	unknown := NewModelManager(ModelConfig{Provider: "fake", Model: "vendor/no-such-model"}, ProxyConfig{})
+	unknown := NewModelManager(ModelConfig{Provider: "openrouter", Model: "vendor/no-such-model"}, ProxyConfig{})
 	if got := unknown.Spec().ContextWindow; got != 0 {
 		t.Errorf("unknown model: ContextWindow = %d, want 0 (caller falls back to yaml default)", got)
 	}

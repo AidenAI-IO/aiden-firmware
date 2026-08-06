@@ -1,5 +1,6 @@
 #include "audio_service_server.h"
 #include "audio_volume_state.h"
+#include "aiden_log.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +61,8 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    aiden::set_log_service("audio_service");
+
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGHUP,  SIG_IGN);
@@ -68,18 +71,18 @@ int main(int argc, char** argv) {
     aiden::AudioServiceServer server(opts.socket_path.c_str(),
                                      opts.volume_state_path.c_str());
     if (server.start() != aiden::AidenServiceStatus::OK) {
-        fprintf(stderr, "[audio_service] Failed to start socket at %s\n",
-                opts.socket_path.c_str());
+        AIDEN_LOG_ERROR("server", "socket_start_failed",
+                        "socket_path=%s", opts.socket_path.c_str());
         return 1;
     }
 
-    printf("[audio_service] Listening on %s\n", opts.socket_path.c_str());
+    AIDEN_LOG_INFO("server", "listening", "socket_path=%s", opts.socket_path.c_str());
 
     while (!g_quit) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
     server.stop();
-    printf("[audio_service] Stopped.\n");
+    AIDEN_LOG_INFO("server", "stopped", "socket_path=%s", opts.socket_path.c_str());
     return 0;
 }

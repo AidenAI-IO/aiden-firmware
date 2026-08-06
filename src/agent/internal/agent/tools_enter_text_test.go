@@ -477,7 +477,7 @@ func TestEnterTextToolSchemaKeepsIMESegmentsInternal(t *testing.T) {
 		t.Fatal("enter_text must not expose IME segments")
 	}
 	if _, found := props["platform"]; found {
-		t.Fatal("enter_text must infer the platform from HID configuration")
+		t.Fatal("enter_text must infer the platform from runtime device state")
 	}
 	if _, found := props["max_attempts"]; found {
 		t.Fatal("enter_text must not expose max_attempts")
@@ -487,12 +487,27 @@ func TestEnterTextToolSchemaKeepsIMESegmentsInternal(t *testing.T) {
 	}
 }
 
-func TestTextInputPlatformUsesHIDPointerMode(t *testing.T) {
+func TestTextInputPlatformFallsBackToHIDPointerMode(t *testing.T) {
 	if got := (textInputHardwareDeps{pointerMode: "absolute"}).platform(); got != "ios" {
 		t.Fatalf("absolute pointer mode platform = %q, want ios", got)
 	}
 	if got := (textInputHardwareDeps{pointerMode: "touchscreen"}).platform(); got != "android" {
 		t.Fatalf("touchscreen pointer mode platform = %q, want android", got)
+	}
+}
+
+func TestTextInputPlatformUsesRuntimeProviderBeforeHIDPointerMode(t *testing.T) {
+	if got := (textInputHardwareDeps{
+		pointerMode: "absolute",
+		platformFn:  func() string { return "Android" },
+	}).platform(); got != "android" {
+		t.Fatalf("runtime platform = %q, want android", got)
+	}
+	if got := (textInputHardwareDeps{
+		pointerMode: "touchscreen",
+		platformFn:  func() string { return "macOS" },
+	}).platform(); got != "mac" {
+		t.Fatalf("runtime platform = %q, want mac", got)
 	}
 }
 
@@ -641,8 +656,13 @@ func TestEnterTextToolPrefersAvailableBridge(t *testing.T) {
 		t.Fatal("available Android bridge should be preferred before local entry")
 	}
 	tool.bridgeTool.hw.pointerMode = "absolute"
+	tool.SetPlatformFn(func() string { return "android" })
+	if !tool.bridgeAvailable(textInputArgs{Text: "global device state keeps Android bridge route"}) {
+		t.Fatal("runtime platform provider should override HID pointer_mode fallback")
+	}
+	tool.SetPlatformFn(func() string { return "ios" })
 	if tool.bridgeAvailable(textInputArgs{Text: "hello"}) {
-		t.Fatal("iOS HID configuration should not select an Android bridge clipboard route")
+		t.Fatal("iOS device_type state should not select an Android bridge clipboard route")
 	}
 }
 

@@ -1849,16 +1849,16 @@ func TestSessionBoundaryLogsProminentNewSessionID(t *testing.T) {
 	}
 
 	logText := buf.String()
-	if !strings.Contains(logText, "NEW SESSION STARTED") {
-		t.Fatalf("log missing session banner:\n%s", logText)
+	if !strings.Contains(logText, "[session] session_started") {
+		t.Fatalf("log missing structured session event:\n%s", logText)
 	}
-	if !strings.Contains(logText, "Session ID: ") {
+	if !strings.Contains(logText, "session_id=") {
 		t.Fatalf("log missing prominent session id:\n%s", logText)
 	}
-	if !strings.Contains(logText, "Reason: "+BoundaryReasonTimeGapLong) {
+	if !strings.Contains(logText, "reason="+BoundaryReasonTimeGapLong) {
 		t.Fatalf("log missing boundary reason:\n%s", logText)
 	}
-	if strings.Contains(logText, "Runtime ID:") {
+	if strings.Contains(logText, "runtime_id=") {
 		t.Fatalf("session boundary log should not present runtime id as the primary marker:\n%s", logText)
 	}
 }

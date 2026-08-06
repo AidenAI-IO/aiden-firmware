@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"aiden-agent/internal/logging"
 )
 
 // LLMHTTPLogCleaner cleans up old LLM HTTP log files
@@ -154,8 +156,11 @@ func (c *LLMHTTPLogCleaner) clean(_ context.Context, force bool) (uint64, error)
 	}
 
 	if deletedCount > 0 {
-		fmt.Fprintf(os.Stderr, "[storage_cleanup] deleted %d llm-http logs (retention: %dd), freed %d MB\n",
-			deletedCount, int(c.retentionAge.Hours()/24), totalFreed/(1024*1024))
+		_ = logging.LogEvent(logging.Info, "agent", "storage_cleanup", "llm_http_logs_deleted",
+			logging.Field{Key: "files", Value: deletedCount},
+			logging.Field{Key: "retention_days", Value: int(c.retentionAge.Hours() / 24)},
+			logging.Field{Key: "freed_bytes", Value: totalFreed},
+		)
 	}
 
 	return totalFreed, nil

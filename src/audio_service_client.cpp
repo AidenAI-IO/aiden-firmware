@@ -1,4 +1,5 @@
 #include "audio_service_client.h"
+#include "aiden_log.h"
 #include "uds_client.h"
 #include <limits>
 #include <stdio.h>
@@ -96,8 +97,8 @@ AidenServiceStatus AudioServiceClient::write_play_chunk(uint64_t session_id,
                                                          size_t len,
                                                          bool is_final) {
     if (!data && len > 0) {
-        fprintf(stderr, "[audio_service_client] write_play_chunk invalid args: data=null len=%zu\n",
-                len);
+        AIDEN_LOG_ERROR("audio_service_client", "invalid_playback_chunk",
+                        "data=null length=%zu", len);
         return AidenServiceStatus::INTERNAL_ERROR;
     }
 
