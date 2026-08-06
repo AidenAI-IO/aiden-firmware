@@ -1,43 +1,127 @@
 #!/bin/sh
-# Aiden override: optional bluetooth daemon startup.
+# Start BlueZ after hci0 is initialized and keep its pairing database in userdata.
 
-BOOT_CONF=/etc/aiden_boot.conf
+BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
+BLUEZ_CONFIG=${BLUEZ_CONFIG:-/etc/bluetooth/main.conf}
+BLUETOOTHD_BIN=${BLUETOOTHD_BIN:-/usr/libexec/bluetooth/bluetoothd}
+PID_FILE=${PID_FILE:-/run/bluetoothd.pid}
+LOG_PATH=${LOG_PATH:-/var/log/bluetoothd/bluetoothd.log}
+STATE_DIR=${STATE_DIR:-/userdata/ble_service/bluetooth}
+STATE_MOUNT=${STATE_MOUNT:-/var/lib/bluetooth}
+WAIT_SECONDS=${WAIT_SECONDS:-15}
 
-if [ -f "$BOOT_CONF" ]; then
-	. "$BOOT_CONF"
-fi
-: "${ENABLE_BLUETOOTHD:=0}"
+[ -f "$BOOT_CONF" ] && . "$BOOT_CONF"
+: "${ENABLE_BLUETOOTHD:=1}"
+
+is_running() {
+    pid="$1"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+service_pid() {
+    [ -f "$PID_FILE" ] || return 0
+    pid="$(cat "$PID_FILE" 2>/dev/null)"
+    case "$pid" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    if is_running "$pid"; then
+        echo "$pid"
+    fi
+}
+
+prepare_state() {
+    mkdir -p "$STATE_DIR" "$STATE_MOUNT" "$(dirname "$LOG_PATH")"
+    chmod 0700 "$STATE_DIR"
+    if ! grep -F " $STATE_MOUNT " /proc/mounts >/dev/null 2>&1; then
+        mount -o bind "$STATE_DIR" "$STATE_MOUNT" || {
+            echo "failed to bind persistent BlueZ state at $STATE_MOUNT" >&2
+            return 1
+        }
+    fi
+}
+
+wait_for_hci() {
+    elapsed=0
+    while [ "$elapsed" -lt "$WAIT_SECONDS" ]; do
+        if [ -d /sys/class/bluetooth/hci0 ]; then
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
 
 start() {
-	if [ "$ENABLE_BLUETOOTHD" != "1" ]; then
-		echo "bluetoothd disabled by config (ENABLE_BLUETOOTHD=$ENABLE_BLUETOOTHD)"
-		return 0
-	fi
+    if [ "$ENABLE_BLUETOOTHD" != "1" ]; then
+        echo "bluetoothd disabled by config (ENABLE_BLUETOOTHD=$ENABLE_BLUETOOTHD)"
+        return 0
+    fi
+    if [ ! -x "$BLUETOOTHD_BIN" ]; then
+        if [ -x /usr/sbin/bluetoothd ]; then
+            BLUETOOTHD_BIN=/usr/sbin/bluetoothd
+        else
+            echo "bluetoothd binary not found" >&2
+            return 1
+        fi
+    fi
 
-	if [ -x /usr/libexec/bluetooth/bluetoothd ]; then
-		/usr/libexec/bluetooth/bluetoothd
-	elif [ -x /usr/sbin/bluetoothd ]; then
-		/usr/sbin/bluetoothd
-	else
-		echo "bluetoothd binary not found"
-		return 1
-	fi
-	echo "Started bluetoothd"
+    pid="$(service_pid)"
+    if is_running "$pid"; then
+        echo "bluetoothd already running (pid $pid)"
+        return 0
+    fi
+    if ! wait_for_hci; then
+        echo "hci0 is not available; bluetoothd not started" >&2
+        return 1
+    fi
+    prepare_state || return 1
+
+    if [ -f "$BLUEZ_CONFIG" ]; then
+        "$BLUETOOTHD_BIN" --nodetach --experimental --configfile="$BLUEZ_CONFIG" \
+            >> "$LOG_PATH" 2>&1 &
+    else
+        "$BLUETOOTHD_BIN" --nodetach --experimental >> "$LOG_PATH" 2>&1 &
+    fi
+    pid="$!"
+    echo "$pid" > "$PID_FILE"
+    sleep 1
+    if ! is_running "$pid"; then
+        rm -f "$PID_FILE"
+        echo "bluetoothd exited during startup; see $LOG_PATH" >&2
+        return 1
+    fi
+    echo "Started bluetoothd (pid $pid)"
 }
 
 stop() {
-	killall bluetoothd 2>/dev/null || true
-	echo "Stopped bluetoothd"
+    pid="$(service_pid)"
+    if is_running "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        elapsed=0
+        while is_running "$pid" && [ "$elapsed" -lt 5 ]; do
+            sleep 1
+            elapsed=$((elapsed + 1))
+        done
+    fi
+    rm -f "$PID_FILE"
+    echo "Stopped bluetoothd"
 }
 
-restart() {
-	stop
-	start
+status() {
+    pid="$(service_pid)"
+    if is_running "$pid"; then
+        echo "bluetoothd=running pid=$pid state=$STATE_DIR"
+        return 0
+    fi
+    echo "bluetoothd=stopped state=$STATE_DIR"
+    return 1
 }
 
-case "$1" in
-	start) start ;;
-	stop) stop ;;
-	restart|reload) restart ;;
-	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+case "${1:-}" in
+    start) start ;;
+    stop) stop ;;
+    restart|reload) stop; start ;;
+    status) status ;;
+    *) echo "Usage: $0 {start|stop|restart|reload|status}" >&2; exit 1 ;;
 esac

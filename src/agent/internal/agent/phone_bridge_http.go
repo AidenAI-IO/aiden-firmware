@@ -86,6 +86,7 @@ func (pb *PhoneBridge) handleEnqueueCommand(w http.ResponseWriter, r *http.Reque
 		}
 		return
 	}
+	pb.notifyBLEWake()
 
 	cmd := pb.queue.Get(req.Command.ID)
 	if cmd == nil {
