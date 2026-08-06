@@ -157,8 +157,8 @@ start() {
 
 	# Link all functions, THEN bind UDC (configfs requires this order)
 	ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0" 2>/dev/null
-	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1" 2>/dev/null
 	ln -s "$GADGET_DIR/functions/hid.usb2" "$GADGET_DIR/configs/c.1/hid.usb2" 2>/dev/null
+	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1" 2>/dev/null
 	ln -s "$GADGET_DIR/functions/ecm.usb0" "$GADGET_DIR/configs/c.1/ecm.usb0" 2>/dev/null
 
 	echo "$UDC" > "$GADGET_DIR/UDC"

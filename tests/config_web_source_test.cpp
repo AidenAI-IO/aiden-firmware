@@ -705,7 +705,8 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("handle_get_ota_log") != std::string::npos);
     CHECK(source.find("read_ota_log_snapshot") != std::string::npos);
     CHECK(source.find("kOtaWebUpdateLogPath") != std::string::npos);
-    CHECK(source.find("/tmp/config_web_ota_update.log") != std::string::npos);
+    CHECK(source.find("/userdata/ota/config_web_ota_update.log") != std::string::npos);
+    CHECK(source.find("kOtaWebUpdateLogMaxBytes") != std::string::npos);
     CHECK(source.find("/var/log/ota/ota.log") != std::string::npos);
     CHECK(source.find("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG") != std::string::npos);
     CHECK(source.find("\"ota_health_log\"") != std::string::npos);
@@ -716,7 +717,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("ota update already running") != std::string::npos);
     CHECK(source.find("prepare_ota_update_log_file") != std::string::npos);
     CHECK(source.find("ota_log_start_size_bytes") != std::string::npos);
-    CHECK(source.find("cJSON_AddNumberToObject(response, \"ota_log_start_size_bytes\", 0)") != std::string::npos);
+    CHECK(source.find("static_cast<double>(start_size_bytes)") != std::string::npos);
     CHECK(source.find("cJSON_AddItemToObject(response, \"ota_log\"") == std::string::npos);
     CHECK(source.find("echo '[config_web] ota update requested'") == std::string::npos);
     CHECK(source.find("close(lock_fd)") != std::string::npos);
