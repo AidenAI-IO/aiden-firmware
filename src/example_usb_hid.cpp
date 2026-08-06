@@ -635,11 +635,11 @@ void setup_gadget(const Options& options, const std::string& mode) {
     if (mode == "keyboard" || mode == "composite") {
         setup_keyboard_function(gadget);
     }
-    if (mode == "touch" || mode == "composite") {
-        setup_touch_function(gadget, options);
-    }
     if (mode == "keyboard" || mode == "composite") {
         setup_android_extension_function(gadget, options.pointer_touchscreen);
+    }
+    if (mode == "touch" || mode == "composite") {
+        setup_touch_function(gadget, options);
     }
 
     std::string udc = options.udc.empty() ? first_udc_name() : options.udc;
