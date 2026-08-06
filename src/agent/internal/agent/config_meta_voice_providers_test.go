@@ -70,13 +70,24 @@ func TestConfigMeta_VoiceProviderRulesKeyOnRecordType(t *testing.T) {
 		}
 	}
 
-	appID := idx["stt_providers.app_id"]
-	wantAppIDVisibility := VisibleRule{All: []Condition{
-		in("stt_providers.type", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider),
+	tencentProviderNames := sttProviderNamesForCanonical(tencentASRProvider)
+	if len(tencentProviderNames) == 0 {
+		t.Fatalf("Tencent STT provider %q is not registered", tencentASRProvider)
+	}
+	wantTencentVisibility := VisibleRule{All: []Condition{
+		in("stt_providers.type", tencentProviderNames...),
 	}}
-	if appID.VisibleWhen == nil || !reflect.DeepEqual(*appID.VisibleWhen, wantAppIDVisibility) {
-		t.Errorf("stt_providers.app_id visibleWhen = %#v, want %#v",
-			appID.VisibleWhen, wantAppIDVisibility)
+	for _, path := range []string{
+		"stt_providers.app_id",
+		"stt_providers.secret_id",
+		"stt_providers.secret_key",
+		"stt_providers.region",
+		"stt_providers.engine_model_type",
+	} {
+		field := idx[path]
+		if field.VisibleWhen == nil || !reflect.DeepEqual(*field.VisibleWhen, wantTencentVisibility) {
+			t.Errorf("%s visibleWhen = %#v, want %#v", path, field.VisibleWhen, wantTencentVisibility)
+		}
 	}
 
 	// No rule anywhere in the two record sections may reference the flat
@@ -139,11 +150,6 @@ func TestConfigMeta_VoiceProviderTypeEnums(t *testing.T) {
 	if ttsTypes.Widget != WidgetSelect {
 		t.Errorf("tts_providers.type widget = %q, want select", ttsTypes.Widget)
 	}
-	for _, want := range []string{"minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter", "google-cloud"} {
-		if !enumHasValue(ttsTypes.Enum, want) {
-			t.Errorf("tts_providers.type enum missing %q: %#v", want, ttsTypes.Enum)
-		}
-	}
 	// Every offered type must actually be accepted by validation, or the dialog
 	// can save a record that fails on the next load.
 	for _, option := range ttsTypes.Enum {
@@ -156,11 +162,6 @@ func TestConfigMeta_VoiceProviderTypeEnums(t *testing.T) {
 	}
 
 	sttTypes := idx["stt_providers.type"]
-	for _, want := range []string{"openai-whisper", tencentASRProvider, "openrouter", "qwen-asr", "google-cloud"} {
-		if !enumHasValue(sttTypes.Enum, want) {
-			t.Errorf("stt_providers.type enum missing %q: %#v", want, sttTypes.Enum)
-		}
-	}
 	for _, option := range sttTypes.Enum {
 		if option.Value == "" {
 			continue
@@ -169,13 +170,4 @@ func TestConfigMeta_VoiceProviderTypeEnums(t *testing.T) {
 			t.Errorf("stt_providers.type offers %q, which isKnownSTTProviderType rejects", option.Value)
 		}
 	}
-}
-
-func enumHasValue(options []EnumOption, value string) bool {
-	for _, option := range options {
-		if option.Value == value {
-			return true
-		}
-	}
-	return false
 }

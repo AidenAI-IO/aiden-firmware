@@ -1046,10 +1046,8 @@ func clearNonAllowedModelBaseURL(m *ModelConfig) {
 	if m == nil {
 		return
 	}
-	provider := strings.ToLower(strings.TrimSpace(m.Provider))
-	switch provider {
-	case "openai", "ollama":
-	default:
+	definition, ok := lookupModelProviderDefinition(m.Provider)
+	if !ok || !definition.allowsCustomBaseURL {
 		m.BaseURL = ""
 	}
 }
@@ -1082,12 +1080,8 @@ func clearDefaultTTSProviderFields(cfg *Config, metadata toml.MetaData) {
 }
 
 func usesDefaultSTTModel(provider string) bool {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "openai", defaultSTTProvider:
-		return true
-	default:
-		return false
-	}
+	canonicalProvider, ok := canonicalSTTProviderType(provider)
+	return ok && canonicalProvider == defaultSTTProvider
 }
 
 // LoadResolvedConfig loads the TOML config file at path over the canonical
@@ -1445,12 +1439,8 @@ func (c Config) Validate() error {
 // isKnownProviderType reports whether the value names a built-in model
 // provider type (as opposed to a [model_providers] section name).
 func isKnownProviderType(providerType string) bool {
-	switch strings.ToLower(strings.TrimSpace(providerType)) {
-	case "openai", "kimi", "kimi-cn", "volcengine", "openrouter", "ollama", "fake":
-		return true
-	default:
-		return false
-	}
+	_, ok := lookupModelProviderDefinition(providerType)
+	return ok
 }
 
 // validateModelProvider validates a single model provider configuration.

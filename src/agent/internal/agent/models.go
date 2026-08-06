@@ -17,7 +17,6 @@ import (
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
-	fakellm "github.com/tmc/langchaingo/llms/fake"
 	"github.com/tmc/langchaingo/llms/ollama"
 )
 
@@ -186,59 +185,46 @@ func (m *ModelManager) Spec() model.ModelSpec {
 }
 
 func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
-	switch strings.ToLower(cfg.Provider) {
-	case "openai":
-		baseURL := cfg.BaseURL
-		if baseURL == "" {
-			baseURL = "https://api.openai.com/v1"
-		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
-	case "kimi":
-		baseURL := cfg.BaseURL
-		if baseURL == "" {
-			baseURL = moonshotGlobalBaseURL
-		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
-	case "kimi-cn":
-		baseURL := cfg.BaseURL
-		if baseURL == "" {
-			baseURL = moonshotCNBaseURL
-		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
-	case "volcengine":
-		baseURL := cfg.BaseURL
-		if baseURL == "" {
-			baseURL = arkBeijingBaseURL
-		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
-	case "openrouter":
-		token := resolveToken(cfg)
-		if token == "" {
-			return nil, fmt.Errorf("missing the OpenRouter API key, set it in the %s environment variable", cfg.TokenEnv)
-		}
-		baseURL := cfg.BaseURL
-		if baseURL == "" {
-			baseURL = "https://openrouter.ai/api/v1"
-		}
-		opts := append(m.openAICompatibleOptions(cfg),
-			withOpenAICompatibleSessionSticky(m.activeSessionID),
-			withOpenAICompatibleRouterMetadata(),
-			withOpenAICompatibleOpenRouterReasoning())
-		if m.cachedOpenRouterPromptCachePolicy().UsesExplicitCacheControl() {
-			opts = append(opts, withOpenAICompatibleExplicitPromptCache())
-		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy), opts...), nil
-	case "ollama":
-		options := []ollama.Option{ollama.WithModel(cfg.Model), ollama.WithHTTPClient(newProxyHTTPClient(m.proxy))}
-		if cfg.BaseURL != "" {
-			options = append(options, ollama.WithServerURL(cfg.BaseURL))
-		}
-		return ollama.New(options...)
-	case "fake":
-		return fakellm.NewFakeLLM(cfg.Responses), nil
-	default:
+	definition, ok := lookupModelProviderDefinition(cfg.Provider)
+	if !ok {
 		return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
 	}
+	return definition.build(m, cfg)
+}
+
+func (m *ModelManager) buildOpenAICompatibleModel(cfg ModelConfig, defaultBaseURL string) llms.Model {
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...)
+}
+
+func (m *ModelManager) buildOpenRouterModel(cfg ModelConfig) (llms.Model, error) {
+	token := resolveToken(cfg)
+	if token == "" {
+		return nil, fmt.Errorf("missing the OpenRouter API key, set it in the %s environment variable", cfg.TokenEnv)
+	}
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = "https://openrouter.ai/api/v1"
+	}
+	opts := append(m.openAICompatibleOptions(cfg),
+		withOpenAICompatibleSessionSticky(m.activeSessionID),
+		withOpenAICompatibleRouterMetadata(),
+		withOpenAICompatibleOpenRouterReasoning())
+	if m.cachedOpenRouterPromptCachePolicy().UsesExplicitCacheControl() {
+		opts = append(opts, withOpenAICompatibleExplicitPromptCache())
+	}
+	return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy), opts...), nil
+}
+
+func (m *ModelManager) buildOllamaModel(cfg ModelConfig) (llms.Model, error) {
+	options := []ollama.Option{ollama.WithModel(cfg.Model), ollama.WithHTTPClient(newProxyHTTPClient(m.proxy))}
+	if cfg.BaseURL != "" {
+		options = append(options, ollama.WithServerURL(cfg.BaseURL))
+	}
+	return ollama.New(options...)
 }
 
 func openRouterExplicitPromptCacheSupported(model string) bool {

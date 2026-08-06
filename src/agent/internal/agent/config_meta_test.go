@@ -119,9 +119,9 @@ func TestConfigMeta_Valid(t *testing.T) {
 
 }
 
-// TestConfigMeta_EnumsMatchValidation guards against drift between the metadata
-// enums and the constants the validator accepts.
-func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
+// TestConfigMeta_NonRegistryEnumsMatchValidation covers enums that do not have
+// a runtime provider registry as their canonical source.
+func TestConfigMeta_NonRegistryEnumsMatchValidation(t *testing.T) {
 	idx := fieldIndex(t)
 
 	enumValues := func(path string) []string {
@@ -150,24 +150,6 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		if !contains(searchEnum, p) {
 			t.Errorf("search.provider enum missing validated provider %q", p)
 		}
-	}
-
-	// model.provider enum must include every provider ModelManager.build accepts.
-	modelEnum := enumValues("model.provider")
-	for _, p := range []string{"openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake"} {
-		if !contains(modelEnum, p) {
-			t.Errorf("model.provider enum missing provider %q", p)
-		}
-	}
-
-	ttsEnum := enumValues("tts.provider")
-	for _, p := range []string{"minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine"} {
-		if !contains(ttsEnum, p) {
-			t.Errorf("tts.provider enum missing provider %q", p)
-		}
-	}
-	if contains(ttsEnum, "minimax-ws") {
-		t.Errorf("tts.provider enum still includes legacy provider minimax-ws")
 	}
 
 	// device.device_type enum must match Validate()'s accepted set.
@@ -484,12 +466,16 @@ func TestConfigMeta_STTTencentASRProviderMetadata(t *testing.T) {
 	for _, option := range provider.Enum {
 		values[option.Value] = true
 	}
-	if !values["tencent-asr"] {
-		t.Fatalf("stt.provider enum missing canonical tencent-asr option: %#v", provider.Enum)
+	if !values[tencentASRProvider] {
+		t.Fatalf("stt.provider enum missing canonical %s option: %#v", tencentASRProvider, provider.Enum)
 	}
-	for _, legacy := range []string{"tencent", "tencent_asr"} {
-		if values[legacy] {
-			t.Fatalf("stt.provider enum still includes legacy alias %q: %#v", legacy, provider.Enum)
+	providerNames := sttProviderNamesForCanonical(tencentASRProvider)
+	if len(providerNames) == 0 {
+		t.Fatalf("Tencent STT provider %q is not registered", tencentASRProvider)
+	}
+	for _, alias := range providerNames[1:] {
+		if values[alias] {
+			t.Fatalf("stt.provider enum still includes legacy alias %q: %#v", alias, provider.Enum)
 		}
 	}
 

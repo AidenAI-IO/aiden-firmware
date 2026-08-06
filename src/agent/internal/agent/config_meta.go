@@ -129,6 +129,7 @@ func placeholderWhen(value interface{}, conds ...Condition) ConditionalPlacehold
 // custom_instruction is only an override.
 func ConfigMeta() ConfigMetadata {
 	defaults := DefaultConfig()
+	tencentSTTProviderNames := sttProviderNamesForCanonical(tencentASRProvider)
 	return ConfigMetadata{
 		Sections: []SectionMeta{
 			{
@@ -143,12 +144,12 @@ func ConfigMeta() ConfigMetadata {
 				Name: "model",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake"),
+						Enum:    enumOptions(modelProviderTypes()...),
 						Default: defaults.Model.Provider},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(in("model.provider", "openai", "ollama"))},
+						VisibleWhen: all(in("model.provider", modelProviderTypesAllowingCustomBaseURL()...))},
 					// The effective default is model-dependent (resolved at load
 					// time); show the global fallback here as the UI placeholder.
 					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},
@@ -185,12 +186,10 @@ func ConfigMeta() ConfigMetadata {
 				Name: "model_providers",
 				Fields: []FieldMeta{
 					{Key: "type", Widget: WidgetSelect,
-						Enum: enumOptions("openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake")},
+						Enum: enumOptions(modelProviderTypes()...)},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
-					// base_url is deliberately not scoped to a subset: it's visible
-					// for all provider types, but clearNonAllowedModelBaseURL clears
-					// it at runtime for providers other than openai and ollama.
-					{Key: "base_url", Widget: WidgetText},
+					{Key: "base_url", Widget: WidgetText,
+						VisibleWhen: all(in("model_providers.type", modelProviderTypesAllowingCustomBaseURL()...))},
 				},
 			},
 			// [tts] keeps only the provider reference and the settings that are
@@ -204,7 +203,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "tts",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter", "google-cloud"),
+						Enum:    enumOptions(tts.AvailableProviders()...),
 						Default: defaults.TTS.Provider},
 					// speed is a listening preference, not a credential: it must
 					// not change when the voice changes, so it stays global.
@@ -223,7 +222,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "tts_providers",
 				Fields: []FieldMeta{
 					{Key: "type", Widget: WidgetSelect,
-						Enum: enumOptions("minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter", "google-cloud")},
+						Enum: enumOptions(tts.AvailableProviders()...)},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "model", Widget: WidgetText,
 						Enum: []EnumOption{
@@ -276,7 +275,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "stt",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("openai-whisper", tencentASRProvider, "openrouter", "qwen-asr", "google-cloud"),
+						Enum:    enumOptions(sttProviderTypes()...),
 						Default: defaults.STT.Provider},
 					{Key: "language", Widget: WidgetSelect,
 						Enum:    []EnumOption{{Value: "zh", Label: "中文"}, {Value: "en", Label: "English"}},
@@ -289,7 +288,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "stt_providers",
 				Fields: []FieldMeta{
 					{Key: "type", Widget: WidgetSelect,
-						Enum: enumOptions("openai-whisper", tencentASRProvider, "openrouter", "qwen-asr", "google-cloud")},
+						Enum: enumOptions(sttProviderTypes()...)},
 					{Key: "api_key", Widget: WidgetText, Secret: true,
 						VisibleWhen: all(in("stt_providers.type", "openai-whisper", "openrouter", "qwen-asr", "google-cloud"))},
 					{Key: "model", Widget: WidgetSelect,
@@ -310,15 +309,15 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "base_url", Widget: WidgetText,
 						VisibleWhen: all(in("stt_providers.type", "openai-whisper"))},
 					{Key: "app_id", Widget: WidgetText, Default: "",
-						VisibleWhen: all(in("stt_providers.type", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.type", tencentSTTProviderNames...))},
 					{Key: "secret_id", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(in("stt_providers.type", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.type", tencentSTTProviderNames...))},
 					{Key: "secret_key", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(in("stt_providers.type", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.type", tencentSTTProviderNames...))},
 					{Key: "region", Widget: WidgetText, Default: defaultTencentASRRegion,
-						VisibleWhen: all(in("stt_providers.type", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.type", tencentSTTProviderNames...))},
 					{Key: "engine_model_type", Widget: WidgetText,
-						VisibleWhen: all(in("stt_providers.type", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.type", tencentSTTProviderNames...))},
 				},
 			},
 			{

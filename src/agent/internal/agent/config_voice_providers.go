@@ -48,23 +48,12 @@ type STTProvider struct {
 // [model] provider = "minimax", which passes validation and only fails much
 // later when the model client is built.
 func isKnownTTSProviderType(providerType string) bool {
-	switch strings.ToLower(strings.TrimSpace(providerType)) {
-	case "minimax", "minimax-cn", "minimax-ws", "fish-audio", "alicloud",
-		"volcengine", "openrouter", "google-cloud":
-		return true
-	default:
-		return false
-	}
+	return tts.HasProvider(normalizeTTSProvider(providerType))
 }
 
 func isKnownSTTProviderType(providerType string) bool {
-	switch strings.ToLower(strings.TrimSpace(providerType)) {
-	case "openai-whisper", "openai", tencentASRProvider, legacyTencentProvider,
-		legacyTencentASRProvider, "openrouter", "qwen-asr", "google-cloud":
-		return true
-	default:
-		return false
-	}
+	_, ok := lookupSTTProviderDefinition(providerType)
+	return ok
 }
 
 // resolveTTSProvider expands a [tts] provider reference into the effective
