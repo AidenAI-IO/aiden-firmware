@@ -113,6 +113,9 @@ func TestVisualFollowupMarksScreenshotObservationSource(t *testing.T) {
 			llms.BinaryPart("image/jpeg", []byte("jpeg-bytes")),
 		},
 	})
+	if msg.Role != contextmanager.MessageRoleState {
+		t.Fatalf("Role = %q, want state", msg.Role)
+	}
 	if len(msg.Attachments) != 1 {
 		t.Fatalf("attachments = %#v", msg.Attachments)
 	}

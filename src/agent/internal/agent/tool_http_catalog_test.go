@@ -21,6 +21,20 @@ func TestHTTPToolSkillDocumentsCompactEnterTextActionOutput(t *testing.T) {
 	}
 }
 
+func TestHTTPToolSkillDocumentsAllOpenURLSchemes(t *testing.T) {
+	markdown := buildHTTPToolSkillMarkdown("tools", "tools", defaultHTTPToolSkillBaseURL, nil)
+	for _, want := range []string{
+		"HTTP/HTTPS webpages",
+		"sms:<phone_number>?body=<message>",
+		"mailto:<email_address>?subject=<subject>",
+		"tel:<phone_number>",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("open_url guidance missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
 func toolAgentExposed(name string) bool {
 	return NewToolSpec(&stubTool{name: name, description: name}).AgentExposed
 }
@@ -129,7 +143,7 @@ func TestTimeAndCalculatorAreNotRegistered(t *testing.T) {
 }
 
 func TestPhoneBridgeToolsExposedToAgent(t *testing.T) {
-	for _, name := range []string{"bridge_open_app", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
+	for _, name := range []string{"open_app", "open_url", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
 		if !toolAgentExposed(name) {
 			t.Fatalf("expected %s available to conversational agent", name)
 		}
@@ -212,7 +226,15 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 
 	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
-	for _, want := range []string{"bridge_open_app", "search_launch_app", "enter_text"} {
+	for _, want := range []string{
+		"open_app",
+		"open_url",
+		"bridge_clipboard",
+		"bridge_calendar",
+		"bridge_contacts",
+		"bridge_notification",
+		"enter_text",
+	} {
 		found := false
 		for _, name := range names {
 			if name == want {
@@ -221,14 +243,15 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatalf("availableTools missing disconnected bridge recovery tool %s: %v", want, names)
+			t.Fatalf("static tool catalog missing %s while Phone Bridge is disconnected: %v", want, names)
 		}
 	}
-	for _, notWant := range []string{"bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
-		for _, name := range names {
-			if name == notWant {
-				t.Fatalf("availableTools exposed disconnected phone bridge tool %s: %v", notWant, names)
-			}
+	for _, internal := range []string{"bridge_open_app", "search_launch_app"} {
+		if _, ok := toolNameSet(tools)[internal]; ok {
+			t.Fatalf("internal launch route %s leaked into agent catalog: %v", internal, names)
+		}
+		if _, ok := runtime.ToolDescriptorByName(internal); ok {
+			t.Fatalf("internal launch route %s leaked into HTTP catalog", internal)
 		}
 	}
 }
@@ -240,7 +263,7 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	runtime.tools.RegisterPhoneBridge(bridge)
 
 	defaultNames := toolNameSet(runtime.availableTools())
-	for _, want := range []string{"bridge_open_app", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
+	for _, want := range []string{"open_app", "open_url", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
 		if _, ok := defaultNames[want]; !ok {
 			t.Fatalf("default catalog missing connected phone bridge tool %s: %v", want, defaultNames)
 		}
@@ -248,7 +271,7 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 
 	runtime.config.LoadAllTools = true
 	fullNames := toolNameSet(runtime.availableTools())
-	for _, want := range []string{"bridge_open_app", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
+	for _, want := range []string{"open_app", "open_url", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
 		if _, ok := fullNames[want]; !ok {
 			t.Fatalf("full catalog missing connected phone bridge tool %s: %v", want, fullNames)
 		}
@@ -284,12 +307,12 @@ func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
 		"wikipedia",
 		"request_human_handoff",
 		"run_script",
-		"bridge_open_app",
+		"open_app",
+		"open_url",
 		"bridge_clipboard",
 		"bridge_calendar",
 		"bridge_contacts",
 		"bridge_notification",
-		"search_launch_app",
 	}
 	omittedTools := []string{
 		"list_scripts",
@@ -336,13 +359,15 @@ func TestRuntimeLoadAllToolsIncludesScriptAuthoringTools(t *testing.T) {
 	}
 }
 
-func TestPhoneBridgeDataToolDescriptorsHaveUsefulExamples(t *testing.T) {
+func TestPhoneBridgeToolDescriptorsHaveUsefulExamples(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newPhoneBridgeForTest()
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
 
 	expected := map[string]string{
+		"open_app":            `{"app":"微信"}`,
+		"open_url":            `{"url":"https://example.com"}`,
 		"bridge_clipboard":    `{"action":"read"}`,
 		"bridge_calendar":     `{"action":"query","from":"2026-07-10T00:00:00+08:00","to":"2026-07-11T00:00:00+08:00"}`,
 		"bridge_contacts":     `{"action":"query","query":"Alice","limit":20}`,
@@ -359,21 +384,14 @@ func TestPhoneBridgeDataToolDescriptorsHaveUsefulExamples(t *testing.T) {
 	}
 }
 
-func TestAvailableToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testing.T) {
+func TestAvailableToolsKeepsPhoneBridgeCatalogStaticDuringPiPBackground(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newIOSPiPBackgroundBridge(t)
 	runtime.tools.RegisterPhoneBridge(bridge)
 
 	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
-	for _, notWant := range []string{"bridge_open_app"} {
-		for _, name := range names {
-			if name == notWant {
-				t.Fatalf("availableTools exposed PiP background unavailable tool %s: %v", notWant, names)
-			}
-		}
-	}
-	for _, want := range []string{"bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification", "search_launch_app"} {
+	for _, want := range []string{"open_app", "open_url", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
 		found := false
 		for _, name := range names {
 			if name == want {
@@ -382,11 +400,11 @@ func TestAvailableToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testi
 			}
 		}
 		if !found {
-			t.Fatalf("resolveTools missing PiP background tool %s: %v", want, names)
+			t.Fatalf("static tool catalog missing %s during PiP background state: %v", want, names)
 		}
 	}
-	if _, ok := runtime.ToolDescriptorByName("bridge_open_app"); ok {
-		t.Fatalf("ToolDescriptorByName exposed PiP background unavailable bridge_open_app: %v", names)
+	if _, ok := runtime.ToolDescriptorByName("open_app"); !ok {
+		t.Fatalf("ToolDescriptorByName missing static open_app descriptor: %v", names)
 	}
 	if _, ok := runtime.ToolDescriptorByName("bridge_clipboard"); !ok {
 		t.Fatalf("ToolDescriptorByName missing PiP background bridge_clipboard: %v", names)

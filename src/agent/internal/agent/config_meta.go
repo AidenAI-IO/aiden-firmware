@@ -132,6 +132,14 @@ func ConfigMeta() ConfigMetadata {
 	return ConfigMetadata{
 		Sections: []SectionMeta{
 			{
+				Name: "device",
+				Fields: []FieldMeta{
+					{Key: "device_type", Widget: WidgetSelect,
+						Enum:    enumOptions("iOS", "Android", "macOS", "windows", "linux"),
+						Default: defaults.Device.DeviceTypeOrDefault()},
+				},
+			},
+			{
 				Name: "model",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
@@ -368,9 +376,6 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "keyboard_layout", Widget: WidgetSelect,
 						Enum:    keyboardLayoutEnumOptions(),
 						Default: defaults.HID.KeyboardLayoutOrDefault()},
-					{Key: "pointer_mode", Widget: WidgetSelect,
-						Enum:    enumOptions("absolute", "touchscreen"),
-						Default: defaults.HID.PointerMode},
 					{Key: "input_backend", Widget: WidgetSelect,
 						Enum:    enumOptions("hid", "adb"),
 						Default: defaults.HID.InputBackend},

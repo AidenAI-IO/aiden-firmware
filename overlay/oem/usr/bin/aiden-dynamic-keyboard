@@ -79,8 +79,8 @@ unlink_functions() {
 
 link_normal_profile() {
 	ln -s "$KEYBOARD_FUNC" "$CONFIG_DIR/hid.usb0"
-	ln -s "$POINTER_FUNC" "$CONFIG_DIR/hid.usb1"
 	ln -s "$EXTRA_KEYS_FUNC" "$CONFIG_DIR/hid.usb2"
+	ln -s "$POINTER_FUNC" "$CONFIG_DIR/hid.usb1"
 }
 
 link_isolated_profile() {

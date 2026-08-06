@@ -84,6 +84,9 @@ sudo ./build/bin/example_usb_hid cleanup
 ## Agent HID Configuration
 
 ```toml
+[device]
+device_type = "iOS"
+
 [hid]
 keyboard_device = "/dev/hidg0"
 keyboard_layout = "qwerty"
@@ -93,12 +96,12 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
 The firmware also binds `hid.usb2` as `/dev/hidg2`. This second keyboard-like
-interface advertises Consumer Control usages. In `pointer_mode = "touchscreen"`
-(Android mode), it is used for Android extension keys such as Back, Home, App
-Switch, Search, Power, and Volume. In `pointer_mode = "absolute"` (iOS cursor
-mode), it is exposed as a smaller bitmap media-key interface that advertises
-only volume mute/up/down, media playback controls, screenshot, and brightness
-up/down.
+interface advertises Consumer Control usages. When `[device].device_type =
+"Android"` derives `pointer_mode = "touchscreen"`, it is used for Android
+extension keys such as Back, Home, App Switch, Search, Power, and Volume. Other
+device types derive `pointer_mode = "absolute"` and expose a smaller bitmap
+media-key interface that advertises only volume mute/up/down, media playback
+controls, screenshot, and brightness up/down.
 
 Built-in Agent tools:
 
@@ -131,7 +134,7 @@ On iOS, AssistiveTouch can make modifier routing unstable when an external
 keyboard and pointer are advertised by the same USB composite. Plain key input
 may work while shortcuts such as `Cmd+A` or `Cmd+V` are ignored.
 
-When `hid.pointer_mode = "absolute"`, firmware builds that include
+When `[device].device_type` derives `pointer_mode = "absolute"`, firmware builds that include
 `/oem/usr/bin/aiden-dynamic-keyboard` automatically isolate keyboard actions
 whose HID reports contain Ctrl, Shift, Option/Alt, or Cmd/Meta. This includes
 `keyboard_text` values containing uppercase letters or symbols that require
@@ -144,6 +147,17 @@ single USB gadget to a pointer-free keyboard + Consumer Control + ECM profile.
 After the action, including error and cancellation paths, it restores the normal
 composite. The isolated profile uses a distinct USB product ID and serial number
 so iOS does not reuse the pointer-bearing descriptor for the input.
+
+The normal composite must enumerate the pointer as the last HID interface:
+`keyboard -> Consumer Control -> pointer -> ECM`. iOS builds its keyboard and
+AssistiveTouch pointer subsystem state in interface order; a pointer that is
+enumerated immediately after the keyboard leaves the on-screen keyboard policy
+subject to an async race, so after an isolate/restore cycle the soft keyboard
+only reappears about 80% of the time. With the Consumer Control interface between
+them, the keyboard subsystem settles first and the pointer registers last, which
+closes that race: field tests showed 10/10 successful soft-keyboard restores.
+The pointer must stay before ECM: putting a HID interface after the ECM IAD
+causes continuous USB reset loops on iOS.
 
 One conversational Agent run owns a shared isolation scope. The first
 modifier-bearing keyboard operation removes the pointer, and later keyboard or

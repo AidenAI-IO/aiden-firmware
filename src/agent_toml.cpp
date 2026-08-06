@@ -412,6 +412,10 @@ void apply_kv(AgentToml& cfg,
     } else if (section == "ota") {
         if (key == "github_proxy_url") assign_string(&cfg.ota.github_proxy_url, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "device") {
+        if (key == "backend") assign_string(&cfg.device.backend, raw, &sub_err);
+        else if (key == "device_type") assign_string(&cfg.device.device_type, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     } else if (section == "hid") {
         if (key == "keyboard_device") assign_string(&cfg.hid.keyboard_device, raw, &sub_err);
         else if (key == "keyboard_layout") assign_string(&cfg.hid.keyboard_layout, raw, &sub_err);
@@ -998,6 +1002,11 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
         out << "\n";
     }
 
+    out << "[device]\n";
+    if (!cfg.device.backend.empty()) emit_string(out, "backend", cfg.device.backend);
+    if (!cfg.device.device_type.empty()) emit_string(out, "device_type", cfg.device.device_type);
+    out << "\n";
+
     emit_model(out, "model", cfg.model);
     if (!cfg.model_text.provider.empty() || !cfg.model_text.model.empty()) {
         emit_model(out, "model_text", cfg.model_text);
@@ -1083,7 +1092,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     emit_string(out, "mouse_device", cfg.hid.mouse_device);
     emit_string(out, "android_keyboard_device", cfg.hid.android_keyboard_device);
     emit_string(out, "frame_socket", cfg.hid.frame_socket);
-    if (!cfg.hid.pointer_mode.empty()) emit_string(out, "pointer_mode", cfg.hid.pointer_mode);
     if (!cfg.hid.input_backend.empty()) emit_string(out, "input_backend", cfg.hid.input_backend);
     out << "\n";
 

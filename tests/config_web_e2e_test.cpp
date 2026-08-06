@@ -218,6 +218,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "{"
         "\"providers\":{\"stub-openai\":{\"provider\":\"openai\",\"api_key\":\"sk-stub-secret-1234\"},"
         "\"stub-ollama\":{\"provider\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
+        "\"device\":{\"backend\":\"hdmi\",\"device_type\":\"iOS\"},"
         "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
         "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
         "\"context_window\":0,\"model_max_output_tokens\":0},"
@@ -239,7 +240,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"keyboard_layout\":\"qwerty\",\"mouse_device\":\"/dev/hidg1\","
         "\"android_keyboard_device\":\"/dev/hidg2\","
-        "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
+        "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"input_backend\":\"hid\"},"
         "\"search\":{\"provider\":\"") + search_provider + "\",\"has_api_key\":" +
         (search_has_api_key ? "true" : "false") +
         "},"
@@ -271,6 +272,28 @@ bool wait_for_file_contains(const std::string& path, const std::string& needle, 
             buf << in.rdbuf();
             if (buf.str().find(needle) != std::string::npos) {
                 return true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return false;
+}
+
+bool wait_for_file_contains_any(const std::string& path,
+                                const std::vector<std::string>& needles,
+                                int timeout_ms) {
+    using clock = std::chrono::steady_clock;
+    auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (clock::now() < deadline) {
+        std::ifstream in(path);
+        if (in.good()) {
+            std::ostringstream buf;
+            buf << in.rdbuf();
+            const std::string contents = buf.str();
+            for (size_t i = 0; i < needles.size(); ++i) {
+                if (contents.find(needles[i]) != std::string::npos) {
+                    return true;
+                }
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
@@ -1047,7 +1070,7 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
         "\"audio_archive\":{\"enabled\":false,\"max_files\":123,\"max_size_mb\":45,"
         "\"storage_path\":\"/userdata/custom-audio\"},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
@@ -1423,7 +1446,8 @@ TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only
 
     const std::string body =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"hid\":{\"keyboard_layout\":\"azerty\",\"pointer_mode\":\"absolute\"},"
+        "\"device\":{\"device_type\":\"iOS\"},"
+        "\"hid\":{\"keyboard_layout\":\"azerty\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
@@ -1438,6 +1462,39 @@ TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only
     CHECK(saved_buffer.str().find("keyboard_layout = \"azerty\"") != std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config uses default_platform to infer legacy device type") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"agent\":{\"default_platform\":\"android\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[device]") != std::string::npos);
+    CHECK(saved.find("device_type = \"Android\"") != std::string::npos);
+    CHECK(saved.find("default_platform = \"android\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config device type change reports reboot message") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"device\":{\"device_type\":\"Android\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+    CHECK(resp.body.find("\"message\":\"config saved; USB HID device_type configuration changed; reboot required\"") != std::string::npos);
+    CHECK(resp.body.find("\"agent_restart_scheduled\":false") != std::string::npos);
+    CHECK(resp.body.find("\"usbhid_restart_required\":true") != std::string::npos);
+    CHECK(resp.body.find("\"reboot_required\":true") != std::string::npos);
+}
+
 TEST_CASE("config_web: POST /api/config omitting temperature clears a saved value") {
     // Regression test: update_model_from_json() applies JSON as a patch onto the
     // config pre-loaded from disk. Omitting the temperature key must clear the
@@ -1449,7 +1506,7 @@ TEST_CASE("config_web: POST /api/config omitting temperature clears a saved valu
     const std::string with_temp =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\","
         "\"temperature\":0.7},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse first = http_request(handle->port, "POST", "/api/config", with_temp);
     CHECK(first.status == 200);
@@ -1464,7 +1521,7 @@ TEST_CASE("config_web: POST /api/config omitting temperature clears a saved valu
     // Now save again without the temperature key: it must be cleared.
     const std::string without_temp =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse second = http_request(handle->port, "POST", "/api/config", without_temp);
     CHECK(second.status == 200);
@@ -1486,7 +1543,7 @@ TEST_CASE("config_web: POST /api/config preserves voice notification settings") 
         "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
         "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
         "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"network\":123}}},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     REQUIRE(resp.status == 200);
@@ -1526,7 +1583,7 @@ TEST_CASE("config_web: POST /api/config rejects invalid voice notification integ
         const std::string body =
             std::string("{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},") +
             "\"voice_notifications\":" + test_case.voice_notifications + "," +
-            "\"hid\":{\"pointer_mode\":\"absolute\"}," +
+            "\"device\":{\"device_type\":\"iOS\"}," +
             "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
         HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
         CHECK_MESSAGE(resp.status == 400, test_case.name << ": status=" << resp.status);
@@ -1545,7 +1602,7 @@ TEST_CASE("config_web: POST /api/config writes ota section") {
     const std::string body =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
         "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse post_resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(post_resp.status == 200);
@@ -1603,7 +1660,7 @@ TEST_CASE("config_web: POST /api/config accepts empty audio_archive storage_path
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":123,\"max_size_mb\":45,"
         "\"storage_path\":\"\"},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
@@ -1615,7 +1672,7 @@ TEST_CASE("config_web: POST /api/config writes custom_instruction") {
 
     const std::string body =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},"
         "\"agent\":{\"custom_instruction\":\"Use custom behavior.\"}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
@@ -1640,7 +1697,7 @@ TEST_CASE("config_web: POST /api/config ignores legacy instruction") {
 
     const std::string body =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},"
         "\"agent\":{\"custom_instruction\":\"\",\"instruction\":\"legacy value\"}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
@@ -1813,125 +1870,182 @@ TEST_CASE("config_web: config test rejects blank search api key without stored m
     CHECK(test_resp.body.find("required for brave") != std::string::npos);
 }
 
-TEST_CASE("config_web: hid config test requires extension keyboard device in pointer modes") {
+TEST_CASE("config_web: device config test derives pointer mode") {
     StubEnv env;
     auto handle = start_server(env);
 
-    const std::string absolute_body =
+    const std::string ios_body =
+        "{\"section\":\"device\",\"values\":{"
+        "\"device_type\":\"iOS\""
+        "}}";
+
+    HttpResponse ios_resp = http_request(handle->port, "POST", "/api/config/test", ios_body);
+    REQUIRE(ios_resp.status == 200);
+    cJSON* ios_json = cJSON_Parse(ios_resp.body.c_str());
+    REQUIRE(ios_json != nullptr);
+    cJSON* ios_ok = cJSON_GetObjectItem(ios_json, "ok");
+    REQUIRE(ios_ok != nullptr);
+    CHECK((ios_ok->type & 0xff) == cJSON_True);
+    cJSON* ios_type = required_test_result(ios_json, "device_type");
+    REQUIRE(ios_type != nullptr);
+    cJSON* ios_type_passed = cJSON_GetObjectItem(ios_type, "passed");
+    REQUIRE(ios_type_passed != nullptr);
+    CHECK((ios_type_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(ios_type, "detail") == "effective pointer_mode: absolute");
+    cJSON_Delete(ios_json);
+
+    const std::string android_body =
+        "{\"section\":\"device\",\"values\":{"
+        "\"device_type\":\"Android\""
+        "}}";
+
+    HttpResponse android_resp = http_request(handle->port, "POST", "/api/config/test", android_body);
+    REQUIRE(android_resp.status == 200);
+    cJSON* android_json = cJSON_Parse(android_resp.body.c_str());
+    REQUIRE(android_json != nullptr);
+    cJSON* android_ok = cJSON_GetObjectItem(android_json, "ok");
+    REQUIRE(android_ok != nullptr);
+    CHECK((android_ok->type & 0xff) == cJSON_True);
+    cJSON* android_type = required_test_result(android_json, "device_type");
+    REQUIRE(android_type != nullptr);
+    cJSON* android_type_passed = cJSON_GetObjectItem(android_type, "passed");
+    REQUIRE(android_type_passed != nullptr);
+    CHECK((android_type_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(android_type, "detail") == "effective pointer_mode: touchscreen");
+    cJSON_Delete(android_json);
+
+    const std::string invalid_body =
+        "{\"section\":\"device\",\"values\":{"
+        "\"device_type\":\"blackberry\""
+        "}}";
+
+    HttpResponse invalid_resp = http_request(handle->port, "POST", "/api/config/test", invalid_body);
+    REQUIRE(invalid_resp.status == 200);
+    cJSON* invalid_json = cJSON_Parse(invalid_resp.body.c_str());
+    REQUIRE(invalid_json != nullptr);
+    cJSON* invalid_ok = cJSON_GetObjectItem(invalid_json, "ok");
+    REQUIRE(invalid_ok != nullptr);
+    CHECK((invalid_ok->type & 0xff) == cJSON_False);
+    cJSON* invalid_type = required_test_result(invalid_json, "device_type");
+    REQUIRE(invalid_type != nullptr);
+    cJSON* invalid_type_passed = cJSON_GetObjectItem(invalid_type, "passed");
+    REQUIRE(invalid_type_passed != nullptr);
+    CHECK((invalid_type_passed->type & 0xff) == cJSON_False);
+    CHECK(required_json_string(invalid_type, "detail") == "must be iOS, Android, macOS, windows, or linux");
+    cJSON_Delete(invalid_json);
+
+    const std::string missing_body =
+        "{\"section\":\"device\",\"values\":{"
+        "}}";
+
+    HttpResponse missing_resp = http_request(handle->port, "POST", "/api/config/test", missing_body);
+    REQUIRE(missing_resp.status == 200);
+    cJSON* missing_json = cJSON_Parse(missing_resp.body.c_str());
+    REQUIRE(missing_json != nullptr);
+    cJSON* missing_ok = cJSON_GetObjectItem(missing_json, "ok");
+    REQUIRE(missing_ok != nullptr);
+    CHECK((missing_ok->type & 0xff) == cJSON_True);
+    cJSON* missing_type = required_test_result(missing_json, "device_type");
+    REQUIRE(missing_type != nullptr);
+    cJSON* missing_type_passed = cJSON_GetObjectItem(missing_type, "passed");
+    REQUIRE(missing_type_passed != nullptr);
+    CHECK((missing_type_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(missing_type, "detail") == "effective pointer_mode: absolute");
+    cJSON_Delete(missing_json);
+
+    const std::vector<std::string> non_string_bodies = {
+        "{\"section\":\"device\",\"values\":{\"device_type\":null}}",
+        "{\"section\":\"device\",\"values\":{\"device_type\":123}}",
+        "{\"section\":\"device\",\"values\":{\"device_type\":{}}}"
+    };
+
+    for (size_t i = 0; i < non_string_bodies.size(); ++i) {
+        HttpResponse non_string_resp = http_request(handle->port, "POST", "/api/config/test", non_string_bodies[i]);
+        REQUIRE(non_string_resp.status == 200);
+        cJSON* non_string_json = cJSON_Parse(non_string_resp.body.c_str());
+        REQUIRE(non_string_json != nullptr);
+        cJSON* non_string_ok = cJSON_GetObjectItem(non_string_json, "ok");
+        REQUIRE(non_string_ok != nullptr);
+        CHECK((non_string_ok->type & 0xff) == cJSON_False);
+        cJSON* non_string_type = required_test_result(non_string_json, "device_type");
+        REQUIRE(non_string_type != nullptr);
+        cJSON* non_string_type_passed = cJSON_GetObjectItem(non_string_type, "passed");
+        REQUIRE(non_string_type_passed != nullptr);
+        CHECK((non_string_type_passed->type & 0xff) == cJSON_False);
+        CHECK(required_json_string(non_string_type, "detail") == "must be a string");
+        cJSON_Delete(non_string_json);
+    }
+}
+
+TEST_CASE("config_web: hid config test requires extension keyboard device") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string missing_body =
         "{\"section\":\"hid\",\"values\":{"
         "\"keyboard_device\":\"/dev/null\","
         "\"mouse_device\":\"/dev/null\","
-        "\"android_keyboard_device\":\"\","
-        "\"pointer_mode\":\"absolute\""
+        "\"android_keyboard_device\":\"\""
         "}}";
 
-    HttpResponse absolute_resp = http_request(handle->port, "POST", "/api/config/test", absolute_body);
-    REQUIRE(absolute_resp.status == 200);
-    cJSON* absolute_json = cJSON_Parse(absolute_resp.body.c_str());
-    REQUIRE(absolute_json != nullptr);
-    cJSON* absolute_ok = cJSON_GetObjectItem(absolute_json, "ok");
-    REQUIRE(absolute_ok != nullptr);
-    CHECK((absolute_ok->type & 0xff) == cJSON_False);
-    cJSON* absolute_android = required_test_result(absolute_json, "android_keyboard_device");
-    REQUIRE(absolute_android != nullptr);
-    cJSON* absolute_android_passed = cJSON_GetObjectItem(absolute_android, "passed");
-    REQUIRE(absolute_android_passed != nullptr);
-    CHECK((absolute_android_passed->type & 0xff) == cJSON_False);
-    CHECK(required_json_string(absolute_android, "detail") == "path is empty");
-    cJSON* absolute_mode = required_test_result(absolute_json, "pointer_mode");
-    REQUIRE(absolute_mode != nullptr);
-    cJSON* absolute_mode_passed = cJSON_GetObjectItem(absolute_mode, "passed");
-    REQUIRE(absolute_mode_passed != nullptr);
-    CHECK((absolute_mode_passed->type & 0xff) == cJSON_True);
-    CHECK(required_json_string(absolute_mode, "detail") == "effective mode: absolute");
-    cJSON_Delete(absolute_json);
+    HttpResponse missing_resp = http_request(handle->port, "POST", "/api/config/test", missing_body);
+    REQUIRE(missing_resp.status == 200);
+    cJSON* missing_json = cJSON_Parse(missing_resp.body.c_str());
+    REQUIRE(missing_json != nullptr);
+    cJSON* missing_ok = cJSON_GetObjectItem(missing_json, "ok");
+    REQUIRE(missing_ok != nullptr);
+    CHECK((missing_ok->type & 0xff) == cJSON_False);
+    cJSON* missing_android = required_test_result(missing_json, "android_keyboard_device");
+    REQUIRE(missing_android != nullptr);
+    cJSON* missing_android_passed = cJSON_GetObjectItem(missing_android, "passed");
+    REQUIRE(missing_android_passed != nullptr);
+    CHECK((missing_android_passed->type & 0xff) == cJSON_False);
+    CHECK(required_json_string(missing_android, "detail") == "path is empty");
+    cJSON_Delete(missing_json);
 
-    const std::string touchscreen_body =
+    const std::string valid_body =
         "{\"section\":\"hid\",\"values\":{"
         "\"keyboard_device\":\"/dev/null\","
         "\"mouse_device\":\"/dev/null\","
-        "\"android_keyboard_device\":\"\","
-        "\"pointer_mode\":\"touchscreen\""
+        "\"android_keyboard_device\":\"/dev/null\""
         "}}";
 
-    HttpResponse touchscreen_resp = http_request(handle->port, "POST", "/api/config/test", touchscreen_body);
-    REQUIRE(touchscreen_resp.status == 200);
-    cJSON* touchscreen_json = cJSON_Parse(touchscreen_resp.body.c_str());
-    REQUIRE(touchscreen_json != nullptr);
-    cJSON* touchscreen_ok = cJSON_GetObjectItem(touchscreen_json, "ok");
-    REQUIRE(touchscreen_ok != nullptr);
-    CHECK((touchscreen_ok->type & 0xff) == cJSON_False);
-    cJSON* touchscreen_android = required_test_result(touchscreen_json, "android_keyboard_device");
-    REQUIRE(touchscreen_android != nullptr);
-    cJSON* touchscreen_android_passed = cJSON_GetObjectItem(touchscreen_android, "passed");
-    REQUIRE(touchscreen_android_passed != nullptr);
-    CHECK((touchscreen_android_passed->type & 0xff) == cJSON_False);
-    CHECK(required_json_string(touchscreen_android, "detail") == "path is empty");
-    cJSON* touchscreen_mode = required_test_result(touchscreen_json, "pointer_mode");
-    REQUIRE(touchscreen_mode != nullptr);
-    cJSON* touchscreen_mode_passed = cJSON_GetObjectItem(touchscreen_mode, "passed");
-    REQUIRE(touchscreen_mode_passed != nullptr);
-    CHECK((touchscreen_mode_passed->type & 0xff) == cJSON_True);
-    CHECK(required_json_string(touchscreen_mode, "detail") == "effective mode: touchscreen");
-    cJSON_Delete(touchscreen_json);
+    HttpResponse valid_resp = http_request(handle->port, "POST", "/api/config/test", valid_body);
+    REQUIRE(valid_resp.status == 200);
+    cJSON* valid_json = cJSON_Parse(valid_resp.body.c_str());
+    REQUIRE(valid_json != nullptr);
+    cJSON* valid_ok = cJSON_GetObjectItem(valid_json, "ok");
+    REQUIRE(valid_ok != nullptr);
+    CHECK((valid_ok->type & 0xff) == cJSON_True);
+    cJSON* valid_android = required_test_result(valid_json, "android_keyboard_device");
+    REQUIRE(valid_android != nullptr);
+    cJSON* valid_android_passed = cJSON_GetObjectItem(valid_android, "passed");
+    REQUIRE(valid_android_passed != nullptr);
+    CHECK((valid_android_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(valid_android, "detail") == "/dev/null exists");
+    cJSON_Delete(valid_json);
 
-    const std::string touchscreen_valid_body =
+    const std::string not_found_body =
         "{\"section\":\"hid\",\"values\":{"
         "\"keyboard_device\":\"/dev/null\","
         "\"mouse_device\":\"/dev/null\","
-        "\"android_keyboard_device\":\"/dev/null\","
-        "\"pointer_mode\":\"touchscreen\""
+        "\"android_keyboard_device\":\"/dev/definitely-missing-hidg9\""
         "}}";
 
-    HttpResponse touchscreen_valid_resp = http_request(handle->port, "POST", "/api/config/test", touchscreen_valid_body);
-    REQUIRE(touchscreen_valid_resp.status == 200);
-    cJSON* touchscreen_valid_json = cJSON_Parse(touchscreen_valid_resp.body.c_str());
-    REQUIRE(touchscreen_valid_json != nullptr);
-    cJSON* touchscreen_valid_ok = cJSON_GetObjectItem(touchscreen_valid_json, "ok");
-    REQUIRE(touchscreen_valid_ok != nullptr);
-    CHECK((touchscreen_valid_ok->type & 0xff) == cJSON_True);
-    cJSON* touchscreen_valid_android = required_test_result(touchscreen_valid_json, "android_keyboard_device");
-    REQUIRE(touchscreen_valid_android != nullptr);
-    cJSON* touchscreen_valid_android_passed = cJSON_GetObjectItem(touchscreen_valid_android, "passed");
-    REQUIRE(touchscreen_valid_android_passed != nullptr);
-    CHECK((touchscreen_valid_android_passed->type & 0xff) == cJSON_True);
-    CHECK(required_json_string(touchscreen_valid_android, "detail") == "/dev/null exists");
-    cJSON* touchscreen_valid_mode = required_test_result(touchscreen_valid_json, "pointer_mode");
-    REQUIRE(touchscreen_valid_mode != nullptr);
-    cJSON* touchscreen_valid_mode_passed = cJSON_GetObjectItem(touchscreen_valid_mode, "passed");
-    REQUIRE(touchscreen_valid_mode_passed != nullptr);
-    CHECK((touchscreen_valid_mode_passed->type & 0xff) == cJSON_True);
-    CHECK(required_json_string(touchscreen_valid_mode, "detail") == "effective mode: touchscreen");
-    cJSON_Delete(touchscreen_valid_json);
-
-    const std::string touchscreen_missing_body =
-        "{\"section\":\"hid\",\"values\":{"
-        "\"keyboard_device\":\"/dev/null\","
-        "\"mouse_device\":\"/dev/null\","
-        "\"android_keyboard_device\":\"/dev/definitely-missing-hidg9\","
-        "\"pointer_mode\":\"touchscreen\""
-        "}}";
-
-    HttpResponse touchscreen_missing_resp = http_request(handle->port, "POST", "/api/config/test", touchscreen_missing_body);
-    REQUIRE(touchscreen_missing_resp.status == 200);
-    cJSON* touchscreen_missing_json = cJSON_Parse(touchscreen_missing_resp.body.c_str());
-    REQUIRE(touchscreen_missing_json != nullptr);
-    cJSON* touchscreen_missing_ok = cJSON_GetObjectItem(touchscreen_missing_json, "ok");
-    REQUIRE(touchscreen_missing_ok != nullptr);
-    CHECK((touchscreen_missing_ok->type & 0xff) == cJSON_False);
-    cJSON* touchscreen_missing_android = required_test_result(touchscreen_missing_json, "android_keyboard_device");
-    REQUIRE(touchscreen_missing_android != nullptr);
-    cJSON* touchscreen_missing_android_passed = cJSON_GetObjectItem(touchscreen_missing_android, "passed");
-    REQUIRE(touchscreen_missing_android_passed != nullptr);
-    CHECK((touchscreen_missing_android_passed->type & 0xff) == cJSON_False);
-    CHECK(required_json_string(touchscreen_missing_android, "detail") == "/dev/definitely-missing-hidg9 not found");
-    cJSON* touchscreen_missing_mode = required_test_result(touchscreen_missing_json, "pointer_mode");
-    REQUIRE(touchscreen_missing_mode != nullptr);
-    cJSON* touchscreen_missing_mode_passed = cJSON_GetObjectItem(touchscreen_missing_mode, "passed");
-    REQUIRE(touchscreen_missing_mode_passed != nullptr);
-    CHECK((touchscreen_missing_mode_passed->type & 0xff) == cJSON_True);
-    CHECK(required_json_string(touchscreen_missing_mode, "detail") == "effective mode: touchscreen");
-    cJSON_Delete(touchscreen_missing_json);
+    HttpResponse not_found_resp = http_request(handle->port, "POST", "/api/config/test", not_found_body);
+    REQUIRE(not_found_resp.status == 200);
+    cJSON* not_found_json = cJSON_Parse(not_found_resp.body.c_str());
+    REQUIRE(not_found_json != nullptr);
+    cJSON* not_found_ok = cJSON_GetObjectItem(not_found_json, "ok");
+    REQUIRE(not_found_ok != nullptr);
+    CHECK((not_found_ok->type & 0xff) == cJSON_False);
+    cJSON* not_found_android = required_test_result(not_found_json, "android_keyboard_device");
+    REQUIRE(not_found_android != nullptr);
+    cJSON* not_found_android_passed = cJSON_GetObjectItem(not_found_android, "passed");
+    REQUIRE(not_found_android_passed != nullptr);
+    CHECK((not_found_android_passed->type & 0xff) == cJSON_False);
+    CHECK(required_json_string(not_found_android, "detail") == "/dev/definitely-missing-hidg9 not found");
+    cJSON_Delete(not_found_json);
 }
 
 TEST_CASE("config_web: config test rejects wakeup trigger for text input") {
@@ -2402,7 +2516,7 @@ TEST_CASE("config_web: POST /api/config returns 200 when stub config-check appro
     auto handle = start_server(env);
     const std::string body =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
@@ -2413,11 +2527,23 @@ TEST_CASE("config_web: POST /api/config rejects non-object termination_policy") 
     auto handle = start_server(env);
     const std::string body =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"termination_policy\":123,\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"termination_policy\":123,\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 400);
     CHECK(resp.body.find("termination_policy: expected object") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config rejects non-object device section") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"device\":123,"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("device: expected object") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config legacy wifi fields update saved networks") {
@@ -2444,7 +2570,7 @@ TEST_CASE("config_web: POST /api/config legacy wifi fields update saved networks
 
     const std::string body =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},"
         "\"wifi\":{\"ssid\":\"zzz\",\"psk\":\"zzz-password\",\"country\":\"CN\"},"
         "\"apply_wifi\":false}";
@@ -2474,7 +2600,7 @@ TEST_CASE("config_web: POST /api/config returns 400 when stub config-check rejec
     env.set("AIDEN_AGENT_STUB_CHECK_EXIT", "1");
     auto handle = start_server(env);
     const std::string body =
-        "{\"config\":{\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "{\"config\":{\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 400);
@@ -2497,7 +2623,7 @@ TEST_CASE("config_web: POST /api/config returns 503 when stub config-check retur
     env.set("AIDEN_AGENT_STUB_CHECK_EXIT", "1");
     auto handle = start_server(env);
     const std::string body =
-        "{\"config\":{\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "{\"config\":{\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 503);
@@ -2517,7 +2643,7 @@ TEST_CASE("config_web: both endpoints fail closed with 503 when AIDEN_AGENT_BIN 
     CHECK(meta.body.find("agent binary not found") != std::string::npos);
 
     const std::string body =
-        "{\"config\":{\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "{\"config\":{\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse save = http_request(handle->port, "POST", "/api/config", body);
     CHECK(save.status == 503);
@@ -2574,6 +2700,108 @@ TEST_CASE("config_web: failed manual OTA update releases launch lock even if a c
     }
     CHECK(accepted);
     CHECK(retry.body.find("ota update already running") == std::string::npos);
+}
+
+TEST_CASE("config_web: manual OTA update appends update log and reports start size") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+
+    const std::string env_run_path = tmp + "/aiden-env-run";
+    const std::string ota_path = tmp + "/ota";
+    const std::string lock_path = tmp + "/config_web_ota_update.lock";
+    const std::string log_path = tmp + "/config_web_ota_update.log";
+    const std::string previous_log = "previous web ota update\n";
+    write_file(log_path, previous_log);
+
+    write_file(env_run_path, "#!/bin/sh\nexec \"$@\"\n");
+    REQUIRE(::chmod(env_run_path.c_str(), 0755) == 0);
+
+    write_file(ota_path,
+               "#!/bin/sh\n"
+               "if [ \"${1:-}\" = \"update\" ]; then\n"
+               "  echo 'new ota update output'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 0\n");
+    REQUIRE(::chmod(ota_path.c_str(), 0755) == 0);
+
+    StubEnv env;
+    env.set("AIDEN_OTA_BIN", ota_path);
+    env.set("AIDEN_ENV_RUN_BIN", env_run_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", lock_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", log_path);
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "POST", "/api/ota/update");
+    REQUIRE(resp.status == 200);
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    CHECK(required_json_int(parsed, "ota_log_start_size_bytes") == static_cast<int>(previous_log.size()));
+    cJSON_Delete(parsed);
+
+    REQUIRE(wait_for_file_contains_any(log_path,
+                                       {
+                                           "[config_web] ota update exited rc=0",
+                                           "[config_web] [ota] update_exited exit_code=0",
+                                       },
+                                       2000));
+    const std::string log = read_file(log_path);
+    CHECK(log.find(previous_log) == 0);
+    CHECK(log.find("new ota update output") != std::string::npos);
+}
+
+TEST_CASE("config_web: manual OTA update truncates oversized update log before appending") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+
+    const std::string env_run_path = tmp + "/aiden-env-run";
+    const std::string ota_path = tmp + "/ota";
+    const std::string lock_path = tmp + "/config_web_ota_update.lock";
+    const std::string log_path = tmp + "/config_web_ota_update.log";
+    write_file(log_path, std::string(1024 * 1024, 'x'));
+
+    write_file(env_run_path, "#!/bin/sh\nexec \"$@\"\n");
+    REQUIRE(::chmod(env_run_path.c_str(), 0755) == 0);
+
+    write_file(ota_path,
+               "#!/bin/sh\n"
+               "if [ \"${1:-}\" = \"update\" ]; then\n"
+               "  echo 'fresh ota update output'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 0\n");
+    REQUIRE(::chmod(ota_path.c_str(), 0755) == 0);
+
+    StubEnv env;
+    env.set("AIDEN_OTA_BIN", ota_path);
+    env.set("AIDEN_ENV_RUN_BIN", env_run_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", lock_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", log_path);
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "POST", "/api/ota/update");
+    REQUIRE(resp.status == 200);
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    CHECK(required_json_int(parsed, "ota_log_start_size_bytes") == 0);
+    cJSON_Delete(parsed);
+
+    REQUIRE(wait_for_file_contains_any(log_path,
+                                       {
+                                           "[config_web] ota update exited rc=0",
+                                           "[config_web] [ota] update_exited exit_code=0",
+                                       },
+                                       2000));
+    const std::string log = read_file(log_path);
+    CHECK(log.size() < 4096);
+    CHECK(log.find(std::string(64, 'x')) == std::string::npos);
+    CHECK(log.find("fresh ota update output") != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate") {

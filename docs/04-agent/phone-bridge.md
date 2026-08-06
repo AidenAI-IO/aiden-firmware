@@ -39,7 +39,7 @@ This way there's no need to guess the phone IP, no need for the phone app to ope
 
 The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native JS, WebSocket, and polling timers in the iOS background must not be treated as a general tool execution path. On iOS, Phone Bridge is normally a foreground fast path: if Aiden is backgrounded and the app has reported `return_entry=dynamic_island`, Agent restores Aiden through Dynamic Island, waits for foreground WebSocket bridge reconnection, then executes the requested tool command. Lock-screen Live Activity entries require visual confirmation rather than fixed-coordinate tapping.
 
-PiP Bridge is a narrow exception. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. In that state, the Agent dynamically removes `bridge_open_app` from the Phone Bridge tool catalog and keeps only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) available through the HTTP queue.
+PiP Bridge is a narrow exception. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. The public tool catalog remains static: `open_app` selects its internal SearchLaunchApp route, while only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) can execute through the HTTP queue.
 
 Android FGS Bridge follows the same HTTP queue contract without using WebSocket as a background transport. When the Android foreground service polls `/api/phone-bridge/commands` with `app_state=background` and `fgs_bridge_enabled=true`, the Agent keeps `open_app` unavailable and routes only background-safe data tools through the HTTP queue.
 
@@ -76,19 +76,11 @@ iOS: weixin://
 Android: com.tencent.mm
         │
         ▼
-If relay app already connected:
-    Send open_app command
-If relay app is backgrounded and the Aiden Dynamic Island entry is visible:
-    Tap Dynamic Island to return to Aiden
-    Wait for app to reconnect to board
-    Then send open_app command
-If relay app is backgrounded with PiP Bridge mode enabled:
-    Do not expose Phone Bridge bridge_open_app
-    Use HID/screenshot fallback for app opening or wait for Aiden foreground
+Public open_app reads the live relay-app state:
+If foreground Phone Bridge is ready:
+    Send semantic open_app command
 Otherwise:
-    First use HID to open Aiden relay app
-    Wait for app to auto-connect to board
-    Then send open_app command
+    Use SearchLaunchApp through the visible system UI
         │
         ▼
 Relay app executes:
@@ -198,7 +190,7 @@ WebSocket's core value:
 
 `bridge_connected` only means the WebSocket is currently active. It is not equivalent to USB cable connectivity. After the iOS app enters background, WebSocket may disconnect while USB ECM remains reachable; real-time background Dynamic Island updates should go through Live Activity relay/APNs, not the phone bridge WebSocket.
 
-When `app_state=background|inactive`, `return_entry=dynamic_island`, `return_entry_available=true`, and PiP Bridge mode is not enabled, Phone Bridge tools directly click the Aiden Dynamic Island entry, wait for Phone Bridge recovery, then send commands through tools such as `bridge_open_app` or `bridge_clipboard`. Lock-screen Live Activity entries are not blind-tapped because their screen position is not stable; use screenshot/HID fallback or visual confirmation instead. When `pip_bridge_enabled=true` on iOS or `fgs_bridge_enabled=true` on Android in the background, `bridge_open_app` is not exposed, and only background-safe data tools use the HTTP command queue.
+When `app_state=background|inactive`, `return_entry=dynamic_island`, `return_entry_available=true`, and PiP Bridge mode is not enabled, `open_url` and bridge data tools can click the Aiden Dynamic Island entry, wait for Phone Bridge recovery, then send their commands. `open_app` instead selects SearchLaunchApp whenever foreground Bridge app launch is unavailable. Lock-screen Live Activity entries are not blind-tapped because their screen position is not stable; use screenshot/HID fallback or visual confirmation instead. When `pip_bridge_enabled=true` on iOS or `fgs_bridge_enabled=true` on Android in the background, only background-safe data tools use the HTTP command queue.
 
 ### Command Protocol
 
@@ -276,9 +268,9 @@ Reply:
 }
 ```
 
-App-side `method` represents underlying mechanism (e.g., `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, `dial`, `open_url`). Agent's `bridge_open_app` tool normalizes it to task semantics: opening app returns `method:"open_app"`, opening webpage returns `method:"open_url"`, underlying mechanism goes in `mechanism`.
+App-side `method` represents the underlying mechanism (for example `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, or `open_url`). The public `open_app` tool routes semantic app launches to the internal Phone Bridge launcher or visible system search. The public `open_url` tool sends `http`, `https`, `sms`, `mailto`, and `tel` URLs through Phone Bridge. Their results normalize task semantics into `method:"open_app"` or `method:"open_url"`, while the underlying app-side method is returned as `mechanism`.
 
-Browser semantics and fixed webpage semantics are separated: when opening browser entry pass `{"app":"browser"}`; when opening a fixed webpage pass `{"url":"https://example.com"}`. Dialing uses `{"phone_number":"10086"}`. Set exactly one of `app`, `url`, or `phone_number`; the companion app owns the platform-specific URL/package/intent mapping.
+App-launch and URL semantics are separated: call `open_app` with `{"app":"browser"}` to launch the browser itself, and call `open_url` with a supported URL such as `{"url":"https://example.com"}` or `{"url":"tel:+15551234567"}`. The companion app owns platform-specific URL/package/intent mapping.
 
 ##### 2. `clipboard_read` — Read Clipboard
 
@@ -535,11 +527,10 @@ Use the phone environment timezone when it is available. The Agent can use `shel
 
 ### Implementation Notes
 
-7. If the iOS Aiden app is backgrounded and `return_entry=dynamic_island` with `return_entry_available=true`, and PiP Bridge mode is not enabled, Phone Bridge tools first click Dynamic Island to restore Aiden, wait for foreground bridge reconnection, then send `bridge_open_app`, `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, or `bridge_notification` commands.
-8. If `pip_bridge_enabled=true` while Aiden is backgrounded, board-side tool resolution hides `bridge_open_app`; `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, and `bridge_notification` commands can be routed through the HTTP command queue.
-9. If Android FGS polls with `fgs_bridge_enabled=true` while Aiden is backgrounded, board-side tool resolution hides `bridge_open_app`; `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, and `bridge_notification` commands can be routed through the HTTP command queue.
-10. Board then verifies via HDMI whether target app opened (only `bridge_open_app`).
-11. Verification failure auto-fallback to HID (only `bridge_open_app`; `bridge_clipboard`/`bridge_calendar`/`bridge_contacts`/`bridge_notification` have no reliable HID/API fallback when neither foreground WebSocket nor PiP/FGS HTTP polling is available. If no usable foreground restore path or background queue is available, the tool returns a clear bridge unavailable error).
+7. `open_app` reads the live companion-app state. When foreground Phone Bridge commands are ready it uses the internal BridgeOpenApp path; otherwise it uses SearchLaunchApp through the visible system UI.
+8. `open_url` and bridge data tools may restore a backgrounded iOS Aiden app through a confirmed Dynamic Island entry before sending their command.
+9. If `pip_bridge_enabled=true` on iOS or `fgs_bridge_enabled=true` on Android while Aiden is backgrounded, only `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, and `bridge_notification` use the HTTP command queue. `open_app` uses visible system search, and `open_url` still requires foreground Bridge recovery.
+10. Bridge data tools have no reliable HID/API fallback when neither foreground WebSocket, Dynamic Island recovery, nor PiP/FGS HTTP polling is available; they return a clear bridge-unavailable error.
 
 ## Final Positioning
 

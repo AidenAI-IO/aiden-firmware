@@ -24,7 +24,7 @@ Key boundaries:
 - If app has already been suspended/killed by system and there is no existing Live Activity, making Live Activity appear remotely requires APNs push-to-start or waiting for user to reopen app.
 - USB ECM connectivity only means the phone and board can still exchange IP packets; it does not mean the iOS app is running in background. `phone_bridge.connected=true` primarily means the app WebSocket is still active, usually while the app is foreground or inside the short background window.
 - When `phone_bridge.connected=false` but USB is still physically connected, the agent cannot push status to the app over WebSocket. If relay has a valid Live Activity token for the board, the agent should still update Dynamic Island through relay/APNs.
-- When agent needs Phone Bridge capability and a visible Aiden Dynamic Island entry exists, treat it as the automatic recovery entry: tap back to Aiden, wait for bridge recovery, then call `bridge_open_app`, `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, or `bridge_notification` instead of searching the home screen for the target app icon first. For lock-screen Live Activity cards, use screenshot/HID fallback or visual confirmation.
+- When `open_url` or a bridge data tool needs Phone Bridge capability and a visible Aiden Dynamic Island entry exists, treat it as the automatic recovery entry: tap back to Aiden, wait for bridge recovery, then send the command. `open_app` owns its own BridgeOpenApp-versus-SearchLaunchApp routing. For lock-screen Live Activity cards, use screenshot/HID fallback or visual confirmation.
 
 ## State Model
 

@@ -153,6 +153,38 @@ Solution:
   from `POST /api/tools/{tool_name}`;
 - Separate transport failure from tool failure judgement.
 
+## `opkg update` prints nothing, and no package can be found
+
+```text
+# opkg update
+# opkg install htop
+error: opkg_prepare_url_for_install: Couldn't find anything to satisfy 'htop'.
+```
+
+`opkg update` prints one `Downloading` line per configured source, so silence
+means no source is configured. Two different causes produce it:
+
+```bash
+cat /etc/opkg/*.conf | grep -E '^\s*(src|dist)'   # any sources at all?
+/etc/init.d/S22opt status                          # is /opt actually bound?
+```
+
+Every `src` line lives in `/opt/etc/opkg/userfeeds.conf`, so an unbound `/opt`
+looks exactly like "no source was ever configured". Check both before writing a
+source into a file that cannot be read.
+
+Note this is *not* opkg refusing to start. `/etc/opkg/90-userfeeds.conf` is a
+symlink into `/opt`, and when it dangles uClibc-ng's `glob()` silently drops it —
+opkg never tries to open it and runs normally. The protection against installing
+into the A/B rootfs comes from the read-only seal `S22opt` applies to `/opt`,
+plus the fact that no source is reachable. See
+[opkg Package Management](opkg-package-management.md) §6.2.1.
+
+`opt=bound` is healthy. For `sealed`, `wrong-source` or `unbound`, and for the
+rest of the opkg runbook (enabling a feed, recovering a truncated package
+database, cleaning up before a restore), see
+[opkg Package Management](opkg-package-management.md) §13.
+
 ## Docker build fails
 
 Check:

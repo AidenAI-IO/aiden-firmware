@@ -704,7 +704,8 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("handle_get_ota_log") != std::string::npos);
     CHECK(source.find("read_ota_log_snapshot") != std::string::npos);
     CHECK(source.find("kOtaWebUpdateLogPath") != std::string::npos);
-    CHECK(source.find("/tmp/config_web_ota_update.log") != std::string::npos);
+    CHECK(source.find("/userdata/ota/config_web_ota_update.log") != std::string::npos);
+    CHECK(source.find("kOtaWebUpdateLogMaxBytes") != std::string::npos);
     CHECK(source.find("/var/log/ota/ota.log") != std::string::npos);
     CHECK(source.find("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG") != std::string::npos);
     CHECK(source.find("\"ota_health_log\"") != std::string::npos);
@@ -715,7 +716,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("ota update already running") != std::string::npos);
     CHECK(source.find("prepare_ota_update_log_file") != std::string::npos);
     CHECK(source.find("ota_log_start_size_bytes") != std::string::npos);
-    CHECK(source.find("cJSON_AddNumberToObject(response, \"ota_log_start_size_bytes\", 0)") != std::string::npos);
+    CHECK(source.find("static_cast<double>(start_size_bytes)") != std::string::npos);
     CHECK(source.find("cJSON_AddItemToObject(response, \"ota_log\"") == std::string::npos);
     CHECK(source.find("echo '[config_web] ota update requested'") == std::string::npos);
     CHECK(source.find("close(lock_fd)") != std::string::npos);
@@ -951,8 +952,8 @@ TEST_CASE("config web renders finite choice fields as selects") {
         "tts_provider",
         "tts_speed",
         "stt_provider",
+        "device_device_type",
         "hid_keyboard_layout",
-        "hid_pointer_mode",
         "search_provider",
         "telemetry_provider",
         NULL,
@@ -1172,7 +1173,7 @@ TEST_CASE("config web hides successful forget details but reports runtime apply 
     const std::string::size_type forget_start =
         html.find("async function forgetWifi(ssid)");
     const std::string::size_type forget_end =
-        html.find("async function poweroffDevice()", forget_start);
+        html.find("async function rebootDevice()", forget_start);
     REQUIRE(forget_start != std::string::npos);
     REQUIRE(forget_end != std::string::npos);
     const std::string forget_source =
@@ -1781,6 +1782,9 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     toml_source_buffer << toml_source_in.rdbuf();
     const std::string toml_source = toml_source_buffer.str();
 
+    CHECK(toml_header.find("device_type") != std::string::npos);
+    CHECK(toml_source.find("\"device_type\"") != std::string::npos);
+    CHECK(source.find("\"device_type\"") != std::string::npos);
     CHECK(toml_header.find("pointer_mode") != std::string::npos);
     CHECK(toml_source.find("\"pointer_mode\"") != std::string::npos);
     CHECK(toml_header.find("keyboard_layout") != std::string::npos);
@@ -1791,8 +1795,10 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("usbhid_restart_scheduled") != std::string::npos);
     CHECK(source.find("usbhid_restart_required") != std::string::npos);
     CHECK(source.find("reboot_required") != std::string::npos);
-    CHECK(source.find("schedule_poweroff") != std::string::npos);
-    CHECK(source.find("\"/api/poweroff\"") != std::string::npos);
+    CHECK(source.find("schedule_reboot") != std::string::npos);
+    CHECK(source.find("command -v reboot") != std::string::npos);
+    CHECK(source.find("make_json_error(503, error.empty() ? \"failed to schedule reboot\" : error)") != std::string::npos);
+    CHECK(source.find("\"/api/reboot\"") != std::string::npos);
     CHECK(source.find("config-check --stdin --format=json") != std::string::npos);
     CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);
     // config metadata endpoint: agent CLI is the single source of field metadata.
@@ -1802,14 +1808,15 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("cannot load config defaults") == std::string::npos);
     CHECK(source.find("\"/api/config/meta\"") != std::string::npos);
     CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
-    CHECK(html.find("hid_pointer_mode") != std::string::npos);
-    CHECK(html.find("<select id=\\\"hid_pointer_mode\\\"") != std::string::npos);
+    CHECK(html.find("device_device_type") != std::string::npos);
+    CHECK(html.find("<select id=\\\"device_device_type\\\"") != std::string::npos);
+    CHECK(html.find("hid_pointer_mode") == std::string::npos);
     CHECK(html.find("hid_keyboard_layout") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_keyboard_layout\\\"") != std::string::npos);
-    CHECK(html.find("pointer_mode requires power off and restart to take effect") != std::string::npos);
+    CHECK(html.find("device_type requires reboot to take effect") != std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
-    CHECK(html.find("/api/poweroff") != std::string::npos);
-    CHECK(html.find("poweroff command sent") != std::string::npos);
+    CHECK(html.find("/api/reboot") != std::string::npos);
+    CHECK(html.find("reboot command sent") != std::string::npos);
 }
 
 TEST_CASE("config web usbhid init script does not orchestrate dependent service restarts") {
@@ -1830,9 +1837,11 @@ TEST_CASE("config web usbhid init script does not orchestrate dependent service 
     CHECK(script.find("AIDEN_USBHID_ALLOW_HOT_REBIND") == std::string::npos);
     CHECK(script.find("force-restart") == std::string::npos);
     CHECK(script.find("USB HID hot restart is unsafe") != std::string::npos);
-    CHECK(script.find("use poweroff") != std::string::npos);
+    CHECK(script.find("use reboot") != std::string::npos);
     CHECK(script.find("restart|reload) restart") != std::string::npos);
     CHECK(script.find("restart|reload) stop; start") == std::string::npos);
+    CHECK(script.find("[device]") != std::string::npos);
+    CHECK(script.find("device_type") != std::string::npos);
 }
 
 TEST_CASE("config web resolved config validation keeps required fields and type guards") {

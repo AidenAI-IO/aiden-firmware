@@ -111,7 +111,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"quick_action": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"action":"list","platform":"ios"}`,
+		ExampleInput: `{"action":"list"}`,
 	},
 	"recall_device_memory": {
 		Category:     "memory",
@@ -239,15 +239,22 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		ExampleInput: `{"action":"list"}`,
 		HTTPExposed:  toolSpecBoolPtr(false),
 	},
-	toolBridgeOpenApp: {
+	toolOpenApp: {
 		Category:     "bridge",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"app":"微信"}`,
 	},
-	"search_launch_app": {
+	toolOpenURL: {
+		Category:     "bridge",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"url":"https://example.com"}`,
+	},
+	toolSearchLaunchApp: {
 		Category:     "phone",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"app":"WeChat"}`,
+		AgentExposed: toolSpecBoolPtr(false),
+		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	toolBridgeClipboard: {
 		Category:     "bridge",

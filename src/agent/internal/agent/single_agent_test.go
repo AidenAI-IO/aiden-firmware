@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -111,8 +112,8 @@ func TestSingleAgentDoesNotRunDefaultFinalVerifierReview(t *testing.T) {
 	}
 }
 
-func TestSingleAgentUsesUIFallbackAfterDisconnectedOpenApp(t *testing.T) {
-	model := &disconnectedOpenAppFallbackModel{}
+func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) {
+	model := &routedOpenAppModel{}
 	bridge := NewPhoneBridge(nil)
 	bridge.mu.Lock()
 	bridge.platform = "ios"
@@ -125,7 +126,7 @@ func TestSingleAgentUsesUIFallbackAfterDisconnectedOpenApp(t *testing.T) {
 		name:        "screenshot",
 		description: "Capture the current phone screen.",
 		visual:      true,
-		output:      `{"format":"jpeg","width":1,"height":1,"size":0}`,
+		output:      `{"format":"jpeg","width":1,"height":1,"size":1,"data":"YQ=="}`,
 	}
 	searchLaunch := &stubTool{
 		name:        "search_launch_app",
@@ -135,10 +136,9 @@ func TestSingleAgentUsesUIFallbackAfterDisconnectedOpenApp(t *testing.T) {
 	toolSet := &ToolSet{
 		phoneBridge: bridge,
 		tools: map[string]langtools.Tool{
-			"bridge_open_app":       NewOpenAppTool(bridge, nil),
+			"open_app":              newPostActionScreenshotTool(NewOpenAppTool(bridge, nil, searchLaunch), screenshot, 0),
 			"request_human_handoff": NewHumanHandoffTool(),
 			"screenshot":            screenshot,
-			"search_launch_app":     searchLaunch,
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -153,41 +153,42 @@ func TestSingleAgentUsesUIFallbackAfterDisconnectedOpenApp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if result.Output != "已通过屏幕搜索继续打开小红书。" {
-		t.Fatalf("Output = %q, want UI fallback completion", result.Output)
+	if result.Output != "已打开小红书。" {
+		t.Fatalf("Output = %q, want routed completion", result.Output)
 	}
-	if model.callCount != 4 {
-		t.Fatalf("model calls = %d, want open_app failure, screenshot, UI fallback, and completion", model.callCount)
+	if model.callCount != 2 {
+		t.Fatalf("model calls = %d, want open_app plus completion", model.callCount)
 	}
 	if len(screenshot.inputs) != 2 || len(searchLaunch.inputs) != 1 {
-		t.Fatalf("fallback calls: screenshot=%v search_launch_app=%v", screenshot.inputs, searchLaunch.inputs)
+		t.Fatalf("routed calls: screenshot=%v search_launch_app=%v", screenshot.inputs, searchLaunch.inputs)
+	}
+	var searchInput appSearchOpenArgs
+	if err := json.Unmarshal([]byte(searchLaunch.inputs[0]), &searchInput); err != nil {
+		t.Fatalf("decode search_launch_app input: %v", err)
+	}
+	if searchInput.App != "小红书" || searchInput.Platform != "ios" {
+		t.Fatalf("search_launch_app input = %#v, want app=小红书 platform=ios", searchInput)
 	}
 }
 
-type disconnectedOpenAppFallbackModel struct {
+type routedOpenAppModel struct {
 	callCount int
 }
 
-func (m *disconnectedOpenAppFallbackModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+func (m *routedOpenAppModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
 	m.callCount++
 	switch m.callCount {
 	case 1:
-		return toolCallResponse("call_open", "bridge_open_app", `{"app":"小红书"}`), nil
+		return toolCallResponse("call_open", "open_app", `{"app":"小红书","platform":"ios"}`), nil
 	case 2:
-		if modelMessagesContain(messages, "call screenshot first") {
-			return toolCallResponse("call_screen", "screenshot", `{}`), nil
+		if modelMessagesContainSuccessfulToolResult(messages, "open_app") && modelMessagesContainToolScreenshotObservation(messages, "open_app") {
+			return contentResponse("已打开小红书。"), nil
 		}
-	case 3:
-		if modelMessagesContainToolResult(messages, "screenshot") {
-			return toolCallResponse("call_search", "search_launch_app", `{"app":"小红书","platform":"ios"}`), nil
-		}
-	case 4:
-		return contentResponse("已通过屏幕搜索继续打开小红书。"), nil
 	}
-	return contentResponse("手机连接断开，无法继续。"), nil
+	return contentResponse("未完成。"), nil
 }
 
-func (m *disconnectedOpenAppFallbackModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+func (m *routedOpenAppModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
 	panic("unexpected Call invocation")
 }
 
@@ -209,12 +210,38 @@ func modelMessagesContain(messages []llms.MessageContent, want string) bool {
 	return false
 }
 
-func modelMessagesContainToolResult(messages []llms.MessageContent, name string) bool {
+func modelMessagesContainSuccessfulToolResult(messages []llms.MessageContent, name string) bool {
 	for _, message := range messages {
 		for _, part := range message.Parts {
-			if result, ok := part.(llms.ToolCallResponse); ok && result.Name == name {
+			result, ok := part.(llms.ToolCallResponse)
+			if !ok || result.Name != name {
+				continue
+			}
+			if strings.Contains(result.Content, `"ok":true`) || strings.Contains(result.Content, `\"ok\":true`) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func modelMessagesContainToolScreenshotObservation(messages []llms.MessageContent, name string) bool {
+	caption := "screenshot observation returned by the " + name + " tool"
+	for _, message := range messages {
+		hasCaption := false
+		hasImage := false
+		for _, part := range message.Parts {
+			switch typed := part.(type) {
+			case llms.TextContent:
+				hasCaption = hasCaption || strings.Contains(typed.Text, caption)
+			case llms.BinaryContent:
+				hasImage = len(typed.Data) > 0
+			case llms.ImageURLContent:
+				hasImage = strings.TrimSpace(typed.URL) != ""
+			}
+		}
+		if hasCaption && hasImage {
+			return true
 		}
 	}
 	return false

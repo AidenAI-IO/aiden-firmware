@@ -578,7 +578,8 @@ type HIDConfig struct {
 }
 
 type DeviceConfig struct {
-	Backend string `toml:"backend,omitempty"`
+	Backend    string `toml:"backend,omitempty"`
+	DeviceType string `toml:"device_type,omitempty"`
 }
 
 func (d DeviceConfig) BackendOrDefault() string {
@@ -588,6 +589,106 @@ func (d DeviceConfig) BackendOrDefault() string {
 	default:
 		return strings.ToLower(strings.TrimSpace(d.Backend))
 	}
+}
+
+func normalizeDeviceType(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "ios":
+		return "iOS", true
+	case "android":
+		return "Android", true
+	case "macos", "mac", "darwin":
+		return "macOS", true
+	case "windows", "win":
+		return "windows", true
+	case "linux":
+		return "linux", true
+	default:
+		return "", false
+	}
+}
+
+func (d DeviceConfig) DeviceTypeOrDefault() string {
+	if deviceType, ok := normalizeDeviceType(d.DeviceType); ok {
+		return deviceType
+	}
+	return defaultDeviceType
+}
+
+func (d DeviceConfig) PlatformOrDefault() string {
+	return deviceTypePlatform(d.DeviceTypeOrDefault())
+}
+
+func (d DeviceConfig) PointerModeOrDefault() string {
+	if d.PlatformOrDefault() == "android" {
+		return "touchscreen"
+	}
+	return "absolute"
+}
+
+func deviceTypePlatform(deviceType string) string {
+	switch normalized, _ := normalizeDeviceType(deviceType); normalized {
+	case "iOS":
+		return "ios"
+	case "Android":
+		return "android"
+	case "macOS":
+		return "macos"
+	case "windows":
+		return "windows"
+	case "linux":
+		return "linux"
+	default:
+		return "ios"
+	}
+}
+
+func deviceTypeFromPlatform(platform string) string {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "ios", "iphone", "ipad", "ipados":
+		return "iOS"
+	case "android":
+		return "Android"
+	case "mac", "macos", "darwin":
+		return "macOS"
+	case "windows", "win":
+		return "windows"
+	case "linux":
+		return "linux"
+	default:
+		return ""
+	}
+}
+
+func inferredDeviceTypeFromLegacyConfig(hid HIDConfig, defaultPlatform string) string {
+	if deviceType := deviceTypeFromPlatform(defaultPlatform); deviceType != "" {
+		return deviceType
+	}
+	if strings.ToLower(strings.TrimSpace(hid.PointerMode)) == "touchscreen" {
+		return "Android"
+	}
+	return defaultDeviceType
+}
+
+func (c Config) DeviceTypeOrDefault() string {
+	if strings.TrimSpace(c.Device.DeviceType) != "" {
+		return c.Device.DeviceTypeOrDefault()
+	}
+	return inferredDeviceTypeFromLegacyConfig(c.HID, c.DefaultPlatform)
+}
+
+func (c Config) DevicePlatformOrDefault() string {
+	return deviceTypePlatform(c.DeviceTypeOrDefault())
+}
+
+func (c Config) PointerModeOrDefault() string {
+	return DeviceConfig{DeviceType: c.DeviceTypeOrDefault()}.PointerModeOrDefault()
+}
+
+func (c Config) HIDConfigForDevice() HIDConfig {
+	hid := c.HID
+	hid.PointerMode = c.PointerModeOrDefault()
+	return hid
 }
 
 func (h HIDConfig) KeyboardDeviceOrDefault() string {
@@ -778,6 +879,7 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	}
 
 	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
+	applyDeviceConfigDefaults(&cfg, metadata)
 
 	// Upgrade the legacy voice shapes to named records. This must run after the
 	// defaults pass above -- that pass zeroes [tts]/[stt] when the file declares
@@ -817,6 +919,18 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
+	if cfg == nil {
+		return
+	}
+	if !metadata.IsDefined("device", "device_type") || strings.TrimSpace(cfg.Device.DeviceType) == "" {
+		cfg.Device.DeviceType = inferredDeviceTypeFromLegacyConfig(cfg.HID, cfg.DefaultPlatform)
+	} else if deviceType, ok := normalizeDeviceType(cfg.Device.DeviceType); ok {
+		cfg.Device.DeviceType = deviceType
+	}
+	cfg.HID.PointerMode = cfg.PointerModeOrDefault()
 }
 
 // applyRuntimeModelTemperatureDefaults resolves the sampling temperature for
@@ -1040,6 +1154,9 @@ func LoadResolvedConfig(path string) (Config, error) {
 		if metadata, err = decodeConfigFile(resolvedPath, &cfg); err != nil {
 			return Config{}, err
 		}
+		applyDeviceConfigDefaults(&cfg, metadata)
+	} else {
+		cfg.HID.PointerMode = cfg.PointerModeOrDefault()
 	}
 
 	applyRuntimeInstructionDefault(&cfg)
@@ -1226,6 +1343,9 @@ func (c Config) Validate() error {
 	case "hdmi":
 	default:
 		return fmt.Errorf("invalid device.backend: %s (expected hdmi)", c.Device.Backend)
+	}
+	if _, ok := normalizeDeviceType(c.Device.DeviceType); !ok {
+		return fmt.Errorf("invalid device.device_type: %s (expected iOS, Android, macOS, windows, or linux)", c.Device.DeviceType)
 	}
 	if _, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend); err != nil {
 		return err

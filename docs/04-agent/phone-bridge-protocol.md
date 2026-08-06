@@ -13,7 +13,7 @@ This document defines the WebSocket command protocol between the hardware board 
 
 WebSocket is the foreground fast path. The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native app execution, JS timers, and WebSocket in the iOS background must not be treated as a general tool execution path. On iOS, Phone Bridge tools are foreground capabilities: if the app is backgrounded and reports `return_entry=dynamic_island` with `return_entry_available=true`, board-side tools restore Aiden through Dynamic Island, wait for WebSocket reconnection and active app state, then execute the command. Lock-screen Live Activity entries require visual confirmation instead of blind tapping.
 
-PiP Bridge is a narrow background queue mode. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. In that state, the board must not expose `bridge_open_app` as a Phone Bridge tool; only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) backed by command types (`clipboard_*`, `calendar_*`, `contacts_*`, `notification_send`) may use the HTTP queue.
+PiP Bridge is a narrow background queue mode. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. In that state, the public `open_app` tool selects visible system search instead of its internal Phone Bridge route; only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) backed by command types (`clipboard_*`, `calendar_*`, `contacts_*`, `notification_send`) may use the HTTP queue.
 
 Android FGS Bridge is also an HTTP queue mode. The foreground service polls `/api/phone-bridge/commands?platform=android&phone_id=<stable>&app_state=background&fgs_bridge_enabled=true&limit=10`; the board treats that as a background queue consumer for background-safe data commands only. It does not treat WebSocket as a reliable Android background transport, and it does not expose `open_app` through the FGS queue.
 
@@ -40,8 +40,7 @@ The board records `last_heartbeat_at` timestamp; no heartbeat for more than 60 s
 
   // Following fields used based on type
   app?: string;                  // open_app semantic app name or alias
-  url?: string;                  // open_app HTTP/HTTPS URL
-  phone_number?: string;         // open_app phone number to dial
+  url?: string;                  // open_app URL using http, https, sms, mailto, or tel, sent by public open_url
   payload?: object;              // JSON payload for other command types
 }
 ```
@@ -119,7 +118,7 @@ Example:
 }
 ```
 
-The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`, and keeps `app_state`, `return_entry`, `return_entry_available`, `pip_bridge_enabled`, and `fgs_bridge_enabled` for Agent runtime context and tool resolution. Runtime context carries compact state facts such as connection status, app foreground/background state, return-entry visibility, PiP/Dynamic Island visibility state, Android FGS bridge state, system type/version, language/region/timezone, screen dimensions, and confirmed openable third-party candidate apps. Tool availability is resolved separately: PiP/FGS background state hides `bridge_open_app` and keeps only background-safe data tools exposed through the HTTP queue. Environment is cleared on disconnection to avoid using stale information, but the latest app foreground/background state can be retained to decide whether Aiden should be restored through Dynamic Island first.
+The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`, and keeps `app_state`, `return_entry`, `return_entry_available`, `pip_bridge_enabled`, and `fgs_bridge_enabled` for Agent runtime context and internal routing. Runtime context carries compact state facts such as connection status, app foreground/background state, return-entry visibility, PiP/Dynamic Island visibility state, Android FGS bridge state, system type/version, language/region/timezone, screen dimensions, and confirmed openable third-party candidate apps. The public tool catalog is static: `open_app` selects BridgeOpenApp or SearchLaunchApp internally, while background-safe data tools enforce HTTP queue availability during execution. Environment is cleared on disconnection to avoid using stale information, but the latest app foreground/background state can be retained for Dynamic Island recovery.
 
 `phone_app_state` example:
 
@@ -156,10 +155,10 @@ Open specified app or URL.
 }
 ```
 
-**iOS implementation**: Resolve the semantic app/url/phone request inside the companion app, then open the matching iOS URL scheme or system URL.
-**Android implementation**: Resolve the semantic app/url/phone request inside the companion app, then launch the matching package, intent URI, or system URL.
+**iOS implementation**: Resolve the semantic app or URL request inside the companion app, then open the matching iOS URL scheme or system URL.
+**Android implementation**: Resolve the semantic app or URL request inside the companion app, then launch the matching package, intent URI, or system URL.
 
-The board must not send platform launch details. For known apps, send `app` (for example `"微信"` or `"weixin"`). For webpages, send `url`. For dialing, send `phone_number`. Exactly one of `app`, `url`, or `phone_number` should be set.
+The board sends semantic launch targets and the companion app resolves platform details. The internal BridgeOpenApp route sends `app` (for example `"微信"` or `"weixin"`), while `open_url` sends an `http`, `https`, `sms`, `mailto`, or `tel` URL. Each command sets one target field.
 
 **Response**:
 ```json
@@ -170,8 +169,8 @@ The board must not send platform launch details. For known apps, send `app` (for
 }
 ```
 
-`method` indicates the underlying mechanism used by the app side, common values include `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, `dial`, `open_url`. Where `open_url` only indicates explicit webpage URL.
-The Agent's exposed `bridge_open_app` tool normalizes these underlying mechanisms into task-oriented `method` (e.g., opening app returns `open_app`, opening webpage returns `open_url`), and places the underlying value in the `mechanism` field.
+`method` indicates the underlying mechanism used by the app side, with common values including `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, and `open_url`. Here `open_url` indicates an explicit supported URL.
+The Agent's exposed `open_app` and `open_url` tools normalize underlying companion-app mechanisms into task-oriented `method` values and place the underlying value in the `mechanism` field.
 
 On failure:
 ```json

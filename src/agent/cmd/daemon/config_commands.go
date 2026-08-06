@@ -56,6 +56,7 @@ type webConfigDTO struct {
 	Audio              audioDTO                      `json:"audio"`
 	AudioArchive       audioArchiveDTO               `json:"audio_archive"`
 	VoiceNotifications voiceNotificationsDTO         `json:"voice_notifications"`
+	Device             deviceDTO                     `json:"device"`
 	Log                logDTO                        `json:"log"`
 	OTA                otaDTO                        `json:"ota"`
 	HID                hidDTO                        `json:"hid"`
@@ -182,6 +183,11 @@ type audioArchiveDTO struct {
 	MaxFiles    int    `json:"max_files"`
 	MaxSizeMB   int    `json:"max_size_mb"`
 	StoragePath string `json:"storage_path"`
+}
+
+type deviceDTO struct {
+	Backend    string `json:"backend,omitempty"`
+	DeviceType string `json:"device_type"`
 }
 
 type voiceNotificationsDTO struct {
@@ -396,6 +402,10 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			FrameSocket:           d.HID.FrameSocket,
 			PointerMode:           d.HID.PointerMode,
 			InputBackend:          d.HID.InputBackend,
+		},
+		Device: agent.DeviceConfig{
+			Backend:    d.Device.Backend,
+			DeviceType: d.Device.DeviceType,
 		},
 		Search: agent.SearchConfig{
 			Provider: d.Search.Provider,
@@ -639,6 +649,10 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
 			StoragePath: audioArchive.StoragePathOrDefault(),
 		},
+		Device: deviceDTO{
+			Backend:    cfg.Device.BackendOrDefault(),
+			DeviceType: cfg.DeviceTypeOrDefault(),
+		},
 		VoiceNotifications: voiceNotificationsDTO{
 			Enabled:    cfg.VoiceNotifications.Enabled,
 			MaxPending: cfg.VoiceNotifications.MaxPendingOrDefault(),
@@ -664,7 +678,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			MouseDevice:           cfg.HID.MouseDeviceOrDefault(),
 			AndroidKeyboardDevice: cfg.HID.AndroidKeyboardDeviceOrDefault(),
 			FrameSocket:           cfg.HID.FrameSocketOrDefault(),
-			PointerMode:           cfg.HID.PointerModeOrDefault(),
+			PointerMode:           cfg.PointerModeOrDefault(),
 			InputBackend:          cfg.HID.InputBackendOrDefault(),
 		},
 		Search: searchDTO{
@@ -1072,6 +1086,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "model.model_max_output_tokens"
 	} else if strings.Contains(errMsg, "model.model") {
 		field = "model.model"
+	} else if strings.Contains(errMsg, "device.device_type") {
+		field = "device.device_type"
 	} else if strings.Contains(errMsg, "stt.provider") {
 		field = "stt.provider"
 	} else if strings.Contains(errMsg, "tts.provider") {

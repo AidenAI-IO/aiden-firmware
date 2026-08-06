@@ -20,6 +20,29 @@ read_pointer_mode() {
 	if [ ! -f "$AGENT_TOML" ]; then
 		return
 	fi
+	device_line=$(awk '
+		/^[[:space:]]*\[/ {
+			in_device = ($0 ~ /^[[:space:]]*\[device\][[:space:]]*$/)
+			next
+		}
+		in_device && /^[[:space:]]*device_type[[:space:]]*=/ {
+			print
+			exit
+		}
+		' "$AGENT_TOML" 2>/dev/null)
+	device_line_lc=$(printf '%s' "$device_line" | awk '
+		{
+			sub(/^[^=]*=/, "")
+			sub(/[[:space:]]*#.*/, "")
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+			print
+		}
+	' | tr '[:upper:]' '[:lower:]')
+	case "$device_line_lc" in
+		*\"android\"*|*\'android\'*|*android*) POINTER_MODE=touchscreen; return ;;
+		*\"ios\"*|*\'ios\'*|*ios*|*\"macos\"*|*\'macos\'*|*macos*|*\"windows\"*|*\'windows\'*|*windows*|*\"linux\"*|*\'linux\'*|*linux*) POINTER_MODE=absolute; return ;;
+	esac
+
 	line=$(grep -E '^[[:space:]]*pointer_mode[[:space:]]*=' "$AGENT_TOML" | tail -n1)
 	case "$line" in
 		*\"touchscreen\"*|*\'touchscreen\'*|*touchscreen*) POINTER_MODE=touchscreen ;;
@@ -100,7 +123,7 @@ start() {
 	printf '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x01\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' \
 		> "$GADGET_DIR/functions/hid.usb0/report_desc"
 
-	# Touch / mouse HID function (report format follows agent.toml pointer_mode)
+	# Touch / mouse HID function (report format follows [device].device_type)
 	mkdir -p "$GADGET_DIR/functions/hid.usb1"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/protocol"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/subclass"
@@ -134,8 +157,8 @@ start() {
 
 	# Link all functions, THEN bind UDC (configfs requires this order)
 	ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0" 2>/dev/null
-	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1" 2>/dev/null
 	ln -s "$GADGET_DIR/functions/hid.usb2" "$GADGET_DIR/configs/c.1/hid.usb2" 2>/dev/null
+	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1" 2>/dev/null
 	ln -s "$GADGET_DIR/functions/ecm.usb0" "$GADGET_DIR/configs/c.1/ecm.usb0" 2>/dev/null
 
 	echo "$UDC" > "$GADGET_DIR/UDC"
@@ -172,7 +195,7 @@ stop() {
 }
 
 restart() {
-	echo "USB HID hot restart is unsafe; use poweroff and reconnect power to apply changes." >&2
+	echo "USB HID hot restart is unsafe; use reboot to apply changes." >&2
 	exit 1
 }
 
