@@ -19,6 +19,7 @@ type SkillManager struct {
 	mu              sync.RWMutex
 	activatedSkills map[string]*SkillDefinition
 	usagePath       string
+	deviceTypeFn    func() string
 }
 
 type ResolvedSkills struct {
@@ -36,6 +37,12 @@ func (m *SkillManager) SetUsagePath(path string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.usagePath = strings.TrimSpace(path)
+}
+
+func (m *SkillManager) SetDeviceTypeFunc(fn func() string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deviceTypeFn = fn
 }
 
 func NewSkillManager(index *SkillIndex) *SkillManager {
@@ -78,6 +85,7 @@ func (m *SkillManager) Snapshot() *SkillManager {
 		index:           m.index,
 		activatedSkills: activated,
 		usagePath:       m.usagePath,
+		deviceTypeFn:    m.deviceTypeFn,
 	}
 }
 
@@ -95,6 +103,10 @@ func (m *SkillManager) Activate(ctx context.Context, name string) error {
 	skill, ok := m.index.Get(name)
 	if !ok {
 		return fmt.Errorf("unknown skill %q", name)
+	}
+	deviceType := m.deviceTypeLocked()
+	if !skillSupportsDeviceType(skill, deviceType) {
+		return fmt.Errorf("skill %q supports device_type %s, current device_type is %s", name, formatSkillDeviceTypes(skill.DeviceTypes), currentDeviceTypeForMessage(deviceType))
 	}
 
 	// Mark as activated
@@ -118,6 +130,10 @@ func (m *SkillManager) Resolve(names []string) (ResolvedSkills, error) {
 		skill, ok := m.activatedSkills[name]
 		if !ok {
 			return ResolvedSkills{}, fmt.Errorf("skill %q not activated", name)
+		}
+		deviceType := m.deviceTypeLocked()
+		if !skillSupportsDeviceType(skill, deviceType) {
+			return ResolvedSkills{}, fmt.Errorf("skill %q supports device_type %s, current device_type is %s", name, formatSkillDeviceTypes(skill.DeviceTypes), currentDeviceTypeForMessage(deviceType))
 		}
 
 		if text := strings.TrimSpace(skill.Instructions); text != "" {
@@ -177,6 +193,7 @@ func (m *SkillManager) CatalogSummary() string {
 	}
 	names := m.index.Names()
 	sort.Strings(names)
+	deviceType := m.deviceTypeLocked()
 	lines := make([]string, 0, minInt(maxSkillCatalogEntries, len(names)))
 	hidden := 0
 	for _, name := range names {
@@ -185,6 +202,9 @@ func (m *SkillManager) CatalogSummary() string {
 		}
 		skill, ok := m.index.Get(name)
 		if !ok {
+			continue
+		}
+		if !skillSupportsDeviceType(skill, deviceType) {
 			continue
 		}
 		if len(lines) >= maxSkillCatalogEntries {
@@ -204,6 +224,49 @@ func (m *SkillManager) CatalogSummary() string {
 		lines = append(lines, fmt.Sprintf("... %d more skills hidden. Use skill_list to search.", hidden))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m *SkillManager) deviceTypeLocked() string {
+	if m == nil || m.deviceTypeFn == nil {
+		return ""
+	}
+	return m.deviceTypeFn()
+}
+
+func skillSupportsDeviceType(skill *SkillDefinition, deviceType string) bool {
+	if skill == nil || len(skill.DeviceTypes) == 0 {
+		return true
+	}
+	if strings.TrimSpace(deviceType) == "" {
+		return true
+	}
+	normalized, ok := normalizeDeviceType(deviceType)
+	if !ok {
+		return false
+	}
+	for _, supported := range skill.DeviceTypes {
+		if supported == normalized {
+			return true
+		}
+	}
+	return false
+}
+
+func formatSkillDeviceTypes(deviceTypes []string) string {
+	if len(deviceTypes) == 0 {
+		return "all"
+	}
+	return strings.Join(deviceTypes, ", ")
+}
+
+func currentDeviceTypeForMessage(deviceType string) string {
+	if normalized, ok := normalizeDeviceType(deviceType); ok {
+		return normalized
+	}
+	if strings.TrimSpace(deviceType) != "" {
+		return strings.TrimSpace(deviceType)
+	}
+	return "unknown"
 }
 
 func truncateRunes(s string, max int) string {

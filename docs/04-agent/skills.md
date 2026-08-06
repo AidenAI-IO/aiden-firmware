@@ -24,7 +24,8 @@ configDir/skills/**/SKILL.md
 name: ui-operator
 description: Prefer screenshot-driven UI inspection before clicking.
 metadata:
-  allowed_tools: [screenshot, mouse_click, mouse_move, keyboard_text]
+  device_types: [iOS, Android]
+  allowed_tools: [screenshot, touch_gesture, keyboard_tap, enter_text]
 ---
 
 Take a screenshot before interacting with an unfamiliar UI.
@@ -37,6 +38,7 @@ Prefer describing what you see before clicking.
 - Display Available skills in the prompt and load complete `SKILL.md` at runtime via `skill_read`;
 - Inject skill instructions into the Agent's system prompt via `RoleProfile`;
 - Parse `allowed_tools` metadata for validation and future compatibility, but tool availability is currently controlled by the static Agent tool catalog rather than by active skills;
+- Filter custom skills by `metadata.device_types` against the global `device_type` state;
 - Provide `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` to the Agent; the HTTP Tool API exposes only the non-maintenance ones (`skill_list` / `skill_read`);
 - `skill_read` supports reading `SKILL.md` as well as UTF-8 supporting files under `references/`, `templates/`, `scripts/`, `assets/`;
 - Record view/use/modify statistics in `usage.json`;
@@ -49,6 +51,34 @@ Prefer describing what you see before clicking.
 The Agent uses a streamlined execution loop that handles tool calls and generates responses in a single unified flow. All tools are available to the Agent throughout execution, and the Agent directly manages its own task breakdown and execution strategy.
 
 Tool execution is integrated into the main loop with callback handlers for streaming responses and episode recording.
+
+## Device-Specific Skills
+
+Custom skills can declare which configured target device types they support:
+
+```markdown
+---
+name: wechat-login-android
+description: WeChat login flow for Android.
+metadata:
+  device_types: [Android]
+  allowed_tools: [screenshot, touch_gesture, enter_text, quick_action]
+---
+
+Follow the Android-specific login flow.
+```
+
+Rules:
+
+- Omit `metadata.device_types` for a generic skill that applies to every device type;
+- Supported values match `[device].device_type`: `iOS`, `Android`, `macOS`, `windows`, and `linux`;
+- Common aliases such as `ios`, `android`, `mac`, `macos`, and `win` are normalized when loading the skill;
+- `Available skills` only shows skills compatible with the current global `device_type`;
+- `skill_list` and `skill_read` also hide incompatible skills by default;
+- For explicit inspection or maintenance, pass `include_incompatible: true` to `skill_list` or `skill_read`;
+- `skill_manage` validates `metadata.device_types` on create/edit/patch, but can still manage any skill file under `configDir/skills`.
+
+For platform-specific workflows, prefer separate skills such as `wechat-login-android` and `wechat-login-ios` when the instructions differ substantially. Use a single skill with multiple `device_types` only when most of the flow is shared and the body can branch cleanly on the global `device_type`.
 
 ## Parsed but Not Fully Enforced Fields
 

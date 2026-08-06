@@ -1962,6 +1962,35 @@ func TestRuntimeRunOmitsArchivedSkillsFromAvailableCatalog(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunFiltersAvailableSkillCatalogByDeviceType(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	skillsDir := filepath.Join(configDir, "skills")
+	writeSKILL(t, skillsDir, "android-only", "---\nname: android-only\ndescription: Android skill\nmetadata:\n  device_types: [Android]\n---\n\nUse Android.\n")
+	writeSKILL(t, skillsDir, "ios-only", "---\nname: ios-only\ndescription: iOS skill\nmetadata:\n  device_types: [iOS]\n---\n\nUse iOS.\n")
+	index, err := LoadSkillsFromDirs([]string{skillsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, SkillsDirs: []string{skillsDir}, Device: DeviceConfig{DeviceType: "Android"}, Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		index,
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !runtimeModelCallContains(model.messages[0], "- android-only: Android skill") {
+		t.Fatalf("run missing Android skill catalog entry")
+	}
+	if runtimeModelCallContains(model.messages[0], "- ios-only: iOS skill") {
+		t.Fatalf("run included incompatible iOS skill catalog entry")
+	}
+}
+
 func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	tools := &ToolSet{tools: map[string]langtools.Tool{}}
@@ -2035,6 +2064,21 @@ func TestSkillCatalogSummaryLimitsEntriesAndDescriptionLength(t *testing.T) {
 	}
 	if strings.Contains(catalog, strings.Repeat("长", maxSkillCatalogDescriptionRunes+1)) {
 		t.Fatalf("expected long descriptions to be truncated")
+	}
+}
+
+func TestSkillManagerRejectsIncompatibleDeviceTypeActivation(t *testing.T) {
+	index := NewSkillIndex()
+	index.skills["ios-only"] = &SkillDefinition{Name: "ios-only", Description: "iOS skill", DeviceTypes: []string{"iOS"}}
+	manager := NewSkillManager(index)
+	manager.SetDeviceTypeFunc(func() string { return "Android" })
+
+	err := manager.Activate(context.Background(), "ios-only")
+	if err == nil {
+		t.Fatal("expected incompatible activation to fail")
+	}
+	if !strings.Contains(err.Error(), "current device_type is Android") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

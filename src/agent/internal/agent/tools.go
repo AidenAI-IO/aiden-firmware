@@ -336,11 +336,35 @@ func (s *ToolSet) RegisterMemoryTools(memoryDir string, summaryMaxChunks int, lo
 }
 
 func (s *ToolSet) RegisterSkillTools(skillsDir, manifestPath string, onModify ...func()) {
+	s.registerSkillTools(skillsDir, manifestPath, nil, onModify...)
+}
+
+func (s *ToolSet) RegisterSkillToolsWithDeviceType(skillsDir, manifestPath string, deviceTypeFn func() string, onModify ...func()) {
+	s.registerSkillTools(skillsDir, manifestPath, deviceTypeFn, onModify...)
+}
+
+func (s *ToolSet) registerSkillTools(skillsDir, manifestPath string, deviceTypeFn func() string, onModify ...func()) {
 	usagePath := usagePathForManifest(manifestPath)
-	s.tools["skill_list"] = NewSkillListTool(skillsDir, usagePath)
-	s.tools["skill_read"] = NewSkillReadTool(skillsDir, usagePath)
+	listTool := NewSkillListTool(skillsDir, usagePath)
+	readTool := NewSkillReadTool(skillsDir, usagePath)
+	listTool.SetDeviceTypeFunc(deviceTypeFn)
+	readTool.SetDeviceTypeFunc(deviceTypeFn)
+	s.tools["skill_list"] = listTool
+	s.tools["skill_read"] = readTool
 	s.tools["skill_manage"] = NewSkillManageTool(skillsDir, manifestPath, onModify...)
 	s.tools["skill_mark_used"] = NewSkillMarkUsedTool(skillsDir, usagePath)
+}
+
+func (s *ToolSet) SetRuntimeDeviceTypeFn(deviceTypeFn func() string) {
+	if s == nil {
+		return
+	}
+	if tool, ok := s.tools["skill_list"].(*SkillListTool); ok {
+		tool.SetDeviceTypeFunc(deviceTypeFn)
+	}
+	if tool, ok := s.tools["skill_read"].(*SkillReadTool); ok {
+		tool.SetDeviceTypeFunc(deviceTypeFn)
+	}
 }
 
 func usagePathForManifest(manifestPath string) string {

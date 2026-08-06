@@ -414,7 +414,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if cfg.ConfigDir != "" {
 		skillsDir := filepath.Join(cfg.ConfigDir, "skills")
 		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
-		toolSet.RegisterSkillTools(skillsDir, manifestPath, rt.MarkSkillsDirty)
+		toolSet.RegisterSkillToolsWithDeviceType(skillsDir, manifestPath, rt.deviceTypeFromState, rt.MarkSkillsDirty)
 	}
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
@@ -552,7 +552,9 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		rt.markInterruptedEpisodesBestEffort()
 	}
 	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
+	skillManager.SetDeviceTypeFunc(rt.deviceTypeFromState)
 	rt.tools.SetRuntimePlatformFn(rt.devicePlatformFromState)
+	rt.tools.SetRuntimeDeviceTypeFn(rt.deviceTypeFromState)
 	rt.sessionManager = newMemoryManagerSessionManager(memories, func() BoundaryEpisodeContext {
 		return recentEpisodeContext(rt.memoryPlane)
 	})
