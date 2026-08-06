@@ -1959,13 +1959,19 @@ std::string decode_html_header_literals(const std::string& header) {
     return js;
 }
 
-// Collects the double-quoted strings in a fragment, e.g. the arguments of an
-// enumOptions(...) call or the value="..." attributes of a <select>.
-std::vector<std::string> quoted_strings(const std::string& text) {
+// Collects the double-quoted values assigned to a named field in a Go source
+// fragment, e.g. providerType: "openai" in a registry definition.
+std::vector<std::string> go_string_field_values(const std::string& text,
+                                                const std::string& field) {
     std::vector<std::string> values;
     size_t at = 0;
+    const std::string assignment = field + ":";
     for (;;) {
-        const size_t open = text.find('"', at);
+        const size_t field_at = text.find(assignment, at);
+        if (field_at == std::string::npos) {
+            break;
+        }
+        const size_t open = text.find('"', field_at + assignment.size());
         if (open == std::string::npos) {
             break;
         }
@@ -2229,29 +2235,24 @@ TEST_CASE("config web html keeps the remembered provider in sync with the select
 
 // The model select no longer offers provider types, so the Add Provider dialog
 // is the only way to reach one. That makes its hard-coded <option> list
-// load-bearing: a provider type added to config_meta.go but not to the dialog
-// would be unreachable from the web UI entirely.
+// load-bearing: a provider type added to the central registry but not to the
+// dialog would be unreachable from the web UI entirely.
 TEST_CASE("config web html dialog offers every provider type the agent supports") {
-    const std::string meta_path =
-        std::string(AIDEN_SOURCE_DIR) + "/src/agent/internal/agent/config_meta.go";
-    std::ifstream meta_in(meta_path.c_str());
-    REQUIRE(meta_in.good());
-    std::ostringstream meta_buffer;
-    meta_buffer << meta_in.rdbuf();
-    const std::string meta = meta_buffer.str();
+    const std::string registry_path =
+        std::string(AIDEN_SOURCE_DIR) + "/src/agent/internal/agent/model_provider_registry.go";
+    std::ifstream registry_in(registry_path.c_str());
+    REQUIRE(registry_in.good());
+    std::ostringstream registry_buffer;
+    registry_buffer << registry_in.rdbuf();
+    const std::string registry = registry_buffer.str();
 
-    // Anchor on [model]'s provider enum specifically; other sections have their
-    // own provider enums (tts, stt, search) that are unrelated types.
-    const size_t model_at = meta.find("Name: \"model\"");
-    REQUIRE(model_at != std::string::npos);
-    const size_t provider_at = meta.find("{Key: \"provider\"", model_at);
-    REQUIRE(provider_at != std::string::npos);
-    const size_t enum_at = meta.find("enumOptions(", provider_at);
-    REQUIRE(enum_at != std::string::npos);
-    const size_t enum_end = meta.find(')', enum_at);
-    REQUIRE(enum_end != std::string::npos);
-    const std::vector<std::string> types =
-        quoted_strings(meta.substr(enum_at, enum_end - enum_at));
+    const size_t definitions_at = registry.find("var modelProviderDefinitions");
+    REQUIRE(definitions_at != std::string::npos);
+    const size_t definitions_end =
+        registry.find("func lookupModelProviderDefinition", definitions_at);
+    REQUIRE(definitions_end != std::string::npos);
+    const std::vector<std::string> types = go_string_field_values(
+        registry.substr(definitions_at, definitions_end - definitions_at), "providerType");
     REQUIRE(types.size() >= 6);
 
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
@@ -2277,7 +2278,8 @@ TEST_CASE("config web html dialog offers every provider type the agent supports"
         }
         CHECK_MESSAGE(select_body.find("value=\"" + types[i] + "\"") != std::string::npos,
                       "provider type \"" << types[i]
-                                         << "\" is in config_meta.go but unreachable from the "
+                                         << "\" is in the model provider registry but unreachable "
+                                            "from the "
                                             "Add Provider dialog");
     }
 }
