@@ -1624,7 +1624,7 @@ TEST_CASE("config_web: POST /api/config rejects a malformed providers section") 
     CHECK(canonical_resp.body.find("model_providers") != std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only agent") {
+TEST_CASE("config_web: POST /api/config writes keyboard layout and requires reboot") {
     StubEnv env;
     auto handle = start_server(env);
 
@@ -1635,9 +1635,11 @@ TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
-    CHECK(resp.body.find("\"agent_restart_scheduled\":true") != std::string::npos);
-    CHECK(resp.body.find("\"usbhid_restart_required\":false") != std::string::npos);
-    CHECK(resp.body.find("\"reboot_required\":false") != std::string::npos);
+    CHECK(resp.body.find("\"message\":\"config saved; USB HID configuration changed; reboot required\"") != std::string::npos);
+    CHECK(resp.body.find("\"agent_restart_scheduled\":false") != std::string::npos);
+    CHECK(resp.body.find("\"usb_reenumeration_scheduled\":false") != std::string::npos);
+    CHECK(resp.body.find("\"usbhid_restart_required\":true") != std::string::npos);
+    CHECK(resp.body.find("\"reboot_required\":true") != std::string::npos);
 
     std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
     REQUIRE(saved_in.good());
@@ -1663,20 +1665,24 @@ TEST_CASE("config_web: POST /api/config uses default_platform to infer legacy de
     CHECK(saved.find("default_platform = \"android\"") != std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config device type change reports reboot message") {
+TEST_CASE("config_web: POST /api/config same-pointer-mode device type change requires reboot") {
     StubEnv env;
     auto handle = start_server(env);
 
     const std::string body =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"device\":{\"device_type\":\"Android\"},"
+        "\"device\":{\"device_type\":\"macOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
-    CHECK(resp.body.find("\"message\":\"config saved; USB HID device_type configuration changed; reboot required\"") != std::string::npos);
+    CHECK(resp.body.find("\"message\":\"config saved; USB HID configuration changed; reboot required\"") != std::string::npos);
     CHECK(resp.body.find("\"agent_restart_scheduled\":false") != std::string::npos);
     CHECK(resp.body.find("\"usbhid_restart_required\":true") != std::string::npos);
     CHECK(resp.body.find("\"reboot_required\":true") != std::string::npos);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("device_type = \"macOS\"") != std::string::npos);
+    CHECK(saved.find("pointer_mode =") == std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config omitting temperature clears a saved value") {
