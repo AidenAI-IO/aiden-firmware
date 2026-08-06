@@ -5729,7 +5729,6 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     load_current_agent_config(options, &config, &ignore_error);
     load_current_wifi_config(options, &wifi, &ignore_error);
     std::string original_device_type = effective_device_type(config);
-    std::string original_pointer_mode = pointer_mode_for_device_type(original_device_type);
     std::string original_keyboard_layout = config.hid.keyboard_layout;
 
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
@@ -5771,13 +5770,14 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     config.device.device_type = effective_device_type(config);
     config.hid.pointer_mode = pointer_mode_for_device_type(config.device.device_type);
     config.hid.input_backend = normalize_input_backend(config.hid.input_backend);
-    // pointer_mode changes the HID report format. keyboard_layout changes the
-    // Agent's key mapping, but iOS also pins its hardware layout at USB
-    // enumeration. A same-identity UDC bounce can leave iOS with inconsistent
-    // keyboard and pointer state, so both changes require a clean board restart.
-    bool usbhid_restart_required =
-        original_pointer_mode != config.hid.pointer_mode ||
-        original_keyboard_layout != config.hid.keyboard_layout;
+    // device_type is the user-visible source of truth for the USB HID profile;
+    // pointer_mode is derived from it. keyboard_layout changes the Agent's key
+    // mapping, but iOS also pins its hardware layout at USB enumeration. A
+    // same-identity UDC bounce can leave iOS with inconsistent keyboard and
+    // pointer state, so either configuration change requires a clean restart.
+    bool device_type_changed = original_device_type != config.device.device_type;
+    bool keyboard_layout_changed = original_keyboard_layout != config.hid.keyboard_layout;
+    bool usb_hid_reboot_required = device_type_changed || keyboard_layout_changed;
 
     std::string save_error;
     if (!aiden::save_agent_toml(options.agent_config_path.c_str(), config, &save_error)) {
@@ -5789,7 +5789,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         return make_json_error(500, save_error);
     }
 
-    bool agent_restart_scheduled = !usbhid_restart_required;
+    bool agent_restart_scheduled = !usb_hid_reboot_required;
     if (agent_restart_scheduled) {
         schedule_agent_restart();
     }
@@ -5797,14 +5797,14 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
     cJSON_AddStringToObject(response, "message",
-                            usbhid_restart_required
+                            usb_hid_reboot_required
                                 ? "config saved; USB HID configuration changed; reboot required"
                                 : "config saved; agent restarting");
     cJSON_AddBoolToObject(response, "agent_restart_scheduled", agent_restart_scheduled ? 1 : 0);
     cJSON_AddBoolToObject(response, "usb_reenumeration_scheduled", 0);
     cJSON_AddBoolToObject(response, "usbhid_restart_scheduled", 0);
-    cJSON_AddBoolToObject(response, "usbhid_restart_required", usbhid_restart_required ? 1 : 0);
-    cJSON_AddBoolToObject(response, "reboot_required", usbhid_restart_required ? 1 : 0);
+    cJSON_AddBoolToObject(response, "usbhid_restart_required", usb_hid_reboot_required ? 1 : 0);
+    cJSON_AddBoolToObject(response, "reboot_required", usb_hid_reboot_required ? 1 : 0);
     cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
     cJSON_AddItemToObject(response, "config", config_to_json(config));
 
