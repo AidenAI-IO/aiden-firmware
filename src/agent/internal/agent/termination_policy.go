@@ -579,7 +579,7 @@ func isLoopRestrictedActionTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "keyboard_tap", "mouse_click", "mouse_move", "mouse_scroll", "touch_gesture",
 		"quick_action", "enter_text",
-		"search_launch_app", toolBridgeOpenApp:
+		toolSearchLaunchApp, toolOpenApp, toolOpenURL, toolBridgeOpenApp:
 		return true
 	default:
 		return false

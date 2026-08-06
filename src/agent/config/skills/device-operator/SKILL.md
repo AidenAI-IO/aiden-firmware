@@ -16,7 +16,8 @@ metadata:
       mouse_scroll,
       keyboard_tap,
       enter_text,
-      search_launch_app,
+      open_app,
+      open_url,
       request_human_handoff,
       recall_memory,
       save_memory,
@@ -92,7 +93,7 @@ Required pattern:
 
 - Focus coordinates must come from the latest screenshot.
 - Before calling `enter_text`, the latest screenshot must clearly show the actual editable field or composer, and `focus` must be inside that visible field. An app home screen, folder/list view, blank area, or screen that only shows a create/new button is not input-ready; first create/open the document or message and observe its editor.
-- Treat `search_launch_app` success as app-open confirmation only. It does not prove an in-app editor or input field is ready.
+- Treat `open_app` success as app-open confirmation only. It does not prove an in-app editor or input field is ready.
 - Treat `ok:true` as successful text entry. When visual confirmation matters, also inspect the screenshot returned with the tool result.
 - `ok:false` includes a next-step suggestion; follow it instead of inferring internal IME state from fields that are not part of the public result.
 - For Chinese/CJK composition, provide only the exact target text. `enter_text` derives IME parts and keystrokes internally.
@@ -118,7 +119,7 @@ Use this flow for app switcher, recents, returning to Aiden, and cross-app navig
 1. Use global `[device].device_type` as the platform authority. Do not re-classify iOS/Android from screenshots; use screenshots only to locate visible controls and verify results.
 2. Observe the screen.
 3. Try `quick_action` for `app_switch`, home, back, or app search before manual gestures.
-4. Use `search_launch_app` when opening a target app via system search is the clearest path.
+4. Use `open_app` to open a target app; it selects Phone Bridge or visible system search internally.
 5. Verify the result with a screenshot before continuing.
 
 Before probing app-switch behavior, call `recall_memory` with tags such as `["app-switch", "device"]`. If a matching calibration exists for the configured `[device].device_type`, use it directly.
@@ -135,7 +136,7 @@ Selecting an app:
 
 - If the target app card is visible, tap the visible non-overlapping center of that card.
 - If not visible, swipe within the switcher to bring it into view.
-- If still not found, dismiss the switcher and use `search_launch_app`, system search, or the home/app drawer.
+- If still not found, dismiss the switcher and use `open_app`, system search, or the home/app drawer.
 - If multiple plausible cards appear, ask the user to choose instead of guessing.
 
 After successfully opening the switcher via a non-obvious method, call `save_memory` with the configured `[device].device_type`, method, gesture coordinates, and tags `["app-switch", "device"]`.

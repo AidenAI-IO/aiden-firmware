@@ -18,6 +18,7 @@ type ToolSet struct {
 	phoneBridgeRestorer  *PhoneBridgeRestorer
 	textInputHW          *textInputHardwareDeps
 	iosKeyboardIsolation *iosKeyboardIsolationController
+	searchOpenTool       *appSearchOpenTool
 }
 
 type runtimePlatformConfigurable interface {
@@ -83,10 +84,10 @@ var scriptCallableToolNames = map[string]struct{}{
 	"mouse_click":            {},
 	"mouse_move":             {},
 	"mouse_scroll":           {},
-	toolBridgeOpenApp:        {},
+	toolOpenApp:              {},
+	toolOpenURL:              {},
 	"quick_action":           {},
 	"screenshot":             {},
-	"search_launch_app":      {},
 	"touch_gesture":          {},
 	"wait_for_stable_screen": {},
 }
@@ -217,7 +218,8 @@ func (s *ToolSet) RegisterEnterTextTool(models model.Model, platformFn func() st
 		launchDelay:          appSearchOpenLaunchDelay,
 		iosKeyboardIsolation: s.iosKeyboardIsolation,
 	}
-	s.tools["search_launch_app"] = searchOpenTool
+	s.searchOpenTool = searchOpenTool
+	s.refreshOpenAppTool()
 	s.tools["enter_text"] = newPostActionScreenshotTool(entryTool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
 
@@ -238,7 +240,7 @@ func (s *ToolSet) SetRuntimePlatformFn(fn func() string) {
 	if s == nil {
 		return
 	}
-	for _, name := range []string{"enter_text", "quick_action", "search_launch_app"} {
+	for _, name := range []string{"enter_text", "quick_action"} {
 		tool, ok := s.tools[name]
 		if !ok {
 			continue
@@ -247,10 +249,13 @@ func (s *ToolSet) SetRuntimePlatformFn(fn func() string) {
 			configurable.SetPlatformFn(fn)
 		}
 	}
+	if s.searchOpenTool != nil {
+		s.searchOpenTool.SetPlatformFn(fn)
+	}
 }
 
 func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
-	if s == nil || !s.toolAvailable(name) {
+	if s == nil {
 		return nil, false
 	}
 	t, ok := s.tools[name]
@@ -277,23 +282,10 @@ func (s *ToolSet) Names() []string {
 	}
 	names := make([]string, 0, len(s.tools))
 	for name := range s.tools {
-		if !s.toolAvailable(name) {
-			continue
-		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	return names
-}
-
-func (s *ToolSet) toolAvailable(name string) bool {
-	if !isPhoneBridgeToolName(name) {
-		return true
-	}
-	if s.phoneBridge == nil {
-		return false
-	}
-	return phoneBridgeToolAvailable(s.phoneBridge.getStatus(), name)
 }
 
 func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {

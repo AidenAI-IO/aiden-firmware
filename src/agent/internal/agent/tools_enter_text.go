@@ -88,6 +88,10 @@ func (t *EnterTextTool) ArgsSchema() map[string]any {
 }
 
 func (t *EnterTextTool) Call(ctx context.Context, input string) (string, error) {
+	return t.enterTextInner(ctx, input, false)
+}
+
+func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disableBridge bool) (string, error) {
 	started := time.Now()
 	ctx, metrics := withTextInputMetrics(ctx)
 	var output string
@@ -126,8 +130,7 @@ func (t *EnterTextTool) Call(ctx context.Context, input string) (string, error) 
 		if localController == nil {
 			localController = iosKeyboardIsolationControllerFromContext(batchCtx)
 		}
-		bridgeAvailable := t.bridgeAvailable(args)
-		if bridgeAvailable {
+		if !disableBridge && t.bridgeAvailable(args) {
 			bridgeResult, attempted := t.bridgeTool.runClipboardFirstResult(batchCtx, args)
 			if attempted {
 				return enterTextToolResultString(bridgeResult), nil

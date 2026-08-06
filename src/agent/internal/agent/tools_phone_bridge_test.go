@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -30,7 +31,7 @@ func (t iosIsolationPointerTestTool) Call(ctx context.Context, _ string) (string
 
 func TestSearchLaunchAppDescriptionRequiresFollowUpNavigation(t *testing.T) {
 	desc := (&appSearchOpenTool{}).Description()
-	for _, want := range []string{"target app is visibly opened", "does not mean", "editor", "input field is ready", "create/open/navigation step"} {
+	for _, want := range []string{"fallback used internally by open_app", "target app is visibly opened", "Observe the opened screen", "create/open/navigation step"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("search_launch_app description missing %q: %s", want, desc)
 		}
@@ -51,126 +52,137 @@ func TestSearchLaunchAppSchemaInfersPlatformFromDeviceState(t *testing.T) {
 	}
 }
 
-func TestResolveOpenAppTargetsAppAliasStaysSemantic(t *testing.T) {
-	args := openAppArgs{App: " weixin "}
-
-	if err := resolveOpenAppTargets(&args); err != nil {
-		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
-	}
-
-	if args.App != "weixin" {
-		t.Fatalf("app = %q, want semantic alias", args.App)
-	}
-	if args.URL != "" {
-		t.Fatalf("url = %q, want empty", args.URL)
-	}
-}
-
-func TestResolveOpenAppTargetsURL(t *testing.T) {
-	args := openAppArgs{URL: " https://example.com/path?q=1 "}
-
-	if err := resolveOpenAppTargets(&args); err != nil {
-		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
-	}
-
-	if args.URL != "https://example.com/path?q=1" {
-		t.Fatalf("url = %q, want trimmed URL", args.URL)
-	}
-}
-
-func TestResolveOpenAppTargetsRejectsURLInApp(t *testing.T) {
-	args := openAppArgs{App: "https://example.org"}
-
-	if err := resolveOpenAppTargets(&args); err == nil {
-		t.Fatal("resolveOpenAppTargets returned nil error, want URL-in-app rejected")
-	}
-}
-
-func TestResolveOpenAppTargetsPhoneNumber(t *testing.T) {
-	args := openAppArgs{PhoneNumber: " 10086 "}
-
-	if err := resolveOpenAppTargets(&args); err != nil {
-		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
-	}
-
-	if args.PhoneNumber != "10086" {
-		t.Fatalf("phone_number = %q, want trimmed phone number", args.PhoneNumber)
-	}
-}
-
-func TestResolveOpenAppTargetsRejectsInvalidCombinations(t *testing.T) {
-	tests := []openAppArgs{
-		{},
-		{App: "  "},
-		{URL: "not-a-url"},
-		{App: "微信", URL: "https://example.com"},
-		{App: "微信", PhoneNumber: "10086"},
-		{App: "phone", PhoneNumber: "10086"},
-		{URL: "https://example.com", PhoneNumber: "10086"},
-	}
-
-	for _, args := range tests {
-		if err := resolveOpenAppTargets(&args); err == nil {
-			t.Fatalf("resolveOpenAppTargets(%#v) returned nil error, want error", args)
+func TestAppSearchResultPromptPrefersTopmostMatchingResult(t *testing.T) {
+	prompt := buildAppSearchResultPrompt("WeChat")
+	for _, want := range []string{
+		`query "WeChat"`,
+		"direct app-launch result",
+		`localized "Best Search Result" heading`,
+		"localized Settings section",
+		"Settings gear badge",
+		`localized "Search in App" action`,
+		"discard every result that is not a direct app launch",
+		"scan from top to bottom and choose the topmost one",
+		"actual app icon or its directly associated app-launch tile",
+		"Do not use the center of the screen",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("app search result prompt missing %q:\n%s", want, prompt)
 		}
 	}
 }
 
-func TestOpenAppResultMetadataForApp(t *testing.T) {
-	args := openAppArgs{App: "微信"}
-	if err := resolveOpenAppTargets(&args); err != nil {
-		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
-	}
-
-	if got := openAppResultMethod(args); got != "open_app" {
-		t.Fatalf("method = %q, want open_app", got)
-	}
-	if got := openAppResultTarget(args); got != "微信" {
-		t.Fatalf("target = %q, want app alias", got)
-	}
-	if got := openAppResultMechanism(args, "ios_url_scheme"); got != "ios_url_scheme" {
-		t.Fatalf("mechanism = %q, want app-side launch method", got)
+func TestOpenAppDescriptionOwnsRouting(t *testing.T) {
+	description := NewOpenAppTool(nil, nil, nil).Description()
+	for _, want := range []string{"automatically uses Phone Bridge", "otherwise it searches"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("open_app description missing %q: %s", want, description)
+		}
 	}
 }
 
-func TestOpenAppResultMetadataForURL(t *testing.T) {
-	args := openAppArgs{URL: "https://example.com"}
-	if err := resolveOpenAppTargets(&args); err != nil {
-		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
+func TestPhoneBridgeToolDescriptionsOmitSharedStateRouting(t *testing.T) {
+	tools := []langtools.Tool{
+		NewOpenURLTool(nil, nil),
+		NewClipboardTool(nil, nil),
+		NewCalendarTool(nil, nil),
+		NewContactsTool(nil, nil),
+		NewNotificationTool(nil, nil),
 	}
+	for _, tool := range tools {
+		description := tool.Description()
+		for _, unwanted := range []string{"app_pip_enabled", "app_fgs_enabled", "MUST NOT call"} {
+			if strings.Contains(description, unwanted) {
+				t.Errorf("%s description duplicates system prompt guidance %q: %s", tool.Name(), unwanted, description)
+			}
+		}
+	}
+}
 
-	if got := openAppResultMethod(args); got != "open_url" {
-		t.Fatalf("method = %q, want open_url", got)
+func TestOpenURLDescriptionDocumentsSupportedFormats(t *testing.T) {
+	description := NewOpenURLTool(nil, nil).Description()
+	for _, want := range []string{
+		"https://example.com",
+		"http://example.com",
+		"sms:<phone_number>?body=<message>",
+		"mailto:<email_address>?subject=<subject>",
+		"tel:<phone_number>",
+		"Percent-encode",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("open_url description missing %q: %s", want, description)
+		}
 	}
-	if got := openAppResultTarget(args); got != "https://example.com" {
-		t.Fatalf("target = %q, want requested URL", got)
+}
+
+func TestParseRoutedOpenAppArgsKeepsSemanticAlias(t *testing.T) {
+	args, te := parseRoutedOpenAppArgs(`{"app":" weixin "}`)
+	if te != nil {
+		t.Fatalf("parseRoutedOpenAppArgs returned error: %v", te)
 	}
-	if got := openAppResultMechanism(args, "open_url"); got != "open_url" {
+	if args.App != "weixin" {
+		t.Fatalf("app = %q, want semantic alias", args.App)
+	}
+}
+
+func TestParseRoutedOpenAppArgsAcceptsNameAlias(t *testing.T) {
+	args, te := parseRoutedOpenAppArgs(`{"name":"微信","platform":"IOS"}`)
+	if te != nil {
+		t.Fatalf("parseRoutedOpenAppArgs returned error: %v", te)
+	}
+	if args.App != "微信" || args.Platform != "ios" {
+		t.Fatalf("args = %#v, want normalized alias and platform", args)
+	}
+}
+
+func TestParseOpenURLArgsAcceptsSupportedSchemes(t *testing.T) {
+	for _, value := range []string{
+		"http://example.com/path",
+		"https://example.com/path?q=1",
+		"sms:+15551234567?body=example",
+		"mailto:user@example.com?subject=example",
+		"tel:+15551234567",
+	} {
+		args, te := parseOpenURLArgs(jsonString(map[string]string{"url": " " + value + " "}))
+		if te != nil {
+			t.Fatalf("parseOpenURLArgs(%q) returned error: %v", value, te)
+		}
+		if args.URL != value {
+			t.Fatalf("url = %q, want %q", args.URL, value)
+		}
+	}
+}
+
+func TestParseOpenURLArgsRejectsUnsupportedScheme(t *testing.T) {
+	if _, te := parseOpenURLArgs(`{"url":"weixin://scan"}`); te == nil {
+		t.Fatal("parseOpenURLArgs returned nil error, want unsupported URL rejected")
+	}
+}
+
+func TestBridgeOpenResultMechanismNormalizesAndroidPackage(t *testing.T) {
+	if got := bridgeOpenResultMechanism("launch_package"); got != "android_package" {
+		t.Fatalf("mechanism = %q, want android_package", got)
+	}
+	if got := bridgeOpenResultMechanism("open_url"); got != "open_url" {
 		t.Fatalf("mechanism = %q, want open_url", got)
 	}
 }
 
-func TestOpenAppResultMetadataForDial(t *testing.T) {
-	args := openAppArgs{PhoneNumber: "10086"}
-	if err := resolveOpenAppTargets(&args); err != nil {
-		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
-	}
-
-	if got := openAppResultMethod(args); got != "dial" {
-		t.Fatalf("method = %q, want dial", got)
-	}
-	if got := openAppResultTarget(args); got != "10086" {
-		t.Fatalf("target = %q, want phone number", got)
-	}
-	if got := openAppResultMechanism(args, "dial"); got != "dial" {
-		t.Fatalf("mechanism = %q, want dial", got)
-	}
-}
-
-func TestSearchOpenAppToolAvailable(t *testing.T) {
+func TestSearchOpenAppToolIsInternalToOpenApp(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
-	if _, ok := runtime.tools.Get("search_launch_app"); !ok {
-		t.Fatal("expected search_launch_app tool to be registered")
+	if _, ok := runtime.tools.Get(toolSearchLaunchApp); ok {
+		t.Fatal("search_launch_app must not be exposed as a standalone tool")
+	}
+	if runtime.tools.searchOpenTool == nil {
+		t.Fatal("expected internal search_launch_app implementation")
+	}
+	openApp, ok := runtime.tools.Get(toolOpenApp)
+	if !ok {
+		t.Fatal("expected public open_app router without Phone Bridge registration")
+	}
+	visual, ok := openApp.(visualObservationTool)
+	if !ok || !visual.ReturnsVisualObservation() {
+		t.Fatal("open_app must return a post-action screenshot observation")
 	}
 }
 
@@ -213,6 +225,50 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 	}
 }
 
+func TestSearchLaunchAppTextEntryDisablesBridgePath(t *testing.T) {
+	pb := newTestPhoneBridge(t)
+	pb.platform = "android"
+	pb.connected = true
+	pb.appState = "background"
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	hw := &textInputHardwareDeps{
+		pointerMode:  "touchscreen",
+		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: keyboardText,
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}
+	bridgeWrites := 0
+	entryTool := &EnterTextTool{
+		engine: newFastTextInputEngine(*hw, vision),
+		bridgeTool: &textInputBridge{
+			hw:       hw,
+			vision:   vision,
+			bridgeFn: func() *PhoneBridge { return pb },
+			clipboardWriteFn: func(context.Context, *PhoneBridge, string) error {
+				bridgeWrites++
+				return context.Canceled
+			},
+		},
+	}
+
+	err := enterSearchQuery(context.Background(), appSearchOpenFlowConfig{
+		hw:        hw,
+		vision:    vision,
+		platform:  "android",
+		entryTool: entryTool,
+	}, "Aiden", false)
+	if err != nil {
+		t.Fatalf("enterSearchQuery() error = %v", err)
+	}
+	if bridgeWrites != 0 {
+		t.Fatalf("bridge writes = %d, want search_launch_app text entry to disable Bridge", bridgeWrites)
+	}
+	if len(keyboardText.calls) == 0 {
+		t.Fatal("keyboard_text was not called; want local text-entry path")
+	}
+}
+
 func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T) {
 	vision := &stubTextInputVision{}
 	quick := &recordingTextInputTool{name: "quick_action", out: "ok"}
@@ -239,7 +295,7 @@ func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T
 			return bridgeAppOpenResult{Opened: true, Reason: "WeChat visible"}, nil
 		},
 	}
-	toolSet := &ToolSet{tools: map[string]langtools.Tool{"search_launch_app": tool}}
+	toolSet := &ToolSet{tools: map[string]langtools.Tool{}, searchOpenTool: tool}
 	toolSet.SetRuntimePlatformFn(func() string { return "android" })
 
 	out, err := tool.Call(context.Background(), `{"app":"WeChat"}`)
@@ -439,77 +495,156 @@ func TestOpenAppMissingArgsReturnsInvalidArguments(t *testing.T) {
 	}
 }
 
-func TestOpenAppNameFieldIsNotAccepted(t *testing.T) {
-	tool := &OpenAppTool{}
-	ctx, _ := WithToolError(context.Background())
-	out, err := tool.Call(ctx, `{"name":"微信"}`)
-	if err != nil {
-		t.Fatalf("Call returned err: %v", err)
+func TestOpenAppDisconnectedRoutesToSearchLaunchApp(t *testing.T) {
+	search := &recordingTextInputTool{name: toolSearchLaunchApp, out: `{"ok":true,"target":"小红书"}`}
+	tool := NewOpenAppTool(nil, nil, search)
+	var logs []string
+	tool.logf = func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
 	}
-	te := ToolErrorFromContext(ctx)
-	if te == nil {
-		t.Fatalf("expected structured ToolError on context; got nil")
-	}
-	if te.Code != CodeInvalidArguments {
-		t.Errorf("Code = %q want %q", te.Code, CodeInvalidArguments)
-	}
-	if out != te.Message {
-		t.Errorf("Call output (%q) must equal Error.Message (%q)", out, te.Message)
-	}
-}
-
-func TestOpenAppDisconnectedGuidesUIFallbackBeforeHandoff(t *testing.T) {
-	tool := &OpenAppTool{}
 	ctx, _ := WithToolError(context.Background())
 	out, err := tool.Call(ctx, `{"app":"小红书"}`)
 	if err != nil {
 		t.Fatalf("Call returned err: %v", err)
 	}
-	te := ToolErrorFromContext(ctx)
-	if te == nil || te.Code != CodeBridgeNotConnected {
-		t.Fatalf("expected bridge_not_connected; got %+v", te)
+	if got := ToolErrorFromContext(ctx); got != nil {
+		t.Fatalf("unexpected ToolError: %+v", got)
 	}
-	for _, want := range []string{"call screenshot first", "search_launch_app", "request_human_handoff only after"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("disconnected output missing %q: %s", want, out)
-		}
+	if out != search.out {
+		t.Fatalf("output = %s, want search output %s", out, search.out)
 	}
-	if got := te.Details["fallback"]; got != phoneBridgeOpenAppRecoveryGuidance(PhoneBridgeStatus{}) {
-		t.Fatalf("fallback detail = %q, want ordered recovery guidance", got)
+	if len(search.calls) != 1 || !strings.Contains(search.calls[0], `"app":"小红书"`) {
+		t.Fatalf("search calls = %#v, want semantic app", search.calls)
+	}
+	if got := strings.Join(logs, "\n"); !strings.Contains(got, "selected=search_launch_app") || !strings.Contains(got, "reason=phone_bridge_unavailable") {
+		t.Fatalf("route logs = %q, want direct search route and reason", got)
 	}
 }
 
-func TestOpenAppDisconnectedAndroidDoesNotMentionDynamicIsland(t *testing.T) {
+func TestOpenAppConnectedForegroundRoutesToBridge(t *testing.T) {
+	var sent BridgeCommand
+	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+		sent = cmd
+		return BridgeCommandResponse{ID: cmd.ID, Method: "ios_url_scheme"}
+	})
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "active"
+	bridge.mu.Unlock()
+	search := &recordingTextInputTool{name: toolSearchLaunchApp, out: `{"ok":true}`}
+	tool := NewOpenAppTool(bridge, nil, search)
+
+	out, err := tool.Call(context.Background(), `{"app":"微信"}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	if sent.Type != "open_app" || sent.App != "微信" || sent.URL != "" {
+		t.Fatalf("sent command = %#v, want semantic app command", sent)
+	}
+	if len(search.calls) != 0 {
+		t.Fatalf("search calls = %#v, want bridge route", search.calls)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil || result["ok"] != true || result["method"] != "open_app" {
+		t.Fatalf("output = %s, want bridge app result: %v", out, err)
+	}
+}
+
+func TestOpenAppBridgeFailureFallsBackToSearchLaunchApp(t *testing.T) {
+	var sent BridgeCommand
+	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+		sent = cmd
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeToolExecutionFailed, "bridge launch failed"),
+		}
+	})
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "active"
+	bridge.mu.Unlock()
+	search := &recordingTextInputTool{name: toolSearchLaunchApp, out: `{"ok":true,"target":"微信"}`}
+	tool := NewOpenAppTool(bridge, nil, search)
+	var logs []string
+	tool.logf = func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"app":"微信","platform":"ios"}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	if sent.Type != "open_app" || sent.App != "微信" {
+		t.Fatalf("sent command = %#v, want failed semantic bridge launch", sent)
+	}
+	if len(search.calls) != 1 || !strings.Contains(search.calls[0], `"app":"微信"`) || !strings.Contains(search.calls[0], `"platform":"ios"`) {
+		t.Fatalf("search calls = %#v, want one semantic fallback call", search.calls)
+	}
+	if out != search.out {
+		t.Fatalf("output = %s, want search fallback output %s", out, search.out)
+	}
+	if te := ToolErrorFromContext(ctx); te != nil {
+		t.Fatalf("successful search fallback retained bridge ToolError: %+v", te)
+	}
+	if got := strings.Join(logs, "\n"); !strings.Contains(got, "selected=bridge_open_app") ||
+		!strings.Contains(got, "selected=search_launch_app") ||
+		!strings.Contains(got, "reason=bridge_failed") ||
+		!strings.Contains(got, `bridge_error_code="tool_execution_failed"`) {
+		t.Fatalf("route logs = %q, want bridge selection and search fallback details", got)
+	}
+}
+
+func TestOpenURLSendsURLTarget(t *testing.T) {
+	var sent BridgeCommand
+	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+		sent = cmd
+		return BridgeCommandResponse{ID: cmd.ID, Method: "open_url"}
+	})
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "active"
+	bridge.mu.Unlock()
+	tool := NewOpenURLTool(bridge, nil)
+
+	const target = "sms:+15551234567?body=example"
+	out, err := tool.Call(context.Background(), jsonString(map[string]string{"url": target}))
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	if sent.Type != "open_app" || sent.URL != target || sent.App != "" {
+		t.Fatalf("sent command = %#v, want URL-only bridge command", sent)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil || result["method"] != "open_url" || result["target"] != target {
+		t.Fatalf("output = %s, want open_url result: %v", out, err)
+	}
+	properties := NewOpenURLTool(nil, nil).ArgsSchema()["properties"].(map[string]any)
+	if _, ok := properties["url"]; !ok || len(properties) != 1 {
+		t.Fatalf("open_url schema = %#v, want URL-only input", properties)
+	}
+}
+
+func TestOpenAppDisconnectedAndroidRoutesToSearch(t *testing.T) {
 	bridge := newPhoneBridgeForTest()
 	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.mu.Lock()
 	bridge.platform = "android"
 	bridge.mu.Unlock()
-	tool := NewOpenAppTool(bridge, nil)
+	search := &recordingTextInputTool{name: toolSearchLaunchApp, out: `{"ok":true}`}
+	tool := NewOpenAppTool(bridge, nil, search)
 
 	ctx, _ := WithToolError(context.Background())
-	out, err := tool.Call(ctx, `{"app":"微信"}`)
+	_, err := tool.Call(ctx, `{"app":"微信","platform":"android"}`)
 	if err != nil {
 		t.Fatalf("Call returned err: %v", err)
 	}
-	te := ToolErrorFromContext(ctx)
-	if te == nil || te.Code != CodeBridgeNotConnected {
-		t.Fatalf("expected bridge_not_connected; got %+v", te)
-	}
-	if strings.Contains(out, "Dynamic Island") {
-		t.Fatalf("Android disconnected output should not mention Dynamic Island: %s", out)
-	}
-	for _, want := range []string{"Android", "Aiden open in the foreground", "search_launch_app"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("Android disconnected output missing %q: %s", want, out)
-		}
-	}
-	if fallback, _ := te.Details["fallback"].(string); strings.Contains(fallback, "Dynamic Island") {
-		t.Fatalf("Android fallback should not mention Dynamic Island: %s", fallback)
+	if len(search.calls) != 1 || !strings.Contains(search.calls[0], `"platform":"android"`) {
+		t.Fatalf("search calls = %#v, want Android fallback", search.calls)
 	}
 }
 
-func TestOpenAppConnectedAndroidBackgroundRequiresForeground(t *testing.T) {
+func TestOpenAppConnectedAndroidBackgroundRoutesToSearch(t *testing.T) {
 	sent := false
 	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
 		sent = true
@@ -520,7 +655,8 @@ func TestOpenAppConnectedAndroidBackgroundRequiresForeground(t *testing.T) {
 	bridge.appState = "background"
 	bridge.appStateAt = time.Now()
 	bridge.mu.Unlock()
-	tool := NewOpenAppTool(bridge, nil)
+	search := &recordingTextInputTool{name: toolSearchLaunchApp, out: `{"ok":true}`}
+	tool := NewOpenAppTool(bridge, nil, search)
 
 	ctx, _ := WithToolError(context.Background())
 	out, err := tool.Call(ctx, `{"app":"微信"}`)
@@ -530,32 +666,36 @@ func TestOpenAppConnectedAndroidBackgroundRequiresForeground(t *testing.T) {
 	if sent {
 		t.Fatal("background Android open_app was sent over Phone Bridge")
 	}
-	te := ToolErrorFromContext(ctx)
-	if te == nil || te.Code != CodeBridgeNotConnected {
-		t.Fatalf("expected bridge_not_connected; got %+v", te)
-	}
-	if strings.Contains(out, "Dynamic Island") {
-		t.Fatalf("Android background output should not mention Dynamic Island: %s", out)
-	}
-	for _, want := range []string{"Android", "foreground", "search_launch_app"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("Android background output missing %q: %s", want, out)
-		}
+	if out != search.out || len(search.calls) != 1 {
+		t.Fatalf("output=%s search calls=%#v, want search fallback", out, search.calls)
 	}
 }
 
-func TestResolveOpenAppTargetsUnknownAppStaysSemantic(t *testing.T) {
-	args := openAppArgs{App: "NoSuchApp12345"}
+func TestOpenAppConnectedUnknownPlatformBackgroundRoutesToSearch(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
+	bridge.mu.Lock()
+	bridge.connected = true
+	bridge.appState = "background"
+	bridge.mu.Unlock()
+	search := &recordingTextInputTool{name: toolSearchLaunchApp, out: `{"ok":true}`}
+	tool := NewOpenAppTool(bridge, nil, search)
 
-	if err := resolveOpenAppTargets(&args); err != nil {
-		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
+	if _, err := tool.Call(context.Background(), `{"app":"Maps"}`); err != nil {
+		t.Fatalf("Call returned err: %v", err)
 	}
+	if len(search.calls) != 1 {
+		t.Fatalf("search calls = %#v, want fallback for background state", search.calls)
+	}
+}
 
+func TestParseRoutedOpenAppArgsUnknownAppStaysSemantic(t *testing.T) {
+	args, te := parseRoutedOpenAppArgs(`{"app":"NoSuchApp12345"}`)
+	if te != nil {
+		t.Fatalf("parseRoutedOpenAppArgs returned error: %v", te)
+	}
 	if args.App != "NoSuchApp12345" {
 		t.Fatalf("app = %q, want semantic alias", args.App)
-	}
-	if args.URL != "" {
-		t.Fatalf("url = %q, want empty", args.URL)
 	}
 }
 
@@ -688,7 +828,7 @@ func TestClipboardReadUsesPiPBackgroundQueueWhenActive(t *testing.T) {
 	}
 }
 
-func TestPhoneBridgeDataToolsRestoreFromDynamicIslandBeforeCommand(t *testing.T) {
+func TestPhoneBridgeToolsRestoreFromDynamicIslandBeforeCommand(t *testing.T) {
 	tests := []struct {
 		name        string
 		commandType string
@@ -696,6 +836,14 @@ func TestPhoneBridgeDataToolsRestoreFromDynamicIslandBeforeCommand(t *testing.T)
 		response    json.RawMessage
 		newTool     func(*PhoneBridge, *PhoneBridgeRestorer) langtools.Tool
 	}{
+		{
+			name:        "open URL",
+			commandType: "open_app",
+			input:       `{"url":"https://example.com"}`,
+			newTool: func(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) langtools.Tool {
+				return NewOpenURLTool(bridge, restorer)
+			},
+		},
 		{
 			name:        "clipboard read",
 			commandType: "clipboard_read",

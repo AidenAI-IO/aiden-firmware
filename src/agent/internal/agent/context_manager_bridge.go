@@ -116,7 +116,7 @@ func toolResultMessage(toolCallID, toolName string, prepared PreparedToolResult)
 }
 
 func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager, content llms.MessageContent) contextmanager.Message {
-	message := contextmanager.Message{Role: messageRoleFromLLM(content.Role)}
+	message := contextmanager.Message{Role: contextmanager.MessageRoleState}
 	for _, part := range content.Parts {
 		switch typed := part.(type) {
 		case llms.TextContent:
