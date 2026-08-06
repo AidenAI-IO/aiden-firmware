@@ -79,15 +79,15 @@ screenshot_keep_n = 3
 screenshot_prune_interval = 2
 input_mode = "text"
 
-[providers.openrouter]
-provider = "openrouter"
+[model_providers.openrouter-main]
+type = "openrouter"
 token_env = "OPENROUTER_API_KEY"
 
 [device]
 device_type = "iOS"
 
 [model]
-provider = "openrouter"
+provider = "openrouter-main"
 model = "bytedance-seed/seed-2.0-lite"
 temperature = 0.2
 max_response_tokens = 1000
@@ -113,7 +113,7 @@ android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
-> `token_env` lives on a named provider (`[providers.<name>]`), not on `[model]`, and means the key is read from that environment variable. In Config Web, type `$VAR_NAME` into the provider's API Key box to set it. Overlay example configs may also write the `api_key` field directly; for production, prefer environment variables or a device-side secure injection method.
+> `token_env` lives on a named provider (`[model_providers.<name>]`), not on `[model]`, and means the key is read from that environment variable. In Config Web, type `$VAR_NAME` into the provider's API Key box to set it. Overlay example configs may also write the `api_key` field directly; for production, prefer environment variables or a device-side secure injection method.
 
 ### STT voice mode
 
@@ -138,27 +138,34 @@ voice_tool_call_speech = true
 voice_progress_speech_enabled = true
 voice_max_response_tokens = 400
 
-[providers.openrouter]
-provider = "openrouter"
+[model_providers.openrouter-main]
+type = "openrouter"
 token_env = "OPENROUTER_API_KEY"
 
 [device]
 device_type = "iOS"
 
 [model]
-provider = "openrouter"
+provider = "openrouter-main"
 model = "bytedance-seed/seed-2.0-lite"
 
-[stt]
-provider = "openrouter"
-api_key = "OPENROUTER_API_KEY"
+[stt_providers.openrouter-main]
+type = "openrouter"
+token_env = "OPENROUTER_API_KEY"
 model = "qwen/qwen3-asr-flash-2026-02-10"
 
-[tts]
-provider = "minimax"
+[stt]
+provider = "openrouter-main"
+
+[tts_providers.minimax-main]
+type = "minimax"
+token_env = "MINIMAX_API_KEY"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
+
+[tts]
+provider = "minimax-main"
 speed = 1.0
 
 [audio]
@@ -252,7 +259,7 @@ parse_failure_limit = 3
 The three stall-score thresholds must satisfy
 `soft_notice_stall_score < restrict_tools_stall_score < terminate_stall_score`.
 
-## `[providers.<name>]`
+## `[model_providers.<name>]`
 
 Optional named provider configurations. Each section holds the credentials for
 one endpoint, and `[model]` references it by putting the name in its `provider`
@@ -261,31 +268,36 @@ so switching is a one-line change instead of a re-entry of keys.
 
 | Field       | Description                                                                                        |
 | ----------- | -------------------------------------------------------------------------------------------------- |
-| `provider`  | Required provider type: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`   |
+| `type`      | Required provider type: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`   |
 | `api_key`   | API key written directly                                                                           |
 | `token_env` | Read the API key from the specified environment variable                                            |
 | `base_url`  | Custom OpenAI-compatible endpoint; same `openai`/`ollama` restriction as `[model]`                  |
 
 ```toml
-[providers.openai-work]
-provider = "openai"
+[model_providers.openai-work]
+type = "openai"
 api_key = "sk-..."
 
-[providers.ollama-local]
-provider = "ollama"
+[model_providers.ollama-local]
+type = "ollama"
 base_url = "http://127.0.0.1:11434"
 
 [model]
-provider = "openai-work"   # references [providers.openai-work]
+provider = "openai-work"   # references [model_providers.openai-work]
 model = "gpt-5.5"
 ```
 
-On load, a `provider` value that names a section under `[providers]` is replaced
+On load, a `provider` value that names a section under `[model_providers]` is replaced
 by that section's provider type, and its `api_key`, `token_env` and `base_url`
 fill in any field the model section leaves empty — values set directly on
 `[model]` always win. `token_env` is the exception: it exists only on a named
 provider, so the provider's value always applies. A `provider` that matches no section is treated as a
 provider type, so existing configs keep working unchanged.
+
+The legacy `[providers.<name>]` namespace and record-level `provider` field are
+accepted only when reading existing files. Saving always writes
+`[model_providers.<name>]` and `type`. If both old and canonical names are
+present, the canonical namespace and `type` field take precedence.
 
 A `provider` that is neither a section name nor a known provider type is
 rejected at load, so a typo or a reference left behind after deleting a section
@@ -297,7 +309,7 @@ See `docs/04-agent/model-providers.md`.
 
 | Field                     | Description                                                                                                                                                                                                                                          |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider`                | A provider type, or the name of a `[providers.<name>]` section. Types: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
+| `provider`                | A provider type, or the name of a `[model_providers.<name>]` section. Types: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
 | `base_url`                | Custom OpenAI-compatible endpoint. Only `openai` and `ollama` accept a `base_url` override; other providers use their built-in endpoints and a stored value is dropped on load. |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
@@ -342,8 +354,8 @@ To read the key from the environment instead of writing it here, put it on a
 named provider and reference that:
 
 ```toml
-[providers.ark]
-provider = "volcengine"
+[model_providers.ark]
+type = "volcengine"
 token_env = "ARK_API_KEY"
 
 [model]
@@ -438,13 +450,13 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 
 ## `[tts_providers.<name>]` and `[stt_providers.<name>]`
 
-Named voice provider configurations, the same shape `[providers.<name>]` gives
+Named voice provider configurations, the same shape `[model_providers.<name>]` gives
 `[model]`. Each section holds the credentials and settings for one voice service,
 and `[tts]` / `[stt]` reference one by putting the name in their own `provider`
 field. Several providers stay configured at once, so switching is a one-line
 change instead of a re-entry of keys.
 
-Unlike `[providers.<name>]`, these are separate namespaces: the `[tts]`
+Unlike `[model_providers.<name>]`, these are separate namespaces: the `[tts]`
 `volcengine` provider speaks a different protocol with its own host and
 credentials than the Ark LLM provider of the same name, so one map could not
 serve both. Each namespace also validates its own provider types — a TTS type is
@@ -455,17 +467,17 @@ same service (different keys, different voices) stay configured together.
 
 ```toml
 [tts_providers.minimax-main]
-provider = "minimax"
+type = "minimax"
 api_key = "sk-aaa"
 voice_id = "male-qn-qingse"
 
 [tts_providers.minimax-alt]     # same type, second account
-provider = "minimax"
+type = "minimax"
 api_key = "sk-bbb"
 voice_id = "female-shaonv"
 
 [tts_providers.fish]
-provider = "fish-audio"
+type = "fish-audio"
 token_env = "FISH_API_KEY"
 reference_id = "abc123"
 
@@ -474,7 +486,7 @@ provider = "minimax-main"       # references [tts_providers.minimax-main]
 speed = 1.0
 
 [stt_providers.tencent]
-provider = "tencent-asr"
+type = "tencent-asr"
 app_id = "123"
 secret_id = "AKID..."
 secret_key = "..."
@@ -492,8 +504,8 @@ changes; it stays on `[tts]` / `[stt]` when it holds regardless of provider.
 
 | | Record fields | Stays on the flat section |
 | ---- | ---- | ---- |
-| TTS | `provider` (type), `api_key`, `token_env`, `model`, `voice_id`, `emotion`, `reference_id` | `provider` (reference), `speed` |
-| STT | `provider` (type), `api_key`, `token_env`, `model`, `base_url`, `app_id`, `secret_id`, `secret_key`, `region`, `engine_model_type` | `provider` (reference), `language` |
+| TTS | `type`, `api_key`, `token_env`, `model`, `voice_id`, `emotion`, `reference_id` | `provider` (reference), `speed` |
+| STT | `type`, `api_key`, `token_env`, `model`, `base_url`, `app_id`, `secret_id`, `secret_key`, `region`, `engine_model_type` | `provider` (reference), `language` |
 
 `speed` is a listening preference and `language` a transcription preference:
 neither should change because the voice changed, so both stay global.
@@ -504,6 +516,9 @@ with `$` is stored as `token_env`.
 
 ### Backward compatibility
 
+- The record-level `provider` field remains read-only compatible in all three
+  provider maps. `type` wins if both fields are present, and the next save emits
+  only `type`.
 - A bare provider type in `[tts]` / `[stt]` keeps working. `provider = "minimax-cn"`
   with a flat `api_key` needs no migration to keep speaking.
 - Flat credentials on `[tts]` / `[stt]` are upgraded to records on load, keyed
@@ -622,25 +637,25 @@ If you need to store the keys of multiple providers in the same config, use name
 
 ```toml
 [tts_providers.minimax-main]
-provider = "minimax"
+type = "minimax"
 api_key = "..."
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 
 [tts_providers.fish-main]
-provider = "fish-audio"
+type = "fish-audio"
 api_key = "..."
 model = "s2-pro"
 reference_id = "98655a12fa944e26b274c535e5e03842"
 
 [tts_providers.alicloud-main]
-provider = "alicloud"
+type = "alicloud"
 api_key = "..."
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
 
 [tts_providers.volcengine-main]
-provider = "volcengine"
+type = "volcengine"
 api_key = "..."
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"

@@ -60,17 +60,17 @@ TEST_CASE("agent_toml loads named voice providers") {
     REQUIRE(err.empty());
 
     REQUIRE(cfg.tts_providers.size() == 2);
-    CHECK(cfg.tts_providers["minimax-main"].provider == "minimax");
+    CHECK(cfg.tts_providers["minimax-main"].type == "minimax");
     CHECK(cfg.tts_providers["minimax-main"].api_key == "sk-aaa");
     CHECK(cfg.tts_providers["minimax-main"].voice_id == "male-qn-qingse");
     CHECK(cfg.tts_providers["minimax-main"].emotion == "happy");
-    CHECK(cfg.tts_providers["fish"].provider == "fish-audio");
+    CHECK(cfg.tts_providers["fish"].type == "fish-audio");
     CHECK(cfg.tts_providers["fish"].token_env == "FISH_KEY");
     CHECK(cfg.tts_providers["fish"].reference_id == "ref-abc");
     CHECK(cfg.tts_providers["fish"].model == "s2-pro");
 
     REQUIRE(cfg.stt_providers.size() == 2);
-    CHECK(cfg.stt_providers["tencent"].provider == "tencent-asr");
+    CHECK(cfg.stt_providers["tencent"].type == "tencent-asr");
     CHECK(cfg.stt_providers["tencent"].app_id == "1234");
     CHECK(cfg.stt_providers["tencent"].secret_id == "AKID-xxx");
     CHECK(cfg.stt_providers["tencent"].secret_key == "secret-yyy");
@@ -94,13 +94,13 @@ TEST_CASE("agent_toml round-trips named voice providers") {
     cfg.search.provider = "duckduckgo";
 
     aiden::TTSProviderToml tts_record;
-    tts_record.provider = "fish-audio";
+    tts_record.type = "fish-audio";
     tts_record.api_key = "sk-fish";
     tts_record.reference_id = "ref-abc";
     cfg.tts_providers["fish"] = tts_record;
 
     aiden::STTProviderToml stt_record;
-    stt_record.provider = "tencent-asr";
+    stt_record.type = "tencent-asr";
     stt_record.app_id = "1234";
     stt_record.secret_key = "secret-yyy";
     cfg.stt_providers["tencent"] = stt_record;
@@ -120,11 +120,11 @@ TEST_CASE("agent_toml round-trips named voice providers") {
     REQUIRE(err.empty());
 
     REQUIRE(loaded.tts_providers.size() == 1);
-    CHECK(loaded.tts_providers["fish"].provider == "fish-audio");
+    CHECK(loaded.tts_providers["fish"].type == "fish-audio");
     CHECK(loaded.tts_providers["fish"].api_key == "sk-fish");
     CHECK(loaded.tts_providers["fish"].reference_id == "ref-abc");
     REQUIRE(loaded.stt_providers.size() == 1);
-    CHECK(loaded.stt_providers["tencent"].provider == "tencent-asr");
+    CHECK(loaded.stt_providers["tencent"].type == "tencent-asr");
     CHECK(loaded.stt_providers["tencent"].app_id == "1234");
     CHECK(loaded.stt_providers["tencent"].secret_key == "secret-yyy");
     CHECK(loaded.tts.provider == "fish");
@@ -162,7 +162,7 @@ TEST_CASE("agent_toml migrates flat voice credentials into records") {
     REQUIRE(err.empty());
 
     REQUIRE(cfg.tts_providers.count("minimax-cn") == 1);
-    CHECK(cfg.tts_providers["minimax-cn"].provider == "minimax-cn");
+    CHECK(cfg.tts_providers["minimax-cn"].type == "minimax-cn");
     CHECK(cfg.tts_providers["minimax-cn"].api_key == "sk-flat");
     CHECK(cfg.tts_providers["minimax-cn"].voice_id == "male-qn-qingse");
 
@@ -186,7 +186,7 @@ TEST_CASE("agent_toml migrates flat voice credentials into records") {
 }
 
 // A record name that save_agent_toml could not write back must be rejected at
-// load, matching the [providers.*] contract: accepting it yields a config that
+// load, matching the [model_providers.*] contract: accepting it yields a config that
 // loads cleanly but fails every later save.
 TEST_CASE("agent_toml rejects voice provider names it cannot write back") {
     struct Case {

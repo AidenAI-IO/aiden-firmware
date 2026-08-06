@@ -46,7 +46,7 @@ type ConfigTestCheck struct {
 // Keep this struct in lockstep with config_to_json(); the round-trip is covered
 // by TestConfigCheck_WireFormatContract.
 type webConfigDTO struct {
-	Providers          map[string]providerDTO        `json:"providers,omitempty"`
+	ModelProviders     map[string]modelProviderDTO   `json:"model_providers,omitempty"`
 	TTSProviders       map[string]ttsProviderDTO     `json:"tts_providers,omitempty"`
 	STTProviders       map[string]sttProviderDTO     `json:"stt_providers,omitempty"`
 	Model              modelDTO                      `json:"model"`
@@ -66,6 +66,27 @@ type webConfigDTO struct {
 	Agent              agentDTO                      `json:"agent"`
 }
 
+// UnmarshalJSON accepts the former top-level providers key. The canonical
+// model_providers key wins whenever both are present.
+func (d *webConfigDTO) UnmarshalJSON(data []byte) error {
+	type canonicalDTO webConfigDTO
+	if err := json.Unmarshal(data, (*canonicalDTO)(d)); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if _, canonical := fields["model_providers"]; canonical {
+		return nil
+	}
+	legacy, exists := fields["providers"]
+	if !exists {
+		return nil
+	}
+	return json.Unmarshal(legacy, &d.ModelProviders)
+}
+
 type modelDTO struct {
 	Provider             string   `json:"provider"`
 	APIKey               string   `json:"api_key"`
@@ -78,14 +99,39 @@ type modelDTO struct {
 	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
 }
 
-// providerDTO mirrors a single [providers.<name>] section. Named providers hold
+// modelProviderDTO mirrors a single [model_providers.<name>] section. Named providers hold
 // the credentials; a model section references one by putting the provider name
 // in its own "provider" field.
-type providerDTO struct {
-	Provider string `json:"provider"`
+type modelProviderDTO struct {
+	Type     string `json:"type"`
 	APIKey   string `json:"api_key,omitempty"`
 	TokenEnv string `json:"token_env,omitempty"`
 	BaseURL  string `json:"base_url,omitempty"`
+}
+
+func (d *modelProviderDTO) UnmarshalJSON(data []byte) error {
+	type canonical modelProviderDTO
+	var fields struct {
+		canonical
+		Type           *string `json:"type"`
+		LegacyProvider string  `json:"provider"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	typePresent, err := jsonFieldPresent(data, "type")
+	if err != nil {
+		return err
+	}
+	*d = modelProviderDTO(fields.canonical)
+	if typePresent {
+		if fields.Type != nil {
+			d.Type = *fields.Type
+		}
+		return nil
+	}
+	d.Type = fields.LegacyProvider
+	return nil
 }
 
 // ttsProviderDTO mirrors a single [tts_providers.<name>] section. [tts]
@@ -93,7 +139,7 @@ type providerDTO struct {
 // is absent on purpose: it is a listening preference that stays global on [tts]
 // so switching voice never changes playback speed.
 type ttsProviderDTO struct {
-	Provider    string `json:"provider"`
+	Type        string `json:"type"`
 	APIKey      string `json:"api_key,omitempty"`
 	TokenEnv    string `json:"token_env,omitempty"`
 	Model       string `json:"model,omitempty"`
@@ -102,10 +148,35 @@ type ttsProviderDTO struct {
 	ReferenceID string `json:"reference_id,omitempty"`
 }
 
+func (d *ttsProviderDTO) UnmarshalJSON(data []byte) error {
+	type canonical ttsProviderDTO
+	var fields struct {
+		canonical
+		Type           *string `json:"type"`
+		LegacyProvider string  `json:"provider"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	typePresent, err := jsonFieldPresent(data, "type")
+	if err != nil {
+		return err
+	}
+	*d = ttsProviderDTO(fields.canonical)
+	if typePresent {
+		if fields.Type != nil {
+			d.Type = *fields.Type
+		}
+		return nil
+	}
+	d.Type = fields.LegacyProvider
+	return nil
+}
+
 // sttProviderDTO mirrors a single [stt_providers.<name>] section. language stays
 // on [stt]: it holds regardless of which provider transcribes.
 type sttProviderDTO struct {
-	Provider        string `json:"provider"`
+	Type            string `json:"type"`
 	APIKey          string `json:"api_key,omitempty"`
 	TokenEnv        string `json:"token_env,omitempty"`
 	Model           string `json:"model,omitempty"`
@@ -115,6 +186,40 @@ type sttProviderDTO struct {
 	SecretKey       string `json:"secret_key,omitempty"`
 	Region          string `json:"region,omitempty"`
 	EngineModelType string `json:"engine_model_type,omitempty"`
+}
+
+func (d *sttProviderDTO) UnmarshalJSON(data []byte) error {
+	type canonical sttProviderDTO
+	var fields struct {
+		canonical
+		Type           *string `json:"type"`
+		LegacyProvider string  `json:"provider"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	typePresent, err := jsonFieldPresent(data, "type")
+	if err != nil {
+		return err
+	}
+	*d = sttProviderDTO(fields.canonical)
+	if typePresent {
+		if fields.Type != nil {
+			d.Type = *fields.Type
+		}
+		return nil
+	}
+	d.Type = fields.LegacyProvider
+	return nil
+}
+
+func jsonFieldPresent(data []byte, key string) (bool, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return false, err
+	}
+	_, exists := fields[key]
+	return exists, nil
 }
 
 type ttsDTO struct {
@@ -317,9 +422,9 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 	}
 
 	return agent.Config{
-		Providers:    d.providersToAgentConfig(),
-		TTSProviders: d.ttsProvidersToAgentConfig(),
-		STTProviders: d.sttProvidersToAgentConfig(),
+		ModelProviders: d.modelProvidersToAgentConfig(),
+		TTSProviders:   d.ttsProvidersToAgentConfig(),
+		STTProviders:   d.sttProvidersToAgentConfig(),
 		Model: agent.ModelConfig{
 			Provider:             d.Model.Provider,
 			APIKey:               d.Model.APIKey,
@@ -461,14 +566,14 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
-func providerDTOsFromConfig(providers map[string]agent.Provider) map[string]providerDTO {
+func modelProviderDTOsFromConfig(providers map[string]agent.ModelProvider) map[string]modelProviderDTO {
 	if len(providers) == 0 {
 		return nil
 	}
-	result := make(map[string]providerDTO, len(providers))
+	result := make(map[string]modelProviderDTO, len(providers))
 	for name, provider := range providers {
-		result[name] = providerDTO{
-			Provider: provider.Provider,
+		result[name] = modelProviderDTO{
+			Type:     provider.Type,
 			APIKey:   provider.APIKey,
 			TokenEnv: provider.TokenEnv,
 			BaseURL:  provider.BaseURL,
@@ -477,14 +582,14 @@ func providerDTOsFromConfig(providers map[string]agent.Provider) map[string]prov
 	return result
 }
 
-func (d webConfigDTO) providersToAgentConfig() map[string]agent.Provider {
-	if len(d.Providers) == 0 {
+func (d webConfigDTO) modelProvidersToAgentConfig() map[string]agent.ModelProvider {
+	if len(d.ModelProviders) == 0 {
 		return nil
 	}
-	result := make(map[string]agent.Provider, len(d.Providers))
-	for name, provider := range d.Providers {
-		result[name] = agent.Provider{
-			Provider: provider.Provider,
+	result := make(map[string]agent.ModelProvider, len(d.ModelProviders))
+	for name, provider := range d.ModelProviders {
+		result[name] = agent.ModelProvider{
+			Type:     provider.Type,
 			APIKey:   provider.APIKey,
 			TokenEnv: provider.TokenEnv,
 			BaseURL:  provider.BaseURL,
@@ -500,7 +605,7 @@ func ttsProviderDTOsFromConfig(providers map[string]agent.TTSProvider) map[strin
 	result := make(map[string]ttsProviderDTO, len(providers))
 	for name, provider := range providers {
 		result[name] = ttsProviderDTO{
-			Provider:    provider.Provider,
+			Type:        provider.Type,
 			APIKey:      provider.APIKey,
 			TokenEnv:    provider.TokenEnv,
 			Model:       provider.Model,
@@ -519,7 +624,7 @@ func (d webConfigDTO) ttsProvidersToAgentConfig() map[string]agent.TTSProvider {
 	result := make(map[string]agent.TTSProvider, len(d.TTSProviders))
 	for name, provider := range d.TTSProviders {
 		result[name] = agent.TTSProvider{
-			Provider:    provider.Provider,
+			Type:        provider.Type,
 			APIKey:      provider.APIKey,
 			TokenEnv:    provider.TokenEnv,
 			Model:       provider.Model,
@@ -538,7 +643,7 @@ func sttProviderDTOsFromConfig(providers map[string]agent.STTProvider) map[strin
 	result := make(map[string]sttProviderDTO, len(providers))
 	for name, provider := range providers {
 		result[name] = sttProviderDTO{
-			Provider:        provider.Provider,
+			Type:            provider.Type,
 			APIKey:          provider.APIKey,
 			TokenEnv:        provider.TokenEnv,
 			Model:           provider.Model,
@@ -560,7 +665,7 @@ func (d webConfigDTO) sttProvidersToAgentConfig() map[string]agent.STTProvider {
 	result := make(map[string]agent.STTProvider, len(d.STTProviders))
 	for name, provider := range d.STTProviders {
 		result[name] = agent.STTProvider{
-			Provider:        provider.Provider,
+			Type:            provider.Type,
 			APIKey:          provider.APIKey,
 			TokenEnv:        provider.TokenEnv,
 			Model:           provider.Model,
@@ -579,9 +684,9 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 	audioArchive := cfg.AudioArchive
 
 	return webConfigDTO{
-		Providers:    providerDTOsFromConfig(cfg.Providers),
-		TTSProviders: ttsProviderDTOsFromConfig(cfg.TTSProviders),
-		STTProviders: sttProviderDTOsFromConfig(cfg.STTProviders),
+		ModelProviders: modelProviderDTOsFromConfig(cfg.ModelProviders),
+		TTSProviders:   ttsProviderDTOsFromConfig(cfg.TTSProviders),
+		STTProviders:   sttProviderDTOsFromConfig(cfg.STTProviders),
 		Model: modelDTO{
 			Provider:             cfg.Model.Provider,
 			APIKey:               cfg.Model.APIKey,

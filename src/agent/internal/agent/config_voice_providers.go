@@ -14,12 +14,12 @@ import (
 // TTSProvider is one [tts_providers.<name>] record: a provider type plus the
 // credentials and voice settings that only mean anything for that type. [tts]
 // references one by name, so several stay configured at once and switching is a
-// one-line change -- the same shape [providers.<name>] gives [model].
+// one-line change -- the same shape [model_providers.<name>] gives [model].
 //
 // speed is deliberately absent. It is a listening preference that should not
 // change when the voice changes, so it stays global on [tts].
 type TTSProvider struct {
-	Provider    string `toml:"provider"` // Provider type: minimax, fish-audio, ...
+	Type        string `toml:"type"` // Provider type: minimax, fish-audio, ...
 	APIKey      string `toml:"api_key,omitempty"`
 	TokenEnv    string `toml:"token_env,omitempty"`
 	Model       string `toml:"model,omitempty"`
@@ -31,7 +31,7 @@ type TTSProvider struct {
 // STTProvider is one [stt_providers.<name>] record. language stays on [stt]: it
 // is a user preference that holds regardless of which provider transcribes.
 type STTProvider struct {
-	Provider        string `toml:"provider"` // Provider type: openai-whisper, tencent-asr, ...
+	Type            string `toml:"type"` // Provider type: openai-whisper, tencent-asr, ...
 	APIKey          string `toml:"api_key,omitempty"`
 	TokenEnv        string `toml:"token_env,omitempty"`
 	Model           string `toml:"model,omitempty"`
@@ -96,7 +96,7 @@ func resolveTTSProvider(cfg *Config) {
 		return
 	}
 
-	providerType := strings.TrimSpace(record.Provider)
+	providerType := strings.TrimSpace(record.Type)
 	if providerType == "" {
 		// Leave the reference in place. Blanking it here would read downstream
 		// as "TTS disabled" rather than "TTS misconfigured".
@@ -140,7 +140,7 @@ func resolveSTTProvider(cfg *Config) {
 		return
 	}
 
-	providerType := strings.TrimSpace(record.Provider)
+	providerType := strings.TrimSpace(record.Type)
 	if providerType == "" {
 		return
 	}
@@ -217,7 +217,7 @@ func (c Config) ValidateVoiceProviders() error {
 
 	if ref := strings.TrimSpace(c.TTS.Provider); ref != "" {
 		if record, ok := c.TTSProviders[ref]; ok {
-			providerType := strings.TrimSpace(record.Provider)
+			providerType := strings.TrimSpace(record.Type)
 			if providerType == "" {
 				return fmt.Errorf("tts_providers.%s: provider type is required", ref)
 			}
@@ -231,7 +231,7 @@ func (c Config) ValidateVoiceProviders() error {
 
 	if ref := strings.TrimSpace(c.STT.Provider); ref != "" {
 		if record, ok := c.STTProviders[ref]; ok {
-			providerType := strings.TrimSpace(record.Provider)
+			providerType := strings.TrimSpace(record.Type)
 			if providerType == "" {
 				return fmt.Errorf("stt_providers.%s: provider type is required", ref)
 			}
@@ -303,7 +303,7 @@ func migrateLegacyTTSFlatFields(cfg *Config, metadata toml.MetaData) {
 	// it. Neither the copy nor the clear may be unconditional.
 	//
 	// speed is not here at all: it is global by design.
-	record := TTSProvider{Provider: provider}
+	record := TTSProvider{Type: provider}
 	if metadata.IsDefined("tts", "api_key") {
 		record.APIKey = cfg.TTS.APIKey
 		cfg.TTS.APIKey = ""
@@ -349,7 +349,7 @@ func migrateLegacySTTFlatFields(cfg *Config, metadata toml.MetaData) {
 
 	// Same copy/clear symmetry as TTS above. language is not here at all: it
 	// holds regardless of which provider transcribes, so it stays global.
-	record := STTProvider{Provider: provider}
+	record := STTProvider{Type: provider}
 	if metadata.IsDefined("stt", "api_key") {
 		record.APIKey = cfg.STT.APIKey
 		cfg.STT.APIKey = ""
@@ -437,7 +437,7 @@ func lookupTTSProviderRecord(cfg Config, providerRef string) (TTSProvider, bool)
 
 	if active := strings.TrimSpace(cfg.TTS.ActiveProviderRecord); active != "" {
 		if record, ok := cfg.TTSProviders[active]; ok &&
-			normalizeTTSProvider(record.Provider) == target {
+			normalizeTTSProvider(record.Type) == target {
 			return record, true
 		}
 	}
@@ -448,7 +448,7 @@ func lookupTTSProviderRecord(cfg Config, providerRef string) (TTSProvider, bool)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if normalizeTTSProvider(cfg.TTSProviders[name].Provider) == target {
+		if normalizeTTSProvider(cfg.TTSProviders[name].Type) == target {
 			return cfg.TTSProviders[name], true
 		}
 	}

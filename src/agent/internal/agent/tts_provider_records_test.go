@@ -7,8 +7,8 @@ import "testing"
 func TestBuildTTSProviderConfigForUsesRecords(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{
-			"minimax-main": {Provider: "minimax", APIKey: "sk-minimax", VoiceID: "male-qn-qingse"},
-			"fish-main":    {Provider: "fish-audio", APIKey: "sk-fish", ReferenceID: "ref-abc"},
+			"minimax-main": {Type: "minimax", APIKey: "sk-minimax", VoiceID: "male-qn-qingse"},
+			"fish-main":    {Type: "fish-audio", APIKey: "sk-fish", ReferenceID: "ref-abc"},
 		},
 		TTS: TTSConfig{Provider: "minimax", APIKey: "sk-minimax", VoiceID: "male-qn-qingse"},
 	}
@@ -35,7 +35,7 @@ func TestBuildTTSProviderConfigForUsesRecords(t *testing.T) {
 func TestBuildTTSProviderConfigForAcceptsRecordName(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{
-			"fish-main": {Provider: "fish-audio", APIKey: "sk-fish", ReferenceID: "ref-abc"},
+			"fish-main": {Type: "fish-audio", APIKey: "sk-fish", ReferenceID: "ref-abc"},
 		},
 		TTS: TTSConfig{Provider: "fish-main"},
 	}
@@ -54,7 +54,7 @@ func TestBuildTTSProviderConfigForResolvesTokenEnv(t *testing.T) {
 	t.Setenv("AIDEN_TEST_SWITCH_KEY", "sk-env-switch")
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{
-			"fish-main": {Provider: "fish-audio", TokenEnv: "AIDEN_TEST_SWITCH_KEY"},
+			"fish-main": {Type: "fish-audio", TokenEnv: "AIDEN_TEST_SWITCH_KEY"},
 		},
 	}
 

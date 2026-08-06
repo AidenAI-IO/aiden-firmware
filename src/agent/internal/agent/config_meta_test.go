@@ -346,7 +346,7 @@ func TestConfigMeta_TTSFieldsFollowProviderCapabilities(t *testing.T) {
 	if referenceID.Widget != WidgetText {
 		t.Fatalf("tts_providers.reference_id widget = %q, want %q", referenceID.Widget, WidgetText)
 	}
-	wantReferenceVisibility := VisibleRule{All: []Condition{{Field: "tts_providers.provider", Op: "in", Values: []string{"fish-audio"}}}}
+	wantReferenceVisibility := VisibleRule{All: []Condition{{Field: "tts_providers.type", Op: "in", Values: []string{"fish-audio"}}}}
 	if referenceID.VisibleWhen == nil || !reflect.DeepEqual(*referenceID.VisibleWhen, wantReferenceVisibility) {
 		t.Fatalf("tts_providers.reference_id visibleWhen = %#v, want %#v", referenceID.VisibleWhen, wantReferenceVisibility)
 	}
@@ -361,14 +361,14 @@ func TestConfigMeta_TTSFieldsFollowProviderCapabilities(t *testing.T) {
 	if model.Widget != WidgetText {
 		t.Fatalf("tts_providers.model widget = %q, want %q", model.Widget, WidgetText)
 	}
-	wantModelSelect := VisibleRule{All: []Condition{{Field: "tts_providers.provider", Op: "in", Values: []string{"openrouter"}}}}
+	wantModelSelect := VisibleRule{All: []Condition{{Field: "tts_providers.type", Op: "in", Values: []string{"openrouter"}}}}
 	if model.SelectWhen == nil || !reflect.DeepEqual(*model.SelectWhen, wantModelSelect) {
 		t.Fatalf("tts_providers.model selectWhen = %#v, want %#v", model.SelectWhen, wantModelSelect)
 	}
 	if model.VisibleWhen == nil {
 		t.Fatal("tts_providers.model has no visibleWhen rule")
 	}
-	wantModelVisibility := VisibleRule{All: []Condition{{Field: "tts_providers.provider", Op: "in", Values: []string{
+	wantModelVisibility := VisibleRule{All: []Condition{{Field: "tts_providers.type", Op: "in", Values: []string{
 		"minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter",
 	}}}}
 	if !reflect.DeepEqual(*model.VisibleWhen, wantModelVisibility) {
@@ -402,13 +402,13 @@ func TestConfigMeta_TTSFieldsFollowProviderCapabilities(t *testing.T) {
 		value string
 		when  VisibleRule
 	}{
-		{"male-qn-qingse", VisibleRule{All: []Condition{in("tts_providers.provider", "minimax", "minimax-cn")}}},
-		{"Cherry", VisibleRule{All: []Condition{in("tts_providers.provider", "alicloud")}}},
-		{"zh_female_vv_uranus_bigtts", VisibleRule{All: []Condition{in("tts_providers.provider", "volcengine")}}},
-		{"en-US-Neural2-C", VisibleRule{All: []Condition{in("tts_providers.provider", "google-cloud")}}},
-		{"Kore", VisibleRule{All: []Condition{eq("tts_providers.provider", "openrouter"), eq("tts_providers.model", "google/gemini-3.1-flash-tts-preview")}}},
-		{"af_heart", VisibleRule{All: []Condition{eq("tts_providers.provider", "openrouter"), eq("tts_providers.model", "hexgrad/kokoro-82m")}}},
-		{"en-US-AndrewMultilingualNeural", VisibleRule{All: []Condition{eq("tts_providers.provider", "openrouter"), eq("tts_providers.model", "microsoft/mai-voice-2")}}},
+		{"male-qn-qingse", VisibleRule{All: []Condition{in("tts_providers.type", "minimax", "minimax-cn")}}},
+		{"Cherry", VisibleRule{All: []Condition{in("tts_providers.type", "alicloud")}}},
+		{"zh_female_vv_uranus_bigtts", VisibleRule{All: []Condition{in("tts_providers.type", "volcengine")}}},
+		{"en-US-Neural2-C", VisibleRule{All: []Condition{in("tts_providers.type", "google-cloud")}}},
+		{"Kore", VisibleRule{All: []Condition{eq("tts_providers.type", "openrouter"), eq("tts_providers.model", "google/gemini-3.1-flash-tts-preview")}}},
+		{"af_heart", VisibleRule{All: []Condition{eq("tts_providers.type", "openrouter"), eq("tts_providers.model", "hexgrad/kokoro-82m")}}},
+		{"en-US-AndrewMultilingualNeural", VisibleRule{All: []Condition{eq("tts_providers.type", "openrouter"), eq("tts_providers.model", "microsoft/mai-voice-2")}}},
 	}
 	for _, want := range voiceDefaults {
 		if !hasPlaceholder(voice, want.value, want.when) {
@@ -417,7 +417,7 @@ func TestConfigMeta_TTSFieldsFollowProviderCapabilities(t *testing.T) {
 	}
 
 	emotion := idx["tts_providers.emotion"]
-	minimaxEmotion := VisibleRule{All: []Condition{in("tts_providers.provider", "minimax", "minimax-cn")}}
+	minimaxEmotion := VisibleRule{All: []Condition{in("tts_providers.type", "minimax", "minimax-cn")}}
 	if !hasPlaceholder(emotion, "happy", minimaxEmotion) {
 		t.Errorf("tts_providers.emotion missing MiniMax placeholder")
 	}
@@ -608,8 +608,9 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	// The record types themselves must be fully described, or a field the
 	// backend reads would have no editor at all. token_env is exempt: the
 	// dialog folds it into the API key box via the $ENV_VAR syntax, matching
-	// how [providers.<name>] is edited.
+	// how [model_providers.<name>] is edited.
 	recordSections := []sectionType{
+		{"model_providers", reflect.TypeOf(ModelProvider{}), map[string]bool{"token_env": true}},
 		{"tts_providers", reflect.TypeOf(TTSProvider{}), map[string]bool{"token_env": true}},
 		{"stt_providers", reflect.TypeOf(STTProvider{}), map[string]bool{"token_env": true}},
 	}

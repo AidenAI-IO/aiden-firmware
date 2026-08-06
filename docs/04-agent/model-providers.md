@@ -9,7 +9,7 @@ between them by editing a single line.
 
 **Separation of concerns:**
 
-- `[providers]` sections: define the available services (credentials, endpoint)
+- `[model_providers]` sections: define the available services (credentials, endpoint)
 - `[model]` section: pick which provider to use and set model parameters
 
 This mirrors Git remotes or Docker registries: declare the available services
@@ -21,21 +21,21 @@ first, then choose one.
 
 ```toml
 # 1. Define several providers
-[providers.my-openai]
-provider = "openai"
+[model_providers.my-openai]
+type = "openai"
 api_key = "sk-xxx"
 
-[providers.my-kimi]
-provider = "kimi"
+[model_providers.my-kimi]
+type = "kimi"
 api_key = "sk-yyy"
 
-[providers.my-ollama]
-provider = "ollama"
+[model_providers.my-ollama]
+type = "ollama"
 base_url = "http://localhost:11434"
 
 # 2. Pick one
 [model]
-provider = "my-openai"  # references [providers.my-openai] above
+provider = "my-openai"  # references [model_providers.my-openai] above
 model = "gpt-4o"
 temperature = 0.7
 ```
@@ -44,14 +44,14 @@ temperature = 0.7
 
 | Field | Required | Description | Example |
 |-------|----------|-------------|---------|
-| `provider` | Yes | Provider type | `"openai"`, `"kimi"`, `"ollama"`, ... |
+| `type` | Yes | Provider type | `"openai"`, `"kimi"`, `"ollama"`, ... |
 | `api_key` | No | API key | `"sk-xxx"` |
 | `token_env` | No | Environment variable holding the API key. Provider-only: `[model]` has no `token_env` | `"OPENAI_API_KEY"` |
 | `base_url` | No | Custom endpoint; honored only for `openai` and `ollama` | `"https://api.openai.com/v1"` |
 
 The `base_url` whitelist matches `[model]`: only `openai` and `ollama` accept an
 override. For any other type the value is dropped at load, whether it is set on
-`[providers.<name>]` or directly on `[model]`.
+`[model_providers.<name>]` or directly on `[model]`.
 
 ### Supported provider types
 
@@ -84,12 +84,12 @@ migration rules.
 ### Work and personal accounts
 
 ```toml
-[providers.work]
-provider = "openai"
+[model_providers.work]
+type = "openai"
 api_key = "sk-work-xxx"
 
-[providers.personal]
-provider = "openai"
+[model_providers.personal]
+type = "openai"
 api_key = "sk-personal-xxx"
 
 [model]
@@ -102,16 +102,16 @@ model = "gpt-4o"
 ### Switching vendors
 
 ```toml
-[providers.primary]
-provider = "kimi"
+[model_providers.primary]
+type = "kimi"
 api_key = "sk-kimi-xxx"
 
-[providers.backup]
-provider = "volcengine"
+[model_providers.backup]
+type = "volcengine"
 api_key = "sk-volcengine-xxx"
 
-[providers.local]
-provider = "ollama"
+[model_providers.local]
+type = "ollama"
 base_url = "http://localhost:11434"
 
 [model]
@@ -124,16 +124,16 @@ model = "moonshot-v1-32k"
 ### Development, staging, production
 
 ```toml
-[providers.dev]
-provider = "ollama"
+[model_providers.dev]
+type = "ollama"
 base_url = "http://localhost:11434"
 
-[providers.staging]
-provider = "kimi"
+[model_providers.staging]
+type = "kimi"
 api_key = "sk-staging-xxx"
 
-[providers.prod]
-provider = "openai"
+[model_providers.prod]
+type = "openai"
 api_key = "sk-prod-xxx"
 
 [model]
@@ -147,7 +147,7 @@ model = "qwen2.5:14b"
 
 `[model].provider` resolves in this order:
 
-1. If it matches the name of a `[providers.<name>]` section, that section is used.
+1. If it matches the name of a `[model_providers.<name>]` section, that section is used.
 2. Otherwise it is treated as a provider type (keeps older configs working).
 3. If it matches neither, loading fails. A misspelled name, or a reference left
    behind after its section was deleted, is rejected at load instead of failing
@@ -156,9 +156,9 @@ model = "qwen2.5:14b"
 Two edge cases worth knowing:
 
 - **A section name shadows a provider type.** When a section is named after a
-  built-in type, the section wins: `[providers.openai] provider = "ollama"`
+  built-in type, the section wins: `[model_providers.openai] type = "ollama"`
   makes `[model] provider = "openai"` resolve to **ollama**. Avoid such names.
-- **Section names cannot nest.** Only a single level, `[providers.<name>]`, is
+- **Section names cannot nest.** Only a single level, `[model_providers.<name>]`, is
   supported, and names are limited to `[A-Za-z0-9_-]`.
 
 ## Advanced usage
@@ -168,8 +168,8 @@ Two edge cases worth knowing:
 Fields set on the model section win over the ones inherited from the provider:
 
 ```toml
-[providers.my-openai]
-provider = "openai"
+[model_providers.my-openai]
+type = "openai"
 api_key = "sk-default-key"
 base_url = "https://api.openai.com/v1"
 
@@ -186,8 +186,8 @@ the provider's value always applies.
 ### Reading keys from the environment
 
 ```toml
-[providers.my-openai]
-provider = "openai"
+[model_providers.my-openai]
+type = "openai"
 token_env = "OPENAI_API_KEY"  # read from the environment
 
 [model]
@@ -197,10 +197,16 @@ model = "gpt-4o"
 
 ## Backward compatibility
 
-The older style still works; defining providers is optional:
+The old `[providers.<name>]` namespace and record-level `provider` field are
+accepted when loading existing files. If old and canonical names are both
+present, `[model_providers.<name>]` and `type` win. Saving always writes the
+canonical namespace and field, so compatibility is read-only.
+
+The traditional flat style also still works; defining named providers is
+optional:
 
 ```toml
-# Traditional form, no [providers] sections
+# Traditional form, no [model_providers] sections
 [model]
 provider = "openai"     # a provider type directly
 model = "gpt-4o"
@@ -228,7 +234,7 @@ key, an optional base URL, and the name, in that order.
 ### From the web UI
 
 The `provider` dropdown in the Model section lists your configured
-`[providers.*]` sections, labelled `name (type)`, and nothing else: a bare
+`[model_providers.*]` sections, labelled `name (type)`, and nothing else: a bare
 provider type carries no credentials, so it is not offered. Pick one, save, and
 restart the agent. Selecting a provider also reloads the model list for its
 underlying type.
@@ -280,8 +286,8 @@ easy to spot.
 ### Provider is missing its type
 
 ```toml
-[providers.broken]
-# no provider field
+[model_providers.broken]
+# no type field
 api_key = "sk-xxx"
 
 [model]
@@ -289,13 +295,13 @@ provider = "broken"
 model = "gpt-4o"
 ```
 
-**Error:** `providers.broken: provider type is required`
+**Error:** `model_providers.broken: provider type is required`
 
 ### Unsupported provider type
 
 ```toml
-[providers.invalid]
-provider = "unknown-provider"
+[model_providers.invalid]
+type = "unknown-provider"
 api_key = "sk-xxx"
 
 [model]
@@ -303,7 +309,7 @@ provider = "invalid"
 model = "gpt-4o"
 ```
 
-**Error:** `providers.invalid: unsupported provider type "unknown-provider"`
+**Error:** `model_providers.invalid: unsupported provider type "unknown-provider"`
 
 ## Best practices
 
@@ -313,15 +319,15 @@ model = "gpt-4o"
 
 2. **Credentials:** prefer environment variables for keys
    ```toml
-   [providers.secure]
-   provider = "openai"
+   [model_providers.secure]
+   type = "openai"
    token_env = "OPENAI_API_KEY"
    ```
 
 3. **Comments:** annotate each provider
    ```toml
-   [providers.work]
-   provider = "openai"
+   [model_providers.work]
+   type = "openai"
    api_key = "sk-xxx"
    # Work account, quota: 10M tokens/month
    ```

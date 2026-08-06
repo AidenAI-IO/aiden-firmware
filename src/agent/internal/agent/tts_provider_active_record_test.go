@@ -20,12 +20,12 @@ func TestActiveRecordSurvivesSpeakTimeResolution(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	body := `
 [tts_providers.a-minimax]
-provider = "minimax"
+type = "minimax"
 api_key = "sk-aaa"
 voice_id = "male-qn-qingse"
 
 [tts_providers.z-minimax]
-provider = "minimax"
+type = "minimax"
 api_key = "sk-bbb"
 voice_id = "female-shaonv"
 
@@ -61,8 +61,8 @@ provider = "z-minimax"
 func TestSwitchByNameReachesTheNamedRecord(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{
-			"minimax-main": {Provider: "minimax", APIKey: "sk-aaa", VoiceID: "male-qn-qingse"},
-			"minimax-alt":  {Provider: "minimax", APIKey: "sk-bbb", VoiceID: "female-shaonv"},
+			"minimax-main": {Type: "minimax", APIKey: "sk-aaa", VoiceID: "male-qn-qingse"},
+			"minimax-alt":  {Type: "minimax", APIKey: "sk-bbb", VoiceID: "female-shaonv"},
 		},
 		// As if minimax-alt were resolved at load.
 		TTS: TTSConfig{Provider: "minimax", APIKey: "sk-bbb", VoiceID: "female-shaonv"},
@@ -82,8 +82,8 @@ func TestSwitchByNameReachesTheNamedRecord(t *testing.T) {
 func TestSwitchByTypeToInactiveProviderUsesItsRecord(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{
-			"minimax-alt": {Provider: "minimax", APIKey: "sk-bbb"},
-			"fish":        {Provider: "fish-audio", APIKey: "sk-fish", ReferenceID: "ref-abc"},
+			"minimax-alt": {Type: "minimax", APIKey: "sk-bbb"},
+			"fish":        {Type: "fish-audio", APIKey: "sk-fish", ReferenceID: "ref-abc"},
 		},
 		TTS: TTSConfig{Provider: "minimax", APIKey: "sk-bbb"},
 	}

@@ -29,7 +29,7 @@ func TestVoiceProviderMisconfigurationDoesNotBlockBoot(t *testing.T) {
 	// A record whose type is an LLM type, referenced by [tts].
 	cfg := writeVoiceProviderConfig(t, `
 [tts_providers.bad]
-provider = "openai"
+type = "openai"
 
 [tts]
 provider = "bad"
@@ -42,7 +42,7 @@ provider = "bad"
 	// A reference left behind after its record was deleted.
 	cfg = writeVoiceProviderConfig(t, `
 [tts_providers.fish]
-provider = "fish-audio"
+type = "fish-audio"
 
 [tts]
 provider = "typo-name"
@@ -57,7 +57,7 @@ provider = "typo-name"
 // validation and only fail later when the model client is built.
 func TestTTSProviderTypeWhitelistIsSeparateFromLLM(t *testing.T) {
 	cfg := Config{
-		TTSProviders: map[string]TTSProvider{"bad": {Provider: "openai"}},
+		TTSProviders: map[string]TTSProvider{"bad": {Type: "openai"}},
 		TTS:          TTSConfig{Provider: "bad"},
 	}
 	err := cfg.ValidateVoiceProviders()
@@ -71,8 +71,8 @@ func TestTTSProviderTypeWhitelistIsSeparateFromLLM(t *testing.T) {
 	// And the converse: a TTS type must not satisfy [model]. This one IS fatal
 	// at load, because [model] is not optional the way voice is.
 	loadErr := loadVoiceProviderConfigErr(t, `
-[providers.bad]
-provider = "minimax"
+[model_providers.bad]
+type = "minimax"
 
 [model]
 provider = "bad"
@@ -85,7 +85,7 @@ model = "gpt-4o"
 
 func TestSTTProviderTypeWhitelist(t *testing.T) {
 	cfg := Config{
-		STTProviders: map[string]STTProvider{"bad": {Provider: "minimax"}},
+		STTProviders: map[string]STTProvider{"bad": {Type: "minimax"}},
 		STT:          STTConfig{Provider: "bad"},
 	}
 	err := cfg.ValidateVoiceProviders()
@@ -115,7 +115,7 @@ func TestVoiceProviderRecordRequiresType(t *testing.T) {
 // the config page cannot persist a config that silently loses voice.
 func TestVoiceProviderDanglingRefRejectedOnSave(t *testing.T) {
 	cfg := Config{
-		TTSProviders: map[string]TTSProvider{"fish": {Provider: "fish-audio"}},
+		TTSProviders: map[string]TTSProvider{"fish": {Type: "fish-audio"}},
 		TTS:          TTSConfig{Provider: "typo-name"},
 	}
 	if err := cfg.ValidateVoiceProviders(); err == nil {
@@ -128,8 +128,8 @@ func TestVoiceProviderDanglingRefRejectedOnSave(t *testing.T) {
 func TestUnreferencedVoiceRecordToleratedOnSave(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{
-			"fish":     {Provider: "fish-audio"},
-			"cartesia": {Provider: "cartesia"},
+			"fish":     {Type: "fish-audio"},
+			"cartesia": {Type: "cartesia"},
 		},
 		TTS: TTSConfig{Provider: "fish"},
 	}

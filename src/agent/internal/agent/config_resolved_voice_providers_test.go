@@ -128,7 +128,7 @@ model = "gpt-4o"
 api_key = "sk-model"
 
 [tts_providers.fish-main]
-provider = "fish-audio"
+type = "fish-audio"
 api_key = "sk-fish"
 
 [tts]

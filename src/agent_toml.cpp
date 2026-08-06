@@ -486,7 +486,7 @@ void apply_kv(AgentToml& cfg,
         }
 
         TTSProviderToml& record = cfg.tts_providers[record_name];
-        if (key == "provider") assign_string(&record.provider, raw, &sub_err);
+        if (key == "type" || key == "provider") assign_string(&record.type, raw, &sub_err);
         else if (key == "api_key") assign_string(&record.api_key, raw, &sub_err);
         else if (key == "token_env") assign_string(&record.token_env, raw, &sub_err);
         else if (key == "model") assign_string(&record.model, raw, &sub_err);
@@ -505,7 +505,7 @@ void apply_kv(AgentToml& cfg,
         }
 
         STTProviderToml& record = cfg.stt_providers[record_name];
-        if (key == "provider") assign_string(&record.provider, raw, &sub_err);
+        if (key == "type" || key == "provider") assign_string(&record.type, raw, &sub_err);
         else if (key == "api_key") assign_string(&record.api_key, raw, &sub_err);
         else if (key == "token_env") assign_string(&record.token_env, raw, &sub_err);
         else if (key == "model") assign_string(&record.model, raw, &sub_err);
@@ -516,9 +516,10 @@ void apply_kv(AgentToml& cfg,
         else if (key == "region") assign_string(&record.region, raw, &sub_err);
         else if (key == "engine_model_type") assign_string(&record.engine_model_type, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
-    } else if (section.find("providers.") == 0) {
-        // Handle [providers.xxx] sections
-        std::string provider_name = section.substr(10); // Skip "providers."
+    } else if (section.find("model_providers.") == 0 || section.find("providers.") == 0) {
+        const bool legacy_section = section.find("providers.") == 0;
+        const char* prefix = legacy_section ? "providers." : "model_providers.";
+        std::string provider_name = section.substr(std::strlen(prefix));
         // Reject here what save_agent_toml would refuse to write. Accepting a
         // name that cannot be serialized back would make every later save fail
         // with "invalid provider name" on a config that loaded cleanly.
@@ -530,9 +531,9 @@ void apply_kv(AgentToml& cfg,
             return;
         }
 
-        ProviderToml& provider = cfg.providers[provider_name];
+        ModelProviderToml& provider = cfg.model_providers[provider_name];
 
-        if (key == "provider") assign_string(&provider.provider, raw, &sub_err);
+        if (key == "type" || key == "provider") assign_string(&provider.type, raw, &sub_err);
         else if (key == "api_key") assign_string(&provider.api_key, raw, &sub_err);
         else if (key == "token_env") assign_string(&provider.token_env, raw, &sub_err);
         else if (key == "base_url") assign_string(&provider.base_url, raw, &sub_err);
@@ -579,6 +580,17 @@ struct LegacyModelMaxTokens {
         : raw(raw_value), lineno(line) {}
 };
 
+struct CanonicalProviderType {
+    std::string section;
+    std::string raw;
+    int lineno = 0;
+
+    CanonicalProviderType(const std::string& section_name,
+                          const std::string& raw_value,
+                          int line)
+        : section(section_name), raw(raw_value), lineno(line) {}
+};
+
 // migrate_flat_voice_credentials moves a flat [tts]/[stt] credential set onto a
 // record named after the provider type, then clears the flat fields.
 //
@@ -593,7 +605,7 @@ void migrate_flat_voice_credentials(AgentToml& cfg) {
     if (!tts_provider.empty() && cfg.tts_providers.count(tts_provider) == 0 &&
         is_valid_bare_toml_key(tts_provider)) {
         TTSProviderToml& record = cfg.tts_providers[tts_provider];
-        record.provider = tts_provider;
+        record.type = tts_provider;
         record.api_key = cfg.tts.api_key;
         record.model = cfg.tts.model;
         record.voice_id = cfg.tts.voice_id;
@@ -613,7 +625,7 @@ void migrate_flat_voice_credentials(AgentToml& cfg) {
     if (!stt_provider.empty() && cfg.stt_providers.count(stt_provider) == 0 &&
         is_valid_bare_toml_key(stt_provider)) {
         STTProviderToml& record = cfg.stt_providers[stt_provider];
-        record.provider = stt_provider;
+        record.type = stt_provider;
         record.api_key = cfg.stt.api_key;
         record.model = cfg.stt.model;
         record.base_url = cfg.stt.base_url;
@@ -698,6 +710,11 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
     std::string parse_error;
     bool model_max_response_tokens_seen = false;
     std::vector<LegacyModelMaxTokens> legacy_model_max_tokens;
+    AgentToml canonical_model_providers;
+    AgentToml legacy_model_providers;
+    bool canonical_model_providers_seen = false;
+    bool legacy_model_providers_seen = false;
+    std::vector<CanonicalProviderType> canonical_provider_types;
 
     while (std::getline(in, line)) {
         ++lineno;
@@ -713,6 +730,11 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
                 return false;
             }
             section = trim(t.substr(1, close - 1));
+            if (section.find("model_providers.") == 0) {
+                canonical_model_providers_seen = true;
+            } else if (section.find("providers.") == 0) {
+                legacy_model_providers_seen = true;
+            }
             continue;
         }
 
@@ -760,11 +782,58 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
             legacy_model_max_tokens.push_back(LegacyModelMaxTokens(value, lineno));
             continue;
         }
+        AgentToml* apply_target = &cfg;
+        if (section.find("model_providers.") == 0) {
+            apply_target = &canonical_model_providers;
+        } else if (section.find("providers.") == 0) {
+            apply_target = &legacy_model_providers;
+        }
+
         std::string apply_err;
-        apply_kv(cfg, section, key, value, &apply_err);
+        apply_kv(*apply_target, section, key, value, &apply_err);
         if (!apply_err.empty() && parse_error.empty()) {
             parse_error = "line " + std::to_string(lineno) + ": " + apply_err;
+        } else if (key == "type" &&
+                   (section.find("model_providers.") == 0 ||
+                    section.find("providers.") == 0 ||
+                    section.find("tts_providers.") == 0 ||
+                    section.find("stt_providers.") == 0)) {
+            canonical_provider_types.push_back(CanonicalProviderType(section, value, lineno));
         }
+    }
+
+    // Re-apply canonical record type fields after all legacy `provider` aliases,
+    // so `type` wins regardless of their order within a record.
+    if (parse_error.empty()) {
+        for (const auto& canonical : canonical_provider_types) {
+            AgentToml* apply_target = &cfg;
+            if (canonical.section.find("model_providers.") == 0) {
+                apply_target = &canonical_model_providers;
+            } else if (canonical.section.find("providers.") == 0) {
+                apply_target = &legacy_model_providers;
+            }
+
+            std::string apply_error;
+            apply_kv(*apply_target, canonical.section, "type", canonical.raw, &apply_error);
+            if (!apply_error.empty()) {
+                parse_error = "line " + std::to_string(canonical.lineno) + ": " + apply_error;
+                break;
+            }
+        }
+    }
+
+    if (parse_error.empty() &&
+        (canonical_model_providers_seen || legacy_model_providers_seen)) {
+        std::map<std::string, ModelProviderToml> merged;
+        if (legacy_model_providers_seen) {
+            merged = legacy_model_providers.model_providers;
+        }
+        if (canonical_model_providers_seen) {
+            for (const auto& item : canonical_model_providers.model_providers) {
+                merged[item.first] = item.second;
+            }
+        }
+        cfg.model_providers = merged;
     }
 
     if (parse_error.empty()) {
@@ -833,10 +902,10 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (!cfg.default_platform.empty()) emit_string(out, "default_platform", cfg.default_platform);
     out << "\n";
 
-    // Write [providers.xxx] sections
-    for (const auto& item : cfg.providers) {
+    // Write [model_providers.xxx] sections
+    for (const auto& item : cfg.model_providers) {
         const std::string& provider_name = item.first;
-        const ProviderToml& provider = item.second;
+        const ModelProviderToml& provider = item.second;
 
         // Validate provider name
         if (!is_valid_bare_toml_key(provider_name)) {
@@ -846,8 +915,8 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
             return false;
         }
 
-        out << "[providers." << provider_name << "]\n";
-        if (!provider.provider.empty()) emit_string(out, "provider", provider.provider);
+        out << "[model_providers." << provider_name << "]\n";
+        if (!provider.type.empty()) emit_string(out, "type", provider.type);
         if (!provider.api_key.empty()) emit_string(out, "api_key", provider.api_key);
         if (!provider.token_env.empty()) emit_string(out, "token_env", provider.token_env);
         if (!provider.base_url.empty()) emit_string(out, "base_url", provider.base_url);
@@ -867,7 +936,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
         }
 
         out << "[tts_providers." << record_name << "]\n";
-        if (!record.provider.empty()) emit_string(out, "provider", record.provider);
+        if (!record.type.empty()) emit_string(out, "type", record.type);
         if (!record.api_key.empty()) emit_string(out, "api_key", record.api_key);
         if (!record.token_env.empty()) emit_string(out, "token_env", record.token_env);
         if (!record.model.empty()) emit_string(out, "model", record.model);
@@ -890,7 +959,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
         }
 
         out << "[stt_providers." << record_name << "]\n";
-        if (!record.provider.empty()) emit_string(out, "provider", record.provider);
+        if (!record.type.empty()) emit_string(out, "type", record.type);
         if (!record.api_key.empty()) emit_string(out, "api_key", record.api_key);
         if (!record.token_env.empty()) emit_string(out, "token_env", record.token_env);
         if (!record.model.empty()) emit_string(out, "model", record.model);

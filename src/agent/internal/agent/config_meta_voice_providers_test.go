@@ -24,9 +24,9 @@ func TestConfigMeta_VoiceProviderSectionsExist(t *testing.T) {
 	idx := fieldIndex(t)
 
 	for _, path := range []string{
-		"tts_providers.provider", "tts_providers.api_key", "tts_providers.model",
+		"tts_providers.type", "tts_providers.api_key", "tts_providers.model",
 		"tts_providers.voice_id", "tts_providers.emotion", "tts_providers.reference_id",
-		"stt_providers.provider", "stt_providers.api_key", "stt_providers.model",
+		"stt_providers.type", "stt_providers.api_key", "stt_providers.model",
 		"stt_providers.base_url", "stt_providers.app_id", "stt_providers.secret_id",
 		"stt_providers.secret_key", "stt_providers.region", "stt_providers.engine_model_type",
 	} {
@@ -47,14 +47,14 @@ func TestConfigMeta_VoiceProviderSectionsExist(t *testing.T) {
 }
 
 // The per-type rules move with the fields: they must now key on
-// tts_providers.provider, which is the record's own type select in the dialog.
+// tts_providers.type, which is the record's own type select in the dialog.
 // Keying them on tts.provider would compare against a record NAME and never
 // match, silently showing every field for every provider type.
 func TestConfigMeta_VoiceProviderRulesKeyOnRecordType(t *testing.T) {
 	idx := fieldIndex(t)
 
 	referenceID := idx["tts_providers.reference_id"]
-	wantRefVisibility := VisibleRule{All: []Condition{in("tts_providers.provider", "fish-audio")}}
+	wantRefVisibility := VisibleRule{All: []Condition{in("tts_providers.type", "fish-audio")}}
 	if referenceID.VisibleWhen == nil || !reflect.DeepEqual(*referenceID.VisibleWhen, wantRefVisibility) {
 		t.Errorf("tts_providers.reference_id visibleWhen = %#v, want %#v",
 			referenceID.VisibleWhen, wantRefVisibility)
@@ -65,14 +65,14 @@ func TestConfigMeta_VoiceProviderRulesKeyOnRecordType(t *testing.T) {
 		t.Fatal("tts_providers.voice_id has no visibleWhen rule")
 	}
 	for _, cond := range voice.VisibleWhen.All {
-		if cond.Field != "tts_providers.provider" {
-			t.Errorf("tts_providers.voice_id rule keys on %q, want tts_providers.provider", cond.Field)
+		if cond.Field != "tts_providers.type" {
+			t.Errorf("tts_providers.voice_id rule keys on %q, want tts_providers.type", cond.Field)
 		}
 	}
 
 	appID := idx["stt_providers.app_id"]
 	wantAppIDVisibility := VisibleRule{All: []Condition{
-		in("stt_providers.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider),
+		in("stt_providers.type", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider),
 	}}
 	if appID.VisibleWhen == nil || !reflect.DeepEqual(*appID.VisibleWhen, wantAppIDVisibility) {
 		t.Errorf("stt_providers.app_id visibleWhen = %#v, want %#v",
@@ -135,13 +135,13 @@ func TestConfigMeta_FlatVoiceSectionsAreSlim(t *testing.T) {
 func TestConfigMeta_VoiceProviderTypeEnums(t *testing.T) {
 	idx := fieldIndex(t)
 
-	ttsTypes := idx["tts_providers.provider"]
+	ttsTypes := idx["tts_providers.type"]
 	if ttsTypes.Widget != WidgetSelect {
-		t.Errorf("tts_providers.provider widget = %q, want select", ttsTypes.Widget)
+		t.Errorf("tts_providers.type widget = %q, want select", ttsTypes.Widget)
 	}
 	for _, want := range []string{"minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter", "google-cloud"} {
 		if !enumHasValue(ttsTypes.Enum, want) {
-			t.Errorf("tts_providers.provider enum missing %q: %#v", want, ttsTypes.Enum)
+			t.Errorf("tts_providers.type enum missing %q: %#v", want, ttsTypes.Enum)
 		}
 	}
 	// Every offered type must actually be accepted by validation, or the dialog
@@ -151,14 +151,14 @@ func TestConfigMeta_VoiceProviderTypeEnums(t *testing.T) {
 			continue
 		}
 		if !isKnownTTSProviderType(option.Value) {
-			t.Errorf("tts_providers.provider offers %q, which isKnownTTSProviderType rejects", option.Value)
+			t.Errorf("tts_providers.type offers %q, which isKnownTTSProviderType rejects", option.Value)
 		}
 	}
 
-	sttTypes := idx["stt_providers.provider"]
+	sttTypes := idx["stt_providers.type"]
 	for _, want := range []string{"openai-whisper", tencentASRProvider, "openrouter", "qwen-asr", "google-cloud"} {
 		if !enumHasValue(sttTypes.Enum, want) {
-			t.Errorf("stt_providers.provider enum missing %q: %#v", want, sttTypes.Enum)
+			t.Errorf("stt_providers.type enum missing %q: %#v", want, sttTypes.Enum)
 		}
 	}
 	for _, option := range sttTypes.Enum {
@@ -166,7 +166,7 @@ func TestConfigMeta_VoiceProviderTypeEnums(t *testing.T) {
 			continue
 		}
 		if !isKnownSTTProviderType(option.Value) {
-			t.Errorf("stt_providers.provider offers %q, which isKnownSTTProviderType rejects", option.Value)
+			t.Errorf("stt_providers.type offers %q, which isKnownSTTProviderType rejects", option.Value)
 		}
 	}
 }

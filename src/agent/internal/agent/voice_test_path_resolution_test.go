@@ -13,7 +13,7 @@ func TestApplySTTTestRequestResolvesRecordRef(t *testing.T) {
 	cfg := Config{
 		STTProviders: map[string]STTProvider{
 			"tencent-main": {
-				Provider: "tencent-asr", AppID: "1234", SecretID: "AKID-xxx",
+				Type: "tencent-asr", AppID: "1234", SecretID: "AKID-xxx",
 				SecretKey: "secret-yyy", Region: "ap-shanghai",
 			},
 		},
@@ -47,7 +47,7 @@ func TestApplySTTTestRequestResolvesRecordRef(t *testing.T) {
 func TestApplySTTTestRequestFormValueOverridesRecord(t *testing.T) {
 	cfg := Config{
 		STTProviders: map[string]STTProvider{
-			"whisper": {Provider: "openai-whisper", APIKey: "sk-record", BaseURL: "https://record.example"},
+			"whisper": {Type: "openai-whisper", APIKey: "sk-record", BaseURL: "https://record.example"},
 		},
 	}
 
@@ -67,7 +67,7 @@ func TestApplySTTTestRequestFormValueOverridesRecord(t *testing.T) {
 func TestApplyTTSTestRequestResolvesRecordRef(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{
-			"fish-main": {Provider: "fish-audio", APIKey: "sk-fish", ReferenceID: "ref-abc"},
+			"fish-main": {Type: "fish-audio", APIKey: "sk-fish", ReferenceID: "ref-abc"},
 		},
 	}
 
@@ -122,9 +122,9 @@ func TestApplyVoiceTestRequestBareTypeStillWorks(t *testing.T) {
 func TestAvailableTTSProvidersIncludesRecordNames(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{
-			"z-minimax": {Provider: "minimax"},
-			"a-minimax": {Provider: "minimax"},
-			"fish-main": {Provider: "fish-audio"},
+			"z-minimax": {Type: "minimax"},
+			"a-minimax": {Type: "minimax"},
+			"fish-main": {Type: "fish-audio"},
 		},
 	}
 

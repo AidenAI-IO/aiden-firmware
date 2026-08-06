@@ -216,14 +216,14 @@ std::string replace_all(std::string text, const std::string& needle, const std::
 std::string resolved_config_json(const std::string& search_provider, bool search_has_api_key) {
     return std::string(
         "{"
-        "\"providers\":{\"stub-openai\":{\"provider\":\"openai\",\"api_key\":\"sk-stub-secret-1234\"},"
-        "\"stub-ollama\":{\"provider\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
+        "\"model_providers\":{\"stub-openai\":{\"type\":\"openai\",\"api_key\":\"sk-stub-secret-1234\"},"
+        "\"stub-ollama\":{\"type\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
         "\"device\":{\"backend\":\"hdmi\",\"device_type\":\"iOS\"},"
         "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
         "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
         "\"context_window\":0,\"model_max_output_tokens\":0},"
-        "\"tts_providers\":{\"minimax-cn\":{\"provider\":\"minimax-cn\"}},"
-        "\"stt_providers\":{\"openai-whisper\":{\"provider\":\"openai-whisper\"}},"
+        "\"tts_providers\":{\"minimax-cn\":{\"type\":\"minimax-cn\"}},"
+        "\"stt_providers\":{\"openai-whisper\":{\"type\":\"openai-whisper\"}},"
         "\"tts\":{\"provider\":\"minimax-cn\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
         "\"emotion\":\"happy\",\"speed\":1},"
         "\"stt\":{\"provider\":\"openai-whisper\",\"api_key\":\"\",\"model\":\"whisper-1\",\"base_url\":\"\","
@@ -1156,10 +1156,62 @@ TEST_CASE("config_web: POST /api/config writes named providers") {
     CHECK(resp.status == 200);
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("[providers.my-openai]") != std::string::npos);
+    CHECK(saved.find("[model_providers.my-openai]") != std::string::npos);
     CHECK(saved.find("api_key = \"sk-plain-secret-1234\"") != std::string::npos);
-    CHECK(saved.find("[providers.my-ollama]") != std::string::npos);
+    CHECK(saved.find("[model_providers.my-ollama]") != std::string::npos);
     CHECK(saved.find("base_url = \"http://127.0.0.1:11434\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config writes canonical provider maps and type fields") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{"
+        "\"model_providers\":{\"my-openai\":{\"type\":\"openai\",\"api_key\":\"sk-model\"}},"
+        "\"tts_providers\":{\"voice\":{\"type\":\"fish-audio\",\"api_key\":\"sk-tts\"}},"
+        "\"stt_providers\":{\"transcriber\":{\"type\":\"openai-whisper\",\"api_key\":\"sk-stt\"}},"
+        "\"model\":{\"provider\":\"my-openai\",\"model\":\"x\"},"
+        "\"tts\":{\"provider\":\"voice\",\"speed\":1},"
+        "\"stt\":{\"provider\":\"transcriber\",\"language\":\"zh\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[model_providers.my-openai]") != std::string::npos);
+    CHECK(saved.find("[tts_providers.voice]") != std::string::npos);
+    CHECK(saved.find("[stt_providers.transcriber]") != std::string::npos);
+    CHECK(saved.find("type = \"openai\"") != std::string::npos);
+    CHECK(saved.find("type = \"fish-audio\"") != std::string::npos);
+    CHECK(saved.find("type = \"openai-whisper\"") != std::string::npos);
+    CHECK(saved.find("[providers.") == std::string::npos);
+}
+
+TEST_CASE("config_web: canonical provider aliases win in POST patches") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{"
+        "\"providers\":{\"legacy\":{\"provider\":\"ollama\"}},"
+        "\"model_providers\":{\"canonical\":{\"provider\":\"kimi\",\"type\":\"openai\"}},"
+        "\"tts_providers\":{\"voice\":{\"provider\":\"minimax\",\"type\":\"fish-audio\"}},"
+        "\"stt_providers\":{\"transcriber\":{\"provider\":\"tencent-asr\",\"type\":\"openai-whisper\"}},"
+        "\"model\":{\"provider\":\"canonical\",\"model\":\"x\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[model_providers.canonical]") != std::string::npos);
+    CHECK(saved.find("type = \"openai\"") != std::string::npos);
+    CHECK(saved.find("type = \"fish-audio\"") != std::string::npos);
+    CHECK(saved.find("type = \"openai-whisper\"") != std::string::npos);
+    CHECK(saved.find("legacy") == std::string::npos);
+    CHECK(saved.find("type = \"kimi\"") == std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config writes a provider token_env without an api_key") {
@@ -1179,7 +1231,7 @@ TEST_CASE("config_web: POST /api/config writes a provider token_env without an a
     CHECK(resp.status == 200);
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("[providers.my-openai]") != std::string::npos);
+    CHECK(saved.find("[model_providers.my-openai]") != std::string::npos);
     CHECK(saved.find("token_env = \"OPENAI_API_KEY\"") != std::string::npos);
     // An empty api_key must not be written alongside it.
     CHECK(saved.find("api_key = \"\"\ntoken_env") == std::string::npos);
@@ -1228,15 +1280,15 @@ TEST_CASE("config_web: POST /api/config renames a provider with its model refere
     CHECK(http_request(handle->port, "POST", "/api/config", rename).status == 200);
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("[providers.openai-work]") != std::string::npos);
-    CHECK(saved.find("[providers.openai]\n") == std::string::npos);
+    CHECK(saved.find("[model_providers.openai-work]") != std::string::npos);
+    CHECK(saved.find("[model_providers.openai]\n") == std::string::npos);
     CHECK(saved.find("provider = \"openai-work\"") != std::string::npos);
     // The key rides along instead of being re-entered.
     CHECK(saved.find("api_key = \"sk-plain-secret-1234\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config drops named provider base_url for types that pin their endpoint") {
-    // A [providers.*] base_url is inherited by any model referencing it
+    // A [model_providers.*] base_url is inherited by any model referencing it
     // (applyProviderRef), and the runtime then clears it for non-whitelisted
     // types. Storing one is dead config, so the same whitelist the model path
     // uses has to apply to named providers too -- the UI hides the field for
@@ -1256,7 +1308,7 @@ TEST_CASE("config_web: POST /api/config drops named provider base_url for types 
         REQUIRE_MESSAGE(resp.status == 200, type);
 
         const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-        CHECK_MESSAGE(saved.find(std::string("[providers.named-") + type + "]") != std::string::npos,
+        CHECK_MESSAGE(saved.find(std::string("[model_providers.named-") + type + "]") != std::string::npos,
                       type);
         CHECK_MESSAGE(saved.find(base_url) == std::string::npos, type);
     }
@@ -1307,6 +1359,9 @@ TEST_CASE("config_web: GET /api/config returns providers from the resolved confi
     REQUIRE(resp.status == 200);
     CHECK(resp.body.find("\"stub-openai\"") != std::string::npos);
     CHECK(resp.body.find("\"stub-ollama\"") != std::string::npos);
+    CHECK(resp.body.find("\"model_providers\":") != std::string::npos);
+    CHECK(resp.body.find("\"providers\":") == std::string::npos);
+    CHECK(resp.body.find("\"stub-openai\":{\"type\":\"openai\"") != std::string::npos);
     CHECK(resp.body.find("\"base_url\":\"http://127.0.0.1:11434\"") != std::string::npos);
     // Secrets are masked on the read path.
     CHECK(resp.body.find("sk-stub-secret-1234") == std::string::npos);
@@ -1333,9 +1388,9 @@ TEST_CASE("config_web: POST /api/config preserves providers when saving another 
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
     CHECK(saved.find("keyboard_layout = \"azerty\"") != std::string::npos);
-    CHECK(saved.find("[providers.stub-openai]") != std::string::npos);
+    CHECK(saved.find("[model_providers.stub-openai]") != std::string::npos);
     CHECK(saved.find("api_key = \"sk-stub-secret-1234\"") != std::string::npos);
-    CHECK(saved.find("[providers.stub-ollama]") != std::string::npos);
+    CHECK(saved.find("[model_providers.stub-ollama]") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config keeps the stored provider api_key when masked") {
@@ -1361,7 +1416,86 @@ TEST_CASE("config_web: POST /api/config keeps the stored provider api_key when m
     CHECK(saved.find("sk-s***1234") == std::string::npos);
     // Omitting stub-ollama from the payload deletes it: the posted map is
     // authoritative for which providers exist.
-    CHECK(saved.find("[providers.stub-ollama]") == std::string::npos);
+    CHECK(saved.find("[model_providers.stub-ollama]") == std::string::npos);
+}
+
+TEST_CASE("config_web: provider renames preserve every masked secret") {
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"model_providers\":{\"model-old\":{\"type\":\"openai\","
+               "\"api_key\":\"sk-model-secret-1234\"}},"
+               "\"tts_providers\":{\"tts-old\":{\"type\":\"fish-audio\","
+               "\"api_key\":\"sk-tts-secret-1234\"}},"
+               "\"stt_providers\":{\"stt-old\":{\"type\":\"tencent-asr\","
+               "\"api_key\":\"sk-stt-secret-1234\",\"app_id\":\"1234\","
+               "\"secret_id\":\"AKID-secret-1234\","
+               "\"secret_key\":\"secret-key-1234\",\"region\":\"ap-shanghai\"}},"
+               "\"model\":{\"provider\":\"model-old\",\"model\":\"gpt-4o\"},"
+               "\"tts\":{\"provider\":\"tts-old\",\"speed\":1},"
+               "\"stt\":{\"provider\":\"stt-old\",\"language\":\"zh\"},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config", "");
+    REQUIRE(get_resp.status == 200);
+    cJSON* root = cJSON_Parse(get_resp.body.c_str());
+    REQUIRE(root != nullptr);
+    cJSON* config = cJSON_GetObjectItem(root, "config");
+    REQUIRE(config != nullptr);
+    auto masked_secret = [config](const char* section, const char* record, const char* field) {
+        cJSON* records = cJSON_GetObjectItem(config, section);
+        cJSON* item = records ? cJSON_GetObjectItem(records, record) : nullptr;
+        cJSON* value = item ? cJSON_GetObjectItem(item, field) : nullptr;
+        return value && value->valuestring ? std::string(value->valuestring) : std::string();
+    };
+    const std::string model_key = masked_secret("model_providers", "model-old", "api_key");
+    const std::string tts_key = masked_secret("tts_providers", "tts-old", "api_key");
+    const std::string stt_key = masked_secret("stt_providers", "stt-old", "api_key");
+    const std::string secret_id = masked_secret("stt_providers", "stt-old", "secret_id");
+    const std::string secret_key = masked_secret("stt_providers", "stt-old", "secret_key");
+    cJSON_Delete(root);
+    REQUIRE(model_key.find("***") != std::string::npos);
+    REQUIRE(tts_key.find("***") != std::string::npos);
+    REQUIRE(stt_key.find("***") != std::string::npos);
+    REQUIRE(secret_id.find("***") != std::string::npos);
+    REQUIRE(secret_key.find("***") != std::string::npos);
+
+    const std::string body =
+        "{\"config\":{"
+        "\"model_providers\":{\"model-new\":{\"type\":\"openai\",\"api_key\":\"" +
+        model_key + "\"}},"
+        "\"tts_providers\":{\"tts-new\":{\"type\":\"fish-audio\",\"api_key\":\"" +
+        tts_key + "\"}},"
+        "\"stt_providers\":{\"stt-new\":{\"type\":\"tencent-asr\",\"api_key\":\"" +
+        stt_key + "\",\"app_id\":\"1234\",\"secret_id\":\"" + secret_id +
+        "\",\"secret_key\":\"" + secret_key + "\",\"region\":\"ap-shanghai\"}},"
+        "\"_provider_renames\":{"
+        "\"model_providers\":{\"model-new\":\"model-old\"},"
+        "\"tts_providers\":{\"tts-new\":\"tts-old\"},"
+        "\"stt_providers\":{\"stt-new\":\"stt-old\"}},"
+        "\"model\":{\"provider\":\"model-new\",\"model\":\"gpt-4o\"},"
+        "\"tts\":{\"provider\":\"tts-new\",\"speed\":1},"
+        "\"stt\":{\"provider\":\"stt-new\",\"language\":\"zh\"}},"
+        "\"apply_wifi\":false}";
+    REQUIRE(http_request(handle->port, "POST", "/api/config", body).status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[model_providers.model-new]") != std::string::npos);
+    CHECK(saved.find("[tts_providers.tts-new]") != std::string::npos);
+    CHECK(saved.find("[stt_providers.stt-new]") != std::string::npos);
+    CHECK(saved.find("api_key = \"sk-model-secret-1234\"") != std::string::npos);
+    CHECK(saved.find("api_key = \"sk-tts-secret-1234\"") != std::string::npos);
+    CHECK(saved.find("api_key = \"sk-stt-secret-1234\"") != std::string::npos);
+    CHECK(saved.find("secret_id = \"AKID-secret-1234\"") != std::string::npos);
+    CHECK(saved.find("secret_key = \"secret-key-1234\"") != std::string::npos);
+    CHECK(saved.find("***") == std::string::npos);
+    CHECK(saved.find("_provider_renames") == std::string::npos);
+    CHECK(saved.find("model-old") == std::string::npos);
+    CHECK(saved.find("tts-old") == std::string::npos);
+    CHECK(saved.find("stt-old") == std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config keeps a submitted api_key that contains the mask marker") {
@@ -1436,6 +1570,14 @@ TEST_CASE("config_web: POST /api/config rejects a malformed providers section") 
         CHECK_MESSAGE(resp.status == 400, c.providers);
         CHECK_MESSAGE(resp.body.find(c.expected_fragment) != std::string::npos, c.providers);
     }
+
+    const std::string canonical_body =
+        "{\"config\":{\"model_providers\":{\"bad.name\":{\"type\":\"openai\"}}},"
+        "\"apply_wifi\":false}";
+    HttpResponse canonical_resp =
+        http_request(handle->port, "POST", "/api/config", canonical_body);
+    CHECK(canonical_resp.status == 400);
+    CHECK(canonical_resp.body.find("model_providers") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config writes keyboard layout and restarts only agent") {
@@ -3090,7 +3232,7 @@ TEST_CASE("config_web: POST /api/config writes named voice providers") {
     CHECK(saved.find("provider = \"tencent\"\n") != std::string::npos);
 }
 
-// This is the exact bug class that broke [providers]: a save of an unrelated
+// This is the exact bug class that broke named provider records: a save of an unrelated
 // section carried no records key, the read path started from an empty map, and
 // every record was erased from agent.toml.
 TEST_CASE("config_web: POST /api/config keeps voice records when the payload omits them") {

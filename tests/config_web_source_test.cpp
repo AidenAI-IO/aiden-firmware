@@ -1289,7 +1289,7 @@ TEST_CASE("config web fills Tencent ASR STT defaults from metadata") {
     // defaults are filled on the record's fields inside the provider dialog.
     // Reading [stt] provider here would never match: that field holds a record
     // NAME now, so the fill would silently stop happening.
-    CHECK(html.find("isTencentASRProvider(fieldValue('stt_providers','provider'))") != std::string::npos);
+    CHECK(html.find("isTencentASRProvider(fieldValue('stt_providers','type'))") != std::string::npos);
     CHECK(html.find("byId('stt_providers_'+key)") != std::string::npos);
     CHECK(html.find("fieldDefaultValue('stt_providers',key,fallback)") != std::string::npos);
     CHECK(html.find("fillIfEmpty('region','ap-shanghai')") != std::string::npos);
@@ -1982,7 +1982,7 @@ std::vector<std::string> quoted_strings(const std::string& text) {
 // A `//` comment runs to the end of its line, so any JavaScript sharing a line
 // with one never reaches the browser. The page is emitted as minified one-liners,
 // which makes it easy to append code to a commented line and silently delete it:
-// that is how ProvidersManager and syncProvidersFromConfig were once dropped,
+// that is how ModelProvidersManager and syncModelProvidersFromConfig were once dropped,
 // leaving the page stuck on "Page initialization failed."
 TEST_CASE("config web html keeps javascript off line-comment lines") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
@@ -1992,7 +1992,7 @@ TEST_CASE("config web html keeps javascript off line-comment lines") {
     std::ostringstream html_buffer;
     html_buffer << html_in.rdbuf();
     const std::string js = decode_html_header_literals(html_buffer.str());
-    REQUIRE(js.find("syncProvidersFromConfig") != std::string::npos);
+    REQUIRE(js.find("syncModelProvidersFromConfig") != std::string::npos);
 
     const char* code_markers[] = {
         "function ", "const ", "let ", "var ", "();", NULL,
@@ -2025,7 +2025,7 @@ TEST_CASE("config web html keeps javascript off line-comment lines") {
     }
 }
 
-// loadConfig() calls syncProvidersFromConfig(), which drives ProvidersManager and
+// loadConfig() calls syncModelProvidersFromConfig(), which drives ModelProvidersManager and
 // ModelSelector. Each must be defined on a line the browser can execute, or page
 // init throws a ReferenceError that the init try/catch turns into a banner.
 TEST_CASE("config web html defines provider ui symbols on executable lines") {
@@ -2038,10 +2038,10 @@ TEST_CASE("config web html defines provider ui symbols on executable lines") {
     const std::string js = decode_html_header_literals(html_buffer.str());
 
     const char* definitions[] = {
-        "function syncProvidersFromConfig(",
-        "const ProvidersManager = {",
+        "function syncModelProvidersFromConfig(",
+        "const ModelProvidersManager = {",
         "const ModelSelector = {",
-        "ProvidersManager.init();",
+        "ModelProvidersManager.init();",
         "ModelSelector.init();",
         NULL,
     };
@@ -2060,7 +2060,7 @@ TEST_CASE("config web html defines provider ui symbols on executable lines") {
     }
 }
 
-// The [model] provider select offers configured [providers.*] entries only,
+// The [model] provider select offers configured [model_providers.*] entries only,
 // plus an add shortcut. A bare provider type carries no credentials, so
 // offering the metadata enum let the user pick a provider that cannot
 // authenticate; the type now lives in the Add Provider dialog instead.
@@ -2074,15 +2074,15 @@ TEST_CASE("config web html lists only configured providers in the provider selec
     const std::string js = decode_html_header_literals(html_buffer.str());
 
     CHECK(js.find("function injectNamedProviderOptions()") != std::string::npos);
-    // syncProvidersFromConfig must call it, otherwise the select never updates.
-    const size_t sync_at = js.find("function syncProvidersFromConfig(");
+    // syncModelProvidersFromConfig must call it, otherwise the select never updates.
+    const size_t sync_at = js.find("function syncModelProvidersFromConfig(");
     REQUIRE(sync_at != std::string::npos);
-    const size_t sync_end = js.find("const ProvidersManager", sync_at);
+    const size_t sync_end = js.find("const ModelProvidersManager", sync_at);
     REQUIRE(sync_end != std::string::npos);
     const std::string sync_body = js.substr(sync_at, sync_end - sync_at);
     CHECK(sync_body.find("injectNamedProviderOptions()") != std::string::npos);
     // Clearing the manager on an empty config keeps stale cards from lingering.
-    CHECK(sync_body.find("ProvidersManager.loadProviders({})") != std::string::npos);
+    CHECK(sync_body.find("ModelProvidersManager.loadModelProviders({})") != std::string::npos);
     // Provider-scoped options (reasoning_effort) are hydrated from the resolved
     // provider type, which is only knowable once the providers map is loaded.
     // Without this re-apply, loading a config that references a named provider
@@ -2109,11 +2109,27 @@ TEST_CASE("config web html lists only configured providers in the provider selec
     CHECK(inject_body.find("options.push({value:ADD_PROVIDER_OPTION,label:'+ Add Provider...'") !=
           std::string::npos);
     // The sentinel has to be a value the backend rejects as a provider name so
-    // it can never be mistaken for a real [providers.*] key.
+    // it can never be mistaken for a real [model_providers.*] key.
     CHECK(js.find("const ADD_PROVIDER_OPTION='+ add-provider';") != std::string::npos);
     // Both new option labels need a zh-CN entry; the page defaults to zh-CN.
     CHECK(js.find("'+ Add Provider...':'") != std::string::npos);
     CHECK(js.find("'-- Select Provider --':'") != std::string::npos);
+}
+
+TEST_CASE("config web html uses canonical provider map and type field names") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("appState.config.model_providers") != std::string::npos);
+    CHECK(html.find("model_providers: this.modelProviders") != std::string::npos);
+    CHECK(html.find("payload.config.model_providers") != std::string::npos);
+    CHECK(html.find("const provider = { type: type }") != std::string::npos);
+    CHECK(html.find("ModelProvidersManager.modelProviders[providerRef].type") != std::string::npos);
+    CHECK(html.find("hydrateSelectField(section,'type'") != std::string::npos);
 }
 
 // Picking the add shortcut must not leave the sentinel sitting in the select
@@ -2132,7 +2148,7 @@ TEST_CASE("config web html turns the provider add option into the provider dialo
     const std::string listener_body = js.substr(listener_at, 400);
     CHECK(listener_body.find("e.target.value === ADD_PROVIDER_OPTION") != std::string::npos);
     CHECK(listener_body.find("restoreModelProviderValue()") != std::string::npos);
-    CHECK(listener_body.find("ProvidersManager.addProvider({selectIntoModel: true})") !=
+    CHECK(listener_body.find("ModelProvidersManager.addProvider({selectIntoModel: true})") !=
           std::string::npos);
     // Any real pick has to be remembered, or restoring after a cancelled add
     // would fall back to a stale provider.
@@ -2141,7 +2157,7 @@ TEST_CASE("config web html turns the provider add option into the provider dialo
     // A provider added from the select is selected once the save round-trips.
     CHECK(js.find("if (selectIntoModel) { selectModelProvider(selectIntoModel); }") !=
           std::string::npos);
-    CHECK(js.find("saveProviders: async function(extraConfig, selectIntoModel)") !=
+    CHECK(js.find("saveModelProviders: async function(extraConfig, selectIntoModel)") !=
           std::string::npos);
     // The Add Provider card button must not inherit that auto-select.
     CHECK(js.find("addProvider: function(options) { this.pendingModelSelect = "
@@ -2283,7 +2299,7 @@ TEST_CASE("config web html resolves named providers when filtering option scopes
     REQUIRE(filter_at != std::string::npos);
     const std::string filter_body = js.substr(filter_at, 260);
     // Only [model] holds a provider reference; tts/stt/search providers are
-    // plain types and must not be resolved through [providers.*].
+    // plain types and must not be resolved through [model_providers.*].
     CHECK(filter_body.find("section==='model'?resolveProviderType(raw):raw") != std::string::npos);
     CHECK(js.find("function filterSelectOptions(section,options){const provider=providerFilterValue(section);") !=
           std::string::npos);
@@ -2295,7 +2311,7 @@ TEST_CASE("config web html resolves named providers when filtering option scopes
     //   - Field visibility matches the RAW value, which is what keeps
     //     [model] base_url hidden for a named reference. That is correct: the
     //     backend clears a model base_url for any named ref, and the
-    //     [providers.*] entry's own base_url is inherited instead
+    //     [model_providers.*] entry's own base_url is inherited instead
     //     (applyProviderToModel), so offering the field would only ever produce
     //     dead config. A legacy bare provider type still matches the rule and
     //     still shows the field.
@@ -2375,7 +2391,7 @@ TEST_CASE("config web html auto-fills the provider name and keeps it editable") 
     CHECK(key_at < name_at);
     CHECK(base_at < name_at);
     // Editing the name pins it so later auto-fills cannot overwrite the choice.
-    CHECK(dialog_body.find("ProvidersManager.onProviderNameInput()") != std::string::npos);
+    CHECK(dialog_body.find("ModelProvidersManager.onProviderNameInput()") != std::string::npos);
     // The select is relabeled: it is the provider, not a separate "type".
     CHECK(dialog_body.find("<label>Provider</label>") != std::string::npos);
     CHECK(js.find("Provider Type") == std::string::npos);
@@ -2391,17 +2407,17 @@ TEST_CASE("config web html auto-fills the provider name and keeps it editable") 
           std::string::npos);
     CHECK(save_body.find("Provider is required") != std::string::npos);
     // A collision is only an error when it targets a different existing entry.
-    CHECK(save_body.find("name !== editName && Object.prototype.hasOwnProperty.call(this.providers, name)") !=
+    CHECK(save_body.find("name !== editName && Object.prototype.hasOwnProperty.call(this.modelProviders, name)") !=
           std::string::npos);
     // Renaming has to carry the model references across, or they dangle.
-    CHECK(save_body.find("this.modelRefPatch(renamedFrom, name)") != std::string::npos);
+    CHECK(save_body.find("this.modelRefPatch(renamedFrom,name)") != std::string::npos);
 
     // The select only lists configured providers, so retargeting it to the new
     // name has to add that option first -- assigning an absent value silently
     // reset the select to the placeholder and lost the reference.
     const size_t patch_at = js.find("modelRefPatch: function");
     REQUIRE(patch_at != std::string::npos);
-    const size_t patch_end = js.find("saveProviders: async function", patch_at);
+    const size_t patch_end = js.find("saveModelProviders: async function", patch_at);
     REQUIRE(patch_end != std::string::npos);
     const std::string patch_body = js.substr(patch_at, patch_end - patch_at);
     CHECK(patch_body.find("ensureSelectOption(select, newName); select.value = newName;") !=
@@ -2505,12 +2521,12 @@ TEST_CASE("config web html shows the provider base url only where it applies") {
     // The row is addressable and starts hidden or shown to match the type the
     // dialog opened with, so editing a kimi provider never flashes the field.
     CHECK(dialog_body.find("id=\"providerBaseUrlField\"") != std::string::npos);
-    CHECK(dialog_body.find("providerBaseUrlAllowed(provider.provider)") != std::string::npos);
+    CHECK(dialog_body.find("providerBaseUrlAllowed(provider.type)") != std::string::npos);
     // Changing the type toggles it without reopening the dialog.
     CHECK(dialog_body.find("syncProviderBaseUrlVisibility") != std::string::npos);
     CHECK(js.find("syncProviderBaseUrlVisibility: function") != std::string::npos);
 
-    const size_t save_end = js.find("saveProviders: async function", save_at);
+    const size_t save_end = js.find("saveModelProviders: async function", save_at);
     REQUIRE(save_end != std::string::npos);
     const std::string save_body = js.substr(save_at, save_end - save_at);
     // A base_url left over from a previous type must not be saved once the type
@@ -2518,7 +2534,7 @@ TEST_CASE("config web html shows the provider base url only where it applies") {
     CHECK(save_body.find("providerBaseUrlAllowed(type)") != std::string::npos);
 }
 
-// TTS and STT get the same named-record UX as [providers.*]. One factory serves
+// TTS and STT get the same named-record UX as [model_providers.*]. One factory serves
 // both: two copies of this logic would be two places to fix every
 // rename/mask/save bug, so assert the shared factory and the two specs rather
 // than per-kind implementations.
@@ -2553,6 +2569,17 @@ TEST_CASE("config web builds tts and stt provider records from one factory") {
     // Records have to be loaded on every config load, or the cards render empty
     // after a reload even though agent.toml has records.
     CHECK(html.find("syncVoiceProvidersFromConfig();") != std::string::npos);
+
+    // The selector labels must use the canonical record type. Reading the old
+    // provider field here would make every canonical record render without its
+    // type even though GET /api/config correctly returned it.
+    const size_t options_at = html.find("function voiceRecordOptions(records)");
+    REQUIRE(options_at != std::string::npos);
+    const size_t options_end = html.find("\\n\"", options_at);
+    REQUIRE(options_end != std::string::npos);
+    const std::string options_body = html.substr(options_at, options_end - options_at);
+    CHECK(options_body.find(".type||''") != std::string::npos);
+    CHECK(options_body.find(".provider||''") == std::string::npos);
 }
 
 // The credentials moved onto records, so the flat [tts]/[stt] cards must not keep
@@ -2631,7 +2658,7 @@ TEST_CASE("config web hydrates the provider dialog type select from metadata") {
     REQUIRE(hydrate_end != std::string::npos);
     const std::string hydrate_body = html.substr(hydrate_at, hydrate_end - hydrate_at);
 
-    CHECK(hydrate_body.find("hydrateSelectField(section,'provider'") != std::string::npos);
+    CHECK(hydrate_body.find("hydrateSelectField(section,'type'") != std::string::npos);
     CHECK(hydrate_body.find("ensureBlankTypeOption(section)") != std::string::npos);
     // Seeding the single current value is what the bug looked like.
     CHECK(hydrate_body.find("ensureSelectOption(typeEl") == std::string::npos);
@@ -2646,7 +2673,7 @@ TEST_CASE("config web hydrates the provider dialog type select from metadata") {
 
 // Field ids in the dialog follow the page's section_key convention, which is what
 // lets the existing visibility engine (fieldValue -> byId(section+'_'+key)) drive
-// it unchanged. A rule keyed on tts_providers.provider reads the record's own type
+// it unchanged. A rule keyed on tts_providers.type reads the record's own type
 // select; keying it on tts.provider would compare against a record NAME and never
 // match, showing every field for every provider type.
 TEST_CASE("config web dialog field ids drive the existing visibility engine") {
@@ -2701,8 +2728,25 @@ TEST_CASE("config web patches the voice reference on rename") {
     CHECK(patch_body.find("this.spec.refSection") != std::string::npos);
     CHECK(patch_body.find("copy.provider=newName") != std::string::npos);
 
-    CHECK(html.find("this.save(renamedFrom?this.refPatch(renamedFrom,name):null,selectInto)") !=
+    CHECK(html.find("this.save(addProviderRename(renamedFrom?this.refPatch(renamedFrom,name):null,"
+                    "section,renamedFrom,name),selectInto)") != std::string::npos);
+}
+
+TEST_CASE("config web sends provider rename metadata for masked secrets") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("function addProviderRename(config,section,oldName,newName)") !=
           std::string::npos);
+    CHECK(html.find("addProviderRename(this.modelRefPatch(renamedFrom,name),"
+                    "'model_providers',renamedFrom,name)") != std::string::npos);
+    CHECK(html.find("addProviderRename(renamedFrom?this.refPatch(renamedFrom,name):null,"
+                    "section,renamedFrom,name)") != std::string::npos);
 }
 
 // The [tts]/[stt] provider select offers configured record names plus an add

@@ -19,8 +19,8 @@ struct ModelToml {
     int model_max_output_tokens = 0;
 };
 
-struct ProviderToml {
-    std::string provider;
+struct ModelProviderToml {
+    std::string type;
     std::string api_key;
     std::string token_env;
     std::string base_url;
@@ -33,7 +33,7 @@ struct ProviderToml {
 // speed is absent on purpose: it is a listening preference that must not change
 // when the voice changes, so it stays global on [tts].
 struct TTSProviderToml {
-    std::string provider;
+    std::string type;
     std::string api_key;
     std::string token_env;
     std::string model;
@@ -45,7 +45,7 @@ struct TTSProviderToml {
 // STTProviderToml is one [stt_providers.<name>] record. language stays on [stt]:
 // it holds regardless of which provider transcribes.
 struct STTProviderToml {
-    std::string provider;
+    std::string type;
     std::string api_key;
     std::string token_env;
     std::string model;
@@ -186,7 +186,7 @@ struct TerminationPolicyToml {
 };
 
 struct AgentToml {
-    std::map<std::string, ProviderToml> providers;
+    std::map<std::string, ModelProviderToml> model_providers;
     std::map<std::string, TTSProviderToml> tts_providers;
     std::map<std::string, STTProviderToml> stt_providers;
     ModelToml model;

@@ -10,19 +10,19 @@ import (
 )
 
 // The voice provider records must survive config -> DTO -> config. This is the
-// same sync point that broke [providers] end to end: a missing DTO field made
+// same sync point that broke [model_providers] end to end: a missing DTO field made
 // the config page show zero records AND made every save of an unrelated section
 // erase them from agent.toml.
 func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	cfg := agent.Config{
 		TTSProviders: map[string]agent.TTSProvider{
-			"minimax-main": {Provider: "minimax", APIKey: "sk-aaa", VoiceID: "male-qn-qingse", Emotion: "happy"},
-			"fish":         {Provider: "fish-audio", APIKey: "sk-ccc", ReferenceID: "ref-abc"},
-			"env-based":    {Provider: "minimax", TokenEnv: "MINIMAX_KEY"},
+			"minimax-main": {Type: "minimax", APIKey: "sk-aaa", VoiceID: "male-qn-qingse", Emotion: "happy"},
+			"fish":         {Type: "fish-audio", APIKey: "sk-ccc", ReferenceID: "ref-abc"},
+			"env-based":    {Type: "minimax", TokenEnv: "MINIMAX_KEY"},
 		},
 		STTProviders: map[string]agent.STTProvider{
-			"tencent": {Provider: "tencent-asr", AppID: "123", SecretID: "AKID", SecretKey: "sec", Region: "ap-shanghai"},
-			"whisper": {Provider: "openai-whisper", APIKey: "sk-w", BaseURL: "https://api.openai.com/v1", Model: "whisper-1"},
+			"tencent": {Type: "tencent-asr", AppID: "123", SecretID: "AKID", SecretKey: "sec", Region: "ap-shanghai"},
+			"whisper": {Type: "openai-whisper", APIKey: "sk-w", BaseURL: "https://api.openai.com/v1", Model: "whisper-1"},
 		},
 		TTS:   agent.TTSConfig{Provider: "minimax-main", Speed: 1.2},
 		STT:   agent.STTConfig{Provider: "tencent", Language: "zh"},
@@ -36,7 +36,7 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	if len(dto.STTProviders) != 2 {
 		t.Fatalf("dto.STTProviders = %#v, want 2 entries", dto.STTProviders)
 	}
-	if got := dto.TTSProviders["fish"]; got.Provider != "fish-audio" || got.ReferenceID != "ref-abc" {
+	if got := dto.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" {
 		t.Errorf("dto.TTSProviders[fish] = %#v", got)
 	}
 	if got := dto.TTSProviders["env-based"].TokenEnv; got != "MINIMAX_KEY" {
@@ -63,6 +63,74 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConfigWire_VoiceProviderRecordsUseCanonicalType(t *testing.T) {
+	payload := `{
+		"tts_providers":{"voice":{"type":"fish-audio","provider":"minimax","api_key":"sk-v"}},
+		"stt_providers":{"speech":{"type":"openai-whisper","provider":"tencent-asr","api_key":"sk-s"}},
+		"tts":{"provider":"voice"},
+		"stt":{"provider":"speech"},
+		"model":{"provider":"openai","model":"gpt-4o","api_key":"sk-x"},
+		"search":{"provider":"duckduckgo"},
+		"agent":{},
+		"hid":{"pointer_mode":"absolute"}
+	}`
+	var dto webConfigDTO
+	if err := json.Unmarshal([]byte(payload), &dto); err != nil {
+		t.Fatalf("unmarshal canonical voice records: %v", err)
+	}
+	encoded, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal canonical voice records: %v", err)
+	}
+	output := string(encoded)
+	if !strings.Contains(output, `"tts_providers":{"voice":{"type":"fish-audio"`) ||
+		!strings.Contains(output, `"stt_providers":{"speech":{"type":"openai-whisper"`) {
+		t.Errorf("canonical voice provider types missing: %s", output)
+	}
+	if strings.Contains(output, `"provider":"minimax"`) || strings.Contains(output, `"provider":"tencent-asr"`) {
+		t.Errorf("legacy voice provider fields leaked or overrode type: %s", output)
+	}
+
+	result := checkWire(t, payload)
+	if !result.Valid {
+		t.Fatalf("canonical voice records rejected: %+v", result.Errors)
+	}
+}
+
+func TestConfigWire_LegacyVoiceProviderRecordFieldsStillLoad(t *testing.T) {
+	payload := `{
+		"tts_providers":{"voice":{"provider":"fish-audio","api_key":"sk-v"}},
+		"stt_providers":{"speech":{"provider":"openai-whisper","api_key":"sk-s"}},
+		"tts":{"provider":"voice"},
+		"stt":{"provider":"speech"},
+		"model":{"provider":"openai","model":"gpt-4o","api_key":"sk-x"},
+		"search":{"provider":"duckduckgo"},
+		"agent":{},
+		"hid":{"pointer_mode":"absolute"}
+	}`
+	result := checkWire(t, payload)
+	if !result.Valid {
+		t.Fatalf("legacy voice records rejected: %+v", result.Errors)
+	}
+}
+
+func TestConfigWire_CanonicalNullVoiceTypesDoNotUseLegacyAliases(t *testing.T) {
+	var dto webConfigDTO
+	payload := `{
+		"tts_providers":{"voice":{"type":null,"provider":"fish-audio"}},
+		"stt_providers":{"speech":{"type":null,"provider":"openai-whisper"}}
+	}`
+	if err := json.Unmarshal([]byte(payload), &dto); err != nil {
+		t.Fatalf("unmarshal null canonical voice types: %v", err)
+	}
+	if got := dto.TTSProviders["voice"].Type; got != "" {
+		t.Errorf("tts type = %q, want empty canonical value without legacy fallback", got)
+	}
+	if got := dto.STTProviders["speech"].Type; got != "" {
+		t.Errorf("stt type = %q, want empty canonical value without legacy fallback", got)
+	}
+}
+
 // omitempty on both maps, matching providers: a config with no records omits the
 // key rather than emitting {}, and the C++ read path treats a missing key as
 // "no records" rather than an error.
@@ -79,8 +147,8 @@ func TestConfigWire_VoiceProvidersOmittedWhenEmpty(t *testing.T) {
 		t.Errorf("expected stt_providers omitted when empty, got: %s", payload)
 	}
 
-	cfg.TTSProviders = map[string]agent.TTSProvider{"fish": {Provider: "fish-audio"}}
-	cfg.STTProviders = map[string]agent.STTProvider{"w": {Provider: "openai-whisper"}}
+	cfg.TTSProviders = map[string]agent.TTSProvider{"fish": {Type: "fish-audio"}}
+	cfg.STTProviders = map[string]agent.STTProvider{"w": {Type: "openai-whisper"}}
 	payload, err = json.Marshal(webConfigDTOFromAgentConfig(cfg))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -98,7 +166,7 @@ func TestConfigWire_VoiceProvidersOmittedWhenEmpty(t *testing.T) {
 // Boot stays lenient on purpose -- see the agent package tests.
 func TestConfigWire_DanglingVoiceRefRejectedOnSave(t *testing.T) {
 	payload := `{
-		"tts_providers":{"fish":{"provider":"fish-audio"}},
+		"tts_providers":{"fish":{"type":"fish-audio"}},
 		"tts":{"provider":"typo-name"},
 		"model":{"provider":"openai","model":"gpt-4o","api_key":"sk-x"},
 		"search":{"provider":"duckduckgo"},
@@ -118,7 +186,7 @@ func TestConfigWire_UnsupportedVoiceProviderTypeRejectedOnSave(t *testing.T) {
 	// openai is an LLM type; accepting it for TTS would save a config that can
 	// never build a TTS adapter.
 	payload := `{
-		"tts_providers":{"bad":{"provider":"openai"}},
+		"tts_providers":{"bad":{"type":"openai"}},
 		"tts":{"provider":"bad"},
 		"model":{"provider":"openai","model":"gpt-4o","api_key":"sk-x"},
 		"search":{"provider":"duckduckgo"},
@@ -131,7 +199,7 @@ func TestConfigWire_UnsupportedVoiceProviderTypeRejectedOnSave(t *testing.T) {
 	}
 
 	payload = `{
-		"stt_providers":{"bad":{"provider":"minimax"}},
+		"stt_providers":{"bad":{"type":"minimax"}},
 		"stt":{"provider":"bad"},
 		"model":{"provider":"openai","model":"gpt-4o","api_key":"sk-x"},
 		"search":{"provider":"duckduckgo"},
@@ -148,7 +216,7 @@ func TestConfigWire_UnsupportedVoiceProviderTypeRejectedOnSave(t *testing.T) {
 // unrelated section even when this build has no adapter for its provider type.
 func TestConfigWire_UnreferencedVoiceRecordSaves(t *testing.T) {
 	payload := `{
-		"tts_providers":{"fish":{"provider":"fish-audio"},"cartesia":{"provider":"cartesia"}},
+		"tts_providers":{"fish":{"type":"fish-audio"},"cartesia":{"type":"cartesia"}},
 		"tts":{"provider":"fish"},
 		"model":{"provider":"openai","model":"gpt-4o","api_key":"sk-x"},
 		"search":{"provider":"duckduckgo"},

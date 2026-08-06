@@ -1,10 +1,78 @@
 package agent
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
+
+func TestVoiceProviderRecordsUseCanonicalTypeTOML(t *testing.T) {
+	cfg := writeVoiceProviderConfig(t, `
+[tts_providers.voice]
+type = "fish-audio"
+provider = "minimax"
+api_key = "sk-v"
+
+[stt_providers.speech]
+type = "openai-whisper"
+provider = "tencent-asr"
+api_key = "sk-s"
+
+[tts]
+provider = "voice"
+
+[stt]
+provider = "speech"
+
+[model]
+provider = "openai"
+model = "gpt-4o"
+api_key = "sk-x"
+`)
+	if cfg.TTS.Provider != "fish-audio" || cfg.STT.Provider != "openai-whisper" {
+		t.Fatalf("canonical types did not win: tts=%q stt=%q", cfg.TTS.Provider, cfg.STT.Provider)
+	}
+
+	var encoded bytes.Buffer
+	if err := toml.NewEncoder(&encoded).Encode(Config{
+		TTSProviders: map[string]TTSProvider{"voice": {Type: "fish-audio"}},
+		STTProviders: map[string]STTProvider{"speech": {Type: "openai-whisper"}},
+	}); err != nil {
+		t.Fatalf("encode voice provider records: %v", err)
+	}
+	output := encoded.String()
+	if !strings.Contains(output, `type = "fish-audio"`) || !strings.Contains(output, `type = "openai-whisper"`) {
+		t.Errorf("canonical type fields missing:\n%s", output)
+	}
+}
+
+func TestLegacyVoiceProviderRecordFieldStillLoads(t *testing.T) {
+	cfg := writeVoiceProviderConfig(t, `
+[tts_providers.voice]
+provider = "fish-audio"
+
+[stt_providers.speech]
+provider = "openai-whisper"
+
+[tts]
+provider = "voice"
+
+[stt]
+provider = "speech"
+
+[model]
+provider = "openai"
+model = "gpt-4o"
+api_key = "sk-x"
+`)
+	if cfg.TTS.Provider != "fish-audio" || cfg.STT.Provider != "openai-whisper" {
+		t.Fatalf("legacy provider fields did not load: tts=%q stt=%q", cfg.TTS.Provider, cfg.STT.Provider)
+	}
+}
 
 // writeVoiceProviderConfig writes a config file and loads it through the runtime
 // path, which is where reference resolution and legacy migration run.
@@ -26,7 +94,7 @@ func writeVoiceProviderConfig(t *testing.T, body string) Config {
 func TestTTSProviderReferenceResolves(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
 [tts_providers.fish-main]
-provider = "fish-audio"
+type = "fish-audio"
 api_key = "sk-fish"
 reference_id = "ref-123"
 
@@ -54,12 +122,12 @@ speed = 1.2
 func TestTTSTwoRecordsOfSameType(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
 [tts_providers.minimax-main]
-provider = "minimax"
+type = "minimax"
 api_key = "sk-aaa"
 voice_id = "male-qn-qingse"
 
 [tts_providers.minimax-alt]
-provider = "minimax"
+type = "minimax"
 api_key = "sk-bbb"
 voice_id = "female-shaonv"
 
@@ -104,7 +172,7 @@ voice_id = "male-qn-qingse"
 func TestSTTProviderReferenceResolves(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
 [stt_providers.tencent-main]
-provider = "tencent-asr"
+type = "tencent-asr"
 app_id = "1234"
 secret_id = "AKID-xxx"
 secret_key = "secret-yyy"
@@ -152,11 +220,11 @@ base_url = "https://api.openai.com/v1"
 }
 
 // A field set directly on [tts] wins over the record, matching how [model]
-// overrides an inherited [providers.*] value.
+// overrides an inherited [model_providers.*] value.
 func TestVoiceFlatFieldOverridesRecord(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
 [tts_providers.minimax-main]
-provider = "minimax"
+type = "minimax"
 api_key = "sk-record"
 voice_id = "male-qn-qingse"
 
@@ -182,14 +250,14 @@ func TestVoiceProviderTokenEnvResolves(t *testing.T) {
 
 	cfg := writeVoiceProviderConfig(t, `
 [tts_providers.minimax-main]
-provider = "minimax"
+type = "minimax"
 token_env = "AIDEN_TEST_TTS_KEY"
 
 [tts]
 provider = "minimax-main"
 
 [stt_providers.whisper]
-provider = "openai-whisper"
+type = "openai-whisper"
 token_env = "AIDEN_TEST_STT_KEY"
 
 [stt]
@@ -211,7 +279,7 @@ func TestVoiceProviderAPIKeyBeatsTokenEnv(t *testing.T) {
 
 	cfg := writeVoiceProviderConfig(t, `
 [tts_providers.minimax-main]
-provider = "minimax"
+type = "minimax"
 api_key = "sk-explicit"
 token_env = "AIDEN_TEST_TTS_KEY"
 

@@ -262,18 +262,18 @@ func (c OTAConfig) Validate() error {
 	return nil
 }
 
-// Provider defines a model service provider configuration.
-type Provider struct {
-	Provider string `toml:"provider"` // Provider type: openai, kimi, ollama, etc.
+// ModelProvider defines a model service provider configuration.
+type ModelProvider struct {
+	Type     string `toml:"type"` // Provider type: openai, kimi, ollama, etc.
 	APIKey   string `toml:"api_key,omitempty"`
 	TokenEnv string `toml:"token_env,omitempty"`
 	BaseURL  string `toml:"base_url,omitempty"`
 }
 
 type Config struct {
-	Providers                  map[string]Provider      `toml:"providers,omitempty"`     // Named model provider configurations
-	TTSProviders               map[string]TTSProvider   `toml:"tts_providers,omitempty"` // Named TTS provider configurations
-	STTProviders               map[string]STTProvider   `toml:"stt_providers,omitempty"` // Named STT provider configurations
+	ModelProviders             map[string]ModelProvider `toml:"model_providers,omitempty"` // Named model provider configurations
+	TTSProviders               map[string]TTSProvider   `toml:"tts_providers,omitempty"`   // Named TTS provider configurations
+	STTProviders               map[string]STTProvider   `toml:"stt_providers,omitempty"`   // Named STT provider configurations
 	Model                      ModelConfig              `toml:"model"`
 	TTS                        TTSConfig                `toml:"tts,omitempty"`
 	STT                        STTConfig                `toml:"stt,omitempty"`
@@ -369,7 +369,7 @@ type TTSConfig struct {
 	ReferenceID string  `toml:"reference_id,omitempty"` // Fish Audio voice reference ID
 
 	// ActiveProviderRecord is runtime-only: it records which
-	// [tts_providers.<name>] record Provider referred to before resolution
+	// [tts_providers.<name>] record the Provider field referred to before resolution
 	// replaced the reference with the provider TYPE.
 	//
 	// Without it the two resolution steps disagree. Load time resolves the
@@ -725,7 +725,7 @@ type ModelConfig struct {
 	Model    string `toml:"model"`
 	BaseURL  string `toml:"base_url,omitempty"`
 	APIKey   string `toml:"api_key,omitempty"`
-	// TokenEnv is runtime-only: credentials live in [providers.<name>], and
+	// TokenEnv is runtime-only: credentials live in [model_providers.<name>], and
 	// applyProviderToModel copies the referenced provider's token_env here.
 	// It is never read from or written to a [model] section.
 	TokenEnv string `toml:"-"`
@@ -866,7 +866,7 @@ func LoadRuntimeConfig(path string) (Config, error) {
 
 	// Apply provider references to model configurations. This must run before
 	// the base_url whitelist below: until the reference is expanded, Provider
-	// still holds a [providers] section name rather than a provider type, so
+	// still holds a [model_providers] section name rather than a provider type, so
 	// the whitelist would compare against the wrong value in both directions.
 	if err := applyRuntimeModelProviders(&cfg); err != nil {
 		return Config{}, err
@@ -875,7 +875,7 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	// base_url is honored for providers whose model builders accept an
 	// OpenAI-compatible endpoint override. Drop stray overrides elsewhere to
 	// keep runtime behavior consistent with the config web UI. Applies to a
-	// base_url inherited from a [providers] section as well as one set
+	// base_url inherited from a [model_providers] section as well as one set
 	// directly on the model.
 	clearNonAllowedModelBaseURL(&cfg.Model)
 
@@ -955,7 +955,7 @@ func applyModelReasoningEffortDefault(m *ModelConfig) {
 }
 
 // applyRuntimeModelProviders resolves provider references in model configurations.
-// If model.provider refers to a named provider in [providers], apply that provider's
+// If model.provider refers to a named provider in [model_providers], apply that provider's
 // configuration. Otherwise, treat it as a direct provider type (backward compatibility).
 func applyRuntimeModelProviders(cfg *Config) error {
 	if cfg == nil {
@@ -980,9 +980,9 @@ func resolveModelProvider(cfg *Config, m *ModelConfig) error {
 		return errors.New("provider is required")
 	}
 
-	// Check if this is a reference to a named provider in [providers]
-	if cfg.Providers != nil {
-		if provider, exists := cfg.Providers[providerRef]; exists {
+	// Check if this is a reference to a named provider in [model_providers]
+	if cfg.ModelProviders != nil {
+		if provider, exists := cfg.ModelProviders[providerRef]; exists {
 			return applyProviderToModel(provider, providerRef, m)
 		}
 	}
@@ -992,8 +992,8 @@ func resolveModelProvider(cfg *Config, m *ModelConfig) error {
 }
 
 // applyProviderToModel applies a provider configuration to a model config.
-func applyProviderToModel(provider Provider, originalRef string, m *ModelConfig) error {
-	providerType := strings.TrimSpace(provider.Provider)
+func applyProviderToModel(provider ModelProvider, originalRef string, m *ModelConfig) error {
+	providerType := strings.TrimSpace(provider.Type)
 	if providerType == "" {
 		return fmt.Errorf("provider %q has no provider type specified", originalRef)
 	}
@@ -1181,6 +1181,9 @@ func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 		if metadata, err = toml.DecodeFile(path, cfg); err != nil {
 			return toml.MetaData{}, fmt.Errorf("decode TOML config: %w", err)
 		}
+		if err := mergeLegacyModelProviders(path, cfg); err != nil {
+			return toml.MetaData{}, err
+		}
 	} else {
 		_, err := os.Stat(path)
 		if err != nil {
@@ -1235,18 +1238,18 @@ func legacyModelMaxTokens(raw map[string]interface{}, section string) (int, erro
 func (c Config) Validate() error {
 	// Validate providers. Iterate in sorted order so a config with several
 	// broken sections reports the same error every run.
-	providerNames := make([]string, 0, len(c.Providers))
-	for name := range c.Providers {
+	providerNames := make([]string, 0, len(c.ModelProviders))
+	for name := range c.ModelProviders {
 		providerNames = append(providerNames, name)
 	}
 	sort.Strings(providerNames)
 	for _, name := range providerNames {
-		if err := validateProvider(name, c.Providers[name]); err != nil {
+		if err := validateModelProvider(name, c.ModelProviders[name]); err != nil {
 			return err
 		}
 	}
 
-	if err := validateModelProviderRef("model", c.Providers, c.Model.Provider); err != nil {
+	if err := validateModelProviderRef("model", c.ModelProviders, c.Model.Provider); err != nil {
 		return err
 	}
 
@@ -1440,7 +1443,7 @@ func (c Config) Validate() error {
 }
 
 // isKnownProviderType reports whether the value names a built-in model
-// provider type (as opposed to a [providers] section name).
+// provider type (as opposed to a [model_providers] section name).
 func isKnownProviderType(providerType string) bool {
 	switch strings.ToLower(strings.TrimSpace(providerType)) {
 	case "openai", "kimi", "kimi-cn", "volcengine", "openrouter", "ollama", "fake":
@@ -1450,30 +1453,30 @@ func isKnownProviderType(providerType string) bool {
 	}
 }
 
-// validateProvider validates a single provider configuration.
-func validateProvider(name string, p Provider) error {
+// validateModelProvider validates a single model provider configuration.
+func validateModelProvider(name string, p ModelProvider) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("provider name cannot be empty")
 	}
 
-	providerType := strings.TrimSpace(p.Provider)
+	providerType := strings.TrimSpace(p.Type)
 	if providerType == "" {
-		return fmt.Errorf("providers.%s: provider type is required", name)
+		return fmt.Errorf("model_providers.%s: provider type is required", name)
 	}
 
 	if !isKnownProviderType(providerType) {
-		return fmt.Errorf("providers.%s: unsupported provider type %q", name, providerType)
+		return fmt.Errorf("model_providers.%s: unsupported provider type %q", name, providerType)
 	}
 
 	return nil
 }
 
 // validateModelProviderRef checks that a model's provider field resolves: it
-// must either name a [providers] section or be a built-in provider type. A
+// must either name a [model_providers] section or be a built-in provider type. A
 // typo, or a reference left behind after the section was deleted, otherwise
 // passes validation and only fails later when the model client is built.
 // section is the config section being validated, e.g. "model".
-func validateModelProviderRef(section string, providers map[string]Provider, provider string) error {
+func validateModelProviderRef(section string, providers map[string]ModelProvider, provider string) error {
 	ref := strings.TrimSpace(provider)
 	if ref == "" {
 		return nil
@@ -1492,7 +1495,7 @@ func validateModelProviderRef(section string, providers map[string]Provider, pro
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	return fmt.Errorf("%s.provider: unknown provider %q (not a provider type, and no [providers.%s] section; configured: %s)",
+	return fmt.Errorf("%s.provider: unknown provider %q (not a provider type, and no [model_providers.%s] section; configured: %s)",
 		section, ref, ref, strings.Join(names, ", "))
 }
 

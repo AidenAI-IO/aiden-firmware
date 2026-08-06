@@ -39,8 +39,8 @@ func buildTTSProviderConfigFor(cfg Config, providerRef string) tts.ProviderConfi
 	record, hasRecord := lookupTTSProviderRecord(cfg, providerRef)
 
 	provider := normalizeTTSProvider(providerRef)
-	if hasRecord && strings.TrimSpace(record.Provider) != "" {
-		provider = normalizeTTSProvider(record.Provider)
+	if hasRecord && strings.TrimSpace(record.Type) != "" {
+		provider = normalizeTTSProvider(record.Type)
 	}
 
 	// Defaults from the top-level [tts] section. A blank per-provider field

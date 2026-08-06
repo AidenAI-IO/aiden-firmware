@@ -1,11 +1,142 @@
 package agent
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
+
+func TestModelProviderCanonicalTOML(t *testing.T) {
+	cfg, err := loadProviderConfig(t, `
+[model_providers.work]
+type = "openai"
+api_key = "sk-work"
+
+[model]
+provider = "work"
+model = "gpt-4o"
+`)
+	if err != nil {
+		t.Fatalf("load canonical model provider config: %v", err)
+	}
+	if cfg.Model.Provider != "openai" || cfg.Model.APIKey != "sk-work" {
+		t.Fatalf("resolved model = provider %q api_key %q, want openai/sk-work", cfg.Model.Provider, cfg.Model.APIKey)
+	}
+
+	var encoded bytes.Buffer
+	if err := toml.NewEncoder(&encoded).Encode(Config{
+		ModelProviders: map[string]ModelProvider{
+			"work": {Type: "openai", APIKey: "sk-work"},
+		},
+		Model: ModelConfig{Provider: "work", Model: "gpt-4o"},
+	}); err != nil {
+		t.Fatalf("encode config: %v", err)
+	}
+	output := encoded.String()
+	if !strings.Contains(output, "[model_providers.work]") || !strings.Contains(output, `type = "openai"`) {
+		t.Errorf("canonical model provider missing from TOML:\n%s", output)
+	}
+	if strings.Contains(output, "[providers.") {
+		t.Errorf("legacy model provider shape leaked into TOML:\n%s", output)
+	}
+}
+
+func TestLegacyModelProviderTOMLStillLoads(t *testing.T) {
+	cfg, err := loadProviderConfig(t, `
+[providers.work]
+provider = "openai"
+api_key = "sk-work"
+
+[model]
+provider = "work"
+model = "gpt-4o"
+`)
+	if err != nil {
+		t.Fatalf("load legacy model provider config: %v", err)
+	}
+	if cfg.Model.Provider != "openai" || cfg.Model.APIKey != "sk-work" {
+		t.Fatalf("resolved model = provider %q api_key %q, want openai/sk-work", cfg.Model.Provider, cfg.Model.APIKey)
+	}
+}
+
+func TestProviderRecordCompatibilityRejectsNonStringFields(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "model provider",
+			body: `
+[model_providers.work]
+type = "openai"
+api_key = 123
+
+[model]
+provider = "work"
+model = "gpt-4o"
+`,
+		},
+		{
+			name: "tts provider",
+			body: `
+[tts_providers.voice]
+type = "fish-audio"
+api_key = 123
+
+[model]
+provider = "openai"
+model = "gpt-4o"
+`,
+		},
+		{
+			name: "stt provider",
+			body: `
+[stt_providers.speech]
+type = "tencent-asr"
+secret_key = 123
+
+[model]
+provider = "openai"
+model = "gpt-4o"
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := loadProviderConfig(t, tt.body); err == nil {
+				t.Fatal("expected a non-string provider field to fail TOML decoding")
+			}
+		})
+	}
+}
+
+func TestModelProviderCanonicalTOMLTakesPrecedence(t *testing.T) {
+	cfg, err := loadProviderConfig(t, `
+[providers.work]
+provider = "ollama"
+base_url = "http://legacy.invalid"
+
+[model_providers.work]
+type = "openai"
+provider = "kimi"
+api_key = "sk-canonical"
+
+[model]
+provider = "work"
+model = "gpt-4o"
+`)
+	if err != nil {
+		t.Fatalf("load mixed model provider config: %v", err)
+	}
+	if cfg.Model.Provider != "openai" || cfg.Model.APIKey != "sk-canonical" || cfg.Model.BaseURL != "" {
+		t.Fatalf("canonical provider did not win: %#v", cfg.Model)
+	}
+}
 
 func TestProviderReferences(t *testing.T) {
 	tests := []struct {
@@ -21,8 +152,8 @@ func TestProviderReferences(t *testing.T) {
 		{
 			name: "provider reference resolves correctly",
 			config: `
-[providers.my-openai]
-provider = "openai"
+[model_providers.my-openai]
+type = "openai"
 api_key = "sk-test-key"
 
 [model]
@@ -36,8 +167,8 @@ model = "gpt-4o"
 		{
 			name: "provider with base_url",
 			config: `
-[providers.my-ollama]
-provider = "ollama"
+[model_providers.my-ollama]
+type = "ollama"
 base_url = "http://localhost:11434"
 
 [model]
@@ -51,8 +182,8 @@ model = "qwen2.5:14b"
 		{
 			name: "model config overrides provider config",
 			config: `
-[providers.my-openai]
-provider = "openai"
+[model_providers.my-openai]
+type = "openai"
 api_key = "sk-provider-key"
 base_url = "https://api.openai.com/v1"
 
@@ -81,12 +212,12 @@ api_key = "sk-direct-key"
 		{
 			name: "multiple providers defined, one used",
 			config: `
-[providers.work]
-provider = "openai"
+[model_providers.work]
+type = "openai"
 api_key = "sk-work-key"
 
-[providers.personal]
-provider = "kimi"
+[model_providers.personal]
+type = "kimi"
 api_key = "sk-personal-key"
 
 [model]
@@ -100,7 +231,7 @@ model = "gpt-4o"
 		{
 			name: "provider missing provider type",
 			config: `
-[providers.broken]
+[model_providers.broken]
 api_key = "sk-test-key"
 
 [model]
@@ -113,8 +244,8 @@ model = "gpt-4o"
 		{
 			name: "invalid provider type",
 			config: `
-[providers.invalid]
-provider = "unknown-provider"
+[model_providers.invalid]
+type = "unknown-provider"
 api_key = "sk-test-key"
 
 [model]
@@ -183,7 +314,7 @@ api_key = "sk-test-key"
 func TestProviderValidation(t *testing.T) {
 	tests := []struct {
 		name        string
-		provider    Provider
+		provider    ModelProvider
 		provName    string
 		wantErr     bool
 		errContains string
@@ -191,25 +322,25 @@ func TestProviderValidation(t *testing.T) {
 		{
 			name:     "valid openai provider",
 			provName: "my-openai",
-			provider: Provider{
-				Provider: "openai",
-				APIKey:   "sk-test",
+			provider: ModelProvider{
+				Type:   "openai",
+				APIKey: "sk-test",
 			},
 			wantErr: false,
 		},
 		{
 			name:     "valid ollama provider with base_url",
 			provName: "my-ollama",
-			provider: Provider{
-				Provider: "ollama",
-				BaseURL:  "http://localhost:11434",
+			provider: ModelProvider{
+				Type:    "ollama",
+				BaseURL: "http://localhost:11434",
 			},
 			wantErr: false,
 		},
 		{
 			name:     "missing provider type",
 			provName: "broken",
-			provider: Provider{
+			provider: ModelProvider{
 				APIKey: "sk-test",
 			},
 			wantErr:     true,
@@ -218,9 +349,9 @@ func TestProviderValidation(t *testing.T) {
 		{
 			name:     "invalid provider type",
 			provName: "invalid",
-			provider: Provider{
-				Provider: "unknown-provider",
-				APIKey:   "sk-test",
+			provider: ModelProvider{
+				Type:   "unknown-provider",
+				APIKey: "sk-test",
 			},
 			wantErr:     true,
 			errContains: "unsupported provider type",
@@ -228,8 +359,8 @@ func TestProviderValidation(t *testing.T) {
 		{
 			name:     "empty provider name",
 			provName: "",
-			provider: Provider{
-				Provider: "openai",
+			provider: ModelProvider{
+				Type: "openai",
 			},
 			wantErr:     true,
 			errContains: "provider name cannot be empty",
@@ -238,7 +369,7 @@ func TestProviderValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateProvider(tt.provName, tt.provider)
+			err := validateModelProvider(tt.provName, tt.provider)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tt.errContains)
@@ -269,7 +400,7 @@ func loadProviderConfig(t *testing.T, body string) (Config, error) {
 // TestProviderReferenceBaseURLWhitelist covers the interaction between
 // provider-reference expansion and the base_url whitelist (openai and ollama
 // only). Regression test: clearNonAllowedModelBaseURL used to run BEFORE the
-// reference was expanded, so it compared the whitelist against a [providers]
+// reference was expanded, so it compared the whitelist against a [model_providers]
 // section NAME instead of a provider type. That broke both directions -- a
 // legitimate override was dropped, and a disallowed one survived.
 func TestProviderReferenceBaseURLWhitelist(t *testing.T) {
@@ -283,8 +414,8 @@ func TestProviderReferenceBaseURLWhitelist(t *testing.T) {
 			// clear discarded a base_url that openai actually accepts.
 			name: "model base_url survives a named openai provider",
 			config: `
-[providers.my-openai]
-provider = "openai"
+[model_providers.my-openai]
+type = "openai"
 api_key = "sk-x"
 
 [model]
@@ -297,8 +428,8 @@ base_url = "https://gateway.example.com/v1"
 		{
 			name: "provider base_url survives for ollama",
 			config: `
-[providers.local]
-provider = "ollama"
+[model_providers.local]
+type = "ollama"
 base_url = "http://127.0.0.1:11434"
 
 [model]
@@ -312,8 +443,8 @@ model = "qwen2.5:7b"
 			// base_url inherited from the section was never checked at all.
 			name: "provider base_url is dropped for openrouter",
 			config: `
-[providers.my-router]
-provider = "openrouter"
+[model_providers.my-router]
+type = "openrouter"
 api_key = "sk-x"
 base_url = "https://sneaky.example.com/v1"
 
@@ -326,8 +457,8 @@ model = "anthropic/claude-opus-4.8"
 		{
 			name: "model base_url is dropped for a named volcengine provider",
 			config: `
-[providers.ark]
-provider = "volcengine"
+[model_providers.ark]
+type = "volcengine"
 api_key = "sk-x"
 
 [model]
@@ -353,7 +484,7 @@ base_url = "https://gateway.example.com/v1"
 }
 
 // TestDanglingProviderReferenceRejected is the regression test for a [model]
-// provider that names no [providers] section and is not a provider type --
+// provider that names no [model_providers] section and is not a provider type --
 // a typo, or a reference left behind after the section was deleted. It used to
 // fall through as a "direct provider type" and pass both LoadRuntimeConfig and
 // Validate(), only failing later when the model client was built. The config
@@ -361,8 +492,8 @@ base_url = "https://gateway.example.com/v1"
 func TestDanglingProviderReferenceRejected(t *testing.T) {
 	t.Run("model provider naming a missing section", func(t *testing.T) {
 		_, err := loadProviderConfig(t, `
-[providers.exists]
-provider = "openai"
+[model_providers.exists]
+type = "openai"
 api_key = "sk-x"
 
 [model]
@@ -382,7 +513,7 @@ model = "gpt-4o"
 	})
 
 	t.Run("bare provider type with no providers section still loads", func(t *testing.T) {
-		// Backward compatibility: configs predating [providers] must keep
+		// Backward compatibility: configs predating [model_providers] must keep
 		// working, so a known type is never treated as a dangling reference.
 		cfg, err := loadProviderConfig(t, `
 [model]
@@ -405,8 +536,8 @@ api_key = "sk-x"
 // applies (see ModelConfig.TokenEnv).
 func TestProviderReferencePrecedence(t *testing.T) {
 	cfg, err := loadProviderConfig(t, `
-[providers.p]
-provider = "openai"
+[model_providers.p]
+type = "openai"
 api_key = "sk-from-provider"
 token_env = "PROVIDER_ENV"
 base_url = "https://provider.example.com/v1"
@@ -454,8 +585,8 @@ token_env = "STALE_ENV"
 // wins. Locked so the precedence cannot change silently.
 func TestProviderNameShadowingProviderType(t *testing.T) {
 	cfg, err := loadProviderConfig(t, `
-[providers.openai]
-provider = "ollama"
+[model_providers.openai]
+type = "ollama"
 base_url = "http://127.0.0.1:11434"
 
 [model]
