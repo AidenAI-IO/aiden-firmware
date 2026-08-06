@@ -736,10 +736,8 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "open_url"
 		status.requiresApp = true
-		status.app = "Browser"
-		if target != "" {
-			status.step = "Opening " + target
-		}
+		status.app = liveActivityOpenURLApp(target)
+		status.step = liveActivityOpenURLCallStep(target)
 	case toolBridgeClipboard:
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "clipboard"
@@ -1041,6 +1039,55 @@ func liveActivityStepFromJSONRoleOutput(content string) string {
 	return ""
 }
 
+func liveActivityOpenURLKind(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch {
+	case strings.HasPrefix(value, "http://"), strings.HasPrefix(value, "https://"):
+		return "web"
+	case strings.HasPrefix(value, "sms:"):
+		return "sms"
+	case strings.HasPrefix(value, "mailto:"):
+		return "email"
+	case strings.HasPrefix(value, "tel:"):
+		return "phone"
+	default:
+		return "link"
+	}
+}
+
+func liveActivityOpenURLApp(value string) string {
+	switch liveActivityOpenURLKind(value) {
+	case "web":
+		return "Browser"
+	case "sms":
+		return "Messages"
+	case "email":
+		return "Mail"
+	case "phone":
+		return "Phone"
+	default:
+		return ""
+	}
+}
+
+func liveActivityOpenURLCallStep(value string) string {
+	switch liveActivityOpenURLKind(value) {
+	case "web":
+		if value = strings.TrimSpace(value); value != "" {
+			return "Opening " + value
+		}
+		return "Opening webpage"
+	case "sms":
+		return "Opening message composer"
+	case "email":
+		return "Opening email composer"
+	case "phone":
+		return "Opening phone"
+	default:
+		return "Opening link"
+	}
+}
+
 func liveActivityToolCallStep(tool string) string {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "screenshot":
@@ -1050,7 +1097,7 @@ func liveActivityToolCallStep(tool string) string {
 	case toolOpenApp:
 		return "Opening app"
 	case toolOpenURL:
-		return "Opening webpage"
+		return "Opening link"
 	case "touch_gesture", "mouse_click", "quick_action":
 		return "Controlling the phone"
 	case "mouse_move":
@@ -1099,7 +1146,7 @@ func liveActivityToolResultStep(tool string) string {
 	case toolOpenApp:
 		return "App opened"
 	case toolOpenURL:
-		return "Webpage opened"
+		return "Link opened"
 	case "touch_gesture", "mouse_click", "quick_action", "mouse_move", "mouse_scroll", "keyboard_tap", "keyboard_text", "enter_text":
 		return "Action sent; checking result"
 	case "request_human_handoff":
@@ -1139,7 +1186,7 @@ func liveActivityAppFromToolCall(event RunEvent) string {
 		}
 	}
 	if value, ok := payload["url"].(string); ok && strings.TrimSpace(value) != "" {
-		return "Browser"
+		return liveActivityOpenURLApp(value)
 	}
 	return ""
 }

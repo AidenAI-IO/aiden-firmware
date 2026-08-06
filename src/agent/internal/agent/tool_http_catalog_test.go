@@ -21,6 +21,20 @@ func TestHTTPToolSkillDocumentsCompactEnterTextActionOutput(t *testing.T) {
 	}
 }
 
+func TestHTTPToolSkillDocumentsAllOpenURLSchemes(t *testing.T) {
+	markdown := buildHTTPToolSkillMarkdown("tools", "tools", defaultHTTPToolSkillBaseURL, nil)
+	for _, want := range []string{
+		"HTTP/HTTPS webpages",
+		"sms:<phone_number>?body=<message>",
+		"mailto:<email_address>?subject=<subject>",
+		"tel:<phone_number>",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("open_url guidance missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
 func toolAgentExposed(name string) bool {
 	return NewToolSpec(&stubTool{name: name, description: name}).AgentExposed
 }
@@ -352,8 +366,8 @@ func TestPhoneBridgeToolDescriptorsHaveUsefulExamples(t *testing.T) {
 	runtime.tools.RegisterPhoneBridge(bridge)
 
 	expected := map[string]string{
-		"open_app":           `{"app":"微信"}`,
-		"open_url":           `{"url":"https://example.com"}`,
+		"open_app":            `{"app":"微信"}`,
+		"open_url":            `{"url":"https://example.com"}`,
 		"bridge_clipboard":    `{"action":"read"}`,
 		"bridge_calendar":     `{"action":"query","from":"2026-07-10T00:00:00+08:00","to":"2026-07-11T00:00:00+08:00"}`,
 		"bridge_contacts":     `{"action":"query","query":"Alice","limit":20}`,

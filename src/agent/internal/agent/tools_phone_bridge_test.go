@@ -162,10 +162,9 @@ func TestSearchOpenAppToolIsInternalToOpenApp(t *testing.T) {
 	if runtime.tools.searchOpenTool == nil {
 		t.Fatal("expected internal search_launch_app implementation")
 	}
-	runtime.tools.RegisterPhoneBridge(newPhoneBridgeForTest())
 	openApp, ok := runtime.tools.Get(toolOpenApp)
 	if !ok {
-		t.Fatal("expected public open_app router after Phone Bridge registration")
+		t.Fatal("expected public open_app router without Phone Bridge registration")
 	}
 	visual, ok := openApp.(visualObservationTool)
 	if !ok || !visual.ReturnsVisualObservation() {

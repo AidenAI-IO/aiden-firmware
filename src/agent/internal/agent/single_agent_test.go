@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -125,7 +126,7 @@ func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) 
 		name:        "screenshot",
 		description: "Capture the current phone screen.",
 		visual:      true,
-		output:      `{"format":"jpeg","width":1,"height":1,"size":0}`,
+		output:      `{"format":"jpeg","width":1,"height":1,"size":1,"data":"YQ=="}`,
 	}
 	searchLaunch := &stubTool{
 		name:        "search_launch_app",
@@ -135,7 +136,7 @@ func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) 
 	toolSet := &ToolSet{
 		phoneBridge: bridge,
 		tools: map[string]langtools.Tool{
-			"open_app":              NewOpenAppTool(bridge, nil, searchLaunch),
+			"open_app":              newPostActionScreenshotTool(NewOpenAppTool(bridge, nil, searchLaunch), screenshot, 0),
 			"request_human_handoff": NewHumanHandoffTool(),
 			"screenshot":            screenshot,
 		},
@@ -158,8 +159,15 @@ func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) 
 	if model.callCount != 2 {
 		t.Fatalf("model calls = %d, want open_app plus completion", model.callCount)
 	}
-	if len(screenshot.inputs) != 1 || len(searchLaunch.inputs) != 1 {
+	if len(screenshot.inputs) != 2 || len(searchLaunch.inputs) != 1 {
 		t.Fatalf("routed calls: screenshot=%v search_launch_app=%v", screenshot.inputs, searchLaunch.inputs)
+	}
+	var searchInput appSearchOpenArgs
+	if err := json.Unmarshal([]byte(searchLaunch.inputs[0]), &searchInput); err != nil {
+		t.Fatalf("decode search_launch_app input: %v", err)
+	}
+	if searchInput.App != "小红书" || searchInput.Platform != "ios" {
+		t.Fatalf("search_launch_app input = %#v, want app=小红书 platform=ios", searchInput)
 	}
 }
 
@@ -173,7 +181,7 @@ func (m *routedOpenAppModel) GenerateContent(_ context.Context, messages []llms.
 	case 1:
 		return toolCallResponse("call_open", "open_app", `{"app":"小红书","platform":"ios"}`), nil
 	case 2:
-		if modelMessagesContainToolResult(messages, "open_app") {
+		if modelMessagesContainSuccessfulToolResult(messages, "open_app") && modelMessagesContainToolScreenshotObservation(messages, "open_app") {
 			return contentResponse("已打开小红书。"), nil
 		}
 	}
@@ -202,12 +210,38 @@ func modelMessagesContain(messages []llms.MessageContent, want string) bool {
 	return false
 }
 
-func modelMessagesContainToolResult(messages []llms.MessageContent, name string) bool {
+func modelMessagesContainSuccessfulToolResult(messages []llms.MessageContent, name string) bool {
 	for _, message := range messages {
 		for _, part := range message.Parts {
-			if result, ok := part.(llms.ToolCallResponse); ok && result.Name == name {
+			result, ok := part.(llms.ToolCallResponse)
+			if !ok || result.Name != name {
+				continue
+			}
+			if strings.Contains(result.Content, `"ok":true`) || strings.Contains(result.Content, `\"ok\":true`) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func modelMessagesContainToolScreenshotObservation(messages []llms.MessageContent, name string) bool {
+	caption := "screenshot observation returned by the " + name + " tool"
+	for _, message := range messages {
+		hasCaption := false
+		hasImage := false
+		for _, part := range message.Parts {
+			switch typed := part.(type) {
+			case llms.TextContent:
+				hasCaption = hasCaption || strings.Contains(typed.Text, caption)
+			case llms.BinaryContent:
+				hasImage = len(typed.Data) > 0
+			case llms.ImageURLContent:
+				hasImage = strings.TrimSpace(typed.URL) != ""
+			}
+		}
+		if hasCaption && hasImage {
+			return true
 		}
 	}
 	return false

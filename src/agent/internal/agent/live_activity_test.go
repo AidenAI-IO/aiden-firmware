@@ -80,6 +80,36 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 	}
 }
 
+func TestLiveActivityOpenURLUsesSchemeSpecificStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		app  string
+		step string
+	}{
+		{name: "web", url: "https://example.com", app: "Browser", step: "Opening https://example.com"},
+		{name: "sms", url: "sms:+15551234567?body=hello", app: "Messages", step: "Opening message composer"},
+		{name: "email", url: "mailto:user@example.com?subject=hello", app: "Mail", step: "Opening email composer"},
+		{name: "phone", url: "tel:+15551234567", app: "Phone", step: "Opening phone"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := RunEvent{ToolName: toolOpenURL, ToolInput: jsonString(map[string]string{"url": tt.url})}
+			status := liveActivityToolCallStatus(event)
+			if status.app != tt.app || status.step != tt.step {
+				t.Fatalf("status = %#v, want app=%q step=%q", status, tt.app, tt.step)
+			}
+			if got := liveActivityAppFromToolCall(event); got != tt.app {
+				t.Fatalf("liveActivityAppFromToolCall() = %q, want %q", got, tt.app)
+			}
+		})
+	}
+	if got := liveActivityToolResultStep(toolOpenURL); got != "Link opened" {
+		t.Fatalf("liveActivityToolResultStep(open_url) = %q, want Link opened", got)
+	}
+}
+
 func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
 	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
 	manager.StartTask("req-1", "Read clipboard")

@@ -424,6 +424,7 @@ func TestRolePromptRoutesAppLaunchInsideOpenApp(t *testing.T) {
 	for _, want := range []string{
 		"call open_app with a semantic app name",
 		"selects Phone Bridge or visible system search internally",
+		"HTTP or HTTPS webpages and SMS, email, or telephone links",
 		"call open_url",
 		"Before calling open_url or a bridge data tool, inspect the latest <state>",
 		"open_url_available =",

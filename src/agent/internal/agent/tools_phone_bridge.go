@@ -379,10 +379,7 @@ func (t *OpenURLTool) Call(ctx context.Context, input string) (string, error) {
 }
 
 func (s *ToolSet) refreshOpenAppTool() {
-	if s == nil || s.phoneBridge == nil {
-		return
-	}
-	if s.searchOpenTool == nil {
+	if s == nil || s.searchOpenTool == nil {
 		return
 	}
 	openApp := NewOpenAppTool(s.phoneBridge, s.phoneBridgeRestorer, s.searchOpenTool)
