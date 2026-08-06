@@ -3464,8 +3464,8 @@ func TestServerToolInvokeContinuesAfterClientDisconnect(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	tool := &stubTool{
-		name:        "search_launch_app",
-		description: "Search for and open an app.",
+		name:        "open_app",
+		description: "Open an app.",
 		callFn: func(ctx context.Context, _ string) (string, error) {
 			close(started)
 			select {
@@ -3480,13 +3480,13 @@ func TestServerToolInvokeContinuesAfterClientDisconnect(t *testing.T) {
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{"search_launch_app": tool}},
+		&ToolSet{tools: map[string]langtools.Tool{"open_app": tool}},
 		NewSkillIndex(),
 	)
 	server := newServerForTest(runtime)
 
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodPost, "/api/tools/search_launch_app", bytes.NewBufferString(`{"input":{"app":"WeChat"}}`)).WithContext(requestCtx)
+	req := httptest.NewRequest(http.MethodPost, "/api/tools/open_app", bytes.NewBufferString(`{"input":{"app":"WeChat"}}`)).WithContext(requestCtx)
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() {
@@ -3525,7 +3525,7 @@ func TestHTTPToolExecutionSurvivesClientDisconnectForHIDTools(t *testing.T) {
 	for _, toolName := range []string{
 		"keyboard_tap",
 		"quick_action",
-		"search_launch_app",
+		"open_app",
 		"enter_text",
 		"mouse_click",
 		"mouse_move",
@@ -3957,16 +3957,6 @@ func TestHandleBenchmarkPhoneBridgeStateAppliesIOSPiPPolicy(t *testing.T) {
 	}
 	if status.AppStateUpdatedAt == nil || status.PipBridgeEnabled == nil || !*status.PipBridgeEnabled {
 		t.Fatalf("PiP benchmark status was not made fresh: %+v", status)
-	}
-	if !phoneBridgeToolAvailable(status, toolBridgeContacts) {
-		t.Fatal("bridge_contacts should be available in fresh iOS PiP background state")
-	}
-	if phoneBridgeToolAvailable(status, toolBridgeOpenApp) {
-		t.Fatal("bridge_open_app must be unavailable in iOS PiP background state")
-	}
-	server.runtime.stateManager.GetAllStates()
-	if got := server.runtime.stateManager.GetState("app_text_entry_strategy"); got != phoneBridgeTextEntryTargetPreserving {
-		t.Fatalf("app_text_entry_strategy = %q, want %q", got, phoneBridgeTextEntryTargetPreserving)
 	}
 }
 

@@ -52,19 +52,18 @@ func (t *appSearchOpenTool) SetPlatformFn(fn func() string) {
 	}
 }
 
-func (t *appSearchOpenTool) Name() string { return "search_launch_app" }
+func (t *appSearchOpenTool) Name() string { return toolSearchLaunchApp }
 
 func (t *appSearchOpenTool) Description() string {
 	return strings.TrimSpace(`Search for an app from the system search UI, tap the result, and confirm it opened. ` +
-		`Use this when the fastest path is visible app search instead of bridge-based direct launch. ` +
-		`Input JSON: {"app":"WeChat"}. Returns ok:true only when the target app is visibly opened; it does not mean an in-app editor, composer, or input field is ready. Observe the opened screen and complete any create/open/navigation step before calling a text-entry tool.`)
+		`This is the visible-UI fallback used internally by open_app when Phone Bridge is unavailable. ` +
+		`Input JSON: {"app":"WeChat"}. Returns ok:true when the target app is visibly opened. Observe the opened screen and complete any create/open/navigation step before calling a text-entry tool.`)
 }
 
 func (t *appSearchOpenTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"app":      stringArgSchema("App name to search for and open."),
-		"name":     stringArgSchema("Alias for app."),
-		"platform": stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
+		"app":  stringArgSchema("App name to search for and open."),
+		"name": stringArgSchema("Alias for app."),
 	}, "app")
 }
 
@@ -176,10 +175,6 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 	if searchTerm == "" {
 		return result, fmt.Errorf("search term is required")
 	}
-	platform := strings.ToLower(strings.TrimSpace(cfg.platform))
-	if platform == "" {
-		platform = "android"
-	}
 	launchDelay := cfg.launchDelay
 	if launchDelay <= 0 {
 		launchDelay = appSearchOpenLaunchDelay
@@ -193,7 +188,7 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 	}
 	steps := make([]string, 0, 12)
 	callQuickAction := func(action string) error {
-		out, err := cfg.hw.quickAction.Call(ctx, jsonString(map[string]any{"action": action, "platform": platform}))
+		out, err := cfg.hw.quickAction.Call(ctx, jsonString(map[string]any{"action": action}))
 		if err != nil {
 			return err
 		}
@@ -294,7 +289,7 @@ func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term str
 		"text":  term,
 		"focus": map[string]any{"x": 500, "y": 120, "coord_space": "normalized"},
 	}
-	out, err := cfg.entryTool.Call(ctx, jsonString(input))
+	out, err := cfg.entryTool.enterTextInner(ctx, jsonString(input), true)
 	if err != nil {
 		return err
 	}
@@ -355,20 +350,7 @@ func findSearchOpenAppResult(ctx context.Context, cfg appSearchOpenFlowConfig, e
 	if !ok || modelVision == nil {
 		return bridgeSearchResult{}, 0, fmt.Errorf("app search vision is not configured")
 	}
-	prompt := strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot of a system search results page.
-Find the visible search result row that launches the requested app for query %q.
-Return JSON only:
-{
-  "found": true,
-  "tap_point": {"x": 500, "y": 220, "coord_space": "normalized"},
-  "label": "App"
-}
-
-Rules:
-- Return found=true only when the app result is clearly visible and tappable.
-- tap_point must be inside the visible app result row, using normalized 0-1000 coordinates.
-- Prefer the actual app result row, not the keyboard, search field, or suggestion chip.
-- If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`, searchTerm))
+	prompt := buildAppSearchResultPrompt(searchTerm)
 	raw, err := modelVision.visionJSON(ctx, "app_search", prompt, shot)
 	if err != nil {
 		return bridgeSearchResult{}, 1, err
@@ -381,6 +363,25 @@ Rules:
 		result.TapPoint.CoordSpace = "normalized"
 	}
 	return result, 1, nil
+}
+
+func buildAppSearchResultPrompt(searchTerm string) string {
+	return strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot of a system search results page.
+Find the visible direct app-launch result for query %q.
+Return JSON only:
+{
+  "found": true,
+  "tap_point": {"x": 180, "y": 180, "coord_space": "normalized"},
+  "label": "App"
+}
+
+Rules:
+- A valid result must directly launch the requested app itself. On iOS this is commonly the standalone app icon/tile under a localized "Best Search Result" heading or an Apps section.
+- Do not select a result from a localized Settings section, a result with a Settings gear badge, an app settings page, a localized "Search in App" action, a web suggestion, or content from another app even when it contains the exact query text or app icon.
+- First discard every result that is not a direct app launch. If multiple valid direct app-launch results remain, scan from top to bottom and choose the topmost one.
+- tap_point must be centered inside the actual app icon or its directly associated app-launch tile, using normalized 0-1000 coordinates. Do not use the center of the screen or a large container's empty area.
+- Return found=true only when the direct app-launch result is clearly identifiable and tappable. If it cannot be distinguished from Settings or content results, return found=false.
+- If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`, searchTerm))
 }
 
 func confirmSearchOpenApp(ctx context.Context, cfg appSearchOpenFlowConfig, engine *textInputEngine, searchTerm string) (bridgeAppOpenResult, int, error) {

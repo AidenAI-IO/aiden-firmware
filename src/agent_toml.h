@@ -94,6 +94,11 @@ struct HIDToml {
     std::string input_backend = "hid";
 };
 
+struct DeviceToml {
+    std::string backend;
+    std::string device_type;
+};
+
 struct SearchToml {
     std::string provider;
     std::string api_key;
@@ -153,6 +158,7 @@ struct AgentToml {
     VoiceNotificationsToml voice_notifications;
     LogToml log;
     OTAToml ota;
+    DeviceToml device;
     HIDToml hid;
     SearchToml search;
     TelemetryToml telemetry;

@@ -63,12 +63,11 @@ func TestQuickActionExposesStructuredSchema(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing properties: %#v", schema)
 	}
-	if props["action"] == nil || props["platform"] == nil || props["list"] == nil {
+	if props["action"] == nil || props["list"] == nil {
 		t.Fatalf("quick_action schema missing expected fields: %#v", props)
 	}
-	platform := props["platform"].(map[string]any)
-	if platform["type"] != "string" {
-		t.Fatalf("platform type = %#v, want string", platform["type"])
+	if _, found := props["platform"]; found {
+		t.Fatalf("quick_action schema must infer platform from runtime device state: %#v", props)
 	}
 	// quick_action exposes only the actions defined in quick_actions.json; it
 	// carries no transport for bridge-invented capabilities such as open_url.
@@ -76,8 +75,8 @@ func TestQuickActionExposesStructuredSchema(t *testing.T) {
 		t.Fatalf("quick_action schema must not carry a url field: %#v", props)
 	}
 	required, ok := schema["required"].([]string)
-	if !ok || len(required) != 2 || required[0] != "action" || required[1] != "platform" {
-		t.Fatalf("required = %#v, want action and platform", schema["required"])
+	if !ok || len(required) != 1 || required[0] != "action" {
+		t.Fatalf("required = %#v, want action only", schema["required"])
 	}
 }
 
@@ -144,15 +143,37 @@ func TestQuickActionListActionAlias(t *testing.T) {
 	}
 }
 
+func TestQuickActionUsesRuntimePlatformProvider(t *testing.T) {
+	tool := &QuickActionTool{}
+	tool.SetPlatformFn(func() string { return "Android" })
+	out, err := tool.Call(context.Background(), `{"action":"list","platform":"ios"}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	var payload struct {
+		OK       bool   `json:"ok"`
+		Platform string `json:"platform"`
+		Actions  []struct {
+			ID string `json:"id"`
+		} `json:"actions"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !payload.OK || payload.Platform != "android" || len(payload.Actions) == 0 {
+		t.Fatalf("expected Android list response from runtime provider, got %s", out)
+	}
+}
+
 func TestQuickActionDescriptionDocumentsListInspection(t *testing.T) {
 	desc := (&QuickActionTool{}).Description()
-	if !strings.Contains(desc, `{"action":"list","platform":"android"}`) {
+	if !strings.Contains(desc, `{"action":"list"}`) {
 		t.Fatalf("description missing action=list inspection example: %s", desc)
 	}
-	if !strings.Contains(desc, `Always pass action and platform`) {
-		t.Fatalf("description missing required action/platform guidance: %s", desc)
+	if !strings.Contains(desc, `global device_type state`) {
+		t.Fatalf("description missing runtime device_type guidance: %s", desc)
 	}
-	for _, want := range []string{"Cataloged semantic actions MUST use quick_action", "physical-key requests", "uncataloged app-specific shortcuts", "current run", "reserved/unavailable", "keyboard_tap"} {
+	for _, want := range []string{"Cataloged semantic actions MUST use quick_action", "physical-key requests", "uncataloged app-specific shortcuts", "current run", "reserved/unavailable", "keyboard_tap", `{"action":"home"}`, "KEYCODE_HOME", `touch_gesture {"type":"home"} remains a fallback`} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing semantic shortcut routing guidance %q: %s", want, desc)
 		}

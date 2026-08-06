@@ -46,13 +46,36 @@ type textInputBridge struct {
 	vision           textInputVision
 	bridgeFn         func() *PhoneBridge
 	restorer         *PhoneBridgeRestorer
+	platformFn       func() string
 	clipboardWriteFn func(context.Context, *PhoneBridge, string) error
 	findPasteMenuFn  func(context.Context, screenshotResult, string) (pasteMenuResult, error)
 	sleep            func(context.Context, time.Duration) error
 }
 
+func (t *textInputBridge) SetPlatformFn(fn func() string) {
+	if t == nil {
+		return
+	}
+	t.platformFn = fn
+	if t.hw != nil {
+		t.hw.platformFn = fn
+	}
+}
+
+func (t *textInputBridge) platform() string {
+	if t == nil {
+		return "android"
+	}
+	if t.platformFn != nil {
+		if platform := normalizeTextInputPlatform(t.platformFn()); platform != "" {
+			return platform
+		}
+	}
+	return textInputHardwarePlatform(t.hw)
+}
+
 func (t *textInputBridge) runClipboardFirstResult(ctx context.Context, args textInputArgs) (textInputResult, bool) {
-	platform := textInputHardwarePlatform(t.hw)
+	platform := t.platform()
 	if strings.TrimSpace(args.Text) == "" {
 		return textInputResult{Reason: "text is required"}, false
 	}
@@ -197,7 +220,7 @@ func (t *textInputBridge) runLegacyBridgeFlow(ctx context.Context, platform stri
 	if err := t.sleepAfterClipboardWrite(ctx); err != nil {
 		return textViaBridgeResult{Attempted: true, Err: err}
 	}
-	if _, err := t.callQuickAction(ctx, "app_switch_back", platform); err != nil {
+	if _, err := t.callQuickAction(ctx, "app_switch_back"); err != nil {
 		return textViaBridgeResult{Attempted: true, Err: err}
 	}
 	result := t.focusPasteVerify(ctx, engine, platform, args)
@@ -365,7 +388,7 @@ func (t *textInputBridge) keyboardPaste(ctx context.Context, platform string) er
 
 func (t *textInputBridge) pasteClipboard(ctx context.Context, platform string) (method string, fallbackReason string, err error) {
 	if t != nil && t.hw != nil && t.hw.quickAction != nil {
-		if _, err := t.callQuickAction(ctx, "paste", platform); err == nil {
+		if _, err := t.callQuickAction(ctx, "paste"); err == nil {
 			return "quick_action", "", nil
 		} else {
 			fallbackReason = err.Error()
@@ -431,8 +454,8 @@ func (t *textInputBridge) currentBridge() *PhoneBridge {
 	return t.bridgeFn()
 }
 
-func (t *textInputBridge) callQuickAction(ctx context.Context, action, platform string) (string, error) {
-	out, err := t.hw.quickAction.Call(ctx, jsonString(map[string]any{"action": action, "platform": platform}))
+func (t *textInputBridge) callQuickAction(ctx context.Context, action string) (string, error) {
+	out, err := t.hw.quickAction.Call(ctx, jsonString(map[string]any{"action": action}))
 	if err != nil {
 		return out, err
 	}

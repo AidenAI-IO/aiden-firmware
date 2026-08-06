@@ -16,7 +16,8 @@ metadata:
       mouse_scroll,
       keyboard_tap,
       enter_text,
-      search_launch_app,
+      open_app,
+      open_url,
       request_human_handoff,
       recall_memory,
       save_memory,
@@ -44,7 +45,7 @@ Do not perform multiple blind UI actions in a row. Base every coordinate, tap, s
 
 For actions that were expected to visibly change the UI, treat `screen_changed=false` in a post-action screenshot or `wait_for_stable_screen` result as "effect not yet verified". In that case, do not say the action succeeded just because `action_output` is `ok`; inspect the screenshot, compare it with the expected target change, and continue checking or choose a different action if the UI still looks unchanged.
 
-If `touch_gesture` returns `screen_changed=false` and the configured touch mode does not match the target platform, stop instead of retrying blind touches: Android expects `hid.pointer_mode="touchscreen"`, while iOS/iPadOS expects `hid.pointer_mode="absolute"`. Ask the user to switch the pointer mode and restart the agent before continuing.
+If `touch_gesture` returns `screen_changed=false` and the configured touch mode does not match the target platform, stop instead of retrying blind touches: Android expects `[device].device_type="Android"` (derived `hid.pointer_mode="touchscreen"`), while iOS/iPadOS expects `[device].device_type="iOS"` (derived `hid.pointer_mode="absolute"`). Ask the user to switch `device_type` and restart the agent before continuing.
 
 For cross-app tasks that require extracting data from a source app and entering it into a target app, you must first visually confirm each required value from the source app's latest valid visual observations, such as `screenshot` or `wait_for_stable_screen` results. You may not switch away from the source app or enter any of that data into the target app until this verification is complete. Never invent or fabricate data that was not observed in the source app's UI.
 
@@ -52,7 +53,7 @@ For cross-app tasks that require extracting data from a source app and entering 
 
 Prefer the highest-level reliable tool for the job:
 
-- When the user's intent clearly matches a cataloged semantic action, you MUST use `quick_action`. This includes back, home, app switching or switching back, system/global search, copy, paste, cut, select all, semantic backward/forward deletion, undo/redo, find, send, and browser actions. Always pass both `action` and the observed `platform`; use `{"action":"list","platform":"..."}` to inspect the catalog when availability is uncertain.
+- When the user's intent clearly matches a cataloged semantic action, you MUST use `quick_action`. This includes back, home, app switching or switching back, system/global search, copy, paste, cut, select all, semantic backward/forward deletion, undo/redo, find, send, and browser actions. Pass only the `action`; runtime selects the platform from global `[device].device_type`. Use `{"action":"list"}` to inspect the configured device catalog when availability is uncertain.
   - A `ctrl`/`meta` `keyboard_tap` chord is allowed only when the user explicitly asks to press those exact physical keys, the shortcut is app-specific or not cataloged, or a `quick_action` result in the current run explicitly reports the matching action as `reserved`/unavailable before executing a binding.
   - Do not infer that `quick_action` is unavailable from an unrelated tool failure, text-entry failure, stale screenshot, HID problem, or your own assumption.
   - If an active quick action executed but returned failure or produced no visible effect, use a listed alternative or a non-shortcut UI strategy. Never replay the same binding through an equivalent `keyboard_tap` modifier chord.
@@ -60,7 +61,6 @@ Prefer the highest-level reliable tool for the job:
 - Use `touch_gesture` for mobile taps, swipes, and drags, and as a listed or non-shortcut fallback for back/home gestures.
 - For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `enter_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
-- Before entering English/ASCII text into any field, inspect the visible keyboard language. If a Chinese IME is active, for example the space bar says `拼音` or candidate/preedit text is shown, first switch to the English/Latin keyboard with the globe/input-method key, then type. Do not use `keyboard_text` while English text remains in Chinese IME preedit/candidate state.
 - Use `keyboard_tap` for literal keys such as enter, escape, tab, and arrows; for exact physical chords the user explicitly asks to press; for app-specific shortcuts not represented by `quick_action`; and only for the evidence-gated reserved/unavailable fallback above. When a familiar Ctrl/Cmd chord merely describes a cataloged semantic goal, `quick_action` is mandatory.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch-style controls are not appropriate.
 
@@ -93,7 +93,7 @@ Required pattern:
 
 - Focus coordinates must come from the latest screenshot.
 - Before calling `enter_text`, the latest screenshot must clearly show the actual editable field or composer, and `focus` must be inside that visible field. An app home screen, folder/list view, blank area, or screen that only shows a create/new button is not input-ready; first create/open the document or message and observe its editor.
-- Treat `search_launch_app` success as app-open confirmation only. It does not prove an in-app editor or input field is ready.
+- Treat `open_app` success as app-open confirmation only. It does not prove an in-app editor or input field is ready.
 - Treat `ok:true` as successful text entry. When visual confirmation matters, also inspect the screenshot returned with the tool result.
 - `ok:false` includes a next-step suggestion; follow it instead of inferring internal IME state from fields that are not part of the public result.
 - For Chinese/CJK composition, provide only the exact target text. `enter_text` derives IME parts and keystrokes internally.
@@ -116,19 +116,13 @@ If `enter_text` reports missing HID devices such as `/dev/hidg0` or `/dev/hidg1`
 
 Use this flow for app switcher, recents, returning to Aiden, and cross-app navigation workflows.
 
-1. Observe the screen.
-2. If platform is known, try `quick_action` for `app_switch`, home, back, or app search before manual gestures.
-3. Use `search_launch_app` when opening a target app via system search is the clearest path.
-4. Verify the result with a screenshot before continuing.
+1. Use global `[device].device_type` as the platform authority. Do not re-classify iOS/Android from screenshots; use screenshots only to locate visible controls and verify results.
+2. Observe the screen.
+3. Try `quick_action` for `app_switch`, home, back, or app search before manual gestures.
+4. Use `open_app` to open a target app; it selects Phone Bridge or visible system search internally.
+5. Verify the result with a screenshot before continuing.
 
-Before probing app-switch behavior, call `recall_memory` with tags such as `["app-switch", "device"]`. If a matching calibration exists for this device/platform, use it directly.
-
-Platform clues:
-
-- iOS/iPadOS: home bar at bottom, no Android navigation buttons.
-- Android gesture navigation: thin gesture bar, no 3-button nav.
-- Android 3-button navigation: visible Back / Home / Recents buttons.
-- Unknown: treat as gesture navigation and probe conservatively.
+Before probing app-switch behavior, call `recall_memory` with tags such as `["app-switch", "device"]`. If a matching calibration exists for the configured `[device].device_type`, use it directly.
 
 If no known quick action or cached method works:
 
@@ -142,10 +136,10 @@ Selecting an app:
 
 - If the target app card is visible, tap the visible non-overlapping center of that card.
 - If not visible, swipe within the switcher to bring it into view.
-- If still not found, dismiss the switcher and use `search_launch_app`, system search, or the home/app drawer.
+- If still not found, dismiss the switcher and use `open_app`, system search, or the home/app drawer.
 - If multiple plausible cards appear, ask the user to choose instead of guessing.
 
-After successfully opening the switcher via a non-obvious method, call `save_memory` with device/platform, method, gesture coordinates, and tags `["app-switch", "device"]`.
+After successfully opening the switcher via a non-obvious method, call `save_memory` with the configured `[device].device_type`, method, gesture coordinates, and tags `["app-switch", "device"]`.
 
 On iOS, if Phone Bridge context says the Aiden companion app is backgrounded/inactive and `return_entry=dynamic_island`, treat Dynamic Island as the fastest way back to Aiden. Do not blind-tap lock-screen Live Activity cards; use screenshot/HID fallback or visual confirmation for those cases. Opening Aiden restores the companion app shortcut channel.
 

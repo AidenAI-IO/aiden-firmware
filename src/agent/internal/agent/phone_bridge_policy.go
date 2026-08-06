@@ -9,11 +9,14 @@ import (
 const phoneBridgeBackgroundStateMaxAge = 15 * time.Second
 
 const (
-	phoneBridgeDisconnectedRecoveryGuidance = "If Phone Bridge recovery is unavailable, do not stop the task: call screenshot first to inspect the current phone state, then try search_launch_app or suitable HID/touch tools. Call request_human_handoff only after observation or input fallback is also unavailable, or the next step truly requires user action."
+	phoneBridgeDisconnectedRecoveryGuidance = "If Phone Bridge recovery is unavailable, do not stop the task: call screenshot first to inspect the current phone state, then use visible app search or suitable HID/touch tools. Call request_human_handoff only after observation or input fallback is also unavailable, or the next step truly requires user action."
 	phoneBridgeIOSOpenAppRecoveryGuidance   = "If a Dynamic Island entry is visible, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry. " + phoneBridgeDisconnectedRecoveryGuidance
 )
 
 const (
+	toolOpenApp            = "open_app"
+	toolOpenURL            = "open_url"
+	toolSearchLaunchApp    = "search_launch_app"
 	toolBridgeOpenApp      = "bridge_open_app"
 	toolBridgeClipboard    = "bridge_clipboard"
 	toolBridgeCalendar     = "bridge_calendar"
@@ -31,39 +34,6 @@ var phoneBridgeBackgroundSafeCommandTypes = map[string]struct{}{
 	"contacts_create":   {},
 	"contacts_update":   {},
 	"notification_send": {},
-}
-
-var phoneBridgeToolBackgroundCommandTypes = map[string]string{
-	toolBridgeClipboard:    "clipboard_read",
-	toolBridgeCalendar:     "calendar_query",
-	toolBridgeContacts:     "contacts_query",
-	toolBridgeNotification: "notification_send",
-}
-
-func isPhoneBridgeToolName(name string) bool {
-	switch name {
-	case toolBridgeOpenApp, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
-		return true
-	default:
-		return false
-	}
-}
-
-func phoneBridgeToolAvailable(status PhoneBridgeStatus, name string) bool {
-	switch name {
-	case toolBridgeOpenApp:
-		if phoneBridgePiPBackgroundEnabled(status) || phoneBridgeFGSBackgroundEnabled(status) {
-			return false
-		}
-		return !phoneBridgeIsAndroid(status) || !status.Connected || phoneBridgeReadyForCommand(status, "open_app")
-	case toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
-		return phoneBridgeReadyForCommand(status, phoneBridgeBackgroundCommandTypeForTool(name)) ||
-			phoneBridgeCanUsePiPBackground(status, phoneBridgeBackgroundCommandTypeForTool(name)) ||
-			phoneBridgeCanUseFGSBackground(status, phoneBridgeBackgroundCommandTypeForTool(name)) ||
-			phoneBridgeCanRestoreFromReturnEntry(status)
-	default:
-		return true
-	}
 }
 
 func phoneBridgeReadyForCommand(status PhoneBridgeStatus, commandTypes ...string) bool {
@@ -149,10 +119,6 @@ func phoneBridgeFGSBackgroundEnabled(status PhoneBridgeStatus) bool {
 	}
 	state := strings.ToLower(strings.TrimSpace(status.AppState))
 	return state == "background" || state == "inactive"
-}
-
-func phoneBridgeBackgroundCommandTypeForTool(name string) string {
-	return phoneBridgeToolBackgroundCommandTypes[strings.TrimSpace(name)]
 }
 
 func phoneBridgePlatform(status PhoneBridgeStatus) string {

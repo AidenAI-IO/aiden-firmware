@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-const phoneBridgeBackgroundSafeDataToolNote = `When Aiden is backgrounded, this data tool can run through the HTTP command queue if iOS PiP Bridge mode or Android FGS Bridge mode is active. If iOS PiP is not active but the Dynamic Island return entry is available, the tool restores Aiden to foreground before sending the command. Background bridge modes are not foreground substitutes for bridge_open_app or UI actions. `
-
 // nextBridgeCmdID builds a unique command id for a bridge command type. It
 // reuses openAppCmdSeq so every outbound bridge command shares one counter.
 func nextBridgeCmdID(prefix string) string {
@@ -56,8 +54,7 @@ func (t *ClipboardTool) Name() string { return toolBridgeClipboard }
 
 func (t *ClipboardTool) Description() string {
 	return `Read or write the connected phone's system clipboard via the phone bridge. ` +
-		`Use this when the user explicitly wants clipboard read/write or when a separate clipboard state is the goal. For filling a visible input field, use enter_text; do not manually chain bridge_clipboard with quick_action paste. ` +
-		phoneBridgeBackgroundSafeDataToolNote
+		`Use this when the user explicitly wants clipboard read/write or when a separate clipboard state is the goal. For filling a visible input field, use enter_text; do not manually chain bridge_clipboard with quick_action paste.`
 }
 
 func (t *ClipboardTool) ArgsSchema() map[string]any {
@@ -168,8 +165,7 @@ func (t *CalendarTool) Name() string { return toolBridgeCalendar }
 func (t *CalendarTool) Description() string {
 	return `Create, query, or delete system calendar events on the connected phone via the phone bridge. ` +
 		`Times are RFC3339 strings with timezone offset, e.g. "2026-06-02T15:00:00+08:00". Use the connected phone environment timezone when available; otherwise use shell to obtain a controller-time baseline and do not assume it matches the phone timezone. ` +
-		`Confirm details with the user before creating or deleting events. ` +
-		phoneBridgeBackgroundSafeDataToolNote
+		`Confirm details with the user before creating or deleting events.`
 }
 
 func (t *CalendarTool) ArgsSchema() map[string]any {
@@ -361,8 +357,7 @@ func (t *ContactsTool) Name() string { return toolBridgeContacts }
 
 func (t *ContactsTool) Description() string {
 	return `Query, create, or update contacts on the connected phone via the phone bridge. ` +
-		`Confirm details with the user before creating or updating contacts. ` +
-		phoneBridgeBackgroundSafeDataToolNote
+		`Confirm details with the user before creating or updating contacts.`
 }
 
 func (t *ContactsTool) ArgsSchema() map[string]any {
@@ -554,8 +549,7 @@ func (t *NotificationTool) Name() string { return toolBridgeNotification }
 
 func (t *NotificationTool) Description() string {
 	return `Send local notifications on the connected phone via the phone bridge. ` +
-		`Use this to remind the user or bring the companion app back to foreground. ` +
-		phoneBridgeBackgroundSafeDataToolNote
+		`Use this to remind the user or bring the companion app back to foreground.`
 }
 
 func (t *NotificationTool) ArgsSchema() map[string]any {

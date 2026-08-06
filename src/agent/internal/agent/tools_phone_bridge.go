@@ -7,160 +7,304 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	langtools "github.com/tmc/langchaingo/tools"
 )
 
 var openAppCmdSeq atomic.Uint64
 
+type routedOpenAppArgs struct {
+	App      string `json:"app"`
+	Name     string `json:"name"`
+	Platform string `json:"platform,omitempty"`
+}
+
+// OpenAppTool is the public app-launch tool. It owns Phone Bridge routing so
+// the model does not need to choose between the bridge and visible app search.
 type OpenAppTool struct {
-	bridge   *PhoneBridge
-	restorer *PhoneBridgeRestorer
+	bridge     *PhoneBridge
+	bridgeOpen langtools.Tool
+	searchOpen langtools.Tool
+	logf       func(string, ...any)
 }
 
-func NewOpenAppTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *OpenAppTool {
-	return &OpenAppTool{bridge: bridge, restorer: restorer}
+func NewOpenAppTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer, searchOpen langtools.Tool) *OpenAppTool {
+	tool := &OpenAppTool{
+		bridge:     bridge,
+		bridgeOpen: NewBridgeOpenAppTool(bridge, restorer),
+		searchOpen: searchOpen,
+	}
+	if bridge != nil && bridge.logger != nil {
+		tool.logf = bridge.logger.Info
+	}
+	return tool
 }
 
-func (t *OpenAppTool) Name() string { return toolBridgeOpenApp }
+func (t *OpenAppTool) Name() string { return toolOpenApp }
 
 func (t *OpenAppTool) Description() string {
-	return `Open an app, webpage, or dial a phone number on the connected phone via the phone bridge. ` +
-		`Use this instead of manually finding and tapping app icons when the phone bridge is connected. ` +
-		`If the Aiden companion app is backgrounded on iOS and the Dynamic Island entry is visible, reopen Aiden from that entry first, then use this tool before searching the home screen. ` +
-		`Pass the desired app name (WeChat/微信, browser, Taobao/淘宝, Douyin/抖音, Settings/设置, Safari, Chrome), webpage URL, or phone number; the companion app owns platform-specific launch details. ` +
-		`When this tool returns ok:true, the app launch is complete; answer the user immediately unless they asked for additional actions inside that app. ` +
-		`PiP Bridge mode does not make bridge_open_app background-safe: opening apps, URLs, or phone dialer still requires Aiden in foreground or a restore path such as the Dynamic Island entry.`
+	return `Open an app by semantic app name. The tool automatically uses Phone Bridge when the companion app is ready, otherwise it searches for and opens the app through the visible system UI. ` +
+		`If the Phone Bridge launch fails, the tool retries through visible system search. ` +
+		`Returns ok:true when the selected launch path reports success. After launch, inspect the opened screen before performing in-app navigation or text entry.`
 }
 
 func (t *OpenAppTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"app":          stringArgSchema("Preferred app name or alias, such as WeChat, 微信, weixin, or browser."),
-		"url":          stringArgSchema("HTTP or HTTPS URL to open."),
-		"phone_number": stringArgSchema("Phone number to dial."),
-	})
+		"app":      stringArgSchema("App name or semantic alias to open, such as WeChat, 微信, browser, or Settings."),
+		"name":     stringArgSchema("Alias for app."),
+		"platform": stringEnumArgSchema("Target platform for the visible-search fallback.", "ios", "android", "mac"),
+	}, "app")
 }
 
-type openAppArgs struct {
-	App         string `json:"app"`
-	URL         string `json:"url"`
-	PhoneNumber string `json:"phone_number"`
-}
-
-func isHTTPURL(value string) bool {
-	value = strings.ToLower(strings.TrimSpace(value))
-	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
-}
-
-func applyOpenAppURL(args *openAppArgs, rawURL string) *ToolError {
-	targetURL := strings.TrimSpace(rawURL)
-	if !isHTTPURL(targetURL) {
-		return NewToolError(CodeInvalidArguments, "url must start with http:// or https://")
-	}
-	args.URL = targetURL
-	args.App = ""
-	return nil
-}
-
-func resolveOpenAppTargets(args *openAppArgs) *ToolError {
-	if args == nil {
-		return NewToolError(CodeInvalidArguments, "missing bridge_open_app args")
-	}
-	hasApp := strings.TrimSpace(args.App) != ""
-	hasURL := strings.TrimSpace(args.URL) != ""
-
-	if strings.TrimSpace(args.PhoneNumber) != "" {
-		if hasApp || hasURL {
-			return NewToolError(CodeInvalidArguments, "phone_number cannot be combined with app or url")
-		}
-		args.PhoneNumber = strings.TrimSpace(args.PhoneNumber)
-		return nil
-	}
-
-	if hasURL {
-		if hasApp {
-			return NewToolError(CodeInvalidArguments, "url cannot be combined with app")
-		}
-		return applyOpenAppURL(args, args.URL)
-	}
-
-	if hasApp {
-		key := strings.ToLower(strings.TrimSpace(args.App))
-		if isHTTPURL(key) {
-			return NewToolError(CodeInvalidArguments, "app must be an app name or alias; use url for HTTP/HTTPS URLs")
-		}
-		args.App = strings.TrimSpace(args.App)
-		return nil
-	}
-
-	return NewToolError(CodeInvalidArguments, "must provide app name, url, or phone_number")
-}
-
-func openAppResultMethod(args openAppArgs) string {
-	if strings.TrimSpace(args.PhoneNumber) != "" {
-		return "dial"
-	}
-	if strings.TrimSpace(args.URL) != "" {
-		return "open_url"
-	}
-	if strings.TrimSpace(args.App) != "" {
-		return "open_app"
-	}
-	return "open_app"
-}
-
-func openAppResultTarget(args openAppArgs) string {
-	if value := strings.TrimSpace(args.PhoneNumber); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(args.URL); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(args.App); value != "" {
-		return value
-	}
-	return ""
-}
-
-func openAppResultMechanism(args openAppArgs, responseMethod string) string {
-	method := strings.TrimSpace(responseMethod)
-	switch method {
-	case "ios_shortcut", "ios_url_scheme", "android_intent", "android_deeplink", "android_package", "dial":
-		return method
-	case "open_url":
-		if openAppResultMethod(args) == "open_url" {
-			return method
-		}
-	case "launch_package", "package_name":
-		return "android_package"
-	}
-
-	return method
-}
-
-func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
-	var args openAppArgs
+func parseRoutedOpenAppArgs(input string) (routedOpenAppArgs, *ToolError) {
+	var args routedOpenAppArgs
 	trimmed := strings.TrimSpace(input)
 	if strings.HasPrefix(trimmed, "{") {
 		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
-			te := NewToolErrorWithDetails(CodeInvalidArguments,
-				fmt.Sprintf("invalid input: %v. Expected JSON like {\"app\": \"WeChat\"}, {\"app\": \"微信\"}, or {\"url\": \"https://example.com\"}", err),
+			return args, NewToolErrorWithDetails(CodeInvalidArguments,
+				fmt.Sprintf("invalid input: %v. Expected JSON like {\"app\":\"WeChat\"}", err),
 				map[string]any{"raw_input": trimmed})
-			SetToolError(ctx, te)
-			return toolErrorString(te), nil
 		}
 	} else {
 		args.App = trimmed
 	}
+	if strings.TrimSpace(args.App) == "" {
+		args.App = strings.TrimSpace(args.Name)
+	}
+	args.App = strings.TrimSpace(args.App)
+	args.Name = ""
+	args.Platform = strings.ToLower(strings.TrimSpace(args.Platform))
+	if args.App == "" {
+		return args, NewToolError(CodeInvalidArguments, "app is required")
+	}
+	return args, nil
+}
 
-	if te := resolveOpenAppTargets(&args); te != nil {
+func callNestedTool(ctx context.Context, tool langtools.Tool, input string) (string, *ToolError, error) {
+	if tool == nil {
+		te := NewToolError(CodeToolExecutionFailed, "app launch route is not configured")
+		return toolErrorString(te), te, nil
+	}
+	toolCtx, _ := WithToolError(ctx)
+	out, err := tool.Call(toolCtx, input)
+	return out, ToolErrorFromContext(toolCtx), err
+}
+
+func returnNestedToolResult(ctx context.Context, out string, te *ToolError, err error) (string, error) {
+	if te != nil && (strings.TrimSpace(out) == "" || out == te.Message) {
+		SetToolError(ctx, te)
+	}
+	return out, err
+}
+
+func (t *OpenAppTool) logRoute(format string, args ...any) {
+	if t != nil && t.logf != nil {
+		t.logf("open_app route: "+format, args...)
+	}
+}
+
+func openAppSearchRouteReason(tool *OpenAppTool, status PhoneBridgeStatus) string {
+	if tool == nil || tool.bridge == nil {
+		return "phone_bridge_unavailable"
+	}
+	if phoneBridgePiPBackgroundEnabled(status) {
+		return "ios_pip_background"
+	}
+	if phoneBridgeFGSBackgroundEnabled(status) {
+		return "android_fgs_background"
+	}
+	if !status.Connected {
+		return "phone_bridge_disconnected"
+	}
+	if phoneBridgeAppNeedsForeground(status) {
+		return "companion_app_background"
+	}
+	return "phone_bridge_not_ready"
+}
+
+func openAppBridgeFailureDetails(te *ToolError, err error) (string, string) {
+	if te != nil {
+		return te.Code, te.Message
+	}
+	if err != nil {
+		return "", err.Error()
+	}
+	return "", "unknown bridge failure"
+}
+
+func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
+	args, te := parseRoutedOpenAppArgs(input)
+	if te != nil {
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
 
-	restored, err := ensurePhoneBridgeReadyForCommand(ctx, t.bridge, t.restorer, "open_app")
+	searchInput := map[string]string{"app": args.App}
+	if args.Platform != "" {
+		searchInput["platform"] = args.Platform
+	}
+	rawSearchInput, _ := json.Marshal(searchInput)
+
+	status := PhoneBridgeStatus{}
+	if t != nil && t.bridge != nil {
+		status = t.bridge.getStatus()
+	}
+	if t != nil && t.bridge != nil && phoneBridgeCanUseDirectOpenApp(status) {
+		t.logRoute("selected=bridge_open_app app=%q requested_platform=%q connected=%t bridge_platform=%q app_state=%q pip=%t fgs=%t",
+			args.App, args.Platform, status.Connected, status.Platform, status.AppState,
+			status.PipBridgeEnabled != nil && *status.PipBridgeEnabled,
+			status.FgsBridgeEnabled != nil && *status.FgsBridgeEnabled)
+		bridgeInput, _ := json.Marshal(map[string]string{"app": args.App})
+		bridgeOut, bridgeTE, bridgeErr := callNestedTool(ctx, t.bridgeOpen, string(bridgeInput))
+		if bridgeErr == nil && bridgeTE == nil {
+			return bridgeOut, nil
+		}
+		if ctx.Err() != nil {
+			return returnNestedToolResult(ctx, bridgeOut, bridgeTE, bridgeErr)
+		}
+		bridgeErrorCode, bridgeError := openAppBridgeFailureDetails(bridgeTE, bridgeErr)
+		t.logRoute("selected=search_launch_app reason=bridge_failed previous=bridge_open_app app=%q requested_platform=%q bridge_error_code=%q bridge_error=%q",
+			args.App, args.Platform, bridgeErrorCode, bridgeError)
+	} else {
+		t.logRoute("selected=search_launch_app reason=%s app=%q requested_platform=%q connected=%t bridge_platform=%q app_state=%q pip=%t fgs=%t",
+			openAppSearchRouteReason(t, status), args.App, args.Platform, status.Connected, status.Platform, status.AppState,
+			status.PipBridgeEnabled != nil && *status.PipBridgeEnabled,
+			status.FgsBridgeEnabled != nil && *status.FgsBridgeEnabled)
+	}
+
+	searchOut, searchTE, searchErr := callNestedTool(ctx, t.searchOpen, string(rawSearchInput))
+	return returnNestedToolResult(ctx, searchOut, searchTE, searchErr)
+}
+
+func phoneBridgeCanUseDirectOpenApp(status PhoneBridgeStatus) bool {
+	return !phoneBridgeAppNeedsForeground(status) && phoneBridgeReadyForCommand(status, "open_app")
+}
+
+// BridgeOpenAppTool is the internal Phone Bridge implementation used by
+// OpenAppTool when the companion app is ready for a foreground command.
+type BridgeOpenAppTool struct {
+	bridge   *PhoneBridge
+	restorer *PhoneBridgeRestorer
+}
+
+func NewBridgeOpenAppTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *BridgeOpenAppTool {
+	return &BridgeOpenAppTool{bridge: bridge, restorer: restorer}
+}
+
+func (t *BridgeOpenAppTool) Name() string { return toolBridgeOpenApp }
+
+func (t *BridgeOpenAppTool) Description() string {
+	return `Open an app by semantic app name through the connected phone companion app. This is an internal route used by open_app.`
+}
+
+func (t *BridgeOpenAppTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"app": stringArgSchema("App name or semantic alias, such as WeChat, 微信, browser, or Settings."),
+	}, "app")
+}
+
+type bridgeOpenAppArgs struct {
+	App string `json:"app"`
+}
+
+func parseBridgeOpenAppArgs(input string) (bridgeOpenAppArgs, *ToolError) {
+	var args bridgeOpenAppArgs
+	trimmed := strings.TrimSpace(input)
+	if strings.HasPrefix(trimmed, "{") {
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return args, NewToolErrorWithDetails(CodeInvalidArguments,
+				fmt.Sprintf("invalid input: %v. Expected JSON like {\"app\":\"WeChat\"}", err),
+				map[string]any{"raw_input": trimmed})
+		}
+	} else {
+		args.App = trimmed
+	}
+	args.App = strings.TrimSpace(args.App)
+	if args.App == "" {
+		return args, NewToolError(CodeInvalidArguments, "app is required")
+	}
+	return args, nil
+}
+
+func isSupportedOpenURL(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, prefix := range []string{"http://", "https://", "sms:", "mailto:", "tel:"} {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeOpenURL(value string) (string, *ToolError) {
+	value = strings.TrimSpace(value)
+	if !isSupportedOpenURL(value) {
+		return "", NewToolError(CodeInvalidArguments, "url must use http, https, sms, mailto, or tel")
+	}
+	return value, nil
+}
+
+type OpenURLTool struct {
+	bridge   *PhoneBridge
+	restorer *PhoneBridgeRestorer
+}
+
+func NewOpenURLTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *OpenURLTool {
+	return &OpenURLTool{bridge: bridge, restorer: restorer}
+}
+
+func (t *OpenURLTool) Name() string { return toolOpenURL }
+
+func (t *OpenURLTool) Description() string {
+	return `Open an HTTP/HTTPS webpage, SMS composer, email composer, or telephone link on the connected phone through Phone Bridge. ` +
+		`Supported formats: https://example.com, http://example.com, sms:<phone_number>?body=<message>, mailto:<email_address>?subject=<subject>, and tel:<phone_number>. ` +
+		`Percent-encode spaces and reserved characters in SMS body and email subject query values. ` +
+		`Use open_app to launch a browser without navigating to a fixed URL.`
+}
+
+func (t *OpenURLTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"url": stringArgSchema("URL to open using http, https, sms, mailto, or tel."),
+	}, "url")
+}
+
+type openURLArgs struct {
+	URL string `json:"url"`
+}
+
+func parseOpenURLArgs(input string) (openURLArgs, *ToolError) {
+	var args openURLArgs
+	trimmed := strings.TrimSpace(input)
+	if strings.HasPrefix(trimmed, "{") {
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return args, NewToolErrorWithDetails(CodeInvalidArguments,
+				fmt.Sprintf("invalid input: %v. Expected JSON like {\"url\":\"https://example.com\"}", err),
+				map[string]any{"raw_input": trimmed})
+		}
+	} else {
+		args.URL = trimmed
+	}
+	url, te := normalizeOpenURL(args.URL)
+	args.URL = url
+	return args, te
+}
+
+func bridgeOpenResultMechanism(responseMethod string) string {
+	method := strings.TrimSpace(responseMethod)
+	switch method {
+	case "launch_package", "package_name":
+		return "android_package"
+	default:
+		return method
+	}
+}
+
+func sendBridgeOpenCommand(ctx context.Context, bridge *PhoneBridge, restorer *PhoneBridgeRestorer, cmd BridgeCommand, method, target string) (string, error) {
+	restored, err := ensurePhoneBridgeReadyForCommand(ctx, bridge, restorer, "open_app")
 	if err != nil {
 		status := PhoneBridgeStatus{}
-		if t.bridge != nil {
-			status = t.bridge.getStatus()
+		if bridge != nil {
+			status = bridge.getStatus()
 		}
 		guidance := phoneBridgeOpenAppRecoveryGuidance(status)
 		te := NewToolErrorWithDetails(CodeBridgeNotConnected,
@@ -170,35 +314,17 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 		return toolErrorString(te), nil
 	}
 
-	cmdID := fmt.Sprintf("open_%d_%d", time.Now().UnixMilli(), openAppCmdSeq.Add(1))
-	cmd := BridgeCommand{
-		ID:          cmdID,
-		Type:        "open_app",
-		App:         strings.TrimSpace(args.App),
-		URL:         strings.TrimSpace(args.URL),
-		PhoneNumber: strings.TrimSpace(args.PhoneNumber),
-		TimeoutMs:   10000,
-	}
-
-	resp, err := t.bridge.SendCommand(ctx, cmd)
+	resp, err := bridge.SendCommand(ctx, cmd)
 	if err != nil {
-		status := PhoneBridgeStatus{}
-		if t.bridge != nil {
-			status = t.bridge.getStatus()
-		}
+		status := bridge.getStatus()
 		te := NewToolErrorWithDetails(CodeToolExecutionFailed,
 			fmt.Sprintf("send command: %v", err),
 			map[string]any{"fallback": phoneBridgeRecoveryGuidance(status)})
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
-
 	if resp.Error != nil {
-		status := PhoneBridgeStatus{}
-		if t.bridge != nil {
-			status = t.bridge.getStatus()
-		}
-		// Preserve upstream Code/Category; attach app-side fallback hint.
+		status := bridge.getStatus()
 		te := resp.Error
 		if te.Details == nil {
 			te.Details = map[string]any{}
@@ -208,20 +334,60 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 		return toolErrorString(te), nil
 	}
 
-	result := map[string]interface{}{
+	result := map[string]any{
 		"ok":     true,
-		"method": openAppResultMethod(args),
+		"method": method,
+		"target": target,
 	}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
-	if target := openAppResultTarget(args); target != "" {
-		result["target"] = target
-	}
-	if mechanism := openAppResultMechanism(args, resp.Method); mechanism != "" {
+	if mechanism := bridgeOpenResultMechanism(resp.Method); mechanism != "" {
 		result["mechanism"] = mechanism
 	}
 	return jsonString(result), nil
+}
+
+func (t *BridgeOpenAppTool) Call(ctx context.Context, input string) (string, error) {
+	args, te := parseBridgeOpenAppArgs(input)
+	if te != nil {
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
+	cmd := BridgeCommand{
+		ID:        fmt.Sprintf("open_%d_%d", time.Now().UnixMilli(), openAppCmdSeq.Add(1)),
+		Type:      "open_app",
+		App:       args.App,
+		TimeoutMs: 10000,
+	}
+	return sendBridgeOpenCommand(ctx, t.bridge, t.restorer, cmd, "open_app", args.App)
+}
+
+func (t *OpenURLTool) Call(ctx context.Context, input string) (string, error) {
+	args, te := parseOpenURLArgs(input)
+	if te != nil {
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
+	cmd := BridgeCommand{
+		ID:        fmt.Sprintf("url_%d_%d", time.Now().UnixMilli(), openAppCmdSeq.Add(1)),
+		Type:      "open_app",
+		URL:       args.URL,
+		TimeoutMs: 10000,
+	}
+	return sendBridgeOpenCommand(ctx, t.bridge, t.restorer, cmd, "open_url", args.URL)
+}
+
+func (s *ToolSet) refreshOpenAppTool() {
+	if s == nil || s.searchOpenTool == nil {
+		return
+	}
+	openApp := NewOpenAppTool(s.phoneBridge, s.phoneBridgeRestorer, s.searchOpenTool)
+	if screenshot, ok := s.tools["screenshot"]; ok && screenshot != nil {
+		s.tools[toolOpenApp] = newPostActionScreenshotTool(openApp, screenshot, postActionScreenshotDelay)
+		return
+	}
+	s.tools[toolOpenApp] = openApp
 }
 
 func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
@@ -236,7 +402,8 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 	if s.phoneBridgeRestorer != nil {
 		s.phoneBridgeRestorer.SetBridge(bridge)
 	}
-	s.tools[toolBridgeOpenApp] = NewOpenAppTool(bridge, s.phoneBridgeRestorer)
+	s.refreshOpenAppTool()
+	s.tools[toolOpenURL] = NewOpenURLTool(bridge, s.phoneBridgeRestorer)
 	s.tools[toolBridgeClipboard] = NewClipboardTool(bridge, s.phoneBridgeRestorer)
 	s.tools[toolBridgeCalendar] = NewCalendarTool(bridge, s.phoneBridgeRestorer)
 	s.tools[toolBridgeContacts] = NewContactsTool(bridge, s.phoneBridgeRestorer)

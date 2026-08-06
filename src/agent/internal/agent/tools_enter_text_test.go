@@ -477,7 +477,7 @@ func TestEnterTextToolSchemaKeepsIMESegmentsInternal(t *testing.T) {
 		t.Fatal("enter_text must not expose IME segments")
 	}
 	if _, found := props["platform"]; found {
-		t.Fatal("enter_text must infer the platform from HID configuration")
+		t.Fatal("enter_text must infer the platform from runtime device state")
 	}
 	if _, found := props["max_attempts"]; found {
 		t.Fatal("enter_text must not expose max_attempts")
@@ -487,12 +487,27 @@ func TestEnterTextToolSchemaKeepsIMESegmentsInternal(t *testing.T) {
 	}
 }
 
-func TestTextInputPlatformUsesHIDPointerMode(t *testing.T) {
+func TestTextInputPlatformFallsBackToHIDPointerMode(t *testing.T) {
 	if got := (textInputHardwareDeps{pointerMode: "absolute"}).platform(); got != "ios" {
 		t.Fatalf("absolute pointer mode platform = %q, want ios", got)
 	}
 	if got := (textInputHardwareDeps{pointerMode: "touchscreen"}).platform(); got != "android" {
 		t.Fatalf("touchscreen pointer mode platform = %q, want android", got)
+	}
+}
+
+func TestTextInputPlatformUsesRuntimeProviderBeforeHIDPointerMode(t *testing.T) {
+	if got := (textInputHardwareDeps{
+		pointerMode: "absolute",
+		platformFn:  func() string { return "Android" },
+	}).platform(); got != "android" {
+		t.Fatalf("runtime platform = %q, want android", got)
+	}
+	if got := (textInputHardwareDeps{
+		pointerMode: "touchscreen",
+		platformFn:  func() string { return "macOS" },
+	}).platform(); got != "mac" {
+		t.Fatalf("runtime platform = %q, want mac", got)
 	}
 }
 
@@ -641,8 +656,55 @@ func TestEnterTextToolPrefersAvailableBridge(t *testing.T) {
 		t.Fatal("available Android bridge should be preferred before local entry")
 	}
 	tool.bridgeTool.hw.pointerMode = "absolute"
+	tool.SetPlatformFn(func() string { return "android" })
+	if !tool.bridgeAvailable(textInputArgs{Text: "global device state keeps Android bridge route"}) {
+		t.Fatal("runtime platform provider should override HID pointer_mode fallback")
+	}
+	tool.SetPlatformFn(func() string { return "ios" })
 	if tool.bridgeAvailable(textInputArgs{Text: "hello"}) {
-		t.Fatal("iOS HID configuration should not select an Android bridge clipboard route")
+		t.Fatal("iOS device_type state should not select an Android bridge clipboard route")
+	}
+}
+
+func TestEnterTextToolCallKeepsBridgePathEnabled(t *testing.T) {
+	pb := newTestPhoneBridge(t)
+	pb.platform = "android"
+	pb.connected = true
+	pb.appState = "background"
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	hw := &textInputHardwareDeps{
+		pointerMode:  "touchscreen",
+		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: keyboardText,
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}
+	bridgeWrites := 0
+	tool := &EnterTextTool{
+		engine: newFastTextInputEngine(*hw, vision),
+		bridgeTool: &textInputBridge{
+			hw:       hw,
+			vision:   vision,
+			bridgeFn: func() *PhoneBridge { return pb },
+			clipboardWriteFn: func(context.Context, *PhoneBridge, string) error {
+				bridgeWrites++
+				return context.Canceled
+			},
+		},
+	}
+
+	out, err := tool.Call(context.Background(), `{"text":"Aiden","focus":{"x":500,"y":120,"coord_space":"normalized"}}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if bridgeWrites != 1 {
+		t.Fatalf("bridge writes = %d, want public enter_text to attempt Bridge once", bridgeWrites)
+	}
+	if len(keyboardText.calls) != 0 {
+		t.Fatalf("keyboard_text calls = %v, want no local fallback after attempted Bridge path", keyboardText.calls)
+	}
+	if enterTextOutputOK(out, nil) {
+		t.Fatalf("Call() output = %s, want failed Bridge result", out)
 	}
 }
 
