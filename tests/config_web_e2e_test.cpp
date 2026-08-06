@@ -275,6 +275,28 @@ bool wait_for_file_contains(const std::string& path, const std::string& needle, 
     return false;
 }
 
+bool wait_for_file_contains_any(const std::string& path,
+                                const std::vector<std::string>& needles,
+                                int timeout_ms) {
+    using clock = std::chrono::steady_clock;
+    auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (clock::now() < deadline) {
+        std::ifstream in(path);
+        if (in.good()) {
+            std::ostringstream buf;
+            buf << in.rdbuf();
+            const std::string contents = buf.str();
+            for (size_t i = 0; i < needles.size(); ++i) {
+                if (contents.find(needles[i]) != std::string::npos) {
+                    return true;
+                }
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return false;
+}
+
 bool wait_for_port(int port, int timeout_ms) {
     using clock = std::chrono::steady_clock;
     auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -2307,6 +2329,108 @@ TEST_CASE("config_web: failed manual OTA update releases launch lock even if a c
     }
     CHECK(accepted);
     CHECK(retry.body.find("ota update already running") == std::string::npos);
+}
+
+TEST_CASE("config_web: manual OTA update appends update log and reports start size") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+
+    const std::string env_run_path = tmp + "/aiden-env-run";
+    const std::string ota_path = tmp + "/ota";
+    const std::string lock_path = tmp + "/config_web_ota_update.lock";
+    const std::string log_path = tmp + "/config_web_ota_update.log";
+    const std::string previous_log = "previous web ota update\n";
+    write_file(log_path, previous_log);
+
+    write_file(env_run_path, "#!/bin/sh\nexec \"$@\"\n");
+    REQUIRE(::chmod(env_run_path.c_str(), 0755) == 0);
+
+    write_file(ota_path,
+               "#!/bin/sh\n"
+               "if [ \"${1:-}\" = \"update\" ]; then\n"
+               "  echo 'new ota update output'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 0\n");
+    REQUIRE(::chmod(ota_path.c_str(), 0755) == 0);
+
+    StubEnv env;
+    env.set("AIDEN_OTA_BIN", ota_path);
+    env.set("AIDEN_ENV_RUN_BIN", env_run_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", lock_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", log_path);
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "POST", "/api/ota/update");
+    REQUIRE(resp.status == 200);
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    CHECK(required_json_int(parsed, "ota_log_start_size_bytes") == static_cast<int>(previous_log.size()));
+    cJSON_Delete(parsed);
+
+    REQUIRE(wait_for_file_contains_any(log_path,
+                                       {
+                                           "[config_web] ota update exited rc=0",
+                                           "[config_web] [ota] update_exited exit_code=0",
+                                       },
+                                       2000));
+    const std::string log = read_file(log_path);
+    CHECK(log.find(previous_log) == 0);
+    CHECK(log.find("new ota update output") != std::string::npos);
+}
+
+TEST_CASE("config_web: manual OTA update truncates oversized update log before appending") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+
+    const std::string env_run_path = tmp + "/aiden-env-run";
+    const std::string ota_path = tmp + "/ota";
+    const std::string lock_path = tmp + "/config_web_ota_update.lock";
+    const std::string log_path = tmp + "/config_web_ota_update.log";
+    write_file(log_path, std::string(1024 * 1024, 'x'));
+
+    write_file(env_run_path, "#!/bin/sh\nexec \"$@\"\n");
+    REQUIRE(::chmod(env_run_path.c_str(), 0755) == 0);
+
+    write_file(ota_path,
+               "#!/bin/sh\n"
+               "if [ \"${1:-}\" = \"update\" ]; then\n"
+               "  echo 'fresh ota update output'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 0\n");
+    REQUIRE(::chmod(ota_path.c_str(), 0755) == 0);
+
+    StubEnv env;
+    env.set("AIDEN_OTA_BIN", ota_path);
+    env.set("AIDEN_ENV_RUN_BIN", env_run_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", lock_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", log_path);
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "POST", "/api/ota/update");
+    REQUIRE(resp.status == 200);
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    CHECK(required_json_int(parsed, "ota_log_start_size_bytes") == 0);
+    cJSON_Delete(parsed);
+
+    REQUIRE(wait_for_file_contains_any(log_path,
+                                       {
+                                           "[config_web] ota update exited rc=0",
+                                           "[config_web] [ota] update_exited exit_code=0",
+                                       },
+                                       2000));
+    const std::string log = read_file(log_path);
+    CHECK(log.size() < 4096);
+    CHECK(log.find(std::string(64, 'x')) == std::string::npos);
+    CHECK(log.find("fresh ota update output") != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate") {
