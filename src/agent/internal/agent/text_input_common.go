@@ -302,7 +302,7 @@ func textInputKeyboardKeysForIMESwitch(platform string) ([]string, error) {
 	case "mac", "macos":
 		return []string{"ctrl", "space"}, nil
 	case "windows":
-		return []string{"shift"}, nil
+		return []string{"alt", "shift"}, nil
 	case "linux":
 		return []string{"ctrl", "space"}, nil
 	default:

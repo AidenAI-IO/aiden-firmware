@@ -310,7 +310,7 @@ func TestTextInputKeyboardKeysForPlatforms(t *testing.T) {
 		{platform: "ios", imeSwitch: []string{"capslock"}, selectAll: []string{"meta", "a"}, undo: []string{"meta", "z"}},
 		{platform: "mac", imeSwitch: []string{"ctrl", "space"}, selectAll: []string{"meta", "a"}, undo: []string{"meta", "z"}},
 		{platform: "android", imeSwitch: []string{"ctrl", "shift"}, selectAll: []string{"ctrl", "a"}, undo: []string{"ctrl", "z"}},
-		{platform: "windows", imeSwitch: []string{"shift"}, selectAll: []string{"ctrl", "a"}, undo: []string{"ctrl", "z"}},
+		{platform: "windows", imeSwitch: []string{"alt", "shift"}, selectAll: []string{"ctrl", "a"}, undo: []string{"ctrl", "z"}},
 		{platform: "linux", imeSwitch: []string{"ctrl", "space"}, selectAll: []string{"ctrl", "a"}, undo: []string{"ctrl", "z"}},
 	}
 	for _, test := range tests {
