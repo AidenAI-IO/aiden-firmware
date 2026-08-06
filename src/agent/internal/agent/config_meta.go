@@ -140,7 +140,7 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(in("model.provider", "openai", "openrouter", "kimi", "kimi-cn", "volcengine", "ollama"))},
+						VisibleWhen: all(in("model.provider", "openai", "ollama"))},
 					// The effective default is model-dependent (resolved at load
 					// time); show the global fallback here as the UI placeholder.
 					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},
@@ -179,10 +179,9 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "provider", Widget: WidgetSelect,
 						Enum: enumOptions("openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake")},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
-					// base_url is deliberately not scoped to a subset: ollama and
-					// openai need it, but users also set it for kimi-cn proxies and
-					// openrouter-with-custom-endpoint. The agent validates it is
-					// empty for providers where the backend has no support for it.
+					// base_url is deliberately not scoped to a subset: it's visible
+					// for all provider types, but clearNonAllowedModelBaseURL clears
+					// it at runtime for providers other than openai and ollama.
 					{Key: "base_url", Widget: WidgetText},
 				},
 			},

@@ -22,8 +22,7 @@ import (
 )
 
 // Moonshot Kimi OpenAI-compatible endpoints. "kimi" targets the global site and
-// "kimi-cn" targets the mainland China site; both accept a custom base_url
-// override for proxies or self-hosted gateways.
+// "kimi-cn" targets the mainland China site.
 const (
 	moonshotGlobalBaseURL = "https://api.moonshot.ai/v1"
 	moonshotCNBaseURL     = "https://api.moonshot.cn/v1"
@@ -32,8 +31,7 @@ const (
 // Volcengine Ark (火山方舟) OpenAI-compatible endpoint for the Doubao models.
 // Ark also exposes an Anthropic-protocol endpoint at /api/compatible, which this
 // repo does not use: every Ark model here is reached through the shared
-// openAICompatibleModel. The provider accepts a base_url override for proxies
-// and for the Agent Plan endpoints (/api/plan/v3).
+// openAICompatibleModel.
 const arkBeijingBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
 
 type ModelManager struct {

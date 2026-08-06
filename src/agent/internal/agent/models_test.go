@@ -136,8 +136,6 @@ func TestBuildKimiProvidersResolveBaseURL(t *testing.T) {
 		{"kimi default global", "kimi", "", moonshotGlobalBaseURL},
 		{"kimi-cn default cn", "kimi-cn", "", moonshotCNBaseURL},
 		{"kimi case insensitive", "Kimi", "", moonshotGlobalBaseURL},
-		{"kimi custom base url", "kimi", "https://gateway.example.com/v1", "https://gateway.example.com/v1"},
-		{"kimi-cn custom base url", "kimi-cn", "https://gateway.example.com/v1", "https://gateway.example.com/v1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -172,7 +170,6 @@ func TestBuildVolcengineProviderResolvesBaseURL(t *testing.T) {
 	}{
 		{"volcengine default ark", "volcengine", "", arkBeijingBaseURL},
 		{"volcengine case insensitive", "Volcengine", "", arkBeijingBaseURL},
-		{"volcengine custom base url", "volcengine", "https://gateway.example.com/v3", "https://gateway.example.com/v3"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
