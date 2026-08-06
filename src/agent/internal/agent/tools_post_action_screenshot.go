@@ -221,7 +221,7 @@ func waitForPostActionScreenshot(ctx context.Context, delay time.Duration) error
 }
 
 // SetPlatformFn delegates to wrapped text-entry tools if present.
-// This allows runtime configuration of platform precedence (bridge > config > LLM).
+// This allows runtime target-platform selection from global device_type state.
 func (t *postActionScreenshotTool) SetPlatformFn(fn func() string) {
 	type platformConfigurable interface {
 		SetPlatformFn(func() string)

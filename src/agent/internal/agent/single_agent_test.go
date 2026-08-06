@@ -179,7 +179,7 @@ func (m *disconnectedOpenAppFallbackModel) GenerateContent(_ context.Context, me
 		}
 	case 3:
 		if modelMessagesContainToolResult(messages, "screenshot") {
-			return toolCallResponse("call_search", "search_launch_app", `{"app":"小红书","platform":"ios"}`), nil
+			return toolCallResponse("call_search", "search_launch_app", `{"app":"小红书"}`), nil
 		}
 	case 4:
 		return contentResponse("已通过屏幕搜索继续打开小红书。"), nil
