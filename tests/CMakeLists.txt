@@ -185,3 +185,6 @@ add_test(NAME aiden_tests COMMAND $<TARGET_FILE:aiden_tests>)
 add_test(NAME logger_shell_format
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_logger_format.sh
 )
+add_test(NAME usb0_dhcp_options
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_usb0_dhcp_options.sh
+)
