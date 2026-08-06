@@ -148,6 +148,17 @@ After the action, including error and cancellation paths, it restores the normal
 composite. The isolated profile uses a distinct USB product ID and serial number
 so iOS does not reuse the pointer-bearing descriptor for the input.
 
+The normal composite must enumerate the pointer as the last HID interface:
+`keyboard -> Consumer Control -> pointer -> ECM`. iOS builds its keyboard and
+AssistiveTouch pointer subsystem state in interface order; a pointer that is
+enumerated immediately after the keyboard leaves the on-screen keyboard policy
+subject to an async race, so after an isolate/restore cycle the soft keyboard
+only reappears about 80% of the time. With the Consumer Control interface between
+them, the keyboard subsystem settles first and the pointer registers last, which
+closes that race: field tests showed 10/10 successful soft-keyboard restores.
+The pointer must stay before ECM: putting a HID interface after the ECM IAD
+causes continuous USB reset loops on iOS.
+
 One conversational Agent run owns a shared isolation scope. The first
 modifier-bearing keyboard operation removes the pointer, and later keyboard or
 Consumer Control operations reuse that profile without another enumeration. A
