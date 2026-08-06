@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
@@ -14,24 +15,31 @@ import (
 )
 
 const (
-	dbusPropertiesInterface     = "org.freedesktop.DBus.Properties"
-	dbusObjectManagerInterface  = "org.freedesktop.DBus.ObjectManager"
-	blueZAdapterInterface       = "org.bluez.Adapter1"
-	blueZDeviceInterface        = "org.bluez.Device1"
-	blueZGattManagerInterface   = "org.bluez.GattManager1"
-	blueZGattServiceInterface   = "org.bluez.GattService1"
-	blueZGattCharInterface      = "org.bluez.GattCharacteristic1"
-	blueZAdvManagerInterface    = "org.bluez.LEAdvertisingManager1"
-	blueZAdvertisementInterface = "org.bluez.LEAdvertisement1"
-	blueZAgentManagerInterface  = "org.bluez.AgentManager1"
-	blueZAgentInterface         = "org.bluez.Agent1"
+	dbusPropertiesInterface      = "org.freedesktop.DBus.Properties"
+	dbusObjectManagerInterface   = "org.freedesktop.DBus.ObjectManager"
+	blueZAdapterInterface        = "org.bluez.Adapter1"
+	blueZDeviceInterface         = "org.bluez.Device1"
+	blueZGattManagerInterface    = "org.bluez.GattManager1"
+	blueZGattServiceInterface    = "org.bluez.GattService1"
+	blueZGattCharInterface       = "org.bluez.GattCharacteristic1"
+	blueZGattDescriptorInterface = "org.bluez.GattDescriptor1"
+	blueZAdvManagerInterface     = "org.bluez.LEAdvertisingManager1"
+	blueZAdvertisementInterface  = "org.bluez.LEAdvertisement1"
+	blueZAgentManagerInterface   = "org.bluez.AgentManager1"
+	blueZAgentInterface          = "org.bluez.Agent1"
 
-	applicationPath   = dbus.ObjectPath("/com/aiden/ble")
-	gattServicePath   = dbus.ObjectPath("/com/aiden/ble/service0")
-	wakeCharPath      = dbus.ObjectPath("/com/aiden/ble/service0/char0")
-	advertisementPath = dbus.ObjectPath("/com/aiden/ble/advertisement0")
-	agentPath         = dbus.ObjectPath("/com/aiden/ble/agent0")
-	blueZRootPath     = dbus.ObjectPath("/")
+	applicationPath         = dbus.ObjectPath("/com/aiden/ble")
+	wakeServicePath         = dbus.ObjectPath("/com/aiden/ble/service0")
+	wakeCharPath            = dbus.ObjectPath("/com/aiden/ble/service0/char0")
+	hidServicePath          = dbus.ObjectPath("/com/aiden/ble/service1")
+	hidInformationCharPath  = dbus.ObjectPath("/com/aiden/ble/service1/char0")
+	hidReportMapCharPath    = dbus.ObjectPath("/com/aiden/ble/service1/char1")
+	hidControlPointCharPath = dbus.ObjectPath("/com/aiden/ble/service1/char2")
+	hidReportCharPath       = dbus.ObjectPath("/com/aiden/ble/service1/char3")
+	hidReportReferencePath  = dbus.ObjectPath("/com/aiden/ble/service1/char3/desc0")
+	advertisementPath       = dbus.ObjectPath("/com/aiden/ble/advertisement0")
+	agentPath               = dbus.ObjectPath("/com/aiden/ble/agent0")
+	blueZRootPath           = dbus.ObjectPath("/")
 )
 
 type managedObjects map[dbus.ObjectPath]map[string]map[string]dbus.Variant
@@ -43,33 +51,48 @@ type ancsPaths struct {
 	dataSource         dbus.ObjectPath
 }
 
+type exportedGattObject struct {
+	path          dbus.ObjectPath
+	interfaceName string
+	properties    *prop.Properties
+}
+
 func (p ancsPaths) complete() bool {
 	return p.device.IsValid() && p.notificationSource.IsValid() &&
 		p.controlPoint.IsValid() && p.dataSource.IsValid()
 }
 
 type blueZBackend struct {
-	service    *Service
-	deviceName string
-	conn       *dbus.Conn
-	adapter    dbus.ObjectPath
-	signals    chan *dbus.Signal
+	service       *Service
+	deviceName    string
+	pairingWindow time.Duration
+	conn          *dbus.Conn
+	adapter       dbus.ObjectPath
+	signals       chan *dbus.Signal
 
-	serviceProps *prop.Properties
-	wakeProps    *prop.Properties
-	advProps     *prop.Properties
-	wakeObject   *wakeCharacteristic
+	wakeProps      *prop.Properties
+	advProps       *prop.Properties
+	wakeObject     *wakeCharacteristic
+	hidReportProps *prop.Properties
+	gattObjects    []exportedGattObject
 
-	ancsMu sync.Mutex
-	ancs   ancsPaths
-	closed bool
+	ancsMu          sync.Mutex
+	ancs            ancsPaths
+	stateMu         sync.Mutex
+	trustedDevice   dbus.ObjectPath
+	pairingOpen     bool
+	pairingDeadline time.Time
+	closed          bool
 }
 
-func newBlueZBackend(service *Service, deviceName string) *blueZBackend {
+func newBlueZBackend(service *Service, deviceName string, pairingWindow time.Duration) *blueZBackend {
 	if strings.TrimSpace(deviceName) == "" {
 		deviceName = "Aiden"
 	}
-	return &blueZBackend{service: service, deviceName: deviceName}
+	if pairingWindow < 0 {
+		pairingWindow = 0
+	}
+	return &blueZBackend{service: service, deviceName: deviceName, pairingWindow: pairingWindow}
 }
 
 func (b *blueZBackend) start() error {
@@ -81,9 +104,6 @@ func (b *blueZBackend) start() error {
 	b.signals = make(chan *dbus.Signal, 64)
 	b.conn.Signal(b.signals)
 
-	if err := b.exportObjects(); err != nil {
-		return err
-	}
 	if err := b.addSignalMatches(); err != nil {
 		return fmt.Errorf("subscribe BlueZ signals: %w", err)
 	}
@@ -96,7 +116,23 @@ func (b *blueZBackend) start() error {
 	if !b.adapter.IsValid() {
 		return errors.New("BlueZ adapter hci0 is unavailable")
 	}
-	if err := b.configureAdapter(); err != nil {
+	adapterProps := objects[b.adapter][blueZAdapterInterface]
+	b.deviceName = stableDeviceName(b.deviceName, variantString(adapterProps, "Address"))
+	trusted, bondedCount := selectBondedDevice(objects)
+	b.stateMu.Lock()
+	b.trustedDevice = trusted
+	if !trusted.IsValid() && b.pairingWindow > 0 {
+		b.pairingOpen = true
+		b.pairingDeadline = time.Now().Add(b.pairingWindow)
+	}
+	pairingOpen := b.pairingOpen
+	pairingDeadline := b.pairingDeadline
+	b.stateMu.Unlock()
+
+	if err := b.exportObjects(); err != nil {
+		return err
+	}
+	if err := b.configureAdapter(pairingOpen); err != nil {
 		return err
 	}
 	if err := b.registerAgent(); err != nil {
@@ -109,22 +145,35 @@ func (b *blueZBackend) start() error {
 		return err
 	}
 
-	adapterProps := objects[b.adapter][blueZAdapterInterface]
+	if trusted.IsValid() {
+		if !variantBool(objects[trusted][blueZDeviceInterface], "Trusted") {
+			if err := b.markDeviceTrusted(trusted); err != nil {
+				return err
+			}
+		}
+	}
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.BackendAvailable = true
+		status.DeviceName = b.deviceName
 		status.AdapterPath = string(b.adapter)
 		status.AdapterAddress = variantString(adapterProps, "Address")
 		status.AdapterPowered = true
 		status.GattRegistered = true
+		status.HOGPRegistered = true
 		status.Advertising = true
+		status.PairingOpen = pairingOpen
+		status.PairingDeadline = formatDeadline(pairingDeadline)
+		status.BondedDeviceCount = bondedCount
 	})
-	if err := b.rescanANCS(); err != nil {
+	if err := b.rescanBluetoothState(); err != nil {
 		b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
 	}
 	return nil
 }
 
 func (b *blueZBackend) run(ctx context.Context) error {
+	maintenance := time.NewTicker(time.Second)
+	defer maintenance.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -136,6 +185,9 @@ func (b *blueZBackend) run(ctx context.Context) error {
 				return errors.New("BlueZ signal channel closed")
 			}
 			b.handleSignal(signal)
+		case now := <-maintenance.C:
+			b.expirePairingWindow(now)
+			b.service.consumer.ExpireActive(now)
 		}
 	}
 }
@@ -175,51 +227,128 @@ func (b *blueZBackend) close() {
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.BackendAvailable = false
 		status.GattRegistered = false
+		status.HOGPRegistered = false
 		status.Advertising = false
+		status.PairingOpen = false
+		status.PairingDeadline = ""
 		status.WakeSubscriber = false
 		status.ANCSSubscribed = false
 	})
 }
 
 func (b *blueZBackend) exportObjects() error {
-	var err error
-	b.serviceProps, err = prop.Export(b.conn, gattServicePath, prop.Map{
-		blueZGattServiceInterface: {
-			"UUID":    {Value: WakeServiceUUID, Emit: prop.EmitConst},
-			"Primary": {Value: true, Emit: prop.EmitConst},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("export Wake service properties: %w", err)
-	}
-
-	b.wakeObject = &wakeCharacteristic{backend: b}
-	b.wakeProps, err = prop.Export(b.conn, wakeCharPath, prop.Map{
-		blueZGattCharInterface: {
-			"UUID":      {Value: WakeCharacteristicUUID, Emit: prop.EmitConst},
-			"Service":   {Value: gattServicePath, Emit: prop.EmitConst},
-			"Flags":     {Value: []string{"read", "notify"}, Emit: prop.EmitConst},
-			"Value":     {Value: []byte{}, Emit: prop.EmitTrue},
-			"Notifying": {Value: false, Emit: prop.EmitTrue},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("export Wake characteristic properties: %w", err)
-	}
-	if err := b.conn.Export(b.wakeObject, wakeCharPath, blueZGattCharInterface); err != nil {
-		return fmt.Errorf("export Wake characteristic: %w", err)
-	}
 	manager := &gattObjectManager{backend: b}
 	if err := b.conn.Export(manager, applicationPath, dbusObjectManagerInterface); err != nil {
 		return fmt.Errorf("export GATT object manager: %w", err)
+	}
+	if err := exportIntrospection(b.conn, applicationPath, dbusObjectManagerInterface, manager, nil); err != nil {
+		return err
+	}
+
+	var err error
+	_, err = b.exportGattObject(wakeServicePath, blueZGattServiceInterface, prop.Map{
+		blueZGattServiceInterface: {
+			"UUID":            {Value: WakeServiceUUID, Emit: prop.EmitConst},
+			"Primary":         {Value: true, Emit: prop.EmitConst},
+			"Characteristics": {Value: []dbus.ObjectPath{wakeCharPath}, Emit: prop.EmitConst},
+		},
+	}, &struct{}{})
+	if err != nil {
+		return fmt.Errorf("export Wake service: %w", err)
+	}
+
+	b.wakeObject = &wakeCharacteristic{backend: b}
+	b.wakeProps, err = b.exportGattObject(wakeCharPath, blueZGattCharInterface, prop.Map{
+		blueZGattCharInterface: {
+			"UUID":        {Value: WakeCharacteristicUUID, Emit: prop.EmitConst},
+			"Service":     {Value: wakeServicePath, Emit: prop.EmitConst},
+			"Flags":       {Value: []string{"read", "notify", "encrypt-read", "encrypt-notify"}, Emit: prop.EmitConst},
+			"Descriptors": {Value: []dbus.ObjectPath{}, Emit: prop.EmitConst},
+			"Value":       {Value: []byte{}, Emit: prop.EmitTrue},
+			"Notifying":   {Value: false, Emit: prop.EmitTrue},
+		},
+	}, b.wakeObject)
+	if err != nil {
+		return fmt.Errorf("export Wake characteristic: %w", err)
+	}
+
+	if _, err := b.exportGattObject(hidServicePath, blueZGattServiceInterface, prop.Map{
+		blueZGattServiceInterface: {
+			"UUID":    {Value: HIDServiceUUID, Emit: prop.EmitConst},
+			"Primary": {Value: true, Emit: prop.EmitConst},
+			"Characteristics": {Value: []dbus.ObjectPath{
+				hidInformationCharPath,
+				hidReportMapCharPath,
+				hidControlPointCharPath,
+				hidReportCharPath,
+			}, Emit: prop.EmitConst},
+		},
+	}, &struct{}{}); err != nil {
+		return fmt.Errorf("export HID service: %w", err)
+	}
+	if _, err := b.exportGattObject(hidInformationCharPath, blueZGattCharInterface, prop.Map{
+		blueZGattCharInterface: {
+			"UUID":        {Value: HIDInformationCharacteristicUUID, Emit: prop.EmitConst},
+			"Service":     {Value: hidServicePath, Emit: prop.EmitConst},
+			"Flags":       {Value: []string{"read", "encrypt-read"}, Emit: prop.EmitConst},
+			"Descriptors": {Value: []dbus.ObjectPath{}, Emit: prop.EmitConst},
+		},
+	}, &staticReadCharacteristic{value: hidInformationValue()}); err != nil {
+		return fmt.Errorf("export HID Information characteristic: %w", err)
+	}
+	if _, err := b.exportGattObject(hidReportMapCharPath, blueZGattCharInterface, prop.Map{
+		blueZGattCharInterface: {
+			"UUID":        {Value: HIDReportMapCharacteristicUUID, Emit: prop.EmitConst},
+			"Service":     {Value: hidServicePath, Emit: prop.EmitConst},
+			"Flags":       {Value: []string{"read", "encrypt-read"}, Emit: prop.EmitConst},
+			"Descriptors": {Value: []dbus.ObjectPath{}, Emit: prop.EmitConst},
+		},
+	}, &staticReadCharacteristic{value: hidReportMapValue()}); err != nil {
+		return fmt.Errorf("export HID Report Map characteristic: %w", err)
+	}
+	if _, err := b.exportGattObject(hidControlPointCharPath, blueZGattCharInterface, prop.Map{
+		blueZGattCharInterface: {
+			"UUID":        {Value: HIDControlPointCharacteristicUUID, Emit: prop.EmitConst},
+			"Service":     {Value: hidServicePath, Emit: prop.EmitConst},
+			"Flags":       {Value: []string{"write-without-response", "encrypt-write"}, Emit: prop.EmitConst},
+			"Descriptors": {Value: []dbus.ObjectPath{}, Emit: prop.EmitConst},
+		},
+	}, &hidControlPointCharacteristic{}); err != nil {
+		return fmt.Errorf("export HID Control Point characteristic: %w", err)
+	}
+
+	hidReportObject := &hidReportCharacteristic{}
+	b.hidReportProps, err = b.exportGattObject(hidReportCharPath, blueZGattCharInterface, prop.Map{
+		blueZGattCharInterface: {
+			"UUID":        {Value: HIDReportCharacteristicUUID, Emit: prop.EmitConst},
+			"Service":     {Value: hidServicePath, Emit: prop.EmitConst},
+			"Flags":       {Value: []string{"read", "notify", "encrypt-read", "encrypt-notify"}, Emit: prop.EmitConst},
+			"Descriptors": {Value: []dbus.ObjectPath{hidReportReferencePath}, Emit: prop.EmitConst},
+			"Value":       {Value: []byte{0x00, 0x00}, Emit: prop.EmitTrue},
+			"Notifying":   {Value: false, Emit: prop.EmitTrue},
+		},
+	}, hidReportObject)
+	if err != nil {
+		return fmt.Errorf("export HID Report characteristic: %w", err)
+	}
+	hidReportObject.properties = b.hidReportProps
+	if _, err := b.exportGattObject(hidReportReferencePath, blueZGattDescriptorInterface, prop.Map{
+		blueZGattDescriptorInterface: {
+			"UUID":           {Value: HIDReportReferenceDescriptorUUID, Emit: prop.EmitConst},
+			"Characteristic": {Value: hidReportCharPath, Emit: prop.EmitConst},
+			"Flags":          {Value: []string{"read", "encrypt-read"}, Emit: prop.EmitConst},
+		},
+	}, &staticReadDescriptor{value: hidReportReferenceValue()}); err != nil {
+		return fmt.Errorf("export HID Report Reference descriptor: %w", err)
 	}
 
 	b.advProps, err = prop.Export(b.conn, advertisementPath, prop.Map{
 		blueZAdvertisementInterface: {
 			"Type":         {Value: "peripheral", Emit: prop.EmitConst},
-			"ServiceUUIDs": {Value: []string{WakeServiceUUID}, Emit: prop.EmitConst},
+			"ServiceUUIDs": {Value: []string{HIDServiceUUID, WakeServiceUUID}, Emit: prop.EmitConst},
 			"LocalName":    {Value: b.deviceName, Emit: prop.EmitConst},
-			"Discoverable": {Value: true, Emit: prop.EmitConst},
+			"Appearance":   {Value: HIDGenericAppearance, Emit: prop.EmitConst},
+			"Discoverable": {Value: b.pairingOpen, Emit: prop.EmitTrue},
 		},
 	})
 	if err != nil {
@@ -229,24 +358,41 @@ func (b *blueZBackend) exportObjects() error {
 	if err := b.conn.Export(advertisement, advertisementPath, blueZAdvertisementInterface); err != nil {
 		return fmt.Errorf("export BLE advertisement: %w", err)
 	}
-	agent := &pairingAgent{}
+	agent := &pairingAgent{backend: b}
 	if err := b.conn.Export(agent, agentPath, blueZAgentInterface); err != nil {
 		return fmt.Errorf("export pairing agent: %w", err)
 	}
 
-	if err := exportIntrospection(b.conn, applicationPath, dbusObjectManagerInterface, manager, nil); err != nil {
-		return err
-	}
-	if err := exportIntrospection(b.conn, gattServicePath, blueZGattServiceInterface, &struct{}{}, b.serviceProps); err != nil {
-		return err
-	}
-	if err := exportIntrospection(b.conn, wakeCharPath, blueZGattCharInterface, b.wakeObject, b.wakeProps); err != nil {
-		return err
-	}
 	if err := exportIntrospection(b.conn, advertisementPath, blueZAdvertisementInterface, advertisement, b.advProps); err != nil {
 		return err
 	}
 	return exportIntrospection(b.conn, agentPath, blueZAgentInterface, agent, nil)
+}
+
+func (b *blueZBackend) exportGattObject(
+	path dbus.ObjectPath,
+	interfaceName string,
+	properties prop.Map,
+	object any,
+) (*prop.Properties, error) {
+	exported, err := prop.Export(b.conn, path, properties)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := object.(*struct{}); !ok {
+		if err := b.conn.Export(object, path, interfaceName); err != nil {
+			return nil, err
+		}
+	}
+	if err := exportIntrospection(b.conn, path, interfaceName, object, exported); err != nil {
+		return nil, err
+	}
+	b.gattObjects = append(b.gattObjects, exportedGattObject{
+		path:          path,
+		interfaceName: interfaceName,
+		properties:    exported,
+	})
+	return exported, nil
 }
 
 func exportIntrospection(conn *dbus.Conn, path dbus.ObjectPath, interfaceName string, object any, properties *prop.Properties) error {
@@ -271,15 +417,15 @@ func (b *blueZBackend) addSignalMatches() error {
 	)
 }
 
-func (b *blueZBackend) configureAdapter() error {
+func (b *blueZBackend) configureAdapter(pairingOpen bool) error {
 	properties := []struct {
 		name  string
 		value any
 	}{
 		{name: "Powered", value: true},
 		{name: "Alias", value: b.deviceName},
-		{name: "Pairable", value: true},
-		{name: "Discoverable", value: true},
+		{name: "Pairable", value: pairingOpen},
+		{name: "Discoverable", value: pairingOpen},
 	}
 	for _, property := range properties {
 		if err := b.conn.Object(BlueZBusName, b.adapter).
@@ -305,7 +451,7 @@ func (b *blueZBackend) registerGatt() error {
 	options := map[string]dbus.Variant{}
 	if err := b.conn.Object(BlueZBusName, b.adapter).
 		Call(blueZGattManagerInterface+".RegisterApplication", 0, applicationPath, options).Err; err != nil {
-		return fmt.Errorf("register Wake GATT application: %w", err)
+		return fmt.Errorf("register BLE GATT application: %w", err)
 	}
 	return nil
 }
@@ -314,7 +460,7 @@ func (b *blueZBackend) registerAdvertisement() error {
 	options := map[string]dbus.Variant{}
 	if err := b.conn.Object(BlueZBusName, b.adapter).
 		Call(blueZAdvManagerInterface+".RegisterAdvertisement", 0, advertisementPath, options).Err; err != nil {
-		return fmt.Errorf("register Wake advertisement: %w", err)
+		return fmt.Errorf("register BLE advertisement: %w", err)
 	}
 	return nil
 }
@@ -350,7 +496,7 @@ func (b *blueZBackend) handleSignal(signal *dbus.Signal) {
 		b.handlePropertiesChanged(signal)
 	case dbusObjectManagerInterface + ".InterfacesAdded",
 		dbusObjectManagerInterface + ".InterfacesRemoved":
-		if err := b.rescanANCS(); err != nil {
+		if err := b.rescanBluetoothState(); err != nil {
 			b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
 		}
 	}
@@ -381,18 +527,35 @@ func (b *blueZBackend) handlePropertiesChanged(signal *dbus.Signal) {
 			}
 		}
 	}
-	if interfaceName == blueZDeviceInterface || interfaceName == blueZGattCharInterface {
-		if err := b.rescanANCS(); err != nil {
+	needsRescan := interfaceName == blueZDeviceInterface
+	if interfaceName == blueZGattCharInterface {
+		_, notifyingChanged := changed["Notifying"]
+		_, serviceChanged := changed["Service"]
+		_, uuidChanged := changed["UUID"]
+		needsRescan = notifyingChanged || serviceChanged || uuidChanged
+	}
+	if needsRescan {
+		if err := b.rescanBluetoothState(); err != nil {
 			b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
 		}
 	}
 }
 
-func (b *blueZBackend) rescanANCS() error {
+func (b *blueZBackend) rescanBluetoothState() error {
 	objects, err := b.getManagedObjects()
 	if err != nil {
 		return err
 	}
+	trusted, bondedCount := b.refreshTrustedDevice(objects)
+	var trustedProps map[string]dbus.Variant
+	if trusted.IsValid() {
+		trustedProps = objects[trusted][blueZDeviceInterface]
+	}
+	b.updateDeviceStatus(trusted, trustedProps, bondedCount)
+	return b.rescanANCS(objects, trusted)
+}
+
+func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.ObjectPath) error {
 	type candidate struct {
 		paths       ancsPaths
 		deviceProps map[string]dbus.Variant
@@ -405,7 +568,7 @@ func (b *blueZBackend) rescanANCS() error {
 			continue
 		}
 		devicePath, ok := variantObjectPath(serviceProps, "Device")
-		if !ok {
+		if !ok || devicePath != trustedDevice {
 			continue
 		}
 		deviceProps := objects[devicePath][blueZDeviceInterface]
@@ -439,29 +602,8 @@ func (b *blueZBackend) rescanANCS() error {
 
 	if selected == nil {
 		b.clearANCS("ANCS device disconnected")
-		b.service.status.update(func(status *RuntimeStatus) {
-			status.ConnectedDevicePath = ""
-			status.ConnectedDeviceName = ""
-			status.ConnectedDeviceAddr = ""
-			status.Connected = false
-			status.Paired = false
-			status.ServicesResolved = false
-			status.ANCSSubscribed = false
-		})
 		return nil
 	}
-
-	b.service.status.update(func(status *RuntimeStatus) {
-		status.ConnectedDevicePath = string(selected.paths.device)
-		status.ConnectedDeviceName = firstNonEmpty(
-			variantString(selected.deviceProps, "Name"),
-			variantString(selected.deviceProps, "Alias"),
-		)
-		status.ConnectedDeviceAddr = variantString(selected.deviceProps, "Address")
-		status.Connected = variantBool(selected.deviceProps, "Connected")
-		status.Paired = variantBool(selected.deviceProps, "Paired")
-		status.ServicesResolved = variantBool(selected.deviceProps, "ServicesResolved")
-	})
 	if !selected.paths.complete() {
 		b.clearANCS("ANCS characteristics are incomplete")
 		return nil
@@ -554,27 +696,26 @@ type gattObjectManager struct {
 }
 
 func (m *gattObjectManager) GetManagedObjects() (managedObjects, *dbus.Error) {
-	serviceProperties, serviceErr := m.backend.serviceProps.GetAll(blueZGattServiceInterface)
-	if serviceErr != nil {
-		return nil, serviceErr
+	objects := make(managedObjects, len(m.backend.gattObjects))
+	for _, object := range m.backend.gattObjects {
+		properties, err := object.properties.GetAll(object.interfaceName)
+		if err != nil {
+			return nil, err
+		}
+		objects[object.path] = map[string]map[string]dbus.Variant{
+			object.interfaceName: properties,
+		}
 	}
-	wakeProperties, wakeErr := m.backend.wakeProps.GetAll(blueZGattCharInterface)
-	if wakeErr != nil {
-		return nil, wakeErr
-	}
-	return managedObjects{
-		gattServicePath: {blueZGattServiceInterface: serviceProperties},
-		wakeCharPath:    {blueZGattCharInterface: wakeProperties},
-	}, nil
+	return objects, nil
 }
 
 type wakeCharacteristic struct {
 	backend *blueZBackend
 }
 
-func (c *wakeCharacteristic) ReadValue(_ map[string]dbus.Variant) ([]byte, *dbus.Error) {
+func (c *wakeCharacteristic) ReadValue(options map[string]dbus.Variant) ([]byte, *dbus.Error) {
 	value, _ := c.backend.wakeProps.GetMust(blueZGattCharInterface, "Value").([]byte)
-	return append([]byte(nil), value...), nil
+	return readValueAtOffset(value, options)
 }
 
 func (c *wakeCharacteristic) StartNotify() *dbus.Error {
@@ -596,23 +737,44 @@ type advertisementObject struct{}
 
 func (a *advertisementObject) Release() *dbus.Error { return nil }
 
-type pairingAgent struct{}
+type pairingAgent struct {
+	backend *blueZBackend
+}
 
 func (a *pairingAgent) Release() *dbus.Error { return nil }
-func (a *pairingAgent) RequestPinCode(dbus.ObjectPath) (string, *dbus.Error) {
+func (a *pairingAgent) RequestPinCode(device dbus.ObjectPath) (string, *dbus.Error) {
+	if err := a.authorize(device); err != nil {
+		return "", err
+	}
 	return "000000", nil
 }
 func (a *pairingAgent) DisplayPinCode(dbus.ObjectPath, string) *dbus.Error { return nil }
-func (a *pairingAgent) RequestPasskey(dbus.ObjectPath) (uint32, *dbus.Error) {
+func (a *pairingAgent) RequestPasskey(device dbus.ObjectPath) (uint32, *dbus.Error) {
+	if err := a.authorize(device); err != nil {
+		return 0, err
+	}
 	return 0, nil
 }
 func (a *pairingAgent) DisplayPasskey(dbus.ObjectPath, uint32, uint16) *dbus.Error {
 	return nil
 }
-func (a *pairingAgent) RequestConfirmation(dbus.ObjectPath, uint32) *dbus.Error { return nil }
-func (a *pairingAgent) RequestAuthorization(dbus.ObjectPath) *dbus.Error        { return nil }
-func (a *pairingAgent) AuthorizeService(dbus.ObjectPath, string) *dbus.Error    { return nil }
-func (a *pairingAgent) Cancel() *dbus.Error                                     { return nil }
+func (a *pairingAgent) RequestConfirmation(device dbus.ObjectPath, _ uint32) *dbus.Error {
+	return a.authorize(device)
+}
+func (a *pairingAgent) RequestAuthorization(device dbus.ObjectPath) *dbus.Error {
+	return a.authorize(device)
+}
+func (a *pairingAgent) AuthorizeService(device dbus.ObjectPath, _ string) *dbus.Error {
+	return a.authorize(device)
+}
+func (a *pairingAgent) Cancel() *dbus.Error { return nil }
+
+func (a *pairingAgent) authorize(device dbus.ObjectPath) *dbus.Error {
+	if a.backend != nil && a.backend.deviceAllowed(device) {
+		return nil
+	}
+	return dbus.NewError("org.bluez.Error.Rejected", []any{"only the trusted iPhone may use Aiden BLE"})
+}
 
 func variantString(properties map[string]dbus.Variant, name string) string {
 	if variant, ok := properties[name]; ok {

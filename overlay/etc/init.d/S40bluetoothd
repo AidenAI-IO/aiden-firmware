@@ -5,10 +5,13 @@ BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
 BLUEZ_CONFIG=${BLUEZ_CONFIG:-/etc/bluetooth/main.conf}
 BLUETOOTHD_BIN=${BLUETOOTHD_BIN:-/usr/libexec/bluetooth/bluetoothd}
 PID_FILE=${PID_FILE:-/run/bluetoothd.pid}
+WATCHDOG_PID_FILE=${WATCHDOG_PID_FILE:-/run/bluetoothd-watchdog.pid}
 LOG_PATH=${LOG_PATH:-/var/log/bluetoothd/bluetoothd.log}
 STATE_DIR=${STATE_DIR:-/userdata/ble_service/bluetooth}
 STATE_MOUNT=${STATE_MOUNT:-/var/lib/bluetooth}
 WAIT_SECONDS=${WAIT_SECONDS:-15}
+HEALTH_SECONDS=${HEALTH_SECONDS:-2}
+HCI_INIT=${HCI_INIT:-/etc/init.d/S39hciinit}
 
 [ -f "$BOOT_CONF" ] && . "$BOOT_CONF"
 : "${ENABLE_BLUETOOTHD:=1}"
@@ -18,9 +21,10 @@ is_running() {
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
-service_pid() {
-    [ -f "$PID_FILE" ] || return 0
-    pid="$(cat "$PID_FILE" 2>/dev/null)"
+read_pid() {
+    file="$1"
+    [ -f "$file" ] || return 0
+    pid="$(cat "$file" 2>/dev/null)"
     case "$pid" in
         ''|*[!0-9]*) return 0 ;;
     esac
@@ -40,16 +44,39 @@ prepare_state() {
     fi
 }
 
+hci_ready() {
+    [ -d /sys/class/bluetooth/hci0 ] || return 1
+    if [ -x "$HCI_INIT" ]; then
+        "$HCI_INIT" status >/dev/null 2>&1
+    fi
+}
+
 wait_for_hci() {
     elapsed=0
     while [ "$elapsed" -lt "$WAIT_SECONDS" ]; do
-        if [ -d /sys/class/bluetooth/hci0 ]; then
+        if hci_ready; then
             return 0
         fi
         sleep 1
         elapsed=$((elapsed + 1))
     done
     return 1
+}
+
+start_hci() {
+    if [ -x "$HCI_INIT" ]; then
+        "$HCI_INIT" restart >> "$LOG_PATH" 2>&1 || true
+    fi
+}
+
+start_bluetoothd() {
+    if [ -f "$BLUEZ_CONFIG" ]; then
+        "$BLUETOOTHD_BIN" --nodetach --experimental --configfile="$BLUEZ_CONFIG" \
+            >> "$LOG_PATH" 2>&1 &
+    else
+        "$BLUETOOTHD_BIN" --nodetach --experimental >> "$LOG_PATH" 2>&1 &
+    fi
+    BLUETOOTHD_PID="$!"
 }
 
 start() {
@@ -66,36 +93,75 @@ start() {
         fi
     fi
 
-    pid="$(service_pid)"
-    if is_running "$pid"; then
-        echo "bluetoothd already running (pid $pid)"
+    wpid="$(read_pid "$WATCHDOG_PID_FILE")"
+    if is_running "$wpid"; then
+        echo "bluetoothd watchdog already running (pid $wpid)"
         return 0
     fi
-    if ! wait_for_hci; then
-        echo "hci0 is not available; bluetoothd not started" >&2
-        return 1
+    pid="$(read_pid "$PID_FILE")"
+    if is_running "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        elapsed=0
+        while is_running "$pid" && [ "$elapsed" -lt 5 ]; do
+            sleep 1
+            elapsed=$((elapsed + 1))
+        done
     fi
+    rm -f "$PID_FILE" "$WATCHDOG_PID_FILE"
     prepare_state || return 1
 
-    if [ -f "$BLUEZ_CONFIG" ]; then
-        "$BLUETOOTHD_BIN" --nodetach --experimental --configfile="$BLUEZ_CONFIG" \
-            >> "$LOG_PATH" 2>&1 &
-    else
-        "$BLUETOOTHD_BIN" --nodetach --experimental >> "$LOG_PATH" 2>&1 &
-    fi
-    pid="$!"
-    echo "$pid" > "$PID_FILE"
-    sleep 1
-    if ! is_running "$pid"; then
-        rm -f "$PID_FILE"
-        echo "bluetoothd exited during startup; see $LOG_PATH" >&2
-        return 1
-    fi
-    echo "Started bluetoothd (pid $pid)"
+    (
+        trap '' HUP
+        trap 'exit 0' INT TERM
+        while true; do
+            if ! wait_for_hci; then
+                echo "$(date -Iseconds 2>/dev/null || date) hci0 unavailable; retrying HCI init" >> "$LOG_PATH"
+                start_hci
+                sleep "$HEALTH_SECONDS"
+                continue
+            fi
+
+            start_bluetoothd
+            child="$BLUETOOTHD_PID"
+            echo "$child" > "$PID_FILE"
+            sleep 1
+            if ! is_running "$child"; then
+                rm -f "$PID_FILE"
+                echo "$(date -Iseconds 2>/dev/null || date) bluetoothd exited during startup; restarting" >> "$LOG_PATH"
+                sleep "$HEALTH_SECONDS"
+                continue
+            fi
+
+            while is_running "$child" && hci_ready; do
+                sleep "$HEALTH_SECONDS"
+            done
+            if is_running "$child"; then
+                echo "$(date -Iseconds 2>/dev/null || date) hci0 disappeared; restarting Bluetooth stack" >> "$LOG_PATH"
+                kill "$child" 2>/dev/null || true
+            fi
+            wait "$child" 2>/dev/null || true
+            rm -f "$PID_FILE"
+            start_hci
+            sleep "$HEALTH_SECONDS"
+        done
+    ) </dev/null >/dev/null 2>&1 &
+    echo "$!" > "$WATCHDOG_PID_FILE"
+    echo "Started bluetoothd watchdog"
 }
 
 stop() {
-    pid="$(service_pid)"
+    wpid="$(read_pid "$WATCHDOG_PID_FILE")"
+    if is_running "$wpid"; then
+        kill "$wpid" 2>/dev/null || true
+        elapsed=0
+        while is_running "$wpid" && [ "$elapsed" -lt 5 ]; do
+            sleep 1
+            elapsed=$((elapsed + 1))
+        done
+    fi
+    rm -f "$WATCHDOG_PID_FILE"
+
+    pid="$(read_pid "$PID_FILE")"
     if is_running "$pid"; then
         kill "$pid" 2>/dev/null || true
         elapsed=0
@@ -109,7 +175,13 @@ stop() {
 }
 
 status() {
-    pid="$(service_pid)"
+    wpid="$(read_pid "$WATCHDOG_PID_FILE")"
+    pid="$(read_pid "$PID_FILE")"
+    if is_running "$wpid"; then
+        echo "watchdog=running pid=$wpid"
+    else
+        echo "watchdog=stopped"
+    fi
     if is_running "$pid"; then
         echo "bluetoothd=running pid=$pid state=$STATE_DIR"
         return 0

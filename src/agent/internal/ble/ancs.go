@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -19,6 +20,9 @@ const (
 	ancsAttributeSubtitle                = 2
 	ancsAttributeMessage                 = 3
 	ancsAttributeDate                    = 5
+
+	defaultANCSAttributeTimeout   = 5 * time.Second
+	maxANCSAttributeResponseBytes = 8 * 1024
 )
 
 var requestedANCSAttributes = []uint8{
@@ -55,20 +59,43 @@ func ParseNotificationSource(data []byte) ([]NotificationSourceEvent, error) {
 }
 
 type attributeRequest struct {
-	event  NotificationEvent
-	buffer []byte
+	event     NotificationEvent
+	buffer    []byte
+	startedAt time.Time
 }
 
 type ANCSConsumer struct {
-	mu     sync.Mutex
-	store  *EventStore
-	writer func([]byte) error
-	queue  []NotificationEvent
-	active *attributeRequest
+	mu             sync.Mutex
+	store          *EventStore
+	writer         func([]byte) error
+	queue          []NotificationEvent
+	active         *attributeRequest
+	requestTimeout time.Duration
+	now            func() time.Time
+	maxPending     int
 }
 
 func NewANCSConsumer(store *EventStore) *ANCSConsumer {
-	return &ANCSConsumer{store: store}
+	return newANCSConsumer(store, defaultANCSAttributeTimeout, time.Now)
+}
+
+func newANCSConsumer(store *EventStore, requestTimeout time.Duration, now func() time.Time) *ANCSConsumer {
+	if requestTimeout <= 0 {
+		requestTimeout = defaultANCSAttributeTimeout
+	}
+	if now == nil {
+		now = time.Now
+	}
+	maxPending := 512
+	if store != nil && store.capacity > 0 {
+		maxPending = store.capacity
+	}
+	return &ANCSConsumer{
+		store:          store,
+		requestTimeout: requestTimeout,
+		now:            now,
+		maxPending:     maxPending,
+	}
 }
 
 func (c *ANCSConsumer) SetControlPointWriter(writer func([]byte) error) {
@@ -119,6 +146,16 @@ func (c *ANCSConsumer) HandleNotificationSource(data []byte) error {
 		}
 
 		c.mu.Lock()
+		pendingCount := len(c.queue)
+		if c.active != nil {
+			pendingCount++
+		}
+		if pendingCount >= c.maxPending {
+			c.mu.Unlock()
+			event.MetadataError = "ANCS metadata queue is full"
+			c.store.Append(event)
+			continue
+		}
 		c.queue = append(c.queue, event)
 		if command == nil {
 			command = c.prepareNextLocked()
@@ -136,6 +173,16 @@ func (c *ANCSConsumer) HandleDataSource(data []byte) error {
 		return errors.New("ANCS Data Source response without an active request")
 	}
 	c.active.buffer = append(c.active.buffer, data...)
+	if len(c.active.buffer) > maxANCSAttributeResponseBytes {
+		event := c.active.event
+		event.MetadataError = "ANCS attribute response exceeds size limit"
+		c.active = nil
+		command := c.prepareNextLocked()
+		c.mu.Unlock()
+		c.store.Append(event)
+		c.dispatch(command)
+		return errors.New(event.MetadataError)
+	}
 	attributes, complete, err := parseAttributeResponse(c.active.buffer, c.active.event.NotificationUID)
 	if err != nil {
 		event := c.active.event
@@ -174,8 +221,25 @@ func (c *ANCSConsumer) prepareNextLocked() []byte {
 	}
 	event := c.queue[0]
 	c.queue = c.queue[1:]
-	c.active = &attributeRequest{event: event}
+	c.active = &attributeRequest{event: event, startedAt: c.now()}
 	return buildNotificationAttributeRequest(event.NotificationUID)
+}
+
+func (c *ANCSConsumer) ExpireActive(now time.Time) bool {
+	c.mu.Lock()
+	if c.active == nil || now.Sub(c.active.startedAt) < c.requestTimeout {
+		c.mu.Unlock()
+		return false
+	}
+	event := c.active.event
+	event.MetadataError = "ANCS attribute response timed out"
+	c.active = nil
+	command := c.prepareNextLocked()
+	c.mu.Unlock()
+
+	c.store.Append(event)
+	c.dispatch(command)
+	return true
 }
 
 func (c *ANCSConsumer) dispatch(command []byte) {

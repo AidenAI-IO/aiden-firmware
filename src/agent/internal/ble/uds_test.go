@@ -32,6 +32,12 @@ func TestUDSOperations(t *testing.T) {
 		t.Fatalf("wake was not forwarded: %#v", backend)
 	}
 
+	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"status"}`), nil))
+	bluetooth, ok := response["bluetooth"].(map[string]any)
+	if !ok || bluetooth["hid_service_uuid"] != HIDServiceUUID {
+		t.Fatalf("status does not expose HOGP identity: %#v", response)
+	}
+
 	service.store.Append(NotificationEvent{NotificationUID: 42, Event: "added"})
 	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"events_since","since":"0","limit":10}`), nil))
 	if response["status"] != "OK" {

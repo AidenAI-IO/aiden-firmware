@@ -14,11 +14,19 @@ var ErrBluetoothUnavailable = errors.New("Bluetooth backend is unavailable")
 type RuntimeStatus struct {
 	StartedAt              string `json:"started_at"`
 	BackendAvailable       bool   `json:"backend_available"`
+	DeviceName             string `json:"device_name,omitempty"`
 	AdapterPath            string `json:"adapter_path,omitempty"`
 	AdapterAddress         string `json:"adapter_address,omitempty"`
 	AdapterPowered         bool   `json:"adapter_powered"`
 	GattRegistered         bool   `json:"gatt_registered"`
+	HOGPRegistered         bool   `json:"hogp_registered"`
 	Advertising            bool   `json:"advertising"`
+	PairingOpen            bool   `json:"pairing_open"`
+	PairingDeadline        string `json:"pairing_deadline,omitempty"`
+	BondedDeviceCount      int    `json:"bonded_device_count"`
+	TrustedDevicePath      string `json:"trusted_device_path,omitempty"`
+	TrustedDeviceName      string `json:"trusted_device_name,omitempty"`
+	TrustedDeviceAddr      string `json:"trusted_device_address,omitempty"`
 	WakeSubscriber         bool   `json:"wake_subscriber"`
 	ConnectedDevicePath    string `json:"connected_device_path,omitempty"`
 	ConnectedDeviceName    string `json:"connected_device_name,omitempty"`
@@ -35,6 +43,7 @@ type RuntimeStatus struct {
 	LastEventID            string `json:"last_event_id"`
 	WakeServiceUUID        string `json:"wake_service_uuid"`
 	WakeCharacteristicUUID string `json:"wake_characteristic_uuid"`
+	HIDServiceUUID         string `json:"hid_service_uuid"`
 }
 
 type statusState struct {
@@ -47,6 +56,7 @@ func newStatusState() *statusState {
 		StartedAt:              time.Now().UTC().Format(time.RFC3339Nano),
 		WakeServiceUUID:        WakeServiceUUID,
 		WakeCharacteristicUUID: WakeCharacteristicUUID,
+		HIDServiceUUID:         HIDServiceUUID,
 	}}
 }
 
@@ -130,13 +140,14 @@ func (s *Service) clearBackend(backend wakeBackend) {
 	s.backendMu.Unlock()
 }
 
-func (s *Service) RunBlueZ(ctx context.Context, deviceName string) error {
-	backend := newBlueZBackend(s, deviceName)
+func (s *Service) RunBlueZ(ctx context.Context, deviceName string, pairingWindow time.Duration) error {
+	backend := newBlueZBackend(s, deviceName, pairingWindow)
 	if err := backend.start(); err != nil {
 		backend.close()
 		s.status.update(func(status *RuntimeStatus) {
 			status.BackendAvailable = false
 			status.GattRegistered = false
+			status.HOGPRegistered = false
 			status.Advertising = false
 			status.LastError = err.Error()
 		})

@@ -16,6 +16,7 @@ func main() {
 	socketPath := flag.String("socket", "/run/ble_service/ble_service.sock", "Unix domain socket path")
 	deviceName := flag.String("device-name", "Aiden", "BLE advertised device name")
 	eventCapacity := flag.Int("event-capacity", 512, "maximum in-memory ANCS events")
+	pairingWindow := flag.Duration("pairing-window", 5*time.Minute, "first-device BLE pairing window")
 	flag.Parse()
 	if *eventCapacity <= 0 {
 		log.Fatalf("event-capacity must be positive")
@@ -33,7 +34,7 @@ func main() {
 	log.Printf("ble_service listening on %s", *socketPath)
 
 	for ctx.Err() == nil {
-		err := service.RunBlueZ(ctx, *deviceName)
+		err := service.RunBlueZ(ctx, *deviceName, *pairingWindow)
 		if ctx.Err() != nil {
 			break
 		}

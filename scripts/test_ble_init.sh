@@ -8,8 +8,9 @@ HCI_INIT="$ROOT_DIR/overlay/etc/init.d/S39hciinit"
 BLUEZ_INIT="$ROOT_DIR/overlay/etc/init.d/S40bluetoothd"
 BLE_INIT="$ROOT_DIR/overlay/etc/init.d/S41ble_service"
 BLE_CONFIG="$ROOT_DIR/overlay/etc/aiden_ble_service.conf"
+BLE_CONSTANTS="$ROOT_DIR/src/agent/internal/ble/constants.go"
 
-for path in "$BOARD_CONFIG" "$BOOT_CONF" "$HCI_INIT" "$BLUEZ_INIT" "$BLE_INIT" "$BLE_CONFIG"; do
+for path in "$BOARD_CONFIG" "$BOOT_CONF" "$HCI_INIT" "$BLUEZ_INIT" "$BLE_INIT" "$BLE_CONFIG" "$BLE_CONSTANTS"; do
     if [ ! -f "$path" ]; then
         echo "missing BLE integration file: $path" >&2
         exit 1
@@ -45,7 +46,11 @@ done
 grep -Fq '/dev/ttyS1' "$HCI_INIT"
 grep -Fq '1500000' "$HCI_INIT"
 grep -Fq '/userdata/ble_service/bluetooth' "$BLUEZ_INIT"
+grep -Fq 'bluetoothd-watchdog.pid' "$BLUEZ_INIT"
+grep -Fq 'hci0 disappeared; restarting Bluetooth stack' "$BLUEZ_INIT"
 grep -Fq '/run/ble_service/ble_service.sock' "$BLE_CONFIG"
+grep -Fxq 'PAIRING_WINDOW_SECONDS=300' "$BLE_CONFIG"
+grep -Fq '00001812-0000-1000-8000-00805f9b34fb' "$BLE_CONSTANTS"
 grep -Fq './cmd/ble_service' "$ROOT_DIR/_build.sh"
 
 echo "BLE init tests passed"

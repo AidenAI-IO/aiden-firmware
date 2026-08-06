@@ -143,7 +143,7 @@ When starting with the firmware, the main service relationships are as follows:
 | --- | --- |
 | `/etc/aiden_frame_service.conf` | frame service binary, socket, log, pid file paths |
 | `/etc/aiden_audio_service.conf` | audio service binary, socket, log, pid file paths |
-| `/etc/aiden_ble_service.conf` | BLE service binary, socket, log, device name, and event capacity |
+| `/etc/aiden_ble_service.conf` | BLE service binary, socket, log, device-name base, event capacity, and pairing-window duration |
 | `/userdata/agent/agent.toml` | Go Agent runtime configuration |
 | `/userdata/wpa_supplicant.conf` | Wi-Fi configuration |
 

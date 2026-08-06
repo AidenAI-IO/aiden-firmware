@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
+	"time"
 )
 
 func TestANCSConsumerFetchesAndNormalizesAttributes(t *testing.T) {
@@ -86,6 +87,44 @@ func TestANCSRemovedEventDoesNotRequestAttributes(t *testing.T) {
 func TestParseNotificationSourceRejectsPartialPacket(t *testing.T) {
 	if _, err := ParseNotificationSource(make([]byte, 7)); err == nil {
 		t.Fatal("expected invalid packet length error")
+	}
+}
+
+func TestANCSAttributeTimeoutAdvancesQueuedNotification(t *testing.T) {
+	store := NewEventStore(8)
+	now := time.Unix(100, 0)
+	consumer := newANCSConsumer(store, 2*time.Second, func() time.Time { return now })
+	var commands [][]byte
+	consumer.SetControlPointWriter(func(value []byte) error {
+		commands = append(commands, append([]byte(nil), value...))
+		return nil
+	})
+
+	source := make([]byte, 16)
+	source[0] = ancsEventAdded
+	source[2] = 6
+	binary.LittleEndian.PutUint32(source[4:8], 1)
+	source[8] = ancsEventAdded
+	source[10] = 6
+	binary.LittleEndian.PutUint32(source[12:16], 2)
+	if err := consumer.HandleNotificationSource(source); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 1 || binary.LittleEndian.Uint32(commands[0][1:5]) != 1 {
+		t.Fatalf("unexpected first command: %v", commands)
+	}
+
+	now = now.Add(2 * time.Second)
+	if !consumer.ExpireActive(now) {
+		t.Fatal("active attribute request did not expire")
+	}
+	if len(commands) != 2 || binary.LittleEndian.Uint32(commands[1][1:5]) != 2 {
+		t.Fatalf("queued notification was not dispatched: %v", commands)
+	}
+	page := store.Page(0, 10)
+	if len(page.Events) != 1 || page.Events[0].NotificationUID != 1 ||
+		page.Events[0].MetadataComplete || page.Events[0].MetadataError == "" {
+		t.Fatalf("unexpected timed-out event: %#v", page.Events)
 	}
 }
 

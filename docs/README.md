@@ -18,6 +18,7 @@ This documentation hub is the structured entry point for the project. The root `
 ### 02. Architecture
 
 - [Architecture Overview](02-architecture/overview.md)
+- [BLE Foundation Service Design](02-architecture/ble-service-design.md)
 - [Source Tree & Directory Layout](02-architecture/source-tree.md)
 - [Boot Services & Runtime Layout](02-architecture/boot-services.md)
 - [Paths, Artifacts & Config Cheat Sheet](02-architecture/paths-and-artifacts.md)
