@@ -1,6 +1,8 @@
 # Agent Configuration Reference
 
-The Agent expects `-config` to point to a directory, not a single config file. Every field below lives in `agent.toml`. Most fields can be edited through the on-device [Config Web page](#config-web-the-device-config-page); sections without dedicated controls are preserved by Config Web and can be edited by hand. TOML is the only supported config format; JSON config is deprecated.
+The Agent takes `-dir`, the data directory it works out of. `agent.toml` is only one of the things that live there: skills, memory, cache and logs are all resolved relative to it (see [Directory layout](#directory-layout)). Every field below lives in `agent.toml`. Most fields can be edited through the on-device [Config Web page](#config-web-the-device-config-page); sections without dedicated controls are preserved by Config Web and can be edited by hand. TOML is the only supported config format; JSON config is deprecated.
+
+The `config`, `config-check` and `config-test` subcommands are different: they only read configuration, so their `-config` flag takes either an `agent.toml` path or a directory containing one.
 
 ## Contents
 
@@ -22,12 +24,20 @@ The Agent expects `-config` to point to a directory, not a single config file. E
 
 ## Directory layout
 
+Passed to the daemon as `-dir /userdata/agent`. Everything except `agent.toml`
+is created on demand, so a directory holding only `agent.toml` is a valid start.
+
 ```text
 /userdata/agent/
-├── agent.toml       # required
-├── skills/          # optional, auto-discovers **/SKILL.md
-├── log/             # runtime log directory
-└── memory/          # conversation memory persistence directory
+├── agent.toml               # required
+├── quick_actions.json       # optional, falls back to the bundled defaults
+├── skills/                  # optional, auto-discovers **/SKILL.md
+├── skill-state/             # bundled skill sync manifest
+├── memory/                  # conversation memory persistence directory
+│   └── extraction.yaml      # optional memory extraction overrides
+├── cache/                   # provider model metadata cache
+├── log/                     # runtime log directory
+└── board_id                 # generated on first run when live activity is on
 ```
 
 ## Config Web: the device config page

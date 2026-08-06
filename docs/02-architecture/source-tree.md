@@ -38,9 +38,10 @@ aiden-firmware/
 | Path | Description |
 | --- | --- |
 | `cmd/daemon` | Long-running Agent daemon, providing Web UI or device voice mode |
-| `cmd/demo` | Local CLI demo runner |
 | `cmd/abctl` | A/B partition control utility for OTA system |
 | `cmd/ota` | OTA update client |
+| `cmd/benchmark-http` | Standalone LLM endpoint latency probe |
+| `cmd/test-warmup` | Connection warmup measurement harness |
 | `internal/agent/runtime.go` | Agent runtime, model invocation and tool loop |
 | `internal/agent/server.go` | HTTP server / Web UI / tool API |
 | `internal/agent/tools*.go` | Built-in tools such as HID, screenshot, audio, shell |

@@ -83,7 +83,7 @@ pid_matches_service() {
     cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
     case "$cmd" in
         *"$AGENT_BIN"*) return 0 ;;
-        *"agent"*"-config"*"$CONFIG_DIR"*) return 0 ;;
+        *"agent"*"-dir"*"$CONFIG_DIR"*) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -150,8 +150,8 @@ start() {
             fi
 
             supervisor_log INFO process_starting \
-                "starting $AGENT_BIN -config $CONFIG_DIR -addr $ADDR"
-            "$ENV_RUN_BIN" "$AGENT_BIN" -config "$CONFIG_DIR" -addr "$ADDR" >> "$LOG_PATH" 2>&1 &
+                "starting $AGENT_BIN -dir $CONFIG_DIR -addr $ADDR"
+            "$ENV_RUN_BIN" "$AGENT_BIN" -dir "$CONFIG_DIR" -addr "$ADDR" >> "$LOG_PATH" 2>&1 &
             child="$!"
             echo "$child" > "$PID_FILE"
             while is_running "$child"; do

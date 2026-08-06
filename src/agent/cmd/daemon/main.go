@@ -57,7 +57,7 @@ func main() {
 
 	// Default: run as daemon
 	var (
-		configDir                 = flag.String("config", "", "path to config directory (required)")
+		dataDir                   = flag.String("dir", "", "path to the agent data directory holding agent.toml, skills, memory, cache and logs (required)")
 		addr                      = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
 		environmentBridgeMode     = flag.Bool("environment-bridge-mode", false, "Enable environment bridge mode (forward selected tool calls to an environment bridge; see --environment-bridge-tools)")
 		environmentBridgeEndpoint = flag.String("environment-bridge-endpoint", "", "Environment bridge endpoint (e.g., http://192.168.50.123:8080)")
@@ -67,15 +67,16 @@ func main() {
 	)
 	flag.Parse()
 
-	if *configDir == "" {
-		_ = logging.LogEvent(logging.Error, "agent", "startup", "config_directory_missing")
+	dir := strings.TrimSpace(*dataDir)
+	if dir == "" {
+		_ = logging.LogEvent(logging.Error, "agent", "startup", "data_directory_missing")
 		os.Exit(1)
 	}
 
-	cfg, err := agent.LoadRuntimeConfigFromDir(*configDir)
+	cfg, err := agent.LoadRuntimeConfigFromDir(dir)
 	if err != nil {
 		_ = logging.LogEvent(logging.Error, "agent", "startup", "config_load_failed",
-			logging.Field{Key: "config_dir", Value: *configDir},
+			logging.Field{Key: "dir", Value: dir},
 			logging.Field{Key: "error", Value: err},
 		)
 		os.Exit(1)
@@ -151,7 +152,7 @@ func main() {
 
 	_ = logging.LogEvent(logging.Info, "agent", "startup", "daemon_starting",
 		logging.Field{Key: "addr", Value: *addr},
-		logging.Field{Key: "config_dir", Value: *configDir},
+		logging.Field{Key: "dir", Value: dir},
 	)
 	if cfg.EnvironmentBridge.Enabled {
 		fields := []logging.Field{
@@ -178,7 +179,7 @@ func main() {
 		}
 	}
 	_ = logging.LogEvent(logging.Info, "agent", "startup", "log_directory_configured",
-		logging.Field{Key: "path", Value: filepath.Join(*configDir, "log")},
+		logging.Field{Key: "path", Value: filepath.Join(dir, "log")},
 	)
 
 	serverErr := make(chan error, 1)

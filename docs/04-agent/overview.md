@@ -7,7 +7,6 @@ The Aiden Go Agent is located in `src/agent/` and is built on `github.com/tmc/la
 | Entry Point  | Description                                                     |
 | ------------ | --------------------------------------------------------------- |
 | `cmd/daemon` | Long-running daemon supporting Web UI mode or device voice mode |
-| `cmd/demo`   | Local CLI runner for development testing                        |
 
 After cross-compilation, the daemon binary is:
 
@@ -52,22 +51,13 @@ Local development:
 
 ```bash
 cd src/agent
-go run ./cmd/daemon -config ./config -addr :8080
+go run ./cmd/daemon -dir ./config -addr :8080
 ```
 
 Device service:
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -config /userdata/agent -addr :8080
-```
-
-CLI runner:
-
-```bash
-cd src/agent
-go run ./cmd/demo -config ./config -input "What tools do you have?"
-go run ./cmd/demo -config ./config -skills my-skill -input "Inspect the UI"
-go run ./cmd/demo -config ./config -clear-memory -show-memory -input "Start fresh"
+/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -dir /userdata/agent -addr :8080
 ```
 
 ## Built-in Tools
