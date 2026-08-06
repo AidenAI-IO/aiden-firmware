@@ -43,6 +43,7 @@ set(AIDEN_TEST_SOURCES
 # config_web_for_tests executable below builds it WITHOUT the macro for the
 # E2E test driver to spawn.
 add_library(config_web_no_main OBJECT
+    ${CMAKE_SOURCE_DIR}/src/aiden_log.cpp
     ${CMAKE_SOURCE_DIR}/src/config_web.cpp
 )
 target_include_directories(config_web_no_main PRIVATE
@@ -95,6 +96,7 @@ list(APPEND AIDEN_IMAGE_TEST_SOURCES aiden_sdk_audio_stub.cpp)
 
 add_executable(aiden_tests
     test_main.cpp
+    aiden_log_test.cpp
     agent_toml_test.cpp
     wifi_config_test.cpp
     frame_service_protocol_test.cpp
@@ -131,6 +133,7 @@ add_executable(aiden_tests
 # dependency for sequencing and pass the resolved paths via
 # target_compile_definitions.
 add_executable(config_web_for_tests
+    ${CMAKE_SOURCE_DIR}/src/aiden_log.cpp
     ${CMAKE_SOURCE_DIR}/src/config_web.cpp
     ${CMAKE_SOURCE_DIR}/src/agent_toml.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_service_client.cpp
@@ -179,3 +182,6 @@ if(UTIL_LIBRARY)
 endif()
 
 add_test(NAME aiden_tests COMMAND $<TARGET_FILE:aiden_tests>)
+add_test(NAME logger_shell_format
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_logger_format.sh
+)

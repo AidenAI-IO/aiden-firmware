@@ -1,0 +1,11 @@
+# Rootfs CLI tool catalog.
+#
+# Fields:
+# name|version|kind|source|target|source_sha256|artifact_path|strip_policy
+#
+# kind:         go | tar_gz
+# strip_policy: preserve (keep verified bytes) | normal (allow release strip)
+# Use "-" when source_sha256 or artifact_path does not apply.
+fq|v0.17.0|go|github.com/wader/fq@v0.17.0|linux/arm/v7|-|-|preserve
+yq|v4.53.3|go|github.com/mikefarah/yq/v4@v4.53.3|linux/arm/v7|-|-|preserve
+rg|15.2.0|tar_gz|https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-armv7-unknown-linux-musleabihf.tar.gz|armv7-unknown-linux-musleabihf|0332b481aa007969a54d5c19e793208e73405c48d38f226bdee56b9ed085cdde|ripgrep-15.2.0-armv7-unknown-linux-musleabihf/rg|preserve

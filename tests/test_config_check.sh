@@ -19,7 +19,7 @@ echo ""
 
 # Test 1: Valid config
 echo "Test 1: Valid configuration should pass"
-VALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"duckduckgo"},"agent":{},"hid":{"pointer_mode":"absolute"}}'
+VALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"duckduckgo"},"agent":{},"device":{"device_type":"iOS"}}'
 RESULT=$(echo "$VALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json)
 if echo "$RESULT" | grep -q '"valid".*:.*true'; then
     echo "✓ Valid config passed"
@@ -84,15 +84,15 @@ else
 fi
 echo ""
 
-# Test 6: Invalid pointer_mode (nested under "hid"). Same contract concern as
+# Test 6: Invalid device_type (nested under "device"). Same contract concern as
 # Test 5 but for a snake_case key inside a nested object.
-echo "Test 6: Invalid hid.pointer_mode (nested under hid) should fail"
-INVALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"duckduckgo"},"hid":{"pointer_mode":"joystick"},"agent":{}}'
+echo "Test 6: Invalid device.device_type (nested under device) should fail"
+INVALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"duckduckgo"},"device":{"device_type":"blackberry"},"agent":{}}'
 RESULT=$(echo "$INVALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json 2>&1 || true)
-if echo "$RESULT" | grep '"valid"' | grep -q 'false' && echo "$RESULT" | grep -q 'pointer_mode'; then
-    echo "✓ Invalid pointer_mode rejected"
+if echo "$RESULT" | grep '"valid"' | grep -q 'false' && echo "$RESULT" | grep -q 'device_type'; then
+    echo "✓ Invalid device_type rejected"
 else
-    echo "✗ Invalid pointer_mode not properly rejected"
+    echo "✗ Invalid device_type not properly rejected"
     echo "Result: $RESULT"
     exit 1
 fi

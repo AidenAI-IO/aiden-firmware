@@ -25,8 +25,9 @@ import (
 // "kimi-cn" targets the mainland China site; both accept a custom base_url
 // override for proxies or self-hosted gateways.
 const (
-	moonshotGlobalBaseURL = "https://api.moonshot.ai/v1"
-	moonshotCNBaseURL     = "https://api.moonshot.cn/v1"
+	moonshotGlobalBaseURL  = "https://api.moonshot.ai/v1"
+	moonshotCNBaseURL      = "https://api.moonshot.cn/v1"
+	fakeModelContextWindow = 1_000_000
 )
 
 // Volcengine Ark (火山方舟) OpenAI-compatible endpoint for the Doubao models.
@@ -165,6 +166,9 @@ func (m *ModelManager) Spec() model.ModelSpec {
 	}
 	if explicitMaxOutput {
 		spec.MaxOutput = m.config.ModelMaxOutputTokens
+	}
+	if !explicitContextWindow && strings.EqualFold(m.config.Provider, "fake") && spec.ContextWindow <= 0 {
+		spec.ContextWindow = fakeModelContextWindow
 	}
 
 	if m.needsProviderModelMetadataForSpec(spec) {

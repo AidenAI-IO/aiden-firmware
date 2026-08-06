@@ -90,13 +90,27 @@ func userMessageFromInput(manager *contextmanager.ContextManager, input string, 
 	return message
 }
 
-func toolResultMessage(toolCallID, toolName, content string) contextmanager.Message {
+func toolResultMessage(toolCallID, toolName string, prepared PreparedToolResult) contextmanager.Message {
 	return contextmanager.Message{
 		Role: contextmanager.MessageRoleToolResult,
 		ToolResults: []contextmanager.ToolResult{{
 			ToolCallID: strings.TrimSpace(toolCallID),
 			Name:       strings.TrimSpace(toolName),
-			Content:    content,
+			Content:    prepared.Content,
+			Meta: &contextmanager.ToolResultMeta{
+				ArtifactPath:        prepared.ArtifactPath,
+				OriginalBytes:       prepared.OriginalBytes,
+				OriginalChars:       prepared.OriginalChars,
+				EstimatedTokens:     prepared.EstimatedTokens,
+				Complete:            prepared.Complete,
+				ArtifactComplete:    prepared.ArtifactComplete,
+				Reason:              prepared.Reason,
+				Summary:             prepared.Summary,
+				ActionCompleted:     prepared.ActionCompleted,
+				ObservationComplete: prepared.ObservationComplete,
+				ProcessingErrorCode: prepared.ProcessingErrorCode,
+				ArtifactStoreError:  prepared.ArtifactStoreError,
+			},
 		}},
 	}
 }

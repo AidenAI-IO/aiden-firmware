@@ -1,4 +1,5 @@
 #include "aiden_sdk.h"
+#include "aiden_log.h"
 
 #include <atomic>
 #include <cstring>
@@ -208,13 +209,15 @@ static int load_edid_hex_file(const char* path, uint8_t** data_out, uint32_t* bl
     unsigned value;
 
     if (!file) {
-        fprintf(stderr, "Failed to open EDID file %s: %s\n", path, strerror(errno));
+        AIDEN_LOG_ERROR("hdmi", "edid_open_failed", "path=%s error=%s", path,
+                        strerror(errno));
         return -1;
     }
 
     while (fscanf(file, "%x", &value) == 1) {
         if (value > 0xff) {
-            fprintf(stderr, "Invalid EDID byte 0x%x in %s\n", value, path);
+            AIDEN_LOG_ERROR("hdmi", "edid_byte_invalid", "path=%s value=0x%x", path,
+                            value);
             free(buffer);
             fclose(file);
             errno = EINVAL;
@@ -225,7 +228,8 @@ static int load_edid_hex_file(const char* path, uint8_t** data_out, uint32_t* bl
             size_t new_capacity = capacity ? capacity * 2 : 256;
             uint8_t* new_buffer = static_cast<uint8_t*>(realloc(buffer, new_capacity));
             if (!new_buffer) {
-                fprintf(stderr, "Out of memory while loading EDID file %s\n", path);
+                AIDEN_LOG_ERROR("hdmi", "edid_allocation_failed", "path=%s capacity=%zu",
+                                path, new_capacity);
                 free(buffer);
                 fclose(file);
                 errno = ENOMEM;
@@ -241,8 +245,7 @@ static int load_edid_hex_file(const char* path, uint8_t** data_out, uint32_t* bl
     fclose(file);
 
     if (used == 0 || (used % 128) != 0) {
-        fprintf(stderr, "EDID file %s has %zu bytes, expected a non-zero multiple of 128\n",
-                path, used);
+        AIDEN_LOG_ERROR("hdmi", "edid_size_invalid", "path=%s bytes=%zu", path, used);
         free(buffer);
         errno = EINVAL;
         return -1;
@@ -256,7 +259,8 @@ static int load_edid_hex_file(const char* path, uint8_t** data_out, uint32_t* bl
 static int write_edid_hex_file(const char* path, const uint8_t* data, size_t size) {
     int fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if (fd < 0) {
-        fprintf(stderr, "Failed to create temporary EDID file %s: %s\n", path, strerror(errno));
+        AIDEN_LOG_ERROR("hdmi", "edid_temp_create_failed", "path=%s error=%s", path,
+                        strerror(errno));
         return -1;
     }
 
@@ -319,13 +323,13 @@ static int push_edid_with_v4l2ctl(const CameraConfig& config,
     }
 
     if (child < 0 || wait_ret < 0) {
-        fprintf(stderr, "Failed to execute EDID fallback command: %s\n", strerror(errno));
+        AIDEN_LOG_ERROR("hdmi", "edid_fallback_exec_failed", "error=%s", strerror(errno));
         return -1;
     }
 
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        fprintf(stderr, "EDID fallback command failed with status %d\n",
-                WIFEXITED(status) ? WEXITSTATUS(status) : status);
+        AIDEN_LOG_ERROR("hdmi", "edid_fallback_failed", "status=%d",
+                        WIFEXITED(status) ? WEXITSTATUS(status) : status);
         errno = EIO;
         return -1;
     }
@@ -385,8 +389,8 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
     const char* subdev_device = config.subdev_device ? config.subdev_device : "/dev/v4l-subdev2";
     int subdev_fd = open(subdev_device, O_RDWR);
     if (subdev_fd < 0) {
-        fprintf(stderr, "Failed to open HDMI subdev %s: %s\n",
-                subdev_device, strerror(errno));
+        AIDEN_LOG_ERROR("hdmi", "subdevice_open_failed", "device=%s error=%s",
+                        subdev_device, strerror(errno));
         return false;
     }
 
@@ -397,13 +401,10 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
         int ret = query_and_set_timings(subdev_fd, &timings);
         if (ret == 0) {
             if (!timings_match_request(config, timings)) {
-                fprintf(stderr,
-                        "HDMI timing mismatch on %s: detected %ux%u, expected %dx%d\n",
-                        subdev_device,
-                        timings.bt.width,
-                        timings.bt.height,
-                        config.width,
-                        config.height);
+                AIDEN_LOG_WARN("hdmi", "timing_mismatch",
+                               "device=%s detected_width=%u detected_height=%u expected_width=%d expected_height=%d",
+                               subdev_device, timings.bt.width, timings.bt.height,
+                               config.width, config.height);
                 errno = ERANGE;
             } else {
                 *width = timings.bt.width;
@@ -412,8 +413,8 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
                 return true;
             }
         } else if (ret == -2) {
-            fprintf(stderr, "Failed to apply detected HDMI timings on %s: %s\n",
-                    subdev_device, strerror(errno));
+            AIDEN_LOG_WARN("hdmi", "timing_apply_failed", "device=%s error=%s",
+                           subdev_device, strerror(errno));
         }
     }
 
@@ -429,13 +430,10 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
         int ret = query_and_set_timings(subdev_fd, &timings);
         if (ret == 0) {
             if (!timings_match_request(config, timings)) {
-                fprintf(stderr,
-                        "HDMI timing mismatch on %s: detected %ux%u, expected %dx%d\n",
-                        subdev_device,
-                        timings.bt.width,
-                        timings.bt.height,
-                        config.width,
-                        config.height);
+                AIDEN_LOG_WARN("hdmi", "timing_mismatch",
+                               "device=%s detected_width=%u detected_height=%u expected_width=%d expected_height=%d",
+                               subdev_device, timings.bt.width, timings.bt.height,
+                               config.width, config.height);
                 errno = ERANGE;
                 continue;
             }
@@ -447,8 +445,8 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
         }
 
         if (ret == -2) {
-            fprintf(stderr, "Failed to apply detected HDMI timings on %s: %s\n",
-                    subdev_device, strerror(errno));
+            AIDEN_LOG_WARN("hdmi", "timing_apply_failed", "device=%s error=%s",
+                           subdev_device, strerror(errno));
         }
 
         if (attempt == trigger_attempts) {
@@ -456,8 +454,8 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
         }
     }
 
-    fprintf(stderr, "Failed to synchronize HDMI DV timings on %s: %s\n",
-            subdev_device, strerror(errno));
+    AIDEN_LOG_ERROR("hdmi", "timing_sync_failed", "device=%s error=%s",
+                    subdev_device, strerror(errno));
     close(subdev_fd);
     return false;
 }
@@ -483,7 +481,8 @@ public:
 
         int fd = open(gpio_path, O_RDONLY);
         if (fd < 0) {
-            fprintf(stderr, "Failed to open GPIO %d\n", gpio_pin);
+            AIDEN_LOG_ERROR("gpio", "value_open_failed", "gpio=%d path=%s error=%s",
+                            gpio_pin, gpio_path, strerror(errno));
             running = false;
             return;
         }
@@ -959,8 +958,8 @@ public:
     void cleanup_device() {
         if (frame_held) {
             if (xioctl(video_fd, VIDIOC_QBUF, &held_buffer) < 0) {
-                fprintf(stderr, "VIDIOC_QBUF failed while releasing held frame: %s\n",
-                        strerror(errno));
+                AIDEN_LOG_ERROR("camera", "held_frame_release_failed", "error=%s",
+                                strerror(errno));
             }
             frame_held = false;
             held_bytes_used = 0;
@@ -968,7 +967,8 @@ public:
 
         if (streaming) {
             if (xioctl(video_fd, VIDIOC_STREAMOFF, &buf_type) < 0) {
-                fprintf(stderr, "VIDIOC_STREAMOFF failed: %s\n", strerror(errno));
+                AIDEN_LOG_ERROR("camera", "stream_stop_failed", "error=%s",
+                                strerror(errno));
             }
             streaming = false;
         }
@@ -1097,7 +1097,8 @@ public:
             }
 
             if (frame_held && xioctl(video_fd, VIDIOC_QBUF, &held_buffer) < 0) {
-                fprintf(stderr, "VIDIOC_QBUF failed: %s\n", strerror(errno));
+                AIDEN_LOG_ERROR("camera", "buffer_requeue_failed", "error=%s",
+                                strerror(errno));
             }
             frame_held = false;
             held_bytes_used = 0;
@@ -1138,14 +1139,16 @@ bool CameraCapture::init(const CameraConfig& config) {
     const char* device = config.device_name ? config.device_name : "/dev/video0";
     impl_->video_fd = open(device, O_RDWR | O_NONBLOCK);
     if (impl_->video_fd < 0) {
-        fprintf(stderr, "Failed to open video device %s: %s\n", device, strerror(errno));
+        AIDEN_LOG_ERROR("camera", "device_open_failed", "device=%s error=%s", device,
+                        strerror(errno));
         return fail();
     }
 
     struct v4l2_capability cap;
     memset(&cap, 0, sizeof(cap));
     if (xioctl(impl_->video_fd, VIDIOC_QUERYCAP, &cap) < 0) {
-        fprintf(stderr, "VIDIOC_QUERYCAP failed for %s: %s\n", device, strerror(errno));
+        AIDEN_LOG_ERROR("camera", "capability_query_failed", "device=%s error=%s", device,
+                        strerror(errno));
         return fail();
     }
 
@@ -1160,7 +1163,7 @@ bool CameraCapture::init(const CameraConfig& config) {
         impl_->is_mplane = false;
         impl_->buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     } else {
-        fprintf(stderr, "Video device %s is not a capture device\n", device);
+        AIDEN_LOG_ERROR("camera", "capture_capability_missing", "device=%s", device);
         errno = ENODEV;
         return fail();
     }
@@ -1181,7 +1184,8 @@ bool CameraCapture::init(const CameraConfig& config) {
     }
 
     if (xioctl(impl_->video_fd, VIDIOC_S_FMT, &fmt) < 0) {
-        fprintf(stderr, "VIDIOC_S_FMT failed for %s: %s\n", device, strerror(errno));
+        AIDEN_LOG_ERROR("camera", "format_set_failed", "device=%s error=%s", device,
+                        strerror(errno));
         return fail();
     }
 
@@ -1192,11 +1196,10 @@ bool CameraCapture::init(const CameraConfig& config) {
     if (actual_format != requested_format) {
         char requested_text[5];
         char actual_text[5];
-        fprintf(stderr,
-                "Video device %s returned pixelformat %s instead of requested %s\n",
-                device,
-                v4l2_format_name(actual_format, actual_text),
-                v4l2_format_name(requested_format, requested_text));
+        AIDEN_LOG_WARN("camera", "pixel_format_mismatch",
+                       "device=%s actual_format=%s requested_format=%s", device,
+                       v4l2_format_name(actual_format, actual_text),
+                       v4l2_format_name(requested_format, requested_text));
         errno = EINVAL;
         return fail();
     }
@@ -1212,13 +1215,10 @@ bool CameraCapture::init(const CameraConfig& config) {
     if (config.require_exact_resolution &&
         (impl_->config.width != static_cast<int>(synced_width) ||
          impl_->config.height != static_cast<int>(synced_height))) {
-        fprintf(stderr,
-                "Video device %s returned %dx%d instead of synchronized %ux%u\n",
-                device,
-                impl_->config.width,
-                impl_->config.height,
-                synced_width,
-                synced_height);
+        AIDEN_LOG_ERROR("camera", "resolution_mismatch",
+                        "device=%s actual_width=%d actual_height=%d expected_width=%u expected_height=%u",
+                        device, impl_->config.width, impl_->config.height,
+                        synced_width, synced_height);
         errno = EINVAL;
         return fail();
     }
@@ -1229,11 +1229,12 @@ bool CameraCapture::init(const CameraConfig& config) {
     req.type = impl_->buf_type;
     req.memory = V4L2_MEMORY_MMAP;
     if (xioctl(impl_->video_fd, VIDIOC_REQBUFS, &req) < 0) {
-        fprintf(stderr, "VIDIOC_REQBUFS failed for %s: %s\n", device, strerror(errno));
+        AIDEN_LOG_ERROR("camera", "buffer_request_failed", "device=%s error=%s", device,
+                        strerror(errno));
         return fail();
     }
     if (req.count == 0) {
-        fprintf(stderr, "Video device %s returned zero capture buffers\n", device);
+        AIDEN_LOG_ERROR("camera", "capture_buffers_missing", "device=%s", device);
         errno = ENOMEM;
         return fail();
     }
@@ -1254,7 +1255,9 @@ bool CameraCapture::init(const CameraConfig& config) {
         }
 
         if (xioctl(impl_->video_fd, VIDIOC_QUERYBUF, &buf) < 0) {
-            fprintf(stderr, "VIDIOC_QUERYBUF failed for %s: %s\n", device, strerror(errno));
+            AIDEN_LOG_ERROR("camera", "buffer_query_failed",
+                            "device=%s buffer_index=%u error=%s", device, i,
+                            strerror(errno));
             return fail();
         }
 
@@ -1262,7 +1265,9 @@ bool CameraCapture::init(const CameraConfig& config) {
         off_t offset = impl_->is_mplane ? planes[0].m.mem_offset : buf.m.offset;
         void* start = mmap(nullptr, length, PROT_READ | PROT_WRITE, MAP_SHARED, impl_->video_fd, offset);
         if (start == MAP_FAILED) {
-            fprintf(stderr, "mmap failed for %s buffer %u: %s\n", device, i, strerror(errno));
+            AIDEN_LOG_ERROR("camera", "buffer_map_failed",
+                            "device=%s buffer_index=%u error=%s", device, i,
+                            strerror(errno));
             return fail();
         }
 
@@ -1270,14 +1275,16 @@ bool CameraCapture::init(const CameraConfig& config) {
         impl_->buffers[i].length = length;
 
         if (xioctl(impl_->video_fd, VIDIOC_QBUF, &buf) < 0) {
-            fprintf(stderr, "VIDIOC_QBUF failed for %s buffer %u: %s\n",
-                    device, i, strerror(errno));
+            AIDEN_LOG_ERROR("camera", "buffer_queue_failed",
+                            "device=%s buffer_index=%u error=%s", device, i,
+                            strerror(errno));
             return fail();
         }
     }
 
     if (xioctl(impl_->video_fd, VIDIOC_STREAMON, &impl_->buf_type) < 0) {
-        fprintf(stderr, "VIDIOC_STREAMON failed for %s: %s\n", device, strerror(errno));
+        AIDEN_LOG_ERROR("camera", "stream_start_failed", "device=%s error=%s", device,
+                        strerror(errno));
         return fail();
     }
 
@@ -1330,16 +1337,18 @@ bool CameraCapture::capture_frame_timeout(VideoFrame& frame, std::vector<uint8_t
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
         if (!impl_->initialized) {
             if (!init(retry_config)) {
-                fprintf(stderr, "Camera init failed (attempt %d/%d): %s\n",
-                        attempt + 1, max_attempts, strerror(errno));
+                AIDEN_LOG_WARN("camera", "capture_init_retry_failed",
+                               "attempt=%d max_attempts=%d error=%s", attempt + 1,
+                               max_attempts, strerror(errno));
                 continue;
             }
         }
 
         bool uniform_reject = false;
         if (!impl_->acquire_frame(&frame, timeout_ms)) {
-            fprintf(stderr, "Failed to acquire frame (attempt %d/%d): %s\n",
-                    attempt + 1, max_attempts, strerror(errno));
+            AIDEN_LOG_WARN("camera", "frame_acquire_failed",
+                           "attempt=%d max_attempts=%d error=%s", attempt + 1,
+                           max_attempts, strerror(errno));
         } else {
             buffer.resize(frame.length);
             memcpy(buffer.data(), frame.data, frame.length);
@@ -1351,9 +1360,8 @@ bool CameraCapture::capture_frame_timeout(VideoFrame& frame, std::vector<uint8_t
             }
 
             uniform_reject = true;
-            fprintf(stderr,
-                    "Skipping uniform frame (attempt %d/%d)\n",
-                    attempt + 1, max_attempts);
+            AIDEN_LOG_WARN("camera", "uniform_frame_rejected",
+                           "attempt=%d max_attempts=%d", attempt + 1, max_attempts);
         }
 
         if (impl_->frame_held) {
@@ -1382,16 +1390,18 @@ bool CameraCapture::discard_frame_timeout(int timeout_ms) {
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
         if (!impl_->initialized) {
             if (!init(retry_config)) {
-                fprintf(stderr, "Camera init failed while discarding frame (attempt %d/%d): %s\n",
-                        attempt + 1, max_attempts, strerror(errno));
+                AIDEN_LOG_WARN("camera", "discard_init_retry_failed",
+                               "attempt=%d max_attempts=%d error=%s", attempt + 1,
+                               max_attempts, strerror(errno));
                 continue;
             }
         }
 
         VideoFrame frame{};
         if (!impl_->acquire_frame(&frame, timeout_ms)) {
-            fprintf(stderr, "Failed to discard frame (attempt %d/%d): %s\n",
-                    attempt + 1, max_attempts, strerror(errno));
+            AIDEN_LOG_WARN("camera", "frame_discard_failed",
+                           "attempt=%d max_attempts=%d error=%s", attempt + 1,
+                           max_attempts, strerror(errno));
         } else {
             release_frame();
             return true;
@@ -1418,8 +1428,9 @@ bool CameraCapture::capture_once(const CameraConfig& config,
     stop();
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
         if (!init(config)) {
-            fprintf(stderr, "Camera init failed (attempt %d/%d): %s\n",
-                    attempt + 1, max_attempts, strerror(errno));
+            AIDEN_LOG_WARN("camera", "init_retry_failed",
+                           "attempt=%d max_attempts=%d error=%s", attempt + 1,
+                           max_attempts, strerror(errno));
         } else if (capture_frame(frame, buffer)) {
             stop();
             return true;
@@ -1437,7 +1448,7 @@ void CameraCapture::release_frame() {
     }
 
     if (xioctl(impl_->video_fd, VIDIOC_QBUF, &impl_->held_buffer) < 0) {
-        fprintf(stderr, "VIDIOC_QBUF failed: %s\n", strerror(errno));
+        AIDEN_LOG_ERROR("camera", "frame_release_failed", "error=%s", strerror(errno));
     }
     impl_->frame_held = false;
     impl_->held_bytes_used = 0;

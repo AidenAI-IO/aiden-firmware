@@ -107,7 +107,11 @@ func TestConfigMeta_Valid(t *testing.T) {
 		}
 	}
 
-	for _, name := range []string{"model", "tts", "stt", "audio", "audio_archive", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
+	if ConfigMeta().Sections[0].Name != "device" {
+		t.Errorf("expected device section first, got %q", ConfigMeta().Sections[0].Name)
+	}
+
+	for _, name := range []string{"device", "model", "tts", "stt", "audio", "audio_archive", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -166,17 +170,17 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		t.Errorf("tts.provider enum still includes legacy provider minimax-ws")
 	}
 
-	// hid.pointer_mode enum must match Validate()'s accepted set.
-	pmEnum := enumValues("hid.pointer_mode")
-	for _, m := range []string{"absolute", "touchscreen"} {
-		if !contains(pmEnum, m) {
-			t.Errorf("hid.pointer_mode enum missing %q", m)
+	// device.device_type enum must match Validate()'s accepted set.
+	deviceTypeEnum := enumValues("device.device_type")
+	for _, deviceType := range []string{"iOS", "Android", "macOS", "windows", "linux"} {
+		if !contains(deviceTypeEnum, deviceType) {
+			t.Errorf("device.device_type enum missing %q", deviceType)
 		}
 	}
-	for _, m := range pmEnum {
-		c := Config{HID: HIDConfig{PointerMode: m}, Model: ModelConfig{Provider: "openai", Model: "x"}}
+	for _, deviceType := range deviceTypeEnum {
+		c := Config{Device: DeviceConfig{DeviceType: deviceType}, Model: ModelConfig{Provider: "openai", Model: "x"}}
 		if err := c.Validate(); err != nil {
-			t.Errorf("hid.pointer_mode enum value %q rejected by Validate: %v", m, err)
+			t.Errorf("device.device_type enum value %q rejected by Validate: %v", deviceType, err)
 		}
 	}
 
@@ -271,13 +275,13 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
 		{"audio_archive.storage_path", defaults.AudioArchive.StoragePathOrDefault()},
+		{"device.device_type", defaults.Device.DeviceTypeOrDefault()},
 		{"log.llm_http_retention_days", defaults.Log.LLMHTTPRetentionDaysOrDefault()},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
 		{"hid.keyboard_layout", defaults.HID.KeyboardLayout},
 		{"hid.mouse_device", defaults.HID.MouseDevice},
 		{"hid.android_keyboard_device", defaults.HID.AndroidKeyboardDevice},
 		{"hid.frame_socket", defaults.HID.FrameSocket},
-		{"hid.pointer_mode", defaults.HID.PointerMode},
 		{"hid.input_backend", defaults.HID.InputBackend},
 		{"search.provider", defaults.Search.ProviderOrDefault()},
 		{"agent.input_mode", defaults.InputMode},
@@ -553,7 +557,8 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"stt", reflect.TypeOf(STTConfig{}), nil},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
 		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},
-		{"hid", reflect.TypeOf(HIDConfig{}), nil},
+		{"device", reflect.TypeOf(DeviceConfig{}), map[string]bool{"backend": true}},
+		{"hid", reflect.TypeOf(HIDConfig{}), map[string]bool{"pointer_mode": true}},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},
 		{"log", reflect.TypeOf(LogConfig{}), nil},
 		{"telemetry", reflect.TypeOf(TelemetryConfig{}), nil},
@@ -581,7 +586,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	// (scalar/string/bool) fields are rendered; nested structs and infra-only
 	// fields are surfaced under their own sections or not at all.
 	agentSkip := map[string]bool{
-		"model": true, "model_text": true, "tts": true, "stt": true, "hid": true,
+		"model": true, "model_text": true, "tts": true, "stt": true, "device": true, "hid": true,
 		"audio": true, "search": true, "log": true, "telemetry": true, "termination_policy": true, "live_activity": true,
 		"skills_dirs": true, "bundled_skills_dir": true,
 	}

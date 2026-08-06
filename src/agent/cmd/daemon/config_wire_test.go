@@ -35,7 +35,7 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 			"model":{"provider":"openai","model":"gpt-4"},
 			"search":{"provider":"duckduckgo"},
 			"agent":{},
-			"hid":{"pointer_mode":"absolute"}
+			"device":{"device_type":"iOS"}
 		}`
 		result := checkWire(t, payload)
 		if !result.Valid {
@@ -44,7 +44,7 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 	})
 
 	// The core regression: these invalid values live in their real wire
-	// positions (nested under "agent" / "hid", snake_case). Before the DTO fix
+	// positions (nested under "agent" / "device" / "hid", snake_case). Before the DTO fix
 	// every one of these was silently dropped and the config validated as valid.
 	invalidCases := []struct {
 		name        string
@@ -52,11 +52,11 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 		wantInField string // substring expected in the offending field/message
 	}{
 		{
-			name: "invalid pointer_mode nested under hid",
+			name: "invalid device_type nested under device",
 			payload: `{"model":{"provider":"openai","model":"gpt-4"},
 				"search":{"provider":"duckduckgo"},
-				"hid":{"pointer_mode":"joystick"},"agent":{}}`,
-			wantInField: "pointer_mode",
+				"device":{"device_type":"blackberry"},"agent":{}}`,
+			wantInField: "device_type",
 		},
 		{
 			name: "invalid keyboard_layout nested under hid",

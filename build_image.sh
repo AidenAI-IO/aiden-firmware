@@ -2,17 +2,56 @@
 set -euo pipefail
 
 docker_go_args=()
+cached_linux_go_root="${AIDEN_GO_ROOT:-$(pwd)/.toolchains/go1.26.0.linux-amd64}"
+cached_linux_go_report="not checked"
+
+cached_linux_go_valid() {
+  local binary="$cached_linux_go_root/bin/go"
+  if [ ! -x "$binary" ] || [ ! -f "$cached_linux_go_root/VERSION" ] || \
+     ! grep -qx 'go1.26.0' "$cached_linux_go_root/VERSION"; then
+    cached_linux_go_report="missing binary or pinned VERSION file"
+    return 1
+  fi
+
+  if command -v go >/dev/null 2>&1; then
+    cached_linux_go_report=$(go version "$binary" 2>&1 || true)
+    [ "$cached_linux_go_report" = "go version go1.26.0 linux/amd64" ]
+    return
+  fi
+
+  if command -v file >/dev/null 2>&1; then
+    cached_linux_go_report="go1.26.0; $(file -b "$binary" 2>&1 || true)"
+    case "$cached_linux_go_report" in
+      *"ELF 64-bit"*"x86-64"*) return 0 ;;
+    esac
+  else
+    cached_linux_go_report="cannot inspect cached binary because both go and file are unavailable"
+  fi
+  return 1
+}
+
 if command -v go >/dev/null 2>&1; then
   host_goroot=$(go env GOROOT)
   host_goos=$(go env GOHOSTOS)
   host_goarch=$(go env GOHOSTARCH)
-  if [ -d "$host_goroot" ] && [ "$host_goos" = linux ] && [ "$host_goarch" = amd64 ]; then
+  host_goversion=$(go env GOVERSION)
+  if [ -d "$host_goroot" ] && [ "$host_goos" = linux ] && [ "$host_goarch" = amd64 ] && \
+     [ "$host_goversion" = go1.26.0 ]; then
     docker_go_args=(-v "${host_goroot}:/usr/local/go:ro")
+  elif cached_linux_go_valid; then
+    docker_go_args=(-v "${cached_linux_go_root}:/usr/local/go:ro")
   else
-    echo "Host Go toolchain is not linux/amd64; Docker build will rely on go already being present in the image." >&2
+    echo "Host Go toolchain must be go1.26.0 linux/amd64; detected $host_goversion $host_goos/$host_goarch." >&2
+    echo "Cached Go validation failed at $cached_linux_go_root: $cached_linux_go_report" >&2
+    echo "Run ./build.sh once to provision the pinned Linux toolchain before building an image." >&2
+    exit 1
   fi
+elif cached_linux_go_valid; then
+  docker_go_args=(-v "${cached_linux_go_root}:/usr/local/go:ro")
 else
-  echo "Host Go toolchain not found; Docker build will rely on go already being present in the image." >&2
+  echo "Go is unavailable and cached Go validation failed at $cached_linux_go_root: $cached_linux_go_report" >&2
+  echo "Run ./build.sh once to provision the pinned Linux toolchain before building an image." >&2
+  exit 1
 fi
 
 docker_ota_key_args=()
@@ -67,7 +106,7 @@ restore_docker_output_ownership() {
   fi
 
   paths=()
-  for path in build overlay/oem overlay/userdata pico-sdk/output; do
+  for path in build .cache/rootfs-cli-tools overlay/oem overlay/userdata pico-sdk/output; do
     if [ -e "$path" ]; then
       paths+=("$path")
     fi
@@ -76,6 +115,13 @@ restore_docker_output_ownership() {
   if [ "${#paths[@]}" -gt 0 ]; then
     # Errors here must not mask the original docker exit status, hence `|| true`.
     sudo chown -R "$(id -u):$(id -g)" "${paths[@]}" || true
+  fi
+
+  # Go module downloads are intentionally extracted read-only. Restore write
+  # permission after the root container exits so actions/checkout can clean a
+  # self-hosted workspace on the next run.
+  if [ -d .cache/rootfs-cli-tools/go-mod ]; then
+    chmod -R u+w .cache/rootfs-cli-tools/go-mod || true
   fi
 }
 

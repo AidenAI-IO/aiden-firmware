@@ -231,6 +231,12 @@ TEST_CASE("config web exposes agent runtime status") {
     CHECK(html.find("agentPortStatus") != std::string::npos);
     CHECK(html.find("renderAgentStatus") != std::string::npos);
     CHECK(html.find("startup_error") != std::string::npos);
+    CHECK(source.find("rfind_event(\"[agent] [supervisor] process_starting\")") !=
+          std::string::npos);
+    CHECK(source.find("rfind_event(\"[agent] [supervisor] binary_wait\")") !=
+          std::string::npos);
+    CHECK(source.find("boundary == log.size() || log[boundary] == ' '") !=
+          std::string::npos);
 }
 
 TEST_CASE("config web listens on all interfaces by default") {
@@ -327,6 +333,10 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("/api/logs/export") != std::string::npos);
     CHECK(html.find("aiden-logs.tar.gz") != std::string::npos);
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
+    CHECK(html.find("const severity=text.match(/^\\\\d{4}-") != std::string::npos);
+    CHECK(html.find("if(severity[1]==='ERROR')return 'log-error'") != std::string::npos);
+    CHECK(html.find("if(severity[1]==='WARN')return 'log-warn'") != std::string::npos);
+    CHECK(html.find("if(text.indexOf(' [ERROR] ')") == std::string::npos);
 }
 
 TEST_CASE("config web links to wetty browser terminal") {
@@ -747,7 +757,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("otaLogStartSize:0") != std::string::npos);
     CHECK(html.find("otaLogHasNewProgress") != std::string::npos);
     CHECK(html.find("extractOtaExitCode") != std::string::npos);
-    CHECK(html.find("[config_web] ota update exited rc=") != std::string::npos);
+    CHECK(html.find("[config_web] [ota] update_exited exit_code=") != std::string::npos);
     CHECK(html.find("OTA update failed (rc=") != std::string::npos);
     CHECK(html.find("Recent OTA log:\\\\n") != std::string::npos);
     CHECK(html.find("setOtaLogPending") != std::string::npos);
@@ -942,8 +952,8 @@ TEST_CASE("config web renders finite choice fields as selects") {
         "tts_provider",
         "tts_speed",
         "stt_provider",
+        "device_device_type",
         "hid_keyboard_layout",
-        "hid_pointer_mode",
         "search_provider",
         "telemetry_provider",
         NULL,
@@ -1157,7 +1167,7 @@ TEST_CASE("config web hides successful forget details but reports runtime apply 
     const std::string::size_type forget_start =
         html.find("async function forgetWifi(ssid)");
     const std::string::size_type forget_end =
-        html.find("async function poweroffDevice()", forget_start);
+        html.find("async function rebootDevice()", forget_start);
     REQUIRE(forget_start != std::string::npos);
     REQUIRE(forget_end != std::string::npos);
     const std::string forget_source =
@@ -1756,6 +1766,9 @@ TEST_CASE("config web requires reboot for USB HID configuration changes") {
     toml_source_buffer << toml_source_in.rdbuf();
     const std::string toml_source = toml_source_buffer.str();
 
+    CHECK(toml_header.find("device_type") != std::string::npos);
+    CHECK(toml_source.find("\"device_type\"") != std::string::npos);
+    CHECK(source.find("\"device_type\"") != std::string::npos);
     CHECK(toml_header.find("pointer_mode") != std::string::npos);
     CHECK(toml_source.find("\"pointer_mode\"") != std::string::npos);
     CHECK(toml_header.find("keyboard_layout") != std::string::npos);
@@ -1766,8 +1779,10 @@ TEST_CASE("config web requires reboot for USB HID configuration changes") {
     CHECK(source.find("usbhid_restart_required") != std::string::npos);
     CHECK(source.find("reboot_required") != std::string::npos);
     CHECK(source.find("schedule_usb_reenumerate") == std::string::npos);
-    CHECK(source.find("schedule_poweroff") != std::string::npos);
-    CHECK(source.find("\"/api/poweroff\"") != std::string::npos);
+    CHECK(source.find("schedule_reboot") != std::string::npos);
+    CHECK(source.find("command -v reboot") != std::string::npos);
+    CHECK(source.find("make_json_error(503, error.empty() ? \"failed to schedule reboot\" : error)") != std::string::npos);
+    CHECK(source.find("\"/api/reboot\"") != std::string::npos);
     CHECK(source.find("config-check --stdin --format=json") != std::string::npos);
     CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);
     // config metadata endpoint: agent CLI is the single source of field metadata.
@@ -1777,17 +1792,18 @@ TEST_CASE("config web requires reboot for USB HID configuration changes") {
     CHECK(source.find("cannot load config defaults") == std::string::npos);
     CHECK(source.find("\"/api/config/meta\"") != std::string::npos);
     CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
-    CHECK(html.find("hid_pointer_mode") != std::string::npos);
-    CHECK(html.find("<select id=\\\"hid_pointer_mode\\\"") != std::string::npos);
+    CHECK(html.find("device_device_type") != std::string::npos);
+    CHECK(html.find("<select id=\\\"device_device_type\\\"") != std::string::npos);
+    CHECK(html.find("hid_pointer_mode") == std::string::npos);
     CHECK(html.find("hid_keyboard_layout") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_keyboard_layout\\\"") != std::string::npos);
-    CHECK(html.find("Power off the board, then disconnect and reconnect power") != std::string::npos);
-    CHECK(html.find("After shutdown, disconnect and reconnect power to restart the board") != std::string::npos);
-    CHECK(html.find("Wait for shutdown, then disconnect and reconnect power") != std::string::npos);
+    CHECK(html.find("USB HID configuration saved. Reboot the board for it to take effect") != std::string::npos);
+    CHECK(html.find("USB HID settings saved, requires reboot to take effect. Reboot now?") != std::string::npos);
+    CHECK(html.find("Cancelled immediate reboot. Please reboot manually later, then verify USB HID after reboot") != std::string::npos);
     CHECK(html.find("USB will re-enumerate automatically") == std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
-    CHECK(html.find("/api/poweroff") != std::string::npos);
-    CHECK(html.find("poweroff command sent") != std::string::npos);
+    CHECK(html.find("/api/reboot") != std::string::npos);
+    CHECK(html.find("reboot command sent") != std::string::npos);
 }
 
 TEST_CASE("config web usbhid init script does not orchestrate dependent service restarts") {
@@ -1808,9 +1824,11 @@ TEST_CASE("config web usbhid init script does not orchestrate dependent service 
     CHECK(script.find("AIDEN_USBHID_ALLOW_HOT_REBIND") == std::string::npos);
     CHECK(script.find("force-restart") == std::string::npos);
     CHECK(script.find("USB HID hot restart is unsafe") != std::string::npos);
-    CHECK(script.find("use poweroff") != std::string::npos);
+    CHECK(script.find("use reboot") != std::string::npos);
     CHECK(script.find("restart|reload) restart") != std::string::npos);
     CHECK(script.find("restart|reload) stop; start") == std::string::npos);
+    CHECK(script.find("[device]") != std::string::npos);
+    CHECK(script.find("device_type") != std::string::npos);
 }
 
 TEST_CASE("config web resolved config validation keeps required fields and type guards") {

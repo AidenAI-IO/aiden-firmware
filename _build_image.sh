@@ -5,6 +5,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OVERLAY="$SCRIPT_DIR/overlay"
 PICO_SDK="$SCRIPT_DIR/pico-sdk"
 DEST_OVERLAY="$PICO_SDK/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden"
+ROOTFS_CLI_MANAGED_STATE="${DEST_OVERLAY}.aiden-rootfs-cli-tools.list"
+ROOTFS_CLI_TOOL_CATALOG="$SCRIPT_DIR/scripts/rootfs_cli_tools.catalog"
+ROOTFS_CLI_CATALOG_LIB="$SCRIPT_DIR/scripts/rootfs_cli_tool_catalog.sh"
+
+# shellcheck source=/dev/null
+source "$ROOTFS_CLI_CATALOG_LIB"
+ROOTFS_CLI_NAME_POLICY_RECORDS="$(rootfs_cli_catalog_name_policy_records "$ROOTFS_CLI_TOOL_CATALOG")" || exit 1
+ROOTFS_CLI_PRESERVE_TOOLS=()
+while IFS='|' read -r tool strip_policy; do
+    if [ "$strip_policy" = "preserve" ]; then
+        ROOTFS_CLI_PRESERVE_TOOLS+=("$tool")
+    fi
+done <<< "$ROOTFS_CLI_NAME_POLICY_RECORDS"
 
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
     # Keep image metadata stable without relying on every package treating epoch 0
@@ -68,6 +81,8 @@ AIDEN_GENERATED_BINARIES=(
     trigger
 )
 GENERATED_BINARY_MANIFEST="$SCRIPT_DIR/build/aiden-generated-binaries.sha256"
+ROOTFS_CLI_BUILD_DIR="$SCRIPT_DIR/build/rootfs-cli-tools"
+ROOTFS_CLI_CACHE_DIR="$SCRIPT_DIR/.cache/rootfs-cli-tools"
 
 clean_generated_binaries() {
     local bin_dir="$1"
@@ -134,7 +149,8 @@ partition_fs_type() {
 
 strip_release_files() {
     local target_dir="$1"
-    local strip_tool toolchain_cross toolchain_bin
+    local strip_tool toolchain_cross toolchain_bin tool
+    local -a strip_find_args
 
     if [ "${RK_BUILD_VERSION_TYPE:-}" = "DEBUG" ]; then
         return 0
@@ -159,8 +175,16 @@ strip_release_files() {
 
     find "$target_dir" \( -name "lib*.la" -o -name "lib*.a" \) -exec rm -rf {} +
     find "$target_dir" -type d -name pkgconfig -exec rm -rf {} +
-    find "$target_dir" -type f \( -perm /111 -o -name '*.so*' \) \
-        -not \( -name 'libpthread*.so*' -o -name 'ld-*.so*' -o -name '*.ko' \) -print0 |
+    strip_find_args=(
+        "$target_dir" -type f
+        "(" -perm /111 -o -name '*.so*' ")"
+        -not "(" -name 'libpthread*.so*' -o -name 'ld-*.so*' -o -name '*.ko' ")"
+    )
+    for tool in "${ROOTFS_CLI_PRESERVE_TOOLS[@]}"; do
+        strip_find_args+=( -not -path "$target_dir/usr/bin/$tool" )
+    done
+    strip_find_args+=( -print0 )
+    find "${strip_find_args[@]}" |
         xargs -0 "$strip_tool" 2>/dev/null || true
     find "$target_dir" -type f -name '*.ko' -print0 |
         xargs -0 "$strip_tool" --strip-debug 2>/dev/null || true
@@ -535,6 +559,24 @@ verify_oem_generated_binaries_in_image() {
     echo "  ✓ Verified $verified generated OEM binaries in $(basename "$image_path")"
 }
 
+verify_rootfs_cli_tools_in_image() {
+    local image_path="$1"
+    local original_root="$2"
+    local packaged_root="$3"
+    local tool strip_policy expected_root verified
+
+    verified=0
+    while IFS='|' read -r tool strip_policy; do
+        expected_root="$packaged_root"
+        if [ "$strip_policy" = "preserve" ]; then
+            expected_root="$original_root"
+        fi
+        verify_ext4_image_file_matches "$image_path" "$expected_root" "usr/bin/$tool"
+        verified=$((verified + 1))
+    done <<< "$ROOTFS_CLI_NAME_POLICY_RECORDS"
+    echo "  ✓ Verified $verified catalog CLI tools in $(basename "$image_path")"
+}
+
 rebuild_ext4_image() {
     local name="$1"
     local src_dir="$2"
@@ -648,7 +690,20 @@ if [ ! -d "$DEST_OVERLAY" ]; then
     exit 1
 fi
 
-"$SCRIPT_DIR/scripts/clean_rootfs_overlay_staging.sh" --dest-overlay "$DEST_OVERLAY"
+"$SCRIPT_DIR/scripts/clean_rootfs_overlay_staging.sh" \
+    --catalog "$ROOTFS_CLI_TOOL_CATALOG" \
+    --managed-state "$ROOTFS_CLI_MANAGED_STATE" \
+    --dest-overlay "$DEST_OVERLAY"
+
+"$SCRIPT_DIR/scripts/build_rootfs_cli_tools.sh" \
+    --catalog "$ROOTFS_CLI_TOOL_CATALOG" \
+    --output-dir "$ROOTFS_CLI_BUILD_DIR" \
+    --cache-dir "$ROOTFS_CLI_CACHE_DIR"
+"$SCRIPT_DIR/scripts/stage_rootfs_cli_tools.sh" \
+    --catalog "$ROOTFS_CLI_TOOL_CATALOG" \
+    --managed-state "$ROOTFS_CLI_MANAGED_STATE" \
+    --source-dir "$ROOTFS_CLI_BUILD_DIR" \
+    --dest-overlay "$DEST_OVERLAY"
 
 # 只复制 etc 目录到 buildroot overlay
 if [ -d "$OVERLAY/etc" ]; then
@@ -681,6 +736,11 @@ fi
 SDK_ROOT_DIR="$PICO_SDK"
 RK_PROJECT_OUTPUT="${SDK_ROOT_DIR}/output/out"
 RK_PROJECT_OUTPUT_IMAGE="${SDK_ROOT_DIR}/output/image"
+case "${RK_PROJECT_TOOLCHAIN_CROSS:-${RK_TOOLCHAIN_CROSS:-}}" in
+    *-uclibc*) RK_LIBC_TPYE=uclibc ;;
+    *) RK_LIBC_TPYE=glibc ;;
+esac
+RK_PROJECT_PACKAGE_ROOTFS_DIR="${RK_PROJECT_OUTPUT}/rootfs_${RK_LIBC_TPYE}_${RK_CHIP}"
 RK_PROJECT_PACKAGE_OEM_DIR="${RK_PROJECT_OUTPUT}/oem"
 RK_PROJECT_PACKAGE_USERDATA_DIR="${RK_PROJECT_OUTPUT}/userdata"
 RK_PROJECT_PACKAGE_OTA_DIR="${RK_PROJECT_OUTPUT}/ota"
@@ -774,6 +834,21 @@ cd "$PICO_SDK/project"
 echo "  → Rebuilding oem.img..."
 rebuild_ext4_image oem "$RK_PROJECT_PACKAGE_OEM_DIR"
 verify_oem_generated_binaries_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"
+
+# The SDK firmware packager strips every executable in the assembled rootfs,
+# including already-minimized static tools copied from the Buildroot overlay.
+# Restore only catalog entries with strip_policy=preserve after that generic
+# pass, then rebuild rootfs.img while excluding those entries from the second
+# release strip pass. Normal-policy tools keep the SDK-stripped bytes.
+echo "  → Restaging rootfs CLI tools after SDK release strip..."
+"$SCRIPT_DIR/scripts/stage_rootfs_cli_tools.sh" \
+    --catalog "$ROOTFS_CLI_TOOL_CATALOG" \
+    --policy preserve \
+    --source-dir "$ROOTFS_CLI_BUILD_DIR" \
+    --dest-overlay "$RK_PROJECT_PACKAGE_ROOTFS_DIR"
+echo "  → Rebuilding rootfs.img..."
+rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR"
+verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY" "$RK_PROJECT_PACKAGE_ROOTFS_DIR"
 
 echo "  → Rebuilding userdata.img..."
 rebuild_ext4_image userdata "$RK_PROJECT_PACKAGE_USERDATA_DIR"

@@ -8,6 +8,7 @@ The Agent expects `-config` to point to a directory, not a single config file. E
 - [Config Web: the device config page](#config-web-the-device-config-page)
 - [Minimal config examples](#minimal-config-examples)
 - [Top-level fields](#top-level-fields)
+- [`[device]`](#device)
 - [`[model]`](#model)
 - [`[log]`](#log)
 - [`[audio]`](#audio)
@@ -53,7 +54,8 @@ The page fields cover the following config sections (all detailed later on this 
 - `audio`: socket, sample_rate, channels, bit_width, playback_backend
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
 - `log`: LLM HTTP log retention
-- `hid`: keyboard_device, keyboard_layout, mouse_device, android_keyboard_device, frame_socket, pointer_mode, input_backend
+- `device`: device_type
+- `hid`: keyboard_device, keyboard_layout, mouse_device, android_keyboard_device, frame_socket, input_backend
 - `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
 - Wi-Fi: SSID / PSK etc. (written to `/userdata/wpa_supplicant.conf`)
 
@@ -68,6 +70,9 @@ max_iterations = -1
 screenshot_keep_n = 3
 screenshot_prune_interval = 2
 input_mode = "text"
+
+[device]
+device_type = "iOS"
 
 [model]
 provider = "openrouter"
@@ -121,6 +126,9 @@ voice_streaming_tts_enabled = true
 voice_tool_call_speech = true
 voice_progress_speech_enabled = true
 voice_max_response_tokens = 400
+
+[device]
+device_type = "iOS"
 
 [model]
 provider = "openrouter"
@@ -347,16 +355,21 @@ storage = 900
 
 Config Web preserves this section through GET/POST and TOML save operations. Edit it directly in `agent.toml` until dedicated controls are added to the page.
 
+## `[device]`
+
+| Field         | Default | Description |
+| ------------- | ------- | ----------- |
+| `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Changing it requires a reboot so USB descriptors are re-enumerated. |
+
 ## `[hid]`
 
 | Field                     | Default                                 | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `keyboard_device`         | `/dev/hidg0`                            | Keyboard HID device                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `keyboard_layout`         | `qwerty`                                | How the phone interprets the external USB HID keyboard: `qwerty`, `azerty`, or `qwertz`. The visible soft-keyboard layout may differ. Used by `keyboard_text` and standard text-like `keyboard_tap` keys. iOS locks the hardware layout at USB enumeration, so switch the phone's input language to match _before_ saving, then follow the Config Web prompt to power off and physically disconnect and reconnect power. A same-identity soft re-enumeration is avoided because it can leave the iOS keyboard and pointer session inconsistent. See [USB HID](../03-services/usb-hid.md). |
+| `keyboard_layout`         | `qwerty`                                | How the phone interprets the external USB HID keyboard: `qwerty`, `azerty`, or `qwertz`. The visible soft-keyboard layout may differ. Used by `keyboard_text` and standard text-like `keyboard_tap` keys. iOS locks the hardware layout at USB enumeration, so switch the phone's input language to match _before_ saving, then follow the Config Web reboot prompt. A same-identity soft re-enumeration is avoided because it can leave the iOS keyboard and pointer session inconsistent. See [USB HID](../03-services/usb-hid.md). |
 | `mouse_device`            | `/dev/hidg1`                            | Mouse/touch HID device                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `android_keyboard_device` | `/dev/hidg2`                            | Consumer Control HID device (`hid.usb2`) used for Android extension keys in `pointer_mode = "touchscreen"` and media/volume/brightness/screenshot keys in `pointer_mode = "absolute"`                                                                                                                                                                                                                                                                                                                                        |
+| `android_keyboard_device` | `/dev/hidg2`                            | Consumer Control HID device (`hid.usb2`) used for Android extension keys when `[device].device_type = "Android"` and media/volume/brightness/screenshot keys for other device types                                                                                                                                                                                                                                                                                                                                          |
 | `frame_socket`            | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `pointer_mode`            | `absolute`                              | `absolute` for iOS-style cursor mode on `hid.usb1` plus a limited `hid.usb2` media-key interface; `touchscreen` for Android digitizer mode plus full `hid.usb2` Android extension keys                                                                                                                                                                                                                                                                                                                                       |
 | `input_backend`           | `hid`                                   | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands.                                                                                                                                                                                                                                                                                                                                               |
 
 ## `[stt]` and `[tts]`

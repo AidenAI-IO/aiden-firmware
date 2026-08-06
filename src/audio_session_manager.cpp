@@ -1,5 +1,6 @@
 #include "audio_session_manager.h"
 #include "audio_volume_state.h"
+#include "aiden_log.h"
 #include <chrono>
 #include <stdio.h>
 #include <vector>
@@ -24,14 +25,14 @@ AudioSessionManager::AudioSessionManager(const char* volume_state_path)
         if (load_status == AudioVolumeStateLoadStatus::LOADED) {
             playback_volume_ = persisted_volume;
             last_persisted_playback_volume_ = persisted_volume;
-            fprintf(stderr, "[audio_service] loaded playback volume %d from %s\n",
-                    playback_volume_, volume_state_path_.c_str());
+            AIDEN_LOG_INFO("volume", "state_loaded", "volume=%d path=%s",
+                           playback_volume_, volume_state_path_.c_str());
         } else if (load_status == AudioVolumeStateLoadStatus::MISSING) {
             last_persisted_playback_volume_ = playback_volume_;
         } else if (load_status == AudioVolumeStateLoadStatus::INVALID ||
                    load_status == AudioVolumeStateLoadStatus::ERROR) {
-            fprintf(stderr, "[audio_service] ignoring playback volume state %s: %s\n",
-                    volume_state_path_.c_str(), error.c_str());
+            AIDEN_LOG_WARN("volume", "state_ignored", "path=%s error=%s",
+                           volume_state_path_.c_str(), error.c_str());
         }
     }
     reaper_thread_ = std::thread([this]() { reaper_loop(); });
@@ -62,8 +63,8 @@ bool AudioSessionManager::persist_playback_volume_if_changed(int volume) {
 
     std::string error;
     if (!save_playback_volume_state(volume_state_path_.c_str(), volume, &error)) {
-        fprintf(stderr, "[audio_service] failed to persist playback volume to %s: %s\n",
-                volume_state_path_.c_str(), error.c_str());
+        AIDEN_LOG_ERROR("volume", "state_persist_failed", "path=%s error=%s",
+                        volume_state_path_.c_str(), error.c_str());
         return false;
     }
 
@@ -94,8 +95,8 @@ AidenServiceStatus AudioSessionManager::start_recording(const AudioFormat& fmt,
     for (size_t i = 0; i < stale_records.size(); ++i) {
         stale_records[i].second->stop();
         stale_records[i].second->join();
-        fprintf(stderr, "[audio_service] record session %llu replaced\n",
-                static_cast<unsigned long long>(stale_records[i].first));
+        AIDEN_LOG_INFO("recording", "session_replaced", "session_id=%llu",
+                       static_cast<unsigned long long>(stale_records[i].first));
     }
 
     uint64_t id;
@@ -113,8 +114,8 @@ AidenServiceStatus AudioSessionManager::start_recording(const AudioFormat& fmt,
         record_sessions_[id] = std::move(session);
         record_last_active_[id] = now;
     }
-    fprintf(stderr, "[audio_service] record session %llu started\n",
-            static_cast<unsigned long long>(id));
+    AIDEN_LOG_INFO("recording", "session_started", "session_id=%llu",
+                   static_cast<unsigned long long>(id));
     return AidenServiceStatus::OK;
 }
 
@@ -158,8 +159,8 @@ AidenServiceStatus AudioSessionManager::stop_recording(uint64_t session_id) {
         record_last_active_[session_id] = Clock::now();
     }
     session->stop();
-    fprintf(stderr, "[audio_service] record session %llu stopped\n",
-            static_cast<unsigned long long>(session_id));
+    AIDEN_LOG_INFO("recording", "session_stopped", "session_id=%llu",
+                   static_cast<unsigned long long>(session_id));
     return AidenServiceStatus::OK;
 }
 
@@ -173,8 +174,7 @@ AidenServiceStatus AudioSessionManager::start_playback(const AudioFormat& fmt,
     std::lock_guard<std::mutex> lock(mutex_);
     if (!playback_sessions_.empty() ||
         draining_playback_state_->count.load(std::memory_order_acquire) > 0) {
-        fprintf(stderr,
-                "[audio_service] rejecting playback start while another playback is active or draining\n");
+        AIDEN_LOG_WARN("playback", "session_start_rejected", "reason=active_or_draining");
         return AidenServiceStatus::SERVICE_RECOVERING;
     }
     uint64_t id = next_session_id();
@@ -189,8 +189,8 @@ AidenServiceStatus AudioSessionManager::start_playback(const AudioFormat& fmt,
     out->session_id = id;
     playback_sessions_[id] = std::move(session);
     playback_last_active_[id] = now;
-    fprintf(stderr, "[audio_service] playback session %llu started (volume=%d)\n",
-            static_cast<unsigned long long>(id), playback_volume_);
+    AIDEN_LOG_INFO("playback", "session_started", "session_id=%llu volume=%d",
+                   static_cast<unsigned long long>(id), playback_volume_);
     return AidenServiceStatus::OK;
 }
 
@@ -271,8 +271,8 @@ AidenServiceStatus AudioSessionManager::stop_playback(uint64_t session_id) {
         }
     }
     session->stop();
-    fprintf(stderr, "[audio_service] playback session %llu stopped\n",
-            static_cast<unsigned long long>(session_id));
+    AIDEN_LOG_INFO("playback", "session_stopped", "session_id=%llu",
+                   static_cast<unsigned long long>(session_id));
     return AidenServiceStatus::OK;
 }
 
@@ -305,7 +305,7 @@ AidenServiceStatus AudioSessionManager::set_playback_volume(int volume) {
     if (!persist_playback_volume_if_changed(volume)) {
         return AidenServiceStatus::INTERNAL_ERROR;
     }
-    fprintf(stderr, "[audio_service] playback volume set to %d\n", volume);
+    AIDEN_LOG_INFO("volume", "updated", "volume=%d", volume);
     return AidenServiceStatus::OK;
 }
 
@@ -378,13 +378,13 @@ void AudioSessionManager::reap_idle_sessions() {
 
 	for (size_t i = 0; i < expired_records.size(); ++i) {
 		expired_records[i].second->stop();
-		fprintf(stderr, "[audio_service] reaped idle record session %llu\n",
-		        static_cast<unsigned long long>(expired_records[i].first));
+		AIDEN_LOG_INFO("recording", "idle_session_reaped", "session_id=%llu",
+		               static_cast<unsigned long long>(expired_records[i].first));
 	}
 	for (size_t i = 0; i < expired_playbacks.size(); ++i) {
 		expired_playbacks[i].second->stop();
-		fprintf(stderr, "[audio_service] reaped idle playback session %llu\n",
-                static_cast<unsigned long long>(expired_playbacks[i].first));
+		AIDEN_LOG_INFO("playback", "idle_session_reaped", "session_id=%llu",
+                       static_cast<unsigned long long>(expired_playbacks[i].first));
     }
 }
 

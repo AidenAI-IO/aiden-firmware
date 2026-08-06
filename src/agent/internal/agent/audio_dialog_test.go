@@ -1526,7 +1526,7 @@ func (m *blockingFirstCallModel) Spec() model.ModelSpec {
 	return model.ModelSpec{
 		Provider:      "fake",
 		Name:          "scripted",
-		ContextWindow: 100,
+		ContextWindow: 1_000_000,
 	}
 }
 
