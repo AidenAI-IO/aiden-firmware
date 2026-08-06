@@ -5482,9 +5482,10 @@ ApiResponse handle_get_agent_log(const Options& options) {
 // ----- storage (microSD) ---------------------------------------------------
 //
 // The agent's StorageManager owns the SD card and mirrors its state to a
-// small KEY=VALUE file (docs/04-agent/storage-modes.md). Status reads come
-// straight from that mirror; mutations (mode / format / eject) are proxied to
-// the agent HTTP API, which stays the single executor for card operations.
+// small KEY=VALUE file. Status reads come straight from that mirror; format
+// and eject requests are proxied to the agent HTTP API, which stays the single
+// executor for card operations. The effective mode is derived from card
+// availability and cannot be changed through the portal.
 
 bool read_storage_state(const std::string& path, std::map<std::string, std::string>* out) {
     if (!out) {

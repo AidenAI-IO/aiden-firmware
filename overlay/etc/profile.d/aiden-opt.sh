@@ -1,7 +1,7 @@
 # Put opkg-installed tools on the path for interactive login shells.
 #
-# See docs/07-operations/opkg-package-management.md §6.7. Two deliberate
-# asymmetries:
+# Two deliberate asymmetries keep installed packages isolated from system
+# tools and libraries:
 #
 #   Appended, never prepended. storage_manager.go invokes mount, umount, fsck,
 #   sync and mkfs.* by bare name, so a package that happens to ship one of those

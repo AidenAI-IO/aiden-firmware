@@ -128,7 +128,7 @@ func (c AudioArchiveConfig) ExplicitStoragePath() string {
 
 // StorageConfig tunes the optional microSD data store managed by
 // StorageManager. The storage mode itself is not configurable: a usable
-// card means dual storage, otherwise eMMC only (docs/04-agent/storage-modes.md).
+// card enables the SD migration tier; otherwise governed data remains on eMMC.
 type StorageConfig struct {
 	MountPoint    string `toml:"mount_point,omitempty"`
 	Device        string `toml:"device,omitempty"`
