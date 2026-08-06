@@ -274,6 +274,9 @@ func (t *quickActionsTable) catalogSummary(platform string) string {
 		if platform != "" && !hasPlatform {
 			continue
 		}
+		if hasPlatform && bindingStatus(binding) != quickActionStatusActive {
+			continue
+		}
 		status := "missing"
 		tool := ""
 		if hasPlatform {
@@ -290,6 +293,30 @@ func (t *quickActionsTable) catalogSummary(platform string) string {
 		builder.WriteString("\n")
 	}
 	return strings.TrimRight(builder.String(), "\n")
+}
+
+func (t *quickActionsTable) activeActionIDs(platform string) []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	ids := make([]string, 0, len(t.document.Actions))
+	for id, action := range t.document.Actions {
+		if platform == "" {
+			for _, binding := range action.Platforms {
+				if bindingStatus(binding) == quickActionStatusActive {
+					ids = append(ids, id)
+					break
+				}
+			}
+			continue
+		}
+		binding, ok := action.Platforms[platform]
+		if ok && bindingStatus(binding) == quickActionStatusActive {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // loadQuickActionsForConfig picks the highest-priority mapping file available
@@ -345,12 +372,30 @@ func (t *QuickActionTool) Description() string {
 }
 
 func (t *QuickActionTool) ArgsSchema() map[string]any {
+	actionDescription := `Required active action id for the configured device_type, or "list" to inspect active actions.`
+	actionSchema := stringArgSchema(actionDescription)
+	if platform := t.schemaPlatform(); platform != "" {
+		actions := append([]string{"list"}, globalQuickActions.activeActionIDs(platform)...)
+		actionSchema = stringEnumArgSchema(actionDescription, actions...)
+	}
 	return objectArgsSchema(map[string]any{
-		"action":            stringArgSchema(`Required action id or alias, for example "back", "copy", "spotlight_search", or "list" to inspect actions.`),
+		"action":            actionSchema,
 		"list":              boolArgSchema("Legacy alternative to action=list. New calls should always provide action."),
 		"alternative":       boolArgSchema("Set true to execute an alternative binding listed by a previous quick_action result."),
 		"alternative_index": minIntegerArgSchema("1-based alternative binding index; defaults to 1 when alternative=true.", 1),
 	}, "action")
+}
+
+func (t *QuickActionTool) schemaPlatform() string {
+	if t != nil && t.platformFn != nil {
+		rawPlatform := t.platformFn()
+		platform, err := normalizeQuickActionPlatform(rawPlatform)
+		if err == nil {
+			return platform
+		}
+		return normalizeAgentToolPlatform(rawPlatform)
+	}
+	return ""
 }
 
 type quickActionArgs struct {
@@ -718,6 +763,9 @@ func (t *QuickActionTool) listJSON(platform string) string {
 				if !ok {
 					continue
 				}
+				if bindingStatus(binding) != quickActionStatusActive {
+					continue
+				}
 				items = append(items, listItem{
 					ID:       id,
 					Label:    action.Label,
@@ -732,6 +780,9 @@ func (t *QuickActionTool) listJSON(platform string) string {
 		}
 		binding, ok := action.Platforms[platform]
 		if !ok {
+			continue
+		}
+		if bindingStatus(binding) != quickActionStatusActive {
 			continue
 		}
 		items = append(items, listItem{

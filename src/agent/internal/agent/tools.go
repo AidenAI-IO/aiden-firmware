@@ -240,7 +240,7 @@ func (s *ToolSet) SetRuntimePlatformFn(fn func() string) {
 	if s == nil {
 		return
 	}
-	for _, name := range []string{"enter_text", "quick_action"} {
+	for _, name := range []string{"enter_text", "keyboard_tap", "quick_action", "touch_gesture"} {
 		tool, ok := s.tools[name]
 		if !ok {
 			continue

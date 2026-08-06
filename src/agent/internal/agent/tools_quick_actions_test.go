@@ -80,6 +80,24 @@ func TestQuickActionExposesStructuredSchema(t *testing.T) {
 	}
 }
 
+func TestQuickActionSchemaListsOnlyActiveActionsForRuntimePlatform(t *testing.T) {
+	tool := &QuickActionTool{}
+	tool.SetPlatformFn(func() string { return "android" })
+	schema := tool.ArgsSchema()
+	actionEnum := stringEnumPropertyValues(t, schema, "action")
+
+	for _, want := range []string{"list", "back", "home", "app_switch"} {
+		if _, ok := actionEnum[want]; !ok {
+			t.Fatalf("quick_action schema missing active Android action %q: %v", want, actionEnum)
+		}
+	}
+	for _, notWant := range []string{"control_center", "quick_app_switch_left", "spotlight_search"} {
+		if _, ok := actionEnum[notWant]; ok {
+			t.Fatalf("quick_action schema exposed unavailable Android action %q: %v", notWant, actionEnum)
+		}
+	}
+}
+
 func TestQuickActionsSuggestUnknownAction(t *testing.T) {
 	table := newQuickActionsTable()
 	suggestions := table.suggestActionIDs("go browser backward", 3)
@@ -120,6 +138,31 @@ func TestQuickActionListForPlatform(t *testing.T) {
 	}
 	if !foundBack {
 		t.Fatalf("expected active back action in list: %s", out)
+	}
+}
+
+func TestQuickActionListOnlyReturnsActivePlatformActions(t *testing.T) {
+	tool := &QuickActionTool{}
+	out, err := tool.Call(context.Background(), `{"action":"list","platform":"android"}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	var payload struct {
+		OK      bool `json:"ok"`
+		Actions []struct {
+			ID string `json:"id"`
+		} `json:"actions"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !payload.OK {
+		t.Fatalf("expected list response, got %s", out)
+	}
+	for _, action := range payload.Actions {
+		if action.ID == "control_center" || action.ID == "quick_app_switch_left" {
+			t.Fatalf("list exposed unavailable Android action %q: %s", action.ID, out)
+		}
 	}
 }
 
@@ -512,6 +555,27 @@ func TestQuickActionForwardsInputToEnvironmentBridge(t *testing.T) {
 	if args["action"] != "app_switch" || args["platform"] != "ios" {
 		t.Fatalf("action/platform lost in forwarding: %s", forwarded.Input)
 	}
+}
+
+func stringEnumPropertyValues(t *testing.T, schema map[string]any, property string) map[string]struct{} {
+	t.Helper()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing properties: %#v", schema)
+	}
+	prop, ok := props[property].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing property %q: %#v", property, props)
+	}
+	values, ok := prop["enum"].([]string)
+	if !ok {
+		t.Fatalf("property %q missing string enum: %#v", property, prop)
+	}
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		result[value] = struct{}{}
+	}
+	return result
 }
 
 func quickActionResultOK(t *testing.T, out string) bool {

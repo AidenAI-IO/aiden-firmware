@@ -301,6 +301,10 @@ func textInputKeyboardKeysForIMESwitch(platform string) ([]string, error) {
 		return []string{"capslock"}, nil
 	case "mac", "macos":
 		return []string{"ctrl", "space"}, nil
+	case "windows":
+		return []string{"shift"}, nil
+	case "linux":
+		return []string{"ctrl", "space"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported platform %q for IME switch", platform)
 	}
@@ -312,6 +316,8 @@ func textInputKeyboardKeysForSelectAll(platform string) ([]string, error) {
 		return []string{"ctrl", "a"}, nil
 	case "ios", "mac", "macos":
 		return []string{"meta", "a"}, nil
+	case "windows", "linux":
+		return []string{"ctrl", "a"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported platform %q for select all", platform)
 	}
@@ -323,6 +329,8 @@ func textInputKeyboardKeysForUndo(platform string) ([]string, error) {
 		return []string{"ctrl", "z"}, nil
 	case "ios", "mac", "macos":
 		return []string{"meta", "z"}, nil
+	case "windows", "linux":
+		return []string{"ctrl", "z"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported platform %q for undo", platform)
 	}

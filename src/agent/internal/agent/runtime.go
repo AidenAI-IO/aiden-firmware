@@ -1463,7 +1463,7 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	if r == nil || r.tools == nil {
 		return nil
 	}
-	return NewToolSpecs(r.tools.All()).AgentTools(r.config.LoadAllTools)
+	return NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
 }
 
 func toolNamesFromTools(tools []langtools.Tool) []string {

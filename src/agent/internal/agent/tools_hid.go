@@ -699,20 +699,52 @@ type KeyboardTapTool struct {
 	adb                  *ADBInputController
 	keyboardLayout       string
 	iosKeyboardIsolation *iosKeyboardIsolationController
+	platformFn           func() string
 }
 
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
 
+func (t *KeyboardTapTool) SetPlatformFn(fn func() string) {
+	if t != nil {
+		t.platformFn = fn
+	}
+}
+
+func (t *KeyboardTapTool) platform() string {
+	if t != nil && t.platformFn != nil {
+		return normalizeAgentToolPlatform(t.platformFn())
+	}
+	return ""
+}
+
+func (t *KeyboardTapTool) fullAndroidExtensionKeysVisible() bool {
+	platform := t.platform()
+	return platform == "" || platform == "android"
+}
+
+func (t *KeyboardTapTool) extensionKeyDescription() string {
+	if t.fullAndroidExtensionKeysVisible() {
+		return " Android device_type also supports single-key Android KEYCODE_* aliases through the extension keyboard device; they cannot be combined with modifiers/chords."
+	}
+	return " This non-Android device_type exposes only the absolute pointer-mode KEYCODE subset through the extension keyboard device: " + absolutePointerModeExtensionKeyList + "."
+}
+
 func (t *KeyboardTapTool) Description() string {
-	return `Press and release literal keyboard keys (e.g. {"keys":["enter"]}). Use for simple keys such as enter, escape, tab, or arrows; for exact physical chords explicitly requested by the user; and for app-specific shortcuts not represented by quick_action. For cataloged semantic actions—including copy, paste, cut, select_all, delete_backward, delete_forward, undo, redo, find, send, back, home, app switching, and browser actions—you MUST use quick_action and let runtime select the platform from global device_type state. A ctrl/meta chord fallback is allowed only after a quick_action result in the current run explicitly reports the action as reserved/unavailable before executing a binding. Do not infer unavailability from another tool's failure. Never replay an active quick_action binding as a raw chord after failure or no visible effect.`
+	description := `Press and release literal keyboard keys (e.g. {"keys":["enter"]}). Use for simple keys such as enter, escape, tab, or arrows; for exact physical chords explicitly requested by the user; and for app-specific shortcuts not represented by quick_action. For cataloged semantic actions—including copy, paste, cut, select_all, delete_backward, delete_forward, undo, redo, find, send, back, home, app switching, and browser actions—you MUST use quick_action and let runtime select the platform from global device_type state. A ctrl/meta chord fallback is allowed only after a quick_action result in the current run explicitly reports the action as reserved/unavailable before executing a binding. Do not infer unavailability from another tool's failure. Never replay an active quick_action binding as a raw chord after failure or no visible effect.`
+	if t.fullAndroidExtensionKeysVisible() {
+		description += ` On Android device_type, single-key Android KEYCODE_* aliases are available through the Android extension keyboard device.`
+	} else {
+		description += ` On this non-Android device_type, only media, volume, screenshot, and brightness KEYCODE_* aliases are available through the extension keyboard device.`
+	}
+	return description
 }
 
 func (t *KeyboardTapTool) ArgsSchema() map[string]any {
-	keysSchema := stringArrayArgSchema("Literal keys pressed simultaneously, e.g. [\"enter\"] or [\"shift\",\"tab\"]. Cataloged semantic actions MUST use quick_action. Raw ctrl/meta chords are allowed only for explicitly requested physical input, uncataloged app-specific shortcuts, or after a quick_action result in the current run explicitly reports the matching action as reserved/unavailable before execution. Do not infer unavailability or replay an active binding after failure or no visible effect. "+
-		"Standard boot-keyboard keys: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen; modifiers ctrl, shift, alt, meta/super/win/cmd; modifier-only taps allowed. "+
-		"backspace is backward-delete before the cursor; delete is forward-delete after the cursor. For semantic deletion, use quick_action delete_backward/delete_forward unless the user explicitly requests the literal physical key or the evidence-gated fallback above applies. "+
-		"Android extension keys (hid.usb2) use Android KEYCODE_* aliases (see the Android key guide for the full list; legacy KEY_USAGE_* names are accepted where previously supported), are single-key taps only, and cannot be combined with modifiers/chords. "+
-		"When hid.pointer_mode is absolute, hid.usb2 only supports media, volume, screenshot, and brightness keys: "+absolutePointerModeExtensionKeyList+".", []string{"enter"}, []string{"shift", "tab"})
+	keysDescription := "Literal keys pressed simultaneously, e.g. [\"enter\"] or [\"shift\",\"tab\"]. Cataloged semantic actions MUST use quick_action. Raw ctrl/meta chords are allowed only for explicitly requested physical input, uncataloged app-specific shortcuts, or after a quick_action result in the current run explicitly reports the matching action as reserved/unavailable before execution. Do not infer unavailability or replay an active binding after failure or no visible effect. " +
+		"Standard boot-keyboard keys: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen; modifiers ctrl, shift, alt, meta/super/win/cmd; modifier-only taps allowed. " +
+		"backspace is backward-delete before the cursor; delete is forward-delete after the cursor. For semantic deletion, use quick_action delete_backward/delete_forward unless the user explicitly requests the literal physical key or the evidence-gated fallback above applies."
+	keysDescription += t.extensionKeyDescription()
+	keysSchema := stringArrayArgSchema(keysDescription, []string{"enter"}, []string{"shift", "tab"})
 	keysSchema["minItems"] = 1
 	keysSchema["maxItems"] = 6
 
@@ -1121,19 +1153,41 @@ type TouchGestureTool struct {
 	screen             *screen.ScreenState
 	adb                *ADBInputController
 	primeScreenMapping func(context.Context) error
+	platformFn         func() string
 }
 
 func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
+func (t *TouchGestureTool) SetPlatformFn(fn func() string) {
+	if t != nil {
+		t.platformFn = fn
+	}
+}
+
+func (t *TouchGestureTool) platform() string {
+	if t != nil && t.platformFn != nil {
+		return normalizeAgentToolPlatform(t.platformFn())
+	}
+	return ""
+}
+
 func (t *TouchGestureTool) Description() string {
-	return `Perform a custom touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for tap/swipe/drag and other freehand screen gestures. For go-home/home-screen requests such as 回到桌面, call quick_action with {"action":"home"} first; use touch_gesture {"type":"home"} only as a fallback. ` +
+	description := `Perform a custom touch/pointer gesture via HID. Use this for tap/swipe/drag and other freehand screen gestures. `
+	if touchGestureIncludesEdgeNavigation(t.platform()) {
+		description += `Prefer quick_action for semantic platform actions. For go-home/home-screen requests such as 回到桌面, call quick_action with {"action":"home"} first; use touch_gesture {"type":"home"} only as a fallback. `
+	}
+	return description +
 		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Swipe direction names describe finger movement, not content scroll. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
+	typeDescription := "Gesture type."
+	if touchGestureIncludesEdgeNavigation(t.platform()) {
+		typeDescription += ` Edge aliases use real edges: back starts at x=1, home starts at y=999. For semantic home/back requests, prefer quick_action first, especially quick_action {"action":"home"} for go-home/home-screen requests; use back/home here only as fallback alternatives.`
+	}
 	return objectArgsSchema(map[string]any{
-		"type":           stringEnumArgSchema("Gesture type. Edge aliases use real edges: back starts at x=1, home starts at y=999. For semantic home/back requests, prefer quick_action first, especially quick_action {\"action\":\"home\"} for go-home/home-screen requests; use back/home here only as fallback alternatives.", "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"),
+		"type":           stringEnumArgSchema(typeDescription, touchGestureTypesForPlatform(t.platform())...),
 		"point":          pointSchema("Point for tap, double_tap, or long_press."),
 		"start":          pointSchema("Start point for swipe or drag."),
 		"end":            pointSchema("End point for swipe or drag."),
@@ -1149,6 +1203,23 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		"anchor":         coordinateSchema("Directional swipe fixed-axis coordinate in 0-1000 normalized units.", 500),
 		"strength":       stringEnumArgSchema("Directional swipe preset distance.", "large", "medium", "small", "tiny"),
 	}, "type")
+}
+
+func touchGestureTypesForPlatform(platform string) []string {
+	types := []string{"tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down"}
+	if touchGestureIncludesEdgeNavigation(platform) {
+		types = append(types, "back", "home")
+	}
+	return types
+}
+
+func touchGestureIncludesEdgeNavigation(platform string) bool {
+	switch normalizeAgentToolPlatform(platform) {
+	case "", "ios", "android":
+		return true
+	default:
+		return false
+	}
 }
 
 func pointSchema(description string) map[string]any {

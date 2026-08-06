@@ -78,6 +78,22 @@ The HTTP catalog is generated from registered Agent-owned tools at runtime. It c
 
 `current_time` and `calculator` are not registered and therefore do not appear in either the conversational or HTTP tool catalogs. Use `shell` for controller-local precise time, timezone, and deterministic calculations. The conversational Agent omits `list_scripts`, `read_script`, and `write_script` from its default LLM `tools` request; configure `load_all_tools = true` to include those three script-authoring tools.
 
+## Platform-Specific Conversational Catalog
+
+The conversational Agent tool catalog is filtered by the global `[device].device_type` state. The configured device type resolves to one of `ios`, `android`, `macos`, `windows`, or `linux`; tools with no platform metadata are treated as portable.
+
+Platform-specific tools should stay registered and HTTP-visible for Tool Lab and manual diagnostics unless they are unsafe or impossible to invoke directly. The platform split applies to the model-facing catalog so the model is not taught tools that cannot run for the current device.
+
+When adding or changing a tool, use this rule:
+
+- Prefer one semantic tool that reads runtime `device_type` internally when the capability is the same across platforms.
+- Add platform metadata in `builtInToolSpecMetadata` when the tool cannot run on every configured device type, its schema or description would imply the wrong platform behavior, or the supported action set is materially different.
+- Use `ios` and `android` for phone-companion capabilities, `macos` for Mac desktop bindings, and add `windows` or `linux` only after the tool has verified bindings for those platforms.
+- Do not ask the model to pass platform/device/os arguments for platform selection; the runtime derives the platform from global `device_type` state.
+- If a tool has platform-specific subcommands, keep the execution path backward-compatible but make its runtime `ArgsSchema()` list only the subcommands active for the current `device_type` (for example `quick_action.action` and `touch_gesture.type`).
+- When a nominally platform-specific namespace has a portable subset, expose only that subset on other platforms instead of hiding the namespace entirely; for example non-Android `keyboard_tap` may list only the absolute pointer-mode `KEYCODE_*` media, volume, screenshot, and brightness aliases.
+- Add focused tests for `AgentToolsForPlatform`, `Runtime.availableTools()`, or platform-specific tool schemas whenever a tool is introduced or moved between platform groups.
+
 Once an HID-affecting tool invocation is accepted, its execution is independent
 of the client socket and has a five-minute server-side timeout. This is important
 when the client reaches the board through USB ECM: iOS keyboard profile isolation

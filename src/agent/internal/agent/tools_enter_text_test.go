@@ -281,19 +281,53 @@ func TestTextInputProbeWaitsForConfiguredSettleDelayBeforeCapture(t *testing.T) 
 	}
 }
 
-func TestTextInputKeyboardKeysForUndo(t *testing.T) {
-	for _, test := range []struct {
-		platform string
-		want     []string
+func TestTextInputProbeSupportsWindowsAndLinuxPlatforms(t *testing.T) {
+	for _, platform := range []string{"windows", "linux"} {
+		t.Run(platform, func(t *testing.T) {
+			engine := newTextInputEngineWithSleep(textInputHardwareDeps{
+				keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+				keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+				screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+			}, &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}, func(_ context.Context, _ time.Duration) error {
+				return nil
+			})
+
+			mode, _, err := engine.probeTextInputMode(context.Background(), platform, focusPointArgs{})
+			if err != nil || mode != textInputModeASCII {
+				t.Fatalf("probeTextInputMode(%q) mode=%s err=%v", platform, mode, err)
+			}
+		})
+	}
+}
+
+func TestTextInputKeyboardKeysForPlatforms(t *testing.T) {
+	tests := []struct {
+		platform  string
+		imeSwitch []string
+		selectAll []string
+		undo      []string
 	}{
-		{platform: "ios", want: []string{"meta", "z"}},
-		{platform: "mac", want: []string{"meta", "z"}},
-		{platform: "android", want: []string{"ctrl", "z"}},
-	} {
-		got, err := textInputKeyboardKeysForUndo(test.platform)
-		if err != nil || strings.Join(got, ",") != strings.Join(test.want, ",") {
-			t.Errorf("undo keys for %s = %v, %v; want %v, nil", test.platform, got, err, test.want)
-		}
+		{platform: "ios", imeSwitch: []string{"capslock"}, selectAll: []string{"meta", "a"}, undo: []string{"meta", "z"}},
+		{platform: "mac", imeSwitch: []string{"ctrl", "space"}, selectAll: []string{"meta", "a"}, undo: []string{"meta", "z"}},
+		{platform: "android", imeSwitch: []string{"ctrl", "shift"}, selectAll: []string{"ctrl", "a"}, undo: []string{"ctrl", "z"}},
+		{platform: "windows", imeSwitch: []string{"shift"}, selectAll: []string{"ctrl", "a"}, undo: []string{"ctrl", "z"}},
+		{platform: "linux", imeSwitch: []string{"ctrl", "space"}, selectAll: []string{"ctrl", "a"}, undo: []string{"ctrl", "z"}},
+	}
+	for _, test := range tests {
+		t.Run(test.platform, func(t *testing.T) {
+			gotSwitch, err := textInputKeyboardKeysForIMESwitch(test.platform)
+			if err != nil || strings.Join(gotSwitch, ",") != strings.Join(test.imeSwitch, ",") {
+				t.Errorf("IME switch keys = %v, %v; want %v, nil", gotSwitch, err, test.imeSwitch)
+			}
+			gotSelectAll, err := textInputKeyboardKeysForSelectAll(test.platform)
+			if err != nil || strings.Join(gotSelectAll, ",") != strings.Join(test.selectAll, ",") {
+				t.Errorf("select all keys = %v, %v; want %v, nil", gotSelectAll, err, test.selectAll)
+			}
+			gotUndo, err := textInputKeyboardKeysForUndo(test.platform)
+			if err != nil || strings.Join(gotUndo, ",") != strings.Join(test.undo, ",") {
+				t.Errorf("undo keys = %v, %v; want %v, nil", gotUndo, err, test.undo)
+			}
+		})
 	}
 }
 
