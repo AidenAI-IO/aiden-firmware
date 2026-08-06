@@ -3,12 +3,14 @@ package compactor
 import (
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/tokencounter"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -35,31 +37,8 @@ const (
 )
 
 type Compactor struct {
-	ProtectRule                ProtectRule
-	Model                      model.Model
-	HistoricalToolResultTarget int
-	lastStats                  CompactionStats
-}
-
-type CompactionStats struct {
-	HistoricalResultsReplaced   int
-	TokensBefore                int
-	TokensAfter                 int
-	ConversationSummaryRequired bool
-}
-
-func (c *Compactor) LastStats() CompactionStats {
-	if c == nil {
-		return CompactionStats{}
-	}
-	return c.lastStats
-}
-
-func (c *Compactor) SetHistoricalToolResultTarget(target int) {
-	if c == nil {
-		return
-	}
-	c.HistoricalToolResultTarget = max(0, target)
+	ProtectRule ProtectRule
+	Model       model.Model
 }
 
 func NewCompactor(protectRule ProtectRule, model model.Model) *Compactor {
@@ -76,22 +55,15 @@ func validateProtectRule(protectRule ProtectRule) {
 	}
 }
 
-func (c *Compactor) EstimateTokenUsage(session *contextmanager.ContextManager) int {
-	if session == nil {
-		return 0
-	}
-	return estimateMessageListTokenUsage(session.CloneMessageList())
-}
-
-func estimateMessageListTokenUsage(messageList []contextmanager.Message) int {
+func estimateMessageListTokenUsage(messageList []messages.Message) int {
 	tokenUsage := 0
 	for _, msg := range messageList {
 		switch msg.Role {
-		case contextmanager.MessageRoleToolCall:
+		case messages.MessageRoleToolCall:
 			for _, call := range msg.ToolCalls {
 				tokenUsage += tokencounter.EstimateTextTokens(call.Arguments)
 			}
-		case contextmanager.MessageRoleToolResult:
+		case messages.MessageRoleToolResult:
 			for _, result := range msg.ToolResults {
 				tokenUsage += tokencounter.EstimateTextTokens(result.Content)
 			}
@@ -110,29 +82,11 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 		return nil, false, nil
 	}
 	messageList := session.CloneMessageList()
-	tokensBefore := estimateMessageListTokenUsage(messageList)
-	c.lastStats = CompactionStats{
-		TokensBefore: tokensBefore,
-		TokensAfter:  tokensBefore,
-	}
-	if c.HistoricalToolResultTarget > 0 {
-		var replaced int
-		messageList, replaced = compactHistoricalToolResults(messageList, c.HistoricalToolResultTarget)
-		c.lastStats.HistoricalResultsReplaced = replaced
-		c.lastStats.TokensAfter = estimateMessageListTokenUsage(messageList)
-		if replaced > 0 && c.lastStats.TokensAfter <= c.HistoricalToolResultTarget {
-			newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, messageList)
-			if err != nil {
-				return nil, false, err
-			}
-			return newManager, true, nil
-		}
-	}
 
 	HeadN := c.ProtectRule.HeadN
 	TailN := c.ProtectRule.TailN
-	for i := len(messageList) - 1; i >= 0; i-- {
-		if messageList[i].Role == contextmanager.MessageRoleUser {
+	for i, m := range slices.Backward(messageList) {
+		if m.Role == messages.MessageRoleUser {
 			currentTurnLength := len(messageList) - i
 			if currentTurnLength > TailN {
 				TailN = currentTurnLength
@@ -143,7 +97,7 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 
 	// adjust headN so that headN is assitant, tool_result or user_message, make sure headN not breaking tool_call pairs
 	for i := HeadN - 1; i < len(messageList); i++ {
-		if messageList[i].Role == contextmanager.MessageRoleAssistant || messageList[i].Role == contextmanager.MessageRoleToolResult || messageList[i].Role == contextmanager.MessageRoleUser {
+		if messageList[i].Role == messages.MessageRoleAssistant || messageList[i].Role == messages.MessageRoleToolResult || messageList[i].Role == messages.MessageRoleUser {
 			break
 		}
 		HeadN++
@@ -151,20 +105,13 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 
 	// adjust tailN so that N - tailN - 1 is tool_result or user_message
 	for i := len(messageList) - TailN - 1; i >= 0; i-- {
-		if messageList[i].Role == contextmanager.MessageRoleAssistant || messageList[i].Role == contextmanager.MessageRoleToolResult || messageList[i].Role == contextmanager.MessageRoleUser {
+		if messageList[i].Role == messages.MessageRoleAssistant || messageList[i].Role == messages.MessageRoleToolResult || messageList[i].Role == messages.MessageRoleUser {
 			break
 		}
 		TailN++
 	}
 
 	if HeadN+TailN >= len(messageList) {
-		if c.lastStats.HistoricalResultsReplaced > 0 {
-			newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, messageList)
-			if err != nil {
-				return nil, false, err
-			}
-			return newManager, true, nil
-		}
 		return nil, false, nil
 	}
 
@@ -173,7 +120,6 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	mids := messageList[HeadN : len(messageList)-TailN]
 	recoverableResults := collectRecoverableToolResults(mids)
 	// compact mids into one single user message
-	c.lastStats.ConversationSummaryRequired = true
 	summary, err := c.generateSummary(ctx, mids)
 	if err != nil {
 		return nil, false, err
@@ -183,13 +129,12 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	}
 	// assemble
 	formattedSummary, retainedRecoverableResults := c.formatSummary(summary, recoverableResults)
-	newMessageList := append(append([]contextmanager.Message(nil), heads...), contextmanager.Message{
-		Role:                   contextmanager.MessageRoleUser,
+	newMessageList := append(append([]messages.Message(nil), heads...), messages.Message{
+		Role:                   messages.MessageRoleUser,
 		Content:                formattedSummary,
 		RecoverableToolResults: retainedRecoverableResults,
 	})
 	newMessageList = append(newMessageList, tails...)
-	c.lastStats.TokensAfter = estimateMessageListTokenUsage(newMessageList)
 	// create new context manager
 	newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, newMessageList)
 	if err != nil {
@@ -198,13 +143,13 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	return newManager, true, nil
 }
 
-func compactHistoricalToolResults(messageList []contextmanager.Message, targetTokens int) ([]contextmanager.Message, int) {
+func compactHistoricalToolResults(messageList []messages.Message, targetTokens int) ([]messages.Message, int) {
 	if targetTokens <= 0 || len(messageList) == 0 {
 		return messageList, 0
 	}
 	latestUserIndex := -1
-	for i := len(messageList) - 1; i >= 0; i-- {
-		if messageList[i].Role == contextmanager.MessageRoleUser {
+	for i, m := range slices.Backward(messageList) {
+		if m.Role == messages.MessageRoleUser {
 			latestUserIndex = i
 			break
 		}
@@ -217,7 +162,7 @@ func compactHistoricalToolResults(messageList []contextmanager.Message, targetTo
 	currentTokens := estimateMessageListTokenUsage(messageList)
 	for messageIndex := 0; messageIndex < latestUserIndex; messageIndex++ {
 		message := &messageList[messageIndex]
-		if message.Role != contextmanager.MessageRoleToolResult {
+		if message.Role != messages.MessageRoleToolResult {
 			continue
 		}
 		for resultIndex := range message.ToolResults {
@@ -228,7 +173,7 @@ func compactHistoricalToolResults(messageList []contextmanager.Message, targetTo
 			call, _ := findHistoricalToolCall(messageList, result.ToolCallID, messageIndex)
 			meta := result.Meta
 			if meta == nil {
-				meta = &contextmanager.ToolResultMeta{
+				meta = &messages.ToolResultMeta{
 					OriginalBytes:   int64(len(result.Content)),
 					OriginalChars:   utf8.RuneCountInString(result.Content),
 					EstimatedTokens: tokencounter.EstimateTextTokens(result.Content),
@@ -251,10 +196,10 @@ func compactHistoricalToolResults(messageList []contextmanager.Message, targetTo
 	return messageList, replaced
 }
 
-func findHistoricalToolCall(messageList []contextmanager.Message, toolCallID string, before int) (contextmanager.ToolCall, bool) {
+func findHistoricalToolCall(messageList []messages.Message, toolCallID string, before int) (messages.ToolCall, bool) {
 	toolCallID = strings.TrimSpace(toolCallID)
 	if toolCallID == "" {
-		return contextmanager.ToolCall{}, false
+		return messages.ToolCall{}, false
 	}
 	for i := before - 1; i >= 0; i-- {
 		for _, call := range messageList[i].ToolCalls {
@@ -263,10 +208,10 @@ func findHistoricalToolCall(messageList []contextmanager.Message, toolCallID str
 			}
 		}
 	}
-	return contextmanager.ToolCall{}, false
+	return messages.ToolCall{}, false
 }
 
-func historicalToolResultPlaceholder(result contextmanager.ToolResult, call contextmanager.ToolCall) string {
+func historicalToolResultPlaceholder(result messages.ToolResult, call messages.ToolCall) string {
 	toolName := strings.TrimSpace(result.Name)
 	if toolName == "" {
 		toolName = strings.TrimSpace(call.Name)
@@ -317,11 +262,11 @@ type recoveryRecord struct {
 	Summary      string `json:"summary,omitempty"`
 }
 
-func collectRecoverableToolResults(messageList []contextmanager.Message) []contextmanager.RecoverableToolResult {
-	results := make([]contextmanager.RecoverableToolResult, 0)
+func collectRecoverableToolResults(messageList []messages.Message) []messages.RecoverableToolResult {
+	results := make([]messages.RecoverableToolResult, 0)
 	seen := make(map[string]struct{})
 	now := time.Now()
-	appendResult := func(result contextmanager.RecoverableToolResult) {
+	appendResult := func(result messages.RecoverableToolResult) {
 		result.ArtifactPath = strings.TrimSpace(result.ArtifactPath)
 		if result.ArtifactPath == "" {
 			return
@@ -341,12 +286,12 @@ func collectRecoverableToolResults(messageList []contextmanager.Message) []conte
 		results = append(results, result)
 	}
 	for _, message := range messageList {
-		if message.Role == contextmanager.MessageRoleUser {
+		if message.Role == messages.MessageRoleUser {
 			for _, result := range message.RecoverableToolResults {
 				appendResult(result)
 			}
 		}
-		if message.Role != contextmanager.MessageRoleToolResult {
+		if message.Role != messages.MessageRoleToolResult {
 			continue
 		}
 		for _, result := range message.ToolResults {
@@ -357,7 +302,7 @@ func collectRecoverableToolResults(messageList []contextmanager.Message) []conte
 			if path == "" {
 				continue
 			}
-			appendResult(contextmanager.RecoverableToolResult{
+			appendResult(messages.RecoverableToolResult{
 				ToolName:         result.Name,
 				ArtifactPath:     path,
 				ArtifactComplete: result.Meta.ArtifactComplete,
@@ -376,15 +321,15 @@ func truncateRunes(text string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "…"
 }
 
-func (c *Compactor) generateSummary(ctx context.Context, messageList []contextmanager.Message) (string, error) {
+func (c *Compactor) generateSummary(ctx context.Context, messageList []messages.Message) (string, error) {
 	var transcript strings.Builder
 	for _, msg := range messageList {
 		switch msg.Role {
-		case contextmanager.MessageRoleToolCall:
+		case messages.MessageRoleToolCall:
 			for _, call := range msg.ToolCalls {
 				fmt.Fprintf(&transcript, "[%s] tool_call_id: %s\n tool_call_name: %s\n tool_call_arguments: %s\n", msg.Role, call.ID, call.Name, call.Arguments)
 			}
-		case contextmanager.MessageRoleToolResult:
+		case messages.MessageRoleToolResult:
 			for _, result := range msg.ToolResults {
 				fmt.Fprintf(&transcript, "[%s] tool_call_id: %s\n tool_call_name: %s\n tool_call_result: %s\n", msg.Role, result.ToolCallID, result.Name, result.Content)
 			}
@@ -433,14 +378,14 @@ And here are the conversation details:
 	return result, nil
 }
 
-func (c *Compactor) formatSummary(summary string, recoverableResults []contextmanager.RecoverableToolResult) (string, []contextmanager.RecoverableToolResult) {
+func (c *Compactor) formatSummary(summary string, recoverableResults []messages.RecoverableToolResult) (string, []messages.RecoverableToolResult) {
 	// wrap summary into <summary>...</summary>, make sure llm understand the summary is a summary of the conversation
 	formatted := fmt.Sprintf("<summary>\n%s\n</summary>\n", summary)
 	if len(recoverableResults) == 0 {
 		return formatted, nil
 	}
 	start := max(0, len(recoverableResults)-recoverableToolResultMaxEntries)
-	retained := append([]contextmanager.RecoverableToolResult(nil), recoverableResults[start:]...)
+	retained := append([]messages.RecoverableToolResult(nil), recoverableResults[start:]...)
 	lines := make([]string, 0, len(retained))
 	for index := range retained {
 		result := &retained[index]

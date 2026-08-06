@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -16,14 +17,14 @@ func TestInitializeContextManagerStartsNewSessionWhenSystemPromptChanges(t *test
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}
 	rawMessages := manager.CloneMessageList()
-	messages := contextmanager.ConvertMessageList(rawMessages)
-	if len(messages) != 1 {
-		t.Fatalf("messages = %d, want 1", len(messages))
+	messageList := contextmanager.ConvertMessageList(rawMessages)
+	if len(messageList) != 1 {
+		t.Fatalf("messages = %d, want 1", len(messageList))
 	}
-	if text := messageText(messages); text != "system v1\n" {
+	if text := messageText(messageList); text != "system v1\n" {
 		t.Fatalf("system prompt = %q, want original system v1", text)
 	}
-	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "first request"}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "first request"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 	originalSessionID := manager.GetSessionID()
@@ -58,7 +59,7 @@ func TestInitializeContextManagerReusesSessionWhenSystemPromptMatches(t *testing
 	if err != nil {
 		t.Fatalf("InitializeContextManager() error = %v", err)
 	}
-	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
@@ -113,7 +114,7 @@ func TestVisualFollowupMarksScreenshotObservationSource(t *testing.T) {
 			llms.BinaryPart("image/jpeg", []byte("jpeg-bytes")),
 		},
 	})
-	if msg.Role != contextmanager.MessageRoleState {
+	if msg.Role != messages.MessageRoleState {
 		t.Fatalf("Role = %q, want state", msg.Role)
 	}
 	if len(msg.Attachments) != 1 {

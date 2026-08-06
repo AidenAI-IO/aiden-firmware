@@ -287,7 +287,7 @@ func (t *textInputBridge) focusPasteVerify(ctx context.Context, engine *textInpu
 			result.Err = err
 			return result
 		}
-		if committed, committedFieldText := evaluateFieldCommit(analysis, args.Text); committed {
+		if committed, committedFieldText := evaluateFieldCommit(analysis); committed {
 			result.Committed = true
 			result.FieldText = committedFieldText
 			return result

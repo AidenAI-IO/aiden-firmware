@@ -1,7 +1,7 @@
 package executor
 
-import "aiden-agent/internal/agent/contextmanager"
+import "aiden-agent/internal/agent/messages"
 
 type OutboundMessageTransform interface {
-	Transform(messages []contextmanager.Message) []contextmanager.Message
+	Transform(messages []messages.Message) []messages.Message
 }

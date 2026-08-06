@@ -57,9 +57,10 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 		cleaner := NewLLMHTTPLogCleanerWithCheckedSessionProvider(logDir, retentionDays, priority, currentSessionID)
 		priority++
 		minimumLevel := StorageLevelCritical
-		if index == 0 {
+		switch index {
+		case 0:
 			minimumLevel = StorageLevelNormal
-		} else if index == 1 {
+		case 1:
 			minimumLevel = StorageLevelWarning
 		}
 		cleaners = append(cleaners, withMinimumStorageLevel(cleaner, minimumLevel))

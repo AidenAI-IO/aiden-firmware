@@ -9,6 +9,7 @@ import (
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
 
 	"github.com/tmc/langchaingo/chains"
@@ -128,9 +129,9 @@ func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.
 		t.Fatalf("Run() answer = %q, want Done", answer)
 	}
 
-	var stored contextmanager.ToolResult
+	var stored messages.ToolResult
 	for _, message := range manager.CloneMessageList() {
-		if message.Role == contextmanager.MessageRoleToolResult && len(message.ToolResults) > 0 {
+		if message.Role == messages.MessageRoleToolResult && len(message.ToolResults) > 0 {
 			stored = message.ToolResults[0]
 			break
 		}
@@ -176,9 +177,9 @@ func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {
 		t.Fatalf("Run() answer = %q", answer)
 	}
 
-	var stored contextmanager.ToolResult
+	var stored messages.ToolResult
 	for _, message := range manager.CloneMessageList() {
-		if message.Role == contextmanager.MessageRoleToolResult && len(message.ToolResults) > 0 {
+		if message.Role == messages.MessageRoleToolResult && len(message.ToolResults) > 0 {
 			stored = message.ToolResults[0]
 			break
 		}
@@ -255,9 +256,9 @@ func TestAgentLoopDoesNotRepeatCompletedActionWhenArtifactPersistenceFails(t *te
 		t.Fatalf("answer=%q tool calls=%d, want one completed action", answer, tool.calls)
 	}
 
-	var stored contextmanager.ToolResult
+	var stored messages.ToolResult
 	for _, message := range manager.CloneMessageList() {
-		if message.Role == contextmanager.MessageRoleToolResult && len(message.ToolResults) > 0 {
+		if message.Role == messages.MessageRoleToolResult && len(message.ToolResults) > 0 {
 			stored = message.ToolResults[0]
 			break
 		}
@@ -301,9 +302,9 @@ func TestAgentLoopPersistsBoundedToolResultWhenPolicyFails(t *testing.T) {
 		t.Fatalf("answer=%q tool calls=%d, want one completed action", answer, tool.calls)
 	}
 
-	var stored contextmanager.ToolResult
+	var stored messages.ToolResult
 	for _, message := range manager.CloneMessageList() {
-		if message.Role == contextmanager.MessageRoleToolResult && len(message.ToolResults) > 0 {
+		if message.Role == messages.MessageRoleToolResult && len(message.ToolResults) > 0 {
 			stored = message.ToolResults[0]
 			break
 		}

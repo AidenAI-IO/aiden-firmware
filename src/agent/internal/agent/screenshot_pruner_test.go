@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 )
 
 func TestAnthropicScreenshotPrunerDisabledIsNoop(t *testing.T) {
@@ -57,11 +58,11 @@ func TestAnthropicScreenshotPrunerConfiguredKeepNInterval(t *testing.T) {
 }
 
 func TestAnthropicScreenshotPrunerIgnoresUnmarkedAttachments(t *testing.T) {
-	msgs := []contextmanager.Message{
-		{Role: contextmanager.MessageRoleUser, Content: "upload", Attachments: []contextmanager.Attachment{{
+	msgs := []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "upload", Attachments: []messages.Attachment{{
 			MIMEType: "image/png", FilePath: "/tmp/user.png",
 		}}},
-		{Role: contextmanager.MessageRoleUser, Content: "shot", Attachments: []contextmanager.Attachment{{
+		{Role: messages.MessageRoleUser, Content: "shot", Attachments: []messages.Attachment{{
 			MIMEType: "image/png", FilePath: "/tmp/s.png",
 			Source: contextmanager.AttachmentSourceScreenshotObservation,
 		}}},
@@ -79,70 +80,70 @@ func TestAnthropicScreenshotPrunerIgnoresUnmarkedAttachments(t *testing.T) {
 }
 
 func TestAnthropicScreenshotPrunerRewritesPairedToolResultWhenPruning(t *testing.T) {
-	msgs := []contextmanager.Message{
+	msgs := []messages.Message{
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "call_1",
 				Name:       "screenshot",
 				Content:    "screenshot returned a screenshot observation: format=jpeg width=100 height=50 size=123 bytes. The image is attached in the next message.",
 			}},
 		},
 		{
-			Role:    contextmanager.MessageRoleUser,
+			Role:    messages.MessageRoleUser,
 			Content: "This image is the screenshot observation returned by the screenshot tool.",
-			Attachments: []contextmanager.Attachment{{
+			Attachments: []messages.Attachment{{
 				MIMEType: "image/jpeg",
 				FilePath: "/tmp/fake-0.jpg",
 				Source:   contextmanager.AttachmentSourceScreenshotObservation,
 			}},
 		},
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "call_2",
 				Name:       "screenshot",
 				Content:    "screenshot returned a screenshot observation: format=jpeg width=100 height=50 size=456 bytes. The image is attached in the next message.",
 			}},
 		},
 		{
-			Role:    contextmanager.MessageRoleUser,
+			Role:    messages.MessageRoleUser,
 			Content: "This image is the screenshot observation returned by the screenshot tool.",
-			Attachments: []contextmanager.Attachment{{
+			Attachments: []messages.Attachment{{
 				MIMEType: "image/jpeg",
 				FilePath: "/tmp/fake-1.jpg",
 				Source:   contextmanager.AttachmentSourceScreenshotObservation,
 			}},
 		},
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "call_3",
 				Name:       "screenshot",
 				Content:    "screenshot returned a screenshot observation: format=jpeg width=100 height=50 size=789 bytes. The image is attached in the next message.",
 			}},
 		},
 		{
-			Role:    contextmanager.MessageRoleUser,
+			Role:    messages.MessageRoleUser,
 			Content: "This image is the screenshot observation returned by the screenshot tool.",
-			Attachments: []contextmanager.Attachment{{
+			Attachments: []messages.Attachment{{
 				MIMEType: "image/jpeg",
 				FilePath: "/tmp/fake-2.jpg",
 				Source:   contextmanager.AttachmentSourceScreenshotObservation,
 			}},
 		},
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "call_4",
 				Name:       "screenshot",
 				Content:    "screenshot returned a screenshot observation: format=jpeg width=100 height=50 size=999 bytes. The image is attached in the next message.",
 			}},
 		},
 		{
-			Role:    contextmanager.MessageRoleUser,
+			Role:    messages.MessageRoleUser,
 			Content: "This image is the screenshot observation returned by the screenshot tool.",
-			Attachments: []contextmanager.Attachment{{
+			Attachments: []messages.Attachment{{
 				MIMEType: "image/jpeg",
 				FilePath: "/tmp/fake-3.jpg",
 				Source:   contextmanager.AttachmentSourceScreenshotObservation,
@@ -169,13 +170,13 @@ func TestAnthropicScreenshotPrunerRewritesPairedToolResultWhenPruning(t *testing
 	}
 }
 
-func screenshotObservationMessages(n int) []contextmanager.Message {
-	out := make([]contextmanager.Message, 0, n)
+func screenshotObservationMessages(n int) []messages.Message {
+	out := make([]messages.Message, 0, n)
 	for i := 0; i < n; i++ {
-		out = append(out, contextmanager.Message{
-			Role:    contextmanager.MessageRoleUser,
+		out = append(out, messages.Message{
+			Role:    messages.MessageRoleUser,
 			Content: "This image is the screenshot observation returned by the screenshot tool.",
-			Attachments: []contextmanager.Attachment{{
+			Attachments: []messages.Attachment{{
 				MIMEType: "image/jpeg",
 				FilePath: fmt.Sprintf("/tmp/fake-%d.jpg", i),
 				Source:   contextmanager.AttachmentSourceScreenshotObservation,
@@ -185,25 +186,25 @@ func screenshotObservationMessages(n int) []contextmanager.Message {
 	return out
 }
 
-func cloneMessagesForAssert(messages []contextmanager.Message) []contextmanager.Message {
-	out := make([]contextmanager.Message, len(messages))
-	for i, msg := range messages {
+func cloneMessagesForAssert(messageList []messages.Message) []messages.Message {
+	out := make([]messages.Message, len(messageList))
+	for i, msg := range messageList {
 		cloned := msg
 		if len(msg.Attachments) > 0 {
-			cloned.Attachments = append([]contextmanager.Attachment(nil), msg.Attachments...)
+			cloned.Attachments = append([]messages.Attachment(nil), msg.Attachments...)
 		}
 		if len(msg.ToolCalls) > 0 {
-			cloned.ToolCalls = append([]contextmanager.ToolCall(nil), msg.ToolCalls...)
+			cloned.ToolCalls = append([]messages.ToolCall(nil), msg.ToolCalls...)
 		}
 		if len(msg.ToolResults) > 0 {
-			cloned.ToolResults = append([]contextmanager.ToolResult(nil), msg.ToolResults...)
+			cloned.ToolResults = append([]messages.ToolResult(nil), msg.ToolResults...)
 		}
 		out[i] = cloned
 	}
 	return out
 }
 
-func assertMessagesUnchanged(t *testing.T, got, want []contextmanager.Message) {
+func assertMessagesUnchanged(t *testing.T, got, want []messages.Message) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Fatalf("input slice length mutated: got %d want %d", len(got), len(want))
@@ -223,7 +224,7 @@ func assertMessagesUnchanged(t *testing.T, got, want []contextmanager.Message) {
 	}
 }
 
-func assertRemainingScreenshotPaths(t *testing.T, messages []contextmanager.Message, wantPaths []string) {
+func assertRemainingScreenshotPaths(t *testing.T, messages []messages.Message, wantPaths []string) {
 	t.Helper()
 	var got []string
 	for _, msg := range messages {
@@ -243,7 +244,7 @@ func assertRemainingScreenshotPaths(t *testing.T, messages []contextmanager.Mess
 	}
 }
 
-func countScreenshotSources(messages []contextmanager.Message) int {
+func countScreenshotSources(messages []messages.Message) int {
 	n := 0
 	for _, msg := range messages {
 		for _, a := range msg.Attachments {
@@ -255,7 +256,7 @@ func countScreenshotSources(messages []contextmanager.Message) int {
 	return n
 }
 
-func countImageOmitted(messages []contextmanager.Message) int {
+func countImageOmitted(messages []messages.Message) int {
 	n := 0
 	for _, msg := range messages {
 		n += strings.Count(msg.Content, "[Image omitted]")

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/langfuse"
+	"aiden-agent/internal/agent/messages"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -2316,27 +2317,27 @@ func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
 	// This fixture must comfortably exceed the 8192-token model's ~80% input
 	// threshold to force compaction.
-	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
-		{Role: contextmanager.MessageRoleSystem, Content: "Answer directly."},
-		{Role: contextmanager.MessageRoleUser, Content: strings.Repeat("user ", 1600)},
-		{Role: contextmanager.MessageRoleAssistant, Content: strings.Repeat("assistant ", 1600)},
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "Answer directly."},
+		{Role: messages.MessageRoleUser, Content: strings.Repeat("user ", 1600)},
+		{Role: messages.MessageRoleAssistant, Content: strings.Repeat("assistant ", 1600)},
 		{
-			Role: contextmanager.MessageRoleToolCall,
-			ToolCalls: []contextmanager.ToolCall{{
+			Role: messages.MessageRoleToolCall,
+			ToolCalls: []messages.ToolCall{{
 				ID:        "call_1",
 				Name:      "echo",
 				Arguments: `{"input":"` + strings.Repeat("x", 4000) + `"}`,
 			}},
 		},
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "call_1",
 				Name:       "echo",
 				Content:    strings.Repeat("result ", 1600),
 			}},
 		},
-		{Role: contextmanager.MessageRoleAssistant, Content: "recent tail"},
+		{Role: messages.MessageRoleAssistant, Content: "recent tail"},
 	})
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)

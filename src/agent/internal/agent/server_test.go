@@ -28,6 +28,7 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/screen"
 	speechtext "aiden-agent/internal/agent/speech"
 	ttsmodule "aiden-agent/internal/agent/tts"
@@ -2457,8 +2458,8 @@ func TestServerContextDumpEndpointReturnsPlannerMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
-	if err := manager.AppendMessage(contextmanager.Message{
-		Role:    contextmanager.MessageRoleUser,
+	if err := manager.AppendMessage(messages.Message{
+		Role:    messages.MessageRoleUser,
 		Content: "hello planner",
 	}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)

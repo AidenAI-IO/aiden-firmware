@@ -19,6 +19,7 @@ import (
 	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/speech"
@@ -1047,8 +1048,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	// append runtime context as assistant message if present (e.g., voice interruption notification)
 	if runtimeContext := strings.TrimSpace(req.RuntimeContext); runtimeContext != "" {
-		if err := r.contextManager.AppendMessage(contextmanager.Message{
-			Role:    contextmanager.MessageRoleAssistant,
+		if err := r.contextManager.AppendMessage(messages.Message{
+			Role:    messages.MessageRoleAssistant,
 			Content: runtimeContext,
 		}); err != nil {
 			return RunResult{}, err
@@ -1073,26 +1074,18 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
 	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
-	if compactionEnabled {
-		compactor.SetHistoricalToolResultTarget(compactionTarget)
-	}
-	tokenUsage := compactor.EstimateTokenUsage(r.contextManager)
+	tokenUsage := estimateMessagesTokens(contextmanager.ConvertMessageList(r.contextManager.CloneMessageList()))
 	if compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
 		}
 		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
 		if episodeRecorder != nil {
-			stats := compactor.LastStats()
 			episodeRecorder.RecordEvent(TaskEpisodeEvent{
 				Type: runEventHistoricalToolResultCompaction,
 				Metadata: map[string]interface{}{
-					"historical_results_replaced":   stats.HistoricalResultsReplaced,
-					"tokens_before":                 stats.TokensBefore,
-					"tokens_after":                  stats.TokensAfter,
-					"conversation_summary_required": stats.ConversationSummaryRequired,
-					"compacted":                     compacted,
-					"success":                       err == nil,
+					"compacted": compacted,
+					"success":   err == nil,
 				},
 			})
 		}
@@ -1204,9 +1197,9 @@ func (r *Runtime) getSystemPrompt() string {
 }
 
 func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
-	return func(message contextmanager.Message) contextmanager.AppendMessageHookResult {
+	return func(message messages.Message) contextmanager.AppendMessageHookResult {
 		// if not user message, just skip
-		if message.Role != contextmanager.MessageRoleUser {
+		if message.Role != messages.MessageRoleUser {
 			return contextmanager.AppendMessageHookResult{
 				Message: &message,
 			}
@@ -1241,22 +1234,22 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 			tagged = util.STag("state", formated.String())
 		}
 		// create a new StateMessage
-		stateMessage := contextmanager.Message{
-			Role:    contextmanager.MessageRoleState,
+		stateMessage := messages.Message{
+			Role:    messages.MessageRoleState,
 			Content: tagged,
 		}
 		if attachment != nil {
-			stateMessage.Attachments = []contextmanager.Attachment{*attachment}
+			stateMessage.Attachments = []messages.Attachment{*attachment}
 		}
 		return contextmanager.AppendMessageHookResult{
-			Before:  []contextmanager.Message{stateMessage},
+			Before:  []messages.Message{stateMessage},
 			Message: &message,
-			After:   []contextmanager.Message{},
+			After:   []messages.Message{},
 		}
 	}
 }
 
-func (r *Runtime) captureStateScreenshot() *contextmanager.Attachment {
+func (r *Runtime) captureStateScreenshot() *messages.Attachment {
 	if r == nil || r.tools == nil || r.contextManager == nil {
 		return nil
 	}

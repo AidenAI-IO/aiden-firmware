@@ -5,27 +5,28 @@ import (
 	"strings"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
-func messageRoleFromLLM(role llms.ChatMessageType) contextmanager.MessageRole {
+func messageRoleFromLLM(role llms.ChatMessageType) messages.MessageRole {
 	switch role {
 	case llms.ChatMessageTypeSystem:
-		return contextmanager.MessageRoleSystem
+		return messages.MessageRoleSystem
 	case llms.ChatMessageTypeHuman, llms.ChatMessageTypeGeneric:
-		return contextmanager.MessageRoleUser
+		return messages.MessageRoleUser
 	case llms.ChatMessageTypeAI:
-		return contextmanager.MessageRoleAssistant
+		return messages.MessageRoleAssistant
 	case llms.ChatMessageTypeTool, llms.ChatMessageTypeFunction:
-		return contextmanager.MessageRoleToolResult
+		return messages.MessageRoleToolResult
 	default:
-		return contextmanager.MessageRoleUser
+		return messages.MessageRoleUser
 	}
 }
 
-func messageFromLLMContent(manager *contextmanager.ContextManager, content llms.MessageContent) contextmanager.Message {
-	message := contextmanager.Message{Role: messageRoleFromLLM(content.Role)}
+func messageFromLLMContent(manager *contextmanager.ContextManager, content llms.MessageContent) messages.Message {
+	message := messages.Message{Role: messageRoleFromLLM(content.Role)}
 	for _, part := range content.Parts {
 		switch typed := part.(type) {
 		case llms.TextContent:
@@ -34,15 +35,15 @@ func messageFromLLMContent(manager *contextmanager.ContextManager, content llms.
 			if typed.FunctionCall == nil {
 				continue
 			}
-			message.Role = contextmanager.MessageRoleToolCall
-			message.ToolCalls = append(message.ToolCalls, contextmanager.ToolCall{
+			message.Role = messages.MessageRoleToolCall
+			message.ToolCalls = append(message.ToolCalls, messages.ToolCall{
 				ID:        strings.TrimSpace(typed.ID),
 				Name:      strings.TrimSpace(typed.FunctionCall.Name),
 				Arguments: strings.TrimSpace(typed.FunctionCall.Arguments),
 			})
 		case llms.ToolCallResponse:
-			message.Role = contextmanager.MessageRoleToolResult
-			message.ToolResults = append(message.ToolResults, contextmanager.ToolResult{
+			message.Role = messages.MessageRoleToolResult
+			message.ToolResults = append(message.ToolResults, messages.ToolResult{
 				ToolCallID: strings.TrimSpace(typed.ToolCallID),
 				Name:       strings.TrimSpace(typed.Name),
 				Content:    typed.Content,
@@ -66,10 +67,10 @@ func messageFromLLMContent(manager *contextmanager.ContextManager, content llms.
 	return message
 }
 
-func userMessageFromInput(manager *contextmanager.ContextManager, input string, attachments []InputAttachment) contextmanager.Message {
+func userMessageFromInput(manager *contextmanager.ContextManager, input string, attachments []InputAttachment) messages.Message {
 	descriptions := make([]string, 0, len(attachments))
-	message := contextmanager.Message{
-		Role:    contextmanager.MessageRoleUser,
+	message := messages.Message{
+		Role:    messages.MessageRoleUser,
 		Content: attachmentAwarePrompt(normalizeRunInput(input, attachments), attachments, descriptions),
 	}
 	if manager == nil {
@@ -90,14 +91,14 @@ func userMessageFromInput(manager *contextmanager.ContextManager, input string, 
 	return message
 }
 
-func toolResultMessage(toolCallID, toolName string, prepared PreparedToolResult) contextmanager.Message {
-	return contextmanager.Message{
-		Role: contextmanager.MessageRoleToolResult,
-		ToolResults: []contextmanager.ToolResult{{
+func toolResultMessage(toolCallID, toolName string, prepared PreparedToolResult) messages.Message {
+	return messages.Message{
+		Role: messages.MessageRoleToolResult,
+		ToolResults: []messages.ToolResult{{
 			ToolCallID: strings.TrimSpace(toolCallID),
 			Name:       strings.TrimSpace(toolName),
 			Content:    prepared.Content,
-			Meta: &contextmanager.ToolResultMeta{
+			Meta: &messages.ToolResultMeta{
 				ArtifactPath:        prepared.ArtifactPath,
 				OriginalBytes:       prepared.OriginalBytes,
 				OriginalChars:       prepared.OriginalChars,
@@ -115,8 +116,8 @@ func toolResultMessage(toolCallID, toolName string, prepared PreparedToolResult)
 	}
 }
 
-func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager, content llms.MessageContent) contextmanager.Message {
-	message := contextmanager.Message{Role: contextmanager.MessageRoleState}
+func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager, content llms.MessageContent) messages.Message {
+	message := messages.Message{Role: messages.MessageRoleState}
 	for _, part := range content.Parts {
 		switch typed := part.(type) {
 		case llms.TextContent:
@@ -230,8 +231,8 @@ func contextManagerHasSystemPrompt(manager *contextmanager.ContextManager, syste
 	if manager == nil {
 		return false
 	}
-	messages := manager.MessageListDump().Messages
-	return len(messages) > 0 &&
-		messages[0].Role == contextmanager.MessageRoleSystem &&
-		strings.TrimSpace(messages[0].Content) == strings.TrimSpace(systemPrompt)
+	messageList := manager.MessageListDump().Messages
+	return len(messageList) > 0 &&
+		messageList[0].Role == messages.MessageRoleSystem &&
+		strings.TrimSpace(messageList[0].Content) == strings.TrimSpace(systemPrompt)
 }

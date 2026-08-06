@@ -11,6 +11,7 @@ import (
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/util"
 
@@ -580,8 +581,8 @@ func (l *AgentLoop) applyLoopGuardDecision(decision TerminationDecision) {
 	if strings.TrimSpace(decision.Notice) == "" {
 		return
 	}
-	if err := l.contextManager.AppendMessage(contextmanager.Message{
-		Role:    contextmanager.MessageRoleNotice,
+	if err := l.contextManager.AppendMessage(messages.Message{
+		Role:    messages.MessageRoleNotice,
 		Content: util.STag("notice", decision.Notice),
 	}); err != nil {
 		log.Printf("[loop guard] failed to append notice message: %v", err)
@@ -668,15 +669,15 @@ func (l *AgentLoop) consumeAndPersistSteer(
 func (l *AgentLoop) persistSteer(ctx context.Context, executor *executor.LLMExecutor, steer RunSteerMessage) error {
 	// Step 1: Append to context manager
 	if executor != nil {
-		if err := executor.AppendMessage(contextmanager.Message{
-			Role:    contextmanager.MessageRoleUser,
+		if err := executor.AppendMessage(messages.Message{
+			Role:    messages.MessageRoleUser,
 			Content: steer.Content,
 		}); err != nil {
 			return err
 		}
 	} else if l.contextManager != nil {
-		if err := l.contextManager.AppendMessage(contextmanager.Message{
-			Role:    contextmanager.MessageRoleUser,
+		if err := l.contextManager.AppendMessage(messages.Message{
+			Role:    messages.MessageRoleUser,
 			Content: steer.Content,
 		}); err != nil {
 			return err

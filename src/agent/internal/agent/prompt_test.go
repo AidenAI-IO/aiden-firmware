@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
+
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -67,21 +69,21 @@ func TestStateHookDoesNotInjectResponseLocale(t *testing.T) {
 	manager := newPromptTestContextManager(t)
 	runtime.contextManager = manager
 	manager.AddAppendMessageHook(runtime.getStateHook())
-	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
-	messages := manager.MessageListDump().Messages
-	if len(messages) != 2 ||
-		messages[0].Role != contextmanager.MessageRoleState ||
-		messages[1].Role != contextmanager.MessageRoleUser {
-		t.Fatalf("messages = %#v, want device state followed by the user message", messages)
+	messageList := manager.MessageListDump().Messages
+	if len(messageList) != 2 ||
+		messageList[0].Role != messages.MessageRoleState ||
+		messageList[1].Role != messages.MessageRoleUser {
+		t.Fatalf("messages = %#v, want device state followed by the user message", messageList)
 	}
-	if strings.Contains(messages[0].Content, "response locale") || strings.Contains(messages[0].Content, "en-US") {
-		t.Fatalf("state message injected response locale: %q", messages[0].Content)
+	if strings.Contains(messageList[0].Content, "response locale") || strings.Contains(messageList[0].Content, "en-US") {
+		t.Fatalf("state message injected response locale: %q", messageList[0].Content)
 	}
-	if !strings.Contains(messages[0].Content, "device_type") {
-		t.Fatalf("state message missing device state: %q", messages[0].Content)
+	if !strings.Contains(messageList[0].Content, "device_type") {
+		t.Fatalf("state message missing device state: %q", messageList[0].Content)
 	}
 }
 
@@ -100,23 +102,23 @@ func TestStateHookAttachesFreshScreenshotToUserTurn(t *testing.T) {
 	runtime.contextManager = manager
 	manager.AddAppendMessageHook(runtime.getStateHook())
 
-	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
-	messages := manager.MessageListDump().Messages
-	if len(messages) != 2 || messages[0].Role != contextmanager.MessageRoleState || messages[1].Role != contextmanager.MessageRoleUser {
-		t.Fatalf("messages = %#v, want state screenshot followed by user message", messages)
+	messageList := manager.MessageListDump().Messages
+	if len(messageList) != 2 || messageList[0].Role != messages.MessageRoleState || messageList[1].Role != messages.MessageRoleUser {
+		t.Fatalf("messages = %#v, want state screenshot followed by user message", messageList)
 	}
-	if len(messages[0].Attachments) != 1 {
-		t.Fatalf("state attachments = %#v, want one screenshot", messages[0].Attachments)
+	if len(messageList[0].Attachments) != 1 {
+		t.Fatalf("state attachments = %#v, want one screenshot", messageList[0].Attachments)
 	}
-	attachment := messages[0].Attachments[0]
+	attachment := messageList[0].Attachments[0]
 	if attachment.MIMEType != "image/jpeg" || attachment.Source != contextmanager.AttachmentSourceScreenshotObservation {
 		t.Fatalf("state screenshot attachment = %#v", attachment)
 	}
 
-	standard := contextmanager.ConvertMessageList(messages)
+	standard := contextmanager.ConvertMessageList(messageList)
 	foundImage := false
 	for _, part := range standard[0].Parts {
 		if binary, ok := part.(llms.BinaryContent); ok && binary.MIMEType == "image/jpeg" && bytes.Equal(binary.Data, imageData) {
@@ -145,19 +147,19 @@ func TestStateHookKeepsTextStateWhenScreenshotFails(t *testing.T) {
 	runtime.contextManager = manager
 	manager.AddAppendMessageHook(runtime.getStateHook())
 
-	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
-	messages := manager.MessageListDump().Messages
-	if len(messages) != 2 || messages[0].Role != contextmanager.MessageRoleState {
-		t.Fatalf("messages = %#v, want text state followed by user message", messages)
+	messageList := manager.MessageListDump().Messages
+	if len(messageList) != 2 || messageList[0].Role != messages.MessageRoleState {
+		t.Fatalf("messages = %#v, want text state followed by user message", messageList)
 	}
-	if !strings.Contains(messages[0].Content, "device: connected") {
-		t.Fatalf("state content = %q, want device state", messages[0].Content)
+	if !strings.Contains(messageList[0].Content, "device: connected") {
+		t.Fatalf("state content = %q, want device state", messageList[0].Content)
 	}
-	if len(messages[0].Attachments) != 0 {
-		t.Fatalf("state attachments = %#v, want none after screenshot failure", messages[0].Attachments)
+	if len(messageList[0].Attachments) != 0 {
+		t.Fatalf("state attachments = %#v, want none after screenshot failure", messageList[0].Attachments)
 	}
 }
 
@@ -169,19 +171,19 @@ func TestStateHookOmitsEmptyStateValues(t *testing.T) {
 	runtime.contextManager = manager
 	manager.AddAppendMessageHook(runtime.getStateHook())
 
-	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
-	messages := manager.MessageListDump().Messages
-	if len(messages) != 2 || messages[0].Role != contextmanager.MessageRoleState {
-		t.Fatalf("messages = %#v, want filtered state followed by user message", messages)
+	messageList := manager.MessageListDump().Messages
+	if len(messageList) != 2 || messageList[0].Role != messages.MessageRoleState {
+		t.Fatalf("messages = %#v, want filtered state followed by user message", messageList)
 	}
-	if !strings.Contains(messages[0].Content, "app_connected: false") {
-		t.Fatalf("state content = %q, want app_connected", messages[0].Content)
+	if !strings.Contains(messageList[0].Content, "app_connected: false") {
+		t.Fatalf("state content = %q, want app_connected", messageList[0].Content)
 	}
-	if strings.Contains(messages[0].Content, "app_platform") {
-		t.Fatalf("state content = %q, want empty app_platform omitted", messages[0].Content)
+	if strings.Contains(messageList[0].Content, "app_platform") {
+		t.Fatalf("state content = %q, want empty app_platform omitted", messageList[0].Content)
 	}
 }
 

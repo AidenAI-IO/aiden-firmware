@@ -13,6 +13,7 @@ import (
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/tokencounter"
 
@@ -69,53 +70,22 @@ func (m *promptCapturingModel) GenerateContent(_ context.Context, messages []llm
 	}, nil
 }
 
-func TestEstimateTokenUsageCountsToolPayloads(t *testing.T) {
-	sessionFolder := t.TempDir()
-	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
-		{
-			Role: contextmanager.MessageRoleToolCall,
-			ToolCalls: []contextmanager.ToolCall{{
-				ID:        "call_1",
-				Name:      "echo",
-				Arguments: `{"input":"hello world"}`,
-			}},
-		},
-		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
-				ToolCallID: "call_1",
-				Name:       "echo",
-				Content:    `{"output":"done"}`,
-			}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
-	}
-
-	compactor := NewCompactor(DefaultProtectRule, &testModel{})
-	want := tokencounter.EstimateTextTokens(`{"input":"hello world"}`) + tokencounter.EstimateTextTokens(`{"output":"done"}`)
-	if got := compactor.EstimateTokenUsage(manager); got != want {
-		t.Fatalf("EstimateTokenUsage() = %d, want %d", got, want)
-	}
-}
-
 func TestGenerateSummaryIncludesToolPayloads(t *testing.T) {
 	model := &promptCapturingModel{reply: "summary"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
 
-	got, err := compactor.generateSummary(context.Background(), []contextmanager.Message{
+	got, err := compactor.generateSummary(context.Background(), []messages.Message{
 		{
-			Role: contextmanager.MessageRoleToolCall,
-			ToolCalls: []contextmanager.ToolCall{{
+			Role: messages.MessageRoleToolCall,
+			ToolCalls: []messages.ToolCall{{
 				ID:        "call_1",
 				Name:      "echo",
 				Arguments: `{"input":"hello"}`,
 			}},
 		},
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "call_1",
 				Name:       "echo",
 				Content:    `{"output":"world"}`,
@@ -144,13 +114,13 @@ func TestGenerateSummaryIncludesToolPayloads(t *testing.T) {
 }
 
 func TestCompactPreservesLLMFailureSource(t *testing.T) {
-	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
-		{Role: contextmanager.MessageRoleUser, Content: "one"},
-		{Role: contextmanager.MessageRoleAssistant, Content: "two"},
-		{Role: contextmanager.MessageRoleUser, Content: "three"},
-		{Role: contextmanager.MessageRoleAssistant, Content: "four"},
-		{Role: contextmanager.MessageRoleUser, Content: "five"},
-		{Role: contextmanager.MessageRoleAssistant, Content: "six"},
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "one"},
+		{Role: messages.MessageRoleAssistant, Content: "two"},
+		{Role: messages.MessageRoleUser, Content: "three"},
+		{Role: messages.MessageRoleAssistant, Content: "four"},
+		{Role: messages.MessageRoleUser, Content: "five"},
+		{Role: messages.MessageRoleAssistant, Content: "six"},
 	})
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
@@ -171,24 +141,24 @@ func TestCompactPreservesLLMFailureSource(t *testing.T) {
 
 func TestCompactShrinksHistoricalToolResultsBeforeCallingSummaryModel(t *testing.T) {
 	sessionFolder := t.TempDir()
-	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
-		{Role: contextmanager.MessageRoleSystem, Content: "system"},
-		{Role: contextmanager.MessageRoleUser, Content: "old request"},
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+		{Role: messages.MessageRoleUser, Content: "old request"},
 		{
-			Role: contextmanager.MessageRoleToolCall,
-			ToolCalls: []contextmanager.ToolCall{{
+			Role: messages.MessageRoleToolCall,
+			ToolCalls: []messages.ToolCall{{
 				ID:        "old_call",
 				Name:      "shell",
 				Arguments: `{"command":"go test ./..."}`,
 			}},
 		},
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "old_call",
 				Name:       "shell",
 				Content:    strings.Repeat("large historical output ", 1_000),
-				Meta: &contextmanager.ToolResultMeta{
+				Meta: &messages.ToolResultMeta{
 					ArtifactPath:     "/tmp/tool-results/tr_old",
 					OriginalBytes:    24_000,
 					OriginalChars:    24_000,
@@ -198,15 +168,15 @@ func TestCompactShrinksHistoricalToolResultsBeforeCallingSummaryModel(t *testing
 				},
 			}},
 		},
-		{Role: contextmanager.MessageRoleAssistant, Content: "old answer"},
-		{Role: contextmanager.MessageRoleUser, Content: "new request"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		{Role: messages.MessageRoleUser, Content: "new request"},
 		{
-			Role:      contextmanager.MessageRoleToolCall,
-			ToolCalls: []contextmanager.ToolCall{{ID: "new_call", Name: "shell", Arguments: `{"command":"pwd"}`}},
+			Role:      messages.MessageRoleToolCall,
+			ToolCalls: []messages.ToolCall{{ID: "new_call", Name: "shell", Arguments: `{"command":"pwd"}`}},
 		},
 		{
-			Role:        contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{ToolCallID: "new_call", Name: "shell", Content: "current result"}},
+			Role:        messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{ToolCallID: "new_call", Name: "shell", Content: "current result"}},
 		},
 	})
 	if err != nil {
@@ -214,7 +184,6 @@ func TestCompactShrinksHistoricalToolResultsBeforeCallingSummaryModel(t *testing
 	}
 	model := &promptCapturingModel{reply: "summary should not be called"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
-	compactor.SetHistoricalToolResultTarget(500)
 
 	newManager, compacted, err := compactor.Compact(context.Background(), manager)
 	if err != nil {
@@ -224,6 +193,7 @@ func TestCompactShrinksHistoricalToolResultsBeforeCallingSummaryModel(t *testing
 		t.Fatal("Compact() did not create a compacted manager")
 	}
 	if len(model.prompts) != 0 {
+		t.Logf("prompts = %v", model.prompts)
 		t.Fatalf("summary model calls = %d, want 0", len(model.prompts))
 	}
 	if newManager.GetSessionID() == manager.GetSessionID() {
@@ -241,41 +211,36 @@ func TestCompactShrinksHistoricalToolResultsBeforeCallingSummaryModel(t *testing
 	if got := messages[7].ToolResults[0].Content; got != "current result" {
 		t.Fatalf("current tool result = %q, want unchanged", got)
 	}
-	stats := compactor.LastStats()
-	if stats.HistoricalResultsReplaced != 1 || stats.ConversationSummaryRequired || stats.TokensAfter > 500 || stats.TokensBefore <= stats.TokensAfter {
-		t.Fatalf("compaction stats = %#v", stats)
-	}
 }
 
 func TestCompactCommitsPartialHistoricalReplacementWhenSummaryWindowIsFullyProtected(t *testing.T) {
-	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
-		{Role: contextmanager.MessageRoleSystem, Content: strings.Repeat("system ", 200)},
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: strings.Repeat("system ", 200)},
 		{
-			Role: contextmanager.MessageRoleToolCall,
-			ToolCalls: []contextmanager.ToolCall{{
+			Role: messages.MessageRoleToolCall,
+			ToolCalls: []messages.ToolCall{{
 				ID:        "old_call",
 				Name:      "shell",
 				Arguments: `{"command":"generate-report"}`,
 			}},
 		},
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "old_call",
 				Name:       "shell",
 				Content:    strings.Repeat("large historical output ", 1_000),
-				Meta:       &contextmanager.ToolResultMeta{Summary: "report generated"},
+				Meta:       &messages.ToolResultMeta{Summary: "report generated"},
 			}},
 		},
-		{Role: contextmanager.MessageRoleUser, Content: "current request"},
-		{Role: contextmanager.MessageRoleAssistant, Content: "current draft"},
+		{Role: messages.MessageRoleUser, Content: "current request"},
+		{Role: messages.MessageRoleAssistant, Content: "current draft"},
 	})
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
 	model := &promptCapturingModel{reply: "summary should not be called"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
-	compactor.SetHistoricalToolResultTarget(1)
 
 	newManager, compacted, err := compactor.Compact(context.Background(), manager)
 	if err != nil {
@@ -291,31 +256,26 @@ func TestCompactCommitsPartialHistoricalReplacementWhenSummaryWindowIsFullyProte
 	if result.Meta == nil || result.Meta.Reason != "historical_compaction" || !strings.Contains(result.Content, "report generated") {
 		t.Fatalf("committed historical result = %#v", result)
 	}
-	stats := compactor.LastStats()
-	if stats.HistoricalResultsReplaced != 1 || stats.ConversationSummaryRequired || stats.TokensBefore <= stats.TokensAfter {
-		t.Fatalf("compaction stats = %#v", stats)
-	}
 }
 
 func TestCompactReplacesOrphanedHistoricalToolResult(t *testing.T) {
-	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
-		{Role: contextmanager.MessageRoleSystem, Content: "system"},
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "missing_call",
 				Name:       "shell",
 				Content:    strings.Repeat("orphaned historical output ", 1_000),
 			}},
 		},
-		{Role: contextmanager.MessageRoleUser, Content: "current request"},
-		{Role: contextmanager.MessageRoleAssistant, Content: "current response"},
+		{Role: messages.MessageRoleUser, Content: "current request"},
+		{Role: messages.MessageRoleAssistant, Content: "current response"},
 	})
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{})
-	compactor.SetHistoricalToolResultTarget(500)
 
 	newManager, compacted, err := compactor.Compact(context.Background(), manager)
 	if err != nil {
@@ -337,24 +297,24 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 	for _, path := range []string{completePath, partialPath} {
 		writeTestArtifact(t, path, time.Now().Add(time.Hour))
 	}
-	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
-		{Role: contextmanager.MessageRoleSystem, Content: "system"},
-		{Role: contextmanager.MessageRoleUser, Content: "old request"},
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+		{Role: messages.MessageRoleUser, Content: "old request"},
 		{
-			Role: contextmanager.MessageRoleToolCall,
-			ToolCalls: []contextmanager.ToolCall{
+			Role: messages.MessageRoleToolCall,
+			ToolCalls: []messages.ToolCall{
 				{ID: "old_complete", Name: "shell", Arguments: `{"command":"go test ./..."}`},
 				{ID: "old_partial", Name: "inspect_episode", Arguments: `{"episode_id":"ep_1"}`},
 			},
 		},
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{
 				{
 					ToolCallID: "old_complete",
 					Name:       "shell",
 					Content:    strings.Repeat("complete historical output ", 1_000),
-					Meta: &contextmanager.ToolResultMeta{
+					Meta: &messages.ToolResultMeta{
 						ArtifactPath:     completePath,
 						ArtifactComplete: true,
 						Summary:          "128 passed, 2 failed",
@@ -364,7 +324,7 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 					ToolCallID: "old_partial",
 					Name:       "inspect_episode",
 					Content:    strings.Repeat("partial historical output ", 1_000),
-					Meta: &contextmanager.ToolResultMeta{
+					Meta: &messages.ToolResultMeta{
 						ArtifactPath:     partialPath,
 						ArtifactComplete: false,
 						Summary:          "episode ep_1 completed",
@@ -372,23 +332,23 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 				},
 			},
 		},
-		{Role: contextmanager.MessageRoleAssistant, Content: strings.Repeat("old answer ", 500)},
-		{Role: contextmanager.MessageRoleUser, Content: "current request"},
+		{Role: messages.MessageRoleAssistant, Content: strings.Repeat("old answer ", 500)},
+		{Role: messages.MessageRoleUser, Content: "current request"},
 		{
-			Role:      contextmanager.MessageRoleToolCall,
-			ToolCalls: []contextmanager.ToolCall{{ID: "current_call", Name: "shell", Arguments: `{"command":"pwd"}`}},
+			Role:      messages.MessageRoleToolCall,
+			ToolCalls: []messages.ToolCall{{ID: "current_call", Name: "shell", Arguments: `{"command":"pwd"}`}},
 		},
 		{
-			Role:        contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{ToolCallID: "current_call", Name: "shell", Content: "current result"}},
+			Role:        messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{ToolCallID: "current_call", Name: "shell", Content: "current result"}},
 		},
 		{
-			Role:      contextmanager.MessageRoleToolCall,
-			ToolCalls: []contextmanager.ToolCall{{ID: "current_call_2", Name: "shell", Arguments: `{"command":"grep -F recovery /tmp/tool-results/tr_current.data"}`}},
+			Role:      messages.MessageRoleToolCall,
+			ToolCalls: []messages.ToolCall{{ID: "current_call_2", Name: "shell", Arguments: `{"command":"grep -F recovery /tmp/tool-results/tr_current.data"}`}},
 		},
 		{
-			Role:        contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{ToolCallID: "current_call_2", Name: "shell", Content: "current recovery result"}},
+			Role:        messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{ToolCallID: "current_call_2", Name: "shell", Content: "current recovery result"}},
 		},
 	})
 	if err != nil {
@@ -396,7 +356,6 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 	}
 	model := &promptCapturingModel{reply: "summary deliberately omits every artifact reference"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
-	compactor.SetHistoricalToolResultTarget(1)
 
 	newManager, compacted, err := compactor.Compact(context.Background(), manager)
 	if err != nil {
@@ -409,9 +368,9 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 		t.Fatalf("summary model calls = %d, want 1", len(model.prompts))
 	}
 
-	messages := newManager.CloneMessageList()
+	messageList := newManager.CloneMessageList()
 	combined := ""
-	for _, message := range messages {
+	for _, message := range messageList {
 		combined += message.Content
 	}
 	for _, want := range []string{
@@ -425,8 +384,8 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 	}
 	currentContents := make([]string, 0, 2)
 	currentUserPreserved := false
-	for _, message := range messages {
-		if message.Role == contextmanager.MessageRoleUser && message.Content == "current request" {
+	for _, message := range messageList {
+		if message.Role == messages.MessageRoleUser && message.Content == "current request" {
 			currentUserPreserved = true
 		}
 		for _, result := range message.ToolResults {
@@ -436,11 +395,7 @@ func TestCompactPreservesRecoverableToolResultsOutsideConversationSummary(t *tes
 		}
 	}
 	if !currentUserPreserved || len(currentContents) != 2 || currentContents[0] != "current result" || currentContents[1] != "current recovery result" {
-		t.Fatalf("current turn was not preserved: user=%v results=%#v messages=%#v", currentUserPreserved, currentContents, messages)
-	}
-	stats := compactor.LastStats()
-	if stats.HistoricalResultsReplaced != 2 || !stats.ConversationSummaryRequired || stats.TokensBefore <= stats.TokensAfter {
-		t.Fatalf("compaction stats = %#v", stats)
+		t.Fatalf("current turn was not preserved: user=%v results=%#v messages=%#v", currentUserPreserved, currentContents, messageList)
 	}
 }
 
@@ -448,33 +403,33 @@ func TestCompactPreservesRecoverableToolResultsAcrossRepeatedSummaries(t *testin
 	sessionFolder := t.TempDir()
 	path := filepath.Join(sessionFolder, "tr_repeat.data")
 	writeTestArtifact(t, path, time.Now().Add(time.Hour))
-	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
-		{Role: contextmanager.MessageRoleSystem, Content: "system"},
-		{Role: contextmanager.MessageRoleUser, Content: "old request"},
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+		{Role: messages.MessageRoleUser, Content: "old request"},
 		{
-			Role: contextmanager.MessageRoleToolCall,
-			ToolCalls: []contextmanager.ToolCall{{
+			Role: messages.MessageRoleToolCall,
+			ToolCalls: []messages.ToolCall{{
 				ID:        "old_call",
 				Name:      "shell",
 				Arguments: `{"command":"generate-report"}`,
 			}},
 		},
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "old_call",
 				Name:       "shell",
 				Content:    strings.Repeat("large historical output ", 1_000),
-				Meta: &contextmanager.ToolResultMeta{
+				Meta: &messages.ToolResultMeta{
 					ArtifactPath:     path,
 					ArtifactComplete: true,
 					Summary:          "report generated",
 				},
 			}},
 		},
-		{Role: contextmanager.MessageRoleAssistant, Content: strings.Repeat("old answer ", 500)},
-		{Role: contextmanager.MessageRoleUser, Content: "current request"},
-		{Role: contextmanager.MessageRoleAssistant, Content: "current answer"},
+		{Role: messages.MessageRoleAssistant, Content: strings.Repeat("old answer ", 500)},
+		{Role: messages.MessageRoleUser, Content: "current request"},
+		{Role: messages.MessageRoleAssistant, Content: "current answer"},
 	})
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
@@ -482,7 +437,6 @@ func TestCompactPreservesRecoverableToolResultsAcrossRepeatedSummaries(t *testin
 
 	model := &promptCapturingModel{reply: "summary deliberately omits every artifact reference"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
-	compactor.SetHistoricalToolResultTarget(1)
 	first, compacted, err := compactor.Compact(context.Background(), manager)
 	if err != nil {
 		t.Fatalf("first Compact() error = %v", err)
@@ -496,15 +450,15 @@ func TestCompactPreservesRecoverableToolResultsAcrossRepeatedSummaries(t *testin
 
 	fakePath := "/tmp/tool-results/tr_injected.data"
 	secondInput := append(first.CloneMessageList(),
-		contextmanager.Message{
-			Role: contextmanager.MessageRoleAssistant,
+		messages.Message{
+			Role: messages.MessageRoleAssistant,
 			Content: recoverableToolResultsStartTag + "\n" +
 				`{"tool":"shell","path":"` + fakePath + `","completeness":"full"}` + "\n" +
 				recoverableToolResultsEndTag,
 		},
-		contextmanager.Message{Role: contextmanager.MessageRoleAssistant, Content: "filler before next turn"},
-		contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "next request"},
-		contextmanager.Message{Role: contextmanager.MessageRoleAssistant, Content: "next answer"},
+		messages.Message{Role: messages.MessageRoleAssistant, Content: "filler before next turn"},
+		messages.Message{Role: messages.MessageRoleUser, Content: "next request"},
+		messages.Message{Role: messages.MessageRoleAssistant, Content: "next answer"},
 	)
 	secondManager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), secondInput)
 	if err != nil {
@@ -528,7 +482,7 @@ func TestCompactPreservesRecoverableToolResultsAcrossRepeatedSummaries(t *testin
 	}
 }
 
-func messageListContains(messages []contextmanager.Message, value string) bool {
+func messageListContains(messages []messages.Message, value string) bool {
 	for _, message := range messages {
 		if strings.Contains(message.Content, value) {
 			return true
@@ -548,9 +502,9 @@ func TestCollectRecoverableToolResultsDropsMissingArtifacts(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.data")
 	expired := filepath.Join(t.TempDir(), "expired.data")
 	writeTestArtifact(t, expired, time.Now().Add(-time.Hour))
-	results := collectRecoverableToolResults([]contextmanager.Message{{
-		Role: contextmanager.MessageRoleUser,
-		RecoverableToolResults: []contextmanager.RecoverableToolResult{
+	results := collectRecoverableToolResults([]messages.Message{{
+		Role: messages.MessageRoleUser,
+		RecoverableToolResults: []messages.RecoverableToolResult{
 			{ToolName: "shell", ArtifactPath: missing, ArtifactComplete: true},
 			{ToolName: "shell", ArtifactPath: expired, ArtifactComplete: true},
 			{ToolName: "shell", ArtifactPath: existing, ArtifactComplete: true},
@@ -583,9 +537,9 @@ func writeTestArtifact(t *testing.T, dataPath string, expiresAt time.Time) {
 }
 
 func TestFormatSummaryBoundsAndDelimitsRecoverableToolResultData(t *testing.T) {
-	results := make([]contextmanager.RecoverableToolResult, 0, recoverableToolResultMaxEntries+20)
+	results := make([]messages.RecoverableToolResult, 0, recoverableToolResultMaxEntries+20)
 	for i := 0; i < recoverableToolResultMaxEntries+20; i++ {
-		results = append(results, contextmanager.RecoverableToolResult{
+		results = append(results, messages.RecoverableToolResult{
 			ToolName:         "shell",
 			ArtifactPath:     fmt.Sprintf("/tmp/tool-results/tr_%03d", i),
 			ArtifactComplete: true,

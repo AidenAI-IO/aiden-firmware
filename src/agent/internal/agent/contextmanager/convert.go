@@ -1,6 +1,7 @@
 package contextmanager
 
 import (
+	"aiden-agent/internal/agent/messages"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,14 +11,14 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func ConvertMessageList(messages []Message) []llms.MessageContent {
-	standardMessageList := make([]llms.MessageContent, len(messages))
-	for i, message := range messages {
+func ConvertMessageList(messageList []messages.Message) []llms.MessageContent {
+	standardMessageList := make([]llms.MessageContent, len(messageList))
+	for i, message := range messageList {
 		newMessage := llms.MessageContent{
 			Role:  message.Role.ToStandardRole(),
 			Parts: []llms.ContentPart{},
 		}
-		if message.Role == MessageRoleToolResult {
+		if message.Role == messages.MessageRoleToolResult {
 			for resultIndex, result := range message.ToolResults {
 				toolCallID := strings.TrimSpace(result.ToolCallID)
 				if toolCallID == "" {
@@ -76,12 +77,12 @@ func ConvertMessageList(messages []Message) []llms.MessageContent {
 }
 
 // ConvertChoiceToContextManagerMessage converts a content choice to a context manager message
-func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) Message {
-	role := MessageRoleAssistant
+func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) messages.Message {
+	role := messages.MessageRoleAssistant
 	if contentChoiceHasToolCalls(choice) {
-		role = MessageRoleToolCall
+		role = messages.MessageRoleToolCall
 	}
-	return Message{
+	return messages.Message{
 		Role:      role,
 		Content:   contentChoiceText(choice),
 		ToolCalls: toolCallsFromContentChoice(choice),
@@ -106,7 +107,7 @@ func contentChoiceText(choice llms.ContentChoice) string {
 	return strings.Join(parts, "\n")
 }
 
-func toolCallsFromContentChoice(choice llms.ContentChoice) []ToolCall {
+func toolCallsFromContentChoice(choice llms.ContentChoice) []messages.ToolCall {
 	toolCalls := choice.ToolCalls
 	if len(toolCalls) == 0 && choice.FuncCall != nil {
 		toolCalls = []llms.ToolCall{{
@@ -114,7 +115,7 @@ func toolCallsFromContentChoice(choice llms.ContentChoice) []ToolCall {
 			FunctionCall: choice.FuncCall,
 		}}
 	}
-	result := make([]ToolCall, 0, len(toolCalls))
+	result := make([]messages.ToolCall, 0, len(toolCalls))
 	for _, call := range toolCalls {
 		if call.FunctionCall == nil {
 			continue
@@ -123,7 +124,7 @@ func toolCallsFromContentChoice(choice llms.ContentChoice) []ToolCall {
 		if name == "" {
 			continue
 		}
-		result = append(result, ToolCall{
+		result = append(result, messages.ToolCall{
 			ID:        strings.TrimSpace(call.ID),
 			Name:      name,
 			Arguments: normalizeToolCallArguments(call.FunctionCall.Arguments),

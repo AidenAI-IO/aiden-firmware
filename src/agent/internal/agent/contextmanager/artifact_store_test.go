@@ -1,6 +1,7 @@
 package contextmanager
 
 import (
+	"aiden-agent/internal/agent/messages"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -91,13 +92,13 @@ func TestToolResultMetadataPersistsButIsNotSentToModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
-	message := Message{
-		Role: MessageRoleToolResult,
-		ToolResults: []ToolResult{{
+	message := messages.Message{
+		Role: messages.MessageRoleToolResult,
+		ToolResults: []messages.ToolResult{{
 			ToolCallID: "call_1",
 			Name:       "shell",
 			Content:    "bounded observation",
-			Meta: &ToolResultMeta{
+			Meta: &messages.ToolResultMeta{
 				ArtifactPath:     "/tmp/tool-results/tr_example.data",
 				OriginalBytes:    12_345,
 				OriginalChars:    12_345,
@@ -176,33 +177,6 @@ func TestLoadContextManagerMigratesLegacyArtifactRefToShellReadablePath(t *testi
 	}
 }
 
-func TestLoadContextManagerKeepsLegacyArtifactRefWhenFileIsMissing(t *testing.T) {
-	sessionFolder := t.TempDir()
-	sessionID := "s_legacy_missing"
-	scopeID := "s_legacy_missing_scope"
-	artifactID := "tr_" + uuid.NewString()
-	if err := writeLegacySessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
-		t.Fatalf("writeLegacySessionMetadata() error = %v", err)
-	}
-	legacyRef := "artifact://" + artifactID
-	line := fmt.Sprintf(`{"role":"tool_result","tool_results":[{"tool_call_id":"call_legacy","name":"shell","content":"Full result: %s","meta":{"artifact_ref":"%s","complete":false,"artifact_complete":true}}]}`+"\n", legacyRef, legacyRef)
-	if err := os.WriteFile(filepath.Join(sessionFolder, sessionID+".jsonl"), []byte(line), 0o600); err != nil {
-		t.Fatalf("WriteFile(session) error = %v", err)
-	}
-
-	manager, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
-	if err != nil {
-		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
-	}
-	result := manager.CloneMessageList()[0].ToolResults[0]
-	if result.Meta == nil || result.Meta.ArtifactPath != "" || result.Meta.legacyArtifactRef != legacyRef {
-		t.Fatalf("missing artifact metadata = %#v, want legacy ref preserved", result.Meta)
-	}
-	if !strings.Contains(result.Content, legacyRef) || strings.Contains(result.Content, "Full result file:") {
-		t.Fatalf("missing artifact content was migrated: %q", result.Content)
-	}
-}
-
 func TestLoadContextManagerIgnoresUnsafeLegacyArtifactRef(t *testing.T) {
 	sessionFolder := t.TempDir()
 	sessionID := "s_legacy_unsafe"
@@ -225,8 +199,8 @@ func TestLoadContextManagerIgnoresUnsafeLegacyArtifactRef(t *testing.T) {
 
 func TestContextManagerRevisionPreservesArtifactPathWithoutSharingStore(t *testing.T) {
 	sessionFolder := t.TempDir()
-	manager, err := NewContextManagerFromMessageList(sessionFolder, []Message{
-		{Role: MessageRoleSystem, Content: "system"},
+	manager, err := NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
 	})
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
@@ -238,13 +212,13 @@ func TestContextManagerRevisionPreservesArtifactPathWithoutSharingStore(t *testi
 	if err != nil {
 		t.Fatalf("StoreArtifact() error = %v", err)
 	}
-	if err := manager.AppendMessage(Message{
-		Role: MessageRoleToolResult,
-		ToolResults: []ToolResult{{
+	if err := manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleToolResult,
+		ToolResults: []messages.ToolResult{{
 			ToolCallID: "call_1",
 			Name:       "shell",
 			Content:    "bounded result",
-			Meta:       &ToolResultMeta{ArtifactPath: stored.Path, ArtifactComplete: true},
+			Meta:       &messages.ToolResultMeta{ArtifactPath: stored.Path, ArtifactComplete: true},
 		}},
 	}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)

@@ -163,7 +163,7 @@ func fieldTextExactlyMatches(fieldText, targetText string) bool {
 	return strings.TrimSpace(fieldText) == strings.TrimSpace(targetText)
 }
 
-func evaluateFieldCommit(analysis textInputScreenAnalysis, targetText string) (committed bool, fieldText string) {
+func evaluateFieldCommit(analysis textInputScreenAnalysis) (committed bool, fieldText string) {
 	fieldText = strings.TrimSpace(analysis.FieldText)
 	// field_text is a diagnostic transcription, not a reliable code-point-level
 	// representation of the screenshot. target_matched already means that the
