@@ -111,7 +111,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"quick_action": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"action":"list","platform":"ios"}`,
+		ExampleInput: `{"action":"list"}`,
 	},
 	"recall_device_memory": {
 		Category:     "memory",

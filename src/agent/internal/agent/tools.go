@@ -208,6 +208,7 @@ func (s *ToolSet) RegisterEnterTextTool(models model.Model, platformFn func() st
 		restorer: s.phoneBridgeRestorer,
 	}
 	entryTool := &EnterTextTool{engine: engine, bridgeTool: bridgeTool, iosKeyboardIsolation: s.iosKeyboardIsolation}
+	entryTool.SetPlatformFn(platformFn)
 	searchOpenTool := &appSearchOpenTool{
 		hw:                   s.textInputHW,
 		vision:               newLLMTextInputVision(models),
@@ -237,7 +238,7 @@ func (s *ToolSet) SetRuntimePlatformFn(fn func() string) {
 	if s == nil {
 		return
 	}
-	for _, name := range []string{"enter_text", "search_launch_app"} {
+	for _, name := range []string{"enter_text", "quick_action", "search_launch_app"} {
 		tool, ok := s.tools[name]
 		if !ok {
 			continue

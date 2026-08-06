@@ -14,6 +14,7 @@ import (
 type EnterTextTool struct {
 	engine               *textInputEngine
 	bridgeTool           *textInputBridge
+	platformFn           func() string
 	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
@@ -37,6 +38,37 @@ func (a enterTextArgs) toEngineArgs() textInputArgs {
 }
 
 func (t *EnterTextTool) Name() string { return "enter_text" }
+
+func (t *EnterTextTool) SetPlatformFn(fn func() string) {
+	if t == nil {
+		return
+	}
+	t.platformFn = fn
+	if t.engine != nil {
+		t.engine.hw.platformFn = fn
+	}
+	if t.bridgeTool != nil {
+		t.bridgeTool.SetPlatformFn(fn)
+	}
+}
+
+func (t *EnterTextTool) platform() string {
+	if t == nil {
+		return "android"
+	}
+	if t.platformFn != nil {
+		if platform := normalizeTextInputPlatform(t.platformFn()); platform != "" {
+			return platform
+		}
+	}
+	if t.engine != nil {
+		return t.engine.hw.platform()
+	}
+	if t.bridgeTool != nil {
+		return t.bridgeTool.platform()
+	}
+	return "android"
+}
 
 func (t *EnterTextTool) Description() string {
 	return `Enter exact text into a visible, focused input field or composer. ` +
@@ -89,7 +121,7 @@ func (t *EnterTextTool) Call(ctx context.Context, input string) (string, error) 
 		if strings.TrimSpace(args.Text) == "" {
 			return enterTextToolFailure(batchCtx, CodeInvalidArguments, "Provide non-empty text, then retry enter_text."), nil
 		}
-		platform := t.engine.hw.platform()
+		platform := t.platform()
 		localController := controller
 		if localController == nil {
 			localController = iosKeyboardIsolationControllerFromContext(batchCtx)
@@ -170,6 +202,9 @@ func (t *EnterTextTool) bridgeAvailable(args textInputArgs) bool {
 	} else if t.bridgeTool != nil {
 		hw = t.bridgeTool.hw
 	}
-	platform := textInputHardwarePlatform(hw)
+	platform := t.platform()
+	if strings.TrimSpace(platform) == "" {
+		platform = textInputHardwarePlatform(hw)
+	}
 	return t.bridgeTool.canUseClipboardFirst(platform, args.Text)
 }
