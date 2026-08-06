@@ -173,7 +173,7 @@ const char* kOtaBin = "/oem/usr/bin/ota";
 const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
 const char* kOtaHealthLogPath = "/var/log/ota/ota.log";
 const char* kOtaWebUpdateLockPath = "/tmp/config_web_ota_update.lock";
-const char* kOtaWebUpdateLogPath = "/tmp/config_web_ota_update.log";
+const char* kOtaWebUpdateLogPath = "/userdata/ota/config_web_ota_update.log";
 const char* kAgentPortHost = "127.0.0.1";
 const int kDefaultAgentPort = 8080;
 const int kAgentStatusCommandTimeoutMs = 1500;
@@ -183,6 +183,7 @@ const size_t kAgentLogReadSize = 64 * 1024;
 const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kOtaLogReadSize = 128 * 1024;
 const size_t kOtaLogDisplaySize = 96 * 1024;
+const size_t kOtaWebUpdateLogMaxBytes = 1024 * 1024;
 const int kSupportLogExportTimeoutMs = 30000;
 const char* kSupportLogArchiveName = "aiden-logs.tar.gz";
 const char* kSupportLogStagePrefix = "aiden-logs-stage-";
@@ -214,7 +215,10 @@ std::string parent_dir(const std::string& path);
 std::string llm_log_dir(const Options& options);
 std::string agent_log_path(const Options& options);
 bool mkdir_p(const std::string& dir, std::string* error);
-bool prepare_ota_update_log_file(const std::string& path, std::string* error);
+bool prepare_ota_update_log_file(const std::string& path,
+                                 size_t max_size,
+                                 unsigned long long* start_size_bytes,
+                                 std::string* error);
 bool set_fd_cloexec(int fd, std::string* error);
 bool create_temp_file_in_dir(const std::string& dir,
                              const std::string& prefix,
@@ -3530,13 +3534,17 @@ bool launch_ota_update_supervisor(int lock_fd, const std::string& log_path, std:
     return true;
 }
 
-bool schedule_ota_update(std::string* error) {
+bool schedule_ota_update(unsigned long long* start_size_bytes, std::string* error) {
+    if (start_size_bytes) {
+        *start_size_bytes = 0;
+    }
     int lock_fd = acquire_ota_update_launch_lock(error);
     if (lock_fd < 0) {
         return false;
     }
     std::string log_path = ota_update_log_path();
-    if (!prepare_ota_update_log_file(log_path, error)) {
+    unsigned long long prepared_start_size = 0;
+    if (!prepare_ota_update_log_file(log_path, kOtaWebUpdateLogMaxBytes, &prepared_start_size, error)) {
         close(lock_fd);
         return false;
     }
@@ -3545,6 +3553,9 @@ bool schedule_ota_update(std::string* error) {
         return false;
     }
     close(lock_fd);
+    if (start_size_bytes) {
+        *start_size_bytes = prepared_start_size;
+    }
     return true;
 }
 
@@ -3820,18 +3831,47 @@ std::string parent_dir(const std::string& path) {
     return path.substr(0, pos);
 }
 
-bool prepare_ota_update_log_file(const std::string& path, std::string* error) {
+bool prepare_ota_update_log_file(const std::string& path,
+                                 size_t max_size,
+                                 unsigned long long* start_size_bytes,
+                                 std::string* error) {
+    if (start_size_bytes) {
+        *start_size_bytes = 0;
+    }
     if (!mkdir_p(parent_dir(path), error)) {
         return false;
     }
-    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(path.c_str(), O_WRONLY | O_CREAT, 0644);
     if (fd < 0) {
         if (error) *error = "open " + path + ": " + strerror(errno);
         return false;
     }
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        if (error) *error = "stat " + path + ": " + strerror(errno);
+        close(fd);
+        return false;
+    }
+    if (st.st_size < 0) {
+        if (error) *error = "stat " + path + ": negative file size";
+        close(fd);
+        return false;
+    }
+    unsigned long long size_bytes = static_cast<unsigned long long>(st.st_size);
+    if (size_bytes >= static_cast<unsigned long long>(max_size)) {
+        if (ftruncate(fd, 0) != 0) {
+            if (error) *error = "truncate " + path + ": " + strerror(errno);
+            close(fd);
+            return false;
+        }
+        size_bytes = 0;
+    }
     if (close(fd) != 0) {
         if (error) *error = "close " + path + ": " + strerror(errno);
         return false;
+    }
+    if (start_size_bytes) {
+        *start_size_bytes = size_bytes;
     }
     return true;
 }
@@ -5649,7 +5689,8 @@ ApiResponse handle_get_ota_log() {
 
 ApiResponse handle_post_ota_update() {
     std::string error;
-    if (!schedule_ota_update(&error)) {
+    unsigned long long start_size_bytes = 0;
+    if (!schedule_ota_update(&start_size_bytes, &error)) {
         return make_json_error(500, error.empty() ? "failed to start ota update" : error);
     }
 
@@ -5657,7 +5698,7 @@ ApiResponse handle_post_ota_update() {
     cJSON_AddBoolToObject(response, "ok", 1);
     cJSON_AddBoolToObject(response, "ota_update_started", 1);
     cJSON_AddStringToObject(response, "message", "ota update started");
-    cJSON_AddNumberToObject(response, "ota_log_start_size_bytes", 0);
+    cJSON_AddNumberToObject(response, "ota_log_start_size_bytes", static_cast<double>(start_size_bytes));
     return make_json_ok(response);
 }
 
