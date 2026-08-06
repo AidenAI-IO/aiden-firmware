@@ -7,6 +7,69 @@ import (
 	"time"
 )
 
+func TestPhoneBridgeUpdateStateDoesNotExposeUnknownValues(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+
+	state := bridge.UpdateState()
+	for _, key := range []string{"app_connected", "app_pip_enabled", "app_fgs_enabled"} {
+		if got := state[key]; got != "false" {
+			t.Errorf("%s = %q, want false", key, got)
+		}
+	}
+	for _, key := range []string{"app_state", "app_platform"} {
+		if got := state[key]; got != "" {
+			t.Errorf("%s = %q, want empty", key, got)
+		}
+	}
+	for key, value := range state {
+		if value == "unknown" {
+			t.Errorf("%s exposes unknown value", key)
+		}
+	}
+}
+
+func TestPhoneBridgeUpdateStateExpiresBackgroundBridgeModes(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.appStateAt = time.Now()
+	bridge.pipBridgeEnabled = true
+	bridge.pipBridgeSeen = true
+	bridge.mu.Unlock()
+	if got := bridge.UpdateState()["app_pip_enabled"]; got != "true" {
+		t.Fatalf("fresh app_pip_enabled = %q, want true", got)
+	}
+
+	bridge.mu.Lock()
+	bridge.appStateAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
+	bridge.mu.Unlock()
+	if got := bridge.UpdateState()["app_pip_enabled"]; got != "false" {
+		t.Fatalf("stale app_pip_enabled = %q, want false", got)
+	}
+
+	bridge.mu.Lock()
+	bridge.platform = "android"
+	bridge.appStateAt = time.Now()
+	bridge.fgsBridgeEnabled = true
+	bridge.fgsBridgeSeen = true
+	bridge.fgsBridgeAt = time.Now()
+	bridge.mu.Unlock()
+	if got := bridge.UpdateState()["app_fgs_enabled"]; got != "true" {
+		t.Fatalf("fresh app_fgs_enabled = %q, want true", got)
+	}
+
+	bridge.mu.Lock()
+	bridge.fgsBridgeAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
+	bridge.mu.Unlock()
+	if got := bridge.UpdateState()["app_fgs_enabled"]; got != "false" {
+		t.Fatalf("stale app_fgs_enabled = %q, want false", got)
+	}
+}
+
 func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()

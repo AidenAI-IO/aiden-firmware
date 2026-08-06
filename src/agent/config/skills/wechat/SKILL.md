@@ -3,7 +3,7 @@ name: wechat
 description: Use for WeChat tasks on Mac or iPhone, with platform-specific search and send rules.
 metadata:
   preferred_model: primary
-  allowed_tools: [bridge_open_app, screenshot, touch_gesture, mouse_click, keyboard_tap, enter_text]
+  allowed_tools: [open_app, screenshot, touch_gesture, mouse_click, keyboard_tap, enter_text]
 ---
 
 Use this skill together with `device-operator` for visible WeChat UI work.
@@ -14,7 +14,7 @@ Use this skill when the user asks to open WeChat, find a contact or chat, read m
 
 ## Common rules
 
-- Prefer `bridge_open_app` with `{"app":"WeChat"}` to launch WeChat.
+- Prefer `open_app` with `{"app":"WeChat"}` to launch WeChat.
 - Prefer search over blind scrolling.
 - Verify the chat title before sending anything.
 - Use `enter_text` for the WeChat chat input field.

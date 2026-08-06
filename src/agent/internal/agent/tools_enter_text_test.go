@@ -666,6 +666,48 @@ func TestEnterTextToolPrefersAvailableBridge(t *testing.T) {
 	}
 }
 
+func TestEnterTextToolCallKeepsBridgePathEnabled(t *testing.T) {
+	pb := newTestPhoneBridge(t)
+	pb.platform = "android"
+	pb.connected = true
+	pb.appState = "background"
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	hw := &textInputHardwareDeps{
+		pointerMode:  "touchscreen",
+		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: keyboardText,
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}
+	bridgeWrites := 0
+	tool := &EnterTextTool{
+		engine: newFastTextInputEngine(*hw, vision),
+		bridgeTool: &textInputBridge{
+			hw:       hw,
+			vision:   vision,
+			bridgeFn: func() *PhoneBridge { return pb },
+			clipboardWriteFn: func(context.Context, *PhoneBridge, string) error {
+				bridgeWrites++
+				return context.Canceled
+			},
+		},
+	}
+
+	out, err := tool.Call(context.Background(), `{"text":"Aiden","focus":{"x":500,"y":120,"coord_space":"normalized"}}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if bridgeWrites != 1 {
+		t.Fatalf("bridge writes = %d, want public enter_text to attempt Bridge once", bridgeWrites)
+	}
+	if len(keyboardText.calls) != 0 {
+		t.Fatalf("keyboard_text calls = %v, want no local fallback after attempted Bridge path", keyboardText.calls)
+	}
+	if enterTextOutputOK(out, nil) {
+		t.Fatalf("Call() output = %s, want failed Bridge result", out)
+	}
+}
+
 func TestEnterTextToolLocalPathRestoresIsolationOnSuccessAndFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
