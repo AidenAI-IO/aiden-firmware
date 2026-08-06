@@ -1,0 +1,322 @@
+#!/bin/sh
+# Bind the persistent opkg install root into /opt.
+#
+# See docs/07-operations/opkg-package-management.md.
+#
+# Why /userdata/opt: rootfs and oem are A/B partitions that are overwritten
+# wholesale by OTA, so /userdata is the only writable space a package can
+# survive an upgrade in (§6.1).
+#
+# Why a bind mount and not a symlink: overlay/ only syncs etc/ into the rootfs,
+# so a /opt symlink cannot be baked into the image; and the Buildroot skeleton
+# may already ship an empty /opt, which "ln -s" will not overwrite. A bind
+# mount works either way (§6.2). /opt itself has to be a real path because
+# Entware binaries carry it in PT_INTERP and DT_RUNPATH.
+#
+# What happens when the bind fails: /opt is sealed with a read-only tmpfs so
+# writes fail with EROFS instead of silently landing in the current A/B rootfs,
+# where they would neither persist nor be accounted for (§6.2.1). That seal is
+# the only thing actually enforced.
+#
+# A second, weaker effect backs it up: every "src" line lives in
+# /opt/etc/opkg/userfeeds.conf, so a failed mount leaves opkg with no package
+# source and nothing to install. Note this is NOT because opkg refuses to run --
+# /etc/opkg/90-userfeeds.conf is then a dangling symlink, and uClibc-ng's glob()
+# silently drops those, so opkg never even tries to open it and starts normally.
+# The protection comes purely from keeping every source inside /opt, which is
+# also why the default feed is seeded there rather than shipped as a rootfs
+# fragment (§6.5.1).
+
+OPT_DIR=${OPT_DIR:-/opt}
+USERDATA_DIR=${USERDATA_DIR:-/userdata}
+PERSISTENT_OPT=${PERSISTENT_OPT:-$USERDATA_DIR/opt}
+USERFEEDS_FILE=${USERFEEDS_FILE:-$OPT_DIR/etc/opkg/userfeeds.conf}
+# Source seeded into a freshly created userfeeds.conf. Expanded with "-" rather
+# than ":-" on purpose: DEFAULT_FEED= (explicitly empty) must produce a source
+# less image, which is what the tests use and what an image that does not want
+# to endorse a third-party feed would set.
+DEFAULT_FEED=${DEFAULT_FEED-src/gz entware https://bin.entware.net/armv7sf-k3.2}
+LOCK_DIR=${LOCK_DIR:-/run/lock}
+MOUNT_BIN=${MOUNT_BIN:-mount}
+UMOUNT_BIN=${UMOUNT_BIN:-umount}
+AWK_BIN=${AWK_BIN:-awk}
+MOUNTINFO_PATH=${MOUNTINFO_PATH:-/proc/self/mountinfo}
+
+# Print one property of the last /proc/self/mountinfo entry mounted at $1.
+#
+# /proc/mounts is not enough here: it reports a bind mount's *device*, never the
+# directory it was bound from, so it cannot tell /opt bound from /userdata/opt
+# apart from /opt bound from anywhere else on the same filesystem. mountinfo
+# also carries the path within the filesystem, which is what makes the source
+# check in opt_is_bound possible.
+#
+# mountinfo fields 1-6 are fixed (id, parent, major:minor, root, mount point,
+# options). A variable number of optional fields then precedes a "-" separator,
+# after which comes the filesystem type -- so fstype is found by walking to the
+# separator, not by column number.
+mount_field() {
+	[ -r "$MOUNTINFO_PATH" ] || return 1
+	"$AWK_BIN" -v target="$1" -v want="$2" '
+		$5 == target {
+			found = 1
+			dev = $3
+			root = $4
+			opts = $6
+			fstype = ""
+			for (i = 7; i <= NF; i++) {
+				if ($i == "-") {
+					fstype = $(i + 1)
+					break
+				}
+			}
+		}
+		END {
+			if (!found) exit 1
+			if (want == "dev") print dev
+			else if (want == "root") print root
+			else if (want == "opts") print opts
+			else if (want == "fstype") print fstype
+			else exit 1
+		}
+	' "$MOUNTINFO_PATH"
+}
+
+path_is_mounted() {
+	mount_field "$1" dev >/dev/null 2>&1
+}
+
+# The in-filesystem path that $PERSISTENT_OPT occupies, i.e. what mountinfo
+# reports as the "root" of a correct bind mount at $OPT_DIR.
+persistent_opt_fs_root() {
+	case "$PERSISTENT_OPT" in
+		"$USERDATA_DIR"/?*) ;;
+		*)
+			echo "S22opt: $PERSISTENT_OPT is not below $USERDATA_DIR" >&2
+			return 1
+			;;
+	esac
+
+	userdata_root=$(mount_field "$USERDATA_DIR" root) || return 1
+	printf '%s\n' "${userdata_root%/}${PERSISTENT_OPT#"$USERDATA_DIR"}"
+}
+
+# True only when $OPT_DIR is a bind of $PERSISTENT_OPT: same filesystem as
+# $USERDATA_DIR, and the same path inside it. Merely being mounted is not
+# enough -- a wrong source has to be reported as an error.
+opt_is_bound() {
+	opt_dev=$(mount_field "$OPT_DIR" dev) || return 1
+	opt_root=$(mount_field "$OPT_DIR" root) || return 1
+	userdata_dev=$(mount_field "$USERDATA_DIR" dev) || return 1
+	expected_root=$(persistent_opt_fs_root) || return 1
+
+	[ "$opt_dev" = "$userdata_dev" ] && [ "$opt_root" = "$expected_root" ]
+}
+
+opt_is_sealed() {
+	[ "$(mount_field "$OPT_DIR" fstype)" = "tmpfs" ] || return 1
+	case ",$(mount_field "$OPT_DIR" opts)," in
+		*,ro,*) return 0 ;;
+	esac
+	return 1
+}
+
+seal_opt() {
+	# Already sealed by an earlier attempt: nothing to do.
+	if opt_is_sealed; then
+		return 0
+	fi
+
+	# Mounted, but not by us and not read-only. Reporting success here would be
+	# a lie: the caller would believe /opt is protected while it is in fact
+	# writable, so an opkg install would land in whatever that mount is. Do not
+	# stack a tmpfs on top either -- start() deliberately refuses to touch a
+	# foreign mount, and unmounting something this script did not create could
+	# pull the rug from under whoever did.
+	if path_is_mounted "$OPT_DIR"; then
+		echo "S22opt: $OPT_DIR carries an unexpected writable mount and cannot be sealed; do not use opkg" >&2
+		return 1
+	fi
+
+	mkdir -p "$OPT_DIR" 2>/dev/null || true
+
+	# "ro" is what enforces the seal; size=0 does not cap a tmpfs.
+	if "$MOUNT_BIN" -t tmpfs -o ro,size=0 tmpfs "$OPT_DIR"; then
+		echo "S22opt: bind mount failed, $OPT_DIR sealed read-only" >&2
+		return 0
+	fi
+
+	echo "S22opt: bind mount failed and $OPT_DIR could not be sealed; do not use opkg" >&2
+	return 1
+}
+
+# Write a fresh userfeeds.conf. Only ever called when the file does not exist.
+#
+# Written via a temporary file and mv so a failure part way through (a full
+# /userdata is the realistic one) cannot leave a half-written source line that
+# opkg would then try to parse. mv within the same directory is atomic.
+write_default_userfeeds() {
+	_uf_dir=${USERFEEDS_FILE%/*}
+	_uf_tmp=$_uf_dir/.userfeeds.conf.$$
+
+	if [ -n "$DEFAULT_FEED" ]; then
+		{
+			echo "# opkg package sources, one 'src/gz <name> <url>' per line."
+			echo "#"
+			echo "# This file lives on /userdata and survives reboots and OTA."
+			echo "# A full flash erases /userdata; the default below is then"
+			echo "# written again on the next boot."
+			echo "#"
+			echo "# Edit or delete these lines freely -- an existing file is"
+			echo "# never rewritten, so your choice is kept."
+			echo "$DEFAULT_FEED"
+		} > "$_uf_tmp" 2>/dev/null || { rm -f "$_uf_tmp"; unset _uf_dir _uf_tmp; return 1; }
+	else
+		: > "$_uf_tmp" 2>/dev/null || { rm -f "$_uf_tmp"; unset _uf_dir _uf_tmp; return 1; }
+	fi
+
+	if ! mv "$_uf_tmp" "$USERFEEDS_FILE"; then
+		rm -f "$_uf_tmp"
+		unset _uf_dir _uf_tmp
+		return 1
+	fi
+
+	unset _uf_dir _uf_tmp
+	return 0
+}
+
+ensure_opt_layout() {
+	# opkg's lock_file lives under /run, which is a tmpfs and starts empty.
+	mkdir -p "$LOCK_DIR" 2>/dev/null || true
+
+	if ! mkdir -p \
+		"$OPT_DIR/bin" \
+		"$OPT_DIR/sbin" \
+		"$OPT_DIR/tmp" \
+		"$OPT_DIR/etc/opkg" \
+		"$OPT_DIR/var/cache/opkg" \
+		"$OPT_DIR/var/lib/opkg/info" \
+		"$OPT_DIR/var/lib/opkg/lists"; then
+		echo "S22opt: cannot create the opkg layout under $OPT_DIR" >&2
+		return 1
+	fi
+
+	# Create when absent, never truncate: this file holds the user's feed
+	# selection and is expected to survive reboots and OTA (§6.4). A full flash
+	# does erase /userdata, and this is where the default source comes back.
+	#
+	# Seeding here rather than shipping the source as a rootfs fragment is the
+	# whole point (§6.5.1). When /opt fails to mount, the only thing standing
+	# between that and packages landing in the A/B rootfs is that no source is
+	# reachable -- opkg does NOT refuse to run on a dangling config symlink the
+	# way §6.2.1 first assumed, because uClibc-ng's glob() silently drops it.
+	# Keeping every src line inside /opt is what preserves that property; a
+	# rootfs fragment would destroy it.
+	#
+	# Only the absent case is touched, so a user who deletes the seeded line
+	# keeps their choice: the file still exists and is left alone.
+	if [ ! -e "$USERFEEDS_FILE" ]; then
+		if ! write_default_userfeeds; then
+			echo "S22opt: cannot create $USERFEEDS_FILE" >&2
+			return 1
+		fi
+	fi
+
+	return 0
+}
+
+start() {
+	if opt_is_bound; then
+		ensure_opt_layout
+		return
+	fi
+
+	if ! path_is_mounted "$USERDATA_DIR"; then
+		echo "S22opt: $USERDATA_DIR is not mounted" >&2
+		seal_opt
+		return 1
+	fi
+
+	# A read-only seal left by an earlier failed boot holds nothing, so drop it
+	# and retry. That makes "S22opt restart" the recovery path once whatever
+	# broke the bind has been fixed.
+	if opt_is_sealed && ! "$UMOUNT_BIN" "$OPT_DIR"; then
+		echo "S22opt: cannot release the read-only seal on $OPT_DIR" >&2
+		return 1
+	fi
+
+	if path_is_mounted "$OPT_DIR"; then
+		echo "S22opt: $OPT_DIR is already mounted from an unexpected source" >&2
+		return 1
+	fi
+
+	if ! mkdir -p "$PERSISTENT_OPT" "$OPT_DIR"; then
+		echo "S22opt: cannot create $PERSISTENT_OPT" >&2
+		seal_opt
+		return 1
+	fi
+
+	if ! "$MOUNT_BIN" -o bind "$PERSISTENT_OPT" "$OPT_DIR"; then
+		seal_opt
+		return 1
+	fi
+
+	# Confirm through mountinfo rather than trusting the exit status: the mount
+	# can succeed and still land somewhere else -- if $PERSISTENT_OPT is a
+	# symlink, mount follows it, so /opt can end up bound to a rootfs directory.
+	# Such a mount is writable, so it has to be torn down and replaced by the
+	# seal; leaving it in place would drop the design's second layer of defence
+	# and let anything writing under /opt fill the system partition.
+	if ! opt_is_bound; then
+		echo "S22opt: $OPT_DIR is mounted but not bound from $PERSISTENT_OPT" >&2
+		if ! "$UMOUNT_BIN" "$OPT_DIR"; then
+			echo "S22opt: cannot release the unexpected mount on $OPT_DIR; do not use opkg" >&2
+			return 1
+		fi
+		seal_opt
+		return 1
+	fi
+
+	ensure_opt_layout
+}
+
+stop() {
+	# Deliberately not unmounted: processes started from /opt may still be
+	# running, and the kernel releases the mount on reboot anyway.
+	echo "opt bind is managed at boot"
+}
+
+status() {
+	if opt_is_bound; then
+		echo "opt=bound source=$PERSISTENT_OPT"
+		return 0
+	fi
+	if opt_is_sealed; then
+		echo "opt=sealed source=none (bind of $PERSISTENT_OPT failed; opkg is disabled)"
+		return 1
+	fi
+	if path_is_mounted "$OPT_DIR"; then
+		echo "opt=wrong-source (mounted, but not bound from $PERSISTENT_OPT)"
+		return 1
+	fi
+	echo "opt=unbound"
+	return 1
+}
+
+case "${1:-start}" in
+	start)
+		start
+		;;
+	stop)
+		stop
+		;;
+	restart|reload)
+		start
+		;;
+	status)
+		status
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart|reload|status}" >&2
+		exit 1
+		;;
+esac
