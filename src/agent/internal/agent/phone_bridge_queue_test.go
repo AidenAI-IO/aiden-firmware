@@ -71,6 +71,11 @@ func TestEnqueueAndPoll(t *testing.T) {
 func TestSendQueuedCommandWaitsForHTTPResult(t *testing.T) {
 	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
+	wakeCalled := make(chan string, 1)
+	bridge.bleWake = func(_ context.Context, reason string) error {
+		wakeCalled <- reason
+		return nil
+	}
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
@@ -107,6 +112,14 @@ func TestSendQueuedCommandWaitsForHTTPResult(t *testing.T) {
 	}
 	if resp.Method != "clipboard" {
 		t.Fatalf("SendQueuedCommand() method = %q, want clipboard", resp.Method)
+	}
+	select {
+	case reason := <-wakeCalled:
+		if reason != "phone_bridge" {
+			t.Fatalf("wake reason = %q, want phone_bridge", reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued command did not trigger BLE wake")
 	}
 }
 

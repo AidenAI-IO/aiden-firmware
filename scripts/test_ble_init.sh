@@ -1,0 +1,51 @@
+#!/bin/sh
+set -eu
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+BOARD_CONFIG="$ROOT_DIR/pico-sdk/project/cfg/BoardConfig_IPC/BoardConfig-EMMC-Buildroot-RV1106_Luckfox_Pico_Zero-IPC.mk"
+BOOT_CONF="$ROOT_DIR/overlay/etc/aiden_boot.conf"
+HCI_INIT="$ROOT_DIR/overlay/etc/init.d/S39hciinit"
+BLUEZ_INIT="$ROOT_DIR/overlay/etc/init.d/S40bluetoothd"
+BLE_INIT="$ROOT_DIR/overlay/etc/init.d/S41ble_service"
+BLE_CONFIG="$ROOT_DIR/overlay/etc/aiden_ble_service.conf"
+
+for path in "$BOARD_CONFIG" "$BOOT_CONF" "$HCI_INIT" "$BLUEZ_INIT" "$BLE_INIT" "$BLE_CONFIG"; do
+    if [ ! -f "$path" ]; then
+        echo "missing BLE integration file: $path" >&2
+        exit 1
+    fi
+done
+
+for script in "$HCI_INIT" "$BLUEZ_INIT" "$BLE_INIT"; do
+    if [ ! -x "$script" ]; then
+        echo "BLE init script must be executable: $script" >&2
+        exit 1
+    fi
+    sh -n "$script"
+done
+
+if [ -e "$ROOT_DIR/overlay/etc/init.d/S99hciinit" ]; then
+    echo "legacy late HCI init script must be removed" >&2
+    exit 1
+fi
+
+fragment_line=$(grep 'RK_KERNEL_DEFCONFIG_FRAGMENT=' "$BOARD_CONFIG")
+case "$fragment_line" in
+    *aiden-zram.config*rv1106-bt.config*) ;;
+    *) echo "Pico Zero kernel fragments must include zram and Bluetooth: $fragment_line" >&2; exit 1 ;;
+esac
+
+for setting in ENABLE_BLUETOOTH_HCI ENABLE_BLUETOOTHD ENABLE_BLE_SERVICE; do
+    if ! grep -Fxq "$setting=1" "$BOOT_CONF"; then
+        echo "$setting must be enabled by default" >&2
+        exit 1
+    fi
+done
+
+grep -Fq '/dev/ttyS1' "$HCI_INIT"
+grep -Fq '1500000' "$HCI_INIT"
+grep -Fq '/userdata/ble_service/bluetooth' "$BLUEZ_INIT"
+grep -Fq '/run/ble_service/ble_service.sock' "$BLE_CONFIG"
+grep -Fq './cmd/ble_service' "$ROOT_DIR/_build.sh"
+
+echo "BLE init tests passed"

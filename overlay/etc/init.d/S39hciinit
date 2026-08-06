@@ -1,0 +1,127 @@
+#!/bin/sh
+# Initialize the AIC8800 UART Bluetooth controller before bluetoothd starts.
+
+BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
+HCIATTACH_BIN=${HCIATTACH_BIN:-/usr/bin/hciattach}
+HCICONFIG_BIN=${HCICONFIG_BIN:-/usr/bin/hciconfig}
+TTY_DEVICE=${TTY_DEVICE:-/dev/ttyS1}
+PID_FILE=${PID_FILE:-/run/aiden-hciattach.pid}
+INITIAL_SPEED=${INITIAL_SPEED:-1500000}
+TARGET_SPEED=${TARGET_SPEED:-1500000}
+WAIT_SECONDS=${WAIT_SECONDS:-15}
+
+[ -f "$BOOT_CONF" ] && . "$BOOT_CONF"
+: "${ENABLE_BLUETOOTH_HCI:=1}"
+
+is_running() {
+    pid="$1"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+attached_pid() {
+    [ -f "$PID_FILE" ] || return 0
+    pid="$(cat "$PID_FILE" 2>/dev/null)"
+    case "$pid" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    if is_running "$pid"; then
+        echo "$pid"
+    fi
+}
+
+hci_ready() {
+    [ -x "$HCICONFIG_BIN" ] && "$HCICONFIG_BIN" hci0 >/dev/null 2>&1
+}
+
+wait_for_controller() {
+    elapsed=0
+    while [ "$elapsed" -lt "$WAIT_SECONDS" ]; do
+        if hci_ready; then
+            "$HCICONFIG_BIN" hci0 up >/dev/null 2>&1 || return 1
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
+start() {
+    if [ "$ENABLE_BLUETOOTH_HCI" != "1" ]; then
+        echo "Bluetooth HCI disabled by config (ENABLE_BLUETOOTH_HCI=$ENABLE_BLUETOOTH_HCI)"
+        return 0
+    fi
+
+    if hci_ready; then
+        "$HCICONFIG_BIN" hci0 up >/dev/null 2>&1 || return 1
+        echo "Bluetooth HCI already available"
+        return 0
+    fi
+    if [ ! -x "$HCIATTACH_BIN" ]; then
+        echo "hciattach binary not found: $HCIATTACH_BIN" >&2
+        return 1
+    fi
+    if [ ! -c "$TTY_DEVICE" ]; then
+        echo "Bluetooth UART does not exist: $TTY_DEVICE" >&2
+        return 1
+    fi
+    if [ ! -d /sys/module/aic8800_fdrv ]; then
+        echo "AIC8800 Wi-Fi/Bluetooth firmware driver is not ready" >&2
+        return 1
+    fi
+
+    pid="$(attached_pid)"
+    if is_running "$pid"; then
+        if wait_for_controller; then
+            echo "Bluetooth HCI initialized (pid $pid)"
+            return 0
+        fi
+        echo "existing hciattach process did not expose hci0" >&2
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$PID_FILE")"
+    "$HCIATTACH_BIN" -n -s "$INITIAL_SPEED" "$TTY_DEVICE" any \
+        "$TARGET_SPEED" flow nosleep >/var/log/aiden-hciattach.log 2>&1 &
+    pid="$!"
+    echo "$pid" > "$PID_FILE"
+
+    if ! wait_for_controller; then
+        kill "$pid" 2>/dev/null || true
+        rm -f "$PID_FILE"
+        echo "hciattach did not create hci0 within ${WAIT_SECONDS}s" >&2
+        return 1
+    fi
+
+    echo "Bluetooth HCI initialized (pid $pid)"
+}
+
+stop() {
+    if hci_ready; then
+        "$HCICONFIG_BIN" hci0 down >/dev/null 2>&1 || true
+    fi
+    pid="$(attached_pid)"
+    if is_running "$pid"; then
+        kill "$pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE"
+    echo "Bluetooth HCI stopped"
+}
+
+status() {
+    pid="$(attached_pid)"
+    if hci_ready; then
+        echo "hci=ready pid=${pid:-unknown} device=$TTY_DEVICE"
+        return 0
+    fi
+    echo "hci=unavailable pid=${pid:-none} device=$TTY_DEVICE"
+    return 1
+}
+
+case "${1:-}" in
+    start) start ;;
+    stop) stop ;;
+    restart|reload) stop; start ;;
+    status) status ;;
+    *) echo "Usage: $0 {start|stop|restart|reload|status}" >&2; exit 1 ;;
+esac

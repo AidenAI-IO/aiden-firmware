@@ -2,11 +2,13 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/ble"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -130,6 +132,7 @@ type PhoneBridge struct {
 	logger            *Logger
 	done              chan struct{}
 	queue             *CommandQueue // HTTP queue for background-compatible commands
+	bleWake           func(context.Context, string) error
 }
 
 func NewPhoneBridge(logger *Logger) *PhoneBridge {
@@ -137,7 +140,30 @@ func NewPhoneBridge(logger *Logger) *PhoneBridge {
 		pendingCmds: make(map[string]chan BridgeCommandResponse),
 		logger:      logger,
 		queue:       NewCommandQueue(logger),
+		bleWake:     defaultBLEWake,
 	}
+}
+
+func defaultBLEWake(ctx context.Context, reason string) error {
+	socketPath := strings.TrimSpace(os.Getenv("AIDEN_BLE_SERVICE_SOCKET"))
+	if socketPath == "" {
+		socketPath = "/run/ble_service/ble_service.sock"
+	}
+	_, err := ble.RequestWake(ctx, socketPath, reason)
+	return err
+}
+
+func (pb *PhoneBridge) notifyBLEWake() {
+	if pb.bleWake == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := pb.bleWake(ctx, "phone_bridge"); err != nil && pb.logger != nil {
+			pb.logger.Warn("phone-bridge: BLE wake unavailable: %v", err)
+		}
+	}()
 }
 
 func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -411,6 +437,7 @@ func (pb *PhoneBridge) SendQueuedCommand(ctx context.Context, cmd BridgeCommand)
 			Error: NewToolError(CodeToolExecutionFailed, fmt.Sprintf("enqueue command: %v", err)),
 		}, nil
 	}
+	pb.notifyBLEWake()
 
 	timeout := 10 * time.Second
 	if cmd.TimeoutMs > 0 {

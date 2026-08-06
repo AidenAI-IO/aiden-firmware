@@ -28,6 +28,10 @@ JSON header describes the request or response; large binary data (such as raw HD
 | `src/uds_server.*` | bind/listen/accept/thread lifecycle and dispatch to service handler |
 | `src/frame_ipc.*` | Frame service compatibility wrapper |
 
+`ble_service` implements the same envelope in Go at
+`/run/ble_service/ble_service.sock`. Its `status`, `wake`, and `events_since`
+operations are documented in [BLE Service](../03-services/ble-service.md).
+
 ## Cross-Language Clients
 
 Go or other languages don't need C++ ABI / cgo, just:

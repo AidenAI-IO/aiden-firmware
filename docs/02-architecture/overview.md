@@ -39,7 +39,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
 | --- | --- | --- |
 | Hardware Abstraction | `src/aiden_sdk.*` | Encapsulates GPIO, audio, video, HID-related low-level capabilities |
 | Common Transport | `src/uds_*` | Unix domain socket one-shot request/response transport layer |
-| C++ Services | `frame_service`, `audio_service` | Centrally manage hardware resources and expose them to other processes |
+| Hardware Services | `frame_service`, `audio_service`, `ble_service` | Centrally manage hardware resources and expose them to other processes |
 | Utility Programs | `*_cli`, `example_*`, `image_process` | Debugging, validation, and single-capability examples |
 | Go Agent | `src/agent` | LLM runtime, tool invocation, Web UI, HTTP Tool API, voice pipeline |
 | Firmware Integration | `overlay/`, `pico-sdk/` | Startup scripts, configuration files, userdata/oem injection |
@@ -70,3 +70,14 @@ LLM tool call → Go HID tool → /dev/hidg0 or /dev/hidg1 → target device
 ```text
 audio_service recording → RKNN Silero VAD → STT or audio attachment → LLM → TTS → audio_service playback
 ```
+
+### Bluetooth Notifications and Wake
+
+```text
+iOS ANCS → BlueZ/hci0 → ble_service event ring → UDS events_since
+Phone Bridge HTTP queue → ble_service UDS wake → Wake Notify → iOS native HTTP poll
+```
+
+BLE carries notification metadata and a wake hint only. Phone Bridge commands
+and results remain on WebSocket/HTTP transports, and ANCS events do not enter
+Agent memory in this layer.
