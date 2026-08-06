@@ -255,8 +255,8 @@ The three stall-score thresholds must satisfy
 ## `[providers.<name>]`
 
 Optional named provider configurations. Each section holds the credentials for
-one endpoint, and `[model]`/`[model_text]` reference it by putting the name in
-their own `provider` field. This lets several providers stay configured at once
+one endpoint, and `[model]` references it by putting the name in its `provider`
+field. This lets several providers stay configured at once
 so switching is a one-line change instead of a re-entry of keys.
 
 | Field       | Description                                                                                        |
@@ -732,5 +732,5 @@ Optional. Place `memory/extraction.yaml` under the config directory to control s
 
 ## Known limitations
 
-- `preferred_model`, `allowed_children`, and `model_text` are currently parsed but not fully wired into execution;
+- `preferred_model` and `allowed_children` are currently parsed but not fully wired into execution;
 - Example skills may reference old tools and should be checked before production use.

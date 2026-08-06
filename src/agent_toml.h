@@ -190,7 +190,6 @@ struct AgentToml {
     std::map<std::string, TTSProviderToml> tts_providers;
     std::map<std::string, STTProviderToml> stt_providers;
     ModelToml model;
-    ModelToml model_text;
     TTSToml tts;
     STTToml stt;
     AudioToml audio;

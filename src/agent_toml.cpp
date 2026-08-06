@@ -349,8 +349,6 @@ void apply_kv(AgentToml& cfg,
 
     if (section == "model") {
         fill_model(cfg.model);
-    } else if (section == "model_text") {
-        fill_model(cfg.model_text);
     } else if (section == "tts") {
         if (key == "provider") assign_string(&cfg.tts.provider, raw, &sub_err);
         else if (key == "api_key") assign_string(&cfg.tts.api_key, raw, &sub_err);
@@ -574,12 +572,11 @@ bool atomic_write(const std::string& path, const std::string& content, std::stri
 }
 
 struct LegacyModelMaxTokens {
-    std::string section;
     std::string raw;
     int lineno = 0;
 
-    LegacyModelMaxTokens(const std::string& section_name, const std::string& raw_value, int line)
-        : section(section_name), raw(raw_value), lineno(line) {}
+    LegacyModelMaxTokens(const std::string& raw_value, int line)
+        : raw(raw_value), lineno(line) {}
 };
 
 // migrate_flat_voice_credentials moves a flat [tts]/[stt] credential set onto a
@@ -700,7 +697,6 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
     int lineno = 0;
     std::string parse_error;
     bool model_max_response_tokens_seen = false;
-    bool model_text_max_response_tokens_seen = false;
     std::vector<LegacyModelMaxTokens> legacy_model_max_tokens;
 
     while (std::getline(in, line)) {
@@ -757,15 +753,11 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
             }
         }
 
-        if ((section == "model" || section == "model_text") && key == "max_response_tokens") {
-            if (section == "model") {
-                model_max_response_tokens_seen = true;
-            } else {
-                model_text_max_response_tokens_seen = true;
-            }
+        if (section == "model" && key == "max_response_tokens") {
+            model_max_response_tokens_seen = true;
         }
-        if ((section == "model" || section == "model_text") && key == "max_tokens") {
-            legacy_model_max_tokens.push_back(LegacyModelMaxTokens(section, value, lineno));
+        if (section == "model" && key == "max_tokens") {
+            legacy_model_max_tokens.push_back(LegacyModelMaxTokens(value, lineno));
             continue;
         }
         std::string apply_err;
@@ -777,25 +769,18 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
 
     if (parse_error.empty()) {
         for (const auto& legacy : legacy_model_max_tokens) {
-            bool canonical_seen = legacy.section == "model"
-                ? model_max_response_tokens_seen
-                : model_text_max_response_tokens_seen;
-            if (canonical_seen) {
+            if (model_max_response_tokens_seen) {
                 continue;
             }
 
             int value = 0;
             std::string legacy_error;
             if (!assign_non_negative_int(&value, legacy.raw, &legacy_error)) {
-                parse_error = "line " + std::to_string(legacy.lineno) + ": ["
-                    + legacy.section + "] max_tokens: " + legacy_error;
+                parse_error = "line " + std::to_string(legacy.lineno)
+                    + ": [model] max_tokens: " + legacy_error;
                 break;
             }
-            if (legacy.section == "model") {
-                cfg.model.max_response_tokens = value;
-            } else {
-                cfg.model_text.max_response_tokens = value;
-            }
+            cfg.model.max_response_tokens = value;
         }
     }
 
@@ -926,9 +911,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     out << "\n";
 
     emit_model(out, "model", cfg.model);
-    if (!cfg.model_text.provider.empty() || !cfg.model_text.model.empty()) {
-        emit_model(out, "model_text", cfg.model_text);
-    }
 
     out << "[tts]\n";
     emit_string(out, "provider", cfg.tts.provider);

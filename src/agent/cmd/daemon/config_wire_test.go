@@ -400,7 +400,6 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 		"live_activity",
 		"log",
 		"model",
-		"model_text",
 		"ota",
 		"providers",
 		"search",

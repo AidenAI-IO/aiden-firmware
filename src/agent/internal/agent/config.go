@@ -275,7 +275,6 @@ type Config struct {
 	TTSProviders               map[string]TTSProvider   `toml:"tts_providers,omitempty"` // Named TTS provider configurations
 	STTProviders               map[string]STTProvider   `toml:"stt_providers,omitempty"` // Named STT provider configurations
 	Model                      ModelConfig              `toml:"model"`
-	ModelText                  ModelConfig              `toml:"model_text,omitempty"` // Override for STT-then-text mode
 	TTS                        TTSConfig                `toml:"tts,omitempty"`
 	STT                        STTConfig                `toml:"stt,omitempty"`
 	HID                        HIDConfig                `toml:"hid"`
@@ -879,7 +878,6 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	// base_url inherited from a [providers] section as well as one set
 	// directly on the model.
 	clearNonAllowedModelBaseURL(&cfg.Model)
-	clearNonAllowedModelBaseURL(&cfg.ModelText)
 
 	applyRuntimeModelTemperatureDefaults(&cfg)
 	applyRuntimeModelReasoningEffortDefaults(&cfg)
@@ -905,7 +903,7 @@ func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
 }
 
 // applyRuntimeModelTemperatureDefaults resolves the sampling temperature for
-// model and model_text when the user has not set it. The default is sourced
+// the model when the user has not set it. The default is sourced
 // from the model's metadata (some models, e.g. Kimi K3, require a fixed
 // temperature) and falls back to defaultModelTemperature. An explicit
 // model.temperature always takes precedence. This is only called in
@@ -916,11 +914,6 @@ func applyRuntimeModelTemperatureDefaults(cfg *Config) {
 		return
 	}
 	applyModelTemperatureDefault(&cfg.Model)
-	// model_text is an optional override; only resolve a default when it is
-	// actually configured, otherwise leave the unused section untouched.
-	if strings.TrimSpace(cfg.ModelText.Provider) != "" || strings.TrimSpace(cfg.ModelText.Model) != "" {
-		applyModelTemperatureDefault(&cfg.ModelText)
-	}
 }
 
 func applyModelTemperatureDefault(m *ModelConfig) {
@@ -937,8 +930,8 @@ func applyModelTemperatureDefault(m *ModelConfig) {
 	m.Temperature = &temp
 }
 
-// applyRuntimeModelReasoningEffortDefaults resolves reasoning_effort for model
-// and model_text when the user has not set it (empty string). The default is
+// applyRuntimeModelReasoningEffortDefaults resolves reasoning_effort for the
+// model when the user has not set it (empty string). The default is
 // sourced from the model's metadata; forced-reasoning models (e.g. Kimi K3)
 // pin a lighter effort to keep streaming responsive. Unlike temperature there
 // is no global fallback: unknown models stay in auto mode (empty). An explicit
@@ -950,11 +943,6 @@ func applyRuntimeModelReasoningEffortDefaults(cfg *Config) {
 		return
 	}
 	applyModelReasoningEffortDefault(&cfg.Model)
-	// model_text is an optional override; only resolve a default when it is
-	// actually configured, otherwise leave the unused section untouched.
-	if strings.TrimSpace(cfg.ModelText.Provider) != "" || strings.TrimSpace(cfg.ModelText.Model) != "" {
-		applyModelReasoningEffortDefault(&cfg.ModelText)
-	}
 }
 
 func applyModelReasoningEffortDefault(m *ModelConfig) {
@@ -976,13 +964,6 @@ func applyRuntimeModelProviders(cfg *Config) error {
 
 	if err := resolveModelProvider(cfg, &cfg.Model); err != nil {
 		return fmt.Errorf("model: %w", err)
-	}
-
-	// model_text is optional; only resolve if provider is specified
-	if strings.TrimSpace(cfg.ModelText.Provider) != "" {
-		if err := resolveModelProvider(cfg, &cfg.ModelText); err != nil {
-			return fmt.Errorf("model_text: %w", err)
-		}
 	}
 
 	return nil
@@ -1217,9 +1198,7 @@ func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {
 	needsModel := metadata.IsDefined("model", "max_tokens") &&
 		!metadata.IsDefined("model", "max_response_tokens")
-	needsModelText := metadata.IsDefined("model_text", "max_tokens") &&
-		!metadata.IsDefined("model_text", "max_response_tokens")
-	if !needsModel && !needsModelText {
+	if !needsModel {
 		return nil
 	}
 
@@ -1233,13 +1212,6 @@ func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config)
 			return err
 		}
 		cfg.Model.MaxResponseTokens = value
-	}
-	if needsModelText {
-		value, err := legacyModelMaxTokens(raw, "model_text")
-		if err != nil {
-			return err
-		}
-		cfg.ModelText.MaxResponseTokens = value
 	}
 	return nil
 }
@@ -1275,9 +1247,6 @@ func (c Config) Validate() error {
 	}
 
 	if err := validateModelProviderRef("model", c.Providers, c.Model.Provider); err != nil {
-		return err
-	}
-	if err := validateModelProviderRef("model_text", c.Providers, c.ModelText.Provider); err != nil {
 		return err
 	}
 
@@ -1329,16 +1298,6 @@ func (c Config) Validate() error {
 	if c.Model.ModelMaxOutputTokens < 0 {
 		return fmt.Errorf("model.model_max_output_tokens must be >= 0, got %d", c.Model.ModelMaxOutputTokens)
 	}
-	if c.ModelText.ContextWindow < 0 {
-		return fmt.Errorf("model_text.context_window must be >= 0, got %d", c.ModelText.ContextWindow)
-	}
-	if c.ModelText.ModelMaxOutputTokens < 0 {
-		return fmt.Errorf("model_text.model_max_output_tokens must be >= 0, got %d", c.ModelText.ModelMaxOutputTokens)
-	}
-	if c.ModelText.MaxResponseTokens < 0 {
-		return fmt.Errorf("model_text.max_response_tokens must be >= 0, got %d", c.ModelText.MaxResponseTokens)
-	}
-
 	// Validate input_mode
 	if strings.TrimSpace(c.InputMode) != "" {
 		mode := strings.ToLower(strings.TrimSpace(c.InputMode))

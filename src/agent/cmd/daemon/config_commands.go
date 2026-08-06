@@ -50,7 +50,6 @@ type webConfigDTO struct {
 	TTSProviders       map[string]ttsProviderDTO     `json:"tts_providers,omitempty"`
 	STTProviders       map[string]sttProviderDTO     `json:"stt_providers,omitempty"`
 	Model              modelDTO                      `json:"model"`
-	ModelText          modelDTO                      `json:"model_text"`
 	TTS                ttsDTO                        `json:"tts"`
 	STT                sttDTO                        `json:"stt"`
 	Audio              audioDTO                      `json:"audio"`
@@ -331,16 +330,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			ContextWindow:        d.Model.ContextWindow,
 			ModelMaxOutputTokens: d.Model.ModelMaxOutputTokens,
 		},
-		ModelText: agent.ModelConfig{
-			Provider:             d.ModelText.Provider,
-			APIKey:               d.ModelText.APIKey,
-			Model:                d.ModelText.Model,
-			BaseURL:              d.ModelText.BaseURL,
-			Temperature:          d.ModelText.Temperature,
-			MaxResponseTokens:    d.ModelText.MaxResponseTokens,
-			ContextWindow:        d.ModelText.ContextWindow,
-			ModelMaxOutputTokens: d.ModelText.ModelMaxOutputTokens,
-		},
 		TTS: agent.TTSConfig{
 			Provider:    d.TTS.Provider,
 			APIKey:      d.TTS.APIKey,
@@ -603,17 +592,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
 			ContextWindow:        cfg.Model.ContextWindow,
 			ModelMaxOutputTokens: cfg.Model.ModelMaxOutputTokens,
-		},
-		ModelText: modelDTO{
-			Provider:             cfg.ModelText.Provider,
-			APIKey:               cfg.ModelText.APIKey,
-			Model:                cfg.ModelText.Model,
-			BaseURL:              cfg.ModelText.BaseURL,
-			ReasoningEffort:      cfg.ModelText.ReasoningEffort,
-			Temperature:          cfg.ModelText.Temperature,
-			MaxResponseTokens:    cfg.ModelText.MaxResponseTokens,
-			ContextWindow:        cfg.ModelText.ContextWindow,
-			ModelMaxOutputTokens: cfg.ModelText.ModelMaxOutputTokens,
 		},
 		TTS: ttsDTO{
 			Provider:    cfg.TTS.Provider,

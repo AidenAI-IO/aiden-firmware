@@ -629,7 +629,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	// (scalar/string/bool) fields are rendered; nested structs and infra-only
 	// fields are surfaced under their own sections or not at all.
 	agentSkip := map[string]bool{
-		"model": true, "model_text": true, "tts": true, "stt": true, "device": true, "hid": true,
+		"model": true, "tts": true, "stt": true, "device": true, "hid": true,
 		"audio": true, "search": true, "log": true, "telemetry": true, "termination_policy": true, "live_activity": true,
 		"skills_dirs": true, "bundled_skills_dir": true,
 	}

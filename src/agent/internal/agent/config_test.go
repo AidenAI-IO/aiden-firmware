@@ -187,11 +187,6 @@ func TestLoadRuntimeConfigClearsBaseURLOnlyForProvidersWithoutOverrides(t *testi
 provider = "` + tt.provider + `"
 model = "some-model"
 base_url = "https://gateway.example.com/v1"
-
-[model_text]
-provider = "` + tt.provider + `"
-model = "some-model"
-base_url = "https://gateway.example.com/v1"
 `
 			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
@@ -203,9 +198,6 @@ base_url = "https://gateway.example.com/v1"
 			}
 			if cfg.Model.BaseURL != tt.wantBaseURL {
 				t.Errorf("model.base_url = %q, want %q", cfg.Model.BaseURL, tt.wantBaseURL)
-			}
-			if cfg.ModelText.BaseURL != tt.wantBaseURL {
-				t.Errorf("model_text.base_url = %q, want %q", cfg.ModelText.BaseURL, tt.wantBaseURL)
 			}
 		})
 	}
@@ -257,33 +249,6 @@ func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
 				t.Errorf("model.temperature = %v, want %v", formatFloatPtr(cfg.Model.Temperature), formatFloatPtr(tt.want))
 			}
 		})
-	}
-}
-
-func TestLoadRuntimeConfigResolvesModelTextTemperatureDefault(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent.toml")
-	contents := `
-[model]
-provider = "openai"
-model = "gpt-5.5"
-
-[model_text]
-provider = "kimi"
-model = "kimi-k3"
-`
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	cfg, err := LoadRuntimeConfig(path)
-	if err != nil {
-		t.Fatalf("LoadRuntimeConfig() error = %v", err)
-	}
-	if !floatPtrEqual(cfg.Model.Temperature, floatPtr(defaultModelTemperature)) {
-		t.Errorf("model.temperature = %v, want %v (fallback)", formatFloatPtr(cfg.Model.Temperature), defaultModelTemperature)
-	}
-	if !floatPtrEqual(cfg.ModelText.Temperature, floatPtr(1)) {
-		t.Errorf("model_text.temperature = %v, want 1 (kimi-k3 default)", formatFloatPtr(cfg.ModelText.Temperature))
 	}
 }
 
@@ -493,33 +458,6 @@ func TestLoadRuntimeConfigResolvesModelReasoningEffortDefault(t *testing.T) {
 				t.Errorf("model.reasoning_effort = %q, want %q", cfg.Model.ReasoningEffort, tt.want)
 			}
 		})
-	}
-}
-
-func TestLoadRuntimeConfigResolvesModelTextReasoningEffortDefault(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent.toml")
-	contents := `
-[model]
-provider = "openai"
-model = "gpt-5.5"
-
-[model_text]
-provider = "kimi"
-model = "kimi-k3"
-`
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	cfg, err := LoadRuntimeConfig(path)
-	if err != nil {
-		t.Fatalf("LoadRuntimeConfig() error = %v", err)
-	}
-	if cfg.Model.ReasoningEffort != "" {
-		t.Errorf("model.reasoning_effort = %q, want \"\" (unknown model stays auto)", cfg.Model.ReasoningEffort)
-	}
-	if cfg.ModelText.ReasoningEffort != "low" {
-		t.Errorf("model_text.reasoning_effort = %q, want \"low\" (kimi-k3 default)", cfg.ModelText.ReasoningEffort)
 	}
 }
 
@@ -1061,32 +999,6 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 		t.Fatalf("expected model.model_max_output_tokens validation error, got %v", err)
 	}
 
-	cfg = Config{
-		Model:     ModelConfig{Provider: "fake"},
-		ModelText: ModelConfig{ContextWindow: -1},
-	}
-	err = cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "model_text.context_window") {
-		t.Fatalf("expected model_text.context_window validation error, got %v", err)
-	}
-
-	cfg = Config{
-		Model:     ModelConfig{Provider: "fake"},
-		ModelText: ModelConfig{ModelMaxOutputTokens: -1},
-	}
-	err = cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "model_text.model_max_output_tokens") {
-		t.Fatalf("expected model_text.model_max_output_tokens validation error, got %v", err)
-	}
-
-	cfg = Config{
-		Model:     ModelConfig{Provider: "fake"},
-		ModelText: ModelConfig{MaxResponseTokens: -1},
-	}
-	err = cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "model_text.max_response_tokens") {
-		t.Fatalf("expected model_text.max_response_tokens validation error, got %v", err)
-	}
 }
 
 func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {

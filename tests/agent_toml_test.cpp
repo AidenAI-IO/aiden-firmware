@@ -499,7 +499,7 @@ TEST_CASE("agent_toml rejects negative model metadata overrides") {
     };
     const Case cases[] = {
         {"negative_context_window.toml", "model", "context_window"},
-        {"negative_model_max_output_tokens.toml", "model_text", "model_max_output_tokens"},
+        {"negative_model_max_output_tokens.toml", "model", "model_max_output_tokens"},
     };
 
     for (const auto& tc : cases) {
@@ -529,7 +529,7 @@ TEST_CASE("agent_toml rejects negative model response token limits") {
     };
     const Case cases[] = {
         {"negative_max_response_tokens.toml", "model", "max_response_tokens"},
-        {"negative_legacy_max_tokens.toml", "model_text", "max_tokens"},
+        {"negative_legacy_max_tokens.toml", "model", "max_tokens"},
     };
 
     for (const auto& tc : cases) {

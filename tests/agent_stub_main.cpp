@@ -59,8 +59,6 @@ const char* kDefaultConfig =
     "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
     "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
     "\"context_window\":0,\"model_max_output_tokens\":0},"
-    "\"model_text\":{\"provider\":\"\",\"api_key\":\"\",\"model\":\"\",\"base_url\":\"\","
-    "\"temperature\":0,\"max_response_tokens\":0,\"context_window\":0,\"model_max_output_tokens\":0},"
     "\"tts_providers\":{\"minimax-cn\":{\"provider\":\"minimax-cn\"}},"
     "\"stt_providers\":{\"openai-whisper\":{\"provider\":\"openai-whisper\"}},"
     "\"tts\":{\"provider\":\"minimax-cn\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","

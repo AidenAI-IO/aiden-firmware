@@ -762,15 +762,6 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"model", "max_response_tokens", CONFIG_FIELD_NUMBER},
         {"model", "context_window", CONFIG_FIELD_NUMBER},
         {"model", "model_max_output_tokens", CONFIG_FIELD_NUMBER},
-        {"model_text", "provider", CONFIG_FIELD_STRING},
-        {"model_text", "model", CONFIG_FIELD_STRING},
-        {"model_text", "api_key", CONFIG_FIELD_STRING},
-        {"model_text", "base_url", CONFIG_FIELD_STRING},
-        {"model_text", "reasoning_effort", CONFIG_FIELD_STRING},
-        {"model_text", "temperature", CONFIG_FIELD_NUMBER},
-        {"model_text", "max_response_tokens", CONFIG_FIELD_NUMBER},
-        {"model_text", "context_window", CONFIG_FIELD_NUMBER},
-        {"model_text", "model_max_output_tokens", CONFIG_FIELD_NUMBER},
         {"tts", "provider", CONFIG_FIELD_STRING},
         {"tts", "api_key", CONFIG_FIELD_STRING},
         {"tts", "model", CONFIG_FIELD_STRING},
@@ -1708,7 +1699,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
     }
 
     const char* sections[] = {
-        "providers", "tts_providers", "stt_providers", "model", "model_text",
+        "providers", "tts_providers", "stt_providers", "model",
         "tts", "stt", "audio", "audio_archive",
         "voice_notifications", "log", "ota", "device", "hid", "search", "telemetry",
         "termination_policy", "live_activity", "agent", NULL,
@@ -1751,7 +1742,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
     // requires it (Config.Validate: "model.provider is required"), so accepting
     // an empty value writes an agent.toml that loads here but refuses to start.
     // The provider select leads with an empty placeholder, which is how a save
-    // can carry one. model_text.provider is exempt -- empty means "inherit".
+    // can carry one.
     cJSON* model_section = cJSON_GetObjectItem(root, "model");
     if (json_is_object(model_section) && cJSON_GetObjectItem(model_section, "provider")
         && !validate_required_string(model_section, "model", "provider", false, error)) {
@@ -2817,18 +2808,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(model, "context_window", config.model.context_window);
     cJSON_AddNumberToObject(model, "model_max_output_tokens", config.model.model_max_output_tokens);
 
-    cJSON* model_text = add_object(root, "model_text");
-    cJSON_AddStringToObject(model_text, "provider", config.model_text.provider.c_str());
-    cJSON_AddStringToObject(model_text, "api_key", config.model_text.api_key.c_str());
-    cJSON_AddStringToObject(model_text, "model", config.model_text.model.c_str());
-    cJSON_AddStringToObject(model_text, "base_url", config.model_text.base_url.c_str());
-    if (config.model_text.has_temperature) {
-        cJSON_AddNumberToObject(model_text, "temperature", config.model_text.temperature);
-    }
-    cJSON_AddNumberToObject(model_text, "max_response_tokens", config.model_text.max_response_tokens);
-    cJSON_AddNumberToObject(model_text, "context_window", config.model_text.context_window);
-    cJSON_AddNumberToObject(model_text, "model_max_output_tokens", config.model_text.model_max_output_tokens);
-
     cJSON* tts = add_object(root, "tts");
     cJSON_AddStringToObject(tts, "provider", config.tts.provider.c_str());
     cJSON_AddStringToObject(tts, "api_key", config.tts.api_key.c_str());
@@ -3320,7 +3299,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     }
 
     update_model_from_json(cJSON_GetObjectItem(root, "model"), &config->model);
-    update_model_from_json(cJSON_GetObjectItem(root, "model_text"), &config->model_text);
 
     cJSON* tts = cJSON_GetObjectItem(root, "tts");
     if (json_is_object(tts)) {

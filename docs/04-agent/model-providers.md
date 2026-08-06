@@ -143,26 +143,6 @@ model = "qwen2.5:14b"
 # On deploy, change to: provider = "prod"
 ```
 
-### Different providers for voice and text
-
-```toml
-[providers.openai-main]
-provider = "openai"
-api_key = "sk-openai-xxx"
-
-[providers.kimi-fast]
-provider = "kimi"
-api_key = "sk-kimi-xxx"
-
-[model]
-provider = "openai-main"  # voice mode uses OpenAI
-model = "gpt-4o"
-
-[model_text]
-provider = "kimi-fast"    # text mode uses Kimi
-model = "moonshot-v1-8k"
-```
-
 ## Resolution rules
 
 `[model].provider` resolves in this order:
@@ -241,7 +221,7 @@ key, an optional base URL, and the name, in that order.
   `$` is stored as `token_env`, so `$OPENAI_API_KEY` reads the key from that
   variable at runtime. Anything else is stored as `api_key`.
 - Renaming an existing provider rewrites the `provider` reference in `[model]`
-  and `[model_text]` in the same save, so the reference cannot dangle.
+  in the same save, so the reference cannot dangle.
 
 ## Switching providers
 
@@ -295,7 +275,7 @@ model = "gpt-4o"
 **Error:** `model.provider: unknown provider "non-existent"`
 
 When other providers are configured, the message also lists them, so a typo is
-easy to spot. `model_text` reports the same way under `model_text.provider`.
+easy to spot.
 
 ### Provider is missing its type
 

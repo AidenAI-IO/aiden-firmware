@@ -222,8 +222,6 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
         "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
         "\"context_window\":0,\"model_max_output_tokens\":0},"
-        "\"model_text\":{\"provider\":\"\",\"api_key\":\"\",\"model\":\"\",\"base_url\":\"\","
-        "\"temperature\":0,\"max_response_tokens\":0,\"context_window\":0,\"model_max_output_tokens\":0},"
         "\"tts_providers\":{\"minimax-cn\":{\"provider\":\"minimax-cn\"}},"
         "\"stt_providers\":{\"openai-whisper\":{\"provider\":\"openai-whisper\"}},"
         "\"tts\":{\"provider\":\"minimax-cn\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
@@ -2337,13 +2335,10 @@ TEST_CASE("config_web: GET /api/config accepts optional field-level omissions fr
         const_cast<char*>(tmp.c_str()),
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
-    const std::string partial_config = remove_nested_key(remove_nested_key(
+    const std::string partial_config = remove_nested_key(
         resolved_config_json("duckduckgo", false),
         "hid",
         "android_keyboard_device"
-    ),
-        "model_text",
-        "provider"
     );
     write_file(tmp + "/config.json", partial_config);
     StubEnv env;
@@ -2437,7 +2432,6 @@ TEST_CASE("config_web: GET /api/config accepts section-level omissions from reso
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
     std::string partial_config = resolved_config_json("duckduckgo", false);
-    partial_config = remove_top_level_key(partial_config, "model_text");
     partial_config = remove_top_level_key(partial_config, "audio_archive");
     write_file(tmp + "/config.json", partial_config);
     StubEnv env;

@@ -180,53 +180,6 @@ api_key = "sk-test-key"
 	}
 }
 
-func TestModelTextProviderReferences(t *testing.T) {
-	config := `
-[providers.openai-main]
-provider = "openai"
-api_key = "sk-openai-key"
-
-[providers.kimi-main]
-provider = "kimi"
-api_key = "sk-kimi-key"
-
-[model]
-provider = "openai-main"
-model = "gpt-4o"
-
-[model_text]
-provider = "kimi-main"
-model = "moonshot-v1-8k"
-`
-
-	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "agent.toml")
-	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
-		t.Fatalf("failed to write config: %v", err)
-	}
-
-	cfg, err := LoadRuntimeConfig(configPath)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify model
-	if cfg.Model.Provider != "openai" {
-		t.Errorf("model.provider = %q, want %q", cfg.Model.Provider, "openai")
-	}
-	if cfg.Model.APIKey != "sk-openai-key" {
-		t.Errorf("model.api_key = %q, want %q", cfg.Model.APIKey, "sk-openai-key")
-	}
-
-	// Verify model_text
-	if cfg.ModelText.Provider != "kimi" {
-		t.Errorf("model_text.provider = %q, want %q", cfg.ModelText.Provider, "kimi")
-	}
-	if cfg.ModelText.APIKey != "sk-kimi-key" {
-		t.Errorf("model_text.api_key = %q, want %q", cfg.ModelText.APIKey, "sk-kimi-key")
-	}
-}
-
 func TestProviderValidation(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -425,28 +378,6 @@ model = "gpt-4o"
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error %q does not mention %q", err.Error(), want)
 			}
-		}
-	})
-
-	t.Run("model_text provider naming a missing section", func(t *testing.T) {
-		_, err := loadProviderConfig(t, `
-[providers.exists]
-provider = "openai"
-api_key = "sk-x"
-
-[model]
-provider = "exists"
-model = "gpt-4o"
-
-[model_text]
-provider = "typo-here"
-model = "gpt-4o"
-`)
-		if err == nil {
-			t.Fatal("expected a dangling model_text provider reference to be rejected")
-		}
-		if !strings.Contains(err.Error(), "model_text.provider") {
-			t.Errorf("error %q does not mention model_text.provider", err.Error())
 		}
 	})
 
