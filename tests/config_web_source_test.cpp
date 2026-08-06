@@ -2066,10 +2066,71 @@ TEST_CASE("config web html defines provider ui symbols on executable lines") {
     }
 }
 
-// The [model] provider select offers configured [model_providers.*] entries only,
-// plus an add shortcut. A bare provider type carries no credentials, so
+TEST_CASE("config web keeps provider management beside each provider select") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("id=\\\"section-providers\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"section-tts-providers\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"section-stt-providers\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"providersList\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"ttsProvidersList\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"sttProvidersList\\\"") == std::string::npos);
+
+    const char* action_ids[] = {
+        "addProviderBtn", "editProviderBtn", "deleteProviderBtn",
+        "addTtsProviderBtn", "editTtsProviderBtn", "deleteTtsProviderBtn",
+        "addSttProviderBtn", "editSttProviderBtn", "deleteSttProviderBtn",
+        NULL,
+    };
+    for (int i = 0; action_ids[i]; ++i) {
+        CHECK_MESSAGE(html.find("id=\\\"" + std::string(action_ids[i]) + "\\\"") !=
+                          std::string::npos,
+                      action_ids[i]);
+    }
+    CHECK(html.find("class=\\\"provider-picker\\\"") != std::string::npos);
+}
+
+TEST_CASE("config web collapses the model picker around the current model") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("<details id=\\\"modelSelectorDetails\\\"") != std::string::npos);
+    CHECK(html.find("<summary>") != std::string::npos);
+    CHECK(html.find("id=\\\"modelSelectorSummary\\\"") != std::string::npos);
+    CHECK(html.find("function syncModelSelectorSummary()") != std::string::npos);
+}
+
+TEST_CASE("config web provider deletion keeps active references valid") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("async function deleteSelectedProvider(kind)") != std::string::npos);
+    CHECK(html.find("remainingNames.length===0") != std::string::npos);
+    CHECK(html.find("Add or select another provider before deleting it.") != std::string::npos);
+    CHECK(html.find("context.refPatch(name,replacement)") != std::string::npos);
+    CHECK(html.find("body[context.configKey]=nextRecords") != std::string::npos);
+}
+
+// The [model] provider select offers configured [model_providers.*] entries only.
+// A bare provider type carries no credentials, so
 // offering the metadata enum let the user pick a provider that cannot
-// authenticate; the type now lives in the Add Provider dialog instead.
+// authenticate; adding a record is a button beside the select instead.
 TEST_CASE("config web html lists only configured providers in the provider select") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
@@ -2108,17 +2169,11 @@ TEST_CASE("config web html lists only configured providers in the provider selec
     // The provider the config already references has to stay selectable, or
     // loading an existing agent.toml would silently retarget the model.
     CHECK(inject_body.find("!known[current]") != std::string::npos);
-    // An empty placeholder must lead so the add sentinel is never the value a
-    // fresh config falls back to.
+    // An empty placeholder leads for a fresh config.
     CHECK(inject_body.find("options.unshift({value:'',label:'-- Select Provider --'") !=
           std::string::npos);
-    CHECK(inject_body.find("options.push({value:ADD_PROVIDER_OPTION,label:'+ Add Provider...'") !=
-          std::string::npos);
-    // The sentinel has to be a value the backend rejects as a provider name so
-    // it can never be mistaken for a real [model_providers.*] key.
-    CHECK(js.find("const ADD_PROVIDER_OPTION='+ add-provider';") != std::string::npos);
-    // Both new option labels need a zh-CN entry; the page defaults to zh-CN.
-    CHECK(js.find("'+ Add Provider...':'") != std::string::npos);
+    CHECK(inject_body.find("ADD_PROVIDER_OPTION") == std::string::npos);
+    CHECK(js.find("id=\"addProviderBtn\"") != std::string::npos);
     CHECK(js.find("'-- Select Provider --':'") != std::string::npos);
 }
 
@@ -2138,9 +2193,9 @@ TEST_CASE("config web html uses canonical provider map and type field names") {
     CHECK(html.find("hydrateSelectField(section,'type'") != std::string::npos);
 }
 
-// Picking the add shortcut must not leave the sentinel sitting in the select
-// (it would be saved as model.provider) and must open the Add Provider dialog.
-TEST_CASE("config web html turns the provider add option into the provider dialog") {
+// Adding a provider is an explicit action beside the select, so the select never
+// has to carry a sentinel value that could leak into model.provider.
+TEST_CASE("config web html opens the provider dialog from the inline add button") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
     REQUIRE(html_in.good());
@@ -2149,40 +2204,20 @@ TEST_CASE("config web html turns the provider add option into the provider dialo
     html_buffer << html_in.rdbuf();
     const std::string js = decode_html_header_literals(html_buffer.str());
 
+    CHECK(js.find("document.getElementById('addProviderBtn')") != std::string::npos);
+    CHECK(js.find("addBtn.onclick = () => this.addProvider()") != std::string::npos);
+    CHECK(js.find("ADD_PROVIDER_OPTION") == std::string::npos);
+
     const size_t listener_at = js.find("document.addEventListener('change', (e) => { if (e.target.id !== 'model_provider')");
     REQUIRE(listener_at != std::string::npos);
-    const std::string listener_body = js.substr(listener_at, 400);
-    CHECK(listener_body.find("e.target.value === ADD_PROVIDER_OPTION") != std::string::npos);
-    CHECK(listener_body.find("restoreModelProviderValue()") != std::string::npos);
-    CHECK(listener_body.find("ModelProvidersManager.addProvider({selectIntoModel: true})") !=
-          std::string::npos);
-    // Any real pick has to be remembered, or restoring after a cancelled add
-    // would fall back to a stale provider.
+    const std::string listener_body = js.substr(listener_at, 300);
     CHECK(listener_body.find("rememberModelProvider()") != std::string::npos);
-
-    // A provider added from the select is selected once the save round-trips.
-    CHECK(js.find("if (selectIntoModel) { selectModelProvider(selectIntoModel); }") !=
-          std::string::npos);
-    CHECK(js.find("saveModelProviders: async function(extraConfig, selectIntoModel)") !=
-          std::string::npos);
-    // The Add Provider card button must not inherit that auto-select.
-    CHECK(js.find("addProvider: function(options) { this.pendingModelSelect = "
-                  "!!(options && options.selectIntoModel);") != std::string::npos);
-    // Editing an existing provider is not an add, so it never auto-selects.
-    CHECK(js.find("const selectInto = this.pendingModelSelect && !editName ? name : ''") !=
-          std::string::npos);
-
-    // Defence in depth: even if the sentinel were somehow current at save time,
-    // readSection must not persist it as model.provider.
-    CHECK(js.find("if(section==='model'&&key==='provider'&&raw===ADD_PROVIDER_OPTION)") !=
-          std::string::npos);
+    CHECK(listener_body.find("updateProviderActionState('model')") != std::string::npos);
 }
 
-// The remembered provider backs the sentinel restore. Paths that repopulate the
-// select without firing a change event (snapshot restore on cancel, refill from
-// the save response) have to update it, or picking the add option restores the
-// provider the user abandoned instead of the live one. Keeping one writer that
-// reads the DOM is what makes that hold for every such path.
+// Paths that repopulate the select without firing a change event (snapshot
+// restore on cancel, refill from the save response) keep the remembered value in
+// sync. Keeping one writer that reads the DOM makes that invariant explicit.
 TEST_CASE("config web html keeps the remembered provider in sync with the select") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
@@ -2193,11 +2228,10 @@ TEST_CASE("config web html keeps the remembered provider in sync with the select
     const std::string js = decode_html_header_literals(html_buffer.str());
 
     CHECK(js.find("function rememberModelProvider(){") != std::string::npos);
-    // The sentinel must never be what gets remembered.
     const size_t remember_at = js.find("function rememberModelProvider(){");
     REQUIRE(remember_at != std::string::npos);
     const std::string remember_body = js.substr(remember_at, 200);
-    CHECK(remember_body.find("el.value!==ADD_PROVIDER_OPTION") != std::string::npos);
+    CHECK(remember_body.find("lastModelProviderValue=el.value") != std::string::npos);
 
     // One writer: nothing else may assign the remembered value directly. Count
     // real assignments only -- `lastModelProviderValue===` is a comparison, and
@@ -2561,9 +2595,10 @@ TEST_CASE("config web builds tts and stt provider records from one factory") {
     CHECK(html.find("configKey:'stt_providers'") != std::string::npos);
     CHECK(html.find("refFieldId:'stt_provider'") != std::string::npos);
 
-    // Both cards, and both lists the factory renders into.
-    CHECK(html.find("id=\\\"ttsProvidersList\\\"") != std::string::npos);
-    CHECK(html.find("id=\\\"sttProvidersList\\\"") != std::string::npos);
+    // Both inline add actions are wired through the same manager factory. The
+    // old standalone record lists are intentionally gone.
+    CHECK(html.find("id=\\\"ttsProvidersList\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"sttProvidersList\\\"") == std::string::npos);
     CHECK(html.find("id=\\\"addTtsProviderBtn\\\"") != std::string::npos);
     CHECK(html.find("id=\\\"addSttProviderBtn\\\"") != std::string::npos);
 
@@ -2751,8 +2786,8 @@ TEST_CASE("config web sends provider rename metadata for masked secrets") {
                     "section,renamedFrom,name)") != std::string::npos);
 }
 
-// The [tts]/[stt] provider select offers configured record names plus an add
-// shortcut, matching [model]. A bare provider type already in agent.toml is kept
+// The [tts]/[stt] provider select offers configured record names. A bare
+// provider type already in agent.toml is kept
 // as an option so a pre-records config still round-trips instead of silently
 // losing its provider.
 TEST_CASE("config web offers voice record names in the provider select") {
@@ -2772,17 +2807,13 @@ TEST_CASE("config web offers voice record names in the provider select") {
 
     CHECK(inject_body.find("voiceRecordOptions(manager.records)") != std::string::npos);
     CHECK(inject_body.find("label:'-- Select Provider --'") != std::string::npos);
-    CHECK(inject_body.find("value:ADD_PROVIDER_OPTION,label:'+ Add Provider...'") != std::string::npos);
+    CHECK(inject_body.find("ADD_PROVIDER_OPTION") == std::string::npos);
     // An unknown current value is preserved as an option.
     CHECK(inject_body.find("!known[current]") != std::string::npos);
 
-    // Choosing the add shortcut must not be saved as the provider: it has to
-    // restore the previous value and open the dialog.
+    // Selection changes only update the current record management state; adding
+    // records is handled by the explicit inline buttons.
     CHECK(html.find("function bindVoiceProviderSelect(spec)") != std::string::npos);
-    CHECK(html.find("restoreVoiceProviderValue(spec)") != std::string::npos);
-    CHECK(html.find("manager.addRecord({selectIntoRef:true})") != std::string::npos);
-
-    // Localized labels for the two new cards.
-    CHECK(html.find("'TTS Providers':'") != std::string::npos);
-    CHECK(html.find("'STT Providers':'") != std::string::npos);
+    CHECK(html.find("updateProviderActionState(spec.refSection)") != std::string::npos);
+    CHECK(html.find("btn.onclick=()=>this.addRecord()") != std::string::npos);
 }
