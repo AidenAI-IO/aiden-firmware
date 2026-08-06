@@ -13,9 +13,10 @@ locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification
 # screenshot_keep_n = 3
 # screenshot_prune_interval = 2
 
-# Input mode:
-# - text: run HTTP server with Web UI
-# - stt: device audio -> STT -> LLM -> TTS
+# The HTTP server and Web UI run in every input mode.
+# Input mode controls the device-side audio loop:
+# - text: HTTP server and Web UI only
+# - stt: also run device audio -> STT -> LLM -> TTS
 input_mode = "stt"
 
 # Trigger mode: "manual" (push-to-talk) or "wakeup" (GPIO trigger)

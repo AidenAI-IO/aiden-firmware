@@ -37,7 +37,7 @@ aiden-firmware/
 
 | Path | Description |
 | --- | --- |
-| `cmd/daemon` | Long-running Agent daemon, providing Web UI or device voice mode |
+| `cmd/daemon` | Long-running Agent daemon providing the HTTP/Web UI in all input modes and an additional device voice loop in `stt` mode |
 | `cmd/abctl` | A/B partition control utility for OTA system |
 | `cmd/ota` | OTA update client |
 | `cmd/benchmark-http` | Standalone LLM endpoint latency probe |

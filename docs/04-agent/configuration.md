@@ -69,7 +69,7 @@ The page fields cover the following config sections (all detailed later on this 
 
 ## Minimal config examples
 
-### Web UI (text mode)
+### HTTP/Web UI without the device voice loop (`text`)
 
 ```toml
 locale = "zh-CN"
@@ -126,17 +126,17 @@ vad_backend = "rknn"
 vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 vad_helper_path = "/oem/usr/bin/rknn_vad"
 vad_speech_threshold = 0.5
-silence_ms = 650
+silence_ms = 550
 min_speech_ms = 300
 voice_followup_enabled = false
-voice_followup_timeout_ms = 6000
+voice_followup_timeout_ms = 5000
 voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0
 voice_interrupt_on_wakeup = true
 voice_streaming_tts_enabled = true
 voice_tool_call_speech = true
 voice_progress_speech_enabled = true
-voice_max_response_tokens = 400
+voice_max_response_tokens = 300
 
 [model_providers.openrouter-main]
 type = "openrouter"
@@ -210,17 +210,17 @@ These fields apply to the `stt` input mode.
 | `vad_model_path`                | `/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"`                                                                                                                  |
 | `vad_helper_path`               | `/oem/usr/bin/rknn_vad`                                     | VAD helper executable path; the CPU backend defaults to `/oem/usr/bin/cpu_vad`                                                                                                         |
 | `vad_speech_threshold`          | `0.5`                                                       | Silero VAD speech probability threshold                                                                                                                                                |
-| `silence_ms`                    | `650`                                                       | How many milliseconds of silence before an utterance is considered finished                                                                                                            |
+| `silence_ms`                    | `550`                                                       | How many milliseconds of silence before an utterance is considered finished                                                                                                            |
 | `min_speech_ms`                 | `300`                                                       | Minimum valid speech duration                                                                                                                                                          |
 | `voice_followup_enabled`        | `false`                                                     | Enable continuous follow-up after a single wakeup in wakeup mode; defaults to one wakeup per turn                                                                                      |
-| `voice_followup_timeout_ms`     | `6000`                                                      | Window to wait for a user follow-up after the Agent replies                                                                                                                            |
+| `voice_followup_timeout_ms`     | `5000`                                                      | Window to wait for a user follow-up after the Agent replies                                                                                                                            |
 | `voice_first_turn_timeout_ms`   | `10000`                                                     | Window to wait for the first utterance after wakeup                                                                                                                                    |
 | `voice_max_turns`               | `0`                                                         | Maximum turns per wakeup session; `0` means unlimited                                                                                                                                  |
 | `voice_interrupt_on_wakeup`     | `true`                                                      | When a wakeup is received again within a session, cancel thinking/TTS and listen again; repeated wakeups during the listening or recording phase are merged or ignored                 |
 | `voice_streaming_tts_enabled`   | `true`                                                      | Feed the LLM streaming output into TTS sentence by sentence, reducing the wait before the first sentence plays                                                                         |
 | `voice_tool_call_speech`        | `true`                                                      | Whether to asynchronously read the `content` of a tool-call event; this content comes only from the assistant content in the same LLM tool-call response, and stays silent when absent |
 | `voice_progress_speech_enabled` | `true`                                                      | Whether to announce a short progress message when a todo item enters `in_progress`; todo state is still sent to the UI/trace                                                           |
-| `voice_max_response_tokens`     | `400`                                                       | Per-turn output token limit for voice replies (must be `>= 0`)                                                                                                                         |
+| `voice_max_response_tokens`     | `300`                                                       | Per-turn output token limit for voice replies (must be `>= 0`)                                                                                                                         |
 
 The model pointed to by `vad_model_path` must first be converted from the Silero ONNX to RV1106 RKNN on a PC using `silero-vad/convert_silero_vad_to_rknn.py`, then placed at the corresponding path on the device. The CPU backend requires `silero_vad_6_2_lstm_decoder_weights.bin` to include the Conv1d encoder extension, which can be generated from the TorchScript file shipped with the repo using `silero-vad/export_silero_vad_v6_2_weights.py`.
 When `vad_helper_path` is still the built-in default, switching `vad_backend` automatically switches the helper; only when set to a custom path does it run that custom path.
@@ -313,7 +313,7 @@ built. When a section is named exactly like a provider type, the section wins.
 | `base_url`                | Custom OpenAI-compatible endpoint. Only `openai` and `ollama` accept a `base_url` override; other providers use their built-in endpoints and a stored value is dropped on load. |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
 | `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
-| `reasoning_effort`        | Thinking budget. Unset is auto: the field is omitted and the provider decides, except that reasoning is disabled for no-tool requests. `low`/`medium`/`high` work everywhere; `minimal` is Volcengine Ark only; `none` is accepted by the others but not by Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
+| `reasoning_effort`        | Thinking budget. Unset is auto: the field is omitted and the provider decides, except that reasoning is disabled for no-tool requests. `low`/`medium`/`high` work everywhere; `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, Ollama, and the fake provider, but not by Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
 | `max_response_tokens`     | Maximum output tokens passed to the model on request                                                                                                                                                                                                 |
 | `context_window`          | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback.                                                                        |
 | `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry.                                                                                                                     |
@@ -541,7 +541,9 @@ STT:
 
 - `provider = "openai-whisper"`: currently available;
 - `provider = "openrouter"`: currently available, default endpoint is `https://openrouter.ai/api/v1/audio/transcriptions`, request body uses base64 WAV;
-- `provider = "tencent-asr"`: Tencent Cloud Sentence Recognition (SentenceRecognition), uses `secret_id` / `secret_key`, no `base_url` needed; the legacy values `tencent` / `tencent_asr` are retained only as compatibility aliases.
+- `provider = "tencent-asr"`: Tencent Cloud Sentence Recognition (SentenceRecognition), uses `secret_id` / `secret_key`, no `base_url` needed; the legacy values `tencent` / `tencent_asr` are retained only as compatibility aliases;
+- `provider = "qwen-asr"`: Alibaba Cloud DashScope Realtime ASR over WebSocket, default model `qwen3-asr-flash-realtime`; supports streaming upload and accepts optional `model` / `base_url` overrides;
+- `provider = "google-cloud"`: Google Cloud Speech-to-Text REST API with API key authentication, default endpoint `https://speech.googleapis.com/v1/speech:recognize`; accepts optional `model` / `base_url` overrides and does not support streaming upload.
 
 TTS:
 
@@ -549,7 +551,9 @@ TTS:
 - `provider = "minimax-cn"`: Minimax WebSocket, mainland China endpoint `api.minimaxi.com`;
 - `provider = "fish-audio"`: Fish Audio WebSocket;
 - `provider = "alicloud"`: Alibaba Cloud Qwen-TTS Realtime;
-- `provider = "volcengine"`: Volcengine WebSocket bidirectional streaming V3. Currently only the new console's `X-Api-Key` authentication is supported: `api_key` maps to `X-Api-Key`, `model` maps to `X-Api-Resource-Id` (default `seed-tts-2.0`), and `voice_id` maps to the speaker.
+- `provider = "volcengine"`: Volcengine WebSocket bidirectional streaming V3. Currently only the new console's `X-Api-Key` authentication is supported: `api_key` maps to `X-Api-Key`, `model` maps to `X-Api-Resource-Id` (default `seed-tts-2.0`), and `voice_id` maps to the speaker;
+- `provider = "openrouter"`: OpenRouter HTTP speech API, default model `google/gemini-3.1-flash-tts-preview`; `model` and `voice_id` select the routed TTS model and its voice;
+- `provider = "google-cloud"`: Google Cloud Text-to-Speech REST API with API key authentication; `voice_id` defaults to `en-US-Neural2-C`.
 
 TTS configuration fields:
 
@@ -557,8 +561,8 @@ TTS configuration fields:
 | -------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `provider`     | `[tts]`                          | Required reference to a named provider record; a bare provider type remains supported for backward compatibility        |
 | `api_key`      | `[tts_providers.<name>]`         | Required authentication key for the selected provider                                                                   |
-| `model`        | `[tts_providers.<name>]`         | Optional Minimax model, Fish Audio model header, Alibaba Cloud Realtime model, or Volcengine `X-Api-Resource-Id`         |
-| `voice_id`     | `[tts_providers.<name>]`         | Optional Minimax voice id, Alibaba Cloud voice, or Volcengine speaker. Not used by Fish Audio (see `reference_id`)       |
+| `model`        | `[tts_providers.<name>]`         | Optional Minimax model, Fish Audio model header, Alibaba Cloud Realtime model, Volcengine `X-Api-Resource-Id`, or OpenRouter model |
+| `voice_id`     | `[tts_providers.<name>]`         | Optional Minimax, Alibaba Cloud, OpenRouter, or Google Cloud voice; Volcengine speaker. Not used by Fish Audio (see `reference_id`) |
 | `reference_id` | `[tts_providers.<name>]`         | Optional Fish Audio reference id; defaults to the built-in demo voice shown by Config Web. Ignored by other providers    |
 | `emotion`      | `[tts_providers.<name>]`         | Optional Minimax emotion; Volcengine passes it through as `audio_params.emotion` and requires voice support             |
 | `speed`        | `[tts]`                          | Optional speech rate, default `1.0`; the supported range varies by provider, refer to the official docs                 |
@@ -567,13 +571,15 @@ The examples use placeholder keys to make the required record placement explicit
 
 Common TTS adapter configs:
 
-| Provider     | `model` example            | Voice/reference field                               | Description                                                                                                         |
-| ------------ | -------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `minimax`    | `speech-2.8-hd`            | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimax.io`; `emotion` is passed through to Minimax                                      |
-| `minimax-cn` | `speech-2.8-hd`            | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimaxi.com`; `emotion` is passed through to Minimax                                    |
-| `fish-audio` | `s2-pro`                   | `reference_id = "98655a12fa944e26b274c535e5e03842"` | WebSocket live TTS; the shown reference is used by default, and `voice_id` is not used                              |
-| `alicloud`   | `qwen3-tts-flash-realtime` | `voice_id = "Cherry"`                               | DashScope Realtime; the adapter outputs 24 kHz PCM, automatically resampling when the sample rate differs           |
-| `volcengine` | `seed-tts-2.0`             | `voice_id = "zh_female_vv_uranus_bigtts"`           | `model` maps to `X-Api-Resource-Id`, `voice_id` maps to the speaker, and the two must match                         |
+| Provider       | `model` example                           | Voice/reference field                               | Description                                                                                                         |
+| -------------- | ----------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `minimax`      | `speech-2.8-hd`                           | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimax.io`; `emotion` is passed through to Minimax                                      |
+| `minimax-cn`   | `speech-2.8-hd`                           | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimaxi.com`; `emotion` is passed through to Minimax                                    |
+| `fish-audio`   | `s2-pro`                                  | `reference_id = "98655a12fa944e26b274c535e5e03842"` | WebSocket live TTS; the shown reference is used by default, and `voice_id` is not used                              |
+| `alicloud`     | `qwen3-tts-flash-realtime`                | `voice_id = "Cherry"`                               | DashScope Realtime; the adapter outputs 24 kHz PCM, automatically resampling when the sample rate differs           |
+| `volcengine`   | `seed-tts-2.0`                            | `voice_id = "zh_female_vv_uranus_bigtts"`           | `model` maps to `X-Api-Resource-Id`, `voice_id` maps to the speaker, and the two must match                         |
+| `openrouter`   | `google/gemini-3.1-flash-tts-preview`     | `voice_id = "Kore"`                                 | OpenRouter `/audio/speech`; voice defaults depend on the selected model and output is 24 kHz PCM                    |
+| `google-cloud` | —                                         | `voice_id = "en-US-Neural2-C"`                      | Google Cloud Text-to-Speech REST API with API key authentication; output is 24 kHz PCM                              |
 
 ### Provider examples
 

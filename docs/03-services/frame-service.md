@@ -19,7 +19,8 @@ Allowing multiple processes to directly open `/dev/video0` can lead to resource 
 | Socket (firmware service) | `/run/frame_service/frame_service.sock` | Default value in init configuration |
 | EDID | Built-in 1080p30 CTA EDID | Used when `--edid` is not provided |
 | Ring size | `3` | `kDefaultFrameServiceRingSize` |
-| FPS | `3.0` | For default 1080p input, the service sampling FPS is kept low to control CPU, memory bandwidth, and heat |
+| FPS (binary default) | `3.0` | Used when `frame_service` is run directly without `--fps` |
+| FPS (firmware service default) | `30` | `S52frame_service` passes `--fps 30` from `/etc/aiden_frame_service.conf` |
 | Screenshot max edge | `960` | Related to Go screenshot tool default compression strategy |
 
 ## Startup
@@ -30,11 +31,18 @@ Development mode:
 ./build/bin/frame_service --socket /tmp/frame_service.sock
 ```
 
+This direct invocation uses the binary default of 3 FPS unless `--fps` is
+provided.
+
 Firmware service:
 
 ```bash
 /etc/init.d/S52frame_service start
 ```
+
+The firmware service overrides the binary default and samples at 30 FPS by
+default. Change `FRAME_SERVICE_FPS` in `/etc/aiden_frame_service.conf` to tune
+the deployed service.
 
 ## Parameters
 
