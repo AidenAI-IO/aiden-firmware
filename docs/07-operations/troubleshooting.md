@@ -62,7 +62,7 @@ netstat -lntp | grep 8080
 
 Verify:
 
-- `input_mode = "text"`;
+- The daemon is listening on port `8080`; both `text` and `stt` modes serve the Web UI;
 - `agent.toml` TOML syntax is correct;
 - Model configuration and API key are available;
 - Firewall, USB network, or Wi-Fi IP is correct.

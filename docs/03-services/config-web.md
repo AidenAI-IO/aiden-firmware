@@ -14,9 +14,14 @@
 
 ```bash
 /etc/init.d/S56config_web start
-/etc/init.d/S56config_web status
+/etc/init.d/S56config_web stop
 /etc/init.d/S56config_web restart
+/etc/init.d/S56config_web reload
 ```
+
+The init script supports `start`, `stop`, `restart`, and `reload`. It does not
+provide a `status` command; `reload` currently performs the same stop-and-start
+sequence as `restart`.
 
 ## Access
 
@@ -29,7 +34,7 @@ http://192.168.42.1
 The web interface allows:
 - Opening the browser terminal exposed by WeTTY at `http://192.168.42.1:3000/wetty/`
 - Switching the device language between Simplified Chinese (`zh-CN`) and English (`en-US`); this also controls user-facing Agent responses and `<tts>` content
-- Switching LLM providers (Anthropic, OpenAI, Gemini)
+- Switching among registered model provider types such as OpenAI, OpenRouter, Kimi, Volcengine, and Ollama; Anthropic Claude and Google Gemini models are available through compatible providers such as OpenRouter, not native `anthropic` or `gemini` provider types
 - Configuring API keys and model names
 - Selecting STT/TTS providers
 - Testing voice recognition and synthesis

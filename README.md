@@ -21,7 +21,7 @@ The current development setup centers on:
 - A USB-C hub that provides HDMI output for capture and a USB data path back to the target device;
 - The Pico Zero Linux USB gadget stack for keyboard, pointer/touch, and ECM networking.
 
-Some prototype hardware revisions may include additional USB modules, but the firmware-documented HID path is the Linux gadget path exposed as `/dev/hidg0` and `/dev/hidg1`.
+Some prototype hardware revisions may include additional USB modules, but the firmware-documented HID path is the Linux gadget path: `/dev/hidg0` for the keyboard, `/dev/hidg1` for pointer/touch input, and `/dev/hidg2` for Android extension keys or Consumer Control media keys.
 
 For the complete parts list, self-assembly instructions, wiring diagram, and target-device prerequisites, see [Hardware & Wiring](docs/01-getting-started/hardware.md).
 
@@ -30,8 +30,8 @@ For the complete parts list, self-assembly instructions, wiring diagram, and tar
 The current hardware setup connects to a phone or computer through a USB-C hub:
 
 - the target device's display output is captured through HDMI and the TC358743 HDMI-to-CSI path;
-- the Luckfox Pico Zero exposes a composite USB gadget with keyboard/pointer HID and USB ECM networking;
-- the Go Agent sends screenshots to a configured multimodal model, decides the next action, and writes keyboard/mouse/touch reports to `/dev/hidg0` and `/dev/hidg1`;
+- the Luckfox Pico Zero exposes a composite USB gadget with keyboard, pointer/touch, auxiliary control HID, and USB ECM networking;
+- the Go Agent sends screenshots to a configured multimodal model, decides the next action, and writes keyboard, pointer/touch, and Android extension or Consumer Control reports to `/dev/hidg0`, `/dev/hidg1`, and `/dev/hidg2`;
 - voice mode records audio on the board, applies VAD, then uses configured STT, LLM, and TTS providers.
 
 The basic control path does not require jailbreak, ADB, developer mode, or a custom app on the target device. It does require a target that can output video to the capture path and accept USB HID input. iOS control also requires AssistiveTouch to be enabled.
@@ -47,7 +47,7 @@ Most mobile agent projects are lab prototypes that require a laptop or desktop t
 ### 2. **Fully Open**
 - **Open-source firmware** — Complete C++ services and Go agent code
 - **Development board reference** — Current prototyping board schematics and assembly guide available
-- **Any LLM** — Configure OpenAI, Anthropic, local models, or your own deployment
+- **Flexible model backends** — Configure registered providers such as OpenAI, OpenRouter, Kimi, Volcengine, or Ollama; use OpenRouter for Anthropic Claude and Google Gemini models
 - **Exportable data** — Your memory, skills, and learned behaviors are yours to keep and migrate
 - **Community-driven** — Contributions welcome; flash custom firmware freely
 
@@ -87,7 +87,7 @@ Target display
     -> screenshot tool
     -> Go Agent
     -> HID tools
-    -> /dev/hidg0 and /dev/hidg1
+    -> /dev/hidg0, /dev/hidg1, and /dev/hidg2
     -> target device input
 
 Board audio
