@@ -720,6 +720,7 @@ func TestEnterTextToolCallKeepsBridgePathEnabled(t *testing.T) {
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	hw := &textInputHardwareDeps{
 		pointerMode:  "touchscreen",
+		deviceTypeFn: func() string { return "Android" },
 		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: keyboardText,
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
@@ -738,6 +739,7 @@ func TestEnterTextToolCallKeepsBridgePathEnabled(t *testing.T) {
 			},
 		},
 	}
+	tool.SetDeviceTypeFunc(hw.deviceTypeFn)
 
 	out, err := tool.Call(context.Background(), `{"text":"Aiden","focus":{"x":500,"y":120,"coord_space":"normalized"}}`)
 	if err != nil {

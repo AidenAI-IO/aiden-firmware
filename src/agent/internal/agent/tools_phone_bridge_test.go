@@ -235,6 +235,7 @@ func TestSearchLaunchAppTextEntryDisablesBridgePath(t *testing.T) {
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	hw := &textInputHardwareDeps{
 		pointerMode:  "touchscreen",
+		deviceTypeFn: func() string { return "Android" },
 		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: keyboardText,
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
@@ -253,6 +254,7 @@ func TestSearchLaunchAppTextEntryDisablesBridgePath(t *testing.T) {
 			},
 		},
 	}
+	entryTool.SetDeviceTypeFunc(hw.deviceTypeFn)
 
 	err := enterSearchQuery(context.Background(), appSearchOpenFlowConfig{
 		hw:        hw,

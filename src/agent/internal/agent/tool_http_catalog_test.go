@@ -351,8 +351,10 @@ func TestAgentToolsForPlatformFiltersPlatformSpecificTools(t *testing.T) {
 		"screenshot",
 		"quick_action",
 		"enter_text",
-		"search_launch_app",
-		"bridge_open_app",
+		"open_app",
+		"open_url",
+		toolSearchLaunchApp,
+		toolBridgeOpenApp,
 		"bridge_clipboard",
 		"list_scripts",
 	})
@@ -366,31 +368,32 @@ func TestAgentToolsForPlatformFiltersPlatformSpecificTools(t *testing.T) {
 		{
 			name:     "ios",
 			platform: "ios",
-			want:     []string{"screenshot", "quick_action", "enter_text", "search_launch_app", "bridge_open_app", "bridge_clipboard"},
+			want:     []string{"screenshot", "quick_action", "enter_text", "open_app", "open_url", "bridge_clipboard"},
+			notWant:  []string{"search_launch_app", "bridge_open_app"},
 		},
 		{
 			name:     "android",
 			platform: "android",
-			want:     []string{"screenshot", "quick_action", "enter_text", "bridge_open_app", "bridge_clipboard"},
-			notWant:  []string{"search_launch_app"},
+			want:     []string{"screenshot", "quick_action", "enter_text", "open_app", "open_url", "bridge_clipboard"},
+			notWant:  []string{"search_launch_app", "bridge_open_app"},
 		},
 		{
 			name:     "macos",
 			platform: "macOS",
-			want:     []string{"screenshot", "quick_action", "enter_text", "search_launch_app"},
-			notWant:  []string{"bridge_open_app", "bridge_clipboard"},
+			want:     []string{"screenshot", "quick_action", "enter_text", "open_app"},
+			notWant:  []string{"open_url", "search_launch_app", "bridge_open_app", "bridge_clipboard"},
 		},
 		{
 			name:     "windows",
 			platform: "windows",
 			want:     []string{"screenshot", "enter_text"},
-			notWant:  []string{"quick_action", "search_launch_app", "bridge_open_app", "bridge_clipboard"},
+			notWant:  []string{"quick_action", "open_app", "open_url", "search_launch_app", "bridge_open_app", "bridge_clipboard"},
 		},
 		{
 			name:     "linux",
 			platform: "linux",
 			want:     []string{"screenshot", "enter_text"},
-			notWant:  []string{"quick_action", "search_launch_app", "bridge_open_app", "bridge_clipboard"},
+			notWant:  []string{"quick_action", "open_app", "open_url", "search_launch_app", "bridge_open_app", "bridge_clipboard"},
 		},
 	}
 	for _, tc := range tests {
@@ -428,12 +431,12 @@ func TestRuntimeAvailableToolsUsesDeviceTypePlatformFilter(t *testing.T) {
 	if _, ok := names["enter_text"]; !ok {
 		t.Fatalf("availableTools missing windows-supported enter_text: %v", names)
 	}
-	for _, notWant := range []string{"quick_action", "search_launch_app", "bridge_open_app", "bridge_clipboard"} {
+	for _, notWant := range []string{"quick_action", "open_app", "open_url", "search_launch_app", "bridge_open_app", "bridge_clipboard"} {
 		if _, ok := names[notWant]; ok {
 			t.Fatalf("availableTools exposed %s for windows device_type: %v", notWant, names)
 		}
 	}
-	for _, httpWant := range []string{"quick_action", "enter_text", "search_launch_app", "bridge_open_app", "bridge_clipboard"} {
+	for _, httpWant := range []string{"quick_action", "enter_text", "open_app", "open_url", "bridge_clipboard"} {
 		if _, ok := runtime.ToolDescriptorByName(httpWant); !ok {
 			t.Fatalf("HTTP catalog hid %s while only model catalog should be platform-filtered", httpWant)
 		}
@@ -444,7 +447,7 @@ func TestRuntimeAvailableToolsUsesDeviceTypePlatformFilter(t *testing.T) {
 	if _, ok := fullNames["list_scripts"]; !ok {
 		t.Fatalf("load_all_tools should still expose script authoring tools: %v", fullNames)
 	}
-	for _, notWant := range []string{"quick_action", "search_launch_app", "bridge_open_app", "bridge_clipboard"} {
+	for _, notWant := range []string{"quick_action", "open_app", "open_url", "search_launch_app", "bridge_open_app", "bridge_clipboard"} {
 		if _, ok := fullNames[notWant]; ok {
 			t.Fatalf("load_all_tools bypassed platform filtering for %s: %v", notWant, fullNames)
 		}
