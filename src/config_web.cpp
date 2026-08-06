@@ -2702,9 +2702,8 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     }
     cJSON_AddItemToObject(root, "tts_providers", tts_providers);
 
-    // Add stt_providers. secret_id/secret_key stay unmasked, matching how the
-    // flat [stt] section has always reported them -- masking them here would
-    // need its own resolve path and is a separate change.
+    // Add stt_providers. Secret fields (api_key, secret_id, secret_key) are
+    // masked when include_secrets is false; the UI resolves them on save.
     cJSON* stt_providers = cJSON_CreateObject();
     for (const auto& item : config.stt_providers) {
         const aiden::STTProviderToml& record = item.second;
@@ -2729,10 +2728,20 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
             cJSON_AddStringToObject(record_obj, "app_id", record.app_id.c_str());
         }
         if (!record.secret_id.empty()) {
-            cJSON_AddStringToObject(record_obj, "secret_id", record.secret_id.c_str());
+            if (include_secrets) {
+                cJSON_AddStringToObject(record_obj, "secret_id", record.secret_id.c_str());
+            } else {
+                std::string masked = mask_secret(record.secret_id);
+                cJSON_AddStringToObject(record_obj, "secret_id", masked.c_str());
+            }
         }
         if (!record.secret_key.empty()) {
-            cJSON_AddStringToObject(record_obj, "secret_key", record.secret_key.c_str());
+            if (include_secrets) {
+                cJSON_AddStringToObject(record_obj, "secret_key", record.secret_key.c_str());
+            } else {
+                std::string masked = mask_secret(record.secret_key);
+                cJSON_AddStringToObject(record_obj, "secret_key", masked.c_str());
+            }
         }
         if (!record.region.empty()) {
             cJSON_AddStringToObject(record_obj, "region", record.region.c_str());
@@ -3214,8 +3223,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
             set_json_str(&record.model, item, "model");
             set_json_str(&record.base_url, item, "base_url");
             set_json_str(&record.app_id, item, "app_id");
-            set_json_str(&record.secret_id, item, "secret_id");
-            set_json_str(&record.secret_key, item, "secret_key");
             set_json_str(&record.region, item, "region");
             set_json_str(&record.engine_model_type, item, "engine_model_type");
 
@@ -3229,6 +3236,32 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
                     record.api_key = it->second.api_key;
                 } else {
                     record.api_key = key;
+                }
+            }
+
+            cJSON* secret_id = cJSON_GetObjectItem(item, "secret_id");
+            if (json_is_string(secret_id)) {
+                const std::string value = secret_id->valuestring;
+                std::map<std::string, aiden::STTProviderToml>::const_iterator it =
+                    previous.find(record_name);
+                if (it != previous.end() && !it->second.secret_id.empty() &&
+                    value == mask_secret(it->second.secret_id)) {
+                    record.secret_id = it->second.secret_id;
+                } else {
+                    record.secret_id = value;
+                }
+            }
+
+            cJSON* secret_key = cJSON_GetObjectItem(item, "secret_key");
+            if (json_is_string(secret_key)) {
+                const std::string value = secret_key->valuestring;
+                std::map<std::string, aiden::STTProviderToml>::const_iterator it =
+                    previous.find(record_name);
+                if (it != previous.end() && !it->second.secret_key.empty() &&
+                    value == mask_secret(it->second.secret_key)) {
+                    record.secret_key = it->second.secret_key;
+                } else {
+                    record.secret_key = value;
                 }
             }
 

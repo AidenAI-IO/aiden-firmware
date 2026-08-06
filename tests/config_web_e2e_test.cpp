@@ -2865,7 +2865,7 @@ TEST_CASE("config_web: POST /api/config writes named voice providers") {
     CHECK(saved.find("secret_key = \"secret-yyy\"") != std::string::npos);
     // The reference is stored unresolved: the Go runtime resolves it.
     CHECK(saved.find("provider = \"minimax-main\"") != std::string::npos);
-    CHECK(saved.find("provider = \"tencent\"") != std::string::npos);
+    CHECK(saved.find("provider = \"tencent\"\n") != std::string::npos);
 }
 
 // This is the exact bug class that broke [providers]: a save of an unrelated

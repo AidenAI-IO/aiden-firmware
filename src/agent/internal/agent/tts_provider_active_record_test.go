@@ -45,7 +45,7 @@ provider = "z-minimax"
 		t.Fatalf("load resolved api_key = %q, want %q", cfg.TTS.APIKey, "sk-bbb")
 	}
 
-	// Speak time must not silently swap to minimax-main just because it sorts
+	// Speak time must not silently swap to a-minimax just because it sorts
 	// first among records of type "minimax".
 	got := buildTTSProviderConfig(cfg)
 	if got.APIKey != "sk-bbb" {
