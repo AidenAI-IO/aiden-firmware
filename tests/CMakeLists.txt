@@ -185,3 +185,16 @@ add_test(NAME aiden_tests COMMAND $<TARGET_FILE:aiden_tests>)
 add_test(NAME logger_shell_format
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_logger_format.sh
 )
+
+# Shell-level test for the /opt bind mount that opkg installs into. Needs no
+# build artifacts and no board: S22opt reads its paths and its mount/umount
+# binaries from the environment, so the test stubs them out.
+add_test(
+    NAME s22opt_tests
+    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test_s22opt.sh
+)
+
+add_test(
+    NAME aiden_opt_profile_tests
+    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test_aiden_opt_profile.sh
+)
