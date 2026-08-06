@@ -199,3 +199,7 @@ add_test(
     NAME aiden_opt_profile_tests
     COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test_aiden_opt_profile.sh
 )
+
+add_test(NAME usb0_dhcp_options
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_usb0_dhcp_options.sh
+)

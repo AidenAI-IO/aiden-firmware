@@ -1,8 +1,9 @@
 #!/bin/sh
-# Aiden DHCP/DNS on usb0. Runs after S49usbhid has brought up usb0.
+# Aiden DHCP-only service on usb0. Runs after S49usbhid has brought up usb0.
 
 DNSMASQ_BIN=/usr/bin/dnsmasq
 CONF_FILE=/etc/dnsmasq.d/usb0.conf
+RUNTIME_CONF=/run/aiden_usb_dhcp.conf
 PID_FILE=/run/aiden_usb_dhcp.pid
 LOG_FILE=/var/log/aiden_usb_dhcp.log
 
@@ -15,7 +16,99 @@ is_running() {
 		"$DNSMASQ_BIN"|*/dnsmasq) ;;
 		*) return 1 ;;
 	esac
+	grep -aq -- "$RUNTIME_CONF" "/proc/$pid/cmdline" 2>/dev/null
+}
+
+# Recognize the process identity used before RUNTIME_CONF was introduced. An
+# in-place upgrade can leave that dnsmasq running until this script is restarted;
+# stop must still own and terminate it before starting the sanitized instance.
+is_legacy_running() {
+	pid="$1"
+	[ -n "$pid" ] || return 1
+	kill -0 "$pid" 2>/dev/null || return 1
+	exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+	case "$exe" in
+		"$DNSMASQ_BIN"|*/dnsmasq) ;;
+		*) return 1 ;;
+	esac
 	grep -aq -- "$CONF_FILE" "/proc/$pid/cmdline" 2>/dev/null
+}
+
+is_managed_running() {
+	is_running "$1" || is_legacy_running "$1"
+}
+
+# sanitize_conf builds a minimal allowlisted dnsmasq configuration for usb0.
+# The board does no NAT or IP forwarding, so it must not advertise any IPv4 or
+# IPv6 default route or a DNS server. Copying arbitrary directives would allow
+# classless routes, Router Advertisements, or included option files to bypass
+# the bare option:router and option:dns-server suppressors.
+#
+# Unknown directives are intentionally dropped and recorded as comments. This
+# makes future dnsmasq features opt-in: they must be reviewed here before they
+# can enter the local-only USB network policy.
+sanitize_conf() {
+	awk '
+		function dropped() {
+			printf "# dropped by S55aiden_usb_dhcp (outside local-only policy): %s\n", $0
+		}
+		{
+			line = $0
+			sub(/#.*/, "", line)
+			gsub(/[ \t]/, "", line)
+
+			if (line == "") {
+				print
+				next
+			}
+
+			if (line == "interface=usb0" ||
+				line == "bind-interfaces" ||
+				line == "except-interface=wlan0" ||
+				line == "except-interface=lo" ||
+				line == "port=0" ||
+				line == "no-resolv" ||
+				line == "no-hosts" ||
+				line == "dhcp-authoritative" ||
+				line == "dhcp-leasefile=/tmp/dnsmasq.leases" ||
+				line == "log-dhcp") {
+				print
+				next
+			}
+
+			# Only the product IPv4 pool is accepted. In particular, IPv6
+			# ranges are excluded so dnsmasq cannot emit Router Advertisements.
+			if (line ~ /^dhcp-range=192\.168\.42\.[0-9]+,192\.168\.42\.[0-9]+,255\.255\.255\.0,[0-9]+[smhdw]$/) {
+				print
+				next
+			}
+
+			# Canonical bare suppressors are appended once below.
+			if (line == "dhcp-option=option:router" ||
+				line == "dhcp-option=option:dns-server") {
+				next
+			}
+
+			dropped()
+		}
+	' "$1" || return 1
+
+	printf '\n'
+	printf '# Appended by S55aiden_usb_dhcp. Empty value = option omitted.\n'
+	printf 'dhcp-option=option:router\n'
+	printf 'dhcp-option=option:dns-server\n'
+}
+
+build_runtime_conf() {
+	tmp="${RUNTIME_CONF}.$$"
+	if ! sanitize_conf "$CONF_FILE" > "$tmp"; then
+		rm -f "$tmp"
+		return 1
+	fi
+	if grep -q '^# dropped by S55aiden_usb_dhcp' "$tmp"; then
+		echo "WARNING: $CONF_FILE contained directives outside the local-only usb0 policy; stripped them"
+	fi
+	mv "$tmp" "$RUNTIME_CONF"
 }
 
 current_pid() {
@@ -32,6 +125,10 @@ start() {
 	if is_running "$pid"; then
 		echo "aiden_usb_dhcp already running (pid $pid)"
 		return 0
+	fi
+	if is_legacy_running "$pid"; then
+		echo "Stopping legacy aiden_usb_dhcp instance (pid $pid)"
+		stop
 	fi
 
 	if [ ! -x "$DNSMASQ_BIN" ]; then
@@ -58,7 +155,16 @@ start() {
 	fi
 
 	mkdir -p "$(dirname "$LOG_FILE")"
-	"$DNSMASQ_BIN" --conf-file="$CONF_FILE" \
+	if ! build_runtime_conf; then
+		echo "Failed to build $RUNTIME_CONF from $CONF_FILE"
+		return 1
+	fi
+	if ! "$DNSMASQ_BIN" --test --conf-file="$RUNTIME_CONF" >/dev/null 2>&1; then
+		echo "dnsmasq rejected generated config $RUNTIME_CONF"
+		return 1
+	fi
+
+	"$DNSMASQ_BIN" --conf-file="$RUNTIME_CONF" \
 		--pid-file="$PID_FILE" \
 		--log-facility="$LOG_FILE" \
 		--keep-in-foreground &
@@ -76,14 +182,14 @@ start() {
 
 stop() {
 	pid="$(current_pid)"
-	if is_running "$pid"; then
+	if is_managed_running "$pid"; then
 		kill "$pid" 2>/dev/null || true
 		i=0
-		while is_running "$pid" && [ "$i" -lt 5 ]; do
+		while is_managed_running "$pid" && [ "$i" -lt 5 ]; do
 			sleep 1
 			i="$((i + 1))"
 		done
-		is_running "$pid" && kill -9 "$pid" 2>/dev/null || true
+		is_managed_running "$pid" && kill -9 "$pid" 2>/dev/null || true
 	fi
 	rm -f "$PID_FILE"
 	echo "Stopped aiden_usb_dhcp"
@@ -93,6 +199,8 @@ status() {
 	pid="$(current_pid)"
 	if is_running "$pid"; then
 		echo "aiden_usb_dhcp=running pid=$pid"
+	elif is_legacy_running "$pid"; then
+		echo "aiden_usb_dhcp=legacy pid=$pid"
 	else
 		echo "aiden_usb_dhcp=stopped"
 	fi
@@ -103,5 +211,9 @@ case "${1:-}" in
 	stop)           stop ;;
 	restart|reload) stop; start ;;
 	status)         status ;;
-	*) echo "Usage: $0 {start|stop|restart|reload|status}" >&2; exit 1 ;;
+	# Print the effective dnsmasq config to stdout without starting anything.
+	# Used on-device to inspect what dnsmasq will actually serve, and by
+	# scripts/test_usb0_dhcp_options.sh to test the sanitizer on the host.
+	sanitize-conf) sanitize_conf "${2:-$CONF_FILE}" ;;
+	*) echo "Usage: $0 {start|stop|restart|reload|status|sanitize-conf [file]}" >&2; exit 1 ;;
 esac
