@@ -1138,12 +1138,13 @@ func usesDefaultSTTModel(provider string) bool {
 	}
 }
 
-// LoadResolvedConfig loads a config file over the canonical defaults and
-// returns the effective values used by config-editing surfaces. Missing files
-// are treated as "all defaults" so first-boot config pages can render before
+// LoadResolvedConfig loads the TOML config file at path over the canonical
+// defaults and returns the effective values used by config-editing surfaces.
+// The path must identify a file, not a config directory. Missing TOML files are
+// treated as "all defaults" so first-boot config pages can render before
 // agent.toml has been created.
 func LoadResolvedConfig(path string) (Config, error) {
-	resolvedPath, exists, err := resolveConfigPath(path)
+	exists, err := inspectConfigFilePath(path)
 	if err != nil {
 		return Config{}, err
 	}
@@ -1151,7 +1152,7 @@ func LoadResolvedConfig(path string) (Config, error) {
 	cfg := DefaultConfig()
 	var metadata toml.MetaData
 	if exists {
-		if metadata, err = decodeConfigFile(resolvedPath, &cfg); err != nil {
+		if metadata, err = decodeConfigFile(path, &cfg); err != nil {
 			return Config{}, err
 		}
 		applyDeviceConfigDefaults(&cfg, metadata)
@@ -1179,37 +1180,36 @@ func LoadResolvedConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
-func resolveConfigPath(path string) (string, bool, error) {
+func inspectConfigFilePath(path string) (bool, error) {
 	if strings.TrimSpace(path) == "" {
-		return "", false, errors.New("config path is required")
+		return false, errors.New("config path is required")
+	}
+	if !strings.HasSuffix(path, ".toml") {
+		return false, fmt.Errorf("config path must end with .toml: %q", path)
 	}
 
-	info, err := os.Stat(path)
-	if err == nil {
-		if !info.IsDir() {
-			return path, true, nil
-		}
-
-		tomlPath := filepath.Join(path, "agent.toml")
-		if _, err := os.Stat(tomlPath); err == nil {
-			return tomlPath, true, nil
-		} else if !os.IsNotExist(err) {
-			return "", false, fmt.Errorf("read config: %w", err)
-		}
-
-		jsonPath := filepath.Join(path, "agent.json")
-		if _, err := os.Stat(jsonPath); err == nil {
-			return jsonPath, true, nil
-		} else if !os.IsNotExist(err) {
-			return "", false, fmt.Errorf("read config: %w", err)
-		}
-
-		return tomlPath, false, nil
-	}
+	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		return path, false, nil
+		return false, nil
 	}
-	return "", false, fmt.Errorf("read config: %w", err)
+	if err != nil {
+		return false, fmt.Errorf("read config: %w", err)
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		info, err = os.Stat(path)
+		if err != nil {
+			return false, fmt.Errorf("resolve config symlink target %q: %w", path, err)
+		}
+	}
+
+	if !info.Mode().IsRegular() {
+		if info.IsDir() {
+			return false, fmt.Errorf("config path must be a regular file, got directory: %q", path)
+		}
+		return false, fmt.Errorf("config path must be a regular file: %q", path)
+	}
+	return true, nil
 }
 
 func applyRuntimeInstructionDefault(cfg *Config) {

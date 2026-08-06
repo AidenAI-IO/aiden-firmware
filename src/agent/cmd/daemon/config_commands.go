@@ -758,7 +758,7 @@ func runConfigCheck(args []string) int {
 	fs := flag.NewFlagSet("config-check", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
 	stdinFlag := fs.Bool("stdin", false, "read config from stdin")
-	configFlag := fs.String("config", "", "path to agent.toml or config directory")
+	configFlag := fs.String("config", "", "path to a TOML config file")
 
 	if err := fs.Parse(args); err != nil {
 		writeConfigCheckError("failed to parse flags: " + err.Error())
@@ -890,7 +890,7 @@ func resolvedWebConfigDTO(configPath string) (webConfigDTO, error) {
 func runConfig(args []string) int {
 	fs := flag.NewFlagSet("config", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
-	configFlag := fs.String("config", "", "path to agent.toml or config directory")
+	configFlag := fs.String("config", "", "path to a TOML config file")
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse flags: %v\n", err)
@@ -937,7 +937,7 @@ func runConfigTest(args []string) int {
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
 	stdinFlag := fs.Bool("stdin", false, "read test request from stdin")
 	sectionFlag := fs.String("section", "", "config section to test")
-	configFlag := fs.String("config", "", "path to agent.toml or config directory")
+	configFlag := fs.String("config", "", "path to a TOML config file")
 	timeoutFlag := fs.Duration("timeout", 45*time.Second, "test timeout")
 
 	if err := fs.Parse(args); err != nil {

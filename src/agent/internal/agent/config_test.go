@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -299,6 +300,135 @@ func TestLoadResolvedConfigKeepsTemperatureUnset(t *testing.T) {
 	}
 	if cfg.Model.Temperature != nil {
 		t.Errorf("model.temperature = %v, want nil (LoadResolvedConfig keeps unset for editor)", formatFloatPtr(cfg.Model.Temperature))
+	}
+}
+
+func TestLoadResolvedConfigRejectsDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("create config directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[model]\nprovider = \"fake\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadResolvedConfig(dir)
+	if err == nil {
+		t.Fatal("LoadResolvedConfig() error = nil, want directory rejection")
+	}
+	if !strings.Contains(err.Error(), "config path must be a regular file") {
+		t.Fatalf("LoadResolvedConfig() error = %q, want clear regular-file requirement", err)
+	}
+}
+
+func TestLoadResolvedConfigRejectsExistingNonTOMLFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "draft.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadResolvedConfig(path)
+	if err == nil {
+		t.Fatal("LoadResolvedConfig() error = nil, want TOML suffix rejection")
+	}
+	if !strings.Contains(err.Error(), "config path must end with .toml") {
+		t.Fatalf("LoadResolvedConfig() error = %q, want consistent TOML suffix requirement", err)
+	}
+}
+
+func TestLoadResolvedConfigAcceptsSymlinkToRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.toml")
+	if err := os.WriteFile(target, []byte("[model]\nprovider = \"fake\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	path := filepath.Join(dir, "draft.toml")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatalf("create config symlink: %v", err)
+	}
+
+	cfg, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	if cfg.Model.Provider != "fake" {
+		t.Fatalf("model.provider = %q, want fake", cfg.Model.Provider)
+	}
+}
+
+func TestLoadResolvedConfigRejectsSpecialFile(t *testing.T) {
+	dir, err := os.MkdirTemp("", "aiden-config-")
+	if err != nil {
+		t.Fatalf("create short temp directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "socket.toml")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("create Unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	_, err = LoadResolvedConfig(path)
+	if err == nil {
+		t.Fatal("LoadResolvedConfig() error = nil, want special-file rejection")
+	}
+	if !strings.Contains(err.Error(), "config path must be a regular file") {
+		t.Fatalf("LoadResolvedConfig() error = %q, want clear regular-file requirement", err)
+	}
+}
+
+func TestLoadResolvedConfigRejectsDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "draft.toml")
+	if err := os.Symlink(filepath.Join(dir, "missing.toml"), path); err != nil {
+		t.Fatalf("create dangling config symlink: %v", err)
+	}
+
+	_, err := LoadResolvedConfig(path)
+	if err == nil {
+		t.Fatal("LoadResolvedConfig() error = nil, want dangling-symlink rejection")
+	}
+	if !strings.Contains(err.Error(), "config symlink target") {
+		t.Fatalf("LoadResolvedConfig() error = %q, want clear dangling-symlink error", err)
+	}
+}
+
+func TestLoadResolvedConfigMissingPathContract(t *testing.T) {
+	t.Run("toml file may be missing", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "draft.toml")
+
+		cfg, err := LoadResolvedConfig(path)
+		if err != nil {
+			t.Fatalf("LoadResolvedConfig() error = %v", err)
+		}
+		if cfg.HID.FrameSocket != DefaultConfig().HID.FrameSocket {
+			t.Fatalf("HID frame_socket = %q, want default %q", cfg.HID.FrameSocket, DefaultConfig().HID.FrameSocket)
+		}
+	})
+
+	for _, tt := range []struct {
+		name string
+		path func(string) string
+	}{
+		{
+			name: "non-TOML file",
+			path: func(dir string) string { return filepath.Join(dir, "draft.json") },
+		},
+		{
+			name: "trailing slash",
+			path: func(dir string) string { return filepath.Join(dir, "draft.toml") + string(os.PathSeparator) },
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadResolvedConfig(tt.path(t.TempDir()))
+			if err == nil {
+				t.Fatal("LoadResolvedConfig() error = nil, want TOML file-path rejection")
+			}
+			if !strings.Contains(err.Error(), "config path must end with .toml") {
+				t.Fatalf("LoadResolvedConfig() error = %q, want clear TOML file-path requirement", err)
+			}
+		})
 	}
 }
 
