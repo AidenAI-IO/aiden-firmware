@@ -14,6 +14,7 @@ import (
 
 type textInputHardwareDeps struct {
 	pointerMode  string
+	deviceTypeFn func() string
 	platformFn   func() string
 	mouseClick   langtools.Tool
 	touchGesture langtools.Tool
@@ -36,22 +37,31 @@ func normalizeTextInputPlatform(platform string) string {
 	}
 }
 
+func textInputPlatformFromDeviceType(deviceType string) string {
+	normalizedDeviceType, ok := normalizeDeviceType(deviceType)
+	if !ok {
+		return ""
+	}
+	return normalizeTextInputPlatform(deviceTypePlatform(normalizedDeviceType))
+}
+
 func (d textInputHardwareDeps) platform() string {
+	if d.deviceTypeFn != nil {
+		if platform := textInputPlatformFromDeviceType(d.deviceTypeFn()); platform != "" {
+			return platform
+		}
+	}
 	if d.platformFn != nil {
 		if platform := normalizeTextInputPlatform(d.platformFn()); platform != "" {
 			return platform
 		}
 	}
-	// An empty dependency is the same as the default HID configuration.
-	if strings.EqualFold(strings.TrimSpace(d.pointerMode), "") || strings.EqualFold(strings.TrimSpace(d.pointerMode), "absolute") {
-		return "ios"
-	}
-	return "android"
+	return textInputPlatformFromDeviceType(defaultDeviceType)
 }
 
 func textInputHardwarePlatform(hw *textInputHardwareDeps) string {
 	if hw == nil {
-		return "android"
+		return textInputPlatformFromDeviceType(defaultDeviceType)
 	}
 	return hw.platform()
 }

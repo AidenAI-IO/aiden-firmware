@@ -14,6 +14,7 @@ import (
 type EnterTextTool struct {
 	engine               *textInputEngine
 	bridgeTool           *textInputBridge
+	deviceTypeFn         func() string
 	platformFn           func() string
 	iosKeyboardIsolation *iosKeyboardIsolationController
 }
@@ -52,9 +53,27 @@ func (t *EnterTextTool) SetPlatformFn(fn func() string) {
 	}
 }
 
+func (t *EnterTextTool) SetDeviceTypeFunc(fn func() string) {
+	if t == nil {
+		return
+	}
+	t.deviceTypeFn = fn
+	if t.engine != nil {
+		t.engine.hw.deviceTypeFn = fn
+	}
+	if t.bridgeTool != nil {
+		t.bridgeTool.SetDeviceTypeFunc(fn)
+	}
+}
+
 func (t *EnterTextTool) platform() string {
 	if t == nil {
-		return "android"
+		return textInputPlatformFromDeviceType(defaultDeviceType)
+	}
+	if t.deviceTypeFn != nil {
+		if platform := textInputPlatformFromDeviceType(t.deviceTypeFn()); platform != "" {
+			return platform
+		}
 	}
 	if t.platformFn != nil {
 		if platform := normalizeTextInputPlatform(t.platformFn()); platform != "" {
@@ -67,7 +86,7 @@ func (t *EnterTextTool) platform() string {
 	if t.bridgeTool != nil {
 		return t.bridgeTool.platform()
 	}
-	return "android"
+	return textInputPlatformFromDeviceType(defaultDeviceType)
 }
 
 func (t *EnterTextTool) Description() string {

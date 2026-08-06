@@ -25,6 +25,10 @@ type runtimePlatformConfigurable interface {
 	SetPlatformFn(func() string)
 }
 
+type runtimeDeviceTypeConfigurable interface {
+	SetDeviceTypeFunc(func() string)
+}
+
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
 // everything is registered here with its runtime dependencies already wired up.
 type BuiltinToolSetOption func(*builtinToolSetOptions)
@@ -358,6 +362,18 @@ func (s *ToolSet) registerSkillTools(skillsDir, manifestPath string, deviceTypeF
 func (s *ToolSet) SetRuntimeDeviceTypeFn(deviceTypeFn func() string) {
 	if s == nil {
 		return
+	}
+	if s.textInputHW != nil {
+		s.textInputHW.deviceTypeFn = deviceTypeFn
+	}
+	for _, name := range []string{"enter_text"} {
+		tool, ok := s.tools[name]
+		if !ok {
+			continue
+		}
+		if configurable, ok := tool.(runtimeDeviceTypeConfigurable); ok {
+			configurable.SetDeviceTypeFunc(deviceTypeFn)
+		}
 	}
 	if tool, ok := s.tools["skill_list"].(*SkillListTool); ok {
 		tool.SetDeviceTypeFunc(deviceTypeFn)

@@ -193,8 +193,10 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: textInputStubTool{name: "keyboard_tap", out: "ok"}}
 	hw.pointerMode = "touchscreen"
+	hw.deviceTypeFn = func() string { return "Android" }
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
 	entryTool := &EnterTextTool{engine: newFastTextInputEngine(*hw, vision)}
+	entryTool.SetDeviceTypeFunc(hw.deviceTypeFn)
 	called := 0
 	result, err := runAppSearchOpenFlow(context.Background(), appSearchOpenFlowConfig{
 		hw:         hw,
@@ -390,8 +392,10 @@ func TestAppSearchOpenFlowFallsBackToShorterTerm(t *testing.T) {
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: kbTap}
 	hw.pointerMode = "touchscreen"
+	hw.deviceTypeFn = func() string { return "Android" }
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
 	entryTool := &EnterTextTool{engine: newFastTextInputEngine(*hw, vision)}
+	entryTool.SetDeviceTypeFunc(hw.deviceTypeFn)
 	terms := []string{}
 	result, err := runAppSearchOpenFlow(context.Background(), appSearchOpenFlowConfig{
 		hw:         hw,
@@ -433,8 +437,10 @@ func TestAppSearchOpenFlowRechecksSameTermBeforeFallback(t *testing.T) {
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: kbTap}
 	hw.pointerMode = "touchscreen"
+	hw.deviceTypeFn = func() string { return "Android" }
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
 	entryTool := &EnterTextTool{engine: newFastTextInputEngine(*hw, vision)}
+	entryTool.SetDeviceTypeFunc(hw.deviceTypeFn)
 	terms := []string{}
 	findCalls := 0
 	result, err := runAppSearchOpenFlow(context.Background(), appSearchOpenFlowConfig{

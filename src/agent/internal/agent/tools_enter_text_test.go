@@ -521,27 +521,38 @@ func TestEnterTextToolSchemaKeepsIMESegmentsInternal(t *testing.T) {
 	}
 }
 
-func TestTextInputPlatformFallsBackToHIDPointerMode(t *testing.T) {
+func TestTextInputPlatformDefaultsToDeviceType(t *testing.T) {
 	if got := (textInputHardwareDeps{pointerMode: "absolute"}).platform(); got != "ios" {
-		t.Fatalf("absolute pointer mode platform = %q, want ios", got)
+		t.Fatalf("absolute pointer mode platform = %q, want default device_type ios", got)
 	}
-	if got := (textInputHardwareDeps{pointerMode: "touchscreen"}).platform(); got != "android" {
-		t.Fatalf("touchscreen pointer mode platform = %q, want android", got)
+	if got := (textInputHardwareDeps{pointerMode: "touchscreen"}).platform(); got != "ios" {
+		t.Fatalf("touchscreen pointer mode platform = %q, want default device_type ios", got)
 	}
 }
 
-func TestTextInputPlatformUsesRuntimeProviderBeforeHIDPointerMode(t *testing.T) {
+func TestTextInputPlatformUsesDeviceTypeProviderBeforeRuntimePlatform(t *testing.T) {
+	if got := (textInputHardwareDeps{
+		pointerMode:  "absolute",
+		deviceTypeFn: func() string { return "Android" },
+		platformFn:   func() string { return "ios" },
+	}).platform(); got != "android" {
+		t.Fatalf("device_type platform = %q, want android", got)
+	}
+	if got := (textInputHardwareDeps{
+		pointerMode:  "touchscreen",
+		deviceTypeFn: func() string { return "macOS" },
+		platformFn:   func() string { return "android" },
+	}).platform(); got != "mac" {
+		t.Fatalf("device_type platform = %q, want mac", got)
+	}
+}
+
+func TestTextInputPlatformFallsBackToRuntimePlatformProvider(t *testing.T) {
 	if got := (textInputHardwareDeps{
 		pointerMode: "absolute",
 		platformFn:  func() string { return "Android" },
 	}).platform(); got != "android" {
 		t.Fatalf("runtime platform = %q, want android", got)
-	}
-	if got := (textInputHardwareDeps{
-		pointerMode: "touchscreen",
-		platformFn:  func() string { return "macOS" },
-	}).platform(); got != "mac" {
-		t.Fatalf("runtime platform = %q, want mac", got)
 	}
 }
 
@@ -685,7 +696,8 @@ func TestEnterTextToolPrefersAvailableBridge(t *testing.T) {
 	pb.platform = "android"
 	pb.connected = true
 	pb.appState = "background"
-	tool := &EnterTextTool{bridgeTool: &textInputBridge{hw: &textInputHardwareDeps{pointerMode: "touchscreen"}, bridgeFn: func() *PhoneBridge { return pb }}}
+	tool := &EnterTextTool{bridgeTool: &textInputBridge{hw: &textInputHardwareDeps{pointerMode: "absolute"}, bridgeFn: func() *PhoneBridge { return pb }}}
+	tool.SetDeviceTypeFunc(func() string { return "Android" })
 	if !tool.bridgeAvailable(textInputArgs{Text: "ASCII is bridged too"}) {
 		t.Fatal("available Android bridge should be preferred before local entry")
 	}
@@ -694,7 +706,7 @@ func TestEnterTextToolPrefersAvailableBridge(t *testing.T) {
 	if !tool.bridgeAvailable(textInputArgs{Text: "global device state keeps Android bridge route"}) {
 		t.Fatal("runtime platform provider should override HID pointer_mode fallback")
 	}
-	tool.SetPlatformFn(func() string { return "ios" })
+	tool.SetDeviceTypeFunc(func() string { return "iOS" })
 	if tool.bridgeAvailable(textInputArgs{Text: "hello"}) {
 		t.Fatal("iOS device_type state should not select an Android bridge clipboard route")
 	}

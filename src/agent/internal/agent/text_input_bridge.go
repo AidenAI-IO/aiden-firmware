@@ -46,6 +46,7 @@ type textInputBridge struct {
 	vision           textInputVision
 	bridgeFn         func() *PhoneBridge
 	restorer         *PhoneBridgeRestorer
+	deviceTypeFn     func() string
 	platformFn       func() string
 	clipboardWriteFn func(context.Context, *PhoneBridge, string) error
 	findPasteMenuFn  func(context.Context, screenshotResult, string) (pasteMenuResult, error)
@@ -62,9 +63,24 @@ func (t *textInputBridge) SetPlatformFn(fn func() string) {
 	}
 }
 
+func (t *textInputBridge) SetDeviceTypeFunc(fn func() string) {
+	if t == nil {
+		return
+	}
+	t.deviceTypeFn = fn
+	if t.hw != nil {
+		t.hw.deviceTypeFn = fn
+	}
+}
+
 func (t *textInputBridge) platform() string {
 	if t == nil {
-		return "android"
+		return textInputPlatformFromDeviceType(defaultDeviceType)
+	}
+	if t.deviceTypeFn != nil {
+		if platform := textInputPlatformFromDeviceType(t.deviceTypeFn()); platform != "" {
+			return platform
+		}
 	}
 	if t.platformFn != nil {
 		if platform := normalizeTextInputPlatform(t.platformFn()); platform != "" {

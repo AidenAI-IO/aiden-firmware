@@ -230,3 +230,12 @@ func (t *postActionScreenshotTool) SetPlatformFn(fn func() string) {
 		tool.SetPlatformFn(fn)
 	}
 }
+
+func (t *postActionScreenshotTool) SetDeviceTypeFunc(fn func() string) {
+	type deviceTypeConfigurable interface {
+		SetDeviceTypeFunc(func() string)
+	}
+	if tool, ok := t.inner.(deviceTypeConfigurable); ok {
+		tool.SetDeviceTypeFunc(fn)
+	}
+}
