@@ -191,9 +191,7 @@ func resolveVoiceAPIKey(apiKey, tokenEnv string) string {
 // rejected while the user is still looking at the form.
 //
 // Only the referenced record is checked strictly. An unreferenced record is
-// user data parked for later -- notably a legacy [tts.credentials.<type>] entry
-// for a provider this build has no adapter for, which loads fine today and must
-// keep loading after migration turns it into a record.
+// user data parked for later and must not block unrelated config changes.
 func (c Config) ValidateVoiceProviders() error {
 	names := make([]string, 0, len(c.TTSProviders))
 	for name := range c.TTSProviders {
@@ -248,77 +246,17 @@ func (c Config) ValidateVoiceProviders() error {
 	return nil
 }
 
-// migrateLegacyVoiceProviders upgrades the two pre-record shapes into named
-// records so the config page sees one shape:
-//
-//  1. [tts.credentials.<type>] -- a Go-only map keyed by provider type. C++
-//     agent_toml.cpp had no handling for the key at all and ttsDTO carried no
-//     field for it, so a single save from the config page erased the whole
-//     block. Migrating it is what makes that data reachable and durable.
-//  2. The flat credentials on [tts]/[stt] themselves.
+// migrateLegacyVoiceProviders upgrades flat [tts]/[stt] credentials into named
+// records so the config page sees one shape.
 //
 // An existing record always wins: migration never overwrites what the user (or
 // the config page) wrote explicitly.
-//
-// metadata tells an explicit [tts].speed from a zero value, which decides
-// whether a legacy per-type speed may be promoted.
 func migrateLegacyVoiceProviders(cfg *Config, metadata toml.MetaData) {
 	if cfg == nil {
 		return
 	}
-	migrateLegacyTTSCredentials(cfg, metadata)
 	migrateLegacyTTSFlatFields(cfg, metadata)
 	migrateLegacySTTFlatFields(cfg, metadata)
-}
-
-func migrateLegacyTTSCredentials(cfg *Config, metadata toml.MetaData) {
-	if len(cfg.TTS.Credentials) == 0 {
-		return
-	}
-	if cfg.TTSProviders == nil {
-		cfg.TTSProviders = map[string]TTSProvider{}
-	}
-
-	activeType := normalizeTTSProvider(cfg.TTS.Provider)
-
-	// Sorted so a config with several legacy entries migrates identically every
-	// run, and so the promoted speed below is deterministic.
-	names := make([]string, 0, len(cfg.TTS.Credentials))
-	for name := range cfg.TTS.Credentials {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
-		creds := cfg.TTS.Credentials[name]
-		recordName := normalizeTTSProvider(name)
-		if recordName == "" {
-			continue
-		}
-
-		// speed is global by design, so it does not travel into the record. It
-		// is only promoted when it belongs to the provider actually in use and
-		// [tts].speed is unset -- otherwise a switch of voice would silently
-		// change playback speed.
-		if creds.Speed != 0 && recordName == activeType && !metadata.IsDefined("tts", "speed") {
-			cfg.TTS.Speed = creds.Speed
-		}
-
-		if _, exists := cfg.TTSProviders[recordName]; exists {
-			continue
-		}
-		cfg.TTSProviders[recordName] = TTSProvider{
-			Provider:    recordName,
-			APIKey:      creds.APIKey,
-			Model:       creds.Model,
-			VoiceID:     creds.VoiceID,
-			Emotion:     creds.Emotion,
-			ReferenceID: creds.ReferenceID,
-		}
-	}
-
-	// Drop the legacy map so a save does not write both shapes back.
-	cfg.TTS.Credentials = nil
 }
 
 // migrateLegacyTTSFlatFields turns a bare [tts] provider type plus its flat

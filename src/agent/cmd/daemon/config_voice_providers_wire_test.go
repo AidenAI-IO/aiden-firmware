@@ -144,9 +144,8 @@ func TestConfigWire_UnsupportedVoiceProviderTypeRejectedOnSave(t *testing.T) {
 	}
 }
 
-// An unreferenced record is parked user data -- notably a migrated
-// [tts.credentials.<type>] entry for a provider this build has no adapter for.
-// It must not block a save of an unrelated section.
+// An unreferenced record is parked user data. It must not block a save of an
+// unrelated section even when this build has no adapter for its provider type.
 func TestConfigWire_UnreferencedVoiceRecordSaves(t *testing.T) {
 	payload := `{
 		"tts_providers":{"fish":{"provider":"fish-audio"},"cartesia":{"provider":"cartesia"}},

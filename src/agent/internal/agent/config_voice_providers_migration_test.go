@@ -124,8 +124,7 @@ func TestVoiceProviderDanglingRefRejectedOnSave(t *testing.T) {
 }
 
 // An unreferenced record is user data parked for later. It must not block a
-// save, and above all a legacy [tts.credentials.<type>] entry for an
-// unregistered provider must survive migration without breaking anything.
+// save even when this build has no adapter for its provider type.
 func TestUnreferencedVoiceRecordToleratedOnSave(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{
@@ -136,97 +135,6 @@ func TestUnreferencedVoiceRecordToleratedOnSave(t *testing.T) {
 	}
 	if err := cfg.ValidateVoiceProviders(); err != nil {
 		t.Errorf("unreferenced cartesia record should be tolerated, got: %v", err)
-	}
-}
-
-// [tts.credentials.<type>] is the old Go-only shape. It must upgrade to a named
-// record so the config page can see it -- until now C++ had no handling for the
-// key at all, so a single web save erased the whole block.
-func TestLegacyTTSCredentialsMigrateToRecords(t *testing.T) {
-	cfg := writeVoiceProviderConfig(t, `
-[tts]
-provider = "minimax-cn"
-api_key = "sk-minimax"
-
-[tts.credentials.fish-audio]
-api_key = "sk-fish"
-reference_id = "ref-abc"
-
-[tts.credentials.cartesia]
-api_key = "sk-cartesia"
-voice_id = "voice-xyz"
-`)
-
-	// The active provider becomes a record too, so the flat section is left
-	// holding nothing but the reference.
-	rec, ok := cfg.TTSProviders["minimax-cn"]
-	if !ok {
-		t.Fatalf("expected a minimax-cn record, got %v", recordNames(cfg.TTSProviders))
-	}
-	if rec.Provider != "minimax-cn" {
-		t.Errorf("record type = %q, want %q", rec.Provider, "minimax-cn")
-	}
-	if rec.APIKey != "sk-minimax" {
-		t.Errorf("record api_key = %q, want %q", rec.APIKey, "sk-minimax")
-	}
-
-	fish, ok := cfg.TTSProviders["fish-audio"]
-	if !ok {
-		t.Fatalf("expected a fish-audio record, got %v", recordNames(cfg.TTSProviders))
-	}
-	if fish.APIKey != "sk-fish" {
-		t.Errorf("fish api_key = %q, want %q", fish.APIKey, "sk-fish")
-	}
-	if fish.ReferenceID != "ref-abc" {
-		t.Errorf("fish reference_id = %q, want %q", fish.ReferenceID, "ref-abc")
-	}
-
-	// An unregistered type in legacy credentials must not be silently dropped:
-	// it is user data, and dropping it is the bug this migration exists to fix.
-	if _, ok := cfg.TTSProviders["cartesia"]; !ok {
-		t.Errorf("expected the cartesia record to survive, got %v", recordNames(cfg.TTSProviders))
-	}
-
-	// The reference still resolves to the active provider's own credentials.
-	if cfg.TTS.Provider != "minimax-cn" {
-		t.Errorf("tts.provider = %q, want %q", cfg.TTS.Provider, "minimax-cn")
-	}
-	if cfg.TTS.APIKey != "sk-minimax" {
-		t.Errorf("tts.api_key = %q, want %q", cfg.TTS.APIKey, "sk-minimax")
-	}
-}
-
-// speed is a listening preference, not a credential, so it stays global. A
-// legacy per-type speed is only honored when it belongs to the active provider
-// and [tts].speed is unset; otherwise keeping it would silently change playback
-// speed on switching voices.
-func TestLegacyCredentialsSpeedPromotedOnlyForActiveProvider(t *testing.T) {
-	cfg := writeVoiceProviderConfig(t, `
-[tts]
-provider = "fish-audio"
-
-[tts.credentials.fish-audio]
-api_key = "sk-fish"
-speed = 1.4
-`)
-	if cfg.TTS.Speed != 1.4 {
-		t.Errorf("tts.speed = %v, want 1.4 promoted from the active provider", cfg.TTS.Speed)
-	}
-
-	// An explicit [tts].speed wins, and an inactive provider's speed is dropped.
-	cfg = writeVoiceProviderConfig(t, `
-[tts]
-provider = "fish-audio"
-speed = 1.0
-
-[tts.credentials.fish-audio]
-speed = 1.4
-
-[tts.credentials.minimax]
-speed = 0.8
-`)
-	if cfg.TTS.Speed != 1.0 {
-		t.Errorf("tts.speed = %v, want the explicit 1.0 to win", cfg.TTS.Speed)
 	}
 }
 
@@ -256,26 +164,6 @@ language = "zh"
 	// language is global and must not migrate into the record.
 	if cfg.STT.Language != "zh" {
 		t.Errorf("stt.language = %q, want %q to stay on the flat section", cfg.STT.Language, "zh")
-	}
-}
-
-// Migration must not clobber a record the user already wrote by hand.
-func TestMigrationDoesNotOverwriteExistingRecord(t *testing.T) {
-	cfg := writeVoiceProviderConfig(t, `
-[tts_providers.fish-audio]
-provider = "fish-audio"
-api_key = "sk-explicit-record"
-
-[tts]
-provider = "fish-audio"
-
-[tts.credentials.fish-audio]
-api_key = "sk-legacy"
-`)
-
-	rec := cfg.TTSProviders["fish-audio"]
-	if rec.APIKey != "sk-explicit-record" {
-		t.Errorf("record api_key = %q, want the explicit record to win over legacy credentials", rec.APIKey)
 	}
 }
 

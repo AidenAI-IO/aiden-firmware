@@ -380,35 +380,6 @@ type TTSConfig struct {
 	// The result is speaking with the wrong account's key while the config page
 	// shows the right record selected.
 	ActiveProviderRecord string `toml:"-"`
-
-	// Credentials lets you store per-provider settings so the app can switch
-	// providers at runtime without losing each one's API key/voice. Keys are
-	// matched case-insensitively against the provider name passed to switch.
-	//
-	// Example agent.toml:
-	//   [tts]
-	//   provider = "minimax-cn"
-	//   api_key = "<minimax-key>"   # used as fallback for any provider
-	//
-	//   [tts.credentials.fish-audio]
-	//   api_key = "<fish-key>"
-	//   reference_id = "<fish-reference-id>"
-	//
-	//   [tts.credentials.cartesia]
-	//   api_key = "<cartesia-key>"
-	//   voice_id = "<cartesia-voice>"
-	Credentials map[string]TTSProviderCredentials `toml:"credentials,omitempty"`
-}
-
-// TTSProviderCredentials holds per-provider override settings.
-// Any field left blank falls back to the top-level [tts] values.
-type TTSProviderCredentials struct {
-	APIKey      string  `toml:"api_key,omitempty"`
-	VoiceID     string  `toml:"voice_id,omitempty"`
-	Emotion     string  `toml:"emotion,omitempty"`
-	Model       string  `toml:"model,omitempty"`
-	Speed       float64 `toml:"speed,omitempty"`
-	ReferenceID string  `toml:"reference_id,omitempty"`
 }
 
 type STTConfig struct {
@@ -1162,12 +1133,11 @@ func LoadResolvedConfig(path string) (Config, error) {
 
 	applyRuntimeInstructionDefault(&cfg)
 
-	// Upgrade the legacy voice shapes to named records. This backs
+	// Upgrade flat voice credentials to named records. This backs
 	// `agent config --format=json`, which is what the config page reads through,
-	// so it has to run here as well as in LoadRuntimeConfig: without it a legacy
+	// so it has to run here as well as in LoadRuntimeConfig: without it a flat
 	// config reaches the page as flat fields with no record, leaving the key
-	// invisible and un-editable -- and since the wire DTO has no field for
-	// [tts.credentials.*], the next save would drop the block entirely.
+	// invisible and un-editable.
 	//
 	// References are deliberately NOT resolved here. The page edits the
 	// reference, so it must come back as the name it wrote.

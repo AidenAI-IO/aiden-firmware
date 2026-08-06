@@ -2,10 +2,8 @@ package agent
 
 import "testing"
 
-// Runtime switching must read the target provider's own credentials. Before
-// records existed this came from [tts.credentials.<type>]; migration clears that
-// map, so a switch that still consulted it would silently fall back to the
-// ACTIVE provider's key and try to authenticate against the wrong service.
+// Runtime switching must read the target provider's own credentials instead of
+// falling back to the active provider's key.
 func TestBuildTTSProviderConfigForUsesRecords(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{
@@ -63,45 +61,5 @@ func TestBuildTTSProviderConfigForResolvesTokenEnv(t *testing.T) {
 	got := buildTTSProviderConfigFor(cfg, "fish-audio")
 	if got.APIKey != "sk-env-switch" {
 		t.Errorf("api_key = %q, want %q from token_env", got.APIKey, "sk-env-switch")
-	}
-}
-
-// The legacy per-type credentials map keeps working for a config built in
-// process (tests, and any caller that never went through LoadRuntimeConfig).
-func TestBuildTTSProviderConfigForStillHonorsLegacyCredentials(t *testing.T) {
-	cfg := Config{
-		TTS: TTSConfig{
-			Provider: "minimax",
-			APIKey:   "sk-active",
-			Credentials: map[string]TTSProviderCredentials{
-				"fish-audio": {APIKey: "sk-legacy-fish", ReferenceID: "ref-legacy"},
-			},
-		},
-	}
-
-	got := buildTTSProviderConfigFor(cfg, "fish-audio")
-	if got.APIKey != "sk-legacy-fish" {
-		t.Errorf("api_key = %q, want %q", got.APIKey, "sk-legacy-fish")
-	}
-}
-
-// A record beats the legacy map when both describe the same provider, so a
-// half-migrated config converges on the record.
-func TestBuildTTSProviderConfigForPrefersRecordOverLegacy(t *testing.T) {
-	cfg := Config{
-		TTSProviders: map[string]TTSProvider{
-			"fish-main": {Provider: "fish-audio", APIKey: "sk-record-fish"},
-		},
-		TTS: TTSConfig{
-			Provider: "minimax",
-			Credentials: map[string]TTSProviderCredentials{
-				"fish-audio": {APIKey: "sk-legacy-fish"},
-			},
-		},
-	}
-
-	got := buildTTSProviderConfigFor(cfg, "fish-audio")
-	if got.APIKey != "sk-record-fish" {
-		t.Errorf("api_key = %q, want the record's %q", got.APIKey, "sk-record-fish")
 	}
 }

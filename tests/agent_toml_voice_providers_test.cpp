@@ -19,11 +19,6 @@ std::string voice_temp_path(const char* leaf) {
     return base + "_" + leaf;
 }
 
-std::string read_all(const std::string& path) {
-    std::ifstream in(path);
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-}
-
 }
 
 TEST_CASE("agent_toml loads named voice providers") {
@@ -138,56 +133,6 @@ TEST_CASE("agent_toml round-trips named voice providers") {
     std::remove(path.c_str());
 }
 
-// This is the data-erasure bug. [tts.credentials.<type>] works in the Go agent,
-// but agent_toml.cpp had no handling for the key, so it fell through to "unknown
-// sections are ignored" and the very next save wrote a file without it. Loading
-// must migrate it into a record so the block survives and becomes editable.
-TEST_CASE("agent_toml migrates legacy tts.credentials instead of erasing them") {
-    std::string path = voice_temp_path("legacy_credentials.toml");
-    {
-        std::ofstream out(path);
-        out << "[model]\n"
-            << "provider = \"fake\"\n"
-            << "[tts]\n"
-            << "provider = \"minimax-cn\"\n"
-            << "api_key = \"sk-minimax\"\n"
-            << "[tts.credentials.fish-audio]\n"
-            << "api_key = \"sk-fish\"\n"
-            << "reference_id = \"ref-abc\"\n"
-            << "[tts.credentials.cartesia]\n"
-            << "api_key = \"sk-cartesia\"\n"
-            << "voice_id = \"voice-xyz\"\n";
-    }
-
-    aiden::AgentToml cfg;
-    std::string err;
-    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
-    REQUIRE(err.empty());
-
-    CHECK(cfg.tts_providers["fish-audio"].provider == "fish-audio");
-    CHECK(cfg.tts_providers["fish-audio"].api_key == "sk-fish");
-    CHECK(cfg.tts_providers["fish-audio"].reference_id == "ref-abc");
-    // An unregistered type is still user data and must not be dropped.
-    CHECK(cfg.tts_providers["cartesia"].api_key == "sk-cartesia");
-    CHECK(cfg.tts_providers["cartesia"].voice_id == "voice-xyz");
-
-    // Saving and reloading must keep every credential. Before the fix this
-    // round-trip silently lost all of [tts.credentials.*].
-    std::string saved_path = voice_temp_path("legacy_credentials_saved.toml");
-    REQUIRE(aiden::save_agent_toml(saved_path.c_str(), cfg, &err));
-    aiden::AgentToml reloaded;
-    REQUIRE(aiden::load_agent_toml(saved_path.c_str(), reloaded, &err));
-    CHECK(reloaded.tts_providers["fish-audio"].api_key == "sk-fish");
-    CHECK(reloaded.tts_providers["cartesia"].api_key == "sk-cartesia");
-
-    // The legacy key must not be written back, or the file would carry both
-    // shapes and they could drift apart.
-    CHECK(read_all(saved_path).find("[tts.credentials") == std::string::npos);
-
-    std::remove(path.c_str());
-    std::remove(saved_path.c_str());
-}
-
 // A flat [tts]/[stt] credential set must become a record on load. Go migrates
 // this too, but only in memory -- C++ is the only writer of agent.toml, so
 // without migrating here a device's key would stay flat forever and the config
@@ -236,31 +181,6 @@ TEST_CASE("agent_toml migrates flat voice credentials into records") {
     CHECK(cfg.tts.voice_id.empty());
     CHECK(cfg.stt.app_id.empty());
     CHECK(cfg.stt.secret_key.empty());
-
-    std::remove(path.c_str());
-}
-
-// An explicit record always wins: migration must never overwrite what the user
-// or the config page wrote.
-TEST_CASE("agent_toml migration does not overwrite an existing record") {
-    std::string path = voice_temp_path("voice_no_overwrite.toml");
-    {
-        std::ofstream out(path);
-        out << "[model]\n"
-            << "provider = \"fake\"\n"
-            << "[tts_providers.fish-audio]\n"
-            << "provider = \"fish-audio\"\n"
-            << "api_key = \"sk-explicit\"\n"
-            << "[tts]\n"
-            << "provider = \"fish-audio\"\n"
-            << "[tts.credentials.fish-audio]\n"
-            << "api_key = \"sk-legacy\"\n";
-    }
-
-    aiden::AgentToml cfg;
-    std::string err;
-    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
-    CHECK(cfg.tts_providers["fish-audio"].api_key == "sk-explicit");
 
     std::remove(path.c_str());
 }

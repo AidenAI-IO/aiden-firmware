@@ -5,7 +5,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -583,73 +582,6 @@ struct LegacyModelMaxTokens {
         : section(section_name), raw(raw_value), lineno(line) {}
 };
 
-// LegacyTTSCredential is one key of a [tts.credentials.<type>] section, the
-// pre-records shape that only the Go agent understood. It is collected during
-// the parse and applied afterwards, because an explicit [tts_providers.<name>]
-// record must win regardless of which appears first in the file.
-struct LegacyTTSCredential {
-    std::string type;
-    std::string key;
-    std::string raw;
-    int lineno = 0;
-
-    LegacyTTSCredential(const std::string& type_name, const std::string& key_name,
-                        const std::string& raw_value, int line)
-        : type(type_name), key(key_name), raw(raw_value), lineno(line) {}
-};
-
-// migrate_legacy_tts_credentials folds collected [tts.credentials.<type>] keys
-// into [tts_providers.<type>] records. An existing record always wins, so the
-// config page's own writes are never clobbered.
-//
-// A credential type that cannot be written back as a bare TOML key fails the
-// load rather than being dropped: silently discarding it is the very bug this
-// migration exists to fix.
-void migrate_legacy_tts_credentials(AgentToml& cfg,
-                                    const std::vector<LegacyTTSCredential>& legacy,
-                                    std::string* parse_error) {
-    if (legacy.empty()) return;
-
-    // Records present in the file itself are off limits to the migration.
-    std::set<std::string> explicit_records;
-    for (const auto& item : cfg.tts_providers) {
-        explicit_records.insert(item.first);
-    }
-
-    for (const auto& entry : legacy) {
-        if (!is_valid_bare_toml_key(entry.type)) {
-            if (parse_error && parse_error->empty()) {
-                *parse_error = "line " + std::to_string(entry.lineno) +
-                    ": [tts.credentials." + entry.type +
-                    "]: cannot migrate a provider name that is not a bare key" +
-                    " (only letters, digits, '-' and '_' are allowed)";
-            }
-            return;
-        }
-        if (explicit_records.count(entry.type)) {
-            continue;
-        }
-
-        TTSProviderToml& record = cfg.tts_providers[entry.type];
-        // The legacy map was keyed by provider type, so the name IS the type.
-        record.provider = entry.type;
-
-        std::string sub_err;
-        if (entry.key == "api_key") assign_string(&record.api_key, entry.raw, &sub_err);
-        else if (entry.key == "model") assign_string(&record.model, entry.raw, &sub_err);
-        else if (entry.key == "voice_id") assign_string(&record.voice_id, entry.raw, &sub_err);
-        else if (entry.key == "emotion") assign_string(&record.emotion, entry.raw, &sub_err);
-        else if (entry.key == "reference_id") assign_string(&record.reference_id, entry.raw, &sub_err);
-        // speed is intentionally dropped: it is global on [tts] now, and keeping
-        // a per-provider copy would change playback speed on switching voice.
-        if (!sub_err.empty() && parse_error && parse_error->empty()) {
-            *parse_error = "line " + std::to_string(entry.lineno) +
-                ": [tts.credentials." + entry.type + "] " + entry.key + ": " + sub_err;
-            return;
-        }
-    }
-}
-
 // migrate_flat_voice_credentials moves a flat [tts]/[stt] credential set onto a
 // record named after the provider type, then clears the flat fields.
 //
@@ -770,7 +702,6 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
     bool model_max_response_tokens_seen = false;
     bool model_text_max_response_tokens_seen = false;
     std::vector<LegacyModelMaxTokens> legacy_model_max_tokens;
-    std::vector<LegacyTTSCredential> legacy_tts_credentials;
 
     while (std::getline(in, line)) {
         ++lineno;
@@ -837,16 +768,6 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
             legacy_model_max_tokens.push_back(LegacyModelMaxTokens(section, value, lineno));
             continue;
         }
-        // [tts.credentials.<type>] is the pre-records shape. It had no handling
-        // here at all, so it fell through to "unknown sections are ignored" and
-        // the next save erased the whole block. Collect it and migrate after the
-        // parse, where an explicit record can take precedence.
-        if (section.find("tts.credentials.") == 0) {
-            legacy_tts_credentials.push_back(
-                LegacyTTSCredential(section.substr(16), key, value, lineno)); // Skip "tts.credentials."
-            continue;
-        }
-
         std::string apply_err;
         apply_kv(cfg, section, key, value, &apply_err);
         if (!apply_err.empty() && parse_error.empty()) {
@@ -878,9 +799,6 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
         }
     }
 
-    if (parse_error.empty()) {
-        migrate_legacy_tts_credentials(cfg, legacy_tts_credentials, &parse_error);
-    }
     if (parse_error.empty()) {
         migrate_flat_voice_credentials(cfg);
     }

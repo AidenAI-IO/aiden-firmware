@@ -75,27 +75,6 @@ func buildTTSProviderConfigFor(cfg Config, providerRef string) tts.ProviderConfi
 		if record.ReferenceID != "" {
 			referenceID = record.ReferenceID
 		}
-	} else if creds, ok := lookupCredentials(cfg.TTS.Credentials, provider); ok {
-		// Legacy [tts.credentials.<type>]. LoadRuntimeConfig migrates this into
-		// records, so this path only serves a Config built in process.
-		if creds.APIKey != "" {
-			apiKey = creds.APIKey
-		}
-		if creds.VoiceID != "" {
-			voice = creds.VoiceID
-		}
-		if creds.Emotion != "" {
-			emotion = creds.Emotion
-		}
-		if creds.Model != "" {
-			model = creds.Model
-		}
-		if creds.Speed != 0 {
-			speed = creds.Speed
-		}
-		if creds.ReferenceID != "" {
-			referenceID = creds.ReferenceID
-		}
 	}
 
 	extra := map[string]any{}
@@ -327,21 +306,6 @@ func isTransientTTSError(err error) bool {
 		}
 	}
 	return false
-}
-
-// lookupCredentials does a case-insensitive map lookup so users don't have to
-// match the exact registered provider casing in their toml.
-func lookupCredentials(creds map[string]TTSProviderCredentials, provider string) (TTSProviderCredentials, bool) {
-	if creds == nil {
-		return TTSProviderCredentials{}, false
-	}
-	target := normalizeTTSProvider(provider)
-	for k, v := range creds {
-		if normalizeTTSProvider(k) == target {
-			return v, true
-		}
-	}
-	return TTSProviderCredentials{}, false
 }
 
 // ttsLoggerAdapter bridges the agent Logger to tts.Logger.

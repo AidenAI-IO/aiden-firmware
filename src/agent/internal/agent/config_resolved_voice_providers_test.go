@@ -7,14 +7,13 @@ import (
 )
 
 // LoadResolvedConfig backs `agent config --format=json`, which is what the config
-// page reads through. It ran neither migration nor resolution, so for a legacy
-// config it emitted flat fields and no records: the page showed a provider select
-// with no card, leaving the key invisible and un-editable -- and since the wire
-// DTO has no field for [tts.credentials.*], the next save dropped the block.
+// page reads through. It ran neither migration nor resolution, so for a flat
+// config it emitted fields and no records: the page showed a provider select
+// with no card, leaving the key invisible and un-editable.
 //
 // Migration has to run here, not only in LoadRuntimeConfig, because both GET and
 // POST read the stored config through this CLI path.
-func TestLoadResolvedConfigMigratesLegacyVoiceCredentials(t *testing.T) {
+func TestLoadResolvedConfigMigratesFlatVoiceCredentials(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	body := `
 [model]
@@ -27,10 +26,6 @@ provider = "minimax-cn"
 api_key = "sk-minimax"
 voice_id = "male-qn-qingse"
 speed = 1.3
-
-[tts.credentials.fish-audio]
-api_key = "sk-fish"
-reference_id = "ref-abc"
 
 [stt]
 provider = "tencent-asr"
@@ -45,15 +40,6 @@ language = "zh"
 	cfg, err := LoadResolvedConfig(path)
 	if err != nil {
 		t.Fatalf("LoadResolvedConfig: %v", err)
-	}
-
-	// The legacy credentials block survives as a record.
-	fish, ok := cfg.TTSProviders["fish-audio"]
-	if !ok {
-		t.Fatalf("expected a fish-audio record, got %v", recordNames(cfg.TTSProviders))
-	}
-	if fish.APIKey != "sk-fish" || fish.ReferenceID != "ref-abc" {
-		t.Errorf("fish record = %+v, want the legacy credentials", fish)
 	}
 
 	// The flat credential set becomes a record too.

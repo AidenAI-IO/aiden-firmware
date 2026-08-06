@@ -506,13 +506,9 @@ with `$` is stored as `token_env`.
 
 - A bare provider type in `[tts]` / `[stt]` keeps working. `provider = "minimax-cn"`
   with a flat `api_key` needs no migration to keep speaking.
-- Both legacy shapes are upgraded to records on load, keyed by provider type:
-  the flat credentials on `[tts]` / `[stt]`, and the older Go-only
-  `[tts.credentials.<type>]` map. The upgrade is written back the next time the
-  config is saved, and an existing record is never overwritten.
-- A legacy `[tts.credentials.<type>]` entry carrying `speed` only keeps it when
-  that provider is the active one and `[tts].speed` is unset. Otherwise it is
-  dropped, because a per-provider speed would change playback on switching voice.
+- Flat credentials on `[tts]` / `[stt]` are upgraded to records on load, keyed
+  by provider type. The upgrade is written back the next time the config is
+  saved, and an existing record is never overwritten.
 - An unresolvable reference does not stop the device from booting: voice is
   optional at runtime, so a stale name is reported and the agent starts without
   voice. Config Web rejects such a reference when saving instead, while the form
@@ -553,7 +549,7 @@ TTS:
 | `emotion`      | Optional. Minimax emotion; Volcengine passes it through as `audio_params.emotion`, requires voice support                  |
 | `speed`        | Optional. Speech rate, default `1.0`; the supported range varies by provider, refer to the official docs                   |
 
-The config examples below only show non-key fields relevant to adapter behavior; at actual runtime you still need to provide the corresponding `api_key` on the provider's `[tts_providers.<name>]` record. (The older `[tts.credentials.<provider>]` map is still read, and is upgraded to a record on load.)
+The config examples below only show non-key fields relevant to adapter behavior; at actual runtime you still need to provide the corresponding `api_key` on the provider's `[tts_providers.<name>]` record.
 
 Common TTS adapter configs:
 
@@ -588,7 +584,7 @@ reference_id = "98655a12fa944e26b274c535e5e03842"
 speed = 1.0
 ```
 
-Fish Audio `model` defaults to `s2-pro` and is sent as a WebSocket handshake header. An empty `reference_id` uses the built-in demo voice shown in Config Web; configure `[tts].reference_id` or `[tts.credentials.fish-audio].reference_id` to override it. `voice_id` is not used by Fish Audio and is ignored (this avoids inheriting a `voice_id` meant for another provider). In some networks, the public Fish Audio endpoint may require `ALL_PROXY` or `HTTPS_PROXY` in `/userdata/system/env`.
+Fish Audio `model` defaults to `s2-pro` and is sent as a WebSocket handshake header. An empty `reference_id` uses the built-in demo voice shown in Config Web; configure `reference_id` on the selected `[tts_providers.<name>]` record to override it. `voice_id` is not used by Fish Audio and is ignored (this avoids inheriting a `voice_id` meant for another provider). In some networks, the public Fish Audio endpoint may require `ALL_PROXY` or `HTTPS_PROXY` in `/userdata/system/env`.
 
 Alibaba Cloud Qwen-TTS Realtime:
 
@@ -622,25 +618,36 @@ curl -X POST http://<device-ip>:8080/api/settings/tts \
   -d '{"provider":"volcengine","voice":"zh_female_vv_uranus_bigtts"}'
 ```
 
-If you need to store the keys of multiple providers in the same config, use per-provider credentials. When switching providers via runtime POST, the corresponding credentials are read first, then overridden by the request body.
+If you need to store the keys of multiple providers in the same config, use named provider records. When switching providers via runtime POST, the corresponding record is read first, then overridden by the request body.
 
 ```toml
-[tts]
+[tts_providers.minimax-main]
 provider = "minimax"
+api_key = "..."
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 
-[tts.credentials.fish-audio]
+[tts_providers.fish-main]
+provider = "fish-audio"
+api_key = "..."
 model = "s2-pro"
 reference_id = "98655a12fa944e26b274c535e5e03842"
 
-[tts.credentials.alicloud]
+[tts_providers.alicloud-main]
+provider = "alicloud"
+api_key = "..."
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
 
-[tts.credentials.volcengine]
+[tts_providers.volcengine-main]
+provider = "volcengine"
+api_key = "..."
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
+
+[tts]
+provider = "minimax-main"
+speed = 1.0
 ```
 
 ## `[live_activity]`
