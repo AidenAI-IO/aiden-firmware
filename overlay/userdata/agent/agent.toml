@@ -61,11 +61,14 @@ device_type = "iOS"
 # terminate_stall_score = 6
 # parse_failure_limit = 3
 
-# Primary LLM model configuration
+# Primary LLM provider and model configuration
+[model_providers.openai-main]
+type = "openai"
+token_env = "OPENAI_API_KEY"
+
 [model]
-provider = "openai"
+provider = "openai-main"
 model = "gpt-5.5"
-api_key = "OPENAI_API_KEY"
 # base_url = "https://api.openai.com/v1"     # Optional: custom endpoint
 # temperature = 0.2
 # max_response_tokens = 1000
@@ -74,20 +77,23 @@ api_key = "OPENAI_API_KEY"
 # model_max_output_tokens = 8192
 
 # For Moonshot Kimi K3, use the "kimi" (global) or "kimi-cn" (mainland China)
-# provider. Each has a built-in Moonshot base_url, so only model + api_key are
-# needed. Set base_url only to override the default (e.g. a proxy).
-# provider = "kimi"       # global: https://api.moonshot.ai/v1
-# provider = "kimi-cn"    # mainland China: https://api.moonshot.cn/v1
+# provider. Each uses its built-in Moonshot endpoint, so only model + api_key
+# are needed. Custom base_url values are not supported for Kimi providers.
+# [model_providers.kimi-main]
+# type = "kimi"           # global: https://api.moonshot.ai/v1
+# type = "kimi-cn"        # mainland China: https://api.moonshot.cn/v1
+# token_env = "MOONSHOT_API_KEY"
+# Set [model].provider = "kimi-main" to select it.
 # model = "kimi-k3"
-# api_key = "MOONSHOT_API_KEY"
 
-# For Volcengine Ark (Doubao), use the "volcengine" provider. It has a built-in
-# OpenAI-compatible base_url, so only model + api_key are needed. Set base_url
-# only to override it (e.g. a proxy, or the Agent Plan endpoint
-# https://ark.cn-beijing.volces.com/api/plan/v3).
-# provider = "volcengine"  # https://ark.cn-beijing.volces.com/api/v3
+# For Volcengine Ark (Doubao), use the "volcengine" provider. It uses its
+# built-in OpenAI-compatible endpoint, so only model + api_key are needed.
+# Custom base_url values are not supported for Volcengine providers.
+# [model_providers.ark-main]
+# type = "volcengine"      # https://ark.cn-beijing.volces.com/api/v3
+# token_env = "ARK_API_KEY"
+# Set [model].provider = "ark-main" to select it.
 # model = "doubao-seed-2-1-pro-260628"
-# api_key = "ARK_API_KEY"
 # Ark treats an omitted reasoning_effort as "high", which delays the first
 # streamed token; the registry pins "low" for the model above. Ark accepts
 # minimal/low/medium/high ("none" is not an Ark level).
@@ -163,32 +169,42 @@ max_agent_log_mb = 1
 
 # Speech-to-Text (STT) configuration
 # Required when input_mode = "stt"
-[stt]
-provider = "openai-whisper"  # "openai-whisper", or "tencent-asr"
-api_key = "OPENAI_API_KEY"
+[stt_providers.openai-main]
+type = "openai-whisper"
+token_env = "OPENAI_API_KEY"
 model = "whisper-1"
 # base_url = "https://api.openai.com/v1"  # Optional: custom endpoint
 
+[stt]
+provider = "openai-main"
+
 # For OpenRouter STT:
-# provider = "openrouter"
-# api_key = "OPENROUTER_API_KEY"
+# [stt_providers.openrouter-main]
+# type = "openrouter"
+# token_env = "OPENROUTER_API_KEY"
 # model = "qwen/qwen3-asr-flash-2026-02-10"
+# Set [stt].provider = "openrouter-main" to select it.
 
 # For Tencent ASR (alternative to OpenAI Whisper):
-# provider = "tencent-asr"  # legacy aliases: tencent, tencent_asr
+# [stt_providers.tencent-main]
+# type = "tencent-asr"  # legacy aliases: tencent, tencent_asr
 # app_id = "TENCENT_APP_ID"   # Required for realtime upload during recording
 # secret_id = "TENCENT_SECRET_ID"
 # secret_key = "TENCENT_SECRET_KEY"
 # region = "ap-shanghai"
 # engine_model_type = "16k_zh"
+# Set [stt].provider = "tencent-main" to select it.
 
 # Text-to-Speech (TTS) configuration
 # Required when input_mode = "stt"
-[tts]
-provider = "minimax-cn"
-api_key = "MINIMAX_API_KEY"
+[tts_providers.minimax-main]
+type = "minimax-cn"
+token_env = "MINIMAX_API_KEY"
 voice_id = "male-qn-qingse"   # Voice ID from Minimax
 emotion = "happy"             # Emotion: happy, sad, angry, etc.
+
+[tts]
+provider = "minimax-main"
 speed = 1.0                   # Speech speed: 0.5 - 2.0
 
 # HID (Human Interface Device) configuration

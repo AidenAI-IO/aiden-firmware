@@ -125,7 +125,7 @@ Start the Go agent so selected tools are forwarded to an environment bridge:
 
 ```bash
 daemon \
-  -config /config \
+  -dir /config \
   -addr 0.0.0.0:8080 \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://bridge:9090 \

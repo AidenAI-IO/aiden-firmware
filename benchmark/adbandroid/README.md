@@ -85,7 +85,7 @@ uv run python -m adbandroid.scripts.start_bridge \
 # 2. Run the daemon locally (the daemon and the runner must use the SAME benchmark-task-id)
 cd ../src/agent
 go run ./cmd/daemon \
-  -config <your config directory> \
+  -dir <your agent data directory> \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://127.0.0.1:8899 \
   --environment-bridge-tools "screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,mouse_click,mouse_move,mouse_scroll,quick_action" \

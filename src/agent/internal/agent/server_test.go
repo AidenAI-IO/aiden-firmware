@@ -1652,6 +1652,11 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("runtime.Close() error = %v", err)
+		}
+	})
 	server := newServerForTest(runtime)
 	provider := &recordingTTSProvider{name: "server-provider"}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
@@ -1666,7 +1671,16 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
+	}
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
+	waitForServerRequestFinished(t, server, requestID)
 }
 
 func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {

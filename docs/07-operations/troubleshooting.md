@@ -177,13 +177,81 @@ Note this is *not* opkg refusing to start. `/etc/opkg/90-userfeeds.conf` is a
 symlink into `/opt`, and when it dangles uClibc-ng's `glob()` silently drops it —
 opkg never tries to open it and runs normally. The protection against installing
 into the A/B rootfs comes from the read-only seal `S22opt` applies to `/opt`,
-plus the fact that no source is reachable. See
-[opkg Package Management](opkg-package-management.md) §6.2.1.
+plus the fact that no source is reachable.
 
-`opt=bound` is healthy. For `sealed`, `wrong-source` or `unbound`, and for the
-rest of the opkg runbook (enabling a feed, recovering a truncated package
-database, cleaning up before a restore), see
-[opkg Package Management](opkg-package-management.md) §13.
+### Recover the `/opt` mount
+
+`opt=bound` is the only healthy status. Other states require mount recovery
+before running opkg:
+
+- `opt=sealed`: `/userdata` was unavailable or the bind mount failed, so
+  `S22opt` protected the rootfs with a read-only tmpfs. Confirm that `/userdata`
+  is mounted, fix the reported cause, then run `/etc/init.d/S22opt restart`.
+- `opt=wrong-source`: something other than `/userdata/opt` is mounted at
+  `/opt`. Do not run opkg or unmount it blindly; stop processes using that mount,
+  remove the configuration that created it, and reboot.
+- `opt=unbound`: run `/etc/init.d/S22opt restart` and use its error output to
+  diagnose the missing `/userdata` mount, directory creation failure, or bind
+  failure.
+
+After recovery, require a successful status check before continuing:
+
+```bash
+/etc/init.d/S22opt status
+# opt=bound source=/userdata/opt
+```
+
+### Configure a package feed
+
+Package sources belong only in `/opt/etc/opkg/userfeeds.conf`. The init script
+seeds the Entware source when it creates this file for the first time, but it
+never changes an existing file, including an empty one. To enable or change a
+feed, first verify that `/opt` is bound, then edit the file so it contains one
+source declaration per feed:
+
+```text
+src/gz entware https://bin.entware.net/armv7sf-k3.2
+```
+
+Avoid declaring the same source more than once. After saving the file, refresh
+the package lists and confirm that packages are visible:
+
+```bash
+opkg update
+opkg list | head
+```
+
+Run plain `opkg` commands without `-f`; supplying a standalone configuration
+file bypasses the fixed fragments under `/etc/opkg` that keep package files,
+metadata, caches, and locks in their intended locations.
+
+### Recover opkg metadata
+
+If an interrupted `opkg update` leaves only the downloaded package lists or
+cache inconsistent, remove those regenerable files and download them again:
+
+```bash
+rm -f /opt/var/lib/opkg/lists/* /opt/var/cache/opkg/*
+opkg update
+```
+
+Do not use that procedure for a truncated `/opt/var/lib/opkg/status` file. The
+status file, `/opt/var/lib/opkg/info`, and the installed package files form one
+state and must come from the same backup. Stop programs running from `/opt`,
+unmount `/opt`, move the current `/userdata/opt` aside instead of overwriting
+it, restore the complete backed-up tree at `/userdata/opt`, and start `S22opt`
+again. Preserve file ownership, modes, and symlinks during the restore. The
+`S22opt stop` action deliberately leaves `/opt` mounted because package
+processes may still be running; it is not a substitute for stopping those
+processes and running `umount /opt` before the replacement.
+
+If no consistent backup exists, reset the whole package root rather than mixing
+old package files with a new database. Stop `/opt` programs, unmount `/opt`, move
+`/userdata/opt` to a recovery path, and run `/etc/init.d/S22opt start`. The init
+script creates a clean package layout and feed file; then run `opkg update` and
+reinstall the required packages. If `/opt` is busy, identify and stop its users
+or reboot into a maintenance state, then repeat the unmount check before
+replacing or restoring the package root.
 
 ## Docker build fails
 

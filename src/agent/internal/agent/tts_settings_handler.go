@@ -37,7 +37,7 @@ func (s *Server) handleTTSSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) respondTTSSettings(w http.ResponseWriter) {
-	resp := TTSSettingsResponse{Available: tts.AvailableProviders()}
+	resp := TTSSettingsResponse{Available: availableTTSProviderNames(s.runtime.config)}
 	manager := s.currentTTSManager()
 	if manager != nil {
 		resp.Provider = manager.Current()
@@ -109,6 +109,6 @@ func (s *Server) handleTTSProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"providers": tts.AvailableProviders(),
+		"providers": availableTTSProviderNames(s.runtime.config),
 	})
 }

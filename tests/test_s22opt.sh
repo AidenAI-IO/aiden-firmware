@@ -6,10 +6,9 @@
 # umount are replaced by stubs that edit a fake /proc/self/mountinfo, which is
 # the only thing S22opt reads to decide what is mounted where.
 #
-# The cases that matter are the failure ones. V7 (a failed bind must never let
-# a package land in the rootfs) and V9 (a mount from the wrong source must be
-# an error, not a success) are the two guards the whole design rests on; see
-# docs/07-operations/opkg-package-management.md §6.2 and §8.
+# The cases that matter are the failure ones: a failed bind must never let a
+# package land in the rootfs, and a mount from the wrong source must be an
+# error, not a success. These are the two guards the whole design rests on.
 #
 # The board runs busybox ash, which is stricter than the host /bin/sh. Set SH to
 # re-run the same cases under a closer stand-in, e.g. "SH=dash sh
@@ -181,7 +180,7 @@ run_s22opt status
 check_status 0 $? "status reports bound"
 check_contains "$OUTPUT" "opt=bound" "status names the source"
 
-echo "Test 2: an existing user feed file is never truncated (§6.4)"
+echo "Test 2: an existing user feed file is never truncated"
 new_case keep-feeds
 mkdir -p "$case_dir/opt/etc/opkg"
 echo 'src/gz entware https://bin.entware.net/armv7sf-k3.2' \
@@ -202,7 +201,7 @@ else
 	pass "does not re-mount when already bound"
 fi
 
-echo "Test 3: a failed bind seals /opt read-only and leaves opkg unusable (V7)"
+echo "Test 3: a failed bind seals /opt read-only and leaves opkg unusable"
 new_case seal
 : > "$case_dir/fail-bind"
 run_s22opt start
@@ -214,7 +213,7 @@ check_contains "$OUTPUT" "sealed read-only" "says /opt was sealed"
 # Note this is NOT because opkg refuses to start on a dangling config symlink --
 # uClibc-ng's glob() silently drops it. Keeping the only src line inside /opt is
 # what makes a failed mount safe, which is why the default source is seeded here
-# and not shipped as a rootfs fragment (§6.5.1).
+# and not shipped as a rootfs fragment.
 check_absent "$case_dir/opt/etc/opkg/userfeeds.conf" \
 	"creates no feed file, so no source is reachable"
 run_s22opt status
@@ -230,7 +229,7 @@ check_status 1 $? "start fails"
 check_contains "$OUTPUT" "could not be sealed" "warns that /opt is unprotected"
 check_absent "$case_dir/opt/etc/opkg/userfeeds.conf" "still creates no feed file"
 
-echo "Test 5: /opt mounted from the wrong path on the right device is an error (V9)"
+echo "Test 5: /opt mounted from the wrong path on the right device is an error"
 new_case wrong-root
 preset_opt_mount "$USERDATA_DEV" /somewhere-else
 run_s22opt status
@@ -245,7 +244,7 @@ else
 	pass "does not stack a mount on the foreign one"
 fi
 
-echo "Test 6: /opt mounted from the right path on the wrong device is an error (V9)"
+echo "Test 6: /opt mounted from the right path on the wrong device is an error"
 new_case wrong-dev
 preset_opt_mount "$OTHER_DEV" /opt
 run_s22opt status
@@ -368,7 +367,7 @@ run_s22opt bogus
 check_status 1 $? "an unknown subcommand fails"
 check_contains "$OUTPUT" "Usage:" "prints usage"
 
-echo "Test 13: a freshly created feed file is seeded with the default source (§6.5.1)"
+echo "Test 13: a freshly created feed file is seeded with the default source"
 new_case seed-default
 run_s22opt start
 check_status 0 $? "start succeeds"
@@ -376,7 +375,7 @@ UF=$case_dir/opt/etc/opkg/userfeeds.conf
 check_contains "$UF" "src/gz entware https://bin.entware.net/armv7sf-k3.2" \
 	"the default source is written"
 # Exactly one source line: comments are fine, a second src line would mean
-# opkg reports "Duplicate src declaration" (§13.1.1).
+# opkg reports "Duplicate src declaration" when a source is repeated.
 if [ "$(grep -c '^src' "$UF")" -eq 1 ]; then
 	pass "exactly one src line"
 else

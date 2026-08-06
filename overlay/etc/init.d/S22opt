@@ -1,21 +1,22 @@
 #!/bin/sh
 # Bind the persistent opkg install root into /opt.
 #
-# See docs/07-operations/opkg-package-management.md.
+# Recovery and feed-management steps are documented in
+# docs/07-operations/troubleshooting.md under the opkg troubleshooting section.
 #
 # Why /userdata/opt: rootfs and oem are A/B partitions that are overwritten
 # wholesale by OTA, so /userdata is the only writable space a package can
-# survive an upgrade in (§6.1).
+# survive an upgrade in.
 #
 # Why a bind mount and not a symlink: overlay/ only syncs etc/ into the rootfs,
 # so a /opt symlink cannot be baked into the image; and the Buildroot skeleton
 # may already ship an empty /opt, which "ln -s" will not overwrite. A bind
-# mount works either way (§6.2). /opt itself has to be a real path because
+# mount works either way. /opt itself has to be a real path because
 # Entware binaries carry it in PT_INTERP and DT_RUNPATH.
 #
 # What happens when the bind fails: /opt is sealed with a read-only tmpfs so
 # writes fail with EROFS instead of silently landing in the current A/B rootfs,
-# where they would neither persist nor be accounted for (§6.2.1). That seal is
+# where they would neither persist nor be accounted for. That seal is
 # the only thing actually enforced.
 #
 # A second, weaker effect backs it up: every "src" line lives in
@@ -25,7 +26,7 @@
 # silently drops those, so opkg never even tries to open it and starts normally.
 # The protection comes purely from keeping every source inside /opt, which is
 # also why the default feed is seeded there rather than shipped as a rootfs
-# fragment (§6.5.1).
+# fragment.
 
 OPT_DIR=${OPT_DIR:-/opt}
 USERDATA_DIR=${USERDATA_DIR:-/userdata}
@@ -201,14 +202,15 @@ ensure_opt_layout() {
 	fi
 
 	# Create when absent, never truncate: this file holds the user's feed
-	# selection and is expected to survive reboots and OTA (§6.4). A full flash
+	# selection and is expected to survive reboots and OTA. A full flash
 	# does erase /userdata, and this is where the default source comes back.
 	#
 	# Seeding here rather than shipping the source as a rootfs fragment is the
-	# whole point (§6.5.1). When /opt fails to mount, the only thing standing
+	# whole point. When /opt fails to mount, the only thing standing
 	# between that and packages landing in the A/B rootfs is that no source is
 	# reachable -- opkg does NOT refuse to run on a dangling config symlink the
-	# way §6.2.1 first assumed, because uClibc-ng's glob() silently drops it.
+	# way the initial design assumed, because uClibc-ng's glob() silently drops
+	# it.
 	# Keeping every src line inside /opt is what preserves that property; a
 	# rootfs fragment would destroy it.
 	#

@@ -57,7 +57,10 @@ struct Options {
 
 struct HttpRequest {
     std::string method;
+    // path holds the request target with any query string stripped, so routes
+    // can compare it for equality. The raw query lives in `query`.
     std::string path;
+    std::string query;
     std::string body;
     std::string body_file_path;
     size_t body_size = 0;
@@ -260,6 +263,12 @@ bool parse_http_base_url(const std::string& base_url,
                          std::string* error);
 std::string join_url_path(const std::string& base_path, const std::string& path);
 int connect_tcp_host(const std::string& host, int port, int timeout_ms, std::string* error);
+bool send_agent_http_request(const AgentHttpTarget& target,
+                             const char* method,
+                             const std::string& path,
+                             const std::string& body,
+                             bool send_body,
+                             AgentHttpResponse* response);
 bool post_agent_http_json(const AgentHttpTarget& target,
                           const std::string& path,
                           const std::string& body,
@@ -267,9 +276,17 @@ bool post_agent_http_json(const AgentHttpTarget& target,
 bool resolve_agent_http_target(const Options& options,
                                AgentHttpTarget* target,
                                std::string* error);
+ApiResponse proxy_agent_request(const Options& options,
+                                const char* method,
+                                const std::string& agent_path,
+                                const std::string& body,
+                                bool send_body);
 ApiResponse proxy_agent_json_request(const Options& options,
                                          const std::string& agent_path,
                                          const std::string& body);
+ApiResponse proxy_agent_get_request(const Options& options,
+                                     const std::string& agent_path_with_query);
+ApiResponse handle_api_models(const Options& options, const std::string& query_string);
 ApiResponse handle_usb_reenumerate(const Options& options);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
@@ -739,22 +756,11 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"model", "model", CONFIG_FIELD_STRING},
         {"model", "api_key", CONFIG_FIELD_STRING},
         {"model", "base_url", CONFIG_FIELD_STRING},
-        {"model", "token_env", CONFIG_FIELD_STRING},
         {"model", "reasoning_effort", CONFIG_FIELD_STRING},
         {"model", "temperature", CONFIG_FIELD_NUMBER},
         {"model", "max_response_tokens", CONFIG_FIELD_NUMBER},
         {"model", "context_window", CONFIG_FIELD_NUMBER},
         {"model", "model_max_output_tokens", CONFIG_FIELD_NUMBER},
-        {"model_text", "provider", CONFIG_FIELD_STRING},
-        {"model_text", "model", CONFIG_FIELD_STRING},
-        {"model_text", "api_key", CONFIG_FIELD_STRING},
-        {"model_text", "base_url", CONFIG_FIELD_STRING},
-        {"model_text", "token_env", CONFIG_FIELD_STRING},
-        {"model_text", "reasoning_effort", CONFIG_FIELD_STRING},
-        {"model_text", "temperature", CONFIG_FIELD_NUMBER},
-        {"model_text", "max_response_tokens", CONFIG_FIELD_NUMBER},
-        {"model_text", "context_window", CONFIG_FIELD_NUMBER},
-        {"model_text", "model_max_output_tokens", CONFIG_FIELD_NUMBER},
         {"tts", "provider", CONFIG_FIELD_STRING},
         {"tts", "api_key", CONFIG_FIELD_STRING},
         {"tts", "model", CONFIG_FIELD_STRING},
@@ -1268,6 +1274,17 @@ std::string trim_trailing_newlines(const std::string& text) {
     return text.substr(0, end);
 }
 
+std::string mask_secret(const std::string& secret) {
+    if (secret.empty()) {
+        return "";
+    }
+    if (secret.length() <= 8) {
+        return "***";
+    }
+    // Show first 4 and last 4 characters, mask the middle
+    return secret.substr(0, 4) + "***" + secret.substr(secret.length() - 4);
+}
+
 std::vector<std::string> split_lines(const std::string& text) {
     std::vector<std::string> lines;
     std::istringstream input(text);
@@ -1566,6 +1583,7 @@ HttpRequest parse_request(int client_fd, const Options& options) {
         }
         size_t query_pos = req.path.find('?');
         if (query_pos != std::string::npos) {
+            req.query = req.path.substr(query_pos + 1);
             req.path = req.path.substr(0, query_pos);
         }
     } else {
@@ -1679,10 +1697,18 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
         return config_schema_error(error, "root", "object", root);
     }
 
+    if (cJSON_GetObjectItem(root, "providers")) {
+        if (error) {
+            *error = "agent config field providers is unsupported; use model_providers";
+        }
+        return false;
+    }
+
     const char* sections[] = {
-        "model", "model_text", "tts", "stt", "audio", "audio_archive", "voice_notifications",
-        "log", "ota", "device", "hid", "search", "telemetry", "termination_policy",
-        "live_activity", "agent", NULL,
+        "model_providers", "tts_providers", "stt_providers", "model",
+        "tts", "stt", "audio", "audio_archive",
+        "voice_notifications", "log", "ota", "device", "hid", "search", "telemetry",
+        "termination_policy", "live_activity", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
@@ -1690,6 +1716,47 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
             return config_schema_error(error, sections[i], "object", section);
         }
     }
+
+    // The three provider sections are maps of name -> object rather than flat
+    // sections, so their entries need their own type check: a non-object entry
+    // would otherwise be skipped silently and the record dropped on save. The
+    // name check mirrors save_agent_toml, which refuses to write a name that is
+    // not a bare TOML key -- accepting one here would produce a config that
+    // loads cleanly but fails every later save.
+    const char* provider_maps[] = {
+        "model_providers", "tts_providers", "stt_providers", NULL,
+    };
+    for (int i = 0; provider_maps[i]; ++i) {
+        cJSON* records = cJSON_GetObjectItem(root, provider_maps[i]);
+        if (!json_is_object(records)) continue;
+        for (cJSON* item = records->child; item; item = item->next) {
+            const std::string name = item->string ? item->string : "";
+            if (!json_is_object(item)) {
+                return config_schema_error(error, std::string(provider_maps[i]) + "." + name,
+                                          "object", item);
+            }
+            if (!is_valid_bare_toml_key(name)) {
+                if (error) {
+                    *error = std::string("agent config invalid ") + provider_maps[i]
+                           + " name \"" + name
+                           + "\": expected letters, digits, '-' or '_'";
+                }
+                return false;
+            }
+        }
+    }
+
+    // A patch may omit any field, but it may not blank model.provider: the agent
+    // requires it (Config.Validate: "model.provider is required"), so accepting
+    // an empty value writes an agent.toml that loads here but refuses to start.
+    // The provider select leads with an empty placeholder, which is how a save
+    // can carry one.
+    cJSON* model_section = cJSON_GetObjectItem(root, "model");
+    if (json_is_object(model_section) && cJSON_GetObjectItem(model_section, "provider")
+        && !validate_required_string(model_section, "model", "provider", false, error)) {
+        return false;
+    }
+
     return validate_known_config_field_types(root, error);
 }
 
@@ -2288,10 +2355,18 @@ ReadStatus read_to_eof(int fd, std::string* out, size_t max_size) {
     }
 }
 
-bool post_agent_http_json(const AgentHttpTarget& target,
-                          const std::string& path,
-                          const std::string& body,
-                          AgentHttpResponse* response) {
+// Sends one HTTP/1.1 request to the agent and reads the whole response.
+// Both the POST and the GET proxy go through here: keeping a single copy of the
+// socket setup, status-line parsing and body reading is what stops one path
+// from silently losing a size cap or a short-write guard.
+// `send_body` separates a POST that carries an (possibly empty) JSON body from a
+// GET, which must not announce Content-Type or Content-Length at all.
+bool send_agent_http_request(const AgentHttpTarget& target,
+                             const char* method,
+                             const std::string& path,
+                             const std::string& body,
+                             bool send_body,
+                             AgentHttpResponse* response) {
     if (response) {
         *response = AgentHttpResponse();
     }
@@ -2319,12 +2394,17 @@ bool post_agent_http_json(const AgentHttpTarget& target,
     }
 
     std::ostringstream request;
-    request << "POST " << request_path << " HTTP/1.1\r\n";
+    request << method << " " << request_path << " HTTP/1.1\r\n";
     request << "Host: " << target.host << ":" << target.port << "\r\n";
-    request << "Content-Type: application/json\r\n";
-    request << "Content-Length: " << body.size() << "\r\n";
+    request << "Accept: application/json\r\n";
+    if (send_body) {
+        request << "Content-Type: application/json\r\n";
+        request << "Content-Length: " << body.size() << "\r\n";
+    }
     request << "Connection: close\r\n\r\n";
-    request << body;
+    if (send_body) {
+        request << body;
+    }
     std::string request_text = request.str();
     if (!write_all(fd, request_text.data(), request_text.size())) {
         if (response) {
@@ -2438,6 +2518,13 @@ bool post_agent_http_json(const AgentHttpTarget& target,
     return true;
 }
 
+bool post_agent_http_json(const AgentHttpTarget& target,
+                          const std::string& path,
+                          const std::string& body,
+                          AgentHttpResponse* response) {
+    return send_agent_http_request(target, "POST", path, body, true, response);
+}
+
 bool resolve_agent_http_target(const Options& options,
                                AgentHttpTarget* target,
                                std::string* error) {
@@ -2463,9 +2550,14 @@ bool resolve_agent_http_target(const Options& options,
     return true;
 }
 
-ApiResponse proxy_agent_json_request(const Options& options,
-                                         const std::string& agent_path,
-                                         const std::string& body) {
+// Resolves the agent endpoint, forwards one request to it and translates the
+// upstream reply into an ApiResponse. `agent_path` may already carry a query
+// string; it is forwarded verbatim.
+ApiResponse proxy_agent_request(const Options& options,
+                                const char* method,
+                                const std::string& agent_path,
+                                const std::string& body,
+                                bool send_body) {
     AgentHttpTarget target;
     std::string target_error;
     if (!resolve_agent_http_target(options, &target, &target_error)) {
@@ -2473,7 +2565,7 @@ ApiResponse proxy_agent_json_request(const Options& options,
     }
 
     AgentHttpResponse upstream;
-    if (!post_agent_http_json(target, agent_path, body, &upstream)) {
+    if (!send_agent_http_request(target, method, agent_path, body, send_body, &upstream)) {
         return make_json_error(503, upstream.error.empty() ? "agent HTTP request failed" : upstream.error);
     }
 
@@ -2487,12 +2579,35 @@ ApiResponse proxy_agent_json_request(const Options& options,
     return response;
 }
 
+ApiResponse proxy_agent_json_request(const Options& options,
+                                         const std::string& agent_path,
+                                         const std::string& body) {
+    return proxy_agent_request(options, "POST", agent_path, body, true);
+}
+
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body) {
     return proxy_agent_json_request(options, "/api/config-test/stt/start", body);
 }
 
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
     return proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
+}
+
+// GET request proxy to agent. `agent_path_with_query` keeps its query string.
+ApiResponse proxy_agent_get_request(const Options& options,
+                                     const std::string& agent_path_with_query) {
+    return proxy_agent_request(options, "GET", agent_path_with_query, std::string(), false);
+}
+
+// Handle GET /api/models?provider=xxx&locale=xxx
+ApiResponse handle_api_models(const Options& options, const std::string& query_string) {
+    // Build agent path with query string
+    std::string agent_path = "/api/models";
+    if (!query_string.empty()) {
+        agent_path += "?" + query_string;
+    }
+
+    return proxy_agent_get_request(options, agent_path);
 }
 
 // Shell script that unbinds and rebinds the USB gadget UDC to force the host
@@ -2554,16 +2669,132 @@ void load_current_wifi_config(const Options& options,
 cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = false) {
     cJSON* root = cJSON_CreateObject();
 
+    // Add model_providers
+    cJSON* model_providers = cJSON_CreateObject();
+    for (const auto& item : config.model_providers) {
+        const std::string& provider_name = item.first;
+        const aiden::ModelProviderToml& provider = item.second;
+
+        cJSON* provider_obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(provider_obj, "type", provider.type.c_str());
+
+        // Mask API key unless include_secrets is true
+        if (include_secrets) {
+            cJSON_AddStringToObject(provider_obj, "api_key", provider.api_key.c_str());
+        } else {
+            std::string masked_key = mask_secret(provider.api_key);
+            cJSON_AddStringToObject(provider_obj, "api_key", masked_key.c_str());
+        }
+
+        if (!provider.token_env.empty()) {
+            cJSON_AddStringToObject(provider_obj, "token_env", provider.token_env.c_str());
+        }
+        if (!provider.base_url.empty()) {
+            cJSON_AddStringToObject(provider_obj, "base_url", provider.base_url.c_str());
+        }
+
+        cJSON_AddItemToObject(model_providers, provider_name.c_str(), provider_obj);
+    }
+    cJSON_AddItemToObject(root, "model_providers", model_providers);
+
+    // Add tts_providers. api_key is masked like [model_providers.*] so a GET never
+    // returns it in the clear; update_config_from_json resolves the mask back to
+    // the stored secret when the UI posts it back unchanged.
+    cJSON* tts_providers = cJSON_CreateObject();
+    for (const auto& item : config.tts_providers) {
+        const aiden::TTSProviderToml& record = item.second;
+        cJSON* record_obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(record_obj, "type", record.type.c_str());
+        if (include_secrets) {
+            cJSON_AddStringToObject(record_obj, "api_key", record.api_key.c_str());
+        } else {
+            std::string masked_key = mask_secret(record.api_key);
+            cJSON_AddStringToObject(record_obj, "api_key", masked_key.c_str());
+        }
+        if (!record.token_env.empty()) {
+            cJSON_AddStringToObject(record_obj, "token_env", record.token_env.c_str());
+        }
+        if (!record.model.empty()) {
+            cJSON_AddStringToObject(record_obj, "model", record.model.c_str());
+        }
+        if (!record.voice_id.empty()) {
+            cJSON_AddStringToObject(record_obj, "voice_id", record.voice_id.c_str());
+        }
+        if (!record.emotion.empty()) {
+            cJSON_AddStringToObject(record_obj, "emotion", record.emotion.c_str());
+        }
+        if (!record.reference_id.empty()) {
+            cJSON_AddStringToObject(record_obj, "reference_id", record.reference_id.c_str());
+        }
+        cJSON_AddItemToObject(tts_providers, item.first.c_str(), record_obj);
+    }
+    cJSON_AddItemToObject(root, "tts_providers", tts_providers);
+
+    // Add stt_providers. Secret fields (api_key, secret_id, secret_key) are
+    // masked when include_secrets is false; the UI resolves them on save.
+    cJSON* stt_providers = cJSON_CreateObject();
+    for (const auto& item : config.stt_providers) {
+        const aiden::STTProviderToml& record = item.second;
+        cJSON* record_obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(record_obj, "type", record.type.c_str());
+        if (include_secrets) {
+            cJSON_AddStringToObject(record_obj, "api_key", record.api_key.c_str());
+        } else {
+            std::string masked_key = mask_secret(record.api_key);
+            cJSON_AddStringToObject(record_obj, "api_key", masked_key.c_str());
+        }
+        if (!record.token_env.empty()) {
+            cJSON_AddStringToObject(record_obj, "token_env", record.token_env.c_str());
+        }
+        if (!record.model.empty()) {
+            cJSON_AddStringToObject(record_obj, "model", record.model.c_str());
+        }
+        if (!record.base_url.empty()) {
+            cJSON_AddStringToObject(record_obj, "base_url", record.base_url.c_str());
+        }
+        if (!record.app_id.empty()) {
+            cJSON_AddStringToObject(record_obj, "app_id", record.app_id.c_str());
+        }
+        if (!record.secret_id.empty()) {
+            if (include_secrets) {
+                cJSON_AddStringToObject(record_obj, "secret_id", record.secret_id.c_str());
+            } else {
+                std::string masked = mask_secret(record.secret_id);
+                cJSON_AddStringToObject(record_obj, "secret_id", masked.c_str());
+            }
+        }
+        if (!record.secret_key.empty()) {
+            if (include_secrets) {
+                cJSON_AddStringToObject(record_obj, "secret_key", record.secret_key.c_str());
+            } else {
+                std::string masked = mask_secret(record.secret_key);
+                cJSON_AddStringToObject(record_obj, "secret_key", masked.c_str());
+            }
+        }
+        if (!record.region.empty()) {
+            cJSON_AddStringToObject(record_obj, "region", record.region.c_str());
+        }
+        if (!record.engine_model_type.empty()) {
+            cJSON_AddStringToObject(record_obj, "engine_model_type", record.engine_model_type.c_str());
+        }
+        cJSON_AddItemToObject(stt_providers, item.first.c_str(), record_obj);
+    }
+    cJSON_AddItemToObject(root, "stt_providers", stt_providers);
+
     cJSON* device = add_object(root, "device");
     cJSON_AddStringToObject(device, "backend", config.device.backend.c_str());
     cJSON_AddStringToObject(device, "device_type", effective_device_type(config).c_str());
 
     cJSON* model = add_object(root, "model");
     cJSON_AddStringToObject(model, "provider", config.model.provider.c_str());
-    cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
+    // model.api_key is accepted only as a legacy/internal validation field.
+    // The config web contract exposes credentials through model_providers so
+    // the flat model section cannot become a second source of truth.
+    if (include_secrets) {
+        cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
+    }
     cJSON_AddStringToObject(model, "model", config.model.model.c_str());
     cJSON_AddStringToObject(model, "base_url", config.model.base_url.c_str());
-    cJSON_AddStringToObject(model, "token_env", config.model.token_env.c_str());
     cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
     if (config.model.has_temperature) {
         cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
@@ -2571,19 +2802,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(model, "max_response_tokens", config.model.max_response_tokens);
     cJSON_AddNumberToObject(model, "context_window", config.model.context_window);
     cJSON_AddNumberToObject(model, "model_max_output_tokens", config.model.model_max_output_tokens);
-
-    cJSON* model_text = add_object(root, "model_text");
-    cJSON_AddStringToObject(model_text, "provider", config.model_text.provider.c_str());
-    cJSON_AddStringToObject(model_text, "api_key", config.model_text.api_key.c_str());
-    cJSON_AddStringToObject(model_text, "model", config.model_text.model.c_str());
-    cJSON_AddStringToObject(model_text, "base_url", config.model_text.base_url.c_str());
-    cJSON_AddStringToObject(model_text, "token_env", config.model_text.token_env.c_str());
-    if (config.model_text.has_temperature) {
-        cJSON_AddNumberToObject(model_text, "temperature", config.model_text.temperature);
-    }
-    cJSON_AddNumberToObject(model_text, "max_response_tokens", config.model_text.max_response_tokens);
-    cJSON_AddNumberToObject(model_text, "context_window", config.model_text.context_window);
-    cJSON_AddNumberToObject(model_text, "model_max_output_tokens", config.model_text.model_max_output_tokens);
 
     cJSON* tts = add_object(root, "tts");
     cJSON_AddStringToObject(tts, "provider", config.tts.provider.c_str());
@@ -2807,6 +3025,20 @@ void set_json_str(std::string* dst, cJSON* obj, const char* key) {
     }
 }
 
+void set_json_str_alias(std::string* dst,
+                        cJSON* obj,
+                        const char* canonical_key,
+                        const char* legacy_key) {
+    cJSON* canonical = cJSON_GetObjectItem(obj, canonical_key);
+    if (canonical) {
+        if (dst && json_is_string(canonical)) {
+            *dst = canonical->valuestring;
+        }
+        return;
+    }
+    set_json_str(dst, obj, legacy_key);
+}
+
 void set_json_int(int* dst, cJSON* obj, const char* key) {
     cJSON* item = cJSON_GetObjectItem(obj, key);
     if (dst && json_is_number(item)) {
@@ -2877,13 +3109,25 @@ bool model_base_url_allowed(const std::string& provider) {
     return normalized == "openai" || normalized == "ollama";
 }
 
+std::string provider_secret_source_name(cJSON* root, const char* section,
+                                        const std::string& submitted_name) {
+    cJSON* renames = cJSON_GetObjectItem(root, "_provider_renames");
+    if (!json_is_object(renames)) return submitted_name;
+    cJSON* section_renames = cJSON_GetObjectItem(renames, section);
+    if (!json_is_object(section_renames)) return submitted_name;
+    cJSON* old_name = cJSON_GetObjectItem(section_renames, submitted_name.c_str());
+    if (!json_is_string(old_name) || !old_name->valuestring || !old_name->valuestring[0]) {
+        return submitted_name;
+    }
+    return old_name->valuestring;
+}
+
 void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     if (!json_is_object(obj) || !m) return;
     set_json_str(&m->provider, obj, "provider");
     set_json_str(&m->model, obj, "model");
     set_json_str(&m->base_url, obj, "base_url");
     set_json_str(&m->api_key, obj, "api_key");
-    set_json_str(&m->token_env, obj, "token_env");
     set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
     // Temperature is nullable: presence of the key sets has_temperature, and
     // its absence clears it. This function applies JSON as a patch onto an
@@ -2907,13 +3151,201 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     }
 }
 
+void move_model_api_key_to_provider(aiden::AgentToml* config, bool submitted_api_key) {
+    if (!config) return;
+    if (!submitted_api_key) {
+        // load_current_agent_config returns the runtime-resolved credential on
+        // model.api_key. It belongs to the previously resolved provider and
+        // must never be persisted or assigned after a provider switch.
+        config->model.api_key.clear();
+        return;
+    }
+    if (config->model.api_key.empty()) return;
+
+    const std::string provider_name = trim_copy(config->model.provider);
+    if (provider_name.empty()) return;
+
+    aiden::ModelProviderToml& provider = config->model_providers[provider_name];
+    if (provider.type.empty()) {
+        provider.type = provider_name;
+    }
+    provider.api_key = config->model.api_key;
+    config->model.api_key.clear();
+}
+
 void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     if (!root || !config) {
         return;
     }
 
+    // Update model_providers. The payload is authoritative: a provider absent from
+    // it was deleted in the UI. Snapshot the current map first so masked
+    // api_key values ("sk-a***1234") can still resolve to the stored secret --
+    // reading back from `config->model_providers` after clearing it would always
+    // miss and silently wipe the key.
+    cJSON* model_providers = cJSON_GetObjectItem(root, "model_providers");
+    if (json_is_object(model_providers)) {
+        const std::map<std::string, aiden::ModelProviderToml> previous_providers =
+            config->model_providers;
+        config->model_providers.clear();
+
+        for (cJSON* item = model_providers->child; item; item = item->next) {
+            if (!item->string) continue;
+
+            std::string provider_name = item->string;
+            if (!json_is_object(item)) continue;
+
+            aiden::ModelProviderToml provider;
+            set_json_str_alias(&provider.type, item, "type", "provider");
+
+            cJSON* api_key = cJSON_GetObjectItem(item, "api_key");
+            if (json_is_string(api_key)) {
+                std::string key = api_key->valuestring;
+                // Keep the stored secret only when the submitted value is
+                // exactly the mask we handed the UI for this provider. Testing
+                // for a "***" substring instead would drop a real key that
+                // happens to contain it, and would blank the key for a provider
+                // the previous config did not have.
+                const std::string secret_source = provider_secret_source_name(
+                    root, "model_providers", provider_name);
+                std::map<std::string, aiden::ModelProviderToml>::const_iterator it =
+                    previous_providers.find(secret_source);
+                if (it != previous_providers.end() && !it->second.api_key.empty() &&
+                    key == mask_secret(it->second.api_key)) {
+                    provider.api_key = it->second.api_key;
+                } else {
+                    provider.api_key = key;
+                }
+            }
+
+            cJSON* token_env = cJSON_GetObjectItem(item, "token_env");
+            if (json_is_string(token_env)) {
+                provider.token_env = token_env->valuestring;
+            }
+
+            cJSON* base_url = cJSON_GetObjectItem(item, "base_url");
+            // A named provider's base_url is inherited by every model that
+            // references it (applyProviderRef), where the runtime then drops it
+            // for types that pin their endpoint. Applying the same whitelist
+            // here keeps agent.toml free of config that can never take effect.
+            if (json_is_string(base_url) && model_base_url_allowed(provider.type)) {
+                provider.base_url = base_url->valuestring;
+            }
+
+            config->model_providers[provider_name] = provider;
+        }
+    }
+
+    // Update tts_providers. Same contract as providers above: the payload is
+    // authoritative, so a record absent from it was deleted in the UI -- but an
+    // ABSENT KEY means "not edited" and must leave the stored records alone.
+    // Clearing unconditionally is exactly the bug that erased every [model_providers.*]
+    // whenever an unrelated section was saved.
+    cJSON* tts_providers = cJSON_GetObjectItem(root, "tts_providers");
+    if (json_is_object(tts_providers)) {
+        const std::map<std::string, aiden::TTSProviderToml> previous = config->tts_providers;
+        config->tts_providers.clear();
+
+        for (cJSON* item = tts_providers->child; item; item = item->next) {
+            if (!item->string) continue;
+            if (!json_is_object(item)) continue;
+            const std::string record_name = item->string;
+
+            aiden::TTSProviderToml record;
+            set_json_str_alias(&record.type, item, "type", "provider");
+            set_json_str(&record.token_env, item, "token_env");
+            set_json_str(&record.model, item, "model");
+            set_json_str(&record.voice_id, item, "voice_id");
+            set_json_str(&record.emotion, item, "emotion");
+            set_json_str(&record.reference_id, item, "reference_id");
+
+            cJSON* api_key = cJSON_GetObjectItem(item, "api_key");
+            if (json_is_string(api_key)) {
+                // Keep the stored secret only when the submitted value is
+                // exactly the mask we handed the UI for this record. Matching a
+                // "***" substring instead would drop a real key containing it.
+                const std::string key = api_key->valuestring;
+                const std::string secret_source = provider_secret_source_name(
+                    root, "tts_providers", record_name);
+                std::map<std::string, aiden::TTSProviderToml>::const_iterator it =
+                    previous.find(secret_source);
+                if (it != previous.end() && !it->second.api_key.empty() &&
+                    key == mask_secret(it->second.api_key)) {
+                    record.api_key = it->second.api_key;
+                } else {
+                    record.api_key = key;
+                }
+            }
+
+            config->tts_providers[record_name] = record;
+        }
+    }
+
+    cJSON* stt_providers = cJSON_GetObjectItem(root, "stt_providers");
+    if (json_is_object(stt_providers)) {
+        const std::map<std::string, aiden::STTProviderToml> previous = config->stt_providers;
+        config->stt_providers.clear();
+
+        for (cJSON* item = stt_providers->child; item; item = item->next) {
+            if (!item->string) continue;
+            if (!json_is_object(item)) continue;
+            const std::string record_name = item->string;
+            const std::string secret_source = provider_secret_source_name(
+                root, "stt_providers", record_name);
+
+            aiden::STTProviderToml record;
+            set_json_str_alias(&record.type, item, "type", "provider");
+            set_json_str(&record.token_env, item, "token_env");
+            set_json_str(&record.model, item, "model");
+            set_json_str(&record.base_url, item, "base_url");
+            set_json_str(&record.app_id, item, "app_id");
+            set_json_str(&record.region, item, "region");
+            set_json_str(&record.engine_model_type, item, "engine_model_type");
+
+            cJSON* api_key = cJSON_GetObjectItem(item, "api_key");
+            if (json_is_string(api_key)) {
+                const std::string key = api_key->valuestring;
+                std::map<std::string, aiden::STTProviderToml>::const_iterator it =
+                    previous.find(secret_source);
+                if (it != previous.end() && !it->second.api_key.empty() &&
+                    key == mask_secret(it->second.api_key)) {
+                    record.api_key = it->second.api_key;
+                } else {
+                    record.api_key = key;
+                }
+            }
+
+            cJSON* secret_id = cJSON_GetObjectItem(item, "secret_id");
+            if (json_is_string(secret_id)) {
+                const std::string value = secret_id->valuestring;
+                std::map<std::string, aiden::STTProviderToml>::const_iterator it =
+                    previous.find(secret_source);
+                if (it != previous.end() && !it->second.secret_id.empty() &&
+                    value == mask_secret(it->second.secret_id)) {
+                    record.secret_id = it->second.secret_id;
+                } else {
+                    record.secret_id = value;
+                }
+            }
+
+            cJSON* secret_key = cJSON_GetObjectItem(item, "secret_key");
+            if (json_is_string(secret_key)) {
+                const std::string value = secret_key->valuestring;
+                std::map<std::string, aiden::STTProviderToml>::const_iterator it =
+                    previous.find(secret_source);
+                if (it != previous.end() && !it->second.secret_key.empty() &&
+                    value == mask_secret(it->second.secret_key)) {
+                    record.secret_key = it->second.secret_key;
+                } else {
+                    record.secret_key = value;
+                }
+            }
+
+            config->stt_providers[record_name] = record;
+        }
+    }
+
     update_model_from_json(cJSON_GetObjectItem(root, "model"), &config->model);
-    update_model_from_json(cJSON_GetObjectItem(root, "model_text"), &config->model_text);
 
     cJSON* tts = cJSON_GetObjectItem(root, "tts");
     if (json_is_object(tts)) {
@@ -5052,9 +5484,10 @@ ApiResponse handle_get_agent_log(const Options& options) {
 // ----- storage (microSD) ---------------------------------------------------
 //
 // The agent's StorageManager owns the SD card and mirrors its state to a
-// small KEY=VALUE file (docs/04-agent/storage-modes.md). Status reads come
-// straight from that mirror; mutations (mode / format / eject) are proxied to
-// the agent HTTP API, which stays the single executor for card operations.
+// small KEY=VALUE file. Status reads come straight from that mirror; format
+// and eject requests are proxied to the agent HTTP API, which stays the single
+// executor for card operations. The effective mode is derived from card
+// availability and cannot be changed through the portal.
 
 bool read_storage_state(const std::string& path, std::map<std::string, std::string>* out) {
     if (!out) {
@@ -5731,6 +6164,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     std::string original_device_type = effective_device_type(config);
     std::string original_keyboard_layout = config.hid.keyboard_layout;
 
+    bool submitted_model_api_key = false;
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
     if (config_json) {
         std::string schema_error;
@@ -5738,9 +6172,17 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
             cJSON_Delete(root);
             return make_json_error(400, schema_error.empty() ? "invalid config schema" : schema_error);
         }
+        cJSON* model_patch = cJSON_GetObjectItem(config_json, "model");
+        submitted_model_api_key =
+            json_is_object(model_patch) &&
+            json_is_string(cJSON_GetObjectItem(model_patch, "api_key"));
         update_config_from_json(config_json, &config);
         preserve_redacted_agent_secrets(options, &config);
     }
+    // Only an explicitly submitted legacy model.api_key can be migrated. The
+    // value loaded from the runtime config is already resolved from a provider
+    // record and may belong to a different provider than the request selects.
+    move_model_api_key_to_provider(&config, submitted_model_api_key);
 
     cJSON* wifi_json = cJSON_GetObjectItem(root, "wifi");
     if (json_is_object(wifi_json)) {
@@ -6183,6 +6625,73 @@ std::string provider_default_url(const std::string& provider, const std::string&
     return "";
 }
 
+// set_json_str_if_absent adds key=value only when `values` does not already
+// carry a non-empty string for it, so a value the user typed into the form always
+// beats the stored record.
+void set_json_str_if_absent(cJSON* values, const char* key, const std::string& value) {
+    if (value.empty()) return;
+    cJSON* existing = cJSON_GetObjectItem(values, key);
+    if (json_is_string(existing) && !trim_copy(existing->valuestring).empty()) {
+        return;
+    }
+    if (existing) {
+        cJSON_DeleteItemFromObject(values, key);
+    }
+    cJSON_AddStringToObject(values, key, value.c_str());
+}
+
+// flatten_voice_provider_reference rewrites values.provider from a
+// [tts_providers]/[stt_providers] record name to its provider type and fills the
+// record's fields into `values`. Without it the config-test pre-checks, which read
+// the flat keys, would see an unknown provider and an empty api_key.
+void flatten_voice_provider_reference(const Options& options,
+                                      const std::string& section,
+                                      cJSON* values) {
+    if (!values) return;
+    cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
+    if (!json_is_string(provider_item)) return;
+    const std::string ref = trim_copy(provider_item->valuestring);
+    if (ref.empty()) return;
+
+    aiden::AgentToml stored;
+    std::string load_error;
+    load_current_agent_config(options, &stored, &load_error);
+
+    if (section == "tts") {
+        std::map<std::string, aiden::TTSProviderToml>::const_iterator it =
+            stored.tts_providers.find(ref);
+        if (it == stored.tts_providers.end()) return;
+        const aiden::TTSProviderToml& record = it->second;
+        if (trim_copy(record.type).empty()) return;
+
+        cJSON_DeleteItemFromObject(values, "provider");
+        cJSON_AddStringToObject(values, "provider", record.type.c_str());
+        set_json_str_if_absent(values, "api_key", record.api_key);
+        set_json_str_if_absent(values, "model", record.model);
+        set_json_str_if_absent(values, "voice_id", record.voice_id);
+        set_json_str_if_absent(values, "emotion", record.emotion);
+        set_json_str_if_absent(values, "reference_id", record.reference_id);
+        return;
+    }
+
+    std::map<std::string, aiden::STTProviderToml>::const_iterator it =
+        stored.stt_providers.find(ref);
+    if (it == stored.stt_providers.end()) return;
+    const aiden::STTProviderToml& record = it->second;
+    if (trim_copy(record.type).empty()) return;
+
+    cJSON_DeleteItemFromObject(values, "provider");
+    cJSON_AddStringToObject(values, "provider", record.type.c_str());
+    set_json_str_if_absent(values, "api_key", record.api_key);
+    set_json_str_if_absent(values, "model", record.model);
+    set_json_str_if_absent(values, "base_url", record.base_url);
+    set_json_str_if_absent(values, "app_id", record.app_id);
+    set_json_str_if_absent(values, "secret_id", record.secret_id);
+    set_json_str_if_absent(values, "secret_key", record.secret_key);
+    set_json_str_if_absent(values, "region", record.region);
+    set_json_str_if_absent(values, "engine_model_type", record.engine_model_type);
+}
+
 std::string build_curl_proxy_arg(const SystemProxy& proxy) {
     std::string url = trim_copy(proxy.https_proxy);
     if (url.empty()) url = trim_copy(proxy.http_proxy);
@@ -6248,6 +6757,22 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     if (!json_is_object(values)) {
         cJSON_Delete(root);
         return make_json_error(400, "missing 'values' object");
+    }
+
+    // Flatten a voice provider reference into `values` before anything reads it.
+    // The Test button posts the form state, and now that credentials live on a
+    // [tts_providers]/[stt_providers] record that form carries only the reference
+    // plus the globals. The checks below read values.provider and values.api_key
+    // directly, so an unresolved reference reads as an unknown provider with an
+    // empty key -- reporting "provider unknown" and "skipped because api_key is
+    // empty" for a record that is configured correctly.
+    //
+    // A value already present in `values` wins, so a field the user typed still
+    // takes precedence over the stored record. The agent CLI resolves references
+    // again on its own side (applyTTSPlaybackTestRequest), which is idempotent:
+    // once flattened, provider holds a bare type and matches no record.
+    if (section == "tts" || section == "stt") {
+        flatten_voice_provider_reference(options, section, values);
     }
 
     cJSON* response = cJSON_CreateObject();
@@ -6961,6 +7486,11 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "GET" && request.path == "/api/config") {
         return handle_get_config(options);
+    }
+
+    // Handle /api/models?provider=xxx&locale=xxx
+    if (request.method == "GET" && request.path == "/api/models") {
+        return handle_api_models(options, request.query);
     }
 
     if (request.method == "GET" &&
