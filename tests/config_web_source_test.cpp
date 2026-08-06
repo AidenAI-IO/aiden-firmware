@@ -2336,12 +2336,22 @@ TEST_CASE("config web html resolves named providers when filtering option scopes
     CHECK(js.find("function resolveProviderType(value)") != std::string::npos);
     const size_t filter_at = js.find("function providerFilterValue(section)");
     REQUIRE(filter_at != std::string::npos);
-    const std::string filter_body = js.substr(filter_at, 260);
-    // Only [model] holds a provider reference; tts/stt/search providers are
-    // plain types and must not be resolved through [model_providers.*].
-    CHECK(filter_body.find("section==='model'?resolveProviderType(raw):raw") != std::string::npos);
+    const std::string filter_body = js.substr(filter_at, 700);
+    // Named model and voice references must be compared using the selected
+    // record's built-in provider type. Provider record dialogs instead filter
+    // against their own `type` field.
+    CHECK(filter_body.find("isProviderRecordSection(section)") != std::string::npos);
+    CHECK(filter_body.find("fieldValue(section,'type')") != std::string::npos);
+    CHECK(filter_body.find("section==='model'") != std::string::npos);
+    CHECK(filter_body.find("TtsProvidersManager.records[raw]") != std::string::npos);
+    CHECK(filter_body.find("SttProvidersManager.records[raw]") != std::string::npos);
     CHECK(js.find("function filterSelectOptions(section,options){const provider=providerFilterValue(section);") !=
           std::string::npos);
+    const size_t conditional_at = js.find("function syncConditionalSelectField(item,preserveUnknown)");
+    REQUIRE(conditional_at != std::string::npos);
+    const std::string conditional_body = js.substr(conditional_at, 400);
+    CHECK(conditional_body.find("providerFilterValue(item.section)") != std::string::npos);
+    CHECK(conditional_body.find("fieldValue(item.section,'provider')") == std::string::npos);
 
     // The two readers of model.provider must disagree, deliberately:
     //
@@ -2482,6 +2492,7 @@ TEST_CASE("config web html auto-fills the provider name and keeps it editable") 
         "Provider",
         "Name",
         "Provider is required",
+        "Provider type is required",
         "Name is required",
         "Environment variable name is required after $",
     };

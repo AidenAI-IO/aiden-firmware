@@ -552,19 +552,19 @@ TTS:
 - `provider = "alicloud"`: Alibaba Cloud Qwen-TTS Realtime;
 - `provider = "volcengine"`: Volcengine WebSocket bidirectional streaming V3. Currently only the new console's `X-Api-Key` authentication is supported: `api_key` maps to `X-Api-Key`, `model` maps to `X-Api-Resource-Id` (default `seed-tts-2.0`), and `voice_id` maps to the speaker.
 
-`[tts]` common fields:
+TTS configuration fields:
 
-| Field          | Description                                                                                                                |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `provider`     | Required. One of `minimax`, `minimax-cn`, `fish-audio`, `alicloud`, `volcengine`                                           |
-| `api_key`      | Required. The authentication key for each provider; the examples below omit this field to avoid writing keys into the docs |
-| `model`        | Optional. Minimax model name, Fish Audio model header, Alibaba Cloud Realtime model name, Volcengine `X-Api-Resource-Id`   |
-| `voice_id`     | Optional. Minimax voice id, Alibaba Cloud voice, Volcengine speaker. Not used by Fish Audio (see `reference_id`)           |
-| `reference_id` | Optional Fish Audio reference id; defaults to the built-in demo voice shown by Config Web. Ignored by other providers      |
-| `emotion`      | Optional. Minimax emotion; Volcengine passes it through as `audio_params.emotion`, requires voice support                  |
-| `speed`        | Optional. Speech rate, default `1.0`; the supported range varies by provider, refer to the official docs                   |
+| Field          | Location                         | Description                                                                                                              |
+| -------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `provider`     | `[tts]`                          | Required reference to a named provider record; a bare provider type remains supported for backward compatibility        |
+| `api_key`      | `[tts_providers.<name>]`         | Required authentication key for the selected provider                                                                   |
+| `model`        | `[tts_providers.<name>]`         | Optional Minimax model, Fish Audio model header, Alibaba Cloud Realtime model, or Volcengine `X-Api-Resource-Id`         |
+| `voice_id`     | `[tts_providers.<name>]`         | Optional Minimax voice id, Alibaba Cloud voice, or Volcengine speaker. Not used by Fish Audio (see `reference_id`)       |
+| `reference_id` | `[tts_providers.<name>]`         | Optional Fish Audio reference id; defaults to the built-in demo voice shown by Config Web. Ignored by other providers    |
+| `emotion`      | `[tts_providers.<name>]`         | Optional Minimax emotion; Volcengine passes it through as `audio_params.emotion` and requires voice support             |
+| `speed`        | `[tts]`                          | Optional speech rate, default `1.0`; the supported range varies by provider, refer to the official docs                 |
 
-The config examples below only show non-key fields relevant to adapter behavior; at actual runtime you still need to provide the corresponding `api_key` on the provider's `[tts_providers.<name>]` record.
+The examples use placeholder keys to make the required record placement explicit.
 
 Common TTS adapter configs:
 
@@ -581,21 +581,29 @@ Common TTS adapter configs:
 Minimax WebSocket:
 
 ```toml
-[tts]
-provider = "minimax"
+[tts_providers.minimax-main]
+type = "minimax"
+api_key = "..."
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
+
+[tts]
+provider = "minimax-main"
 speed = 1.0
 ```
 
 Fish Audio WebSocket:
 
 ```toml
-[tts]
-provider = "fish-audio"
+[tts_providers.fish-main]
+type = "fish-audio"
+api_key = "..."
 model = "s2-pro"
 reference_id = "98655a12fa944e26b274c535e5e03842"
+
+[tts]
+provider = "fish-main"
 speed = 1.0
 ```
 
@@ -604,10 +612,14 @@ Fish Audio `model` defaults to `s2-pro` and is sent as a WebSocket handshake hea
 Alibaba Cloud Qwen-TTS Realtime:
 
 ```toml
-[tts]
-provider = "alicloud"
+[tts_providers.alicloud-main]
+type = "alicloud"
+api_key = "..."
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
+
+[tts]
+provider = "alicloud-main"
 speed = 1.0
 ```
 
@@ -616,10 +628,14 @@ The Alibaba Cloud adapter uses the DashScope WebSocket Realtime endpoint and out
 Volcengine WebSocket bidirectional streaming V3:
 
 ```toml
-[tts]
-provider = "volcengine"
+[tts_providers.volcengine-main]
+type = "volcengine"
+api_key = "..."
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
+
+[tts]
+provider = "volcengine-main"
 speed = 1.0
 ```
 

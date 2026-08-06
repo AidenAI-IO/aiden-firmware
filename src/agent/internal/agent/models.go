@@ -203,7 +203,10 @@ func (m *ModelManager) buildOpenAICompatibleModel(cfg ModelConfig, defaultBaseUR
 func (m *ModelManager) buildOpenRouterModel(cfg ModelConfig) (llms.Model, error) {
 	token := resolveToken(cfg)
 	if token == "" {
-		return nil, fmt.Errorf("missing the OpenRouter API key, set it in the %s environment variable", cfg.TokenEnv)
+		if env := strings.TrimSpace(cfg.TokenEnv); env != "" {
+			return nil, fmt.Errorf("missing the OpenRouter API key, set it in the %s environment variable", env)
+		}
+		return nil, fmt.Errorf("missing the OpenRouter API key, set api_key or token_env on the provider record")
 	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {

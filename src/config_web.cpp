@@ -3144,8 +3144,16 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     }
 }
 
-void move_model_api_key_to_provider(aiden::AgentToml* config) {
-    if (!config || config->model.api_key.empty()) return;
+void move_model_api_key_to_provider(aiden::AgentToml* config, bool submitted_api_key) {
+    if (!config) return;
+    if (!submitted_api_key) {
+        // load_current_agent_config returns the runtime-resolved credential on
+        // model.api_key. It belongs to the previously resolved provider and
+        // must never be persisted or assigned after a provider switch.
+        config->model.api_key.clear();
+        return;
+    }
+    if (config->model.api_key.empty()) return;
 
     const std::string provider_name = trim_copy(config->model.provider);
     if (provider_name.empty()) return;
@@ -6153,6 +6161,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     std::string original_device_type = effective_device_type(config);
     std::string original_keyboard_layout = config.hid.keyboard_layout;
 
+    bool submitted_model_api_key = false;
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
     if (config_json) {
         std::string schema_error;
@@ -6160,14 +6169,17 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
             cJSON_Delete(root);
             return make_json_error(400, schema_error.empty() ? "invalid config schema" : schema_error);
         }
+        cJSON* model_patch = cJSON_GetObjectItem(config_json, "model");
+        submitted_model_api_key =
+            json_is_object(model_patch) &&
+            json_is_string(cJSON_GetObjectItem(model_patch, "api_key"));
         update_config_from_json(config_json, &config);
-        // The agent CLI resolves provider credentials onto model.api_key for
-        // runtime use. Move that effective value back to its owning record
-        // before validation and persistence; this also migrates legacy flat
-        // model credentials without dropping them.
-        move_model_api_key_to_provider(&config);
         preserve_redacted_agent_secrets(options, &config);
     }
+    // Only an explicitly submitted legacy model.api_key can be migrated. The
+    // value loaded from the runtime config is already resolved from a provider
+    // record and may belong to a different provider than the request selects.
+    move_model_api_key_to_provider(&config, submitted_model_api_key);
 
     cJSON* wifi_json = cJSON_GetObjectItem(root, "wifi");
     if (json_is_object(wifi_json)) {

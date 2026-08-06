@@ -1421,7 +1421,8 @@ TEST_CASE("config_web: POST /api/config migrates a legacy model api_key to a pro
     auto handle = start_server(env);
 
     const std::string body =
-        "{\"config\":{\"hid\":{\"keyboard_layout\":\"azerty\","
+        "{\"config\":{\"model\":{\"api_key\":\"sk-legacy-secret\"},"
+        "\"hid\":{\"keyboard_layout\":\"azerty\","
         "\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     REQUIRE(resp.status == 200);
@@ -1434,6 +1435,46 @@ TEST_CASE("config_web: POST /api/config migrates a legacy model api_key to a pro
     REQUIRE(model_at != std::string::npos);
     const size_t model_end = saved.find("\n[", model_at + 1);
     const std::string model_section = saved.substr(model_at, model_end - model_at);
+    CHECK(model_section.find("api_key") == std::string::npos);
+}
+
+TEST_CASE("config_web: switching model providers never reassigns the resolved api_key") {
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"model_providers\":{"
+               "\"work-openai\":{\"type\":\"openai\",\"api_key\":\"sk-work-secret-aaaa\"},"
+               "\"personal-openai\":{\"type\":\"openai\",\"api_key\":\"sk-personal-secret-bbbb\"}},"
+               "\"model\":{\"provider\":\"work-openai\",\"api_key\":\"sk-work-secret-aaaa\","
+               "\"model\":\"gpt-4o\",\"base_url\":\"\",\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    // This is the same shape used when deleting the selected provider: the
+    // provider map is authoritative and [model] switches to the replacement.
+    // The loaded model.api_key is the resolved key for work-openai and must not
+    // be attributed to personal-openai.
+    const std::string body =
+        "{\"config\":{\"model_providers\":{"
+        "\"personal-openai\":{\"type\":\"openai\",\"api_key\":\"sk-p***bbbb\"}},"
+        "\"model\":{\"provider\":\"personal-openai\"}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[model_providers.work-openai]") == std::string::npos);
+    CHECK(saved.find("[model_providers.personal-openai]") != std::string::npos);
+    CHECK(saved.find("api_key = \"sk-personal-secret-bbbb\"") != std::string::npos);
+    CHECK(saved.find("sk-work-secret-aaaa") == std::string::npos);
+
+    const size_t model_at = saved.find("[model]\n");
+    REQUIRE(model_at != std::string::npos);
+    const size_t model_end = saved.find("\n[", model_at + 1);
+    const std::string model_section = saved.substr(model_at, model_end - model_at);
+    CHECK(model_section.find("provider = \"personal-openai\"") != std::string::npos);
     CHECK(model_section.find("api_key") == std::string::npos);
 }
 
