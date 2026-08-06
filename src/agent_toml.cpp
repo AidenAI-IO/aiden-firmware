@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -469,6 +470,51 @@ void apply_kv(AgentToml& cfg,
             cfg.live_activity.has_private_key_pem = !cfg.live_activity.private_key_pem.empty();
         } else if (key == "timeout_sec") assign_non_negative_int(&cfg.live_activity.timeout_sec, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section.find("tts_providers.") == 0) {
+        // Handle [tts_providers.xxx] sections. Checked before the
+        // "providers." branch would ever see it -- find() is anchored at 0, so
+        // "tts_providers.x" does not match "providers." (that substring sits at
+        // index 4), but ordering it here keeps the intent obvious.
+        std::string record_name = section.substr(14); // Skip "tts_providers."
+        if (!is_valid_bare_toml_key(record_name)) {
+            fail(record_name.empty()
+                     ? "empty tts provider name"
+                     : "invalid tts provider name \"" + record_name +
+                           "\": only letters, digits, '-' and '_' are allowed");
+            return;
+        }
+
+        TTSProviderToml& record = cfg.tts_providers[record_name];
+        if (key == "provider") assign_string(&record.provider, raw, &sub_err);
+        else if (key == "api_key") assign_string(&record.api_key, raw, &sub_err);
+        else if (key == "token_env") assign_string(&record.token_env, raw, &sub_err);
+        else if (key == "model") assign_string(&record.model, raw, &sub_err);
+        else if (key == "voice_id") assign_string(&record.voice_id, raw, &sub_err);
+        else if (key == "emotion") assign_string(&record.emotion, raw, &sub_err);
+        else if (key == "reference_id") assign_string(&record.reference_id, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
+    } else if (section.find("stt_providers.") == 0) {
+        std::string record_name = section.substr(14); // Skip "stt_providers."
+        if (!is_valid_bare_toml_key(record_name)) {
+            fail(record_name.empty()
+                     ? "empty stt provider name"
+                     : "invalid stt provider name \"" + record_name +
+                           "\": only letters, digits, '-' and '_' are allowed");
+            return;
+        }
+
+        STTProviderToml& record = cfg.stt_providers[record_name];
+        if (key == "provider") assign_string(&record.provider, raw, &sub_err);
+        else if (key == "api_key") assign_string(&record.api_key, raw, &sub_err);
+        else if (key == "token_env") assign_string(&record.token_env, raw, &sub_err);
+        else if (key == "model") assign_string(&record.model, raw, &sub_err);
+        else if (key == "base_url") assign_string(&record.base_url, raw, &sub_err);
+        else if (key == "app_id") assign_string(&record.app_id, raw, &sub_err);
+        else if (key == "secret_id") assign_string(&record.secret_id, raw, &sub_err);
+        else if (key == "secret_key") assign_string(&record.secret_key, raw, &sub_err);
+        else if (key == "region") assign_string(&record.region, raw, &sub_err);
+        else if (key == "engine_model_type") assign_string(&record.engine_model_type, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     } else if (section.find("providers.") == 0) {
         // Handle [providers.xxx] sections
         std::string provider_name = section.substr(10); // Skip "providers."
@@ -532,6 +578,129 @@ struct LegacyModelMaxTokens {
     LegacyModelMaxTokens(const std::string& section_name, const std::string& raw_value, int line)
         : section(section_name), raw(raw_value), lineno(line) {}
 };
+
+// LegacyTTSCredential is one key of a [tts.credentials.<type>] section, the
+// pre-records shape that only the Go agent understood. It is collected during
+// the parse and applied afterwards, because an explicit [tts_providers.<name>]
+// record must win regardless of which appears first in the file.
+struct LegacyTTSCredential {
+    std::string type;
+    std::string key;
+    std::string raw;
+    int lineno = 0;
+
+    LegacyTTSCredential(const std::string& type_name, const std::string& key_name,
+                        const std::string& raw_value, int line)
+        : type(type_name), key(key_name), raw(raw_value), lineno(line) {}
+};
+
+// migrate_legacy_tts_credentials folds collected [tts.credentials.<type>] keys
+// into [tts_providers.<type>] records. An existing record always wins, so the
+// config page's own writes are never clobbered.
+//
+// A credential type that cannot be written back as a bare TOML key fails the
+// load rather than being dropped: silently discarding it is the very bug this
+// migration exists to fix.
+void migrate_legacy_tts_credentials(AgentToml& cfg,
+                                    const std::vector<LegacyTTSCredential>& legacy,
+                                    std::string* parse_error) {
+    if (legacy.empty()) return;
+
+    // Records present in the file itself are off limits to the migration.
+    std::set<std::string> explicit_records;
+    for (const auto& item : cfg.tts_providers) {
+        explicit_records.insert(item.first);
+    }
+
+    for (const auto& entry : legacy) {
+        if (!is_valid_bare_toml_key(entry.type)) {
+            if (parse_error && parse_error->empty()) {
+                *parse_error = "line " + std::to_string(entry.lineno) +
+                    ": [tts.credentials." + entry.type +
+                    "]: cannot migrate a provider name that is not a bare key" +
+                    " (only letters, digits, '-' and '_' are allowed)";
+            }
+            return;
+        }
+        if (explicit_records.count(entry.type)) {
+            continue;
+        }
+
+        TTSProviderToml& record = cfg.tts_providers[entry.type];
+        // The legacy map was keyed by provider type, so the name IS the type.
+        record.provider = entry.type;
+
+        std::string sub_err;
+        if (entry.key == "api_key") assign_string(&record.api_key, entry.raw, &sub_err);
+        else if (entry.key == "model") assign_string(&record.model, entry.raw, &sub_err);
+        else if (entry.key == "voice_id") assign_string(&record.voice_id, entry.raw, &sub_err);
+        else if (entry.key == "emotion") assign_string(&record.emotion, entry.raw, &sub_err);
+        else if (entry.key == "reference_id") assign_string(&record.reference_id, entry.raw, &sub_err);
+        // speed is intentionally dropped: it is global on [tts] now, and keeping
+        // a per-provider copy would change playback speed on switching voice.
+        if (!sub_err.empty() && parse_error && parse_error->empty()) {
+            *parse_error = "line " + std::to_string(entry.lineno) +
+                ": [tts.credentials." + entry.type + "] " + entry.key + ": " + sub_err;
+            return;
+        }
+    }
+}
+
+// migrate_flat_voice_credentials moves a flat [tts]/[stt] credential set onto a
+// record named after the provider type, then clears the flat fields.
+//
+// The Go runtime migrates this too, but only in memory: agent_toml.cpp is the
+// only writer of the file. Without migrating here a device's key would stay flat
+// forever, and the config page -- which edits records now -- would show no card
+// for it, leaving the key invisible and un-editable while still working.
+void migrate_flat_voice_credentials(AgentToml& cfg) {
+    const std::string tts_provider = trim(cfg.tts.provider);
+    // An empty provider means voice is not configured; a name that already
+    // matches a record is a reference, not a bare type.
+    if (!tts_provider.empty() && cfg.tts_providers.count(tts_provider) == 0 &&
+        is_valid_bare_toml_key(tts_provider)) {
+        TTSProviderToml& record = cfg.tts_providers[tts_provider];
+        record.provider = tts_provider;
+        record.api_key = cfg.tts.api_key;
+        record.model = cfg.tts.model;
+        record.voice_id = cfg.tts.voice_id;
+        record.emotion = cfg.tts.emotion;
+        record.reference_id = cfg.tts.reference_id;
+
+        // Two editors for one credential would disagree the moment either is
+        // used. speed stays: it is global by design.
+        cfg.tts.api_key.clear();
+        cfg.tts.model.clear();
+        cfg.tts.voice_id.clear();
+        cfg.tts.emotion.clear();
+        cfg.tts.reference_id.clear();
+    }
+
+    const std::string stt_provider = trim(cfg.stt.provider);
+    if (!stt_provider.empty() && cfg.stt_providers.count(stt_provider) == 0 &&
+        is_valid_bare_toml_key(stt_provider)) {
+        STTProviderToml& record = cfg.stt_providers[stt_provider];
+        record.provider = stt_provider;
+        record.api_key = cfg.stt.api_key;
+        record.model = cfg.stt.model;
+        record.base_url = cfg.stt.base_url;
+        record.app_id = cfg.stt.app_id;
+        record.secret_id = cfg.stt.secret_id;
+        record.secret_key = cfg.stt.secret_key;
+        record.region = cfg.stt.region;
+        record.engine_model_type = cfg.stt.engine_model_type;
+
+        // language stays: it holds regardless of which provider transcribes.
+        cfg.stt.api_key.clear();
+        cfg.stt.model.clear();
+        cfg.stt.base_url.clear();
+        cfg.stt.app_id.clear();
+        cfg.stt.secret_id.clear();
+        cfg.stt.secret_key.clear();
+        cfg.stt.region.clear();
+        cfg.stt.engine_model_type.clear();
+    }
+}
 
 void emit_string(std::ostringstream& out, const char* key, const std::string& value) {
     out << key << " = " << quote(value) << "\n";
@@ -597,6 +766,7 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
     bool model_max_response_tokens_seen = false;
     bool model_text_max_response_tokens_seen = false;
     std::vector<LegacyModelMaxTokens> legacy_model_max_tokens;
+    std::vector<LegacyTTSCredential> legacy_tts_credentials;
 
     while (std::getline(in, line)) {
         ++lineno;
@@ -663,6 +833,15 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
             legacy_model_max_tokens.push_back(LegacyModelMaxTokens(section, value, lineno));
             continue;
         }
+        // [tts.credentials.<type>] is the pre-records shape. It had no handling
+        // here at all, so it fell through to "unknown sections are ignored" and
+        // the next save erased the whole block. Collect it and migrate after the
+        // parse, where an explicit record can take precedence.
+        if (section.find("tts.credentials.") == 0) {
+            legacy_tts_credentials.push_back(
+                LegacyTTSCredential(section.substr(16), key, value, lineno)); // Skip "tts.credentials."
+            continue;
+        }
 
         std::string apply_err;
         apply_kv(cfg, section, key, value, &apply_err);
@@ -693,6 +872,13 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
                 cfg.model_text.max_response_tokens = value;
             }
         }
+    }
+
+    if (parse_error.empty()) {
+        migrate_legacy_tts_credentials(cfg, legacy_tts_credentials, &parse_error);
+    }
+    if (parse_error.empty()) {
+        migrate_flat_voice_credentials(cfg);
     }
 
     if (!parse_error.empty()) {
@@ -758,6 +944,57 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
         if (!provider.api_key.empty()) emit_string(out, "api_key", provider.api_key);
         if (!provider.token_env.empty()) emit_string(out, "token_env", provider.token_env);
         if (!provider.base_url.empty()) emit_string(out, "base_url", provider.base_url);
+        out << "\n";
+    }
+
+    // Write [tts_providers.xxx] sections
+    for (const auto& item : cfg.tts_providers) {
+        const std::string& record_name = item.first;
+        const TTSProviderToml& record = item.second;
+
+        if (!is_valid_bare_toml_key(record_name)) {
+            if (error) {
+                *error = "invalid tts provider name: " + record_name;
+            }
+            return false;
+        }
+
+        out << "[tts_providers." << record_name << "]\n";
+        if (!record.provider.empty()) emit_string(out, "provider", record.provider);
+        if (!record.api_key.empty()) emit_string(out, "api_key", record.api_key);
+        if (!record.token_env.empty()) emit_string(out, "token_env", record.token_env);
+        if (!record.model.empty()) emit_string(out, "model", record.model);
+        if (!record.voice_id.empty()) emit_string(out, "voice_id", record.voice_id);
+        if (!record.emotion.empty()) emit_string(out, "emotion", record.emotion);
+        if (!record.reference_id.empty()) emit_string(out, "reference_id", record.reference_id);
+        out << "\n";
+    }
+
+    // Write [stt_providers.xxx] sections
+    for (const auto& item : cfg.stt_providers) {
+        const std::string& record_name = item.first;
+        const STTProviderToml& record = item.second;
+
+        if (!is_valid_bare_toml_key(record_name)) {
+            if (error) {
+                *error = "invalid stt provider name: " + record_name;
+            }
+            return false;
+        }
+
+        out << "[stt_providers." << record_name << "]\n";
+        if (!record.provider.empty()) emit_string(out, "provider", record.provider);
+        if (!record.api_key.empty()) emit_string(out, "api_key", record.api_key);
+        if (!record.token_env.empty()) emit_string(out, "token_env", record.token_env);
+        if (!record.model.empty()) emit_string(out, "model", record.model);
+        if (!record.base_url.empty()) emit_string(out, "base_url", record.base_url);
+        if (!record.app_id.empty()) emit_string(out, "app_id", record.app_id);
+        if (!record.secret_id.empty()) emit_string(out, "secret_id", record.secret_id);
+        if (!record.secret_key.empty()) emit_string(out, "secret_key", record.secret_key);
+        if (!record.region.empty()) emit_string(out, "region", record.region);
+        if (!record.engine_model_type.empty()) {
+            emit_string(out, "engine_model_type", record.engine_model_type);
+        }
         out << "\n";
     }
 

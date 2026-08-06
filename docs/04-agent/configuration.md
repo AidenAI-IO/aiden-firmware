@@ -415,9 +415,96 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 | `pointer_mode`            | `absolute`                              | `absolute` for iOS-style cursor mode on `hid.usb1` plus a limited `hid.usb2` media-key interface; `touchscreen` for Android digitizer mode plus full `hid.usb2` Android extension keys                                                                                                                                                                                                                                                                                                                                       |
 | `input_backend`           | `hid`                                   | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands.                                                                                                                                                                                                                                                                                                                                               |
 
+## `[tts_providers.<name>]` and `[stt_providers.<name>]`
+
+Named voice provider configurations, the same shape `[providers.<name>]` gives
+`[model]`. Each section holds the credentials and settings for one voice service,
+and `[tts]` / `[stt]` reference one by putting the name in their own `provider`
+field. Several providers stay configured at once, so switching is a one-line
+change instead of a re-entry of keys.
+
+Unlike `[providers.<name>]`, these are separate namespaces: the `[tts]`
+`volcengine` provider speaks a different protocol with its own host and
+credentials than the Ark LLM provider of the same name, so one map could not
+serve both. Each namespace also validates its own provider types — a TTS type is
+rejected for `[model]` and vice versa.
+
+Several records may share one provider type, which is how two accounts of the
+same service (different keys, different voices) stay configured together.
+
+```toml
+[tts_providers.minimax-main]
+provider = "minimax"
+api_key = "sk-aaa"
+voice_id = "male-qn-qingse"
+
+[tts_providers.minimax-alt]     # same type, second account
+provider = "minimax"
+api_key = "sk-bbb"
+voice_id = "female-shaonv"
+
+[tts_providers.fish]
+provider = "fish-audio"
+token_env = "FISH_API_KEY"
+reference_id = "abc123"
+
+[tts]
+provider = "minimax-main"       # references [tts_providers.minimax-main]
+speed = 1.0
+
+[stt_providers.tencent]
+provider = "tencent-asr"
+app_id = "123"
+secret_id = "AKID..."
+secret_key = "..."
+region = "ap-shanghai"
+
+[stt]
+provider = "tencent"
+language = "zh"
+```
+
+### Field placement
+
+A field lives on the record when it stops meaning anything once the provider
+changes; it stays on `[tts]` / `[stt]` when it holds regardless of provider.
+
+| | Record fields | Stays on the flat section |
+| ---- | ---- | ---- |
+| TTS | `provider` (type), `api_key`, `token_env`, `model`, `voice_id`, `emotion`, `reference_id` | `provider` (reference), `speed` |
+| STT | `provider` (type), `api_key`, `token_env`, `model`, `base_url`, `app_id`, `secret_id`, `secret_key`, `region`, `engine_model_type` | `provider` (reference), `language` |
+
+`speed` is a listening preference and `language` a transcription preference:
+neither should change because the voice changed, so both stay global.
+
+`token_env` reads the key from the named environment variable, and is used when
+`api_key` is unset. Config Web folds both into one API Key box: a value starting
+with `$` is stored as `token_env`.
+
+### Backward compatibility
+
+- A bare provider type in `[tts]` / `[stt]` keeps working. `provider = "minimax-cn"`
+  with a flat `api_key` needs no migration to keep speaking.
+- Both legacy shapes are upgraded to records on load, keyed by provider type:
+  the flat credentials on `[tts]` / `[stt]`, and the older Go-only
+  `[tts.credentials.<type>]` map. The upgrade is written back the next time the
+  config is saved, and an existing record is never overwritten.
+- A legacy `[tts.credentials.<type>]` entry carrying `speed` only keeps it when
+  that provider is the active one and `[tts].speed` is unset. Otherwise it is
+  dropped, because a per-provider speed would change playback on switching voice.
+- An unresolvable reference does not stop the device from booting: voice is
+  optional at runtime, so a stale name is reported and the agent starts without
+  voice. Config Web rejects such a reference when saving instead, while the form
+  is still on screen.
+
 ## `[stt]` and `[tts]`
 
 `[stt]` is required when `input_mode = "stt"`; `[tts]` is required when `input_mode = "stt"`.
+
+`provider` here is a reference to a `[tts_providers.<name>]` /
+`[stt_providers.<name>]` record (a bare provider type still works — see above).
+The provider-specific credentials listed below live on that record; Config Web
+edits them in the provider dialog rather than on the `[tts]` / `[stt]` card.
 
 STT:
 
@@ -445,7 +532,7 @@ TTS:
 | `emotion`      | Optional. Minimax emotion; Volcengine passes it through as `audio_params.emotion`, requires voice support                  |
 | `speed`        | Optional. Speech rate, default `1.0`; the supported range varies by provider, refer to the official docs                   |
 
-The config examples below only show non-key fields relevant to adapter behavior; at actual runtime you still need to provide the corresponding `api_key` in the device config via `[tts]` or `[tts.credentials.<provider>]`.
+The config examples below only show non-key fields relevant to adapter behavior; at actual runtime you still need to provide the corresponding `api_key` on the provider's `[tts_providers.<name>]` record. (The older `[tts.credentials.<provider>]` map is still read, and is upgraded to a record on load.)
 
 Common TTS adapter configs:
 

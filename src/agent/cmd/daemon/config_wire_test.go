@@ -404,9 +404,11 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 		"providers",
 		"search",
 		"stt",
+		"stt_providers",
 		"telemetry",
 		"termination_policy",
 		"tts",
+		"tts_providers",
 		"voice_notifications",
 	}
 

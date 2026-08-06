@@ -63,6 +63,22 @@ override. For any other type the value is dropped at load, whether it is set on
 - `ollama` - Ollama local models
 - `fake` - fake provider for tests
 
+This list is enforced: a type outside it is rejected at load. Voice provider
+types (`minimax`, `fish-audio`, `tencent-asr`, ...) are **not** accepted here.
+
+### Voice providers use their own namespaces
+
+`[tts]` and `[stt]` have the same named-record mechanism, in separate maps:
+`[tts_providers.<name>]` and `[stt_providers.<name>]`. They are deliberately not
+this map — the `[tts]` `volcengine` provider speaks a different protocol with its
+own host and credentials than the Ark LLM provider of the same name, so a single
+map could not serve both, and a shared type whitelist would let
+`[model] provider = "minimax"` pass validation only to fail when the model client
+is built.
+
+See [Configuration](configuration.md) for the voice record fields and the
+migration rules.
+
 ## Use cases
 
 ### Work and personal accounts

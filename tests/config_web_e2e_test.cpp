@@ -223,6 +223,8 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"context_window\":0,\"model_max_output_tokens\":0},"
         "\"model_text\":{\"provider\":\"\",\"api_key\":\"\",\"model\":\"\",\"base_url\":\"\","
         "\"temperature\":0,\"max_response_tokens\":0,\"context_window\":0,\"model_max_output_tokens\":0},"
+        "\"tts_providers\":{\"minimax-cn\":{\"provider\":\"minimax-cn\"}},"
+        "\"stt_providers\":{\"openai-whisper\":{\"provider\":\"openai-whisper\"}},"
         "\"tts\":{\"provider\":\"minimax-cn\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
         "\"emotion\":\"happy\",\"speed\":1},"
         "\"stt\":{\"provider\":\"openai-whisper\",\"api_key\":\"\",\"model\":\"whisper-1\",\"base_url\":\"\","
@@ -2827,4 +2829,265 @@ TEST_CASE("config_web: imports llm raw log files larger than viewer limit") {
     CHECK(export_resp.body.size() == content.size());
     CHECK(export_resp.body.compare(0, 128, content, 0, 128) == 0);
     CHECK(export_resp.body.compare(export_resp.body.size() - 128, 128, content, content.size() - 128, 128) == 0);
+}
+
+TEST_CASE("config_web: POST /api/config writes named voice providers") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{"
+        "\"tts_providers\":{"
+        "\"minimax-main\":{\"provider\":\"minimax\",\"api_key\":\"sk-mm-1234\","
+        "\"voice_id\":\"male-qn-qingse\",\"emotion\":\"happy\"},"
+        "\"fish\":{\"provider\":\"fish-audio\",\"token_env\":\"FISH_KEY\","
+        "\"reference_id\":\"ref-abc\",\"model\":\"s2-pro\"}},"
+        "\"stt_providers\":{"
+        "\"tencent\":{\"provider\":\"tencent-asr\",\"app_id\":\"1234\","
+        "\"secret_id\":\"AKID-xxx\",\"secret_key\":\"secret-yyy\",\"region\":\"ap-shanghai\"}},"
+        "\"tts\":{\"provider\":\"minimax-main\",\"speed\":1.2},"
+        "\"stt\":{\"provider\":\"tencent\",\"language\":\"zh\"},"
+        "\"model\":{\"provider\":\"openrouter\",\"model\":\"x\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[tts_providers.minimax-main]") != std::string::npos);
+    CHECK(saved.find("api_key = \"sk-mm-1234\"") != std::string::npos);
+    CHECK(saved.find("voice_id = \"male-qn-qingse\"") != std::string::npos);
+    CHECK(saved.find("[tts_providers.fish]") != std::string::npos);
+    CHECK(saved.find("token_env = \"FISH_KEY\"") != std::string::npos);
+    CHECK(saved.find("reference_id = \"ref-abc\"") != std::string::npos);
+    CHECK(saved.find("[stt_providers.tencent]") != std::string::npos);
+    CHECK(saved.find("app_id = \"1234\"") != std::string::npos);
+    CHECK(saved.find("secret_key = \"secret-yyy\"") != std::string::npos);
+    // The reference is stored unresolved: the Go runtime resolves it.
+    CHECK(saved.find("provider = \"minimax-main\"") != std::string::npos);
+    CHECK(saved.find("provider = \"tencent\"") != std::string::npos);
+}
+
+// This is the exact bug class that broke [providers]: a save of an unrelated
+// section carried no records key, the read path started from an empty map, and
+// every record was erased from agent.toml.
+TEST_CASE("config_web: POST /api/config keeps voice records when the payload omits them") {
+    // The stored config comes from the agent CLI's resolved output, so records
+    // are seeded through the stub's config file rather than by a prior POST --
+    // a POST writes agent.toml, which the stub does not read back.
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\",\"api_key\":\"sk-fish-1234\"}},"
+               "\"stt_providers\":{\"whisper\":{\"provider\":\"openai-whisper\",\"api_key\":\"sk-w-1234\"}},"
+               "\"tts\":{\"provider\":\"fish\",\"speed\":1},"
+               "\"stt\":{\"provider\":\"whisper\",\"language\":\"zh\"},"
+               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
+               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    // A save that touches only [agent], with no voice keys at all.
+    const std::string unrelated =
+        "{\"config\":{"
+        "\"model\":{\"provider\":\"openrouter\",\"model\":\"x\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},"
+        "\"agent\":{\"locale\":\"en-US\"}},\"apply_wifi\":false}";
+    CHECK(http_request(handle->port, "POST", "/api/config", unrelated).status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[tts_providers.fish]") != std::string::npos);
+    CHECK(saved.find("api_key = \"sk-fish-1234\"") != std::string::npos);
+    CHECK(saved.find("[stt_providers.whisper]") != std::string::npos);
+    CHECK(saved.find("api_key = \"sk-w-1234\"") != std::string::npos);
+}
+
+// GET masks a record's api_key, so the UI posts the mask back unchanged when the
+// user edits anything else. The mask must resolve to the stored secret or every
+// unrelated edit would silently blank the key.
+TEST_CASE("config_web: POST /api/config resolves a masked voice provider api_key") {
+    // Seeded through the stub config file: the stored config is the agent CLI's
+    // resolved output, so a prior POST would not be visible to this GET.
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\","
+               "\"api_key\":\"sk-fish-secret-1234\"}},"
+               "\"tts\":{\"provider\":\"fish\",\"speed\":1},"
+               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
+               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config", "");
+    REQUIRE(get_resp.status == 200);
+    // The key must not come back in the clear.
+    CHECK(get_resp.body.find("sk-fish-secret-1234") == std::string::npos);
+
+    cJSON* root = cJSON_Parse(get_resp.body.c_str());
+    REQUIRE(root != nullptr);
+    cJSON* cfg_obj = cJSON_GetObjectItem(root, "config");
+    REQUIRE(cfg_obj != nullptr);
+    cJSON* records = cJSON_GetObjectItem(cfg_obj, "tts_providers");
+    REQUIRE(records != nullptr);
+    cJSON* fish = cJSON_GetObjectItem(records, "fish");
+    REQUIRE(fish != nullptr);
+    cJSON* masked = cJSON_GetObjectItem(fish, "api_key");
+    REQUIRE(masked != nullptr);
+    REQUIRE(masked->valuestring != nullptr);
+    const std::string masked_key = masked->valuestring;
+    cJSON_Delete(root);
+    CHECK(masked_key.find("***") != std::string::npos);
+
+    // Post the mask back verbatim, as the UI would.
+    const std::string repost =
+        "{\"config\":{"
+        "\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\",\"api_key\":\"" + masked_key + "\"}},"
+        "\"tts\":{\"provider\":\"fish\",\"speed\":1.5},"
+        "\"model\":{\"provider\":\"openrouter\",\"model\":\"x\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    CHECK(http_request(handle->port, "POST", "/api/config", repost).status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("api_key = \"sk-fish-secret-1234\"") != std::string::npos);
+    CHECK(saved.find("***") == std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config rejects an invalid voice provider name") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    // A name save_agent_toml could not write back must fail the schema check
+    // rather than producing a config that loads but never saves again.
+    const std::string body =
+        "{\"config\":{"
+        "\"tts_providers\":{\"bad name\":{\"provider\":\"minimax\"}},"
+        "\"model\":{\"provider\":\"openrouter\",\"model\":\"x\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("tts_providers") != std::string::npos);
+
+    const std::string stt_body =
+        "{\"config\":{"
+        "\"stt_providers\":{\"bad.name\":{\"provider\":\"tencent-asr\"}},"
+        "\"model\":{\"provider\":\"openrouter\",\"model\":\"x\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse stt_resp = http_request(handle->port, "POST", "/api/config", stt_body);
+    CHECK(stt_resp.status == 400);
+    CHECK(stt_resp.body.find("stt_providers") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config rejects a non-object voice provider entry") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{"
+        "\"tts_providers\":{\"fish\":\"not-an-object\"},"
+        "\"model\":{\"provider\":\"openrouter\",\"model\":\"x\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("tts_providers.fish") != std::string::npos);
+}
+
+// The Test button posts the form values, and after the credentials moved onto
+// records that form carries only the reference plus the globals. config_web's own
+// pre-checks read values.provider and values.api_key directly, so without
+// flattening the reference first they see an unknown provider and an empty key --
+// reporting "provider unknown" and "skipped because api_key is empty" for a
+// record that is configured correctly.
+TEST_CASE("config_web: config test flattens a tts provider reference") {
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\","
+               "\"api_key\":\"sk-fish-secret-1234\",\"reference_id\":\"ref-abc\"}},"
+               "\"tts\":{\"provider\":\"fish\",\"speed\":1},"
+               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
+               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    // What the slimmed form posts: the reference and the global speed only.
+    const std::string test_body =
+        "{\"section\":\"tts\",\"values\":{\"provider\":\"fish\",\"speed\":1}}";
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(test_resp.status == 200);
+
+    // The key lives on the record, so it must not be reported as missing.
+    CHECK(test_resp.body.find("skipped because api_key is empty") == std::string::npos);
+    // And the endpoint check must resolve the provider type rather than treating
+    // the record name as an unknown provider.
+    CHECK(test_resp.body.find("provider unknown and base_url empty") == std::string::npos);
+}
+
+TEST_CASE("config_web: config test flattens an stt provider reference") {
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"stt_providers\":{\"tencent-main\":{\"provider\":\"tencent-asr\","
+               "\"app_id\":\"1234\",\"secret_id\":\"AKID-xxx\",\"secret_key\":\"secret-yyy\","
+               "\"region\":\"ap-shanghai\"}},"
+               "\"stt\":{\"provider\":\"tencent-main\",\"language\":\"zh\"},"
+               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
+               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    const std::string test_body =
+        "{\"section\":\"stt\",\"values\":{\"provider\":\"tencent-main\",\"language\":\"zh\"}}";
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(test_resp.status == 200);
+
+    // The Tencent-specific credential checks only run once the reference has
+    // resolved to tencent-asr, so their presence proves the flattening happened.
+    CHECK(test_resp.body.find("\"check\":\"streaming_app_id\"") != std::string::npos);
+    CHECK(test_resp.body.find("provider unknown and base_url empty") == std::string::npos);
+}
+
+TEST_CASE("config_web: GET /api/config returns voice providers from the resolved config") {
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\",\"api_key\":\"\","
+               "\"token_env\":\"FISH_KEY\",\"reference_id\":\"ref-abc\"}},"
+               "\"stt_providers\":{\"tencent\":{\"provider\":\"tencent-asr\",\"app_id\":\"1234\","
+               "\"region\":\"ap-shanghai\"}},"
+               "\"tts\":{\"provider\":\"fish\",\"speed\":1.2},"
+               "\"stt\":{\"provider\":\"tencent\",\"language\":\"zh\"},"
+               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
+               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config", "");
+    REQUIRE(resp.status == 200);
+    CHECK(resp.body.find("\"tts_providers\"") != std::string::npos);
+    CHECK(resp.body.find("\"token_env\":\"FISH_KEY\"") != std::string::npos);
+    CHECK(resp.body.find("\"reference_id\":\"ref-abc\"") != std::string::npos);
+    CHECK(resp.body.find("\"stt_providers\"") != std::string::npos);
+    CHECK(resp.body.find("\"app_id\":\"1234\"") != std::string::npos);
+    CHECK(resp.body.find("\"region\":\"ap-shanghai\"") != std::string::npos);
 }

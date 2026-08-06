@@ -47,6 +47,8 @@ type ConfigTestCheck struct {
 // by TestConfigCheck_WireFormatContract.
 type webConfigDTO struct {
 	Providers          map[string]providerDTO        `json:"providers,omitempty"`
+	TTSProviders       map[string]ttsProviderDTO     `json:"tts_providers,omitempty"`
+	STTProviders       map[string]sttProviderDTO     `json:"stt_providers,omitempty"`
 	Model              modelDTO                      `json:"model"`
 	ModelText          modelDTO                      `json:"model_text"`
 	TTS                ttsDTO                        `json:"tts"`
@@ -84,6 +86,35 @@ type providerDTO struct {
 	APIKey   string `json:"api_key,omitempty"`
 	TokenEnv string `json:"token_env,omitempty"`
 	BaseURL  string `json:"base_url,omitempty"`
+}
+
+// ttsProviderDTO mirrors a single [tts_providers.<name>] section. [tts]
+// references one by putting the record name in its own "provider" field. speed
+// is absent on purpose: it is a listening preference that stays global on [tts]
+// so switching voice never changes playback speed.
+type ttsProviderDTO struct {
+	Provider    string `json:"provider"`
+	APIKey      string `json:"api_key,omitempty"`
+	TokenEnv    string `json:"token_env,omitempty"`
+	Model       string `json:"model,omitempty"`
+	VoiceID     string `json:"voice_id,omitempty"`
+	Emotion     string `json:"emotion,omitempty"`
+	ReferenceID string `json:"reference_id,omitempty"`
+}
+
+// sttProviderDTO mirrors a single [stt_providers.<name>] section. language stays
+// on [stt]: it holds regardless of which provider transcribes.
+type sttProviderDTO struct {
+	Provider        string `json:"provider"`
+	APIKey          string `json:"api_key,omitempty"`
+	TokenEnv        string `json:"token_env,omitempty"`
+	Model           string `json:"model,omitempty"`
+	BaseURL         string `json:"base_url,omitempty"`
+	AppID           string `json:"app_id,omitempty"`
+	SecretID        string `json:"secret_id,omitempty"`
+	SecretKey       string `json:"secret_key,omitempty"`
+	Region          string `json:"region,omitempty"`
+	EngineModelType string `json:"engine_model_type,omitempty"`
 }
 
 type ttsDTO struct {
@@ -281,7 +312,9 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 	}
 
 	return agent.Config{
-		Providers: d.providersToAgentConfig(),
+		Providers:    d.providersToAgentConfig(),
+		TTSProviders: d.ttsProvidersToAgentConfig(),
+		STTProviders: d.sttProvidersToAgentConfig(),
 		Model: agent.ModelConfig{
 			Provider:             d.Model.Provider,
 			APIKey:               d.Model.APIKey,
@@ -461,11 +494,95 @@ func (d webConfigDTO) providersToAgentConfig() map[string]agent.Provider {
 	return result
 }
 
+func ttsProviderDTOsFromConfig(providers map[string]agent.TTSProvider) map[string]ttsProviderDTO {
+	if len(providers) == 0 {
+		return nil
+	}
+	result := make(map[string]ttsProviderDTO, len(providers))
+	for name, provider := range providers {
+		result[name] = ttsProviderDTO{
+			Provider:    provider.Provider,
+			APIKey:      provider.APIKey,
+			TokenEnv:    provider.TokenEnv,
+			Model:       provider.Model,
+			VoiceID:     provider.VoiceID,
+			Emotion:     provider.Emotion,
+			ReferenceID: provider.ReferenceID,
+		}
+	}
+	return result
+}
+
+func (d webConfigDTO) ttsProvidersToAgentConfig() map[string]agent.TTSProvider {
+	if len(d.TTSProviders) == 0 {
+		return nil
+	}
+	result := make(map[string]agent.TTSProvider, len(d.TTSProviders))
+	for name, provider := range d.TTSProviders {
+		result[name] = agent.TTSProvider{
+			Provider:    provider.Provider,
+			APIKey:      provider.APIKey,
+			TokenEnv:    provider.TokenEnv,
+			Model:       provider.Model,
+			VoiceID:     provider.VoiceID,
+			Emotion:     provider.Emotion,
+			ReferenceID: provider.ReferenceID,
+		}
+	}
+	return result
+}
+
+func sttProviderDTOsFromConfig(providers map[string]agent.STTProvider) map[string]sttProviderDTO {
+	if len(providers) == 0 {
+		return nil
+	}
+	result := make(map[string]sttProviderDTO, len(providers))
+	for name, provider := range providers {
+		result[name] = sttProviderDTO{
+			Provider:        provider.Provider,
+			APIKey:          provider.APIKey,
+			TokenEnv:        provider.TokenEnv,
+			Model:           provider.Model,
+			BaseURL:         provider.BaseURL,
+			AppID:           provider.AppID,
+			SecretID:        provider.SecretID,
+			SecretKey:       provider.SecretKey,
+			Region:          provider.Region,
+			EngineModelType: provider.EngineModelType,
+		}
+	}
+	return result
+}
+
+func (d webConfigDTO) sttProvidersToAgentConfig() map[string]agent.STTProvider {
+	if len(d.STTProviders) == 0 {
+		return nil
+	}
+	result := make(map[string]agent.STTProvider, len(d.STTProviders))
+	for name, provider := range d.STTProviders {
+		result[name] = agent.STTProvider{
+			Provider:        provider.Provider,
+			APIKey:          provider.APIKey,
+			TokenEnv:        provider.TokenEnv,
+			Model:           provider.Model,
+			BaseURL:         provider.BaseURL,
+			AppID:           provider.AppID,
+			SecretID:        provider.SecretID,
+			SecretKey:       provider.SecretKey,
+			Region:          provider.Region,
+			EngineModelType: provider.EngineModelType,
+		}
+	}
+	return result
+}
+
 func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 	audioArchive := cfg.AudioArchive
 
 	return webConfigDTO{
-		Providers: providerDTOsFromConfig(cfg.Providers),
+		Providers:    providerDTOsFromConfig(cfg.Providers),
+		TTSProviders: ttsProviderDTOsFromConfig(cfg.TTSProviders),
+		STTProviders: sttProviderDTOsFromConfig(cfg.STTProviders),
 		Model: modelDTO{
 			Provider:             cfg.Model.Provider,
 			APIKey:               cfg.Model.APIKey,
@@ -702,6 +819,16 @@ func checkConfig(r io.Reader) (ValidationResult, error) {
 		Errors: []ValidationError{},
 	}
 	if err := cfg.Validate(); err != nil {
+		result.Valid = false
+		result.Errors = parseValidationErrors(err)
+		return result, nil
+	}
+	// Voice provider records are checked only here, on the save path. Boot stays
+	// lenient: a TTS init failure is a warning and the agent still starts, so a
+	// device whose provider reference went stale must keep booting. But a save
+	// that stores a dangling reference silently loses voice on the next restart,
+	// so it has to be rejected while the user is still looking at the form.
+	if err := cfg.ValidateVoiceProviders(); err != nil {
 		result.Valid = false
 		result.Errors = parseValidationErrors(err)
 	}

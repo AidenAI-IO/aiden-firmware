@@ -189,15 +189,21 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.model.context_window == 64000);
     CHECK(loaded.model.model_max_output_tokens == 4096);
 
+    // The flat voice credentials set above are written flat and then migrated
+    // onto a [tts_providers]/[stt_providers] record at load, so they arrive on
+    // the record rather than on the flat section. Nothing is lost -- which is
+    // what this round-trip guards -- it just lands where the config page can
+    // edit it. See agent_toml_voice_providers_test.cpp for the migration rules.
     CHECK(loaded.tts.provider == "minimax-cn");
-    CHECK(loaded.tts.api_key == "mx-test");
-    CHECK(loaded.tts.voice_id == "male-qn-qingse");
-    CHECK(loaded.tts.emotion == "happy");
+    CHECK(loaded.tts_providers["minimax-cn"].api_key == "mx-test");
+    CHECK(loaded.tts_providers["minimax-cn"].voice_id == "male-qn-qingse");
+    CHECK(loaded.tts_providers["minimax-cn"].emotion == "happy");
+    // speed stays flat: it is a listening preference, global by design.
     CHECK(loaded.tts.speed == doctest::Approx(1.25));
 
     CHECK(loaded.stt.provider == "openai-whisper");
-    CHECK(loaded.stt.api_key == "sk-stt");
-    CHECK(loaded.stt.model == "whisper-1");
+    CHECK(loaded.stt_providers["openai-whisper"].api_key == "sk-stt");
+    CHECK(loaded.stt_providers["openai-whisper"].model == "whisper-1");
 
     CHECK(loaded.audio.socket == "/run/audio_service/audio_service.sock");
     CHECK(loaded.audio.sample_rate == 16000);

@@ -964,8 +964,14 @@ TEST_CASE("config web renders finite choice fields as selects") {
         CHECK_MESSAGE(html.find(input_marker) == std::string::npos, select_ids[i]);
     }
 
-    CHECK(html.find("<input id=\\\"tts_model\\\"") != std::string::npos);
+    // tts.model moved onto a [tts_providers] record, so it has no flat input on
+    // the page at all -- the provider dialog renders it from the metadata. The
+    // widget choice is still asserted there: providerRecordFieldsHtml emits a
+    // <select> only for a field whose metadata carries enum options, and
+    // tts_providers.model is a text widget with a conditional selectWhen.
+    CHECK(html.find("<input id=\\\"tts_model\\\"") == std::string::npos);
     CHECK(html.find("<select id=\\\"tts_model\\\"") == std::string::npos);
+    CHECK(html.find("function providerRecordFieldsHtml(section,record)") != std::string::npos);
 
     CHECK(html.find("input,select,textarea") != std::string::npos);
     CHECK(html.find("input:focus,select:focus,textarea:focus") != std::string::npos);
@@ -1278,8 +1284,13 @@ TEST_CASE("config web fills Tencent ASR STT defaults from metadata") {
     CHECK(html.find("function fieldDefaultValue(section,key,fallback)") != std::string::npos);
     CHECK(html.find("function applySTTTencentASRDefaults()") != std::string::npos);
     CHECK(html.find("applySTTTencentASRDefaults();applyAudioArchiveAvailability();") != std::string::npos);
-    CHECK(html.find("stt_app_id") != std::string::npos);
-    CHECK(html.find("id=\\\"stt_engine_model_type\\\" data-section=\\\"stt\\\"") != std::string::npos);
+    // The Tencent credential set moved onto an [stt_providers] record, so the
+    // defaults are filled on the record's fields inside the provider dialog.
+    // Reading [stt] provider here would never match: that field holds a record
+    // NAME now, so the fill would silently stop happening.
+    CHECK(html.find("isTencentASRProvider(fieldValue('stt_providers','provider'))") != std::string::npos);
+    CHECK(html.find("byId('stt_providers_'+key)") != std::string::npos);
+    CHECK(html.find("fieldDefaultValue('stt_providers',key,fallback)") != std::string::npos);
     CHECK(html.find("fillIfEmpty('region','ap-shanghai')") != std::string::npos);
     CHECK(html.find("fillIfEmpty('engine_model_type','16k_zh')") != std::string::npos);
     CHECK(html.find("p==='tencent-asr'||p==='tencent_asr'||p==='tencent'") != std::string::npos);
@@ -2496,4 +2507,227 @@ TEST_CASE("config web html shows the provider base url only where it applies") {
     // A base_url left over from a previous type must not be saved once the type
     // no longer accepts one.
     CHECK(save_body.find("providerBaseUrlAllowed(type)") != std::string::npos);
+}
+
+// TTS and STT get the same named-record UX as [providers.*]. One factory serves
+// both: two copies of this logic would be two places to fix every
+// rename/mask/save bug, so assert the shared factory and the two specs rather
+// than per-kind implementations.
+TEST_CASE("config web builds tts and stt provider records from one factory") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("function createProviderRecordsManager(spec)") != std::string::npos);
+    CHECK(html.find("const TtsProvidersManager=createProviderRecordsManager(TTS_PROVIDER_SPEC)") !=
+          std::string::npos);
+    CHECK(html.find("const SttProvidersManager=createProviderRecordsManager(STT_PROVIDER_SPEC)") !=
+          std::string::npos);
+    // Each spec must name its own config key and reference field, or a save would
+    // write the records under the wrong key and erase the other kind's.
+    CHECK(html.find("configKey:'tts_providers'") != std::string::npos);
+    CHECK(html.find("refFieldId:'tts_provider'") != std::string::npos);
+    CHECK(html.find("configKey:'stt_providers'") != std::string::npos);
+    CHECK(html.find("refFieldId:'stt_provider'") != std::string::npos);
+
+    // Both cards, and both lists the factory renders into.
+    CHECK(html.find("id=\\\"ttsProvidersList\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"sttProvidersList\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"addTtsProviderBtn\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"addSttProviderBtn\\\"") != std::string::npos);
+
+    CHECK(html.find("TtsProvidersManager.init(); SttProvidersManager.init();") != std::string::npos);
+    // Records have to be loaded on every config load, or the cards render empty
+    // after a reload even though agent.toml has records.
+    CHECK(html.find("syncVoiceProvidersFromConfig();") != std::string::npos);
+}
+
+// The credentials moved onto records, so the flat [tts]/[stt] cards must not keep
+// inputs for them: a second editor for one credential disagrees with the record
+// the moment either is used, and readSection would post the stale flat copy.
+TEST_CASE("config web drops flat voice credential inputs") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const char* gone[] = {
+        "tts_api_key", "tts_voice_id", "tts_reference_id", "tts_emotion",
+        "stt_api_key", "stt_app_id", "stt_secret_id", "stt_secret_key",
+        "stt_region", "stt_base_url",
+        NULL,
+    };
+    for (int i = 0; gone[i]; ++i) {
+        const std::string marker = "id=\\\"" + std::string(gone[i]) + "\\\"";
+        CHECK_MESSAGE(html.find(marker) == std::string::npos, gone[i]);
+    }
+
+    // The reference plus the genuinely global settings stay.
+    CHECK(html.find("id=\\\"tts_provider\\\" data-section=\\\"tts\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"tts_speed\\\" data-section=\\\"tts\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"stt_provider\\\" data-section=\\\"stt\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"stt_language\\\" data-section=\\\"stt\\\"") != std::string::npos);
+}
+
+// A "*_providers" metadata section describes a record map, not a form section.
+// Leaving it in sectionFields makes fillConfigForm / readSection / saveSection
+// walk a map as if it were scalar fields.
+TEST_CASE("config web keeps provider record sections out of the form loops") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("function isProviderRecordSection(name)") != std::string::npos);
+    CHECK(html.find("_providers'") != std::string::npos);
+
+    const size_t build_at = html.find("function buildConfigMeta(meta)");
+    REQUIRE(build_at != std::string::npos);
+    const size_t build_end = html.find("\\n\"", build_at);
+    REQUIRE(build_end != std::string::npos);
+    const std::string build_body = html.substr(build_at, build_end - build_at);
+    CHECK(build_body.find("isRecordSection=isProviderRecordSection(name)") != std::string::npos);
+    CHECK(build_body.find("recordSectionFields[name]=fieldList") != std::string::npos);
+    // The record's own fields must not land in sectionFields.
+    CHECK(build_body.find("sectionFields[name].push") == std::string::npos);
+}
+
+// Verified by running the real page in jsdom: seeding the dialog's type select
+// with only the record's current value (ensureSelectOption) left a dropdown
+// holding one option -- none at all for a new record -- so the provider type
+// could not be chosen and every save failed "Provider is required". No grep of
+// the emitted JS can catch that, hence this guard on the mechanism.
+TEST_CASE("config web hydrates the provider dialog type select from metadata") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const size_t hydrate_at = html.find("hydrateDialog:function(record)");
+    REQUIRE(hydrate_at != std::string::npos);
+    const size_t hydrate_end = html.find("\\n\"", hydrate_at);
+    REQUIRE(hydrate_end != std::string::npos);
+    const std::string hydrate_body = html.substr(hydrate_at, hydrate_end - hydrate_at);
+
+    CHECK(hydrate_body.find("hydrateSelectField(section,'provider'") != std::string::npos);
+    CHECK(hydrate_body.find("ensureBlankTypeOption(section)") != std::string::npos);
+    // Seeding the single current value is what the bug looked like.
+    CHECK(hydrate_body.find("ensureSelectOption(typeEl") == std::string::npos);
+
+    CHECK(html.find("function ensureBlankTypeOption(section)") != std::string::npos);
+
+    // The dialog fields come from the metadata, so provider knowledge stays in
+    // the agent's ConfigMeta instead of being duplicated per dialog in JS.
+    CHECK(html.find("function providerRecordFieldsHtml(section,record)") != std::string::npos);
+    CHECK(html.find("recordSectionFields[section]") != std::string::npos);
+}
+
+// Field ids in the dialog follow the page's section_key convention, which is what
+// lets the existing visibility engine (fieldValue -> byId(section+'_'+key)) drive
+// it unchanged. A rule keyed on tts_providers.provider reads the record's own type
+// select; keying it on tts.provider would compare against a record NAME and never
+// match, showing every field for every provider type.
+TEST_CASE("config web dialog field ids drive the existing visibility engine") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const size_t fields_at = html.find("function providerRecordFieldsHtml(section,record)");
+    REQUIRE(fields_at != std::string::npos);
+    const size_t fields_end = html.find("\\n\"", fields_at);
+    REQUIRE(fields_end != std::string::npos);
+    const std::string fields_body = html.substr(fields_at, fields_end - fields_at);
+    CHECK(fields_body.find("const id=section+'_'+key") != std::string::npos);
+
+    // The dialog re-runs visibility after rendering and on every type change, or
+    // a field scoped to another provider type would stay on screen and be saved.
+    CHECK(html.find("applyFieldVisibility(true);this.autoFillName();") != std::string::npos);
+    CHECK(html.find("onTypeChange:function()") != std::string::npos);
+
+    // A hidden field must not be written into the record: it belongs to a
+    // different provider type and would be dead config at best.
+    const size_t read_at = html.find("readDialog:function()");
+    REQUIRE(read_at != std::string::npos);
+    const size_t read_end = html.find("\\n\"", read_at);
+    REQUIRE(read_end != std::string::npos);
+    const std::string read_body = html.substr(read_at, read_end - read_at);
+    CHECK(read_body.find("classList.contains('hidden')") != std::string::npos);
+}
+
+// Renaming a record has to move the reference in the same request. Saving the
+// records alone would leave [tts] pointing at a name that no longer exists, which
+// the agent reports as misconfigured and ValidateVoiceProviders rejects on the
+// next save.
+TEST_CASE("config web patches the voice reference on rename") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const size_t patch_at = html.find("refPatch:function(oldName,newName)");
+    REQUIRE(patch_at != std::string::npos);
+    const size_t patch_end = html.find("\\n\"", patch_at);
+    REQUIRE(patch_end != std::string::npos);
+    const std::string patch_body = html.substr(patch_at, patch_end - patch_at);
+    CHECK(patch_body.find("this.spec.refSection") != std::string::npos);
+    CHECK(patch_body.find("copy.provider=newName") != std::string::npos);
+
+    CHECK(html.find("this.save(renamedFrom?this.refPatch(renamedFrom,name):null,selectInto)") !=
+          std::string::npos);
+}
+
+// The [tts]/[stt] provider select offers configured record names plus an add
+// shortcut, matching [model]. A bare provider type already in agent.toml is kept
+// as an option so a pre-records config still round-trips instead of silently
+// losing its provider.
+TEST_CASE("config web offers voice record names in the provider select") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const size_t inject_at = html.find("function injectVoiceProviderOptions(spec)");
+    REQUIRE(inject_at != std::string::npos);
+    const size_t inject_end = html.find("\\n\"", inject_at);
+    REQUIRE(inject_end != std::string::npos);
+    const std::string inject_body = html.substr(inject_at, inject_end - inject_at);
+
+    CHECK(inject_body.find("voiceRecordOptions(manager.records)") != std::string::npos);
+    CHECK(inject_body.find("label:'-- Select Provider --'") != std::string::npos);
+    CHECK(inject_body.find("value:ADD_PROVIDER_OPTION,label:'+ Add Provider...'") != std::string::npos);
+    // An unknown current value is preserved as an option.
+    CHECK(inject_body.find("!known[current]") != std::string::npos);
+
+    // Choosing the add shortcut must not be saved as the provider: it has to
+    // restore the previous value and open the dialog.
+    CHECK(html.find("function bindVoiceProviderSelect(spec)") != std::string::npos);
+    CHECK(html.find("restoreVoiceProviderValue(spec)") != std::string::npos);
+    CHECK(html.find("manager.addRecord({selectIntoRef:true})") != std::string::npos);
+
+    // Localized labels for the two new cards.
+    CHECK(html.find("'TTS Providers':'") != std::string::npos);
+    CHECK(html.find("'STT Providers':'") != std::string::npos);
 }

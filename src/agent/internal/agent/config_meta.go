@@ -165,12 +165,58 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "model_max_output_tokens", Widget: WidgetNumber, Default: defaults.Model.ModelMaxOutputTokens},
 				},
 			},
+			// providers describes one [providers.<name>] record, the same shape
+			// [tts_providers] and [stt_providers] give voice. Each holds the
+			// credentials and settings for one LLM service, and [model] references
+			// one by putting the name in its own provider field. Several providers
+			// stay configured at once, so switching is a one-line change instead of
+			// a re-entry of keys.
+			//
+			// Every rule keys on providers.provider — the record's own type select.
+			{
+				Name: "providers",
+				Fields: []FieldMeta{
+					{Key: "provider", Widget: WidgetSelect,
+						Enum: enumOptions("openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake")},
+					{Key: "api_key", Widget: WidgetText, Secret: true},
+					// base_url is deliberately not scoped to a subset: ollama and
+					// openai need it, but users also set it for kimi-cn proxies and
+					// openrouter-with-custom-endpoint. The agent validates it is
+					// empty for providers where the backend has no support for it.
+					{Key: "base_url", Widget: WidgetText},
+				},
+			},
+			// [tts] keeps only the provider reference and the settings that are
+			// genuinely global. Everything that stops meaning anything when the
+			// provider changes lives on the record instead -- see tts_providers.
+			//
+			// The provider enum here is the legacy bare-type list, which is what
+			// a pre-records config carries. The UI replaces these options with
+			// the configured record names at runtime.
 			{
 				Name: "tts",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
 						Enum:    enumOptions("minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter", "google-cloud"),
 						Default: defaults.TTS.Provider},
+					// speed is a listening preference, not a credential: it must
+					// not change when the voice changes, so it stays global.
+					{Key: "speed", Widget: WidgetSelect, Default: defaults.TTS.Speed,
+						Range: &Range{Min: 0.5, Max: 2, Step: 0.1, Precision: 1}},
+				},
+			},
+			// tts_providers describes one [tts_providers.<name>] record. The
+			// provider dialog renders straight from this, so provider knowledge
+			// stays here rather than being hardcoded per dialog in JS.
+			//
+			// Every rule keys on tts_providers.provider -- the record's own type
+			// select. Keying on tts.provider would compare against a record NAME
+			// and never match, which would show every field for every type.
+			{
+				Name: "tts_providers",
+				Fields: []FieldMeta{
+					{Key: "provider", Widget: WidgetSelect,
+						Enum: enumOptions("minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter", "google-cloud")},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "model", Widget: WidgetText,
 						Enum: []EnumOption{
@@ -184,40 +230,41 @@ func ConfigMeta() ConfigMetadata {
 							{Value: "microsoft/mai-voice-2", Label: "Microsoft MAI Voice 2", Providers: []string{"openrouter"}},
 						},
 						PlaceholderWhen: []ConditionalPlaceholder{
-							placeholderWhen("speech-2.8-hd", in("tts.provider", "minimax", "minimax-cn")),
-							placeholderWhen("s2-pro", in("tts.provider", "fish-audio")),
-							placeholderWhen("qwen-tts-realtime", in("tts.provider", "alicloud")),
-							placeholderWhen("seed-tts-2.0", in("tts.provider", "volcengine")),
-							placeholderWhen("google/gemini-3.1-flash-tts-preview", in("tts.provider", "openrouter")),
+							placeholderWhen("speech-2.8-hd", in("tts_providers.provider", "minimax", "minimax-cn")),
+							placeholderWhen("s2-pro", in("tts_providers.provider", "fish-audio")),
+							placeholderWhen("qwen-tts-realtime", in("tts_providers.provider", "alicloud")),
+							placeholderWhen("seed-tts-2.0", in("tts_providers.provider", "volcengine")),
+							placeholderWhen("google/gemini-3.1-flash-tts-preview", in("tts_providers.provider", "openrouter")),
 						},
-						SelectWhen:  all(in("tts.provider", "openrouter")),
-						VisibleWhen: all(in("tts.provider", "minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter"))},
+						SelectWhen:  all(in("tts_providers.provider", "openrouter")),
+						VisibleWhen: all(in("tts_providers.provider", "minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter"))},
 					{Key: "voice_id", Widget: WidgetText, Default: defaults.TTS.VoiceID,
 						PlaceholderWhen: []ConditionalPlaceholder{
-							placeholderWhen("Kore", eq("tts.provider", "openrouter"), eq("tts.model", "google/gemini-3.1-flash-tts-preview")),
-							placeholderWhen("af_heart", eq("tts.provider", "openrouter"), eq("tts.model", "hexgrad/kokoro-82m")),
-							placeholderWhen("en-US-AndrewMultilingualNeural", eq("tts.provider", "openrouter"), eq("tts.model", "microsoft/mai-voice-2")),
-							placeholderWhen("alloy", in("tts.provider", "openrouter")),
-							placeholderWhen("male-qn-qingse", in("tts.provider", "minimax", "minimax-cn")),
-							placeholderWhen("Cherry", in("tts.provider", "alicloud")),
-							placeholderWhen("zh_female_vv_uranus_bigtts", in("tts.provider", "volcengine")),
-							placeholderWhen("en-US-Neural2-C", in("tts.provider", "google-cloud")),
+							placeholderWhen("Kore", eq("tts_providers.provider", "openrouter"), eq("tts_providers.model", "google/gemini-3.1-flash-tts-preview")),
+							placeholderWhen("af_heart", eq("tts_providers.provider", "openrouter"), eq("tts_providers.model", "hexgrad/kokoro-82m")),
+							placeholderWhen("en-US-AndrewMultilingualNeural", eq("tts_providers.provider", "openrouter"), eq("tts_providers.model", "microsoft/mai-voice-2")),
+							placeholderWhen("alloy", in("tts_providers.provider", "openrouter")),
+							placeholderWhen("male-qn-qingse", in("tts_providers.provider", "minimax", "minimax-cn")),
+							placeholderWhen("Cherry", in("tts_providers.provider", "alicloud")),
+							placeholderWhen("zh_female_vv_uranus_bigtts", in("tts_providers.provider", "volcengine")),
+							placeholderWhen("en-US-Neural2-C", in("tts_providers.provider", "google-cloud")),
 						},
-						VisibleWhen: all(in("tts.provider", "minimax", "minimax-cn", "alicloud", "volcengine", "openrouter", "google-cloud"))},
+						VisibleWhen: all(in("tts_providers.provider", "minimax", "minimax-cn", "alicloud", "volcengine", "openrouter", "google-cloud"))},
 					{Key: "reference_id", Widget: WidgetText,
 						PlaceholderWhen: []ConditionalPlaceholder{
-							placeholderWhen(tts.DefaultFishAudioReferenceID, in("tts.provider", "fish-audio")),
+							placeholderWhen(tts.DefaultFishAudioReferenceID, in("tts_providers.provider", "fish-audio")),
 						},
-						VisibleWhen: all(in("tts.provider", "fish-audio"))},
+						VisibleWhen: all(in("tts_providers.provider", "fish-audio"))},
 					{Key: "emotion", Widget: WidgetText, Default: defaults.TTS.Emotion,
 						PlaceholderWhen: []ConditionalPlaceholder{
-							placeholderWhen("happy", in("tts.provider", "minimax", "minimax-cn")),
+							placeholderWhen("happy", in("tts_providers.provider", "minimax", "minimax-cn")),
 						},
-						VisibleWhen: all(in("tts.provider", "minimax", "minimax-cn", "volcengine"))},
-					{Key: "speed", Widget: WidgetSelect, Default: defaults.TTS.Speed,
-						Range: &Range{Min: 0.5, Max: 2, Step: 0.1, Precision: 1}},
+						VisibleWhen: all(in("tts_providers.provider", "minimax", "minimax-cn", "volcengine"))},
 				},
 			},
+			// [stt] keeps the provider reference and language. language is a user
+			// preference that holds regardless of which provider transcribes, so
+			// unlike the credential set it does not belong on a record.
 			{
 				Name: "stt",
 				Fields: []FieldMeta{
@@ -227,8 +274,17 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "language", Widget: WidgetSelect,
 						Enum:    []EnumOption{{Value: "zh", Label: "中文"}, {Value: "en", Label: "English"}},
 						Default: defaults.STT.Language},
+				},
+			},
+			// stt_providers describes one [stt_providers.<name>] record. Same
+			// contract as tts_providers: every rule keys on the record's own type.
+			{
+				Name: "stt_providers",
+				Fields: []FieldMeta{
+					{Key: "provider", Widget: WidgetSelect,
+						Enum: enumOptions("openai-whisper", tencentASRProvider, "openrouter", "qwen-asr", "google-cloud")},
 					{Key: "api_key", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(in("stt.provider", "openai-whisper", "openrouter", "qwen-asr", "google-cloud"))},
+						VisibleWhen: all(in("stt_providers.provider", "openai-whisper", "openrouter", "qwen-asr", "google-cloud"))},
 					{Key: "model", Widget: WidgetSelect,
 						Enum: []EnumOption{
 							{Value: "openai/whisper-large-v3-turbo", Label: "OpenAI Whisper v3 Turbo"},
@@ -243,19 +299,19 @@ func ConfigMeta() ConfigMetadata {
 							{Value: "google/chirp-3", Label: "Google Chirp 3"},
 						},
 						Default:     defaults.STT.Model,
-						VisibleWhen: all(in("stt.provider", "openrouter"))},
+						VisibleWhen: all(in("stt_providers.provider", "openrouter"))},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(in("stt.provider", "openai-whisper"))},
+						VisibleWhen: all(in("stt_providers.provider", "openai-whisper"))},
 					{Key: "app_id", Widget: WidgetText, Default: "",
-						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
 					{Key: "secret_id", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
 					{Key: "secret_key", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
 					{Key: "region", Widget: WidgetText, Default: defaultTencentASRRegion,
-						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
 					{Key: "engine_model_type", Widget: WidgetText,
-						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
 				},
 			},
 			{

@@ -271,7 +271,9 @@ type Provider struct {
 }
 
 type Config struct {
-	Providers                  map[string]Provider      `toml:"providers,omitempty"` // Named provider configurations
+	Providers                  map[string]Provider      `toml:"providers,omitempty"`     // Named model provider configurations
+	TTSProviders               map[string]TTSProvider   `toml:"tts_providers,omitempty"` // Named TTS provider configurations
+	STTProviders               map[string]STTProvider   `toml:"stt_providers,omitempty"` // Named STT provider configurations
 	Model                      ModelConfig              `toml:"model"`
 	ModelText                  ModelConfig              `toml:"model_text,omitempty"` // Override for STT-then-text mode
 	TTS                        TTSConfig                `toml:"tts,omitempty"`
@@ -366,6 +368,18 @@ type TTSConfig struct {
 	Emotion     string  `toml:"emotion,omitempty"`
 	Speed       float64 `toml:"speed,omitempty"`
 	ReferenceID string  `toml:"reference_id,omitempty"` // Fish Audio voice reference ID
+
+	// ActiveProviderRecord is runtime-only: it records which
+	// [tts_providers.<name>] record Provider referred to before resolution
+	// replaced the reference with the provider TYPE.
+	//
+	// Without it the two resolution steps disagree. Load time resolves the
+	// reference and rewrites Provider to the type; speak time re-resolves by
+	// type, and with two records of the same type (two accounts of one service,
+	// the whole point of named records) the type scan can return the other one.
+	// The result is speaking with the wrong account's key while the config page
+	// shows the right record selected.
+	ActiveProviderRecord string `toml:"-"`
 
 	// Credentials lets you store per-provider settings so the app can switch
 	// providers at runtime without losing each one's API key/voice. Keys are
@@ -765,6 +779,19 @@ func LoadRuntimeConfig(path string) (Config, error) {
 
 	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
 
+	// Upgrade the legacy voice shapes to named records. This must run after the
+	// defaults pass above -- that pass zeroes [tts]/[stt] when the file declares
+	// no provider, and migrating first would mint a record out of DefaultConfig
+	// for a device that never configured voice at all.
+	migrateLegacyVoiceProviders(&cfg, metadata)
+
+	// Expand the voice provider references. Neither call fails: voice is
+	// optional at runtime (a TTS init failure is a warning and the agent still
+	// starts), so a stale reference must not stop the device from booting. The
+	// config page runs Config.ValidateVoiceProviders on save for strict checks.
+	resolveTTSProvider(&cfg)
+	resolveSTTProvider(&cfg)
+
 	// Apply provider references to model configurations. This must run before
 	// the base_url whitelist below: until the reference is expanded, Provider
 	// still holds a [providers] section name rather than a provider type, so
@@ -930,7 +957,14 @@ func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 	if !metadata.IsDefined("tts", "provider") || strings.TrimSpace(cfg.TTS.Provider) == "" {
 		cfg.TTS = TTSConfig{}
 	} else {
-		cfg.TTS.Provider = normalizeTTSProvider(cfg.TTS.Provider)
+		// Normalizing lowercases, so it must not touch a [tts_providers] record
+		// name: record names come from the config page and may carry capitals,
+		// and a lowercased name would stop matching its own record. Bare
+		// provider types still normalize, which is what folds the minimax-ws
+		// alias. resolveTTSProvider normalizes the resolved type afterwards.
+		if _, isRef := cfg.TTSProviders[strings.TrimSpace(cfg.TTS.Provider)]; !isRef {
+			cfg.TTS.Provider = normalizeTTSProvider(cfg.TTS.Provider)
+		}
 		if cfg.TTS.Provider != defaultTTSProvider {
 			clearDefaultTTSProviderFields(cfg, metadata)
 		}
@@ -1001,13 +1035,25 @@ func LoadResolvedConfig(path string) (Config, error) {
 	}
 
 	cfg := DefaultConfig()
+	var metadata toml.MetaData
 	if exists {
-		if _, err = decodeConfigFile(resolvedPath, &cfg); err != nil {
+		if metadata, err = decodeConfigFile(resolvedPath, &cfg); err != nil {
 			return Config{}, err
 		}
 	}
 
 	applyRuntimeInstructionDefault(&cfg)
+
+	// Upgrade the legacy voice shapes to named records. This backs
+	// `agent config --format=json`, which is what the config page reads through,
+	// so it has to run here as well as in LoadRuntimeConfig: without it a legacy
+	// config reaches the page as flat fields with no record, leaving the key
+	// invisible and un-editable -- and since the wire DTO has no field for
+	// [tts.credentials.*], the next save would drop the block entirely.
+	//
+	// References are deliberately NOT resolved here. The page edits the
+	// reference, so it must come back as the name it wrote.
+	migrateLegacyVoiceProviders(&cfg, metadata)
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
