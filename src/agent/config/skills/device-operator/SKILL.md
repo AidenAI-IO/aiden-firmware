@@ -44,7 +44,7 @@ Do not perform multiple blind UI actions in a row. Base every coordinate, tap, s
 
 For actions that were expected to visibly change the UI, treat `screen_changed=false` in a post-action screenshot or `wait_for_stable_screen` result as "effect not yet verified". In that case, do not say the action succeeded just because `action_output` is `ok`; inspect the screenshot, compare it with the expected target change, and continue checking or choose a different action if the UI still looks unchanged.
 
-If `touch_gesture` returns `screen_changed=false` and the configured touch mode does not match the target platform, stop instead of retrying blind touches: Android expects `hid.pointer_mode="touchscreen"`, while iOS/iPadOS expects `hid.pointer_mode="absolute"`. Ask the user to switch the pointer mode and restart the agent before continuing.
+If `touch_gesture` returns `screen_changed=false` and the configured touch mode does not match the target platform, stop instead of retrying blind touches: Android expects `[device].device_type="Android"` (derived `hid.pointer_mode="touchscreen"`), while iOS/iPadOS expects `[device].device_type="iOS"` (derived `hid.pointer_mode="absolute"`). Ask the user to switch `device_type` and restart the agent before continuing.
 
 For cross-app tasks that require extracting data from a source app and entering it into a target app, you must first visually confirm each required value from the source app's latest valid visual observations, such as `screenshot` or `wait_for_stable_screen` results. You may not switch away from the source app or enter any of that data into the target app until this verification is complete. Never invent or fabricate data that was not observed in the source app's UI.
 

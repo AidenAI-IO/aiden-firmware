@@ -72,7 +72,7 @@ func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...Bu
 		defaultOptions = append(defaultOptions, WithRunScriptScriptsDir(filepath.Join(cfg.ConfigDir, "scripts")))
 	}
 	options = append(defaultOptions, options...)
-	return newHardwareToolSet(cfg.HID, cfg.Audio, cfg.Search, proxyCfg, options...)
+	return newHardwareToolSet(cfg.HIDConfigForDevice(), cfg.Audio, cfg.Search, proxyCfg, options...)
 }
 
 var scriptCallableToolNames = map[string]struct{}{

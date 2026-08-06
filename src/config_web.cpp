@@ -386,6 +386,48 @@ std::string normalize_pointer_mode(const std::string& value) {
     return mode.empty() ? "absolute" : mode;
 }
 
+std::string normalize_device_type(const std::string& value) {
+    std::string device_type = trim_copy(value);
+    for (size_t i = 0; i < device_type.size(); ++i) {
+        device_type[i] = static_cast<char>(tolower(static_cast<unsigned char>(device_type[i])));
+    }
+    if (device_type.empty() || device_type == "ios") return "iOS";
+    if (device_type == "android") return "Android";
+    if (device_type == "macos" || device_type == "mac" || device_type == "darwin") return "macOS";
+    if (device_type == "windows" || device_type == "win") return "windows";
+    if (device_type == "linux") return "linux";
+    return device_type;
+}
+
+std::string pointer_mode_for_device_type(const std::string& device_type) {
+    return normalize_device_type(device_type) == "Android" ? "touchscreen" : "absolute";
+}
+
+std::string device_type_from_platform(const std::string& value) {
+    std::string platform = trim_copy(value);
+    for (size_t i = 0; i < platform.size(); ++i) {
+        platform[i] = static_cast<char>(tolower(static_cast<unsigned char>(platform[i])));
+    }
+    if (platform == "ios" || platform == "iphone" || platform == "ipad" || platform == "ipados") return "iOS";
+    if (platform == "android") return "Android";
+    if (platform == "macos" || platform == "mac" || platform == "darwin") return "macOS";
+    if (platform == "windows" || platform == "win") return "windows";
+    if (platform == "linux") return "linux";
+    return "";
+}
+
+std::string effective_device_type(const aiden::AgentToml& config) {
+    std::string configured = trim_copy(config.device.device_type);
+    if (!configured.empty()) {
+        return normalize_device_type(configured);
+    }
+    std::string platform_device_type = device_type_from_platform(config.default_platform);
+    if (!platform_device_type.empty()) {
+        return platform_device_type;
+    }
+    return normalize_pointer_mode(config.hid.pointer_mode) == "touchscreen" ? "Android" : "iOS";
+}
+
 std::string normalize_input_backend(const std::string& value) {
     std::string backend = trim_copy(value);
     for (size_t i = 0; i < backend.size(); ++i) {
@@ -742,12 +784,13 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"voice_notifications", "expiration", CONFIG_FIELD_OBJECT},
         {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
         {"ota", "github_proxy_url", CONFIG_FIELD_STRING},
+        {"device", "backend", CONFIG_FIELD_STRING},
+        {"device", "device_type", CONFIG_FIELD_STRING},
         {"hid", "keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "keyboard_layout", CONFIG_FIELD_STRING},
         {"hid", "mouse_device", CONFIG_FIELD_STRING},
         {"hid", "android_keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "frame_socket", CONFIG_FIELD_STRING},
-        {"hid", "pointer_mode", CONFIG_FIELD_STRING},
         {"hid", "input_backend", CONFIG_FIELD_STRING},
         {"search", "provider", CONFIG_FIELD_STRING},
         {"search", "api_key", CONFIG_FIELD_STRING},
@@ -1635,7 +1678,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model", "model_text", "tts", "stt", "audio", "audio_archive", "voice_notifications",
-        "log", "ota", "hid", "search", "telemetry", "termination_policy",
+        "log", "ota", "device", "hid", "search", "telemetry", "termination_policy",
         "live_activity", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
@@ -2526,6 +2569,10 @@ void load_current_wifi_config(const Options& options,
 cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = false) {
     cJSON* root = cJSON_CreateObject();
 
+    cJSON* device = add_object(root, "device");
+    cJSON_AddStringToObject(device, "backend", config.device.backend.c_str());
+    cJSON_AddStringToObject(device, "device_type", effective_device_type(config).c_str());
+
     cJSON* model = add_object(root, "model");
     cJSON_AddStringToObject(model, "provider", config.model.provider.c_str());
     cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
@@ -2613,7 +2660,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
     cJSON_AddStringToObject(hid, "android_keyboard_device", config.hid.android_keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
-    cJSON_AddStringToObject(hid, "pointer_mode", normalize_pointer_mode(config.hid.pointer_mode).c_str());
     cJSON_AddStringToObject(hid, "input_backend", normalize_input_backend(config.hid.input_backend).c_str());
 
     cJSON* search = add_object(root, "search");
@@ -2963,6 +3009,12 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->ota.github_proxy_url, ota, "github_proxy_url");
     }
 
+    cJSON* device = cJSON_GetObjectItem(root, "device");
+    if (json_is_object(device)) {
+        set_json_str(&config->device.backend, device, "backend");
+        set_json_str(&config->device.device_type, device, "device_type");
+    }
+
     cJSON* hid = cJSON_GetObjectItem(root, "hid");
     if (json_is_object(hid)) {
         set_json_str(&config->hid.keyboard_device, hid, "keyboard_device");
@@ -2970,7 +3022,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->hid.mouse_device, hid, "mouse_device");
         set_json_str(&config->hid.android_keyboard_device, hid, "android_keyboard_device");
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");
-        set_json_str(&config->hid.pointer_mode, hid, "pointer_mode");
         set_json_str(&config->hid.input_backend, hid, "input_backend");
     }
 
@@ -3497,9 +3548,36 @@ bool schedule_ota_update(std::string* error) {
     return true;
 }
 
-void schedule_poweroff() {
-    int rc = system("(PATH=/sbin:/bin:/usr/sbin:/usr/bin; sync; sleep 1; poweroff) >/dev/null 2>&1 &");
-    (void)rc;
+bool schedule_reboot(std::string* error) {
+    CommandResult lookup = run_shell_command("PATH=/sbin:/bin:/usr/sbin:/usr/bin; command -v reboot >/dev/null 2>&1");
+    if (lookup.exit_code != 0) {
+        if (error) {
+            *error = "reboot command not found";
+        }
+        return false;
+    }
+
+    int rc = system("(PATH=/sbin:/bin:/usr/sbin:/usr/bin; sync; sleep 1; reboot) >/dev/null 2>&1 &");
+    if (rc == -1) {
+        if (error) {
+            *error = std::string("launch reboot command: ") + strerror(errno);
+        }
+        return false;
+    }
+    if (!WIFEXITED(rc) || WEXITSTATUS(rc) != 0) {
+        if (error) {
+            std::ostringstream msg;
+            msg << "launch reboot command failed";
+            if (WIFEXITED(rc)) {
+                msg << " (exit " << WEXITSTATUS(rc) << ")";
+            } else if (WIFSIGNALED(rc)) {
+                msg << " (signal " << WTERMSIG(rc) << ")";
+            }
+            *error = msg.str();
+        }
+        return false;
+    }
+    return true;
 }
 
 CommandResult apply_wifi_config(const Options& options, bool force_restart = false) {
@@ -5628,7 +5706,8 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     std::string ignore_error;
     load_current_agent_config(options, &config, &ignore_error);
     load_current_wifi_config(options, &wifi, &ignore_error);
-    std::string original_pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
+    std::string original_device_type = effective_device_type(config);
+    std::string original_pointer_mode = pointer_mode_for_device_type(original_device_type);
     std::string original_keyboard_layout = config.hid.keyboard_layout;
 
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
@@ -5667,7 +5746,8 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     }
 
     cJSON_Delete(root);
-    config.hid.pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
+    config.device.device_type = effective_device_type(config);
+    config.hid.pointer_mode = pointer_mode_for_device_type(config.device.device_type);
     config.hid.input_backend = normalize_input_backend(config.hid.input_backend);
     bool usbhid_restart_scheduled = original_pointer_mode != config.hid.pointer_mode;
     bool keyboard_layout_changed = original_keyboard_layout != config.hid.keyboard_layout;
@@ -5702,7 +5782,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON_AddBoolToObject(response, "ok", 1);
     cJSON_AddStringToObject(response, "message",
                             usbhid_restart_scheduled
-                                ? "config saved; reboot required for usb hid pointer_mode"
+                                ? "config saved; USB HID device_type configuration changed; reboot required"
                                 : (usb_reenumeration_scheduled
                                    ? "config saved; agent restarting and USB re-enumerating"
                                    : "config saved; agent restarting"));
@@ -5791,13 +5871,16 @@ ApiResponse handle_put_config_locale(const Options& options, const std::string& 
     return make_json_ok(response);
 }
 
-ApiResponse handle_post_poweroff() {
-    schedule_poweroff();
+ApiResponse handle_post_reboot() {
+    std::string error;
+    if (!schedule_reboot(&error)) {
+        return make_json_error(503, error.empty() ? "failed to schedule reboot" : error);
+    }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "message", "poweroff scheduled");
-    cJSON_AddBoolToObject(response, "poweroff_scheduled", 1);
+    cJSON_AddStringToObject(response, "message", "reboot scheduled");
+    cJSON_AddBoolToObject(response, "reboot_scheduled", 1);
     return make_json_ok(response);
 }
 
@@ -6433,9 +6516,30 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             all_passed = false;
         }
         cJSON_AddItemToArray(results, r);
+    } else if (section == "device") {
+        cJSON* device_type_item = cJSON_GetObjectItem(values, "device_type");
+        bool string_value = true;
+        std::string device_type = "iOS";
+        if (device_type_item != NULL) {
+            if (json_is_string(device_type_item)) {
+                device_type = normalize_device_type(device_type_item->valuestring);
+            } else {
+                string_value = false;
+            }
+        }
+        cJSON* r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "check", "device_type");
+        bool valid = string_value &&
+                     (device_type == "iOS" || device_type == "Android" || device_type == "macOS" ||
+                      device_type == "windows" || device_type == "linux");
+        cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
+        std::string detail = valid ? "effective pointer_mode: " + pointer_mode_for_device_type(device_type)
+                                   : (string_value ? "must be iOS, Android, macOS, windows, or linux"
+                                                   : "must be a string");
+        cJSON_AddStringToObject(r, "detail", detail.c_str());
+        if (!valid) all_passed = false;
+        cJSON_AddItemToArray(results, r);
     } else if (section == "hid") {
-        cJSON* pointer_item = cJSON_GetObjectItem(values, "pointer_mode");
-        std::string pointer_mode = json_is_string(pointer_item) ? normalize_pointer_mode(pointer_item->valuestring) : "absolute";
         cJSON* backend_item = cJSON_GetObjectItem(values, "input_backend");
         std::string input_backend = json_is_string(backend_item) ? normalize_input_backend(backend_item->valuestring) : "hid";
         const char* dev_keys[] = {"keyboard_device", "mouse_device", "android_keyboard_device", NULL};
@@ -6463,19 +6567,10 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             cJSON_AddItemToArray(results, r);
         }
         cJSON* r = cJSON_CreateObject();
-        cJSON_AddStringToObject(r, "check", "pointer_mode");
-        bool valid = pointer_mode == "absolute" || pointer_mode == "touchscreen";
-        cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
-        std::string detail = valid ? "effective mode: " + pointer_mode : "must be absolute or touchscreen";
-        cJSON_AddStringToObject(r, "detail", detail.c_str());
-        if (!valid) all_passed = false;
-        cJSON_AddItemToArray(results, r);
-
-        r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "input_backend");
-        valid = input_backend == "hid" || input_backend == "adb";
+        bool valid = input_backend == "hid" || input_backend == "adb";
         cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
-        detail = valid ? "effective backend: " + input_backend : "must be hid or adb";
+        std::string detail = valid ? "effective backend: " + input_backend : "must be hid or adb";
         cJSON_AddStringToObject(r, "detail", detail.c_str());
         if (!valid) all_passed = false;
         cJSON_AddItemToArray(results, r);
@@ -6871,8 +6966,8 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return handle_post_system_env(options, request.body);
     }
 
-    if (request.method == "POST" && request.path == "/api/poweroff") {
-        return handle_post_poweroff();
+    if (request.method == "POST" && request.path == "/api/reboot") {
+        return handle_post_reboot();
     }
 
     if (request.method == "POST" && request.path == "/api/wifi/scan") {
