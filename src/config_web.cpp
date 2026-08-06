@@ -1697,8 +1697,15 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
         return config_schema_error(error, "root", "object", root);
     }
 
+    if (cJSON_GetObjectItem(root, "providers")) {
+        if (error) {
+            *error = "agent config field providers is unsupported; use model_providers";
+        }
+        return false;
+    }
+
     const char* sections[] = {
-        "model_providers", "providers", "tts_providers", "stt_providers", "model",
+        "model_providers", "tts_providers", "stt_providers", "model",
         "tts", "stt", "audio", "audio_archive",
         "voice_notifications", "log", "ota", "device", "hid", "search", "telemetry",
         "termination_policy", "live_activity", "agent", NULL,
@@ -1717,7 +1724,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
     // not a bare TOML key -- accepting one here would produce a config that
     // loads cleanly but fails every later save.
     const char* provider_maps[] = {
-        "model_providers", "providers", "tts_providers", "stt_providers", NULL,
+        "model_providers", "tts_providers", "stt_providers", NULL,
     };
     for (int i = 0; provider_maps[i]; ++i) {
         cJSON* records = cJSON_GetObjectItem(root, provider_maps[i]);
@@ -3176,12 +3183,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     // api_key values ("sk-a***1234") can still resolve to the stored secret --
     // reading back from `config->model_providers` after clearing it would always
     // miss and silently wipe the key.
-    // The canonical map wins whenever both aliases are present, regardless of
-    // JSON object order.
     cJSON* model_providers = cJSON_GetObjectItem(root, "model_providers");
-    if (!model_providers) {
-        model_providers = cJSON_GetObjectItem(root, "providers");
-    }
     if (json_is_object(model_providers)) {
         const std::map<std::string, aiden::ModelProviderToml> previous_providers =
             config->model_providers;

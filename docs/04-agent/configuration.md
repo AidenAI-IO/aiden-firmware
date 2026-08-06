@@ -294,10 +294,10 @@ fill in any field the model section leaves empty — values set directly on
 provider, so the provider's value always applies. A `provider` that matches no section is treated as a
 provider type, so existing configs keep working unchanged.
 
-The legacy `[providers.<name>]` namespace and record-level `provider` field are
-accepted only when reading existing files. Saving always writes
-`[model_providers.<name>]` and `type`. If both old and canonical names are
-present, the canonical namespace and `type` field take precedence.
+Only the `[model_providers.<name>]` namespace is supported. The former
+`[providers.<name>]` namespace is rejected with an error. The record-level
+`provider` field is still accepted as a read-time alias for `type`; saving always
+writes `type`, and `type` wins when both fields are present.
 
 A `provider` that is neither a section name nor a known provider type is
 rejected at load, so a typo or a reference left behind after deleting a section

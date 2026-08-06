@@ -376,7 +376,7 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 	})
 }
 
-func TestConfigWire_ModelProviderCanonicalAndLegacyJSON(t *testing.T) {
+func TestConfigWire_ModelProviderCanonicalJSON(t *testing.T) {
 	t.Run("canonical payload uses model_providers and type", func(t *testing.T) {
 		payload := `{
 			"model_providers":{"work":{"type":"openai","api_key":"sk-x"}},
@@ -391,7 +391,7 @@ func TestConfigWire_ModelProviderCanonicalAndLegacyJSON(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy payload remains readable", func(t *testing.T) {
+	t.Run("legacy providers namespace is rejected", func(t *testing.T) {
 		payload := `{
 			"providers":{"work":{"provider":"openai","api_key":"sk-x"}},
 			"model":{"provider":"work","model":"gpt-4"},
@@ -399,15 +399,15 @@ func TestConfigWire_ModelProviderCanonicalAndLegacyJSON(t *testing.T) {
 			"agent":{},
 			"hid":{"pointer_mode":"absolute"}
 		}`
-		result := checkWire(t, payload)
-		if !result.Valid {
-			t.Fatalf("legacy payload rejected: %+v", result.Errors)
+		if _, err := checkConfig(strings.NewReader(payload)); err == nil {
+			t.Fatal("expected legacy providers namespace to fail decoding")
+		} else if !strings.Contains(err.Error(), "model_providers") {
+			t.Fatalf("unexpected decode error: %v", err)
 		}
 	})
 
-	t.Run("canonical namespace and type win over legacy values", func(t *testing.T) {
+	t.Run("canonical type wins over legacy record field", func(t *testing.T) {
 		payload := `{
-			"providers":{"work":{"provider":"ollama","base_url":"http://legacy.invalid"}},
 			"model_providers":{"work":{"type":"openai","provider":"kimi","api_key":"sk-canonical"}},
 			"model":{"provider":"work","model":"gpt-4"},
 			"search":{"provider":"duckduckgo"},
@@ -437,12 +437,9 @@ func TestConfigWire_ModelProviderCanonicalAndLegacyJSON(t *testing.T) {
 	})
 
 	t.Run("marshaled payload only uses canonical names", func(t *testing.T) {
-		var dto webConfigDTO
-		if err := json.Unmarshal([]byte(`{
-			"providers":{"work":{"provider":"openai","api_key":"sk-x"}},
-			"model":{"provider":"work","model":"gpt-4"}
-		}`), &dto); err != nil {
-			t.Fatalf("unmarshal legacy payload: %v", err)
+		dto := webConfigDTO{
+			ModelProviders: map[string]modelProviderDTO{"work": {Type: "openai", APIKey: "sk-x"}},
+			Model:          modelDTO{Provider: "work", Model: "gpt-4"},
 		}
 		encoded, err := json.Marshal(dto)
 		if err != nil {

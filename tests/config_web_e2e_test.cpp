@@ -1146,9 +1146,9 @@ TEST_CASE("config_web: POST /api/config writes named providers") {
     auto handle = start_server(env);
 
     const std::string body =
-        "{\"config\":{\"providers\":{"
-        "\"my-openai\":{\"provider\":\"openai\",\"api_key\":\"sk-plain-secret-1234\"},"
-        "\"my-ollama\":{\"provider\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
+        "{\"config\":{\"model_providers\":{"
+        "\"my-openai\":{\"type\":\"openai\",\"api_key\":\"sk-plain-secret-1234\"},"
+        "\"my-ollama\":{\"type\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
         "\"model\":{\"provider\":\"my-openai\",\"model\":\"x\"},"
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
@@ -1189,29 +1189,17 @@ TEST_CASE("config_web: POST /api/config writes canonical provider maps and type 
     CHECK(saved.find("[providers.") == std::string::npos);
 }
 
-TEST_CASE("config_web: canonical provider aliases win in POST patches") {
+TEST_CASE("config_web: POST /api/config rejects the legacy providers namespace") {
     StubEnv env;
     auto handle = start_server(env);
 
     const std::string body =
         "{\"config\":{"
-        "\"providers\":{\"legacy\":{\"provider\":\"ollama\"}},"
-        "\"model_providers\":{\"canonical\":{\"provider\":\"kimi\",\"type\":\"openai\"}},"
-        "\"tts_providers\":{\"voice\":{\"provider\":\"minimax\",\"type\":\"fish-audio\"}},"
-        "\"stt_providers\":{\"transcriber\":{\"provider\":\"tencent-asr\",\"type\":\"openai-whisper\"}},"
-        "\"model\":{\"provider\":\"canonical\",\"model\":\"x\"},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
-        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+        "\"providers\":{\"legacy\":{\"provider\":\"ollama\"}}},"
+        "\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
-    REQUIRE(resp.status == 200);
-
-    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("[model_providers.canonical]") != std::string::npos);
-    CHECK(saved.find("type = \"openai\"") != std::string::npos);
-    CHECK(saved.find("type = \"fish-audio\"") != std::string::npos);
-    CHECK(saved.find("type = \"openai-whisper\"") != std::string::npos);
-    CHECK(saved.find("legacy") == std::string::npos);
-    CHECK(saved.find("type = \"kimi\"") == std::string::npos);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("model_providers") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config writes a provider token_env without an api_key") {
@@ -1222,8 +1210,8 @@ TEST_CASE("config_web: POST /api/config writes a provider token_env without an a
     auto handle = start_server(env);
 
     const std::string body =
-        "{\"config\":{\"providers\":{"
-        "\"my-openai\":{\"provider\":\"openai\",\"api_key\":\"\",\"token_env\":\"OPENAI_API_KEY\"}},"
+        "{\"config\":{\"model_providers\":{"
+        "\"my-openai\":{\"type\":\"openai\",\"api_key\":\"\",\"token_env\":\"OPENAI_API_KEY\"}},"
         "\"model\":{\"provider\":\"my-openai\",\"model\":\"x\"},"
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
@@ -1243,7 +1231,7 @@ TEST_CASE("config_web: GET /api/config reports a provider token_env") {
     StubEnv env;
     const std::string tmp = make_temp_dir();
     write_file(tmp + "/config.json",
-               "{\"providers\":{\"env-openai\":{\"provider\":\"openai\",\"api_key\":\"\","
+               "{\"model_providers\":{\"env-openai\":{\"type\":\"openai\",\"api_key\":\"\","
                "\"token_env\":\"OPENAI_API_KEY\"}},"
                "\"model\":{\"provider\":\"env-openai\",\"api_key\":\"\",\"model\":\"gpt-4o\","
                "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
@@ -1266,16 +1254,16 @@ TEST_CASE("config_web: POST /api/config renames a provider with its model refere
     auto handle = start_server(env);
 
     const std::string create =
-        "{\"config\":{\"providers\":{"
-        "\"openai\":{\"provider\":\"openai\",\"api_key\":\"sk-plain-secret-1234\"}},"
+        "{\"config\":{\"model_providers\":{"
+        "\"openai\":{\"type\":\"openai\",\"api_key\":\"sk-plain-secret-1234\"}},"
         "\"model\":{\"provider\":\"openai\",\"model\":\"x\"},"
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     CHECK(http_request(handle->port, "POST", "/api/config", create).status == 200);
 
     const std::string rename =
-        "{\"config\":{\"providers\":{"
-        "\"openai-work\":{\"provider\":\"openai\",\"api_key\":\"sk-plain-secret-1234\"}},"
+        "{\"config\":{\"model_providers\":{"
+        "\"openai-work\":{\"type\":\"openai\",\"api_key\":\"sk-plain-secret-1234\"}},"
         "\"model\":{\"provider\":\"openai-work\",\"model\":\"x\"}},\"apply_wifi\":false}";
     CHECK(http_request(handle->port, "POST", "/api/config", rename).status == 200);
 
@@ -1301,7 +1289,7 @@ TEST_CASE("config_web: POST /api/config drops named provider base_url for types 
 
         const std::string base_url = "https://gateway.example.com/v1";
         const std::string body =
-            "{\"config\":{\"providers\":{\"named-" + std::string(type) + "\":{\"provider\":\"" +
+            "{\"config\":{\"model_providers\":{\"named-" + std::string(type) + "\":{\"type\":\"" +
             type + "\",\"api_key\":\"k\",\"base_url\":\"" + base_url + "\"}},"
             "\"hid\":{\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
         HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
@@ -1329,7 +1317,7 @@ TEST_CASE("config_web: POST /api/config keeps named provider base_url for types 
         auto handle = start_server(env);
 
         const std::string body =
-            "{\"config\":{\"providers\":{\"named-" + std::string(c.type) + "\":{\"provider\":\"" +
+            "{\"config\":{\"model_providers\":{\"named-" + std::string(c.type) + "\":{\"type\":\"" +
             c.type + "\",\"api_key\":\"k\",\"base_url\":\"" + c.base_url + "\"}},"
             "\"hid\":{\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
         HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
@@ -1490,8 +1478,8 @@ TEST_CASE("config_web: POST /api/config keeps the stored provider api_key when m
     auto handle = start_server(env);
 
     const std::string body =
-        "{\"config\":{\"providers\":{"
-        "\"stub-openai\":{\"provider\":\"openai\",\"api_key\":\"sk-s***1234\"}},"
+        "{\"config\":{\"model_providers\":{"
+        "\"stub-openai\":{\"type\":\"openai\",\"api_key\":\"sk-s***1234\"}},"
         "\"hid\":{\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     REQUIRE(resp.status == 200);
@@ -1595,11 +1583,11 @@ TEST_CASE("config_web: POST /api/config keeps a submitted api_key that contains 
     auto handle = start_server(env);
 
     const std::string body =
-        "{\"config\":{\"providers\":{"
+        "{\"config\":{\"model_providers\":{"
         // Same provider as the stored one, but not its mask: must be written.
-        "\"stub-openai\":{\"provider\":\"openai\",\"api_key\":\"sk-a***b-real-key\"},"
+        "\"stub-openai\":{\"type\":\"openai\",\"api_key\":\"sk-a***b-real-key\"},"
         // Provider the previous config never had: the submitted key must survive.
-        "\"brand-new\":{\"provider\":\"openai\",\"api_key\":\"sk-n***w-other-key\"}},"
+        "\"brand-new\":{\"type\":\"openai\",\"api_key\":\"sk-n***w-other-key\"}},"
         "\"hid\":{\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     REQUIRE(resp.status == 200);
@@ -1622,7 +1610,7 @@ TEST_CASE("config_web: POST /api/config rejects an empty model provider") {
     const std::string before = read_file(handle->tmp_dir + "/agent.toml");
 
     const std::string body =
-        "{\"config\":{\"providers\":{},"
+        "{\"config\":{\"model_providers\":{},"
         "\"model\":{\"provider\":\"\",\"model\":\"x\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
@@ -1633,7 +1621,7 @@ TEST_CASE("config_web: POST /api/config rejects an empty model provider") {
     CHECK(read_file(handle->tmp_dir + "/agent.toml") == before);
 }
 
-TEST_CASE("config_web: POST /api/config rejects a malformed providers section") {
+TEST_CASE("config_web: POST /api/config rejects a malformed model_providers section") {
     StubEnv env;
     auto handle = start_server(env);
 
@@ -1642,14 +1630,14 @@ TEST_CASE("config_web: POST /api/config rejects a malformed providers section") 
         const char* expected_fragment;
     };
     const Case cases[] = {
-        {"\"not-an-object\"", "providers"},
-        {"{\"x\":\"not-an-object\"}", "providers.x"},
-        {"{\"bad name!\":{\"provider\":\"openai\"}}", "bad name!"},
+        {"\"not-an-object\"", "model_providers"},
+        {"{\"x\":\"not-an-object\"}", "model_providers.x"},
+        {"{\"bad name!\":{\"type\":\"openai\"}}", "bad name!"},
     };
 
     for (const Case& c : cases) {
         const std::string body =
-            std::string("{\"config\":{\"providers\":") + c.providers +
+            std::string("{\"config\":{\"model_providers\":") + c.providers +
             "},\"apply_wifi\":false}";
         HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
         CHECK_MESSAGE(resp.status == 400, c.providers);

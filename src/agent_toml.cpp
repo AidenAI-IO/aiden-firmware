@@ -516,10 +516,8 @@ void apply_kv(AgentToml& cfg,
         else if (key == "region") assign_string(&record.region, raw, &sub_err);
         else if (key == "engine_model_type") assign_string(&record.engine_model_type, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
-    } else if (section.find("model_providers.") == 0 || section.find("providers.") == 0) {
-        const bool legacy_section = section.find("providers.") == 0;
-        const char* prefix = legacy_section ? "providers." : "model_providers.";
-        std::string provider_name = section.substr(std::strlen(prefix));
+    } else if (section.find("model_providers.") == 0) {
+        std::string provider_name = section.substr(16); // Skip "model_providers."
         // Reject here what save_agent_toml would refuse to write. Accepting a
         // name that cannot be serialized back would make every later save fail
         // with "invalid provider name" on a config that loaded cleanly.
@@ -711,9 +709,7 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
     bool model_max_response_tokens_seen = false;
     std::vector<LegacyModelMaxTokens> legacy_model_max_tokens;
     AgentToml canonical_model_providers;
-    AgentToml legacy_model_providers;
     bool canonical_model_providers_seen = false;
-    bool legacy_model_providers_seen = false;
     std::vector<CanonicalProviderType> canonical_provider_types;
 
     while (std::getline(in, line)) {
@@ -732,8 +728,12 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
             section = trim(t.substr(1, close - 1));
             if (section.find("model_providers.") == 0) {
                 canonical_model_providers_seen = true;
-            } else if (section.find("providers.") == 0) {
-                legacy_model_providers_seen = true;
+            } else if (section == "providers" || section.find("providers.") == 0) {
+                if (error) {
+                    *error = "line " + std::to_string(lineno)
+                        + ": [providers] is unsupported; use [model_providers]";
+                }
+                return false;
             }
             continue;
         }
@@ -785,8 +785,6 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
         AgentToml* apply_target = &cfg;
         if (section.find("model_providers.") == 0) {
             apply_target = &canonical_model_providers;
-        } else if (section.find("providers.") == 0) {
-            apply_target = &legacy_model_providers;
         }
 
         std::string apply_err;
@@ -795,7 +793,6 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
             parse_error = "line " + std::to_string(lineno) + ": " + apply_err;
         } else if (key == "type" &&
                    (section.find("model_providers.") == 0 ||
-                    section.find("providers.") == 0 ||
                     section.find("tts_providers.") == 0 ||
                     section.find("stt_providers.") == 0)) {
             canonical_provider_types.push_back(CanonicalProviderType(section, value, lineno));
@@ -809,8 +806,6 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
             AgentToml* apply_target = &cfg;
             if (canonical.section.find("model_providers.") == 0) {
                 apply_target = &canonical_model_providers;
-            } else if (canonical.section.find("providers.") == 0) {
-                apply_target = &legacy_model_providers;
             }
 
             std::string apply_error;
@@ -822,18 +817,8 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
         }
     }
 
-    if (parse_error.empty() &&
-        (canonical_model_providers_seen || legacy_model_providers_seen)) {
-        std::map<std::string, ModelProviderToml> merged;
-        if (legacy_model_providers_seen) {
-            merged = legacy_model_providers.model_providers;
-        }
-        if (canonical_model_providers_seen) {
-            for (const auto& item : canonical_model_providers.model_providers) {
-                merged[item.first] = item.second;
-            }
-        }
-        cfg.model_providers = merged;
+    if (parse_error.empty() && canonical_model_providers_seen) {
+        cfg.model_providers = canonical_model_providers.model_providers;
     }
 
     if (parse_error.empty()) {

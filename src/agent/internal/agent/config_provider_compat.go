@@ -2,8 +2,6 @@ package agent
 
 import (
 	"fmt"
-
-	"github.com/BurntSushi/toml"
 )
 
 // UnmarshalTOML accepts the former provider field while keeping type as the
@@ -107,28 +105,4 @@ func providerRecordString(fields map[string]any, key string) (string, error) {
 		return "", fmt.Errorf("provider record field %q must be a string", key)
 	}
 	return text, nil
-}
-
-// mergeLegacyModelProviders reads the former [providers] namespace. Canonical
-// [model_providers] records win on name collisions, while legacy-only records
-// remain available during migration.
-func mergeLegacyModelProviders(path string, cfg *Config) error {
-	var legacy struct {
-		Providers map[string]ModelProvider `toml:"providers"`
-	}
-	if _, err := toml.DecodeFile(path, &legacy); err != nil {
-		return fmt.Errorf("decode legacy model providers: %w", err)
-	}
-	if len(legacy.Providers) == 0 {
-		return nil
-	}
-	if cfg.ModelProviders == nil {
-		cfg.ModelProviders = make(map[string]ModelProvider, len(legacy.Providers))
-	}
-	for name, provider := range legacy.Providers {
-		if _, canonical := cfg.ModelProviders[name]; !canonical {
-			cfg.ModelProviders[name] = provider
-		}
-	}
-	return nil
 }

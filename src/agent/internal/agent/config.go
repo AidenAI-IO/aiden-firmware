@@ -1175,8 +1175,8 @@ func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 		if metadata, err = toml.DecodeFile(path, cfg); err != nil {
 			return toml.MetaData{}, fmt.Errorf("decode TOML config: %w", err)
 		}
-		if err := mergeLegacyModelProviders(path, cfg); err != nil {
-			return toml.MetaData{}, err
+		if metadata.IsDefined("providers") {
+			return toml.MetaData{}, errors.New("[providers] is unsupported; use [model_providers]")
 		}
 	} else {
 		_, err := os.Stat(path)

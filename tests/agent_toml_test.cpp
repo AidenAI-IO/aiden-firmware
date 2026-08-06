@@ -559,8 +559,8 @@ TEST_CASE("agent_toml rejects negative model response token limits") {
     }
 }
 
-TEST_CASE("agent_toml loads named providers") {
-    std::string path = make_temp_path("providers.toml");
+TEST_CASE("agent_toml rejects the legacy providers namespace") {
+    std::string path = make_temp_path("legacy_providers.toml");
     {
         std::ofstream out(path);
         out << "[providers.openai-work]\n"
@@ -576,15 +576,10 @@ TEST_CASE("agent_toml loads named providers") {
 
     aiden::AgentToml cfg;
     std::string err;
-    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
-    REQUIRE(err.empty());
-    REQUIRE(cfg.model_providers.size() == 2);
-    CHECK(cfg.model_providers["openai-work"].type == "openai");
-    CHECK(cfg.model_providers["openai-work"].api_key == "sk-work");
-    CHECK(cfg.model_providers["ollama_local"].type == "ollama");
-    CHECK(cfg.model_providers["ollama_local"].base_url == "http://127.0.0.1:11434");
-    CHECK(cfg.model_providers["ollama_local"].token_env == "OLLAMA_TOKEN");
-    CHECK(cfg.model.provider == "openai-work");
+    CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    CHECK(err.find("providers") != std::string::npos);
+    CHECK(err.find("model_providers") != std::string::npos);
+    CHECK(cfg.model_providers.empty());
 
     std::remove(path.c_str());
 }
@@ -635,26 +630,21 @@ TEST_CASE("agent_toml uses canonical model provider names and type fields") {
     std::remove(saved_path.c_str());
 }
 
-TEST_CASE("agent_toml canonical provider keys override legacy aliases") {
+TEST_CASE("agent_toml canonical provider type overrides its legacy field alias") {
     std::string path = make_temp_path("provider_alias_precedence.toml");
     {
         std::ofstream out(path);
         out << "[model_providers.primary]\n"
             << "type = \"openai\"\n"
-            << "provider = \"ollama\"\n"
-            << "[providers.primary]\n"
-            << "provider = \"kimi\"\n"
-            << "[providers.legacy-only]\n"
-            << "provider = \"openrouter\"\n";
+            << "provider = \"ollama\"\n";
     }
 
     aiden::AgentToml cfg;
     std::string err;
     REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
     REQUIRE(err.empty());
-    REQUIRE(cfg.model_providers.size() == 2);
+    REQUIRE(cfg.model_providers.size() == 1);
     CHECK(cfg.model_providers["primary"].type == "openai");
-    CHECK(cfg.model_providers["legacy-only"].type == "openrouter");
 
     std::remove(path.c_str());
 }
@@ -673,9 +663,6 @@ TEST_CASE("agent_toml rejects provider names it cannot write back") {
         {"empty_model_provider_name.toml", "model_providers.", "empty provider name"},
         {"dotted_model_provider_name.toml", "model_providers.a.b", "invalid provider name"},
         {"spaced_model_provider_name.toml", "model_providers.my provider", "invalid provider name"},
-        {"empty_provider_name.toml", "providers.", "empty provider name"},
-        {"dotted_provider_name.toml", "providers.a.b", "invalid provider name"},
-        {"spaced_provider_name.toml", "providers.my provider", "invalid provider name"},
     };
 
     for (const auto& tc : cases) {

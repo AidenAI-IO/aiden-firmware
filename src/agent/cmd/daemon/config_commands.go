@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -66,8 +67,8 @@ type webConfigDTO struct {
 	Agent              agentDTO                      `json:"agent"`
 }
 
-// UnmarshalJSON accepts the former top-level providers key. The canonical
-// model_providers key wins whenever both are present.
+// UnmarshalJSON rejects the former top-level providers key so callers do not
+// get a successful response for a payload whose provider records were ignored.
 func (d *webConfigDTO) UnmarshalJSON(data []byte) error {
 	type canonicalDTO webConfigDTO
 	if err := json.Unmarshal(data, (*canonicalDTO)(d)); err != nil {
@@ -77,14 +78,10 @@ func (d *webConfigDTO) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	if _, canonical := fields["model_providers"]; canonical {
-		return nil
+	if _, exists := fields["providers"]; exists {
+		return errors.New(`"providers" is unsupported; use "model_providers"`)
 	}
-	legacy, exists := fields["providers"]
-	if !exists {
-		return nil
-	}
-	return json.Unmarshal(legacy, &d.ModelProviders)
+	return nil
 }
 
 type modelDTO struct {

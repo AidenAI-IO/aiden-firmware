@@ -45,8 +45,8 @@ model = "gpt-4o"
 	}
 }
 
-func TestLegacyModelProviderTOMLStillLoads(t *testing.T) {
-	cfg, err := loadProviderConfig(t, `
+func TestLegacyModelProviderTOMLIsRejected(t *testing.T) {
+	_, err := loadProviderConfig(t, `
 [providers.work]
 provider = "openai"
 api_key = "sk-work"
@@ -55,11 +55,11 @@ api_key = "sk-work"
 provider = "work"
 model = "gpt-4o"
 `)
-	if err != nil {
-		t.Fatalf("load legacy model provider config: %v", err)
+	if err == nil {
+		t.Fatal("expected the legacy providers namespace to be rejected")
 	}
-	if cfg.Model.Provider != "openai" || cfg.Model.APIKey != "sk-work" {
-		t.Fatalf("resolved model = provider %q api_key %q, want openai/sk-work", cfg.Model.Provider, cfg.Model.APIKey)
+	if !strings.Contains(err.Error(), "providers") || !strings.Contains(err.Error(), "model_providers") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -115,12 +115,8 @@ model = "gpt-4o"
 	}
 }
 
-func TestModelProviderCanonicalTOMLTakesPrecedence(t *testing.T) {
+func TestModelProviderCanonicalTypeTakesPrecedence(t *testing.T) {
 	cfg, err := loadProviderConfig(t, `
-[providers.work]
-provider = "ollama"
-base_url = "http://legacy.invalid"
-
 [model_providers.work]
 type = "openai"
 provider = "kimi"
@@ -131,7 +127,7 @@ provider = "work"
 model = "gpt-4o"
 `)
 	if err != nil {
-		t.Fatalf("load mixed model provider config: %v", err)
+		t.Fatalf("load model provider config: %v", err)
 	}
 	if cfg.Model.Provider != "openai" || cfg.Model.APIKey != "sk-canonical" || cfg.Model.BaseURL != "" {
 		t.Fatalf("canonical provider did not win: %#v", cfg.Model)
