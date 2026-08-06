@@ -147,7 +147,6 @@ func ConfigMeta() ConfigMetadata {
 						Enum:    enumOptions(modelProviderTypes()...),
 						Default: defaults.Model.Provider},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},
-					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,
 						VisibleWhen: all(in("model.provider", modelProviderTypesAllowingCustomBaseURL()...))},
 					// The effective default is model-dependent (resolved at load

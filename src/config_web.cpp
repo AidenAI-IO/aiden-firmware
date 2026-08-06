@@ -2799,7 +2799,12 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
     cJSON* model = add_object(root, "model");
     cJSON_AddStringToObject(model, "provider", config.model.provider.c_str());
-    cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
+    // model.api_key is accepted only as a legacy/internal validation field.
+    // The config web contract exposes credentials through model_providers so
+    // the flat model section cannot become a second source of truth.
+    if (include_secrets) {
+        cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
+    }
     cJSON_AddStringToObject(model, "model", config.model.model.c_str());
     cJSON_AddStringToObject(model, "base_url", config.model.base_url.c_str());
     cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
@@ -3156,6 +3161,20 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     if (!m->base_url.empty() && !model_base_url_allowed(m->provider)) {
         m->base_url.clear();
     }
+}
+
+void move_model_api_key_to_provider(aiden::AgentToml* config) {
+    if (!config || config->model.api_key.empty()) return;
+
+    const std::string provider_name = trim_copy(config->model.provider);
+    if (provider_name.empty()) return;
+
+    aiden::ModelProviderToml& provider = config->model_providers[provider_name];
+    if (provider.type.empty()) {
+        provider.type = provider_name;
+    }
+    provider.api_key = config->model.api_key;
+    config->model.api_key.clear();
 }
 
 void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
@@ -6162,6 +6181,11 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
             return make_json_error(400, schema_error.empty() ? "invalid config schema" : schema_error);
         }
         update_config_from_json(config_json, &config);
+        // The agent CLI resolves provider credentials onto model.api_key for
+        // runtime use. Move that effective value back to its owning record
+        // before validation and persistence; this also migrates legacy flat
+        // model credentials without dropping them.
+        move_model_api_key_to_provider(&config);
         preserve_redacted_agent_secrets(options, &config);
     }
 

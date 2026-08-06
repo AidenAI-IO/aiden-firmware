@@ -679,7 +679,7 @@ void emit_model(std::ostringstream& out, const char* section, const ModelToml& m
     emit_string(out, "provider", m.provider);
     emit_string(out, "model", m.model);
     if (!m.base_url.empty()) emit_string(out, "base_url", m.base_url);
-    emit_string(out, "api_key", m.api_key);
+    if (!m.api_key.empty()) emit_string(out, "api_key", m.api_key);
     // Always emit reasoning_effort, even if empty (empty = "auto" default)
     emit_string(out, "reasoning_effort", m.reasoning_effort);
     if (m.has_temperature) emit_double(out, "temperature", m.temperature);

@@ -530,6 +530,20 @@ func TestConfigMeta_AudioArchiveRequiresSTTInputMode(t *testing.T) {
 	}
 }
 
+func TestConfigMeta_ModelAPIKeyOwnedByProvider(t *testing.T) {
+	idx := fieldIndex(t)
+	if _, ok := idx["model.api_key"]; ok {
+		t.Fatal("model.api_key must not be exposed by config web metadata")
+	}
+	field, ok := idx["model_providers.api_key"]
+	if !ok {
+		t.Fatal("model_providers.api_key is missing from config web metadata")
+	}
+	if !field.Secret {
+		t.Fatal("model_providers.api_key must remain a secret field")
+	}
+}
+
 // TestConfigMeta_CoversConfigFields uses reflection to ensure every flat,
 // UI-relevant config field has corresponding metadata, preventing silent drift
 // when new fields are added to the Config structs.
@@ -572,6 +586,11 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	// config field silently loses its UI -- without pinning down which of the
 	// two editors owns it.
 	altSection := map[string]string{"tts": "tts_providers", "stt": "stt_providers"}
+	// model.api_key remains in ModelConfig for legacy TOML compatibility, but
+	// config web edits it only through the selected provider record.
+	altFieldSection := map[string]map[string]string{
+		"model": {"api_key": "model_providers"},
+	}
 
 	for _, s := range sections {
 		for name := range tomlKeys(s.typ) {
@@ -585,6 +604,13 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 			if alt, hasAlt := altSection[s.name]; hasAlt {
 				if _, ok := idx[alt+"."+name]; ok {
 					continue
+				}
+			}
+			if fields, hasFields := altFieldSection[s.name]; hasFields {
+				if alt, hasAlt := fields[name]; hasAlt {
+					if _, ok := idx[alt+"."+name]; ok {
+						continue
+					}
 				}
 			}
 			t.Errorf("config field %s has no metadata entry", path)

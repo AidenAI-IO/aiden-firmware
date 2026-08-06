@@ -2619,6 +2619,22 @@ TEST_CASE("config web builds tts and stt provider records from one factory") {
     CHECK(options_body.find(".provider||''") == std::string::npos);
 }
 
+// Model credentials belong to [model_providers.*]. Keeping a second API key
+// input on [model] lets the flat section overwrite or disagree with the selected
+// provider record.
+TEST_CASE("config web keeps model credentials in provider records") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("id=\\\"model_api_key\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"providerApiKey\\\"") != std::string::npos);
+}
+
 // The credentials moved onto records, so the flat [tts]/[stt] cards must not keep
 // inputs for them: a second editor for one credential disagrees with the record
 // the moment either is used, and readSection would post the stale flat copy.

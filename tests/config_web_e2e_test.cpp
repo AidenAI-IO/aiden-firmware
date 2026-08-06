@@ -1366,6 +1366,15 @@ TEST_CASE("config_web: GET /api/config returns providers from the resolved confi
     // Secrets are masked on the read path.
     CHECK(resp.body.find("sk-stub-secret-1234") == std::string::npos);
     CHECK(resp.body.find("sk-s***1234") != std::string::npos);
+
+    cJSON* root = cJSON_Parse(resp.body.c_str());
+    REQUIRE(root != nullptr);
+    cJSON* config = cJSON_GetObjectItem(root, "config");
+    REQUIRE(config != nullptr);
+    cJSON* model = cJSON_GetObjectItem(config, "model");
+    REQUIRE(model != nullptr);
+    CHECK(cJSON_GetObjectItem(model, "api_key") == nullptr);
+    cJSON_Delete(root);
 }
 
 TEST_CASE("config_web: POST /api/config preserves providers when saving another section") {
@@ -1391,6 +1400,41 @@ TEST_CASE("config_web: POST /api/config preserves providers when saving another 
     CHECK(saved.find("[model_providers.stub-openai]") != std::string::npos);
     CHECK(saved.find("api_key = \"sk-stub-secret-1234\"") != std::string::npos);
     CHECK(saved.find("[model_providers.stub-ollama]") != std::string::npos);
+
+    const size_t model_at = saved.find("[model]\n");
+    REQUIRE(model_at != std::string::npos);
+    const size_t model_end = saved.find("\n[", model_at + 1);
+    const std::string model_section = saved.substr(model_at, model_end - model_at);
+    CHECK(model_section.find("api_key") == std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config migrates a legacy model api_key to a provider record") {
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"model\":{\"provider\":\"openai\",\"api_key\":\"sk-legacy-secret\","
+               "\"model\":\"gpt-4o\",\"base_url\":\"\",\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"hid\":{\"keyboard_layout\":\"azerty\","
+        "\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[model_providers.openai]") != std::string::npos);
+    CHECK(saved.find("api_key = \"sk-legacy-secret\"") != std::string::npos);
+
+    const size_t model_at = saved.find("[model]\n");
+    REQUIRE(model_at != std::string::npos);
+    const size_t model_end = saved.find("\n[", model_at + 1);
+    const std::string model_section = saved.substr(model_at, model_end - model_at);
+    CHECK(model_section.find("api_key") == std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config keeps the stored provider api_key when masked") {
