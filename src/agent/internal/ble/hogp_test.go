@@ -138,6 +138,23 @@ func TestStartPairingDoesNotTreatBondAsConnection(t *testing.T) {
 	}
 }
 
+func TestPairingModeMatchesAdapterState(t *testing.T) {
+	open := map[string]dbus.Variant{
+		"Pairable":     dbus.MakeVariant(true),
+		"Discoverable": dbus.MakeVariant(true),
+	}
+	if !pairingModeMatches(open, true) || pairingModeMatches(open, false) {
+		t.Fatalf("open adapter properties were misclassified: %#v", open)
+	}
+	drifted := map[string]dbus.Variant{
+		"Pairable":     dbus.MakeVariant(false),
+		"Discoverable": dbus.MakeVariant(true),
+	}
+	if pairingModeMatches(drifted, true) {
+		t.Fatalf("drifted adapter properties were accepted: %#v", drifted)
+	}
+}
+
 func TestPairingAgentRejectsLegacyCredentials(t *testing.T) {
 	agent := &pairingAgent{}
 	if pin, err := agent.RequestPinCode("/org/bluez/hci0/dev_01"); pin != "" || err == nil || err.Name != "org.bluez.Error.Rejected" {

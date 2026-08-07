@@ -316,6 +316,22 @@ func (b *blueZBackend) expirePairingWindow(now time.Time) error {
 	return nil
 }
 
+func (b *blueZBackend) reconcilePairingMode(objects managedObjects) error {
+	b.stateMu.Lock()
+	open := b.pairingOpen
+	b.stateMu.Unlock()
+	properties := objects[b.adapter][blueZAdapterInterface]
+	if pairingModeMatches(properties, open) {
+		return nil
+	}
+	return b.setPairingMode(open)
+}
+
+func pairingModeMatches(properties map[string]dbus.Variant, open bool) bool {
+	return variantBool(properties, "Pairable") == open &&
+		variantBool(properties, "Discoverable") == open
+}
+
 func (b *blueZBackend) setPairingMode(open bool) error {
 	if b.conn == nil || !b.adapter.IsValid() {
 		return ErrBluetoothUnavailable

@@ -69,7 +69,9 @@ trusted phone is authorized. `PAIRING_WINDOW_SECONDS` in
 The five-minute value is an upper bound that tolerates Bluetooth permission and
 iOS confirmation delays; the app starts scanning immediately and successful
 pairing closes the window early. A service restart never opens the window by
-itself.
+itself. While a user-initiated window is active, the service also reconciles the
+actual BlueZ `Pairable` and `Discoverable` properties because bond removal and
+other BlueZ state changes can reset them independently of the service state.
 
 The app reports only the live connection state. A bond is a reconnect cache,
 not proof that the App Wake session is connected. Every explicit Connect action
