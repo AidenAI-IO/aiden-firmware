@@ -89,7 +89,7 @@ func (c *hidReportCharacteristic) ReadValue(options map[string]dbus.Variant) ([]
 
 func (c *hidReportCharacteristic) StartNotify() *dbus.Error {
 	if notifying, _ := c.properties.GetMust(blueZGattCharInterface, "Notifying").(bool); notifying {
-		return dbus.NewError("org.bluez.Error.InProgress", []any{"notifications already enabled"})
+		return nil
 	}
 	c.properties.SetMust(blueZGattCharInterface, "Notifying", true)
 	return nil

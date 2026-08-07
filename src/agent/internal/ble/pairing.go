@@ -116,6 +116,7 @@ func (b *blueZBackend) ForgetPairing() (int, error) {
 			blueZAdapterInterface+".RemoveDevice",
 			device.path,
 		).Err; err != nil {
+			b.requestRescan()
 			return removed, fmt.Errorf("remove Bluetooth bond %s: %w", device.path, err)
 		}
 		removed++
@@ -205,37 +206,78 @@ func (b *blueZBackend) beginPairingWindow(now time.Time) error {
 	if b.pairingWindow <= 0 {
 		return nil
 	}
+	b.pairingModeMu.Lock()
+	defer b.pairingModeMu.Unlock()
+
 	b.stateMu.Lock()
 	b.pairingOpen = true
 	b.pairingDeadline = now.Add(b.pairingWindow)
+	b.pairingModeDirty = true
 	deadline := b.pairingDeadline
+	b.stateMu.Unlock()
+
 	if err := b.setPairingMode(true); err != nil {
+		// Reapply the complete closed state, including the advertisement. A
+		// failure may have happened after the old advertisement was removed,
+		// so only clearing the adapter flags could leave BLE unavailable.
+		cleanupErr := b.setPairingMode(false)
+		b.stateMu.Lock()
+		b.pairingOpen = false
+		b.pairingDeadline = time.Time{}
+		b.pairingModeDirty = cleanupErr != nil
 		b.stateMu.Unlock()
-		return fmt.Errorf("%w: %v", errPairingModeState, err)
+		resultErr := fmt.Errorf("%w: %v", errPairingModeState, err)
+		b.service.status.update(func(status *RuntimeStatus) {
+			status.PairingOpen = false
+			status.PairingDeadline = ""
+			status.LastError = resultErr.Error()
+		})
+		return resultErr
 	}
+	b.stateMu.Lock()
+	b.pairingModeDirty = false
 	b.stateMu.Unlock()
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.PairingOpen = true
 		status.PairingDeadline = formatDeadline(deadline)
+		status.LastError = ""
 	})
 	return nil
 }
 
 func (b *blueZBackend) closePairingWindow() error {
+	b.pairingModeMu.Lock()
+	defer b.pairingModeMu.Unlock()
+
 	b.stateMu.Lock()
 	wasOpen := b.pairingOpen
+	wasDirty := b.pairingModeDirty
 	b.pairingOpen = false
 	b.pairingDeadline = time.Time{}
-	if wasOpen {
-		if err := b.setPairingMode(false); err != nil {
-			b.stateMu.Unlock()
-			return fmt.Errorf("%w: %v", errPairingModeState, err)
-		}
+	b.pairingModeDirty = wasOpen || wasDirty
+	b.stateMu.Unlock()
+
+	if !wasOpen && !wasDirty {
+		return nil
 	}
+	// Always reapply the closed state. This also recovers from a previous
+	// partial D-Bus failure that may have left one adapter property enabled.
+	if err := b.setPairingMode(false); err != nil {
+		resultErr := fmt.Errorf("%w: %v", errPairingModeState, err)
+		b.service.status.update(func(status *RuntimeStatus) {
+			status.PairingOpen = false
+			status.PairingDeadline = ""
+			status.LastError = resultErr.Error()
+		})
+		return resultErr
+	}
+	b.stateMu.Lock()
+	b.pairingModeDirty = false
 	b.stateMu.Unlock()
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.PairingOpen = false
 		status.PairingDeadline = ""
+		status.LastError = ""
 	})
 	return nil
 }
@@ -266,13 +308,14 @@ func (b *blueZBackend) setPairingMode(open bool) error {
 		}
 	}
 	if b.advProps != nil {
-		if err := callWithTimeout(
+		unregisterErr := callWithTimeout(
 			b.conn.Object(BlueZBusName, b.adapter),
 			blueZAdvManagerInterface+".UnregisterAdvertisement",
 			advertisementPath,
-		).Err; err != nil {
+		).Err
+		if unregisterErr != nil && !isDBusErrorNamed(unregisterErr, "org.bluez.Error.DoesNotExist") {
 			b.service.status.update(func(status *RuntimeStatus) { status.Advertising = false })
-			return fmt.Errorf("unregister BLE advertisement: %w", err)
+			return fmt.Errorf("unregister BLE advertisement: %w", unregisterErr)
 		}
 		b.advProps.SetMust(blueZAdvertisementInterface, "Discoverable", open)
 		if err := b.registerAdvertisement(); err != nil {

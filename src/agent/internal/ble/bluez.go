@@ -84,14 +84,16 @@ type blueZBackend struct {
 	hidReportProps *prop.Properties
 	gattObjects    []exportedGattObject
 
-	ancsMu          sync.Mutex
-	ancs            ancsPaths
-	wakeMu          sync.Mutex
-	closed          bool
-	stateMu         sync.Mutex
-	trustedDevice   dbus.ObjectPath
-	pairingOpen     bool
-	pairingDeadline time.Time
+	ancsMu           sync.Mutex
+	ancs             ancsPaths
+	wakeMu           sync.Mutex
+	closed           bool
+	pairingModeMu    sync.Mutex
+	stateMu          sync.Mutex
+	trustedDevice    dbus.ObjectPath
+	pairingOpen      bool
+	pairingDeadline  time.Time
+	pairingModeDirty bool
 }
 
 func newBlueZBackend(service *Service, deviceName string, pairingWindow time.Duration) *blueZBackend {
@@ -889,7 +891,8 @@ func (c *wakeCharacteristic) ReadValue(options map[string]dbus.Variant) ([]byte,
 
 func (c *wakeCharacteristic) StartNotify() *dbus.Error {
 	if notifying, _ := c.properties.GetMust(blueZGattCharInterface, "Notifying").(bool); notifying {
-		return dbus.NewError("org.bluez.Error.InProgress", []any{"notifications already enabled"})
+		c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = true })
+		return nil
 	}
 	c.properties.SetMust(blueZGattCharInterface, "Notifying", true)
 	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = true })
