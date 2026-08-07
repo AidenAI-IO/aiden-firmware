@@ -78,6 +78,10 @@ type hidReportCharacteristic struct {
 	properties *prop.Properties
 }
 
+func (c *hidReportCharacteristic) setGattProperties(properties *prop.Properties) {
+	c.properties = properties
+}
+
 func (c *hidReportCharacteristic) ReadValue(options map[string]dbus.Variant) ([]byte, *dbus.Error) {
 	value, _ := c.properties.GetMust(blueZGattCharInterface, "Value").([]byte)
 	return readValueAtOffset(value, options)

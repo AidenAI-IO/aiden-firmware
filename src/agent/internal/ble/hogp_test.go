@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -46,6 +48,14 @@ func TestStableDeviceNameUsesAdapterSuffix(t *testing.T) {
 	if len(got) != 29 || !strings.HasSuffix(got, "-1234") {
 		t.Fatalf("stable name must fit legacy advertising: %q", got)
 	}
+	got = stableDeviceName(strings.Repeat("你", 20), "AA:BB:CC:DD:12:34")
+	if len(got) > 29 || !utf8.ValidString(got) || !strings.HasSuffix(got, "-1234") {
+		t.Fatalf("stable name must truncate on a UTF-8 boundary: %q", got)
+	}
+	got = stableDeviceName(strings.Repeat("x", 40)+"-1234", "AA:BB:CC:DD:12:34")
+	if len(got) != 29 || strings.Count(got, "-1234") != 1 {
+		t.Fatalf("stable name must truncate an existing suffix exactly once: %q", got)
+	}
 }
 
 func TestSelectBondedDevicePrefersTrustedBond(t *testing.T) {
@@ -84,5 +94,56 @@ func TestPairingPolicyAllowsOnlyWindowOrTrustedDevice(t *testing.T) {
 	backend.stateMu.Unlock()
 	if !backend.deviceAllowed(trusted) || backend.deviceAllowed(other) {
 		t.Fatal("only the selected trusted device must remain authorized")
+	}
+}
+
+func TestPairingAgentRejectsLegacyCredentials(t *testing.T) {
+	agent := &pairingAgent{}
+	if pin, err := agent.RequestPinCode("/org/bluez/hci0/dev_01"); pin != "" || err == nil || err.Name != "org.bluez.Error.Rejected" {
+		t.Fatalf("legacy PIN request was not rejected: pin=%q error=%v", pin, err)
+	}
+	if passkey, err := agent.RequestPasskey("/org/bluez/hci0/dev_01"); passkey != 0 || err == nil || err.Name != "org.bluez.Error.Rejected" {
+		t.Fatalf("legacy passkey request was not rejected: passkey=%d error=%v", passkey, err)
+	}
+}
+
+func TestBlueZSignalSourceAndOwnerChangeHandling(t *testing.T) {
+	backend := newBlueZBackend(NewService(4), "Aiden", time.Minute)
+	backend.blueZOwner = ":1.42"
+	rescanSignal := &dbus.Signal{
+		Sender: ":1.99",
+		Name:   dbusObjectManagerInterface + ".InterfacesAdded",
+	}
+	backend.handleSignal(rescanSignal)
+	if len(backend.rescanRequests) != 0 {
+		t.Fatal("forged non-BlueZ signal requested a rescan")
+	}
+	rescanSignal.Sender = backend.blueZOwner
+	backend.handleSignal(rescanSignal)
+	if len(backend.rescanRequests) != 1 {
+		t.Fatal("signal from the BlueZ owner did not request a rescan")
+	}
+
+	backend.handleSignal(&dbus.Signal{
+		Sender: dbusBusName,
+		Name:   dbusBusInterface + ".NameOwnerChanged",
+		Body:   []any{BlueZBusName, backend.blueZOwner, ":1.43"},
+	})
+	select {
+	case err := <-backend.fatalErrors:
+		if err == nil {
+			t.Fatal("BlueZ owner change reported a nil fatal error")
+		}
+	default:
+		t.Fatal("BlueZ owner change did not stop the backend")
+	}
+}
+
+func TestDBusInProgressErrorRecognition(t *testing.T) {
+	if !isDBusErrorNamed(dbus.NewError("org.bluez.Error.InProgress", nil), "org.bluez.Error.InProgress") {
+		t.Fatal("pointer D-Bus error name was not recognized")
+	}
+	if !isDBusErrorNamed(dbus.Error{Name: "org.bluez.Error.InProgress"}, "org.bluez.Error.InProgress") {
+		t.Fatal("value D-Bus error name was not recognized")
 	}
 }

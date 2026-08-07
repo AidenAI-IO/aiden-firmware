@@ -5,11 +5,11 @@ import (
 	"errors"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 var ErrBluetoothUnavailable = errors.New("Bluetooth backend is unavailable")
+var ErrAlreadyPaired = errors.New("Bluetooth already has a trusted device")
 
 type RuntimeStatus struct {
 	StartedAt              string `json:"started_at"`
@@ -80,13 +80,19 @@ type wakeBackend interface {
 	NotifyWake(sequence uint64, reason string) (bool, error)
 }
 
+type pairingBackend interface {
+	StartPairing() error
+	ForgetPairing() (int, error)
+}
+
 type Service struct {
 	store        *EventStore
 	status       *statusState
 	consumer     *ANCSConsumer
 	backendMu    sync.RWMutex
 	backend      wakeBackend
-	wakeSequence atomic.Uint64
+	wakeMu       sync.Mutex
+	wakeSequence uint64
 }
 
 func NewService(eventCapacity int) *Service {
@@ -107,6 +113,9 @@ func (s *Service) Status() RuntimeStatus {
 }
 
 func (s *Service) Wake(reason string) (sequence uint64, delivered bool, err error) {
+	s.wakeMu.Lock()
+	defer s.wakeMu.Unlock()
+
 	s.backendMu.RLock()
 	backend := s.backend
 	s.backendMu.RUnlock()
@@ -114,7 +123,8 @@ func (s *Service) Wake(reason string) (sequence uint64, delivered bool, err erro
 		return 0, false, ErrBluetoothUnavailable
 	}
 
-	sequence = s.wakeSequence.Add(1)
+	s.wakeSequence++
+	sequence = s.wakeSequence
 	delivered, err = backend.NotifyWake(sequence, reason)
 	if err != nil {
 		return 0, false, err
@@ -124,6 +134,26 @@ func (s *Service) Wake(reason string) (sequence uint64, delivered bool, err erro
 		status.LastWakeReason = reason
 	})
 	return sequence, delivered, nil
+}
+
+func (s *Service) StartPairing() error {
+	s.backendMu.RLock()
+	backend, ok := s.backend.(pairingBackend)
+	s.backendMu.RUnlock()
+	if !ok || backend == nil {
+		return ErrBluetoothUnavailable
+	}
+	return backend.StartPairing()
+}
+
+func (s *Service) ForgetPairing() (int, error) {
+	s.backendMu.RLock()
+	backend, ok := s.backend.(pairingBackend)
+	s.backendMu.RUnlock()
+	if !ok || backend == nil {
+		return 0, ErrBluetoothUnavailable
+	}
+	return backend.ForgetPairing()
 }
 
 func (s *Service) setBackend(backend wakeBackend) {

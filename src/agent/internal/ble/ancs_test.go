@@ -3,6 +3,7 @@ package ble
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"testing"
 	"time"
 )
@@ -126,6 +127,69 @@ func TestANCSAttributeTimeoutAdvancesQueuedNotification(t *testing.T) {
 		page.Events[0].MetadataComplete || page.Events[0].MetadataError == "" {
 		t.Fatalf("unexpected timed-out event: %#v", page.Events)
 	}
+}
+
+func TestANCSWriteFailureDoesNotFailNewerActiveRequest(t *testing.T) {
+	store := NewEventStore(8)
+	consumer := NewANCSConsumer(store)
+	firstWriteStarted := make(chan struct{})
+	releaseFirstWrite := make(chan struct{})
+	consumer.SetControlPointWriter(func(command []byte) error {
+		uid := binary.LittleEndian.Uint32(command[1:5])
+		if uid == 1 {
+			close(firstWriteStarted)
+			<-releaseFirstWrite
+			return errors.New("first write failed")
+		}
+		return nil
+	})
+
+	source := make([]byte, 16)
+	source[0] = ancsEventAdded
+	source[2] = 6
+	binary.LittleEndian.PutUint32(source[4:8], 1)
+	source[8] = ancsEventAdded
+	source[10] = 6
+	binary.LittleEndian.PutUint32(source[12:16], 2)
+	done := make(chan error, 1)
+	go func() { done <- consumer.HandleNotificationSource(source) }()
+	<-firstWriteStarted
+
+	if err := consumer.HandleDataSource(completeAttributeResponse(1)); err != nil {
+		t.Fatalf("complete first request: %v", err)
+	}
+	close(releaseFirstWrite)
+	if err := <-done; err != nil {
+		t.Fatalf("HandleNotificationSource: %v", err)
+	}
+
+	consumer.mu.Lock()
+	if consumer.active == nil || consumer.active.event.NotificationUID != 2 {
+		consumer.mu.Unlock()
+		t.Fatalf("newer request was cleared after stale write failure: %#v", consumer.active)
+	}
+	consumer.mu.Unlock()
+	if page := store.Page(0, 10); len(page.Events) != 1 || page.Events[0].NotificationUID != 1 || !page.Events[0].MetadataComplete {
+		t.Fatalf("unexpected events after stale write failure: %#v", page.Events)
+	}
+
+	if err := consumer.HandleDataSource(completeAttributeResponse(2)); err != nil {
+		t.Fatalf("complete second request: %v", err)
+	}
+	page := store.Page(0, 10)
+	if len(page.Events) != 2 || page.Events[1].NotificationUID != 2 || !page.Events[1].MetadataComplete {
+		t.Fatalf("newer request did not complete: %#v", page.Events)
+	}
+}
+
+func completeAttributeResponse(uid uint32) []byte {
+	response := []byte{ancsCommandGetNotificationAttributes, 0, 0, 0, 0}
+	binary.LittleEndian.PutUint32(response[1:5], uid)
+	response = appendAttribute(response, ancsAttributeAppIdentifier, "com.example")
+	response = appendAttribute(response, ancsAttributeTitle, "title")
+	response = appendAttribute(response, ancsAttributeSubtitle, "subtitle")
+	response = appendAttribute(response, ancsAttributeMessage, "message")
+	return appendAttribute(response, ancsAttributeDate, "20260806T103000")
 }
 
 func appendAttribute(buffer []byte, attributeID uint8, value string) []byte {

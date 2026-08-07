@@ -21,6 +21,9 @@ func main() {
 	if *eventCapacity <= 0 {
 		log.Fatalf("event-capacity must be positive")
 	}
+	if *pairingWindow <= 0 {
+		log.Fatalf("pairing-window must be positive")
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

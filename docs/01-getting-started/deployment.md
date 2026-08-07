@@ -93,7 +93,7 @@ Notes:
 After copying, common restart commands:
 
 ```bash
-ssh root@<device-ip> "chmod +x /oem/usr/bin/frame_service /oem/usr/bin/audio_service /oem/usr/bin/ble_service /oem/usr/bin/config_web /oem/usr/bin/agent /oem/usr/bin/aiden-env-run"
+ssh root@<device-ip> "chmod +x /etc/init.d/S39hciinit /etc/init.d/S40bluetoothd /etc/init.d/S41ble_service /etc/init.d/S52frame_service /etc/init.d/S53adb_server /etc/init.d/S53audio_service /etc/init.d/S53agent /etc/init.d/S56config_web /oem/usr/bin/frame_service /oem/usr/bin/audio_service /oem/usr/bin/ble_service /oem/usr/bin/config_web /oem/usr/bin/agent /oem/usr/bin/aiden-env-run"
 ssh root@<device-ip> "/etc/init.d/S52frame_service restart"
 ssh root@<device-ip> "/etc/init.d/S53audio_service restart"
 ssh root@<device-ip> "/etc/init.d/S53agent restart"

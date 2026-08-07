@@ -33,7 +33,7 @@ for setting in 'CONFIG_SWAP=y' 'CONFIG_CRYPTO=y' 'CONFIG_ZSMALLOC=y' 'CONFIG_ZRA
     fi
 done
 
-if ! grep -Eq 'RK_KERNEL_DEFCONFIG_FRAGMENT=.*aiden-zram\.config' "$BOARD_CONFIG"; then
+if ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?RK_KERNEL_DEFCONFIG_FRAGMENT[[:space:]]*=[[:space:]]*"?([^"[:space:]]+[[:space:]]+)*aiden-zram\.config([[:space:]]|"?[[:space:]]*$)' "$BOARD_CONFIG"; then
     echo "Pico Zero BoardConfig must include aiden-zram.config" >&2
     exit 1
 fi

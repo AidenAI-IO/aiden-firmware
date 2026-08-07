@@ -43,12 +43,44 @@ start() {
         echo "ble_service watchdog already running (pid $wpid)"
         return 0
     fi
+    pid="$(read_pid "$PID_FILE")"
+    if is_running "$pid"; then
+        echo "ble_service is still running without its watchdog (pid $pid)" >&2
+        return 1
+    fi
 
     mkdir -p "$(dirname "$SOCKET_PATH")" "$(dirname "$LOG_PATH")"
     rm -f "$SOCKET_PATH"
     (
+        child=""
+        stop_child() {
+            if [ -n "$child" ]; then
+                if is_running "$child"; then
+                    kill "$child" 2>/dev/null || true
+                    elapsed=0
+                    while is_running "$child" && [ "$elapsed" -lt 5 ]; do
+                        sleep 1
+                        elapsed=$((elapsed + 1))
+                    done
+                    if is_running "$child"; then
+                        echo "$(date -Iseconds 2>/dev/null || date) ble_service did not exit (pid $child)" >> "$LOG_PATH"
+                        return 1
+                    fi
+                fi
+                wait "$child" 2>/dev/null || true
+            fi
+            child=""
+            rm -f "$PID_FILE" "$SOCKET_PATH"
+            return 0
+        }
+        shutdown() {
+            if stop_child; then
+                exit 0
+            fi
+            exit 1
+        }
         trap '' HUP
-        trap 'exit 0' INT TERM
+        trap 'shutdown' INT TERM
         while true; do
             if [ ! -x "$BLE_SERVICE_BIN" ]; then
                 echo "$(date -Iseconds 2>/dev/null || date) ble_service binary missing: $BLE_SERVICE_BIN" >> "$LOG_PATH"
@@ -64,6 +96,7 @@ start() {
             echo "$child" > "$PID_FILE"
             wait "$child"
             status="$?"
+            child=""
             rm -f "$PID_FILE" "$SOCKET_PATH"
             echo "$(date -Iseconds 2>/dev/null || date) ble_service exited status=$status; restarting in 2s" >> "$LOG_PATH"
             sleep 2
@@ -77,12 +110,30 @@ stop() {
     wpid="$(read_pid "$WATCHDOG_PID_FILE")"
     if is_running "$wpid"; then
         kill "$wpid" 2>/dev/null || true
+        elapsed=0
+        while is_running "$wpid" && [ "$elapsed" -lt 10 ]; do
+            sleep 1
+            elapsed=$((elapsed + 1))
+        done
+        if is_running "$wpid"; then
+            echo "ble_service watchdog did not exit (pid $wpid); retaining $WATCHDOG_PID_FILE" >&2
+            return 1
+        fi
     fi
     rm -f "$WATCHDOG_PID_FILE"
 
     pid="$(read_pid "$PID_FILE")"
     if is_running "$pid"; then
         kill "$pid" 2>/dev/null || true
+        elapsed=0
+        while is_running "$pid" && [ "$elapsed" -lt 5 ]; do
+            sleep 1
+            elapsed=$((elapsed + 1))
+        done
+        if is_running "$pid"; then
+            echo "ble_service did not exit (pid $pid); retaining $PID_FILE and $SOCKET_PATH" >&2
+            return 1
+        fi
     fi
     rm -f "$PID_FILE" "$SOCKET_PATH"
     echo "Stopped ble_service"
@@ -107,7 +158,7 @@ status() {
 case "${1:-}" in
     start) start ;;
     stop) stop ;;
-    restart|reload) stop; start ;;
+    restart|reload) stop && start ;;
     status) status ;;
     *) echo "Usage: $0 {start|stop|restart|reload|status}" >&2; exit 1 ;;
 esac

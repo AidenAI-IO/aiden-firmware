@@ -6,7 +6,8 @@
 - BLE Peripheral: advertises an Aiden Wake service that the iOS companion app
   subscribes to.
 - BLE HID Peripheral: exposes a minimal Consumer Control HOGP service so iOS
-  Settings can pair and automatically reconnect without the Aiden app.
+  keeps a manageable system device entry and can automatically reconnect after
+  the app-orchestrated first pairing.
 - ANCS Consumer: subscribes to Apple's Notification Center Service exposed by
   a paired iPhone and normalizes system notification events.
 
@@ -52,12 +53,25 @@ Consumer Control input report. It does not expose a keyboard Usage Page and
 never emits input, so it is a pairing/reconnect anchor rather than a second
 control channel competing with USB HID.
 
-When no bond exists, Aiden is pairable and discoverable for five minutes by
-default. The first paired phone is marked trusted, the window closes, and new
-devices are rejected by the BlueZ pairing agent. Existing bonds can still
-reconnect while the adapter remains non-discoverable. The pairing window opens
-again after the trusted bond is removed. `PAIRING_WINDOW_SECONDS` in
-`/etc/aiden_ble_service.conf` controls the initial window.
+`ble_service` starts non-pairable and non-discoverable even when no bond exists.
+The iOS app explicitly calls the Agent pairing API over USB ECM; only then does
+the service open a five-minute pairing window. The app reads the board's stable
+`device_name` first and only connects a Wake-service advertiser with that exact
+name, so it does not bind an arbitrary nearby Aiden. The first paired phone is
+marked trusted, the window closes immediately, and new devices are rejected by
+the BlueZ pairing agent. Existing bonds can reconnect while the adapter remains
+non-discoverable. `PAIRING_WINDOW_SECONDS` in `/etc/aiden_ble_service.conf`
+controls the maximum user-initiated window.
+
+The five-minute value is an upper bound that tolerates Bluetooth permission and
+iOS confirmation delays; the app starts scanning immediately and successful
+pairing closes the window early. A service restart never opens the window by
+itself.
+
+If a bond predates the app's saved CoreBluetooth peripheral identifier, the app
+can attach to that existing bond without opening a new pairing window. After a
+bond exists, HOGP reconnection and board-side ANCS continue even when the app is
+not running.
 
 ## Wake GATT Contract
 
@@ -134,6 +148,40 @@ central was subscribed; the HTTP queue remains intact.
 Returns events after the cursor. `truncated=true` means the requested cursor is
 older than the bounded ring's retained history.
 
+### `pairing_start`
+
+```json
+{"op":"pairing_start"}
+```
+
+Opens the configured pairing window only when no trusted bond exists. An
+existing trusted phone returns `FAILED_PRECONDITION`.
+
+### `pairing_forget`
+
+```json
+{"op":"pairing_forget"}
+```
+
+Calls BlueZ `Adapter1.RemoveDevice` for board-side bonds and returns the removal
+count plus the latest Bluetooth status. The app also clears its saved
+CoreBluetooth identifier. iOS does not expose a public API for deleting the
+phone-side bond, so the UI then instructs the user to choose **Forget This
+Device** in iOS Bluetooth Settings.
+
+## Agent HTTP API
+
+The companion app reaches the pairing operations through the Agent on USB ECM:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/bluetooth/status` | Read BLE runtime and bond state |
+| `POST` | `/api/bluetooth/pairing/start` | Open the user-initiated pairing window |
+| `POST` | `/api/bluetooth/pairing/forget` | Remove board-side bonds |
+
+These endpoints only orchestrate state. BLE keys, ANCS bodies, and Phone Bridge
+command payloads never pass through them.
+
 ## Operations
 
 ```bash
@@ -157,6 +205,10 @@ hciconfig -a
 bluetoothctl show
 ls -l /userdata/ble_service/bluetooth
 ```
+
+Before the app requests pairing, `bluetoothctl show` should report
+`Pairable: no` and `Discoverable: no`. After `pairing_start` both become `yes`
+until pairing succeeds or the configured deadline expires.
 
 Changing the HOGP report map after a phone has bonded requires clearing the old
 bond and pairing again. Do not evolve this profile silently on deployed units.

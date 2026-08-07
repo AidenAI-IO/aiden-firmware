@@ -246,6 +246,7 @@ func (c *ANCSConsumer) dispatch(command []byte) {
 	for len(command) > 0 {
 		c.mu.Lock()
 		writer := c.writer
+		request := c.active
 		c.mu.Unlock()
 		var err error
 		if writer == nil {
@@ -258,7 +259,7 @@ func (c *ANCSConsumer) dispatch(command []byte) {
 		}
 
 		c.mu.Lock()
-		if c.active == nil {
+		if c.active == nil || c.active != request {
 			c.mu.Unlock()
 			return
 		}

@@ -83,6 +83,10 @@ func (s *UDSServer) acceptLoop() {
 	for {
 		connection, err := s.listener.AcceptUnix()
 		if err != nil {
+			if temporary, ok := err.(net.Error); ok && temporary.Temporary() {
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
 			return
 		}
 		s.wg.Add(1)
@@ -146,6 +150,24 @@ func (s *UDSServer) handleRequest(header, payload []byte) []byte {
 			"wake_id":   strconv.FormatUint(sequence, 10),
 			"delivered": delivered,
 		})
+	case "pairing_start":
+		if err := s.service.StartPairing(); err != nil {
+			return marshalBLEError(err)
+		}
+		return marshalResponse(map[string]any{
+			"status":    "OK",
+			"bluetooth": s.service.Status(),
+		})
+	case "pairing_forget":
+		removed, err := s.service.ForgetPairing()
+		if err != nil {
+			return marshalBLEError(err)
+		}
+		return marshalResponse(map[string]any{
+			"status":    "OK",
+			"removed":   removed,
+			"bluetooth": s.service.Status(),
+		})
 	case "events_since":
 		since, err := parseCursor(request.Since)
 		if err != nil {
@@ -165,6 +187,17 @@ func (s *UDSServer) handleRequest(header, payload []byte) []byte {
 			"error":  fmt.Sprintf("unsupported operation %q", request.Op),
 		})
 	}
+}
+
+func marshalBLEError(err error) []byte {
+	status := "INTERNAL_ERROR"
+	switch {
+	case errors.Is(err, ErrBluetoothUnavailable):
+		status = "SERVICE_UNAVAILABLE"
+	case errors.Is(err, ErrAlreadyPaired):
+		status = "FAILED_PRECONDITION"
+	}
+	return marshalResponse(map[string]any{"status": status, "error": err.Error()})
 }
 
 func parseCursor(raw json.RawMessage) (uint64, error) {
@@ -190,6 +223,9 @@ func marshalResponse(response map[string]any) []byte {
 	encoded, err := json.Marshal(response)
 	if err != nil {
 		return []byte(`{"status":"INTERNAL_ERROR","error":"response encoding failed"}`)
+	}
+	if len(encoded) > maxUDSHeaderBytes {
+		return []byte(`{"status":"RESOURCE_EXHAUSTED","error":"response exceeds frame limit; retry with a smaller limit"}`)
 	}
 	return encoded
 }
@@ -219,6 +255,12 @@ func readUDSMessage(reader io.Reader) ([]byte, []byte, error) {
 }
 
 func writeUDSMessage(writer io.Writer, header, payload []byte) error {
+	if len(header) == 0 || len(header) > maxUDSHeaderBytes {
+		return fmt.Errorf("invalid BLE UDS header length %d", len(header))
+	}
+	if len(payload) > maxUDSPayloadBytes {
+		return fmt.Errorf("invalid BLE UDS payload length %d", len(payload))
+	}
 	prefix := make([]byte, 12)
 	binary.LittleEndian.PutUint32(prefix[:4], uint32(len(header)))
 	binary.LittleEndian.PutUint64(prefix[4:], uint64(len(payload)))

@@ -15,6 +15,11 @@ import (
 )
 
 const (
+	blueZDBusCallTimeout    = 5 * time.Second
+	blueZCleanupCallTimeout = time.Second
+
+	dbusBusName                  = "org.freedesktop.DBus"
+	dbusBusInterface             = "org.freedesktop.DBus"
 	dbusPropertiesInterface      = "org.freedesktop.DBus.Properties"
 	dbusObjectManagerInterface   = "org.freedesktop.DBus.ObjectManager"
 	blueZAdapterInterface        = "org.bluez.Adapter1"
@@ -63,12 +68,15 @@ func (p ancsPaths) complete() bool {
 }
 
 type blueZBackend struct {
-	service       *Service
-	deviceName    string
-	pairingWindow time.Duration
-	conn          *dbus.Conn
-	adapter       dbus.ObjectPath
-	signals       chan *dbus.Signal
+	service        *Service
+	deviceName     string
+	pairingWindow  time.Duration
+	conn           *dbus.Conn
+	adapter        dbus.ObjectPath
+	signals        chan *dbus.Signal
+	blueZOwner     string
+	rescanRequests chan struct{}
+	fatalErrors    chan error
 
 	wakeProps      *prop.Properties
 	advProps       *prop.Properties
@@ -78,11 +86,12 @@ type blueZBackend struct {
 
 	ancsMu          sync.Mutex
 	ancs            ancsPaths
+	wakeMu          sync.Mutex
+	closed          bool
 	stateMu         sync.Mutex
 	trustedDevice   dbus.ObjectPath
 	pairingOpen     bool
 	pairingDeadline time.Time
-	closed          bool
 }
 
 func newBlueZBackend(service *Service, deviceName string, pairingWindow time.Duration) *blueZBackend {
@@ -92,7 +101,13 @@ func newBlueZBackend(service *Service, deviceName string, pairingWindow time.Dur
 	if pairingWindow < 0 {
 		pairingWindow = 0
 	}
-	return &blueZBackend{service: service, deviceName: deviceName, pairingWindow: pairingWindow}
+	return &blueZBackend{
+		service:        service,
+		deviceName:     deviceName,
+		pairingWindow:  pairingWindow,
+		rescanRequests: make(chan struct{}, 1),
+		fatalErrors:    make(chan error, 1),
+	}
 }
 
 func (b *blueZBackend) start() error {
@@ -103,6 +118,10 @@ func (b *blueZBackend) start() error {
 	b.conn = conn
 	b.signals = make(chan *dbus.Signal, 64)
 	b.conn.Signal(b.signals)
+	if err := callWithTimeout(b.conn.BusObject(), "org.freedesktop.DBus.GetNameOwner", BlueZBusName).
+		Store(&b.blueZOwner); err != nil {
+		return fmt.Errorf("resolve BlueZ D-Bus owner: %w", err)
+	}
 
 	if err := b.addSignalMatches(); err != nil {
 		return fmt.Errorf("subscribe BlueZ signals: %w", err)
@@ -121,15 +140,11 @@ func (b *blueZBackend) start() error {
 	trusted, bondedCount := selectBondedDevice(objects)
 	b.stateMu.Lock()
 	b.trustedDevice = trusted
-	if !trusted.IsValid() && b.pairingWindow > 0 {
-		b.pairingOpen = true
-		b.pairingDeadline = time.Now().Add(b.pairingWindow)
-	}
 	pairingOpen := b.pairingOpen
 	pairingDeadline := b.pairingDeadline
 	b.stateMu.Unlock()
 
-	if err := b.exportObjects(); err != nil {
+	if err := b.exportObjects(pairingOpen); err != nil {
 		return err
 	}
 	if err := b.configureAdapter(pairingOpen); err != nil {
@@ -167,6 +182,9 @@ func (b *blueZBackend) start() error {
 	})
 	if err := b.rescanBluetoothState(); err != nil {
 		b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
+		if errors.Is(err, errPairingModeState) {
+			return err
+		}
 	}
 	return nil
 }
@@ -174,6 +192,16 @@ func (b *blueZBackend) start() error {
 func (b *blueZBackend) run(ctx context.Context) error {
 	maintenance := time.NewTicker(time.Second)
 	defer maintenance.Stop()
+	rescanCtx, cancelRescans := context.WithCancel(ctx)
+	rescanDone := make(chan struct{})
+	go func() {
+		defer close(rescanDone)
+		b.runRescans(rescanCtx)
+	}()
+	defer func() {
+		cancelRescans()
+		<-rescanDone
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -185,10 +213,47 @@ func (b *blueZBackend) run(ctx context.Context) error {
 				return errors.New("BlueZ signal channel closed")
 			}
 			b.handleSignal(signal)
+		case err := <-b.fatalErrors:
+			return err
 		case now := <-maintenance.C:
-			b.expirePairingWindow(now)
+			if err := b.expirePairingWindow(now); err != nil {
+				return err
+			}
 			b.service.consumer.ExpireActive(now)
 		}
+	}
+}
+
+func (b *blueZBackend) runRescans(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-b.rescanRequests:
+			if err := b.rescanBluetoothState(); err != nil {
+				b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
+				if errors.Is(err, errPairingModeState) {
+					b.reportFatal(err)
+				}
+			}
+		}
+	}
+}
+
+func (b *blueZBackend) requestRescan() {
+	select {
+	case b.rescanRequests <- struct{}{}:
+	default:
+	}
+}
+
+func (b *blueZBackend) reportFatal(err error) {
+	if err == nil {
+		return
+	}
+	select {
+	case b.fatalErrors <- err:
+	default:
 	}
 }
 
@@ -196,32 +261,45 @@ func (b *blueZBackend) close() {
 	if b.conn == nil {
 		return
 	}
-	b.ancsMu.Lock()
+	b.wakeMu.Lock()
 	if b.closed {
-		b.ancsMu.Unlock()
+		b.wakeMu.Unlock()
 		return
 	}
 	b.closed = true
+	b.wakeMu.Unlock()
+
+	b.ancsMu.Lock()
 	paths := b.ancs
 	b.ancs = ancsPaths{}
 	b.ancsMu.Unlock()
 
 	if paths.notificationSource.IsValid() {
-		_ = b.conn.Object(BlueZBusName, paths.notificationSource).
-			Call(blueZGattCharInterface+".StopNotify", 0).Err
+		_ = callWithCleanupTimeout(
+			b.conn.Object(BlueZBusName, paths.notificationSource),
+			blueZGattCharInterface+".StopNotify",
+		).Err
 	}
 	if paths.dataSource.IsValid() {
-		_ = b.conn.Object(BlueZBusName, paths.dataSource).
-			Call(blueZGattCharInterface+".StopNotify", 0).Err
+		_ = callWithCleanupTimeout(
+			b.conn.Object(BlueZBusName, paths.dataSource),
+			blueZGattCharInterface+".StopNotify",
+		).Err
 	}
 	b.service.consumer.ResetConnection("Bluetooth connection closed")
 	if b.adapter.IsValid() {
 		adapter := b.conn.Object(BlueZBusName, b.adapter)
-		_ = adapter.Call(blueZAdvManagerInterface+".UnregisterAdvertisement", 0, advertisementPath).Err
-		_ = adapter.Call(blueZGattManagerInterface+".UnregisterApplication", 0, applicationPath).Err
+		for _, name := range []string{"Pairable", "Discoverable"} {
+			_ = callWithCleanupTimeout(adapter, dbusPropertiesInterface+".Set", blueZAdapterInterface, name, dbus.MakeVariant(false)).Err
+		}
+		_ = callWithCleanupTimeout(adapter, blueZAdvManagerInterface+".UnregisterAdvertisement", advertisementPath).Err
+		_ = callWithCleanupTimeout(adapter, blueZGattManagerInterface+".UnregisterApplication", applicationPath).Err
 	}
-	_ = b.conn.Object(BlueZBusName, dbus.ObjectPath("/org/bluez")).
-		Call(blueZAgentManagerInterface+".UnregisterAgent", 0, agentPath).Err
+	_ = callWithCleanupTimeout(
+		b.conn.Object(BlueZBusName, dbus.ObjectPath("/org/bluez")),
+		blueZAgentManagerInterface+".UnregisterAgent",
+		agentPath,
+	).Err
 	b.conn.RemoveSignal(b.signals)
 	_ = b.conn.Close()
 	b.service.status.update(func(status *RuntimeStatus) {
@@ -236,15 +314,7 @@ func (b *blueZBackend) close() {
 	})
 }
 
-func (b *blueZBackend) exportObjects() error {
-	manager := &gattObjectManager{backend: b}
-	if err := b.conn.Export(manager, applicationPath, dbusObjectManagerInterface); err != nil {
-		return fmt.Errorf("export GATT object manager: %w", err)
-	}
-	if err := exportIntrospection(b.conn, applicationPath, dbusObjectManagerInterface, manager, nil); err != nil {
-		return err
-	}
-
+func (b *blueZBackend) exportObjects(pairingOpen bool) error {
 	var err error
 	_, err = b.exportGattObject(wakeServicePath, blueZGattServiceInterface, prop.Map{
 		blueZGattServiceInterface: {
@@ -331,7 +401,6 @@ func (b *blueZBackend) exportObjects() error {
 	if err != nil {
 		return fmt.Errorf("export HID Report characteristic: %w", err)
 	}
-	hidReportObject.properties = b.hidReportProps
 	if _, err := b.exportGattObject(hidReportReferencePath, blueZGattDescriptorInterface, prop.Map{
 		blueZGattDescriptorInterface: {
 			"UUID":           {Value: HIDReportReferenceDescriptorUUID, Emit: prop.EmitConst},
@@ -348,7 +417,7 @@ func (b *blueZBackend) exportObjects() error {
 			"ServiceUUIDs": {Value: []string{HIDServiceUUID, WakeServiceUUID}, Emit: prop.EmitConst},
 			"LocalName":    {Value: b.deviceName, Emit: prop.EmitConst},
 			"Appearance":   {Value: HIDGenericAppearance, Emit: prop.EmitConst},
-			"Discoverable": {Value: b.pairingOpen, Emit: prop.EmitTrue},
+			"Discoverable": {Value: pairingOpen, Emit: prop.EmitTrue},
 		},
 	})
 	if err != nil {
@@ -361,6 +430,13 @@ func (b *blueZBackend) exportObjects() error {
 	agent := &pairingAgent{backend: b}
 	if err := b.conn.Export(agent, agentPath, blueZAgentInterface); err != nil {
 		return fmt.Errorf("export pairing agent: %w", err)
+	}
+	manager := &gattObjectManager{backend: b}
+	if err := b.conn.Export(manager, applicationPath, dbusObjectManagerInterface); err != nil {
+		return fmt.Errorf("export GATT object manager: %w", err)
+	}
+	if err := exportIntrospection(b.conn, applicationPath, dbusObjectManagerInterface, manager, nil); err != nil {
+		return err
 	}
 
 	if err := exportIntrospection(b.conn, advertisementPath, blueZAdvertisementInterface, advertisement, b.advProps); err != nil {
@@ -380,6 +456,9 @@ func (b *blueZBackend) exportGattObject(
 		return nil, err
 	}
 	if _, ok := object.(*struct{}); !ok {
+		if aware, ok := object.(gattPropertiesAware); ok {
+			aware.setGattProperties(exported)
+		}
 		if err := b.conn.Export(object, path, interfaceName); err != nil {
 			return nil, err
 		}
@@ -395,6 +474,10 @@ func (b *blueZBackend) exportGattObject(
 	return exported, nil
 }
 
+type gattPropertiesAware interface {
+	setGattProperties(*prop.Properties)
+}
+
 func exportIntrospection(conn *dbus.Conn, path dbus.ObjectPath, interfaceName string, object any, properties *prop.Properties) error {
 	iface := introspect.Interface{Name: interfaceName, Methods: introspect.Methods(object)}
 	if properties != nil {
@@ -406,14 +489,24 @@ func exportIntrospection(conn *dbus.Conn, path dbus.ObjectPath, interfaceName st
 
 func (b *blueZBackend) addSignalMatches() error {
 	if err := b.conn.AddMatchSignal(
+		dbus.WithMatchSender(BlueZBusName),
 		dbus.WithMatchInterface(dbusPropertiesInterface),
 		dbus.WithMatchPathNamespace(dbus.ObjectPath("/org/bluez")),
 	); err != nil {
 		return err
 	}
-	return b.conn.AddMatchSignal(
+	if err := b.conn.AddMatchSignal(
+		dbus.WithMatchSender(BlueZBusName),
 		dbus.WithMatchInterface(dbusObjectManagerInterface),
 		dbus.WithMatchPathNamespace(dbus.ObjectPath("/org/bluez")),
+	); err != nil {
+		return err
+	}
+	return b.conn.AddMatchSignal(
+		dbus.WithMatchSender(dbusBusName),
+		dbus.WithMatchInterface(dbusBusInterface),
+		dbus.WithMatchMember("NameOwnerChanged"),
+		dbus.WithMatchArg(0, BlueZBusName),
 	)
 }
 
@@ -428,8 +521,13 @@ func (b *blueZBackend) configureAdapter(pairingOpen bool) error {
 		{name: "Discoverable", value: pairingOpen},
 	}
 	for _, property := range properties {
-		if err := b.conn.Object(BlueZBusName, b.adapter).
-			Call(dbusPropertiesInterface+".Set", 0, blueZAdapterInterface, property.name, dbus.MakeVariant(property.value)).Err; err != nil {
+		if err := callWithTimeout(
+			b.conn.Object(BlueZBusName, b.adapter),
+			dbusPropertiesInterface+".Set",
+			blueZAdapterInterface,
+			property.name,
+			dbus.MakeVariant(property.value),
+		).Err; err != nil {
 			return fmt.Errorf("set adapter %s: %w", property.name, err)
 		}
 	}
@@ -438,10 +536,10 @@ func (b *blueZBackend) configureAdapter(pairingOpen bool) error {
 
 func (b *blueZBackend) registerAgent() error {
 	manager := b.conn.Object(BlueZBusName, dbus.ObjectPath("/org/bluez"))
-	if err := manager.Call(blueZAgentManagerInterface+".RegisterAgent", 0, agentPath, "NoInputNoOutput").Err; err != nil {
+	if err := callWithTimeout(manager, blueZAgentManagerInterface+".RegisterAgent", agentPath, "NoInputNoOutput").Err; err != nil {
 		return fmt.Errorf("register pairing agent: %w", err)
 	}
-	if err := manager.Call(blueZAgentManagerInterface+".RequestDefaultAgent", 0, agentPath).Err; err != nil {
+	if err := callWithTimeout(manager, blueZAgentManagerInterface+".RequestDefaultAgent", agentPath).Err; err != nil {
 		return fmt.Errorf("select default pairing agent: %w", err)
 	}
 	return nil
@@ -449,8 +547,12 @@ func (b *blueZBackend) registerAgent() error {
 
 func (b *blueZBackend) registerGatt() error {
 	options := map[string]dbus.Variant{}
-	if err := b.conn.Object(BlueZBusName, b.adapter).
-		Call(blueZGattManagerInterface+".RegisterApplication", 0, applicationPath, options).Err; err != nil {
+	if err := callWithTimeout(
+		b.conn.Object(BlueZBusName, b.adapter),
+		blueZGattManagerInterface+".RegisterApplication",
+		applicationPath,
+		options,
+	).Err; err != nil {
 		return fmt.Errorf("register BLE GATT application: %w", err)
 	}
 	return nil
@@ -458,8 +560,12 @@ func (b *blueZBackend) registerGatt() error {
 
 func (b *blueZBackend) registerAdvertisement() error {
 	options := map[string]dbus.Variant{}
-	if err := b.conn.Object(BlueZBusName, b.adapter).
-		Call(blueZAdvManagerInterface+".RegisterAdvertisement", 0, advertisementPath, options).Err; err != nil {
+	if err := callWithTimeout(
+		b.conn.Object(BlueZBusName, b.adapter),
+		blueZAdvManagerInterface+".RegisterAdvertisement",
+		advertisementPath,
+		options,
+	).Err; err != nil {
 		return fmt.Errorf("register BLE advertisement: %w", err)
 	}
 	return nil
@@ -467,11 +573,40 @@ func (b *blueZBackend) registerAdvertisement() error {
 
 func (b *blueZBackend) getManagedObjects() (managedObjects, error) {
 	objects := managedObjects{}
-	if err := b.conn.Object(BlueZBusName, blueZRootPath).
-		Call(dbusObjectManagerInterface+".GetManagedObjects", 0).Store(&objects); err != nil {
+	if err := callWithTimeout(
+		b.conn.Object(BlueZBusName, blueZRootPath),
+		dbusObjectManagerInterface+".GetManagedObjects",
+	).Store(&objects); err != nil {
 		return nil, fmt.Errorf("read BlueZ managed objects: %w", err)
 	}
 	return objects, nil
+}
+
+func callWithTimeout(object dbus.BusObject, method string, args ...any) *dbus.Call {
+	return callWithDeadline(object, blueZDBusCallTimeout, method, args...)
+}
+
+func callWithCleanupTimeout(object dbus.BusObject, method string, args ...any) *dbus.Call {
+	return callWithDeadline(object, blueZCleanupCallTimeout, method, args...)
+}
+
+func callWithDeadline(object dbus.BusObject, timeout time.Duration, method string, args ...any) *dbus.Call {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return object.CallWithContext(ctx, method, 0, args...)
+}
+
+func isDBusErrorNamed(err error, name string) bool {
+	for err != nil {
+		switch typed := err.(type) {
+		case dbus.Error:
+			return typed.Name == name
+		case *dbus.Error:
+			return typed != nil && typed.Name == name
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
 }
 
 func findAdapter(objects managedObjects) dbus.ObjectPath {
@@ -491,14 +626,25 @@ func (b *blueZBackend) handleSignal(signal *dbus.Signal) {
 	if signal == nil {
 		return
 	}
+	if signal.Name == dbusBusInterface+".NameOwnerChanged" {
+		if signal.Sender != dbusBusName || len(signal.Body) < 3 || signal.Body[0] != BlueZBusName {
+			return
+		}
+		newOwner, _ := signal.Body[2].(string)
+		if newOwner != b.blueZOwner {
+			b.reportFatal(errors.New("BlueZ D-Bus owner changed"))
+		}
+		return
+	}
+	if signal.Sender != BlueZBusName && signal.Sender != b.blueZOwner {
+		return
+	}
 	switch signal.Name {
 	case dbusPropertiesInterface + ".PropertiesChanged":
 		b.handlePropertiesChanged(signal)
 	case dbusObjectManagerInterface + ".InterfacesAdded",
 		dbusObjectManagerInterface + ".InterfacesRemoved":
-		if err := b.rescanBluetoothState(); err != nil {
-			b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
-		}
+		b.requestRescan()
 	}
 }
 
@@ -535,9 +681,7 @@ func (b *blueZBackend) handlePropertiesChanged(signal *dbus.Signal) {
 		needsRescan = notifyingChanged || serviceChanged || uuidChanged
 	}
 	if needsRescan {
-		if err := b.rescanBluetoothState(); err != nil {
-			b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
-		}
+		b.requestRescan()
 	}
 }
 
@@ -546,7 +690,10 @@ func (b *blueZBackend) rescanBluetoothState() error {
 	if err != nil {
 		return err
 	}
-	trusted, bondedCount := b.refreshTrustedDevice(objects)
+	trusted, bondedCount, err := b.refreshTrustedDevice(objects)
+	if err != nil {
+		return err
+	}
 	var trustedProps map[string]dbus.Variant
 	if trusted.IsValid() {
 		trustedProps = objects[trusted][blueZDeviceInterface]
@@ -585,12 +732,13 @@ func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.Obj
 			if !ok || parentService != servicePath {
 				continue
 			}
-			switch strings.ToLower(variantString(charProps, "UUID")) {
-			case ANCSNotificationSourceUUID:
+			charUUID := variantString(charProps, "UUID")
+			switch {
+			case strings.EqualFold(charUUID, ANCSNotificationSourceUUID):
 				paths.notificationSource = charPath
-			case ANCSControlPointUUID:
+			case strings.EqualFold(charUUID, ANCSControlPointUUID):
 				paths.controlPoint = charPath
-			case ANCSDataSourceUUID:
+			case strings.EqualFold(charUUID, ANCSDataSourceUUID):
 				paths.dataSource = charPath
 			}
 		}
@@ -621,8 +769,10 @@ func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.Obj
 		return fmt.Errorf("subscribe ANCS Notification Source: %w", err)
 	}
 	if err := b.startNotify(objects, selected.paths.dataSource); err != nil {
-		_ = b.conn.Object(BlueZBusName, selected.paths.notificationSource).
-			Call(blueZGattCharInterface+".StopNotify", 0).Err
+		_ = callWithTimeout(
+			b.conn.Object(BlueZBusName, selected.paths.notificationSource),
+			blueZGattCharInterface+".StopNotify",
+		).Err
 		return fmt.Errorf("subscribe ANCS Data Source: %w", err)
 	}
 
@@ -631,8 +781,12 @@ func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.Obj
 	b.ancsMu.Unlock()
 	b.service.consumer.SetControlPointWriter(func(command []byte) error {
 		options := map[string]dbus.Variant{"type": dbus.MakeVariant("command")}
-		return b.conn.Object(BlueZBusName, selected.paths.controlPoint).
-			Call(blueZGattCharInterface+".WriteValue", 0, command, options).Err
+		return callWithTimeout(
+			b.conn.Object(BlueZBusName, selected.paths.controlPoint),
+			blueZGattCharInterface+".WriteValue",
+			command,
+			options,
+		).Err
 	})
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.ANCSSubscribed = true
@@ -646,7 +800,11 @@ func (b *blueZBackend) startNotify(objects managedObjects, path dbus.ObjectPath)
 	if variantBool(properties, "Notifying") {
 		return nil
 	}
-	return b.conn.Object(BlueZBusName, path).Call(blueZGattCharInterface+".StartNotify", 0).Err
+	err := callWithTimeout(b.conn.Object(BlueZBusName, path), blueZGattCharInterface+".StartNotify").Err
+	if isDBusErrorNamed(err, "org.bluez.Error.InProgress") {
+		return nil
+	}
+	return err
 }
 
 func (b *blueZBackend) clearANCS(reason string) {
@@ -661,8 +819,8 @@ func (b *blueZBackend) clearANCS(reason string) {
 }
 
 func (b *blueZBackend) NotifyWake(sequence uint64, reason string) (bool, error) {
-	b.ancsMu.Lock()
-	defer b.ancsMu.Unlock()
+	b.wakeMu.Lock()
+	defer b.wakeMu.Unlock()
 	if b.closed {
 		return false, ErrBluetoothUnavailable
 	}
@@ -710,25 +868,31 @@ func (m *gattObjectManager) GetManagedObjects() (managedObjects, *dbus.Error) {
 }
 
 type wakeCharacteristic struct {
-	backend *blueZBackend
+	backend    *blueZBackend
+	properties *prop.Properties
+}
+
+func (c *wakeCharacteristic) setGattProperties(properties *prop.Properties) {
+	c.properties = properties
+	c.backend.wakeProps = properties
 }
 
 func (c *wakeCharacteristic) ReadValue(options map[string]dbus.Variant) ([]byte, *dbus.Error) {
-	value, _ := c.backend.wakeProps.GetMust(blueZGattCharInterface, "Value").([]byte)
+	value, _ := c.properties.GetMust(blueZGattCharInterface, "Value").([]byte)
 	return readValueAtOffset(value, options)
 }
 
 func (c *wakeCharacteristic) StartNotify() *dbus.Error {
-	if notifying, _ := c.backend.wakeProps.GetMust(blueZGattCharInterface, "Notifying").(bool); notifying {
+	if notifying, _ := c.properties.GetMust(blueZGattCharInterface, "Notifying").(bool); notifying {
 		return dbus.NewError("org.bluez.Error.InProgress", []any{"notifications already enabled"})
 	}
-	c.backend.wakeProps.SetMust(blueZGattCharInterface, "Notifying", true)
+	c.properties.SetMust(blueZGattCharInterface, "Notifying", true)
 	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = true })
 	return nil
 }
 
 func (c *wakeCharacteristic) StopNotify() *dbus.Error {
-	c.backend.wakeProps.SetMust(blueZGattCharInterface, "Notifying", false)
+	c.properties.SetMust(blueZGattCharInterface, "Notifying", false)
 	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = false })
 	return nil
 }
@@ -742,18 +906,12 @@ type pairingAgent struct {
 }
 
 func (a *pairingAgent) Release() *dbus.Error { return nil }
-func (a *pairingAgent) RequestPinCode(device dbus.ObjectPath) (string, *dbus.Error) {
-	if err := a.authorize(device); err != nil {
-		return "", err
-	}
-	return "000000", nil
+func (a *pairingAgent) RequestPinCode(dbus.ObjectPath) (string, *dbus.Error) {
+	return "", dbus.NewError("org.bluez.Error.Rejected", []any{"legacy PIN pairing is unsupported"})
 }
 func (a *pairingAgent) DisplayPinCode(dbus.ObjectPath, string) *dbus.Error { return nil }
-func (a *pairingAgent) RequestPasskey(device dbus.ObjectPath) (uint32, *dbus.Error) {
-	if err := a.authorize(device); err != nil {
-		return 0, err
-	}
-	return 0, nil
+func (a *pairingAgent) RequestPasskey(dbus.ObjectPath) (uint32, *dbus.Error) {
+	return 0, dbus.NewError("org.bluez.Error.Rejected", []any{"legacy passkey pairing is unsupported"})
 }
 func (a *pairingAgent) DisplayPasskey(dbus.ObjectPath, uint32, uint16) *dbus.Error {
 	return nil

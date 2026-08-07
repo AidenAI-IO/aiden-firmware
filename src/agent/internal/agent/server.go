@@ -30,6 +30,7 @@ import (
 	_ "aiden-agent/internal/agent/tts/adapters/minimax"
 	_ "aiden-agent/internal/agent/tts/adapters/openrouter"
 	_ "aiden-agent/internal/agent/tts/adapters/volcengine"
+	"aiden-agent/internal/ble"
 )
 
 const (
@@ -40,44 +41,48 @@ const (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime                *Runtime
-	addr                   string
-	logger                 *Logger
-	userFilesReportPath    string
-	userFilesToolsDir      string
-	userFilesMemoryDir     string
-	userFilesSkillsDir     string
-	userFilesSkillStateDir string
-	mu                     sync.Mutex
-	history                []Message
-	historyStore           *ChatHistoryStore
-	episodeStore           *TaskEpisodeStore
-	sttClient              STTClient
-	ttsManager             *tts.ProviderManager
-	ttsMu                  sync.RWMutex
-	audioClient            *AudioServiceClient
-	ttsPlaybackBackend     tts.AudioServiceBackend
-	screenCaptureMu        sync.Mutex
-	screenCaptureClient    *ScreenCaptureClient
-	recordMu               sync.Mutex
-	webRecording           *webAudioRecording
-	sttConfigTestSession   *sttConfigTestLiveSession
-	bridge                 *PhoneBridge
-	androidADB             androidADBController
-	liveActivity           *LiveActivityManager
-	pendingResults         map[string]*chatPendingResult
-	pendingResultsMu       sync.Mutex
-	activeRuns             map[string]context.CancelFunc
-	activeRunsMu           sync.Mutex
-	terminatedRequests     map[string]struct{}
-	terminatedRequestsMu   sync.Mutex
-	activeOutputs          map[string]map[*activeTTSOutput]struct{}
-	activeOutputsMu        sync.Mutex
-	pendingSteers          map[string]pendingSteerMessage
-	steerSignals           map[string]chan struct{}
-	steersMu               sync.Mutex
-	eventBroadcaster       *EventBroadcaster
-	storageMonitor         *StorageMonitor
+	runtime                 *Runtime
+	addr                    string
+	logger                  *Logger
+	userFilesReportPath     string
+	userFilesToolsDir       string
+	userFilesMemoryDir      string
+	userFilesSkillsDir      string
+	userFilesSkillStateDir  string
+	mu                      sync.Mutex
+	history                 []Message
+	historyStore            *ChatHistoryStore
+	episodeStore            *TaskEpisodeStore
+	sttClient               STTClient
+	ttsManager              *tts.ProviderManager
+	ttsMu                   sync.RWMutex
+	audioClient             *AudioServiceClient
+	ttsPlaybackBackend      tts.AudioServiceBackend
+	screenCaptureMu         sync.Mutex
+	screenCaptureClient     *ScreenCaptureClient
+	recordMu                sync.Mutex
+	webRecording            *webAudioRecording
+	sttConfigTestSession    *sttConfigTestLiveSession
+	bridge                  *PhoneBridge
+	bleSocketPath           string
+	bleStatusRequest        func(context.Context, string) (ble.RuntimeStatus, error)
+	blePairingStartRequest  func(context.Context, string) (ble.RuntimeStatus, error)
+	blePairingForgetRequest func(context.Context, string) (ble.ForgetResult, error)
+	androidADB              androidADBController
+	liveActivity            *LiveActivityManager
+	pendingResults          map[string]*chatPendingResult
+	pendingResultsMu        sync.Mutex
+	activeRuns              map[string]context.CancelFunc
+	activeRunsMu            sync.Mutex
+	terminatedRequests      map[string]struct{}
+	terminatedRequestsMu    sync.Mutex
+	activeOutputs           map[string]map[*activeTTSOutput]struct{}
+	activeOutputsMu         sync.Mutex
+	pendingSteers           map[string]pendingSteerMessage
+	steerSignals            map[string]chan struct{}
+	steersMu                sync.Mutex
+	eventBroadcaster        *EventBroadcaster
+	storageMonitor          *StorageMonitor
 }
 
 type webAudioRecording struct {
@@ -363,26 +368,30 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		userFilesBaseDir = "/userdata/agent"
 	}
 	s := &Server{
-		runtime:                runtime,
-		addr:                   addr,
-		logger:                 runtime.logger,
-		userFilesReportPath:    "/userdata/agent/files_report.html",
-		userFilesToolsDir:      "/userdata/agent_tools",
-		userFilesMemoryDir:     filepath.Join(userFilesBaseDir, "memory"),
-		userFilesSkillsDir:     filepath.Join(userFilesBaseDir, "skills"),
-		userFilesSkillStateDir: filepath.Join(userFilesBaseDir, "skill-state"),
-		history:                make([]Message, 0),
-		screenCaptureClient:    NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
-		bridge:                 runtime.PhoneBridge(),
-		androidADB:             NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
-		liveActivity:           NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
-		pendingResults:         make(map[string]*chatPendingResult),
-		activeRuns:             make(map[string]context.CancelFunc),
-		terminatedRequests:     make(map[string]struct{}),
-		pendingSteers:          make(map[string]pendingSteerMessage),
-		steerSignals:           make(map[string]chan struct{}),
-		eventBroadcaster:       NewEventBroadcaster(),
-		storageMonitor:         runtime.storageMonitor,
+		runtime:                 runtime,
+		addr:                    addr,
+		logger:                  runtime.logger,
+		userFilesReportPath:     "/userdata/agent/files_report.html",
+		userFilesToolsDir:       "/userdata/agent_tools",
+		userFilesMemoryDir:      filepath.Join(userFilesBaseDir, "memory"),
+		userFilesSkillsDir:      filepath.Join(userFilesBaseDir, "skills"),
+		userFilesSkillStateDir:  filepath.Join(userFilesBaseDir, "skill-state"),
+		history:                 make([]Message, 0),
+		screenCaptureClient:     NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
+		bridge:                  runtime.PhoneBridge(),
+		bleSocketPath:           defaultBLEServiceSocketPath,
+		bleStatusRequest:        ble.RequestStatus,
+		blePairingStartRequest:  ble.RequestPairingStart,
+		blePairingForgetRequest: ble.RequestPairingForget,
+		androidADB:              NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
+		liveActivity:            NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
+		pendingResults:          make(map[string]*chatPendingResult),
+		activeRuns:              make(map[string]context.CancelFunc),
+		terminatedRequests:      make(map[string]struct{}),
+		pendingSteers:           make(map[string]pendingSteerMessage),
+		steerSignals:            make(map[string]chan struct{}),
+		eventBroadcaster:        NewEventBroadcaster(),
+		storageMonitor:          runtime.storageMonitor,
 	}
 	if s.userFilesMemoryDir != "" {
 		s.historyStore = NewChatHistoryStore(filepath.Join(s.userFilesMemoryDir, "chat_history"))
@@ -487,6 +496,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/phone-bridge/commands", s.handlePhoneBridgeCommands)
 	mux.HandleFunc("/api/phone-bridge/results", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
+	mux.HandleFunc("/api/bluetooth/status", s.handleBluetoothStatus)
+	mux.HandleFunc("/api/bluetooth/pairing/start", s.handleBluetoothPairingStart)
+	mux.HandleFunc("/api/bluetooth/pairing/forget", s.handleBluetoothPairingForget)
 	mux.HandleFunc("/api/android-adb/status", s.handleAndroidADBStatus)
 	mux.HandleFunc("/api/android-adb/pair", s.handleAndroidADBPair)
 	mux.HandleFunc("/api/storage/monitor/status", s.handleStorageMonitorStatus)
