@@ -4,7 +4,7 @@ import {
   cancelEditSection, closeTestToast, disableAgentConfigEditing, enterEditSection,
   initialReadyMessage, loadConfig, loadConfigMeta, lockAllSections, saveSection, testSection
 } from './config-form.js';
-import {initI18n, saveLocale} from './i18n.js';
+import {initI18n, saveLocale, t} from './i18n.js';
 import {applyPendingAgentLogSnapshotIfIdle, exportLogs, refreshAgentLog, setAgentLogAutoScroll, syncAgentLogAutoScroll, toggleAgentLogAutoScroll} from './logs.js';
 import {refreshAgentStatus} from './agent-status.js';
 import {refreshOtaLog, triggerOtaUpdate} from './ota.js';
@@ -86,9 +86,9 @@ async function reloadAll() {
   try {
     await loadConfig();
     await scanWifi(false);
-    setBanner('Refreshed configuration and Wi-Fi list.', false);
+    setBanner(t('page.config_refreshed'), false);
   } catch (err) {
-    setBanner('Refresh failed.', true);
+    setBanner(t('page.refresh_failed'), true);
     setDetails(err.message);
   } finally {
     byId('reloadBtn').disabled = false;
@@ -100,7 +100,7 @@ async function init() {
   initProviders();
   configureTerminalLink();
   let metaOk = true;
-  setBanner('Reading configuration metadata...', false);
+  setBanner(t('page.reading_config_metadata'), false);
   try {
     await loadConfigMeta();
   } catch (err) {
@@ -112,14 +112,14 @@ async function init() {
     bindFieldVisibility();
   }
   lockAllSections();
-  setBanner('Reading configuration...', false);
+  setBanner(t('page.reading_config'), false);
   try {
     await loadConfig();
     await scanWifi(false);
     await refreshAgentLog(false);
     setBanner(initialReadyMessage(metaOk), !metaOk);
   } catch (err) {
-    setBanner('Page initialization failed.', true);
+    setBanner(t('page.initialization_failed'), true);
     setDetails(err.message);
   }
   if (!metaOk) disableAgentConfigEditing();

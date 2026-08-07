@@ -42,6 +42,7 @@ inline std::string read_config_web_config_scripts() {
         "assets/js/config/state.js",
         "assets/js/config/api.js",
         "assets/js/config/i18n.js",
+        "assets/js/config/test-toast.js",
         "assets/js/config/config-meta.js",
         "assets/js/config/config-form.js",
         "assets/js/config/providers.js",

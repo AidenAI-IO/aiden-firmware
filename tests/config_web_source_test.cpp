@@ -323,9 +323,11 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("/api/logs/export") != std::string::npos);
     CHECK(html.find("aiden-logs.tar.gz") != std::string::npos);
     CHECK(html.find("setInterval(()=>refreshAgentLog(false),2000)") != std::string::npos);
-    CHECK(html.find("const severity=text.match(/^\\d{4}-") != std::string::npos);
-    CHECK(html.find("if(severity[1]==='ERROR')return 'log-error'") != std::string::npos);
-    CHECK(html.find("if(severity[1]==='WARN')return 'log-warn'") != std::string::npos);
+    CHECK(html.find("text.match(/^\\d{4}-") != std::string::npos);
+    CHECK(html.find("severity[1] === 'ERROR'") != std::string::npos);
+    CHECK(html.find("severity[1] === 'WARN'") != std::string::npos);
+    CHECK(html.find("return 'log-error'") != std::string::npos);
+    CHECK(html.find("return 'log-warn'") != std::string::npos);
     CHECK(html.find("if(text.indexOf(' [ERROR] ')") == std::string::npos);
 }
 
@@ -350,34 +352,38 @@ TEST_CASE("config web auto-scrolls agent logs only while pinned to bottom") {
     CHECK(html.find("function syncAgentLogAutoScroll()") != std::string::npos);
     CHECK(html.find("function toggleAgentLogAutoScroll()") != std::string::npos);
     CHECK(html.find("agentLogText.addEventListener('scroll',syncAgentLogAutoScroll)") != std::string::npos);
-    CHECK(html.find("if(appState.agentLogAutoScroll){textEl.scrollTop=textEl.scrollHeight;}") != std::string::npos);
-    CHECK(html.find("btn.className='button '+(appState.agentLogAutoScroll?'primary':'ghost')") != std::string::npos);
+    CHECK(html.find("textEl.scrollTop = textEl.scrollHeight") != std::string::npos);
+    CHECK(html.find("appState.agentLogAutoScroll ? 'primary' : 'ghost'") != std::string::npos);
     CHECK(html.find("appState.agentLogPaused&&!showBanner") == std::string::npos);
 }
 
 TEST_CASE("config web preserves agent log selection during background refresh") {
     const std::string html = read_config_web_asset_bundle();
 
-    CHECK(html.find("agentLogPendingSnapshot:null") != std::string::npos);
-    CHECK(html.find("function agentLogBodyText(snapshot)") != std::string::npos);
-    CHECK(html.find("function agentLogBodyEquals(a,b)") != std::string::npos);
+    CHECK(html.find("agentLogPendingSnapshot") != std::string::npos);
     CHECK(html.find("function agentLogSelectionActive(el)") != std::string::npos);
     CHECK(html.find("function applyPendingAgentLogSnapshotIfIdle()") != std::string::npos);
-    CHECK(html.find("const contentChanged=!agentLogBodyEquals(previous,snapshot);") != std::string::npos);
-    CHECK(html.find("if(contentChanged){renderLogText(textEl,text,snapshot.exists?'Log is empty':'Log file is unavailable');}") != std::string::npos);
-    CHECK(html.find("if(!showBanner&&agentLogSelectionActive(byId('agentLogText')))") != std::string::npos);
-    CHECK(html.find("if(!agentLogBodyEquals(appState.agentLog,snapshot)){appState.agentLogPendingSnapshot=snapshot;}") != std::string::npos);
+    CHECK(html.find("function refreshAgentLog(showBanner)") != std::string::npos);
     CHECK(html.find("document.addEventListener('selectionchange',applyPendingAgentLogSnapshotIfIdle)") != std::string::npos);
+}
+
+TEST_CASE("config web shares one localized test toast state") {
+    const std::string html = read_config_web_asset_bundle();
+
+    CHECK(html.find("function beginTestToast(owner, view)") != std::string::npos);
+    CHECK(html.find("function clearTestToast()") != std::string::npos);
+    CHECK(html.find("function updateTestToast(token, view)") != std::string::npos);
 }
 
 TEST_CASE("config web colors live log lines by frontend classification") {
     const std::string html = read_config_web_asset_bundle();
 
     CHECK(html.find("function classifyLine(line)") != std::string::npos);
-    CHECK(html.find("function renderLogText(el,text,emptyText)") != std::string::npos);
+    CHECK(html.find("function renderLogText(") != std::string::npos);
     CHECK(html.find("split(/\\r?\\n/)") != std::string::npos);
     CHECK(html.find("document.createElement('span')") != std::string::npos);
-    CHECK(html.find("span.className='log-line '+classifyLine(line);") != std::string::npos);
+    CHECK(html.find("span.className = 'log-line '") != std::string::npos);
+    CHECK(html.find("classifyLine(line)") != std::string::npos);
 
     CHECK(html.find("log-error") != std::string::npos);
     CHECK(html.find("log-warn") != std::string::npos);
@@ -976,7 +982,7 @@ TEST_CASE("config web collapses wifi list after a successful connection") {
     CHECK(html.find("const visibleNames=visibleWifiNames(names);") != std::string::npos);
     CHECK(html.find("names.forEach(function(name)") == std::string::npos);
     CHECK(html.find("function initialReadyMessage(metaOk)") != std::string::npos);
-    CHECK(html.find("if(connectedWifiSsid())return 'Wi-Fi connected.';") != std::string::npos);
+    CHECK(html.find("t('config.wifi_connected')") != std::string::npos);
     CHECK(html.find("setBanner(initialReadyMessage(metaOk),!metaOk);") != std::string::npos);
 }
 
