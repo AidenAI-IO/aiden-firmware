@@ -9,6 +9,7 @@ CONFIG_DIR=${CONFIG_DIR:-/userdata/agent}
 WIFI_CONFIG_PATH=/userdata/wpa_supplicant.conf
 SYSTEM_ENV_PATH=${SYSTEM_ENV_PATH:-/userdata/system/env}
 BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
+WEB_ROOT=${WEB_ROOT:-/oem/usr/share/aiden/config-web}
 BOOT_TIMELINE_HELPER=${BOOT_TIMELINE_HELPER:-/etc/aiden_boot_timeline.sh}
 
 if [ -f "$BOOT_CONF" ]; then
@@ -177,7 +178,7 @@ start() {
 
     mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SYSTEM_ENV_PATH")"
 
-    "$ENV_RUN_BIN" "$BIN" --bind=0.0.0.0 --port="$PORT" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" &
+    "$ENV_RUN_BIN" "$BIN" --bind=0.0.0.0 --port="$PORT" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" --web-root="$WEB_ROOT" &
     child_pid=$!
     echo "$child_pid" > "$PID_FILE"
 

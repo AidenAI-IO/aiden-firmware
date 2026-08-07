@@ -1,8 +1,7 @@
 #include "agent_toml.h"
 #include "aiden_log.h"
 #include "audio_service_client.h"
-#include "config_web_html.h"
-#include "config_web_llm_html.h"
+#include "config_web_static_assets.h"
 #include "system_env_parser.h"
 #include "wifi_config.h"
 
@@ -53,6 +52,7 @@ struct Options {
     std::string cmdline_path = "/proc/cmdline";
     std::string system_env_path = "/userdata/system/env";
     std::string storage_state_path = "/run/aiden/storage.state";
+    std::string web_root = "/oem/usr/share/aiden/config-web";
 };
 
 struct HttpRequest {
@@ -76,6 +76,7 @@ struct ApiResponse {
     std::string body = "{}";
     int body_fd = -1;
     unsigned long long body_fd_size = 0;
+    std::vector<std::pair<std::string, std::string> > headers;
 };
 
 struct CommandResult {
@@ -288,6 +289,14 @@ ApiResponse proxy_agent_get_request(const Options& options,
                                      const std::string& agent_path_with_query);
 ApiResponse handle_api_models(const Options& options, const std::string& query_string);
 ApiResponse handle_usb_reenumerate(const Options& options);
+void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config);
+bool flatten_provider_reference(const Options& options,
+                                const std::string& section,
+                                cJSON* values,
+                                std::string* error);
+bool resolve_config_test_api_key(const Options& options,
+                                 cJSON* values,
+                                 std::string* error);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
@@ -1658,6 +1667,9 @@ void send_response(int client_fd, const ApiResponse& response) {
     std::ostringstream header;
     header << "HTTP/1.1 " << response.status_code << " " << response.status_text << "\r\n";
     header << "Content-Type: " << response.content_type << "\r\n";
+    for (size_t i = 0; i < response.headers.size(); ++i) {
+        header << response.headers[i].first << ": " << response.headers[i].second << "\r\n";
+    }
     if (response.body_fd >= 0) {
         header << "Content-Length: " << response.body_fd_size << "\r\n";
     } else {
@@ -1854,7 +1866,9 @@ void load_current_agent_config(const Options& options,
             *load_error = config_error;
         }
         *config = aiden::AgentToml();
+        return;
     }
+    preserve_redacted_agent_secrets(options, config);
 }
 
 void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config) {
@@ -1866,7 +1880,19 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
         config->live_activity.relay_api_key.empty() && config->live_activity.has_relay_api_key;
     bool need_live_activity_private_key_pem =
         config->live_activity.private_key_pem.empty() && config->live_activity.has_private_key_pem;
-    if (!need_search_api_key && !need_live_activity_relay_api_key && !need_live_activity_private_key_pem) {
+    bool need_provider_secrets = false;
+    for (const auto& item : config->model_providers) {
+        need_provider_secrets = need_provider_secrets || item.second.api_key.empty();
+    }
+    for (const auto& item : config->tts_providers) {
+        need_provider_secrets = need_provider_secrets || item.second.api_key.empty();
+    }
+    for (const auto& item : config->stt_providers) {
+        need_provider_secrets = need_provider_secrets || item.second.api_key.empty() ||
+            item.second.secret_id.empty() || item.second.secret_key.empty();
+    }
+    if (!need_search_api_key && !need_live_activity_relay_api_key &&
+        !need_live_activity_private_key_pem && !need_provider_secrets) {
         return;
     }
 
@@ -1886,6 +1912,28 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
     if (need_live_activity_private_key_pem && !stored.live_activity.private_key_pem.empty()) {
         config->live_activity.private_key_pem = stored.live_activity.private_key_pem;
         config->live_activity.has_private_key_pem = true;
+    }
+    for (auto& item : config->model_providers) {
+        std::map<std::string, aiden::ModelProviderToml>::const_iterator previous =
+            stored.model_providers.find(item.first);
+        if (previous != stored.model_providers.end() && item.second.api_key.empty()) {
+            item.second.api_key = previous->second.api_key;
+        }
+    }
+    for (auto& item : config->tts_providers) {
+        std::map<std::string, aiden::TTSProviderToml>::const_iterator previous =
+            stored.tts_providers.find(item.first);
+        if (previous != stored.tts_providers.end() && item.second.api_key.empty()) {
+            item.second.api_key = previous->second.api_key;
+        }
+    }
+    for (auto& item : config->stt_providers) {
+        std::map<std::string, aiden::STTProviderToml>::const_iterator previous =
+            stored.stt_providers.find(item.first);
+        if (previous == stored.stt_providers.end()) continue;
+        if (item.second.api_key.empty()) item.second.api_key = previous->second.api_key;
+        if (item.second.secret_id.empty()) item.second.secret_id = previous->second.secret_id;
+        if (item.second.secret_key.empty()) item.second.secret_key = previous->second.secret_key;
     }
 }
 
@@ -1975,6 +2023,29 @@ bool parse_stt_test_values_request(cJSON* root, cJSON** stt_values, std::string*
     }
     if (error) {
         error->clear();
+    }
+    return true;
+}
+
+bool validate_stt_test_provider_fields(cJSON* values, std::string* error) {
+    static const char* fields[] = {
+        "provider",
+        "api_key",
+        "model",
+        "base_url",
+        "language",
+        "app_id",
+        "secret_id",
+        "secret_key",
+        "region",
+        "engine_model_type",
+        NULL,
+    };
+    for (size_t i = 0; fields[i]; ++i) {
+        if (!validate_config_field_type(
+                values, "stt_values", fields[i], CONFIG_FIELD_STRING, error)) {
+            return false;
+        }
     }
     return true;
 }
@@ -2586,7 +2657,35 @@ ApiResponse proxy_agent_json_request(const Options& options,
 }
 
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body) {
-    return proxy_agent_json_request(options, "/api/config-test/stt/start", body);
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        return make_json_error(400, "invalid JSON body");
+    }
+
+    cJSON* stt_values = NULL;
+    std::string parse_error;
+    if (!parse_stt_test_values_request(root, &stt_values, &parse_error)) {
+        cJSON_Delete(root);
+        return make_json_error(400, parse_error);
+    }
+    if (!validate_stt_test_provider_fields(stt_values, &parse_error)) {
+        cJSON_Delete(root);
+        return make_json_error(400, parse_error);
+    }
+
+    std::string resolve_error;
+    if (!flatten_provider_reference(options, "stt", stt_values, &resolve_error)) {
+        cJSON_Delete(root);
+        return make_json_error(503, "provider config unavailable");
+    }
+    if (!resolve_config_test_api_key(options, stt_values, &resolve_error)) {
+        cJSON_Delete(root);
+        return make_json_error(503, resolve_error);
+    }
+
+    const std::string resolved_body = cjson_to_string(root);
+    cJSON_Delete(root);
+    return proxy_agent_json_request(options, "/api/config-test/stt/start", resolved_body);
 }
 
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
@@ -2678,16 +2777,10 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON* provider_obj = cJSON_CreateObject();
         cJSON_AddStringToObject(provider_obj, "type", provider.type.c_str());
 
-        // Mask API key unless include_secrets is true
         if (include_secrets) {
             cJSON_AddStringToObject(provider_obj, "api_key", provider.api_key.c_str());
         } else {
-            std::string masked_key = mask_secret(provider.api_key);
-            cJSON_AddStringToObject(provider_obj, "api_key", masked_key.c_str());
-        }
-
-        if (!provider.token_env.empty()) {
-            cJSON_AddStringToObject(provider_obj, "token_env", provider.token_env.c_str());
+            cJSON_AddBoolToObject(provider_obj, "has_api_key", provider.api_key.empty() ? 0 : 1);
         }
         if (!provider.base_url.empty()) {
             cJSON_AddStringToObject(provider_obj, "base_url", provider.base_url.c_str());
@@ -2697,9 +2790,8 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     }
     cJSON_AddItemToObject(root, "model_providers", model_providers);
 
-    // Add tts_providers. api_key is masked like [model_providers.*] so a GET never
-    // returns it in the clear; update_config_from_json resolves the mask back to
-    // the stored secret when the UI posts it back unchanged.
+    // Provider credentials are write-only. Browser responses expose only
+    // configured-state flags; the save path preserves omitted values.
     cJSON* tts_providers = cJSON_CreateObject();
     for (const auto& item : config.tts_providers) {
         const aiden::TTSProviderToml& record = item.second;
@@ -2708,11 +2800,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         if (include_secrets) {
             cJSON_AddStringToObject(record_obj, "api_key", record.api_key.c_str());
         } else {
-            std::string masked_key = mask_secret(record.api_key);
-            cJSON_AddStringToObject(record_obj, "api_key", masked_key.c_str());
-        }
-        if (!record.token_env.empty()) {
-            cJSON_AddStringToObject(record_obj, "token_env", record.token_env.c_str());
+            cJSON_AddBoolToObject(record_obj, "has_api_key", record.api_key.empty() ? 0 : 1);
         }
         if (!record.model.empty()) {
             cJSON_AddStringToObject(record_obj, "model", record.model.c_str());
@@ -2730,8 +2818,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     }
     cJSON_AddItemToObject(root, "tts_providers", tts_providers);
 
-    // Add stt_providers. Secret fields (api_key, secret_id, secret_key) are
-    // masked when include_secrets is false; the UI resolves them on save.
+    // STT credentials follow the same write-only contract.
     cJSON* stt_providers = cJSON_CreateObject();
     for (const auto& item : config.stt_providers) {
         const aiden::STTProviderToml& record = item.second;
@@ -2740,11 +2827,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         if (include_secrets) {
             cJSON_AddStringToObject(record_obj, "api_key", record.api_key.c_str());
         } else {
-            std::string masked_key = mask_secret(record.api_key);
-            cJSON_AddStringToObject(record_obj, "api_key", masked_key.c_str());
-        }
-        if (!record.token_env.empty()) {
-            cJSON_AddStringToObject(record_obj, "token_env", record.token_env.c_str());
+            cJSON_AddBoolToObject(record_obj, "has_api_key", record.api_key.empty() ? 0 : 1);
         }
         if (!record.model.empty()) {
             cJSON_AddStringToObject(record_obj, "model", record.model.c_str());
@@ -2758,18 +2841,18 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         if (!record.secret_id.empty()) {
             if (include_secrets) {
                 cJSON_AddStringToObject(record_obj, "secret_id", record.secret_id.c_str());
-            } else {
-                std::string masked = mask_secret(record.secret_id);
-                cJSON_AddStringToObject(record_obj, "secret_id", masked.c_str());
             }
+        }
+        if (!include_secrets) {
+            cJSON_AddBoolToObject(record_obj, "has_secret_id", record.secret_id.empty() ? 0 : 1);
         }
         if (!record.secret_key.empty()) {
             if (include_secrets) {
                 cJSON_AddStringToObject(record_obj, "secret_key", record.secret_key.c_str());
-            } else {
-                std::string masked = mask_secret(record.secret_key);
-                cJSON_AddStringToObject(record_obj, "secret_key", masked.c_str());
             }
+        }
+        if (!include_secrets) {
+            cJSON_AddBoolToObject(record_obj, "has_secret_key", record.secret_key.empty() ? 0 : 1);
         }
         if (!record.region.empty()) {
             cJSON_AddStringToObject(record_obj, "region", record.region.c_str());
@@ -2805,7 +2888,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
     cJSON* tts = add_object(root, "tts");
     cJSON_AddStringToObject(tts, "provider", config.tts.provider.c_str());
-    cJSON_AddStringToObject(tts, "api_key", config.tts.api_key.c_str());
+    if (include_secrets) {
+        cJSON_AddStringToObject(tts, "api_key", config.tts.api_key.c_str());
+    }
     cJSON_AddStringToObject(tts, "model", config.tts.model.c_str());
     cJSON_AddStringToObject(tts, "voice_id", config.tts.voice_id.c_str());
     cJSON_AddStringToObject(tts, "reference_id", config.tts.reference_id.c_str());
@@ -2815,12 +2900,16 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON* stt = add_object(root, "stt");
     cJSON_AddStringToObject(stt, "provider", config.stt.provider.c_str());
     cJSON_AddStringToObject(stt, "language", config.stt.language.c_str());
-    cJSON_AddStringToObject(stt, "api_key", config.stt.api_key.c_str());
+    if (include_secrets) {
+        cJSON_AddStringToObject(stt, "api_key", config.stt.api_key.c_str());
+    }
     cJSON_AddStringToObject(stt, "model", config.stt.model.c_str());
     cJSON_AddStringToObject(stt, "base_url", config.stt.base_url.c_str());
     cJSON_AddStringToObject(stt, "app_id", config.stt.app_id.c_str());
-    cJSON_AddStringToObject(stt, "secret_id", config.stt.secret_id.c_str());
-    cJSON_AddStringToObject(stt, "secret_key", config.stt.secret_key.c_str());
+    if (include_secrets) {
+        cJSON_AddStringToObject(stt, "secret_id", config.stt.secret_id.c_str());
+        cJSON_AddStringToObject(stt, "secret_key", config.stt.secret_key.c_str());
+    }
     cJSON_AddStringToObject(stt, "region", config.stt.region.c_str());
     cJSON_AddStringToObject(stt, "engine_model_type", config.stt.engine_model_type.c_str());
 
@@ -2956,14 +3045,14 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 cJSON* wifi_to_json(const aiden::WifiNetworkConfig& wifi) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "ssid", wifi.ssid.c_str());
-    cJSON_AddStringToObject(root, "psk", wifi.psk.c_str());
+    cJSON_AddBoolToObject(root, "has_psk", wifi.psk.empty() ? 0 : 1);
     cJSON_AddStringToObject(root, "country", wifi.country.c_str());
     cJSON* networks = add_array(root, "networks");
     for (size_t i = 0; i < wifi.networks.size(); ++i) {
         const aiden::WifiNetwork& network = wifi.networks[i];
         cJSON* item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "ssid", network.ssid.c_str());
-        cJSON_AddStringToObject(item, "psk", network.psk.c_str());
+        cJSON_AddBoolToObject(item, "has_psk", network.psk.empty() ? 0 : 1);
         cJSON_AddNumberToObject(item, "priority", network.priority);
         cJSON_AddBoolToObject(item, "scan_ssid", network.scan_ssid ? 1 : 0);
         cJSON_AddBoolToObject(item, "disabled", network.disabled ? 1 : 0);
@@ -3122,6 +3211,36 @@ std::string provider_secret_source_name(cJSON* root, const char* section,
     return old_name->valuestring;
 }
 
+void update_write_only_api_key(cJSON* record, const std::string& previous_api_key,
+                               std::string* api_key) {
+    if (!record || !api_key) return;
+
+    cJSON* submitted_api_key = cJSON_GetObjectItem(record, "api_key");
+    if (json_is_string(submitted_api_key) && submitted_api_key->valuestring[0]) {
+        const std::string value = submitted_api_key->valuestring;
+        *api_key = !previous_api_key.empty() && value == mask_secret(previous_api_key)
+            ? previous_api_key
+            : value;
+        return;
+    }
+
+    *api_key = previous_api_key;
+}
+
+void update_write_only_secret(cJSON* record, const char* field,
+                              const std::string& previous, std::string* value) {
+    if (!record || !field || !value) return;
+    cJSON* submitted = cJSON_GetObjectItem(record, field);
+    if (!json_is_string(submitted) || !submitted->valuestring[0]) {
+        *value = previous;
+        return;
+    }
+    const std::string submitted_value = submitted->valuestring;
+    *value = !previous.empty() && submitted_value == mask_secret(previous)
+        ? previous
+        : submitted_value;
+}
+
 void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     if (!json_is_object(obj) || !m) return;
     set_json_str(&m->provider, obj, "provider");
@@ -3178,11 +3297,9 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         return;
     }
 
-    // Update model_providers. The payload is authoritative: a provider absent from
-    // it was deleted in the UI. Snapshot the current map first so masked
-    // api_key values ("sk-a***1234") can still resolve to the stored secret --
-    // reading back from `config->model_providers` after clearing it would always
-    // miss and silently wipe the key.
+    // Provider maps are authoritative for record membership. Credentials are
+    // write-only: omitted or empty values preserve the stored record, including
+    // across a rename identified by _provider_renames.
     cJSON* model_providers = cJSON_GetObjectItem(root, "model_providers");
     if (json_is_object(model_providers)) {
         const std::map<std::string, aiden::ModelProviderToml> previous_providers =
@@ -3197,31 +3314,14 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 
             aiden::ModelProviderToml provider;
             set_json_str_alias(&provider.type, item, "type", "provider");
-
-            cJSON* api_key = cJSON_GetObjectItem(item, "api_key");
-            if (json_is_string(api_key)) {
-                std::string key = api_key->valuestring;
-                // Keep the stored secret only when the submitted value is
-                // exactly the mask we handed the UI for this provider. Testing
-                // for a "***" substring instead would drop a real key that
-                // happens to contain it, and would blank the key for a provider
-                // the previous config did not have.
-                const std::string secret_source = provider_secret_source_name(
-                    root, "model_providers", provider_name);
-                std::map<std::string, aiden::ModelProviderToml>::const_iterator it =
-                    previous_providers.find(secret_source);
-                if (it != previous_providers.end() && !it->second.api_key.empty() &&
-                    key == mask_secret(it->second.api_key)) {
-                    provider.api_key = it->second.api_key;
-                } else {
-                    provider.api_key = key;
-                }
-            }
-
-            cJSON* token_env = cJSON_GetObjectItem(item, "token_env");
-            if (json_is_string(token_env)) {
-                provider.token_env = token_env->valuestring;
-            }
+            const std::string secret_source = provider_secret_source_name(
+                root, "model_providers", provider_name);
+            std::map<std::string, aiden::ModelProviderToml>::const_iterator previous =
+                previous_providers.find(secret_source);
+            update_write_only_api_key(
+                item,
+                previous == previous_providers.end() ? std::string() : previous->second.api_key,
+                &provider.api_key);
 
             cJSON* base_url = cJSON_GetObjectItem(item, "base_url");
             // A named provider's base_url is inherited by every model that
@@ -3253,29 +3353,19 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 
             aiden::TTSProviderToml record;
             set_json_str_alias(&record.type, item, "type", "provider");
-            set_json_str(&record.token_env, item, "token_env");
             set_json_str(&record.model, item, "model");
             set_json_str(&record.voice_id, item, "voice_id");
             set_json_str(&record.emotion, item, "emotion");
             set_json_str(&record.reference_id, item, "reference_id");
 
-            cJSON* api_key = cJSON_GetObjectItem(item, "api_key");
-            if (json_is_string(api_key)) {
-                // Keep the stored secret only when the submitted value is
-                // exactly the mask we handed the UI for this record. Matching a
-                // "***" substring instead would drop a real key containing it.
-                const std::string key = api_key->valuestring;
-                const std::string secret_source = provider_secret_source_name(
-                    root, "tts_providers", record_name);
-                std::map<std::string, aiden::TTSProviderToml>::const_iterator it =
-                    previous.find(secret_source);
-                if (it != previous.end() && !it->second.api_key.empty() &&
-                    key == mask_secret(it->second.api_key)) {
-                    record.api_key = it->second.api_key;
-                } else {
-                    record.api_key = key;
-                }
-            }
+            const std::string secret_source = provider_secret_source_name(
+                root, "tts_providers", record_name);
+            std::map<std::string, aiden::TTSProviderToml>::const_iterator stored =
+                previous.find(secret_source);
+            update_write_only_api_key(
+                item,
+                stored == previous.end() ? std::string() : stored->second.api_key,
+                &record.api_key);
 
             config->tts_providers[record_name] = record;
         }
@@ -3295,51 +3385,26 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 
             aiden::STTProviderToml record;
             set_json_str_alias(&record.type, item, "type", "provider");
-            set_json_str(&record.token_env, item, "token_env");
             set_json_str(&record.model, item, "model");
             set_json_str(&record.base_url, item, "base_url");
             set_json_str(&record.app_id, item, "app_id");
             set_json_str(&record.region, item, "region");
             set_json_str(&record.engine_model_type, item, "engine_model_type");
 
-            cJSON* api_key = cJSON_GetObjectItem(item, "api_key");
-            if (json_is_string(api_key)) {
-                const std::string key = api_key->valuestring;
-                std::map<std::string, aiden::STTProviderToml>::const_iterator it =
-                    previous.find(secret_source);
-                if (it != previous.end() && !it->second.api_key.empty() &&
-                    key == mask_secret(it->second.api_key)) {
-                    record.api_key = it->second.api_key;
-                } else {
-                    record.api_key = key;
-                }
-            }
-
-            cJSON* secret_id = cJSON_GetObjectItem(item, "secret_id");
-            if (json_is_string(secret_id)) {
-                const std::string value = secret_id->valuestring;
-                std::map<std::string, aiden::STTProviderToml>::const_iterator it =
-                    previous.find(secret_source);
-                if (it != previous.end() && !it->second.secret_id.empty() &&
-                    value == mask_secret(it->second.secret_id)) {
-                    record.secret_id = it->second.secret_id;
-                } else {
-                    record.secret_id = value;
-                }
-            }
-
-            cJSON* secret_key = cJSON_GetObjectItem(item, "secret_key");
-            if (json_is_string(secret_key)) {
-                const std::string value = secret_key->valuestring;
-                std::map<std::string, aiden::STTProviderToml>::const_iterator it =
-                    previous.find(secret_source);
-                if (it != previous.end() && !it->second.secret_key.empty() &&
-                    value == mask_secret(it->second.secret_key)) {
-                    record.secret_key = it->second.secret_key;
-                } else {
-                    record.secret_key = value;
-                }
-            }
+            std::map<std::string, aiden::STTProviderToml>::const_iterator stored =
+                previous.find(secret_source);
+            const aiden::STTProviderToml* stored_record =
+                stored == previous.end() ? NULL : &stored->second;
+            update_write_only_api_key(
+                item,
+                stored_record ? stored_record->api_key : std::string(),
+                &record.api_key);
+            update_write_only_secret(item, "secret_id",
+                                     stored_record ? stored_record->secret_id : std::string(),
+                                     &record.secret_id);
+            update_write_only_secret(item, "secret_key",
+                                     stored_record ? stored_record->secret_key : std::string(),
+                                     &record.secret_key);
 
             config->stt_providers[record_name] = record;
         }
@@ -6179,6 +6244,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         update_config_from_json(config_json, &config);
         preserve_redacted_agent_secrets(options, &config);
     }
+    aiden::migrate_flat_voice_provider_fields(config);
     // Only an explicitly submitted legacy model.api_key can be migrated. The
     // value loaded from the runtime config is already resolved from a provider
     // record and may belong to a different provider than the request selects.
@@ -6606,6 +6672,34 @@ static bool is_streaming_tts_provider(const std::string& provider) {
            provider == "volcengine";
 }
 
+bool is_known_config_test_provider_type(const std::string& section,
+                                        const std::string& provider) {
+    const std::string normalized = lowercase_copy(trim_copy(provider));
+    const char* const* known = NULL;
+    static const char* const model_types[] = {
+        "openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake", NULL,
+    };
+    static const char* const tts_types[] = {
+        "minimax", "minimax-cn", "minimax-ws", "fish-audio", "alicloud",
+        "volcengine", "openrouter", "google-cloud", NULL,
+    };
+    static const char* const stt_types[] = {
+        "openai-whisper", "openai", "tencent-asr", "tencent", "tencent_asr",
+        "openrouter", "qwen-asr", "google-cloud", NULL,
+    };
+    if (section == "model") {
+        known = model_types;
+    } else if (section == "tts") {
+        known = tts_types;
+    } else if (section == "stt") {
+        known = stt_types;
+    }
+    for (size_t i = 0; known && known[i]; ++i) {
+        if (normalized == known[i]) return true;
+    }
+    return false;
+}
+
 std::string provider_default_url(const std::string& provider, const std::string& section = "") {
     if (provider == "openrouter") return "https://openrouter.ai/api/v1";
     if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
@@ -6625,13 +6719,16 @@ std::string provider_default_url(const std::string& provider, const std::string&
     return "";
 }
 
-// set_json_str_if_absent adds key=value only when `values` does not already
-// carry a non-empty string for it, so a value the user typed into the form always
-// beats the stored record.
+// set_json_str_if_absent adds key=value only when `values` omits the field or
+// carries an empty string. A non-string value is malformed input and must remain
+// visible to the caller's validation instead of being replaced by stored data.
 void set_json_str_if_absent(cJSON* values, const char* key, const std::string& value) {
     if (value.empty()) return;
     cJSON* existing = cJSON_GetObjectItem(values, key);
     if (json_is_string(existing) && !trim_copy(existing->valuestring).empty()) {
+        return;
+    }
+    if (existing && !json_is_string(existing)) {
         return;
     }
     if (existing) {
@@ -6640,29 +6737,56 @@ void set_json_str_if_absent(cJSON* values, const char* key, const std::string& v
     cJSON_AddStringToObject(values, key, value.c_str());
 }
 
-// flatten_voice_provider_reference rewrites values.provider from a
-// [tts_providers]/[stt_providers] record name to its provider type and fills the
-// record's fields into `values`. Without it the config-test pre-checks, which read
-// the flat keys, would see an unknown provider and an empty api_key.
-void flatten_voice_provider_reference(const Options& options,
-                                      const std::string& section,
-                                      cJSON* values) {
-    if (!values) return;
+// flatten_provider_reference rewrites values.provider from a named provider
+// record to its provider type and fills the record's fields into `values`.
+// Without it the config-test pre-checks, which read the flat keys, would see an
+// unknown provider and an empty api_key.
+bool flatten_provider_reference(const Options& options,
+                                const std::string& section,
+                                cJSON* values,
+                                std::string* error) {
+    if (error) error->clear();
+    if (!values) return true;
     cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
-    if (!json_is_string(provider_item)) return;
+    if (!json_is_string(provider_item)) return true;
     const std::string ref = trim_copy(provider_item->valuestring);
-    if (ref.empty()) return;
+    if (ref.empty()) return true;
 
     aiden::AgentToml stored;
     std::string load_error;
     load_current_agent_config(options, &stored, &load_error);
+    if (!load_error.empty()) {
+        // A bare provider request is self-contained and does not need the
+        // stored config. Unknown names may be provider references, so failing
+        // to load their records must remain visible instead of being forwarded
+        // as an unknown provider.
+        if (is_known_config_test_provider_type(section, ref)) {
+            return true;
+        }
+        if (error) *error = load_error;
+        return false;
+    }
+
+    if (section == "model") {
+        std::map<std::string, aiden::ModelProviderToml>::const_iterator it =
+            stored.model_providers.find(ref);
+        if (it == stored.model_providers.end()) return true;
+        const aiden::ModelProviderToml& record = it->second;
+        if (trim_copy(record.type).empty()) return true;
+
+        cJSON_DeleteItemFromObject(values, "provider");
+        cJSON_AddStringToObject(values, "provider", record.type.c_str());
+        set_json_str_if_absent(values, "api_key", record.api_key);
+        set_json_str_if_absent(values, "base_url", record.base_url);
+        return true;
+    }
 
     if (section == "tts") {
         std::map<std::string, aiden::TTSProviderToml>::const_iterator it =
             stored.tts_providers.find(ref);
-        if (it == stored.tts_providers.end()) return;
+        if (it == stored.tts_providers.end()) return true;
         const aiden::TTSProviderToml& record = it->second;
-        if (trim_copy(record.type).empty()) return;
+        if (trim_copy(record.type).empty()) return true;
 
         cJSON_DeleteItemFromObject(values, "provider");
         cJSON_AddStringToObject(values, "provider", record.type.c_str());
@@ -6671,14 +6795,14 @@ void flatten_voice_provider_reference(const Options& options,
         set_json_str_if_absent(values, "voice_id", record.voice_id);
         set_json_str_if_absent(values, "emotion", record.emotion);
         set_json_str_if_absent(values, "reference_id", record.reference_id);
-        return;
+        return true;
     }
 
     std::map<std::string, aiden::STTProviderToml>::const_iterator it =
         stored.stt_providers.find(ref);
-    if (it == stored.stt_providers.end()) return;
+    if (it == stored.stt_providers.end()) return true;
     const aiden::STTProviderToml& record = it->second;
-    if (trim_copy(record.type).empty()) return;
+    if (trim_copy(record.type).empty()) return true;
 
     cJSON_DeleteItemFromObject(values, "provider");
     cJSON_AddStringToObject(values, "provider", record.type.c_str());
@@ -6690,6 +6814,61 @@ void flatten_voice_provider_reference(const Options& options,
     set_json_str_if_absent(values, "secret_key", record.secret_key);
     set_json_str_if_absent(values, "region", record.region);
     set_json_str_if_absent(values, "engine_model_type", record.engine_model_type);
+    return true;
+}
+
+bool resolve_config_test_api_key(const Options& options,
+                                 cJSON* values,
+                                 std::string* error) {
+    if (error) error->clear();
+    if (!values) return true;
+    cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
+    if (!json_is_string(api_key_item)) return true;
+
+    const std::string api_key = trim_copy(api_key_item->valuestring);
+    if (api_key.empty() || api_key[0] != '$') return true;
+
+    const std::string env_name = trim_copy(api_key.substr(1));
+    std::string resolved;
+    bool found_in_file = false;
+
+    if (file_exists(options.system_env_path.c_str())) {
+        std::string content;
+        std::string read_error;
+        if (!read_file_contents_checked(options.system_env_path.c_str(),
+                                        kMaxSystemEnvSize,
+                                        &content,
+                                        &read_error)) {
+            AIDEN_LOG_ERROR("config_test", "system_env_read_failed", "error=%s",
+                            read_error.c_str());
+            if (error) *error = "system env file is unavailable";
+            return false;
+        }
+        std::vector<aiden::EnvAssignment> assignments;
+        aiden::SystemEnvProxy proxy;
+        std::string parse_error;
+        if (!aiden::parse_system_env_content(content, &assignments, &proxy, &parse_error)) {
+            AIDEN_LOG_ERROR("config_test", "system_env_parse_failed", "error=%s",
+                            parse_error.c_str());
+            if (error) *error = "system env file is invalid";
+            return false;
+        }
+        for (size_t i = 0; i < assignments.size(); ++i) {
+            if (assignments[i].key == env_name) {
+                resolved = assignments[i].value;
+                found_in_file = true;
+            }
+        }
+    }
+
+    if (!found_in_file) {
+        const char* process_value = std::getenv(env_name.c_str());
+        resolved = process_value ? process_value : "";
+    }
+
+    cJSON_DeleteItemFromObject(values, "api_key");
+    cJSON_AddStringToObject(values, "api_key", resolved.c_str());
+    return true;
 }
 
 std::string build_curl_proxy_arg(const SystemProxy& proxy) {
@@ -6759,20 +6938,26 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         return make_json_error(400, "missing 'values' object");
     }
 
-    // Flatten a voice provider reference into `values` before anything reads it.
-    // The Test button posts the form state, and now that credentials live on a
-    // [tts_providers]/[stt_providers] record that form carries only the reference
-    // plus the globals. The checks below read values.provider and values.api_key
-    // directly, so an unresolved reference reads as an unknown provider with an
-    // empty key -- reporting "provider unknown" and "skipped because api_key is
-    // empty" for a record that is configured correctly.
+    // Flatten a provider reference into `values` before anything reads it. The
+    // Test button posts the form state, and now that credentials live on provider
+    // records that form carries only the reference plus the globals. The checks
+    // below read values.provider and values.api_key directly, so an unresolved
+    // reference reads as an unknown provider with an empty key.
     //
     // A value already present in `values` wins, so a field the user typed still
-    // takes precedence over the stored record. The agent CLI resolves references
-    // again on its own side (applyTTSPlaybackTestRequest), which is idempotent:
-    // once flattened, provider holds a bare type and matches no record.
-    if (section == "tts" || section == "stt") {
-        flatten_voice_provider_reference(options, section, values);
+    // takes precedence over the stored record. The voice playback test resolves
+    // references again on its own side, which is idempotent: once flattened,
+    // provider holds a bare type and matches no record.
+    if (section == "model" || section == "tts" || section == "stt") {
+        std::string resolve_error;
+        if (!flatten_provider_reference(options, section, values, &resolve_error)) {
+            cJSON_Delete(root);
+            return make_json_error(503, "provider config unavailable");
+        }
+        if (!resolve_config_test_api_key(options, values, &resolve_error)) {
+            cJSON_Delete(root);
+            return make_json_error(503, resolve_error);
+        }
     }
 
     cJSON* response = cJSON_CreateObject();
@@ -7418,17 +7603,17 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return response;
     }
 
-    if (request.method == "GET" && request.path == "/") {
+    aiden::ConfigWebStaticAssetResponse static_asset =
+        aiden::serve_config_web_static_asset(options.web_root, request.method, request.path);
+    if (static_asset.handled) {
         ApiResponse response;
-        response.content_type = "text/html; charset=utf-8";
-        response.body = CONFIG_WEB_HTML;
-        return response;
-    }
-
-    if (request.method == "GET" && request.path == "/llm-logs") {
-        ApiResponse response;
-        response.content_type = "text/html; charset=utf-8";
-        response.body = CONFIG_WEB_LLM_HTML;
+        response.status_code = static_asset.status_code;
+        response.status_text = static_asset.status_text;
+        response.content_type = static_asset.content_type;
+        response.body = static_asset.body;
+        response.body_fd = static_asset.body_fd;
+        response.body_fd_size = static_asset.body_fd_size;
+        response.headers = static_asset.headers;
         return response;
     }
 
@@ -7570,7 +7755,7 @@ void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0 << " [--bind=IP] [--port=PORT]"
               << " [--config=PATH] [--wifi-config=PATH] [--wifi-iface=NAME]"
               << " [--ota-state=PATH] [--cmdline=PATH] [--system-env=PATH]"
-              << " [--storage-state=PATH]" << std::endl;
+              << " [--storage-state=PATH] [--web-root=PATH]" << std::endl;
 }
 
 bool parse_args(int argc, char** argv, Options* options) {
@@ -7593,6 +7778,10 @@ bool parse_args(int argc, char** argv, Options* options) {
         } else if (consume_prefix(arg, "--cmdline=", &options->cmdline_path)) {
         } else if (consume_prefix(arg, "--system-env=", &options->system_env_path)) {
         } else if (consume_prefix(arg, "--storage-state=", &options->storage_state_path)) {
+        } else if (consume_prefix(arg, "--web-root=", &options->web_root)) {
+            if (options->web_root.empty()) {
+                return false;
+            }
         } else {
             return false;
         }
@@ -7668,10 +7857,10 @@ int main(int argc, char** argv) {
     }
 
     AIDEN_LOG_INFO("server", "listening",
-                   "bind_address=%s port=%d agent_config=%s wifi_config=%s system_env=%s",
+                   "bind_address=%s port=%d agent_config=%s wifi_config=%s system_env=%s web_root=%s",
                    options.bind_address.c_str(), options.port,
                    options.agent_config_path.c_str(), options.wifi_config_path.c_str(),
-                   options.system_env_path.c_str());
+                   options.system_env_path.c_str(), options.web_root.c_str());
 
     while (!g_should_stop) {
         sockaddr_in client_addr;

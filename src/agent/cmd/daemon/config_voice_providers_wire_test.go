@@ -2,23 +2,21 @@ package main
 
 import (
 	"encoding/json"
-	"reflect"
 	"strings"
 	"testing"
 
 	"aiden-agent/internal/agent"
 )
 
-// The voice provider records must survive config -> DTO -> config. This is the
-// same sync point that broke [model_providers] end to end: a missing DTO field made
-// the config page show zero records AND made every save of an unrelated section
-// erase them from agent.toml.
+// Voice provider records must reach the wire, but their credentials are
+// write-only. The browser receives configured-state flags and non-secret fields;
+// submitted api_key/secret fields are still accepted by the decoder.
 func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	cfg := agent.Config{
 		TTSProviders: map[string]agent.TTSProvider{
 			"minimax-main": {Type: "minimax", APIKey: "sk-aaa", VoiceID: "male-qn-qingse", Emotion: "happy"},
 			"fish":         {Type: "fish-audio", APIKey: "sk-ccc", ReferenceID: "ref-abc"},
-			"env-based":    {Type: "minimax", TokenEnv: "MINIMAX_KEY"},
+			"env-based":    {Type: "minimax", APIKey: "$MINIMAX_KEY"},
 		},
 		STTProviders: map[string]agent.STTProvider{
 			"tencent": {Type: "tencent-asr", AppID: "123", SecretID: "AKID", SecretKey: "sec", Region: "ap-shanghai"},
@@ -39,19 +37,21 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	if got := dto.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" {
 		t.Errorf("dto.TTSProviders[fish] = %#v", got)
 	}
-	if got := dto.TTSProviders["env-based"].TokenEnv; got != "MINIMAX_KEY" {
-		t.Errorf("token_env dropped: %q", got)
+	if got := dto.TTSProviders["env-based"]; got.APIKey != "" || !got.HasAPIKey {
+		t.Errorf("environment credential was not redacted: %#v", got)
 	}
-	if got := dto.STTProviders["tencent"]; got.AppID != "123" || got.SecretKey != "sec" {
+	if got := dto.STTProviders["tencent"]; got.AppID != "123" || got.SecretID != "" ||
+		!got.HasSecretID || got.SecretKey != "" || !got.HasSecretKey {
 		t.Errorf("dto.STTProviders[tencent] = %#v", got)
 	}
 
 	back := dto.toAgentConfig()
-	if !reflect.DeepEqual(back.TTSProviders, cfg.TTSProviders) {
-		t.Errorf("round-tripped tts_providers = %#v, want %#v", back.TTSProviders, cfg.TTSProviders)
+	if got := back.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" || got.APIKey != "" {
+		t.Errorf("redacted tts_providers conversion = %#v", back.TTSProviders)
 	}
-	if !reflect.DeepEqual(back.STTProviders, cfg.STTProviders) {
-		t.Errorf("round-tripped stt_providers = %#v, want %#v", back.STTProviders, cfg.STTProviders)
+	if got := back.STTProviders["tencent"]; got.Type != "tencent-asr" || got.AppID != "123" ||
+		got.SecretID != "" || got.SecretKey != "" {
+		t.Errorf("redacted stt_providers conversion = %#v", back.STTProviders)
 	}
 	// The reference itself must not be resolved on the wire: the config page
 	// edits the reference, so it has to come back as the name it wrote.
@@ -158,6 +158,51 @@ func TestConfigWire_VoiceProvidersOmittedWhenEmpty(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), `"stt_providers"`) {
 		t.Errorf("expected stt_providers in payload, got: %s", payload)
+	}
+}
+
+func TestConfigWire_FlatVoiceCredentialsAreWriteOnly(t *testing.T) {
+	cfg := agent.Config{
+		Model: agent.ModelConfig{Provider: "openai", Model: "gpt-4o"},
+		TTS: agent.TTSConfig{
+			Provider: "voice",
+			APIKey:   "flat-tts-secret",
+		},
+		STT: agent.STTConfig{
+			Provider:  "speech",
+			APIKey:    "flat-stt-secret",
+			SecretID:  "flat-secret-id",
+			SecretKey: "flat-secret-key",
+		},
+	}
+	payload, err := json.Marshal(webConfigDTOFromAgentConfig(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var root map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &root); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	for _, field := range []string{"api_key"} {
+		if _, ok := root["tts"][field]; ok {
+			t.Errorf("tts.%s must be omitted from editor output: %s", field, payload)
+		}
+	}
+	for _, field := range []string{"api_key", "secret_id", "secret_key"} {
+		if _, ok := root["stt"][field]; ok {
+			t.Errorf("stt.%s must be omitted from editor output: %s", field, payload)
+		}
+	}
+
+	var submitted webConfigDTO
+	input := `{"tts":{"api_key":"test-tts"},"stt":{"api_key":"test-stt","secret_id":"test-id","secret_key":"test-key"}}`
+	if err := json.Unmarshal([]byte(input), &submitted); err != nil {
+		t.Fatalf("decode internal test input: %v", err)
+	}
+	if submitted.TTS.APIKey != "test-tts" || submitted.STT.APIKey != "test-stt" ||
+		submitted.STT.SecretID != "test-id" || submitted.STT.SecretKey != "test-key" {
+		t.Errorf("internal flat credential decoding regressed: %+v %+v", submitted.TTS, submitted.STT)
 	}
 }
 

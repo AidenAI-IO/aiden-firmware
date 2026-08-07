@@ -65,6 +65,10 @@ type ConditionalPlaceholder struct {
 // FieldMeta describes a single configurable field.
 type FieldMeta struct {
 	Key             string                   `json:"key"`
+	Label           string                   `json:"label,omitempty"`
+	Help            string                   `json:"help,omitempty"`
+	Placeholder     string                   `json:"placeholder,omitempty"`
+	Layout          string                   `json:"layout,omitempty"`
 	Widget          Widget                   `json:"widget"`
 	Enum            []EnumOption             `json:"enum,omitempty"`
 	Range           *Range                   `json:"range,omitempty"`
@@ -122,6 +126,21 @@ func placeholderWhen(value interface{}, conds ...Condition) ConditionalPlacehold
 	return ConditionalPlaceholder{When: VisibleRule{All: conds}, Value: value}
 }
 
+// withDisplayDefaults ensures every field has a stable label even when the
+// form does not need custom presentation metadata. Config keys are already the
+// labels used by the existing web UI, so using the key preserves that contract.
+func withDisplayDefaults(metadata ConfigMetadata) ConfigMetadata {
+	for sectionIndex := range metadata.Sections {
+		for fieldIndex := range metadata.Sections[sectionIndex].Fields {
+			field := &metadata.Sections[sectionIndex].Fields[fieldIndex]
+			if field.Label == "" {
+				field.Label = field.Key
+			}
+		}
+	}
+	return metadata
+}
+
 // ConfigMeta returns the full field metadata for the config web UI. Defaults
 // here are the canonical defaults for the device's agent.toml. Free-text
 // fields (custom_instruction, additional_prompt) intentionally carry no
@@ -130,12 +149,13 @@ func placeholderWhen(value interface{}, conds ...Condition) ConditionalPlacehold
 func ConfigMeta() ConfigMetadata {
 	defaults := DefaultConfig()
 	tencentSTTProviderNames := sttProviderNamesForCanonical(tencentASRProvider)
-	return ConfigMetadata{
+	metadata := ConfigMetadata{
 		Sections: []SectionMeta{
 			{
 				Name: "device",
 				Fields: []FieldMeta{
 					{Key: "device_type", Widget: WidgetSelect,
+						Help:    "Android uses HID touchscreen mode. iOS, macOS, windows, and linux use absolute pointer mode.",
 						Enum:    enumOptions("iOS", "Android", "macOS", "windows", "linux"),
 						Default: defaults.Device.DeviceTypeOrDefault()},
 				},
@@ -144,10 +164,12 @@ func ConfigMeta() ConfigMetadata {
 				Name: "model",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
+						Layout:  "wide",
 						Enum:    enumOptions(modelProviderTypes()...),
 						Default: defaults.Model.Provider},
-					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},
+					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model, Layout: "wide"},
 					{Key: "base_url", Widget: WidgetText,
+						Layout:      "wide",
 						VisibleWhen: all(in("model.provider", modelProviderTypesAllowingCustomBaseURL()...))},
 					// The effective default is model-dependent (resolved at load
 					// time); show the global fallback here as the UI placeholder.
@@ -160,6 +182,7 @@ func ConfigMeta() ConfigMetadata {
 					// that accept it so the UI cannot save a value the endpoint
 					// rejects; auto plus low/medium/high stay unscoped.
 					{Key: "reasoning_effort", Widget: WidgetSelect,
+						Help: "Empty = auto (disable reasoning only for no-tool requests). Levels are provider-specific: minimal is OpenRouter and Volcengine Ark only, none is not supported by Ark.",
 						Enum: []EnumOption{
 							{Value: "", Label: "auto (default)"},
 							{Value: "minimal", Label: "minimal (no thinking)", Providers: []string{"openrouter", "volcengine"}},
@@ -169,8 +192,10 @@ func ConfigMeta() ConfigMetadata {
 							{Value: "high", Label: "high"},
 						},
 						Default: defaults.Model.ReasoningEffort},
-					{Key: "context_window", Widget: WidgetNumber, Default: defaults.Model.ContextWindow},
-					{Key: "model_max_output_tokens", Widget: WidgetNumber, Default: defaults.Model.ModelMaxOutputTokens},
+					{Key: "context_window", Widget: WidgetNumber, Default: defaults.Model.ContextWindow,
+						Placeholder: "0 = auto", Help: "0 = auto: use provider metadata when available."},
+					{Key: "model_max_output_tokens", Widget: WidgetNumber, Default: defaults.Model.ModelMaxOutputTokens,
+						Placeholder: "0 = auto", Help: "0 = auto: use provider metadata when available."},
 				},
 			},
 			// model_providers describes one [model_providers.<name>] record, the same shape
@@ -202,6 +227,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "tts",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
+						Layout:  "wide",
 						Enum:    enumOptions(tts.AvailableProviders()...),
 						Default: defaults.TTS.Provider},
 					// speed is a listening preference, not a credential: it must
@@ -274,6 +300,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "stt",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
+						Layout:  "wide",
 						Enum:    enumOptions(sttProviderTypes()...),
 						Default: defaults.STT.Provider},
 					{Key: "language", Widget: WidgetSelect,
@@ -322,7 +349,7 @@ func ConfigMeta() ConfigMetadata {
 			{
 				Name: "audio",
 				Fields: []FieldMeta{
-					{Key: "socket", Widget: WidgetText, Default: defaults.Audio.Socket},
+					{Key: "socket", Widget: WidgetText, Default: defaults.Audio.Socket, Layout: "wide"},
 					{Key: "sample_rate", Widget: WidgetNumber, Default: defaults.Audio.SampleRate},
 					{Key: "channels", Widget: WidgetNumber, Default: defaults.Audio.Channels},
 					{Key: "bit_width", Widget: WidgetNumber, Default: defaults.Audio.BitWidth},
@@ -335,8 +362,10 @@ func ConfigMeta() ConfigMetadata {
 				Name: "audio_archive",
 				Fields: []FieldMeta{
 					{Key: "enabled", Widget: WidgetBoolean, Default: defaults.AudioArchive.Enabled,
+						Help:        "After enabling, save STT voice recording WAV for Web UI playback; Automatically delete old files when exceeding quantity or capacity limit.",
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "storage_path", Widget: WidgetText, Default: defaults.AudioArchive.StoragePathOrDefault(),
+						Layout:      "wide",
 						VisibleWhen: all(eq("agent.input_mode", "stt"), truthy("audio_archive.enabled"))},
 					{Key: "max_files", Widget: WidgetNumber, Default: defaults.AudioArchive.MaxFilesOrDefault(),
 						VisibleWhen: all(eq("agent.input_mode", "stt"), truthy("audio_archive.enabled"))},
@@ -365,22 +394,26 @@ func ConfigMeta() ConfigMetadata {
 			{
 				Name: "ota",
 				Fields: []FieldMeta{
-					{Key: "github_proxy_url", Widget: WidgetText, Default: ""},
+					{Key: "github_proxy_url", Label: "GitHub Proxy URL", Widget: WidgetText, Default: "",
+						Help:        "Optional proxy to accelerate GitHub downloads (e.g., https://gh-proxy.com/ or https://ghfast.top/)",
+						Placeholder: "Leave empty to disable",
+						Layout:      "wide"},
 				},
 			},
 			{
 				Name: "hid",
 				Fields: []FieldMeta{
 					{Key: "keyboard_layout", Widget: WidgetSelect,
+						Help:    "How the phone interprets the USB keyboard. Keep qwerty unless typed text comes out transposed; then switch the phone input language to match, save, and reboot the board.",
 						Enum:    keyboardLayoutEnumOptions(),
 						Default: defaults.HID.KeyboardLayoutOrDefault()},
 					{Key: "input_backend", Widget: WidgetSelect,
 						Enum:    enumOptions("hid", "adb"),
 						Default: defaults.HID.InputBackend},
-					{Key: "keyboard_device", Widget: WidgetText, Default: defaults.HID.KeyboardDevice},
-					{Key: "mouse_device", Widget: WidgetText, Default: defaults.HID.MouseDevice},
-					{Key: "android_keyboard_device", Widget: WidgetText, Default: defaults.HID.AndroidKeyboardDevice},
-					{Key: "frame_socket", Widget: WidgetText, Default: defaults.HID.FrameSocket},
+					{Key: "keyboard_device", Widget: WidgetText, Default: defaults.HID.KeyboardDevice, Layout: "wide"},
+					{Key: "mouse_device", Widget: WidgetText, Default: defaults.HID.MouseDevice, Layout: "wide"},
+					{Key: "android_keyboard_device", Widget: WidgetText, Default: defaults.HID.AndroidKeyboardDevice, Layout: "wide"},
+					{Key: "frame_socket", Widget: WidgetText, Default: defaults.HID.FrameSocket, Layout: "wide"},
 				},
 			},
 			{
@@ -389,7 +422,7 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "provider", Widget: WidgetSelect,
 						Enum:    enumOptions(searchProviderDuckDuckGo, searchProviderBrave, searchProviderTavily),
 						Default: defaults.Search.ProviderOrDefault()},
-					{Key: "api_key", Widget: WidgetText, Secret: true,
+					{Key: "api_key", Widget: WidgetText, Secret: true, Layout: "wide",
 						VisibleWhen: all(ne("search.provider", searchProviderDuckDuckGo))},
 				},
 			},
@@ -400,11 +433,11 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "provider", Widget: WidgetSelect,
 						Enum:        []EnumOption{{Value: "", Label: "langfuse (default)"}, {Value: "langfuse"}},
 						VisibleWhen: all(truthy("telemetry.enabled"))},
-					{Key: "base_url", Widget: WidgetText,
+					{Key: "base_url", Widget: WidgetText, Placeholder: "http://langfuse.example.com:3000", Layout: "wide",
 						VisibleWhen: all(truthy("telemetry.enabled"))},
-					{Key: "public_key", Widget: WidgetText, Secret: true,
+					{Key: "public_key", Widget: WidgetText, Secret: true, Layout: "wide",
 						VisibleWhen: all(truthy("telemetry.enabled"))},
-					{Key: "secret_key", Widget: WidgetText, Secret: true,
+					{Key: "secret_key", Widget: WidgetText, Secret: true, Layout: "wide",
 						VisibleWhen: all(truthy("telemetry.enabled"))},
 					{Key: "upload_screenshots", Widget: WidgetBoolean,
 						VisibleWhen: all(truthy("telemetry.enabled"))},
@@ -414,7 +447,7 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(truthy("telemetry.enabled"))},
 					{Key: "environment", Widget: WidgetText,
 						VisibleWhen: all(truthy("telemetry.enabled"))},
-					{Key: "tags", Widget: WidgetList,
+					{Key: "tags", Widget: WidgetList, Layout: "wide",
 						VisibleWhen: all(truthy("telemetry.enabled"))},
 				},
 			},
@@ -424,6 +457,9 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "enabled", Widget: WidgetBoolean, Default: true},
 					{Key: "board_id", Widget: WidgetText,
 						VisibleWhen: all(truthy("live_activity.enabled"))},
+					// phone_id is still part of the config_web TOML contract even
+					// though the Go runtime no longer consumes it directly.
+					{Key: "phone_id", Widget: WidgetText},
 				},
 			},
 			{
@@ -446,9 +482,11 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "vad_model_path", Widget: WidgetText,
 						Default:     defaults.VADModelPath,
+						Layout:      "wide",
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "vad_helper_path", Widget: WidgetText,
 						Default:     defaults.VADHelperPath,
+						Layout:      "wide",
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "vad_speech_threshold", Widget: WidgetSelect,
 						Default:     defaults.VADSpeechThreshold,
@@ -487,10 +525,11 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "default_platform", Widget: WidgetSelect,
 						Enum:    enumOptions("", "ios", "android", "mac"),
 						Default: defaults.DefaultPlatform},
-					{Key: "custom_instruction", Widget: WidgetTextarea},
-					{Key: "additional_prompt", Widget: WidgetTextarea},
+					{Key: "custom_instruction", Widget: WidgetTextarea, Layout: "wide"},
+					{Key: "additional_prompt", Widget: WidgetTextarea, Layout: "wide"},
 				},
 			},
 		},
 	}
+	return withDisplayDefaults(metadata)
 }

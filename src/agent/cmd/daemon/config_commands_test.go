@@ -292,6 +292,44 @@ func TestWebConfigDTOFromAgentConfig_RedactsSearchAPIKey(t *testing.T) {
 	}
 }
 
+func TestWebConfigDTOFromAgentConfig_RedactsProviderCredentials(t *testing.T) {
+	dto := webConfigDTOFromAgentConfig(agent.Config{
+		ModelProviders: map[string]agent.ModelProvider{
+			"model-main": {Type: "openai", APIKey: "model-secret"},
+		},
+		TTSProviders: map[string]agent.TTSProvider{
+			"tts-main": {Type: "fish-audio", APIKey: "tts-secret"},
+		},
+		STTProviders: map[string]agent.STTProvider{
+			"stt-main": {
+				Type: "tencent-asr", APIKey: "stt-secret",
+				SecretID: "secret-id", SecretKey: "secret-key",
+			},
+		},
+	})
+
+	if got := dto.ModelProviders["model-main"]; got.APIKey != "" || !got.HasAPIKey {
+		t.Fatalf("model provider credential DTO = %+v, want redacted configured state", got)
+	}
+	if got := dto.TTSProviders["tts-main"]; got.APIKey != "" || !got.HasAPIKey {
+		t.Fatalf("TTS provider credential DTO = %+v, want redacted configured state", got)
+	}
+	if got := dto.STTProviders["stt-main"]; got.APIKey != "" || !got.HasAPIKey ||
+		got.SecretID != "" || !got.HasSecretID || got.SecretKey != "" || !got.HasSecretKey {
+		t.Fatalf("STT provider credential DTO = %+v, want redacted configured state", got)
+	}
+
+	data, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal config DTO: %v", err)
+	}
+	for _, secret := range []string{"model-secret", "tts-secret", "stt-secret", "secret-id", "secret-key"} {
+		if strings.Contains(string(data), secret) {
+			t.Fatalf("provider secret %q leaked in JSON: %s", secret, data)
+		}
+	}
+}
+
 func TestWebConfigDTOMapsAudioArchive(t *testing.T) {
 	dto := webConfigDTO{
 		AudioArchive: audioArchiveDTO{

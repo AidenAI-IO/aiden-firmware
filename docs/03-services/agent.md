@@ -35,7 +35,7 @@ input_mode = "stt"
 
 [model_providers.openai-main]
 type = "openai"
-token_env = "OPENAI_API_KEY"
+api_key = "$OPENAI_API_KEY"
 
 [model]
 provider = "openai-main"
@@ -56,7 +56,7 @@ model = "gpt-5.5"
 
 [stt_providers.openai-main]
 type = "openai-whisper"
-token_env = "OPENAI_API_KEY"
+api_key = "$OPENAI_API_KEY"
 model = "whisper-1"
 
 [stt]
@@ -64,7 +64,7 @@ provider = "openai-main"
 
 [tts_providers.minimax-main]
 type = "minimax-cn"
-token_env = "MINIMAX_API_KEY"
+api_key = "$MINIMAX_API_KEY"
 voice_id = "male-qn-qingse"
 
 [tts]

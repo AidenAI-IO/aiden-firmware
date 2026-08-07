@@ -7,6 +7,7 @@ SCHEDULED_WORKFLOW="$ROOT_DIR/.github/workflows/build-scheduled.yml"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 BUILD_IMAGE_SCRIPT="$ROOT_DIR/_build_image.sh"
 DOCKER_BUILD_SCRIPT="$ROOT_DIR/build_image.sh"
+CONFIG_WEB_INIT_SCRIPT="$ROOT_DIR/overlay/etc/init.d/S56config_web"
 
 if ! grep -q 'scripts/create_github_release.sh' "$WORKFLOW"; then
     echo "build workflow must create releases through the retry-capable local script" >&2
@@ -204,6 +205,27 @@ if [ -z "$oem_full_sync_line" ] || [ -z "$oem_repair_line" ] || [ "$oem_full_syn
 fi
 if grep -Fq 'rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must not trust overlay/oem/usr/bin as the final generated binary source" >&2
+    exit 1
+fi
+if ! grep -Fq 'WEB_ROOT=${WEB_ROOT:-/oem/usr/share/aiden/config-web}' "$CONFIG_WEB_INIT_SCRIPT" || \
+   ! grep -Fq -- '--web-root="$WEB_ROOT"' "$CONFIG_WEB_INIT_SCRIPT"; then
+    echo "config_web init must pass the overridable OEM web root" >&2
+    exit 1
+fi
+if ! grep -Fq 'CONFIG_WEB_SRC="$SCRIPT_DIR/src/config_web/web"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq 'CONFIG_WEB_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/config-web"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq 'rsync -a --delete "$CONFIG_WEB_SRC/" "$CONFIG_WEB_DEST/"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "_build_image.sh must replace OEM config web assets from src/config_web/web" >&2
+    exit 1
+fi
+if grep -Fq 'RK_PROJECT_PACKAGE_USERDATA_DIR/usr/share/aiden/config-web' "$BUILD_IMAGE_SCRIPT"; then
+    echo "config web assets must not be staged in userdata" >&2
+    exit 1
+fi
+if ! grep -Fq 'verify_oem_config_web_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq '"usr/share/aiden/config-web/index.html"' "$BUILD_IMAGE_SCRIPT" || \
+   ! grep -Fq '"usr/share/aiden/config-web/llm-logs.html"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "_build_image.sh must verify both config web entry pages in the final OEM image" >&2
     exit 1
 fi
 firmware_count=$(grep -cF './build.sh firmware "$@"' "$ROOT_DIR/_build_image.sh")
