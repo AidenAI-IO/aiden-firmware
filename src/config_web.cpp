@@ -2682,16 +2682,14 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON* provider_obj = cJSON_CreateObject();
         cJSON_AddStringToObject(provider_obj, "type", provider.type.c_str());
 
-        // Mask API key unless include_secrets is true
         if (include_secrets) {
             cJSON_AddStringToObject(provider_obj, "api_key", provider.api_key.c_str());
+            if (!provider.token_env.empty()) {
+                cJSON_AddStringToObject(provider_obj, "token_env", provider.token_env.c_str());
+            }
         } else {
-            std::string masked_key = mask_secret(provider.api_key);
-            cJSON_AddStringToObject(provider_obj, "api_key", masked_key.c_str());
-        }
-
-        if (!provider.token_env.empty()) {
-            cJSON_AddStringToObject(provider_obj, "token_env", provider.token_env.c_str());
+            cJSON_AddBoolToObject(provider_obj, "has_api_key", provider.api_key.empty() ? 0 : 1);
+            cJSON_AddBoolToObject(provider_obj, "has_token_env", provider.token_env.empty() ? 0 : 1);
         }
         if (!provider.base_url.empty()) {
             cJSON_AddStringToObject(provider_obj, "base_url", provider.base_url.c_str());
@@ -2701,9 +2699,8 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     }
     cJSON_AddItemToObject(root, "model_providers", model_providers);
 
-    // Add tts_providers. api_key is masked like [model_providers.*] so a GET never
-    // returns it in the clear; update_config_from_json resolves the mask back to
-    // the stored secret when the UI posts it back unchanged.
+    // Provider credentials are write-only. Browser responses expose only
+    // configured-state flags; the save path preserves omitted values.
     cJSON* tts_providers = cJSON_CreateObject();
     for (const auto& item : config.tts_providers) {
         const aiden::TTSProviderToml& record = item.second;
@@ -2711,12 +2708,12 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON_AddStringToObject(record_obj, "type", record.type.c_str());
         if (include_secrets) {
             cJSON_AddStringToObject(record_obj, "api_key", record.api_key.c_str());
+            if (!record.token_env.empty()) {
+                cJSON_AddStringToObject(record_obj, "token_env", record.token_env.c_str());
+            }
         } else {
-            std::string masked_key = mask_secret(record.api_key);
-            cJSON_AddStringToObject(record_obj, "api_key", masked_key.c_str());
-        }
-        if (!record.token_env.empty()) {
-            cJSON_AddStringToObject(record_obj, "token_env", record.token_env.c_str());
+            cJSON_AddBoolToObject(record_obj, "has_api_key", record.api_key.empty() ? 0 : 1);
+            cJSON_AddBoolToObject(record_obj, "has_token_env", record.token_env.empty() ? 0 : 1);
         }
         if (!record.model.empty()) {
             cJSON_AddStringToObject(record_obj, "model", record.model.c_str());
@@ -2734,8 +2731,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     }
     cJSON_AddItemToObject(root, "tts_providers", tts_providers);
 
-    // Add stt_providers. Secret fields (api_key, secret_id, secret_key) are
-    // masked when include_secrets is false; the UI resolves them on save.
+    // STT credentials follow the same write-only contract.
     cJSON* stt_providers = cJSON_CreateObject();
     for (const auto& item : config.stt_providers) {
         const aiden::STTProviderToml& record = item.second;
@@ -2743,12 +2739,12 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON_AddStringToObject(record_obj, "type", record.type.c_str());
         if (include_secrets) {
             cJSON_AddStringToObject(record_obj, "api_key", record.api_key.c_str());
+            if (!record.token_env.empty()) {
+                cJSON_AddStringToObject(record_obj, "token_env", record.token_env.c_str());
+            }
         } else {
-            std::string masked_key = mask_secret(record.api_key);
-            cJSON_AddStringToObject(record_obj, "api_key", masked_key.c_str());
-        }
-        if (!record.token_env.empty()) {
-            cJSON_AddStringToObject(record_obj, "token_env", record.token_env.c_str());
+            cJSON_AddBoolToObject(record_obj, "has_api_key", record.api_key.empty() ? 0 : 1);
+            cJSON_AddBoolToObject(record_obj, "has_token_env", record.token_env.empty() ? 0 : 1);
         }
         if (!record.model.empty()) {
             cJSON_AddStringToObject(record_obj, "model", record.model.c_str());
@@ -2762,18 +2758,18 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         if (!record.secret_id.empty()) {
             if (include_secrets) {
                 cJSON_AddStringToObject(record_obj, "secret_id", record.secret_id.c_str());
-            } else {
-                std::string masked = mask_secret(record.secret_id);
-                cJSON_AddStringToObject(record_obj, "secret_id", masked.c_str());
             }
+        }
+        if (!include_secrets) {
+            cJSON_AddBoolToObject(record_obj, "has_secret_id", record.secret_id.empty() ? 0 : 1);
         }
         if (!record.secret_key.empty()) {
             if (include_secrets) {
                 cJSON_AddStringToObject(record_obj, "secret_key", record.secret_key.c_str());
-            } else {
-                std::string masked = mask_secret(record.secret_key);
-                cJSON_AddStringToObject(record_obj, "secret_key", masked.c_str());
             }
+        }
+        if (!include_secrets) {
+            cJSON_AddBoolToObject(record_obj, "has_secret_key", record.secret_key.empty() ? 0 : 1);
         }
         if (!record.region.empty()) {
             cJSON_AddStringToObject(record_obj, "region", record.region.c_str());
@@ -2960,14 +2956,14 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 cJSON* wifi_to_json(const aiden::WifiNetworkConfig& wifi) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "ssid", wifi.ssid.c_str());
-    cJSON_AddStringToObject(root, "psk", wifi.psk.c_str());
+    cJSON_AddBoolToObject(root, "has_psk", wifi.psk.empty() ? 0 : 1);
     cJSON_AddStringToObject(root, "country", wifi.country.c_str());
     cJSON* networks = add_array(root, "networks");
     for (size_t i = 0; i < wifi.networks.size(); ++i) {
         const aiden::WifiNetwork& network = wifi.networks[i];
         cJSON* item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "ssid", network.ssid.c_str());
-        cJSON_AddStringToObject(item, "psk", network.psk.c_str());
+        cJSON_AddBoolToObject(item, "has_psk", network.psk.empty() ? 0 : 1);
         cJSON_AddNumberToObject(item, "priority", network.priority);
         cJSON_AddBoolToObject(item, "scan_ssid", network.scan_ssid ? 1 : 0);
         cJSON_AddBoolToObject(item, "disabled", network.disabled ? 1 : 0);
@@ -3126,6 +3122,46 @@ std::string provider_secret_source_name(cJSON* root, const char* section,
     return old_name->valuestring;
 }
 
+void update_write_only_credential(cJSON* record, const std::string& previous_api_key,
+                                  const std::string& previous_token_env,
+                                  std::string* api_key, std::string* token_env) {
+    if (!record || !api_key || !token_env) return;
+
+    cJSON* submitted_token_env = cJSON_GetObjectItem(record, "token_env");
+    if (json_is_string(submitted_token_env) && submitted_token_env->valuestring[0]) {
+        api_key->clear();
+        *token_env = submitted_token_env->valuestring;
+        return;
+    }
+
+    cJSON* submitted_api_key = cJSON_GetObjectItem(record, "api_key");
+    if (json_is_string(submitted_api_key) && submitted_api_key->valuestring[0]) {
+        const std::string value = submitted_api_key->valuestring;
+        *api_key = !previous_api_key.empty() && value == mask_secret(previous_api_key)
+            ? previous_api_key
+            : value;
+        token_env->clear();
+        return;
+    }
+
+    *api_key = previous_api_key;
+    *token_env = previous_token_env;
+}
+
+void update_write_only_secret(cJSON* record, const char* field,
+                              const std::string& previous, std::string* value) {
+    if (!record || !field || !value) return;
+    cJSON* submitted = cJSON_GetObjectItem(record, field);
+    if (!json_is_string(submitted) || !submitted->valuestring[0]) {
+        *value = previous;
+        return;
+    }
+    const std::string submitted_value = submitted->valuestring;
+    *value = !previous.empty() && submitted_value == mask_secret(previous)
+        ? previous
+        : submitted_value;
+}
+
 void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     if (!json_is_object(obj) || !m) return;
     set_json_str(&m->provider, obj, "provider");
@@ -3182,11 +3218,9 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         return;
     }
 
-    // Update model_providers. The payload is authoritative: a provider absent from
-    // it was deleted in the UI. Snapshot the current map first so masked
-    // api_key values ("sk-a***1234") can still resolve to the stored secret --
-    // reading back from `config->model_providers` after clearing it would always
-    // miss and silently wipe the key.
+    // Provider maps are authoritative for record membership. Credentials are
+    // write-only: omitted or empty values preserve the stored record, including
+    // across a rename identified by _provider_renames.
     cJSON* model_providers = cJSON_GetObjectItem(root, "model_providers");
     if (json_is_object(model_providers)) {
         const std::map<std::string, aiden::ModelProviderToml> previous_providers =
@@ -3201,31 +3235,15 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 
             aiden::ModelProviderToml provider;
             set_json_str_alias(&provider.type, item, "type", "provider");
-
-            cJSON* api_key = cJSON_GetObjectItem(item, "api_key");
-            if (json_is_string(api_key)) {
-                std::string key = api_key->valuestring;
-                // Keep the stored secret only when the submitted value is
-                // exactly the mask we handed the UI for this provider. Testing
-                // for a "***" substring instead would drop a real key that
-                // happens to contain it, and would blank the key for a provider
-                // the previous config did not have.
-                const std::string secret_source = provider_secret_source_name(
-                    root, "model_providers", provider_name);
-                std::map<std::string, aiden::ModelProviderToml>::const_iterator it =
-                    previous_providers.find(secret_source);
-                if (it != previous_providers.end() && !it->second.api_key.empty() &&
-                    key == mask_secret(it->second.api_key)) {
-                    provider.api_key = it->second.api_key;
-                } else {
-                    provider.api_key = key;
-                }
-            }
-
-            cJSON* token_env = cJSON_GetObjectItem(item, "token_env");
-            if (json_is_string(token_env)) {
-                provider.token_env = token_env->valuestring;
-            }
+            const std::string secret_source = provider_secret_source_name(
+                root, "model_providers", provider_name);
+            std::map<std::string, aiden::ModelProviderToml>::const_iterator previous =
+                previous_providers.find(secret_source);
+            update_write_only_credential(
+                item,
+                previous == previous_providers.end() ? std::string() : previous->second.api_key,
+                previous == previous_providers.end() ? std::string() : previous->second.token_env,
+                &provider.api_key, &provider.token_env);
 
             cJSON* base_url = cJSON_GetObjectItem(item, "base_url");
             // A named provider's base_url is inherited by every model that
@@ -3257,29 +3275,20 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 
             aiden::TTSProviderToml record;
             set_json_str_alias(&record.type, item, "type", "provider");
-            set_json_str(&record.token_env, item, "token_env");
             set_json_str(&record.model, item, "model");
             set_json_str(&record.voice_id, item, "voice_id");
             set_json_str(&record.emotion, item, "emotion");
             set_json_str(&record.reference_id, item, "reference_id");
 
-            cJSON* api_key = cJSON_GetObjectItem(item, "api_key");
-            if (json_is_string(api_key)) {
-                // Keep the stored secret only when the submitted value is
-                // exactly the mask we handed the UI for this record. Matching a
-                // "***" substring instead would drop a real key containing it.
-                const std::string key = api_key->valuestring;
-                const std::string secret_source = provider_secret_source_name(
-                    root, "tts_providers", record_name);
-                std::map<std::string, aiden::TTSProviderToml>::const_iterator it =
-                    previous.find(secret_source);
-                if (it != previous.end() && !it->second.api_key.empty() &&
-                    key == mask_secret(it->second.api_key)) {
-                    record.api_key = it->second.api_key;
-                } else {
-                    record.api_key = key;
-                }
-            }
+            const std::string secret_source = provider_secret_source_name(
+                root, "tts_providers", record_name);
+            std::map<std::string, aiden::TTSProviderToml>::const_iterator stored =
+                previous.find(secret_source);
+            update_write_only_credential(
+                item,
+                stored == previous.end() ? std::string() : stored->second.api_key,
+                stored == previous.end() ? std::string() : stored->second.token_env,
+                &record.api_key, &record.token_env);
 
             config->tts_providers[record_name] = record;
         }
@@ -3299,51 +3308,27 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 
             aiden::STTProviderToml record;
             set_json_str_alias(&record.type, item, "type", "provider");
-            set_json_str(&record.token_env, item, "token_env");
             set_json_str(&record.model, item, "model");
             set_json_str(&record.base_url, item, "base_url");
             set_json_str(&record.app_id, item, "app_id");
             set_json_str(&record.region, item, "region");
             set_json_str(&record.engine_model_type, item, "engine_model_type");
 
-            cJSON* api_key = cJSON_GetObjectItem(item, "api_key");
-            if (json_is_string(api_key)) {
-                const std::string key = api_key->valuestring;
-                std::map<std::string, aiden::STTProviderToml>::const_iterator it =
-                    previous.find(secret_source);
-                if (it != previous.end() && !it->second.api_key.empty() &&
-                    key == mask_secret(it->second.api_key)) {
-                    record.api_key = it->second.api_key;
-                } else {
-                    record.api_key = key;
-                }
-            }
-
-            cJSON* secret_id = cJSON_GetObjectItem(item, "secret_id");
-            if (json_is_string(secret_id)) {
-                const std::string value = secret_id->valuestring;
-                std::map<std::string, aiden::STTProviderToml>::const_iterator it =
-                    previous.find(secret_source);
-                if (it != previous.end() && !it->second.secret_id.empty() &&
-                    value == mask_secret(it->second.secret_id)) {
-                    record.secret_id = it->second.secret_id;
-                } else {
-                    record.secret_id = value;
-                }
-            }
-
-            cJSON* secret_key = cJSON_GetObjectItem(item, "secret_key");
-            if (json_is_string(secret_key)) {
-                const std::string value = secret_key->valuestring;
-                std::map<std::string, aiden::STTProviderToml>::const_iterator it =
-                    previous.find(secret_source);
-                if (it != previous.end() && !it->second.secret_key.empty() &&
-                    value == mask_secret(it->second.secret_key)) {
-                    record.secret_key = it->second.secret_key;
-                } else {
-                    record.secret_key = value;
-                }
-            }
+            std::map<std::string, aiden::STTProviderToml>::const_iterator stored =
+                previous.find(secret_source);
+            const aiden::STTProviderToml* stored_record =
+                stored == previous.end() ? NULL : &stored->second;
+            update_write_only_credential(
+                item,
+                stored_record ? stored_record->api_key : std::string(),
+                stored_record ? stored_record->token_env : std::string(),
+                &record.api_key, &record.token_env);
+            update_write_only_secret(item, "secret_id",
+                                     stored_record ? stored_record->secret_id : std::string(),
+                                     &record.secret_id);
+            update_write_only_secret(item, "secret_key",
+                                     stored_record ? stored_record->secret_key : std::string(),
+                                     &record.secret_key);
 
             config->stt_providers[record_name] = record;
         }

@@ -278,7 +278,8 @@ function renderRequestItem(g, idx) {
   html += '<div class="request-item-head">';
   html += '<span class="request-item-index">#' + (idx + 1) + '</span>';
   html += '<span class="' + badgeClass + '">' + esc(badgeText) + '</span>';
-  html += '<span style="font-size:11px;color:#9ca3af;margin-left:auto">' + esc(g.request.ts.substring(11, 19)) + '</span>';
+  const requestTs=String(g.request.ts||'');
+  html += '<span style="font-size:11px;color:#9ca3af;margin-left:auto">' + esc(requestTs.substring(11, 19)) + '</span>';
   html += '</div>';
   html += '<div class="request-item-preview">' + esc(preview) + '</div>';
   html += '</button>';

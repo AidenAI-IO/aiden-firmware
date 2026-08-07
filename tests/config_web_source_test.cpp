@@ -466,6 +466,8 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("Import Raw") != std::string::npos);
     CHECK(llm_html.find("function streamLogEntries") != std::string::npos);
     CHECK(llm_html.find("function processLogChunk") != std::string::npos);
+    CHECK(llm_html.find("const requestTs=String(g.request.ts||'');") != std::string::npos);
+    CHECK(llm_html.find("g.request.ts.substring(11, 19)") == std::string::npos);
     CHECK(llm_html.find("response.body.getReader()") != std::string::npos);
     CHECK(llm_html.find("new TextDecoder()") != std::string::npos);
     CHECK(llm_html.find("fetch('/api/llm-logs/export/' + encodeURIComponent(name))") != std::string::npos);
@@ -1008,8 +1010,11 @@ TEST_CASE("config web shows saved wifi modal and connects automatically") {
     CHECK(html.find("left.dataset.action=savedNet?'connect-saved-wifi':'open-wifi-modal'") != std::string::npos);
     CHECK(html.find("function connectSavedWifi(ssid)") != std::string::npos);
     CHECK(html.find("openWifiModal(ssid,false);if(!saved)return;") != std::string::npos);
-    CHECK(html.find("setTimeout(function(){connectWifi(ssid,saved.psk||'');},0);") !=
+    CHECK(html.find("setTimeout(function(){connectWifi(ssid);},0);") !=
           std::string::npos);
+    CHECK(html.find("saved.psk") == std::string::npos);
+    CHECK(html.find("wifiPasswordInput').value=''") != std::string::npos);
+    CHECK(html.find("if(psk!==undefined){requestBody.psk=psk;}") != std::string::npos);
     CHECK(html.find("if(focusPassword!==false){byId('wifiPasswordInput').focus();}") !=
           std::string::npos);
     CHECK(html.find("btn.disabled=true;btn.textContent=t('wifi.connecting');") != std::string::npos);
@@ -1070,8 +1075,9 @@ TEST_CASE("config web tolerates metadata fields without rendered controls") {
     CHECK(html.find("if(!el)return;snap[item[0]]=") != std::string::npos);
     CHECK(html.find("if(!el)return;if(snap[item[0]]!==undefined)") != std::string::npos);
     CHECK(html.find("function readSection(section){const values=Object.assign({},(appState.config&&appState.config[section])||{});") != std::string::npos);
-    // readSection now handles hidden fields - check for the updated logic
     CHECK(html.find("if(!el)return;const field=el.closest?el.closest('.field'):el.parentNode;") != std::string::npos);
+    CHECK(html.find("if(field&&field.classList.contains('hidden')){return;}") != std::string::npos);
+    CHECK(html.find("if(type==='number'){values[key]=0;}") == std::string::npos);
 }
 
 TEST_CASE("config web preserves loaded secret values when password inputs are left blank") {
@@ -2020,6 +2026,8 @@ TEST_CASE("config web html degrades model selector when the agent is offline") {
     const std::string load_body = js.substr(load_at, load_end - load_at);
     CHECK(load_body.find("response.status === 503") != std::string::npos);
     CHECK(load_body.find("this.renderModelSelector(true)") != std::string::npos);
+    CHECK(load_body.find("const requestId=++this.requestId") != std::string::npos);
+    CHECK(load_body.find("requestId!==this.requestId") != std::string::npos);
     // Non-503 failures must still surface as errors.
     CHECK(load_body.find("model-selector-error") != std::string::npos);
 
@@ -2116,10 +2124,10 @@ TEST_CASE("config web html auto-fills the provider name and keeps it editable") 
     }
 }
 
-// token_env and api_key are two ways to say the same thing, so the dialog offers
-// one box: a leading $ means the rest names an environment variable. Keeping the
-// split in agent.toml lets the runtime resolve it without new parsing rules.
-TEST_CASE("config web html folds token_env into the api key box") {
+// token_env and api_key share one edit box, but stored values never return to
+// the browser. The server reports only whether a credential is configured and
+// an empty edit keeps the stored value unchanged.
+TEST_CASE("config web html keeps provider credentials write only") {
     const std::string js = read_config_web_config_scripts();
 
     // The separate env-var input is gone.
@@ -2133,25 +2141,38 @@ TEST_CASE("config web html folds token_env into the api key box") {
     const std::string save_body = js.substr(save_at, save_end - save_at);
     // $FOO stores token_env and clears any literal key left behind.
     CHECK(save_body.find("apiKeyRaw.charAt(0) === '$'") != std::string::npos);
-    CHECK(save_body.find("provider.token_env = env; provider.api_key = '';") != std::string::npos);
+    CHECK(save_body.find("provider.token_env = env;") != std::string::npos);
     // A bare $ names no variable, so it must not save silently.
     CHECK(save_body.find("t('provider.env_required')") != std::string::npos);
 
-    // Reopening the dialog shows a stored token_env back as $FOO.
+    // Reopening the dialog never renders a stored key or environment name.
     const size_t dialog_at = js.find("showProviderDialog: function");
     REQUIRE(dialog_at != std::string::npos);
-    const std::string dialog_head = js.substr(dialog_at, 400);
-    CHECK(dialog_head.find("provider.token_env ? '$' + provider.token_env") != std::string::npos);
+    const size_t dialog_end = js.find("syncProviderBaseUrlVisibility: function", dialog_at);
+    REQUIRE(dialog_end != std::string::npos);
+    const std::string dialog_body = js.substr(dialog_at, dialog_end - dialog_at);
+    CHECK(dialog_body.find("type=\"password\" id=\"providerApiKey\" value=\"\"") != std::string::npos);
+    CHECK(dialog_body.find("provider.token_env") == std::string::npos);
+    CHECK(dialog_body.find("provider.api_key ||") == std::string::npos);
 
-    // The card shows the same one-line form instead of a separate row.
+    // Cards show only configured state, never the credential representation.
     const size_t card_at = js.find("createProviderCard: function");
     REQUIRE(card_at != std::string::npos);
     const size_t card_end = js.find("addProvider: function", card_at);
     REQUIRE(card_end != std::string::npos);
     const std::string card_body = js.substr(card_at, card_end - card_at);
     CHECK(card_body.find("Token Env:") == std::string::npos);
-    CHECK(card_body.find("provider.token_env ? '$' + provider.token_env : provider.api_key") !=
+    CHECK(card_body.find("providerCredentialConfigured(provider)") != std::string::npos);
+    CHECK(card_body.find("provider.token_env ? '$' + provider.token_env : provider.api_key") ==
           std::string::npos);
+
+    const size_t fields_at = js.find("function providerRecordFieldsHtml(section,record)");
+    REQUIRE(fields_at != std::string::npos);
+    const size_t fields_end = js.find("function createProviderRecordsManager", fields_at);
+    REQUIRE(fields_end != std::string::npos);
+    const std::string fields_body = js.substr(fields_at, fields_end - fields_at);
+    CHECK(fields_body.find("value=\"\"") != std::string::npos);
+    CHECK(fields_body.find("escRecordHtml(shown)") == std::string::npos);
 }
 
 // Only openai and ollama accept a base_url override; every other provider pins
@@ -2369,6 +2390,19 @@ TEST_CASE("config web sends provider rename metadata for masked secrets") {
                     "'model_providers',renamedFrom,name)") != std::string::npos);
     CHECK(html.find("addProviderRename(renamedFrom?this.refPatch(renamedFrom,name):null,"
                     "section,renamedFrom,name)") != std::string::npos);
+}
+
+TEST_CASE("config web keeps the system env save button disabled after success") {
+    const std::string js = read_config_web_config_scripts();
+    const size_t save_at = js.find("async function saveSystemEnv()");
+    REQUIRE(save_at != std::string::npos);
+    const size_t save_end = js.find("export { setSystemEnvLocked", save_at);
+    REQUIRE(save_end != std::string::npos);
+    const std::string save_body = js.substr(save_at, save_end - save_at);
+
+    CHECK(save_body.find("setSystemEnvLocked(true)") != std::string::npos);
+    CHECK(save_body.find("setSystemEnvLocked(false)") != std::string::npos);
+    CHECK(save_body.find("finally{byId('save-system_env').disabled=false;}") == std::string::npos);
 }
 
 // The [tts]/[stt] provider select offers configured record names. A bare

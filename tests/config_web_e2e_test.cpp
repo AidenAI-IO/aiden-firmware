@@ -925,6 +925,36 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     cJSON_Delete(parsed);
 }
 
+TEST_CASE("config_web: GET /api/config omits saved wifi credentials") {
+    StubEnv env;
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/wifi.conf",
+        "ctrl_interface=/var/run/wpa_supplicant\n"
+        "update_config=1\n"
+        "country=CN\n\n"
+        "network={\n"
+        "    ssid=746573742d77696669\n"
+        "    psk=\"saved-wifi-secret\"\n"
+        "    priority=7\n"
+        "}\n");
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    REQUIRE(resp.status == 200);
+    CHECK(resp.body.find("saved-wifi-secret") == std::string::npos);
+
+    cJSON* root = cJSON_Parse(resp.body.c_str());
+    REQUIRE(root != nullptr);
+    cJSON* wifi = cJSON_GetObjectItem(root, "wifi");
+    REQUIRE(wifi != nullptr);
+    CHECK(cJSON_GetObjectItem(wifi, "psk") == nullptr);
+    cJSON* networks = cJSON_GetObjectItem(wifi, "networks");
+    REQUIRE(networks != nullptr);
+    cJSON* network = cJSON_GetArrayItem(networks, 0);
+    REQUIRE(network != nullptr);
+    CHECK(cJSON_GetObjectItem(network, "psk") == nullptr);
+    cJSON_Delete(root);
+}
+
 TEST_CASE("config_web: PUT /api/config/locale updates only the device locale") {
     StubEnv env;
     auto handle = start_server(env);
@@ -1239,14 +1269,14 @@ TEST_CASE("config_web: POST /api/config rejects the legacy providers namespace")
 
 TEST_CASE("config_web: POST /api/config writes a provider token_env without an api_key") {
     // The dialog folds both into one box: a $-prefixed value arrives as
-    // token_env with an empty api_key, so the env var must survive the round
-    // trip and no empty api_key line should shadow it.
+    // token_env, so the env var must survive the round trip without an empty
+    // api_key shadowing it.
     StubEnv env;
     auto handle = start_server(env);
 
     const std::string body =
         "{\"config\":{\"model_providers\":{"
-        "\"my-openai\":{\"type\":\"openai\",\"api_key\":\"\",\"token_env\":\"OPENAI_API_KEY\"}},"
+        "\"my-openai\":{\"type\":\"openai\",\"token_env\":\"OPENAI_API_KEY\"}},"
         "\"model\":{\"provider\":\"my-openai\",\"model\":\"x\"},"
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
@@ -1260,9 +1290,7 @@ TEST_CASE("config_web: POST /api/config writes a provider token_env without an a
     CHECK(saved.find("api_key = \"\"\ntoken_env") == std::string::npos);
 }
 
-TEST_CASE("config_web: GET /api/config reports a provider token_env") {
-    // The dialog renders a stored token_env back as $VAR, so the read path has
-    // to surface it. Secrets are masked here, but an env var name is not one.
+TEST_CASE("config_web: GET /api/config reports only provider credential state") {
     StubEnv env;
     const std::string tmp = make_temp_dir();
     write_file(tmp + "/config.json",
@@ -1278,7 +1306,9 @@ TEST_CASE("config_web: GET /api/config reports a provider token_env") {
 
     HttpResponse resp = http_request(handle->port, "GET", "/api/config", "");
     REQUIRE(resp.status == 200);
-    CHECK(resp.body.find("\"token_env\":\"OPENAI_API_KEY\"") != std::string::npos);
+    CHECK(resp.body.find("OPENAI_API_KEY") == std::string::npos);
+    CHECK(resp.body.find("\"token_env\"") == std::string::npos);
+    CHECK(resp.body.find("\"has_token_env\":true") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config renames a provider with its model reference") {
@@ -1386,9 +1416,9 @@ TEST_CASE("config_web: GET /api/config returns providers from the resolved confi
     CHECK(resp.body.find("\"providers\":") == std::string::npos);
     CHECK(resp.body.find("\"stub-openai\":{\"type\":\"openai\"") != std::string::npos);
     CHECK(resp.body.find("\"base_url\":\"http://127.0.0.1:11434\"") != std::string::npos);
-    // Secrets are masked on the read path.
+    // Credentials are write-only on the read path. The UI gets only state.
     CHECK(resp.body.find("sk-stub-secret-1234") == std::string::npos);
-    CHECK(resp.body.find("sk-s***1234") != std::string::npos);
+    CHECK(resp.body.find("sk-s***1234") == std::string::npos);
 
     cJSON* root = cJSON_Parse(resp.body.c_str());
     REQUIRE(root != nullptr);
@@ -1397,6 +1427,15 @@ TEST_CASE("config_web: GET /api/config returns providers from the resolved confi
     cJSON* model = cJSON_GetObjectItem(config, "model");
     REQUIRE(model != nullptr);
     CHECK(cJSON_GetObjectItem(model, "api_key") == nullptr);
+    cJSON* providers = cJSON_GetObjectItem(config, "model_providers");
+    REQUIRE(providers != nullptr);
+    cJSON* openai = cJSON_GetObjectItem(providers, "stub-openai");
+    REQUIRE(openai != nullptr);
+    CHECK(cJSON_GetObjectItem(openai, "api_key") == nullptr);
+    CHECK(cJSON_GetObjectItem(openai, "token_env") == nullptr);
+    cJSON* has_api_key = cJSON_GetObjectItem(openai, "has_api_key");
+    REQUIRE(has_api_key != nullptr);
+    CHECK((has_api_key->type & 0xff) == cJSON_True);
     cJSON_Delete(root);
 }
 
@@ -1482,7 +1521,7 @@ TEST_CASE("config_web: switching model providers never reassigns the resolved ap
     // be attributed to personal-openai.
     const std::string body =
         "{\"config\":{\"model_providers\":{"
-        "\"personal-openai\":{\"type\":\"openai\",\"api_key\":\"sk-p***bbbb\"}},"
+        "\"personal-openai\":{\"type\":\"openai\"}},"
         "\"model\":{\"provider\":\"personal-openai\"}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     REQUIRE(resp.status == 200);
@@ -1527,7 +1566,32 @@ TEST_CASE("config_web: POST /api/config keeps the stored provider api_key when m
     CHECK(saved.find("[model_providers.stub-ollama]") == std::string::npos);
 }
 
-TEST_CASE("config_web: provider renames preserve every masked secret") {
+TEST_CASE("config_web: POST /api/config keeps stored provider credentials when empty") {
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"model_providers\":{"
+               "\"literal\":{\"type\":\"openai\",\"api_key\":\"sk-literal-secret\"},"
+               "\"from-env\":{\"type\":\"openai\",\"token_env\":\"OPENAI_API_KEY\"}},"
+               "\"model\":{\"provider\":\"literal\",\"model\":\"gpt-4o\"},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model_providers\":{"
+        "\"literal\":{\"type\":\"openai\",\"api_key\":\"\"},"
+        "\"from-env\":{\"type\":\"openai\",\"api_key\":\"\"}}},"
+        "\"apply_wifi\":false}";
+    REQUIRE(http_request(handle->port, "POST", "/api/config", body).status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("api_key = \"sk-literal-secret\"") != std::string::npos);
+    CHECK(saved.find("token_env = \"OPENAI_API_KEY\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: provider renames preserve every omitted secret") {
     StubEnv env;
     const std::string tmp = make_temp_dir();
     write_file(tmp + "/config.json",
@@ -1553,33 +1617,34 @@ TEST_CASE("config_web: provider renames preserve every masked secret") {
     REQUIRE(root != nullptr);
     cJSON* config = cJSON_GetObjectItem(root, "config");
     REQUIRE(config != nullptr);
-    auto masked_secret = [config](const char* section, const char* record, const char* field) {
-        cJSON* records = cJSON_GetObjectItem(config, section);
-        cJSON* item = records ? cJSON_GetObjectItem(records, record) : nullptr;
-        cJSON* value = item ? cJSON_GetObjectItem(item, field) : nullptr;
-        return value && value->valuestring ? std::string(value->valuestring) : std::string();
-    };
-    const std::string model_key = masked_secret("model_providers", "model-old", "api_key");
-    const std::string tts_key = masked_secret("tts_providers", "tts-old", "api_key");
-    const std::string stt_key = masked_secret("stt_providers", "stt-old", "api_key");
-    const std::string secret_id = masked_secret("stt_providers", "stt-old", "secret_id");
-    const std::string secret_key = masked_secret("stt_providers", "stt-old", "secret_key");
+    cJSON* tts_records = cJSON_GetObjectItem(config, "tts_providers");
+    cJSON* stt_records = cJSON_GetObjectItem(config, "stt_providers");
+    REQUIRE(tts_records != nullptr);
+    REQUIRE(stt_records != nullptr);
+    cJSON* tts_record = cJSON_GetObjectItem(tts_records, "tts-old");
+    cJSON* stt_record = cJSON_GetObjectItem(stt_records, "stt-old");
+    REQUIRE(tts_record != nullptr);
+    REQUIRE(stt_record != nullptr);
+    CHECK(cJSON_GetObjectItem(tts_record, "api_key") == nullptr);
+    CHECK(cJSON_GetObjectItem(stt_record, "api_key") == nullptr);
+    CHECK(cJSON_GetObjectItem(stt_record, "secret_id") == nullptr);
+    CHECK(cJSON_GetObjectItem(stt_record, "secret_key") == nullptr);
+    REQUIRE(cJSON_GetObjectItem(tts_record, "has_api_key") != nullptr);
+    REQUIRE(cJSON_GetObjectItem(stt_record, "has_api_key") != nullptr);
+    REQUIRE(cJSON_GetObjectItem(stt_record, "has_secret_id") != nullptr);
+    REQUIRE(cJSON_GetObjectItem(stt_record, "has_secret_key") != nullptr);
+    CHECK((cJSON_GetObjectItem(tts_record, "has_api_key")->type & 0xff) == cJSON_True);
+    CHECK((cJSON_GetObjectItem(stt_record, "has_api_key")->type & 0xff) == cJSON_True);
+    CHECK((cJSON_GetObjectItem(stt_record, "has_secret_id")->type & 0xff) == cJSON_True);
+    CHECK((cJSON_GetObjectItem(stt_record, "has_secret_key")->type & 0xff) == cJSON_True);
     cJSON_Delete(root);
-    REQUIRE(model_key.find("***") != std::string::npos);
-    REQUIRE(tts_key.find("***") != std::string::npos);
-    REQUIRE(stt_key.find("***") != std::string::npos);
-    REQUIRE(secret_id.find("***") != std::string::npos);
-    REQUIRE(secret_key.find("***") != std::string::npos);
 
     const std::string body =
         "{\"config\":{"
-        "\"model_providers\":{\"model-new\":{\"type\":\"openai\",\"api_key\":\"" +
-        model_key + "\"}},"
-        "\"tts_providers\":{\"tts-new\":{\"type\":\"fish-audio\",\"api_key\":\"" +
-        tts_key + "\"}},"
-        "\"stt_providers\":{\"stt-new\":{\"type\":\"tencent-asr\",\"api_key\":\"" +
-        stt_key + "\",\"app_id\":\"1234\",\"secret_id\":\"" + secret_id +
-        "\",\"secret_key\":\"" + secret_key + "\",\"region\":\"ap-shanghai\"}},"
+        "\"model_providers\":{\"model-new\":{\"type\":\"openai\"}},"
+        "\"tts_providers\":{\"tts-new\":{\"type\":\"fish-audio\"}},"
+        "\"stt_providers\":{\"stt-new\":{\"type\":\"tencent-asr\","
+        "\"app_id\":\"1234\",\"region\":\"ap-shanghai\"}},"
         "\"_provider_renames\":{"
         "\"model_providers\":{\"model-new\":\"model-old\"},"
         "\"tts_providers\":{\"tts-new\":\"tts-old\"},"
@@ -1599,7 +1664,6 @@ TEST_CASE("config_web: provider renames preserve every masked secret") {
     CHECK(saved.find("api_key = \"sk-stt-secret-1234\"") != std::string::npos);
     CHECK(saved.find("secret_id = \"AKID-secret-1234\"") != std::string::npos);
     CHECK(saved.find("secret_key = \"secret-key-1234\"") != std::string::npos);
-    CHECK(saved.find("***") == std::string::npos);
     CHECK(saved.find("_provider_renames") == std::string::npos);
     CHECK(saved.find("model-old") == std::string::npos);
     CHECK(saved.find("tts-old") == std::string::npos);
@@ -3384,10 +3448,9 @@ TEST_CASE("config_web: POST /api/config keeps voice records when the payload omi
     CHECK(saved.find("api_key = \"sk-w-1234\"") != std::string::npos);
 }
 
-// GET masks a record's api_key, so the UI posts the mask back unchanged when the
-// user edits anything else. The mask must resolve to the stored secret or every
-// unrelated edit would silently blank the key.
-TEST_CASE("config_web: POST /api/config resolves a masked voice provider api_key") {
+// Voice-provider credentials are write-only. An empty edit omits the key, and
+// the backend must preserve the stored value.
+TEST_CASE("config_web: POST /api/config preserves an omitted voice provider api_key") {
     // Seeded through the stub config file: the stored config is the agent CLI's
     // resolved output, so a prior POST would not be visible to this GET.
     StubEnv env;
@@ -3417,17 +3480,16 @@ TEST_CASE("config_web: POST /api/config resolves a masked voice provider api_key
     REQUIRE(records != nullptr);
     cJSON* fish = cJSON_GetObjectItem(records, "fish");
     REQUIRE(fish != nullptr);
-    cJSON* masked = cJSON_GetObjectItem(fish, "api_key");
-    REQUIRE(masked != nullptr);
-    REQUIRE(masked->valuestring != nullptr);
-    const std::string masked_key = masked->valuestring;
+    CHECK(cJSON_GetObjectItem(fish, "api_key") == nullptr);
+    cJSON* has_api_key = cJSON_GetObjectItem(fish, "has_api_key");
+    REQUIRE(has_api_key != nullptr);
+    CHECK((has_api_key->type & 0xff) == cJSON_True);
     cJSON_Delete(root);
-    CHECK(masked_key.find("***") != std::string::npos);
 
-    // Post the mask back verbatim, as the UI would.
+    // Post the record without a credential, as the empty edit field does.
     const std::string repost =
         "{\"config\":{"
-        "\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\",\"api_key\":\"" + masked_key + "\"}},"
+        "\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\"}},"
         "\"tts\":{\"provider\":\"fish\",\"speed\":1.5},"
         "\"model\":{\"provider\":\"openrouter\",\"model\":\"x\"},"
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
@@ -3436,7 +3498,6 @@ TEST_CASE("config_web: POST /api/config resolves a masked voice provider api_key
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
     CHECK(saved.find("api_key = \"sk-fish-secret-1234\"") != std::string::npos);
-    CHECK(saved.find("***") == std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config rejects an invalid voice provider name") {
@@ -3563,7 +3624,9 @@ TEST_CASE("config_web: GET /api/config returns voice providers from the resolved
     HttpResponse resp = http_request(handle->port, "GET", "/api/config", "");
     REQUIRE(resp.status == 200);
     CHECK(resp.body.find("\"tts_providers\"") != std::string::npos);
-    CHECK(resp.body.find("\"token_env\":\"FISH_KEY\"") != std::string::npos);
+    CHECK(resp.body.find("FISH_KEY") == std::string::npos);
+    CHECK(resp.body.find("\"token_env\"") == std::string::npos);
+    CHECK(resp.body.find("\"has_token_env\":true") != std::string::npos);
     CHECK(resp.body.find("\"reference_id\":\"ref-abc\"") != std::string::npos);
     CHECK(resp.body.find("\"stt_providers\"") != std::string::npos);
     CHECK(resp.body.find("\"app_id\":\"1234\"") != std::string::npos);
