@@ -286,7 +286,7 @@ func TestConfigCheckPath_RejectsInvalidTOML(t *testing.T) {
 // providers and made every save of an unrelated section erase them from
 // agent.toml. Validation was skipped for the same reason.
 func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
-	t.Run("providers survive config -> DTO -> config", func(t *testing.T) {
+	t.Run("providers reach the DTO with write-only credentials", func(t *testing.T) {
 		cfg := agent.Config{
 			ModelProviders: map[string]agent.ModelProvider{
 				"my-openai": {Type: "openai", APIKey: "$OPENAI_KEY"},
@@ -300,7 +300,7 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 			t.Fatalf("dto.ModelProviders = %#v, want 2 entries", dto.ModelProviders)
 		}
 		if got := dto.ModelProviders["my-openai"]; got.Type != "openai" ||
-			got.APIKey != "$OPENAI_KEY" {
+			got.APIKey != "" || !got.HasAPIKey {
 			t.Errorf("dto.ModelProviders[my-openai] = %#v", got)
 		}
 		if got := dto.ModelProviders["my-ollama"].BaseURL; got != "http://127.0.0.1:11434" {
@@ -308,8 +308,8 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 		}
 
 		back := dto.toAgentConfig()
-		if !reflect.DeepEqual(back.ModelProviders, cfg.ModelProviders) {
-			t.Errorf("round-tripped model_providers = %#v, want %#v", back.ModelProviders, cfg.ModelProviders)
+		if got := back.ModelProviders["my-openai"]; got.Type != "openai" || got.APIKey != "" {
+			t.Errorf("redacted model_providers conversion = %#v", back.ModelProviders)
 		}
 	})
 

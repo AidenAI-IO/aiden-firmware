@@ -1803,7 +1803,8 @@ TEST_CASE("config web provider deletion keeps active references valid") {
     CHECK(html.find("remainingNames.length===0") != std::string::npos);
     CHECK(html.find("Add or select another provider before deleting it.") != std::string::npos);
     CHECK(html.find("context.refPatch(name,replacement)") != std::string::npos);
-    CHECK(html.find("body[context.configKey]=nextRecords") != std::string::npos);
+    CHECK(html.find("context.manager.modelProviders=nextRecords") != std::string::npos);
+    CHECK(html.find("context.manager.saveModelProviders(patch)") != std::string::npos);
 }
 
 // The [model] provider select offers configured [model_providers.*] entries only.
@@ -1854,7 +1855,7 @@ TEST_CASE("config web html uses canonical provider map and type field names") {
     const std::string html = read_config_web_asset_bundle();
 
     CHECK(html.find("appState.config.model_providers") != std::string::npos);
-    CHECK(html.find("model_providers: this.modelProviders") != std::string::npos);
+    CHECK(html.find("model_providers: snapshot") != std::string::npos);
     CHECK(html.find("payload.config.model_providers") != std::string::npos);
     CHECK(html.find("const provider = { type: type }") != std::string::npos);
     CHECK(html.find("ModelProvidersManager.modelProviders[providerRef].type") != std::string::npos);
@@ -2103,15 +2104,17 @@ TEST_CASE("config web html auto-fills the provider name and keeps it editable") 
     // A collision is only an error when it targets a different existing entry.
     CHECK(save_body.find("name !== editName && Object.prototype.hasOwnProperty.call(this.modelProviders, name)") !=
           std::string::npos);
-    // Renaming has to carry the model references across, or they dangle.
-    CHECK(save_body.find("this.modelRefPatch(renamedFrom,name)") != std::string::npos);
+    // Renaming has to carry model references across, while adds and unchanged
+    // edits must not match an empty provider reference.
+    CHECK(save_body.find("renamedFrom?this.modelRefPatch(renamedFrom,name):null") !=
+          std::string::npos);
 
     // The select only lists configured providers, so retargeting it to the new
     // name has to add that option first -- assigning an absent value silently
     // reset the select to the placeholder and lost the reference.
     const size_t patch_at = js.find("modelRefPatch: function");
     REQUIRE(patch_at != std::string::npos);
-    const size_t patch_end = js.find("saveModelProviders: async function", patch_at);
+    const size_t patch_end = js.find("saveModelProviders: function", patch_at);
     REQUIRE(patch_end != std::string::npos);
     const std::string patch_body = js.substr(patch_at, patch_end - patch_at);
     CHECK(patch_body.find("ensureSelectOption(select, newName); select.value = newName;") !=
@@ -2221,7 +2224,7 @@ TEST_CASE("config web html shows the provider base url only where it applies") {
     CHECK(dialog_body.find("syncProviderBaseUrlVisibility") != std::string::npos);
     CHECK(js.find("syncProviderBaseUrlVisibility: function") != std::string::npos);
 
-    const size_t save_end = js.find("saveModelProviders: async function", save_at);
+    const size_t save_end = js.find("saveModelProviders: function", save_at);
     REQUIRE(save_end != std::string::npos);
     const std::string save_body = js.substr(save_at, save_end - save_at);
     // A base_url left over from a previous type must not be saved once the type
@@ -2392,7 +2395,7 @@ TEST_CASE("config web patches the voice reference on rename") {
 
     const size_t patch_at = html.find("refPatch:function(oldName,newName)");
     REQUIRE(patch_at != std::string::npos);
-    const size_t patch_end = html.find("save:async function", patch_at);
+    const size_t patch_end = html.find("save:function", patch_at);
     REQUIRE(patch_end != std::string::npos);
     const std::string patch_body = html.substr(patch_at, patch_end - patch_at);
     CHECK(patch_body.find("this.spec.refSection") != std::string::npos);
@@ -2407,8 +2410,8 @@ TEST_CASE("config web sends provider rename metadata for masked secrets") {
 
     CHECK(html.find("function addProviderRename(config,section,oldName,newName)") !=
           std::string::npos);
-    CHECK(html.find("addProviderRename(this.modelRefPatch(renamedFrom,name),"
-                    "'model_providers',renamedFrom,name)") != std::string::npos);
+    CHECK(html.find("addProviderRename(refPatch,'model_providers',renamedFrom,name)") !=
+          std::string::npos);
     CHECK(html.find("addProviderRename(renamedFrom?this.refPatch(renamedFrom,name):null,"
                     "section,renamedFrom,name)") != std::string::npos);
 }

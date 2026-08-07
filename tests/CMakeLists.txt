@@ -197,6 +197,9 @@ if(NODE_EXECUTABLE)
     add_test(NAME config_web_i18n
         COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_i18n_test.mjs
     )
+    add_test(NAME config_web_providers
+        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_providers_test.mjs
+    )
 endif()
 
 # Shell-level test for the /opt bind mount that opkg installs into. Needs no

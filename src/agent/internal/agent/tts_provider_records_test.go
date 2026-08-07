@@ -62,3 +62,32 @@ func TestBuildTTSProviderConfigForResolvesAPIKeyEnvironmentReference(t *testing.
 		t.Errorf("api_key = %q, want %q from environment reference", got.APIKey, "sk-env-switch")
 	}
 }
+
+func TestBuildTTSProviderConfigForDoesNotFallbackWhenRecordEnvironmentReferenceIsUnavailable(t *testing.T) {
+	t.Setenv("AIDEN_TEST_MISSING_SWITCH_KEY", "")
+	cfg := Config{
+		TTSProviders: map[string]TTSProvider{
+			"fish-main": {Type: "fish-audio", APIKey: "$AIDEN_TEST_MISSING_SWITCH_KEY"},
+		},
+		TTS: TTSConfig{Provider: "minimax", APIKey: "active-provider-secret"},
+	}
+
+	got := buildTTSProviderConfigFor(cfg, "fish-main")
+	if got.APIKey != "" {
+		t.Fatalf("api_key = %q, want empty resolved record credential without active-provider fallback", got.APIKey)
+	}
+}
+
+func TestBuildTTSProviderConfigForFallsBackWhenRecordCredentialIsBlank(t *testing.T) {
+	cfg := Config{
+		TTSProviders: map[string]TTSProvider{
+			"fish-main": {Type: "fish-audio"},
+		},
+		TTS: TTSConfig{Provider: "minimax", APIKey: "active-provider-secret"},
+	}
+
+	got := buildTTSProviderConfigFor(cfg, "fish-main")
+	if got.APIKey != "active-provider-secret" {
+		t.Fatalf("api_key = %q, want blank record to use the flat TTS fallback", got.APIKey)
+	}
+}
