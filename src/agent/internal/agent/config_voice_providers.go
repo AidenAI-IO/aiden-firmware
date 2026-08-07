@@ -21,7 +21,6 @@ import (
 type TTSProvider struct {
 	Type        string `toml:"type"` // Provider type: minimax, fish-audio, ...
 	APIKey      string `toml:"api_key,omitempty"`
-	TokenEnv    string `toml:"token_env,omitempty"`
 	Model       string `toml:"model,omitempty"`
 	VoiceID     string `toml:"voice_id,omitempty"`
 	Emotion     string `toml:"emotion,omitempty"`
@@ -33,7 +32,6 @@ type TTSProvider struct {
 type STTProvider struct {
 	Type            string `toml:"type"` // Provider type: openai-whisper, tencent-asr, ...
 	APIKey          string `toml:"api_key,omitempty"`
-	TokenEnv        string `toml:"token_env,omitempty"`
 	Model           string `toml:"model,omitempty"`
 	BaseURL         string `toml:"base_url,omitempty"`
 	AppID           string `toml:"app_id,omitempty"`
@@ -97,7 +95,7 @@ func resolveTTSProvider(cfg *Config) {
 	// different record of the same type. See TTSConfig.ActiveProviderRecord.
 	cfg.TTS.ActiveProviderRecord = ref
 	if cfg.TTS.APIKey == "" {
-		cfg.TTS.APIKey = resolveVoiceAPIKey(record.APIKey, record.TokenEnv)
+		cfg.TTS.APIKey = resolveProviderAPIKey(record.APIKey)
 	}
 	if cfg.TTS.Model == "" {
 		cfg.TTS.Model = record.Model
@@ -136,7 +134,7 @@ func resolveSTTProvider(cfg *Config) {
 
 	cfg.STT.Provider = providerType
 	if cfg.STT.APIKey == "" {
-		cfg.STT.APIKey = resolveVoiceAPIKey(record.APIKey, record.TokenEnv)
+		cfg.STT.APIKey = resolveProviderAPIKey(record.APIKey)
 	}
 	if cfg.STT.Model == "" {
 		cfg.STT.Model = record.Model
@@ -161,17 +159,26 @@ func resolveSTTProvider(cfg *Config) {
 	}
 }
 
-// resolveVoiceAPIKey reads token_env when no api_key is set. TTS and STT had no
-// os.Getenv path at all before this; the provider dialog offers the $ENV_VAR
-// syntax, so without it a user's $MINIMAX_KEY would silently resolve to empty.
-func resolveVoiceAPIKey(apiKey, tokenEnv string) string {
-	if strings.TrimSpace(apiKey) != "" {
+// resolveProviderAPIKey resolves the single provider credential syntax used by
+// agent.toml and Config Web. A leading $ means the rest is an environment
+// variable name; every other value is a literal API key.
+func resolveProviderAPIKey(apiKey string) string {
+	env, isEnvironmentReference := providerAPIKeyEnv(apiKey)
+	if !isEnvironmentReference {
 		return apiKey
 	}
-	if env := strings.TrimSpace(tokenEnv); env != "" {
-		return os.Getenv(env)
+	if env == "" {
+		return ""
 	}
-	return ""
+	return os.Getenv(env)
+}
+
+func providerAPIKeyEnv(apiKey string) (string, bool) {
+	trimmed := strings.TrimSpace(apiKey)
+	if !strings.HasPrefix(trimmed, "$") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, "$")), true
 }
 
 // ValidateVoiceProviders is the strict pass over the voice provider records. It

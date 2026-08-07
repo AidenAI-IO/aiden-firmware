@@ -100,10 +100,9 @@ type modelDTO struct {
 // the credentials; a model section references one by putting the provider name
 // in its own "provider" field.
 type modelProviderDTO struct {
-	Type     string `json:"type"`
-	APIKey   string `json:"api_key,omitempty"`
-	TokenEnv string `json:"token_env,omitempty"`
-	BaseURL  string `json:"base_url,omitempty"`
+	Type    string `json:"type"`
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
 }
 
 func (d *modelProviderDTO) UnmarshalJSON(data []byte) error {
@@ -138,7 +137,6 @@ func (d *modelProviderDTO) UnmarshalJSON(data []byte) error {
 type ttsProviderDTO struct {
 	Type        string `json:"type"`
 	APIKey      string `json:"api_key,omitempty"`
-	TokenEnv    string `json:"token_env,omitempty"`
 	Model       string `json:"model,omitempty"`
 	VoiceID     string `json:"voice_id,omitempty"`
 	Emotion     string `json:"emotion,omitempty"`
@@ -175,7 +173,6 @@ func (d *ttsProviderDTO) UnmarshalJSON(data []byte) error {
 type sttProviderDTO struct {
 	Type            string `json:"type"`
 	APIKey          string `json:"api_key,omitempty"`
-	TokenEnv        string `json:"token_env,omitempty"`
 	Model           string `json:"model,omitempty"`
 	BaseURL         string `json:"base_url,omitempty"`
 	AppID           string `json:"app_id,omitempty"`
@@ -570,10 +567,9 @@ func modelProviderDTOsFromConfig(providers map[string]agent.ModelProvider) map[s
 	result := make(map[string]modelProviderDTO, len(providers))
 	for name, provider := range providers {
 		result[name] = modelProviderDTO{
-			Type:     provider.Type,
-			APIKey:   provider.APIKey,
-			TokenEnv: provider.TokenEnv,
-			BaseURL:  provider.BaseURL,
+			Type:    provider.Type,
+			APIKey:  provider.APIKey,
+			BaseURL: provider.BaseURL,
 		}
 	}
 	return result
@@ -586,10 +582,9 @@ func (d webConfigDTO) modelProvidersToAgentConfig() map[string]agent.ModelProvid
 	result := make(map[string]agent.ModelProvider, len(d.ModelProviders))
 	for name, provider := range d.ModelProviders {
 		result[name] = agent.ModelProvider{
-			Type:     provider.Type,
-			APIKey:   provider.APIKey,
-			TokenEnv: provider.TokenEnv,
-			BaseURL:  provider.BaseURL,
+			Type:    provider.Type,
+			APIKey:  provider.APIKey,
+			BaseURL: provider.BaseURL,
 		}
 	}
 	return result
@@ -604,7 +599,6 @@ func ttsProviderDTOsFromConfig(providers map[string]agent.TTSProvider) map[strin
 		result[name] = ttsProviderDTO{
 			Type:        provider.Type,
 			APIKey:      provider.APIKey,
-			TokenEnv:    provider.TokenEnv,
 			Model:       provider.Model,
 			VoiceID:     provider.VoiceID,
 			Emotion:     provider.Emotion,
@@ -623,7 +617,6 @@ func (d webConfigDTO) ttsProvidersToAgentConfig() map[string]agent.TTSProvider {
 		result[name] = agent.TTSProvider{
 			Type:        provider.Type,
 			APIKey:      provider.APIKey,
-			TokenEnv:    provider.TokenEnv,
 			Model:       provider.Model,
 			VoiceID:     provider.VoiceID,
 			Emotion:     provider.Emotion,
@@ -642,7 +635,6 @@ func sttProviderDTOsFromConfig(providers map[string]agent.STTProvider) map[strin
 		result[name] = sttProviderDTO{
 			Type:            provider.Type,
 			APIKey:          provider.APIKey,
-			TokenEnv:        provider.TokenEnv,
 			Model:           provider.Model,
 			BaseURL:         provider.BaseURL,
 			AppID:           provider.AppID,
@@ -664,7 +656,6 @@ func (d webConfigDTO) sttProvidersToAgentConfig() map[string]agent.STTProvider {
 		result[name] = agent.STTProvider{
 			Type:            provider.Type,
 			APIKey:          provider.APIKey,
-			TokenEnv:        provider.TokenEnv,
 			Model:           provider.Model,
 			BaseURL:         provider.BaseURL,
 			AppID:           provider.AppID,

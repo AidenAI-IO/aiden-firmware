@@ -32,7 +32,7 @@ TEST_CASE("agent_toml loads named voice providers") {
             << "emotion = \"happy\"\n"
             << "[tts_providers.fish]\n"
             << "provider = \"fish-audio\"\n"
-            << "token_env = \"FISH_KEY\"\n"
+            << "api_key = \"$FISH_KEY\"\n"
             << "reference_id = \"ref-abc\"\n"
             << "model = \"s2-pro\"\n"
             << "[stt_providers.tencent]\n"
@@ -65,7 +65,7 @@ TEST_CASE("agent_toml loads named voice providers") {
     CHECK(cfg.tts_providers["minimax-main"].voice_id == "male-qn-qingse");
     CHECK(cfg.tts_providers["minimax-main"].emotion == "happy");
     CHECK(cfg.tts_providers["fish"].type == "fish-audio");
-    CHECK(cfg.tts_providers["fish"].token_env == "FISH_KEY");
+    CHECK(cfg.tts_providers["fish"].api_key == "$FISH_KEY");
     CHECK(cfg.tts_providers["fish"].reference_id == "ref-abc");
     CHECK(cfg.tts_providers["fish"].model == "s2-pro");
 

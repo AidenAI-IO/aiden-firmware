@@ -765,13 +765,11 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	}
 
 	// The record types themselves must be fully described, or a field the
-	// backend reads would have no editor at all. token_env is exempt: the
-	// dialog folds it into the API key box via the $ENV_VAR syntax, matching
-	// how [model_providers.<name>] is edited.
+	// backend reads would have no editor at all.
 	recordSections := []sectionType{
-		{"model_providers", reflect.TypeOf(ModelProvider{}), map[string]bool{"token_env": true}},
-		{"tts_providers", reflect.TypeOf(TTSProvider{}), map[string]bool{"token_env": true}},
-		{"stt_providers", reflect.TypeOf(STTProvider{}), map[string]bool{"token_env": true}},
+		{"model_providers", reflect.TypeOf(ModelProvider{}), nil},
+		{"tts_providers", reflect.TypeOf(TTSProvider{}), nil},
+		{"stt_providers", reflect.TypeOf(STTProvider{}), nil},
 	}
 	for _, s := range recordSections {
 		for name := range tomlKeys(s.typ) {

@@ -18,7 +18,7 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 		TTSProviders: map[string]agent.TTSProvider{
 			"minimax-main": {Type: "minimax", APIKey: "sk-aaa", VoiceID: "male-qn-qingse", Emotion: "happy"},
 			"fish":         {Type: "fish-audio", APIKey: "sk-ccc", ReferenceID: "ref-abc"},
-			"env-based":    {Type: "minimax", TokenEnv: "MINIMAX_KEY"},
+			"env-based":    {Type: "minimax", APIKey: "$MINIMAX_KEY"},
 		},
 		STTProviders: map[string]agent.STTProvider{
 			"tencent": {Type: "tencent-asr", AppID: "123", SecretID: "AKID", SecretKey: "sec", Region: "ap-shanghai"},
@@ -39,8 +39,8 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	if got := dto.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" {
 		t.Errorf("dto.TTSProviders[fish] = %#v", got)
 	}
-	if got := dto.TTSProviders["env-based"].TokenEnv; got != "MINIMAX_KEY" {
-		t.Errorf("token_env dropped: %q", got)
+	if got := dto.TTSProviders["env-based"].APIKey; got != "$MINIMAX_KEY" {
+		t.Errorf("api_key environment reference dropped: %q", got)
 	}
 	if got := dto.STTProviders["tencent"]; got.AppID != "123" || got.SecretKey != "sec" {
 		t.Errorf("dto.STTProviders[tencent] = %#v", got)

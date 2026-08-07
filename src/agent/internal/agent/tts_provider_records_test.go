@@ -49,17 +49,16 @@ func TestBuildTTSProviderConfigForAcceptsRecordName(t *testing.T) {
 	}
 }
 
-// token_env on a record resolves for runtime switching too, not just at load.
-func TestBuildTTSProviderConfigForResolvesTokenEnv(t *testing.T) {
+func TestBuildTTSProviderConfigForResolvesAPIKeyEnvironmentReference(t *testing.T) {
 	t.Setenv("AIDEN_TEST_SWITCH_KEY", "sk-env-switch")
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{
-			"fish-main": {Type: "fish-audio", TokenEnv: "AIDEN_TEST_SWITCH_KEY"},
+			"fish-main": {Type: "fish-audio", APIKey: "$AIDEN_TEST_SWITCH_KEY"},
 		},
 	}
 
 	got := buildTTSProviderConfigFor(cfg, "fish-audio")
 	if got.APIKey != "sk-env-switch" {
-		t.Errorf("api_key = %q, want %q from token_env", got.APIKey, "sk-env-switch")
+		t.Errorf("api_key = %q, want %q from environment reference", got.APIKey, "sk-env-switch")
 	}
 }

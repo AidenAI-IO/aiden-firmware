@@ -65,7 +65,7 @@ device_type = "iOS"
 # Primary LLM provider and model configuration
 [model_providers.openai-main]
 type = "openai"
-token_env = "OPENAI_API_KEY"
+api_key = "$OPENAI_API_KEY"
 
 [model]
 provider = "openai-main"
@@ -83,7 +83,7 @@ model = "gpt-5.5"
 # [model_providers.kimi-main]
 # type = "kimi"           # global: https://api.moonshot.ai/v1
 # type = "kimi-cn"        # mainland China: https://api.moonshot.cn/v1
-# token_env = "MOONSHOT_API_KEY"
+# api_key = "$MOONSHOT_API_KEY"
 # Set [model].provider = "kimi-main" to select it.
 # model = "kimi-k3"
 
@@ -92,7 +92,7 @@ model = "gpt-5.5"
 # Custom base_url values are not supported for Volcengine providers.
 # [model_providers.ark-main]
 # type = "volcengine"      # https://ark.cn-beijing.volces.com/api/v3
-# token_env = "ARK_API_KEY"
+# api_key = "$ARK_API_KEY"
 # Set [model].provider = "ark-main" to select it.
 # model = "doubao-seed-2-1-pro-260628"
 # Ark treats an omitted reasoning_effort as "high", which delays the first
@@ -172,7 +172,7 @@ max_agent_log_mb = 1
 # Required when input_mode = "stt"
 [stt_providers.openai-main]
 type = "openai-whisper"
-token_env = "OPENAI_API_KEY"
+api_key = "$OPENAI_API_KEY"
 model = "whisper-1"
 # base_url = "https://api.openai.com/v1"  # Optional: custom endpoint
 
@@ -182,7 +182,7 @@ provider = "openai-main"
 # For OpenRouter STT:
 # [stt_providers.openrouter-main]
 # type = "openrouter"
-# token_env = "OPENROUTER_API_KEY"
+# api_key = "$OPENROUTER_API_KEY"
 # model = "qwen/qwen3-asr-flash-2026-02-10"
 # Set [stt].provider = "openrouter-main" to select it.
 
@@ -200,7 +200,7 @@ provider = "openai-main"
 # Required when input_mode = "stt"
 [tts_providers.minimax-main]
 type = "minimax-cn"
-token_env = "MINIMAX_API_KEY"
+api_key = "$MINIMAX_API_KEY"
 voice_id = "male-qn-qingse"   # Voice ID from Minimax
 emotion = "happy"             # Emotion: happy, sad, angry, etc.
 

@@ -2138,9 +2138,9 @@ TEST_CASE("config web html auto-fills the provider name and keeps it editable") 
     }
 }
 
-// token_env and api_key share one edit box, but stored values never return to
-// the browser. The server reports only whether a credential is configured and
-// an empty edit keeps the stored value unchanged.
+// Provider credentials use one api_key field, but stored values never return
+// to the browser. The server reports only whether a credential is configured
+// and an empty edit keeps the stored value unchanged.
 TEST_CASE("config web html keeps provider credentials write only") {
     const std::string js = read_config_web_config_scripts();
 
@@ -2153,11 +2153,12 @@ TEST_CASE("config web html keeps provider credentials write only") {
     const size_t save_end = js.find("modelRefPatch: function", save_at);
     REQUIRE(save_end != std::string::npos);
     const std::string save_body = js.substr(save_at, save_end - save_at);
-    // $FOO stores token_env and clears any literal key left behind.
-    CHECK(save_body.find("apiKeyRaw.charAt(0) === '$'") != std::string::npos);
-    CHECK(save_body.find("provider.token_env = env;") != std::string::npos);
+    // The web sends the same single api_key representation that agent.toml uses.
+    CHECK(js.find("function assignProviderAPIKey(record,apiKeyRaw)") != std::string::npos);
+    CHECK(js.find("record.api_key=apiKeyRaw") != std::string::npos);
+    CHECK(save_body.find("provider.token_env") == std::string::npos);
     // A bare $ names no variable, so it must not save silently.
-    CHECK(save_body.find("t('provider.env_required')") != std::string::npos);
+    CHECK(js.find("alert(t('provider.env_required'))") != std::string::npos);
 
     // Reopening the dialog never renders a stored key or environment name.
     const size_t dialog_at = js.find("showProviderDialog: function");

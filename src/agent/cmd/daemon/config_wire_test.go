@@ -289,7 +289,7 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 	t.Run("providers survive config -> DTO -> config", func(t *testing.T) {
 		cfg := agent.Config{
 			ModelProviders: map[string]agent.ModelProvider{
-				"my-openai": {Type: "openai", APIKey: "sk-secret", TokenEnv: "OPENAI_KEY"},
+				"my-openai": {Type: "openai", APIKey: "$OPENAI_KEY"},
 				"my-ollama": {Type: "ollama", BaseURL: "http://127.0.0.1:11434"},
 			},
 			Model: agent.ModelConfig{Provider: "my-openai", Model: "gpt-4"},
@@ -300,7 +300,7 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 			t.Fatalf("dto.ModelProviders = %#v, want 2 entries", dto.ModelProviders)
 		}
 		if got := dto.ModelProviders["my-openai"]; got.Type != "openai" ||
-			got.APIKey != "sk-secret" || got.TokenEnv != "OPENAI_KEY" {
+			got.APIKey != "$OPENAI_KEY" {
 			t.Errorf("dto.ModelProviders[my-openai] = %#v", got)
 		}
 		if got := dto.ModelProviders["my-ollama"].BaseURL; got != "http://127.0.0.1:11434" {

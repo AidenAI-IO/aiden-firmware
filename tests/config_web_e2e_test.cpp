@@ -1267,16 +1267,13 @@ TEST_CASE("config_web: POST /api/config rejects the legacy providers namespace")
     CHECK(resp.body.find("model_providers") != std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config writes a provider token_env without an api_key") {
-    // The dialog folds both into one box: a $-prefixed value arrives as
-    // token_env, so the env var must survive the round trip without an empty
-    // api_key shadowing it.
+TEST_CASE("config_web: POST /api/config writes a provider api_key environment reference") {
     StubEnv env;
     auto handle = start_server(env);
 
     const std::string body =
         "{\"config\":{\"model_providers\":{"
-        "\"my-openai\":{\"type\":\"openai\",\"token_env\":\"OPENAI_API_KEY\"}},"
+        "\"my-openai\":{\"type\":\"openai\",\"api_key\":\"$OPENAI_API_KEY\"}},"
         "\"model\":{\"provider\":\"my-openai\",\"model\":\"x\"},"
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
@@ -1285,17 +1282,15 @@ TEST_CASE("config_web: POST /api/config writes a provider token_env without an a
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
     CHECK(saved.find("[model_providers.my-openai]") != std::string::npos);
-    CHECK(saved.find("token_env = \"OPENAI_API_KEY\"") != std::string::npos);
-    // An empty api_key must not be written alongside it.
-    CHECK(saved.find("api_key = \"\"\ntoken_env") == std::string::npos);
+    CHECK(saved.find("api_key = \"$OPENAI_API_KEY\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/config reports only provider credential state") {
     StubEnv env;
     const std::string tmp = make_temp_dir();
     write_file(tmp + "/config.json",
-               "{\"model_providers\":{\"env-openai\":{\"type\":\"openai\",\"api_key\":\"\","
-               "\"token_env\":\"OPENAI_API_KEY\"}},"
+               "{\"model_providers\":{\"env-openai\":{\"type\":\"openai\","
+               "\"api_key\":\"$OPENAI_API_KEY\"}},"
                "\"model\":{\"provider\":\"env-openai\",\"api_key\":\"\",\"model\":\"gpt-4o\","
                "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
@@ -1308,7 +1303,7 @@ TEST_CASE("config_web: GET /api/config reports only provider credential state") 
     REQUIRE(resp.status == 200);
     CHECK(resp.body.find("OPENAI_API_KEY") == std::string::npos);
     CHECK(resp.body.find("\"token_env\"") == std::string::npos);
-    CHECK(resp.body.find("\"has_token_env\":true") != std::string::npos);
+    CHECK(resp.body.find("\"has_api_key\":true") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config renames a provider with its model reference") {
@@ -1572,7 +1567,7 @@ TEST_CASE("config_web: POST /api/config keeps stored provider credentials when e
     write_file(tmp + "/config.json",
                "{\"model_providers\":{"
                "\"literal\":{\"type\":\"openai\",\"api_key\":\"sk-literal-secret\"},"
-               "\"from-env\":{\"type\":\"openai\",\"token_env\":\"OPENAI_API_KEY\"}},"
+               "\"from-env\":{\"type\":\"openai\",\"api_key\":\"$OPENAI_API_KEY\"}},"
                "\"model\":{\"provider\":\"literal\",\"model\":\"gpt-4o\"},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -1588,7 +1583,7 @@ TEST_CASE("config_web: POST /api/config keeps stored provider credentials when e
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
     CHECK(saved.find("api_key = \"sk-literal-secret\"") != std::string::npos);
-    CHECK(saved.find("token_env = \"OPENAI_API_KEY\"") != std::string::npos);
+    CHECK(saved.find("api_key = \"$OPENAI_API_KEY\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: provider renames preserve every omitted secret") {
@@ -3382,7 +3377,7 @@ TEST_CASE("config_web: POST /api/config writes named voice providers") {
         "\"tts_providers\":{"
         "\"minimax-main\":{\"provider\":\"minimax\",\"api_key\":\"sk-mm-1234\","
         "\"voice_id\":\"male-qn-qingse\",\"emotion\":\"happy\"},"
-        "\"fish\":{\"provider\":\"fish-audio\",\"token_env\":\"FISH_KEY\","
+        "\"fish\":{\"provider\":\"fish-audio\",\"api_key\":\"$FISH_KEY\","
         "\"reference_id\":\"ref-abc\",\"model\":\"s2-pro\"}},"
         "\"stt_providers\":{"
         "\"tencent\":{\"provider\":\"tencent-asr\",\"app_id\":\"1234\","
@@ -3400,7 +3395,7 @@ TEST_CASE("config_web: POST /api/config writes named voice providers") {
     CHECK(saved.find("api_key = \"sk-mm-1234\"") != std::string::npos);
     CHECK(saved.find("voice_id = \"male-qn-qingse\"") != std::string::npos);
     CHECK(saved.find("[tts_providers.fish]") != std::string::npos);
-    CHECK(saved.find("token_env = \"FISH_KEY\"") != std::string::npos);
+    CHECK(saved.find("api_key = \"$FISH_KEY\"") != std::string::npos);
     CHECK(saved.find("reference_id = \"ref-abc\"") != std::string::npos);
     CHECK(saved.find("[stt_providers.tencent]") != std::string::npos);
     CHECK(saved.find("app_id = \"1234\"") != std::string::npos);
@@ -3643,8 +3638,8 @@ TEST_CASE("config_web: GET /api/config returns voice providers from the resolved
     StubEnv env;
     const std::string tmp = make_temp_dir();
     write_file(tmp + "/config.json",
-               "{\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\",\"api_key\":\"\","
-               "\"token_env\":\"FISH_KEY\",\"reference_id\":\"ref-abc\"}},"
+               "{\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\","
+               "\"api_key\":\"$FISH_KEY\",\"reference_id\":\"ref-abc\"}},"
                "\"stt_providers\":{\"tencent\":{\"provider\":\"tencent-asr\",\"app_id\":\"1234\","
                "\"region\":\"ap-shanghai\"}},"
                "\"tts\":{\"provider\":\"fish\",\"speed\":1.2},"
@@ -3662,7 +3657,7 @@ TEST_CASE("config_web: GET /api/config returns voice providers from the resolved
     CHECK(resp.body.find("\"tts_providers\"") != std::string::npos);
     CHECK(resp.body.find("FISH_KEY") == std::string::npos);
     CHECK(resp.body.find("\"token_env\"") == std::string::npos);
-    CHECK(resp.body.find("\"has_token_env\":true") != std::string::npos);
+    CHECK(resp.body.find("\"has_api_key\":true") != std::string::npos);
     CHECK(resp.body.find("\"reference_id\":\"ref-abc\"") != std::string::npos);
     CHECK(resp.body.find("\"stt_providers\"") != std::string::npos);
     CHECK(resp.body.find("\"app_id\":\"1234\"") != std::string::npos);

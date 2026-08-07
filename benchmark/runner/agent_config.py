@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from typing import Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
 def _strip_toml_comment(line: str) -> str:
@@ -66,8 +64,6 @@ def load_agent_model_config(path: Path) -> dict[str, str]:
     for key in ("api_key", "base_url"):
         if not model.get(key, "").strip() and record.get(key, "").strip():
             model[key] = record[key]
-    if record.get("token_env", "").strip():
-        model["token_env"] = record["token_env"]
     return model
 
 
@@ -101,12 +97,9 @@ def resolve_agent_model_api_key(
     model = load_agent_model_config(path)
     configured = model.get("api_key", "").strip()
     if not configured:
-        token_env = model.get("token_env", "").strip()
-        return env.get(token_env) or None
-    if configured in env and env[configured]:
-        return env[configured]
-    if _ENV_NAME_RE.fullmatch(configured):
         return None
+    if configured.startswith("$"):
+        return env.get(configured[1:].strip()) or None
     return configured
 
 

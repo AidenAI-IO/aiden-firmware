@@ -488,7 +488,6 @@ void apply_kv(AgentToml& cfg,
         TTSProviderToml& record = cfg.tts_providers[record_name];
         if (key == "type" || key == "provider") assign_string(&record.type, raw, &sub_err);
         else if (key == "api_key") assign_string(&record.api_key, raw, &sub_err);
-        else if (key == "token_env") assign_string(&record.token_env, raw, &sub_err);
         else if (key == "model") assign_string(&record.model, raw, &sub_err);
         else if (key == "voice_id") assign_string(&record.voice_id, raw, &sub_err);
         else if (key == "emotion") assign_string(&record.emotion, raw, &sub_err);
@@ -507,7 +506,6 @@ void apply_kv(AgentToml& cfg,
         STTProviderToml& record = cfg.stt_providers[record_name];
         if (key == "type" || key == "provider") assign_string(&record.type, raw, &sub_err);
         else if (key == "api_key") assign_string(&record.api_key, raw, &sub_err);
-        else if (key == "token_env") assign_string(&record.token_env, raw, &sub_err);
         else if (key == "model") assign_string(&record.model, raw, &sub_err);
         else if (key == "base_url") assign_string(&record.base_url, raw, &sub_err);
         else if (key == "app_id") assign_string(&record.app_id, raw, &sub_err);
@@ -533,7 +531,6 @@ void apply_kv(AgentToml& cfg,
 
         if (key == "type" || key == "provider") assign_string(&provider.type, raw, &sub_err);
         else if (key == "api_key") assign_string(&provider.api_key, raw, &sub_err);
-        else if (key == "token_env") assign_string(&provider.token_env, raw, &sub_err);
         else if (key == "base_url") assign_string(&provider.base_url, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     }
@@ -903,7 +900,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
         out << "[model_providers." << provider_name << "]\n";
         if (!provider.type.empty()) emit_string(out, "type", provider.type);
         if (!provider.api_key.empty()) emit_string(out, "api_key", provider.api_key);
-        if (!provider.token_env.empty()) emit_string(out, "token_env", provider.token_env);
         if (!provider.base_url.empty()) emit_string(out, "base_url", provider.base_url);
         out << "\n";
     }
@@ -923,7 +919,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
         out << "[tts_providers." << record_name << "]\n";
         if (!record.type.empty()) emit_string(out, "type", record.type);
         if (!record.api_key.empty()) emit_string(out, "api_key", record.api_key);
-        if (!record.token_env.empty()) emit_string(out, "token_env", record.token_env);
         if (!record.model.empty()) emit_string(out, "model", record.model);
         if (!record.voice_id.empty()) emit_string(out, "voice_id", record.voice_id);
         if (!record.emotion.empty()) emit_string(out, "emotion", record.emotion);
@@ -946,7 +941,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
         out << "[stt_providers." << record_name << "]\n";
         if (!record.type.empty()) emit_string(out, "type", record.type);
         if (!record.api_key.empty()) emit_string(out, "api_key", record.api_key);
-        if (!record.token_env.empty()) emit_string(out, "token_env", record.token_env);
         if (!record.model.empty()) emit_string(out, "model", record.model);
         if (!record.base_url.empty()) emit_string(out, "base_url", record.base_url);
         if (!record.app_id.empty()) emit_string(out, "app_id", record.app_id);

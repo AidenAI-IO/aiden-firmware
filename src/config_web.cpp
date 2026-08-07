@@ -2684,12 +2684,8 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
         if (include_secrets) {
             cJSON_AddStringToObject(provider_obj, "api_key", provider.api_key.c_str());
-            if (!provider.token_env.empty()) {
-                cJSON_AddStringToObject(provider_obj, "token_env", provider.token_env.c_str());
-            }
         } else {
             cJSON_AddBoolToObject(provider_obj, "has_api_key", provider.api_key.empty() ? 0 : 1);
-            cJSON_AddBoolToObject(provider_obj, "has_token_env", provider.token_env.empty() ? 0 : 1);
         }
         if (!provider.base_url.empty()) {
             cJSON_AddStringToObject(provider_obj, "base_url", provider.base_url.c_str());
@@ -2708,12 +2704,8 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON_AddStringToObject(record_obj, "type", record.type.c_str());
         if (include_secrets) {
             cJSON_AddStringToObject(record_obj, "api_key", record.api_key.c_str());
-            if (!record.token_env.empty()) {
-                cJSON_AddStringToObject(record_obj, "token_env", record.token_env.c_str());
-            }
         } else {
             cJSON_AddBoolToObject(record_obj, "has_api_key", record.api_key.empty() ? 0 : 1);
-            cJSON_AddBoolToObject(record_obj, "has_token_env", record.token_env.empty() ? 0 : 1);
         }
         if (!record.model.empty()) {
             cJSON_AddStringToObject(record_obj, "model", record.model.c_str());
@@ -2739,12 +2731,8 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON_AddStringToObject(record_obj, "type", record.type.c_str());
         if (include_secrets) {
             cJSON_AddStringToObject(record_obj, "api_key", record.api_key.c_str());
-            if (!record.token_env.empty()) {
-                cJSON_AddStringToObject(record_obj, "token_env", record.token_env.c_str());
-            }
         } else {
             cJSON_AddBoolToObject(record_obj, "has_api_key", record.api_key.empty() ? 0 : 1);
-            cJSON_AddBoolToObject(record_obj, "has_token_env", record.token_env.empty() ? 0 : 1);
         }
         if (!record.model.empty()) {
             cJSON_AddStringToObject(record_obj, "model", record.model.c_str());
@@ -3122,17 +3110,9 @@ std::string provider_secret_source_name(cJSON* root, const char* section,
     return old_name->valuestring;
 }
 
-void update_write_only_credential(cJSON* record, const std::string& previous_api_key,
-                                  const std::string& previous_token_env,
-                                  std::string* api_key, std::string* token_env) {
-    if (!record || !api_key || !token_env) return;
-
-    cJSON* submitted_token_env = cJSON_GetObjectItem(record, "token_env");
-    if (json_is_string(submitted_token_env) && submitted_token_env->valuestring[0]) {
-        api_key->clear();
-        *token_env = submitted_token_env->valuestring;
-        return;
-    }
+void update_write_only_api_key(cJSON* record, const std::string& previous_api_key,
+                               std::string* api_key) {
+    if (!record || !api_key) return;
 
     cJSON* submitted_api_key = cJSON_GetObjectItem(record, "api_key");
     if (json_is_string(submitted_api_key) && submitted_api_key->valuestring[0]) {
@@ -3140,12 +3120,10 @@ void update_write_only_credential(cJSON* record, const std::string& previous_api
         *api_key = !previous_api_key.empty() && value == mask_secret(previous_api_key)
             ? previous_api_key
             : value;
-        token_env->clear();
         return;
     }
 
     *api_key = previous_api_key;
-    *token_env = previous_token_env;
 }
 
 void update_write_only_secret(cJSON* record, const char* field,
@@ -3239,11 +3217,10 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
                 root, "model_providers", provider_name);
             std::map<std::string, aiden::ModelProviderToml>::const_iterator previous =
                 previous_providers.find(secret_source);
-            update_write_only_credential(
+            update_write_only_api_key(
                 item,
                 previous == previous_providers.end() ? std::string() : previous->second.api_key,
-                previous == previous_providers.end() ? std::string() : previous->second.token_env,
-                &provider.api_key, &provider.token_env);
+                &provider.api_key);
 
             cJSON* base_url = cJSON_GetObjectItem(item, "base_url");
             // A named provider's base_url is inherited by every model that
@@ -3284,11 +3261,10 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
                 root, "tts_providers", record_name);
             std::map<std::string, aiden::TTSProviderToml>::const_iterator stored =
                 previous.find(secret_source);
-            update_write_only_credential(
+            update_write_only_api_key(
                 item,
                 stored == previous.end() ? std::string() : stored->second.api_key,
-                stored == previous.end() ? std::string() : stored->second.token_env,
-                &record.api_key, &record.token_env);
+                &record.api_key);
 
             config->tts_providers[record_name] = record;
         }
@@ -3318,11 +3294,10 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
                 previous.find(secret_source);
             const aiden::STTProviderToml* stored_record =
                 stored == previous.end() ? NULL : &stored->second;
-            update_write_only_credential(
+            update_write_only_api_key(
                 item,
                 stored_record ? stored_record->api_key : std::string(),
-                stored_record ? stored_record->token_env : std::string(),
-                &record.api_key, &record.token_env);
+                &record.api_key);
             update_write_only_secret(item, "secret_id",
                                      stored_record ? stored_record->secret_id : std::string(),
                                      &record.secret_id);

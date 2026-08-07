@@ -60,7 +60,7 @@ func buildTTSProviderConfigFor(cfg Config, providerRef string) tts.ProviderConfi
 	// speed is deliberately not per-provider: it stays global on [tts] so
 	// changing voice never changes playback speed.
 	if hasRecord {
-		if key := resolveVoiceAPIKey(record.APIKey, record.TokenEnv); key != "" {
+		if key := resolveProviderAPIKey(record.APIKey); key != "" {
 			apiKey = key
 		}
 		if record.VoiceID != "" {
