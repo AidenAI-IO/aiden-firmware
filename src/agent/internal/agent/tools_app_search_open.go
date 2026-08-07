@@ -188,7 +188,7 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 	}
 	steps := make([]string, 0, 12)
 	callQuickAction := func(action string) error {
-		out, err := cfg.hw.quickAction.Call(ctx, jsonString(map[string]any{"action": action}))
+		out, err := callTextInputTool(ctx, cfg.hw.quickAction, jsonString(map[string]any{"action": action}))
 		if err != nil {
 			return err
 		}

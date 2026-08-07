@@ -332,13 +332,133 @@ func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T
 	if len(quick.calls) != 1 {
 		t.Fatalf("quick_action calls = %v, want one", quick.calls)
 	}
-	var quickArgs quickActionArgs
-	if err := json.Unmarshal([]byte(quick.calls[0]), &quickArgs); err != nil {
+	var quickPayload map[string]any
+	if err := json.Unmarshal([]byte(quick.calls[0]), &quickPayload); err != nil {
 		t.Fatalf("decode quick_action input: %v", err)
 	}
-	if quickArgs.Action != "spotlight_search" || quickArgs.Platform != "" {
-		t.Fatalf("quick_action input = %#v, want action only", quickArgs)
+	if quickPayload["action"] != "spotlight_search" {
+		t.Fatalf("quick_action action = %#v, want spotlight_search", quickPayload["action"])
 	}
+	if _, ok := quickPayload["platform"]; ok {
+		t.Fatalf("quick_action input = %#v, want platform omitted", quickPayload)
+	}
+}
+
+func TestSearchLaunchAppUsesRealQuickActionRuntimePlatform(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
+	t.Run("ios spotlight search binding", func(t *testing.T) {
+		vision := &stubTextInputVision{}
+		keyboardDev, keyboardPath := newTestHIDDevice(t)
+		events := []string{}
+		controller := newTestIOSKeyboardIsolationController(&events)
+		controller.keyboardDev = keyboardDev
+		keyboardTap := &KeyboardTapTool{dev: keyboardDev, iosKeyboardIsolation: controller}
+		touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
+		keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+		quick := &QuickActionTool{keyboard: keyboardTap, iosKeyboardIsolation: controller}
+		hw := &textInputHardwareDeps{
+			mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+			quickAction:  quick,
+			touchGesture: touch,
+			keyboardText: keyboardText,
+			keyboardTap:  keyboardTap,
+			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+		}
+		entryTool := &EnterTextTool{
+			engine:               newFastTextInputEngine(*hw, vision),
+			iosKeyboardIsolation: controller,
+		}
+		tool := &appSearchOpenTool{
+			hw:                   hw,
+			vision:               vision,
+			entryTool:            entryTool,
+			sleep:                testNoWaitSleep,
+			iosKeyboardIsolation: controller,
+			findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
+				return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "WeChat"}, nil
+			},
+			confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
+				return bridgeAppOpenResult{Opened: true, Reason: "WeChat visible"}, nil
+			},
+		}
+		toolSet := &ToolSet{tools: map[string]langtools.Tool{"enter_text": entryTool, "keyboard_tap": keyboardTap, "quick_action": quick}, searchOpenTool: tool}
+		toolSet.SetRuntimePlatformFn(func() string { return "ios" })
+
+		out, err := tool.Call(context.Background(), `{"app":"WeChat"}`)
+		if err != nil {
+			t.Fatalf("Call() error = %v", err)
+		}
+		var result struct {
+			OK bool `json:"ok"`
+		}
+		if err := json.Unmarshal([]byte(out), &result); err != nil {
+			t.Fatalf("decode Call() output: %v: %s", err, out)
+		}
+		if !result.OK {
+			t.Fatalf("Call() output = %s, want ok", out)
+		}
+		reports := readKeyboardReports(t, keyboardDev, keyboardPath)
+		if len(reports) < 2 {
+			t.Fatalf("keyboard reports = %d, want iOS spotlight binding", len(reports))
+		}
+		assertKeyboardReport(t, reports[0], hidModifierMap["meta"], hidKeyboardMap["space"], "Cmd+Space")
+		assertReleaseReport(t, reports[1], "release after Cmd+Space")
+	})
+
+	t.Run("android reserved catalog result", func(t *testing.T) {
+		vision := &stubTextInputVision{}
+		keyboardTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+		touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
+		keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+		quick := &QuickActionTool{}
+		hw := &textInputHardwareDeps{
+			mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+			quickAction:  quick,
+			touchGesture: touch,
+			keyboardText: keyboardText,
+			keyboardTap:  keyboardTap,
+			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+		}
+		tool := &appSearchOpenTool{
+			hw:        hw,
+			vision:    vision,
+			entryTool: &EnterTextTool{engine: newFastTextInputEngine(*hw, vision)},
+			sleep:     testNoWaitSleep,
+			findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
+				t.Fatal("findAppTapFn should not run after reserved quick_action")
+				return bridgeSearchResult{}, nil
+			},
+			confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
+				t.Fatal("confirmAppOpenFn should not run after reserved quick_action")
+				return bridgeAppOpenResult{}, nil
+			},
+		}
+		toolSet := &ToolSet{tools: map[string]langtools.Tool{"quick_action": quick}, searchOpenTool: tool}
+		toolSet.SetRuntimePlatformFn(func() string { return "android" })
+
+		out, err := tool.Call(context.Background(), `{"app":"WeChat"}`)
+		if err != nil {
+			t.Fatalf("Call() error = %v", err)
+		}
+		var result struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(out), &result); err != nil {
+			t.Fatalf("decode Call() output: %v: %s", err, out)
+		}
+		if result.OK {
+			t.Fatalf("Call() output = %s, want ok=false", out)
+		}
+		if !strings.Contains(result.Error, "spotlight_search is not available on all android phones") {
+			t.Fatalf("Call() error = %q, want catalogued Android reserved result", result.Error)
+		}
+		if len(keyboardTap.calls) != 0 || len(touch.calls) != 0 || len(keyboardText.calls) != 0 {
+			t.Fatalf("unexpected subtool calls after reserved quick_action: keyboard=%v touch=%v text=%v", keyboardTap.calls, touch.calls, keyboardText.calls)
+		}
+	})
 }
 
 func TestSearchLaunchAppBatchesIOSModifierIsolationAcrossSubtools(t *testing.T) {
@@ -381,6 +501,8 @@ func TestSearchLaunchAppBatchesIOSModifierIsolationAcrossSubtools(t *testing.T) 
 			return bridgeAppOpenResult{Opened: true, Reason: "WeChat visible"}, nil
 		},
 	}
+	toolSet := &ToolSet{tools: map[string]langtools.Tool{"quick_action": quickAction}, searchOpenTool: tool}
+	toolSet.SetRuntimePlatformFn(func() string { return "ios" })
 
 	out, err := tool.Call(context.Background(), `{"app":"WeChat"}`)
 	if err != nil {
