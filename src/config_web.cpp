@@ -289,10 +289,14 @@ ApiResponse proxy_agent_get_request(const Options& options,
                                      const std::string& agent_path_with_query);
 ApiResponse handle_api_models(const Options& options, const std::string& query_string);
 ApiResponse handle_usb_reenumerate(const Options& options);
-void flatten_provider_reference(const Options& options,
+void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config);
+bool flatten_provider_reference(const Options& options,
                                 const std::string& section,
-                                cJSON* values);
-void resolve_config_test_api_key(const Options& options, cJSON* values);
+                                cJSON* values,
+                                std::string* error);
+bool resolve_config_test_api_key(const Options& options,
+                                 cJSON* values,
+                                 std::string* error);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
@@ -1862,7 +1866,9 @@ void load_current_agent_config(const Options& options,
             *load_error = config_error;
         }
         *config = aiden::AgentToml();
+        return;
     }
+    preserve_redacted_agent_secrets(options, config);
 }
 
 void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config) {
@@ -1874,7 +1880,19 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
         config->live_activity.relay_api_key.empty() && config->live_activity.has_relay_api_key;
     bool need_live_activity_private_key_pem =
         config->live_activity.private_key_pem.empty() && config->live_activity.has_private_key_pem;
-    if (!need_search_api_key && !need_live_activity_relay_api_key && !need_live_activity_private_key_pem) {
+    bool need_provider_secrets = false;
+    for (const auto& item : config->model_providers) {
+        need_provider_secrets = need_provider_secrets || item.second.api_key.empty();
+    }
+    for (const auto& item : config->tts_providers) {
+        need_provider_secrets = need_provider_secrets || item.second.api_key.empty();
+    }
+    for (const auto& item : config->stt_providers) {
+        need_provider_secrets = need_provider_secrets || item.second.api_key.empty() ||
+            item.second.secret_id.empty() || item.second.secret_key.empty();
+    }
+    if (!need_search_api_key && !need_live_activity_relay_api_key &&
+        !need_live_activity_private_key_pem && !need_provider_secrets) {
         return;
     }
 
@@ -1894,6 +1912,28 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
     if (need_live_activity_private_key_pem && !stored.live_activity.private_key_pem.empty()) {
         config->live_activity.private_key_pem = stored.live_activity.private_key_pem;
         config->live_activity.has_private_key_pem = true;
+    }
+    for (auto& item : config->model_providers) {
+        std::map<std::string, aiden::ModelProviderToml>::const_iterator previous =
+            stored.model_providers.find(item.first);
+        if (previous != stored.model_providers.end() && item.second.api_key.empty()) {
+            item.second.api_key = previous->second.api_key;
+        }
+    }
+    for (auto& item : config->tts_providers) {
+        std::map<std::string, aiden::TTSProviderToml>::const_iterator previous =
+            stored.tts_providers.find(item.first);
+        if (previous != stored.tts_providers.end() && item.second.api_key.empty()) {
+            item.second.api_key = previous->second.api_key;
+        }
+    }
+    for (auto& item : config->stt_providers) {
+        std::map<std::string, aiden::STTProviderToml>::const_iterator previous =
+            stored.stt_providers.find(item.first);
+        if (previous == stored.stt_providers.end()) continue;
+        if (item.second.api_key.empty()) item.second.api_key = previous->second.api_key;
+        if (item.second.secret_id.empty()) item.second.secret_id = previous->second.secret_id;
+        if (item.second.secret_key.empty()) item.second.secret_key = previous->second.secret_key;
     }
 }
 
@@ -1983,6 +2023,29 @@ bool parse_stt_test_values_request(cJSON* root, cJSON** stt_values, std::string*
     }
     if (error) {
         error->clear();
+    }
+    return true;
+}
+
+bool validate_stt_test_provider_fields(cJSON* values, std::string* error) {
+    static const char* fields[] = {
+        "provider",
+        "api_key",
+        "model",
+        "base_url",
+        "language",
+        "app_id",
+        "secret_id",
+        "secret_key",
+        "region",
+        "engine_model_type",
+        NULL,
+    };
+    for (size_t i = 0; fields[i]; ++i) {
+        if (!validate_config_field_type(
+                values, "stt_values", fields[i], CONFIG_FIELD_STRING, error)) {
+            return false;
+        }
     }
     return true;
 }
@@ -2605,9 +2668,20 @@ ApiResponse handle_stt_test_start(const Options& options, const std::string& bod
         cJSON_Delete(root);
         return make_json_error(400, parse_error);
     }
+    if (!validate_stt_test_provider_fields(stt_values, &parse_error)) {
+        cJSON_Delete(root);
+        return make_json_error(400, parse_error);
+    }
 
-    flatten_provider_reference(options, "stt", stt_values);
-    resolve_config_test_api_key(options, stt_values);
+    std::string resolve_error;
+    if (!flatten_provider_reference(options, "stt", stt_values, &resolve_error)) {
+        cJSON_Delete(root);
+        return make_json_error(503, "provider config unavailable");
+    }
+    if (!resolve_config_test_api_key(options, stt_values, &resolve_error)) {
+        cJSON_Delete(root);
+        return make_json_error(503, resolve_error);
+    }
 
     const std::string resolved_body = cjson_to_string(root);
     cJSON_Delete(root);
@@ -6591,6 +6665,34 @@ static bool is_streaming_tts_provider(const std::string& provider) {
            provider == "volcengine";
 }
 
+bool is_known_config_test_provider_type(const std::string& section,
+                                        const std::string& provider) {
+    const std::string normalized = lowercase_copy(trim_copy(provider));
+    const char* const* known = NULL;
+    static const char* const model_types[] = {
+        "openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake", NULL,
+    };
+    static const char* const tts_types[] = {
+        "minimax", "minimax-cn", "minimax-ws", "fish-audio", "alicloud",
+        "volcengine", "openrouter", "google-cloud", NULL,
+    };
+    static const char* const stt_types[] = {
+        "openai-whisper", "openai", "tencent-asr", "tencent", "tencent_asr",
+        "openrouter", "qwen-asr", "google-cloud", NULL,
+    };
+    if (section == "model") {
+        known = model_types;
+    } else if (section == "tts") {
+        known = tts_types;
+    } else if (section == "stt") {
+        known = stt_types;
+    }
+    for (size_t i = 0; known && known[i]; ++i) {
+        if (normalized == known[i]) return true;
+    }
+    return false;
+}
+
 std::string provider_default_url(const std::string& provider, const std::string& section = "") {
     if (provider == "openrouter") return "https://openrouter.ai/api/v1";
     if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
@@ -6610,13 +6712,16 @@ std::string provider_default_url(const std::string& provider, const std::string&
     return "";
 }
 
-// set_json_str_if_absent adds key=value only when `values` does not already
-// carry a non-empty string for it, so a value the user typed into the form always
-// beats the stored record.
+// set_json_str_if_absent adds key=value only when `values` omits the field or
+// carries an empty string. A non-string value is malformed input and must remain
+// visible to the caller's validation instead of being replaced by stored data.
 void set_json_str_if_absent(cJSON* values, const char* key, const std::string& value) {
     if (value.empty()) return;
     cJSON* existing = cJSON_GetObjectItem(values, key);
     if (json_is_string(existing) && !trim_copy(existing->valuestring).empty()) {
+        return;
+    }
+    if (existing && !json_is_string(existing)) {
         return;
     }
     if (existing) {
@@ -6629,39 +6734,52 @@ void set_json_str_if_absent(cJSON* values, const char* key, const std::string& v
 // record to its provider type and fills the record's fields into `values`.
 // Without it the config-test pre-checks, which read the flat keys, would see an
 // unknown provider and an empty api_key.
-void flatten_provider_reference(const Options& options,
+bool flatten_provider_reference(const Options& options,
                                 const std::string& section,
-                                cJSON* values) {
-    if (!values) return;
+                                cJSON* values,
+                                std::string* error) {
+    if (error) error->clear();
+    if (!values) return true;
     cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
-    if (!json_is_string(provider_item)) return;
+    if (!json_is_string(provider_item)) return true;
     const std::string ref = trim_copy(provider_item->valuestring);
-    if (ref.empty()) return;
+    if (ref.empty()) return true;
 
     aiden::AgentToml stored;
     std::string load_error;
     load_current_agent_config(options, &stored, &load_error);
+    if (!load_error.empty()) {
+        // A bare provider request is self-contained and does not need the
+        // stored config. Unknown names may be provider references, so failing
+        // to load their records must remain visible instead of being forwarded
+        // as an unknown provider.
+        if (is_known_config_test_provider_type(section, ref)) {
+            return true;
+        }
+        if (error) *error = load_error;
+        return false;
+    }
 
     if (section == "model") {
         std::map<std::string, aiden::ModelProviderToml>::const_iterator it =
             stored.model_providers.find(ref);
-        if (it == stored.model_providers.end()) return;
+        if (it == stored.model_providers.end()) return true;
         const aiden::ModelProviderToml& record = it->second;
-        if (trim_copy(record.type).empty()) return;
+        if (trim_copy(record.type).empty()) return true;
 
         cJSON_DeleteItemFromObject(values, "provider");
         cJSON_AddStringToObject(values, "provider", record.type.c_str());
         set_json_str_if_absent(values, "api_key", record.api_key);
         set_json_str_if_absent(values, "base_url", record.base_url);
-        return;
+        return true;
     }
 
     if (section == "tts") {
         std::map<std::string, aiden::TTSProviderToml>::const_iterator it =
             stored.tts_providers.find(ref);
-        if (it == stored.tts_providers.end()) return;
+        if (it == stored.tts_providers.end()) return true;
         const aiden::TTSProviderToml& record = it->second;
-        if (trim_copy(record.type).empty()) return;
+        if (trim_copy(record.type).empty()) return true;
 
         cJSON_DeleteItemFromObject(values, "provider");
         cJSON_AddStringToObject(values, "provider", record.type.c_str());
@@ -6670,14 +6788,14 @@ void flatten_provider_reference(const Options& options,
         set_json_str_if_absent(values, "voice_id", record.voice_id);
         set_json_str_if_absent(values, "emotion", record.emotion);
         set_json_str_if_absent(values, "reference_id", record.reference_id);
-        return;
+        return true;
     }
 
     std::map<std::string, aiden::STTProviderToml>::const_iterator it =
         stored.stt_providers.find(ref);
-    if (it == stored.stt_providers.end()) return;
+    if (it == stored.stt_providers.end()) return true;
     const aiden::STTProviderToml& record = it->second;
-    if (trim_copy(record.type).empty()) return;
+    if (trim_copy(record.type).empty()) return true;
 
     cJSON_DeleteItemFromObject(values, "provider");
     cJSON_AddStringToObject(values, "provider", record.type.c_str());
@@ -6689,35 +6807,49 @@ void flatten_provider_reference(const Options& options,
     set_json_str_if_absent(values, "secret_key", record.secret_key);
     set_json_str_if_absent(values, "region", record.region);
     set_json_str_if_absent(values, "engine_model_type", record.engine_model_type);
+    return true;
 }
 
-void resolve_config_test_api_key(const Options& options, cJSON* values) {
-    if (!values) return;
+bool resolve_config_test_api_key(const Options& options,
+                                 cJSON* values,
+                                 std::string* error) {
+    if (error) error->clear();
+    if (!values) return true;
     cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
-    if (!json_is_string(api_key_item)) return;
+    if (!json_is_string(api_key_item)) return true;
 
     const std::string api_key = trim_copy(api_key_item->valuestring);
-    if (api_key.empty() || api_key[0] != '$') return;
+    if (api_key.empty() || api_key[0] != '$') return true;
 
     const std::string env_name = trim_copy(api_key.substr(1));
     std::string resolved;
     bool found_in_file = false;
 
-    std::string content;
-    std::string read_error;
-    if (read_file_contents_checked(options.system_env_path.c_str(),
-                                   kMaxSystemEnvSize,
-                                   &content,
-                                   &read_error)) {
+    if (file_exists(options.system_env_path.c_str())) {
+        std::string content;
+        std::string read_error;
+        if (!read_file_contents_checked(options.system_env_path.c_str(),
+                                        kMaxSystemEnvSize,
+                                        &content,
+                                        &read_error)) {
+            AIDEN_LOG_ERROR("config_test", "system_env_read_failed", "error=%s",
+                            read_error.c_str());
+            if (error) *error = "system env file is unavailable";
+            return false;
+        }
         std::vector<aiden::EnvAssignment> assignments;
         aiden::SystemEnvProxy proxy;
         std::string parse_error;
-        if (aiden::parse_system_env_content(content, &assignments, &proxy, &parse_error)) {
-            for (size_t i = 0; i < assignments.size(); ++i) {
-                if (assignments[i].key == env_name) {
-                    resolved = assignments[i].value;
-                    found_in_file = true;
-                }
+        if (!aiden::parse_system_env_content(content, &assignments, &proxy, &parse_error)) {
+            AIDEN_LOG_ERROR("config_test", "system_env_parse_failed", "error=%s",
+                            parse_error.c_str());
+            if (error) *error = "system env file is invalid";
+            return false;
+        }
+        for (size_t i = 0; i < assignments.size(); ++i) {
+            if (assignments[i].key == env_name) {
+                resolved = assignments[i].value;
+                found_in_file = true;
             }
         }
     }
@@ -6729,6 +6861,7 @@ void resolve_config_test_api_key(const Options& options, cJSON* values) {
 
     cJSON_DeleteItemFromObject(values, "api_key");
     cJSON_AddStringToObject(values, "api_key", resolved.c_str());
+    return true;
 }
 
 std::string build_curl_proxy_arg(const SystemProxy& proxy) {
@@ -6809,8 +6942,15 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     // references again on its own side, which is idempotent: once flattened,
     // provider holds a bare type and matches no record.
     if (section == "model" || section == "tts" || section == "stt") {
-        flatten_provider_reference(options, section, values);
-        resolve_config_test_api_key(options, values);
+        std::string resolve_error;
+        if (!flatten_provider_reference(options, section, values, &resolve_error)) {
+            cJSON_Delete(root);
+            return make_json_error(503, "provider config unavailable");
+        }
+        if (!resolve_config_test_api_key(options, values, &resolve_error)) {
+            cJSON_Delete(root);
+            return make_json_error(503, resolve_error);
+        }
     }
 
     cJSON* response = cJSON_CreateObject();

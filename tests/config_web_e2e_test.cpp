@@ -1326,6 +1326,57 @@ TEST_CASE("config_web: GET /api/config reports only provider credential state") 
     CHECK(resp.body.find("\"has_api_key\":true") != std::string::npos);
 }
 
+TEST_CASE("config_web: redacted agent CLI provider credentials survive reads and unrelated saves") {
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"model_providers\":{\"env-openai\":{\"type\":\"openai\",\"has_api_key\":true}},"
+               "\"tts_providers\":{\"fish\":{\"type\":\"fish-audio\",\"has_api_key\":true}},"
+               "\"stt_providers\":{\"tencent\":{\"type\":\"tencent-asr\",\"app_id\":\"123\","
+               "\"has_secret_id\":true,\"has_secret_key\":true}},"
+               "\"model\":{\"provider\":\"env-openai\",\"model\":\"gpt-4o\","
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"tts\":{\"provider\":\"fish\",\"speed\":1},"
+               "\"stt\":{\"provider\":\"tencent\",\"language\":\"zh\"},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[model_providers.env-openai]\n"
+               "type = \"openai\"\n"
+               "api_key = \"$MODEL_KEY\"\n\n"
+               "[tts_providers.fish]\n"
+               "type = \"fish-audio\"\n"
+               "api_key = \"$TTS_KEY\"\n\n"
+               "[stt_providers.tencent]\n"
+               "type = \"tencent-asr\"\n"
+               "app_id = \"123\"\n"
+               "secret_id = \"stored-id\"\n"
+               "secret_key = \"stored-key\"\n");
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config", "");
+    REQUIRE(get_resp.status == 200);
+    CHECK(get_resp.body.find("$MODEL_KEY") == std::string::npos);
+    CHECK(get_resp.body.find("$TTS_KEY") == std::string::npos);
+    CHECK(get_resp.body.find("stored-id") == std::string::npos);
+    CHECK(get_resp.body.find("\"has_api_key\":true") != std::string::npos);
+    CHECK(get_resp.body.find("\"has_secret_id\":true") != std::string::npos);
+    CHECK(get_resp.body.find("\"has_secret_key\":true") != std::string::npos);
+
+    const std::string body =
+        "{\"config\":{\"hid\":{\"keyboard_layout\":\"azerty\","
+        "\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
+    HttpResponse post_resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(post_resp.status == 200);
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("api_key = \"$MODEL_KEY\"") != std::string::npos);
+    CHECK(saved.find("api_key = \"$TTS_KEY\"") != std::string::npos);
+    CHECK(saved.find("secret_id = \"stored-id\"") != std::string::npos);
+    CHECK(saved.find("secret_key = \"stored-key\"") != std::string::npos);
+}
+
 TEST_CASE("config_web: POST /api/config renames a provider with its model reference") {
     // Renaming in the dialog posts the new providers map plus the rewritten
     // model sections in one request. The old section must be gone and the model
@@ -2600,7 +2651,7 @@ TEST_CASE("config_web: stt live test resolves provider api_key from system env")
     );
     write_file(tmp + "/config.json",
                "{\"stt_providers\":{\"env-whisper\":{\"type\":\"openai-whisper\","
-               "\"api_key\":\"$AIDEN_STT_LIVE_TEST_API_KEY\",\"model\":\"whisper-live-1\","
+               "\"has_api_key\":true,\"model\":\"whisper-live-1\","
                "\"base_url\":\"https://stt.example.test/v1\"}},"
                "\"stt\":{\"provider\":\"env-whisper\",\"language\":\"en\"},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
@@ -2615,6 +2666,12 @@ TEST_CASE("config_web: stt live test resolves provider api_key from system env")
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     env.set("AIDEN_STT_LIVE_TEST_API_KEY", "stale-process-env-key");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[stt_providers.env-whisper]\n"
+               "type = \"openai-whisper\"\n"
+               "api_key = \"$AIDEN_STT_LIVE_TEST_API_KEY\"\n"
+               "model = \"whisper-live-1\"\n"
+               "base_url = \"https://stt.example.test/v1\"\n");
 
     const std::string system_env_body =
         "{\"system_env\":\"AIDEN_STT_LIVE_TEST_API_KEY=stt-live-system-env-secret\\n\"}";
@@ -2649,6 +2706,82 @@ TEST_CASE("config_web: stt live test resolves provider api_key from system env")
     CHECK(requests[0].body.find("$AIDEN_STT_LIVE_TEST_API_KEY") == std::string::npos);
     CHECK(requests[0].body.find("stale-process-env-key") == std::string::npos);
     cJSON_Delete(forwarded);
+}
+
+TEST_CASE("config_web: stt live test rejects malformed provider fields before flattening") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/config.json",
+               "{\"stt_providers\":{\"env-whisper\":{\"type\":\"openai-whisper\","
+               "\"api_key\":\"stored-key\",\"model\":\"whisper-1\"}},"
+               "\"stt\":{\"provider\":\"env-whisper\",\"language\":\"en\"},"
+               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
+               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+
+    StubAgentHTTPServer agent_server;
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    const std::string start_body =
+        "{\"stt_values\":{\"provider\":\"env-whisper\",\"api_key\":false},"
+        "\"audio_values\":{\"socket\":\"/tmp/live-audio.sock\",\"sample_rate\":16000,"
+        "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"}}";
+    HttpResponse start_resp =
+        http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
+
+    CHECK(start_resp.status == 400);
+    CHECK(start_resp.body.find("stt_values.api_key") != std::string::npos);
+    CHECK(agent_server.requests().empty());
+}
+
+TEST_CASE("config_web: stt live test reports provider config load failures") {
+    StubAgentHTTPServer agent_server;
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    env.set("AIDEN_AGENT_BIN", "/nonexistent/aiden-agent");
+    auto handle = start_server(env);
+
+    const std::string start_body =
+        "{\"stt_values\":{\"provider\":\"env-whisper\",\"language\":\"en\"},"
+        "\"audio_values\":{\"socket\":\"/tmp/live-audio.sock\",\"sample_rate\":16000,"
+        "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"}}";
+    HttpResponse start_resp =
+        http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
+
+    CHECK(start_resp.status == 503);
+    CHECK(start_resp.body.find("provider config unavailable") != std::string::npos);
+    CHECK(agent_server.requests().empty());
+}
+
+TEST_CASE("config_web: stt live test keeps bare providers independent of config loading") {
+    StubAgentHTTPServer agent_server;
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    env.set("AIDEN_AGENT_BIN", "/nonexistent/aiden-agent");
+    auto handle = start_server(env);
+
+    const std::string start_body =
+        "{\"stt_values\":{\"provider\":\"openai-whisper\",\"api_key\":\"sk-live\","
+        "\"model\":\"whisper-1\",\"base_url\":\"https://stt.example.test/v1\","
+        "\"language\":\"en\"},"
+        "\"audio_values\":{\"socket\":\"/tmp/live-audio.sock\",\"sample_rate\":16000,"
+        "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"}}";
+    HttpResponse start_resp =
+        http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
+
+    CHECK(start_resp.status == 200);
+    const std::vector<CapturedHTTPRequest> requests = agent_server.requests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].body.find("\"provider\":\"openai-whisper\"") != std::string::npos);
+    CHECK(requests[0].body.find("\"api_key\":\"sk-live\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/storage/status parses the agent state mirror") {
@@ -3668,7 +3801,7 @@ TEST_CASE("config_web: model config test resolves provider api_key from system e
     const std::string base_url = "http://127.0.0.1:" + std::to_string(probe.port());
     write_file(tmp + "/config.json",
                "{\"model_providers\":{\"env-openai\":{\"type\":\"openai\","
-               "\"api_key\":\"$AIDEN_CONFIG_TEST_MODEL_API_KEY\",\"base_url\":\"" + base_url + "\"}},"
+               "\"has_api_key\":true,\"base_url\":\"" + base_url + "\"}},"
                "\"model\":{\"provider\":\"env-openai\",\"model\":\"gpt-4o\","
                "\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
@@ -3679,6 +3812,11 @@ TEST_CASE("config_web: model config test resolves provider api_key from system e
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     env.set("AIDEN_CONFIG_TEST_MODEL_API_KEY", "process-env-key-must-not-win");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[model_providers.env-openai]\n"
+               "type = \"openai\"\n"
+               "api_key = \"$AIDEN_CONFIG_TEST_MODEL_API_KEY\"\n"
+               "base_url = \"" + base_url + "\"\n");
 
     const std::string system_env_body =
         "{\"system_env\":\"AIDEN_CONFIG_TEST_MODEL_API_KEY=stale-file-key\\n"
@@ -3707,6 +3845,50 @@ TEST_CASE("config_web: model config test resolves provider api_key from system e
     REQUIRE(saw_chat_request);
     CHECK(saw_resolved_header);
     CHECK_FALSE(saw_literal_reference);
+}
+
+TEST_CASE("config_web: config test fails closed when system env is invalid or oversized") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    HeadProbeServer probe;
+    const std::string base_url = "http://127.0.0.1:" + std::to_string(probe.port());
+    write_file(tmp + "/config.json",
+               "{\"model_providers\":{\"env-openai\":{\"type\":\"openai\","
+               "\"has_api_key\":true,\"base_url\":\"" + base_url + "\"}},"
+               "\"model\":{\"provider\":\"env-openai\",\"model\":\"gpt-4o\","
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    env.set("AIDEN_CONFIG_TEST_INVALID_ENV_KEY", "stale-process-env-key");
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[model_providers.env-openai]\n"
+               "type = \"openai\"\n"
+               "api_key = \"$AIDEN_CONFIG_TEST_INVALID_ENV_KEY\"\n"
+               "base_url = \"" + base_url + "\"\n");
+    write_file(handle->tmp_dir + "/system_env", "AIDEN_CONFIG_TEST_INVALID_ENV_KEY='unterminated\n");
+
+    const std::string test_body =
+        "{\"section\":\"model\",\"values\":{\"provider\":\"env-openai\",\"model\":\"gpt-4o\"}}";
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+
+    CHECK(test_resp.status == 503);
+    CHECK(test_resp.body.find("system env file is invalid") != std::string::npos);
+    CHECK(probe.requests().empty());
+
+    write_file(handle->tmp_dir + "/system_env", std::string(65537, 'X'));
+    HttpResponse oversized_resp =
+        http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(oversized_resp.status == 503);
+    CHECK(oversized_resp.body.find("system env file is unavailable") != std::string::npos);
+    CHECK(probe.requests().empty());
 }
 
 TEST_CASE("config_web: config test flattens a tts provider reference") {
@@ -3745,8 +3927,8 @@ TEST_CASE("config_web: tts config test resolves provider api_key from process en
     );
     const std::string log_path = tmp + "/config-test.log";
     write_file(tmp + "/config.json",
-               "{\"tts_providers\":{\"env-fish\":{\"provider\":\"fish-audio\","
-               "\"api_key\":\"$AIDEN_CONFIG_TEST_TTS_API_KEY\",\"reference_id\":\"ref-abc\"}},"
+               "{\"tts_providers\":{\"env-fish\":{\"type\":\"fish-audio\","
+               "\"has_api_key\":true,\"reference_id\":\"ref-abc\"}},"
                "\"tts\":{\"provider\":\"env-fish\",\"speed\":1},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
                "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
@@ -3759,6 +3941,11 @@ TEST_CASE("config_web: tts config test resolves provider api_key from process en
     env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", log_path);
     env.set("AIDEN_CONFIG_TEST_TTS_API_KEY", "tts-process-env-secret");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[tts_providers.env-fish]\n"
+               "type = \"fish-audio\"\n"
+               "api_key = \"$AIDEN_CONFIG_TEST_TTS_API_KEY\"\n"
+               "reference_id = \"ref-abc\"\n");
 
     const std::string test_body =
         "{\"section\":\"tts\",\"values\":{\"provider\":\"env-fish\",\"speed\":1}}";
@@ -3807,8 +3994,8 @@ TEST_CASE("config_web: stt config test honors an empty provider api_key in syste
     HeadProbeServer probe;
     const std::string base_url = "http://127.0.0.1:" + std::to_string(probe.port());
     write_file(tmp + "/config.json",
-               "{\"stt_providers\":{\"env-whisper\":{\"provider\":\"openai-whisper\","
-               "\"api_key\":\"$AIDEN_CONFIG_TEST_MISSING_KEY\",\"model\":\"whisper-1\","
+               "{\"stt_providers\":{\"env-whisper\":{\"type\":\"openai-whisper\","
+               "\"has_api_key\":true,\"model\":\"whisper-1\","
                "\"base_url\":\"" + base_url + "\"}},"
                "\"stt\":{\"provider\":\"env-whisper\",\"language\":\"en\"},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
@@ -3821,6 +4008,12 @@ TEST_CASE("config_web: stt config test honors an empty provider api_key in syste
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     env.set("AIDEN_CONFIG_TEST_MISSING_KEY", "process-env-key-must-not-win");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[stt_providers.env-whisper]\n"
+               "type = \"openai-whisper\"\n"
+               "api_key = \"$AIDEN_CONFIG_TEST_MISSING_KEY\"\n"
+               "model = \"whisper-1\"\n"
+               "base_url = \"" + base_url + "\"\n");
 
     const std::string system_env_body =
         "{\"system_env\":\"AIDEN_CONFIG_TEST_MISSING_KEY=\\n\"}";
