@@ -1,6 +1,8 @@
 package ble
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"strconv"
 	"sync"
 	"time"
@@ -29,30 +31,42 @@ type NotificationEvent struct {
 }
 
 type EventPage struct {
-	Events    []NotificationEvent `json:"events"`
-	Truncated bool                `json:"truncated"`
-	OldestID  string              `json:"oldest_id"`
-	LastID    string              `json:"last_id"`
+	Events        []NotificationEvent `json:"events"`
+	Generation    string              `json:"generation"`
+	ResetRequired bool                `json:"reset_required"`
+	Truncated     bool                `json:"truncated"`
+	OldestID      string              `json:"oldest_id"`
+	LastID        string              `json:"last_id"`
 }
 
 type EventStats struct {
-	Count    int
-	OldestID string
-	LastID   string
+	Count      int
+	Generation string
+	OldestID   string
+	LastID     string
 }
 
 type EventStore struct {
-	mu       sync.RWMutex
-	capacity int
-	next     uint64
-	events   []NotificationEvent
+	mu         sync.RWMutex
+	capacity   int
+	generation string
+	next       uint64
+	events     []NotificationEvent
 }
 
 func NewEventStore(capacity int) *EventStore {
 	if capacity <= 0 {
 		capacity = 512
 	}
-	return &EventStore{capacity: capacity}
+	return &EventStore{capacity: capacity, generation: newEventGeneration()}
+}
+
+func newEventGeneration() string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err == nil {
+		return hex.EncodeToString(value)
+	}
+	return strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
 }
 
 func (s *EventStore) Append(event NotificationEvent) NotificationEvent {
@@ -78,6 +92,10 @@ func (s *EventStore) Append(event NotificationEvent) NotificationEvent {
 }
 
 func (s *EventStore) Page(since uint64, limit int) EventPage {
+	return s.PageForGeneration(since, limit, s.Generation())
+}
+
+func (s *EventStore) PageForGeneration(since uint64, limit int, generation string) EventPage {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -88,14 +106,19 @@ func (s *EventStore) Page(since uint64, limit int) EventPage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	page := EventPage{Events: []NotificationEvent{}}
+	page := EventPage{Events: []NotificationEvent{}, Generation: s.generation}
 	if len(s.events) == 0 {
+		page.ResetRequired = since > 0 && generation != s.generation
 		return page
 	}
 	oldest := s.events[0].sequence
 	last := s.events[len(s.events)-1].sequence
 	page.OldestID = strconv.FormatUint(oldest, 10)
 	page.LastID = strconv.FormatUint(last, 10)
+	if since > 0 && generation != s.generation {
+		page.ResetRequired = true
+		return page
+	}
 	page.Truncated = since > 0 && oldest > since && oldest-since > 1
 
 	for _, event := range s.events {
@@ -110,10 +133,16 @@ func (s *EventStore) Page(since uint64, limit int) EventPage {
 	return page
 }
 
+func (s *EventStore) Generation() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.generation
+}
+
 func (s *EventStore) Stats() EventStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	stats := EventStats{Count: len(s.events)}
+	stats := EventStats{Count: len(s.events), Generation: s.generation}
 	if len(s.events) > 0 {
 		stats.OldestID = strconv.FormatUint(s.events[0].sequence, 10)
 		stats.LastID = strconv.FormatUint(s.events[len(s.events)-1].sequence, 10)

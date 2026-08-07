@@ -168,10 +168,11 @@ Wake 只表示“有后台工作可取”，不携带命令内容。App 收到 N
 HTTP Queue。没有 App 或没有订阅者时，`wake` 返回 `delivered=false`，Queue 中的命令仍然
 保留。
 
-App 先通过 USB ECM 获取板端 `device_name`，CoreBluetooth 扫描时同时匹配 Wake Service
-UUID 和该稳定广播名称，不能永久绑定“扫描到的第一台同 UUID 设备”。后续仍可在同一
-Control Service 增加只读设备身份 Characteristic，进一步校验当前 BLE 设备与 USB 连接
-的板子一致。
+App 先通过 USB ECM 获取板端 `device_name` 和 `board_identity`。`board_identity` 使用完整
+蓝牙适配器地址生成，并以 manufacturer-specific data 广播；CoreBluetooth 只有在 Wake Service
+UUID、稳定广播名称和该身份全部匹配时才允许首次连接和配对。`device_name` 只用于展示
+与扫描提示，不能单独作为身份依据。配对成功后 App 同时保存 peripheral identifier 和
+`board_identity`，后续重连仍绑定 USB 选中的同一块板子。
 
 ### 4.3 ANCS Consumer
 
@@ -222,17 +223,12 @@ App 负责发起和展示流程，但配对确认属于 iOS。App 不得模拟�
 
 这里的 `connect` 是 App 建立自己的 CoreBluetooth 会话，不代表再建立一条独立物理连接。
 
-### 5.3 解除配对
+### 5.3 断开 App 蓝牙连接
 
-1. 用户在 App 中点击“解除蓝牙配对”并确认；
-2. App 调用 Agent `POST /api/bluetooth/pairing/forget`；
-3. `ble_service` 调用 BlueZ `Adapter1.RemoveDevice` 删除板端 bond 和 Trusted 状态；
-4. App 取消 CoreBluetooth 连接并清除保存的 peripheral identifier；
-5. App 引导用户打开 iOS 蓝牙设置，对 Aiden 执行“忽略此设备”；
-6. 需要再次连接时，用户重新从 App 发起首次配对。
-
-iOS 没有公开 API 允许第三方 App 静默删除系统 bond。只删除板端 bond 会在 iPhone 上留下
-旧密钥和设备记录，并可能导致后续重配失败，因此 UI 必须明确提示最后的系统设置步骤。
+App 中的“取消连接”只停止 App 自己的 CoreBluetooth Wake 会话并清除本地连接记录，保留
+iPhone 与板端的系统 bond。正常 UI 不删除板端 bond，也不要求用户前往系统设置忽略设备；
+再次点击配对时可复用已有 bond。`pairing_forget` 仅保留为板端维护操作，不对 App HTTP
+接口暴露。
 
 ## 6. 板端 UDS 接口
 
@@ -259,11 +255,13 @@ UDS 复用项目现有的 12 字节小端 envelope。本版提供五个业务操
 {"op":"pairing_start"}
 {"op":"pairing_forget"}
 {"op":"wake","reason":"phone_bridge"}
-{"op":"events_since","since":"42","limit":50}
+{"op":"events_since","since":"42","generation":"<service-generation>","limit":50}
 ```
 
-`events_since` 返回 `truncated=true` 时表示 cursor 已早于 ring 的保留范围。持久消费、去重、
-memory 更新和通知策略由后续任务负责，不进入 BLE 服务。
+`events_since` 每次返回当前 `generation`。消费者首次读取使用 `since=0` 并保存 generation；
+增量读取必须同时回传该 generation。`ble_service` 重启后 generation 改变，旧请求返回
+`reset_required=true` 且不返回事件，消费者必须用 `since=0` 重新读取当前 generation。
+同一 generation 内，`truncated=true` 表示 cursor 已早于 ring 的保留范围。
 
 ### 6.1 Agent HTTP API
 
@@ -273,9 +271,10 @@ App 不直接访问 UDS。Agent 将配对控制转换成手机可通过 USB ECM 
 | --- | --- | --- |
 | `GET` | `/api/bluetooth/status` | 获取完整 BLE runtime status |
 | `POST` | `/api/bluetooth/pairing/start` | 打开配对窗口；已有 Trusted bond 时返回冲突 |
-| `POST` | `/api/bluetooth/pairing/forget` | 删除板端 bond 并返回删除数量和最新状态 |
 
-HTTP API 只编排配对状态，不承载 BLE 密钥、通知正文或 Phone Bridge 命令。
+配对写接口只接受从 `192.168.42.1` USB ECM 监听地址进入的 `192.168.42.0/24` 请求或本机
+loopback 请求；Wi-Fi 等其它监听地址返回 `403`。HTTP API 不承载 BLE 密钥、通知正文或
+Phone Bridge 命令。
 
 ## 7. 配对、持久化与隐私
 
@@ -286,10 +285,9 @@ HTTP API 只编排配对状态，不承载 BLE 密钥、通知正文或 Phone Br
 - 用户从 App 发起后才开放默认 5 分钟窗口，重复发起会刷新 deadline；
 - 5 分钟是显式用户操作后的安全上限，用来覆盖蓝牙授权和 iOS 系统确认耗时；App 会立即
   开始扫描，成功后窗口立刻关闭，不会固定暴露满 5 分钟；
-- 已有 Trusted bond 时拒绝打开新配对窗口，必须先执行解绑；
+- 已有 Trusted bond 时拒绝打开新配对窗口并直接复用现有 bond；
 - 配对成功后立即关闭 Discoverable/Pairable；
-- 清除或替换手机必须同时删除 BlueZ bond 和本地可信设备状态；
-- App 清除本地 peripheral identifier，并引导用户在 iOS 设置中忽略设备；
+- 清除或替换手机属于维护流程；正常 App UI 只断开 Wake 会话并保留 bond；
 - Wake 和 HOGP 的敏感 Characteristic 要求加密连接；
 - ANCS 事件只保存在有界内存，不写入磁盘、Agent memory 或普通日志；
 - App 被用户强制退出或蓝牙权限被关闭时，不承诺 Wake 能重新拉起 App。

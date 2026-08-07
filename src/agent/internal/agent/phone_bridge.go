@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -145,11 +144,7 @@ func NewPhoneBridge(logger *Logger) *PhoneBridge {
 }
 
 func defaultBLEWake(ctx context.Context, reason string) error {
-	socketPath := strings.TrimSpace(os.Getenv("AIDEN_BLE_SERVICE_SOCKET"))
-	if socketPath == "" {
-		socketPath = "/run/ble_service/ble_service.sock"
-	}
-	_, err := ble.RequestWake(ctx, socketPath, reason)
+	_, err := ble.RequestWake(ctx, configuredBLEServiceSocketPath(), reason)
 	return err
 }
 

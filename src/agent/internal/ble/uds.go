@@ -113,10 +113,11 @@ func (s *UDSServer) serveConnection(connection *net.UnixConn) {
 }
 
 type udsRequest struct {
-	Op     string          `json:"op"`
-	Since  json.RawMessage `json:"since"`
-	Limit  int             `json:"limit"`
-	Reason string          `json:"reason"`
+	Op         string          `json:"op"`
+	Since      json.RawMessage `json:"since"`
+	Generation string          `json:"generation"`
+	Limit      int             `json:"limit"`
+	Reason     string          `json:"reason"`
 }
 
 func (s *UDSServer) handleRequest(header, payload []byte) []byte {
@@ -173,13 +174,15 @@ func (s *UDSServer) handleRequest(header, payload []byte) []byte {
 		if err != nil {
 			return marshalResponse(map[string]any{"status": "INVALID_ARGUMENT", "error": err.Error()})
 		}
-		page := s.service.EventsSince(since, request.Limit)
+		page := s.service.EventsSince(since, request.Limit, request.Generation)
 		return marshalResponse(map[string]any{
-			"status":    "OK",
-			"events":    page.Events,
-			"truncated": page.Truncated,
-			"oldest_id": page.OldestID,
-			"last_id":   page.LastID,
+			"status":         "OK",
+			"events":         page.Events,
+			"generation":     page.Generation,
+			"reset_required": page.ResetRequired,
+			"truncated":      page.Truncated,
+			"oldest_id":      page.OldestID,
+			"last_id":        page.LastID,
 		})
 	default:
 		return marshalResponse(map[string]any{

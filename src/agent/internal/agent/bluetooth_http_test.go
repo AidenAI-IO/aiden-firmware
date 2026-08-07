@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,21 +30,12 @@ func TestBluetoothHTTPPairingActions(t *testing.T) {
 		blePairingStartRequest: func(context.Context, string) (ble.RuntimeStatus, error) {
 			return ble.RuntimeStatus{PairingOpen: true}, nil
 		},
-		blePairingForgetRequest: func(context.Context, string) (ble.ForgetResult, error) {
-			return ble.ForgetResult{Removed: 1, Bluetooth: ble.RuntimeStatus{Paired: false}}, nil
-		},
 	}
 
 	recorder := httptest.NewRecorder()
-	server.handleBluetoothPairingStart(recorder, httptest.NewRequest(http.MethodPost, "/api/bluetooth/pairing/start", nil))
+	server.handleBluetoothPairingStart(recorder, bluetoothControlRequest(http.MethodPost))
 	if recorder.Code != http.StatusOK || !containsAll(recorder.Body.String(), `"pairing_open":true`) {
 		t.Fatalf("start code=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-
-	recorder = httptest.NewRecorder()
-	server.handleBluetoothPairingForget(recorder, httptest.NewRequest(http.MethodPost, "/api/bluetooth/pairing/forget", nil))
-	if recorder.Code != http.StatusOK || !containsAll(recorder.Body.String(), `"removed":1`, `"paired":false`) {
-		t.Fatalf("forget code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -54,9 +46,38 @@ func TestBluetoothHTTPMapsPairingConflict(t *testing.T) {
 		},
 	}
 	recorder := httptest.NewRecorder()
-	server.handleBluetoothPairingStart(recorder, httptest.NewRequest(http.MethodPost, "/api/bluetooth/pairing/start", nil))
+	server.handleBluetoothPairingStart(recorder, bluetoothControlRequest(http.MethodPost))
 	if recorder.Code != http.StatusConflict || !containsAll(recorder.Body.String(), "already paired") {
 		t.Fatalf("conflict code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestBluetoothHTTPPairingStartRejectsNonUSBRequest(t *testing.T) {
+	called := false
+	server := &Server{
+		blePairingStartRequest: func(context.Context, string) (ble.RuntimeStatus, error) {
+			called = true
+			return ble.RuntimeStatus{}, nil
+		},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/bluetooth/pairing/start", nil)
+	request.RemoteAddr = "192.168.50.140:12345"
+	request = request.WithContext(context.WithValue(
+		request.Context(),
+		http.LocalAddrContextKey,
+		&net.TCPAddr{IP: net.ParseIP("192.168.50.10"), Port: 8080},
+	))
+	recorder := httptest.NewRecorder()
+	server.handleBluetoothPairingStart(recorder, request)
+	if recorder.Code != http.StatusForbidden || called {
+		t.Fatalf("external pairing request code=%d called=%v body=%s", recorder.Code, called, recorder.Body.String())
+	}
+}
+
+func TestConfiguredBLEServiceSocketPath(t *testing.T) {
+	t.Setenv("AIDEN_BLE_SERVICE_SOCKET", "/tmp/custom-ble.sock")
+	if got := configuredBLEServiceSocketPath(); got != "/tmp/custom-ble.sock" {
+		t.Fatalf("configuredBLEServiceSocketPath() = %q", got)
 	}
 }
 
@@ -86,4 +107,14 @@ func containsAll(value string, wants ...string) bool {
 		}
 	}
 	return true
+}
+
+func bluetoothControlRequest(method string) *http.Request {
+	request := httptest.NewRequest(method, "/api/bluetooth/pairing/start", nil)
+	request.RemoteAddr = "192.168.42.100:12345"
+	return request.WithContext(context.WithValue(
+		request.Context(),
+		http.LocalAddrContextKey,
+		&net.TCPAddr{IP: net.ParseIP("192.168.42.1"), Port: 8080},
+	))
 }

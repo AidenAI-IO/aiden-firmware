@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"net/netip"
+	"os"
 	"strings"
 	"time"
 
@@ -16,7 +19,6 @@ const defaultBLEServiceSocketPath = "/run/ble_service/ble_service.sock"
 type bluetoothStatusResponse struct {
 	OK        bool              `json:"ok"`
 	Bluetooth ble.RuntimeStatus `json:"bluetooth"`
-	Removed   int               `json:"removed,omitempty"`
 	Error     string            `json:"error,omitempty"`
 }
 
@@ -42,6 +44,10 @@ func (s *Server) handleBluetoothPairingStart(w http.ResponseWriter, r *http.Requ
 		writeBluetoothError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !bluetoothControlRequestAllowed(r) {
+		writeBluetoothError(w, http.StatusForbidden, "Bluetooth pairing control is available only over USB")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
 	defer cancel()
 	status, err := s.bluetoothPairingStartRequest()(ctx, s.bluetoothServiceSocketPath())
@@ -51,32 +57,50 @@ func (s *Server) handleBluetoothPairingStart(w http.ResponseWriter, r *http.Requ
 	}
 	writeBluetoothJSON(w, http.StatusOK, bluetoothStatusResponse{OK: true, Bluetooth: status})
 }
-
-func (s *Server) handleBluetoothPairingForget(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		writeBluetoothError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
-	defer cancel()
-	result, err := s.bluetoothPairingForgetRequest()(ctx, s.bluetoothServiceSocketPath())
-	if err != nil {
-		writeBluetoothRequestError(w, err)
-		return
-	}
-	writeBluetoothJSON(w, http.StatusOK, bluetoothStatusResponse{
-		OK:        true,
-		Bluetooth: result.Bluetooth,
-		Removed:   result.Removed,
-	})
-}
-
 func (s *Server) bluetoothServiceSocketPath() string {
 	if path := strings.TrimSpace(s.bleSocketPath); path != "" {
 		return path
 	}
+	return configuredBLEServiceSocketPath()
+}
+
+func configuredBLEServiceSocketPath() string {
+	if path := strings.TrimSpace(os.Getenv("AIDEN_BLE_SERVICE_SOCKET")); path != "" {
+		return path
+	}
 	return defaultBLEServiceSocketPath
+}
+
+func bluetoothControlRequestAllowed(r *http.Request) bool {
+	remoteIP, ok := addressIP(r.RemoteAddr)
+	if !ok {
+		return false
+	}
+	if remoteIP.IsLoopback() {
+		return true
+	}
+	localAddr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if !ok || localAddr == nil {
+		return false
+	}
+	localIP, ok := addressIP(localAddr.String())
+	if !ok {
+		return false
+	}
+	usbPrefix := netip.MustParsePrefix("192.168.42.0/24")
+	return localIP == netip.MustParseAddr("192.168.42.1") && usbPrefix.Contains(remoteIP)
+}
+
+func addressIP(address string) (netip.Addr, bool) {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	parsed, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return parsed.Unmap(), true
 }
 
 func (s *Server) bluetoothStatusRequest() func(context.Context, string) (ble.RuntimeStatus, error) {
@@ -91,13 +115,6 @@ func (s *Server) bluetoothPairingStartRequest() func(context.Context, string) (b
 		return s.blePairingStartRequest
 	}
 	return ble.RequestPairingStart
-}
-
-func (s *Server) bluetoothPairingForgetRequest() func(context.Context, string) (ble.ForgetResult, error) {
-	if s.blePairingForgetRequest != nil {
-		return s.blePairingForgetRequest
-	}
-	return ble.RequestPairingForget
 }
 
 func writeBluetoothRequestError(w http.ResponseWriter, err error) {

@@ -15,6 +15,7 @@ type RuntimeStatus struct {
 	StartedAt              string `json:"started_at"`
 	BackendAvailable       bool   `json:"backend_available"`
 	DeviceName             string `json:"device_name,omitempty"`
+	BoardIdentity          string `json:"board_identity,omitempty"`
 	AdapterPath            string `json:"adapter_path,omitempty"`
 	AdapterAddress         string `json:"adapter_address,omitempty"`
 	AdapterPowered         bool   `json:"adapter_powered"`
@@ -39,6 +40,7 @@ type RuntimeStatus struct {
 	LastWakeReason         string `json:"last_wake_reason,omitempty"`
 	LastError              string `json:"last_error,omitempty"`
 	EventCount             int    `json:"event_count"`
+	EventGeneration        string `json:"event_generation"`
 	OldestEventID          string `json:"oldest_event_id"`
 	LastEventID            string `json:"last_event_id"`
 	WakeServiceUUID        string `json:"wake_service_uuid"`
@@ -71,6 +73,7 @@ func (s *statusState) snapshot(stats EventStats) RuntimeStatus {
 	result := s.status
 	s.mu.RUnlock()
 	result.EventCount = stats.Count
+	result.EventGeneration = stats.Generation
 	result.OldestEventID = stats.OldestID
 	result.LastEventID = stats.LastID
 	return result
@@ -104,8 +107,8 @@ func NewService(eventCapacity int) *Service {
 	}
 }
 
-func (s *Service) EventsSince(since uint64, limit int) EventPage {
-	return s.store.Page(since, limit)
+func (s *Service) EventsSince(since uint64, limit int, generation string) EventPage {
+	return s.store.PageForGeneration(since, limit, generation)
 }
 
 func (s *Service) Status() RuntimeStatus {

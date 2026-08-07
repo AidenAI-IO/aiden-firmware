@@ -78,6 +78,24 @@ func TestUDSOperations(t *testing.T) {
 	if !ok || event["id"] != "1" || event["notification_uid"] != float64(42) || event["event"] != "added" {
 		t.Fatalf("events_since lost cursor or event content: %#v", events[0])
 	}
+	generation, ok := response["generation"].(string)
+	if !ok || generation == "" || response["reset_required"] != false {
+		t.Fatalf("events_since did not expose its generation: %#v", response)
+	}
+
+	restarted := NewService(4)
+	restarted.store.Append(NotificationEvent{NotificationUID: 43, Event: "added"})
+	restartedServer := NewUDSServer("unused", restarted)
+	response = decodeResponse(t, restartedServer.handleRequest(
+		[]byte(`{"op":"events_since","since":"1","generation":"`+generation+`","limit":10}`),
+		nil,
+	))
+	if response["status"] != "OK" || response["reset_required"] != true {
+		t.Fatalf("events_since did not detect a service restart: %#v", response)
+	}
+	if events, ok := response["events"].([]any); !ok || len(events) != 0 {
+		t.Fatalf("restart response must require a zero-cursor retry: %#v", response)
+	}
 
 	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"events_since","since":"bad"}`), nil))
 	if response["status"] != "INVALID_ARGUMENT" {

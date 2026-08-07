@@ -44,8 +44,11 @@ This preserves the iPhone bond across reboot and firmware rootfs replacement.
 
 The advertised name is derived from the configured base name and the final
 four hexadecimal digits of the adapter address, for example `Aiden-12AB`.
-This gives the phone app and the user a stable way to distinguish nearby Aiden
-devices.
+This is display-only. The full adapter identity is exposed as `board_identity`
+over the USB status API and as six bytes of manufacturer-specific data in the BLE
+advertisement. The app requires the service UUID, display name, and full
+identity to match before pairing, so nearby boards with colliding name suffixes
+cannot be selected accidentally.
 
 The GATT application always publishes the standard HID Service
 `00001812-0000-1000-8000-00805f9b34fb`. Its report map contains only one
@@ -56,8 +59,8 @@ control channel competing with USB HID.
 `ble_service` starts non-pairable and non-discoverable even when no bond exists.
 The iOS app explicitly calls the Agent pairing API over USB ECM; only then does
 the service open a five-minute pairing window. The app reads the board's stable
-`device_name` first and only connects a Wake-service advertiser with that exact
-name, so it does not bind an arbitrary nearby Aiden. The first paired phone is
+`device_name` and collision-resistant `board_identity` first and only connects
+a Wake-service advertiser carrying both values. The first paired phone is
 marked trusted, the window closes immediately, and new devices are rejected by
 the BlueZ pairing agent. Existing bonds can reconnect while the adapter remains
 non-discoverable. `PAIRING_WINDOW_SECONDS` in `/etc/aiden_ble_service.conf`
@@ -142,11 +145,14 @@ central was subscribed; the HTTP queue remains intact.
 ### `events_since`
 
 ```json
-{"op":"events_since","since":"42","limit":50}
+{"op":"events_since","since":"42","generation":"<service-generation>","limit":50}
 ```
 
-Returns events after the cursor. `truncated=true` means the requested cursor is
-older than the bounded ring's retained history.
+Returns the current `generation` with events after the cursor. Start with
+`since=0`, save the returned generation, and include it on incremental reads.
+After `ble_service` restarts, a stale generation returns `reset_required=true`
+with no events; retry with `since=0`. Within one generation, `truncated=true`
+means the requested cursor is older than the bounded ring's retained history.
 
 ### `pairing_start`
 
@@ -164,10 +170,9 @@ existing trusted phone returns `FAILED_PRECONDITION`.
 ```
 
 Calls BlueZ `Adapter1.RemoveDevice` for board-side bonds and returns the removal
-count plus the latest Bluetooth status. The app also clears its saved
-CoreBluetooth identifier. iOS does not expose a public API for deleting the
-phone-side bond, so the UI then instructs the user to choose **Forget This
-Device** in iOS Bluetooth Settings.
+count plus the latest Bluetooth status. This is a local UDS maintenance
+operation and is not exposed through the companion App HTTP API. The normal App
+disconnect flow preserves both sides of the system bond.
 
 ## Agent HTTP API
 
@@ -177,10 +182,12 @@ The companion app reaches the pairing operations through the Agent on USB ECM:
 | --- | --- | --- |
 | `GET` | `/api/bluetooth/status` | Read BLE runtime and bond state |
 | `POST` | `/api/bluetooth/pairing/start` | Open the user-initiated pairing window |
-| `POST` | `/api/bluetooth/pairing/forget` | Remove board-side bonds |
 
-These endpoints only orchestrate state. BLE keys, ANCS bodies, and Phone Bridge
-command payloads never pass through them.
+The pairing write is accepted only over the board's USB ECM address
+(`192.168.42.1/24`) or loopback; requests arriving through Wi-Fi and other
+listeners receive `403`. The normal app flow disconnects its CoreBluetooth
+session without deleting the system bond. BLE keys, ANCS bodies, and Phone
+Bridge command payloads never pass through these endpoints.
 
 ## Operations
 

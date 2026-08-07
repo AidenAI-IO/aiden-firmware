@@ -99,21 +99,25 @@ func TestHTTPEnqueueCommand(t *testing.T) {
 
 func TestHTTPEnqueueRetainsCommandWhenBLEWakeDoesNotDeliver(t *testing.T) {
 	tests := []struct {
-		name    string
-		wakeErr error
+		name           string
+		wakeErr        error
+		expectWakeCall bool
 	}{
-		{name: "BLE unavailable", wakeErr: ble.ErrBluetoothUnavailable},
-		{name: "wake error", wakeErr: errors.New("wake failed")},
-		{name: "no wake subscriber", wakeErr: nil},
+		{name: "BLE unavailable", wakeErr: ble.ErrBluetoothUnavailable, expectWakeCall: true},
+		{name: "wake error", wakeErr: errors.New("wake failed"), expectWakeCall: true},
+		{name: "no wake subscriber", expectWakeCall: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			bridge := newPhoneBridgeForTest()
 			defer bridge.queue.Stop()
 			wakeCalled := make(chan struct{}, 1)
-			bridge.bleWake = func(context.Context, string) error {
-				wakeCalled <- struct{}{}
-				return test.wakeErr
+			bridge.bleWake = nil
+			if test.expectWakeCall {
+				bridge.bleWake = func(context.Context, string) error {
+					wakeCalled <- struct{}{}
+					return test.wakeErr
+				}
 			}
 
 			commandID := "wake_retention_" + strings.ReplaceAll(test.name, " ", "_")
@@ -130,10 +134,12 @@ func TestHTTPEnqueueRetainsCommandWhenBLEWakeDoesNotDeliver(t *testing.T) {
 			if response.Code != http.StatusAccepted {
 				t.Fatalf("enqueue status=%d body=%s", response.Code, response.Body.String())
 			}
-			select {
-			case <-wakeCalled:
-			case <-time.After(time.Second):
-				t.Fatal("BLE wake was not attempted")
+			if test.expectWakeCall {
+				select {
+				case <-wakeCalled:
+				case <-time.After(time.Second):
+					t.Fatal("BLE wake was not attempted")
+				}
 			}
 			queued := bridge.queue.Get(commandID)
 			if queued == nil || queued.Status != StatusQueued {

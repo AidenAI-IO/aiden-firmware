@@ -70,6 +70,7 @@ func (p ancsPaths) complete() bool {
 type blueZBackend struct {
 	service        *Service
 	deviceName     string
+	boardIdentity  []byte
 	pairingWindow  time.Duration
 	conn           *dbus.Conn
 	adapter        dbus.ObjectPath
@@ -138,7 +139,13 @@ func (b *blueZBackend) start() error {
 		return errors.New("BlueZ adapter hci0 is unavailable")
 	}
 	adapterProps := objects[b.adapter][blueZAdapterInterface]
-	b.deviceName = stableDeviceName(b.deviceName, variantString(adapterProps, "Address"))
+	adapterAddress := variantString(adapterProps, "Address")
+	identityText, identityBytes, err := boardIdentityFromAdapterAddress(adapterAddress)
+	if err != nil {
+		return err
+	}
+	b.boardIdentity = identityBytes
+	b.deviceName = stableDeviceName(b.deviceName, adapterAddress)
 	trusted, bondedCount := selectBondedDevice(objects)
 	b.stateMu.Lock()
 	b.trustedDevice = trusted
@@ -177,8 +184,9 @@ func (b *blueZBackend) start() error {
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.BackendAvailable = true
 		status.DeviceName = b.deviceName
+		status.BoardIdentity = identityText
 		status.AdapterPath = string(b.adapter)
-		status.AdapterAddress = variantString(adapterProps, "Address")
+		status.AdapterAddress = adapterAddress
 		status.AdapterPowered = true
 		status.GattRegistered = true
 		status.HOGPRegistered = false
@@ -353,13 +361,16 @@ func (b *blueZBackend) exportObjects(pairingOpen bool) error {
 		return fmt.Errorf("export Wake characteristic: %w", err)
 	}
 
+	// Keep the legacy advertising payload within 31 bytes: flags (3), the
+	// 128-bit Wake Service UUID (18), and manufacturer data containing the
+	// 6-byte board identity (10). The local name is emitted in scan response.
 	b.advProps, err = prop.Export(b.conn, advertisementPath, prop.Map{
 		blueZAdvertisementInterface: {
-			"Type":         {Value: "peripheral", Emit: prop.EmitConst},
-			"ServiceUUIDs": {Value: advertisedServiceUUIDs(), Emit: prop.EmitTrue},
-			"LocalName":    {Value: b.deviceName, Emit: prop.EmitConst},
-			"Appearance":   {Value: advertisedAppearance(), Emit: prop.EmitTrue},
-			"Discoverable": {Value: pairingOpen, Emit: prop.EmitTrue},
+			"Type":             {Value: "peripheral", Emit: prop.EmitConst},
+			"ServiceUUIDs":     {Value: advertisedServiceUUIDs(), Emit: prop.EmitTrue},
+			"ManufacturerData": {Value: advertisedManufacturerData(b.boardIdentity), Emit: prop.EmitConst},
+			"LocalName":        {Value: b.deviceName, Emit: prop.EmitConst},
+			"Discoverable":     {Value: pairingOpen, Emit: prop.EmitTrue},
 		},
 	})
 	if err != nil {
@@ -722,13 +733,28 @@ func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.Obj
 	b.ancs = selected.paths
 	b.ancsMu.Unlock()
 	b.service.consumer.SetControlPointWriter(func(command []byte) error {
+		controlPoint := selected.paths.controlPoint
+		command = append([]byte(nil), command...)
 		options := map[string]dbus.Variant{"type": dbus.MakeVariant("command")}
-		return callWithTimeout(
-			b.conn.Object(BlueZBusName, selected.paths.controlPoint),
-			blueZGattCharInterface+".WriteValue",
-			command,
-			options,
-		).Err
+		object := b.conn.Object(BlueZBusName, controlPoint)
+		go func() {
+			if err := callWithTimeout(
+				object,
+				blueZGattCharInterface+".WriteValue",
+				command,
+				options,
+			).Err; err != nil {
+				b.ancsMu.Lock()
+				current := b.ancs.controlPoint
+				b.ancsMu.Unlock()
+				if current == controlPoint {
+					b.service.status.update(func(status *RuntimeStatus) {
+						status.LastError = fmt.Sprintf("write ANCS Control Point: %v", err)
+					})
+				}
+			}
+		}()
+		return nil
 	})
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.ANCSSubscribed = true

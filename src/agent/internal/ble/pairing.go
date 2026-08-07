@@ -1,6 +1,7 @@
 package ble
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -326,11 +327,8 @@ func (b *blueZBackend) setPairingMode(open bool) error {
 			advertisedServiceUUIDs(),
 		)
 		b.advProps.SetMust(
-			blueZAdvertisementInterface,
-			"Appearance",
-			advertisedAppearance(),
+			blueZAdvertisementInterface, "Discoverable", open,
 		)
-		b.advProps.SetMust(blueZAdvertisementInterface, "Discoverable", open)
 		if err := b.registerAdvertisement(); err != nil {
 			b.service.status.update(func(status *RuntimeStatus) { status.Advertising = false })
 			return err
@@ -344,8 +342,11 @@ func advertisedServiceUUIDs() []string {
 	return []string{WakeServiceUUID}
 }
 
-func advertisedAppearance() uint16 {
-	return 0
+func advertisedManufacturerData(boardIdentity []byte) map[uint16]dbus.Variant {
+	identity := append([]byte(nil), boardIdentity...)
+	return map[uint16]dbus.Variant{
+		AidenManufacturerID: dbus.MakeVariant(identity),
+	}
 }
 
 func (b *blueZBackend) deviceAllowed(device dbus.ObjectPath) bool {
@@ -376,6 +377,17 @@ func stableDeviceName(baseName, adapterAddress string) string {
 		baseName = truncateUTF8(baseName, maxBaseBytes)
 	}
 	return baseName + "-" + suffix
+}
+
+func boardIdentityFromAdapterAddress(adapterAddress string) (string, []byte, error) {
+	compactAddress := strings.NewReplacer(":", "", "-", "").Replace(
+		strings.TrimSpace(adapterAddress),
+	)
+	identity, err := hex.DecodeString(compactAddress)
+	if err != nil || len(identity) != 6 {
+		return "", nil, fmt.Errorf("invalid Bluetooth adapter address %q", adapterAddress)
+	}
+	return strings.ToLower(hex.EncodeToString(identity)), identity, nil
 }
 
 func truncateUTF8(value string, maxBytes int) string {

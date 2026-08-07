@@ -43,3 +43,24 @@ func TestEventStoreReportsGapForOldCursor(t *testing.T) {
 		t.Fatalf("expected cursor gap, got %#v", page)
 	}
 }
+
+func TestEventStoreRequiresCursorResetAcrossGenerations(t *testing.T) {
+	oldStore := NewEventStore(2)
+	oldStore.Append(NotificationEvent{NotificationUID: 1, Event: "added"})
+	oldGeneration := oldStore.Generation()
+
+	newStore := NewEventStore(2)
+	newStore.Append(NotificationEvent{NotificationUID: 2, Event: "added"})
+	page := newStore.PageForGeneration(1, 10, oldGeneration)
+	if !page.ResetRequired || len(page.Events) != 0 {
+		t.Fatalf("stale generation was not rejected: %#v", page)
+	}
+	if page.Generation == "" || page.Generation == oldGeneration {
+		t.Fatalf("restart generation was not replaced: old=%q page=%#v", oldGeneration, page)
+	}
+
+	page = newStore.PageForGeneration(0, 10, page.Generation)
+	if page.ResetRequired || len(page.Events) != 1 || page.Events[0].NotificationUID != 2 {
+		t.Fatalf("reset cursor did not return current generation: %#v", page)
+	}
+}
