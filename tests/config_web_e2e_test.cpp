@@ -354,12 +354,30 @@ public:
 
     int port() const { return port_; }
 
+    std::vector<std::string> requests() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return requests_;
+    }
+
 private:
     void serve() {
         while (!stop_) {
             int client = ::accept(fd_, nullptr, nullptr);
             if (client < 0) {
                 continue;
+            }
+            std::string request;
+            char buf[4096];
+            while (request.find("\r\n\r\n") == std::string::npos) {
+                ssize_t n = ::recv(client, buf, sizeof(buf), 0);
+                if (n <= 0) {
+                    break;
+                }
+                request.append(buf, static_cast<size_t>(n));
+            }
+            {
+                std::lock_guard<std::mutex> lock(mu_);
+                requests_.push_back(request);
             }
             const char response[] =
                 "HTTP/1.1 200 OK\r\n"
@@ -373,7 +391,9 @@ private:
 
     int fd_ = -1;
     int port_ = 0;
+    mutable std::mutex mu_;
     std::atomic<bool> stop_{false};
+    std::vector<std::string> requests_;
     std::thread worker_;
 };
 
@@ -2572,6 +2592,65 @@ TEST_CASE("config_web: stt live test proxies start and stop to agent") {
     CHECK(requests[1].path == "/api/config-test/stt/stop");
 }
 
+TEST_CASE("config_web: stt live test resolves provider api_key from system env") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/config.json",
+               "{\"stt_providers\":{\"env-whisper\":{\"type\":\"openai-whisper\","
+               "\"api_key\":\"$AIDEN_STT_LIVE_TEST_API_KEY\",\"model\":\"whisper-live-1\","
+               "\"base_url\":\"https://stt.example.test/v1\"}},"
+               "\"stt\":{\"provider\":\"env-whisper\",\"language\":\"en\"},"
+               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
+               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+
+    StubAgentHTTPServer agent_server;
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    env.set("AIDEN_STT_LIVE_TEST_API_KEY", "stale-process-env-key");
+    auto handle = start_server(env);
+
+    const std::string system_env_body =
+        "{\"system_env\":\"AIDEN_STT_LIVE_TEST_API_KEY=stt-live-system-env-secret\\n\"}";
+    REQUIRE(http_request(handle->port, "POST", "/api/system/env", system_env_body).status == 200);
+
+    const std::string start_body =
+        "{\"stt_values\":{\"provider\":\"env-whisper\",\"language\":\"zh\"},"
+        "\"audio_values\":{\"socket\":\"/tmp/live-audio.sock\",\"sample_rate\":16000,"
+        "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"}}";
+    HttpResponse start_resp =
+        http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
+    REQUIRE(start_resp.status == 200);
+
+    const std::vector<CapturedHTTPRequest> requests = agent_server.requests();
+    REQUIRE(requests.size() == 1);
+    REQUIRE(requests[0].path == "/api/config-test/stt/start");
+
+    cJSON* forwarded = cJSON_Parse(requests[0].body.c_str());
+    REQUIRE(forwarded != nullptr);
+    cJSON* stt_values = cJSON_GetObjectItem(forwarded, "stt_values");
+    REQUIRE(stt_values != nullptr);
+    CHECK(required_json_string(stt_values, "provider") == "openai-whisper");
+    CHECK(required_json_string(stt_values, "api_key") == "stt-live-system-env-secret");
+    CHECK(required_json_string(stt_values, "model") == "whisper-live-1");
+    CHECK(required_json_string(stt_values, "base_url") == "https://stt.example.test/v1");
+    CHECK(required_json_string(stt_values, "language") == "zh");
+
+    cJSON* audio_values = cJSON_GetObjectItem(forwarded, "audio_values");
+    REQUIRE(audio_values != nullptr);
+    CHECK(required_json_string(audio_values, "socket") == "/tmp/live-audio.sock");
+    CHECK(required_json_int(audio_values, "sample_rate") == 16000);
+    CHECK(requests[0].body.find("$AIDEN_STT_LIVE_TEST_API_KEY") == std::string::npos);
+    CHECK(requests[0].body.find("stale-process-env-key") == std::string::npos);
+    cJSON_Delete(forwarded);
+}
+
 TEST_CASE("config_web: GET /api/storage/status parses the agent state mirror") {
     StubEnv env;
     env.storage_state =
@@ -3579,6 +3658,57 @@ TEST_CASE("config_web: config test flattens a model provider reference") {
     cJSON_Delete(parsed);
 }
 
+TEST_CASE("config_web: model config test resolves provider api_key from system env") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    HeadProbeServer probe;
+    const std::string base_url = "http://127.0.0.1:" + std::to_string(probe.port());
+    write_file(tmp + "/config.json",
+               "{\"model_providers\":{\"env-openai\":{\"type\":\"openai\","
+               "\"api_key\":\"$AIDEN_CONFIG_TEST_MODEL_API_KEY\",\"base_url\":\"" + base_url + "\"}},"
+               "\"model\":{\"provider\":\"env-openai\",\"model\":\"gpt-4o\","
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    env.set("AIDEN_CONFIG_TEST_MODEL_API_KEY", "process-env-key-must-not-win");
+    auto handle = start_server(env);
+
+    const std::string system_env_body =
+        "{\"system_env\":\"AIDEN_CONFIG_TEST_MODEL_API_KEY=stale-file-key\\n"
+        "AIDEN_CONFIG_TEST_MODEL_API_KEY=model-system-env-secret\\n\"}";
+    REQUIRE(http_request(handle->port, "POST", "/api/system/env", system_env_body).status == 200);
+
+    const std::string test_body =
+        "{\"section\":\"model\",\"values\":{\"provider\":\"env-openai\",\"model\":\"gpt-4o\"}}";
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    REQUIRE(test_resp.status == 200);
+
+    const std::vector<std::string> requests = probe.requests();
+    bool saw_chat_request = false;
+    bool saw_resolved_header = false;
+    bool saw_literal_reference = false;
+    for (size_t i = 0; i < requests.size(); ++i) {
+        if (requests[i].find("POST /chat/completions ") == std::string::npos) {
+            continue;
+        }
+        saw_chat_request = true;
+        saw_resolved_header =
+            requests[i].find("Authorization: Bearer model-system-env-secret\r\n") != std::string::npos;
+        saw_literal_reference =
+            requests[i].find("Authorization: Bearer $AIDEN_CONFIG_TEST_MODEL_API_KEY\r\n") != std::string::npos;
+    }
+    REQUIRE(saw_chat_request);
+    CHECK(saw_resolved_header);
+    CHECK_FALSE(saw_literal_reference);
+}
+
 TEST_CASE("config_web: config test flattens a tts provider reference") {
     StubEnv env;
     const std::string tmp = make_temp_dir();
@@ -3607,6 +3737,40 @@ TEST_CASE("config_web: config test flattens a tts provider reference") {
     CHECK(test_resp.body.find("provider unknown and base_url empty") == std::string::npos);
 }
 
+TEST_CASE("config_web: tts config test resolves provider api_key from process env fallback") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string log_path = tmp + "/config-test.log";
+    write_file(tmp + "/config.json",
+               "{\"tts_providers\":{\"env-fish\":{\"provider\":\"fish-audio\","
+               "\"api_key\":\"$AIDEN_CONFIG_TEST_TTS_API_KEY\",\"reference_id\":\"ref-abc\"}},"
+               "\"tts\":{\"provider\":\"env-fish\",\"speed\":1},"
+               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
+               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", log_path);
+    env.set("AIDEN_CONFIG_TEST_TTS_API_KEY", "tts-process-env-secret");
+    auto handle = start_server(env);
+
+    const std::string test_body =
+        "{\"section\":\"tts\",\"values\":{\"provider\":\"env-fish\",\"speed\":1}}";
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    REQUIRE(test_resp.status == 200);
+    REQUIRE(wait_for_file_contains(log_path, "stdin:", 1000));
+
+    const std::string log = read_file(log_path);
+    CHECK(log.find("\"api_key\":\"tts-process-env-secret\"") != std::string::npos);
+    CHECK(log.find("\"api_key\":\"$AIDEN_CONFIG_TEST_TTS_API_KEY\"") == std::string::npos);
+}
+
 TEST_CASE("config_web: config test flattens an stt provider reference") {
     StubEnv env;
     const std::string tmp = make_temp_dir();
@@ -3632,6 +3796,50 @@ TEST_CASE("config_web: config test flattens an stt provider reference") {
     // resolved to tencent-asr, so their presence proves the flattening happened.
     CHECK(test_resp.body.find("\"check\":\"streaming_app_id\"") != std::string::npos);
     CHECK(test_resp.body.find("provider unknown and base_url empty") == std::string::npos);
+}
+
+TEST_CASE("config_web: stt config test honors an empty provider api_key in system env") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    HeadProbeServer probe;
+    const std::string base_url = "http://127.0.0.1:" + std::to_string(probe.port());
+    write_file(tmp + "/config.json",
+               "{\"stt_providers\":{\"env-whisper\":{\"provider\":\"openai-whisper\","
+               "\"api_key\":\"$AIDEN_CONFIG_TEST_MISSING_KEY\",\"model\":\"whisper-1\","
+               "\"base_url\":\"" + base_url + "\"}},"
+               "\"stt\":{\"provider\":\"env-whisper\",\"language\":\"en\"},"
+               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
+               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    env.set("AIDEN_CONFIG_TEST_MISSING_KEY", "process-env-key-must-not-win");
+    auto handle = start_server(env);
+
+    const std::string system_env_body =
+        "{\"system_env\":\"AIDEN_CONFIG_TEST_MISSING_KEY=\\n\"}";
+    REQUIRE(http_request(handle->port, "POST", "/api/system/env", system_env_body).status == 200);
+
+    const std::string test_body =
+        "{\"section\":\"stt\",\"values\":{\"provider\":\"env-whisper\",\"language\":\"en\"}}";
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    REQUIRE(test_resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(test_resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* api_key = required_test_result(parsed, "api_key_present");
+    REQUIRE(api_key != nullptr);
+    cJSON* passed = cJSON_GetObjectItem(api_key, "passed");
+    REQUIRE(passed != nullptr);
+    CHECK((passed->type & 0xff) == cJSON_False);
+    CHECK(required_json_string(api_key, "detail") == "api_key is empty");
+    cJSON_Delete(parsed);
 }
 
 TEST_CASE("config_web: GET /api/config returns voice providers from the resolved config") {

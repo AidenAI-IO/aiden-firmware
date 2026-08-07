@@ -289,6 +289,10 @@ ApiResponse proxy_agent_get_request(const Options& options,
                                      const std::string& agent_path_with_query);
 ApiResponse handle_api_models(const Options& options, const std::string& query_string);
 ApiResponse handle_usb_reenumerate(const Options& options);
+void flatten_provider_reference(const Options& options,
+                                const std::string& section,
+                                cJSON* values);
+void resolve_config_test_api_key(const Options& options, cJSON* values);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
@@ -2590,7 +2594,24 @@ ApiResponse proxy_agent_json_request(const Options& options,
 }
 
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body) {
-    return proxy_agent_json_request(options, "/api/config-test/stt/start", body);
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        return make_json_error(400, "invalid JSON body");
+    }
+
+    cJSON* stt_values = NULL;
+    std::string parse_error;
+    if (!parse_stt_test_values_request(root, &stt_values, &parse_error)) {
+        cJSON_Delete(root);
+        return make_json_error(400, parse_error);
+    }
+
+    flatten_provider_reference(options, "stt", stt_values);
+    resolve_config_test_api_key(options, stt_values);
+
+    const std::string resolved_body = cjson_to_string(root);
+    cJSON_Delete(root);
+    return proxy_agent_json_request(options, "/api/config-test/stt/start", resolved_body);
 }
 
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
@@ -6670,6 +6691,46 @@ void flatten_provider_reference(const Options& options,
     set_json_str_if_absent(values, "engine_model_type", record.engine_model_type);
 }
 
+void resolve_config_test_api_key(const Options& options, cJSON* values) {
+    if (!values) return;
+    cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
+    if (!json_is_string(api_key_item)) return;
+
+    const std::string api_key = trim_copy(api_key_item->valuestring);
+    if (api_key.empty() || api_key[0] != '$') return;
+
+    const std::string env_name = trim_copy(api_key.substr(1));
+    std::string resolved;
+    bool found_in_file = false;
+
+    std::string content;
+    std::string read_error;
+    if (read_file_contents_checked(options.system_env_path.c_str(),
+                                   kMaxSystemEnvSize,
+                                   &content,
+                                   &read_error)) {
+        std::vector<aiden::EnvAssignment> assignments;
+        aiden::SystemEnvProxy proxy;
+        std::string parse_error;
+        if (aiden::parse_system_env_content(content, &assignments, &proxy, &parse_error)) {
+            for (size_t i = 0; i < assignments.size(); ++i) {
+                if (assignments[i].key == env_name) {
+                    resolved = assignments[i].value;
+                    found_in_file = true;
+                }
+            }
+        }
+    }
+
+    if (!found_in_file) {
+        const char* process_value = std::getenv(env_name.c_str());
+        resolved = process_value ? process_value : "";
+    }
+
+    cJSON_DeleteItemFromObject(values, "api_key");
+    cJSON_AddStringToObject(values, "api_key", resolved.c_str());
+}
+
 std::string build_curl_proxy_arg(const SystemProxy& proxy) {
     std::string url = trim_copy(proxy.https_proxy);
     if (url.empty()) url = trim_copy(proxy.http_proxy);
@@ -6749,6 +6810,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     // provider holds a bare type and matches no record.
     if (section == "model" || section == "tts" || section == "stt") {
         flatten_provider_reference(options, section, values);
+        resolve_config_test_api_key(options, values);
     }
 
     cJSON* response = cJSON_CreateObject();
