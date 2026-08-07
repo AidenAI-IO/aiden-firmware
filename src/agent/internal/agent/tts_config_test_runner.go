@@ -91,4 +91,13 @@ func applyTTSPlaybackTestRequest(cfg *Config, req TTSPlaybackTestRequest) {
 	if req.Speed > 0 {
 		cfg.TTS.Speed = req.Speed
 	}
+
+	// Resolve a [tts_providers] reference last. The form posts only the
+	// reference plus the global settings now that credentials live on records,
+	// so without this the provider stays a record name.
+	//
+	// The ordering composes with the blanking above: a field the form omitted is
+	// empty here, and resolution fills exactly the empty ones from the record,
+	// while a value the user typed still wins.
+	resolveTTSProvider(cfg)
 }

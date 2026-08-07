@@ -27,7 +27,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
 
                  ┌──────────────────────────┐
                  │ USB HID Gadget           │
-                 │ /dev/hidg0 / /dev/hidg1  │
+                 │ hidg0 / hidg1 / hidg2     │
                  └───────────▲──────────────┘
                              │
                          Agent tools
@@ -62,7 +62,7 @@ TC358743 → /dev/video0 → frame_service ring buffer → Go screenshot tool �
 ### Device Control
 
 ```text
-LLM tool call → Go HID tool → /dev/hidg0 or /dev/hidg1 → target device
+LLM tool call → Go HID tool → /dev/hidg0, /dev/hidg1, or /dev/hidg2 → target device
 ```
 
 ### Voice Interaction

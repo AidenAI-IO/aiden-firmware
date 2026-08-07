@@ -80,4 +80,12 @@ func applySTTTranscriptionTestRequest(cfg *Config, req STTTranscriptionTestReque
 	cfg.STT.SecretKey = req.SecretKey
 	cfg.STT.Region = req.Region
 	cfg.STT.EngineModelType = req.EngineModelType
+
+	// Resolve an [stt_providers] reference last, for the same reason as TTS: the
+	// form posts only the reference plus language. Without this the reference
+	// reaches NewSTTClientFromConfig, which dispatches on the raw value, matches
+	// no provider type, and reports "unsupported STT provider: <record name>"
+	// for a record that is configured correctly. This also covers the live
+	// session path, which reuses this request type.
+	resolveSTTProvider(cfg)
 }

@@ -210,8 +210,8 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	}, nil
 }
 
-// SetStorageManager routes archived recordings through the SD/eMMC storage
-// modes (docs/04-agent/storage-modes.md).
+// SetStorageManager keeps new archived recordings on eMMC and makes older
+// recordings eligible for watermark-driven migration to SD.
 func (d *AudioDialog) SetStorageManager(sm *StorageManager) {
 	if d.audioArchive != nil {
 		d.audioArchive.SetStorageManager(sm)

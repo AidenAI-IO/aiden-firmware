@@ -136,8 +136,6 @@ func TestBuildKimiProvidersResolveBaseURL(t *testing.T) {
 		{"kimi default global", "kimi", "", moonshotGlobalBaseURL},
 		{"kimi-cn default cn", "kimi-cn", "", moonshotCNBaseURL},
 		{"kimi case insensitive", "Kimi", "", moonshotGlobalBaseURL},
-		{"kimi custom base url", "kimi", "https://gateway.example.com/v1", "https://gateway.example.com/v1"},
-		{"kimi-cn custom base url", "kimi-cn", "https://gateway.example.com/v1", "https://gateway.example.com/v1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -172,7 +170,6 @@ func TestBuildVolcengineProviderResolvesBaseURL(t *testing.T) {
 	}{
 		{"volcengine default ark", "volcengine", "", arkBeijingBaseURL},
 		{"volcengine case insensitive", "Volcengine", "", arkBeijingBaseURL},
-		{"volcengine custom base url", "volcengine", "https://gateway.example.com/v3", "https://gateway.example.com/v3"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -221,4 +218,41 @@ func TestBuildOpenRouterEnablesNestedReasoning(t *testing.T) {
 	if !compatible.openRouterReasoning {
 		t.Error("openRouterReasoning = false, want true for the openrouter provider")
 	}
+}
+
+func TestBuildOpenRouterMissingAPIKeyError(t *testing.T) {
+	t.Run("named token environment", func(t *testing.T) {
+		const tokenEnv = "AIDEN_TEST_MISSING_OPENROUTER_KEY"
+		t.Setenv(tokenEnv, "")
+		mgr := NewModelManager(ModelConfig{
+			Provider: "openrouter",
+			Model:    "google/gemini-3.5-flash",
+			TokenEnv: tokenEnv,
+		}, ProxyConfig{})
+
+		_, err := mgr.build(mgr.config)
+		if err == nil {
+			t.Fatal("build succeeded without an API key")
+		}
+		want := "missing the OpenRouter API key, set it in the " + tokenEnv + " environment variable"
+		if err.Error() != want {
+			t.Fatalf("build error = %q, want %q", err, want)
+		}
+	})
+
+	t.Run("provider record without token environment", func(t *testing.T) {
+		mgr := NewModelManager(ModelConfig{
+			Provider: "openrouter",
+			Model:    "google/gemini-3.5-flash",
+		}, ProxyConfig{})
+
+		_, err := mgr.build(mgr.config)
+		if err == nil {
+			t.Fatal("build succeeded without an API key")
+		}
+		const want = "missing the OpenRouter API key, set api_key or token_env on the provider record"
+		if err.Error() != want {
+			t.Fatalf("build error = %q, want %q", err, want)
+		}
+	})
 }

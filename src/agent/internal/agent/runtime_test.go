@@ -704,7 +704,7 @@ func TestRuntimeRunWaitForWakeupAppendsToolResultBeforeFinishing(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunWaitForWakeupDoesNotStreamWithoutModelText(t *testing.T) {
+func TestRuntimeRunWaitForWakeupDoesNotStream(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
 	}}

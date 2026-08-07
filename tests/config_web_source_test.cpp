@@ -654,7 +654,7 @@ TEST_CASE("config web exposes audio archive switch") {
     CHECK(html.find("save STT voice recording WAV") != std::string::npos);
 }
 
-TEST_CASE("config web docs list token_env in model fields") {
+TEST_CASE("config web docs list the model fields") {
     const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/04-agent/configuration.md";
     std::ifstream doc_in(doc_path.c_str());
     REQUIRE(doc_in.good());
@@ -665,7 +665,6 @@ TEST_CASE("config web docs list token_env in model fields") {
 
     const char* model_fields[] = {
         "provider",
-        "token_env",
         "model",
         "api_key",
         "base_url",
@@ -966,8 +965,14 @@ TEST_CASE("config web renders finite choice fields as selects") {
         CHECK_MESSAGE(html.find(input_marker) == std::string::npos, select_ids[i]);
     }
 
-    CHECK(html.find("<input id=\\\"tts_model\\\"") != std::string::npos);
+    // tts.model moved onto a [tts_providers] record, so it has no flat input on
+    // the page at all -- the provider dialog renders it from the metadata. The
+    // widget choice is still asserted there: providerRecordFieldsHtml emits a
+    // <select> only for a field whose metadata carries enum options, and
+    // tts_providers.model is a text widget with a conditional selectWhen.
+    CHECK(html.find("<input id=\\\"tts_model\\\"") == std::string::npos);
     CHECK(html.find("<select id=\\\"tts_model\\\"") == std::string::npos);
+    CHECK(html.find("function providerRecordFieldsHtml(section,record)") != std::string::npos);
 
     CHECK(html.find("input,select,textarea") != std::string::npos);
     CHECK(html.find("input:focus,select:focus,textarea:focus") != std::string::npos);
@@ -1256,7 +1261,12 @@ TEST_CASE("config web updates dependent field visibility from selected values") 
     CHECK(html.find("document.addEventListener('change',function(event)") != std::string::npos);
     CHECK(html.find("applyFieldVisibility(false,path)") != std::string::npos);
     CHECK(html.find("fillConfigForm(config){Object.keys(sectionFields).forEach") != std::string::npos);
-    CHECK(html.find("applyFieldVisibility(true);}") != std::string::npos);
+    // Filling the form has to re-evaluate visibility, or a loaded config shows
+    // fields its own values should have hidden. Scoped to fillConfigForm's body
+    // rather than anchored on its closing brace, which is not part of the rule.
+    const size_t fill_form_at = html.find("fillConfigForm(config){Object.keys(sectionFields).forEach");
+    REQUIRE(fill_form_at != std::string::npos);
+    CHECK(html.substr(fill_form_at, 400).find("applyFieldVisibility(true)") != std::string::npos);
     // The legacy imperative visibility chain must be gone.
     CHECK(html.find("setFieldVisible('model','base_url',modelProvider!=='openrouter')") == std::string::npos);
     CHECK(html.find("const sttTencent=sttProvider==='tencent'") == std::string::npos);
@@ -1275,8 +1285,13 @@ TEST_CASE("config web fills Tencent ASR STT defaults from metadata") {
     CHECK(html.find("function fieldDefaultValue(section,key,fallback)") != std::string::npos);
     CHECK(html.find("function applySTTTencentASRDefaults()") != std::string::npos);
     CHECK(html.find("applySTTTencentASRDefaults();applyAudioArchiveAvailability();") != std::string::npos);
-    CHECK(html.find("stt_app_id") != std::string::npos);
-    CHECK(html.find("id=\\\"stt_engine_model_type\\\" data-section=\\\"stt\\\"") != std::string::npos);
+    // The Tencent credential set moved onto an [stt_providers] record, so the
+    // defaults are filled on the record's fields inside the provider dialog.
+    // Reading [stt] provider here would never match: that field holds a record
+    // NAME now, so the fill would silently stop happening.
+    CHECK(html.find("isTencentASRProvider(fieldValue('stt_providers','type'))") != std::string::npos);
+    CHECK(html.find("byId('stt_providers_'+key)") != std::string::npos);
+    CHECK(html.find("fieldDefaultValue('stt_providers',key,fallback)") != std::string::npos);
     CHECK(html.find("fillIfEmpty('region','ap-shanghai')") != std::string::npos);
     CHECK(html.find("fillIfEmpty('engine_model_type','16k_zh')") != std::string::npos);
     CHECK(html.find("p==='tencent-asr'||p==='tencent_asr'||p==='tencent'") != std::string::npos);
@@ -1734,7 +1749,7 @@ TEST_CASE("config web clears legacy wifi fields for explicit empty network lists
     CHECK(source.find("aiden::sync_legacy_wifi_fields(wifi);") != std::string::npos);
 }
 
-TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {
+TEST_CASE("config web requires reboot for USB HID configuration changes") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -1777,9 +1792,9 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("\"keyboard_layout\"") != std::string::npos);
     CHECK(source.find("kUsbHidInitScript = \"/etc/init.d/S49usbhid\"") == std::string::npos);
     CHECK(source.find("schedule_usbhid_restart") == std::string::npos);
-    CHECK(source.find("usbhid_restart_scheduled") != std::string::npos);
     CHECK(source.find("usbhid_restart_required") != std::string::npos);
     CHECK(source.find("reboot_required") != std::string::npos);
+    CHECK(source.find("schedule_usb_reenumerate") == std::string::npos);
     CHECK(source.find("schedule_reboot") != std::string::npos);
     CHECK(source.find("command -v reboot") != std::string::npos);
     CHECK(source.find("make_json_error(503, error.empty() ? \"failed to schedule reboot\" : error)") != std::string::npos);
@@ -1798,7 +1813,10 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(html.find("hid_pointer_mode") == std::string::npos);
     CHECK(html.find("hid_keyboard_layout") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_keyboard_layout\\\"") != std::string::npos);
-    CHECK(html.find("device_type requires reboot to take effect") != std::string::npos);
+    CHECK(html.find("USB HID configuration saved. Reboot the board for it to take effect") != std::string::npos);
+    CHECK(html.find("USB HID settings saved, requires reboot to take effect. Reboot now?") != std::string::npos);
+    CHECK(html.find("Cancelled immediate reboot. Please reboot manually later, then verify USB HID after reboot") != std::string::npos);
+    CHECK(html.find("USB will re-enumerate automatically") == std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
     CHECK(html.find("/api/reboot") != std::string::npos);
     CHECK(html.find("reboot command sent") != std::string::npos);
@@ -1909,4 +1927,923 @@ TEST_CASE("config web rendered config controls are registered in field type guar
         CHECK_MESSAGE(source.find(guard) != std::string::npos,
                       "rendered config field is missing from validate_known_config_field_types: " << field);
     }
+}
+
+// Decodes the C++ string literals in config_web_html.h into the JavaScript the
+// browser actually receives, so tests can reason about emitted lines rather
+// than about the escaped source. Only the escapes the header uses are handled.
+std::string decode_html_header_literals(const std::string& header) {
+    std::string js;
+    bool in_literal = false;
+    for (size_t i = 0; i < header.size(); ++i) {
+        const char c = header[i];
+        if (!in_literal) {
+            if (c == '"') {
+                in_literal = true;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_literal = false;
+            continue;
+        }
+        if (c != '\\' || i + 1 >= header.size()) {
+            js.push_back(c);
+            continue;
+        }
+        const char esc = header[++i];
+        switch (esc) {
+            case 'n': js.push_back('\n'); break;
+            case 'r': js.push_back('\r'); break;
+            case 't': js.push_back('\t'); break;
+            default: js.push_back(esc); break;
+        }
+    }
+    return js;
+}
+
+// Collects the double-quoted values assigned to a named field in a Go source
+// fragment, e.g. providerType: "openai" in a registry definition.
+std::vector<std::string> go_string_field_values(const std::string& text,
+                                                const std::string& field) {
+    std::vector<std::string> values;
+    size_t at = 0;
+    const std::string assignment = field + ":";
+    for (;;) {
+        const size_t field_at = text.find(assignment, at);
+        if (field_at == std::string::npos) {
+            break;
+        }
+        const size_t open = text.find('"', field_at + assignment.size());
+        if (open == std::string::npos) {
+            break;
+        }
+        const size_t close = text.find('"', open + 1);
+        if (close == std::string::npos) {
+            break;
+        }
+        values.push_back(text.substr(open + 1, close - open - 1));
+        at = close + 1;
+    }
+    return values;
+}
+
+// A `//` comment runs to the end of its line, so any JavaScript sharing a line
+// with one never reaches the browser. The page is emitted as minified one-liners,
+// which makes it easy to append code to a commented line and silently delete it:
+// that is how ModelProvidersManager and syncModelProvidersFromConfig were once dropped,
+// leaving the page stuck on "Page initialization failed."
+TEST_CASE("config web html keeps javascript off line-comment lines") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+    REQUIRE(js.find("syncModelProvidersFromConfig") != std::string::npos);
+
+    const char* code_markers[] = {
+        "function ", "const ", "let ", "var ", "();", NULL,
+    };
+
+    std::istringstream js_in(js);
+    std::string line;
+    int line_number = 0;
+    while (std::getline(js_in, line)) {
+        ++line_number;
+        size_t comment = 0;
+        while ((comment = line.find("//", comment)) != std::string::npos) {
+            // Skip URL schemes such as https:// that are not comments at all.
+            if (comment > 0 && line[comment - 1] == ':') {
+                comment += 2;
+                continue;
+            }
+            break;
+        }
+        if (comment == std::string::npos) {
+            continue;
+        }
+        const std::string commented_out = line.substr(comment + 2);
+        for (int i = 0; code_markers[i]; ++i) {
+            CHECK_MESSAGE(commented_out.find(code_markers[i]) == std::string::npos,
+                          "emitted JS line " << line_number << " hides code after a // comment: "
+                                             << code_markers[i] << " in: "
+                                             << commented_out.substr(0, 80));
+        }
+    }
+}
+
+// loadConfig() calls syncModelProvidersFromConfig(), which drives ModelProvidersManager and
+// ModelSelector. Each must be defined on a line the browser can execute, or page
+// init throws a ReferenceError that the init try/catch turns into a banner.
+TEST_CASE("config web html defines provider ui symbols on executable lines") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    const char* definitions[] = {
+        "function syncModelProvidersFromConfig(",
+        "const ModelProvidersManager = {",
+        "const ModelSelector = {",
+        "ModelProvidersManager.init();",
+        "ModelSelector.init();",
+        NULL,
+    };
+
+    for (int i = 0; definitions[i]; ++i) {
+        const std::string needle(definitions[i]);
+        const size_t at = js.find(needle);
+        CHECK_MESSAGE(at != std::string::npos, "missing definition: " << needle);
+        if (at == std::string::npos) {
+            continue;
+        }
+        const size_t line_start = js.rfind('\n', at) == std::string::npos ? 0 : js.rfind('\n', at) + 1;
+        const std::string prefix = js.substr(line_start, at - line_start);
+        CHECK_MESSAGE(prefix.find("//") == std::string::npos,
+                      "definition is commented out on its line: " << needle);
+    }
+}
+
+TEST_CASE("config web keeps provider management beside each provider select") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("id=\\\"section-providers\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"section-tts-providers\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"section-stt-providers\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"providersList\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"ttsProvidersList\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"sttProvidersList\\\"") == std::string::npos);
+
+    const char* action_ids[] = {
+        "addProviderBtn", "editProviderBtn", "deleteProviderBtn",
+        "addTtsProviderBtn", "editTtsProviderBtn", "deleteTtsProviderBtn",
+        "addSttProviderBtn", "editSttProviderBtn", "deleteSttProviderBtn",
+        NULL,
+    };
+    for (int i = 0; action_ids[i]; ++i) {
+        CHECK_MESSAGE(html.find("id=\\\"" + std::string(action_ids[i]) + "\\\"") !=
+                          std::string::npos,
+                      action_ids[i]);
+    }
+    CHECK(html.find("class=\\\"provider-picker\\\"") != std::string::npos);
+}
+
+TEST_CASE("config web collapses the model picker around the current model") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("<details id=\\\"modelSelectorDetails\\\"") != std::string::npos);
+    CHECK(html.find("<summary>") != std::string::npos);
+    CHECK(html.find("id=\\\"modelSelectorSummary\\\"") != std::string::npos);
+    CHECK(html.find("function syncModelSelectorSummary()") != std::string::npos);
+}
+
+TEST_CASE("config web provider deletion keeps active references valid") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("async function deleteSelectedProvider(kind)") != std::string::npos);
+    CHECK(html.find("remainingNames.length===0") != std::string::npos);
+    CHECK(html.find("Add or select another provider before deleting it.") != std::string::npos);
+    CHECK(html.find("context.refPatch(name,replacement)") != std::string::npos);
+    CHECK(html.find("body[context.configKey]=nextRecords") != std::string::npos);
+}
+
+// The [model] provider select offers configured [model_providers.*] entries only.
+// A bare provider type carries no credentials, so
+// offering the metadata enum let the user pick a provider that cannot
+// authenticate; adding a record is a button beside the select instead.
+TEST_CASE("config web html lists only configured providers in the provider select") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    CHECK(js.find("function injectNamedProviderOptions()") != std::string::npos);
+    // syncModelProvidersFromConfig must call it, otherwise the select never updates.
+    const size_t sync_at = js.find("function syncModelProvidersFromConfig(");
+    REQUIRE(sync_at != std::string::npos);
+    const size_t sync_end = js.find("const ModelProvidersManager", sync_at);
+    REQUIRE(sync_end != std::string::npos);
+    const std::string sync_body = js.substr(sync_at, sync_end - sync_at);
+    CHECK(sync_body.find("injectNamedProviderOptions()") != std::string::npos);
+    // Clearing the manager on an empty config keeps stale cards from lingering.
+    CHECK(sync_body.find("ModelProvidersManager.loadModelProviders({})") != std::string::npos);
+    // Provider-scoped options (reasoning_effort) are hydrated from the resolved
+    // provider type, which is only knowable once the providers map is loaded.
+    // Without this re-apply, loading a config that references a named provider
+    // dropped minimal/none from reasoning_effort until the user re-picked.
+    const size_t inject_call = sync_body.find("injectNamedProviderOptions()");
+    const size_t visibility_call = sync_body.find("applyFieldVisibility(true)");
+    CHECK(visibility_call != std::string::npos);
+    CHECK(inject_call < visibility_call);
+
+    const size_t inject_at = js.find("function injectNamedProviderOptions()");
+    const size_t inject_end = js.find("function restoreModelProviderValue()", inject_at);
+    REQUIRE(inject_end != std::string::npos);
+    const std::string inject_body = js.substr(inject_at, inject_end - inject_at);
+    // Options come from the configured providers, never from the metadata enum.
+    CHECK(inject_body.find("namedProviderOptions()") != std::string::npos);
+    CHECK(inject_body.find("baseProviderOptions") == std::string::npos);
+    // The provider the config already references has to stay selectable, or
+    // loading an existing agent.toml would silently retarget the model.
+    CHECK(inject_body.find("!known[current]") != std::string::npos);
+    // An empty placeholder leads for a fresh config.
+    CHECK(inject_body.find("options.unshift({value:'',label:'-- Select Provider --'") !=
+          std::string::npos);
+    CHECK(inject_body.find("ADD_PROVIDER_OPTION") == std::string::npos);
+    CHECK(js.find("id=\"addProviderBtn\"") != std::string::npos);
+    CHECK(js.find("'-- Select Provider --':'") != std::string::npos);
+}
+
+TEST_CASE("config web html uses canonical provider map and type field names") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("appState.config.model_providers") != std::string::npos);
+    CHECK(html.find("model_providers: this.modelProviders") != std::string::npos);
+    CHECK(html.find("payload.config.model_providers") != std::string::npos);
+    CHECK(html.find("const provider = { type: type }") != std::string::npos);
+    CHECK(html.find("ModelProvidersManager.modelProviders[providerRef].type") != std::string::npos);
+    CHECK(html.find("hydrateSelectField(section,'type'") != std::string::npos);
+}
+
+// Adding a provider is an explicit action beside the select, so the select never
+// has to carry a sentinel value that could leak into model.provider.
+TEST_CASE("config web html opens the provider dialog from the inline add button") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    CHECK(js.find("document.getElementById('addProviderBtn')") != std::string::npos);
+    CHECK(js.find("addBtn.onclick = () => this.addProvider()") != std::string::npos);
+    CHECK(js.find("ADD_PROVIDER_OPTION") == std::string::npos);
+
+    const size_t listener_at = js.find("document.addEventListener('change', (e) => { if (e.target.id !== 'model_provider')");
+    REQUIRE(listener_at != std::string::npos);
+    const std::string listener_body = js.substr(listener_at, 300);
+    CHECK(listener_body.find("rememberModelProvider()") != std::string::npos);
+    CHECK(listener_body.find("updateProviderActionState('model')") != std::string::npos);
+}
+
+// Paths that repopulate the select without firing a change event (snapshot
+// restore on cancel, refill from the save response) keep the remembered value in
+// sync. Keeping one writer that reads the DOM makes that invariant explicit.
+TEST_CASE("config web html keeps the remembered provider in sync with the select") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    CHECK(js.find("function rememberModelProvider(){") != std::string::npos);
+    const size_t remember_at = js.find("function rememberModelProvider(){");
+    REQUIRE(remember_at != std::string::npos);
+    const std::string remember_body = js.substr(remember_at, 200);
+    CHECK(remember_body.find("lastModelProviderValue=el.value") != std::string::npos);
+
+    // One writer: nothing else may assign the remembered value directly. Count
+    // real assignments only -- `lastModelProviderValue===` is a comparison, and
+    // the page has two of those (restore and the readSection guard).
+    size_t assignments = 0;
+    const std::string name("lastModelProviderValue");
+    for (size_t at = js.find(name); at != std::string::npos; at = js.find(name, at + 1)) {
+        size_t after = at + name.size();
+        while (after < js.size() && js[after] == ' ') {
+            ++after;
+        }
+        if (after >= js.size() || js[after] != '=') {
+            continue;  // a read
+        }
+        if (after + 1 < js.size() && js[after + 1] == '=') {
+            continue;  // == or ===, a comparison
+        }
+        ++assignments;
+    }
+    // Exactly two: the `let` declaration and the write inside the writer.
+    CHECK(assignments == 2);
+
+    // Both event-free repopulate paths have to call it.
+    const size_t fill_at = js.find("function fillConfigForm(config){");
+    REQUIRE(fill_at != std::string::npos);
+    CHECK(js.substr(fill_at, 400).find("rememberModelProvider()") != std::string::npos);
+
+    const size_t cancel_at = js.find("function cancelEditSection(section){");
+    REQUIRE(cancel_at != std::string::npos);
+    const size_t cancel_end = js.find("function enterSystemEnvEdit(", cancel_at);
+    REQUIRE(cancel_end != std::string::npos);
+    CHECK(js.substr(cancel_at, cancel_end - cancel_at).find("rememberModelProvider()") !=
+          std::string::npos);
+}
+
+// The model select no longer offers provider types, so the Add Provider dialog
+// is the only way to reach one. That makes its hard-coded <option> list
+// load-bearing: a provider type added to the central registry but not to the
+// dialog would be unreachable from the web UI entirely.
+TEST_CASE("config web html dialog offers every provider type the agent supports") {
+    const std::string registry_path =
+        std::string(AIDEN_SOURCE_DIR) + "/src/agent/internal/agent/model_provider_registry.go";
+    std::ifstream registry_in(registry_path.c_str());
+    REQUIRE(registry_in.good());
+    std::ostringstream registry_buffer;
+    registry_buffer << registry_in.rdbuf();
+    const std::string registry = registry_buffer.str();
+
+    const size_t definitions_at = registry.find("var modelProviderDefinitions");
+    REQUIRE(definitions_at != std::string::npos);
+    const size_t definitions_end =
+        registry.find("func lookupModelProviderDefinition", definitions_at);
+    REQUIRE(definitions_end != std::string::npos);
+    const std::vector<std::string> types = go_string_field_values(
+        registry.substr(definitions_at, definitions_end - definitions_at), "providerType");
+    REQUIRE(types.size() >= 6);
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    const size_t select_at = js.find("id=\"providerType\"");
+    REQUIRE(select_at != std::string::npos);
+    const size_t select_end = js.find("</select>", select_at);
+    REQUIRE(select_end != std::string::npos);
+    const std::string select_body = js.substr(select_at, select_end - select_at);
+
+    for (size_t i = 0; i < types.size(); ++i) {
+        // "fake" is a test double (fakellm.NewFakeLLM), not something a user
+        // should be able to point the device at.
+        if (types[i] == "fake") {
+            CHECK_MESSAGE(select_body.find("value=\"fake\"") == std::string::npos,
+                          "the test-double provider must not be offered in the UI");
+            continue;
+        }
+        CHECK_MESSAGE(select_body.find("value=\"" + types[i] + "\"") != std::string::npos,
+                      "provider type \"" << types[i]
+                                         << "\" is in the model provider registry but unreachable "
+                                            "from the "
+                                            "Add Provider dialog");
+    }
+}
+
+// reasoning_effort scopes its levels to built-in provider types. With the
+// select now offering named references, the filter has to resolve the
+// reference to its type or every named provider would lose minimal/none.
+TEST_CASE("config web html resolves named providers when filtering option scopes") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    CHECK(js.find("function resolveProviderType(value)") != std::string::npos);
+    const size_t filter_at = js.find("function providerFilterValue(section)");
+    REQUIRE(filter_at != std::string::npos);
+    const std::string filter_body = js.substr(filter_at, 700);
+    // Named model and voice references must be compared using the selected
+    // record's built-in provider type. Provider record dialogs instead filter
+    // against their own `type` field.
+    CHECK(filter_body.find("isProviderRecordSection(section)") != std::string::npos);
+    CHECK(filter_body.find("fieldValue(section,'type')") != std::string::npos);
+    CHECK(filter_body.find("section==='model'") != std::string::npos);
+    CHECK(filter_body.find("TtsProvidersManager.records[raw]") != std::string::npos);
+    CHECK(filter_body.find("SttProvidersManager.records[raw]") != std::string::npos);
+    CHECK(js.find("function filterSelectOptions(section,options){const provider=providerFilterValue(section);") !=
+          std::string::npos);
+    const size_t conditional_at = js.find("function syncConditionalSelectField(item,preserveUnknown)");
+    REQUIRE(conditional_at != std::string::npos);
+    const std::string conditional_body = js.substr(conditional_at, 400);
+    CHECK(conditional_body.find("providerFilterValue(item.section)") != std::string::npos);
+    CHECK(conditional_body.find("fieldValue(item.section,'provider')") == std::string::npos);
+
+    // The two readers of model.provider must disagree, deliberately:
+    //
+    //   - Option scoping (above) resolves the named reference to its type, or a
+    //     named provider loses reasoning_effort's minimal/none.
+    //   - Field visibility matches the RAW value, which is what keeps
+    //     [model] base_url hidden for a named reference. That is correct: the
+    //     backend clears a model base_url for any named ref, and the
+    //     [model_providers.*] entry's own base_url is inherited instead
+    //     (applyProviderToModel), so offering the field would only ever produce
+    //     dead config. A legacy bare provider type still matches the rule and
+    //     still shows the field.
+    //
+    // Routing evalCondition through resolveProviderType would read as a natural
+    // unification of the two, and would silently start offering base_url for
+    // named providers.
+    const size_t eval_at = js.find("function evalCondition(cond){");
+    REQUIRE(eval_at != std::string::npos);
+    const size_t eval_end = js.find("function evalRule(rule){", eval_at);
+    REQUIRE(eval_end != std::string::npos);
+    const std::string eval_body = js.substr(eval_at, eval_end - eval_at);
+    CHECK(eval_body.find("fieldValue(parts[0]") != std::string::npos);
+    CHECK(eval_body.find("resolveProviderType") == std::string::npos);
+    CHECK(eval_body.find("providerFilterValue") == std::string::npos);
+}
+
+// A stopped agent daemon makes the /api/models proxy return 503. That is a
+// normal state, not a configuration error, so the model selector degrades to
+// the custom-model input instead of a red failure box the user cannot act on.
+TEST_CASE("config web html degrades model selector when the agent is offline") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    const size_t load_at = js.find("loadModels: async function");
+    REQUIRE(load_at != std::string::npos);
+    const size_t load_end = js.find("renderModelSelector: function", load_at);
+    REQUIRE(load_end != std::string::npos);
+    const std::string load_body = js.substr(load_at, load_end - load_at);
+    CHECK(load_body.find("response.status === 503") != std::string::npos);
+    CHECK(load_body.find("this.renderModelSelector(true)") != std::string::npos);
+    // Non-503 failures must still surface as errors.
+    CHECK(load_body.find("model-selector-error") != std::string::npos);
+
+    const std::string render_body = js.substr(load_end, 1200);
+    CHECK(render_body.find("renderModelSelector: function(agentOffline)") != std::string::npos);
+    // Offline must not short-circuit before the custom-model row is emitted.
+    CHECK(render_body.find("this.availableModels.length === 0 && !agentOffline") != std::string::npos);
+
+    const std::string notice = "Model list needs a running agent. Enter the model ID manually.";
+    CHECK(js.find(notice) != std::string::npos);
+    // Every user-visible string needs a zh-CN entry; the page defaults to zh-CN.
+    CHECK(js.find("'" + notice + "':'") != std::string::npos);
+}
+
+// The name is what the model provider select shows, so the dialog fills it in
+// from the provider type (or the base_url host for a custom OpenAI endpoint) and
+// suffixes duplicates. It stays editable so several keys of one provider can
+// coexist under distinct names.
+TEST_CASE("config web html auto-fills the provider name and keeps it editable") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    const size_t dialog_at = js.find("showProviderDialog: function");
+    REQUIRE(dialog_at != std::string::npos);
+    const size_t save_at = js.find("saveProviderDialog: function", dialog_at);
+    REQUIRE(save_at != std::string::npos);
+    const std::string dialog_body = js.substr(dialog_at, save_at - dialog_at);
+
+    // Name is present and last, after the key and the base_url.
+    const size_t name_at = dialog_body.find("id=\"providerName\"");
+    const size_t key_at = dialog_body.find("id=\"providerApiKey\"");
+    const size_t base_at = dialog_body.find("id=\"providerBaseUrl\"");
+    REQUIRE(name_at != std::string::npos);
+    REQUIRE(key_at != std::string::npos);
+    REQUIRE(base_at != std::string::npos);
+    CHECK(key_at < name_at);
+    CHECK(base_at < name_at);
+    // Editing the name pins it so later auto-fills cannot overwrite the choice.
+    CHECK(dialog_body.find("ModelProvidersManager.onProviderNameInput()") != std::string::npos);
+    // The select is relabeled: it is the provider, not a separate "type".
+    CHECK(dialog_body.find("<label>Provider</label>") != std::string::npos);
+    CHECK(js.find("Provider Type") == std::string::npos);
+    // Opening the dialog seeds the name before the user touches anything.
+    CHECK(dialog_body.find("this.autoFillProviderName()") != std::string::npos);
+
+    const size_t save_end = js.find("modelRefPatch: function", save_at);
+    REQUIRE(save_end != std::string::npos);
+    const std::string save_body = js.substr(save_at, save_end - save_at);
+    // The typed name wins; an empty one falls back to the derived default.
+    CHECK(save_body.find("getElementById('providerName')") != std::string::npos);
+    CHECK(save_body.find("this.uniqueProviderName(this.providerBaseName(type, baseUrl)") !=
+          std::string::npos);
+    CHECK(save_body.find("Provider is required") != std::string::npos);
+    // A collision is only an error when it targets a different existing entry.
+    CHECK(save_body.find("name !== editName && Object.prototype.hasOwnProperty.call(this.modelProviders, name)") !=
+          std::string::npos);
+    // Renaming has to carry the model references across, or they dangle.
+    CHECK(save_body.find("this.modelRefPatch(renamedFrom,name)") != std::string::npos);
+
+    // The select only lists configured providers, so retargeting it to the new
+    // name has to add that option first -- assigning an absent value silently
+    // reset the select to the placeholder and lost the reference.
+    const size_t patch_at = js.find("modelRefPatch: function");
+    REQUIRE(patch_at != std::string::npos);
+    const size_t patch_end = js.find("saveModelProviders: async function", patch_at);
+    REQUIRE(patch_end != std::string::npos);
+    const std::string patch_body = js.substr(patch_at, patch_end - patch_at);
+    CHECK(patch_body.find("ensureSelectOption(select, newName); select.value = newName;") !=
+          std::string::npos);
+    // The remembered value backs sentinel restore, so it has to follow too.
+    CHECK(patch_body.find("rememberModelProvider()") != std::string::npos);
+
+    // Suffixes start at -2 so the first entry keeps the bare provider name.
+    const size_t unique_at = js.find("uniqueProviderName: function");
+    REQUIRE(unique_at != std::string::npos);
+    const std::string unique_body = js.substr(unique_at, 400);
+    CHECK(unique_body.find("for (let i = 2;") != std::string::npos);
+
+    // A custom OpenAI endpoint names itself after its host label.
+    const size_t base_name_at = js.find("providerBaseName: function");
+    REQUIRE(base_name_at != std::string::npos);
+    const std::string base_name_body = js.substr(base_name_at, 400);
+    CHECK(base_name_body.find("cleanType === 'openai' && url") != std::string::npos);
+    CHECK(base_name_body.find("this.hostLabel(url)") != std::string::npos);
+
+    // Every user-visible string needs a zh-CN entry; the page defaults to zh-CN.
+    const char* localized[] = {
+        "Provider",
+        "Name",
+        "Provider is required",
+        "Provider type is required",
+        "Name is required",
+        "Environment variable name is required after $",
+    };
+    for (size_t i = 0; i < sizeof(localized) / sizeof(localized[0]); ++i) {
+        CHECK(js.find("'" + std::string(localized[i]) + "':'") != std::string::npos);
+    }
+}
+
+// token_env and api_key are two ways to say the same thing, so the dialog offers
+// one box: a leading $ means the rest names an environment variable. Keeping the
+// split in agent.toml lets the runtime resolve it without new parsing rules.
+TEST_CASE("config web html folds token_env into the api key box") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    // The separate env-var input is gone.
+    CHECK(js.find("id=\"providerTokenEnv\"") == std::string::npos);
+    CHECK(js.find("Token Environment Variable") == std::string::npos);
+
+    const size_t save_at = js.find("saveProviderDialog: function");
+    REQUIRE(save_at != std::string::npos);
+    const size_t save_end = js.find("modelRefPatch: function", save_at);
+    REQUIRE(save_end != std::string::npos);
+    const std::string save_body = js.substr(save_at, save_end - save_at);
+    // $FOO stores token_env and clears any literal key left behind.
+    CHECK(save_body.find("apiKeyRaw.charAt(0) === '$'") != std::string::npos);
+    CHECK(save_body.find("provider.token_env = env; provider.api_key = '';") != std::string::npos);
+    // A bare $ names no variable, so it must not save silently.
+    CHECK(save_body.find("Environment variable name is required after $") != std::string::npos);
+
+    // Reopening the dialog shows a stored token_env back as $FOO.
+    const size_t dialog_at = js.find("showProviderDialog: function");
+    REQUIRE(dialog_at != std::string::npos);
+    const std::string dialog_head = js.substr(dialog_at, 400);
+    CHECK(dialog_head.find("provider.token_env ? '$' + provider.token_env") != std::string::npos);
+
+    // The card shows the same one-line form instead of a separate row.
+    const size_t card_at = js.find("createProviderCard: function");
+    REQUIRE(card_at != std::string::npos);
+    const size_t card_end = js.find("addProvider: function", card_at);
+    REQUIRE(card_end != std::string::npos);
+    const std::string card_body = js.substr(card_at, card_end - card_at);
+    CHECK(card_body.find("Token Env:") == std::string::npos);
+    CHECK(card_body.find("provider.token_env ? '$' + provider.token_env : provider.api_key") !=
+          std::string::npos);
+}
+
+// Only openai and ollama accept a base_url override; every other provider pins
+// its endpoint, so the field is dead config there. The backend already strips it
+// (model_base_url_allowed), and the dialog must not offer it in the first place.
+TEST_CASE("config web html shows the provider base url only where it applies") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string js = decode_html_header_literals(html_buffer.str());
+
+    // The whitelist has to be a single source the dialog consults, mirroring the
+    // C++ and Go lists.
+    CHECK(js.find("const PROVIDER_BASE_URL_TYPES = ['openai', 'ollama'];") != std::string::npos);
+    CHECK(js.find("function providerBaseUrlAllowed(type)") != std::string::npos);
+
+    const size_t dialog_at = js.find("showProviderDialog: function");
+    REQUIRE(dialog_at != std::string::npos);
+    const size_t save_at = js.find("saveProviderDialog: function", dialog_at);
+    REQUIRE(save_at != std::string::npos);
+    const std::string dialog_body = js.substr(dialog_at, save_at - dialog_at);
+
+    // The row is addressable and starts hidden or shown to match the type the
+    // dialog opened with, so editing a kimi provider never flashes the field.
+    CHECK(dialog_body.find("id=\"providerBaseUrlField\"") != std::string::npos);
+    CHECK(dialog_body.find("providerBaseUrlAllowed(provider.type)") != std::string::npos);
+    // Changing the type toggles it without reopening the dialog.
+    CHECK(dialog_body.find("syncProviderBaseUrlVisibility") != std::string::npos);
+    CHECK(js.find("syncProviderBaseUrlVisibility: function") != std::string::npos);
+
+    const size_t save_end = js.find("saveModelProviders: async function", save_at);
+    REQUIRE(save_end != std::string::npos);
+    const std::string save_body = js.substr(save_at, save_end - save_at);
+    // A base_url left over from a previous type must not be saved once the type
+    // no longer accepts one.
+    CHECK(save_body.find("providerBaseUrlAllowed(type)") != std::string::npos);
+}
+
+// TTS and STT get the same named-record UX as [model_providers.*]. One factory serves
+// both: two copies of this logic would be two places to fix every
+// rename/mask/save bug, so assert the shared factory and the two specs rather
+// than per-kind implementations.
+TEST_CASE("config web builds tts and stt provider records from one factory") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("function createProviderRecordsManager(spec)") != std::string::npos);
+    CHECK(html.find("const TtsProvidersManager=createProviderRecordsManager(TTS_PROVIDER_SPEC)") !=
+          std::string::npos);
+    CHECK(html.find("const SttProvidersManager=createProviderRecordsManager(STT_PROVIDER_SPEC)") !=
+          std::string::npos);
+    // Each spec must name its own config key and reference field, or a save would
+    // write the records under the wrong key and erase the other kind's.
+    CHECK(html.find("configKey:'tts_providers'") != std::string::npos);
+    CHECK(html.find("refFieldId:'tts_provider'") != std::string::npos);
+    CHECK(html.find("configKey:'stt_providers'") != std::string::npos);
+    CHECK(html.find("refFieldId:'stt_provider'") != std::string::npos);
+
+    // Both inline add actions are wired through the same manager factory. The
+    // old standalone record lists are intentionally gone.
+    CHECK(html.find("id=\\\"ttsProvidersList\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"sttProvidersList\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"addTtsProviderBtn\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"addSttProviderBtn\\\"") != std::string::npos);
+
+    CHECK(html.find("TtsProvidersManager.init(); SttProvidersManager.init();") != std::string::npos);
+    // Records have to be loaded on every config load, or the cards render empty
+    // after a reload even though agent.toml has records.
+    CHECK(html.find("syncVoiceProvidersFromConfig();") != std::string::npos);
+
+    // The selector labels must use the canonical record type. Reading the old
+    // provider field here would make every canonical record render without its
+    // type even though GET /api/config correctly returned it.
+    const size_t options_at = html.find("function voiceRecordOptions(records)");
+    REQUIRE(options_at != std::string::npos);
+    const size_t options_end = html.find("\\n\"", options_at);
+    REQUIRE(options_end != std::string::npos);
+    const std::string options_body = html.substr(options_at, options_end - options_at);
+    CHECK(options_body.find(".type||''") != std::string::npos);
+    CHECK(options_body.find(".provider||''") == std::string::npos);
+}
+
+// Model credentials belong to [model_providers.*]. Keeping a second API key
+// input on [model] lets the flat section overwrite or disagree with the selected
+// provider record.
+TEST_CASE("config web keeps model credentials in provider records") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("id=\\\"model_api_key\\\"") == std::string::npos);
+    CHECK(html.find("id=\\\"providerApiKey\\\"") != std::string::npos);
+}
+
+// The credentials moved onto records, so the flat [tts]/[stt] cards must not keep
+// inputs for them: a second editor for one credential disagrees with the record
+// the moment either is used, and readSection would post the stale flat copy.
+TEST_CASE("config web drops flat voice credential inputs") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const char* gone[] = {
+        "tts_api_key", "tts_voice_id", "tts_reference_id", "tts_emotion",
+        "stt_api_key", "stt_app_id", "stt_secret_id", "stt_secret_key",
+        "stt_region", "stt_base_url",
+        NULL,
+    };
+    for (int i = 0; gone[i]; ++i) {
+        const std::string marker = "id=\\\"" + std::string(gone[i]) + "\\\"";
+        CHECK_MESSAGE(html.find(marker) == std::string::npos, gone[i]);
+    }
+
+    // The reference plus the genuinely global settings stay.
+    CHECK(html.find("id=\\\"tts_provider\\\" data-section=\\\"tts\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"tts_speed\\\" data-section=\\\"tts\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"stt_provider\\\" data-section=\\\"stt\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"stt_language\\\" data-section=\\\"stt\\\"") != std::string::npos);
+}
+
+// A "*_providers" metadata section describes a record map, not a form section.
+// Leaving it in sectionFields makes fillConfigForm / readSection / saveSection
+// walk a map as if it were scalar fields.
+TEST_CASE("config web keeps provider record sections out of the form loops") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("function isProviderRecordSection(name)") != std::string::npos);
+    CHECK(html.find("_providers'") != std::string::npos);
+
+    const size_t build_at = html.find("function buildConfigMeta(meta)");
+    REQUIRE(build_at != std::string::npos);
+    const size_t build_end = html.find("\\n\"", build_at);
+    REQUIRE(build_end != std::string::npos);
+    const std::string build_body = html.substr(build_at, build_end - build_at);
+    CHECK(build_body.find("isRecordSection=isProviderRecordSection(name)") != std::string::npos);
+    CHECK(build_body.find("recordSectionFields[name]=fieldList") != std::string::npos);
+    // The record's own fields must not land in sectionFields.
+    CHECK(build_body.find("sectionFields[name].push") == std::string::npos);
+}
+
+// Verified by running the real page in jsdom: seeding the dialog's type select
+// with only the record's current value (ensureSelectOption) left a dropdown
+// holding one option -- none at all for a new record -- so the provider type
+// could not be chosen and every save failed "Provider is required". No grep of
+// the emitted JS can catch that, hence this guard on the mechanism.
+TEST_CASE("config web hydrates the provider dialog type select from metadata") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const size_t hydrate_at = html.find("hydrateDialog:function(record)");
+    REQUIRE(hydrate_at != std::string::npos);
+    const size_t hydrate_end = html.find("\\n\"", hydrate_at);
+    REQUIRE(hydrate_end != std::string::npos);
+    const std::string hydrate_body = html.substr(hydrate_at, hydrate_end - hydrate_at);
+
+    CHECK(hydrate_body.find("hydrateSelectField(section,'type'") != std::string::npos);
+    CHECK(hydrate_body.find("ensureBlankTypeOption(section)") != std::string::npos);
+    // Seeding the single current value is what the bug looked like.
+    CHECK(hydrate_body.find("ensureSelectOption(typeEl") == std::string::npos);
+
+    CHECK(html.find("function ensureBlankTypeOption(section)") != std::string::npos);
+
+    // The dialog fields come from the metadata, so provider knowledge stays in
+    // the agent's ConfigMeta instead of being duplicated per dialog in JS.
+    CHECK(html.find("function providerRecordFieldsHtml(section,record)") != std::string::npos);
+    CHECK(html.find("recordSectionFields[section]") != std::string::npos);
+}
+
+// Field ids in the dialog follow the page's section_key convention, which is what
+// lets the existing visibility engine (fieldValue -> byId(section+'_'+key)) drive
+// it unchanged. A rule keyed on tts_providers.type reads the record's own type
+// select; keying it on tts.provider would compare against a record NAME and never
+// match, showing every field for every provider type.
+TEST_CASE("config web dialog field ids drive the existing visibility engine") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const size_t fields_at = html.find("function providerRecordFieldsHtml(section,record)");
+    REQUIRE(fields_at != std::string::npos);
+    const size_t fields_end = html.find("\\n\"", fields_at);
+    REQUIRE(fields_end != std::string::npos);
+    const std::string fields_body = html.substr(fields_at, fields_end - fields_at);
+    CHECK(fields_body.find("const id=section+'_'+key") != std::string::npos);
+
+    // The dialog re-runs visibility after rendering and on every type change, or
+    // a field scoped to another provider type would stay on screen and be saved.
+    CHECK(html.find("applyFieldVisibility(true);this.autoFillName();") != std::string::npos);
+    CHECK(html.find("onTypeChange:function()") != std::string::npos);
+
+    // A hidden field must not be written into the record: it belongs to a
+    // different provider type and would be dead config at best.
+    const size_t read_at = html.find("readDialog:function()");
+    REQUIRE(read_at != std::string::npos);
+    const size_t read_end = html.find("\\n\"", read_at);
+    REQUIRE(read_end != std::string::npos);
+    const std::string read_body = html.substr(read_at, read_end - read_at);
+    CHECK(read_body.find("classList.contains('hidden')") != std::string::npos);
+}
+
+// Renaming a record has to move the reference in the same request. Saving the
+// records alone would leave [tts] pointing at a name that no longer exists, which
+// the agent reports as misconfigured and ValidateVoiceProviders rejects on the
+// next save.
+TEST_CASE("config web patches the voice reference on rename") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const size_t patch_at = html.find("refPatch:function(oldName,newName)");
+    REQUIRE(patch_at != std::string::npos);
+    const size_t patch_end = html.find("\\n\"", patch_at);
+    REQUIRE(patch_end != std::string::npos);
+    const std::string patch_body = html.substr(patch_at, patch_end - patch_at);
+    CHECK(patch_body.find("this.spec.refSection") != std::string::npos);
+    CHECK(patch_body.find("copy.provider=newName") != std::string::npos);
+
+    CHECK(html.find("this.save(addProviderRename(renamedFrom?this.refPatch(renamedFrom,name):null,"
+                    "section,renamedFrom,name),selectInto)") != std::string::npos);
+}
+
+TEST_CASE("config web sends provider rename metadata for masked secrets") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("function addProviderRename(config,section,oldName,newName)") !=
+          std::string::npos);
+    CHECK(html.find("addProviderRename(this.modelRefPatch(renamedFrom,name),"
+                    "'model_providers',renamedFrom,name)") != std::string::npos);
+    CHECK(html.find("addProviderRename(renamedFrom?this.refPatch(renamedFrom,name):null,"
+                    "section,renamedFrom,name)") != std::string::npos);
+}
+
+// The [tts]/[stt] provider select offers configured record names. A bare
+// provider type already in agent.toml is kept
+// as an option so a pre-records config still round-trips instead of silently
+// losing its provider.
+TEST_CASE("config web offers voice record names in the provider select") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const size_t inject_at = html.find("function injectVoiceProviderOptions(spec)");
+    REQUIRE(inject_at != std::string::npos);
+    const size_t inject_end = html.find("\\n\"", inject_at);
+    REQUIRE(inject_end != std::string::npos);
+    const std::string inject_body = html.substr(inject_at, inject_end - inject_at);
+
+    CHECK(inject_body.find("voiceRecordOptions(manager.records)") != std::string::npos);
+    CHECK(inject_body.find("label:'-- Select Provider --'") != std::string::npos);
+    CHECK(inject_body.find("ADD_PROVIDER_OPTION") == std::string::npos);
+    // An unknown current value is preserved as an option.
+    CHECK(inject_body.find("!known[current]") != std::string::npos);
+
+    // Selection changes only update the current record management state; adding
+    // records is handled by the explicit inline buttons.
+    CHECK(html.find("function bindVoiceProviderSelect(spec)") != std::string::npos);
+    CHECK(html.find("updateProviderActionState(spec.refSection)") != std::string::npos);
+    CHECK(html.find("btn.onclick=()=>this.addRecord()") != std::string::npos);
 }

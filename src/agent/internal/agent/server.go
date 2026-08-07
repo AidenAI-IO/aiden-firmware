@@ -486,6 +486,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/config-test/stt/stop", s.handleSTTConfigTestStop)
 	mux.HandleFunc("/api/audio/", s.handleAudioFile)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
+	mux.HandleFunc("/api/models", s.handleModels)
 	mux.HandleFunc("/api/storage/status", s.handleStorageStatus)
 	mux.HandleFunc("/api/storage/eject", s.handleStorageEject)
 	mux.HandleFunc("/api/storage/format", s.handleStorageFormat)

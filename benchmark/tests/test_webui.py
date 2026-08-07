@@ -1,4 +1,5 @@
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -242,13 +243,15 @@ def test_prepare_run_config_merges_missing_bundled_skills_with_custom_skills(tmp
 
 def test_default_agent_toml_uses_benchmark_defaults():
     rendered = webui.default_agent_toml()
+    config = tomllib.loads(rendered)
 
     assert 'instruction = ""' in rendered
     assert 'trigger_mode = "manual"' in rendered
     assert "max_iterations = -1" in rendered
     assert "screenshot_keep_n = 3" in rendered
-    assert 'provider = "openrouter"' in rendered
-    assert 'model = "qwen3.6-35b"' in rendered
+    assert config["model_providers"]["benchmark"]["type"] == "openrouter"
+    assert config["model"]["provider"] == "benchmark"
+    assert config["model"]["model"] == "qwen3.6-35b"
     assert "temperature = 0.2" in rendered
     assert "max_response_tokens = 1000" in rendered
     assert "voice_streaming_tts_enabled = false" in rendered
@@ -258,10 +261,13 @@ def test_default_agent_toml_uses_benchmark_defaults():
 
 def test_runner_default_agent_toml_disables_voice_side_effects():
     rendered = runner_config.default_agent_toml()
+    config = tomllib.loads(rendered)
 
     assert "voice_streaming_tts_enabled = false" in rendered
     assert "voice_tool_call_speech = false" in rendered
     assert "voice_progress_speech_enabled = false" in rendered
+    assert config["model_providers"]["benchmark"]["type"] == "openrouter"
+    assert config["model"]["provider"] == "benchmark"
 
 
 def test_agent_config_manager_migrates_saved_config_missing_voice_defaults(tmp_path: Path):

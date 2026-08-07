@@ -114,7 +114,7 @@ Built-in Agent tools:
 
 It is recommended to use normalized coordinates (`0..1000`, with center at `500,500`) to avoid click position shifts due to display resolution changes.
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center; only explicitly pass `coord_space: "pixel"` when the screenshot pixel coordinates and HID touch coordinates are already calibrated. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
-`keyboard_layout` must match how the phone interprets the external USB HID keyboard. Supported values are `qwerty` (default), `azerty`, and `qwertz`. The visible soft-keyboard layout is not authoritative: a phone can display an AZERTY soft keyboard while still interpreting Aiden's USB HID reports as QWERTY. Both `keyboard_text` and standard text-like keys in `keyboard_tap` use this mapping. Changing it only requires an Agent restart; it does not change USB descriptors or require a gadget restart.
+`keyboard_layout` must match how the phone interprets the external USB HID keyboard. Supported values are `qwerty` (default), `azerty`, and `qwertz`. The visible soft-keyboard layout is not authoritative: a phone can display an AZERTY soft keyboard while still interpreting Aiden's USB HID reports as QWERTY. Both `keyboard_text` and standard text-like keys in `keyboard_tap` use this mapping. The mapping itself is loaded by the Agent and does not change USB descriptors, but Config Web requires a board restart after saving so the host starts a clean USB session.
 
 Select the matching layout under `[hid]` in Config Web (`qwerty`, `azerty`, or `qwertz`). Most users keep the default `qwerty`; only change it if typed characters come out transposed (for example "shape" becomes "shqpe").
 
@@ -122,9 +122,9 @@ A phone running iOS locks its hardware-keyboard layout at the moment the USB key
 
 1. On the phone, switch the input language to the matching one (for example French for `azerty`, German for `qwertz`).
 2. Set `keyboard_layout` in Config Web to the target layout and save.
-3. Config Web automatically triggers USB re-enumeration. The phone re-locks the hardware layout based on the language active in step 1.
+3. Accept the Config Web reboot prompt and wait for the board and USB composite to reconnect. The phone then locks the hardware layout based on the language active in step 1.
 
-The order matters: switch the language _before_ saving the configuration, because the layout is locked during enumeration. Re-enumeration happens automatically when `keyboard_layout` changes, so no power-cycling is needed.
+The order matters: switch the language _before_ saving the configuration, because the layout is locked during enumeration. The Config Web save flow does not hot-reload or soft re-enumerate the same USB identity: iOS can retain an inconsistent keyboard and pointer session across that transition. If immediate reboot is cancelled, reboot the board manually before verifying the new layout.
 
 `keyboard_text` can only input ASCII typeable characters. For Chinese or other non-ASCII text, use `enter_text` (which leverages the phone's on-screen keyboard and IME candidates) instead of transliterating to pinyin or romanized approximations. The configured layouts cover common ASCII keys, but country-specific punctuation variants may still require device verification.
 

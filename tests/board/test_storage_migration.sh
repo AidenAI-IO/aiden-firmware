@@ -1,6 +1,5 @@
 #!/bin/sh
-# On-board end-to-end test for the eMMC -> SD watermark migration
-# (docs/04-agent/storage-modes.md §2.4).
+# On-board end-to-end test for the eMMC -> SD watermark migration.
 #
 # Strategy: instead of filling the real 3 GB /userdata, a small loop-mounted
 # ext4 image (on /userdata, since /tmp is a ~73 MB tmpfs) acts as the "eMMC"
