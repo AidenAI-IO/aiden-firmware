@@ -159,6 +159,11 @@ func (b *blueZBackend) start() error {
 	if err := b.registerAdvertisement(); err != nil {
 		return err
 	}
+	// RequestDefaultAgent can make BlueZ pairable again. Reapply the service's
+	// closed-by-default state after all agent and GATT registration is complete.
+	if err := b.configureAdapter(pairingOpen); err != nil {
+		return fmt.Errorf("reapply adapter pairing state: %w", err)
+	}
 
 	if trusted.IsValid() {
 		if !variantBool(objects[trusted][blueZDeviceInterface], "Trusted") {
