@@ -59,6 +59,11 @@ EOF
 
 cat > "$MOCK_BIN/swapon" <<'EOF'
 #!/bin/sh
+# MOCK_SWAPON_DELAY lets a test prove that activation really is off the
+# critical path: a slow swapon must not hold up the init script's return.
+if [ -n "${MOCK_SWAPON_DELAY:-}" ]; then
+    sleep "$MOCK_SWAPON_DELAY"
+fi
 printf 'swapon %s\n' "$1" >> "$COMMAND_LOG"
 printf '%s file 1020 0 -2\n' "$1" >> "$MOCK_PROC_SWAPS"
 EOF
@@ -240,7 +245,30 @@ run_swap_bg() {
     sh "$SCRIPT" "$1"
 }
 
-bg_output="$(run_swap_bg start)"
+# Redirect to a file rather than using command substitution: $( ) keeps reading
+# until every writer closes the pipe, so it would wait for the background worker
+# and mask exactly the blocking this test is meant to catch.
+BG_OUT="$TMP_DIR/bg_start.out"
+MOCK_SWAPON_DELAY=5
+export MOCK_SWAPON_DELAY
+
+bg_start_s=$(date +%s)
+run_swap_bg start > "$BG_OUT" 2>&1
+bg_elapsed=$(( $(date +%s) - bg_start_s ))
+
+# swapon is mocked to take 5s; start must return well before that.
+if [ "$bg_elapsed" -ge 3 ]; then
+    echo "background start blocked for ${bg_elapsed}s; activation is not off the critical path" >&2
+    exit 1
+fi
+
+# And the activation must genuinely still be pending at this point.
+if grep -q "^$SWAP_FILE " "$PROC_SWAPS"; then
+    echo "swapfile was activated synchronously despite SWAP_BACKGROUND=1" >&2
+    exit 1
+fi
+
+bg_output="$(cat "$BG_OUT")"
 case "$bg_output" in
     *"in background"*) ;;
     *)
