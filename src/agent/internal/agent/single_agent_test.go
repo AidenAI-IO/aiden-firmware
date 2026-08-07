@@ -166,8 +166,8 @@ func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) 
 	if err := json.Unmarshal([]byte(searchLaunch.inputs[0]), &searchInput); err != nil {
 		t.Fatalf("decode search_launch_app input: %v", err)
 	}
-	if searchInput.App != "小红书" || searchInput.Platform != "ios" {
-		t.Fatalf("search_launch_app input = %#v, want app=小红书 platform=ios", searchInput)
+	if searchInput.App != "小红书" || searchInput.Platform != "" {
+		t.Fatalf("search_launch_app input = %#v, want app=小红书 with platform inferred by runtime", searchInput)
 	}
 }
 

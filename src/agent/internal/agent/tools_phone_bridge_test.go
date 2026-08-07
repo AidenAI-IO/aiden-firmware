@@ -81,6 +81,20 @@ func TestOpenAppDescriptionOwnsRouting(t *testing.T) {
 	}
 }
 
+func TestOpenAppSchemaInfersPlatformFromDeviceState(t *testing.T) {
+	schema := NewOpenAppTool(nil, nil, nil).ArgsSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing properties: %#v", schema)
+	}
+	if props["app"] == nil || props["name"] == nil {
+		t.Fatalf("open_app schema missing expected fields: %#v", props)
+	}
+	if _, found := props["platform"]; found {
+		t.Fatalf("open_app schema must infer fallback platform from runtime device state: %#v", props)
+	}
+}
+
 func TestPhoneBridgeToolDescriptionsOmitSharedStateRouting(t *testing.T) {
 	tools := []langtools.Tool{
 		NewOpenURLTool(nil, nil),
@@ -125,13 +139,13 @@ func TestParseRoutedOpenAppArgsKeepsSemanticAlias(t *testing.T) {
 	}
 }
 
-func TestParseRoutedOpenAppArgsAcceptsNameAlias(t *testing.T) {
+func TestParseRoutedOpenAppArgsAcceptsNameAliasAndIgnoresLegacyPlatform(t *testing.T) {
 	args, te := parseRoutedOpenAppArgs(`{"name":"微信","platform":"IOS"}`)
 	if te != nil {
 		t.Fatalf("parseRoutedOpenAppArgs returned error: %v", te)
 	}
-	if args.App != "微信" || args.Platform != "ios" {
-		t.Fatalf("args = %#v, want normalized alias and platform", args)
+	if args.App != "微信" {
+		t.Fatalf("args = %#v, want normalized alias with legacy platform ignored", args)
 	}
 }
 
@@ -586,8 +600,8 @@ func TestOpenAppBridgeFailureFallsBackToSearchLaunchApp(t *testing.T) {
 	if sent.Type != "open_app" || sent.App != "微信" {
 		t.Fatalf("sent command = %#v, want failed semantic bridge launch", sent)
 	}
-	if len(search.calls) != 1 || !strings.Contains(search.calls[0], `"app":"微信"`) || !strings.Contains(search.calls[0], `"platform":"ios"`) {
-		t.Fatalf("search calls = %#v, want one semantic fallback call", search.calls)
+	if len(search.calls) != 1 || !strings.Contains(search.calls[0], `"app":"微信"`) || strings.Contains(search.calls[0], `"platform"`) {
+		t.Fatalf("search calls = %#v, want one semantic fallback call without platform override", search.calls)
 	}
 	if out != search.out {
 		t.Fatalf("output = %s, want search fallback output %s", out, search.out)
@@ -647,8 +661,8 @@ func TestOpenAppDisconnectedAndroidRoutesToSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call returned err: %v", err)
 	}
-	if len(search.calls) != 1 || !strings.Contains(search.calls[0], `"platform":"android"`) {
-		t.Fatalf("search calls = %#v, want Android fallback", search.calls)
+	if len(search.calls) != 1 || !strings.Contains(search.calls[0], `"app":"微信"`) || strings.Contains(search.calls[0], `"platform"`) {
+		t.Fatalf("search calls = %#v, want fallback without platform override", search.calls)
 	}
 }
 

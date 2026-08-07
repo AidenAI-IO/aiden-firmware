@@ -296,7 +296,7 @@ type focusPointArgs struct {
 func textInputKeyboardKeysForIMESwitch(platform string) ([]string, error) {
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "android":
-		return []string{"ctrl", "shift"}, nil
+		return []string{"KEYCODE_LANGUAGE_SWITCH"}, nil
 	case "ios":
 		return []string{"capslock"}, nil
 	case "mac", "macos":
