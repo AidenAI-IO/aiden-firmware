@@ -648,7 +648,7 @@ func (b *blueZBackend) rescanBluetoothState() error {
 	if err != nil {
 		return err
 	}
-	if err := b.reconcilePairingMode(objects); err != nil {
+	if err := b.reconcilePairingMode(); err != nil {
 		return fmt.Errorf("reconcile Bluetooth connection window: %w", err)
 	}
 	trusted, bondedCount, err := b.refreshTrustedDevice(objects)

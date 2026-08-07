@@ -316,10 +316,17 @@ func (b *blueZBackend) expirePairingWindow(now time.Time) error {
 	return nil
 }
 
-func (b *blueZBackend) reconcilePairingMode(objects managedObjects) error {
+func (b *blueZBackend) reconcilePairingMode() error {
+	b.pairingModeMu.Lock()
+	defer b.pairingModeMu.Unlock()
+
 	b.stateMu.Lock()
 	open := b.pairingOpen
 	b.stateMu.Unlock()
+	objects, err := b.getManagedObjects()
+	if err != nil {
+		return err
+	}
 	properties := objects[b.adapter][blueZAdapterInterface]
 	if pairingModeMatches(properties, open) {
 		return nil
