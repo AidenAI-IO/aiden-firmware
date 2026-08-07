@@ -139,6 +139,11 @@ void maybe_write_config_test_log(int argc, char** argv, const std::string& stdin
     for (int i = 1; i < argc; ++i) {
         out << "\n" << argv[i];
     }
+    const char* env_key = std::getenv("AIDEN_AGENT_STUB_CONFIG_TEST_ENV_KEY");
+    if (env_key && env_key[0] != '\0') {
+        const char* env_value = std::getenv(env_key);
+        out << "\nenv:" << env_key << "=" << (env_value ? env_value : "<unset>");
+    }
     out << "\nstdin:\n" << stdin_body;
 }
 

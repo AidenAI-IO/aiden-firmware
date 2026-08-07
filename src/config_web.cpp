@@ -1,6 +1,5 @@
 #include "agent_toml.h"
 #include "aiden_log.h"
-#include "audio_service_client.h"
 #include "config_web_static_assets.h"
 #include "system_env_parser.h"
 #include "wifi_config.h"
@@ -117,13 +116,6 @@ struct AgentLogSnapshot {
     std::string error;
 };
 
-struct STTTestRecordingState {
-    bool active = false;
-    uint64_t session_id = 0;
-    std::string socket_path;
-    aiden::AudioFormat format;
-};
-
 using SystemProxy = aiden::SystemEnvProxy;
 
 struct TcpPortStatus {
@@ -146,7 +138,10 @@ struct AgentHttpResponse {
 };
 
 volatile sig_atomic_t g_should_stop = 0;
-STTTestRecordingState g_stt_test_recording;
+pid_t g_agent_restart_pid = -1;
+bool g_agent_restart_readiness_pending = false;
+bool g_agent_restart_deferred = false;
+bool g_stt_live_test_active = false;
 
 const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
@@ -173,6 +168,19 @@ const char* agent_bin_path() {
     }();
     return cached;
 }
+
+// Tests replace the init script with a deterministic fixture. Production uses
+// the fixed on-device path.
+const char* agent_init_script_path() {
+    static const char* cached = []() -> const char* {
+        const char* override_path = std::getenv("AIDEN_AGENT_INIT_SCRIPT");
+        if (override_path && override_path[0] != '\0') {
+            return override_path;
+        }
+        return kAgentInitScript;
+    }();
+    return cached;
+}
 const char* kOtaBin = "/oem/usr/bin/ota";
 const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
 const char* kOtaHealthLogPath = "/var/log/ota/ota.log";
@@ -181,6 +189,8 @@ const char* kOtaWebUpdateLogPath = "/userdata/ota/config_web_ota_update.log";
 const char* kAgentPortHost = "127.0.0.1";
 const int kDefaultAgentPort = 8080;
 const int kAgentStatusCommandTimeoutMs = 1500;
+const int kAgentRestartWaitTimeoutMs = 15000;
+const int kAgentRestartPollIntervalMs = 50;
 const size_t kAgentStatusLogReadSize = 16 * 1024;
 const size_t kAgentStatusLogDisplaySize = 4096;
 const size_t kAgentLogReadSize = 64 * 1024;
@@ -243,22 +253,8 @@ bool atomic_write_file(const std::string& path, const std::string& content, mode
 std::string cjson_to_string(cJSON* json);
 ApiResponse make_json_error(int status_code, const std::string& message);
 ApiResponse make_json_ok(cJSON* root);
-bool parse_stt_test_audio_request(cJSON* root,
-                                  std::string* socket_path,
-                                  aiden::AudioFormat* format,
-                                  std::string* error);
 bool parse_stt_test_values_request(cJSON* root, cJSON** stt_values, std::string* error);
-void discard_stt_test_recording(const STTTestRecordingState& state);
-bool finish_stt_test_recording(const STTTestRecordingState& state,
-                               std::vector<uint8_t>* pcm,
-                               std::string* error);
-std::string base64_encode_bytes(const uint8_t* data, size_t len);
-std::vector<uint8_t> wrap_pcm_in_wav(const std::vector<uint8_t>& pcm,
-                                     const aiden::AudioFormat& format);
 AgentRuntimeStatus query_agent_status(const Options& options);
-ApiResponse run_agent_stt_config_test(const Options& options,
-                                      cJSON* stt_values,
-                                      const std::string& audio_base64);
 bool parse_http_base_url(const std::string& base_url,
                          AgentHttpTarget* target,
                          std::string* error);
@@ -290,13 +286,9 @@ ApiResponse proxy_agent_get_request(const Options& options,
 ApiResponse handle_api_models(const Options& options, const std::string& query_string);
 ApiResponse handle_usb_reenumerate(const Options& options);
 void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config);
-bool flatten_provider_reference(const Options& options,
-                                const std::string& section,
-                                cJSON* values,
-                                std::string* error);
-bool resolve_config_test_api_key(const Options& options,
-                                 cJSON* values,
-                                 std::string* error);
+long long monotonic_millis();
+bool reap_agent_restart_process(bool wait, std::string* error);
+void start_deferred_agent_restart_if_idle();
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
@@ -1955,60 +1947,6 @@ bool json_secret_present(cJSON* obj, const char* key) {
     return json_bool_value(obj, has_key.c_str());
 }
 
-bool parse_stt_test_audio_request(cJSON* root,
-                                  std::string* socket_path,
-                                  aiden::AudioFormat* format,
-                                  std::string* error) {
-    if (socket_path) {
-        socket_path->clear();
-    }
-    if (format) {
-        *format = aiden::AudioFormat();
-    }
-
-    cJSON* audio_values = root ? cJSON_GetObjectItem(root, "audio_values") : NULL;
-    if (!json_is_object(audio_values)) {
-        if (error) *error = "missing 'audio_values' object";
-        return false;
-    }
-
-    cJSON* socket_item = cJSON_GetObjectItem(audio_values, "socket");
-    cJSON* sample_rate_item = cJSON_GetObjectItem(audio_values, "sample_rate");
-    cJSON* channels_item = cJSON_GetObjectItem(audio_values, "channels");
-    cJSON* bit_width_item = cJSON_GetObjectItem(audio_values, "bit_width");
-
-    const std::string socket = json_is_string(socket_item) ? trim_copy(socket_item->valuestring) : "";
-    if (socket.empty()) {
-        if (error) *error = "audio.socket is required";
-        return false;
-    }
-    if (!json_is_number(sample_rate_item) || sample_rate_item->valueint <= 0) {
-        if (error) *error = "audio.sample_rate must be > 0";
-        return false;
-    }
-    if (!json_is_number(channels_item) || channels_item->valueint != 1) {
-        if (error) *error = "audio.channels must be 1 for STT test";
-        return false;
-    }
-    if (!json_is_number(bit_width_item) || bit_width_item->valueint != 16) {
-        if (error) *error = "audio.bit_width must be 16 for STT test";
-        return false;
-    }
-
-    if (socket_path) {
-        *socket_path = socket;
-    }
-    if (format) {
-        format->sample_rate = static_cast<uint32_t>(sample_rate_item->valueint);
-        format->channels = static_cast<uint32_t>(channels_item->valueint);
-        format->bit_width = static_cast<uint32_t>(bit_width_item->valueint);
-    }
-    if (error) {
-        error->clear();
-    }
-    return true;
-}
-
 bool parse_stt_test_values_request(cJSON* root, cJSON** stt_values, std::string* error) {
     if (stt_values) {
         *stt_values = NULL;
@@ -2048,167 +1986,6 @@ bool validate_stt_test_provider_fields(cJSON* values, std::string* error) {
         }
     }
     return true;
-}
-
-void discard_stt_test_recording(const STTTestRecordingState& state) {
-    if (!state.active || state.socket_path.empty() || state.session_id == 0) {
-        return;
-    }
-    aiden::AudioServiceClient client(state.socket_path.c_str());
-    (void)client.stop_recording(state.session_id);
-}
-
-bool finish_stt_test_recording(const STTTestRecordingState& state,
-                               std::vector<uint8_t>* pcm,
-                               std::string* error) {
-    if (pcm) {
-        pcm->clear();
-    }
-    if (!state.active || state.socket_path.empty() || state.session_id == 0) {
-        if (error) *error = "STT test recording is not active";
-        return false;
-    }
-
-    aiden::AudioServiceClient client(state.socket_path.c_str());
-    aiden::AidenServiceStatus stop_status = client.stop_recording(state.session_id);
-    if (stop_status != aiden::AidenServiceStatus::OK) {
-        if (error) {
-            *error = std::string("stop device audio recording: ") +
-                     aiden::service_status_to_string(stop_status);
-        }
-        return false;
-    }
-
-    while (true) {
-        aiden::AudioChunkResult chunk;
-        aiden::AidenServiceStatus read_status = client.read_record_chunk(state.session_id, 1000, &chunk);
-        if (read_status == aiden::AidenServiceStatus::OK) {
-            if (pcm && !chunk.pcm.empty()) {
-                pcm->insert(pcm->end(), chunk.pcm.begin(), chunk.pcm.end());
-            }
-            if (chunk.end_of_stream) {
-                if (error) {
-                    error->clear();
-                }
-                return true;
-            }
-            continue;
-        }
-        if (read_status == aiden::AidenServiceStatus::SESSION_NOT_FOUND) {
-            if (error) {
-                error->clear();
-            }
-            return true;
-        }
-        if (error) {
-            *error = std::string("read recorded audio: ") +
-                     aiden::service_status_to_string(read_status);
-        }
-        return false;
-    }
-}
-
-std::string base64_encode_bytes(const uint8_t* data, size_t len) {
-    static const char table[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    if (!data || len == 0) {
-        return "";
-    }
-
-    std::string out;
-    out.reserve(((len + 2) / 3) * 4);
-    for (size_t i = 0; i < len; i += 3) {
-        const uint32_t b0 = data[i];
-        const uint32_t b1 = (i + 1 < len) ? data[i + 1] : 0;
-        const uint32_t b2 = (i + 2 < len) ? data[i + 2] : 0;
-        const uint32_t triple = (b0 << 16) | (b1 << 8) | b2;
-
-        out.push_back(table[(triple >> 18) & 0x3f]);
-        out.push_back(table[(triple >> 12) & 0x3f]);
-        out.push_back(i + 1 < len ? table[(triple >> 6) & 0x3f] : '=');
-        out.push_back(i + 2 < len ? table[triple & 0x3f] : '=');
-    }
-    return out;
-}
-
-void append_le16(std::vector<uint8_t>* out, uint16_t value) {
-    if (!out) {
-        return;
-    }
-    out->push_back(static_cast<uint8_t>(value & 0xff));
-    out->push_back(static_cast<uint8_t>((value >> 8) & 0xff));
-}
-
-void append_le32(std::vector<uint8_t>* out, uint32_t value) {
-    if (!out) {
-        return;
-    }
-    out->push_back(static_cast<uint8_t>(value & 0xff));
-    out->push_back(static_cast<uint8_t>((value >> 8) & 0xff));
-    out->push_back(static_cast<uint8_t>((value >> 16) & 0xff));
-    out->push_back(static_cast<uint8_t>((value >> 24) & 0xff));
-}
-
-std::vector<uint8_t> wrap_pcm_in_wav(const std::vector<uint8_t>& pcm,
-                                     const aiden::AudioFormat& format) {
-    std::vector<uint8_t> wav;
-    const uint16_t channels = static_cast<uint16_t>(format.channels);
-    const uint16_t bit_width = static_cast<uint16_t>(format.bit_width);
-    const uint32_t sample_rate = format.sample_rate;
-    const uint16_t block_align = static_cast<uint16_t>(channels * (bit_width / 8));
-    const uint32_t byte_rate = sample_rate * block_align;
-    const uint32_t data_size = static_cast<uint32_t>(pcm.size());
-
-    wav.reserve(44 + pcm.size());
-    wav.insert(wav.end(), {'R', 'I', 'F', 'F'});
-    append_le32(&wav, 36 + data_size);
-    wav.insert(wav.end(), {'W', 'A', 'V', 'E'});
-    wav.insert(wav.end(), {'f', 'm', 't', ' '});
-    append_le32(&wav, 16);
-    append_le16(&wav, 1);
-    append_le16(&wav, channels);
-    append_le32(&wav, sample_rate);
-    append_le32(&wav, byte_rate);
-    append_le16(&wav, block_align);
-    append_le16(&wav, bit_width);
-    wav.insert(wav.end(), {'d', 'a', 't', 'a'});
-    append_le32(&wav, data_size);
-    wav.insert(wav.end(), pcm.begin(), pcm.end());
-    return wav;
-}
-
-ApiResponse run_agent_stt_config_test(const Options& options,
-                                      cJSON* stt_values,
-                                      const std::string& audio_base64) {
-    cJSON* req = cJSON_CreateObject();
-    cJSON_AddStringToObject(req, "section", "stt");
-    cJSON_AddItemToObject(req, "values", cJSON_Duplicate(stt_values, 1));
-    cJSON_AddStringToObject(req, "audio_base64", audio_base64.c_str());
-    std::string req_body = cjson_to_string(req);
-    cJSON_Delete(req);
-
-    std::string cmd = shell_quote(agent_bin_path()) +
-                      " config-test --format=json --stdin --section=stt --config=" +
-                      shell_quote(options.agent_config_path) + " 2>&1";
-    CommandResult cr = run_command_with_stdin(cmd, req_body, 60000);
-    if (cr.timed_out) {
-        return make_json_error(503, "agent config-test timed out");
-    }
-
-    cJSON* root = parse_config_test_result(cr.output);
-    if (!json_is_object(root)) {
-        if (root) {
-            cJSON_Delete(root);
-        }
-        std::string detail = trim_trailing_newlines(cr.output);
-        if (detail.empty()) {
-            detail = "agent config-test returned an unexpected response";
-        } else if (detail.size() > 400) {
-            detail = detail.substr(0, 400) + "...";
-        }
-        return make_json_error(503, detail);
-    }
-    return make_json_ok(root);
 }
 
 bool parse_http_base_url(const std::string& base_url,
@@ -2656,6 +2433,49 @@ ApiResponse proxy_agent_json_request(const Options& options,
     return proxy_agent_request(options, "POST", agent_path, body, true);
 }
 
+ApiResponse proxy_stt_test_start_after_restart(const Options& options,
+                                               const std::string& body) {
+    const bool wait_for_readiness = g_agent_restart_readiness_pending;
+    if (wait_for_readiness) {
+        std::string wait_error;
+        if (!reap_agent_restart_process(true, &wait_error)) {
+            return make_json_error(503, wait_error);
+        }
+    }
+
+    AgentHttpTarget target;
+    std::string target_error;
+    if (!resolve_agent_http_target(options, &target, &target_error)) {
+        return make_json_error(503, target_error.empty() ? "resolve agent HTTP target failed" : target_error);
+    }
+
+    const long long deadline = monotonic_millis() + kAgentRestartWaitTimeoutMs;
+    AgentHttpResponse upstream;
+    while (!send_agent_http_request(
+            target, "POST", "/api/config-test/stt/start", body, true, &upstream)) {
+        if (!wait_for_readiness || monotonic_millis() >= deadline) {
+            return make_json_error(503, upstream.error.empty() ? "agent HTTP request failed" : upstream.error);
+        }
+        usleep(kAgentRestartPollIntervalMs * 1000);
+    }
+
+    if (wait_for_readiness) {
+        g_agent_restart_readiness_pending = false;
+    }
+
+    ApiResponse response;
+    response.status_code = upstream.status_code > 0 ? upstream.status_code : 200;
+    response.status_text = upstream.status_text.empty() ? "OK" : upstream.status_text;
+    response.content_type = upstream.content_type.empty()
+        ? "application/json; charset=utf-8"
+        : upstream.content_type;
+    response.body = upstream.body;
+    if (response.status_code >= 200 && response.status_code < 300) {
+        g_stt_live_test_active = true;
+    }
+    return response;
+}
+
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body) {
     cJSON* root = cJSON_Parse(body.c_str());
     if (!root) {
@@ -2673,23 +2493,17 @@ ApiResponse handle_stt_test_start(const Options& options, const std::string& bod
         return make_json_error(400, parse_error);
     }
 
-    std::string resolve_error;
-    if (!flatten_provider_reference(options, "stt", stt_values, &resolve_error)) {
-        cJSON_Delete(root);
-        return make_json_error(503, "provider config unavailable");
-    }
-    if (!resolve_config_test_api_key(options, stt_values, &resolve_error)) {
-        cJSON_Delete(root);
-        return make_json_error(503, resolve_error);
-    }
-
-    const std::string resolved_body = cjson_to_string(root);
     cJSON_Delete(root);
-    return proxy_agent_json_request(options, "/api/config-test/stt/start", resolved_body);
+    return proxy_stt_test_start_after_restart(options, body);
 }
 
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
-    return proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
+    ApiResponse response = proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
+    if (response.status_code >= 200 && response.status_code < 300) {
+        g_stt_live_test_active = false;
+        start_deferred_agent_restart_if_idle();
+    }
+    return response;
 }
 
 // GET request proxy to agent. `agent_path_with_query` keeps its query string.
@@ -3893,17 +3707,111 @@ void restart_wpa_supplicant(const Options& options, std::ostringstream& log) {
         << " -c " << options.wifi_config_path << "\n" << start.output;
 }
 
-void schedule_init_script_restart(const char* init_script) {
-    if (!init_script || init_script[0] == '\0') {
-        return;
+long long monotonic_millis() {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return static_cast<long long>(time(NULL)) * 1000LL;
     }
-    std::string cmd = shell_quote(init_script) + " restart >/dev/null 2>&1 &";
-    int rc = system(cmd.c_str());
-    (void)rc;
+    return static_cast<long long>(now.tv_sec) * 1000LL + now.tv_nsec / 1000000LL;
+}
+
+bool reap_agent_restart_process(bool wait, std::string* error) {
+    if (error) error->clear();
+    if (g_agent_restart_pid <= 0) {
+        return true;
+    }
+
+    const long long deadline = monotonic_millis() + kAgentRestartWaitTimeoutMs;
+    while (true) {
+        int status = 0;
+        pid_t result = waitpid(g_agent_restart_pid, &status, WNOHANG);
+        if (result == g_agent_restart_pid) {
+            g_agent_restart_pid = -1;
+            return true;
+        }
+        if (result < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == ECHILD) {
+                g_agent_restart_pid = -1;
+                return true;
+            }
+            if (error) *error = std::string("wait for agent restart: ") + strerror(errno);
+            return false;
+        }
+        if (!wait) {
+            return true;
+        }
+        if (monotonic_millis() >= deadline) {
+            if (error) *error = "timed out waiting for agent restart";
+            return false;
+        }
+        usleep(kAgentRestartPollIntervalMs * 1000);
+    }
+}
+
+bool launch_agent_restart(std::string* error) {
+    if (error) error->clear();
+    const char* init_script = agent_init_script_path();
+    if (!init_script || init_script[0] == '\0') {
+        if (error) *error = "agent init script path is empty";
+        return false;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (error) *error = std::string("fork agent restart: ") + strerror(errno);
+        return false;
+    }
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) close(devnull);
+        }
+        execl(init_script, init_script, "restart", static_cast<char*>(NULL));
+        execl("/bin/sh", "sh", init_script, "restart", static_cast<char*>(NULL));
+        _exit(127);
+    }
+
+    g_agent_restart_pid = pid;
+    g_agent_restart_readiness_pending = true;
+    return true;
+}
+
+void start_deferred_agent_restart_if_idle() {
+    std::string ignored_error;
+    (void)reap_agent_restart_process(false, &ignored_error);
+    if (!g_stt_live_test_active && g_agent_restart_deferred && g_agent_restart_pid <= 0) {
+        g_agent_restart_deferred = false;
+        if (!launch_agent_restart(&ignored_error)) {
+            AIDEN_LOG_ERROR("agent_restart", "launch_failed", "error=%s",
+                            ignored_error.c_str());
+        }
+    }
 }
 
 void schedule_agent_restart() {
-    schedule_init_script_restart(kAgentInitScript);
+    if (g_stt_live_test_active) {
+        g_agent_restart_deferred = true;
+        g_agent_restart_readiness_pending = true;
+        return;
+    }
+
+    std::string ignored_error;
+    (void)reap_agent_restart_process(false, &ignored_error);
+    if (g_agent_restart_pid > 0) {
+        g_agent_restart_deferred = true;
+        g_agent_restart_readiness_pending = true;
+        return;
+    }
+    if (!launch_agent_restart(&ignored_error)) {
+        AIDEN_LOG_ERROR("agent_restart", "launch_failed", "error=%s",
+                        ignored_error.c_str());
+    }
 }
 
 int acquire_ota_update_launch_lock(std::string* error) {
@@ -5203,14 +5111,15 @@ AgentRuntimeStatus query_agent_status(const Options& options) {
     status.addr = ":8080";
     status.port_host = kAgentPortHost;
     status.port = kDefaultAgentPort;
+    const char* init_script = agent_init_script_path();
 
-    if (!file_exists(kAgentInitScript)) {
+    if (!file_exists(init_script)) {
         status.state = "unknown";
-        status.detail = std::string("agent init script not found: ") + kAgentInitScript;
+        status.detail = std::string("agent init script not found: ") + init_script;
         status.startup_error = status.detail;
     } else {
         CommandResult script_status = run_shell_command_with_timeout(
-            std::string(kAgentInitScript) + " status 2>&1", kAgentStatusCommandTimeoutMs);
+            shell_quote(init_script) + " status 2>&1", kAgentStatusCommandTimeoutMs);
         status.detail = trim_trailing_newlines(script_status.output);
 
         if (script_status.timed_out) {
@@ -6662,213 +6571,74 @@ std::string validate_proxy_url(const std::string& url) {
     return aiden::validate_system_proxy_url(url);
 }
 
-static bool is_tencent_asr_provider(const std::string& provider) {
-    return provider == "tencent-asr" || provider == "tencent" || provider == "tencent_asr";
-}
-
-static bool is_streaming_tts_provider(const std::string& provider) {
-    return provider == "minimax" || provider == "minimax-cn" ||
-           provider == "fish-audio" || provider == "alicloud" ||
-           provider == "volcengine";
-}
-
-bool is_known_config_test_provider_type(const std::string& section,
-                                        const std::string& provider) {
-    const std::string normalized = lowercase_copy(trim_copy(provider));
-    const char* const* known = NULL;
-    static const char* const model_types[] = {
-        "openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake", NULL,
-    };
-    static const char* const tts_types[] = {
-        "minimax", "minimax-cn", "minimax-ws", "fish-audio", "alicloud",
-        "volcengine", "openrouter", "google-cloud", NULL,
-    };
-    static const char* const stt_types[] = {
-        "openai-whisper", "openai", "tencent-asr", "tencent", "tencent_asr",
-        "openrouter", "qwen-asr", "google-cloud", NULL,
-    };
-    if (section == "model") {
-        known = model_types;
-    } else if (section == "tts") {
-        known = tts_types;
-    } else if (section == "stt") {
-        known = stt_types;
-    }
-    for (size_t i = 0; known && known[i]; ++i) {
-        if (normalized == known[i]) return true;
-    }
-    return false;
-}
-
-std::string provider_default_url(const std::string& provider, const std::string& section = "") {
-    if (provider == "openrouter") return "https://openrouter.ai/api/v1";
-    if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
-    if (provider == "minimax") return "https://api.minimax.io";
-    if (provider == "minimax-cn" || provider == "minimax-ws") return "https://api.minimaxi.com";
-    if (is_tencent_asr_provider(provider)) return "https://asr.tencentcloudapi.com";
-    if (provider == "google-cloud") {
-        if (section == "tts") return "https://texttospeech.googleapis.com";
-        return "https://speech.googleapis.com";  // STT default
-    }
-    // Volcengine Ark's OpenAI-compatible endpoint, for [model] only. The [tts]
-    // provider of the same name speaks a separate WebSocket protocol with its own
-    // host and auth, so it must not inherit this URL.
-    if (provider == "volcengine" && section == "model") {
-        return "https://ark.cn-beijing.volces.com/api/v3";
-    }
-    return "";
-}
-
-// set_json_str_if_absent adds key=value only when `values` omits the field or
-// carries an empty string. A non-string value is malformed input and must remain
-// visible to the caller's validation instead of being replaced by stored data.
-void set_json_str_if_absent(cJSON* values, const char* key, const std::string& value) {
-    if (value.empty()) return;
-    cJSON* existing = cJSON_GetObjectItem(values, key);
-    if (json_is_string(existing) && !trim_copy(existing->valuestring).empty()) {
-        return;
-    }
-    if (existing && !json_is_string(existing)) {
-        return;
-    }
-    if (existing) {
-        cJSON_DeleteItemFromObject(values, key);
-    }
-    cJSON_AddStringToObject(values, key, value.c_str());
-}
-
-// flatten_provider_reference rewrites values.provider from a named provider
-// record to its provider type and fills the record's fields into `values`.
-// Without it the config-test pre-checks, which read the flat keys, would see an
-// unknown provider and an empty api_key.
-bool flatten_provider_reference(const Options& options,
-                                const std::string& section,
-                                cJSON* values,
-                                std::string* error) {
+bool build_agent_config_test_env_prefix(const Options& options,
+                                        std::string* prefix,
+                                        std::string* error) {
+    if (prefix) prefix->clear();
     if (error) error->clear();
-    if (!values) return true;
-    cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
-    if (!json_is_string(provider_item)) return true;
-    const std::string ref = trim_copy(provider_item->valuestring);
-    if (ref.empty()) return true;
+    if (!file_exists(options.system_env_path.c_str())) {
+        return true;
+    }
 
-    aiden::AgentToml stored;
-    std::string load_error;
-    load_current_agent_config(options, &stored, &load_error);
-    if (!load_error.empty()) {
-        // A bare provider request is self-contained and does not need the
-        // stored config. Unknown names may be provider references, so failing
-        // to load their records must remain visible instead of being forwarded
-        // as an unknown provider.
-        if (is_known_config_test_provider_type(section, ref)) {
-            return true;
-        }
-        if (error) *error = load_error;
+    std::string content;
+    std::string read_error;
+    if (!read_file_contents_checked(options.system_env_path.c_str(),
+                                    kMaxSystemEnvSize,
+                                    &content,
+                                    &read_error)) {
+        AIDEN_LOG_ERROR("config_test", "system_env_read_failed", "error=%s",
+                        read_error.c_str());
+        if (error) *error = "system env file is unavailable";
         return false;
     }
 
-    if (section == "model") {
-        std::map<std::string, aiden::ModelProviderToml>::const_iterator it =
-            stored.model_providers.find(ref);
-        if (it == stored.model_providers.end()) return true;
-        const aiden::ModelProviderToml& record = it->second;
-        if (trim_copy(record.type).empty()) return true;
-
-        cJSON_DeleteItemFromObject(values, "provider");
-        cJSON_AddStringToObject(values, "provider", record.type.c_str());
-        set_json_str_if_absent(values, "api_key", record.api_key);
-        set_json_str_if_absent(values, "base_url", record.base_url);
-        return true;
+    std::string validation_error;
+    if (!validate_system_env_content(content, &validation_error)) {
+        AIDEN_LOG_ERROR("config_test", "system_env_parse_failed", "error=%s",
+                        validation_error.c_str());
+        if (error) *error = "system env file is invalid";
+        return false;
     }
 
-    if (section == "tts") {
-        std::map<std::string, aiden::TTSProviderToml>::const_iterator it =
-            stored.tts_providers.find(ref);
-        if (it == stored.tts_providers.end()) return true;
-        const aiden::TTSProviderToml& record = it->second;
-        if (trim_copy(record.type).empty()) return true;
-
-        cJSON_DeleteItemFromObject(values, "provider");
-        cJSON_AddStringToObject(values, "provider", record.type.c_str());
-        set_json_str_if_absent(values, "api_key", record.api_key);
-        set_json_str_if_absent(values, "model", record.model);
-        set_json_str_if_absent(values, "voice_id", record.voice_id);
-        set_json_str_if_absent(values, "emotion", record.emotion);
-        set_json_str_if_absent(values, "reference_id", record.reference_id);
-        return true;
+    if (prefix) {
+        *prefix = "set -a && . " + shell_quote(options.system_env_path) +
+                  " && set +a && ";
     }
-
-    std::map<std::string, aiden::STTProviderToml>::const_iterator it =
-        stored.stt_providers.find(ref);
-    if (it == stored.stt_providers.end()) return true;
-    const aiden::STTProviderToml& record = it->second;
-    if (trim_copy(record.type).empty()) return true;
-
-    cJSON_DeleteItemFromObject(values, "provider");
-    cJSON_AddStringToObject(values, "provider", record.type.c_str());
-    set_json_str_if_absent(values, "api_key", record.api_key);
-    set_json_str_if_absent(values, "model", record.model);
-    set_json_str_if_absent(values, "base_url", record.base_url);
-    set_json_str_if_absent(values, "app_id", record.app_id);
-    set_json_str_if_absent(values, "secret_id", record.secret_id);
-    set_json_str_if_absent(values, "secret_key", record.secret_key);
-    set_json_str_if_absent(values, "region", record.region);
-    set_json_str_if_absent(values, "engine_model_type", record.engine_model_type);
     return true;
 }
 
-bool resolve_config_test_api_key(const Options& options,
-                                 cJSON* values,
-                                 std::string* error) {
-    if (error) error->clear();
-    if (!values) return true;
-    cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
-    if (!json_is_string(api_key_item)) return true;
-
-    const std::string api_key = trim_copy(api_key_item->valuestring);
-    if (api_key.empty() || api_key[0] != '$') return true;
-
-    const std::string env_name = trim_copy(api_key.substr(1));
-    std::string resolved;
-    bool found_in_file = false;
-
-    if (file_exists(options.system_env_path.c_str())) {
-        std::string content;
-        std::string read_error;
-        if (!read_file_contents_checked(options.system_env_path.c_str(),
-                                        kMaxSystemEnvSize,
-                                        &content,
-                                        &read_error)) {
-            AIDEN_LOG_ERROR("config_test", "system_env_read_failed", "error=%s",
-                            read_error.c_str());
-            if (error) *error = "system env file is unavailable";
-            return false;
-        }
-        std::vector<aiden::EnvAssignment> assignments;
-        aiden::SystemEnvProxy proxy;
-        std::string parse_error;
-        if (!aiden::parse_system_env_content(content, &assignments, &proxy, &parse_error)) {
-            AIDEN_LOG_ERROR("config_test", "system_env_parse_failed", "error=%s",
-                            parse_error.c_str());
-            if (error) *error = "system env file is invalid";
-            return false;
-        }
-        for (size_t i = 0; i < assignments.size(); ++i) {
-            if (assignments[i].key == env_name) {
-                resolved = assignments[i].value;
-                found_in_file = true;
-            }
-        }
+ApiResponse run_agent_provider_config_test(const Options& options,
+                                           const std::string& section,
+                                           const std::string& body) {
+    std::string env_prefix;
+    std::string env_error;
+    if (!build_agent_config_test_env_prefix(options, &env_prefix, &env_error)) {
+        return make_json_error(503, env_error);
     }
 
-    if (!found_in_file) {
-        const char* process_value = std::getenv(env_name.c_str());
-        resolved = process_value ? process_value : "";
+    std::string cmd = env_prefix + shell_quote(agent_bin_path()) +
+                      " config-test --format=json --stdin --section=" +
+                      shell_quote(section) + " --config=" +
+                      shell_quote(options.agent_config_path) + " 2>&1";
+    CommandResult cr = run_command_with_stdin(cmd, body, 60000);
+    if (cr.timed_out) {
+        return make_json_error(503, "agent config-test timed out");
     }
 
-    cJSON_DeleteItemFromObject(values, "api_key");
-    cJSON_AddStringToObject(values, "api_key", resolved.c_str());
-    return true;
+    cJSON* root = parse_config_test_result(cr.output);
+    if (!json_is_object(root)) {
+        if (root) {
+            cJSON_Delete(root);
+        }
+        std::string detail = trim_trailing_newlines(cr.output);
+        if (detail.empty()) {
+            detail = "agent config-test returned an unexpected response";
+        } else if (detail.size() > 400) {
+            detail = detail.substr(0, 400) + "...";
+        }
+        return make_json_error(503, detail);
+    }
+    return make_json_ok(root);
 }
 
 std::string build_curl_proxy_arg(const SystemProxy& proxy) {
@@ -6938,26 +6708,9 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         return make_json_error(400, "missing 'values' object");
     }
 
-    // Flatten a provider reference into `values` before anything reads it. The
-    // Test button posts the form state, and now that credentials live on provider
-    // records that form carries only the reference plus the globals. The checks
-    // below read values.provider and values.api_key directly, so an unresolved
-    // reference reads as an unknown provider with an empty key.
-    //
-    // A value already present in `values` wins, so a field the user typed still
-    // takes precedence over the stored record. The voice playback test resolves
-    // references again on its own side, which is idempotent: once flattened,
-    // provider holds a bare type and matches no record.
     if (section == "model" || section == "tts" || section == "stt") {
-        std::string resolve_error;
-        if (!flatten_provider_reference(options, section, values, &resolve_error)) {
-            cJSON_Delete(root);
-            return make_json_error(503, "provider config unavailable");
-        }
-        if (!resolve_config_test_api_key(options, values, &resolve_error)) {
-            cJSON_Delete(root);
-            return make_json_error(503, resolve_error);
-        }
+        cJSON_Delete(root);
+        return run_agent_provider_config_test(options, section, body);
     }
 
     cJSON* response = cJSON_CreateObject();
@@ -6969,237 +6722,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     std::string curl_proxy_arg = build_curl_proxy_arg(current_proxy);
     std::string curl_env_exports = build_proxy_env_exports(current_proxy);
 
-    if (section == "model" || section == "tts" || section == "stt") {
-        cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
-        cJSON* base_url_item = cJSON_GetObjectItem(values, "base_url");
-        std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
-        std::string base_url = json_is_string(base_url_item) ? trim_copy(base_url_item->valuestring) : "";
-        std::string url = base_url.empty() ? provider_default_url(provider, section) : base_url;
-        const bool tencent_stt = section == "stt" && is_tencent_asr_provider(provider);
-        if (tencent_stt && url.empty()) {
-            url = "https://asr.tencentcloudapi.com";
-        }
-
-        cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
-        std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
-        bool api_key_present = json_secret_present(values, "api_key");
-
-        cJSON* r = cJSON_CreateObject();
-        cJSON_AddStringToObject(r, "check", "endpoint_reachable");
-        if (section == "tts" && is_streaming_tts_provider(provider)) {
-            cJSON_AddBoolToObject(r, "passed", 1);
-            cJSON_AddStringToObject(r, "detail", "streaming endpoint is verified by the TTS playback test");
-        } else if (url.empty()) {
-            cJSON_AddBoolToObject(r, "passed", 0);
-            cJSON_AddStringToObject(r, "detail", "no URL to test (provider unknown and base_url empty)");
-            all_passed = false;
-        } else {
-            std::string cmd = curl_env_exports + "curl -sI --max-time 6 " + curl_proxy_arg + shell_quote(url) + " 2>&1 | head -1";
-            CommandResult cr = run_shell_command(cmd);
-            bool reachable = cr.exit_code == 0 && cr.output.find("HTTP") != std::string::npos;
-            cJSON_AddBoolToObject(r, "passed", reachable ? 1 : 0);
-            std::string detail = url + " -> " + trim_trailing_newlines(cr.output);
-            cJSON_AddStringToObject(r, "detail", detail.c_str());
-            if (!reachable) all_passed = false;
-        }
-        cJSON_AddItemToArray(results, r);
-
-        if (tencent_stt) {
-            bool app_id_present = json_secret_present(values, "app_id");
-            bool secret_id_present = json_secret_present(values, "secret_id");
-            bool secret_key_present = json_secret_present(values, "secret_key");
-
-            cJSON* r_appid = cJSON_CreateObject();
-            cJSON_AddStringToObject(r_appid, "check", "streaming_app_id");
-            cJSON_AddBoolToObject(r_appid, "passed", 1);
-            cJSON_AddStringToObject(
-                r_appid,
-                "detail",
-                app_id_present
-                    ? "app_id is set; realtime upload is available"
-                    : "app_id is empty; recording will fall back to one-shot upload");
-            cJSON_AddItemToArray(results, r_appid);
-
-            cJSON* r_sid = cJSON_CreateObject();
-            cJSON_AddStringToObject(r_sid, "check", "secret_id_present");
-            cJSON_AddBoolToObject(r_sid, "passed", secret_id_present ? 1 : 0);
-            cJSON_AddStringToObject(r_sid, "detail", secret_id_present ? "secret_id is set" : "secret_id is empty");
-            if (!secret_id_present) all_passed = false;
-            cJSON_AddItemToArray(results, r_sid);
-
-            cJSON* r_skey = cJSON_CreateObject();
-            cJSON_AddStringToObject(r_skey, "check", "secret_key_present");
-            cJSON_AddBoolToObject(r_skey, "passed", secret_key_present ? 1 : 0);
-            cJSON_AddStringToObject(r_skey, "detail", secret_key_present ? "secret_key is set" : "secret_key is empty");
-            if (!secret_key_present) all_passed = false;
-            cJSON_AddItemToArray(results, r_skey);
-        } else {
-            cJSON* r2 = cJSON_CreateObject();
-            cJSON_AddStringToObject(r2, "check", "api_key_present");
-            cJSON_AddBoolToObject(r2, "passed", api_key_present ? 1 : 0);
-            cJSON_AddStringToObject(r2, "detail", api_key_present ? "api_key is set" : "api_key is empty");
-            if (!api_key_present) all_passed = false;
-            cJSON_AddItemToArray(results, r2);
-        }
-
-        bool endpoint_ok = false;
-        {
-            cJSON* first = cJSON_GetArrayItem(results, 0);
-            cJSON* p = cJSON_GetObjectItem(first, "passed");
-            endpoint_ok = json_is_type(p, cJSON_True);
-        }
-
-        if (section == "model" && endpoint_ok && !api_key.empty()) {
-            cJSON* model_item = cJSON_GetObjectItem(values, "model");
-            std::string model_name = json_is_string(model_item) ? trim_copy(model_item->valuestring) : "";
-
-            cJSON* r3 = cJSON_CreateObject();
-            cJSON_AddStringToObject(r3, "check", "api_key_valid");
-
-            if (model_name.empty()) {
-                cJSON_AddBoolToObject(r3, "passed", 0);
-                cJSON_AddStringToObject(r3, "detail", "model name is empty; cannot send hello request");
-                all_passed = false;
-            } else {
-                std::string chat_url = url;
-                while (!chat_url.empty() && chat_url[chat_url.size() - 1] == '/') {
-                    chat_url.erase(chat_url.size() - 1);
-                }
-                chat_url += "/chat/completions";
-
-                cJSON* req = cJSON_CreateObject();
-                cJSON_AddStringToObject(req, "model", model_name.c_str());
-                cJSON_AddNumberToObject(req, "max_tokens", 4);
-                // Omit temperature: this is only an auth/connectivity probe, and
-                // some models (e.g. Kimi K3) reject any temperature but their own
-                // fixed value. Letting the model use its default keeps the check
-                // valid across every provider.
-                cJSON* msgs = add_array(req, "messages");
-                cJSON* msg = cJSON_CreateObject();
-                cJSON_AddStringToObject(msg, "role", "user");
-                cJSON_AddStringToObject(msg, "content", "hello");
-                cJSON_AddItemToArray(msgs, msg);
-                std::string req_body = cjson_to_string(req);
-                cJSON_Delete(req);
-
-                std::string auth_header = "Authorization: Bearer " + api_key;
-                char response_path_template[] = "/tmp/config_test_body.XXXXXX";
-                int response_fd = mkstemp(response_path_template);
-                if (response_fd < 0) {
-                    cJSON_AddBoolToObject(r3, "passed", 0);
-                    cJSON_AddStringToObject(r3, "detail", "failed to create temporary response file");
-                    all_passed = false;
-                } else {
-                    close(response_fd);
-                    std::string response_path = response_path_template;
-
-                    std::string cmd =
-                        curl_env_exports +
-                        std::string("curl -sS --max-time 12 ") +
-                        curl_proxy_arg +
-                        "-o " + shell_quote(response_path) + " -w '%{http_code}' " +
-                        "-H " + shell_quote("Content-Type: application/json") + " " +
-                        "-H " + shell_quote(auth_header) + " " +
-                        "-d " + shell_quote(req_body) + " " +
-                        shell_quote(chat_url) + " 2>&1";
-
-                    CommandResult cr = run_shell_command(cmd);
-                    std::string http_code = trim_copy(cr.output);
-                    std::string resp_body = read_file_contents(response_path.c_str(), 4096);
-                    resp_body = trim_trailing_newlines(resp_body);
-                    if (resp_body.size() > 400) {
-                        resp_body = resp_body.substr(0, 400) + "...";
-                    }
-                    unlink(response_path.c_str());
-
-                    bool key_ok = (http_code == "200");
-                    cJSON_AddBoolToObject(r3, "passed", key_ok ? 1 : 0);
-
-                    std::string detail;
-                    if (cr.exit_code != 0 && http_code.empty()) {
-                        detail = "request failed: " + cr.output;
-                    } else if (key_ok) {
-                        detail = "HTTP 200 - key works (model: " + model_name + ")";
-                    } else {
-                        detail = "HTTP " + http_code + " - " + resp_body;
-                    }
-                    if (!key_ok) all_passed = false;
-                    cJSON_AddStringToObject(r3, "detail", detail.c_str());
-                }
-            }
-            cJSON_AddItemToArray(results, r3);
-        }
-
-        if (section == "tts") {
-            if (!api_key_present) {
-                cJSON* r3 = cJSON_CreateObject();
-                cJSON_AddStringToObject(r3, "check", "tts_playback");
-                cJSON_AddBoolToObject(r3, "passed", 0);
-                cJSON_AddStringToObject(r3, "detail", "skipped because api_key is empty");
-                cJSON_AddItemToArray(results, r3);
-                all_passed = false;
-            } else {
-                cJSON* req = cJSON_CreateObject();
-                cJSON_AddStringToObject(req, "section", "tts");
-                cJSON_AddStringToObject(req, "text", "test passed");
-                cJSON_AddItemToObject(req, "values", cJSON_Duplicate(values, 1));
-                std::string req_body = cjson_to_string(req);
-                cJSON_Delete(req);
-
-                std::string cmd = shell_quote(agent_bin_path()) +
-                                  " config-test --format=json --stdin --section=tts --config=" +
-                                  shell_quote(options.agent_config_path) + " 2>&1";
-                CommandResult cr = run_command_with_stdin(cmd, req_body, 60000);
-
-                bool appended_cli_result = false;
-                bool cli_passed = cr.exit_code == 0 && !cr.timed_out;
-                cJSON* cli_root = parse_config_test_result(cr.output);
-                if (cli_root) {
-                    cJSON* ok_item = cJSON_GetObjectItem(cli_root, "ok");
-                    if (!json_is_type(ok_item, cJSON_True)) {
-                        cli_passed = false;
-                    }
-                    cJSON* cli_results = cJSON_GetObjectItem(cli_root, "results");
-                    if (json_is_array(cli_results)) {
-                        int result_count = cJSON_GetArraySize(cli_results);
-                        for (int i = 0; i < result_count; ++i) {
-                            cJSON* item = cJSON_GetArrayItem(cli_results, i);
-                            cJSON* passed_item = cJSON_GetObjectItem(item, "passed");
-                            if (!json_is_type(passed_item, cJSON_True)) {
-                                cli_passed = false;
-                            }
-                            cJSON_AddItemToArray(results, cJSON_Duplicate(item, 1));
-                            appended_cli_result = true;
-                        }
-                    }
-                    cJSON_Delete(cli_root);
-                }
-
-                if (!appended_cli_result) {
-                    cJSON* r3 = cJSON_CreateObject();
-                    cJSON_AddStringToObject(r3, "check", "tts_playback");
-                    cJSON_AddBoolToObject(r3, "passed", 0);
-                    std::string detail;
-                    if (cr.timed_out) {
-                        detail = "agent config-test timed out";
-                    } else if (cr.output.empty()) {
-                        detail = "agent config-test returned exit code " + std::to_string(cr.exit_code);
-                    } else {
-                        detail = trim_trailing_newlines(cr.output);
-                        if (detail.size() > 400) {
-                            detail = detail.substr(0, 400) + "...";
-                        }
-                    }
-                    cJSON_AddStringToObject(r3, "detail", detail.c_str());
-                    cJSON_AddItemToArray(results, r3);
-                    cli_passed = false;
-                }
-                if (!cli_passed) {
-                    all_passed = false;
-                }
-            }
-        }
-    } else if (section == "audio") {
+    if (section == "audio") {
         cJSON* socket_item = cJSON_GetObjectItem(values, "socket");
         std::string socket_path = json_is_string(socket_item) ? trim_copy(socket_item->valuestring) : "";
         cJSON* r = cJSON_CreateObject();
@@ -7594,6 +7117,8 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
 }
 
 ApiResponse handle_request(const Options& options, const HttpRequest& request) {
+    start_deferred_agent_restart_if_idle();
+
     if (request.error_status_code != 0) {
         ApiResponse response;
         response.status_code = request.error_status_code;
@@ -7872,6 +7397,11 @@ int main(int argc, char** argv) {
             }
             break;
         }
+
+        // Restart helpers are forked while a request is being handled. Do not
+        // let them inherit the client connection and keep the response socket
+        // open until the init script exits.
+        fcntl(client_fd, F_SETFD, FD_CLOEXEC);
 
         if (!set_socket_recv_timeout(client_fd, kClientReadTimeoutSeconds)) {
             close(client_fd);

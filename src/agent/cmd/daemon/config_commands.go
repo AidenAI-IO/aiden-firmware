@@ -96,6 +96,17 @@ type modelDTO struct {
 	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
 }
 
+func (d modelDTO) providerTestRequest() agent.ModelProviderTestRequest {
+	return agent.ModelProviderTestRequest{
+		Provider:        d.Provider,
+		APIKey:          d.APIKey,
+		Model:           d.Model,
+		BaseURL:         d.BaseURL,
+		Temperature:     d.Temperature,
+		ReasoningEffort: d.ReasoningEffort,
+	}
+}
+
 // modelProviderDTO mirrors a single [model_providers.<name>] section. Named providers hold
 // the credentials; a model section references one by putting the provider name
 // in its own "provider" field.
@@ -1002,8 +1013,8 @@ type configTestInput struct {
 	AudioBase64 string          `json:"audio_base64"`
 }
 
-// runConfigTest implements `agent config-test` for checks that need agent
-// runtime code instead of config_web's lightweight shell probes.
+// runConfigTest implements provider checks through the same runtime registries
+// and adapters used by the agent itself.
 func runConfigTest(args []string) int {
 	fs := flag.NewFlagSet("config-test", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
@@ -1038,7 +1049,7 @@ func runConfigTest(args []string) int {
 	if section == "" {
 		section = strings.TrimSpace(*sectionFlag)
 	}
-	if section != "tts" && section != "stt" {
+	if section != "model" && section != "tts" && section != "stt" {
 		writeConfigTestResult(configTestFailure("request", "unsupported section: "+section))
 		return 1
 	}
@@ -1056,11 +1067,43 @@ func runConfigTest(args []string) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeoutFlag)
 	defer cancel()
+	result := executeConfigTest(ctx, cfg, input, section)
+	writeConfigTestResult(result)
+	if result.OK {
+		return 0
+	}
+	return 1
+}
+
+func executeConfigTest(ctx context.Context, cfg agent.Config, input configTestInput, section string) ConfigTestResult {
+	if section == "model" {
+		var modelValues modelDTO
+		if err := json.Unmarshal(input.Values, &modelValues); err != nil {
+			return configTestFailure("request", "invalid model values: "+err.Error())
+		}
+
+		result, err := agent.RunModelProviderTest(ctx, cfg, modelValues.providerTestRequest())
+		if err != nil {
+			detail := err.Error()
+			if result.Provider != "" {
+				detail = fmt.Sprintf("[provider=%s model=%s] %s", result.Provider, result.Model, detail)
+			}
+			return configTestFailure("provider_request", detail)
+		}
+		return ConfigTestResult{
+			OK: true,
+			Results: []ConfigTestCheck{{
+				Check:  "provider_request",
+				Passed: true,
+				Detail: fmt.Sprintf("received a response from %s (model: %s)", result.Provider, result.Model),
+			}},
+		}
+	}
+
 	if section == "tts" {
 		var ttsValues ttsDTO
 		if err := json.Unmarshal(input.Values, &ttsValues); err != nil {
-			writeConfigTestResult(configTestFailure("request", "invalid tts values: "+err.Error()))
-			return 1
+			return configTestFailure("request", "invalid tts values: "+err.Error())
 		}
 
 		playback, err := agent.RunTTSPlaybackTest(ctx, cfg, ttsValues.playbackTestRequest(input.Text))
@@ -1069,36 +1112,48 @@ func runConfigTest(args []string) int {
 			if ttsValues.Provider != "" {
 				detail = fmt.Sprintf("[provider=%s model=%s voice=%s] %s", ttsValues.Provider, ttsValues.Model, ttsValues.VoiceID, detail)
 			}
-			writeConfigTestResult(configTestFailure("tts_playback", detail))
-			return 1
+			return configTestFailure("tts_playback", detail)
 		}
-		writeConfigTestResult(ConfigTestResult{
+		return ConfigTestResult{
 			OK: true,
 			Results: []ConfigTestCheck{{
 				Check:  "tts_playback",
 				Passed: true,
 				Detail: fmt.Sprintf("played %q with %s", playback.Text, playback.Provider),
 			}},
-		})
-		return 0
+		}
+	}
+	if section != "stt" {
+		return configTestFailure("request", "unsupported section: "+section)
 	}
 
 	var sttValues sttDTO
 	if err := json.Unmarshal(input.Values, &sttValues); err != nil {
-		writeConfigTestResult(configTestFailure("request", "invalid stt values: "+err.Error()))
-		return 1
+		return configTestFailure("request", "invalid stt values: "+err.Error())
+	}
+	if strings.TrimSpace(input.AudioBase64) == "" {
+		result, err := agent.RunSTTProviderTest(ctx, cfg, sttValues.transcriptionTestRequest(nil))
+		if err != nil {
+			return configTestFailure("provider_config", err.Error())
+		}
+		return ConfigTestResult{
+			OK: true,
+			Results: []ConfigTestCheck{{
+				Check:  "provider_config",
+				Passed: true,
+				Detail: fmt.Sprintf("created the %s STT client", result.Provider),
+			}},
+		}
 	}
 	wavData, err := base64.StdEncoding.DecodeString(strings.TrimSpace(input.AudioBase64))
 	if err != nil {
-		writeConfigTestResult(configTestFailure("request", "invalid audio_base64: "+err.Error()))
-		return 1
+		return configTestFailure("request", "invalid audio_base64: "+err.Error())
 	}
 	transcription, err := agent.RunSTTTranscriptionTest(ctx, cfg, sttValues.transcriptionTestRequest(wavData))
 	if err != nil {
-		writeConfigTestResult(configTestFailure("stt_transcription", err.Error()))
-		return 1
+		return configTestFailure("stt_transcription", err.Error())
 	}
-	writeConfigTestResult(ConfigTestResult{
+	return ConfigTestResult{
 		OK:         true,
 		Transcript: transcription.Transcript,
 		Results: []ConfigTestCheck{{
@@ -1106,8 +1161,7 @@ func runConfigTest(args []string) int {
 			Passed: true,
 			Detail: fmt.Sprintf("transcribed audio with %s", transcription.Provider),
 		}},
-	})
-	return 0
+	}
 }
 
 func configTestFailure(check, detail string) ConfigTestResult {
