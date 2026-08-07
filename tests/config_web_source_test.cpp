@@ -713,7 +713,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("Recent OTA log:\\n") != std::string::npos);
     CHECK(html.find("setOtaLogPending") != std::string::npos);
     CHECK(html.find("OTA update started, waiting for log output...") != std::string::npos);
-    CHECK(html.find("setOtaLogPending('OTA update started, waiting for log output...',Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
+    CHECK(html.find("setOtaLogPending(t('ota.update_started_waiting'),Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
     CHECK(html.find("renderOtaLog(snapshot, {preservePending:true})") != std::string::npos);
     CHECK(html.find("payload.ota_health_log") != std::string::npos);
     CHECK(html.find("extractOtaExitCode((payload.ota_log||{}).log||'')") != std::string::npos);
@@ -723,7 +723,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("function setDetails(text,options)") != std::string::npos);
     CHECK(html.find("if(!(options&&options.keepOtaLog)){hideOtaLogPanel();}") != std::string::npos);
     CHECK(html.find("setDetails('',{keepOtaLog:true})") != std::string::npos);
-    CHECK(html.find("setDetails('Recent OTA log:\\n'+String(text||'').slice(-4000),{keepOtaLog:true})") != std::string::npos);
+    CHECK(html.find("setDetails(t('ota.recent_log',{log:String(text||'').slice(-4000)}),{keepOtaLog:true})") != std::string::npos);
     CHECK(html.find("setDetails(err.message,{keepOtaLog:true})") != std::string::npos);
     CHECK(html.find("otaLogText") != std::string::npos);
     CHECK(html.find("otaLogMeta") != std::string::npos);
@@ -999,7 +999,7 @@ TEST_CASE("config web keeps saved wifi networks at the top when expanded") {
     CHECK(html.find("const hiddenCount=Math.max(0,totalCount-visibleCount);") !=
           std::string::npos);
     CHECK(html.find("totalCount<=1") != std::string::npos);
-    CHECK(html.find("String(hiddenCount)") != std::string::npos);
+    CHECK(html.find("t('wifi.show_others',{count:hiddenCount})") != std::string::npos);
 }
 
 TEST_CASE("config web shows saved wifi modal and connects automatically") {
@@ -1012,12 +1012,12 @@ TEST_CASE("config web shows saved wifi modal and connects automatically") {
           std::string::npos);
     CHECK(html.find("if(focusPassword!==false){byId('wifiPasswordInput').focus();}") !=
           std::string::npos);
-    CHECK(html.find("btn.disabled=true;btn.textContent='Connecting';") != std::string::npos);
-    CHECK(html.find("btn.disabled=false;btn.textContent='Connect';") != std::string::npos);
+    CHECK(html.find("btn.disabled=true;btn.textContent=t('wifi.connecting');") != std::string::npos);
+    CHECK(html.find("btn.disabled=false;btn.textContent=t('action.connect');") != std::string::npos);
     CHECK(html.find("const connected=!!payload.ok&&connectedWifiSsid()===ssid;") !=
           std::string::npos);
     CHECK(html.find("if(connected){closeWifiModal();") != std::string::npos);
-    CHECK(html.find("Failed to connect to \"'+ssid+'\", please check password and try again.") != std::string::npos);
+    CHECK(html.find("t('wifi.connect_failed_detail',{ssid:ssid})") != std::string::npos);
     CHECK(html.find("renderWifiList();closeWifiModal();") == std::string::npos);
 }
 
@@ -1026,7 +1026,7 @@ TEST_CASE("config web does not show a star for disconnected saved wifi") {
 
     CHECK(html.find("state='✓';") != std::string::npos);
     CHECK(html.find("state='★';") == std::string::npos);
-    CHECK(html.find("forget.textContent='Forget';") != std::string::npos);
+    CHECK(html.find("forget.textContent=t('action.forget');") != std::string::npos);
 }
 
 TEST_CASE("config web hides successful forget details but reports runtime apply failure") {
@@ -1041,13 +1041,13 @@ TEST_CASE("config web hides successful forget details but reports runtime apply 
     const std::string forget_source =
         html.substr(forget_start, forget_end - forget_start);
     CHECK(forget_source.find("if(payload.ok!==false)") != std::string::npos);
-    CHECK(forget_source.find("setBanner('Forgot \"'+ssid+'\".',false);setDetails('');") !=
+    CHECK(forget_source.find("setBanner(t('wifi.forgot',{ssid:ssid}),false);setDetails('');") !=
           std::string::npos);
-    CHECK(forget_source.find("Forgot \"'+ssid+'\", but runtime apply failed.") !=
+    CHECK(forget_source.find("t('wifi.forgot_apply_failed',{ssid:ssid})") !=
           std::string::npos);
     CHECK(forget_source.find("payload.wifi_apply&&payload.wifi_apply.output") !=
           std::string::npos);
-    CHECK(forget_source.find("Network removed from saved list, but runtime config update failed.") !=
+    CHECK(forget_source.find("t('wifi.forget_apply_failed_detail')") !=
           std::string::npos);
 }
 
@@ -2059,7 +2059,7 @@ TEST_CASE("config web html auto-fills the provider name and keeps it editable") 
     CHECK(dialog_body.find("data-action=\"model-provider-name\"") != std::string::npos);
     CHECK(js.find("ModelProvidersManager.onProviderNameInput()") != std::string::npos);
     // The select is relabeled: it is the provider, not a separate "type".
-    CHECK(dialog_body.find("<label>Provider</label>") != std::string::npos);
+    CHECK(dialog_body.find("t('provider.type')") != std::string::npos);
     CHECK(js.find("Provider Type") == std::string::npos);
     // Opening the dialog seeds the name before the user touches anything.
     CHECK(dialog_body.find("this.autoFillProviderName()") != std::string::npos);
@@ -2071,7 +2071,7 @@ TEST_CASE("config web html auto-fills the provider name and keeps it editable") 
     CHECK(save_body.find("getElementById('providerName')") != std::string::npos);
     CHECK(save_body.find("this.uniqueProviderName(this.providerBaseName(type, baseUrl)") !=
           std::string::npos);
-    CHECK(save_body.find("Provider is required") != std::string::npos);
+    CHECK(save_body.find("t('provider.required')") != std::string::npos);
     // A collision is only an error when it targets a different existing entry.
     CHECK(save_body.find("name !== editName && Object.prototype.hasOwnProperty.call(this.modelProviders, name)") !=
           std::string::npos);
@@ -2135,7 +2135,7 @@ TEST_CASE("config web html folds token_env into the api key box") {
     CHECK(save_body.find("apiKeyRaw.charAt(0) === '$'") != std::string::npos);
     CHECK(save_body.find("provider.token_env = env; provider.api_key = '';") != std::string::npos);
     // A bare $ names no variable, so it must not save silently.
-    CHECK(save_body.find("Environment variable name is required after $") != std::string::npos);
+    CHECK(save_body.find("t('provider.env_required')") != std::string::npos);
 
     // Reopening the dialog shows a stored token_env back as $FOO.
     const size_t dialog_at = js.find("showProviderDialog: function");

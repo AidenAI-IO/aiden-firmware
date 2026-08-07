@@ -77,6 +77,11 @@ assert.equal(t('config.save_failed', {section: 'agent'}), 'Save [agent] failed.'
 applyLocale('zh-CN', false);
 assert.equal(t('config.save_failed', {section: 'agent'}), '保存 [agent] 失败。');
 assert.equal(t('wifi.connected_to', {ssid: 'Aiden Lab'}), '已连接到“Aiden Lab”。');
+assert.equal(
+  t('config.fields.device.device_type.help'),
+  'Android 使用 HID touchscreen 模式。iOS、macOS、windows 和 linux 使用 absolute 指针模式。',
+);
+assert.equal(t('config.default_value', {value: '16000'}), '默认值：16000');
 assert.equal(t('missing.translation.key'), 'missing.translation.key');
 
 initI18n();
@@ -103,5 +108,36 @@ assert.match(indexHtml, /data-i18n-placeholder="wifi\.password_optional"/);
 
 const configForm = await fs.readFile(path.join(webRoot, 'assets/js/config/config-form.js'), 'utf8');
 const wifi = await fs.readFile(path.join(webRoot, 'assets/js/config/wifi.js'), 'utf8');
+const providers = await fs.readFile(path.join(webRoot, 'assets/js/config/providers.js'), 'utf8');
+const agentStatus = await fs.readFile(path.join(webRoot, 'assets/js/config/agent-status.js'), 'utf8');
+const ota = await fs.readFile(path.join(webRoot, 'assets/js/config/ota.js'), 'utf8');
 assert.match(configForm, /t\('config\.save_failed',\{section:/);
-assert.match(wifi, /t\('wifi\.connected_to',\{ssid:/);
+assert.match(wifi, /t\('wifi\.connected_to',\s*\{ssid\s*:/);
+assert.match(wifi, /t\('wifi\.no_networks'\)/);
+assert.match(wifi, /aiden:locale-changed/);
+assert.doesNotMatch(wifi, /runtimeFunction\('localizedText'\)/);
+assert.match(providers, /t\('provider\.choose_model'\)/);
+assert.doesNotMatch(providers, /runtimeFunction\('localizedText'\)/);
+assert.match(agentStatus, /t\('status\.state\.'/);
+assert.match(ota, /t\('ota\.update_started'\)/);
+
+const moduleDirectory = path.join(webRoot, 'assets/js/config');
+const moduleNames = (await fs.readdir(moduleDirectory)).filter((name) => name.endsWith('.js'));
+const moduleSource = (
+  await Promise.all(moduleNames.map((name) => fs.readFile(path.join(moduleDirectory, name), 'utf8')))
+).join('\n');
+const runtimeDependencies = new Set(
+  [...moduleSource.matchAll(/runtime(?:Function|Object)\('([^']+)'\)/g)].map((match) => match[1]),
+);
+const runtimeBindings = new Set();
+for (const match of moduleSource.matchAll(/registerRuntime\s*\(\s*\{([\s\S]*?)\}\s*\);/g)) {
+  for (const entry of match[1].split(',')) {
+    const name = entry.trim().split(':')[0].trim();
+    if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) runtimeBindings.add(name);
+  }
+}
+assert.deepEqual(
+  [...runtimeDependencies].filter((name) => !runtimeBindings.has(name)).sort(),
+  [],
+  'every runtime dependency must be registered by a config web module',
+);
