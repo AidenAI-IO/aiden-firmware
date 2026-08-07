@@ -13,11 +13,18 @@ BOOT_CONF=/etc/aiden_boot.conf
 AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
 [ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
 . "$AIDEN_LOG_HELPER"
+BOOT_TIMELINE_HELPER=${BOOT_TIMELINE_HELPER:-/etc/aiden_boot_timeline.sh}
 
 if [ -f "$BOOT_CONF" ]; then
     . "$BOOT_CONF"
 fi
 : "${ENABLE_AGENT:=1}"
+
+mark() {
+    [ -x "$BOOT_TIMELINE_HELPER" ] || return 0
+    "$BOOT_TIMELINE_HELPER" mark "$@" 2>/dev/null || true
+    return 0
+}
 LOG_PATH=${LOG_PATH:-$CONFIG_DIR/log/agent.log}
 
 supervisor_log() {
@@ -151,6 +158,7 @@ start() {
 
             supervisor_log INFO process_starting \
                 "starting $AGENT_BIN -dir $CONFIG_DIR -addr $ADDR"
+            mark agent:spawn
             "$ENV_RUN_BIN" "$AGENT_BIN" -dir "$CONFIG_DIR" -addr "$ADDR" >> "$LOG_PATH" 2>&1 &
             child="$!"
             echo "$child" > "$PID_FILE"
