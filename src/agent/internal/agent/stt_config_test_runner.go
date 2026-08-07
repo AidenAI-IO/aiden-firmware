@@ -86,7 +86,18 @@ func applySTTTranscriptionTestRequest(cfg *Config, req STTTranscriptionTestReque
 		return
 	}
 	if provider := strings.TrimSpace(req.Provider); provider != "" {
-		cfg.STT.Provider = provider
+		if _, isRecord := cfg.STTProviders[provider]; isRecord {
+			// Runtime config has already expanded the active provider record, so
+			// its provider-specific values must not become fallbacks when the test
+			// request selects another record. Rebuild from the selected record and
+			// retain only the global preference shared by all STT providers.
+			cfg.STT = STTConfig{
+				Provider: provider,
+				Language: cfg.STT.Language,
+			}
+		} else {
+			cfg.STT.Provider = provider
+		}
 	}
 	if language := strings.TrimSpace(req.Language); language != "" {
 		cfg.STT.Language = language
