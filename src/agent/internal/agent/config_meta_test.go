@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -117,6 +118,152 @@ func TestConfigMeta_Valid(t *testing.T) {
 		}
 	}
 
+}
+
+func TestFieldMeta_DisplayFieldsJSONSchema(t *testing.T) {
+	payload, err := json.Marshal(FieldMeta{
+		Key:         "github_proxy_url",
+		Label:       "GitHub Proxy URL",
+		Help:        "Optional proxy for GitHub downloads.",
+		Placeholder: "Leave empty to disable",
+		Layout:      "wide",
+		Widget:      WidgetText,
+	})
+	if err != nil {
+		t.Fatalf("marshal FieldMeta: %v", err)
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal FieldMeta JSON: %v", err)
+	}
+	for key, want := range map[string]string{
+		"key":         "github_proxy_url",
+		"label":       "GitHub Proxy URL",
+		"help":        "Optional proxy for GitHub downloads.",
+		"placeholder": "Leave empty to disable",
+		"layout":      "wide",
+		"widget":      string(WidgetText),
+	} {
+		if got[key] != want {
+			t.Errorf("FieldMeta JSON %s = %#v, want %q", key, got[key], want)
+		}
+	}
+
+	minimal, err := json.Marshal(FieldMeta{Key: "enabled", Widget: WidgetBoolean})
+	if err != nil {
+		t.Fatalf("marshal minimal FieldMeta: %v", err)
+	}
+	for _, omitted := range []string{"label", "help", "placeholder", "layout"} {
+		if strings.Contains(string(minimal), `"`+omitted+`"`) {
+			t.Errorf("empty %s must be omitted from FieldMeta JSON: %s", omitted, minimal)
+		}
+	}
+}
+
+func TestConfigMeta_AllFieldsHaveStableLabels(t *testing.T) {
+	for _, section := range ConfigMeta().Sections {
+		for _, field := range section.Fields {
+			if strings.TrimSpace(field.Label) == "" {
+				t.Errorf("%s.%s has no display label", section.Name, field.Key)
+			}
+		}
+	}
+}
+
+func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
+	idx := fieldIndex(t)
+
+	type displayMeta struct {
+		label       string
+		help        string
+		placeholder string
+		layout      string
+	}
+	want := map[string]displayMeta{
+		"device.device_type": {
+			help: "Android uses HID touchscreen mode. iOS, macOS, windows, and linux use absolute pointer mode.",
+		},
+		"agent.vad_model_path":          {layout: "wide"},
+		"agent.vad_helper_path":         {layout: "wide"},
+		"agent.custom_instruction":      {layout: "wide"},
+		"agent.additional_prompt":       {layout: "wide"},
+		"model.provider":                {layout: "wide"},
+		"model.model":                   {layout: "wide"},
+		"model.base_url":                {layout: "wide"},
+		"model.reasoning_effort":        {help: "Empty = auto (disable reasoning only for no-tool requests). Levels are provider-specific: minimal is OpenRouter and Volcengine Ark only, none is not supported by Ark."},
+		"model.context_window":          {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
+		"model.model_max_output_tokens": {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
+		"tts.provider":                  {layout: "wide"},
+		"stt.provider":                  {layout: "wide"},
+		"audio.socket":                  {layout: "wide"},
+		"audio_archive.enabled":         {help: "After enabling, save STT voice recording WAV for Web UI playback; Automatically delete old files when exceeding quantity or capacity limit."},
+		"audio_archive.storage_path":    {layout: "wide"},
+		"ota.github_proxy_url": {
+			label:       "GitHub Proxy URL",
+			help:        "Optional proxy to accelerate GitHub downloads (e.g., https://gh-proxy.com/ or https://ghfast.top/)",
+			placeholder: "Leave empty to disable",
+			layout:      "wide",
+		},
+		"hid.keyboard_layout": {
+			help: "How the phone interprets the USB keyboard. Keep qwerty unless typed text comes out transposed; then switch the phone input language to match, save, and reboot the board.",
+		},
+		"hid.keyboard_device":         {layout: "wide"},
+		"hid.mouse_device":            {layout: "wide"},
+		"hid.android_keyboard_device": {layout: "wide"},
+		"hid.frame_socket":            {layout: "wide"},
+		"search.api_key":              {layout: "wide"},
+		"telemetry.base_url": {
+			placeholder: "http://langfuse.example.com:3000",
+			layout:      "wide",
+		},
+		"telemetry.public_key": {layout: "wide"},
+		"telemetry.secret_key": {layout: "wide"},
+		"telemetry.tags":       {layout: "wide"},
+	}
+
+	for path, expected := range want {
+		field, ok := idx[path]
+		if !ok {
+			t.Errorf("missing metadata field %s", path)
+			continue
+		}
+		if expected.label != "" && field.Label != expected.label {
+			t.Errorf("%s label = %q, want %q", path, field.Label, expected.label)
+		}
+		if field.Help != expected.help {
+			t.Errorf("%s help = %q, want %q", path, field.Help, expected.help)
+		}
+		if field.Placeholder != expected.placeholder {
+			t.Errorf("%s placeholder = %q, want %q", path, field.Placeholder, expected.placeholder)
+		}
+		if field.Layout != expected.layout {
+			t.Errorf("%s layout = %q, want %q", path, field.Layout, expected.layout)
+		}
+	}
+}
+
+func TestConfigMeta_SpecialRendererFieldsRemainAddressable(t *testing.T) {
+	idx := fieldIndex(t)
+	// These fields remain in metadata for read/write/default/visibility logic,
+	// but config-form.js renders them through its section.key renderer registry.
+	for _, path := range []string{
+		"model.provider",
+		"model.model",
+		"tts.provider",
+		"stt.provider",
+	} {
+		if _, ok := idx[path]; !ok {
+			t.Errorf("special renderer field %s is missing from metadata", path)
+		}
+	}
+}
+
+func TestConfigMeta_PreservesConfigWebLiveActivityPhoneID(t *testing.T) {
+	idx := fieldIndex(t)
+	if _, ok := idx["live_activity.phone_id"]; !ok {
+		t.Fatal("live_activity.phone_id is missing from config web metadata")
+	}
 }
 
 // TestConfigMeta_NonRegistryEnumsMatchValidation covers enums that do not have

@@ -182,6 +182,7 @@ endforeach()
 add_executable(config_web
     src/aiden_log.cpp
     src/config_web.cpp
+    src/config_web_static_assets.cpp
     src/agent_toml.cpp
     src/audio_service_client.cpp
     src/audio_service_protocol.cpp

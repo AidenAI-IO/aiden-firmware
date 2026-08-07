@@ -570,8 +570,19 @@ private:
 // chunked/keep-alive since config_web closes the connection per response.
 struct HttpResponse {
     int status = 0;
+    std::string headers;
     std::string body;
 };
+
+std::string response_header(const HttpResponse& response, const std::string& name) {
+    const std::string needle = name + ":";
+    size_t pos = response.headers.find(needle);
+    if (pos == std::string::npos) return "";
+    pos += needle.size();
+    while (pos < response.headers.size() && response.headers[pos] == ' ') ++pos;
+    size_t end = response.headers.find("\r\n", pos);
+    return response.headers.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+}
 
 // PLACEHOLDER_HTTP
 HttpResponse http_request(int port, const std::string& method, const std::string& path,
@@ -623,6 +634,7 @@ HttpResponse http_request(int port, const std::string& method, const std::string
     }
     size_t sep = buf.find("\r\n\r\n");
     if (sep != std::string::npos) {
+        resp.headers = buf.substr(0, sep + 2);
         resp.body = buf.substr(sep + 4);
     }
     return resp;
@@ -635,6 +647,7 @@ struct ServerHandle {
     pid_t pid = -1;
     int port = 0;
     std::string tmp_dir;
+    std::string web_root;
 
     ~ServerHandle() {
         if (pid > 0) {
@@ -672,10 +685,13 @@ struct StubEnv {
     }
 };
 
-std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
+std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env,
+                                           bool include_index = true,
+                                           bool include_llm_logs = true) {
     auto handle = std::unique_ptr<ServerHandle>(new ServerHandle());
     handle->tmp_dir = make_temp_dir();
     handle->port = pick_ephemeral_port();
+    handle->web_root = handle->tmp_dir + "/config-web";
 
     const std::string agent_toml_path = handle->tmp_dir + "/agent.toml";
     const std::string wifi_conf_path = handle->tmp_dir + "/wifi.conf";
@@ -686,6 +702,18 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
     write_file(wifi_conf_path, "");
     write_file(sysenv_path, "");
     write_file(cmdline_path, "console=ttyFIQ0 aiden.slot_suffix=_a root=PARTLABEL=rootfs_a\n");
+    REQUIRE(::mkdir(handle->web_root.c_str(), 0755) == 0);
+    REQUIRE(::mkdir((handle->web_root + "/assets").c_str(), 0755) == 0);
+    REQUIRE(::mkdir((handle->web_root + "/assets/css").c_str(), 0755) == 0);
+    REQUIRE(::mkdir((handle->web_root + "/assets/js").c_str(), 0755) == 0);
+    if (include_index) write_file(handle->web_root + "/index.html", "test index page");
+    if (include_llm_logs) write_file(handle->web_root + "/llm-logs.html", "test llm logs page");
+    write_file(handle->web_root + "/assets/css/test.css", "body{color:#123456}");
+    write_file(handle->web_root + "/assets/js/test.js", "globalThis.configWebTest=true;");
+    write_file(handle->web_root + "/assets/test.json", "{}");
+    write_file(handle->web_root + "/assets/test.svg", "<svg/>");
+    write_binary_file(handle->web_root + "/assets/test.png", "png");
+    write_binary_file(handle->web_root + "/assets/test.ico", "ico");
     if (!stub_env.storage_state.empty()) {
         write_file(handle->tmp_dir + "/storage.state", stub_env.storage_state);
     }
@@ -733,6 +761,7 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
         // without storage_state content get a missing file, which the status
         // endpoint must report as unavailable rather than erroring.
         const std::string storage_state_arg = "--storage-state=" + handle->tmp_dir + "/storage.state";
+        const std::string web_root_arg = "--web-root=" + handle->web_root;
         std::vector<char*> argv = {
             const_cast<char*>(AIDEN_CONFIG_WEB_BIN),
             const_cast<char*>("--bind=127.0.0.1"),
@@ -743,6 +772,7 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
             const_cast<char*>(ota_state_arg.c_str()),
             const_cast<char*>(cmdline_arg.c_str()),
             const_cast<char*>(storage_state_arg.c_str()),
+            const_cast<char*>(web_root_arg.c_str()),
             nullptr,
         };
         ::execve(AIDEN_CONFIG_WEB_BIN, argv.data(), envp.data());
@@ -763,62 +793,67 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
 // contract we guard: a missing dependency MUST surface as 503 (server-side
 // outage), a CLI rejection MUST surface as 400 (user input).
 
-TEST_CASE("config_web: setup page exposes an immediate persisted locale switch") {
+TEST_CASE("config_web: serves entry pages and static assets from web root") {
     StubEnv env;
     auto handle = start_server(env);
-    HttpResponse resp = http_request(handle->port, "GET", "/");
-    CHECK(resp.status == 200);
-    CHECK(resp.body.find("id=\"localeSelect\"") != std::string::npos);
-    CHECK(resp.body.find("/api/config/locale") != std::string::npos);
-    CHECK(resp.body.find("localStorage") != std::string::npos);
-    CHECK(resp.body.find("applyLocale") != std::string::npos);
-    CHECK(resp.body.find("'Configuration':'配置'") != std::string::npos);
-    CHECK(resp.body.find("applyLocale(previous,false)") != std::string::npos);
-    CHECK(resp.body.find("let localeRevision=0") != std::string::npos);
-    CHECK(resp.body.find("localeSavePending=true") != std::string::npos);
-    CHECK(resp.body.find("requestLocaleRevision===localeRevision&&!localeSavePending") !=
-          std::string::npos);
-    CHECK(resp.body.find("applyLocale(payload.locale||requested,true)") != std::string::npos);
-    CHECK(resp.body.find("try{await loadAuthoritativeLocale();}catch(refreshErr){}") !=
-          std::string::npos);
-    CHECK(resp.body.find("async function loadAuthoritativeLocale()") != std::string::npos);
-    CHECK(resp.body.find("const configuredLocale=") != std::string::npos);
-    CHECK(resp.body.find("try{await loadConfig();") != std::string::npos);
-    CHECK(resp.body.find("if(metaOk){await loadConfig();") == std::string::npos);
-    CHECK(resp.body.find("window.confirm(localizedText(") != std::string::npos);
+    HttpResponse index = http_request(handle->port, "GET", "/");
+    CHECK(index.status == 200);
+    CHECK(index.body == "test index page");
+    CHECK(response_header(index, "Content-Type") == "text/html; charset=utf-8");
+    CHECK(response_header(index, "Cache-Control") == "no-cache");
+
+    HttpResponse logs = http_request(handle->port, "GET", "/llm-logs");
+    CHECK(logs.status == 200);
+    CHECK(logs.body == "test llm logs page");
+
+    HttpResponse css = http_request(handle->port, "GET", "/assets/css/test.css");
+    CHECK(css.status == 200);
+    CHECK(response_header(css, "Content-Type") == "text/css; charset=utf-8");
+    HttpResponse js = http_request(handle->port, "GET", "/assets/js/test.js");
+    CHECK(js.status == 200);
+    CHECK(response_header(js, "Content-Type") == "application/javascript; charset=utf-8");
+    CHECK(response_header(http_request(handle->port, "GET", "/assets/test.json"), "Content-Type") ==
+          "application/json; charset=utf-8");
+    CHECK(response_header(http_request(handle->port, "GET", "/assets/test.svg"), "Content-Type") ==
+          "image/svg+xml");
+    CHECK(response_header(http_request(handle->port, "GET", "/assets/test.png"), "Content-Type") ==
+          "image/png");
+    CHECK(response_header(http_request(handle->port, "GET", "/assets/test.ico"), "Content-Type") ==
+          "image/x-icon");
 }
 
-// The provider-select behaviour is asserted against config_web_html.h by
-// decoding its string literals. That decoding is a test-side reimplementation of
-// what the C++ compiler does, so a disagreement over an escape would pass those
-// assertions while the device served broken JavaScript. Serving the page from
-// the real binary is what proves the strings survive compilation intact.
-TEST_CASE("config_web: setup page serves the configured-only provider select") {
+TEST_CASE("config_web: static assets fail closed without affecting APIs") {
     StubEnv env;
-    auto handle = start_server(env);
-    HttpResponse resp = http_request(handle->port, "GET", "/");
-    CHECK(resp.status == 200);
+    auto handle = start_server(env, false, true);
+    write_file(handle->tmp_dir + "/outside-secret.txt", "must not be served");
 
-    // The placeholder and inline actions, with the exact quoting the page needs
-    // -- a mangled escape here would break the whole <script> block.
-    CHECK(resp.body.find("label:'-- Select Provider --'") != std::string::npos);
-    CHECK(resp.body.find("id=\"addProviderBtn\"") != std::string::npos);
-    CHECK(resp.body.find("id=\"editProviderBtn\"") != std::string::npos);
-    CHECK(resp.body.find("id=\"deleteProviderBtn\"") != std::string::npos);
-    CHECK(resp.body.find("ADD_PROVIDER_OPTION") == std::string::npos);
-    // zh-CN entries for the visible labels, since the page defaults to zh-CN.
-    CHECK(resp.body.find("'Add':'新增'") != std::string::npos);
-    CHECK(resp.body.find("'-- Select Provider --':'-- 选择提供商 --'") != std::string::npos);
+    CHECK(http_request(handle->port, "GET", "/").status == 503);
+    CHECK(http_request(handle->port, "GET", "/assets/missing.css").status == 404);
+    HttpResponse traversal =
+        http_request(handle->port, "GET", "/assets/%2e%2e/outside-secret.txt");
+    CHECK(traversal.status == 404);
+    CHECK(traversal.body.find("must not be served") == std::string::npos);
+    CHECK(http_request(handle->port, "GET", "/assets//test.css").status == 404);
+    CHECK(http_request(handle->port, "GET", "/assets/%ZZ").status == 404);
+    CHECK(http_request(handle->port, "GET", "/assets/%2fetc").status == 404);
+    CHECK(http_request(handle->port, "GET", "/assets/%5ctest.css").status == 404);
+    CHECK(http_request(handle->port, "POST", "/assets/js/test.js").status == 405);
 
-    // The functions the flow depends on, on executable (non-commented) lines.
-    CHECK(resp.body.find("function injectNamedProviderOptions()") != std::string::npos);
-    CHECK(resp.body.find("function rememberModelProvider()") != std::string::npos);
-    CHECK(resp.body.find("function resolveProviderType(value)") != std::string::npos);
-    CHECK(resp.body.find("async function deleteSelectedProvider(kind)") != std::string::npos);
-    CHECK(resp.body.find("updateProviderActionState('model')") != std::string::npos);
+    HttpResponse api = http_request(handle->port, "GET", "/api/config/meta");
+    CHECK(api.status == 200);
+}
 
-    // The metadata enum must no longer be the source of the select's options.
-    CHECK(resp.body.find("baseProviderOptions") == std::string::npos);
+TEST_CASE("config_web: missing llm logs entry and symlink assets fail closed") {
+    StubEnv env;
+    auto handle = start_server(env, true, false);
+    const std::string outside = handle->tmp_dir + "/outside.css";
+    write_file(outside, "outside");
+    REQUIRE(::symlink(outside.c_str(), (handle->web_root + "/assets/link.css").c_str()) == 0);
+
+    CHECK(http_request(handle->port, "GET", "/llm-logs").status == 503);
+    CHECK(http_request(handle->port, "GET", "/assets/link.css").status == 404);
+    CHECK(http_request(handle->port, "POST", "/").status == 405);
+    CHECK(http_request(handle->port, "POST", "/llm-logs").status == 405);
 }
 
 TEST_CASE("config_web: GET /api/config/meta returns 200 + parseable JSON when stub agent works") {

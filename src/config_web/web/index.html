@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aiden Setup</title>
+  <link rel="stylesheet" href="/assets/css/common.css">
+  <link rel="stylesheet" href="/assets/css/config.css">
+</head>
+<body>
+  <div class="page">
+    <div class="hero">
+      <svg class="hero-logo" width="116" height="26" viewBox="0 0 116 26" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-label="Aiden"><path d="M57.2656 8.41222C57.2656 9.76144 58.3946 10.8904 59.7438 10.8904C61.0932 10.8904 62.2219 9.76144 62.2219 8.41222C62.2219 7.063 61.0932 5.93408 59.7438 5.93408C58.3946 5.93408 57.2656 7.063 57.2656 8.41222Z"/><path d="M110.657 11.1106C113.934 11.1106 115.999 13.2858 115.999 16.6176V25.1809H114.595V16.6176C114.595 14.0844 113.135 12.4323 110.547 12.4323C107.849 12.4323 105.728 14.1945 105.728 17.9117V25.1809H104.352V11.4135H105.728V14.0293C106.775 11.9917 108.537 11.1106 110.657 11.1106Z"/><path d="M92.6825 11.1106C96.8678 11.1106 99.4835 14.58 99.4835 18.3523C99.4835 18.5725 99.456 18.7928 99.456 19.0131H86.9827C87.3132 22.1245 89.681 24.1621 92.8201 24.1621C95.0781 24.1621 96.7852 23.1158 97.5838 21.6565L98.7953 22.3724C97.6663 24.2447 95.5187 25.4838 92.7926 25.4838C88.5523 25.4838 85.5508 22.455 85.5508 18.2972C85.5508 14.2496 88.4697 11.1106 92.6825 11.1106ZM92.6825 12.4323C89.5434 12.4323 87.2582 14.6075 86.9827 17.6639H98.0518C97.7489 14.3046 95.3808 12.4323 92.6825 12.4323Z"/><path d="M79.2313 5.90649H80.608V25.1809H79.2313V21.9869C78.1023 24.1071 75.9822 25.4838 73.3114 25.4838C69.3738 25.4838 66.1797 22.3724 66.1797 18.2972C66.1797 14.222 69.3738 11.1106 73.3114 11.1106C75.9822 11.1106 78.1023 12.4873 79.2313 14.6075V5.90649ZM73.394 24.1621C76.6707 24.1621 79.2313 21.5738 79.2313 18.2972C79.2313 15.0206 76.6707 12.4323 73.394 12.4323C70.1173 12.4323 67.5566 15.0206 67.5566 18.2972C67.5566 21.5738 70.1173 24.1621 73.394 24.1621Z"/><path d="M57.6797 25.181V12.1019H61.8099V25.181H57.6797Z"/><path d="M49.7018 25.1809L48.7382 22.1521H41.5792L40.6153 25.1809H35.7969L42.3502 5.90649H47.9672L54.5205 25.1809H49.7018ZM42.9008 18.0219H47.4166L45.1586 10.9454L42.9008 18.0219Z"/><path d="M25.1178 24.5459C24.7689 25.1539 24.1252 25.524 23.426 25.524H13.692C12.7628 25.524 12.1813 24.5195 12.6413 23.7133C12.6426 23.712 12.6426 23.7093 12.6452 23.708L13.8545 21.6145H20.0426L17.6279 17.4327L18.027 16.7442L19.884 13.5272L25.1178 22.5925C25.468 23.1978 25.468 23.9432 25.1178 24.5459Z"/><path d="M15.7876 6.43232C15.3964 5.80056 14.4659 5.80981 14.0919 6.45876L12.6923 8.88403L12.3024 9.55675L5.34117 21.6143L3.64944 24.5458C3.47365 24.8471 3.22519 25.0916 2.93312 25.2621C2.64102 25.4299 2.30532 25.5238 1.95507 25.5238C1.25591 25.5238 0.61094 25.1537 0.260698 24.5458C-0.0868995 23.9417 -0.0868995 23.1976 0.260698 22.5923L10.9979 3.99781C11.3468 3.39249 11.9931 3.01978 12.6923 3.01978C13.3914 3.01978 14.0364 3.39249 14.3827 3.99781L15.7889 6.43232H15.7876Z"/><path d="M16.9459 8.43868L14.6898 12.3469L12.6914 8.88674L14.0911 6.46147C14.4651 5.81255 15.3955 5.80197 15.7868 6.43503L16.9445 8.44001L16.9459 8.43868Z"/><path d="M22.061 7.39977L19.2035 12.3481L16.9474 16.2563L13.8534 21.6156L12.6441 23.7091C12.6441 23.7091 12.6428 23.7131 12.6401 23.7144C12.1802 24.5206 12.7617 25.5251 13.6909 25.5251H9.20116C8.8443 25.5251 8.53899 25.3784 8.32093 25.151C8.29449 25.122 8.26805 25.0942 8.24295 25.0638C8.14778 24.9396 8.07246 24.8008 8.02753 24.6488C8.01959 24.6198 8.01164 24.592 8.00637 24.5629C8.00109 24.5418 7.99712 24.5193 7.99315 24.4981C7.99184 24.4902 7.99184 24.4849 7.98918 24.477C7.98787 24.4677 7.98787 24.4598 7.98787 24.4506C7.9839 24.4321 7.98257 24.4149 7.97993 24.3951C7.96277 24.1598 8.01034 23.9153 8.1425 23.688L9.3386 21.6156L14.69 12.3467L16.9461 8.4386L18.6749 5.44369C19.4176 4.15773 21.2666 4.13527 22.0398 5.40404C22.4125 6.01466 22.4204 6.78123 22.0623 7.39977H22.061Z"/><path d="M25.0995 2.27744C25.2732 1.20749 24.5466 0.19933 23.4767 0.0256534C22.4067 -0.148025 21.3986 0.578549 21.2249 1.6485C21.0512 2.71845 21.7778 3.72661 22.8477 3.90027C23.9177 4.07396 24.9258 3.3474 25.0995 2.27744Z"/></svg>
+      <div class="hero-text">
+        <h1 data-i18n="page.title">Configuration</h1>
+        <div id="fwActions" class="fw-actions">
+          <p class="subtle" id="fwVersion"></p>
+          <a class="button ghost" href="/llm-logs" data-i18n="page.llm_logs">LLM Logs</a>
+          <a class="button ghost" id="terminalLink" href="http://192.168.42.1:3000/wetty/" target="_blank" rel="noopener" data-i18n="page.terminal">Terminal</a>
+          <button id="exportLogsBtn" class="button ghost" data-action="export-logs" data-i18n="page.export_logs">Export Logs</button>
+          <button id="otaUpdateBtn" class="button primary" data-action="ota-update" data-i18n="page.ota_update">OTA Update</button>
+        </div>
+        <div id="fwHealth" class="fw-health"></div>
+      </div>
+      <div class="locale-control">
+        <label for="localeSelect" data-i18n="page.language">Language</label>
+        <select id="localeSelect" aria-label="Language" data-i18n-aria-label="page.language" data-action="save-locale">
+          <option value="zh-CN">中文</option>
+          <option value="en-US">English</option>
+        </select>
+      </div>
+    </div>
+    <div class="card action-card">
+      <div id="actionBanner" class="banner" data-i18n="action.ready">Ready.</div>
+      <div id="actionDetails" class="details">
+        <pre id="actionDetailsText" class="action-detail-text"></pre>
+        <div id="otaLogPanel" class="ota-log-panel">
+          <div class="ota-log-head">
+            <div>
+              <div class="ota-log-title" data-i18n="ota.live_log">OTA Live Log</div>
+              <div id="otaLogMeta" class="agent-log-meta" data-i18n="ota.waiting">Waiting for update</div>
+            </div>
+            <button id="refreshOtaLogBtn" class="button ghost" data-action="refresh-ota-log" data-i18n="action.refresh_log">Refresh Log</button>
+          </div>
+          <pre id="otaLogText" class="agent-log-viewer" data-i18n="ota.click_to_read">Click OTA Update to read logs</pre>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2 data-i18n="wifi.title">Wi-Fi Configuration</h2>
+        <div class="toolbar">
+          <button id="reloadBtn" class="button ghost" data-action="reload-all" data-i18n="action.refresh_page">Refresh Page Data</button>
+          <button id="scanBtn" class="button secondary" data-action="scan-wifi" data-i18n="action.rescan">Rescan</button>
+        </div>
+      </div>
+      <div id="wifiList" class="wifi-list"></div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2 data-i18n="status.title">Agent Status</h2>
+        <div class="toolbar">
+          <button id="refreshAgentStatusBtn" class="button ghost" data-action="refresh-agent-status" data-i18n="action.refresh_status">Refresh Status</button>
+        </div>
+      </div>
+      <div class="agent-status-grid">
+        <div class="agent-status-item">
+          <span class="agent-status-label" data-i18n="status.process">Process</span>
+          <span id="agentProcessStatus" class="agent-status-value" data-i18n="status.loading">Loading</span>
+          <div id="agentProcessDetail" class="agent-status-detail"></div>
+        </div>
+        <div class="agent-status-item">
+          <span class="agent-status-label" data-i18n="status.port">Port</span>
+          <span id="agentPortStatus" class="agent-status-value" data-i18n="status.loading">Loading</span>
+          <div id="agentPortDetail" class="agent-status-detail"></div>
+        </div>
+      </div>
+      <div id="agentStartupError" class="details">
+        <pre id="agentStartupErrorText"></pre>
+      </div>
+      <div class="agent-log-head">
+        <div>
+          <h3 data-i18n="logs.live_agent">Live Agent Log</h3>
+          <div id="agentLogMeta" class="agent-log-meta" data-i18n="status.loading">Loading</div>
+        </div>
+        <div class="toolbar">
+          <button id="autoScrollAgentLogBtn" class="button primary" data-action="toggle-agent-log-auto-scroll" data-i18n="action.auto_scroll">Auto-scroll</button>
+          <button id="refreshAgentLogBtn" class="button ghost" data-action="refresh-agent-log" data-i18n="action.refresh_log">Refresh Log</button>
+        </div>
+      </div>
+      <pre id="agentLogText" class="agent-log-viewer" data-i18n="status.loading">Loading</pre>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2 data-i18n="config.title">Agent Configuration</h2>
+      </div>
+      <div class="config-grid">
+        <div class="section-card" id="section-device">
+          <div class="card-head">
+            <h3>[device]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="device" data-i18n="action.edit">Edit</button>
+              <button class="button secondary" data-action="test-section" data-section="device" data-i18n="action.test">Test</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="device" data-i18n="action.cancel">Cancel</button>
+              <button id="save-device" class="button primary save-btn" data-action="save-section" data-section="device" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="device"></div>
+        </div>
+        <div class="section-card" id="section-agent">
+          <div class="card-head">
+            <h3>[agent]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="agent" data-i18n="action.edit">Edit</button>
+              <button class="button secondary" data-action="test-section" data-section="agent" data-i18n="action.test">Test</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="agent" data-i18n="action.cancel">Cancel</button>
+              <button id="save-agent" class="button primary save-btn" data-action="save-section" data-section="agent" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="agent"></div>
+        </div>
+        <div class="section-card" id="section-model">
+          <div class="card-head">
+            <h3>[model]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="model" data-i18n="action.edit">Edit</button>
+              <button class="button secondary" data-action="test-section" data-section="model" data-i18n="action.test">Test</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="model" data-i18n="action.cancel">Cancel</button>
+              <button id="save-model" class="button primary save-btn" data-action="save-section" data-section="model" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="model">
+            <div class="field wide" data-config-field="model.provider"><label>provider</label><div class="provider-picker"><select id="model_provider" data-section="model"></select><div class="provider-picker-actions"><button id="addProviderBtn" type="button" class="button ghost" data-action="add-model-provider" data-i18n="action.add">Add</button><button id="editProviderBtn" type="button" class="button ghost" data-action="edit-selected-provider" data-provider-kind="model" data-i18n="action.edit">Edit</button><button id="deleteProviderBtn" type="button" class="button ghost error" data-action="delete-selected-provider" data-provider-kind="model" data-i18n="action.delete">Delete</button></div></div></div>
+            <div class="field wide" data-config-field="model.model"><label>model</label><input id="model_model" data-section="model" style="display:none"><details id="modelSelectorDetails" class="model-selector-details"><summary><span data-i18n="provider.current_model">Current model</span><strong id="modelSelectorSummary" data-i18n="provider.choose_model">Choose a model</strong></summary><div id="modelSelectorContainer" class="model-selector-container"></div></details></div>
+          </div>
+        </div>
+        <div class="section-card" id="section-tts">
+          <div class="card-head">
+            <h3>[tts]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="tts" data-i18n="action.edit">Edit</button>
+              <button class="button secondary" data-action="test-section" data-section="tts" data-i18n="action.test">Test</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="tts" data-i18n="action.cancel">Cancel</button>
+              <button id="save-tts" class="button primary save-btn" data-action="save-section" data-section="tts" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="tts">
+            <div class="field wide" data-config-field="tts.provider"><label>provider</label><div class="provider-picker"><select id="tts_provider" data-section="tts"></select><div class="provider-picker-actions"><button id="addTtsProviderBtn" type="button" class="button ghost" data-action="add-tts-provider" data-i18n="action.add">Add</button><button id="editTtsProviderBtn" type="button" class="button ghost" data-action="edit-selected-provider" data-provider-kind="tts" data-i18n="action.edit">Edit</button><button id="deleteTtsProviderBtn" type="button" class="button ghost error" data-action="delete-selected-provider" data-provider-kind="tts" data-i18n="action.delete">Delete</button></div></div></div>
+          </div>
+        </div>
+        <div class="section-card" id="section-stt">
+          <div class="card-head">
+            <h3>[stt]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="stt" data-i18n="action.edit">Edit</button>
+              <button id="test-stt" class="button secondary" data-action="toggle-stt-test" data-i18n="action.test">Test</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="stt" data-i18n="action.cancel">Cancel</button>
+              <button id="save-stt" class="button primary save-btn" data-action="save-section" data-section="stt" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="field-hint section-note" data-i18n="config.stt_test_help">Click Test will activate microphone to start recording, click again to end recording and display recognition result.</div>
+          <div class="grid" data-config-section="stt">
+            <div class="field wide" data-config-field="stt.provider"><label>provider</label><div class="provider-picker"><select id="stt_provider" data-section="stt"></select><div class="provider-picker-actions"><button id="addSttProviderBtn" type="button" class="button ghost" data-action="add-stt-provider" data-i18n="action.add">Add</button><button id="editSttProviderBtn" type="button" class="button ghost" data-action="edit-selected-provider" data-provider-kind="stt" data-i18n="action.edit">Edit</button><button id="deleteSttProviderBtn" type="button" class="button ghost error" data-action="delete-selected-provider" data-provider-kind="stt" data-i18n="action.delete">Delete</button></div></div></div>
+          </div>
+        </div>
+        <div class="section-card" id="section-audio">
+          <div class="card-head">
+            <h3>[audio]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="audio" data-i18n="action.edit">Edit</button>
+              <button class="button secondary" data-action="test-section" data-section="audio" data-i18n="action.test">Test</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="audio" data-i18n="action.cancel">Cancel</button>
+              <button id="save-audio" class="button primary save-btn" data-action="save-section" data-section="audio" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="audio"></div>
+        </div>
+        <div class="section-card" id="section-audio_archive">
+          <div class="card-head">
+            <h3>[audio_archive]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="audio_archive" data-i18n="action.edit">Edit</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="audio_archive" data-i18n="action.cancel">Cancel</button>
+              <button id="save-audio_archive" class="button primary save-btn" data-action="save-section" data-section="audio_archive" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div id="audioArchiveModeHint" class="field-hint section-note" data-i18n="config.audio_archive_locked">Only effective when agent.input_mode = stt; switch to STT and Edit recording Save settings.</div>
+          <div class="grid" data-config-section="audio_archive"></div>
+        </div>
+        <div class="section-card" id="section-log">
+          <div class="card-head">
+            <h3>[log]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="log" data-i18n="action.edit">Edit</button>
+              <button class="button secondary" data-action="test-section" data-section="log" data-i18n="action.test">Test</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="log" data-i18n="action.cancel">Cancel</button>
+              <button id="save-log" class="button primary save-btn" data-action="save-section" data-section="log" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="log"></div>
+        </div>
+        <div class="section-card" id="section-ota">
+          <div class="card-head">
+            <h3>[ota]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="ota" data-i18n="action.edit">Edit</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="ota" data-i18n="action.cancel">Cancel</button>
+              <button id="save-ota" class="button primary save-btn" data-action="save-section" data-section="ota" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="ota"></div>
+        </div>
+        <div class="section-card" id="section-hid">
+          <div class="card-head">
+            <h3>[hid]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="hid" data-i18n="action.edit">Edit</button>
+              <button class="button secondary" data-action="test-section" data-section="hid" data-i18n="action.test">Test</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="hid" data-i18n="action.cancel">Cancel</button>
+              <button id="save-hid" class="button primary save-btn" data-action="save-section" data-section="hid" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="hid"></div>
+        </div>
+        <div class="section-card" id="section-search">
+          <div class="card-head">
+            <h3>[search]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="search" data-i18n="action.edit">Edit</button>
+              <button class="button secondary" data-action="test-section" data-section="search" data-i18n="action.test">Test</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="search" data-i18n="action.cancel">Cancel</button>
+              <button id="save-search" class="button primary save-btn" data-action="save-section" data-section="search" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="search"></div>
+        </div>
+        <div class="section-card" id="section-telemetry">
+          <div class="card-head">
+            <h3>[telemetry]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="telemetry" data-i18n="action.edit">Edit</button>
+              <button class="button secondary" data-action="test-section" data-section="telemetry" data-i18n="action.test">Test</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="telemetry" data-i18n="action.cancel">Cancel</button>
+              <button id="save-telemetry" class="button primary save-btn" data-action="save-section" data-section="telemetry" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="telemetry"></div>
+        </div>
+        <div class="section-card" id="section-live_activity">
+          <div class="card-head">
+            <h3>[live_activity]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section="live_activity" data-i18n="action.edit">Edit</button>
+              <button class="button secondary" data-action="test-section" data-section="live_activity" data-i18n="action.test">Test</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section="live_activity" data-i18n="action.cancel">Cancel</button>
+              <button id="save-live_activity" class="button primary save-btn" data-action="save-section" data-section="live_activity" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="live_activity"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2>microSD Configuration</h2>
+        <div class="toolbar">
+          <button id="storageRefreshBtn" class="button ghost" data-action="refresh-storage">Refresh</button>
+        </div>
+      </div>
+      <div id="storageSummary" class="subtle">Loading storage status...</div>
+      <div id="storageWarning" class="fw-health error"></div>
+      <div class="fw-actions">
+        <label class="subtle" for="storageFormatFs">Format as</label>
+        <select id="storageFormatFs" disabled>
+          <option value="fat32">FAT32 (readable on PC / phone)</option>
+          <option value="ext4">ext4 (best for on-device use)</option>
+          <option value="exfat">exFAT (large cards / files, PC / phone)</option>
+        </select>
+        <button id="storageFormatBtn" class="button" data-action="format-storage" disabled>Format card</button>
+        <button id="storageEjectBtn" class="button ghost" data-action="eject-storage" disabled>Safe eject</button>
+      </div>
+      <div id="storageJobStatus" class="fw-health"></div>
+    </div>
+    <div class="card section-card" id="section-system_env">
+      <div class="card-head">
+        <h2>env</h2>
+        <div class="section-actions">
+          <button class="button ghost edit-btn" data-action="edit-system-env" data-i18n="action.edit">Edit</button>
+          <button id="comment-system_env" class="button secondary env-comment-btn" data-action="toggle-system-env-comment" data-i18n="action.toggle_comment">Toggle #</button>
+          <button class="button ghost cancel-btn" data-action="cancel-system-env" data-i18n="action.cancel">Cancel</button>
+          <button id="save-system_env" class="button primary save-btn" data-action="save-system-env" data-i18n="action.save">Save</button>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="field wide"><label>/userdata/system/env</label><textarea id="system_env_content" class="system-env-editor" data-section="system_env" spellcheck="false"></textarea></div>
+      </div>
+    </div>
+  </div>
+  <div id="testToast" class="test-toast"><div class="test-toast-header"><span class="test-toast-title" id="testToastTitle"></span><button class="test-toast-close" data-action="close-test-toast">&times;</button></div><div class="test-toast-body" id="testToastBody"></div></div>
+  <div id="wifiModal" class="modal">
+    <div class="modal-card">
+      <h3 data-i18n="wifi.connect_title">Connect to Wi-Fi</h3>
+      <p id="wifiModalText" data-i18n="wifi.selected_network">Selected network</p>
+      <div class="field">
+        <label data-i18n="wifi.password">Password</label>
+        <input id="wifiPasswordInput" type="password" placeholder="Open network can leave empty" data-i18n-placeholder="wifi.password_optional">
+      </div>
+      <div class="modal-actions">
+        <button class="button ghost" data-action="close-wifi-modal" data-i18n="action.cancel">Cancel</button>
+        <button id="connectWifiBtn" class="button primary" data-action="connect-selected-wifi" data-i18n="action.connect">Connect</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/assets/js/config/app.js"></script>
+</body>
+</html>

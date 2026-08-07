@@ -1,8 +1,7 @@
 #include "agent_toml.h"
 #include "aiden_log.h"
 #include "audio_service_client.h"
-#include "config_web_html.h"
-#include "config_web_llm_html.h"
+#include "config_web_static_assets.h"
 #include "system_env_parser.h"
 #include "wifi_config.h"
 
@@ -53,6 +52,7 @@ struct Options {
     std::string cmdline_path = "/proc/cmdline";
     std::string system_env_path = "/userdata/system/env";
     std::string storage_state_path = "/run/aiden/storage.state";
+    std::string web_root = "/oem/usr/share/aiden/config-web";
 };
 
 struct HttpRequest {
@@ -76,6 +76,7 @@ struct ApiResponse {
     std::string body = "{}";
     int body_fd = -1;
     unsigned long long body_fd_size = 0;
+    std::vector<std::pair<std::string, std::string> > headers;
 };
 
 struct CommandResult {
@@ -1658,6 +1659,9 @@ void send_response(int client_fd, const ApiResponse& response) {
     std::ostringstream header;
     header << "HTTP/1.1 " << response.status_code << " " << response.status_text << "\r\n";
     header << "Content-Type: " << response.content_type << "\r\n";
+    for (size_t i = 0; i < response.headers.size(); ++i) {
+        header << response.headers[i].first << ": " << response.headers[i].second << "\r\n";
+    }
     if (response.body_fd >= 0) {
         header << "Content-Length: " << response.body_fd_size << "\r\n";
     } else {
@@ -7418,17 +7422,17 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return response;
     }
 
-    if (request.method == "GET" && request.path == "/") {
+    aiden::ConfigWebStaticAssetResponse static_asset =
+        aiden::serve_config_web_static_asset(options.web_root, request.method, request.path);
+    if (static_asset.handled) {
         ApiResponse response;
-        response.content_type = "text/html; charset=utf-8";
-        response.body = CONFIG_WEB_HTML;
-        return response;
-    }
-
-    if (request.method == "GET" && request.path == "/llm-logs") {
-        ApiResponse response;
-        response.content_type = "text/html; charset=utf-8";
-        response.body = CONFIG_WEB_LLM_HTML;
+        response.status_code = static_asset.status_code;
+        response.status_text = static_asset.status_text;
+        response.content_type = static_asset.content_type;
+        response.body = static_asset.body;
+        response.body_fd = static_asset.body_fd;
+        response.body_fd_size = static_asset.body_fd_size;
+        response.headers = static_asset.headers;
         return response;
     }
 
@@ -7570,7 +7574,7 @@ void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0 << " [--bind=IP] [--port=PORT]"
               << " [--config=PATH] [--wifi-config=PATH] [--wifi-iface=NAME]"
               << " [--ota-state=PATH] [--cmdline=PATH] [--system-env=PATH]"
-              << " [--storage-state=PATH]" << std::endl;
+              << " [--storage-state=PATH] [--web-root=PATH]" << std::endl;
 }
 
 bool parse_args(int argc, char** argv, Options* options) {
@@ -7593,6 +7597,10 @@ bool parse_args(int argc, char** argv, Options* options) {
         } else if (consume_prefix(arg, "--cmdline=", &options->cmdline_path)) {
         } else if (consume_prefix(arg, "--system-env=", &options->system_env_path)) {
         } else if (consume_prefix(arg, "--storage-state=", &options->storage_state_path)) {
+        } else if (consume_prefix(arg, "--web-root=", &options->web_root)) {
+            if (options->web_root.empty()) {
+                return false;
+            }
         } else {
             return false;
         }
@@ -7668,10 +7676,10 @@ int main(int argc, char** argv) {
     }
 
     AIDEN_LOG_INFO("server", "listening",
-                   "bind_address=%s port=%d agent_config=%s wifi_config=%s system_env=%s",
+                   "bind_address=%s port=%d agent_config=%s wifi_config=%s system_env=%s web_root=%s",
                    options.bind_address.c_str(), options.port,
                    options.agent_config_path.c_str(), options.wifi_config_path.c_str(),
-                   options.system_env_path.c_str());
+                   options.system_env_path.c_str(), options.web_root.c_str());
 
     while (!g_should_stop) {
         sockaddr_in client_addr;
