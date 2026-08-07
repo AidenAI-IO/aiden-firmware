@@ -9,10 +9,14 @@ import (
 )
 
 type ModelProviderTestRequest struct {
-	Provider string
-	APIKey   string
-	Model    string
-	BaseURL  string
+	Provider           string
+	APIKey             string
+	Model              string
+	BaseURL            string
+	Temperature        *float64
+	TemperatureSet     bool
+	ReasoningEffort    string
+	ReasoningEffortSet bool
 }
 
 type ModelProviderTestResult struct {
@@ -57,6 +61,15 @@ func applyModelProviderTestRequest(cfg *Config, req ModelProviderTestRequest) er
 	}
 	cfg.Model.Model = req.Model
 	cfg.Model.BaseURL = req.BaseURL
+	cfg.Model.Temperature = nil
+	if req.TemperatureSet && req.Temperature != nil {
+		temperature := *req.Temperature
+		cfg.Model.Temperature = &temperature
+	}
+	cfg.Model.ReasoningEffort = ""
+	if req.ReasoningEffortSet {
+		cfg.Model.ReasoningEffort = req.ReasoningEffort
+	}
 
 	if err := resolveModelProvider(cfg, &cfg.Model); err != nil {
 		return err

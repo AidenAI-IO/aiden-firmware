@@ -98,10 +98,14 @@ type modelDTO struct {
 
 func (d modelDTO) providerTestRequest() agent.ModelProviderTestRequest {
 	return agent.ModelProviderTestRequest{
-		Provider: d.Provider,
-		APIKey:   d.APIKey,
-		Model:    d.Model,
-		BaseURL:  d.BaseURL,
+		Provider:           d.Provider,
+		APIKey:             d.APIKey,
+		Model:              d.Model,
+		BaseURL:            d.BaseURL,
+		Temperature:        d.Temperature,
+		TemperatureSet:     d.Temperature != nil,
+		ReasoningEffort:    d.ReasoningEffort,
+		ReasoningEffortSet: strings.TrimSpace(d.ReasoningEffort) != "",
 	}
 }
 

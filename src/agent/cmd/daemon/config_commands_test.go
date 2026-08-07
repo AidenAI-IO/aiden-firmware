@@ -27,6 +27,31 @@ func TestExecuteConfigTestUsesModelRuntime(t *testing.T) {
 	}
 }
 
+func TestModelDTOProviderTestRequestCarriesSamplingState(t *testing.T) {
+	temperature := 0.7
+	req := (modelDTO{
+		Provider:        "openai",
+		Model:           "kimi-k3",
+		Temperature:     &temperature,
+		ReasoningEffort: "medium",
+	}).providerTestRequest()
+
+	if !req.TemperatureSet || req.Temperature == nil || *req.Temperature != temperature {
+		t.Fatalf("temperature request = set:%v value:%v, want set %v", req.TemperatureSet, req.Temperature, temperature)
+	}
+	if !req.ReasoningEffortSet || req.ReasoningEffort != "medium" {
+		t.Fatalf("reasoning request = set:%v value:%q, want set medium", req.ReasoningEffortSet, req.ReasoningEffort)
+	}
+
+	cleared := (modelDTO{Provider: "openai", Model: "kimi-k3"}).providerTestRequest()
+	if cleared.TemperatureSet || cleared.Temperature != nil {
+		t.Fatalf("cleared temperature request = set:%v value:%v, want unset", cleared.TemperatureSet, cleared.Temperature)
+	}
+	if cleared.ReasoningEffortSet || cleared.ReasoningEffort != "" {
+		t.Fatalf("cleared reasoning request = set:%v value:%q, want unset", cleared.ReasoningEffortSet, cleared.ReasoningEffort)
+	}
+}
+
 func TestExecuteConfigTestUsesSTTRuntimeWithoutAudio(t *testing.T) {
 	values, err := json.Marshal(sttDTO{Provider: "qwen-main", Language: "zh"})
 	if err != nil {

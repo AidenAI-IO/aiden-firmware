@@ -2711,6 +2711,78 @@ TEST_CASE("config_web: stt live test proxies start and stop to agent") {
     CHECK(requests[1].path == "/api/config-test/stt/stop");
 }
 
+TEST_CASE("config_web: stt live test waits for a scheduled agent restart") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string restart_script = tmp + "/restart-agent.sh";
+    const std::string restart_log = tmp + "/restart.log";
+    write_file(restart_script,
+               "#!/bin/sh\n"
+               "echo started >> \"$AIDEN_AGENT_RESTART_TEST_LOG\"\n"
+               "sleep 0.35\n"
+               "echo ready >> \"$AIDEN_AGENT_RESTART_TEST_LOG\"\n");
+    REQUIRE(::chmod(restart_script.c_str(), 0755) == 0);
+
+    StubAgentHTTPServer agent_server;
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    env.set("AIDEN_AGENT_INIT_SCRIPT", restart_script);
+    env.set("AIDEN_AGENT_RESTART_TEST_LOG", restart_log);
+    auto handle = start_server(env);
+
+    REQUIRE(http_request(handle->port, "POST", "/api/system/env", "{\"system_env\":\"\"}").status == 200);
+
+    const std::string start_body =
+        "{\"stt_values\":{\"provider\":\"openai-whisper\",\"api_key\":\"sk-live\",\"model\":\"whisper-1\"},"
+        "\"audio_values\":{\"socket\":\"/tmp/audio.sock\",\"sample_rate\":16000,\"channels\":1,\"bit_width\":16}}";
+    const auto started_at = std::chrono::steady_clock::now();
+    HttpResponse start_resp =
+        http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started_at);
+
+    REQUIRE(start_resp.status == 200);
+    CHECK(elapsed.count() >= 250);
+    REQUIRE(wait_for_file_contains(restart_log, "ready", 1000));
+    REQUIRE(agent_server.requests().size() == 1);
+}
+
+TEST_CASE("config_web: stt live test defers agent restart until recording stops") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string restart_script = tmp + "/restart-agent.sh";
+    const std::string restart_log = tmp + "/restart.log";
+    write_file(restart_script,
+               "#!/bin/sh\n"
+               "echo restarted >> \"$AIDEN_AGENT_RESTART_TEST_LOG\"\n");
+    REQUIRE(::chmod(restart_script.c_str(), 0755) == 0);
+
+    StubAgentHTTPServer agent_server;
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    env.set("AIDEN_AGENT_INIT_SCRIPT", restart_script);
+    env.set("AIDEN_AGENT_RESTART_TEST_LOG", restart_log);
+    auto handle = start_server(env);
+
+    const std::string start_body =
+        "{\"stt_values\":{\"provider\":\"openai-whisper\",\"api_key\":\"sk-live\",\"model\":\"whisper-1\"},"
+        "\"audio_values\":{\"socket\":\"/tmp/audio.sock\",\"sample_rate\":16000,\"channels\":1,\"bit_width\":16}}";
+    REQUIRE(http_request(handle->port, "POST", "/api/config/test/stt/start", start_body).status == 200);
+    REQUIRE(http_request(handle->port, "POST", "/api/system/env", "{\"system_env\":\"\"}").status == 200);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK(::access(restart_log.c_str(), F_OK) != 0);
+
+    REQUIRE(http_request(handle->port, "POST", "/api/config/test/stt/stop", "{}").status == 200);
+    REQUIRE(wait_for_file_contains(restart_log, "restarted", 1000));
+}
+
 TEST_CASE("config_web: stt live test leaves provider resolution to the running agent") {
     const std::string tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(

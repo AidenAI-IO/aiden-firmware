@@ -138,6 +138,10 @@ struct AgentHttpResponse {
 };
 
 volatile sig_atomic_t g_should_stop = 0;
+pid_t g_agent_restart_pid = -1;
+bool g_agent_restart_readiness_pending = false;
+bool g_agent_restart_deferred = false;
+bool g_stt_live_test_active = false;
 
 const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
@@ -164,6 +168,19 @@ const char* agent_bin_path() {
     }();
     return cached;
 }
+
+// Tests replace the init script with a deterministic fixture. Production uses
+// the fixed on-device path.
+const char* agent_init_script_path() {
+    static const char* cached = []() -> const char* {
+        const char* override_path = std::getenv("AIDEN_AGENT_INIT_SCRIPT");
+        if (override_path && override_path[0] != '\0') {
+            return override_path;
+        }
+        return kAgentInitScript;
+    }();
+    return cached;
+}
 const char* kOtaBin = "/oem/usr/bin/ota";
 const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
 const char* kOtaHealthLogPath = "/var/log/ota/ota.log";
@@ -172,6 +189,8 @@ const char* kOtaWebUpdateLogPath = "/userdata/ota/config_web_ota_update.log";
 const char* kAgentPortHost = "127.0.0.1";
 const int kDefaultAgentPort = 8080;
 const int kAgentStatusCommandTimeoutMs = 1500;
+const int kAgentRestartWaitTimeoutMs = 15000;
+const int kAgentRestartPollIntervalMs = 50;
 const size_t kAgentStatusLogReadSize = 16 * 1024;
 const size_t kAgentStatusLogDisplaySize = 4096;
 const size_t kAgentLogReadSize = 64 * 1024;
@@ -267,6 +286,9 @@ ApiResponse proxy_agent_get_request(const Options& options,
 ApiResponse handle_api_models(const Options& options, const std::string& query_string);
 ApiResponse handle_usb_reenumerate(const Options& options);
 void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config);
+long long monotonic_millis();
+bool reap_agent_restart_process(bool wait, std::string* error);
+void start_deferred_agent_restart_if_idle();
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
@@ -2411,6 +2433,49 @@ ApiResponse proxy_agent_json_request(const Options& options,
     return proxy_agent_request(options, "POST", agent_path, body, true);
 }
 
+ApiResponse proxy_stt_test_start_after_restart(const Options& options,
+                                               const std::string& body) {
+    const bool wait_for_readiness = g_agent_restart_readiness_pending;
+    if (wait_for_readiness) {
+        std::string wait_error;
+        if (!reap_agent_restart_process(true, &wait_error)) {
+            return make_json_error(503, wait_error);
+        }
+    }
+
+    AgentHttpTarget target;
+    std::string target_error;
+    if (!resolve_agent_http_target(options, &target, &target_error)) {
+        return make_json_error(503, target_error.empty() ? "resolve agent HTTP target failed" : target_error);
+    }
+
+    const long long deadline = monotonic_millis() + kAgentRestartWaitTimeoutMs;
+    AgentHttpResponse upstream;
+    while (!send_agent_http_request(
+            target, "POST", "/api/config-test/stt/start", body, true, &upstream)) {
+        if (!wait_for_readiness || monotonic_millis() >= deadline) {
+            return make_json_error(503, upstream.error.empty() ? "agent HTTP request failed" : upstream.error);
+        }
+        usleep(kAgentRestartPollIntervalMs * 1000);
+    }
+
+    if (wait_for_readiness) {
+        g_agent_restart_readiness_pending = false;
+    }
+
+    ApiResponse response;
+    response.status_code = upstream.status_code > 0 ? upstream.status_code : 200;
+    response.status_text = upstream.status_text.empty() ? "OK" : upstream.status_text;
+    response.content_type = upstream.content_type.empty()
+        ? "application/json; charset=utf-8"
+        : upstream.content_type;
+    response.body = upstream.body;
+    if (response.status_code >= 200 && response.status_code < 300) {
+        g_stt_live_test_active = true;
+    }
+    return response;
+}
+
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body) {
     cJSON* root = cJSON_Parse(body.c_str());
     if (!root) {
@@ -2429,11 +2494,14 @@ ApiResponse handle_stt_test_start(const Options& options, const std::string& bod
     }
 
     cJSON_Delete(root);
-    return proxy_agent_json_request(options, "/api/config-test/stt/start", body);
+    return proxy_stt_test_start_after_restart(options, body);
 }
 
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
-    return proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
+    ApiResponse response = proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
+    g_stt_live_test_active = false;
+    start_deferred_agent_restart_if_idle();
+    return response;
 }
 
 // GET request proxy to agent. `agent_path_with_query` keeps its query string.
@@ -3637,17 +3705,111 @@ void restart_wpa_supplicant(const Options& options, std::ostringstream& log) {
         << " -c " << options.wifi_config_path << "\n" << start.output;
 }
 
-void schedule_init_script_restart(const char* init_script) {
-    if (!init_script || init_script[0] == '\0') {
-        return;
+long long monotonic_millis() {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return static_cast<long long>(time(NULL)) * 1000LL;
     }
-    std::string cmd = shell_quote(init_script) + " restart >/dev/null 2>&1 &";
-    int rc = system(cmd.c_str());
-    (void)rc;
+    return static_cast<long long>(now.tv_sec) * 1000LL + now.tv_nsec / 1000000LL;
+}
+
+bool reap_agent_restart_process(bool wait, std::string* error) {
+    if (error) error->clear();
+    if (g_agent_restart_pid <= 0) {
+        return true;
+    }
+
+    const long long deadline = monotonic_millis() + kAgentRestartWaitTimeoutMs;
+    while (true) {
+        int status = 0;
+        pid_t result = waitpid(g_agent_restart_pid, &status, WNOHANG);
+        if (result == g_agent_restart_pid) {
+            g_agent_restart_pid = -1;
+            return true;
+        }
+        if (result < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == ECHILD) {
+                g_agent_restart_pid = -1;
+                return true;
+            }
+            if (error) *error = std::string("wait for agent restart: ") + strerror(errno);
+            return false;
+        }
+        if (!wait) {
+            return true;
+        }
+        if (monotonic_millis() >= deadline) {
+            if (error) *error = "timed out waiting for agent restart";
+            return false;
+        }
+        usleep(kAgentRestartPollIntervalMs * 1000);
+    }
+}
+
+bool launch_agent_restart(std::string* error) {
+    if (error) error->clear();
+    const char* init_script = agent_init_script_path();
+    if (!init_script || init_script[0] == '\0') {
+        if (error) *error = "agent init script path is empty";
+        return false;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (error) *error = std::string("fork agent restart: ") + strerror(errno);
+        return false;
+    }
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) close(devnull);
+        }
+        execl(init_script, init_script, "restart", static_cast<char*>(NULL));
+        execl("/bin/sh", "sh", init_script, "restart", static_cast<char*>(NULL));
+        _exit(127);
+    }
+
+    g_agent_restart_pid = pid;
+    g_agent_restart_readiness_pending = true;
+    return true;
+}
+
+void start_deferred_agent_restart_if_idle() {
+    std::string ignored_error;
+    (void)reap_agent_restart_process(false, &ignored_error);
+    if (!g_stt_live_test_active && g_agent_restart_deferred && g_agent_restart_pid <= 0) {
+        g_agent_restart_deferred = false;
+        if (!launch_agent_restart(&ignored_error)) {
+            AIDEN_LOG_ERROR("agent_restart", "launch_failed", "error=%s",
+                            ignored_error.c_str());
+        }
+    }
 }
 
 void schedule_agent_restart() {
-    schedule_init_script_restart(kAgentInitScript);
+    if (g_stt_live_test_active) {
+        g_agent_restart_deferred = true;
+        g_agent_restart_readiness_pending = true;
+        return;
+    }
+
+    std::string ignored_error;
+    (void)reap_agent_restart_process(false, &ignored_error);
+    if (g_agent_restart_pid > 0) {
+        g_agent_restart_deferred = true;
+        g_agent_restart_readiness_pending = true;
+        return;
+    }
+    if (!launch_agent_restart(&ignored_error)) {
+        AIDEN_LOG_ERROR("agent_restart", "launch_failed", "error=%s",
+                        ignored_error.c_str());
+    }
 }
 
 int acquire_ota_update_launch_lock(std::string* error) {
@@ -4947,14 +5109,15 @@ AgentRuntimeStatus query_agent_status(const Options& options) {
     status.addr = ":8080";
     status.port_host = kAgentPortHost;
     status.port = kDefaultAgentPort;
+    const char* init_script = agent_init_script_path();
 
-    if (!file_exists(kAgentInitScript)) {
+    if (!file_exists(init_script)) {
         status.state = "unknown";
-        status.detail = std::string("agent init script not found: ") + kAgentInitScript;
+        status.detail = std::string("agent init script not found: ") + init_script;
         status.startup_error = status.detail;
     } else {
         CommandResult script_status = run_shell_command_with_timeout(
-            std::string(kAgentInitScript) + " status 2>&1", kAgentStatusCommandTimeoutMs);
+            shell_quote(init_script) + " status 2>&1", kAgentStatusCommandTimeoutMs);
         status.detail = trim_trailing_newlines(script_status.output);
 
         if (script_status.timed_out) {
@@ -6952,6 +7115,8 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
 }
 
 ApiResponse handle_request(const Options& options, const HttpRequest& request) {
+    start_deferred_agent_restart_if_idle();
+
     if (request.error_status_code != 0) {
         ApiResponse response;
         response.status_code = request.error_status_code;
@@ -7230,6 +7395,11 @@ int main(int argc, char** argv) {
             }
             break;
         }
+
+        // Restart helpers are forked while a request is being handled. Do not
+        // let them inherit the client connection and keep the response socket
+        // open until the init script exits.
+        fcntl(client_fd, F_SETFD, FD_CLOEXEC);
 
         if (!set_socket_recv_timeout(client_fd, kClientReadTimeoutSeconds)) {
             close(client_fd);
