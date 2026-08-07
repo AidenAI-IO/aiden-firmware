@@ -83,7 +83,7 @@ async function stopSTTTest() {
       body: sttResultBody(payload),
     });
   } catch (err) {
-    setSTTTestButtonState(false, false);
+    setSTTTestButtonState(true, false);
     updateTestToast(token, {
       className: 'test-toast show fail',
       title: {key: 'stt.stop_failed'},

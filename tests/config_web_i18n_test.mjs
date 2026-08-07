@@ -288,6 +288,8 @@ const systemEnvContent = new Element();
 const saveSystemEnvButton = new Element();
 const commentSystemEnvButton = new Element();
 const systemEnvSection = new Element();
+const agentSection = new Element();
+const saveAgentButton = new Element();
 const exportLogsButton = new Element();
 [
   ['test-stt', testButton], ['testToast', testToast], ['testToastTitle', testToastTitle],
@@ -296,6 +298,7 @@ const exportLogsButton = new Element();
   ['agentLogMeta', agentLogMeta], ['system_env_content', systemEnvContent],
   ['save-system_env', saveSystemEnvButton], ['comment-system_env', commentSystemEnvButton],
   ['section-system_env', systemEnvSection],
+  ['section-agent', agentSection], ['save-agent', saveAgentButton],
   ['exportLogsBtn', exportLogsButton],
 ].forEach(([id, element]) => elementsById.set(id, element));
 elements.push(testButton, autoScrollButton, refreshLogButton, agentLogText);
@@ -369,10 +372,21 @@ applyLocale('zh-CN', false);
 await sttModule.namespace.stopSTTTest();
 assert.equal(testToastTitle.textContent, '结束 [stt] 测试失败');
 assert.equal(testToastBody.textContent, 'raw stop failure');
+assert.equal(appState.sttTest.recording, true);
+assert.equal(appState.sttTest.busy, false);
 applyLocale('en-US', false);
 assert.equal(testToastTitle.textContent, 'Failed to end [stt] test');
 assert.equal(testToastBody.textContent, 'raw stop failure');
 requestError = null;
+
+const confirmedAgentConfig = {input_mode: 'stt'};
+appState.config = {agent: confirmedAgentConfig};
+registerRuntime({readSection: () => ({input_mode: 'text'})});
+requestImpl = async () => { throw new Error('raw save failure'); };
+await configFormModule.namespace.saveSection('agent');
+assert.equal(appState.config.agent, confirmedAgentConfig);
+assert.deepEqual(appState.config.agent, {input_mode: 'stt'});
+requestImpl = null;
 
 const sectionOwnerRequest = deferred();
 requestImpl = () => sectionOwnerRequest.promise;
