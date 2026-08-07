@@ -81,6 +81,31 @@ func TestSelectBondedDevicePrefersTrustedBond(t *testing.T) {
 	}
 }
 
+func TestSelectBondedDevicePrefersConnectedBond(t *testing.T) {
+	connected := dbus.ObjectPath("/org/bluez/hci0/dev_02")
+	trusted := dbus.ObjectPath("/org/bluez/hci0/dev_01")
+	objects := managedObjects{
+		connected: {
+			blueZDeviceInterface: {
+				"Connected": dbus.MakeVariant(true),
+				"Paired":    dbus.MakeVariant(true),
+				"Trusted":   dbus.MakeVariant(false),
+			},
+		},
+		trusted: {
+			blueZDeviceInterface: {
+				"Connected": dbus.MakeVariant(false),
+				"Paired":    dbus.MakeVariant(true),
+				"Trusted":   dbus.MakeVariant(true),
+			},
+		},
+	}
+	selected, count := selectBondedDevice(objects)
+	if selected != connected || count != 2 {
+		t.Fatalf("unexpected connected selection path=%s count=%d", selected, count)
+	}
+}
+
 func TestPairingPolicyAllowsOnlyWindowOrTrustedDevice(t *testing.T) {
 	trusted := dbus.ObjectPath("/org/bluez/hci0/dev_01")
 	other := dbus.ObjectPath("/org/bluez/hci0/dev_02")
@@ -90,10 +115,26 @@ func TestPairingPolicyAllowsOnlyWindowOrTrustedDevice(t *testing.T) {
 	}
 	backend.stateMu.Lock()
 	backend.trustedDevice = trusted
+	backend.pairingOpen = true
+	backend.stateMu.Unlock()
+	if !backend.deviceAllowed(other) {
+		t.Fatal("an explicit connection window must allow a phone even when an old bond exists")
+	}
+	backend.stateMu.Lock()
 	backend.pairingOpen = false
 	backend.stateMu.Unlock()
 	if !backend.deviceAllowed(trusted) || backend.deviceAllowed(other) {
 		t.Fatal("only the selected trusted device must remain authorized")
+	}
+}
+
+func TestStartPairingDoesNotTreatBondAsConnection(t *testing.T) {
+	backend := &blueZBackend{
+		pairingWindow: 0,
+		trustedDevice: dbus.ObjectPath("/org/bluez/hci0/dev_01"),
+	}
+	if err := backend.StartPairing(); err != nil {
+		t.Fatalf("StartPairing() rejected an existing bond: %v", err)
 	}
 }
 

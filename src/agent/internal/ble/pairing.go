@@ -29,6 +29,11 @@ func bondedDevices(objects managedObjects) []bondedDevice {
 		devices = append(devices, bondedDevice{path: path, properties: properties})
 	}
 	sort.Slice(devices, func(i, j int) bool {
+		iConnected := variantBool(devices[i].properties, "Connected")
+		jConnected := variantBool(devices[j].properties, "Connected")
+		if iConnected != jConnected {
+			return iConnected
+		}
 		iTrusted := variantBool(devices[i].properties, "Trusted")
 		jTrusted := variantBool(devices[j].properties, "Trusted")
 		if iTrusted != jTrusted {
@@ -53,7 +58,13 @@ func (b *blueZBackend) refreshTrustedDevice(objects managedObjects) (dbus.Object
 	previous := b.trustedDevice
 	selected := dbus.ObjectPath("")
 	for _, device := range devices {
-		if device.path == previous {
+		if variantBool(device.properties, "Connected") {
+			selected = device.path
+			break
+		}
+	}
+	for _, device := range devices {
+		if !selected.IsValid() && device.path == previous {
 			selected = previous
 			break
 		}
@@ -70,9 +81,6 @@ func (b *blueZBackend) refreshTrustedDevice(objects managedObjects) (dbus.Object
 				b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
 			}
 		}
-		if err := b.closePairingWindow(); err != nil {
-			return selected, len(devices), err
-		}
 	}
 	return selected, len(devices), nil
 }
@@ -85,12 +93,9 @@ func (b *blueZBackend) StartPairing() error {
 		return ErrBluetoothUnavailable
 	}
 
-	b.stateMu.Lock()
-	trusted := b.trustedDevice
-	b.stateMu.Unlock()
-	if trusted.IsValid() {
-		return ErrAlreadyPaired
-	}
+	// A bond is only a transport cache. An explicit Connect action must always
+	// reopen the window so the current phone can reconnect, finish an incomplete
+	// authentication, or create a new bond after either side forgot the old one.
 	return b.beginPairingWindow(time.Now())
 }
 
@@ -370,10 +375,13 @@ func advertisedManufacturerData(boardIdentity []byte) map[uint16]dbus.Variant {
 func (b *blueZBackend) deviceAllowed(device dbus.ObjectPath) bool {
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
+	if b.pairingOpen {
+		return true
+	}
 	if b.trustedDevice.IsValid() {
 		return device == b.trustedDevice
 	}
-	return b.pairingOpen
+	return false
 }
 
 func stableDeviceName(baseName, adapterAddress string) string {

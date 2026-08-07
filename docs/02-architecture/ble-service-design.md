@@ -32,9 +32,9 @@ HOGP 继续作为 iOS 系统可识别的标准 Profile，使 Aiden 在系统蓝�
 - 作为 ANCS Consumer 接收 iOS 系统通知并转换为统一事件；
 - 通过 UDS 向 Agent 提供状态、Wake 和通知事件读取接口；
 - Agent 提供 BLE 状态、开始配对和清除板端 bond 的 HTTP API；
-- App 提供“蓝牙与系统通知”UI，负责打开配对窗口、展示状态和发起解绑；
+- App 提供“蓝牙与系统通知”UI，负责打开连接窗口并展示实时连接状态；
 - App 通过 CoreBluetooth 触发系统配对、状态恢复、自动连接并订阅 Wake；
-- App 打开时复用已有系统 bond，不要求用户再次配对；
+- App 打开时优先复用自己保存的 peripheral；系统 bond 只作为底层缓存；
 - BLE 故障不影响 USB HID、USB ECM、Wi-Fi 或 Phone Bridge HTTP Queue。
 
 ### 2.2 不在本版完成
@@ -84,7 +84,7 @@ Agent 不直接操作 BlueZ。这样 BLE 生命周期与 Agent 解耦，后续�
         | - 通过 USB ECM 请求板端开放配对窗口            |
         | - CoreBluetooth 发起连接并触发系统配对         |
         | - 订阅 Wake                                    |
-        | - 展示配对状态和解绑引导                       |
+        | - 展示连接、Wake 与系统通知状态                |
         | - Wake 后通过 USB ECM 拉取 HTTP Queue          |
         +-----------------------+------------------------+
                                 |
@@ -204,28 +204,29 @@ UUID、稳定广播名称和该身份全部匹配时才允许首次连接和配�
 4. App 从状态响应取得唯一 `device_name`，使用 Wake Service UUID 和该名称扫描当前 Aiden；
 5. App 订阅要求加密的 Wake Characteristic，iOS 自动显示系统配对确认；
 6. 用户点击系统“配对”后，BlueZ 保存 bond 并将首台 iPhone 标记为 Trusted；
-7. `ble_service` 立即关闭 Discoverable/Pairable，App 订阅 Wake，板端继续建立 ANCS；
-8. App 轮询 Agent 状态并展示蓝牙绑定、后台唤醒和系统通知三个阶段。
+7. App 成功订阅 Wake 后，`ble_service` 关闭 Discoverable/Pairable，板端继续建立 ANCS；
+8. App 轮询 Agent 状态并展示当前蓝牙连接、后台唤醒和系统通知状态。
 
 App 负责发起和展示流程，但配对确认属于 iOS。App 不得模拟确认、绕过系统弹窗或把
 “CoreBluetooth 已连接”误判为系统 bond 已完成。
 
-### 5.2 已经配对后打开 App
+### 5.2 已有 bond 后连接 App
 
 1. 如果 App 已保存 peripheral identifier，启动时创建支持 state restoration 的
    `CBCentralManager` 并自动恢复；
-2. 如果板端已有 bond、但 App 尚未保存 identifier，用户点击“连接 Aiden App”；
-3. App 读取板端状态，发现 `paired=true` 后跳过 `pairing_start`，按 `device_name` 扫描；
-4. CoreBluetooth `connect` 附着到已有 peripheral；
+2. 用户点击“连接 Aiden 蓝牙”时，App 始终调用 `pairing_start` 打开或刷新连接窗口；
+3. App 只根据自己是否保存 peripheral identifier 决定复用还是重新扫描，不使用板端
+   `paired` 作为产品连接状态；
+4. CoreBluetooth 能复用现有系统关系时直接连接，否则由 iOS 进入系统配对流程；
 5. App 发现并订阅 Wake Characteristic；
-6. 不创建第二个 bond，也不再次要求用户配对；
-7. 用户关闭 App 后，HOGP 和 ANCS 仍可继续工作，只有 Wake subscriber 消失。
+6. Wake 订阅成功后才显示“蓝牙已连接”；
+7. 用户关闭 App 后 Wake subscriber 消失，页面显示未连接，bond 仅作为下次重连缓存。
 
 这里的 `connect` 是 App 建立自己的 CoreBluetooth 会话，不代表再建立一条独立物理连接。
 
 ### 5.3 断开 App 蓝牙连接
 
-App 中的“取消连接”只停止 App 自己的 CoreBluetooth Wake 会话并关闭自动重连，保留
+App 中的“断开蓝牙”只停止 App 自己的 CoreBluetooth Wake 会话并关闭自动重连，保留
 iPhone 与板端的系统 bond，以及 App 用于后续直接找回同一 `CBPeripheral` 的本地身份记录。
 正常 UI 不删除板端 bond，也不要求用户前往系统设置忽略设备；再次点击连接时恢复自动重连
 并复用已有 bond。`pairing_forget` 仅保留为板端维护操作，不对 App HTTP 接口暴露。
@@ -242,10 +243,10 @@ UDS 复用项目现有的 12 字节小端 envelope。本版提供五个业务操
 
 | 操作 | 用途 |
 | --- | --- |
-| `status` | 查询 HCI、BlueZ、连接、配对、Wake subscriber 和 ANCS 状态 |
+| `status` | 查询 HCI、BlueZ、连接、底层 bond、Wake subscriber 和 ANCS 状态 |
 | `wake` | best-effort 发送 Wake Notify |
 | `events_since` | 按 cursor 增量读取内存中的 ANCS 事件 |
-| `pairing_start` | 在没有可信 bond 时打开配置时长的配对窗口 |
+| `pairing_start` | 打开或刷新配置时长的连接窗口；已有 bond 不冲突 |
 | `pairing_forget` | 删除板端 BlueZ bond、Trusted 状态和当前连接状态 |
 
 示例：
@@ -270,7 +271,7 @@ App 不直接访问 UDS。Agent 将配对控制转换成手机可通过 USB ECM 
 | Method | Path | 用途 |
 | --- | --- | --- |
 | `GET` | `/api/bluetooth/status` | 获取完整 BLE runtime status |
-| `POST` | `/api/bluetooth/pairing/start` | 打开配对窗口；已有 Trusted bond 时返回冲突 |
+| `POST` | `/api/bluetooth/pairing/start` | 打开或刷新连接窗口；已有 Trusted bond 也可调用 |
 
 配对写接口只接受从 `192.168.42.1` USB ECM 监听地址进入的 `192.168.42.0/24` 请求或本机
 loopback 请求；Wi-Fi 等其它监听地址返回 `403`。HTTP API 不承载 BLE 密钥、通知正文或
@@ -285,8 +286,8 @@ Phone Bridge 命令。
 - 用户从 App 发起后才开放默认 5 分钟窗口，重复发起会刷新 deadline；
 - 5 分钟是显式用户操作后的安全上限，用来覆盖蓝牙授权和 iOS 系统确认耗时；App 会立即
   开始扫描，成功后窗口立刻关闭，不会固定暴露满 5 分钟；
-- 已有 Trusted bond 时拒绝打开新配对窗口并直接复用现有 bond；
-- 配对成功后立即关闭 Discoverable/Pairable；
+- 显式连接时即使已有 Trusted bond 也重新开放限时窗口，bond 仅作为底层重连缓存；
+- App 完成加密 Wake 订阅后立即关闭 Discoverable/Pairable；
 - 清除或替换手机属于维护流程；正常 App UI 只断开 Wake 会话并保留 bond；
 - Wake 和 HOGP 的敏感 Characteristic 要求加密连接；
 - ANCS 事件只保存在有界内存，不写入磁盘、Agent memory 或普通日志；
@@ -322,15 +323,15 @@ Phone Bridge 命令。
 - HOGP 不造成不可接受的额外键盘或软键盘体验；
 - 板端可以接收短信、邮件等 ANCS 通知并形成标准化事件；
 - 系统蓝牙设置中存在可管理的 Aiden 条目和“忽略此设备”入口；
-- App 解绑后板端 bond 被删除，并明确引导用户完成 iPhone 侧忽略设备。
+- App 断开后页面显示未连接；是否在系统设置忽略设备不属于 App 连接状态。
 
 ### 9.3 App 增强模式验收
 
 - 未预先配对时，App 可以打开板端窗口、扫描并发起连接，首次配对仍显示系统确认；
-- 板端已有历史 bond、但 App 尚未保存 identifier 时，App 能复用该 bond，不出现第二次配对；
+- 板端已有历史 bond、但 App 尚未保存 identifier 时，连接按钮仍能打开窗口并建立连接；
 - 多台 Aiden 同时广播时，App 只连接 USB 当前板端返回的 `device_name`；
 - App 前台、后台和锁屏时可订阅并收到 Wake Notify；
-- App UI 分别显示 bond、Wake subscriber 和 ANCS subscription 状态；
+- App UI 只把实时链路显示为已连接或未连接，并分别展示 Wake 与 ANCS 状态；
 - 收到 Wake 后仍通过 HTTP Queue 获取命令；BLE 中不出现工具 payload；
 - BLE 不可用或 App 未订阅时，HTTP Queue 中的命令不会丢失。
 
@@ -349,7 +350,7 @@ Phone Bridge 命令。
 - 最小 Consumer Control HOGP GATT server；
 - 稳定设备后缀、App 显式开启的限时配对窗口和单一可信设备策略；
 - Agent BLE 状态、配对开始和板端解绑 HTTP API；
-- App 蓝牙设置 UI、CoreBluetooth 配对编排和系统解绑引导；
+- App 蓝牙设置 UI、CoreBluetooth 连接与系统配对编排；
 - Wake、ANCS、UDS 和 Agent Queue Wake；
 - ANCS 分片、超时、响应大小限制和有界队列处理。
 

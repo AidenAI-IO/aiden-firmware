@@ -853,11 +853,21 @@ func (c *wakeCharacteristic) ReadValue(options map[string]dbus.Variant) ([]byte,
 func (c *wakeCharacteristic) StartNotify() *dbus.Error {
 	if notifying, _ := c.properties.GetMust(blueZGattCharInterface, "Notifying").(bool); notifying {
 		c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = true })
+		c.backend.finishConnectionWindow()
 		return nil
 	}
 	c.properties.SetMust(blueZGattCharInterface, "Notifying", true)
 	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = true })
+	c.backend.finishConnectionWindow()
 	return nil
+}
+
+func (b *blueZBackend) finishConnectionWindow() {
+	go func() {
+		if err := b.closePairingWindow(); err != nil {
+			b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
+		}
+	}()
 }
 
 func (c *wakeCharacteristic) StopNotify() *dbus.Error {

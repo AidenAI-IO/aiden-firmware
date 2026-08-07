@@ -197,8 +197,6 @@ func marshalBLEError(err error) []byte {
 	switch {
 	case errors.Is(err, ErrBluetoothUnavailable):
 		status = "SERVICE_UNAVAILABLE"
-	case errors.Is(err, ErrAlreadyPaired):
-		status = "FAILED_PRECONDITION"
 	}
 	return marshalResponse(map[string]any{"status": status, "error": err.Error()})
 }

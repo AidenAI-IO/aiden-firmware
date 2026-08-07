@@ -60,21 +60,21 @@ control channel competing with USB HID.
 The iOS app explicitly calls the Agent pairing API over USB ECM; only then does
 the service open a five-minute pairing window. The app reads the board's stable
 `device_name` and collision-resistant `board_identity` first and only connects
-a Wake-service advertiser carrying both values. The first paired phone is
-marked trusted, the window closes immediately, and new devices are rejected by
-the BlueZ pairing agent. Existing bonds can reconnect while the adapter remains
-non-discoverable. `PAIRING_WINDOW_SECONDS` in `/etc/aiden_ble_service.conf`
-controls the maximum user-initiated window.
+a Wake-service advertiser carrying both values. A successful encrypted Wake
+subscription closes the window; an existing bond does not prevent an explicit
+Connect action from reopening it. Outside that window, only the selected
+trusted phone is authorized. `PAIRING_WINDOW_SECONDS` in
+`/etc/aiden_ble_service.conf` controls the maximum user-initiated window.
 
 The five-minute value is an upper bound that tolerates Bluetooth permission and
 iOS confirmation delays; the app starts scanning immediately and successful
 pairing closes the window early. A service restart never opens the window by
 itself.
 
-If a bond predates the app's saved CoreBluetooth peripheral identifier, the app
-can attach to that existing bond without opening a new pairing window. After a
-bond exists, HOGP reconnection and board-side ANCS continue even when the app is
-not running.
+The app reports only the live connection state. A bond is a reconnect cache,
+not proof that the App Wake session is connected. Every explicit Connect action
+reopens the board window; CoreBluetooth reuses a saved peripheral when possible
+and otherwise performs the system pairing flow.
 
 ## Wake GATT Contract
 
@@ -161,8 +161,9 @@ means the requested cursor is older than the bounded ring's retained history.
 {"op":"pairing_start"}
 ```
 
-Opens the configured pairing window only when no trusted bond exists. An
-existing trusted phone returns `FAILED_PRECONDITION`.
+Opens or refreshes the configured connection window. Existing bonds are kept
+and do not cause a conflict; the window closes after the App establishes the
+encrypted Wake subscription or when the deadline expires.
 
 ### `pairing_forget`
 
@@ -181,8 +182,8 @@ The companion app reaches the pairing operations through the Agent on USB ECM:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/bluetooth/status` | Read BLE runtime and bond state |
-| `POST` | `/api/bluetooth/pairing/start` | Open the user-initiated pairing window |
+| `GET` | `/api/bluetooth/status` | Read BLE runtime and live connection state |
+| `POST` | `/api/bluetooth/pairing/start` | Open or refresh the user-initiated connection window |
 
 The pairing write is accepted only over the board's USB ECM address
 (`192.168.42.1/24`) or loopback; requests arriving through Wi-Fi and other

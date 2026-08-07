@@ -9,7 +9,6 @@ import (
 )
 
 var ErrBluetoothUnavailable = errors.New("Bluetooth backend is unavailable")
-var ErrAlreadyPaired = errors.New("Bluetooth already has a trusted device")
 
 type RuntimeStatus struct {
 	StartedAt              string `json:"started_at"`

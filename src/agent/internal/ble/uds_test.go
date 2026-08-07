@@ -111,11 +111,11 @@ func TestUDSPairingFailures(t *testing.T) {
 		t.Fatalf("missing backend status=%#v", response)
 	}
 
-	backend := &fakeWakeBackend{pairingErr: ErrAlreadyPaired}
+	backend := &fakeWakeBackend{pairingErr: errors.New("pairing failed")}
 	service.setBackend(backend)
 	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"pairing_start"}`), nil))
-	if response["status"] != "FAILED_PRECONDITION" {
-		t.Fatalf("already-paired status=%#v", response)
+	if response["status"] != "INTERNAL_ERROR" {
+		t.Fatalf("pairing failure status=%#v", response)
 	}
 }
 
