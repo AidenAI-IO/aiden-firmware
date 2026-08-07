@@ -154,3 +154,83 @@ speed = 1.0
 		t.Errorf("tts.provider = %q, want the ref %q", cfg.TTS.Provider, "fish-main")
 	}
 }
+
+func TestLoadResolvedConfigMigratesMixedVoiceCredentialsToReferencedRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	body := `
+[model]
+provider = "openai"
+model = "gpt-4o"
+api_key = "sk-model"
+
+[tts_providers.voice]
+type = "minimax-cn"
+api_key = "$TTS_API_KEY"
+voice_id = "record-voice"
+emotion = "record-emotion"
+
+[stt_providers.speech]
+type = "tencent-asr"
+api_key = "$STT_API_KEY"
+model = "record-model"
+app_id = "record-app"
+secret_id = "record-id"
+secret_key = "$STT_SECRET_KEY"
+
+[tts]
+provider = "voice"
+api_key = "flat-tts-key"
+voice_id = "flat-voice"
+
+[stt]
+provider = "speech"
+api_key = "flat-stt-key"
+app_id = "flat-app"
+secret_id = ""
+secret_key = "flat-secret-key"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig: %v", err)
+	}
+
+	if got := cfg.TTSProviders["voice"].APIKey; got != "flat-tts-key" {
+		t.Errorf("tts record api_key = %q, want flat override", got)
+	}
+	if got := cfg.TTSProviders["voice"].VoiceID; got != "flat-voice" {
+		t.Errorf("tts record voice_id = %q, want flat override", got)
+	}
+	if got := cfg.TTSProviders["voice"].Emotion; got != "record-emotion" {
+		t.Errorf("tts record emotion = %q, want existing value rather than editor default", got)
+	}
+	stt := cfg.STTProviders["speech"]
+	if stt.APIKey != "flat-stt-key" {
+		t.Errorf("stt record api_key = %q, want flat override", stt.APIKey)
+	}
+	if stt.SecretID != "record-id" {
+		t.Errorf("stt record secret_id = %q, want existing value preserved by empty flat field", stt.SecretID)
+	}
+	if stt.SecretKey != "flat-secret-key" {
+		t.Errorf("stt record secret_key = %q, want flat override", stt.SecretKey)
+	}
+	if stt.Model != "record-model" {
+		t.Errorf("stt record model = %q, want existing value rather than editor default", stt.Model)
+	}
+	if stt.AppID != "flat-app" {
+		t.Errorf("stt record app_id = %q, want flat override", stt.AppID)
+	}
+	if cfg.TTS.APIKey != "" {
+		t.Errorf("tts.api_key = %q, want cleared", cfg.TTS.APIKey)
+	}
+	if cfg.TTS.Model != "" || cfg.TTS.VoiceID != "" || cfg.TTS.Emotion != "" || cfg.TTS.ReferenceID != "" {
+		t.Errorf("flat tts provider fields not cleared: %+v", cfg.TTS)
+	}
+	if cfg.STT.APIKey != "" || cfg.STT.Model != "" || cfg.STT.AppID != "" ||
+		cfg.STT.SecretID != "" || cfg.STT.SecretKey != "" {
+		t.Errorf("flat stt credentials not cleared: %+v", cfg.STT)
+	}
+}

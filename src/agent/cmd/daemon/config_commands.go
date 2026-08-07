@@ -223,7 +223,7 @@ func jsonFieldPresent(data []byte, key string) (bool, error) {
 
 type ttsDTO struct {
 	Provider    string  `json:"provider"`
-	APIKey      string  `json:"api_key"`
+	APIKey      string  `json:"api_key,omitempty"`
 	Model       string  `json:"model"`
 	VoiceID     string  `json:"voice_id"`
 	ReferenceID string  `json:"reference_id"`
@@ -247,12 +247,12 @@ func (d ttsDTO) playbackTestRequest(text string) agent.TTSPlaybackTestRequest {
 type sttDTO struct {
 	Provider        string `json:"provider"`
 	Language        string `json:"language"`
-	APIKey          string `json:"api_key"`
+	APIKey          string `json:"api_key,omitempty"`
 	Model           string `json:"model"`
 	BaseURL         string `json:"base_url"`
 	AppID           string `json:"app_id"`
-	SecretID        string `json:"secret_id"`
-	SecretKey       string `json:"secret_key"`
+	SecretID        string `json:"secret_id,omitempty"`
+	SecretKey       string `json:"secret_key,omitempty"`
 	Region          string `json:"region"`
 	EngineModelType string `json:"engine_model_type"`
 }
@@ -693,7 +693,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		},
 		TTS: ttsDTO{
 			Provider:    cfg.TTS.Provider,
-			APIKey:      cfg.TTS.APIKey,
 			Model:       cfg.TTS.Model,
 			VoiceID:     cfg.TTS.VoiceID,
 			ReferenceID: cfg.TTS.ReferenceID,
@@ -703,12 +702,9 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		STT: sttDTO{
 			Provider:        cfg.STT.Provider,
 			Language:        cfg.STT.Language,
-			APIKey:          cfg.STT.APIKey,
 			Model:           cfg.STT.Model,
 			BaseURL:         cfg.STT.BaseURL,
 			AppID:           cfg.STT.AppID,
-			SecretID:        cfg.STT.SecretID,
-			SecretKey:       cfg.STT.SecretKey,
 			Region:          cfg.STT.Region,
 			EngineModelType: cfg.STT.EngineModelType,
 		},

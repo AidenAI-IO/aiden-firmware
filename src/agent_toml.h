@@ -232,6 +232,7 @@ struct AgentToml {
 };
 
 bool load_agent_toml(const char* path, AgentToml& config, std::string* error = nullptr);
+void migrate_flat_voice_provider_fields(AgentToml& config);
 bool save_agent_toml(const char* path, const AgentToml& config, std::string* error = nullptr);
 
 }

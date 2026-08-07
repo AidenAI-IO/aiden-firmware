@@ -161,6 +161,51 @@ func TestConfigWire_VoiceProvidersOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestConfigWire_FlatVoiceCredentialsAreWriteOnly(t *testing.T) {
+	cfg := agent.Config{
+		Model: agent.ModelConfig{Provider: "openai", Model: "gpt-4o"},
+		TTS: agent.TTSConfig{
+			Provider: "voice",
+			APIKey:   "flat-tts-secret",
+		},
+		STT: agent.STTConfig{
+			Provider:  "speech",
+			APIKey:    "flat-stt-secret",
+			SecretID:  "flat-secret-id",
+			SecretKey: "flat-secret-key",
+		},
+	}
+	payload, err := json.Marshal(webConfigDTOFromAgentConfig(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var root map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &root); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	for _, field := range []string{"api_key"} {
+		if _, ok := root["tts"][field]; ok {
+			t.Errorf("tts.%s must be omitted from editor output: %s", field, payload)
+		}
+	}
+	for _, field := range []string{"api_key", "secret_id", "secret_key"} {
+		if _, ok := root["stt"][field]; ok {
+			t.Errorf("stt.%s must be omitted from editor output: %s", field, payload)
+		}
+	}
+
+	var submitted webConfigDTO
+	input := `{"tts":{"api_key":"test-tts"},"stt":{"api_key":"test-stt","secret_id":"test-id","secret_key":"test-key"}}`
+	if err := json.Unmarshal([]byte(input), &submitted); err != nil {
+		t.Fatalf("decode internal test input: %v", err)
+	}
+	if submitted.TTS.APIKey != "test-tts" || submitted.STT.APIKey != "test-stt" ||
+		submitted.STT.SecretID != "test-id" || submitted.STT.SecretKey != "test-key" {
+		t.Errorf("internal flat credential decoding regressed: %+v %+v", submitted.TTS, submitted.STT)
+	}
+}
+
 // A save that stores a dangling reference silently loses voice on the next
 // restart, so config-check must reject it while the user is still on the form.
 // Boot stays lenient on purpose -- see the agent package tests.

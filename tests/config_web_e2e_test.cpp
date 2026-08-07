@@ -1377,6 +1377,101 @@ TEST_CASE("config_web: redacted agent CLI provider credentials survive reads and
     CHECK(saved.find("secret_key = \"stored-key\"") != std::string::npos);
 }
 
+TEST_CASE("config_web: mixed flat voice credentials migrate without leaking") {
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    write_file(tmp + "/config.json",
+               "{\"tts_providers\":{\"voice\":{\"type\":\"minimax-cn\",\"has_api_key\":true}},"
+               "\"stt_providers\":{\"speech\":{\"type\":\"tencent-asr\","
+               "\"has_api_key\":true,\"has_secret_id\":true,\"has_secret_key\":true}},"
+               "\"model\":{\"provider\":\"openai\",\"model\":\"gpt-4o\"},"
+               "\"tts\":{\"provider\":\"voice\",\"speed\":1},"
+               "\"stt\":{\"provider\":\"speech\",\"language\":\"zh\"},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[tts_providers.voice]\n"
+               "type = \"minimax-cn\"\n"
+               "api_key = \"record-tts-key\"\n\n"
+               "[stt_providers.speech]\n"
+               "type = \"tencent-asr\"\n"
+               "api_key = \"record-stt-key\"\n"
+               "secret_id = \"record-secret-id\"\n"
+               "secret_key = \"record-secret-key\"\n\n"
+               "[tts]\n"
+               "provider = \"voice\"\n"
+               "api_key = \"flat-tts-key\"\n\n"
+               "[stt]\n"
+               "provider = \"speech\"\n"
+               "api_key = \"flat-stt-key\"\n"
+               "secret_id = \"\"\n"
+               "secret_key = \"flat-secret-key\"\n");
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config", "");
+    REQUIRE(get_resp.status == 200);
+    CHECK(get_resp.body.find("flat-tts-key") == std::string::npos);
+    CHECK(get_resp.body.find("flat-stt-key") == std::string::npos);
+    CHECK(get_resp.body.find("flat-secret-key") == std::string::npos);
+    cJSON* get_root = cJSON_Parse(get_resp.body.c_str());
+    REQUIRE(get_root != nullptr);
+    cJSON* get_config = cJSON_GetObjectItem(get_root, "config");
+    REQUIRE(get_config != nullptr);
+    cJSON* get_tts = cJSON_GetObjectItem(get_config, "tts");
+    cJSON* get_stt = cJSON_GetObjectItem(get_config, "stt");
+    REQUIRE(get_tts != nullptr);
+    REQUIRE(get_stt != nullptr);
+    CHECK(cJSON_GetObjectItem(get_tts, "api_key") == nullptr);
+    CHECK(cJSON_GetObjectItem(get_stt, "api_key") == nullptr);
+    CHECK(cJSON_GetObjectItem(get_stt, "secret_id") == nullptr);
+    CHECK(cJSON_GetObjectItem(get_stt, "secret_key") == nullptr);
+    cJSON_Delete(get_root);
+
+    const std::string body =
+        "{\"config\":{\"hid\":{\"keyboard_layout\":\"azerty\","
+        "\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
+    HttpResponse post_resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(post_resp.status == 200);
+    CHECK(post_resp.body.find("flat-tts-key") == std::string::npos);
+    CHECK(post_resp.body.find("flat-stt-key") == std::string::npos);
+    CHECK(post_resp.body.find("flat-secret-key") == std::string::npos);
+    cJSON* post_root = cJSON_Parse(post_resp.body.c_str());
+    REQUIRE(post_root != nullptr);
+    cJSON* post_config = cJSON_GetObjectItem(post_root, "config");
+    REQUIRE(post_config != nullptr);
+    cJSON* post_tts = cJSON_GetObjectItem(post_config, "tts");
+    cJSON* post_stt = cJSON_GetObjectItem(post_config, "stt");
+    REQUIRE(post_tts != nullptr);
+    REQUIRE(post_stt != nullptr);
+    CHECK(cJSON_GetObjectItem(post_tts, "api_key") == nullptr);
+    CHECK(cJSON_GetObjectItem(post_stt, "api_key") == nullptr);
+    CHECK(cJSON_GetObjectItem(post_stt, "secret_id") == nullptr);
+    CHECK(cJSON_GetObjectItem(post_stt, "secret_key") == nullptr);
+    cJSON_Delete(post_root);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("api_key = \"flat-tts-key\"") != std::string::npos);
+    CHECK(saved.find("api_key = \"flat-stt-key\"") != std::string::npos);
+    CHECK(saved.find("secret_id = \"record-secret-id\"") != std::string::npos);
+    CHECK(saved.find("secret_key = \"flat-secret-key\"") != std::string::npos);
+    CHECK(saved.find("record-tts-key") == std::string::npos);
+    CHECK(saved.find("record-stt-key") == std::string::npos);
+    CHECK(saved.find("record-secret-key") == std::string::npos);
+
+    const size_t tts_at = saved.find("[tts]\n");
+    REQUIRE(tts_at != std::string::npos);
+    const size_t tts_end = saved.find("\n[", tts_at + 1);
+    CHECK(saved.substr(tts_at, tts_end - tts_at).find("api_key") == std::string::npos);
+    const size_t stt_at = saved.find("[stt]\n");
+    REQUIRE(stt_at != std::string::npos);
+    const size_t stt_end = saved.find("\n[", stt_at + 1);
+    const std::string stt_section = saved.substr(stt_at, stt_end - stt_at);
+    CHECK(stt_section.find("api_key") == std::string::npos);
+    CHECK(stt_section.find("secret_id") == std::string::npos);
+    CHECK(stt_section.find("secret_key") == std::string::npos);
+}
+
 TEST_CASE("config_web: POST /api/config renames a provider with its model reference") {
     // Renaming in the dialog posts the new providers map plus the rewritten
     // model sections in one request. The old section must be gone and the model

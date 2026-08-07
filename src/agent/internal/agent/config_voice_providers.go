@@ -245,8 +245,9 @@ func (c Config) ValidateVoiceProviders() error {
 // migrateLegacyVoiceProviders upgrades flat [tts]/[stt] credentials into named
 // records so the config page sees one shape.
 //
-// An existing record always wins: migration never overwrites what the user (or
-// the config page) wrote explicitly.
+// For a mixed config, an explicitly populated flat field keeps its historical
+// runtime precedence and overwrites the referenced record during migration.
+// Fields inherited only from DefaultConfig are cleared without being copied.
 func migrateLegacyVoiceProviders(cfg *Config, metadata toml.MetaData) {
 	if cfg == nil {
 		return
@@ -273,10 +274,39 @@ func migrateLegacyTTSFlatFields(cfg *Config, metadata toml.MetaData) {
 		return
 	}
 	provider := normalizeTTSProvider(cfg.TTS.Provider)
-	if provider == "" || !isKnownTTSProviderType(provider) {
+	if provider == "" {
 		return
 	}
-	if _, isRef := cfg.TTSProviders[cfg.TTS.Provider]; isRef {
+	if record, isRef := cfg.TTSProviders[cfg.TTS.Provider]; isRef {
+		// Flat fields historically override inherited record values at runtime.
+		// Preserve explicitly configured non-empty overrides while collapsing
+		// both sources into the record. Clear every provider-specific flat field,
+		// including values inherited from DefaultConfig, so editing never bakes a
+		// default voice into [tts] or leaves a second source behind.
+		if metadata.IsDefined("tts", "api_key") && cfg.TTS.APIKey != "" {
+			record.APIKey = cfg.TTS.APIKey
+		}
+		if metadata.IsDefined("tts", "model") && cfg.TTS.Model != "" {
+			record.Model = cfg.TTS.Model
+		}
+		if metadata.IsDefined("tts", "voice_id") && cfg.TTS.VoiceID != "" {
+			record.VoiceID = cfg.TTS.VoiceID
+		}
+		if metadata.IsDefined("tts", "emotion") && cfg.TTS.Emotion != "" {
+			record.Emotion = cfg.TTS.Emotion
+		}
+		if metadata.IsDefined("tts", "reference_id") && cfg.TTS.ReferenceID != "" {
+			record.ReferenceID = cfg.TTS.ReferenceID
+		}
+		cfg.TTS.APIKey = ""
+		cfg.TTS.Model = ""
+		cfg.TTS.VoiceID = ""
+		cfg.TTS.Emotion = ""
+		cfg.TTS.ReferenceID = ""
+		cfg.TTSProviders[cfg.TTS.Provider] = record
+		return
+	}
+	if !isKnownTTSProviderType(provider) {
 		return
 	}
 	if cfg.TTSProviders == nil {
@@ -330,10 +360,46 @@ func migrateLegacySTTFlatFields(cfg *Config, metadata toml.MetaData) {
 		return
 	}
 	provider := strings.ToLower(strings.TrimSpace(cfg.STT.Provider))
-	if provider == "" || !isKnownSTTProviderType(provider) {
+	if provider == "" {
 		return
 	}
-	if _, isRef := cfg.STTProviders[cfg.STT.Provider]; isRef {
+	if record, isRef := cfg.STTProviders[cfg.STT.Provider]; isRef {
+		if metadata.IsDefined("stt", "api_key") && cfg.STT.APIKey != "" {
+			record.APIKey = cfg.STT.APIKey
+		}
+		if metadata.IsDefined("stt", "model") && cfg.STT.Model != "" {
+			record.Model = cfg.STT.Model
+		}
+		if metadata.IsDefined("stt", "base_url") && cfg.STT.BaseURL != "" {
+			record.BaseURL = cfg.STT.BaseURL
+		}
+		if metadata.IsDefined("stt", "app_id") && cfg.STT.AppID != "" {
+			record.AppID = cfg.STT.AppID
+		}
+		if metadata.IsDefined("stt", "secret_id") && cfg.STT.SecretID != "" {
+			record.SecretID = cfg.STT.SecretID
+		}
+		if metadata.IsDefined("stt", "secret_key") && cfg.STT.SecretKey != "" {
+			record.SecretKey = cfg.STT.SecretKey
+		}
+		if metadata.IsDefined("stt", "region") && cfg.STT.Region != "" {
+			record.Region = cfg.STT.Region
+		}
+		if metadata.IsDefined("stt", "engine_model_type") && cfg.STT.EngineModelType != "" {
+			record.EngineModelType = cfg.STT.EngineModelType
+		}
+		cfg.STT.APIKey = ""
+		cfg.STT.Model = ""
+		cfg.STT.BaseURL = ""
+		cfg.STT.AppID = ""
+		cfg.STT.SecretID = ""
+		cfg.STT.SecretKey = ""
+		cfg.STT.Region = ""
+		cfg.STT.EngineModelType = ""
+		cfg.STTProviders[cfg.STT.Provider] = record
+		return
+	}
+	if !isKnownSTTProviderType(provider) {
 		return
 	}
 	if cfg.STTProviders == nil {

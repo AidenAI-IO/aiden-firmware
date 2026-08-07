@@ -185,6 +185,86 @@ TEST_CASE("agent_toml migrates flat voice credentials into records") {
     std::remove(path.c_str());
 }
 
+TEST_CASE("agent_toml migrates mixed flat credentials into referenced records") {
+    std::string path = voice_temp_path("mixed_voice.toml");
+    {
+        std::ofstream out(path);
+        out << "[tts_providers.voice]\n"
+            << "type = \"minimax-cn\"\n"
+            << "api_key = \"$TTS_API_KEY\"\n"
+            << "voice_id = \"record-voice\"\n"
+            << "emotion = \"record-emotion\"\n"
+            << "[stt_providers.speech]\n"
+            << "type = \"tencent-asr\"\n"
+            << "api_key = \"$STT_API_KEY\"\n"
+            << "model = \"record-model\"\n"
+            << "app_id = \"record-app\"\n"
+            << "secret_id = \"record-id\"\n"
+            << "secret_key = \"$STT_SECRET_KEY\"\n"
+            << "[tts]\n"
+            << "provider = \"voice\"\n"
+            << "api_key = \"flat-tts-key\"\n"
+            << "voice_id = \"flat-voice\"\n"
+            << "[stt]\n"
+            << "provider = \"speech\"\n"
+            << "api_key = \"flat-stt-key\"\n"
+            << "app_id = \"flat-app\"\n"
+            << "secret_id = \"\"\n"
+            << "secret_key = \"flat-secret-key\"\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    REQUIRE(err.empty());
+
+    CHECK(cfg.tts_providers["voice"].api_key == "flat-tts-key");
+    CHECK(cfg.tts_providers["voice"].voice_id == "flat-voice");
+    CHECK(cfg.tts_providers["voice"].emotion == "record-emotion");
+    CHECK(cfg.stt_providers["speech"].api_key == "flat-stt-key");
+    CHECK(cfg.stt_providers["speech"].model == "record-model");
+    CHECK(cfg.stt_providers["speech"].app_id == "flat-app");
+    CHECK(cfg.stt_providers["speech"].secret_id == "record-id");
+    CHECK(cfg.stt_providers["speech"].secret_key == "flat-secret-key");
+    CHECK(cfg.tts.api_key.empty());
+    CHECK(cfg.tts.voice_id.empty());
+    CHECK(cfg.tts.emotion.empty());
+    CHECK(cfg.stt.api_key.empty());
+    CHECK(cfg.stt.model.empty());
+    CHECK(cfg.stt.app_id.empty());
+    CHECK(cfg.stt.secret_id.empty());
+    CHECK(cfg.stt.secret_key.empty());
+
+    REQUIRE(aiden::save_agent_toml(path.c_str(), cfg, &err));
+    const std::string saved = [&path]() {
+        std::ifstream in(path);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }();
+    const size_t tts_at = saved.find("[tts]\n");
+    REQUIRE(tts_at != std::string::npos);
+    const size_t tts_end = saved.find("\n[", tts_at + 1);
+    const std::string tts_section = saved.substr(tts_at, tts_end - tts_at);
+    CHECK(tts_section.find("api_key") == std::string::npos);
+    CHECK(tts_section.find("model") == std::string::npos);
+    CHECK(tts_section.find("voice_id") == std::string::npos);
+    CHECK(tts_section.find("reference_id") == std::string::npos);
+    CHECK(tts_section.find("emotion") == std::string::npos);
+    const size_t stt_at = saved.find("[stt]\n");
+    REQUIRE(stt_at != std::string::npos);
+    const size_t stt_end = saved.find("\n[", stt_at + 1);
+    const std::string stt_section = saved.substr(stt_at, stt_end - stt_at);
+    CHECK(stt_section.find("api_key") == std::string::npos);
+    CHECK(stt_section.find("model") == std::string::npos);
+    CHECK(stt_section.find("base_url") == std::string::npos);
+    CHECK(stt_section.find("app_id") == std::string::npos);
+    CHECK(stt_section.find("secret_id") == std::string::npos);
+    CHECK(stt_section.find("secret_key") == std::string::npos);
+    CHECK(stt_section.find("region") == std::string::npos);
+    CHECK(stt_section.find("engine_model_type") == std::string::npos);
+
+    std::remove(path.c_str());
+}
+
 // A record name that save_agent_toml could not write back must be rejected at
 // load, matching the [model_providers.*] contract: accepting it yields a config that
 // loads cleanly but fails every later save.

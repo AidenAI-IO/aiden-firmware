@@ -2888,7 +2888,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
     cJSON* tts = add_object(root, "tts");
     cJSON_AddStringToObject(tts, "provider", config.tts.provider.c_str());
-    cJSON_AddStringToObject(tts, "api_key", config.tts.api_key.c_str());
+    if (include_secrets) {
+        cJSON_AddStringToObject(tts, "api_key", config.tts.api_key.c_str());
+    }
     cJSON_AddStringToObject(tts, "model", config.tts.model.c_str());
     cJSON_AddStringToObject(tts, "voice_id", config.tts.voice_id.c_str());
     cJSON_AddStringToObject(tts, "reference_id", config.tts.reference_id.c_str());
@@ -2898,12 +2900,16 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON* stt = add_object(root, "stt");
     cJSON_AddStringToObject(stt, "provider", config.stt.provider.c_str());
     cJSON_AddStringToObject(stt, "language", config.stt.language.c_str());
-    cJSON_AddStringToObject(stt, "api_key", config.stt.api_key.c_str());
+    if (include_secrets) {
+        cJSON_AddStringToObject(stt, "api_key", config.stt.api_key.c_str());
+    }
     cJSON_AddStringToObject(stt, "model", config.stt.model.c_str());
     cJSON_AddStringToObject(stt, "base_url", config.stt.base_url.c_str());
     cJSON_AddStringToObject(stt, "app_id", config.stt.app_id.c_str());
-    cJSON_AddStringToObject(stt, "secret_id", config.stt.secret_id.c_str());
-    cJSON_AddStringToObject(stt, "secret_key", config.stt.secret_key.c_str());
+    if (include_secrets) {
+        cJSON_AddStringToObject(stt, "secret_id", config.stt.secret_id.c_str());
+        cJSON_AddStringToObject(stt, "secret_key", config.stt.secret_key.c_str());
+    }
     cJSON_AddStringToObject(stt, "region", config.stt.region.c_str());
     cJSON_AddStringToObject(stt, "engine_model_type", config.stt.engine_model_type.c_str());
 
@@ -6238,6 +6244,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         update_config_from_json(config_json, &config);
         preserve_redacted_agent_secrets(options, &config);
     }
+    aiden::migrate_flat_voice_provider_fields(config);
     // Only an explicitly submitted legacy model.api_key can be migrated. The
     // value loaded from the runtime config is already resolved from a provider
     // record and may belong to a different provider than the request selects.
