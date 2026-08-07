@@ -317,6 +317,19 @@ func (b *blueZBackend) setPairingMode(open bool) error {
 			b.service.status.update(func(status *RuntimeStatus) { status.Advertising = false })
 			return fmt.Errorf("unregister BLE advertisement: %w", unregisterErr)
 		}
+		// Aiden is a custom BLE accessory. Do not advertise HOGP: an iOS
+		// system-owned HID connection can hold the peripheral link and prevent
+		// the app's CoreBluetooth central from discovering Wake.
+		b.advProps.SetMust(
+			blueZAdvertisementInterface,
+			"ServiceUUIDs",
+			advertisedServiceUUIDs(),
+		)
+		b.advProps.SetMust(
+			blueZAdvertisementInterface,
+			"Appearance",
+			advertisedAppearance(),
+		)
 		b.advProps.SetMust(blueZAdvertisementInterface, "Discoverable", open)
 		if err := b.registerAdvertisement(); err != nil {
 			b.service.status.update(func(status *RuntimeStatus) { status.Advertising = false })
@@ -325,6 +338,14 @@ func (b *blueZBackend) setPairingMode(open bool) error {
 		b.service.status.update(func(status *RuntimeStatus) { status.Advertising = true })
 	}
 	return nil
+}
+
+func advertisedServiceUUIDs() []string {
+	return []string{WakeServiceUUID}
+}
+
+func advertisedAppearance() uint16 {
+	return 0
 }
 
 func (b *blueZBackend) deviceAllowed(device dbus.ObjectPath) bool {

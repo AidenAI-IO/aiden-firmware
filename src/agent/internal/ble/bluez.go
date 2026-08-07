@@ -181,7 +181,7 @@ func (b *blueZBackend) start() error {
 		status.AdapterAddress = variantString(adapterProps, "Address")
 		status.AdapterPowered = true
 		status.GattRegistered = true
-		status.HOGPRegistered = true
+		status.HOGPRegistered = false
 		status.Advertising = true
 		status.PairingOpen = pairingOpen
 		status.PairingDeadline = formatDeadline(pairingDeadline)
@@ -337,9 +337,13 @@ func (b *blueZBackend) exportObjects(pairingOpen bool) error {
 	b.wakeObject = &wakeCharacteristic{backend: b}
 	b.wakeProps, err = b.exportGattObject(wakeCharPath, blueZGattCharInterface, prop.Map{
 		blueZGattCharInterface: {
-			"UUID":        {Value: WakeCharacteristicUUID, Emit: prop.EmitConst},
-			"Service":     {Value: wakeServicePath, Emit: prop.EmitConst},
-			"Flags":       {Value: []string{"read", "notify", "encrypt-read", "encrypt-notify"}, Emit: prop.EmitConst},
+			"UUID":    {Value: WakeCharacteristicUUID, Emit: prop.EmitConst},
+			"Service": {Value: wakeServicePath, Emit: prop.EmitConst},
+			// The encrypted flags already imply the read/notify properties. Do not
+			// also publish their unsecured variants: the board's BlueZ version can
+			// otherwise satisfy the read without starting SMP, then reject the CCC
+			// write with "Writing is not permitted" while iOS is still pairing.
+			"Flags":       {Value: []string{"encrypt-read", "encrypt-notify"}, Emit: prop.EmitConst},
 			"Descriptors": {Value: []dbus.ObjectPath{}, Emit: prop.EmitConst},
 			"Value":       {Value: []byte{}, Emit: prop.EmitTrue},
 			"Notifying":   {Value: false, Emit: prop.EmitTrue},
@@ -349,81 +353,12 @@ func (b *blueZBackend) exportObjects(pairingOpen bool) error {
 		return fmt.Errorf("export Wake characteristic: %w", err)
 	}
 
-	if _, err := b.exportGattObject(hidServicePath, blueZGattServiceInterface, prop.Map{
-		blueZGattServiceInterface: {
-			"UUID":    {Value: HIDServiceUUID, Emit: prop.EmitConst},
-			"Primary": {Value: true, Emit: prop.EmitConst},
-			"Characteristics": {Value: []dbus.ObjectPath{
-				hidInformationCharPath,
-				hidReportMapCharPath,
-				hidControlPointCharPath,
-				hidReportCharPath,
-			}, Emit: prop.EmitConst},
-		},
-	}, &struct{}{}); err != nil {
-		return fmt.Errorf("export HID service: %w", err)
-	}
-	if _, err := b.exportGattObject(hidInformationCharPath, blueZGattCharInterface, prop.Map{
-		blueZGattCharInterface: {
-			"UUID":        {Value: HIDInformationCharacteristicUUID, Emit: prop.EmitConst},
-			"Service":     {Value: hidServicePath, Emit: prop.EmitConst},
-			"Flags":       {Value: []string{"read", "encrypt-read"}, Emit: prop.EmitConst},
-			"Descriptors": {Value: []dbus.ObjectPath{}, Emit: prop.EmitConst},
-		},
-	}, &staticReadCharacteristic{value: hidInformationValue()}); err != nil {
-		return fmt.Errorf("export HID Information characteristic: %w", err)
-	}
-	if _, err := b.exportGattObject(hidReportMapCharPath, blueZGattCharInterface, prop.Map{
-		blueZGattCharInterface: {
-			"UUID":        {Value: HIDReportMapCharacteristicUUID, Emit: prop.EmitConst},
-			"Service":     {Value: hidServicePath, Emit: prop.EmitConst},
-			"Flags":       {Value: []string{"read", "encrypt-read"}, Emit: prop.EmitConst},
-			"Descriptors": {Value: []dbus.ObjectPath{}, Emit: prop.EmitConst},
-		},
-	}, &staticReadCharacteristic{value: hidReportMapValue()}); err != nil {
-		return fmt.Errorf("export HID Report Map characteristic: %w", err)
-	}
-	if _, err := b.exportGattObject(hidControlPointCharPath, blueZGattCharInterface, prop.Map{
-		blueZGattCharInterface: {
-			"UUID":        {Value: HIDControlPointCharacteristicUUID, Emit: prop.EmitConst},
-			"Service":     {Value: hidServicePath, Emit: prop.EmitConst},
-			"Flags":       {Value: []string{"write-without-response", "encrypt-write"}, Emit: prop.EmitConst},
-			"Descriptors": {Value: []dbus.ObjectPath{}, Emit: prop.EmitConst},
-		},
-	}, &hidControlPointCharacteristic{}); err != nil {
-		return fmt.Errorf("export HID Control Point characteristic: %w", err)
-	}
-
-	hidReportObject := &hidReportCharacteristic{}
-	b.hidReportProps, err = b.exportGattObject(hidReportCharPath, blueZGattCharInterface, prop.Map{
-		blueZGattCharInterface: {
-			"UUID":        {Value: HIDReportCharacteristicUUID, Emit: prop.EmitConst},
-			"Service":     {Value: hidServicePath, Emit: prop.EmitConst},
-			"Flags":       {Value: []string{"read", "notify", "encrypt-read", "encrypt-notify"}, Emit: prop.EmitConst},
-			"Descriptors": {Value: []dbus.ObjectPath{hidReportReferencePath}, Emit: prop.EmitConst},
-			"Value":       {Value: []byte{0x00, 0x00}, Emit: prop.EmitTrue},
-			"Notifying":   {Value: false, Emit: prop.EmitTrue},
-		},
-	}, hidReportObject)
-	if err != nil {
-		return fmt.Errorf("export HID Report characteristic: %w", err)
-	}
-	if _, err := b.exportGattObject(hidReportReferencePath, blueZGattDescriptorInterface, prop.Map{
-		blueZGattDescriptorInterface: {
-			"UUID":           {Value: HIDReportReferenceDescriptorUUID, Emit: prop.EmitConst},
-			"Characteristic": {Value: hidReportCharPath, Emit: prop.EmitConst},
-			"Flags":          {Value: []string{"read", "encrypt-read"}, Emit: prop.EmitConst},
-		},
-	}, &staticReadDescriptor{value: hidReportReferenceValue()}); err != nil {
-		return fmt.Errorf("export HID Report Reference descriptor: %w", err)
-	}
-
 	b.advProps, err = prop.Export(b.conn, advertisementPath, prop.Map{
 		blueZAdvertisementInterface: {
 			"Type":         {Value: "peripheral", Emit: prop.EmitConst},
-			"ServiceUUIDs": {Value: []string{HIDServiceUUID, WakeServiceUUID}, Emit: prop.EmitConst},
+			"ServiceUUIDs": {Value: advertisedServiceUUIDs(), Emit: prop.EmitTrue},
 			"LocalName":    {Value: b.deviceName, Emit: prop.EmitConst},
-			"Appearance":   {Value: HIDGenericAppearance, Emit: prop.EmitConst},
+			"Appearance":   {Value: advertisedAppearance(), Emit: prop.EmitTrue},
 			"Discoverable": {Value: pairingOpen, Emit: prop.EmitTrue},
 		},
 	})
