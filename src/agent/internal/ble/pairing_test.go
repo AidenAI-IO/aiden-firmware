@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"reflect"
 	"testing"
+
+	"github.com/godbus/dbus/v5"
 )
 
 func TestAdvertisedServiceUUIDs(t *testing.T) {
@@ -31,5 +33,29 @@ func TestBoardIdentityUsesFullAdapterAddress(t *testing.T) {
 func TestBoardIdentityRejectsInvalidAdapterAddress(t *testing.T) {
 	if _, _, err := boardIdentityFromAdapterAddress("12:34"); err == nil {
 		t.Fatal("short adapter address was accepted")
+	}
+}
+
+func TestDisconnectedDeviceClearsSubscriberStatus(t *testing.T) {
+	service := NewService(1)
+	service.status.update(func(status *RuntimeStatus) {
+		status.WakeSubscriber = true
+		status.ANCSSubscribed = true
+	})
+	backend := newBlueZBackend(service, "Aiden", 0)
+
+	backend.updateDeviceStatus(
+		dbus.ObjectPath("/org/bluez/hci0/dev_00_11_22_33_44_55"),
+		map[string]dbus.Variant{
+			"Name":      dbus.MakeVariant("iPhone"),
+			"Address":   dbus.MakeVariant("00:11:22:33:44:55"),
+			"Connected": dbus.MakeVariant(false),
+		},
+		1,
+	)
+
+	status := service.Status()
+	if !status.Paired || status.Connected || status.WakeSubscriber || status.ANCSSubscribed {
+		t.Fatalf("unexpected disconnected status: %#v", status)
 	}
 }

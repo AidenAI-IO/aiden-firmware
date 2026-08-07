@@ -225,10 +225,10 @@ App 负责发起和展示流程，但配对确认属于 iOS。App 不得模拟�
 
 ### 5.3 断开 App 蓝牙连接
 
-App 中的“取消连接”只停止 App 自己的 CoreBluetooth Wake 会话并清除本地连接记录，保留
-iPhone 与板端的系统 bond。正常 UI 不删除板端 bond，也不要求用户前往系统设置忽略设备；
-再次点击配对时可复用已有 bond。`pairing_forget` 仅保留为板端维护操作，不对 App HTTP
-接口暴露。
+App 中的“取消连接”只停止 App 自己的 CoreBluetooth Wake 会话并关闭自动重连，保留
+iPhone 与板端的系统 bond，以及 App 用于后续直接找回同一 `CBPeripheral` 的本地身份记录。
+正常 UI 不删除板端 bond，也不要求用户前往系统设置忽略设备；再次点击连接时恢复自动重连
+并复用已有 bond。`pairing_forget` 仅保留为板端维护操作，不对 App HTTP 接口暴露。
 
 ## 6. 板端 UDS 接口
 

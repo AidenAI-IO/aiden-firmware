@@ -38,6 +38,7 @@ type RuntimeStatus struct {
 	ANCSSubscribed         bool   `json:"ancs_subscribed"`
 	LastWakeID             string `json:"last_wake_id"`
 	LastWakeReason         string `json:"last_wake_reason,omitempty"`
+	LastWakeDelivered      bool   `json:"last_wake_delivered"`
 	LastError              string `json:"last_error,omitempty"`
 	EventCount             int    `json:"event_count"`
 	EventGeneration        string `json:"event_generation"`
@@ -135,6 +136,7 @@ func (s *Service) Wake(reason string) (sequence uint64, delivered bool, err erro
 	s.status.update(func(status *RuntimeStatus) {
 		status.LastWakeID = strconv.FormatUint(sequence, 10)
 		status.LastWakeReason = reason
+		status.LastWakeDelivered = delivered
 	})
 	return sequence, delivered, nil
 }

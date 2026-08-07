@@ -131,7 +131,8 @@ The framing is the common 12-byte UDS envelope documented in
 
 Returns adapter, HOGP registration, pairing window, trusted bond,
 advertisement, Wake subscriber, connected iPhone, ANCS subscription, cursor,
-and last-error state.
+the last Wake delivery result, and last-error state. A disconnected trusted
+device always reports `wake_subscriber=false` and `ancs_subscribed=false`.
 
 ### `wake`
 

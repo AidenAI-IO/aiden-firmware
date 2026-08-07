@@ -144,8 +144,14 @@ func NewPhoneBridge(logger *Logger) *PhoneBridge {
 }
 
 func defaultBLEWake(ctx context.Context, reason string) error {
-	_, err := ble.RequestWake(ctx, configuredBLEServiceSocketPath(), reason)
-	return err
+	result, err := ble.RequestWake(ctx, configuredBLEServiceSocketPath(), reason)
+	if err != nil {
+		return err
+	}
+	if !result.Delivered {
+		return errors.New("BLE wake has no active subscriber")
+	}
+	return nil
 }
 
 func (pb *PhoneBridge) notifyBLEWake() {

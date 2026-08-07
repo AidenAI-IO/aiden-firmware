@@ -171,6 +171,20 @@ func (b *blueZBackend) updateDeviceStatus(
 	pairingOpen := b.pairingOpen
 	pairingDeadline := b.pairingDeadline
 	b.stateMu.Unlock()
+	connected := trusted.IsValid() && variantBool(properties, "Connected")
+	if !connected {
+		// BlueZ normally invokes StopNotify when the central disconnects, but an
+		// abrupt link loss or bluetoothd restart can omit that callback. Clear the
+		// exported characteristic state here as well so status and Wake delivery
+		// never claim that a disconnected iPhone is still subscribed.
+		b.wakeMu.Lock()
+		if b.wakeProps != nil {
+			if notifying, _ := b.wakeProps.GetMust(blueZGattCharInterface, "Notifying").(bool); notifying {
+				b.wakeProps.SetMust(blueZGattCharInterface, "Notifying", false)
+			}
+		}
+		b.wakeMu.Unlock()
+	}
 
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.BondedDeviceCount = bondedCount
@@ -185,6 +199,10 @@ func (b *blueZBackend) updateDeviceStatus(
 		status.Connected = false
 		status.Paired = trusted.IsValid()
 		status.ServicesResolved = false
+		if !connected {
+			status.WakeSubscriber = false
+			status.ANCSSubscribed = false
+		}
 		if !trusted.IsValid() {
 			return
 		}
@@ -193,7 +211,7 @@ func (b *blueZBackend) updateDeviceStatus(
 		status.TrustedDevicePath = string(trusted)
 		status.TrustedDeviceName = name
 		status.TrustedDeviceAddr = address
-		status.Connected = variantBool(properties, "Connected")
+		status.Connected = connected
 		status.ServicesResolved = variantBool(properties, "ServicesResolved")
 		if status.Connected {
 			status.ConnectedDevicePath = string(trusted)

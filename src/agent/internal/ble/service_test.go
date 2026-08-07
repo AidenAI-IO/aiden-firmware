@@ -57,7 +57,30 @@ func TestServiceWakeSerializesSequenceAndStatus(t *testing.T) {
 	<-firstDone
 	<-secondDone
 	status := service.Status()
-	if status.LastWakeID != "2" || status.LastWakeReason != "second" {
+	if status.LastWakeID != "2" || status.LastWakeReason != "second" || !status.LastWakeDelivered {
 		t.Fatalf("wake status regressed: %#v", status)
+	}
+}
+
+type undeliveredWakeBackend struct{}
+
+func (undeliveredWakeBackend) NotifyWake(uint64, string) (bool, error) {
+	return false, nil
+}
+
+func TestServiceWakeRecordsUndeliveredAttempt(t *testing.T) {
+	service := NewService(1)
+	service.setBackend(undeliveredWakeBackend{})
+
+	sequence, delivered, err := service.Wake("phone_bridge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sequence != 1 || delivered {
+		t.Fatalf("Wake() sequence=%d delivered=%t", sequence, delivered)
+	}
+	status := service.Status()
+	if status.LastWakeID != "1" || status.LastWakeReason != "phone_bridge" || status.LastWakeDelivered {
+		t.Fatalf("unexpected wake status: %#v", status)
 	}
 }
