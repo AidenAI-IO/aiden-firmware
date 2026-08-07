@@ -98,6 +98,7 @@ add_executable(aiden_tests
     test_main.cpp
     aiden_log_test.cpp
     agent_toml_test.cpp
+    agent_toml_voice_providers_test.cpp
     wifi_config_test.cpp
     frame_service_protocol_test.cpp
     frame_service_defaults_test.cpp

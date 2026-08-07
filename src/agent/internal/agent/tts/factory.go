@@ -47,6 +47,13 @@ func New(cfg ProviderConfig) (TTSProvider, error) {
 	return f(cfg)
 }
 
+// HasProvider reports whether an adapter is registered for name.
+func HasProvider(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	_, ok := factories[name]
+	return ok
+}
+
 // AvailableProviders returns the list of registered provider names.
 func AvailableProviders() []string {
 	names := make([]string, 0, len(factories))

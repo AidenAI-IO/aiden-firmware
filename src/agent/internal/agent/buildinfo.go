@@ -59,11 +59,7 @@ func readOTAStateField(path, field string) string {
 }
 
 func telemetryModelInfo(cfg Config) (provider, model string) {
-	modelCfg := cfg.Model
-	if strings.TrimSpace(cfg.ModelText.Provider) != "" || strings.TrimSpace(cfg.ModelText.Model) != "" {
-		modelCfg = cfg.ModelText
-	}
-	return strings.TrimSpace(modelCfg.Provider), strings.TrimSpace(modelCfg.Model)
+	return strings.TrimSpace(cfg.Model.Provider), strings.TrimSpace(cfg.Model.Model)
 }
 
 func telemetryVersionInfo() (commitID, buildVersion, firmwareVersion string) {

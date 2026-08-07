@@ -13,16 +13,17 @@ import (
 	"time"
 )
 
-// StorageMode reports where governed application data is written. The mode
-// is derived purely from card availability — a usable card means dual
-// storage, no usable card means eMMC only. There is no user preference.
-// See docs/04-agent/storage-modes.md for the full design.
+// StorageMode reports which storage tiers are currently available. The mode
+// is derived purely from card availability: a usable card enables the SD tier,
+// while no usable card leaves eMMC as the only tier. New data is always written
+// to eMMC; when the SD tier is available, older data migrates there as eMMC
+// crosses the configured free-space watermarks. There is no user preference.
 type StorageMode int
 
 const (
 	// StorageModeEMMCOnly is the fallback when no usable card is mounted.
 	StorageModeEMMCOnly StorageMode = 1
-	// StorageModeDual writes governed data to SD first, falling back to eMMC.
+	// StorageModeDual makes both eMMC and SD available to governed data.
 	StorageModeDual StorageMode = 2
 )
 

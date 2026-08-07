@@ -60,24 +60,11 @@ func NewSTTClientFromConfig(cfg Config) (STTClient, error) {
 	httpClient := newProxyHTTPClient(proxyConfig)
 	language := strings.ToLower(strings.TrimSpace(cfg.STT.Language))
 
-	switch provider {
-	case "openai", "openai-whisper":
-		return NewOpenAIWhisperSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, language, httpClient), nil
-	case "openrouter":
-		return NewOpenRouterSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, language, httpClient), nil
-	case "qwen-asr":
-		client := NewDashScopeRealtimeSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, language)
-		client.proxy = proxyConfig
-		return client, nil
-	case "google-cloud":
-		return NewGoogleCloudSTT(cfg.STT.APIKey, cfg.STT.BaseURL, language, cfg.STT.Model, httpClient)
-	case tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider:
-		client := NewTencentASRSTT(cfg.STT.SecretID, cfg.STT.SecretKey, cfg.STT.AppID, cfg.STT.Region, cfg.STT.EngineModelType, language, httpClient)
-		client.proxy = proxyConfig
-		return client, nil
-	default:
+	definition, ok := lookupSTTProviderDefinition(provider)
+	if !ok {
 		return nil, fmt.Errorf("unsupported STT provider: %s", cfg.STT.Provider)
 	}
+	return definition.build(cfg, proxyConfig, httpClient, language)
 }
 
 func NewTextTurnInput(userText string, attachments []InputAttachment) TurnInput {

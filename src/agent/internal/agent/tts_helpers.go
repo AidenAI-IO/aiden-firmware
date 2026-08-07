@@ -29,12 +29,23 @@ func buildTTSProviderConfig(cfg Config) tts.ProviderConfig {
 	return buildTTSProviderConfigFor(cfg, provider)
 }
 
-// buildTTSProviderConfigFor resolves the config for a specific provider name,
-// merging per-provider credentials over the top-level [tts] fallbacks.
-func buildTTSProviderConfigFor(cfg Config, provider string) tts.ProviderConfig {
-	provider = normalizeTTSProvider(provider)
+// buildTTSProviderConfigFor resolves the config for a specific provider, which
+// may be a [tts_providers] record name or a bare provider type -- the config
+// page switches by name, the phone switches by type. Per-provider values are
+// merged over the top-level [tts] fallbacks.
+func buildTTSProviderConfigFor(cfg Config, providerRef string) tts.ProviderConfig {
+	// Resolve the record before normalizing: normalizing lowercases, and a
+	// record name from the config page may carry capitals.
+	record, hasRecord := lookupTTSProviderRecord(cfg, providerRef)
 
-	// Defaults from the top-level [tts] section.
+	provider := normalizeTTSProvider(providerRef)
+	if hasRecord && strings.TrimSpace(record.Type) != "" {
+		provider = normalizeTTSProvider(record.Type)
+	}
+
+	// Defaults from the top-level [tts] section. A blank per-provider field
+	// falling back to these is the documented contract for [tts] api_key
+	// ("used as fallback for any provider"), so it is preserved as-is.
 	apiKey := cfg.TTS.APIKey
 	voice := cfg.TTS.VoiceID
 	emotion := cfg.TTS.Emotion
@@ -42,25 +53,27 @@ func buildTTSProviderConfigFor(cfg Config, provider string) tts.ProviderConfig {
 	speed := cfg.TTS.Speed
 	referenceID := cfg.TTS.ReferenceID
 
-	// Per-provider override. Lookup is case-insensitive.
-	if creds, ok := lookupCredentials(cfg.TTS.Credentials, provider); ok {
-		if creds.APIKey != "" {
-			apiKey = creds.APIKey
+	// A [tts_providers] record wins. Without this, migration -- which clears the
+	// legacy Credentials map -- would make every switch fall back to the ACTIVE
+	// provider's key and authenticate against the wrong service.
+	//
+	// speed is deliberately not per-provider: it stays global on [tts] so
+	// changing voice never changes playback speed.
+	if hasRecord {
+		if key := resolveVoiceAPIKey(record.APIKey, record.TokenEnv); key != "" {
+			apiKey = key
 		}
-		if creds.VoiceID != "" {
-			voice = creds.VoiceID
+		if record.VoiceID != "" {
+			voice = record.VoiceID
 		}
-		if creds.Emotion != "" {
-			emotion = creds.Emotion
+		if record.Emotion != "" {
+			emotion = record.Emotion
 		}
-		if creds.Model != "" {
-			model = creds.Model
+		if record.Model != "" {
+			model = record.Model
 		}
-		if creds.Speed != 0 {
-			speed = creds.Speed
-		}
-		if creds.ReferenceID != "" {
-			referenceID = creds.ReferenceID
+		if record.ReferenceID != "" {
+			referenceID = record.ReferenceID
 		}
 	}
 
@@ -293,21 +306,6 @@ func isTransientTTSError(err error) bool {
 		}
 	}
 	return false
-}
-
-// lookupCredentials does a case-insensitive map lookup so users don't have to
-// match the exact registered provider casing in their toml.
-func lookupCredentials(creds map[string]TTSProviderCredentials, provider string) (TTSProviderCredentials, bool) {
-	if creds == nil {
-		return TTSProviderCredentials{}, false
-	}
-	target := normalizeTTSProvider(provider)
-	for k, v := range creds {
-		if normalizeTTSProvider(k) == target {
-			return v, true
-		}
-	}
-	return TTSProviderCredentials{}, false
 }
 
 // ttsLoggerAdapter bridges the agent Logger to tts.Logger.

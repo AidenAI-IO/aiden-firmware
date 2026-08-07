@@ -6,8 +6,7 @@ The Aiden Go Agent is located in `src/agent/` and is built on `github.com/tmc/la
 
 | Entry Point  | Description                                                     |
 | ------------ | --------------------------------------------------------------- |
-| `cmd/daemon` | Long-running daemon supporting Web UI mode or device voice mode |
-| `cmd/demo`   | Local CLI runner for development testing                        |
+| `cmd/daemon` | Long-running daemon providing the Web UI and optional device voice loop |
 
 After cross-compilation, the daemon binary is:
 
@@ -23,8 +22,7 @@ In the firmware, it is installed by default to:
 
 ## Current Capabilities
 
-- OpenAI-compatible model calls: `openai`, `openrouter`
-- Local text models: `ollama`
+- Registered model providers: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`
 - Built-in tool calling: HID, screenshots, audio volume, shell
 - HTTP Tool API for Web UI, external agents, or manual invocation
 - Auto-discovery and runtime activation of skills from `SKILL.md`
@@ -37,14 +35,14 @@ In the firmware, it is installed by default to:
 
 ## Run Modes
 
-Determined by `input_mode` in `agent.toml`:
+The HTTP server and Web UI start in every input mode. `input_mode` controls whether the daemon also runs the device-side voice loop:
 
-| Mode   | Behavior                                 |
-| ------ | ---------------------------------------- |
-| `text` | Start HTTP server and Web UI             |
-| `stt`  | Device recording → VAD → STT → LLM → TTS |
+| Mode   | Behavior                                                                    |
+| ------ | --------------------------------------------------------------------------- |
+| `text` | HTTP server and Web UI only                                                  |
+| `stt`  | HTTP server and Web UI plus device recording → VAD → STT → LLM → TTS loop    |
 
-Currently, one daemon instance can only run in one mode: Web UI mode and device voice mode cannot run simultaneously in the same process.
+In `stt` mode, Web UI requests and device voice interactions share the same Agent runtime and run in the same daemon process.
 
 ## Startup
 
@@ -52,22 +50,13 @@ Local development:
 
 ```bash
 cd src/agent
-go run ./cmd/daemon -config ./config -addr :8080
+go run ./cmd/daemon -dir ./config -addr :8080
 ```
 
 Device service:
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -config /userdata/agent -addr :8080
-```
-
-CLI runner:
-
-```bash
-cd src/agent
-go run ./cmd/demo -config ./config -input "What tools do you have?"
-go run ./cmd/demo -config ./config -skills my-skill -input "Inspect the UI"
-go run ./cmd/demo -config ./config -clear-memory -show-memory -input "Start fresh"
+/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -dir /userdata/agent -addr :8080
 ```
 
 ## Built-in Tools

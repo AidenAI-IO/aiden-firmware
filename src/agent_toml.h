@@ -11,13 +11,50 @@ struct ModelToml {
     std::string model;
     std::string base_url;
     std::string api_key;
-    std::string token_env;
     std::string reasoning_effort;
     double temperature = 0.0;
     bool has_temperature = false;
     int max_response_tokens = 0;
     int context_window = 0;
     int model_max_output_tokens = 0;
+};
+
+struct ModelProviderToml {
+    std::string type;
+    std::string api_key;
+    std::string token_env;
+    std::string base_url;
+};
+
+// TTSProviderToml is one [tts_providers.<name>] record: a provider type plus the
+// credentials and voice settings that only mean anything for that type. [tts]
+// references one by name, so several stay configured at once.
+//
+// speed is absent on purpose: it is a listening preference that must not change
+// when the voice changes, so it stays global on [tts].
+struct TTSProviderToml {
+    std::string type;
+    std::string api_key;
+    std::string token_env;
+    std::string model;
+    std::string voice_id;
+    std::string emotion;
+    std::string reference_id;
+};
+
+// STTProviderToml is one [stt_providers.<name>] record. language stays on [stt]:
+// it holds regardless of which provider transcribes.
+struct STTProviderToml {
+    std::string type;
+    std::string api_key;
+    std::string token_env;
+    std::string model;
+    std::string base_url;
+    std::string app_id;
+    std::string secret_id;
+    std::string secret_key;
+    std::string region;
+    std::string engine_model_type;
 };
 
 struct TTSToml {
@@ -149,8 +186,10 @@ struct TerminationPolicyToml {
 };
 
 struct AgentToml {
+    std::map<std::string, ModelProviderToml> model_providers;
+    std::map<std::string, TTSProviderToml> tts_providers;
+    std::map<std::string, STTProviderToml> stt_providers;
     ModelToml model;
-    ModelToml model_text;
     TTSToml tts;
     STTToml stt;
     AudioToml audio;

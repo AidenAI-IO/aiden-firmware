@@ -22,6 +22,19 @@ func TestAvailableProvidersSorted(t *testing.T) {
 	}
 }
 
+func TestHasProviderNormalizesName(t *testing.T) {
+	old := factories
+	t.Cleanup(func() { factories = old })
+	factories = map[string]Factory{"alpha": func(ProviderConfig) (TTSProvider, error) { return nil, nil }}
+
+	if !HasProvider(" Alpha ") {
+		t.Fatal("HasProvider() = false, want true for normalized registered name")
+	}
+	if HasProvider("missing") {
+		t.Fatal("HasProvider() = true for unregistered name")
+	}
+}
+
 func TestRegisterPanicsOnNilFactory(t *testing.T) {
 	old := factories
 	t.Cleanup(func() { factories = old })

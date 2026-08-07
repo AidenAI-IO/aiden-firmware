@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -165,15 +166,17 @@ func TestLoadRuntimeConfigClearsBaseURLOnlyForProvidersWithoutOverrides(t *testi
 		provider    string
 		wantBaseURL string
 	}{
+		// Only openai (custom gateways) and ollama (local server) accept a
+		// base_url override; every other provider pins its own endpoint.
 		{"openai keeps base_url", "openai", "https://gateway.example.com/v1"},
 		{"OpenAI case insensitive keeps base_url", "OpenAI", "https://gateway.example.com/v1"},
+		{"ollama keeps base_url", "ollama", "https://gateway.example.com/v1"},
+		{"Ollama case insensitive keeps base_url", "Ollama", "https://gateway.example.com/v1"},
 		{"openrouter drops base_url", "openrouter", ""},
 		{"kimi drops base_url", "kimi", ""},
 		{"kimi-cn drops base_url", "kimi-cn", ""},
 		{"volcengine drops base_url", "volcengine", ""},
 		{"Volcengine case insensitive drops base_url", "Volcengine", ""},
-		{"ollama keeps base_url", "ollama", "https://gateway.example.com/v1"},
-		{"Ollama case insensitive keeps base_url", "Ollama", "https://gateway.example.com/v1"},
 		{"fake drops base_url", "fake", ""},
 	}
 	for _, tt := range tests {
@@ -181,11 +184,6 @@ func TestLoadRuntimeConfigClearsBaseURLOnlyForProvidersWithoutOverrides(t *testi
 			path := filepath.Join(t.TempDir(), "agent.toml")
 			contents := `
 [model]
-provider = "` + tt.provider + `"
-model = "some-model"
-base_url = "https://gateway.example.com/v1"
-
-[model_text]
 provider = "` + tt.provider + `"
 model = "some-model"
 base_url = "https://gateway.example.com/v1"
@@ -200,9 +198,6 @@ base_url = "https://gateway.example.com/v1"
 			}
 			if cfg.Model.BaseURL != tt.wantBaseURL {
 				t.Errorf("model.base_url = %q, want %q", cfg.Model.BaseURL, tt.wantBaseURL)
-			}
-			if cfg.ModelText.BaseURL != tt.wantBaseURL {
-				t.Errorf("model_text.base_url = %q, want %q", cfg.ModelText.BaseURL, tt.wantBaseURL)
 			}
 		})
 	}
@@ -257,33 +252,6 @@ func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
 	}
 }
 
-func TestLoadRuntimeConfigResolvesModelTextTemperatureDefault(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent.toml")
-	contents := `
-[model]
-provider = "openai"
-model = "gpt-5.5"
-
-[model_text]
-provider = "kimi"
-model = "kimi-k3"
-`
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	cfg, err := LoadRuntimeConfig(path)
-	if err != nil {
-		t.Fatalf("LoadRuntimeConfig() error = %v", err)
-	}
-	if !floatPtrEqual(cfg.Model.Temperature, floatPtr(defaultModelTemperature)) {
-		t.Errorf("model.temperature = %v, want %v (fallback)", formatFloatPtr(cfg.Model.Temperature), defaultModelTemperature)
-	}
-	if !floatPtrEqual(cfg.ModelText.Temperature, floatPtr(1)) {
-		t.Errorf("model_text.temperature = %v, want 1 (kimi-k3 default)", formatFloatPtr(cfg.ModelText.Temperature))
-	}
-}
-
 func TestLoadResolvedConfigKeepsTemperatureUnset(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	contents := "[model]\nprovider = \"kimi\"\nmodel = \"kimi-k3\"\n"
@@ -297,6 +265,135 @@ func TestLoadResolvedConfigKeepsTemperatureUnset(t *testing.T) {
 	}
 	if cfg.Model.Temperature != nil {
 		t.Errorf("model.temperature = %v, want nil (LoadResolvedConfig keeps unset for editor)", formatFloatPtr(cfg.Model.Temperature))
+	}
+}
+
+func TestLoadResolvedConfigRejectsDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("create config directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[model]\nprovider = \"fake\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadResolvedConfig(dir)
+	if err == nil {
+		t.Fatal("LoadResolvedConfig() error = nil, want directory rejection")
+	}
+	if !strings.Contains(err.Error(), "config path must be a regular file") {
+		t.Fatalf("LoadResolvedConfig() error = %q, want clear regular-file requirement", err)
+	}
+}
+
+func TestLoadResolvedConfigRejectsExistingNonTOMLFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "draft.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadResolvedConfig(path)
+	if err == nil {
+		t.Fatal("LoadResolvedConfig() error = nil, want TOML suffix rejection")
+	}
+	if !strings.Contains(err.Error(), "config path must end with .toml") {
+		t.Fatalf("LoadResolvedConfig() error = %q, want consistent TOML suffix requirement", err)
+	}
+}
+
+func TestLoadResolvedConfigAcceptsSymlinkToRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.toml")
+	if err := os.WriteFile(target, []byte("[model]\nprovider = \"fake\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	path := filepath.Join(dir, "draft.toml")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatalf("create config symlink: %v", err)
+	}
+
+	cfg, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	if cfg.Model.Provider != "fake" {
+		t.Fatalf("model.provider = %q, want fake", cfg.Model.Provider)
+	}
+}
+
+func TestLoadResolvedConfigRejectsSpecialFile(t *testing.T) {
+	dir, err := os.MkdirTemp("", "aiden-config-")
+	if err != nil {
+		t.Fatalf("create short temp directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "socket.toml")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("create Unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	_, err = LoadResolvedConfig(path)
+	if err == nil {
+		t.Fatal("LoadResolvedConfig() error = nil, want special-file rejection")
+	}
+	if !strings.Contains(err.Error(), "config path must be a regular file") {
+		t.Fatalf("LoadResolvedConfig() error = %q, want clear regular-file requirement", err)
+	}
+}
+
+func TestLoadResolvedConfigRejectsDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "draft.toml")
+	if err := os.Symlink(filepath.Join(dir, "missing.toml"), path); err != nil {
+		t.Fatalf("create dangling config symlink: %v", err)
+	}
+
+	_, err := LoadResolvedConfig(path)
+	if err == nil {
+		t.Fatal("LoadResolvedConfig() error = nil, want dangling-symlink rejection")
+	}
+	if !strings.Contains(err.Error(), "config symlink target") {
+		t.Fatalf("LoadResolvedConfig() error = %q, want clear dangling-symlink error", err)
+	}
+}
+
+func TestLoadResolvedConfigMissingPathContract(t *testing.T) {
+	t.Run("toml file may be missing", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "draft.toml")
+
+		cfg, err := LoadResolvedConfig(path)
+		if err != nil {
+			t.Fatalf("LoadResolvedConfig() error = %v", err)
+		}
+		if cfg.HID.FrameSocket != DefaultConfig().HID.FrameSocket {
+			t.Fatalf("HID frame_socket = %q, want default %q", cfg.HID.FrameSocket, DefaultConfig().HID.FrameSocket)
+		}
+	})
+
+	for _, tt := range []struct {
+		name string
+		path func(string) string
+	}{
+		{
+			name: "non-TOML file",
+			path: func(dir string) string { return filepath.Join(dir, "draft.json") },
+		},
+		{
+			name: "trailing slash",
+			path: func(dir string) string { return filepath.Join(dir, "draft.toml") + string(os.PathSeparator) },
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadResolvedConfig(tt.path(t.TempDir()))
+			if err == nil {
+				t.Fatal("LoadResolvedConfig() error = nil, want TOML file-path rejection")
+			}
+			if !strings.Contains(err.Error(), "config path must end with .toml") {
+				t.Fatalf("LoadResolvedConfig() error = %q, want clear TOML file-path requirement", err)
+			}
+		})
 	}
 }
 
@@ -361,33 +458,6 @@ func TestLoadRuntimeConfigResolvesModelReasoningEffortDefault(t *testing.T) {
 				t.Errorf("model.reasoning_effort = %q, want %q", cfg.Model.ReasoningEffort, tt.want)
 			}
 		})
-	}
-}
-
-func TestLoadRuntimeConfigResolvesModelTextReasoningEffortDefault(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent.toml")
-	contents := `
-[model]
-provider = "openai"
-model = "gpt-5.5"
-
-[model_text]
-provider = "kimi"
-model = "kimi-k3"
-`
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	cfg, err := LoadRuntimeConfig(path)
-	if err != nil {
-		t.Fatalf("LoadRuntimeConfig() error = %v", err)
-	}
-	if cfg.Model.ReasoningEffort != "" {
-		t.Errorf("model.reasoning_effort = %q, want \"\" (unknown model stays auto)", cfg.Model.ReasoningEffort)
-	}
-	if cfg.ModelText.ReasoningEffort != "low" {
-		t.Errorf("model_text.reasoning_effort = %q, want \"low\" (kimi-k3 default)", cfg.ModelText.ReasoningEffort)
 	}
 }
 
@@ -929,32 +999,6 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 		t.Fatalf("expected model.model_max_output_tokens validation error, got %v", err)
 	}
 
-	cfg = Config{
-		Model:     ModelConfig{Provider: "fake"},
-		ModelText: ModelConfig{ContextWindow: -1},
-	}
-	err = cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "model_text.context_window") {
-		t.Fatalf("expected model_text.context_window validation error, got %v", err)
-	}
-
-	cfg = Config{
-		Model:     ModelConfig{Provider: "fake"},
-		ModelText: ModelConfig{ModelMaxOutputTokens: -1},
-	}
-	err = cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "model_text.model_max_output_tokens") {
-		t.Fatalf("expected model_text.model_max_output_tokens validation error, got %v", err)
-	}
-
-	cfg = Config{
-		Model:     ModelConfig{Provider: "fake"},
-		ModelText: ModelConfig{MaxResponseTokens: -1},
-	}
-	err = cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "model_text.max_response_tokens") {
-		t.Fatalf("expected model_text.max_response_tokens validation error, got %v", err)
-	}
 }
 
 func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {

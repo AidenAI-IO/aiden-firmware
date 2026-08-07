@@ -1,6 +1,6 @@
 # Agent Configuration Reference
 
-The Agent expects `-config` to point to a directory, not a single config file. Every field below lives in `agent.toml`. Most fields can be edited through the on-device [Config Web page](#config-web-the-device-config-page); sections without dedicated controls are preserved by Config Web and can be edited by hand. TOML is the only supported config format; JSON config is deprecated.
+The Agent daemon takes `-dir`, the data directory it works out of. `agent.toml` is only one of the things that live there: skills, memory, cache and logs are all resolved relative to it (see [Directory layout](#directory-layout)). The `config`, `config-check` and `config-test` subcommands take `-config` with the path to a TOML config file. Every field below lives in `agent.toml`. Most fields can be edited through the on-device [Config Web page](#config-web-the-device-config-page); sections without dedicated controls are preserved by Config Web and can be edited by hand. TOML is the only supported config format; JSON config is deprecated.
 
 ## Contents
 
@@ -23,12 +23,20 @@ The Agent expects `-config` to point to a directory, not a single config file. E
 
 ## Directory layout
 
+Passed to the daemon as `-dir /userdata/agent`. Everything except `agent.toml`
+is created on demand, so a directory holding only `agent.toml` is a valid start.
+
 ```text
 /userdata/agent/
-├── agent.toml       # required
-├── skills/          # optional, auto-discovers **/SKILL.md
-├── log/             # runtime log directory
-└── memory/          # conversation memory persistence directory
+├── agent.toml               # required
+├── quick_actions.json       # optional, falls back to the bundled defaults
+├── skills/                  # optional, auto-discovers **/SKILL.md
+├── skill-state/             # bundled skill sync manifest
+├── memory/                  # conversation memory persistence directory
+│   └── extraction.yaml      # optional memory extraction overrides
+├── cache/                   # provider model metadata cache
+├── log/                     # runtime log directory
+└── board_id                 # generated on first run when live activity is on
 ```
 
 ## Config Web: the device config page
@@ -48,7 +56,7 @@ The firmware starts `config_web` on port 80.
 The page fields cover the following config sections (all detailed later on this page). The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
 - `agent`: `locale`, `input_mode`, `trigger_mode`, VAD params, `load_all_tools`, `max_iterations`, `custom_instruction`, `additional_prompt`
-- `model`: provider, token_env, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
+- `model`: provider, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, playback_backend
@@ -61,7 +69,7 @@ The page fields cover the following config sections (all detailed later on this 
 
 ## Minimal config examples
 
-### Web UI (text mode)
+### HTTP/Web UI without the device voice loop (`text`)
 
 ```toml
 locale = "zh-CN"
@@ -71,13 +79,16 @@ screenshot_keep_n = 3
 screenshot_prune_interval = 2
 input_mode = "text"
 
+[model_providers.openrouter-main]
+type = "openrouter"
+token_env = "OPENROUTER_API_KEY"
+
 [device]
 device_type = "iOS"
 
 [model]
-provider = "openrouter"
+provider = "openrouter-main"
 model = "bytedance-seed/seed-2.0-lite"
-token_env = "OPENROUTER_API_KEY"
 temperature = 0.2
 max_response_tokens = 1000
 # Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
@@ -102,7 +113,7 @@ android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
-> `token_env` means the key is read from an environment variable. Overlay example configs may also write the `api_key` field directly; for production, prefer environment variables or a device-side secure injection method.
+> `token_env` lives on a named provider (`[model_providers.<name>]`), not on `[model]`, and means the key is read from that environment variable. In Config Web, type `$VAR_NAME` into the provider's API Key box to set it. Overlay example configs may also write the `api_key` field directly; for production, prefer environment variables or a device-side secure injection method.
 
 ### STT voice mode
 
@@ -115,36 +126,46 @@ vad_backend = "rknn"
 vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 vad_helper_path = "/oem/usr/bin/rknn_vad"
 vad_speech_threshold = 0.5
-silence_ms = 650
+silence_ms = 550
 min_speech_ms = 300
 voice_followup_enabled = false
-voice_followup_timeout_ms = 6000
+voice_followup_timeout_ms = 5000
 voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0
 voice_interrupt_on_wakeup = true
 voice_streaming_tts_enabled = true
 voice_tool_call_speech = true
 voice_progress_speech_enabled = true
-voice_max_response_tokens = 400
+voice_max_response_tokens = 300
+
+[model_providers.openrouter-main]
+type = "openrouter"
+token_env = "OPENROUTER_API_KEY"
 
 [device]
 device_type = "iOS"
 
 [model]
-provider = "openrouter"
+provider = "openrouter-main"
 model = "bytedance-seed/seed-2.0-lite"
-token_env = "OPENROUTER_API_KEY"
 
-[stt]
-provider = "openrouter"
-api_key = "OPENROUTER_API_KEY"
+[stt_providers.openrouter-main]
+type = "openrouter"
+token_env = "OPENROUTER_API_KEY"
 model = "qwen/qwen3-asr-flash-2026-02-10"
 
-[tts]
-provider = "minimax"
+[stt]
+provider = "openrouter-main"
+
+[tts_providers.minimax-main]
+type = "minimax"
+token_env = "MINIMAX_API_KEY"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
+
+[tts]
+provider = "minimax-main"
 speed = 1.0
 
 [audio]
@@ -189,17 +210,17 @@ These fields apply to the `stt` input mode.
 | `vad_model_path`                | `/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"`                                                                                                                  |
 | `vad_helper_path`               | `/oem/usr/bin/rknn_vad`                                     | VAD helper executable path; the CPU backend defaults to `/oem/usr/bin/cpu_vad`                                                                                                         |
 | `vad_speech_threshold`          | `0.5`                                                       | Silero VAD speech probability threshold                                                                                                                                                |
-| `silence_ms`                    | `650`                                                       | How many milliseconds of silence before an utterance is considered finished                                                                                                            |
+| `silence_ms`                    | `550`                                                       | How many milliseconds of silence before an utterance is considered finished                                                                                                            |
 | `min_speech_ms`                 | `300`                                                       | Minimum valid speech duration                                                                                                                                                          |
 | `voice_followup_enabled`        | `false`                                                     | Enable continuous follow-up after a single wakeup in wakeup mode; defaults to one wakeup per turn                                                                                      |
-| `voice_followup_timeout_ms`     | `6000`                                                      | Window to wait for a user follow-up after the Agent replies                                                                                                                            |
+| `voice_followup_timeout_ms`     | `5000`                                                      | Window to wait for a user follow-up after the Agent replies                                                                                                                            |
 | `voice_first_turn_timeout_ms`   | `10000`                                                     | Window to wait for the first utterance after wakeup                                                                                                                                    |
 | `voice_max_turns`               | `0`                                                         | Maximum turns per wakeup session; `0` means unlimited                                                                                                                                  |
 | `voice_interrupt_on_wakeup`     | `true`                                                      | When a wakeup is received again within a session, cancel thinking/TTS and listen again; repeated wakeups during the listening or recording phase are merged or ignored                 |
 | `voice_streaming_tts_enabled`   | `true`                                                      | Feed the LLM streaming output into TTS sentence by sentence, reducing the wait before the first sentence plays                                                                         |
 | `voice_tool_call_speech`        | `true`                                                      | Whether to asynchronously read the `content` of a tool-call event; this content comes only from the assistant content in the same LLM tool-call response, and stays silent when absent |
 | `voice_progress_speech_enabled` | `true`                                                      | Whether to announce a short progress message when a todo item enters `in_progress`; todo state is still sent to the UI/trace                                                           |
-| `voice_max_response_tokens`     | `400`                                                       | Per-turn output token limit for voice replies (must be `>= 0`)                                                                                                                         |
+| `voice_max_response_tokens`     | `300`                                                       | Per-turn output token limit for voice replies (must be `>= 0`)                                                                                                                         |
 
 The model pointed to by `vad_model_path` must first be converted from the Silero ONNX to RV1106 RKNN on a PC using `silero-vad/convert_silero_vad_to_rknn.py`, then placed at the corresponding path on the device. The CPU backend requires `silero_vad_6_2_lstm_decoder_weights.bin` to include the Conv1d encoder extension, which can be generated from the TorchScript file shipped with the repo using `silero-vad/export_silero_vad_v6_2_weights.py`.
 When `vad_helper_path` is still the built-in default, switching `vad_backend` automatically switches the helper; only when set to a custom path does it run that custom path.
@@ -238,17 +259,61 @@ parse_failure_limit = 3
 The three stall-score thresholds must satisfy
 `soft_notice_stall_score < restrict_tools_stall_score < terminate_stall_score`.
 
+## `[model_providers.<name>]`
+
+Optional named provider configurations. Each section holds the credentials for
+one endpoint, and `[model]` references it by putting the name in its `provider`
+field. This lets several providers stay configured at once
+so switching is a one-line change instead of a re-entry of keys.
+
+| Field       | Description                                                                                        |
+| ----------- | -------------------------------------------------------------------------------------------------- |
+| `type`      | Required provider type: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`   |
+| `api_key`   | API key written directly                                                                           |
+| `token_env` | Read the API key from the specified environment variable                                            |
+| `base_url`  | Custom OpenAI-compatible endpoint; same `openai`/`ollama` restriction as `[model]`                  |
+
+```toml
+[model_providers.openai-work]
+type = "openai"
+api_key = "sk-..."
+
+[model_providers.ollama-local]
+type = "ollama"
+base_url = "http://127.0.0.1:11434"
+
+[model]
+provider = "openai-work"   # references [model_providers.openai-work]
+model = "gpt-5.5"
+```
+
+On load, a `provider` value that names a section under `[model_providers]` is replaced
+by that section's provider type, and its `api_key`, `token_env` and `base_url`
+fill in any field the model section leaves empty — values set directly on
+`[model]` always win. `token_env` is the exception: it exists only on a named
+provider, so the provider's value always applies. A `provider` that matches no section is treated as a
+provider type, so existing configs keep working unchanged.
+
+Only the `[model_providers.<name>]` namespace is supported. The former
+`[providers.<name>]` namespace is rejected with an error. The record-level
+`provider` field is still accepted as a read-time alias for `type`; saving always
+writes `type`, and `type` wins when both fields are present.
+
+A `provider` that is neither a section name nor a known provider type is
+rejected at load, so a typo or a reference left behind after deleting a section
+fails with a clear error instead of surfacing later when the model client is
+built. When a section is named exactly like a provider type, the section wins.
+
 ## `[model]`
 
 | Field                     | Description                                                                                                                                                                                                                                          |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider`                | `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
+| `provider`                | A provider type, or the name of a `[model_providers.<name>]` section. Types: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
 | `base_url`                | Custom OpenAI-compatible endpoint. Only `openai` and `ollama` accept a `base_url` override; other providers use their built-in endpoints and a stored value is dropped on load. |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
-| `token_env`               | Read the API key from the specified environment variable; only supported by `[model]`                                                                                                                                                                |
 | `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
-| `reasoning_effort`        | Thinking budget. Unset is auto: the field is omitted and the provider decides, except that reasoning is disabled for no-tool requests. `low`/`medium`/`high` work everywhere; `minimal` is Volcengine Ark only; `none` is accepted by the others but not by Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
+| `reasoning_effort`        | Thinking budget. Unset is auto: the field is omitted and the provider decides, except that reasoning is disabled for no-tool requests. `low`/`medium`/`high` work everywhere; `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, Ollama, and the fake provider, but not by Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
 | `max_response_tokens`     | Maximum output tokens passed to the model on request                                                                                                                                                                                                 |
 | `context_window`          | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback.                                                                        |
 | `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry.                                                                                                                     |
@@ -282,9 +347,19 @@ required. `model` is the Ark model ID, and `api_key` is an Ark API key.
 provider = "volcengine"
 model = "doubao-seed-2-1-pro-260628"
 api_key = "ARK_API_KEY"
+```
 
-# Or read the key from the environment instead of writing it here:
-# token_env = "ARK_API_KEY"
+To read the key from the environment instead of writing it here, put it on a
+named provider and reference that:
+
+```toml
+[model_providers.ark]
+type = "volcengine"
+token_env = "ARK_API_KEY"
+
+[model]
+provider = "ark"
+model = "doubao-seed-2-1-pro-260628"
 ```
 
 Ark also exposes an Anthropic-protocol endpoint at `/api/compatible`. This agent
@@ -372,15 +447,103 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 | `frame_socket`            | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `input_backend`           | `hid`                                   | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands.                                                                                                                                                                                                                                                                                                                                               |
 
+## `[tts_providers.<name>]` and `[stt_providers.<name>]`
+
+Named voice provider configurations, the same shape `[model_providers.<name>]` gives
+`[model]`. Each section holds the credentials and settings for one voice service,
+and `[tts]` / `[stt]` reference one by putting the name in their own `provider`
+field. Several providers stay configured at once, so switching is a one-line
+change instead of a re-entry of keys.
+
+Unlike `[model_providers.<name>]`, these are separate namespaces: the `[tts]`
+`volcengine` provider speaks a different protocol with its own host and
+credentials than the Ark LLM provider of the same name, so one map could not
+serve both. Each namespace also validates its own provider types — a TTS type is
+rejected for `[model]` and vice versa.
+
+Several records may share one provider type, which is how two accounts of the
+same service (different keys, different voices) stay configured together.
+
+```toml
+[tts_providers.minimax-main]
+type = "minimax"
+api_key = "sk-aaa"
+voice_id = "male-qn-qingse"
+
+[tts_providers.minimax-alt]     # same type, second account
+type = "minimax"
+api_key = "sk-bbb"
+voice_id = "female-shaonv"
+
+[tts_providers.fish]
+type = "fish-audio"
+token_env = "FISH_API_KEY"
+reference_id = "abc123"
+
+[tts]
+provider = "minimax-main"       # references [tts_providers.minimax-main]
+speed = 1.0
+
+[stt_providers.tencent]
+type = "tencent-asr"
+app_id = "123"
+secret_id = "AKID..."
+secret_key = "..."
+region = "ap-shanghai"
+
+[stt]
+provider = "tencent"
+language = "zh"
+```
+
+### Field placement
+
+A field lives on the record when it stops meaning anything once the provider
+changes; it stays on `[tts]` / `[stt]` when it holds regardless of provider.
+
+| | Record fields | Stays on the flat section |
+| ---- | ---- | ---- |
+| TTS | `type`, `api_key`, `token_env`, `model`, `voice_id`, `emotion`, `reference_id` | `provider` (reference), `speed` |
+| STT | `type`, `api_key`, `token_env`, `model`, `base_url`, `app_id`, `secret_id`, `secret_key`, `region`, `engine_model_type` | `provider` (reference), `language` |
+
+`speed` is a listening preference and `language` a transcription preference:
+neither should change because the voice changed, so both stay global.
+
+`token_env` reads the key from the named environment variable, and is used when
+`api_key` is unset. Config Web folds both into one API Key box: a value starting
+with `$` is stored as `token_env`.
+
+### Backward compatibility
+
+- The record-level `provider` field remains read-only compatible in all three
+  provider maps. `type` wins if both fields are present, and the next save emits
+  only `type`.
+- A bare provider type in `[tts]` / `[stt]` keeps working. `provider = "minimax-cn"`
+  with a flat `api_key` needs no migration to keep speaking.
+- Flat credentials on `[tts]` / `[stt]` are upgraded to records on load, keyed
+  by provider type. The upgrade is written back the next time the config is
+  saved, and an existing record is never overwritten.
+- An unresolvable reference does not stop the device from booting: voice is
+  optional at runtime, so a stale name is reported and the agent starts without
+  voice. Config Web rejects such a reference when saving instead, while the form
+  is still on screen.
+
 ## `[stt]` and `[tts]`
 
 `[stt]` is required when `input_mode = "stt"`; `[tts]` is required when `input_mode = "stt"`.
+
+`provider` here is a reference to a `[tts_providers.<name>]` /
+`[stt_providers.<name>]` record (a bare provider type still works — see above).
+The provider-specific credentials listed below live on that record; Config Web
+edits them in the provider dialog rather than on the `[tts]` / `[stt]` card.
 
 STT:
 
 - `provider = "openai-whisper"`: currently available;
 - `provider = "openrouter"`: currently available, default endpoint is `https://openrouter.ai/api/v1/audio/transcriptions`, request body uses base64 WAV;
-- `provider = "tencent-asr"`: Tencent Cloud Sentence Recognition (SentenceRecognition), uses `secret_id` / `secret_key`, no `base_url` needed; the legacy values `tencent` / `tencent_asr` are retained only as compatibility aliases.
+- `provider = "tencent-asr"`: Tencent Cloud Sentence Recognition (SentenceRecognition), uses `secret_id` / `secret_key`, no `base_url` needed; the legacy values `tencent` / `tencent_asr` are retained only as compatibility aliases;
+- `provider = "qwen-asr"`: Alibaba Cloud DashScope Realtime ASR over WebSocket, default model `qwen3-asr-flash-realtime`; supports streaming upload and accepts optional `model` / `base_url` overrides;
+- `provider = "google-cloud"`: Google Cloud Speech-to-Text REST API with API key authentication, default endpoint `https://speech.googleapis.com/v1/speech:recognize`; accepts optional `model` / `base_url` overrides and does not support streaming upload.
 
 TTS:
 
@@ -388,64 +551,80 @@ TTS:
 - `provider = "minimax-cn"`: Minimax WebSocket, mainland China endpoint `api.minimaxi.com`;
 - `provider = "fish-audio"`: Fish Audio WebSocket;
 - `provider = "alicloud"`: Alibaba Cloud Qwen-TTS Realtime;
-- `provider = "volcengine"`: Volcengine WebSocket bidirectional streaming V3. Currently only the new console's `X-Api-Key` authentication is supported: `api_key` maps to `X-Api-Key`, `model` maps to `X-Api-Resource-Id` (default `seed-tts-2.0`), and `voice_id` maps to the speaker.
+- `provider = "volcengine"`: Volcengine WebSocket bidirectional streaming V3. Currently only the new console's `X-Api-Key` authentication is supported: `api_key` maps to `X-Api-Key`, `model` maps to `X-Api-Resource-Id` (default `seed-tts-2.0`), and `voice_id` maps to the speaker;
+- `provider = "openrouter"`: OpenRouter HTTP speech API, default model `google/gemini-3.1-flash-tts-preview`; `model` and `voice_id` select the routed TTS model and its voice;
+- `provider = "google-cloud"`: Google Cloud Text-to-Speech REST API with API key authentication; `voice_id` defaults to `en-US-Neural2-C`.
 
-`[tts]` common fields:
+TTS configuration fields:
 
-| Field          | Description                                                                                                                |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `provider`     | Required. One of `minimax`, `minimax-cn`, `fish-audio`, `alicloud`, `volcengine`                                           |
-| `api_key`      | Required. The authentication key for each provider; the examples below omit this field to avoid writing keys into the docs |
-| `model`        | Optional. Minimax model name, Fish Audio model header, Alibaba Cloud Realtime model name, Volcengine `X-Api-Resource-Id`   |
-| `voice_id`     | Optional. Minimax voice id, Alibaba Cloud voice, Volcengine speaker. Not used by Fish Audio (see `reference_id`)           |
-| `reference_id` | Optional Fish Audio reference id; defaults to the built-in demo voice shown by Config Web. Ignored by other providers      |
-| `emotion`      | Optional. Minimax emotion; Volcengine passes it through as `audio_params.emotion`, requires voice support                  |
-| `speed`        | Optional. Speech rate, default `1.0`; the supported range varies by provider, refer to the official docs                   |
+| Field          | Location                         | Description                                                                                                              |
+| -------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `provider`     | `[tts]`                          | Required reference to a named provider record; a bare provider type remains supported for backward compatibility        |
+| `api_key`      | `[tts_providers.<name>]`         | Required authentication key for the selected provider                                                                   |
+| `model`        | `[tts_providers.<name>]`         | Optional Minimax model, Fish Audio model header, Alibaba Cloud Realtime model, Volcengine `X-Api-Resource-Id`, or OpenRouter model |
+| `voice_id`     | `[tts_providers.<name>]`         | Optional Minimax, Alibaba Cloud, OpenRouter, or Google Cloud voice; Volcengine speaker. Not used by Fish Audio (see `reference_id`) |
+| `reference_id` | `[tts_providers.<name>]`         | Optional Fish Audio reference id; defaults to the built-in demo voice shown by Config Web. Ignored by other providers    |
+| `emotion`      | `[tts_providers.<name>]`         | Optional Minimax emotion; Volcengine passes it through as `audio_params.emotion` and requires voice support             |
+| `speed`        | `[tts]`                          | Optional speech rate, default `1.0`; the supported range varies by provider, refer to the official docs                 |
 
-The config examples below only show non-key fields relevant to adapter behavior; at actual runtime you still need to provide the corresponding `api_key` in the device config via `[tts]` or `[tts.credentials.<provider>]`.
+The examples use placeholder keys to make the required record placement explicit.
 
 Common TTS adapter configs:
 
-| Provider     | `model` example            | Voice/reference field                               | Description                                                                                                         |
-| ------------ | -------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `minimax`    | `speech-2.8-hd`            | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimax.io`; `emotion` is passed through to Minimax                                      |
-| `minimax-cn` | `speech-2.8-hd`            | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimaxi.com`; `emotion` is passed through to Minimax                                    |
-| `fish-audio` | `s2-pro`                   | `reference_id = "98655a12fa944e26b274c535e5e03842"` | WebSocket live TTS; the shown reference is used by default, and `voice_id` is not used                              |
-| `alicloud`   | `qwen3-tts-flash-realtime` | `voice_id = "Cherry"`                               | DashScope Realtime; the adapter outputs 24 kHz PCM, automatically resampling when the sample rate differs           |
-| `volcengine` | `seed-tts-2.0`             | `voice_id = "zh_female_vv_uranus_bigtts"`           | `model` maps to `X-Api-Resource-Id`, `voice_id` maps to the speaker, and the two must match                         |
+| Provider       | `model` example                           | Voice/reference field                               | Description                                                                                                         |
+| -------------- | ----------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `minimax`      | `speech-2.8-hd`                           | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimax.io`; `emotion` is passed through to Minimax                                      |
+| `minimax-cn`   | `speech-2.8-hd`                           | `voice_id = "male-qn-qingse"`                       | Minimax WebSocket via `api.minimaxi.com`; `emotion` is passed through to Minimax                                    |
+| `fish-audio`   | `s2-pro`                                  | `reference_id = "98655a12fa944e26b274c535e5e03842"` | WebSocket live TTS; the shown reference is used by default, and `voice_id` is not used                              |
+| `alicloud`     | `qwen3-tts-flash-realtime`                | `voice_id = "Cherry"`                               | DashScope Realtime; the adapter outputs 24 kHz PCM, automatically resampling when the sample rate differs           |
+| `volcengine`   | `seed-tts-2.0`                            | `voice_id = "zh_female_vv_uranus_bigtts"`           | `model` maps to `X-Api-Resource-Id`, `voice_id` maps to the speaker, and the two must match                         |
+| `openrouter`   | `google/gemini-3.1-flash-tts-preview`     | `voice_id = "Kore"`                                 | OpenRouter `/audio/speech`; voice defaults depend on the selected model and output is 24 kHz PCM                    |
+| `google-cloud` | —                                         | `voice_id = "en-US-Neural2-C"`                      | Google Cloud Text-to-Speech REST API with API key authentication; output is 24 kHz PCM                              |
 
 ### Provider examples
 
 Minimax WebSocket:
 
 ```toml
-[tts]
-provider = "minimax"
+[tts_providers.minimax-main]
+type = "minimax"
+api_key = "..."
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
+
+[tts]
+provider = "minimax-main"
 speed = 1.0
 ```
 
 Fish Audio WebSocket:
 
 ```toml
-[tts]
-provider = "fish-audio"
+[tts_providers.fish-main]
+type = "fish-audio"
+api_key = "..."
 model = "s2-pro"
 reference_id = "98655a12fa944e26b274c535e5e03842"
+
+[tts]
+provider = "fish-main"
 speed = 1.0
 ```
 
-Fish Audio `model` defaults to `s2-pro` and is sent as a WebSocket handshake header. An empty `reference_id` uses the built-in demo voice shown in Config Web; configure `[tts].reference_id` or `[tts.credentials.fish-audio].reference_id` to override it. `voice_id` is not used by Fish Audio and is ignored (this avoids inheriting a `voice_id` meant for another provider). In some networks, the public Fish Audio endpoint may require `ALL_PROXY` or `HTTPS_PROXY` in `/userdata/system/env`.
+Fish Audio `model` defaults to `s2-pro` and is sent as a WebSocket handshake header. An empty `reference_id` uses the built-in demo voice shown in Config Web; configure `reference_id` on the selected `[tts_providers.<name>]` record to override it. `voice_id` is not used by Fish Audio and is ignored (this avoids inheriting a `voice_id` meant for another provider). In some networks, the public Fish Audio endpoint may require `ALL_PROXY` or `HTTPS_PROXY` in `/userdata/system/env`.
 
 Alibaba Cloud Qwen-TTS Realtime:
 
 ```toml
-[tts]
-provider = "alicloud"
+[tts_providers.alicloud-main]
+type = "alicloud"
+api_key = "..."
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
+
+[tts]
+provider = "alicloud-main"
 speed = 1.0
 ```
 
@@ -454,10 +633,14 @@ The Alibaba Cloud adapter uses the DashScope WebSocket Realtime endpoint and out
 Volcengine WebSocket bidirectional streaming V3:
 
 ```toml
-[tts]
-provider = "volcengine"
+[tts_providers.volcengine-main]
+type = "volcengine"
+api_key = "..."
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
+
+[tts]
+provider = "volcengine-main"
 speed = 1.0
 ```
 
@@ -471,25 +654,36 @@ curl -X POST http://<device-ip>:8080/api/settings/tts \
   -d '{"provider":"volcengine","voice":"zh_female_vv_uranus_bigtts"}'
 ```
 
-If you need to store the keys of multiple providers in the same config, use per-provider credentials. When switching providers via runtime POST, the corresponding credentials are read first, then overridden by the request body.
+If you need to store the keys of multiple providers in the same config, use named provider records. When switching providers via runtime POST, the corresponding record is read first, then overridden by the request body.
 
 ```toml
-[tts]
-provider = "minimax"
+[tts_providers.minimax-main]
+type = "minimax"
+api_key = "..."
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 
-[tts.credentials.fish-audio]
+[tts_providers.fish-main]
+type = "fish-audio"
+api_key = "..."
 model = "s2-pro"
 reference_id = "98655a12fa944e26b274c535e5e03842"
 
-[tts.credentials.alicloud]
+[tts_providers.alicloud-main]
+type = "alicloud"
+api_key = "..."
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
 
-[tts.credentials.volcengine]
+[tts_providers.volcengine-main]
+type = "volcengine"
+api_key = "..."
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
+
+[tts]
+provider = "minimax-main"
+speed = 1.0
 ```
 
 ## `[live_activity]`
@@ -574,5 +768,5 @@ Optional. Place `memory/extraction.yaml` under the config directory to control s
 
 ## Known limitations
 
-- `preferred_model`, `allowed_children`, and `model_text` are currently parsed but not fully wired into execution;
+- `preferred_model` and `allowed_children` are currently parsed but not fully wired into execution;
 - Example skills may reference old tools and should be checked before production use.

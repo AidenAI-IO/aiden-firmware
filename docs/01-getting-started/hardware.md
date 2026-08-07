@@ -35,7 +35,7 @@ Target Device (iPhone / PC)
           └─ USB-A out ──→ Luckfox Pico Zero (CSI input + USB)
                                    │
                                    ├─ Video capture: /dev/video0 (from TC358743 CSI)
-                                   ├─ HID keyboard/mouse/touch: /dev/hidg0, /dev/hidg1
+                                   ├─ HID keyboard/pointer/control: /dev/hidg0, /dev/hidg1, /dev/hidg2
                                    ├─ Audio codec / ALSA
                                    └─ Network: Wi-Fi or USB gadget network
 ```
@@ -91,6 +91,7 @@ It is also recommended to enable **Show Onscreen Keyboard** on the AssistiveTouc
 | HDMI subdev | `/dev/v4l-subdev2` | EDID / DV timings / HDMI sync |
 | Keyboard HID | `/dev/hidg0` | Default keyboard device for Go Agent and example tools |
 | Mouse/touch HID | `/dev/hidg1` | Go Agent uses the same HID device for mouse/touch input |
+| Auxiliary control HID | `/dev/hidg2` | Android extension keys in touchscreen mode; Consumer Control media, volume, brightness, and screenshot keys in absolute mode |
 | Frame socket | `/run/frame_service/frame_service.sock` | Default path for system service deployment |
 | Audio socket | `/run/audio_service/audio_service.sock` | Default path for system service deployment |
 
