@@ -405,7 +405,8 @@ struct CapturedHTTPRequest {
 
 class StubAgentHTTPServer {
 public:
-    StubAgentHTTPServer() {
+    explicit StubAgentHTTPServer(int stt_stop_status = 200)
+        : stt_stop_status_(stt_stop_status) {
         fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
         REQUIRE(fd_ >= 0);
         int opt = 1;
@@ -442,7 +443,7 @@ public:
     }
 
 private:
-    static std::string build_response(const std::string& path) {
+    std::string build_response(const std::string& path) const {
         // Echo the request target back so callers can assert the query string
         // survived the proxy hop: config_web strips the query off the path when
         // parsing the request line and must forward it from the saved copy.
@@ -484,12 +485,14 @@ private:
             return out.str();
         }
         if (path == "/api/config-test/stt/stop") {
-            const std::string body =
-                "{\"ok\":true,\"transcript\":\"agent live transcript\","
-                "\"results\":[{\"check\":\"stt_transcription\",\"passed\":true,"
-                "\"detail\":\"transcribed live recording with tencent-asr via streaming upload\"}]}";
+            const bool ok = stt_stop_status_ >= 200 && stt_stop_status_ < 300;
+            const std::string body = ok
+                ? "{\"ok\":true,\"transcript\":\"agent live transcript\","
+                  "\"results\":[{\"check\":\"stt_transcription\",\"passed\":true,"
+                  "\"detail\":\"transcribed live recording with tencent-asr via streaming upload\"}]}"
+                : "{\"ok\":false,\"error\":\"stop failed\"}";
             std::ostringstream out;
-            out << "HTTP/1.1 200 OK\r\n"
+            out << "HTTP/1.1 " << stt_stop_status_ << (ok ? " OK\r\n" : " Service Unavailable\r\n")
                 << "Content-Type: application/json\r\n"
                 << "Content-Length: " << body.size() << "\r\n"
                 << "Connection: close\r\n"
@@ -579,6 +582,7 @@ private:
 
     int fd_ = -1;
     int port_ = 0;
+    int stt_stop_status_ = 200;
     mutable std::mutex mu_;
     std::atomic<bool> stop_{false};
     std::vector<CapturedHTTPRequest> requests_;
@@ -2781,6 +2785,46 @@ TEST_CASE("config_web: stt live test defers agent restart until recording stops"
 
     REQUIRE(http_request(handle->port, "POST", "/api/config/test/stt/stop", "{}").status == 200);
     REQUIRE(wait_for_file_contains(restart_log, "restarted", 1000));
+}
+
+TEST_CASE("config_web: failed stt stop keeps the deferred agent restart pending") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string restart_script = tmp + "/restart-agent.sh";
+    const std::string restart_log = tmp + "/restart.log";
+    write_file(restart_script,
+               "#!/bin/sh\n"
+               "echo restarted >> \"$AIDEN_AGENT_RESTART_TEST_LOG\"\n");
+    REQUIRE(::chmod(restart_script.c_str(), 0755) == 0);
+
+    StubAgentHTTPServer agent_server(503);
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    env.set("AIDEN_AGENT_INIT_SCRIPT", restart_script);
+    env.set("AIDEN_AGENT_RESTART_TEST_LOG", restart_log);
+    auto handle = start_server(env);
+
+    const std::string start_body =
+        "{\"stt_values\":{\"provider\":\"openai-whisper\",\"api_key\":\"sk-live\",\"model\":\"whisper-1\"},"
+        "\"audio_values\":{\"socket\":\"/tmp/audio.sock\",\"sample_rate\":16000,\"channels\":1,\"bit_width\":16}}";
+    REQUIRE(http_request(handle->port, "POST", "/api/config/test/stt/start", start_body).status == 200);
+    REQUIRE(http_request(handle->port, "POST", "/api/system/env", "{\"system_env\":\"\"}").status == 200);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    REQUIRE(::access(restart_log.c_str(), F_OK) != 0);
+
+    HttpResponse stop_response =
+        http_request(handle->port, "POST", "/api/config/test/stt/stop", "{}");
+    CHECK(stop_response.status == 503);
+
+    // A failed stop means the live recording is still active. A later config
+    // change must therefore remain deferred rather than restarting the agent.
+    REQUIRE(http_request(handle->port, "POST", "/api/system/env",
+                         "{\"system_env\":\"HTTP_PROXY=http://proxy.example:8080\\n\"}").status == 200);
+    CHECK_FALSE(wait_for_file_contains(restart_log, "restarted", 1000));
 }
 
 TEST_CASE("config_web: stt live test leaves provider resolution to the running agent") {

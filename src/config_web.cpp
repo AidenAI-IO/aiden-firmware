@@ -2499,8 +2499,10 @@ ApiResponse handle_stt_test_start(const Options& options, const std::string& bod
 
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
     ApiResponse response = proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
-    g_stt_live_test_active = false;
-    start_deferred_agent_restart_if_idle();
+    if (response.status_code >= 200 && response.status_code < 300) {
+        g_stt_live_test_active = false;
+        start_deferred_agent_restart_if_idle();
+    }
     return response;
 }
 
