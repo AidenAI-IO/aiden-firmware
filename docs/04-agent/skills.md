@@ -32,6 +32,11 @@ Take a screenshot before interacting with an unfamiliar UI.
 Prefer describing what you see before clicking.
 ```
 
+`[device].device_type` and `metadata.device_types` use the same canonical values:
+`iOS`, `Android`, `macOS`, `windows`, and `linux`. Lowercase aliases are accepted
+for compatibility, but documentation and new skill metadata should use the
+canonical form.
+
 ## Currently Implemented Capabilities
 
 - Automatically discover `SKILL.md`;
