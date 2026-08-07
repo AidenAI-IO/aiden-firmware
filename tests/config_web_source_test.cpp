@@ -1069,8 +1069,11 @@ TEST_CASE("config web tolerates metadata sections without rendered controls") {
     // card yet. Page-level locking must skip those missing DOM nodes instead
     // of aborting initialization.
     CHECK(html.find("const form=document.querySelector('[data-config-section=\"'+section+'\"]');if(form){form.querySelectorAll('[data-section=\"'+section+'\"]')") != std::string::npos);
+    CHECK(html.find("form.querySelectorAll('[data-section-lock]')") != std::string::npos);
     CHECK(html.find("const btn=byId('save-'+section);if(btn)btn.disabled=actualLocked;") != std::string::npos);
     CHECK(html.find("const card=byId('section-'+section);if(card)card.classList.remove('editing');") != std::string::npos);
+    CHECK(html.find("const section = target.dataset.sectionTarget;") != std::string::npos);
+    CHECK(html.find("data-action=\"enter-edit-section\" data-section=\"model\"") == std::string::npos);
 }
 
 TEST_CASE("config web tolerates metadata fields without rendered controls") {
@@ -1347,7 +1350,7 @@ TEST_CASE("config web exposes log settings section") {
     CHECK(html.find("<h3>[log]</h3>") != std::string::npos);
     CHECK(html.find("{Key: \"llm_http_retention_days\"") != std::string::npos);
     CHECK(html.find("save-log") != std::string::npos);
-    CHECK(html.find("data-action=\"enter-edit-section\" data-section=\"log\"") != std::string::npos);
+    CHECK(html.find("data-action=\"enter-edit-section\" data-section-target=\"log\"") != std::string::npos);
 }
 
 TEST_CASE("config web exposes live activity settings section") {
@@ -1397,7 +1400,7 @@ TEST_CASE("config web exposes live activity settings section") {
     CHECK(html.find("live_activity_timeout_sec") == std::string::npos);
     CHECK(html.find("function isSecretField(el)") != std::string::npos);
     CHECK(html.find("save-live_activity") != std::string::npos);
-    CHECK(html.find("data-action=\"enter-edit-section\" data-section=\"live_activity\"") != std::string::npos);
+    CHECK(html.find("data-action=\"enter-edit-section\" data-section-target=\"live_activity\"") != std::string::npos);
 
     CHECK(toml_header.find("struct LiveActivityToml") != std::string::npos);
     CHECK(toml_header.find("LiveActivityToml live_activity") != std::string::npos);
@@ -1792,9 +1795,12 @@ TEST_CASE("config web collapses the model picker around the current model") {
     const std::string html = read_config_web_asset_bundle();
 
     CHECK(html.find("<details id=\"modelSelectorDetails\"") != std::string::npos);
+    CHECK(html.find("class=\"model-selector-details\" data-section-lock") != std::string::npos);
     CHECK(html.find("<summary>") != std::string::npos);
     CHECK(html.find("id=\"modelSelectorSummary\"") != std::string::npos);
     CHECK(html.find("function syncModelSelectorSummary()") != std::string::npos);
+    CHECK(html.find("const isSectionEditing=runtimeFunction('isSectionEditing')") != std::string::npos);
+    CHECK(html.find("ModelSelector.selectModel=editOnlyModelSelectorMethod(ModelSelector.selectModel)") != std::string::npos);
 }
 
 TEST_CASE("config web provider deletion keeps active references valid") {

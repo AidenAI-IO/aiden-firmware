@@ -48,6 +48,8 @@ class Element {
     this.value = '';
     this.checked = false;
     this.disabled = false;
+    this.inert = false;
+    this.open = false;
   }
 
   set id(value) {
@@ -123,6 +125,8 @@ class Element {
 }
 
 function selectorMatches(element, selector) {
+  const presenceMatch = selector.match(/^\[([^=\]]+)\]$/);
+  if (presenceMatch) return element.hasAttribute(presenceMatch[1]);
   const attributeMatch = selector.match(/^\[([^=]+)=(?:"([^"]+)"|([^\]]+))\]$/);
   if (attributeMatch) return element.getAttribute(attributeMatch[1]) === (attributeMatch[2] ?? attributeMatch[3]);
   return false;
@@ -201,8 +205,13 @@ const modelTarget = appendTarget(document, 'model');
 const modelProviderField = appendSpecialField(document, modelTarget, 'model.provider', 'model_provider');
 const modelNameField = appendSpecialField(document, modelTarget, 'model.model', 'model_model', 'input');
 document.getElementById('model_provider').setAttribute('data-section', 'model');
+const modelSelectorDetails = document.createElement('details');
+modelSelectorDetails.id = 'modelSelectorDetails';
+modelSelectorDetails.open = true;
+modelSelectorDetails.setAttribute('data-section-lock', '');
+modelNameField.appendChild(modelSelectorDetails);
 const modelEditButton = document.createElement('button');
-modelEditButton.setAttribute('data-section', 'model');
+modelEditButton.setAttribute('data-section-target', 'model');
 document.body.appendChild(modelEditButton);
 const modelSaveButton = document.createElement('button');
 modelSaveButton.id = 'save-model';
@@ -281,10 +290,23 @@ configFormModule.namespace.setSectionLocked('model', true);
 assert.equal(document.getElementById('model_provider').disabled, true, 'locking a section disables its fields');
 assert.equal(modelSaveButton.disabled, true, 'locking a section disables its save button');
 assert.equal(modelEditButton.disabled, false, 'locking a section keeps its edit button enabled');
+assert.equal(modelSelectorDetails.inert, true, 'locking a section disables composite controls');
+assert.equal(modelSelectorDetails.open, false, 'locking a section closes composite controls');
+configFormModule.namespace.setSectionLocked('model', false);
+assert.equal(document.getElementById('model_provider').disabled, false, 'editing a section enables its fields');
+assert.equal(modelSaveButton.disabled, false, 'editing a section enables its save button');
+assert.equal(modelSelectorDetails.inert, false, 'editing a section enables composite controls');
 
 const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
 assert.match(indexHtml, /data-config-section="agent"/);
 assert.match(indexHtml, /data-config-field="model\.provider"/);
 assert.doesNotMatch(indexHtml, /id="agent_input_mode"/, 'ordinary controls must not be hand-maintained in index.html');
+assert.match(indexHtml, /data-action="enter-edit-section" data-section-target="model"/);
+assert.doesNotMatch(indexHtml, /data-action="(?:enter-edit-section|cancel-edit-section|test-section|save-section)" data-section=/);
+assert.doesNotMatch(indexHtml, /<button(?=[^>]*data-action="(?:enter-edit-section|cancel-edit-section|test-section|save-section)")(?![^>]*data-section-target=)[^>]*>/);
+assert.match(indexHtml, /id="modelSelectorDetails"[^>]*data-section-lock/);
+const appSource = await fs.readFile(path.join(webRoot, 'assets/js/config/app.js'), 'utf8');
+assert.match(appSource, /target\.dataset\.sectionTarget/);
+assert.doesNotMatch(appSource, /target\.dataset\.section;/);
 
 process.stdout.write('config web dynamic form tests passed\n');
