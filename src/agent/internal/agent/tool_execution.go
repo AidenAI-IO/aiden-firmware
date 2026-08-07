@@ -22,11 +22,12 @@ type ToolCall struct {
 }
 
 type ToolResult struct {
-	Output    string
-	Summary   string
-	Error     *ToolError
-	Terminate bool
-	Duration  time.Duration
+	Output           string
+	Summary          string
+	SummaryTruncated bool
+	Error            *ToolError
+	Terminate        bool
+	Duration         time.Duration
 }
 
 func (r ToolResult) IsError() bool { return r.Error != nil }
@@ -406,7 +407,7 @@ func DefaultAfterToolCall(ctx context.Context, call ToolCall, result ToolResult)
 		if summary, ok := compactScreenshotObservation(call.Spec.Name, result.Output); ok {
 			result.Summary = summary
 		} else {
-			result.Summary = compactToolObservation(result.Output)
+			result.Summary, result.SummaryTruncated = compactToolObservationWithStatus(result.Output)
 		}
 	}
 	if call.Spec.Name == "screenshot" || returnsVisualObservation(call.Spec.Tool) {
