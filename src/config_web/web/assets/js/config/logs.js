@@ -5,6 +5,7 @@ const setBanner = runtimeFunction('setBanner');
 const setDetails = runtimeFunction('setDetails');
 const t = runtimeFunction('t');
 let agentLogRefreshId = 0;
+let agentLogRefreshInFlight = 0;
 
 async function exportLogs() {
   const btn = byId('exportLogsBtn');
@@ -183,7 +184,9 @@ function applyPendingAgentLogSnapshotIfIdle() {
 }
 
 async function refreshAgentLog(showBanner) {
+  if (!showBanner && agentLogRefreshInFlight > 0) return;
   const refreshId = ++agentLogRefreshId;
+  agentLogRefreshInFlight++;
   const btn = byId('refreshAgentLogBtn');
   if (btn) btn.disabled = true;
   try {
@@ -219,6 +222,7 @@ async function refreshAgentLog(showBanner) {
       renderAgentLogMeta(appState.agentLogPendingSnapshot || appState.agentLog || {});
     }
   } finally {
+    agentLogRefreshInFlight--;
     if (btn && refreshId === agentLogRefreshId) btn.disabled = false;
     updateAgentLogAutoScrollButton();
   }
