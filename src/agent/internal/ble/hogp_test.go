@@ -197,6 +197,24 @@ func TestBlueZSignalSourceAndOwnerChangeHandling(t *testing.T) {
 	}
 }
 
+func TestAdapterPairingModeChangeRequestsRescan(t *testing.T) {
+	backend := newBlueZBackend(NewService(4), "Aiden", time.Minute)
+	backend.blueZOwner = ":1.42"
+	backend.handleSignal(&dbus.Signal{
+		Sender: backend.blueZOwner,
+		Path:   dbus.ObjectPath("/org/bluez/hci0"),
+		Name:   dbusPropertiesInterface + ".PropertiesChanged",
+		Body: []any{
+			blueZAdapterInterface,
+			map[string]dbus.Variant{"Pairable": dbus.MakeVariant(false)},
+			[]string{},
+		},
+	})
+	if len(backend.rescanRequests) != 1 {
+		t.Fatal("adapter Pairable change did not request a state reconciliation")
+	}
+}
+
 func TestDBusInProgressErrorRecognition(t *testing.T) {
 	if !isDBusErrorNamed(dbus.NewError("org.bluez.Error.InProgress", nil), "org.bluez.Error.InProgress") {
 		t.Fatal("pointer D-Bus error name was not recognized")

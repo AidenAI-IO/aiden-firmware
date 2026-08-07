@@ -627,6 +627,11 @@ func (b *blueZBackend) handlePropertiesChanged(signal *dbus.Signal) {
 		}
 	}
 	needsRescan := interfaceName == blueZDeviceInterface
+	if interfaceName == blueZAdapterInterface {
+		_, pairableChanged := changed["Pairable"]
+		_, discoverableChanged := changed["Discoverable"]
+		needsRescan = pairableChanged || discoverableChanged
+	}
 	if interfaceName == blueZGattCharInterface {
 		_, notifyingChanged := changed["Notifying"]
 		_, serviceChanged := changed["Service"]
