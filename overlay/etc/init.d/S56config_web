@@ -10,11 +10,18 @@ WIFI_CONFIG_PATH=/userdata/wpa_supplicant.conf
 SYSTEM_ENV_PATH=${SYSTEM_ENV_PATH:-/userdata/system/env}
 BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
 WEB_ROOT=${WEB_ROOT:-/oem/usr/share/aiden/config-web}
+BOOT_TIMELINE_HELPER=${BOOT_TIMELINE_HELPER:-/etc/aiden_boot_timeline.sh}
 
 if [ -f "$BOOT_CONF" ]; then
     . "$BOOT_CONF"
 fi
 CONFIG_PATH=${CONFIG_PATH:-$CONFIG_DIR/agent.toml}
+
+mark() {
+    [ -x "$BOOT_TIMELINE_HELPER" ] || return 0
+    "$BOOT_TIMELINE_HELPER" mark "$@" 2>/dev/null || true
+    return 0
+}
 
 is_running() {
     pid="$1"
@@ -36,6 +43,114 @@ current_pid() {
     echo "$pid"
 }
 
+# busybox sleep supports fractional seconds only when built with FANCY_SLEEP.
+# Probe once and derive the tick budget from the interval, so the wall-clock
+# timeout is the same either way instead of ballooning to one second per tick.
+if sleep 0.05 2>/dev/null; then
+    POLL_INTERVAL_CS=5
+else
+    POLL_INTERVAL_CS=100
+fi
+
+short_sleep() {
+    if [ "$POLL_INTERVAL_CS" = "5" ]; then
+        sleep 0.05
+    else
+        sleep 1
+    fi
+}
+
+PORT=${PORT:-80}
+PROC_NET_TCP=${PROC_NET_TCP:-/proc/net/tcp}
+STARTUP_TIMEOUT_SECONDS=${STARTUP_TIMEOUT_SECONDS:-3}
+STARTUP_TIMEOUT_TICKS=${STARTUP_TIMEOUT_TICKS:-$((STARTUP_TIMEOUT_SECONDS * 100 / POLL_INTERVAL_CS))}
+[ "$STARTUP_TIMEOUT_TICKS" -ge 1 ] 2>/dev/null || STARTUP_TIMEOUT_TICKS=1
+
+# Liveness only — deliberately weaker than is_running(). The launcher is a shell
+# that execs into config_web, so for the first few milliseconds after the fork
+# /proc/<pid>/exe still points at the shell and is_running() is legitimately
+# false. Only a pid that is actually gone means startup failed.
+pid_alive() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+# /proc/net/tcp lists local_address as HEX_IP:HEX_PORT and state 0A = LISTEN.
+port_is_listening() {
+    [ -r "$PROC_NET_TCP" ] || return 1
+    port_hex="$(printf '%04X' "$PORT" 2>/dev/null)" || return 1
+    awk -v ph="$port_hex" '
+        BEGIN { pat = ":" ph "$" }
+        $4 == "0A" && $2 ~ pat { found = 1 }
+        END { exit found ? 0 : 1 }
+    ' "$PROC_NET_TCP" 2>/dev/null
+}
+
+# Reap the process we launched before dropping its PID file, otherwise the only
+# record of it is gone while it keeps running — a later start would then spawn a
+# second instance.
+terminate_child() {
+    pid="$1"
+    [ -n "$pid" ] || return 0
+    kill -0 "$pid" 2>/dev/null || return 0
+    kill "$pid" 2>/dev/null || true
+    i=0
+    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do
+        short_sleep
+        i=$((i + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+    return 0
+}
+
+# Poll until the portal is actually accepting connections rather than sleeping a
+# flat second. config_web binds before its accept loop, so this normally returns
+# in tens of milliseconds — and unlike a sleep it verifies the socket is really
+# up, not merely that the process has not exited yet.
+#
+# Exit status:
+#   0 - listening on $PORT, confirmed
+#   2 - process is up but $PROC_NET_TCP is unreadable, so the socket state
+#       cannot be determined either way
+#   1 - failed to start
+wait_until_ready() {
+    i=0
+    while [ "$i" -lt "$STARTUP_TIMEOUT_TICKS" ]; do
+        pid="$(current_pid)"
+        if ! pid_alive "$pid"; then
+            return 1
+        fi
+        if is_running "$pid" && port_is_listening; then
+            # port_is_listening only proves $PORT is occupied, not by whom.
+            # config_web exits immediately when bind() fails, so re-checking
+            # liveness after the socket is observed rules out the narrow window
+            # where a doomed process is still alive while some other process
+            # holds the port.
+            if is_running "$pid"; then
+                return 0
+            fi
+        fi
+        short_sleep
+        i=$((i + 1))
+    done
+
+    pid="$(current_pid)"
+    if ! is_running "$pid"; then
+        return 1
+    fi
+    # Process is alive but never appeared as LISTEN. Only excuse that when the
+    # socket table could not be read at all; if it was readable, the port
+    # genuinely never opened and reporting readiness would be a lie.
+    if [ -r "$PROC_NET_TCP" ]; then
+        return 1
+    fi
+    return 2
+}
+
 start() {
     pid="$(current_pid)"
     if is_running "$pid"; then
@@ -53,20 +168,40 @@ start() {
         return 1
     fi
 
+    # A listener present before launch cannot belong to this process. Reject it
+    # up front so an unrelated service cannot satisfy the readiness poll while
+    # config_web is still alive in its launcher or bind-failure path.
+    if port_is_listening; then
+        echo "Cannot start config_web: port $PORT is already in use"
+        return 1
+    fi
+
     mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SYSTEM_ENV_PATH")"
 
-    "$ENV_RUN_BIN" "$BIN" --bind=0.0.0.0 --port=80 --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" --web-root="$WEB_ROOT" &
+    "$ENV_RUN_BIN" "$BIN" --bind=0.0.0.0 --port="$PORT" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" --web-root="$WEB_ROOT" &
     child_pid=$!
     echo "$child_pid" > "$PID_FILE"
-    sleep 1
 
-    pid="$(current_pid)"
-    if ! is_running "$pid"; then
+    wait_until_ready
+    ready_state="$?"
+    if [ "$ready_state" = "1" ]; then
+        terminate_child "$child_pid"
         rm -f "$PID_FILE"
         echo "Failed to start config_web"
         return 1
     fi
 
+    pid="$(current_pid)"
+    if [ "$ready_state" = "2" ]; then
+        # Running, but readiness could not be confirmed. Do not record the
+        # listening milestone for something that was never observed listening.
+        echo "Started config_web (pid $pid; listening state unverified, $PROC_NET_TCP unreadable)"
+        return 0
+    fi
+
+    # Milestone: http://192.168.42.1 (the settings portal) is now accepting
+    # connections. This is one of the two numbers users actually wait on.
+    mark config_web:listening
     echo "Started config_web (pid $pid)"
 }
 

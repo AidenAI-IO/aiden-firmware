@@ -44,6 +44,7 @@ func effectiveMaxIterations(configured int) int {
 const (
 	currentEnvironmentHintMaxAge      = 10 * time.Minute
 	runtimeSessionEventPersistTimeout = 2 * time.Second
+	maxPublicToolResultRunes          = maxToolObservationRunes
 )
 
 type Runtime struct {
@@ -1929,12 +1930,13 @@ func (h *runtimeCallbackHandler) AfterToolCall(ctx context.Context, call ToolCal
 }
 
 func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call ToolCall, result ToolResult) {
-	output := result.EventOutput()
+	output := publicToolResultContent(result)
+	logOutput := result.EventOutput()
 	if h.logger != nil {
 		if result.IsError() {
-			h.logger.Error("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
+			h.logger.Error("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(logOutput, 240))
 		} else {
-			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
+			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(logOutput, 240))
 		}
 	}
 	h.emitRunEvent(RunEvent{
@@ -1948,6 +1950,14 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 		IsError:    result.IsError(),
 		ToolError:  cloneToolError(result.Error),
 	})
+}
+
+func publicToolResultContent(result ToolResult) string {
+	originalChars := utf8.RuneCountInString(result.Output)
+	if result.SummaryTruncated && originalChars > maxPublicToolResultRunes {
+		return fmt.Sprintf("[Large tool result omitted from public history (%d chars)]", originalChars)
+	}
+	return result.EventOutput()
 }
 
 func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action schema.AgentAction) {
