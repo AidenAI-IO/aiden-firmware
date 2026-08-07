@@ -2416,7 +2416,7 @@ TEST_CASE("config web sends provider rename metadata for masked secrets") {
                     "section,renamedFrom,name)") != std::string::npos);
 }
 
-TEST_CASE("config web keeps the system env save button disabled after success") {
+TEST_CASE("config web locks the system env editor before saving") {
     const std::string js = read_config_web_config_scripts();
     const size_t save_at = js.find("async function saveSystemEnv()");
     REQUIRE(save_at != std::string::npos);
@@ -2424,7 +2424,11 @@ TEST_CASE("config web keeps the system env save button disabled after success") 
     REQUIRE(save_end != std::string::npos);
     const std::string save_body = js.substr(save_at, save_end - save_at);
 
-    CHECK(save_body.find("setSystemEnvLocked(true)") != std::string::npos);
+    const size_t lock_at = save_body.find("setSystemEnvLocked(true)");
+    const size_t request_at = save_body.find("await request(");
+    REQUIRE(lock_at != std::string::npos);
+    REQUIRE(request_at != std::string::npos);
+    CHECK(lock_at < request_at);
     CHECK(save_body.find("setSystemEnvLocked(false)") != std::string::npos);
     CHECK(save_body.find("finally{byId('save-system_env').disabled=false;}") == std::string::npos);
 }
