@@ -1068,6 +1068,7 @@ TEST_CASE("config web tolerates metadata sections without rendered controls") {
     // Config metadata may expose sections that do not have a static editor
     // card yet. Page-level locking must skip those missing DOM nodes instead
     // of aborting initialization.
+    CHECK(html.find("const form=document.querySelector('[data-config-section=\"'+section+'\"]');if(form){form.querySelectorAll('[data-section=\"'+section+'\"]')") != std::string::npos);
     CHECK(html.find("const btn=byId('save-'+section);if(btn)btn.disabled=actualLocked;") != std::string::npos);
     CHECK(html.find("const card=byId('section-'+section);if(card)card.classList.remove('editing');") != std::string::npos);
 }

@@ -116,11 +116,15 @@ class Element {
   querySelector(selector) {
     return findElement(this, selector, false);
   }
+
+  querySelectorAll(selector) {
+    return findElements(this, selector, false);
+  }
 }
 
 function selectorMatches(element, selector) {
-  const attributeMatch = selector.match(/^\[([^=]+)="([^"]+)"\]$/);
-  if (attributeMatch) return element.getAttribute(attributeMatch[1]) === attributeMatch[2];
+  const attributeMatch = selector.match(/^\[([^=]+)=(?:"([^"]+)"|([^\]]+))\]$/);
+  if (attributeMatch) return element.getAttribute(attributeMatch[1]) === (attributeMatch[2] ?? attributeMatch[3]);
   return false;
 }
 
@@ -131,6 +135,12 @@ function findElement(root, selector, includeRoot = true) {
     if (found) return found;
   }
   return null;
+}
+
+function findElements(root, selector, includeRoot = true, matches = []) {
+  if (includeRoot && selectorMatches(root, selector)) matches.push(root);
+  root.children.forEach((child) => findElements(child, selector, true, matches));
+  return matches;
 }
 
 class Document {
@@ -148,6 +158,10 @@ class Document {
 
   querySelector(selector) {
     return findElement(this.body, selector, true);
+  }
+
+  querySelectorAll(selector) {
+    return findElements(this.body, selector, true);
   }
 
   addEventListener() {}
@@ -186,6 +200,13 @@ const agentTarget = appendTarget(document, 'agent');
 const modelTarget = appendTarget(document, 'model');
 const modelProviderField = appendSpecialField(document, modelTarget, 'model.provider', 'model_provider');
 const modelNameField = appendSpecialField(document, modelTarget, 'model.model', 'model_model', 'input');
+document.getElementById('model_provider').setAttribute('data-section', 'model');
+const modelEditButton = document.createElement('button');
+modelEditButton.setAttribute('data-section', 'model');
+document.body.appendChild(modelEditButton);
+const modelSaveButton = document.createElement('button');
+modelSaveButton.id = 'save-model';
+document.body.appendChild(modelSaveButton);
 
 const context = vm.createContext({document, console, setTimeout, clearTimeout});
 const moduleCache = new Map();
@@ -253,6 +274,13 @@ assert.deepEqual(agentTarget.children.map((field) => field.getAttribute('data-co
   'agent.secret_value',
   'agent.notes',
 ]);
+
+const configFormModule = await loadModule(path.join(webRoot, 'assets/js/config/config-form.js'));
+await configFormModule.evaluate();
+configFormModule.namespace.setSectionLocked('model', true);
+assert.equal(document.getElementById('model_provider').disabled, true, 'locking a section disables its fields');
+assert.equal(modelSaveButton.disabled, true, 'locking a section disables its save button');
+assert.equal(modelEditButton.disabled, false, 'locking a section keeps its edit button enabled');
 
 const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
 assert.match(indexHtml, /data-config-section="agent"/);
