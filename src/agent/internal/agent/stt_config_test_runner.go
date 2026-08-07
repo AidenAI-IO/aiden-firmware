@@ -25,6 +25,28 @@ type STTTranscriptionTestResult struct {
 	Transcript string `json:"transcript"`
 }
 
+type STTProviderTestResult struct {
+	Provider string `json:"provider"`
+}
+
+func RunSTTProviderTest(ctx context.Context, cfg Config, req STTTranscriptionTestRequest) (STTProviderTestResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return STTProviderTestResult{}, err
+	}
+
+	applySTTTranscriptionTestRequest(&cfg, req)
+	if strings.TrimSpace(cfg.STT.Provider) == "" {
+		return STTProviderTestResult{}, errors.New("stt.provider is required")
+	}
+	if _, err := NewSTTClientFromConfig(cfg); err != nil {
+		return STTProviderTestResult{Provider: cfg.STT.Provider}, err
+	}
+	return STTProviderTestResult{Provider: cfg.STT.Provider}, nil
+}
+
 func RunSTTTranscriptionTest(ctx context.Context, cfg Config, req STTTranscriptionTestRequest) (STTTranscriptionTestResult, error) {
 	if ctx == nil {
 		ctx = context.Background()

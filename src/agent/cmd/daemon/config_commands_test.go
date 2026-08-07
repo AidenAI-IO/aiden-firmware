@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +13,34 @@ import (
 
 	"aiden-agent/internal/agent"
 )
+
+func TestExecuteConfigTestUsesModelRuntime(t *testing.T) {
+	values, err := json.Marshal(modelDTO{Provider: "fake"})
+	if err != nil {
+		t.Fatalf("marshal values: %v", err)
+	}
+	result := executeConfigTest(context.Background(), agent.Config{
+		Model: agent.ModelConfig{Provider: "fake", Responses: []string{"hello"}},
+	}, configTestInput{Section: "model", Values: values}, "model")
+	if !result.OK || len(result.Results) != 1 || result.Results[0].Check != "provider_request" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestExecuteConfigTestUsesSTTRuntimeWithoutAudio(t *testing.T) {
+	values, err := json.Marshal(sttDTO{Provider: "qwen-main", Language: "zh"})
+	if err != nil {
+		t.Fatalf("marshal values: %v", err)
+	}
+	result := executeConfigTest(context.Background(), agent.Config{
+		STTProviders: map[string]agent.STTProvider{
+			"qwen-main": {Type: "qwen-asr", APIKey: "test-key"},
+		},
+	}, configTestInput{Section: "stt", Values: values}, "stt")
+	if !result.OK || len(result.Results) != 1 || result.Results[0].Check != "provider_config" {
+		t.Fatalf("result = %+v", result)
+	}
+}
 
 func TestConfigCheck_ValidConfig(t *testing.T) {
 	validConfig := agent.Config{

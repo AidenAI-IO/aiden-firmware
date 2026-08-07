@@ -205,6 +205,25 @@ TEST_CASE("config web agent tests do not reference legacy energy threshold") {
     CHECK(source.find("\"vad_speech_threshold\"") != std::string::npos);
 }
 
+TEST_CASE("config web delegates provider tests to the agent runtime") {
+    const std::string path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream in(path.c_str());
+    REQUIRE(in.good());
+
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string source = buffer.str();
+
+    CHECK(source.find("run_agent_provider_config_test") != std::string::npos);
+    CHECK(source.find("provider_default_url") == std::string::npos);
+    CHECK(source.find("is_known_config_test_provider_type") == std::string::npos);
+    CHECK(source.find("is_streaming_tts_provider") == std::string::npos);
+    CHECK(source.find("flatten_provider_reference") == std::string::npos);
+    CHECK(source.find("resolve_config_test_api_key") == std::string::npos);
+    CHECK(source.find("no URL to test (provider unknown and base_url empty)") == std::string::npos);
+    CHECK(source.find("api_key_valid") == std::string::npos);
+}
+
 TEST_CASE("config web exposes agent runtime status") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());

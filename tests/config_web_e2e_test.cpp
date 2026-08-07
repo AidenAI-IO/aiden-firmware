@@ -2585,7 +2585,7 @@ TEST_CASE("config_web: config test reports removed audio input mode hint") {
     CHECK(test_resp.body.find("audio mode has been removed; use stt instead") != std::string::npos);
 }
 
-TEST_CASE("config_web: tts config test invokes playback of test passed") {
+TEST_CASE("config_web: tts config test invokes the agent runtime") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),
@@ -2595,9 +2595,7 @@ TEST_CASE("config_web: tts config test invokes playback of test passed") {
     StubEnv env;
     env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", log_path);
     auto handle = start_server(env);
-    HeadProbeServer probe;
 
-    const std::string endpoint = "http://127.0.0.1:" + std::to_string(probe.port());
     const std::string test_body =
         "{\"section\":\"tts\",\"values\":{"
         "\"provider\":\"minimax-cn\","
@@ -2605,8 +2603,7 @@ TEST_CASE("config_web: tts config test invokes playback of test passed") {
         "\"model\":\"speech-2.8-hd\","
         "\"voice_id\":\"male-qn-qingse\","
         "\"emotion\":\"happy\","
-        "\"speed\":1,"
-        "\"base_url\":\"" + endpoint + "\""
+        "\"speed\":1"
         "}}";
 
     HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
@@ -2614,10 +2611,11 @@ TEST_CASE("config_web: tts config test invokes playback of test passed") {
     CHECK(test_resp.body.find("\"ok\":true") != std::string::npos);
     CHECK(test_resp.body.find("tts_playback") != std::string::npos);
     CHECK(test_resp.body.find("test passed") != std::string::npos);
-    REQUIRE(wait_for_file_contains(log_path, "test passed", 1000));
+    REQUIRE(wait_for_file_contains(log_path, "stdin:", 1000));
     const std::string log = read_file(log_path);
     CHECK(log.find("config-test") != std::string::npos);
     CHECK(log.find("--section=tts") != std::string::npos);
+    CHECK(log.find("stdin:\n" + test_body) != std::string::npos);
 }
 
 TEST_CASE("config_web: fish audio TTS test accepts empty reference id and agent logs") {
@@ -2644,37 +2642,12 @@ TEST_CASE("config_web: fish audio TTS test accepts empty reference id and agent 
     HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
     CHECK(test_resp.status == 200);
     CHECK(test_resp.body.find("\"ok\":true") != std::string::npos);
-    CHECK(test_resp.body.find("\"check\":\"endpoint_reachable\"") != std::string::npos);
-    CHECK(test_resp.body.find("verified by the TTS playback test") != std::string::npos);
+    CHECK(test_resp.body.find("\"check\":\"tts_playback\"") != std::string::npos);
     REQUIRE(wait_for_file_contains(log_path, "\"reference_id\":\"\"", 1000));
     const std::string log = read_file(log_path);
     CHECK(log.find("\"provider\":\"fish-audio\"") != std::string::npos);
     CHECK(log.find("\"model\":\"s2-pro\"") != std::string::npos);
     CHECK(log.find("\"reference_id\":\"\"") != std::string::npos);
-}
-
-TEST_CASE("config_web: tencent stt config test stays green without app_id") {
-    StubEnv env;
-    auto handle = start_server(env);
-    HeadProbeServer probe;
-
-    const std::string endpoint = "http://127.0.0.1:" + std::to_string(probe.port());
-    const std::string test_body =
-        "{\"section\":\"stt\",\"values\":{"
-        "\"provider\":\"tencent-asr\","
-        "\"base_url\":\"" + endpoint + "\","
-        "\"app_id\":\"\","
-        "\"secret_id\":\"id\","
-        "\"secret_key\":\"key\","
-        "\"region\":\"ap-shanghai\","
-        "\"engine_model_type\":\"16k_zh\""
-        "}}";
-
-    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
-    CHECK(test_resp.status == 200);
-    CHECK(test_resp.body.find("\"ok\":true") != std::string::npos);
-    CHECK(test_resp.body.find("\"check\":\"streaming_app_id\"") != std::string::npos);
-    CHECK(test_resp.body.find("one-shot upload") != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/models forwards the query string to the agent") {
@@ -2738,7 +2711,7 @@ TEST_CASE("config_web: stt live test proxies start and stop to agent") {
     CHECK(requests[1].path == "/api/config-test/stt/stop");
 }
 
-TEST_CASE("config_web: stt live test resolves provider api_key from system env") {
+TEST_CASE("config_web: stt live test leaves provider resolution to the running agent") {
     const std::string tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),
@@ -2788,17 +2761,17 @@ TEST_CASE("config_web: stt live test resolves provider api_key from system env")
     REQUIRE(forwarded != nullptr);
     cJSON* stt_values = cJSON_GetObjectItem(forwarded, "stt_values");
     REQUIRE(stt_values != nullptr);
-    CHECK(required_json_string(stt_values, "provider") == "openai-whisper");
-    CHECK(required_json_string(stt_values, "api_key") == "stt-live-system-env-secret");
-    CHECK(required_json_string(stt_values, "model") == "whisper-live-1");
-    CHECK(required_json_string(stt_values, "base_url") == "https://stt.example.test/v1");
+    CHECK(required_json_string(stt_values, "provider") == "env-whisper");
     CHECK(required_json_string(stt_values, "language") == "zh");
+    CHECK(cJSON_GetObjectItem(stt_values, "api_key") == nullptr);
+    CHECK(cJSON_GetObjectItem(stt_values, "model") == nullptr);
+    CHECK(cJSON_GetObjectItem(stt_values, "base_url") == nullptr);
 
     cJSON* audio_values = cJSON_GetObjectItem(forwarded, "audio_values");
     REQUIRE(audio_values != nullptr);
     CHECK(required_json_string(audio_values, "socket") == "/tmp/live-audio.sock");
     CHECK(required_json_int(audio_values, "sample_rate") == 16000);
-    CHECK(requests[0].body.find("$AIDEN_STT_LIVE_TEST_API_KEY") == std::string::npos);
+    CHECK(requests[0].body.find("stt-live-system-env-secret") == std::string::npos);
     CHECK(requests[0].body.find("stale-process-env-key") == std::string::npos);
     cJSON_Delete(forwarded);
 }
@@ -2837,7 +2810,7 @@ TEST_CASE("config_web: stt live test rejects malformed provider fields before fl
     CHECK(agent_server.requests().empty());
 }
 
-TEST_CASE("config_web: stt live test reports provider config load failures") {
+TEST_CASE("config_web: stt live test does not load provider config in config web") {
     StubAgentHTTPServer agent_server;
     StubEnv env;
     env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
@@ -2851,9 +2824,11 @@ TEST_CASE("config_web: stt live test reports provider config load failures") {
     HttpResponse start_resp =
         http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
 
-    CHECK(start_resp.status == 503);
-    CHECK(start_resp.body.find("provider config unavailable") != std::string::npos);
-    CHECK(agent_server.requests().empty());
+    CHECK(start_resp.status == 200);
+    const std::vector<CapturedHTTPRequest> requests = agent_server.requests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].path == "/api/config-test/stt/start");
+    CHECK(requests[0].body.find("\"provider\":\"env-whisper\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: stt live test keeps bare providers independent of config loading") {
@@ -3844,13 +3819,57 @@ TEST_CASE("config_web: POST /api/config rejects a non-object voice provider entr
     CHECK(resp.body.find("tts_providers.fish") != std::string::npos);
 }
 
-// The Test button posts the form values, and after the credentials moved onto
-// records that form carries only the reference plus the globals. config_web's own
-// pre-checks read values.provider and values.api_key directly, so without
-// flattening the reference first they see an unknown provider and an empty key --
-// reporting "provider unknown" and "skipped because api_key is empty" for a
-// record that is configured correctly.
-TEST_CASE("config_web: config test flattens a model provider reference") {
+TEST_CASE("config_web: provider config tests are delegated unchanged to agent") {
+    struct Case {
+        const char* section;
+        const char* values;
+    };
+    const Case cases[] = {
+        {"model", "{\"provider\":\"kimi\",\"model\":\"kimi-k3\"}"},
+        {"tts", "{\"provider\":\"fish-audio\",\"api_key\":\"test-key\",\"reference_id\":\"ref\",\"speed\":1}"},
+        {"stt", "{\"provider\":\"qwen-asr\",\"api_key\":\"test-key\",\"language\":\"zh\"}"},
+    };
+
+    for (const Case& c : cases) {
+        const std::string tmp = make_temp_dir();
+        auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+            const_cast<char*>(tmp.c_str()),
+            [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+        );
+        const std::string log_path = tmp + "/config-test.log";
+        const std::string result_path = tmp + "/config-test-result.json";
+        write_file(result_path,
+                   "{\"ok\":true,\"results\":[{\"check\":\"provider_runtime\","
+                   "\"passed\":true,\"detail\":\"tested by agent\"}]}\n");
+
+        StubEnv env;
+        env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", log_path);
+        env.set("AIDEN_AGENT_STUB_CONFIG_TEST_FILE", result_path);
+        auto handle = start_server(env);
+        write_file(handle->tmp_dir + "/system_env", "HTTPS_PROXY=http://127.0.0.1:9\n");
+
+        const std::string body =
+            std::string("{\"section\":\"") + c.section + "\",\"values\":" + c.values + "}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config/test", body);
+        REQUIRE_MESSAGE(resp.status == 200, std::string(c.section));
+
+        cJSON* parsed = cJSON_Parse(resp.body.c_str());
+        REQUIRE(parsed != nullptr);
+        cJSON* results = cJSON_GetObjectItem(parsed, "results");
+        REQUIRE(results != nullptr);
+        CHECK_MESSAGE(cJSON_GetArraySize(results) == 1, std::string(c.section));
+        CHECK_MESSAGE(required_test_result(parsed, "provider_runtime") != nullptr, std::string(c.section));
+        cJSON_Delete(parsed);
+
+        REQUIRE_MESSAGE(wait_for_file_contains(log_path, "stdin:", 1000), std::string(c.section));
+        const std::string log = read_file(log_path);
+        CHECK_MESSAGE(log.find(std::string("--section=") + c.section) != std::string::npos,
+                      std::string(c.section));
+        CHECK_MESSAGE(log.find("stdin:\n" + body) != std::string::npos, std::string(c.section));
+    }
+}
+
+TEST_CASE("config_web: model config test leaves provider references for agent") {
     StubEnv env;
     const std::string tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
@@ -3866,24 +3885,18 @@ TEST_CASE("config_web: config test flattens a model provider reference") {
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", tmp + "/config-test.log");
     auto handle = start_server(env);
 
     const std::string test_body =
         "{\"section\":\"model\",\"values\":{\"provider\":\"work-openai\",\"model\":\"gpt-4o\"}}";
     HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
     CHECK(test_resp.status == 200);
-
-    cJSON* parsed = cJSON_Parse(test_resp.body.c_str());
-    REQUIRE(parsed != nullptr);
-    cJSON* endpoint = required_test_result(parsed, "endpoint_reachable");
-    REQUIRE(endpoint != nullptr);
-    CHECK(required_json_string(endpoint, "detail").find("http://127.0.0.1:9") != std::string::npos);
-    cJSON* api_key = required_test_result(parsed, "api_key_present");
-    REQUIRE(api_key != nullptr);
-    cJSON* passed = cJSON_GetObjectItem(api_key, "passed");
-    REQUIRE(passed != nullptr);
-    CHECK((passed->type & 0xff) == cJSON_True);
-    cJSON_Delete(parsed);
+    REQUIRE(wait_for_file_contains(tmp + "/config-test.log", "stdin:", 1000));
+    const std::string log = read_file(tmp + "/config-test.log");
+    CHECK(log.find("stdin:\n" + test_body) != std::string::npos);
+    CHECK(log.find("sk-model-secret-1234") == std::string::npos);
+    CHECK(log.find("http://127.0.0.1:9") == std::string::npos);
 }
 
 TEST_CASE("config_web: model config test resolves provider api_key from system env") {
@@ -3892,8 +3905,8 @@ TEST_CASE("config_web: model config test resolves provider api_key from system e
         const_cast<char*>(tmp.c_str()),
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
-    HeadProbeServer probe;
-    const std::string base_url = "http://127.0.0.1:" + std::to_string(probe.port());
+    const std::string log_path = tmp + "/config-test.log";
+    const std::string base_url = "https://model.example.com/v1";
     write_file(tmp + "/config.json",
                "{\"model_providers\":{\"env-openai\":{\"type\":\"openai\","
                "\"has_api_key\":true,\"base_url\":\"" + base_url + "\"}},"
@@ -3905,6 +3918,8 @@ TEST_CASE("config_web: model config test resolves provider api_key from system e
 
     StubEnv env;
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", log_path);
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_ENV_KEY", "AIDEN_CONFIG_TEST_MODEL_API_KEY");
     env.set("AIDEN_CONFIG_TEST_MODEL_API_KEY", "process-env-key-must-not-win");
     auto handle = start_server(env);
     write_file(handle->tmp_dir + "/agent.toml",
@@ -3922,24 +3937,10 @@ TEST_CASE("config_web: model config test resolves provider api_key from system e
         "{\"section\":\"model\",\"values\":{\"provider\":\"env-openai\",\"model\":\"gpt-4o\"}}";
     HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
     REQUIRE(test_resp.status == 200);
-
-    const std::vector<std::string> requests = probe.requests();
-    bool saw_chat_request = false;
-    bool saw_resolved_header = false;
-    bool saw_literal_reference = false;
-    for (size_t i = 0; i < requests.size(); ++i) {
-        if (requests[i].find("POST /chat/completions ") == std::string::npos) {
-            continue;
-        }
-        saw_chat_request = true;
-        saw_resolved_header =
-            requests[i].find("Authorization: Bearer model-system-env-secret\r\n") != std::string::npos;
-        saw_literal_reference =
-            requests[i].find("Authorization: Bearer $AIDEN_CONFIG_TEST_MODEL_API_KEY\r\n") != std::string::npos;
-    }
-    REQUIRE(saw_chat_request);
-    CHECK(saw_resolved_header);
-    CHECK_FALSE(saw_literal_reference);
+    REQUIRE(wait_for_file_contains(log_path, "env:AIDEN_CONFIG_TEST_MODEL_API_KEY=", 1000));
+    const std::string log = read_file(log_path);
+    CHECK(log.find("env:AIDEN_CONFIG_TEST_MODEL_API_KEY=model-system-env-secret") != std::string::npos);
+    CHECK(log.find("stdin:\n" + test_body) != std::string::npos);
 }
 
 TEST_CASE("config_web: config test fails closed when system env is invalid or oversized") {
@@ -3986,7 +3987,7 @@ TEST_CASE("config_web: config test fails closed when system env is invalid or ov
     CHECK(probe.requests().empty());
 }
 
-TEST_CASE("config_web: config test flattens a tts provider reference") {
+TEST_CASE("config_web: tts config test leaves provider references for agent") {
     StubEnv env;
     const std::string tmp = make_temp_dir();
     write_file(tmp + "/config.json",
@@ -3999,6 +4000,7 @@ TEST_CASE("config_web: config test flattens a tts provider reference") {
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", tmp + "/config-test.log");
     auto handle = start_server(env);
 
     // What the slimmed form posts: the reference and the global speed only.
@@ -4006,15 +4008,14 @@ TEST_CASE("config_web: config test flattens a tts provider reference") {
         "{\"section\":\"tts\",\"values\":{\"provider\":\"fish\",\"speed\":1}}";
     HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
     CHECK(test_resp.status == 200);
-
-    // The key lives on the record, so it must not be reported as missing.
-    CHECK(test_resp.body.find("skipped because api_key is empty") == std::string::npos);
-    // And the endpoint check must resolve the provider type rather than treating
-    // the record name as an unknown provider.
-    CHECK(test_resp.body.find("provider unknown and base_url empty") == std::string::npos);
+    REQUIRE(wait_for_file_contains(tmp + "/config-test.log", "stdin:", 1000));
+    const std::string log = read_file(tmp + "/config-test.log");
+    CHECK(log.find("stdin:\n" + test_body) != std::string::npos);
+    CHECK(log.find("sk-fish-secret-1234") == std::string::npos);
+    CHECK(log.find("ref-abc") == std::string::npos);
 }
 
-TEST_CASE("config_web: tts config test resolves provider api_key from process env fallback") {
+TEST_CASE("config_web: tts config test exposes process env to agent") {
     const std::string tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),
@@ -4034,6 +4035,7 @@ TEST_CASE("config_web: tts config test resolves provider api_key from process en
     StubEnv env;
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", log_path);
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_ENV_KEY", "AIDEN_CONFIG_TEST_TTS_API_KEY");
     env.set("AIDEN_CONFIG_TEST_TTS_API_KEY", "tts-process-env-secret");
     auto handle = start_server(env);
     write_file(handle->tmp_dir + "/agent.toml",
@@ -4049,11 +4051,12 @@ TEST_CASE("config_web: tts config test resolves provider api_key from process en
     REQUIRE(wait_for_file_contains(log_path, "stdin:", 1000));
 
     const std::string log = read_file(log_path);
-    CHECK(log.find("\"api_key\":\"tts-process-env-secret\"") != std::string::npos);
-    CHECK(log.find("\"api_key\":\"$AIDEN_CONFIG_TEST_TTS_API_KEY\"") == std::string::npos);
+    CHECK(log.find("env:AIDEN_CONFIG_TEST_TTS_API_KEY=tts-process-env-secret") != std::string::npos);
+    CHECK(log.find("stdin:\n" + test_body) != std::string::npos);
+    CHECK(log.find("\"api_key\"") == std::string::npos);
 }
 
-TEST_CASE("config_web: config test flattens an stt provider reference") {
+TEST_CASE("config_web: stt config test leaves provider references for agent") {
     StubEnv env;
     const std::string tmp = make_temp_dir();
     write_file(tmp + "/config.json",
@@ -4067,17 +4070,18 @@ TEST_CASE("config_web: config test flattens an stt provider reference") {
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", tmp + "/config-test.log");
     auto handle = start_server(env);
 
     const std::string test_body =
         "{\"section\":\"stt\",\"values\":{\"provider\":\"tencent-main\",\"language\":\"zh\"}}";
     HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
     CHECK(test_resp.status == 200);
-
-    // The Tencent-specific credential checks only run once the reference has
-    // resolved to tencent-asr, so their presence proves the flattening happened.
-    CHECK(test_resp.body.find("\"check\":\"streaming_app_id\"") != std::string::npos);
-    CHECK(test_resp.body.find("provider unknown and base_url empty") == std::string::npos);
+    REQUIRE(wait_for_file_contains(tmp + "/config-test.log", "stdin:", 1000));
+    const std::string log = read_file(tmp + "/config-test.log");
+    CHECK(log.find("stdin:\n" + test_body) != std::string::npos);
+    CHECK(log.find("AKID-xxx") == std::string::npos);
+    CHECK(log.find("secret-yyy") == std::string::npos);
 }
 
 TEST_CASE("config_web: stt config test honors an empty provider api_key in system env") {
@@ -4086,8 +4090,8 @@ TEST_CASE("config_web: stt config test honors an empty provider api_key in syste
         const_cast<char*>(tmp.c_str()),
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
-    HeadProbeServer probe;
-    const std::string base_url = "http://127.0.0.1:" + std::to_string(probe.port());
+    const std::string log_path = tmp + "/config-test.log";
+    const std::string base_url = "https://stt.example.com/v1";
     write_file(tmp + "/config.json",
                "{\"stt_providers\":{\"env-whisper\":{\"type\":\"openai-whisper\","
                "\"has_api_key\":true,\"model\":\"whisper-1\","
@@ -4101,6 +4105,8 @@ TEST_CASE("config_web: stt config test honors an empty provider api_key in syste
 
     StubEnv env;
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", log_path);
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_ENV_KEY", "AIDEN_CONFIG_TEST_MISSING_KEY");
     env.set("AIDEN_CONFIG_TEST_MISSING_KEY", "process-env-key-must-not-win");
     auto handle = start_server(env);
     write_file(handle->tmp_dir + "/agent.toml",
@@ -4118,16 +4124,10 @@ TEST_CASE("config_web: stt config test honors an empty provider api_key in syste
         "{\"section\":\"stt\",\"values\":{\"provider\":\"env-whisper\",\"language\":\"en\"}}";
     HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
     REQUIRE(test_resp.status == 200);
-
-    cJSON* parsed = cJSON_Parse(test_resp.body.c_str());
-    REQUIRE(parsed != nullptr);
-    cJSON* api_key = required_test_result(parsed, "api_key_present");
-    REQUIRE(api_key != nullptr);
-    cJSON* passed = cJSON_GetObjectItem(api_key, "passed");
-    REQUIRE(passed != nullptr);
-    CHECK((passed->type & 0xff) == cJSON_False);
-    CHECK(required_json_string(api_key, "detail") == "api_key is empty");
-    cJSON_Delete(parsed);
+    REQUIRE(wait_for_file_contains(log_path, "env:AIDEN_CONFIG_TEST_MISSING_KEY=", 1000));
+    const std::string log = read_file(log_path);
+    CHECK(log.find("env:AIDEN_CONFIG_TEST_MISSING_KEY=\n") != std::string::npos);
+    CHECK(log.find("stdin:\n" + test_body) != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/config returns voice providers from the resolved config") {
