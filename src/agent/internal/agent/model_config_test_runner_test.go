@@ -58,55 +58,158 @@ func TestRunModelProviderTestReportsInvalidProviderRecord(t *testing.T) {
 	}
 }
 
-func TestApplyModelProviderTestRequestClearsStoredSamplingValuesBeforeDefaults(t *testing.T) {
-	storedTemperature := 0.2
-	cfg := Config{Model: ModelConfig{
-		Provider:        "openai",
-		Model:           "gpt-4o",
-		Temperature:     &storedTemperature,
-		ReasoningEffort: "high",
-	}}
+func TestRunModelProviderTestSendsEffectiveSamplingValues(t *testing.T) {
+	tests := []struct {
+		name                string
+		request             ModelProviderTestRequest
+		wantTemperature     float64
+		wantReasoningEffort string
+	}{
+		{
+			name: "unset values use model defaults",
+			request: ModelProviderTestRequest{
+				Provider: "openai",
+				Model:    "kimi-k3",
+			},
+			wantTemperature:     1,
+			wantReasoningEffort: "low",
+		},
+		{
+			name: "explicit zero and reasoning value reach provider",
+			request: ModelProviderTestRequest{
+				Provider:        "openai",
+				Model:           "kimi-k3",
+				Temperature:     floatPtr(0),
+				ReasoningEffort: "none",
+			},
+			wantTemperature:     0,
+			wantReasoningEffort: "none",
+		},
+	}
 
-	err := applyModelProviderTestRequest(&cfg, ModelProviderTestRequest{
-		Provider: "openai",
-		Model:    "kimi-k3",
-	})
-	if err != nil {
-		t.Fatalf("applyModelProviderTestRequest() error = %v", err)
-	}
-	if cfg.Model.Temperature == nil || *cfg.Model.Temperature != 1 {
-		t.Fatalf("temperature = %v, want Kimi K3 default 1", cfg.Model.Temperature)
-	}
-	if cfg.Model.ReasoningEffort != "low" {
-		t.Fatalf("reasoning_effort = %q, want Kimi K3 default low", cfg.Model.ReasoningEffort)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured struct {
+				Temperature     *float64 `json:"temperature"`
+				ReasoningEffort string   `json:"reasoning_effort"`
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+					t.Errorf("decode request body: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"}}]}`))
+			}))
+			defer server.Close()
+
+			tt.request.APIKey = "test-key"
+			tt.request.BaseURL = server.URL + "/v1"
+			if _, err := RunModelProviderTest(context.Background(), Config{}, tt.request); err != nil {
+				t.Fatalf("RunModelProviderTest() error = %v", err)
+			}
+			if captured.Temperature == nil || *captured.Temperature != tt.wantTemperature {
+				t.Fatalf("request temperature = %v, want %v", captured.Temperature, tt.wantTemperature)
+			}
+			if captured.ReasoningEffort != tt.wantReasoningEffort {
+				t.Fatalf("request reasoning_effort = %q, want %q", captured.ReasoningEffort, tt.wantReasoningEffort)
+			}
+		})
 	}
 }
 
-func TestApplyModelProviderTestRequestKeepsExplicitSamplingValues(t *testing.T) {
-	storedTemperature := 0.2
-	requestedTemperature := 0.7
-	cfg := Config{Model: ModelConfig{
-		Provider:        "openai",
-		Model:           "gpt-4o",
-		Temperature:     &storedTemperature,
-		ReasoningEffort: "high",
-	}}
+func TestApplyModelProviderTestRequestSamplingSemantics(t *testing.T) {
+	tests := []struct {
+		name                string
+		request             ModelProviderTestRequest
+		wantTemperature     float64
+		wantReasoningEffort string
+	}{
+		{
+			name:                "unset clears stored values and uses Kimi defaults",
+			request:             ModelProviderTestRequest{Provider: "openai", Model: "kimi-k3"},
+			wantTemperature:     1,
+			wantReasoningEffort: "low",
+		},
+		{
+			name: "explicit zero remains set",
+			request: ModelProviderTestRequest{
+				Provider:        "openai",
+				Model:           "kimi-k3",
+				Temperature:     floatPtr(0),
+				ReasoningEffort: "none",
+			},
+			wantTemperature:     0,
+			wantReasoningEffort: "none",
+		},
+		{
+			name: "explicit nonzero values remain set",
+			request: ModelProviderTestRequest{
+				Provider:        "openai",
+				Model:           "kimi-k3",
+				Temperature:     floatPtr(0.7),
+				ReasoningEffort: "medium",
+			},
+			wantTemperature:     0.7,
+			wantReasoningEffort: "medium",
+		},
+		{
+			name: "blank reasoning is unset",
+			request: ModelProviderTestRequest{
+				Provider:        "openai",
+				Model:           "kimi-k3",
+				ReasoningEffort: "  \t",
+			},
+			wantTemperature:     1,
+			wantReasoningEffort: "low",
+		},
+		{
+			name:                "unknown model uses global temperature and auto reasoning",
+			request:             ModelProviderTestRequest{Provider: "openai", Model: "custom-model"},
+			wantTemperature:     defaultModelTemperature,
+			wantReasoningEffort: "",
+		},
+	}
 
-	err := applyModelProviderTestRequest(&cfg, ModelProviderTestRequest{
-		Provider:           "openai",
-		Model:              "kimi-k3",
-		Temperature:        &requestedTemperature,
-		TemperatureSet:     true,
-		ReasoningEffort:    "medium",
-		ReasoningEffortSet: true,
-	})
-	if err != nil {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storedTemperature := 0.2
+			cfg := Config{Model: ModelConfig{
+				Provider:        "openai",
+				Model:           "gpt-4o",
+				Temperature:     &storedTemperature,
+				ReasoningEffort: "high",
+			}}
+
+			if err := applyModelProviderTestRequest(&cfg, tt.request); err != nil {
+				t.Fatalf("applyModelProviderTestRequest() error = %v", err)
+			}
+			if cfg.Model.Temperature == nil || *cfg.Model.Temperature != tt.wantTemperature {
+				t.Fatalf("temperature = %v, want %v", cfg.Model.Temperature, tt.wantTemperature)
+			}
+			if cfg.Model.ReasoningEffort != tt.wantReasoningEffort {
+				t.Fatalf("reasoning_effort = %q, want %q", cfg.Model.ReasoningEffort, tt.wantReasoningEffort)
+			}
+		})
+	}
+}
+
+func TestApplyModelProviderTestRequestCopiesExplicitTemperature(t *testing.T) {
+	requestedTemperature := 0.7
+	req := ModelProviderTestRequest{
+		Provider:    "openai",
+		Model:       "kimi-k3",
+		Temperature: &requestedTemperature,
+	}
+	cfg := Config{}
+
+	if err := applyModelProviderTestRequest(&cfg, req); err != nil {
 		t.Fatalf("applyModelProviderTestRequest() error = %v", err)
 	}
-	if cfg.Model.Temperature == nil || *cfg.Model.Temperature != requestedTemperature {
-		t.Fatalf("temperature = %v, want explicit %v", cfg.Model.Temperature, requestedTemperature)
+	requestedTemperature = 0.1
+	if cfg.Model.Temperature == req.Temperature {
+		t.Fatal("temperature pointer aliases request storage")
 	}
-	if cfg.Model.ReasoningEffort != "medium" {
-		t.Fatalf("reasoning_effort = %q, want explicit medium", cfg.Model.ReasoningEffort)
+	if cfg.Model.Temperature == nil || *cfg.Model.Temperature != 0.7 {
+		t.Fatalf("temperature = %v, want copied value 0.7", cfg.Model.Temperature)
 	}
 }

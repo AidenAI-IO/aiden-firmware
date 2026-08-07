@@ -27,29 +27,62 @@ func TestExecuteConfigTestUsesModelRuntime(t *testing.T) {
 	}
 }
 
-func TestModelDTOProviderTestRequestCarriesSamplingState(t *testing.T) {
-	temperature := 0.7
-	req := (modelDTO{
-		Provider:        "openai",
-		Model:           "kimi-k3",
-		Temperature:     &temperature,
-		ReasoningEffort: "medium",
-	}).providerTestRequest()
+func TestModelDTOProviderTestRequestPreservesSamplingPresenceFromJSON(t *testing.T) {
+	tests := []struct {
+		name                string
+		payload             string
+		wantTemperature     *float64
+		wantReasoningEffort string
+	}{
+		{
+			name:    "omitted fields remain unset",
+			payload: `{"provider":"openai","model":"kimi-k3"}`,
+		},
+		{
+			name:    "null temperature remains unset",
+			payload: `{"provider":"openai","model":"kimi-k3","temperature":null}`,
+		},
+		{
+			name:                "explicit zero remains present",
+			payload:             `{"provider":"openai","model":"kimi-k3","temperature":0,"reasoning_effort":"none"}`,
+			wantTemperature:     testFloat64Ptr(0),
+			wantReasoningEffort: "none",
+		},
+		{
+			name:                "explicit nonzero values are preserved",
+			payload:             `{"provider":"openai","model":"kimi-k3","temperature":0.7,"reasoning_effort":"medium"}`,
+			wantTemperature:     testFloat64Ptr(0.7),
+			wantReasoningEffort: "medium",
+		},
+		{
+			name:    "explicit empty reasoning remains auto",
+			payload: `{"provider":"openai","model":"kimi-k3","reasoning_effort":""}`,
+		},
+	}
 
-	if !req.TemperatureSet || req.Temperature == nil || *req.Temperature != temperature {
-		t.Fatalf("temperature request = set:%v value:%v, want set %v", req.TemperatureSet, req.Temperature, temperature)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var dto modelDTO
+			if err := json.Unmarshal([]byte(tt.payload), &dto); err != nil {
+				t.Fatalf("unmarshal model values: %v", err)
+			}
+			req := dto.providerTestRequest()
+			if tt.wantTemperature == nil {
+				if req.Temperature != nil {
+					t.Fatalf("temperature request = %v, want unset", req.Temperature)
+				}
+			} else if req.Temperature == nil || *req.Temperature != *tt.wantTemperature {
+				t.Fatalf("temperature request = %v, want %v", req.Temperature, *tt.wantTemperature)
+			}
+			if req.ReasoningEffort != tt.wantReasoningEffort {
+				t.Fatalf("reasoning request = %q, want %q", req.ReasoningEffort, tt.wantReasoningEffort)
+			}
+		})
 	}
-	if !req.ReasoningEffortSet || req.ReasoningEffort != "medium" {
-		t.Fatalf("reasoning request = set:%v value:%q, want set medium", req.ReasoningEffortSet, req.ReasoningEffort)
-	}
+}
 
-	cleared := (modelDTO{Provider: "openai", Model: "kimi-k3"}).providerTestRequest()
-	if cleared.TemperatureSet || cleared.Temperature != nil {
-		t.Fatalf("cleared temperature request = set:%v value:%v, want unset", cleared.TemperatureSet, cleared.Temperature)
-	}
-	if cleared.ReasoningEffortSet || cleared.ReasoningEffort != "" {
-		t.Fatalf("cleared reasoning request = set:%v value:%q, want unset", cleared.ReasoningEffortSet, cleared.ReasoningEffort)
-	}
+func testFloat64Ptr(value float64) *float64 {
+	return &value
 }
 
 func TestExecuteConfigTestUsesSTTRuntimeWithoutAudio(t *testing.T) {
