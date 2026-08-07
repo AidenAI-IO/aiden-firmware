@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/messages"
 )
 
@@ -64,7 +63,7 @@ func TestAnthropicScreenshotPrunerIgnoresUnmarkedAttachments(t *testing.T) {
 		}}},
 		{Role: messages.MessageRoleUser, Content: "shot", Attachments: []messages.Attachment{{
 			MIMEType: "image/png", FilePath: "/tmp/s.png",
-			Source: contextmanager.AttachmentSourceScreenshotObservation,
+			Source: messages.AttachmentSourceScreenshotObservation,
 		}}},
 	}
 	snapshot := cloneMessagesForAssert(msgs)
@@ -95,7 +94,7 @@ func TestAnthropicScreenshotPrunerRewritesPairedToolResultWhenPruning(t *testing
 			Attachments: []messages.Attachment{{
 				MIMEType: "image/jpeg",
 				FilePath: "/tmp/fake-0.jpg",
-				Source:   contextmanager.AttachmentSourceScreenshotObservation,
+				Source:   messages.AttachmentSourceScreenshotObservation,
 			}},
 		},
 		{
@@ -112,7 +111,7 @@ func TestAnthropicScreenshotPrunerRewritesPairedToolResultWhenPruning(t *testing
 			Attachments: []messages.Attachment{{
 				MIMEType: "image/jpeg",
 				FilePath: "/tmp/fake-1.jpg",
-				Source:   contextmanager.AttachmentSourceScreenshotObservation,
+				Source:   messages.AttachmentSourceScreenshotObservation,
 			}},
 		},
 		{
@@ -129,7 +128,7 @@ func TestAnthropicScreenshotPrunerRewritesPairedToolResultWhenPruning(t *testing
 			Attachments: []messages.Attachment{{
 				MIMEType: "image/jpeg",
 				FilePath: "/tmp/fake-2.jpg",
-				Source:   contextmanager.AttachmentSourceScreenshotObservation,
+				Source:   messages.AttachmentSourceScreenshotObservation,
 			}},
 		},
 		{
@@ -146,7 +145,7 @@ func TestAnthropicScreenshotPrunerRewritesPairedToolResultWhenPruning(t *testing
 			Attachments: []messages.Attachment{{
 				MIMEType: "image/jpeg",
 				FilePath: "/tmp/fake-3.jpg",
-				Source:   contextmanager.AttachmentSourceScreenshotObservation,
+				Source:   messages.AttachmentSourceScreenshotObservation,
 			}},
 		},
 	}
@@ -179,7 +178,7 @@ func screenshotObservationMessages(n int) []messages.Message {
 			Attachments: []messages.Attachment{{
 				MIMEType: "image/jpeg",
 				FilePath: fmt.Sprintf("/tmp/fake-%d.jpg", i),
-				Source:   contextmanager.AttachmentSourceScreenshotObservation,
+				Source:   messages.AttachmentSourceScreenshotObservation,
 			}},
 		})
 	}
@@ -224,12 +223,12 @@ func assertMessagesUnchanged(t *testing.T, got, want []messages.Message) {
 	}
 }
 
-func assertRemainingScreenshotPaths(t *testing.T, messages []messages.Message, wantPaths []string) {
+func assertRemainingScreenshotPaths(t *testing.T, messageList []messages.Message, wantPaths []string) {
 	t.Helper()
 	var got []string
-	for _, msg := range messages {
+	for _, msg := range messageList {
 		for _, a := range msg.Attachments {
-			if a.Source == contextmanager.AttachmentSourceScreenshotObservation {
+			if a.Source == messages.AttachmentSourceScreenshotObservation {
 				got = append(got, a.FilePath)
 			}
 		}
@@ -244,11 +243,11 @@ func assertRemainingScreenshotPaths(t *testing.T, messages []messages.Message, w
 	}
 }
 
-func countScreenshotSources(messages []messages.Message) int {
+func countScreenshotSources(messageList []messages.Message) int {
 	n := 0
-	for _, msg := range messages {
+	for _, msg := range messageList {
 		for _, a := range msg.Attachments {
-			if a.Source == contextmanager.AttachmentSourceScreenshotObservation {
+			if a.Source == messages.AttachmentSourceScreenshotObservation {
 				n++
 			}
 		}

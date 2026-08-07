@@ -17,7 +17,7 @@ func TestInitializeContextManagerStartsNewSessionWhenSystemPromptChanges(t *test
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}
 	rawMessages := manager.CloneMessageList()
-	messageList := contextmanager.ConvertMessageList(rawMessages)
+	messageList := messages.ConvertMessageList(rawMessages)
 	if len(messageList) != 1 {
 		t.Fatalf("messages = %d, want 1", len(messageList))
 	}
@@ -33,7 +33,7 @@ func TestInitializeContextManagerStartsNewSessionWhenSystemPromptChanges(t *test
 	if err != nil {
 		t.Fatalf("reload freshNewContextManager() error = %v", err)
 	}
-	reloadedMessages := contextmanager.ConvertMessageList(reloaded.CloneMessageList())
+	reloadedMessages := messages.ConvertMessageList(reloaded.CloneMessageList())
 	if reloaded.GetSessionID() == originalSessionID {
 		t.Fatal("system prompt change reused the existing session")
 	}
@@ -48,7 +48,7 @@ func TestInitializeContextManagerStartsNewSessionWhenSystemPromptChanges(t *test
 	if err != nil {
 		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
-	if text := messageText(contextmanager.ConvertMessageList(original.CloneMessageList())); text != "system v1\nfirst request\n" {
+	if text := messageText(messages.ConvertMessageList(original.CloneMessageList())); text != "system v1\nfirst request\n" {
 		t.Fatalf("original session was modified: %q", text)
 	}
 }
@@ -70,7 +70,7 @@ func TestInitializeContextManagerReusesSessionWhenSystemPromptMatches(t *testing
 	if reloaded.GetSessionID() != manager.GetSessionID() {
 		t.Fatal("unchanged system prompt started a new session")
 	}
-	if text := messageText(contextmanager.ConvertMessageList(reloaded.CloneMessageList())); text != "system\nhello\n" {
+	if text := messageText(messages.ConvertMessageList(reloaded.CloneMessageList())); text != "system\nhello\n" {
 		t.Fatalf("reloaded session = %q", text)
 	}
 }
@@ -89,7 +89,7 @@ func TestUserMessageFromInputPreservesAttachments(t *testing.T) {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
-	messages := contextmanager.ConvertMessageList(manager.CloneMessageList())
+	messages := messages.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 2 {
 		t.Fatalf("messages = %#v", messages)
 	}
@@ -120,7 +120,7 @@ func TestVisualFollowupMarksScreenshotObservationSource(t *testing.T) {
 	if len(msg.Attachments) != 1 {
 		t.Fatalf("attachments = %#v", msg.Attachments)
 	}
-	if msg.Attachments[0].Source != contextmanager.AttachmentSourceScreenshotObservation {
+	if msg.Attachments[0].Source != messages.AttachmentSourceScreenshotObservation {
 		t.Fatalf("Source = %q", msg.Attachments[0].Source)
 	}
 }

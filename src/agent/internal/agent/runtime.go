@@ -24,6 +24,7 @@ import (
 	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/statemanager"
+	"aiden-agent/internal/agent/tokencounter"
 	"aiden-agent/internal/util"
 
 	"github.com/google/uuid"
@@ -1005,26 +1006,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		executorHandler = streamCallbackHandler
 	}
 	profile := r.buildAgentProfile(r.skills, availableTools)
-	conversationHistory, err := runtimeConversationHistoryMessageContents(
-		ctx,
-		memoryHandle.History,
-		r.memories,
-		runID,
-		r.activeConversationHistoryTokenBudget(contextWindow),
-	)
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return RunResult{}, ctxErr
-		}
-		if r.logger != nil {
-			r.logger.Warn("[memory] load conversation history failed; continuing with empty history: %v", err)
-		}
-		conversationHistory = nil
-	}
 	plannerMemory := memoryHandle.Memory
-	if len(conversationHistory) > 0 {
-		plannerMemory = newConversationMessagePlannerMemory(plannerMemory)
-	}
 	var steerStatus steerConversationStatus
 	if req.SteerProvider != nil {
 		plannerMemory = newSteerConversationMemory(plannerMemory, memoryHandle.History)
@@ -1063,7 +1045,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	compactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
 	budgetContextWindow := contextWindow
 	if budgetContextWindow <= 0 {
-		budgetContextWindow = defaultContextWindowFallback
+		budgetContextWindow = r.models.Spec().ContextWindow
 	}
 	maxResponseTokens := r.models.Spec().MaxOutput
 	if r.config.Model.MaxResponseTokens > 0 {
@@ -1074,7 +1056,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
 	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
-	tokenUsage := estimateMessagesTokens(contextmanager.ConvertMessageList(r.contextManager.CloneMessageList()))
+	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
 	if compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
@@ -1279,7 +1261,7 @@ func (r *Runtime) captureStateScreenshot() *messages.Attachment {
 		}
 		return nil
 	}
-	attachment.Source = contextmanager.AttachmentSourceScreenshotObservation
+	attachment.Source = messages.AttachmentSourceScreenshotObservation
 	return &attachment
 }
 

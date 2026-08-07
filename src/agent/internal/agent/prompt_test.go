@@ -114,11 +114,11 @@ func TestStateHookAttachesFreshScreenshotToUserTurn(t *testing.T) {
 		t.Fatalf("state attachments = %#v, want one screenshot", messageList[0].Attachments)
 	}
 	attachment := messageList[0].Attachments[0]
-	if attachment.MIMEType != "image/jpeg" || attachment.Source != contextmanager.AttachmentSourceScreenshotObservation {
+	if attachment.MIMEType != "image/jpeg" || attachment.Source != messages.AttachmentSourceScreenshotObservation {
 		t.Fatalf("state screenshot attachment = %#v", attachment)
 	}
 
-	standard := contextmanager.ConvertMessageList(messageList)
+	standard := messages.ConvertMessageList(messageList)
 	foundImage := false
 	for _, part := range standard[0].Parts {
 		if binary, ok := part.(llms.BinaryContent); ok && binary.MIMEType == "image/jpeg" && bytes.Equal(binary.Data, imageData) {

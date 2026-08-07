@@ -1,7 +1,6 @@
-package contextmanager
+package messages
 
 import (
-	"aiden-agent/internal/agent/messages"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,18 +10,18 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func ConvertMessageList(messageList []messages.Message) []llms.MessageContent {
+func ConvertMessageList(messageList []Message) []llms.MessageContent {
 	standardMessageList := make([]llms.MessageContent, len(messageList))
 	for i, message := range messageList {
 		newMessage := llms.MessageContent{
 			Role:  message.Role.ToStandardRole(),
 			Parts: []llms.ContentPart{},
 		}
-		if message.Role == messages.MessageRoleToolResult {
+		if message.Role == MessageRoleToolResult {
 			for resultIndex, result := range message.ToolResults {
 				toolCallID := strings.TrimSpace(result.ToolCallID)
 				if toolCallID == "" {
-					toolCallID = toolCallIDOrFallback("", i, resultIndex)
+					toolCallID = ToolCallIDOrFallback("", i, resultIndex)
 				}
 				newMessage.Parts = append(newMessage.Parts, llms.ToolCallResponse{
 					ToolCallID: toolCallID,
@@ -42,7 +41,7 @@ func ConvertMessageList(messageList []messages.Message) []llms.MessageContent {
 				continue
 			}
 			newMessage.Parts = append(newMessage.Parts, llms.ToolCall{
-				ID:   toolCallIDOrFallback(call.ID, i, toolIndex),
+				ID:   ToolCallIDOrFallback(call.ID, i, toolIndex),
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
 					Name:      name,
@@ -77,12 +76,12 @@ func ConvertMessageList(messageList []messages.Message) []llms.MessageContent {
 }
 
 // ConvertChoiceToContextManagerMessage converts a content choice to a context manager message
-func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) messages.Message {
-	role := messages.MessageRoleAssistant
+func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) Message {
+	role := MessageRoleAssistant
 	if contentChoiceHasToolCalls(choice) {
-		role = messages.MessageRoleToolCall
+		role = MessageRoleToolCall
 	}
-	return messages.Message{
+	return Message{
 		Role:      role,
 		Content:   contentChoiceText(choice),
 		ToolCalls: toolCallsFromContentChoice(choice),
@@ -107,7 +106,7 @@ func contentChoiceText(choice llms.ContentChoice) string {
 	return strings.Join(parts, "\n")
 }
 
-func toolCallsFromContentChoice(choice llms.ContentChoice) []messages.ToolCall {
+func toolCallsFromContentChoice(choice llms.ContentChoice) []ToolCall {
 	toolCalls := choice.ToolCalls
 	if len(toolCalls) == 0 && choice.FuncCall != nil {
 		toolCalls = []llms.ToolCall{{
@@ -115,7 +114,7 @@ func toolCallsFromContentChoice(choice llms.ContentChoice) []messages.ToolCall {
 			FunctionCall: choice.FuncCall,
 		}}
 	}
-	result := make([]messages.ToolCall, 0, len(toolCalls))
+	result := make([]ToolCall, 0, len(toolCalls))
 	for _, call := range toolCalls {
 		if call.FunctionCall == nil {
 			continue
@@ -124,7 +123,7 @@ func toolCallsFromContentChoice(choice llms.ContentChoice) []messages.ToolCall {
 		if name == "" {
 			continue
 		}
-		result = append(result, messages.ToolCall{
+		result = append(result, ToolCall{
 			ID:        strings.TrimSpace(call.ID),
 			Name:      name,
 			Arguments: normalizeToolCallArguments(call.FunctionCall.Arguments),
@@ -148,7 +147,18 @@ func normalizeToolCallArguments(arguments string) string {
 	return string(encoded)
 }
 
-func toolCallIDOrFallback(id string, messageIndex, toolIndex int) string {
+func attachmentOmittedMessage(mimeType string, err error) string {
+	label := strings.TrimSpace(mimeType)
+	if label == "" {
+		label = "attachment"
+	}
+	if err == nil {
+		return fmt.Sprintf("[Attachment omitted: %s could not be loaded.]", label)
+	}
+	return fmt.Sprintf("[Attachment omitted: %s could not be loaded: %v]", label, err)
+}
+
+func ToolCallIDOrFallback(id string, messageIndex, toolIndex int) string {
 	if id = strings.TrimSpace(id); id != "" {
 		return id
 	}

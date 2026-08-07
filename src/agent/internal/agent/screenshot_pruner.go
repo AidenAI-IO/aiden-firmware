@@ -3,7 +3,6 @@ package agent
 import (
 	"strings"
 
-	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
 )
@@ -29,7 +28,7 @@ func (p AnthropicScreenshotPruner) Transform(messageList []messages.Message) []m
 	total := 0
 	for _, msg := range messageList {
 		for _, a := range msg.Attachments {
-			if a.Source == contextmanager.AttachmentSourceScreenshotObservation {
+			if a.Source == messages.AttachmentSourceScreenshotObservation {
 				total++
 			}
 		}
@@ -55,7 +54,7 @@ func (p AnthropicScreenshotPruner) Transform(messageList []messages.Message) []m
 
 		kept := cloned.Attachments[:0]
 		for _, a := range cloned.Attachments {
-			if a.Source != contextmanager.AttachmentSourceScreenshotObservation {
+			if a.Source != messages.AttachmentSourceScreenshotObservation {
 				kept = append(kept, a)
 				continue
 			}

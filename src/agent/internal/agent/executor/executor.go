@@ -67,14 +67,14 @@ func (e *LLMExecutor) AppendMessage(message messages.Message) error {
 }
 
 func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	messages := e.contextManager.CloneMessageList()
+	messageList := e.contextManager.CloneMessageList()
 	for _, transform := range e.transforms {
 		if transform == nil {
 			continue
 		}
-		messages = transform.Transform(messages)
+		messageList = transform.Transform(messageList)
 	}
-	standard := contextmanager.ConvertMessageList(messages)
+	standard := messages.ConvertMessageList(messageList)
 	contentResponse, err := e.model.GenerateContent(ctx, standard, options...)
 	if err != nil {
 		return nil, MarkLLMCallError(err)
@@ -90,7 +90,7 @@ func (e *LLMExecutor) Generate(ctx context.Context, options ...llms.CallOption) 
 	if err != nil {
 		return messages.Message{}, contentResponse, err
 	}
-	response := contextmanager.ConvertChoiceToContextManagerMessage(*contentResponse.Choices[0])
+	response := messages.ConvertChoiceToContextManagerMessage(*contentResponse.Choices[0])
 	if err := e.contextManager.AppendMessage(response); err != nil {
 		return messages.Message{}, contentResponse, err
 	}

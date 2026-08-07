@@ -6,6 +6,8 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+const AttachmentSourceScreenshotObservation = "screenshot_observation"
+
 type MessageRole string
 
 const (

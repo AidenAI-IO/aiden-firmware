@@ -25,7 +25,7 @@ func TestAgentLoopMakesScreenshotAttachmentsAvailableToImageDiff(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StoreAttachment() error = %v", err)
 		}
-		stored.Source = contextmanager.AttachmentSourceScreenshotObservation
+		stored.Source = messages.AttachmentSourceScreenshotObservation
 		if err := manager.AppendMessage(messages.Message{
 			Role:        messages.MessageRoleUser,
 			Attachments: []messages.Attachment{stored},

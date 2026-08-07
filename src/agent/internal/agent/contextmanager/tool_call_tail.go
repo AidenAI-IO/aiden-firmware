@@ -52,7 +52,7 @@ func lastPendingToolCall(message messages.Message, messageIndex int) (pendingToo
 		}
 		originalID := strings.TrimSpace(call.ID)
 		return pendingToolCall{
-			id:                toolCallIDOrFallback(originalID, messageIndex, toolIndex),
+			id:                messages.ToolCallIDOrFallback(originalID, messageIndex, toolIndex),
 			name:              name,
 			originalIDMissing: originalID == "",
 		}, true

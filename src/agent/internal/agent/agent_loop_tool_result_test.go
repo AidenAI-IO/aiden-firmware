@@ -51,33 +51,6 @@ func TestAppendToolExecutionMessagesPersistsPreparedContentAndMetadata(t *testin
 	}
 }
 
-func TestAgentLoopHardGuardRejectsBeforeProviderCall(t *testing.T) {
-	inner := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("must not be returned")}}
-	model := &largeContextScriptedModel{scriptedModel: inner}
-	manager, err := freshNewContextManager(strings.Repeat("system ", 20_000), "continue", nil, t.TempDir())
-	if err != nil {
-		t.Fatalf("freshNewContextManager() error = %v", err)
-	}
-	loop := NewAgentLoop(
-		model,
-		RoleProfile{},
-		nil,
-		2,
-		nil,
-		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
-		manager,
-	)
-	_, err = loop.Run(context.Background(), "continue")
-	var budgetErr *ContextBudgetExceededError
-	if !errors.As(err, &budgetErr) {
-		t.Fatalf("Run() error = %T %v, want ContextBudgetExceededError", err, err)
-	}
-	if len(inner.messages) != 0 {
-		t.Fatalf("provider calls = %d, want 0", len(inner.messages))
-	}
-}
-
 type largeContextScriptedModel struct {
 	*scriptedModel
 }
@@ -145,6 +118,22 @@ func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.
 	if stored.Content == rawOutput {
 		t.Fatal("current tool result stayed inline despite the runtime fallback context budget")
 	}
+}
+
+func toolResponseContents(t *testing.T, messages []llms.MessageContent) []string {
+	t.Helper()
+	var contents []string
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if response, ok := part.(llms.ToolCallResponse); ok {
+				contents = append(contents, response.Content)
+			}
+		}
+	}
+	if len(contents) == 0 {
+		t.Fatalf("no tool responses found in messages: %#v", messages)
+	}
+	return contents
 }
 
 func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {

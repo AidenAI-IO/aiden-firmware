@@ -224,20 +224,9 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	turnOptions := append([]llms.CallOption{}, callOptions...)
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
-	var contentResp *llms.ContentResponse
-	err := l.checkOutboundContextBudget(turnOptions)
-	if err == nil {
-		contentResp, err = llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
-	}
+
+	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
 	if err != nil {
-		if l.Recorder != nil {
-			l.Recorder.RecordEvent(TaskEpisodeEvent{
-				Type: runEventModelRequestFailure,
-				Metadata: map[string]interface{}{
-					"provider_context_length_error": isProviderContextLengthError(err),
-				},
-			})
-		}
 		l.abortStreamingResponse(ctx)
 		// If LLM was canceled due to interrupt, check for pending steer
 		if errors.Is(err, context.Canceled) || errors.Is(err, errSteerInterruptToolCancel) {
@@ -283,7 +272,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	actions, finish, err := parser.ParseOutput(contentResp)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
-		if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+		if err := llmExecutor.AppendMessage(messages.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
 			return "", iterationContinue, err
 		}
 		decision := policy.RecordParseFailure()
@@ -309,7 +298,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	if finish != nil {
 		// Don't check steer after finish - let this turn complete normally.
 		// Steer will be processed as a new turn.
-		if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+		if err := llmExecutor.AppendMessage(messages.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
 			return "", iterationContinue, err
 		}
 		answer, _ := finish.ReturnValues[agentLoopOutputKey].(string)
@@ -332,7 +321,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		policy.ResetForSteer()
 		// Append LLM response first, then steer, so context order is correct:
 		// assistant(tool_call) → user(steer)
-		if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+		if err := llmExecutor.AppendMessage(messages.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
 			return "", iterationContinue, err
 		}
 		if err := l.persistSteer(ctx, llmExecutor, steer); err != nil {
@@ -343,7 +332,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	}
 
 	action := actions[0]
-	if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))); err != nil {
+	if err := llmExecutor.AppendMessage(messages.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))); err != nil {
 		return "", iterationContinue, err
 	}
 	var after AfterToolCallHook
@@ -522,41 +511,6 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	l.applyLoopGuardDecision(decision)
 
 	return "", iterationContinue, nil
-}
-
-func (l *AgentLoop) checkOutboundContextBudget(options []llms.CallOption) error {
-	if l == nil || l.Model == nil || l.contextManager == nil {
-		return nil
-	}
-	spec := l.Model.Spec()
-	if spec.ContextWindow <= 0 {
-		return nil
-	}
-	messages := l.contextManager.CloneMessageList()
-	for _, transform := range l.outboundTransforms() {
-		if transform == nil {
-			continue
-		}
-		messages = transform.Transform(messages)
-	}
-	return checkHardContextBudget(spec, contextmanager.ConvertMessageList(messages), options, func(event ContextBudgetTelemetry) {
-		if l.Recorder == nil {
-			return
-		}
-		l.Recorder.RecordEvent(TaskEpisodeEvent{
-			Type: runEventContextBudget,
-			Metadata: map[string]interface{}{
-				"estimated_prompt_tokens":       event.EstimatedPromptTokens,
-				"estimated_input_budget":        event.EstimatedInputBudget,
-				"message_tokens":                event.MessageTokens,
-				"tool_schema_tokens":            event.ToolSchemaTokens,
-				"context_window":                event.ContextWindow,
-				"max_response_tokens":           event.MaxResponseTokens,
-				"hard_guard_rejected":           event.HardGuardRejected,
-				"provider_context_length_error": false,
-			},
-		})
-	})
 }
 
 func (l *AgentLoop) finishStopDecision(ctx context.Context, policy *TerminationPolicy, decision TerminationDecision) (string, iterationOutcome, error) {

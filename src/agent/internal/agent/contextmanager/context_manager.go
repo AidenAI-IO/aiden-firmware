@@ -20,8 +20,6 @@ type AppendMessageHookResult struct {
 	After   []messages.Message
 }
 
-const AttachmentSourceScreenshotObservation = "screenshot_observation"
-
 // ContextManager is a manager for the context of the agent, it is used to manage the context of the agent, it is used to append messages to the context and to fork the context.
 // It is thread safe and can be used concurrently by multiple goroutines.
 // SessionID is the id of the session, it is used to identify the session of the agent. Conversation in a same session are shared the same context.
@@ -285,7 +283,7 @@ func (c *ContextManager) ReadScreenshotAttachment(attachmentID string) ([]byte, 
 	filePath := ""
 	for _, message := range c.messageList {
 		for _, attachment := range message.Attachments {
-			if attachment.Source != AttachmentSourceScreenshotObservation {
+			if attachment.Source != messages.AttachmentSourceScreenshotObservation {
 				continue
 			}
 			candidate := strings.TrimSpace(attachment.FilePath)
@@ -336,15 +334,4 @@ func cloneMessages(messageList []messages.Message) []messages.Message {
 		cloned[i] = msg.Clone()
 	}
 	return cloned
-}
-
-func attachmentOmittedMessage(mimeType string, err error) string {
-	label := strings.TrimSpace(mimeType)
-	if label == "" {
-		label = "attachment"
-	}
-	if err == nil {
-		return fmt.Sprintf("[Attachment omitted: %s could not be loaded.]", label)
-	}
-	return fmt.Sprintf("[Attachment omitted: %s could not be loaded: %v]", label, err)
 }

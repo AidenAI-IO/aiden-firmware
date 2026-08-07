@@ -121,7 +121,7 @@ func TestToolResultMetadataPersistsButIsNotSentToModel(t *testing.T) {
 		t.Fatalf("reloaded ToolResult meta = %#v", got.Meta)
 	}
 
-	standard := ConvertMessageList(reloaded.CloneMessageList())
+	standard := messages.ConvertMessageList(reloaded.CloneMessageList())
 	response, ok := standard[0].Parts[0].(llms.ToolCallResponse)
 	if !ok {
 		t.Fatalf("standard part = %T, want ToolCallResponse", standard[0].Parts[0])
