@@ -52,7 +52,7 @@ document.addEventListener('click', function(event) {
     simpleActions[action]();
     return;
   }
-  const section = target.dataset.section;
+  const section = target.dataset.sectionTarget;
   if (action === 'enter-edit-section') enterEditSection(section);
   else if (action === 'cancel-edit-section') cancelEditSection(section);
   else if (action === 'test-section') testSection(section);

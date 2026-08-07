@@ -88,6 +88,7 @@ async function flushPromises() {
 
 let requestImpl = async () => ({config: {}});
 let latestDetails = null;
+let modelSectionEditing = false;
 const stateModule = await loadModule(path.join(moduleRoot, 'state.js'));
 await stateModule.evaluate();
 const {appState, registerRuntime} = stateModule.namespace;
@@ -98,6 +99,7 @@ registerRuntime({
   getRecordSectionFields: () => ({tts_providers: [], stt_providers: []}),
   getSelectFieldOptions: () => ({}),
   hydrateSelectField() {},
+  isSectionEditing: (section) => section === 'model' && modelSectionEditing,
   optionValue: (option) => option.value,
   request: (...args) => requestImpl(...args),
   setBanner() {},
@@ -109,8 +111,19 @@ const providersModule = await loadModule(path.join(moduleRoot, 'providers.js'));
 await providersModule.evaluate();
 const {
   ModelProvidersManager,
+  ModelSelector,
   TtsProvidersManager,
 } = providersModule.namespace;
+
+const modelInput = new Element();
+modelInput.value = 'existing-model';
+elements.set('model_model', modelInput);
+ModelSelector.selectModel('blocked-model');
+assert.equal(modelInput.value, 'existing-model', 'model selection is immutable outside edit mode');
+modelSectionEditing = true;
+ModelSelector.selectModel('editable-model');
+assert.equal(modelInput.value, 'editable-model', 'model selection updates while editing');
+modelSectionEditing = false;
 
 assert.equal(ModelProvidersManager.sanitizeName('__proto__'), '');
 assert.equal(ModelProvidersManager.sanitizeName('constructor'), '');
