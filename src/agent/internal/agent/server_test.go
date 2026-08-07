@@ -245,7 +245,7 @@ func TestServerPublicHistoryOmitsLargeToolResultContent(t *testing.T) {
 	tool := &stubTool{
 		name:        "shell",
 		description: "Run a shell command.",
-		output:      strings.Repeat("x", 4001),
+		output:      strings.Repeat(" ", 4001),
 	}
 	streamingDisabled := false
 	runtime := NewRuntimeWithDeps(

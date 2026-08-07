@@ -425,11 +425,12 @@ func compactToolObservationLimit(observation string, maxRunes int) string {
 }
 
 func compactToolObservationLimitWithStatus(observation string, maxRunes int) (string, bool) {
+	originalRuneCount := len([]rune(observation))
 	observation = strings.TrimSpace(observation)
-	if observation == "" || len([]rune(observation)) <= maxRunes {
-		return observation, false
-	}
 	runes := []rune(observation)
+	if observation == "" || len(runes) <= maxRunes {
+		return observation, originalRuneCount > maxRunes
+	}
 	return string(runes[:maxRunes]) + fmt.Sprintf("\n...[truncated %d chars]", len(runes)-maxRunes), true
 }
 
