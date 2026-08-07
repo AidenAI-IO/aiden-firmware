@@ -48,7 +48,7 @@ Skill 可以作为第二级晋升，但不能由一次失败或刚生成的 memo
 
 Aiden 已经具备复盘所需的主要基础：
 
-- `TaskEpisode` 保存任务目标、结果、失败原因、事件、截图引用和 verifier；
+- `TaskEpisode` 保存任务目标、结果、失败原因、事件、截图引用和兼容性的 verifier 字段；
 - long-term/device memory 已有 scope、confidence、TTL、证据引用和冲突状态；
 - memory 通过 recall 工具按需进入上下文；
 - 被 recall 的 memory 会根据后续 episode outcome 更新统计；
@@ -63,11 +63,26 @@ Aiden 已经具备复盘所需的主要基础：
 | Session | 一段多轮对话，可包含多个 Episode |
 | Episode | 一个用户请求对应的一次完整 Agent 执行 |
 | Iteration / Step | Episode 内的一轮计划、行动和观察 |
-| Event | tool call/result、截图、replan、verifier 等具体记录 |
+| Event | tool call/result、截图、replan、finish 等具体记录 |
 
 Episode 是事实和审计记录，不是长期知识。它应先完整落盘，再由后台复盘读取；复盘不覆盖原始 Episode。
 
-### 2.2 当前问题
+### 2.2 Verifier 与旧 PEV
+
+旧 PEV 将 Planner、Executor、Verifier 作为不同角色或阶段。当前主线已改为 single-agent `AgentLoop`，同一个 Agent 直接调用工具、观察结果并决定是否结束。
+
+当前循环不会默认追加一次独立 verifier 模型调用。Agent 返回最终答案时记录 `default_finish`；Episode 的 `Outcome.Success` 通常先按 `runErr == nil` 判断。
+
+`verifier_decision`、`CanFinish` 和 `VerifierReason` 仍保留在 Episode schema 中。若某条兼容或外部路径真的写入该事件，最后一条 decision 会覆盖默认 outcome，但当前主循环不会主动产生它。
+
+因此本方案不能依赖“PEV Verifier 已确认成功”。复盘中的 outcome evidence 应来自：
+
+- 动作后的新鲜截图或 observed state 与目标状态匹配；
+- 能证明业务结果的确定性 tool/bridge 返回，而不只是“请求已接受”；
+- 用户明确确认成功或指出失败；
+- 将来若重新引入 verifier，其 decision 也可作为一种证据。
+
+### 2.3 当前问题
 
 当前 `CommitEpisode` 在写入 Episode 后，会立即抽取 long-term/device lessons。单次失败可能同时生成两条 active failure memory，而且内容通常只是泛化后的 failure reason。
 
@@ -121,7 +136,7 @@ Episode 是事实和审计记录，不是长期知识。它应先完整落盘，
 
 1. `TaskEpisode.Outcome.Success == false`；
 2. 用户明确指出上一轮做错、理解错、点错或没有完成；
-3. 最终成功，但中间发生明确失败，且后续恢复被 verifier 证明有效。
+3. 最终成功，但中间发生明确失败，且后续恢复有新鲜 outcome evidence。
 
 用户纠正的 MVP 只关联同一 Session 中紧邻的上一 Episode，不构建跨 Session 关系图。
 
@@ -170,7 +185,7 @@ type FailureLessonProposal struct {
 | 单次普通失败 | 不写 active memory |
 | 两个独立 Episode 的同类失败 | 可晋升窄 scope failure warning |
 | 一次明确用户纠正 | 低风险且 scope 明确时可晋升 correction memory |
-| 存在 verifier-confirmed recovery | 可晋升经过验证的 procedure |
+| 存在 evidence-confirmed recovery | 可晋升经过验证的 procedure |
 | 普通成功 | 不生成 reflection proposal |
 | 新成功证据推翻旧 failure | 更新 outcome；必要时标记 conflicted |
 | 支付、发送、删除、凭证、权限等高风险经验 | 不自动晋升 |
@@ -271,7 +286,7 @@ Memory 是带 scope 的经验；Skill 是会进入 Available skills、通过 `sk
 Failure Reflection
   -> failure/procedure memory
   -> 后续任务 recall + outcome feedback
-  -> 多次 verifier-confirmed success
+  -> 多次 evidence-confirmed success
   -> Skill draft
   -> 现有 skill validation + 人工确认
   -> configDir/skills/<name>/SKILL.md
@@ -280,7 +295,7 @@ Failure Reflection
 生成 Skill draft 的建议门槛：
 
 - 有完整 trigger、precondition、steps、verification 和 fallback；
-- 至少 3 个独立成功 Episode，来自至少 2 个 Session；
+- 至少 3 个 evidence-confirmed 成功 Episode，来自至少 2 个 Session；
 - 近期成功率不低于约 80%，且没有 unresolved conflict；
 - 不包含个人事实、秘密、一次性状态或易漂移坐标；
 - 不属于高风险自动晋升范围。
@@ -304,7 +319,7 @@ Failure Reflection
 
 ```text
 用户当前明确纠正
-  > verifier-confirmed recovery / 当前设备观测
+  > evidence-confirmed recovery / 当前设备观测
   > 两个独立同类失败 Episode
   > 单个失败 Episode
   > 旧 Memory 或 Reviewer 推断
@@ -323,13 +338,13 @@ Failure Reflection
 
 - 关闭旧 generic failure 直写；
 - 只写窄 scope failure warning；
-- 只有 verifier-confirmed recovery 才写 procedure；
+- 只有 evidence-confirmed recovery 才写 procedure；
 - 保持现有 recall 和 outcome feedback；
 - high-risk 始终只 dry-run。
 
 ### 阶段三：Skill draft
 
-- 从已验证 Memory 和 outcome counts 有界重算；
+- 从已验证 Memory、outcome evidence 和 counts 有界重算，不能只看 `Outcome.Success`；
 - 优先生成已有 Skill 的最小 patch；
 - 通过现有 Skill 校验和人工确认后应用。
 
@@ -359,12 +374,13 @@ Failure Reflection
 - 可审计：原始 Episode 不变，Memory 保留 evidence 和替代关系；
 - 可回退：先 dry-run，再关闭旧 failure 直写。
 
-实现前需要重点验证四个风险：
+实现前需要重点验证五个风险：
 
-1. 用户纠正与上一 Episode 的关联准确率；
-2. normalized scope/action 是否能稳定识别语义重复；
-3. 多模态截图的成本、脱敏和模型可用性；
-4. Memory 多文件更新与 index rebuild 的并发和故障原子性。
+1. 没有独立 Verifier 时，outcome evidence 分类是否可靠；
+2. 用户纠正与上一 Episode 的关联准确率；
+3. normalized scope/action 是否能稳定识别语义重复；
+4. 多模态截图的成本、脱敏和模型可用性；
+5. Memory 多文件更新与 index rebuild 的并发和故障原子性。
 
 这些风险不要求增加新的持久模型。它们应留在 `FailureReflector` implementation 内，通过 dry-run telemetry 和 interface-level tests 收敛。
 
@@ -378,6 +394,8 @@ Failure Reflection
 - [Historical `/dream` skill](https://github.com/Piebald-AI/claude-code-system-prompts/blob/3aeebdfc94f2e0706eca65c61e2230a48cb521dd/system-prompts/skill-dream-memory-consolidation.md)
 - [Removal of `/dream` skill](https://github.com/Piebald-AI/claude-code-system-prompts/commit/ed36cc127ea70afaed617bde7fe135a8015a0767)
 - [Aiden TaskEpisode](https://github.com/AidenAI-IO/aiden-hardware-demo/blob/bb19070ce7f5c0fe0243d73dc596f14247f5fdc9/src/agent/internal/agent/task_episode.go)
+- [Aiden single-agent loop](https://github.com/AidenAI-IO/aiden-hardware-demo/blob/bb19070ce7f5c0fe0243d73dc596f14247f5fdc9/src/agent/internal/agent/agent_loop.go)
+- [No default final verifier test](https://github.com/AidenAI-IO/aiden-hardware-demo/blob/bb19070ce7f5c0fe0243d73dc596f14247f5fdc9/src/agent/internal/agent/single_agent_test.go)
 - [Aiden MemoryPlane](https://github.com/AidenAI-IO/aiden-hardware-demo/blob/bb19070ce7f5c0fe0243d73dc596f14247f5fdc9/src/agent/internal/agent/memory_plane.go)
 - [Aiden long-term memory](https://github.com/AidenAI-IO/aiden-hardware-demo/blob/bb19070ce7f5c0fe0243d73dc596f14247f5fdc9/src/agent/internal/agent/long_term_memory.go)
 - [Aiden device memory](https://github.com/AidenAI-IO/aiden-hardware-demo/blob/bb19070ce7f5c0fe0243d73dc596f14247f5fdc9/src/agent/internal/agent/device_memory.go)
