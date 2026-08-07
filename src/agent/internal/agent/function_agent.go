@@ -404,7 +404,12 @@ func screenshotMIMEType(format string) string {
 }
 
 func compactToolObservation(observation string) string {
-	return compactToolObservationLimit(observation, maxToolObservationRunes)
+	compacted, _ := compactToolObservationWithStatus(observation)
+	return compacted
+}
+
+func compactToolObservationWithStatus(observation string) (string, bool) {
+	return compactToolObservationLimitWithStatus(observation, maxToolObservationRunes)
 }
 
 func compactToolObservationForTool(toolName, observation string) string {
@@ -415,12 +420,17 @@ func compactToolObservationForTool(toolName, observation string) string {
 }
 
 func compactToolObservationLimit(observation string, maxRunes int) string {
+	compacted, _ := compactToolObservationLimitWithStatus(observation, maxRunes)
+	return compacted
+}
+
+func compactToolObservationLimitWithStatus(observation string, maxRunes int) (string, bool) {
 	observation = strings.TrimSpace(observation)
 	if observation == "" || len([]rune(observation)) <= maxRunes {
-		return observation
+		return observation, false
 	}
 	runes := []rune(observation)
-	return string(runes[:maxRunes]) + fmt.Sprintf("\n...[truncated %d chars]", len(runes)-maxRunes)
+	return string(runes[:maxRunes]) + fmt.Sprintf("\n...[truncated %d chars]", len(runes)-maxRunes), true
 }
 
 func (a *FunctionAgent) isVisualObservationTool(name string) bool {
