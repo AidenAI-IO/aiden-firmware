@@ -3548,6 +3548,42 @@ TEST_CASE("config_web: POST /api/config rejects a non-object voice provider entr
 // flattening the reference first they see an unknown provider and an empty key --
 // reporting "provider unknown" and "skipped because api_key is empty" for a
 // record that is configured correctly.
+TEST_CASE("config_web: config test flattens a model provider reference") {
+    StubEnv env;
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/config.json",
+               "{\"model_providers\":{\"work-openai\":{\"type\":\"openai\","
+               "\"api_key\":\"sk-model-secret-1234\",\"base_url\":\"http://127.0.0.1:9\"}},"
+               "\"model\":{\"provider\":\"work-openai\",\"model\":\"gpt-4o\","
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"context_window\":0,\"model_max_output_tokens\":0},"
+               "\"hid\":{\"pointer_mode\":\"absolute\"},"
+               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    const std::string test_body =
+        "{\"section\":\"model\",\"values\":{\"provider\":\"work-openai\",\"model\":\"gpt-4o\"}}";
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(test_resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(test_resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* endpoint = required_test_result(parsed, "endpoint_reachable");
+    REQUIRE(endpoint != nullptr);
+    CHECK(required_json_string(endpoint, "detail").find("http://127.0.0.1:9") != std::string::npos);
+    cJSON* api_key = required_test_result(parsed, "api_key_present");
+    REQUIRE(api_key != nullptr);
+    cJSON* passed = cJSON_GetObjectItem(api_key, "passed");
+    REQUIRE(passed != nullptr);
+    CHECK((passed->type & 0xff) == cJSON_True);
+    cJSON_Delete(parsed);
+}
+
 TEST_CASE("config_web: config test flattens a tts provider reference") {
     StubEnv env;
     const std::string tmp = make_temp_dir();

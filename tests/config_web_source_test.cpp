@@ -2013,6 +2013,20 @@ TEST_CASE("config web html resolves named providers when filtering option scopes
     CHECK(eval_body.find("providerFilterValue") == std::string::npos);
 }
 
+TEST_CASE("config web config form imports fieldValue from config metadata") {
+    const std::string path =
+        std::string(AIDEN_SOURCE_DIR) + "/src/config_web/web/assets/js/config/config-form.js";
+    std::ifstream in(path.c_str());
+    REQUIRE(in.good());
+
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string source = buffer.str();
+
+    CHECK(source.find("import {fieldValue} from './config-meta.js';") != std::string::npos);
+    CHECK(source.find("function isAudioArchiveAvailable(){return fieldValue(") != std::string::npos);
+}
+
 // A stopped agent daemon makes the /api/models proxy return 503. That is a
 // normal state, not a configuration error, so the model selector degrades to
 // the custom-model input instead of a red failure box the user cannot act on.

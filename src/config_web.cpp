@@ -6629,13 +6629,13 @@ void set_json_str_if_absent(cJSON* values, const char* key, const std::string& v
     cJSON_AddStringToObject(values, key, value.c_str());
 }
 
-// flatten_voice_provider_reference rewrites values.provider from a
-// [tts_providers]/[stt_providers] record name to its provider type and fills the
-// record's fields into `values`. Without it the config-test pre-checks, which read
-// the flat keys, would see an unknown provider and an empty api_key.
-void flatten_voice_provider_reference(const Options& options,
-                                      const std::string& section,
-                                      cJSON* values) {
+// flatten_provider_reference rewrites values.provider from a named provider
+// record to its provider type and fills the record's fields into `values`.
+// Without it the config-test pre-checks, which read the flat keys, would see an
+// unknown provider and an empty api_key.
+void flatten_provider_reference(const Options& options,
+                                const std::string& section,
+                                cJSON* values) {
     if (!values) return;
     cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
     if (!json_is_string(provider_item)) return;
@@ -6645,6 +6645,20 @@ void flatten_voice_provider_reference(const Options& options,
     aiden::AgentToml stored;
     std::string load_error;
     load_current_agent_config(options, &stored, &load_error);
+
+    if (section == "model") {
+        std::map<std::string, aiden::ModelProviderToml>::const_iterator it =
+            stored.model_providers.find(ref);
+        if (it == stored.model_providers.end()) return;
+        const aiden::ModelProviderToml& record = it->second;
+        if (trim_copy(record.type).empty()) return;
+
+        cJSON_DeleteItemFromObject(values, "provider");
+        cJSON_AddStringToObject(values, "provider", record.type.c_str());
+        set_json_str_if_absent(values, "api_key", record.api_key);
+        set_json_str_if_absent(values, "base_url", record.base_url);
+        return;
+    }
 
     if (section == "tts") {
         std::map<std::string, aiden::TTSProviderToml>::const_iterator it =
@@ -6748,20 +6762,18 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         return make_json_error(400, "missing 'values' object");
     }
 
-    // Flatten a voice provider reference into `values` before anything reads it.
-    // The Test button posts the form state, and now that credentials live on a
-    // [tts_providers]/[stt_providers] record that form carries only the reference
-    // plus the globals. The checks below read values.provider and values.api_key
-    // directly, so an unresolved reference reads as an unknown provider with an
-    // empty key -- reporting "provider unknown" and "skipped because api_key is
-    // empty" for a record that is configured correctly.
+    // Flatten a provider reference into `values` before anything reads it. The
+    // Test button posts the form state, and now that credentials live on provider
+    // records that form carries only the reference plus the globals. The checks
+    // below read values.provider and values.api_key directly, so an unresolved
+    // reference reads as an unknown provider with an empty key.
     //
     // A value already present in `values` wins, so a field the user typed still
-    // takes precedence over the stored record. The agent CLI resolves references
-    // again on its own side (applyTTSPlaybackTestRequest), which is idempotent:
-    // once flattened, provider holds a bare type and matches no record.
-    if (section == "tts" || section == "stt") {
-        flatten_voice_provider_reference(options, section, values);
+    // takes precedence over the stored record. The voice playback test resolves
+    // references again on its own side, which is idempotent: once flattened,
+    // provider holds a bare type and matches no record.
+    if (section == "model" || section == "tts" || section == "stt") {
+        flatten_provider_reference(options, section, values);
     }
 
     cJSON* response = cJSON_CreateObject();
