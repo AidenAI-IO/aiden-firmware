@@ -7,6 +7,7 @@ import (
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/messages"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -35,11 +36,11 @@ func newScreenshotObservationManager(t *testing.T, count int) *contextmanager.Co
 		if err != nil {
 			t.Fatalf("StoreAttachment() error = %v", err)
 		}
-		stored.Source = contextmanager.AttachmentSourceScreenshotObservation
-		if err := manager.AppendMessage(contextmanager.Message{
-			Role:        contextmanager.MessageRoleUser,
+		stored.Source = messages.AttachmentSourceScreenshotObservation
+		if err := manager.AppendMessage(messages.Message{
+			Role:        messages.MessageRoleUser,
 			Content:     "shot",
-			Attachments: []contextmanager.Attachment{stored},
+			Attachments: []messages.Attachment{stored},
 		}); err != nil {
 			t.Fatalf("AppendMessage() error = %v", err)
 		}

@@ -1,6 +1,7 @@
 package contextmanager
 
 import (
+	"aiden-agent/internal/agent/messages"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -29,11 +30,11 @@ func newTestContextManager(t *testing.T) *ContextManager {
 }
 
 func TestConvertStandardMessageToContextManagerMessage_Assistant(t *testing.T) {
-	message := ConvertChoiceToContextManagerMessage(llms.ContentChoice{
+	message := messages.ConvertChoiceToContextManagerMessage(llms.ContentChoice{
 		Content: "hello",
 	})
-	if message.Role != MessageRoleAssistant {
-		t.Fatalf("role = %q, want %q", message.Role, MessageRoleAssistant)
+	if message.Role != messages.MessageRoleAssistant {
+		t.Fatalf("role = %q, want %q", message.Role, messages.MessageRoleAssistant)
 	}
 	if message.Content != "hello" {
 		t.Fatalf("content = %q, want %q", message.Content, "hello")
@@ -41,7 +42,7 @@ func TestConvertStandardMessageToContextManagerMessage_Assistant(t *testing.T) {
 }
 
 func TestConvertStandardMessageToContextManagerMessage_ToolCall(t *testing.T) {
-	message := ConvertChoiceToContextManagerMessage(llms.ContentChoice{
+	message := messages.ConvertChoiceToContextManagerMessage(llms.ContentChoice{
 		Content: "发送测试文本。",
 		ToolCalls: []llms.ToolCall{{
 			ID:   "call_1",
@@ -52,8 +53,8 @@ func TestConvertStandardMessageToContextManagerMessage_ToolCall(t *testing.T) {
 			},
 		}},
 	})
-	if message.Role != MessageRoleToolCall {
-		t.Fatalf("role = %q, want %q", message.Role, MessageRoleToolCall)
+	if message.Role != messages.MessageRoleToolCall {
+		t.Fatalf("role = %q, want %q", message.Role, messages.MessageRoleToolCall)
 	}
 	if message.Content != "发送测试文本。" {
 		t.Fatalf("content = %q, want assistant preamble only", message.Content)
@@ -68,7 +69,7 @@ func TestConvertStandardMessageToContextManagerMessage_ToolCall(t *testing.T) {
 
 func TestConvertStandardMessageToContextManagerMessage_NormalizesInvalidToolCallArguments(t *testing.T) {
 	rawArguments := `{"type": "tap", "point": {"x":}`
-	message := ConvertChoiceToContextManagerMessage(llms.ContentChoice{
+	message := messages.ConvertChoiceToContextManagerMessage(llms.ContentChoice{
 		ToolCalls: []llms.ToolCall{{
 			ID:   "call_1",
 			Type: "function",
@@ -89,7 +90,7 @@ func TestConvertStandardMessageToContextManagerMessage_NormalizesInvalidToolCall
 }
 
 func TestConvertStandardMessageToContextManagerMessage_ToolCallWithoutContent(t *testing.T) {
-	message := ConvertChoiceToContextManagerMessage(llms.ContentChoice{
+	message := messages.ConvertChoiceToContextManagerMessage(llms.ContentChoice{
 		ToolCalls: []llms.ToolCall{{
 			ID:   "call_1",
 			Type: "function",
@@ -99,8 +100,8 @@ func TestConvertStandardMessageToContextManagerMessage_ToolCallWithoutContent(t 
 			},
 		}},
 	})
-	if message.Role != MessageRoleToolCall {
-		t.Fatalf("role = %q, want %q", message.Role, MessageRoleToolCall)
+	if message.Role != messages.MessageRoleToolCall {
+		t.Fatalf("role = %q, want %q", message.Role, messages.MessageRoleToolCall)
 	}
 	if message.Content != "" {
 		t.Fatalf("content = %q, want empty", message.Content)
@@ -111,14 +112,14 @@ func TestConvertStandardMessageToContextManagerMessage_ToolCallWithoutContent(t 
 }
 
 func TestConvertStandardMessageToContextManagerMessage_FuncCallFallback(t *testing.T) {
-	message := ConvertChoiceToContextManagerMessage(llms.ContentChoice{
+	message := messages.ConvertChoiceToContextManagerMessage(llms.ContentChoice{
 		FuncCall: &llms.FunctionCall{
 			Name:      "echo",
 			Arguments: `{"value":"hello"}`,
 		},
 	})
-	if message.Role != MessageRoleToolCall {
-		t.Fatalf("role = %q, want %q", message.Role, MessageRoleToolCall)
+	if message.Role != messages.MessageRoleToolCall {
+		t.Fatalf("role = %q, want %q", message.Role, messages.MessageRoleToolCall)
 	}
 	if message.Content != "" {
 		t.Fatalf("content = %q, want empty", message.Content)
@@ -130,17 +131,17 @@ func TestConvertStandardMessageToContextManagerMessage_FuncCallFallback(t *testi
 
 func TestConvertToStandardMessageList_ToolCalls(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AppendMessage(Message{
-		Role:    MessageRoleToolCall,
+	manager.AppendMessage(messages.Message{
+		Role:    messages.MessageRoleToolCall,
 		Content: "发送测试文本。",
-		ToolCalls: []ToolCall{{
+		ToolCalls: []messages.ToolCall{{
 			ID:        "call_1",
 			Name:      "echo",
 			Arguments: `{"input":"hello"}`,
 		}},
 	})
 
-	messages := ConvertMessageList(manager.CloneMessageList())
+	messages := messages.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 1 {
 		t.Fatalf("messages = %#v", messages)
 	}
@@ -163,16 +164,16 @@ func TestConvertToStandardMessageList_ToolCalls(t *testing.T) {
 func TestConvertToStandardMessageList_NormalizesInvalidToolCallArguments(t *testing.T) {
 	rawArguments := `{"type": "tap", "point": {"x":}`
 	manager := newTestContextManager(t)
-	manager.AppendMessage(Message{
-		Role: MessageRoleToolCall,
-		ToolCalls: []ToolCall{{
+	manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleToolCall,
+		ToolCalls: []messages.ToolCall{{
 			ID:        "call_1",
 			Name:      "touch_gesture",
 			Arguments: rawArguments,
 		}},
 	})
 
-	messages := ConvertMessageList(manager.CloneMessageList())
+	messages := messages.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 1 || len(messages[0].Parts) != 1 {
 		t.Fatalf("messages = %#v, want one tool call message", messages)
 	}
@@ -197,24 +198,24 @@ func mustMarshalToolInput(t *testing.T, input string) string {
 
 func TestConvertToStandardMessageList_ToolResults(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AppendMessage(Message{
-		Role: MessageRoleToolCall,
-		ToolCalls: []ToolCall{{
+	manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleToolCall,
+		ToolCalls: []messages.ToolCall{{
 			ID:        "call_1",
 			Name:      "echo",
 			Arguments: `{}`,
 		}},
 	})
-	manager.AppendMessage(Message{
-		Role: MessageRoleToolResult,
-		ToolResults: []ToolResult{{
+	manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleToolResult,
+		ToolResults: []messages.ToolResult{{
 			ToolCallID: "call_1",
 			Name:       "echo",
 			Content:    `{"output":"hello"}`,
 		}},
 	})
 
-	messages := ConvertMessageList(manager.CloneMessageList())
+	messages := messages.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 2 {
 		t.Fatalf("messages = %#v", messages)
 	}
@@ -232,12 +233,12 @@ func TestConvertToStandardMessageList_ToolResults(t *testing.T) {
 
 func TestNewContextManagerFromMessageListPersistsMessages(t *testing.T) {
 	sessionFolder := t.TempDir()
-	want := []Message{
-		{Role: MessageRoleSystem, Content: "system prompt"},
+	want := []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system prompt"},
 		{
-			Role:    MessageRoleUser,
+			Role:    messages.MessageRoleUser,
 			Content: "compacted summary",
-			RecoverableToolResults: []RecoverableToolResult{{
+			RecoverableToolResults: []messages.RecoverableToolResult{{
 				ToolName:         "shell",
 				ArtifactPath:     "/tmp/tool-results/tr_persisted.data",
 				ArtifactComplete: true,
@@ -245,17 +246,17 @@ func TestNewContextManagerFromMessageListPersistsMessages(t *testing.T) {
 			}},
 		},
 		{
-			Role:    MessageRoleToolCall,
+			Role:    messages.MessageRoleToolCall,
 			Content: "checking",
-			ToolCalls: []ToolCall{{
+			ToolCalls: []messages.ToolCall{{
 				ID:        "call_1",
 				Name:      "echo",
 				Arguments: `{"input":"hello"}`,
 			}},
 		},
 		{
-			Role: MessageRoleToolResult,
-			ToolResults: []ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "call_1",
 				Name:       "echo",
 				Content:    `{"output":"hello"}`,
@@ -288,10 +289,10 @@ func TestAppendMessageRepairsPersistedOrphanToolCallBeforeNextUser(t *testing.T)
 	if err != nil {
 		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
-	if err := manager.AppendMessage(Message{
-		Role:    MessageRoleToolCall,
+	if err := manager.AppendMessage(messages.Message{
+		Role:    messages.MessageRoleToolCall,
 		Content: "Checking the device.",
-		ToolCalls: []ToolCall{{
+		ToolCalls: []messages.ToolCall{{
 			ID:        "call_orphan",
 			Name:      "slow",
 			Arguments: `{}`,
@@ -304,7 +305,7 @@ func TestAppendMessageRepairsPersistedOrphanToolCallBeforeNextUser(t *testing.T)
 	if err != nil {
 		t.Fatalf("reload context manager error = %v", err)
 	}
-	if err := reloaded.AppendMessage(Message{Role: MessageRoleUser, Content: "continue"}); err != nil {
+	if err := reloaded.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "continue"}); err != nil {
 		t.Fatalf("AppendMessage(user) error = %v", err)
 	}
 
@@ -312,17 +313,17 @@ func TestAppendMessageRepairsPersistedOrphanToolCallBeforeNextUser(t *testing.T)
 	if len(dump.Messages) != 3 {
 		t.Fatalf("messages = %#v, want tool call, interrupted result, user", dump.Messages)
 	}
-	if dump.Messages[1].Role != MessageRoleToolResult || len(dump.Messages[1].ToolResults) != 1 {
+	if dump.Messages[1].Role != messages.MessageRoleToolResult || len(dump.Messages[1].ToolResults) != 1 {
 		t.Fatalf("repair message = %#v, want one tool result", dump.Messages[1])
 	}
 	if result := dump.Messages[1].ToolResults[0]; result.ToolCallID != "call_orphan" || result.Content != interruptedToolResultContent {
 		t.Fatalf("repair result = %#v", result)
 	}
-	if dump.Messages[2].Role != MessageRoleUser {
+	if dump.Messages[2].Role != messages.MessageRoleUser {
 		t.Fatalf("last message = %#v, want user", dump.Messages[2])
 	}
 
-	messages := ConvertMessageList(reloaded.CloneMessageList())
+	messages := messages.ConvertMessageList(reloaded.CloneMessageList())
 	if len(messages) != 3 || messages[0].Role != llms.ChatMessageTypeAI || messages[1].Role != llms.ChatMessageTypeTool || messages[2].Role != llms.ChatMessageTypeHuman {
 		t.Fatalf("provider messages = %#v, want assistant/tool/user", messages)
 	}
@@ -330,9 +331,9 @@ func TestAppendMessageRepairsPersistedOrphanToolCallBeforeNextUser(t *testing.T)
 
 func TestAppendMessageRepairsToolCallBeforeHookExpandedUserBatch(t *testing.T) {
 	manager := newTestContextManager(t)
-	if err := manager.AppendMessage(Message{
-		Role: MessageRoleToolCall,
-		ToolCalls: []ToolCall{{
+	if err := manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleToolCall,
+		ToolCalls: []messages.ToolCall{{
 			ID:        "call_1",
 			Name:      "first",
 			Arguments: `{}`,
@@ -340,16 +341,16 @@ func TestAppendMessageRepairsToolCallBeforeHookExpandedUserBatch(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AppendMessage(tool call) error = %v", err)
 	}
-	manager.AddAppendMessageHooks([]AppendMessageHook{func(message Message) AppendMessageHookResult {
-		if message.Role != MessageRoleUser {
+	manager.AddAppendMessageHooks([]AppendMessageHook{func(message messages.Message) AppendMessageHookResult {
+		if message.Role != messages.MessageRoleUser {
 			return AppendMessageHookResult{Message: &message}
 		}
 		return AppendMessageHookResult{
-			Before:  []Message{{Role: MessageRoleState, Content: "device state"}},
+			Before:  []messages.Message{{Role: messages.MessageRoleState, Content: "device state"}},
 			Message: &message,
 		}
 	}})
-	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "continue"}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "continue"}); err != nil {
 		t.Fatalf("AppendMessage(user) error = %v", err)
 	}
 
@@ -360,25 +361,25 @@ func TestAppendMessageRepairsToolCallBeforeHookExpandedUserBatch(t *testing.T) {
 	if got := dump.Messages[1].ToolResults[0]; got.ToolCallID != "call_1" || got.Content != interruptedToolResultContent {
 		t.Fatalf("repair result = %#v", got)
 	}
-	if dump.Messages[2].Role != MessageRoleState || dump.Messages[3].Role != MessageRoleUser {
+	if dump.Messages[2].Role != messages.MessageRoleState || dump.Messages[3].Role != messages.MessageRoleUser {
 		t.Fatalf("tail messages = %#v, want state then user", dump.Messages[2:])
 	}
 }
 
 func TestAppendMessagePairsLegacyMissingToolCallIDByName(t *testing.T) {
 	manager := newTestContextManager(t)
-	if err := manager.AppendMessage(Message{
-		Role: MessageRoleToolCall,
-		ToolCalls: []ToolCall{{
+	if err := manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleToolCall,
+		ToolCalls: []messages.ToolCall{{
 			Name:      "echo",
 			Arguments: `{}`,
 		}},
 	}); err != nil {
 		t.Fatalf("AppendMessage(tool call) error = %v", err)
 	}
-	if err := manager.AppendMessage(Message{
-		Role: MessageRoleToolResult,
-		ToolResults: []ToolResult{{
+	if err := manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleToolResult,
+		ToolResults: []messages.ToolResult{{
 			ToolCallID: "call_legacy",
 			Name:       "echo",
 			Content:    "ok",
@@ -387,7 +388,7 @@ func TestAppendMessagePairsLegacyMissingToolCallIDByName(t *testing.T) {
 		t.Fatalf("AppendMessage(tool result) error = %v", err)
 	}
 
-	messages := ConvertMessageList(manager.CloneMessageList())
+	messages := messages.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 2 {
 		t.Fatalf("messages = %#v, want paired call and result", messages)
 	}
@@ -402,7 +403,7 @@ func TestAppendMessagePairsLegacyMissingToolCallIDByName(t *testing.T) {
 }
 
 func TestConvertStandardMessageToContextManagerMessage_ReasoningContent(t *testing.T) {
-	message := ConvertChoiceToContextManagerMessage(llms.ContentChoice{
+	message := messages.ConvertChoiceToContextManagerMessage(llms.ContentChoice{
 		ReasoningContent: "thinking",
 		Content:          "answer",
 	})
@@ -414,12 +415,12 @@ func TestConvertStandardMessageToContextManagerMessage_ReasoningContent(t *testi
 
 func TestContextManagerAppendMessageHookModifiesMessage(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AddAppendMessageHooks([]AppendMessageHook{func(message Message) AppendMessageHookResult {
+	manager.AddAppendMessageHooks([]AppendMessageHook{func(message messages.Message) AppendMessageHookResult {
 		message.Content = strings.ToUpper(message.Content)
 		return AppendMessageHookResult{Message: &message}
 	}})
 
-	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
+	manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"})
 
 	dump := manager.MessageListDump()
 	if len(dump.Messages) != 1 {
@@ -432,17 +433,17 @@ func TestContextManagerAppendMessageHookModifiesMessage(t *testing.T) {
 
 func TestContextManagerAppendMessageHookInjectsBeforeAndAfter(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AddAppendMessageHooks([]AppendMessageHook{func(message Message) AppendMessageHookResult {
+	manager.AddAppendMessageHooks([]AppendMessageHook{func(message messages.Message) AppendMessageHookResult {
 		modified := message
 		modified.Content = "core:" + message.Content
 		return AppendMessageHookResult{
-			Before:  []Message{{Role: MessageRoleNotice, Content: "before"}},
+			Before:  []messages.Message{{Role: messages.MessageRoleNotice, Content: "before"}},
 			Message: &modified,
-			After:   []Message{{Role: MessageRoleNotice, Content: "after"}},
+			After:   []messages.Message{{Role: messages.MessageRoleNotice, Content: "after"}},
 		}
 	}})
 
-	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
+	manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"})
 
 	dump := manager.MessageListDump()
 	if got, want := len(dump.Messages), 3; got != want {
@@ -455,19 +456,19 @@ func TestContextManagerAppendMessageHookInjectsBeforeAndAfter(t *testing.T) {
 
 func TestContextManagerAppendMessageHookCanDropOriginalMessage(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AddAppendMessageHooks([]AppendMessageHook{func(message Message) AppendMessageHookResult {
+	manager.AddAppendMessageHooks([]AppendMessageHook{func(message messages.Message) AppendMessageHookResult {
 		return AppendMessageHookResult{
-			Before: []Message{{Role: MessageRoleSystem, Content: "replacement"}},
+			Before: []messages.Message{{Role: messages.MessageRoleSystem, Content: "replacement"}},
 		}
 	}})
 
-	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
+	manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"})
 
 	dump := manager.MessageListDump()
 	if len(dump.Messages) != 1 {
 		t.Fatalf("messages = %#v, want one replacement entry", dump.Messages)
 	}
-	if dump.Messages[0].Role != MessageRoleSystem || dump.Messages[0].Content != "replacement" {
+	if dump.Messages[0].Role != messages.MessageRoleSystem || dump.Messages[0].Content != "replacement" {
 		t.Fatalf("message = %#v", dump.Messages[0])
 	}
 }
@@ -476,7 +477,7 @@ func TestContextManagerConcurrentAppendWithStatefulHook(t *testing.T) {
 	manager := newTestContextManager(t)
 	var hookMu sync.Mutex
 	var hookCalls int
-	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+	manager.AddAppendMessageHook(func(message messages.Message) AppendMessageHookResult {
 		hookMu.Lock()
 		hookCalls++
 		hookMu.Unlock()
@@ -487,7 +488,7 @@ func TestContextManagerConcurrentAppendWithStatefulHook(t *testing.T) {
 	var wg sync.WaitGroup
 	for range appends {
 		wg.Go(func() {
-			if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"}); err != nil {
+			if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"}); err != nil {
 				t.Errorf("AppendMessage() error = %v", err)
 			}
 		})
@@ -525,13 +526,13 @@ func TestStoreAttachmentPersistsMetadataOnly(t *testing.T) {
 		t.Fatalf("stored attachment = %#v", stored)
 	}
 
-	manager.AppendMessage(Message{
-		Role:        MessageRoleUser,
+	manager.AppendMessage(messages.Message{
+		Role:        messages.MessageRoleUser,
 		Content:     "see image",
-		Attachments: []Attachment{stored},
+		Attachments: []messages.Attachment{stored},
 	})
 
-	messages := ConvertMessageList(manager.CloneMessageList())
+	messages := messages.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 1 || len(messages[0].Parts) != 2 {
 		t.Fatalf("messages = %#v, want text + binary parts", messages)
 	}
@@ -547,17 +548,17 @@ func TestScreenshotAttachmentIDIsExposedAndReadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StoreAttachment() error = %v", err)
 	}
-	stored.Source = AttachmentSourceScreenshotObservation
-	if err := manager.AppendMessage(Message{
-		Role:        MessageRoleUser,
+	stored.Source = messages.AttachmentSourceScreenshotObservation
+	if err := manager.AppendMessage(messages.Message{
+		Role:        messages.MessageRoleUser,
 		Content:     "screenshot",
-		Attachments: []Attachment{stored},
+		Attachments: []messages.Attachment{stored},
 	}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
 	attachmentID := filepath.Base(stored.FilePath)
-	messages := ConvertMessageList(manager.CloneMessageList())
+	messages := messages.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 1 || len(messages[0].Parts) != 3 {
 		t.Fatalf("messages = %#v, want text + attachment ID + binary", messages)
 	}
@@ -580,7 +581,7 @@ func TestReadScreenshotAttachmentRejectsUnregisteredReferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StoreAttachment() error = %v", err)
 	}
-	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Attachments: []Attachment{stored}}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Attachments: []messages.Attachment{stored}}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
@@ -602,8 +603,8 @@ func TestLoadContextManagerFromSessionIDReloadsMessages(t *testing.T) {
 		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
 
-	manager.AppendMessage(Message{Role: MessageRoleSystem, Content: "system"})
-	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
+	manager.AppendMessage(messages.Message{Role: messages.MessageRoleSystem, Content: "system"})
+	manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"})
 
 	reloaded, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
 	if err != nil {
@@ -633,17 +634,17 @@ func TestConvertToStandardMessageListLoadsAttachmentFromFilePath(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("manual-bytes"), 0o644); err != nil {
 		t.Fatalf("write attachment file: %v", err)
 	}
-	manager.AppendMessage(Message{
-		Role:    MessageRoleUser,
+	manager.AppendMessage(messages.Message{
+		Role:    messages.MessageRoleUser,
 		Content: "see image",
-		Attachments: []Attachment{{
+		Attachments: []messages.Attachment{{
 			MIMEType: "image/png",
 			FileSize: 12,
 			FilePath: filePath,
 		}},
 	})
 
-	messages := ConvertMessageList(manager.CloneMessageList())
+	messages := messages.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 1 || len(messages[0].Parts) != 2 {
 		t.Fatalf("messages = %#v, want text + binary parts", messages)
 	}
@@ -659,11 +660,11 @@ func TestConvertMessageListUsesProvidedSlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StoreAttachment() error = %v", err)
 	}
-	stored.Source = AttachmentSourceScreenshotObservation
-	if err := manager.AppendMessage(Message{
-		Role:        MessageRoleUser,
+	stored.Source = messages.AttachmentSourceScreenshotObservation
+	if err := manager.AppendMessage(messages.Message{
+		Role:        messages.MessageRoleUser,
 		Content:     "caption",
-		Attachments: []Attachment{stored},
+		Attachments: []messages.Attachment{stored},
 	}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
@@ -672,14 +673,14 @@ func TestConvertMessageListUsesProvidedSlice(t *testing.T) {
 	if len(cloned) != 1 || len(cloned[0].Attachments) != 1 {
 		t.Fatalf("clone = %#v", cloned)
 	}
-	if cloned[0].Attachments[0].Source != AttachmentSourceScreenshotObservation {
+	if cloned[0].Attachments[0].Source != messages.AttachmentSourceScreenshotObservation {
 		t.Fatalf("Source = %q", cloned[0].Attachments[0].Source)
 	}
 
 	// Ephemeral prune: drop attachment, keep text — ConvertMessageList must not read the file.
 	cloned[0].Attachments = nil
 	cloned[0].Content = "caption\n[Image omitted]"
-	converted := ConvertMessageList(cloned)
+	converted := messages.ConvertMessageList(cloned)
 	if len(converted) != 1 {
 		t.Fatalf("converted len = %d", len(converted))
 	}
@@ -696,17 +697,17 @@ func TestConvertMessageListUsesProvidedSlice(t *testing.T) {
 
 func TestConvertToStandardMessageListReportsMissingAttachment(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AppendMessage(Message{
-		Role:    MessageRoleUser,
+	manager.AppendMessage(messages.Message{
+		Role:    messages.MessageRoleUser,
 		Content: "see image",
-		Attachments: []Attachment{{
+		Attachments: []messages.Attachment{{
 			MIMEType: "image/png",
 			FileSize: 12,
 			FilePath: filepath.Join(t.TempDir(), "missing.png"),
 		}},
 	})
 
-	messages := ConvertMessageList(manager.CloneMessageList())
+	messages := messages.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 1 || len(messages[0].Parts) != 2 {
 		t.Fatalf("messages = %#v, want text + omitted attachment notice", messages)
 	}

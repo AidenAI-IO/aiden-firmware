@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -35,10 +36,10 @@ func (m *recordingModel) Call(ctx context.Context, prompt string, options ...llm
 
 type dropUserTransform struct{}
 
-func (dropUserTransform) Transform(messages []contextmanager.Message) []contextmanager.Message {
-	out := make([]contextmanager.Message, 0, len(messages))
-	for _, msg := range messages {
-		if msg.Role == contextmanager.MessageRoleUser {
+func (dropUserTransform) Transform(messageList []messages.Message) []messages.Message {
+	out := make([]messages.Message, 0, len(messageList))
+	for _, msg := range messageList {
+		if msg.Role == messages.MessageRoleUser {
 			continue
 		}
 		out = append(out, msg)
@@ -52,10 +53,10 @@ func TestGenerateContentAppliesOutboundTransformsWithoutMutatingStore(t *testing
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
-	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleSystem, Content: "sys"}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleSystem, Content: "sys"}); err != nil {
 		t.Fatalf("append system: %v", err)
 	}
-	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "user"}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "user"}); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
 

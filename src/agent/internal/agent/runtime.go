@@ -19,10 +19,12 @@ import (
 	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/statemanager"
+	"aiden-agent/internal/agent/tokencounter"
 	"aiden-agent/internal/util"
 
 	"github.com/google/uuid"
@@ -1006,26 +1008,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		executorHandler = streamCallbackHandler
 	}
 	profile := r.buildAgentProfile(r.skills, availableTools)
-	conversationHistory, err := runtimeConversationHistoryMessageContents(
-		ctx,
-		memoryHandle.History,
-		r.memories,
-		runID,
-		r.activeConversationHistoryTokenBudget(contextWindow),
-	)
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return RunResult{}, ctxErr
-		}
-		if r.logger != nil {
-			r.logger.Warn("[memory] load conversation history failed; continuing with empty history: %v", err)
-		}
-		conversationHistory = nil
-	}
 	plannerMemory := memoryHandle.Memory
-	if len(conversationHistory) > 0 {
-		plannerMemory = newConversationMessagePlannerMemory(plannerMemory)
-	}
 	var steerStatus steerConversationStatus
 	if req.SteerProvider != nil {
 		plannerMemory = newSteerConversationMemory(plannerMemory, memoryHandle.History)
@@ -1043,8 +1026,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	// append runtime context as assistant message if present (e.g., voice interruption notification)
 	if runtimeContext := strings.TrimSpace(req.RuntimeContext); runtimeContext != "" {
-		if err := r.contextManager.AppendMessage(contextmanager.Message{
-			Role:    contextmanager.MessageRoleAssistant,
+		if err := r.contextManager.AppendMessage(messages.Message{
+			Role:    messages.MessageRoleAssistant,
 			Content: runtimeContext,
 		}); err != nil {
 			return RunResult{}, err
@@ -1058,7 +1041,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	compactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
 	budgetContextWindow := contextWindow
 	if budgetContextWindow <= 0 {
-		budgetContextWindow = defaultContextWindowFallback
+		budgetContextWindow = r.models.Spec().ContextWindow
 	}
 	maxResponseTokens := r.models.Spec().MaxOutput
 	if r.config.Model.MaxResponseTokens > 0 {
@@ -1069,26 +1052,18 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
 	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
-	if compactionEnabled {
-		compactor.SetHistoricalToolResultTarget(compactionTarget)
-	}
-	tokenUsage := compactor.EstimateTokenUsage(r.contextManager)
+	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
 	if compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
 		}
 		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
 		if episodeRecorder != nil {
-			stats := compactor.LastStats()
 			episodeRecorder.RecordEvent(TaskEpisodeEvent{
 				Type: runEventHistoricalToolResultCompaction,
 				Metadata: map[string]interface{}{
-					"historical_results_replaced":   stats.HistoricalResultsReplaced,
-					"tokens_before":                 stats.TokensBefore,
-					"tokens_after":                  stats.TokensAfter,
-					"conversation_summary_required": stats.ConversationSummaryRequired,
-					"compacted":                     compacted,
-					"success":                       err == nil,
+					"compacted": compacted,
+					"success":   err == nil,
 				},
 			})
 		}
@@ -1123,6 +1098,31 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.TerminationPolicy = NewTerminationPolicy(r.config.TerminationPolicy)
 	agentLoop.DevicePlatform = r.devicePlatformFromState()
 	agentLoop.PointerMode = r.devicePointerModeFromState()
+	agentLoop.ContextOverflowRecovery = func(recoveryCtx context.Context, currentManager *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
+		if r.logger != nil {
+			r.logger.Info("Compaction: provider rejected the request because the context window was exceeded; compacting and retrying")
+		}
+		newManager, compacted, compactErr := compactor.Compact(recoveryCtx, currentManager)
+		if episodeRecorder != nil {
+			episodeRecorder.RecordEvent(TaskEpisodeEvent{
+				Type: runEventHistoricalToolResultCompaction,
+				Metadata: map[string]interface{}{
+					"compacted": compacted,
+					"success":   compactErr == nil,
+					"reason":    "provider_context_exceeded",
+				},
+			})
+		}
+		if compactErr != nil || !compacted {
+			return newManager, compacted, compactErr
+		}
+		newManager.AddAppendMessageHook(r.getStateHook())
+		if switchErr := contextmanager.SwitchSession(newManager.GetSessionFolder(), newManager.GetSessionID()); switchErr != nil {
+			return nil, false, switchErr
+		}
+		r.contextManager = newManager
+		return newManager, true, nil
+	}
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
 	if err != nil {
@@ -1200,9 +1200,9 @@ func (r *Runtime) getSystemPrompt() string {
 }
 
 func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
-	return func(message contextmanager.Message) contextmanager.AppendMessageHookResult {
+	return func(message messages.Message) contextmanager.AppendMessageHookResult {
 		// if not user message, just skip
-		if message.Role != contextmanager.MessageRoleUser {
+		if message.Role != messages.MessageRoleUser {
 			return contextmanager.AppendMessageHookResult{
 				Message: &message,
 			}
@@ -1237,22 +1237,22 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 			tagged = util.STag("state", formated.String())
 		}
 		// create a new StateMessage
-		stateMessage := contextmanager.Message{
-			Role:    contextmanager.MessageRoleState,
+		stateMessage := messages.Message{
+			Role:    messages.MessageRoleState,
 			Content: tagged,
 		}
 		if attachment != nil {
-			stateMessage.Attachments = []contextmanager.Attachment{*attachment}
+			stateMessage.Attachments = []messages.Attachment{*attachment}
 		}
 		return contextmanager.AppendMessageHookResult{
-			Before:  []contextmanager.Message{stateMessage},
+			Before:  []messages.Message{stateMessage},
 			Message: &message,
-			After:   []contextmanager.Message{},
+			After:   []messages.Message{},
 		}
 	}
 }
 
-func (r *Runtime) captureStateScreenshot() *contextmanager.Attachment {
+func (r *Runtime) captureStateScreenshot() *messages.Attachment {
 	if r == nil || r.tools == nil || r.contextManager == nil {
 		return nil
 	}
@@ -1282,7 +1282,7 @@ func (r *Runtime) captureStateScreenshot() *contextmanager.Attachment {
 		}
 		return nil
 	}
-	attachment.Source = contextmanager.AttachmentSourceScreenshotObservation
+	attachment.Source = messages.AttachmentSourceScreenshotObservation
 	return &attachment
 }
 

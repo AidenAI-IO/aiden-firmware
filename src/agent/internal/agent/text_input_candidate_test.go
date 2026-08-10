@@ -44,14 +44,14 @@ func TestEvaluateFieldCommitRejectsCandidateOnly(t *testing.T) {
 	committed, _ := evaluateFieldCommit(textInputScreenAnalysis{
 		FieldText:          "你好",
 		CompositionPending: true,
-	}, "你好")
+	})
 	if committed {
 		t.Fatal("candidate/preedit only should not commit")
 	}
 	committed, _ = evaluateFieldCommit(textInputScreenAnalysis{
 		FieldText:     "你好",
 		TargetMatched: true,
-	}, "你好")
+	})
 	if !committed {
 		t.Fatal("vision-confirmed target match should commit")
 	}
@@ -73,7 +73,7 @@ func TestEvaluateFieldCommitAcceptsASCIIDespitePendingFlag(t *testing.T) {
 		FieldText:          "hello",
 		TargetMatched:      true,
 		CompositionPending: true,
-	}, "hello")
+	})
 	if !committed {
 		t.Fatal("vision-confirmed field match should win over a contradictory pending flag")
 	}

@@ -3,8 +3,8 @@ package agent
 import (
 	"strings"
 
-	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/messages"
 )
 
 var _ executor.OutboundMessageTransform = AnthropicScreenshotPruner{}
@@ -19,42 +19,42 @@ type AnthropicScreenshotPruner struct {
 	Config  ScreenshotPruningConfig
 }
 
-func (p AnthropicScreenshotPruner) Transform(messages []contextmanager.Message) []contextmanager.Message {
-	if !p.Enabled || len(messages) == 0 {
-		return messages
+func (p AnthropicScreenshotPruner) Transform(messageList []messages.Message) []messages.Message {
+	if !p.Enabled || len(messageList) == 0 {
+		return messageList
 	}
 	cfg := p.Config.WithDefaults()
 
 	total := 0
-	for _, msg := range messages {
+	for _, msg := range messageList {
 		for _, a := range msg.Attachments {
-			if a.Source == contextmanager.AttachmentSourceScreenshotObservation {
+			if a.Source == messages.AttachmentSourceScreenshotObservation {
 				total++
 			}
 		}
 	}
 	pruned := cfg.PrunedCount(total)
 	if pruned <= 0 {
-		return messages
+		return messageList
 	}
 
-	out := make([]contextmanager.Message, len(messages))
+	out := make([]messages.Message, len(messageList))
 	seen := 0
-	for i, msg := range messages {
+	for i, msg := range messageList {
 		cloned := msg
 		if len(msg.Attachments) > 0 {
-			cloned.Attachments = append([]contextmanager.Attachment(nil), msg.Attachments...)
+			cloned.Attachments = append([]messages.Attachment(nil), msg.Attachments...)
 		}
 		if len(msg.ToolCalls) > 0 {
-			cloned.ToolCalls = append([]contextmanager.ToolCall(nil), msg.ToolCalls...)
+			cloned.ToolCalls = append([]messages.ToolCall(nil), msg.ToolCalls...)
 		}
 		if len(msg.ToolResults) > 0 {
-			cloned.ToolResults = append([]contextmanager.ToolResult(nil), msg.ToolResults...)
+			cloned.ToolResults = append([]messages.ToolResult(nil), msg.ToolResults...)
 		}
 
 		kept := cloned.Attachments[:0]
 		for _, a := range cloned.Attachments {
-			if a.Source != contextmanager.AttachmentSourceScreenshotObservation {
+			if a.Source != messages.AttachmentSourceScreenshotObservation {
 				kept = append(kept, a)
 				continue
 			}
@@ -80,13 +80,13 @@ func (p AnthropicScreenshotPruner) Transform(messages []contextmanager.Message) 
 	return out
 }
 
-func rewritePrunedScreenshotToolResult(msg contextmanager.Message) contextmanager.Message {
-	if msg.Role != contextmanager.MessageRoleToolResult || len(msg.ToolResults) == 0 {
+func rewritePrunedScreenshotToolResult(msg messages.Message) messages.Message {
+	if msg.Role != messages.MessageRoleToolResult || len(msg.ToolResults) == 0 {
 		return msg
 	}
 
 	cloned := msg
-	cloned.ToolResults = append([]contextmanager.ToolResult(nil), msg.ToolResults...)
+	cloned.ToolResults = append([]messages.ToolResult(nil), msg.ToolResults...)
 	for i, result := range cloned.ToolResults {
 		if !strings.Contains(result.Content, screenshotAttachedText) {
 			continue
