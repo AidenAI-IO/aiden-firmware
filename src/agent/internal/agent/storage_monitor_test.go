@@ -563,6 +563,7 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 	monitor := newRuntimeStorageMonitor(cfg, nil, NewMemoryManager(filepath.Join(cfg.ConfigDir, "memory")))
 
 	wantNames := []string{
+		"python_userbase",
 		"tool_result_artifacts",
 		"llm_http_log_7d",
 		"llm_http_log_3d",
@@ -574,6 +575,7 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 		"audio_archive_keep_0",
 	}
 	wantLevels := []StorageLevel{
+		StorageLevelNormal,
 		StorageLevelNormal,
 		StorageLevelNormal,
 		StorageLevelWarning,
@@ -600,10 +602,13 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 			t.Errorf("cleaner %q minimum level = %v, want %v", cleaner.Name(), leveled.MinimumLevel(), wantLevels[index])
 		}
 	}
-	firstAudio := monitor.cleaners[4].(leveledStorageCleaner).StorageCleaner.(*AudioArchiveCleaner)
-	secondAudio := monitor.cleaners[5].(leveledStorageCleaner).StorageCleaner.(*AudioArchiveCleaner)
+	firstAudio := monitor.cleaners[5].(leveledStorageCleaner).StorageCleaner.(*AudioArchiveCleaner)
+	secondAudio := monitor.cleaners[6].(leveledStorageCleaner).StorageCleaner.(*AudioArchiveCleaner)
 	if firstAudio.maxFiles != 10 || secondAudio.maxFiles != 3 {
 		t.Fatalf("audio max files = %d/%d, want 10/3", firstAudio.maxFiles, secondAudio.maxFiles)
+	}
+	if err := monitor.ValidateCleanupTargets([]string{"python_userbase"}); err != nil {
+		t.Fatalf("ValidateCleanupTargets(python_userbase) error = %v", err)
 	}
 }
 

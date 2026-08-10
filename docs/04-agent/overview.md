@@ -66,3 +66,11 @@ The conversational Agent receives every registered, currently available tool nee
 `current_time` and `calculator` are not registered built-in tools; the Agent uses `shell` for controller-local precise time, timezone, and deterministic calculations. The script-file authoring tools (`list_scripts`, `read_script`, and `write_script`) are omitted from the default LLM `tools` request and can be restored with `load_all_tools = true`. This switch does not change HTTP exposure: `skill_manage` and `skill_mark_used` remain unavailable through the HTTP Tool API.
 
 For tool details and HTTP invocation methods, see [Tools HTTP API](tools-http-api.md).
+
+## Python Package Environment
+
+Firmware-provided pip, persistent Agent-installed packages under `/userdata`,
+direct shell-based installation, and limited StorageMonitor cleanup are
+documented in [Persistent Python Package Environment](python-packages.md). The
+implementation reuses the existing `shell` tool and does not add a built-in
+package-install tool.

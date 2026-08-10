@@ -34,6 +34,7 @@ type builtinToolSetOptions struct {
 	screenStable            ScreenStableDefaults
 	scriptsDir              string
 	screenState             *screen.ScreenState
+	shellEnvironment        shellEnvironmentHints
 }
 
 func WithWaitForWakeupController(controller *WaitForWakeupController) BuiltinToolSetOption {
@@ -51,6 +52,15 @@ func WithScreenStableDefaults(defaults ScreenStableDefaults) BuiltinToolSetOptio
 func WithRunScriptScriptsDir(dir string) BuiltinToolSetOption {
 	return func(options *builtinToolSetOptions) {
 		options.scriptsDir = dir
+	}
+}
+
+func WithManagedPythonShellHints(paths managedPythonPaths) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.shellEnvironment = shellEnvironmentHints{
+			pythonUserBase: paths.UserBase,
+			pythonTmp:      paths.Tmp,
+		}
 	}
 }
 
@@ -158,7 +168,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"wait_for_stable_screen": waitStable,
 		"image_diff":             &ImageDiffTool{},
 		"audio_volume":           NewAudioVolumeTool(audioCfg.SocketOrDefault()),
-		"shell":                  &ShellTool{proxy: proxyCfg},
+		"shell":                  &ShellTool{proxy: proxyCfg, environment: toolOptions.shellEnvironment},
 		"weather":                NewWeatherTool(proxyCfg),
 		"web_search":             NewWebSearchTool(searchCfg, proxyCfg),
 		"wikipedia":              NewWikipediaTool(proxyCfg),

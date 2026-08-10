@@ -47,6 +47,7 @@ This documentation hub is the structured entry point for the project. The root `
 - [Swipe Interaction](04-agent/swipe-interaction.md)
 - [Telemetry with Langfuse](04-agent/telemetry-langfuse.md)
 - [Storage subsystem (StorageManager and StorageMonitor)](04-agent/storage-manager.md)
+- [Persistent Python Package Environment](04-agent/python-packages.md)
 
 ### 05. SDK & Tools
 

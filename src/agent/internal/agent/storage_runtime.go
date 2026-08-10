@@ -30,6 +30,9 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 	storageConfig := cfg.Storage.MonitorConfig()
 	cleaners := make([]StorageCleaner, 0)
 	priority := 1
+	pythonCleaner := NewPythonUserBaseCleaner(managedPythonRoot, priority, queryRunningPythonVersion)
+	priority++
+	cleaners = append(cleaners, withMinimumStorageLevel(pythonCleaner, StorageLevelNormal))
 	if cfg.ConfigDir != "" {
 		artifactCleaner := contextmanager.NewArtifactStoreCleaner(agentpath.ContextManagerSessionFolder(cfg.ConfigDir), priority)
 		priority++

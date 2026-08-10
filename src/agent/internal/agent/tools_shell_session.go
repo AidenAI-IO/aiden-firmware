@@ -337,9 +337,15 @@ func shellPlatformShellArg() string {
 	return "-c"
 }
 
-func shellCommandEnv(usePTY bool, proxy ProxyConfig) []string {
+func shellCommandEnv(usePTY bool, proxy ProxyConfig, environment shellEnvironmentHints) []string {
 	env := os.Environ()
 	env = shellApplyProxyEnv(env, proxy)
+	if environment.pythonUserBase != "" {
+		env = shellEnsureEnv(env, "AIDEN_PYTHON_USERBASE", environment.pythonUserBase)
+	}
+	if environment.pythonTmp != "" {
+		env = shellEnsureEnv(env, "AIDEN_PYTHON_TMP", environment.pythonTmp)
+	}
 	if usePTY {
 		env = shellEnsureEnv(env, "TERM", "dumb")
 		env = shellEnsureEnv(env, "NO_COLOR", "1")

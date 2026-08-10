@@ -95,6 +95,142 @@ func TestShellToolForegroundInjectsProxyEnv(t *testing.T) {
 	}
 }
 
+func TestShellToolInjectsManagedPythonHintsWithoutChangingPythonEnvironment(t *testing.T) {
+	skipOnWindows(t)
+	t.Setenv("PYTHONUSERBASE", "inherited-userbase")
+	t.Setenv("PIP_USER", "inherited-pip-user")
+	t.Setenv("TMPDIR", "inherited-tmp")
+	t.Setenv("PATH", "/bin:/usr/bin")
+
+	tool := &ShellTool{environment: shellEnvironmentHints{
+		pythonUserBase: "/userdata/agent/python/py3.11",
+		pythonTmp:      "/userdata/agent/python/tmp",
+	}}
+	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s|%s|%s|%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$AIDEN_PYTHON_TMP\" \"$PYTHONUSERBASE\" \"$PIP_USER\" \"$TMPDIR\" \"$PATH\""}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	want := "/userdata/agent/python/py3.11|/userdata/agent/python/tmp|inherited-userbase|inherited-pip-user|inherited-tmp|/bin:/usr/bin"
+	if out != want {
+		t.Fatalf("Call output = %q, want %q", out, want)
+	}
+}
+
+func TestBuiltinToolSetWiresManagedPythonHintsIntoShell(t *testing.T) {
+	skipOnWindows(t)
+	toolSet := NewBuiltinToolSet(
+		HIDConfig{},
+		AudioConfig{},
+		SearchConfig{},
+		ProxyConfig{},
+		WithManagedPythonShellHints(managedPythonPaths{
+			UserBase: "/userdata/agent/python/py3.12",
+			Tmp:      "/userdata/agent/python/tmp",
+		}),
+	)
+	tool, ok := toolSet.Get("shell")
+	if !ok {
+		t.Fatal("shell tool is not registered")
+	}
+
+	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$AIDEN_PYTHON_TMP\""}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if want := "/userdata/agent/python/py3.12|/userdata/agent/python/tmp"; out != want {
+		t.Fatalf("Call output = %q, want %q", out, want)
+	}
+}
+
+func TestShellCommandEnvAppliesManagedPythonHintsInPTYAndNonPTYModes(t *testing.T) {
+	hints := shellEnvironmentHints{
+		pythonUserBase: "/userdata/agent/python/py3.11",
+		pythonTmp:      "/userdata/agent/python/tmp",
+	}
+	for _, usePTY := range []bool{false, true} {
+		env := shellCommandEnv(usePTY, ProxyConfig{}, hints)
+		values := make(map[string]string)
+		for _, entry := range env {
+			parts := strings.SplitN(entry, "=", 2)
+			if len(parts) == 2 {
+				values[parts[0]] = parts[1]
+			}
+		}
+		if got := values["AIDEN_PYTHON_USERBASE"]; got != hints.pythonUserBase {
+			t.Errorf("usePTY=%v AIDEN_PYTHON_USERBASE = %q, want %q", usePTY, got, hints.pythonUserBase)
+		}
+		if got := values["AIDEN_PYTHON_TMP"]; got != hints.pythonTmp {
+			t.Errorf("usePTY=%v AIDEN_PYTHON_TMP = %q, want %q", usePTY, got, hints.pythonTmp)
+		}
+	}
+}
+
+func TestShellToolManagedPythonHintsReachForegroundPTY(t *testing.T) {
+	skipOnWindows(t)
+	tool := &ShellTool{environment: shellEnvironmentHints{
+		pythonUserBase: "/userdata/agent/python/py3.11",
+		pythonTmp:      "/userdata/agent/python/tmp",
+	}}
+	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$AIDEN_PYTHON_TMP\"","pty":true}`)
+	if err != nil {
+		t.Fatalf("PTY Call returned error: %v", err)
+	}
+	want := "/userdata/agent/python/py3.11|/userdata/agent/python/tmp"
+	if !strings.Contains(out, want) {
+		t.Fatalf("PTY Call output = %q, want it to contain %q", out, want)
+	}
+}
+
+func TestShellToolManagedPythonHintsReachBackgroundCommands(t *testing.T) {
+	skipOnWindows(t)
+	tool := &ShellTool{environment: shellEnvironmentHints{
+		pythonUserBase: "/userdata/agent/python/py3.11",
+		pythonTmp:      "/userdata/agent/python/tmp",
+	}}
+	want := "/userdata/agent/python/py3.11|/userdata/agent/python/tmp"
+
+	startOut, err := tool.Call(context.Background(), `{"action":"start","command":"printf '%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$AIDEN_PYTHON_TMP\"; sleep 1"}`)
+	if err != nil {
+		t.Fatalf("background start returned error: %v", err)
+	}
+	var started struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(startOut), &started); err != nil {
+		t.Fatalf("background start output = %q, unmarshal error = %v", startOut, err)
+	}
+	defer func() {
+		stopArgs, _ := json.Marshal(map[string]interface{}{
+			"action":     "stop",
+			"session_id": started.SessionID,
+		})
+		_, _ = tool.Call(context.Background(), string(stopArgs))
+	}()
+
+	pollArgs, _ := json.Marshal(map[string]interface{}{
+		"action":     "poll",
+		"session_id": started.SessionID,
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pollOut, pollErr := tool.Call(context.Background(), string(pollArgs))
+		if pollErr != nil {
+			t.Fatalf("background poll returned error: %v", pollErr)
+		}
+		var poll struct {
+			Output string `json:"output"`
+		}
+		if err := json.Unmarshal([]byte(pollOut), &poll); err != nil {
+			t.Fatalf("background poll output = %q, unmarshal error = %v", pollOut, err)
+		}
+		if strings.Contains(poll.Output, want) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("background command did not receive managed Python hints")
+}
+
 func TestShellApplyProxyEnvReplacesInheritedProxy(t *testing.T) {
 	env := shellApplyProxyEnv([]string{
 		"PATH=/bin",

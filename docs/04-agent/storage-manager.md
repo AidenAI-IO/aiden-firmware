@@ -19,6 +19,7 @@ Related documentation:
 
 - [Paths, Artifacts & Config Cheat Sheet](../02-architecture/paths-and-artifacts.md)
 - [Agent Configuration Reference](configuration.md)
+- [Persistent Python Package Environment Design](python-packages.md)
 
 ## StorageManager: SD Card and Dual-Storage Routing
 
@@ -387,6 +388,35 @@ The runtime builds cleanup stages from the configured retention arrays.
 | Session archives | 30 days | Warning | Does not touch the active session or long-term memory |
 
 A retention value of 0 creates an emergency cleanup stage. The default session_archive_retention_days value is [30], so an all-session-archives emergency stage is not enabled unless 0 is explicitly added.
+
+#### Python Package Cleanup
+
+The persistent Python package environment registers one `python_userbase`
+cleaner backed by the same `StorageCleaner` interface.
+
+| Cleaner | Normal behavior | Force behavior | Protection |
+| --- | --- | --- | --- |
+| `python_userbase` | Removes temporary entries older than 24 hours and non-current Python-version directories older than 7 days | Keeps the 24-hour temporary-data rule, but removes non-current version directories without waiting 7 days | Never follows symlinks or removes the current Python version |
+
+The active Python environment is never an automatic cleanup target, including
+at Emergency. Because installation uses the general shell tool, this cleaner
+does not enforce an installation gate; the Agent guidance avoids starting new
+pip work while `/userdata` is under storage pressure.
+
+Manual cleanup accepts:
+
+~~~json
+{
+  "force": false,
+  "targets": ["python_userbase"]
+}
+~~~
+
+With `force=false`, the 24-hour and 7-day retention periods apply. A force
+cleanup only bypasses the stale-version retention period; it does not delete
+recent temporary entries or the active environment. See
+[Persistent Python Package Environment](python-packages.md) for the
+directory layout, shell environment, OTA behavior, and cleanup safety rules.
 
 #### Stage Eligibility and Stop Conditions
 

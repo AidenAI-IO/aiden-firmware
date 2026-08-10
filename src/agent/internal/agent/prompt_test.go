@@ -310,6 +310,29 @@ func TestDefaultAgentBehaviorExcludesEnvironmentGuidance(t *testing.T) {
 	}
 }
 
+func TestAgentEnvironmentGuidanceIncludesManagedPythonPackagePolicy(t *testing.T) {
+	guidance := agentEnvironmentGuidance()
+	for _, want := range []string{
+		"Prefer the Python standard library",
+		"AIDEN_PYTHON_USERBASE",
+		"AIDEN_PYTHON_TMP",
+		"name==version",
+		"--only-binary=:all:",
+		"PIP_USER=1",
+		"PIP_NO_CACHE_DIR=1",
+		"PIP_DISABLE_PIP_VERSION_CHECK=1",
+		"pip check",
+		"pip, setuptools, or wheel",
+		"/run/agent/storage_level",
+		"avoid unbounded retries",
+		"$AIDEN_PYTHON_USERBASE/bin",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Fatalf("agentEnvironmentGuidance() missing %q:\n%s", want, guidance)
+		}
+	}
+}
+
 func TestDefaultAgentBehaviorRequiresUnifiedLeadingTTS(t *testing.T) {
 	behavior := defaultAgentBehavior()
 	for _, want := range []string{
