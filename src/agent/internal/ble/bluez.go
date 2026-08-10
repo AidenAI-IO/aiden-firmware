@@ -347,11 +347,12 @@ func (b *blueZBackend) exportObjects() error {
 		blueZGattCharInterface: {
 			"UUID":    {Value: WakeCharacteristicUUID, Emit: prop.EmitConst},
 			"Service": {Value: wakeServicePath, Emit: prop.EmitConst},
-			// The encrypted flags already imply the read/notify properties. Do not
-			// also publish their unsecured variants: the board's BlueZ version can
-			// otherwise satisfy the read without starting SMP, then reject the CCC
-			// write with "Writing is not permitted" while iOS is still pairing.
-			"Flags":       {Value: []string{"encrypt-read", "encrypt-notify"}, Emit: prop.EmitConst},
+			// Keep the read encrypted because it is the explicit operation that
+			// triggers the iOS system bond. BlueZ 5.65 rejects CCC writes for its
+			// encrypt-notify flag even after that bond succeeds, so expose standard
+			// notify separately. Wake payloads contain no command or notification
+			// content; they only ask the app to poll its authenticated HTTP channel.
+			"Flags":       {Value: wakeCharacteristicFlags(), Emit: prop.EmitConst},
 			"Descriptors": {Value: []dbus.ObjectPath{}, Emit: prop.EmitConst},
 			"Value":       {Value: []byte{}, Emit: prop.EmitTrue},
 			"Notifying":   {Value: false, Emit: prop.EmitTrue},
@@ -399,6 +400,10 @@ func (b *blueZBackend) exportObjects() error {
 		return err
 	}
 	return exportIntrospection(b.conn, agentPath, blueZAgentInterface, agent, nil)
+}
+
+func wakeCharacteristicFlags() []string {
+	return []string{"encrypt-read", "notify"}
 }
 
 func (b *blueZBackend) exportGattObject(
