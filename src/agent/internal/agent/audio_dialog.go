@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -226,6 +227,22 @@ func (d *AudioDialog) SetStorageMonitor(monitor *StorageMonitor) {
 	if d.audioArchive != nil {
 		d.audioArchive.SetStorageMonitor(monitor)
 	}
+}
+
+// Close releases resources owned by the dialog. The TTS provider manager is
+// borrowed from Runtime and must remain available until Runtime.Close.
+func (d *AudioDialog) Close() error {
+	if d == nil {
+		return nil
+	}
+
+	d.InterruptOutput()
+	stopErr := d.StopRecording()
+	var vadErr error
+	if d.vad != nil {
+		vadErr = d.vad.Close()
+	}
+	return errors.Join(stopErr, vadErr)
 }
 
 // StartRecording starts an audio recording session

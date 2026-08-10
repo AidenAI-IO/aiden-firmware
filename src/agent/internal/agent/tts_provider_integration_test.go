@@ -281,6 +281,13 @@ func TestRuntimeCloseClosesSharedTTSManagerOnce(t *testing.T) {
 		t.Fatal("AudioDialog does not reference Runtime's TTS manager")
 	}
 
+	if err := dialog.Close(); err != nil {
+		t.Fatalf("AudioDialog.Close() error = %v", err)
+	}
+	if got := provider.providerCloseCalls(); got != 0 {
+		t.Fatalf("provider Close() calls after AudioDialog.Close() = %d, want 0", got)
+	}
+
 	if err := runtime.Close(); err != nil {
 		t.Fatalf("Runtime.Close() error = %v", err)
 	}
