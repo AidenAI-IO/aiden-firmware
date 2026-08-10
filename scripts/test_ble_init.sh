@@ -47,6 +47,10 @@ done
 
 grep -Fq '/dev/ttyS1' "$HCI_INIT"
 grep -Fq '1500000' "$HCI_INIT"
+grep -Fq 'ensure_smp_crypto || return 1' "$HCI_INIT"
+grep -Fq 'ensure_crypto_module aes_generic' "$HCI_INIT"
+grep -Fq 'ensure_crypto_module cmac' "$HCI_INIT"
+grep -Fq 'Bluetooth HCI reinitialized after loading SMP crypto' "$HCI_INIT"
 grep -Fq '/userdata/ble_service/bluetooth' "$BLUEZ_INIT"
 grep -Fq 'bluetoothd-watchdog.pid' "$BLUEZ_INIT"
 grep -Fq 'hci0 disappeared; restarting Bluetooth stack' "$BLUEZ_INIT"

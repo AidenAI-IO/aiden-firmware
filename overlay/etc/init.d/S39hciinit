@@ -4,11 +4,16 @@
 BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
 HCIATTACH_BIN=${HCIATTACH_BIN:-/usr/bin/hciattach}
 HCICONFIG_BIN=${HCICONFIG_BIN:-/usr/bin/hciconfig}
+INSMOD_BIN=${INSMOD_BIN:-/sbin/insmod}
 TTY_DEVICE=${TTY_DEVICE:-/dev/ttyS1}
 PID_FILE=${PID_FILE:-/run/aiden-hciattach.pid}
+CRYPTO_MODULE_DIR=${CRYPTO_MODULE_DIR:-/oem/usr/ko}
+MODULE_SYSFS=${MODULE_SYSFS:-/sys/module}
+PROC_CRYPTO=${PROC_CRYPTO:-/proc/crypto}
 INITIAL_SPEED=${INITIAL_SPEED:-1500000}
 TARGET_SPEED=${TARGET_SPEED:-1500000}
 WAIT_SECONDS=${WAIT_SECONDS:-15}
+SMP_CRYPTO_CHANGED=0
 
 [ -f "$BOOT_CONF" ] && . "$BOOT_CONF"
 : "${ENABLE_BLUETOOTH_HCI:=1}"
@@ -33,6 +38,54 @@ hci_ready() {
     [ -x "$HCICONFIG_BIN" ] && "$HCICONFIG_BIN" hci0 >/dev/null 2>&1
 }
 
+ensure_crypto_module() {
+    module="$1"
+    if [ -d "$MODULE_SYSFS/$module" ]; then
+        return 0
+    fi
+
+    module_path="$CRYPTO_MODULE_DIR/$module.ko"
+    if [ ! -x "$INSMOD_BIN" ]; then
+        echo "insmod binary not found: $INSMOD_BIN" >&2
+        return 1
+    fi
+    if [ ! -f "$module_path" ]; then
+        echo "Bluetooth SMP crypto module not found: $module_path" >&2
+        return 1
+    fi
+    if ! "$INSMOD_BIN" "$module_path"; then
+        echo "failed to load Bluetooth SMP crypto module: $module_path" >&2
+        return 1
+    fi
+    if [ ! -d "$MODULE_SYSFS/$module" ]; then
+        echo "Bluetooth SMP crypto module did not register: $module" >&2
+        return 1
+    fi
+
+    SMP_CRYPTO_CHANGED=1
+}
+
+crypto_available() {
+    algorithm="$1"
+    [ -r "$PROC_CRYPTO" ] &&
+        grep -Eq "^name[[:space:]]*: ${algorithm}$" "$PROC_CRYPTO"
+}
+
+ensure_smp_crypto() {
+    # Linux registers the LE SMP fixed channel when hci0 is powered on.
+    # CMAC cannot be auto-loaded from /oem/usr/ko, so load it first or
+    # smp_register() fails silently and encrypted GATT reads cannot pair.
+    ensure_crypto_module aes_generic || return 1
+    ensure_crypto_module cmac || return 1
+
+    for algorithm in aes ecdh; do
+        if ! crypto_available "$algorithm"; then
+            echo "Bluetooth SMP crypto algorithm unavailable: $algorithm" >&2
+            return 1
+        fi
+    done
+}
+
 wait_for_controller() {
     elapsed=0
     while [ "$elapsed" -lt "$WAIT_SECONDS" ]; do
@@ -52,9 +105,18 @@ start() {
         return 0
     fi
 
+    ensure_smp_crypto || return 1
+
     if hci_ready; then
+        if [ "$SMP_CRYPTO_CHANGED" = "1" ]; then
+            "$HCICONFIG_BIN" hci0 down >/dev/null 2>&1 || return 1
+        fi
         "$HCICONFIG_BIN" hci0 up >/dev/null 2>&1 || return 1
-        echo "Bluetooth HCI already available"
+        if [ "$SMP_CRYPTO_CHANGED" = "1" ]; then
+            echo "Bluetooth HCI reinitialized after loading SMP crypto"
+        else
+            echo "Bluetooth HCI already available"
+        fi
         return 0
     fi
     if [ ! -x "$HCIATTACH_BIN" ]; then
