@@ -16,7 +16,6 @@ func (p *ModelProvider) UnmarshalTOML(data any) error {
 	}
 	return providerRecordStrings(fields,
 		providerRecordField{"api_key", &p.APIKey},
-		providerRecordField{"token_env", &p.TokenEnv},
 		providerRecordField{"base_url", &p.BaseURL},
 	)
 }
@@ -33,7 +32,6 @@ func (p *TTSProvider) UnmarshalTOML(data any) error {
 	}
 	return providerRecordStrings(fields,
 		providerRecordField{"api_key", &p.APIKey},
-		providerRecordField{"token_env", &p.TokenEnv},
 		providerRecordField{"model", &p.Model},
 		providerRecordField{"voice_id", &p.VoiceID},
 		providerRecordField{"emotion", &p.Emotion},
@@ -53,7 +51,6 @@ func (p *STTProvider) UnmarshalTOML(data any) error {
 	}
 	return providerRecordStrings(fields,
 		providerRecordField{"api_key", &p.APIKey},
-		providerRecordField{"token_env", &p.TokenEnv},
 		providerRecordField{"model", &p.Model},
 		providerRecordField{"base_url", &p.BaseURL},
 		providerRecordField{"app_id", &p.AppID},

@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -76,6 +77,7 @@ metadata:
   preferred_model: primary
   allowed_tools: [tool1, tool2]
   allowed_children: [child1]
+  device_types: [android, iOS, android]
 ---
 
 Skill instructions here.
@@ -109,9 +111,34 @@ More lines.
 	if len(skill.AllowedChildren) != 1 || skill.AllowedChildren[0] != "child1" {
 		t.Errorf("AllowedChildren = %v, want [child1]", skill.AllowedChildren)
 	}
+	if len(skill.DeviceTypes) != 2 || skill.DeviceTypes[0] != "Android" || skill.DeviceTypes[1] != "iOS" {
+		t.Errorf("DeviceTypes = %v, want [Android iOS]", skill.DeviceTypes)
+	}
 	expectedInstructions := "Skill instructions here.\nMore lines."
 	if skill.Instructions != expectedInstructions {
 		t.Errorf("Instructions = %q, want %q", skill.Instructions, expectedInstructions)
+	}
+}
+
+func TestLoadSkillMetadataRejectsInvalidDeviceTypes(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+name: test-skill
+description: Test description
+metadata:
+  device_types: [Android, beos]
+---
+
+Skill instructions.
+`
+	writeSKILL(t, dir, "test-skill", content)
+
+	_, err := loadSkillMetadata(filepath.Join(dir, "test-skill", "SKILL.md"))
+	if err == nil {
+		t.Fatal("expected invalid device_types to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid metadata.device_types value") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

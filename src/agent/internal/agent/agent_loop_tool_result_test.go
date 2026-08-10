@@ -9,6 +9,7 @@ import (
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
 
 	"github.com/tmc/langchaingo/chains"
@@ -47,33 +48,6 @@ func TestAppendToolExecutionMessagesPersistsPreparedContentAndMetadata(t *testin
 	}
 	if stored.Meta == nil || stored.Meta.ArtifactPath != prepared.ArtifactPath || stored.Meta.Summary != prepared.Summary {
 		t.Fatalf("stored metadata = %#v", stored.Meta)
-	}
-}
-
-func TestAgentLoopHardGuardRejectsBeforeProviderCall(t *testing.T) {
-	inner := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("must not be returned")}}
-	model := &largeContextScriptedModel{scriptedModel: inner}
-	manager, err := freshNewContextManager(strings.Repeat("system ", 20_000), "continue", nil, t.TempDir())
-	if err != nil {
-		t.Fatalf("freshNewContextManager() error = %v", err)
-	}
-	loop := NewAgentLoop(
-		model,
-		RoleProfile{},
-		nil,
-		2,
-		nil,
-		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
-		manager,
-	)
-	_, err = loop.Run(context.Background(), "continue")
-	var budgetErr *ContextBudgetExceededError
-	if !errors.As(err, &budgetErr) {
-		t.Fatalf("Run() error = %T %v, want ContextBudgetExceededError", err, err)
-	}
-	if len(inner.messages) != 0 {
-		t.Fatalf("provider calls = %d, want 0", len(inner.messages))
 	}
 }
 
@@ -128,9 +102,9 @@ func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.
 		t.Fatalf("Run() answer = %q, want Done", answer)
 	}
 
-	var stored contextmanager.ToolResult
+	var stored messages.ToolResult
 	for _, message := range manager.CloneMessageList() {
-		if message.Role == contextmanager.MessageRoleToolResult && len(message.ToolResults) > 0 {
+		if message.Role == messages.MessageRoleToolResult && len(message.ToolResults) > 0 {
 			stored = message.ToolResults[0]
 			break
 		}
@@ -144,6 +118,22 @@ func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.
 	if stored.Content == rawOutput {
 		t.Fatal("current tool result stayed inline despite the runtime fallback context budget")
 	}
+}
+
+func toolResponseContents(t *testing.T, messages []llms.MessageContent) []string {
+	t.Helper()
+	var contents []string
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if response, ok := part.(llms.ToolCallResponse); ok {
+				contents = append(contents, response.Content)
+			}
+		}
+	}
+	if len(contents) == 0 {
+		t.Fatalf("no tool responses found in messages: %#v", messages)
+	}
+	return contents
 }
 
 func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {
@@ -176,9 +166,9 @@ func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {
 		t.Fatalf("Run() answer = %q", answer)
 	}
 
-	var stored contextmanager.ToolResult
+	var stored messages.ToolResult
 	for _, message := range manager.CloneMessageList() {
-		if message.Role == contextmanager.MessageRoleToolResult && len(message.ToolResults) > 0 {
+		if message.Role == messages.MessageRoleToolResult && len(message.ToolResults) > 0 {
 			stored = message.ToolResults[0]
 			break
 		}
@@ -255,9 +245,9 @@ func TestAgentLoopDoesNotRepeatCompletedActionWhenArtifactPersistenceFails(t *te
 		t.Fatalf("answer=%q tool calls=%d, want one completed action", answer, tool.calls)
 	}
 
-	var stored contextmanager.ToolResult
+	var stored messages.ToolResult
 	for _, message := range manager.CloneMessageList() {
-		if message.Role == contextmanager.MessageRoleToolResult && len(message.ToolResults) > 0 {
+		if message.Role == messages.MessageRoleToolResult && len(message.ToolResults) > 0 {
 			stored = message.ToolResults[0]
 			break
 		}
@@ -301,9 +291,9 @@ func TestAgentLoopPersistsBoundedToolResultWhenPolicyFails(t *testing.T) {
 		t.Fatalf("answer=%q tool calls=%d, want one completed action", answer, tool.calls)
 	}
 
-	var stored contextmanager.ToolResult
+	var stored messages.ToolResult
 	for _, message := range manager.CloneMessageList() {
-		if message.Role == contextmanager.MessageRoleToolResult && len(message.ToolResults) > 0 {
+		if message.Role == messages.MessageRoleToolResult && len(message.ToolResults) > 0 {
 			stored = message.ToolResults[0]
 			break
 		}

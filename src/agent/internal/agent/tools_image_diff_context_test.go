@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -24,10 +25,10 @@ func TestAgentLoopMakesScreenshotAttachmentsAvailableToImageDiff(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StoreAttachment() error = %v", err)
 		}
-		stored.Source = contextmanager.AttachmentSourceScreenshotObservation
-		if err := manager.AppendMessage(contextmanager.Message{
-			Role:        contextmanager.MessageRoleUser,
-			Attachments: []contextmanager.Attachment{stored},
+		stored.Source = messages.AttachmentSourceScreenshotObservation
+		if err := manager.AppendMessage(messages.Message{
+			Role:        messages.MessageRoleUser,
+			Attachments: []messages.Attachment{stored},
 		}); err != nil {
 			t.Fatalf("AppendMessage() error = %v", err)
 		}

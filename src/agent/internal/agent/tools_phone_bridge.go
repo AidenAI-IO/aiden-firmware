@@ -14,9 +14,8 @@ import (
 var openAppCmdSeq atomic.Uint64
 
 type routedOpenAppArgs struct {
-	App      string `json:"app"`
-	Name     string `json:"name"`
-	Platform string `json:"platform,omitempty"`
+	App  string `json:"app"`
+	Name string `json:"name"`
 }
 
 // OpenAppTool is the public app-launch tool. It owns Phone Bridge routing so
@@ -50,9 +49,8 @@ func (t *OpenAppTool) Description() string {
 
 func (t *OpenAppTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"app":      stringArgSchema("App name or semantic alias to open, such as WeChat, 微信, browser, or Settings."),
-		"name":     stringArgSchema("Alias for app."),
-		"platform": stringEnumArgSchema("Target platform for the visible-search fallback.", "ios", "android", "mac"),
+		"app":  stringArgSchema("App name or semantic alias to open, such as WeChat, 微信, browser, or Settings."),
+		"name": stringArgSchema("Alias for app."),
 	}, "app")
 }
 
@@ -73,7 +71,6 @@ func parseRoutedOpenAppArgs(input string) (routedOpenAppArgs, *ToolError) {
 	}
 	args.App = strings.TrimSpace(args.App)
 	args.Name = ""
-	args.Platform = strings.ToLower(strings.TrimSpace(args.Platform))
 	if args.App == "" {
 		return args, NewToolError(CodeInvalidArguments, "app is required")
 	}
@@ -140,9 +137,6 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	}
 
 	searchInput := map[string]string{"app": args.App}
-	if args.Platform != "" {
-		searchInput["platform"] = args.Platform
-	}
 	rawSearchInput, _ := json.Marshal(searchInput)
 
 	status := PhoneBridgeStatus{}
@@ -150,8 +144,8 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 		status = t.bridge.getStatus()
 	}
 	if t != nil && t.bridge != nil && phoneBridgeCanUseDirectOpenApp(status) {
-		t.logRoute("selected=bridge_open_app app=%q requested_platform=%q connected=%t bridge_platform=%q app_state=%q pip=%t fgs=%t",
-			args.App, args.Platform, status.Connected, status.Platform, status.AppState,
+		t.logRoute("selected=bridge_open_app app=%q connected=%t bridge_platform=%q app_state=%q pip=%t fgs=%t",
+			args.App, status.Connected, status.Platform, status.AppState,
 			status.PipBridgeEnabled != nil && *status.PipBridgeEnabled,
 			status.FgsBridgeEnabled != nil && *status.FgsBridgeEnabled)
 		bridgeInput, _ := json.Marshal(map[string]string{"app": args.App})
@@ -163,11 +157,11 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 			return returnNestedToolResult(ctx, bridgeOut, bridgeTE, bridgeErr)
 		}
 		bridgeErrorCode, bridgeError := openAppBridgeFailureDetails(bridgeTE, bridgeErr)
-		t.logRoute("selected=search_launch_app reason=bridge_failed previous=bridge_open_app app=%q requested_platform=%q bridge_error_code=%q bridge_error=%q",
-			args.App, args.Platform, bridgeErrorCode, bridgeError)
+		t.logRoute("selected=search_launch_app reason=bridge_failed previous=bridge_open_app app=%q bridge_error_code=%q bridge_error=%q",
+			args.App, bridgeErrorCode, bridgeError)
 	} else {
-		t.logRoute("selected=search_launch_app reason=%s app=%q requested_platform=%q connected=%t bridge_platform=%q app_state=%q pip=%t fgs=%t",
-			openAppSearchRouteReason(t, status), args.App, args.Platform, status.Connected, status.Platform, status.AppState,
+		t.logRoute("selected=search_launch_app reason=%s app=%q connected=%t bridge_platform=%q app_state=%q pip=%t fgs=%t",
+			openAppSearchRouteReason(t, status), args.App, status.Connected, status.Platform, status.AppState,
 			status.PipBridgeEnabled != nil && *status.PipBridgeEnabled,
 			status.FgsBridgeEnabled != nil && *status.FgsBridgeEnabled)
 	}

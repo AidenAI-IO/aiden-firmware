@@ -384,7 +384,7 @@ func buildTextInputAnalysisPrompt(req textInputScreenAnalysisRequest) string {
 		verificationScope = "committed-suffix"
 		targetMatchRule = "target_matched: judge only whether the committed text at the END of the focused field matches Target text exactly. Ignore any committed text before that suffix because it may have existed before this operation or been entered by earlier parts. Return false if the target suffix is missing, incomplete, reordered, or followed by extra committed text"
 	}
-	return strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot (Android/iOS/macOS) for text-input automation.
+	return strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot for text-input automation.
 Platform: %q
 Target text: %q
 Verification scope: %q

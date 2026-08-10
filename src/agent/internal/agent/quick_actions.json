@@ -954,8 +954,8 @@
         "android": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["ctrl", "shift"] },
-          "note": "cycle input method (Ctrl+Shift)"
+          "input": { "keys": ["KEYCODE_LANGUAGE_SWITCH"] },
+          "note": "cycle input method (Android KEYCODE_LANGUAGE_SWITCH)"
         },
         "mac": {
           "status": "active",

@@ -1,4 +1,4 @@
-package contextmanager
+package messages
 
 import (
 	"encoding/json"
@@ -10,9 +10,9 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func ConvertMessageList(messages []Message) []llms.MessageContent {
-	standardMessageList := make([]llms.MessageContent, len(messages))
-	for i, message := range messages {
+func ConvertMessageList(messageList []Message) []llms.MessageContent {
+	standardMessageList := make([]llms.MessageContent, len(messageList))
+	for i, message := range messageList {
 		newMessage := llms.MessageContent{
 			Role:  message.Role.ToStandardRole(),
 			Parts: []llms.ContentPart{},
@@ -21,7 +21,7 @@ func ConvertMessageList(messages []Message) []llms.MessageContent {
 			for resultIndex, result := range message.ToolResults {
 				toolCallID := strings.TrimSpace(result.ToolCallID)
 				if toolCallID == "" {
-					toolCallID = toolCallIDOrFallback("", i, resultIndex)
+					toolCallID = ToolCallIDOrFallback("", i, resultIndex)
 				}
 				newMessage.Parts = append(newMessage.Parts, llms.ToolCallResponse{
 					ToolCallID: toolCallID,
@@ -41,7 +41,7 @@ func ConvertMessageList(messages []Message) []llms.MessageContent {
 				continue
 			}
 			newMessage.Parts = append(newMessage.Parts, llms.ToolCall{
-				ID:   toolCallIDOrFallback(call.ID, i, toolIndex),
+				ID:   ToolCallIDOrFallback(call.ID, i, toolIndex),
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
 					Name:      name,
@@ -147,7 +147,18 @@ func normalizeToolCallArguments(arguments string) string {
 	return string(encoded)
 }
 
-func toolCallIDOrFallback(id string, messageIndex, toolIndex int) string {
+func attachmentOmittedMessage(mimeType string, err error) string {
+	label := strings.TrimSpace(mimeType)
+	if label == "" {
+		label = "attachment"
+	}
+	if err == nil {
+		return fmt.Sprintf("[Attachment omitted: %s could not be loaded.]", label)
+	}
+	return fmt.Sprintf("[Attachment omitted: %s could not be loaded: %v]", label, err)
+}
+
+func ToolCallIDOrFallback(id string, messageIndex, toolIndex int) string {
 	if id = strings.TrimSpace(id); id != "" {
 		return id
 	}

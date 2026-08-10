@@ -15,8 +15,9 @@ import (
 const maxSkillReadBytes = 64 * 1024
 
 type SkillListTool struct {
-	skillsDir string
-	usagePath string
+	skillsDir    string
+	usagePath    string
+	deviceTypeFn func() string
 }
 
 func NewSkillListTool(skillsDir string, usagePath ...string) *SkillListTool {
@@ -25,6 +26,10 @@ func NewSkillListTool(skillsDir string, usagePath ...string) *SkillListTool {
 		tool.usagePath = usagePath[0]
 	}
 	return tool
+}
+
+func (t *SkillListTool) SetDeviceTypeFunc(fn func() string) {
+	t.deviceTypeFn = fn
 }
 
 func (t *SkillListTool) Name() string { return "skill_list" }
@@ -39,10 +44,11 @@ func (t *SkillListTool) Description() string {
 
 func (t *SkillListTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"query":            stringArgSchema("Optional skill name or description search query."),
-		"state":            stringEnumArgSchema("Optional lifecycle state filter.", SkillUsageStateActive, SkillUsageStateStale, SkillUsageStateArchived),
-		"include_archived": boolArgSchema("Include archived skills in results."),
-		"limit":            minIntegerArgSchema("Maximum number of skills to return.", 1),
+		"query":                stringArgSchema("Optional skill name or description search query."),
+		"state":                stringEnumArgSchema("Optional lifecycle state filter.", SkillUsageStateActive, SkillUsageStateStale, SkillUsageStateArchived),
+		"include_archived":     boolArgSchema("Include archived skills in results."),
+		"include_incompatible": boolArgSchema("Include skills whose metadata.device_types does not match the current global device_type. Use only for explicit inspection or maintenance."),
+		"limit":                minIntegerArgSchema("Maximum number of skills to return.", 1),
 	})
 }
 
@@ -55,14 +61,16 @@ func (t *SkillListTool) Call(_ context.Context, input string) (string, error) {
 		return "[]", nil
 	}
 	usage := loadSkillUsage(t.usagePath)
+	deviceType := t.deviceType()
 
 	type skillInfo struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		State       string `json:"state"`
-		ViewCount   int    `json:"view_count,omitempty"`
-		UseCount    int    `json:"use_count,omitempty"`
-		ModifyCount int    `json:"modify_count,omitempty"`
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		State       string   `json:"state"`
+		ViewCount   int      `json:"view_count,omitempty"`
+		UseCount    int      `json:"use_count,omitempty"`
+		ModifyCount int      `json:"modify_count,omitempty"`
+		DeviceTypes []string `json:"device_types,omitempty"`
 	}
 
 	var results []skillInfo
@@ -83,6 +91,9 @@ func (t *SkillListTool) Call(_ context.Context, input string) (string, error) {
 		if !req.IncludeArchived && state == SkillUsageStateArchived {
 			continue
 		}
+		if !req.IncludeIncompatible && !skillSupportsDeviceType(skill, deviceType) {
+			continue
+		}
 		if query != "" {
 			if !strings.Contains(strings.ToLower(skill.Name), query) &&
 				!strings.Contains(strings.ToLower(skill.Description), query) {
@@ -96,6 +107,7 @@ func (t *SkillListTool) Call(_ context.Context, input string) (string, error) {
 			ViewCount:   skillUsage.ViewCount,
 			UseCount:    skillUsage.UseCount,
 			ModifyCount: skillUsage.ModifyCount,
+			DeviceTypes: skill.DeviceTypes,
 		})
 	}
 
@@ -110,10 +122,11 @@ func (t *SkillListTool) Call(_ context.Context, input string) (string, error) {
 }
 
 type skillListInput struct {
-	Query           string `json:"query"`
-	State           string `json:"state"`
-	IncludeArchived bool   `json:"include_archived"`
-	Limit           int    `json:"limit"`
+	Query               string `json:"query"`
+	State               string `json:"state"`
+	IncludeArchived     bool   `json:"include_archived"`
+	IncludeIncompatible bool   `json:"include_incompatible"`
+	Limit               int    `json:"limit"`
 }
 
 func parseSkillListInput(input string) skillListInput {
@@ -133,6 +146,13 @@ func parseSkillListInput(input string) skillListInput {
 		}
 	}
 	return skillListInput{Query: trimmed}
+}
+
+func (t *SkillListTool) deviceType() string {
+	if t == nil || t.deviceTypeFn == nil {
+		return ""
+	}
+	return t.deviceTypeFn()
 }
 
 type SkillMarkUsedTool struct {
@@ -180,8 +200,9 @@ func (t *SkillMarkUsedTool) Call(_ context.Context, input string) (string, error
 }
 
 type SkillReadTool struct {
-	skillsDir string
-	usagePath string
+	skillsDir    string
+	usagePath    string
+	deviceTypeFn func() string
 }
 
 func NewSkillReadTool(skillsDir string, usagePath ...string) *SkillReadTool {
@@ -190,6 +211,10 @@ func NewSkillReadTool(skillsDir string, usagePath ...string) *SkillReadTool {
 		tool.usagePath = usagePath[0]
 	}
 	return tool
+}
+
+func (t *SkillReadTool) SetDeviceTypeFunc(fn func() string) {
+	t.deviceTypeFn = fn
 }
 
 func (t *SkillReadTool) Name() string { return "skill_read" }
@@ -205,14 +230,16 @@ func (t *SkillReadTool) Description() string {
 
 func (t *SkillReadTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"name":      stringArgSchema("Skill name to read."),
-		"file_path": stringArgSchema("Optional linked file path under SKILL.md, references/, templates/, scripts/, or assets/."),
+		"name":                 stringArgSchema("Skill name to read."),
+		"file_path":            stringArgSchema("Optional linked file path under SKILL.md, references/, templates/, scripts/, or assets/."),
+		"include_incompatible": boolArgSchema("Allow reading a skill whose metadata.device_types does not match the current global device_type. Use only for explicit inspection or maintenance."),
 	}, "name")
 }
 
 type skillReadInput struct {
-	Name     string `json:"name"`
-	FilePath string `json:"file_path"`
+	Name                string `json:"name"`
+	FilePath            string `json:"file_path"`
+	IncludeIncompatible bool   `json:"include_incompatible"`
 }
 
 func (t *SkillReadTool) Call(_ context.Context, input string) (string, error) {
@@ -223,6 +250,21 @@ func (t *SkillReadTool) Call(_ context.Context, input string) (string, error) {
 	}
 	if !isValidSkillName(name) {
 		return "", fmt.Errorf("invalid skill name %q", name)
+	}
+	skillPath, err := safeSkillReadPath(t.skillsDir, name, "SKILL.md")
+	if err != nil {
+		return "", err
+	}
+	skill, err := loadSkillMetadata(skillPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("skill %q not found", name)
+		}
+		return "", err
+	}
+	deviceType := t.deviceType()
+	if !req.IncludeIncompatible && !skillSupportsDeviceType(skill, deviceType) {
+		return "", fmt.Errorf("skill %q supports device_type %s, current device_type is %s", name, formatSkillDeviceTypes(skill.DeviceTypes), currentDeviceTypeForMessage(deviceType))
 	}
 	filePath := strings.TrimSpace(req.FilePath)
 	if filePath == "" {
@@ -248,6 +290,13 @@ func (t *SkillReadTool) Call(_ context.Context, input string) (string, error) {
 		content = appendLinkedFilesSection(content, t.skillsDir, name)
 	}
 	return content, nil
+}
+
+func (t *SkillReadTool) deviceType() string {
+	if t == nil || t.deviceTypeFn == nil {
+		return ""
+	}
+	return t.deviceTypeFn()
 }
 
 func appendLinkedFilesSection(content, skillsDir, name string) string {

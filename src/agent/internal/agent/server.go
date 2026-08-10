@@ -530,10 +530,6 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) Start() error {
 	handler := s.Handler()
 
-	if s.logger != nil {
-		s.logger.Info("Starting HTTP server on %s", s.addr)
-	}
-
 	srv := &http.Server{
 		Addr:              s.addr,
 		Handler:           handler,
@@ -542,9 +538,26 @@ func (s *Server) Start() error {
 		IdleTimeout:       agentHTTPIdleTimeout,
 	}
 
+	// Bind explicitly rather than letting ListenAndServe do it, so the readiness
+	// milestone is recorded only once the port is actually held. Marking before
+	// the bind would report the agent Web UI as listening even when startup
+	// failed on, say, an address already in use.
+	listener, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", s.addr, err)
+	}
+
+	// Milestone: the agent Web UI (http://192.168.42.1:8080) is now accepting
+	// connections. Stamped with kernel uptime so it can be lined up against the
+	// init-script timeline in /var/log/aiden_boot_timeline.log.
+	if s.logger != nil {
+		s.logger.Info("Starting HTTP server on %s%s", s.addr, bootUptimeLogSuffix())
+	}
+	MarkBootTimeline("agent:listening")
+
 	errCh := make(chan error, 1)
 	go func() {
-		err := srv.ListenAndServe()
+		err := srv.Serve(listener)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return

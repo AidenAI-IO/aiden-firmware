@@ -198,6 +198,7 @@ func TestTextInputProbeUsesDedicatedPromptAndResponse(t *testing.T) {
 		`"cjk_candidate_visible":true`,
 		`Chinese candidates such as "啊", "爱"`,
 		`Candidate text does not need to match "a"`,
+		"Platform:",
 		"input-mode probe only",
 		"on-screen keyboard may be visible or completely absent",
 		"inline preedit text",
@@ -211,6 +212,9 @@ func TestTextInputProbeUsesDedicatedPromptAndResponse(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("probe prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, "from global device_type") {
+		t.Fatalf("probe prompt should not expose platform source:\n%s", prompt)
 	}
 
 	model := &textInputVisionRecordingModel{content: `{"mode":"composition","evidence":"candidate 啊 is visible"}`}

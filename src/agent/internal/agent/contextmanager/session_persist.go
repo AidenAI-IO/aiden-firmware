@@ -1,6 +1,7 @@
 package contextmanager
 
 import (
+	"aiden-agent/internal/agent/messages"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -55,7 +56,7 @@ func loadSessionMetadata(sessionFolder, sessionID string) (sessionMetadata, bool
 	return metadata, true, nil
 }
 
-func appendSession(sessionFolder string, sessionID string, messages []Message) error {
+func appendSession(sessionFolder string, sessionID string, messages []messages.Message) error {
 	// append to JSONL file, each message is a new line
 	sessionFile := filepath.Join(sessionFolder, sessionID+".jsonl")
 	file, err := os.OpenFile(sessionFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -82,7 +83,7 @@ func appendSession(sessionFolder string, sessionID string, messages []Message) e
 	return nil
 }
 
-func loadSession(sessionFolder string, sessionID string) ([]Message, error) {
+func loadSession(sessionFolder string, sessionID string) ([]messages.Message, error) {
 	sessionFile := filepath.Join(sessionFolder, sessionID+".jsonl")
 	if _, err := os.Stat(sessionFile); err != nil {
 		if os.IsNotExist(err) {
@@ -95,12 +96,12 @@ func loadSession(sessionFolder string, sessionID string) ([]Message, error) {
 		return nil, fmt.Errorf("failed to read session file %s: %w", sessionFile, err)
 	}
 	lines := strings.Split(string(content), "\n")
-	messageList := make([]Message, 0, len(lines))
+	messageList := make([]messages.Message, 0, len(lines))
 	for _, line := range lines {
 		if line == "" {
 			continue
 		}
-		var message Message
+		var message messages.Message
 		if err := json.Unmarshal([]byte(line), &message); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal message from session file %s: %w", sessionFile, err)
 		}

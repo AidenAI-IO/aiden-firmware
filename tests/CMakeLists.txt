@@ -45,6 +45,7 @@ set(AIDEN_TEST_SOURCES
 add_library(config_web_no_main OBJECT
     ${CMAKE_SOURCE_DIR}/src/aiden_log.cpp
     ${CMAKE_SOURCE_DIR}/src/config_web.cpp
+    ${CMAKE_SOURCE_DIR}/src/config_web_static_assets.cpp
 )
 target_include_directories(config_web_no_main PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -136,9 +137,8 @@ add_executable(aiden_tests
 add_executable(config_web_for_tests
     ${CMAKE_SOURCE_DIR}/src/aiden_log.cpp
     ${CMAKE_SOURCE_DIR}/src/config_web.cpp
+    ${CMAKE_SOURCE_DIR}/src/config_web_static_assets.cpp
     ${CMAKE_SOURCE_DIR}/src/agent_toml.cpp
-    ${CMAKE_SOURCE_DIR}/src/audio_service_client.cpp
-    ${CMAKE_SOURCE_DIR}/src/audio_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/service_status.cpp
     ${CMAKE_SOURCE_DIR}/src/uds_client.cpp
@@ -187,6 +187,19 @@ add_test(NAME logger_shell_format
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_logger_format.sh
 )
 
+find_program(NODE_EXECUTABLE node)
+if(NODE_EXECUTABLE)
+    add_test(NAME config_web_dynamic_form
+        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_dynamic_form_test.mjs
+    )
+    add_test(NAME config_web_i18n
+        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_i18n_test.mjs
+    )
+    add_test(NAME config_web_providers
+        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_providers_test.mjs
+    )
+endif()
+
 # Shell-level test for the /opt bind mount that opkg installs into. Needs no
 # build artifacts and no board: S22opt reads its paths and its mount/umount
 # binaries from the environment, so the test stubs them out.
@@ -198,4 +211,8 @@ add_test(
 add_test(
     NAME aiden_opt_profile_tests
     COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test_aiden_opt_profile.sh
+)
+
+add_test(NAME usb0_dhcp_options
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_usb0_dhcp_options.sh
 )

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 	"context"
 	"errors"
 	"fmt"
@@ -61,19 +62,23 @@ func (e *LLMExecutor) ContextManager() *contextmanager.ContextManager {
 	return e.contextManager
 }
 
-func (e *LLMExecutor) AppendMessage(message contextmanager.Message) error {
+func (e *LLMExecutor) ReplaceContextManager(contextManager *contextmanager.ContextManager) {
+	e.contextManager = contextManager
+}
+
+func (e *LLMExecutor) AppendMessage(message messages.Message) error {
 	return e.contextManager.AppendMessage(message)
 }
 
 func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	messages := e.contextManager.CloneMessageList()
+	messageList := e.contextManager.CloneMessageList()
 	for _, transform := range e.transforms {
 		if transform == nil {
 			continue
 		}
-		messages = transform.Transform(messages)
+		messageList = transform.Transform(messageList)
 	}
-	standard := contextmanager.ConvertMessageList(messages)
+	standard := messages.ConvertMessageList(messageList)
 	contentResponse, err := e.model.GenerateContent(ctx, standard, options...)
 	if err != nil {
 		return nil, MarkLLMCallError(err)
@@ -84,21 +89,21 @@ func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallO
 	return contentResponse, nil
 }
 
-func (e *LLMExecutor) Generate(ctx context.Context, options ...llms.CallOption) (contextmanager.Message, *llms.ContentResponse, error) {
+func (e *LLMExecutor) Generate(ctx context.Context, options ...llms.CallOption) (messages.Message, *llms.ContentResponse, error) {
 	contentResponse, err := e.GenerateContent(ctx, options...)
 	if err != nil {
-		return contextmanager.Message{}, contentResponse, err
+		return messages.Message{}, contentResponse, err
 	}
-	response := contextmanager.ConvertChoiceToContextManagerMessage(*contentResponse.Choices[0])
+	response := messages.ConvertChoiceToContextManagerMessage(*contentResponse.Choices[0])
 	if err := e.contextManager.AppendMessage(response); err != nil {
-		return contextmanager.Message{}, contentResponse, err
+		return messages.Message{}, contentResponse, err
 	}
 	return response, contentResponse, nil
 }
 
-func (e *LLMExecutor) Execute(ctx context.Context, message contextmanager.Message, options ...llms.CallOption) (contextmanager.Message, *llms.ContentResponse, error) {
+func (e *LLMExecutor) Execute(ctx context.Context, message messages.Message, options ...llms.CallOption) (messages.Message, *llms.ContentResponse, error) {
 	if err := e.contextManager.AppendMessage(message); err != nil {
-		return contextmanager.Message{}, nil, err
+		return messages.Message{}, nil, err
 	}
 	return e.Generate(ctx, options...)
 }

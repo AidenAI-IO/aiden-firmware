@@ -21,8 +21,8 @@ type ToolSet struct {
 	searchOpenTool       *appSearchOpenTool
 }
 
-type runtimePlatformConfigurable interface {
-	SetPlatformFn(func() string)
+type runtimeDeviceTypeConfigurable interface {
+	SetDeviceTypeFunc(func() string)
 }
 
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
@@ -197,7 +197,7 @@ func newToolScreenState() *screen.ScreenState {
 	return &screen.ScreenState{}
 }
 
-func (s *ToolSet) RegisterEnterTextTool(models model.Model, platformFn func() string) {
+func (s *ToolSet) RegisterEnterTextTool(models model.Model, deviceTypeFn func() string) {
 	if s == nil || s.textInputHW == nil || models == nil {
 		return
 	}
@@ -209,11 +209,11 @@ func (s *ToolSet) RegisterEnterTextTool(models model.Model, platformFn func() st
 		restorer: s.phoneBridgeRestorer,
 	}
 	entryTool := &EnterTextTool{engine: engine, bridgeTool: bridgeTool, iosKeyboardIsolation: s.iosKeyboardIsolation}
-	entryTool.SetPlatformFn(platformFn)
+	entryTool.SetDeviceTypeFunc(deviceTypeFn)
 	searchOpenTool := &appSearchOpenTool{
 		hw:                   s.textInputHW,
 		vision:               newLLMTextInputVision(models),
-		platformFn:           platformFn,
+		deviceTypeFn:         deviceTypeFn,
 		entryTool:            entryTool,
 		launchDelay:          appSearchOpenLaunchDelay,
 		iosKeyboardIsolation: s.iosKeyboardIsolation,
@@ -233,24 +233,6 @@ func (s *ToolSet) SetRunScriptSpeaker(speaker runScriptSpeaker) {
 	}
 	if runScript, ok := tool.(*RunScriptTool); ok {
 		runScript.SetSpeaker(speaker)
-	}
-}
-
-func (s *ToolSet) SetRuntimePlatformFn(fn func() string) {
-	if s == nil {
-		return
-	}
-	for _, name := range []string{"enter_text", "quick_action"} {
-		tool, ok := s.tools[name]
-		if !ok {
-			continue
-		}
-		if configurable, ok := tool.(runtimePlatformConfigurable); ok {
-			configurable.SetPlatformFn(fn)
-		}
-	}
-	if s.searchOpenTool != nil {
-		s.searchOpenTool.SetPlatformFn(fn)
 	}
 }
 
@@ -336,11 +318,50 @@ func (s *ToolSet) RegisterMemoryTools(memoryDir string, summaryMaxChunks int, lo
 }
 
 func (s *ToolSet) RegisterSkillTools(skillsDir, manifestPath string, onModify ...func()) {
+	s.registerSkillTools(skillsDir, manifestPath, nil, onModify...)
+}
+
+func (s *ToolSet) RegisterSkillToolsWithDeviceType(skillsDir, manifestPath string, deviceTypeFn func() string, onModify ...func()) {
+	s.registerSkillTools(skillsDir, manifestPath, deviceTypeFn, onModify...)
+}
+
+func (s *ToolSet) registerSkillTools(skillsDir, manifestPath string, deviceTypeFn func() string, onModify ...func()) {
 	usagePath := usagePathForManifest(manifestPath)
-	s.tools["skill_list"] = NewSkillListTool(skillsDir, usagePath)
-	s.tools["skill_read"] = NewSkillReadTool(skillsDir, usagePath)
+	listTool := NewSkillListTool(skillsDir, usagePath)
+	readTool := NewSkillReadTool(skillsDir, usagePath)
+	listTool.SetDeviceTypeFunc(deviceTypeFn)
+	readTool.SetDeviceTypeFunc(deviceTypeFn)
+	s.tools["skill_list"] = listTool
+	s.tools["skill_read"] = readTool
 	s.tools["skill_manage"] = NewSkillManageTool(skillsDir, manifestPath, onModify...)
 	s.tools["skill_mark_used"] = NewSkillMarkUsedTool(skillsDir, usagePath)
+}
+
+func (s *ToolSet) SetRuntimeDeviceTypeFn(deviceTypeFn func() string) {
+	if s == nil {
+		return
+	}
+	if s.textInputHW != nil {
+		s.textInputHW.deviceTypeFn = deviceTypeFn
+	}
+	for _, name := range []string{"enter_text", "keyboard_tap", "quick_action", "touch_gesture"} {
+		tool, ok := s.tools[name]
+		if !ok {
+			continue
+		}
+		if configurable, ok := tool.(runtimeDeviceTypeConfigurable); ok {
+			configurable.SetDeviceTypeFunc(deviceTypeFn)
+		}
+	}
+	if s.searchOpenTool != nil {
+		s.searchOpenTool.SetDeviceTypeFunc(deviceTypeFn)
+	}
+	if tool, ok := s.tools["skill_list"].(*SkillListTool); ok {
+		tool.SetDeviceTypeFunc(deviceTypeFn)
+	}
+	if tool, ok := s.tools["skill_read"].(*SkillReadTool); ok {
+		tool.SetDeviceTypeFunc(deviceTypeFn)
+	}
 }
 
 func usagePathForManifest(manifestPath string) string {

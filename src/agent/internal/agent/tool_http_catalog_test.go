@@ -58,10 +58,14 @@ func toolSpecsForNames(names []string) *ToolSpecs {
 }
 
 func newRuntimeWithTextEntryTools() *Runtime {
+	return newRuntimeWithTextEntryToolsWithConfig(Config{})
+}
+
+func newRuntimeWithTextEntryToolsWithConfig(cfg Config) *Runtime {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
 	tools.RegisterEnterTextTool(&testModelResolver{model: &scriptedModel{}}, nil)
 	return NewRuntimeWithDeps(
-		Config{},
+		cfg,
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		tools,
@@ -338,6 +342,170 @@ func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
 	for _, want := range allNames {
 		if _, ok := fullNames[want]; !ok {
 			t.Errorf("full catalog missing tool %s", want)
+		}
+	}
+}
+
+func TestAgentToolsForPlatformFiltersPlatformSpecificTools(t *testing.T) {
+	specs := toolSpecsForNames([]string{
+		"screenshot",
+		"quick_action",
+		"enter_text",
+		"open_app",
+		"open_url",
+		toolSearchLaunchApp,
+		toolBridgeOpenApp,
+		"bridge_clipboard",
+		"list_scripts",
+	})
+
+	tests := []struct {
+		name     string
+		platform string
+		want     []string
+		notWant  []string
+	}{
+		{
+			name:     "ios",
+			platform: "ios",
+			want:     []string{"screenshot", "quick_action", "enter_text", "open_app", "open_url", "bridge_clipboard"},
+			notWant:  []string{"search_launch_app", "bridge_open_app"},
+		},
+		{
+			name:     "android",
+			platform: "android",
+			want:     []string{"screenshot", "quick_action", "enter_text", "open_app", "open_url", "bridge_clipboard"},
+			notWant:  []string{"search_launch_app", "bridge_open_app"},
+		},
+		{
+			name:     "macos",
+			platform: "macOS",
+			want:     []string{"screenshot", "quick_action", "enter_text", "open_app"},
+			notWant:  []string{"open_url", "search_launch_app", "bridge_open_app", "bridge_clipboard"},
+		},
+		{
+			name:     "windows",
+			platform: "windows",
+			want:     []string{"screenshot", "enter_text"},
+			notWant:  []string{"quick_action", "open_app", "open_url", "search_launch_app", "bridge_open_app", "bridge_clipboard"},
+		},
+		{
+			name:     "linux",
+			platform: "linux",
+			want:     []string{"screenshot", "enter_text"},
+			notWant:  []string{"quick_action", "open_app", "open_url", "search_launch_app", "bridge_open_app", "bridge_clipboard"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			names := toolNameSet(specs.AgentToolsForPlatform(false, tc.platform))
+			for _, want := range tc.want {
+				if _, ok := names[want]; !ok {
+					t.Errorf("catalog for %s missing %s: %v", tc.platform, want, names)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if _, ok := names[notWant]; ok {
+					t.Errorf("catalog for %s exposed %s: %v", tc.platform, notWant, names)
+				}
+			}
+			if _, ok := names["list_scripts"]; ok {
+				t.Errorf("catalog for %s exposed default-hidden script tool: %v", tc.platform, names)
+			}
+		})
+	}
+}
+
+func TestRuntimeAvailableToolsUsesDeviceTypePlatformFilter(t *testing.T) {
+	runtime := newRuntimeWithTextEntryToolsWithConfig(Config{
+		Device: DeviceConfig{DeviceType: "windows"},
+	})
+	bridge := newPhoneBridgeForTest()
+	bridge.connected = true
+	runtime.tools.RegisterPhoneBridge(bridge)
+
+	names := toolNameSet(runtime.availableTools())
+	if _, ok := names["screenshot"]; !ok {
+		t.Fatalf("availableTools missing portable tool screenshot: %v", names)
+	}
+	if _, ok := names["enter_text"]; !ok {
+		t.Fatalf("availableTools missing windows-supported enter_text: %v", names)
+	}
+	for _, notWant := range []string{"quick_action", "open_app", "open_url", "search_launch_app", "bridge_open_app", "bridge_clipboard"} {
+		if _, ok := names[notWant]; ok {
+			t.Fatalf("availableTools exposed %s for windows device_type: %v", notWant, names)
+		}
+	}
+	for _, httpWant := range []string{"quick_action", "enter_text", "open_app", "open_url", "bridge_clipboard"} {
+		if _, ok := runtime.ToolDescriptorByName(httpWant); !ok {
+			t.Fatalf("HTTP catalog hid %s while only model catalog should be platform-filtered", httpWant)
+		}
+	}
+
+	runtime.config.LoadAllTools = true
+	fullNames := toolNameSet(runtime.availableTools())
+	if _, ok := fullNames["list_scripts"]; !ok {
+		t.Fatalf("load_all_tools should still expose script authoring tools: %v", fullNames)
+	}
+	for _, notWant := range []string{"quick_action", "open_app", "open_url", "search_launch_app", "bridge_open_app", "bridge_clipboard"} {
+		if _, ok := fullNames[notWant]; ok {
+			t.Fatalf("load_all_tools bypassed platform filtering for %s: %v", notWant, fullNames)
+		}
+	}
+}
+
+func TestRuntimeToolDescriptorsUseDeviceTypeSpecificSchemas(t *testing.T) {
+	androidRuntime := NewRuntimeWithDeps(
+		Config{Device: DeviceConfig{DeviceType: "Android"}},
+		nil,
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	quickAction, ok := androidRuntime.ToolDescriptorByName("quick_action")
+	if !ok {
+		t.Fatal("Android runtime missing quick_action descriptor")
+	}
+	androidActions := stringEnumPropertyValues(t, quickAction.ArgsSchema, "action")
+	if _, ok := androidActions["home"]; !ok {
+		t.Fatalf("Android quick_action schema missing home: %v", androidActions)
+	}
+	if _, ok := androidActions["control_center"]; ok {
+		t.Fatalf("Android quick_action schema exposed reserved control_center: %v", androidActions)
+	}
+
+	windowsRuntime := NewRuntimeWithDeps(
+		Config{Device: DeviceConfig{DeviceType: "windows"}},
+		nil,
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	touchGesture, ok := windowsRuntime.ToolDescriptorByName("touch_gesture")
+	if !ok {
+		t.Fatal("Windows runtime missing touch_gesture descriptor")
+	}
+	windowsGestureTypes := stringEnumPropertyValues(t, touchGesture.ArgsSchema, "type")
+	for _, notWant := range []string{"back", "home"} {
+		if _, ok := windowsGestureTypes[notWant]; ok {
+			t.Fatalf("Windows touch_gesture schema exposed %q: %v", notWant, windowsGestureTypes)
+		}
+	}
+	keyboardTap, ok := windowsRuntime.ToolDescriptorByName("keyboard_tap")
+	if !ok {
+		t.Fatal("Windows runtime missing keyboard_tap descriptor")
+	}
+	props := keyboardTap.ArgsSchema["properties"].(map[string]any)
+	keys := props["keys"].(map[string]any)
+	keysDescription, _ := keys["description"].(string)
+	for _, want := range []string{"KEYCODE_SCREENSHOT", "KEYCODE_VOLUME_UP", "KEYCODE_MEDIA_PLAY_PAUSE"} {
+		if !strings.Contains(keysDescription, want) {
+			t.Fatalf("Windows keyboard_tap schema missing absolute extension key %q: %s", want, keysDescription)
+		}
+	}
+	for _, notWant := range []string{"KEYCODE_HOME", "KEYCODE_BACK", "KEYCODE_APP_SWITCH"} {
+		if strings.Contains(keysDescription, notWant) {
+			t.Fatalf("Windows keyboard_tap schema exposed Android-only key %q: %s", notWant, keysDescription)
 		}
 	}
 }

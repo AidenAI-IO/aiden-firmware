@@ -41,8 +41,8 @@ type ConfigTestCheck struct {
 
 // webConfigDTO mirrors the JSON produced by config_web.cpp's config_to_json().
 // It is the single definition of the config_web <-> agent wire contract: keys
-// are snake_case, agent-level settings live under "agent", and search reports
-// only whether a key is present (has_api_key) rather than echoing the key.
+// are snake_case, agent-level settings live under "agent", and write-only
+// credentials report only configured-state flags rather than echoing values.
 //
 // Keep this struct in lockstep with config_to_json(); the round-trip is covered
 // by TestConfigCheck_WireFormatContract.
@@ -96,14 +96,25 @@ type modelDTO struct {
 	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
 }
 
+func (d modelDTO) providerTestRequest() agent.ModelProviderTestRequest {
+	return agent.ModelProviderTestRequest{
+		Provider:        d.Provider,
+		APIKey:          d.APIKey,
+		Model:           d.Model,
+		BaseURL:         d.BaseURL,
+		Temperature:     d.Temperature,
+		ReasoningEffort: d.ReasoningEffort,
+	}
+}
+
 // modelProviderDTO mirrors a single [model_providers.<name>] section. Named providers hold
 // the credentials; a model section references one by putting the provider name
 // in its own "provider" field.
 type modelProviderDTO struct {
-	Type     string `json:"type"`
-	APIKey   string `json:"api_key,omitempty"`
-	TokenEnv string `json:"token_env,omitempty"`
-	BaseURL  string `json:"base_url,omitempty"`
+	Type      string `json:"type"`
+	APIKey    string `json:"api_key,omitempty"`
+	HasAPIKey bool   `json:"has_api_key,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"`
 }
 
 func (d *modelProviderDTO) UnmarshalJSON(data []byte) error {
@@ -138,7 +149,7 @@ func (d *modelProviderDTO) UnmarshalJSON(data []byte) error {
 type ttsProviderDTO struct {
 	Type        string `json:"type"`
 	APIKey      string `json:"api_key,omitempty"`
-	TokenEnv    string `json:"token_env,omitempty"`
+	HasAPIKey   bool   `json:"has_api_key,omitempty"`
 	Model       string `json:"model,omitempty"`
 	VoiceID     string `json:"voice_id,omitempty"`
 	Emotion     string `json:"emotion,omitempty"`
@@ -175,12 +186,14 @@ func (d *ttsProviderDTO) UnmarshalJSON(data []byte) error {
 type sttProviderDTO struct {
 	Type            string `json:"type"`
 	APIKey          string `json:"api_key,omitempty"`
-	TokenEnv        string `json:"token_env,omitempty"`
+	HasAPIKey       bool   `json:"has_api_key,omitempty"`
 	Model           string `json:"model,omitempty"`
 	BaseURL         string `json:"base_url,omitempty"`
 	AppID           string `json:"app_id,omitempty"`
 	SecretID        string `json:"secret_id,omitempty"`
+	HasSecretID     bool   `json:"has_secret_id,omitempty"`
 	SecretKey       string `json:"secret_key,omitempty"`
+	HasSecretKey    bool   `json:"has_secret_key,omitempty"`
 	Region          string `json:"region,omitempty"`
 	EngineModelType string `json:"engine_model_type,omitempty"`
 }
@@ -221,7 +234,7 @@ func jsonFieldPresent(data []byte, key string) (bool, error) {
 
 type ttsDTO struct {
 	Provider    string  `json:"provider"`
-	APIKey      string  `json:"api_key"`
+	APIKey      string  `json:"api_key,omitempty"`
 	Model       string  `json:"model"`
 	VoiceID     string  `json:"voice_id"`
 	ReferenceID string  `json:"reference_id"`
@@ -245,12 +258,12 @@ func (d ttsDTO) playbackTestRequest(text string) agent.TTSPlaybackTestRequest {
 type sttDTO struct {
 	Provider        string `json:"provider"`
 	Language        string `json:"language"`
-	APIKey          string `json:"api_key"`
+	APIKey          string `json:"api_key,omitempty"`
 	Model           string `json:"model"`
 	BaseURL         string `json:"base_url"`
 	AppID           string `json:"app_id"`
-	SecretID        string `json:"secret_id"`
-	SecretKey       string `json:"secret_key"`
+	SecretID        string `json:"secret_id,omitempty"`
+	SecretKey       string `json:"secret_key,omitempty"`
 	Region          string `json:"region"`
 	EngineModelType string `json:"engine_model_type"`
 }
@@ -570,10 +583,9 @@ func modelProviderDTOsFromConfig(providers map[string]agent.ModelProvider) map[s
 	result := make(map[string]modelProviderDTO, len(providers))
 	for name, provider := range providers {
 		result[name] = modelProviderDTO{
-			Type:     provider.Type,
-			APIKey:   provider.APIKey,
-			TokenEnv: provider.TokenEnv,
-			BaseURL:  provider.BaseURL,
+			Type:      provider.Type,
+			HasAPIKey: strings.TrimSpace(provider.APIKey) != "",
+			BaseURL:   provider.BaseURL,
 		}
 	}
 	return result
@@ -586,10 +598,9 @@ func (d webConfigDTO) modelProvidersToAgentConfig() map[string]agent.ModelProvid
 	result := make(map[string]agent.ModelProvider, len(d.ModelProviders))
 	for name, provider := range d.ModelProviders {
 		result[name] = agent.ModelProvider{
-			Type:     provider.Type,
-			APIKey:   provider.APIKey,
-			TokenEnv: provider.TokenEnv,
-			BaseURL:  provider.BaseURL,
+			Type:    provider.Type,
+			APIKey:  provider.APIKey,
+			BaseURL: provider.BaseURL,
 		}
 	}
 	return result
@@ -603,8 +614,7 @@ func ttsProviderDTOsFromConfig(providers map[string]agent.TTSProvider) map[strin
 	for name, provider := range providers {
 		result[name] = ttsProviderDTO{
 			Type:        provider.Type,
-			APIKey:      provider.APIKey,
-			TokenEnv:    provider.TokenEnv,
+			HasAPIKey:   strings.TrimSpace(provider.APIKey) != "",
 			Model:       provider.Model,
 			VoiceID:     provider.VoiceID,
 			Emotion:     provider.Emotion,
@@ -623,7 +633,6 @@ func (d webConfigDTO) ttsProvidersToAgentConfig() map[string]agent.TTSProvider {
 		result[name] = agent.TTSProvider{
 			Type:        provider.Type,
 			APIKey:      provider.APIKey,
-			TokenEnv:    provider.TokenEnv,
 			Model:       provider.Model,
 			VoiceID:     provider.VoiceID,
 			Emotion:     provider.Emotion,
@@ -641,13 +650,12 @@ func sttProviderDTOsFromConfig(providers map[string]agent.STTProvider) map[strin
 	for name, provider := range providers {
 		result[name] = sttProviderDTO{
 			Type:            provider.Type,
-			APIKey:          provider.APIKey,
-			TokenEnv:        provider.TokenEnv,
+			HasAPIKey:       strings.TrimSpace(provider.APIKey) != "",
 			Model:           provider.Model,
 			BaseURL:         provider.BaseURL,
 			AppID:           provider.AppID,
-			SecretID:        provider.SecretID,
-			SecretKey:       provider.SecretKey,
+			HasSecretID:     strings.TrimSpace(provider.SecretID) != "",
+			HasSecretKey:    strings.TrimSpace(provider.SecretKey) != "",
 			Region:          provider.Region,
 			EngineModelType: provider.EngineModelType,
 		}
@@ -664,7 +672,6 @@ func (d webConfigDTO) sttProvidersToAgentConfig() map[string]agent.STTProvider {
 		result[name] = agent.STTProvider{
 			Type:            provider.Type,
 			APIKey:          provider.APIKey,
-			TokenEnv:        provider.TokenEnv,
 			Model:           provider.Model,
 			BaseURL:         provider.BaseURL,
 			AppID:           provider.AppID,
@@ -697,7 +704,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		},
 		TTS: ttsDTO{
 			Provider:    cfg.TTS.Provider,
-			APIKey:      cfg.TTS.APIKey,
 			Model:       cfg.TTS.Model,
 			VoiceID:     cfg.TTS.VoiceID,
 			ReferenceID: cfg.TTS.ReferenceID,
@@ -707,12 +713,9 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		STT: sttDTO{
 			Provider:        cfg.STT.Provider,
 			Language:        cfg.STT.Language,
-			APIKey:          cfg.STT.APIKey,
 			Model:           cfg.STT.Model,
 			BaseURL:         cfg.STT.BaseURL,
 			AppID:           cfg.STT.AppID,
-			SecretID:        cfg.STT.SecretID,
-			SecretKey:       cfg.STT.SecretKey,
 			Region:          cfg.STT.Region,
 			EngineModelType: cfg.STT.EngineModelType,
 		},
@@ -1010,8 +1013,8 @@ type configTestInput struct {
 	AudioBase64 string          `json:"audio_base64"`
 }
 
-// runConfigTest implements `agent config-test` for checks that need agent
-// runtime code instead of config_web's lightweight shell probes.
+// runConfigTest implements provider checks through the same runtime registries
+// and adapters used by the agent itself.
 func runConfigTest(args []string) int {
 	fs := flag.NewFlagSet("config-test", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
@@ -1046,7 +1049,7 @@ func runConfigTest(args []string) int {
 	if section == "" {
 		section = strings.TrimSpace(*sectionFlag)
 	}
-	if section != "tts" && section != "stt" {
+	if section != "model" && section != "tts" && section != "stt" {
 		writeConfigTestResult(configTestFailure("request", "unsupported section: "+section))
 		return 1
 	}
@@ -1064,11 +1067,43 @@ func runConfigTest(args []string) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeoutFlag)
 	defer cancel()
+	result := executeConfigTest(ctx, cfg, input, section)
+	writeConfigTestResult(result)
+	if result.OK {
+		return 0
+	}
+	return 1
+}
+
+func executeConfigTest(ctx context.Context, cfg agent.Config, input configTestInput, section string) ConfigTestResult {
+	if section == "model" {
+		var modelValues modelDTO
+		if err := json.Unmarshal(input.Values, &modelValues); err != nil {
+			return configTestFailure("request", "invalid model values: "+err.Error())
+		}
+
+		result, err := agent.RunModelProviderTest(ctx, cfg, modelValues.providerTestRequest())
+		if err != nil {
+			detail := err.Error()
+			if result.Provider != "" {
+				detail = fmt.Sprintf("[provider=%s model=%s] %s", result.Provider, result.Model, detail)
+			}
+			return configTestFailure("provider_request", detail)
+		}
+		return ConfigTestResult{
+			OK: true,
+			Results: []ConfigTestCheck{{
+				Check:  "provider_request",
+				Passed: true,
+				Detail: fmt.Sprintf("received a response from %s (model: %s)", result.Provider, result.Model),
+			}},
+		}
+	}
+
 	if section == "tts" {
 		var ttsValues ttsDTO
 		if err := json.Unmarshal(input.Values, &ttsValues); err != nil {
-			writeConfigTestResult(configTestFailure("request", "invalid tts values: "+err.Error()))
-			return 1
+			return configTestFailure("request", "invalid tts values: "+err.Error())
 		}
 
 		playback, err := agent.RunTTSPlaybackTest(ctx, cfg, ttsValues.playbackTestRequest(input.Text))
@@ -1077,36 +1112,48 @@ func runConfigTest(args []string) int {
 			if ttsValues.Provider != "" {
 				detail = fmt.Sprintf("[provider=%s model=%s voice=%s] %s", ttsValues.Provider, ttsValues.Model, ttsValues.VoiceID, detail)
 			}
-			writeConfigTestResult(configTestFailure("tts_playback", detail))
-			return 1
+			return configTestFailure("tts_playback", detail)
 		}
-		writeConfigTestResult(ConfigTestResult{
+		return ConfigTestResult{
 			OK: true,
 			Results: []ConfigTestCheck{{
 				Check:  "tts_playback",
 				Passed: true,
 				Detail: fmt.Sprintf("played %q with %s", playback.Text, playback.Provider),
 			}},
-		})
-		return 0
+		}
+	}
+	if section != "stt" {
+		return configTestFailure("request", "unsupported section: "+section)
 	}
 
 	var sttValues sttDTO
 	if err := json.Unmarshal(input.Values, &sttValues); err != nil {
-		writeConfigTestResult(configTestFailure("request", "invalid stt values: "+err.Error()))
-		return 1
+		return configTestFailure("request", "invalid stt values: "+err.Error())
+	}
+	if strings.TrimSpace(input.AudioBase64) == "" {
+		result, err := agent.RunSTTProviderTest(ctx, cfg, sttValues.transcriptionTestRequest(nil))
+		if err != nil {
+			return configTestFailure("provider_config", err.Error())
+		}
+		return ConfigTestResult{
+			OK: true,
+			Results: []ConfigTestCheck{{
+				Check:  "provider_config",
+				Passed: true,
+				Detail: fmt.Sprintf("created the %s STT client", result.Provider),
+			}},
+		}
 	}
 	wavData, err := base64.StdEncoding.DecodeString(strings.TrimSpace(input.AudioBase64))
 	if err != nil {
-		writeConfigTestResult(configTestFailure("request", "invalid audio_base64: "+err.Error()))
-		return 1
+		return configTestFailure("request", "invalid audio_base64: "+err.Error())
 	}
 	transcription, err := agent.RunSTTTranscriptionTest(ctx, cfg, sttValues.transcriptionTestRequest(wavData))
 	if err != nil {
-		writeConfigTestResult(configTestFailure("stt_transcription", err.Error()))
-		return 1
+		return configTestFailure("stt_transcription", err.Error())
 	}
-	writeConfigTestResult(ConfigTestResult{
+	return ConfigTestResult{
 		OK:         true,
 		Transcript: transcription.Transcript,
 		Results: []ConfigTestCheck{{
@@ -1114,8 +1161,7 @@ func runConfigTest(args []string) int {
 			Passed: true,
 			Detail: fmt.Sprintf("transcribed audio with %s", transcription.Provider),
 		}},
-	})
-	return 0
+	}
 }
 
 func configTestFailure(check, detail string) ConfigTestResult {
