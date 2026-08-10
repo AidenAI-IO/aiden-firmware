@@ -25,6 +25,7 @@ import (
 	"aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/statemanager"
 	"aiden-agent/internal/agent/tokencounter"
+	"aiden-agent/internal/agent/tts"
 	"aiden-agent/internal/util"
 
 	"github.com/google/uuid"
@@ -46,6 +47,7 @@ func effectiveMaxIterations(configured int) int {
 const (
 	currentEnvironmentHintMaxAge      = 10 * time.Minute
 	runtimeSessionEventPersistTimeout = 2 * time.Second
+	runtimeTTSCloseTimeout            = 5 * time.Second
 	maxPublicToolResultRunes          = maxToolObservationRunes
 )
 
@@ -80,6 +82,8 @@ type Runtime struct {
 	screenState        *screen.ScreenState
 	phoneBridge        *PhoneBridge
 	storageMonitor     *StorageMonitor
+	ttsManager         *tts.ProviderManager
+	ttsManagerOnce     sync.Once
 }
 
 type RunRequest struct {
@@ -469,6 +473,33 @@ func (r *Runtime) Storage() *StorageManager {
 
 func (r *Runtime) PhoneBridge() *PhoneBridge {
 	return r.phoneBridge
+}
+
+// ttsProviderManager returns the process-wide provider manager shared by all
+// TTS entrypoints. The stable manager exists even when TTS is not configured so
+// a runtime provider switch is immediately visible to every consumer.
+func (r *Runtime) ttsProviderManager() *tts.ProviderManager {
+	if r == nil {
+		return nil
+	}
+	r.ttsManagerOnce.Do(func() {
+		if r.ttsManager != nil {
+			return
+		}
+		manager, err := newTTSProviderManagerFromConfig(r.config, r.logger)
+		if err != nil {
+			if r.logger != nil {
+				r.logger.Warn("TTS init failed: %v", err)
+			} else {
+				log.Printf("[tts] init failed, continuing without TTS: %v\n", err)
+			}
+		}
+		if manager == nil {
+			manager = tts.NewProviderManager(nil, &ttsLoggerAdapter{logger: r.logger})
+		}
+		r.ttsManager = manager
+	})
+	return r.ttsManager
 }
 
 func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
@@ -2417,6 +2448,13 @@ func (r *Runtime) Close() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := r.profileDebouncer.Flush(ctx); err != nil && r.logger != nil {
 			r.logger.Error("profile debouncer flush on close: %v", err)
+		}
+		cancel()
+	}
+	if r.ttsManager != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), runtimeTTSCloseTimeout)
+		if err := r.ttsManager.CloseContext(ctx); err != nil && r.logger != nil {
+			r.logger.Warn("close TTS provider: %v", err)
 		}
 		cancel()
 	}

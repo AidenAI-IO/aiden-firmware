@@ -47,6 +47,71 @@ func TestProviderHolderSwapWaitsForOldSessionClose(t *testing.T) {
 	}
 }
 
+func TestProviderHolderBeginStreamWithCapabilitiesPinsProviderGeneration(t *testing.T) {
+	oldProvider := &blockingProvider{
+		name:    "old",
+		caps:    Capabilities{SupportedSampleRates: []int{24000}},
+		started: make(chan *blockingSession, 1),
+	}
+	nextProvider := &blockingProvider{
+		name:    "next",
+		caps:    Capabilities{SupportedSampleRates: []int{16000}},
+		started: make(chan *blockingSession, 1),
+	}
+	holder := NewProviderHolder(oldProvider)
+
+	swapped := make(chan TTSProvider, 1)
+	session, err := holder.BeginStreamWithCapabilities(context.Background(), func(caps Capabilities) AudioSink {
+		if got := caps.SupportedSampleRates; len(got) != 1 || got[0] != 24000 {
+			t.Fatalf("capabilities sample rates = %v, want [24000]", got)
+		}
+		go func() {
+			swapped <- holder.Swap(nextProvider)
+		}()
+		waitForHolderName(t, holder, "next")
+		return noopSink{}
+	})
+	if err != nil {
+		t.Fatalf("BeginStreamWithCapabilities() error = %v", err)
+	}
+	waitForBlockingSession(t, oldProvider.started)
+
+	select {
+	case <-nextProvider.started:
+		t.Fatal("session started on the replacement provider")
+	default:
+	}
+	select {
+	case <-swapped:
+		t.Fatal("Swap returned before the pinned session closed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	select {
+	case old := <-swapped:
+		if old != oldProvider {
+			t.Fatalf("Swap returned %#v, want old provider", old)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Swap did not return after the pinned session closed")
+	}
+}
+
+func waitForHolderName(t *testing.T, holder *ProviderHolder, want string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if holder.Name() == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("holder.Name() = %q, want %q", holder.Name(), want)
+}
+
 func TestProviderHolderCloseWaitsForActiveSessionClose(t *testing.T) {
 	provider := &blockingProvider{name: "current", started: make(chan *blockingSession, 1), closed: make(chan struct{})}
 	holder := NewProviderHolder(provider)
@@ -175,13 +240,14 @@ func waitForBlockingSession(t *testing.T, ch <-chan *blockingSession) *blockingS
 
 type blockingProvider struct {
 	name    string
+	caps    Capabilities
 	started chan *blockingSession
 	closed  chan struct{}
 }
 
 func (p *blockingProvider) Name() string { return p.name }
 
-func (p *blockingProvider) Capabilities() Capabilities { return Capabilities{} }
+func (p *blockingProvider) Capabilities() Capabilities { return p.caps }
 
 func (p *blockingProvider) BeginStream(context.Context, AudioSink) (StreamSession, error) {
 	s := &blockingSession{}
