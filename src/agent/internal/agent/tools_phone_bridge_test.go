@@ -314,7 +314,7 @@ func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T
 		},
 	}
 	toolSet := &ToolSet{tools: map[string]langtools.Tool{}, searchOpenTool: tool}
-	toolSet.SetRuntimePlatformFn(func() string { return "android" })
+	toolSet.SetRuntimeDeviceTypeFn(func() string { return "Android" })
 
 	out, err := tool.Call(context.Background(), `{"app":"WeChat"}`)
 	if err != nil {
@@ -344,7 +344,7 @@ func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T
 	}
 }
 
-func TestSearchLaunchAppUsesRealQuickActionRuntimePlatform(t *testing.T) {
+func TestSearchLaunchAppUsesRealQuickActionDeviceType(t *testing.T) {
 	skipHIDSleeps(t)
 	skipQuickActionDelays(t)
 
@@ -384,7 +384,7 @@ func TestSearchLaunchAppUsesRealQuickActionRuntimePlatform(t *testing.T) {
 			},
 		}
 		toolSet := &ToolSet{tools: map[string]langtools.Tool{"enter_text": entryTool, "keyboard_tap": keyboardTap, "quick_action": quick}, searchOpenTool: tool}
-		toolSet.SetRuntimePlatformFn(func() string { return "ios" })
+		toolSet.SetRuntimeDeviceTypeFn(func() string { return "iOS" })
 
 		out, err := tool.Call(context.Background(), `{"app":"WeChat"}`)
 		if err != nil {
@@ -436,7 +436,7 @@ func TestSearchLaunchAppUsesRealQuickActionRuntimePlatform(t *testing.T) {
 			},
 		}
 		toolSet := &ToolSet{tools: map[string]langtools.Tool{"quick_action": quick}, searchOpenTool: tool}
-		toolSet.SetRuntimePlatformFn(func() string { return "android" })
+		toolSet.SetRuntimeDeviceTypeFn(func() string { return "Android" })
 
 		out, err := tool.Call(context.Background(), `{"app":"WeChat"}`)
 		if err != nil {
@@ -502,7 +502,7 @@ func TestSearchLaunchAppBatchesIOSModifierIsolationAcrossSubtools(t *testing.T) 
 		},
 	}
 	toolSet := &ToolSet{tools: map[string]langtools.Tool{"quick_action": quickAction}, searchOpenTool: tool}
-	toolSet.SetRuntimePlatformFn(func() string { return "ios" })
+	toolSet.SetRuntimeDeviceTypeFn(func() string { return "iOS" })
 
 	out, err := tool.Call(context.Background(), `{"app":"WeChat"}`)
 	if err != nil {

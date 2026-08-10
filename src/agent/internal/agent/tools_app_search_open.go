@@ -29,7 +29,7 @@ func sleepWithContext(ctx context.Context, delay time.Duration) error {
 type appSearchOpenTool struct {
 	hw                   *textInputHardwareDeps
 	vision               textInputVision
-	platformFn           func() string
+	deviceTypeFn         func() string
 	findAppTapFn         func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
 	confirmAppOpenFn     func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
 	afterOpenFn          func() error
@@ -41,14 +41,13 @@ type appSearchOpenTool struct {
 }
 
 type appSearchOpenArgs struct {
-	App      string `json:"app"`
-	Name     string `json:"name"`
-	Platform string `json:"platform,omitempty"`
+	App  string `json:"app"`
+	Name string `json:"name"`
 }
 
-func (t *appSearchOpenTool) SetPlatformFn(fn func() string) {
+func (t *appSearchOpenTool) SetDeviceTypeFunc(fn func() string) {
 	if t != nil {
-		t.platformFn = fn
+		t.deviceTypeFn = fn
 	}
 }
 
@@ -92,10 +91,10 @@ func (t *appSearchOpenTool) call(ctx context.Context, input string) (string, err
 	if args.App == "" {
 		return jsonString(map[string]any{"ok": false, "error": "app is required"}), nil
 	}
-	platform := strings.ToLower(strings.TrimSpace(args.Platform))
-	if t.platformFn != nil {
-		if override := strings.ToLower(strings.TrimSpace(t.platformFn())); override != "" {
-			platform = override
+	platform := ""
+	if t.deviceTypeFn != nil {
+		if derived := textInputPlatformFromDeviceType(t.deviceTypeFn()); derived != "" {
+			platform = derived
 		}
 	}
 	if platform == "" && t.iosKeyboardIsolation != nil {

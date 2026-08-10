@@ -162,12 +162,15 @@ func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) 
 	if len(screenshot.inputs) != 2 || len(searchLaunch.inputs) != 1 {
 		t.Fatalf("routed calls: screenshot=%v search_launch_app=%v", screenshot.inputs, searchLaunch.inputs)
 	}
-	var searchInput appSearchOpenArgs
+	var searchInput map[string]any
 	if err := json.Unmarshal([]byte(searchLaunch.inputs[0]), &searchInput); err != nil {
 		t.Fatalf("decode search_launch_app input: %v", err)
 	}
-	if searchInput.App != "小红书" || searchInput.Platform != "" {
-		t.Fatalf("search_launch_app input = %#v, want app=小红书 with platform inferred by runtime", searchInput)
+	if searchInput["app"] != "小红书" {
+		t.Fatalf("search_launch_app app = %#v, want 小红书", searchInput["app"])
+	}
+	if _, ok := searchInput["platform"]; ok {
+		t.Fatalf("search_launch_app input = %#v, want platform omitted", searchInput)
 	}
 }
 

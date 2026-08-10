@@ -21,10 +21,6 @@ type ToolSet struct {
 	searchOpenTool       *appSearchOpenTool
 }
 
-type runtimePlatformConfigurable interface {
-	SetPlatformFn(func() string)
-}
-
 type runtimeDeviceTypeConfigurable interface {
 	SetDeviceTypeFunc(func() string)
 }
@@ -201,7 +197,7 @@ func newToolScreenState() *screen.ScreenState {
 	return &screen.ScreenState{}
 }
 
-func (s *ToolSet) RegisterEnterTextTool(models model.Model, platformFn func() string) {
+func (s *ToolSet) RegisterEnterTextTool(models model.Model, deviceTypeFn func() string) {
 	if s == nil || s.textInputHW == nil || models == nil {
 		return
 	}
@@ -213,11 +209,11 @@ func (s *ToolSet) RegisterEnterTextTool(models model.Model, platformFn func() st
 		restorer: s.phoneBridgeRestorer,
 	}
 	entryTool := &EnterTextTool{engine: engine, bridgeTool: bridgeTool, iosKeyboardIsolation: s.iosKeyboardIsolation}
-	entryTool.SetPlatformFn(platformFn)
+	entryTool.SetDeviceTypeFunc(deviceTypeFn)
 	searchOpenTool := &appSearchOpenTool{
 		hw:                   s.textInputHW,
 		vision:               newLLMTextInputVision(models),
-		platformFn:           platformFn,
+		deviceTypeFn:         deviceTypeFn,
 		entryTool:            entryTool,
 		launchDelay:          appSearchOpenLaunchDelay,
 		iosKeyboardIsolation: s.iosKeyboardIsolation,
@@ -237,24 +233,6 @@ func (s *ToolSet) SetRunScriptSpeaker(speaker runScriptSpeaker) {
 	}
 	if runScript, ok := tool.(*RunScriptTool); ok {
 		runScript.SetSpeaker(speaker)
-	}
-}
-
-func (s *ToolSet) SetRuntimePlatformFn(fn func() string) {
-	if s == nil {
-		return
-	}
-	for _, name := range []string{"enter_text", "keyboard_tap", "quick_action", "touch_gesture"} {
-		tool, ok := s.tools[name]
-		if !ok {
-			continue
-		}
-		if configurable, ok := tool.(runtimePlatformConfigurable); ok {
-			configurable.SetPlatformFn(fn)
-		}
-	}
-	if s.searchOpenTool != nil {
-		s.searchOpenTool.SetPlatformFn(fn)
 	}
 }
 
@@ -366,7 +344,7 @@ func (s *ToolSet) SetRuntimeDeviceTypeFn(deviceTypeFn func() string) {
 	if s.textInputHW != nil {
 		s.textInputHW.deviceTypeFn = deviceTypeFn
 	}
-	for _, name := range []string{"enter_text"} {
+	for _, name := range []string{"enter_text", "keyboard_tap", "quick_action", "touch_gesture"} {
 		tool, ok := s.tools[name]
 		if !ok {
 			continue
@@ -374,6 +352,9 @@ func (s *ToolSet) SetRuntimeDeviceTypeFn(deviceTypeFn func() string) {
 		if configurable, ok := tool.(runtimeDeviceTypeConfigurable); ok {
 			configurable.SetDeviceTypeFunc(deviceTypeFn)
 		}
+	}
+	if s.searchOpenTool != nil {
+		s.searchOpenTool.SetDeviceTypeFunc(deviceTypeFn)
 	}
 	if tool, ok := s.tools["skill_list"].(*SkillListTool); ok {
 		tool.SetDeviceTypeFunc(deviceTypeFn)

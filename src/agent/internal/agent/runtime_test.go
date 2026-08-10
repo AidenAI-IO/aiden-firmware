@@ -398,9 +398,9 @@ func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunUsesDeviceTypeStateForRuntimePlatform(t *testing.T) {
+func TestRuntimeRunInjectsDeviceTypeStateIntoTools(t *testing.T) {
 	model := &scriptedModel{responses: roleToolResponses("enter_text", `{"text":"hello","focus":{"x":500,"y":500}}`, "done")}
-	tool := &platformCaptureTool{
+	tool := &deviceTypeCaptureTool{
 		stubTool: stubTool{
 			name:        "enter_text",
 			description: "Enter text.",
@@ -430,8 +430,8 @@ func TestRuntimeRunUsesDeviceTypeStateForRuntimePlatform(t *testing.T) {
 	if result.Output != "done" {
 		t.Fatalf("output = %q, want final answer", result.Output)
 	}
-	if len(tool.platforms) != 1 || tool.platforms[0] != "android" {
-		t.Fatalf("runtime platform = %v, want [android] from device_type state", tool.platforms)
+	if len(tool.deviceTypes) != 1 || tool.deviceTypes[0] != "Android" {
+		t.Fatalf("runtime device_type = %v, want [Android]", tool.deviceTypes)
 	}
 }
 
@@ -2676,21 +2676,21 @@ func (t *stubTool) Call(ctx context.Context, input string) (string, error) {
 	return t.output, nil
 }
 
-type platformCaptureTool struct {
+type deviceTypeCaptureTool struct {
 	stubTool
-	platformFn func() string
-	platforms  []string
+	deviceTypeFn func() string
+	deviceTypes  []string
 }
 
-func (t *platformCaptureTool) SetPlatformFn(fn func() string) {
-	t.platformFn = fn
+func (t *deviceTypeCaptureTool) SetDeviceTypeFunc(fn func() string) {
+	t.deviceTypeFn = fn
 }
 
-func (t *platformCaptureTool) Call(ctx context.Context, input string) (string, error) {
-	if t.platformFn != nil {
-		t.platforms = append(t.platforms, t.platformFn())
+func (t *deviceTypeCaptureTool) Call(ctx context.Context, input string) (string, error) {
+	if t.deviceTypeFn != nil {
+		t.deviceTypes = append(t.deviceTypes, t.deviceTypeFn())
 	} else {
-		t.platforms = append(t.platforms, "")
+		t.deviceTypes = append(t.deviceTypes, "")
 	}
 	return t.stubTool.Call(ctx, input)
 }

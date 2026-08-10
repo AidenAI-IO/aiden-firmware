@@ -699,20 +699,22 @@ type KeyboardTapTool struct {
 	adb                  *ADBInputController
 	keyboardLayout       string
 	iosKeyboardIsolation *iosKeyboardIsolationController
-	platformFn           func() string
+	deviceTypeFn         func() string
 }
 
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
 
-func (t *KeyboardTapTool) SetPlatformFn(fn func() string) {
+func (t *KeyboardTapTool) SetDeviceTypeFunc(fn func() string) {
 	if t != nil {
-		t.platformFn = fn
+		t.deviceTypeFn = fn
 	}
 }
 
 func (t *KeyboardTapTool) platform() string {
-	if t != nil && t.platformFn != nil {
-		return normalizeAgentToolPlatform(t.platformFn())
+	if t != nil && t.deviceTypeFn != nil {
+		if deviceType, ok := normalizeDeviceType(t.deviceTypeFn()); ok {
+			return normalizeAgentToolPlatform(deviceTypePlatform(deviceType))
+		}
 	}
 	return ""
 }
@@ -730,7 +732,7 @@ func (t *KeyboardTapTool) extensionKeyDescription() string {
 }
 
 func (t *KeyboardTapTool) Description() string {
-	description := `Press and release literal keyboard keys (e.g. {"keys":["enter"]}). Use for simple keys such as enter, escape, tab, or arrows; for exact physical chords explicitly requested by the user; and for app-specific shortcuts not represented by quick_action. For cataloged semantic actions—including copy, paste, cut, select_all, delete_backward, delete_forward, undo, redo, find, send, back, home, app switching, and browser actions—you MUST use quick_action and let runtime select the platform from global device_type state. A ctrl/meta chord fallback is allowed only after a quick_action result in the current run explicitly reports the action as reserved/unavailable before executing a binding. Do not infer unavailability from another tool's failure. Never replay an active quick_action binding as a raw chord after failure or no visible effect.`
+	description := `Press and release literal keyboard keys (e.g. {"keys":["enter"]}). Use for simple keys such as enter, escape, tab, or arrows; for exact physical chords explicitly requested by the user; and for app-specific shortcuts not represented by quick_action. For cataloged semantic actions—including copy, paste, cut, select_all, delete_backward, delete_forward, undo, redo, find, send, back, home, app switching, and browser actions—you MUST use quick_action and let runtime select the device-specific binding from global device_type state. A ctrl/meta chord fallback is allowed only after a quick_action result in the current run explicitly reports the action as reserved/unavailable before executing a binding. Do not infer unavailability from another tool's failure. Never replay an active quick_action binding as a raw chord after failure or no visible effect.`
 	if t.fullAndroidExtensionKeysVisible() {
 		description += ` On Android device_type, single-key Android KEYCODE_* aliases are available through the Android extension keyboard device.`
 	} else {
@@ -1153,20 +1155,22 @@ type TouchGestureTool struct {
 	screen             *screen.ScreenState
 	adb                *ADBInputController
 	primeScreenMapping func(context.Context) error
-	platformFn         func() string
+	deviceTypeFn       func() string
 }
 
 func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
-func (t *TouchGestureTool) SetPlatformFn(fn func() string) {
+func (t *TouchGestureTool) SetDeviceTypeFunc(fn func() string) {
 	if t != nil {
-		t.platformFn = fn
+		t.deviceTypeFn = fn
 	}
 }
 
 func (t *TouchGestureTool) platform() string {
-	if t != nil && t.platformFn != nil {
-		return normalizeAgentToolPlatform(t.platformFn())
+	if t != nil && t.deviceTypeFn != nil {
+		if deviceType, ok := normalizeDeviceType(t.deviceTypeFn()); ok {
+			return normalizeAgentToolPlatform(deviceTypePlatform(deviceType))
+		}
 	}
 	return ""
 }

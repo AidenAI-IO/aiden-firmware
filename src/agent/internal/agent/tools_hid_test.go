@@ -3405,7 +3405,7 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 
 func TestTouchGestureSchemaFiltersEdgeGesturesForDesktopPlatforms(t *testing.T) {
 	desktopTool := &TouchGestureTool{}
-	desktopTool.SetPlatformFn(func() string { return "windows" })
+	desktopTool.SetDeviceTypeFunc(func() string { return "windows" })
 	desktopTypes := stringEnumPropertyValues(t, desktopTool.ArgsSchema(), "type")
 	for _, want := range []string{"tap", "swipe", "swipe_up"} {
 		if _, ok := desktopTypes[want]; !ok {
@@ -3419,7 +3419,7 @@ func TestTouchGestureSchemaFiltersEdgeGesturesForDesktopPlatforms(t *testing.T) 
 	}
 
 	androidTool := &TouchGestureTool{}
-	androidTool.SetPlatformFn(func() string { return "android" })
+	androidTool.SetDeviceTypeFunc(func() string { return "Android" })
 	androidTypes := stringEnumPropertyValues(t, androidTool.ArgsSchema(), "type")
 	for _, want := range []string{"back", "home"} {
 		if _, ok := androidTypes[want]; !ok {
@@ -3455,7 +3455,7 @@ func TestKeyboardTapDescriptionRoutesSemanticShortcutsToQuickAction(t *testing.T
 
 func TestKeyboardTapSchemaListsExtensionKeysForPlatform(t *testing.T) {
 	androidTool := &KeyboardTapTool{}
-	androidTool.SetPlatformFn(func() string { return "android" })
+	androidTool.SetDeviceTypeFunc(func() string { return "Android" })
 	androidDesc := keyboardTapKeysSchemaDescriptionForTool(t, androidTool)
 	for _, want := range []string{"KEYCODE_*", "Android device_type", "single-key Android"} {
 		if !strings.Contains(androidDesc, want) {
@@ -3464,7 +3464,7 @@ func TestKeyboardTapSchemaListsExtensionKeysForPlatform(t *testing.T) {
 	}
 
 	desktopTool := &KeyboardTapTool{}
-	desktopTool.SetPlatformFn(func() string { return "windows" })
+	desktopTool.SetDeviceTypeFunc(func() string { return "windows" })
 	desktopDesc := keyboardTapKeysSchemaDescriptionForTool(t, desktopTool)
 	for _, want := range []string{"non-Android device_type", "KEYCODE_SCREENSHOT", "KEYCODE_BRIGHTNESS_UP", "KEYCODE_MEDIA_PLAY_PAUSE"} {
 		if !strings.Contains(desktopDesc, want) {

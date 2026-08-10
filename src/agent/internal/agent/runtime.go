@@ -405,7 +405,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	toolSet.RegisterMemoryTools(memoryDir, extractionCfg.SummaryMaxChunks, longTermStore)
-	toolSet.RegisterEnterTextTool(modelManager, nil) // platformFn set per-request
+	toolSet.RegisterEnterTextTool(modelManager, nil) // deviceTypeFn set after runtime construction
 
 	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithStructuredSummarizeFn(structuredSummarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithLongTermMemoryStore(longTermStore), WithMemoryLogger(logger)), toolSet, skillIndex)
 
@@ -553,7 +553,6 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	}
 	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
 	skillManager.SetDeviceTypeFunc(rt.deviceTypeFromState)
-	rt.tools.SetRuntimePlatformFn(rt.devicePlatformFromState)
 	rt.tools.SetRuntimeDeviceTypeFn(rt.deviceTypeFromState)
 	rt.sessionManager = newMemoryManagerSessionManager(memories, func() BoundaryEpisodeContext {
 		return recentEpisodeContext(rt.memoryPlane)
@@ -1034,12 +1033,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	// Runtime target-platform decisions come from global device_type state.
-	platformFn := func() string {
-		return r.devicePlatformFromState()
-	}
-	r.tools.SetRuntimePlatformFn(platformFn)
-
 	// setup context manager if not initialized
 	if r.contextManager == nil {
 		r.contextManager, err = InitializeContextManager(profile.SystemPrompt, agentpath.ContextManagerSessionFolder(r.config.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
@@ -1127,7 +1120,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.SteerProvider = req.SteerProvider
 	agentLoop.SteerWaiter = req.SteerWaiter
 	agentLoop.TerminationPolicy = NewTerminationPolicy(r.config.TerminationPolicy)
-	agentLoop.DevicePlatform = platformFn()
+	agentLoop.DevicePlatform = r.devicePlatformFromState()
 	agentLoop.PointerMode = r.devicePointerModeFromState()
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)

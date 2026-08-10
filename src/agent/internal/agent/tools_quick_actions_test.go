@@ -80,9 +80,9 @@ func TestQuickActionExposesStructuredSchema(t *testing.T) {
 	}
 }
 
-func TestQuickActionSchemaListsOnlyActiveActionsForRuntimePlatform(t *testing.T) {
+func TestQuickActionSchemaListsOnlyActiveActionsForDeviceType(t *testing.T) {
 	tool := &QuickActionTool{}
-	tool.SetPlatformFn(func() string { return "android" })
+	tool.SetDeviceTypeFunc(func() string { return "Android" })
 	schema := tool.ArgsSchema()
 	actionEnum := stringEnumPropertyValues(t, schema, "action")
 
@@ -186,9 +186,9 @@ func TestQuickActionListActionAlias(t *testing.T) {
 	}
 }
 
-func TestQuickActionUsesRuntimePlatformProvider(t *testing.T) {
+func TestQuickActionUsesRuntimeDeviceTypeProvider(t *testing.T) {
 	tool := &QuickActionTool{}
-	tool.SetPlatformFn(func() string { return "Android" })
+	tool.SetDeviceTypeFunc(func() string { return "Android" })
 	out, err := tool.Call(context.Background(), `{"action":"list","platform":"ios"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)

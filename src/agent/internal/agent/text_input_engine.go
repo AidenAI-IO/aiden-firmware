@@ -15,7 +15,6 @@ import (
 type textInputHardwareDeps struct {
 	pointerMode  string
 	deviceTypeFn func() string
-	platformFn   func() string
 	mouseClick   langtools.Tool
 	touchGesture langtools.Tool
 	keyboardTap  langtools.Tool
@@ -48,11 +47,6 @@ func textInputPlatformFromDeviceType(deviceType string) string {
 func (d textInputHardwareDeps) platform() string {
 	if d.deviceTypeFn != nil {
 		if platform := textInputPlatformFromDeviceType(d.deviceTypeFn()); platform != "" {
-			return platform
-		}
-	}
-	if d.platformFn != nil {
-		if platform := normalizeTextInputPlatform(d.platformFn()); platform != "" {
 			return platform
 		}
 	}
