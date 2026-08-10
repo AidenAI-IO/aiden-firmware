@@ -94,3 +94,40 @@ func TestRunSTTTranscriptionTestRequiresAudio(t *testing.T) {
 		t.Fatalf("error = %v, want audio data is required", err)
 	}
 }
+
+func TestRunSTTProviderTestUsesRuntimeDefaultEndpoint(t *testing.T) {
+	cfg := Config{
+		STTProviders: map[string]STTProvider{
+			"qwen-main": {
+				Type:   "qwen-asr",
+				APIKey: "test-key",
+			},
+		},
+	}
+	result, err := RunSTTProviderTest(context.Background(), cfg, STTTranscriptionTestRequest{
+		Provider: "qwen-main",
+		Language: "zh",
+	})
+	if err != nil {
+		t.Fatalf("RunSTTProviderTest() error = %v", err)
+	}
+	if result.Provider != "qwen-asr" {
+		t.Fatalf("provider = %q, want qwen-asr", result.Provider)
+	}
+}
+
+func TestRunSTTProviderTestAcceptsTencentWithoutAppID(t *testing.T) {
+	result, err := RunSTTProviderTest(context.Background(), Config{}, STTTranscriptionTestRequest{
+		Provider:  "tencent-asr",
+		SecretID:  "test-id",
+		SecretKey: "test-key",
+		Region:    "ap-shanghai",
+		Language:  "zh",
+	})
+	if err != nil {
+		t.Fatalf("RunSTTProviderTest() error = %v", err)
+	}
+	if result.Provider != "tencent-asr" {
+		t.Fatalf("provider = %q, want tencent-asr", result.Provider)
+	}
+}

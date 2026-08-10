@@ -1,0 +1,74 @@
+#!/bin/sh
+#
+# Aiden override of the Buildroot rcS.
+#
+# Same semantics as the stock script — every /etc/init.d/S??* runs once, in
+# numerical order, in the same shell context as before — with per-script
+# monotonic timing recorded to /var/log/aiden_boot_timeline.log.
+#
+# The profiler is deliberately fail-open: if the helper is missing or a timing
+# call fails, scripts still run exactly as they would without it. Boot must
+# never depend on the profiler.
+#
+
+# Both paths are overridable so scripts/test_boot_timeline.sh can exercise this
+# file against a fixture tree. Production always uses the defaults.
+INIT_D_DIR=${INIT_D_DIR:-/etc/init.d}
+BOOT_TIMELINE_HELPER=${BOOT_TIMELINE_HELPER:-/etc/aiden_boot_timeline.sh}
+BOOT_TIMELINE_ENABLED=0
+
+if [ -f "$BOOT_TIMELINE_HELPER" ]; then
+	# shellcheck source=/dev/null
+	. "$BOOT_TIMELINE_HELPER" 2>/dev/null && BOOT_TIMELINE_ENABLED=1
+fi
+
+if [ "$BOOT_TIMELINE_ENABLED" = "1" ]; then
+	boot_timeline_init 2>/dev/null || BOOT_TIMELINE_ENABLED=0
+fi
+
+rcs_timeline() {
+	[ "$BOOT_TIMELINE_ENABLED" = "1" ] || return 0
+	boot_timeline_record "$@" 2>/dev/null || true
+	return 0
+}
+
+rcs_timeline rcS:begin
+
+# Start all init scripts in /etc/init.d
+# executing them in numerical order.
+#
+for i in "$INIT_D_DIR"/S??* ;do
+
+     # Ignore dangling symlinks (if any).
+     [ ! -f "$i" ] && continue
+
+     name="${i##*/}"
+     rcs_timeline script:begin "$name"
+
+     case "$i" in
+	*.sh)
+	    # Source shell script for speed.
+	    (
+		trap - INT QUIT TSTP
+		set start
+		. $i
+	    )
+	    rc="$?"
+	    ;;
+	*)
+	    # No sh extension, so fork subprocess.
+	    $i start
+	    rc="$?"
+	    ;;
+    esac
+
+     rcs_timeline script:end "$name" "rc=$rc"
+done
+
+rcs_timeline rcS:end
+
+if [ "$BOOT_TIMELINE_ENABLED" = "1" ]; then
+	# Persist this boot so it can be compared against later ones. /userdata is
+	# mounted well before rcS finishes; if it is not, the archive is skipped.
+	boot_timeline_archive 2>/dev/null || true
+fi

@@ -21,7 +21,6 @@ import (
 type TTSProvider struct {
 	Type        string `toml:"type"` // Provider type: minimax, fish-audio, ...
 	APIKey      string `toml:"api_key,omitempty"`
-	TokenEnv    string `toml:"token_env,omitempty"`
 	Model       string `toml:"model,omitempty"`
 	VoiceID     string `toml:"voice_id,omitempty"`
 	Emotion     string `toml:"emotion,omitempty"`
@@ -33,7 +32,6 @@ type TTSProvider struct {
 type STTProvider struct {
 	Type            string `toml:"type"` // Provider type: openai-whisper, tencent-asr, ...
 	APIKey          string `toml:"api_key,omitempty"`
-	TokenEnv        string `toml:"token_env,omitempty"`
 	Model           string `toml:"model,omitempty"`
 	BaseURL         string `toml:"base_url,omitempty"`
 	AppID           string `toml:"app_id,omitempty"`
@@ -97,7 +95,7 @@ func resolveTTSProvider(cfg *Config) {
 	// different record of the same type. See TTSConfig.ActiveProviderRecord.
 	cfg.TTS.ActiveProviderRecord = ref
 	if cfg.TTS.APIKey == "" {
-		cfg.TTS.APIKey = resolveVoiceAPIKey(record.APIKey, record.TokenEnv)
+		cfg.TTS.APIKey = resolveProviderAPIKey(record.APIKey)
 	}
 	if cfg.TTS.Model == "" {
 		cfg.TTS.Model = record.Model
@@ -136,7 +134,7 @@ func resolveSTTProvider(cfg *Config) {
 
 	cfg.STT.Provider = providerType
 	if cfg.STT.APIKey == "" {
-		cfg.STT.APIKey = resolveVoiceAPIKey(record.APIKey, record.TokenEnv)
+		cfg.STT.APIKey = resolveProviderAPIKey(record.APIKey)
 	}
 	if cfg.STT.Model == "" {
 		cfg.STT.Model = record.Model
@@ -161,17 +159,26 @@ func resolveSTTProvider(cfg *Config) {
 	}
 }
 
-// resolveVoiceAPIKey reads token_env when no api_key is set. TTS and STT had no
-// os.Getenv path at all before this; the provider dialog offers the $ENV_VAR
-// syntax, so without it a user's $MINIMAX_KEY would silently resolve to empty.
-func resolveVoiceAPIKey(apiKey, tokenEnv string) string {
-	if strings.TrimSpace(apiKey) != "" {
+// resolveProviderAPIKey resolves the single provider credential syntax used by
+// agent.toml and Config Web. A leading $ means the rest is an environment
+// variable name; every other value is a literal API key.
+func resolveProviderAPIKey(apiKey string) string {
+	env, isEnvironmentReference := providerAPIKeyEnv(apiKey)
+	if !isEnvironmentReference {
 		return apiKey
 	}
-	if env := strings.TrimSpace(tokenEnv); env != "" {
-		return os.Getenv(env)
+	if env == "" {
+		return ""
 	}
-	return ""
+	return os.Getenv(env)
+}
+
+func providerAPIKeyEnv(apiKey string) (string, bool) {
+	trimmed := strings.TrimSpace(apiKey)
+	if !strings.HasPrefix(trimmed, "$") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, "$")), true
 }
 
 // ValidateVoiceProviders is the strict pass over the voice provider records. It
@@ -238,8 +245,9 @@ func (c Config) ValidateVoiceProviders() error {
 // migrateLegacyVoiceProviders upgrades flat [tts]/[stt] credentials into named
 // records so the config page sees one shape.
 //
-// An existing record always wins: migration never overwrites what the user (or
-// the config page) wrote explicitly.
+// For a mixed config, an explicitly populated flat field keeps its historical
+// runtime precedence and overwrites the referenced record during migration.
+// Fields inherited only from DefaultConfig are cleared without being copied.
 func migrateLegacyVoiceProviders(cfg *Config, metadata toml.MetaData) {
 	if cfg == nil {
 		return
@@ -266,10 +274,39 @@ func migrateLegacyTTSFlatFields(cfg *Config, metadata toml.MetaData) {
 		return
 	}
 	provider := normalizeTTSProvider(cfg.TTS.Provider)
-	if provider == "" || !isKnownTTSProviderType(provider) {
+	if provider == "" {
 		return
 	}
-	if _, isRef := cfg.TTSProviders[cfg.TTS.Provider]; isRef {
+	if record, isRef := cfg.TTSProviders[cfg.TTS.Provider]; isRef {
+		// Flat fields historically override inherited record values at runtime.
+		// Preserve explicitly configured non-empty overrides while collapsing
+		// both sources into the record. Clear every provider-specific flat field,
+		// including values inherited from DefaultConfig, so editing never bakes a
+		// default voice into [tts] or leaves a second source behind.
+		if metadata.IsDefined("tts", "api_key") && cfg.TTS.APIKey != "" {
+			record.APIKey = cfg.TTS.APIKey
+		}
+		if metadata.IsDefined("tts", "model") && cfg.TTS.Model != "" {
+			record.Model = cfg.TTS.Model
+		}
+		if metadata.IsDefined("tts", "voice_id") && cfg.TTS.VoiceID != "" {
+			record.VoiceID = cfg.TTS.VoiceID
+		}
+		if metadata.IsDefined("tts", "emotion") && cfg.TTS.Emotion != "" {
+			record.Emotion = cfg.TTS.Emotion
+		}
+		if metadata.IsDefined("tts", "reference_id") && cfg.TTS.ReferenceID != "" {
+			record.ReferenceID = cfg.TTS.ReferenceID
+		}
+		cfg.TTS.APIKey = ""
+		cfg.TTS.Model = ""
+		cfg.TTS.VoiceID = ""
+		cfg.TTS.Emotion = ""
+		cfg.TTS.ReferenceID = ""
+		cfg.TTSProviders[cfg.TTS.Provider] = record
+		return
+	}
+	if !isKnownTTSProviderType(provider) {
 		return
 	}
 	if cfg.TTSProviders == nil {
@@ -323,10 +360,46 @@ func migrateLegacySTTFlatFields(cfg *Config, metadata toml.MetaData) {
 		return
 	}
 	provider := strings.ToLower(strings.TrimSpace(cfg.STT.Provider))
-	if provider == "" || !isKnownSTTProviderType(provider) {
+	if provider == "" {
 		return
 	}
-	if _, isRef := cfg.STTProviders[cfg.STT.Provider]; isRef {
+	if record, isRef := cfg.STTProviders[cfg.STT.Provider]; isRef {
+		if metadata.IsDefined("stt", "api_key") && cfg.STT.APIKey != "" {
+			record.APIKey = cfg.STT.APIKey
+		}
+		if metadata.IsDefined("stt", "model") && cfg.STT.Model != "" {
+			record.Model = cfg.STT.Model
+		}
+		if metadata.IsDefined("stt", "base_url") && cfg.STT.BaseURL != "" {
+			record.BaseURL = cfg.STT.BaseURL
+		}
+		if metadata.IsDefined("stt", "app_id") && cfg.STT.AppID != "" {
+			record.AppID = cfg.STT.AppID
+		}
+		if metadata.IsDefined("stt", "secret_id") && cfg.STT.SecretID != "" {
+			record.SecretID = cfg.STT.SecretID
+		}
+		if metadata.IsDefined("stt", "secret_key") && cfg.STT.SecretKey != "" {
+			record.SecretKey = cfg.STT.SecretKey
+		}
+		if metadata.IsDefined("stt", "region") && cfg.STT.Region != "" {
+			record.Region = cfg.STT.Region
+		}
+		if metadata.IsDefined("stt", "engine_model_type") && cfg.STT.EngineModelType != "" {
+			record.EngineModelType = cfg.STT.EngineModelType
+		}
+		cfg.STT.APIKey = ""
+		cfg.STT.Model = ""
+		cfg.STT.BaseURL = ""
+		cfg.STT.AppID = ""
+		cfg.STT.SecretID = ""
+		cfg.STT.SecretKey = ""
+		cfg.STT.Region = ""
+		cfg.STT.EngineModelType = ""
+		cfg.STTProviders[cfg.STT.Provider] = record
+		return
+	}
+	if !isKnownSTTProviderType(provider) {
 		return
 	}
 	if cfg.STTProviders == nil {

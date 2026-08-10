@@ -20,6 +20,14 @@ fi
 : "${SWAP_REQUIRE_MOUNT:=1}"
 : "${SWAP_SIZE_MB:=256}"
 : "${SWAP_SWAPPINESS:=15}"
+: "${SWAP_BACKGROUND:=1}"
+BOOT_TIMELINE_HELPER=${BOOT_TIMELINE_HELPER:-/etc/aiden_boot_timeline.sh}
+
+mark() {
+    [ -x "$BOOT_TIMELINE_HELPER" ] || return 0
+    "$BOOT_TIMELINE_HELPER" mark "$@" 2>/dev/null || true
+    return 0
+}
 
 case "$SWAP_SIZE_MB" in
     ''|*[!0-9]*|0)
@@ -107,6 +115,21 @@ create_swapfile() {
     mv "$swap_tmp" "$SWAP_FILE"
 }
 
+activate_swap() {
+    if ! file_has_expected_size; then
+        create_swapfile || return 1
+    else
+        chmod 0600 "$SWAP_FILE" || return 1
+    fi
+
+    if ! "$SWAPON_BIN" "$SWAP_FILE"; then
+        echo "failed to enable swapfile: $SWAP_FILE" >&2
+        return 1
+    fi
+    mark swap:active
+    echo "Enabled ${SWAP_SIZE_MB} MB swap at $SWAP_FILE (swappiness=$SWAP_SWAPPINESS)"
+}
+
 start() {
     if [ "$ENABLE_SWAP" != "1" ]; then
         echo "swap disabled by config (ENABLE_SWAP=$ENABLE_SWAP)"
@@ -121,18 +144,22 @@ start() {
         return 0
     fi
 
-    if ! file_has_expected_size; then
-        create_swapfile || return 1
-    else
-        chmod 0600 "$SWAP_FILE" || return 1
+    # Swappiness is a global vm knob and costs nothing, so apply it up front
+    # regardless of how the swapfile itself is activated.
+    configure_swappiness || return 1
+
+    if [ "$SWAP_BACKGROUND" = "1" ]; then
+        # swapon on the 256 MB swapfile measures ~7.4s on this eMMC, and rcS is
+        # strictly sequential — paying that here delays every later service,
+        # including the agent (S53) and the config portal (S56). Nothing between
+        # here and the end of rcS needs disk swap: zram (S21zram) is already
+        # active and absorbs early memory pressure at a higher priority.
+        activate_swap &
+        echo "Activating ${SWAP_SIZE_MB} MB swap at $SWAP_FILE in background (swappiness=$SWAP_SWAPPINESS)"
+        return 0
     fi
 
-    configure_swappiness || return 1
-    if ! "$SWAPON_BIN" "$SWAP_FILE"; then
-        echo "failed to enable swapfile: $SWAP_FILE" >&2
-        return 1
-    fi
-    echo "Enabled ${SWAP_SIZE_MB} MB swap at $SWAP_FILE (swappiness=$SWAP_SWAPPINESS)"
+    activate_swap
 }
 
 stop() {

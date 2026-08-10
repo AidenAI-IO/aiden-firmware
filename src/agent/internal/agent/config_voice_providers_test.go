@@ -241,53 +241,30 @@ api_key = "sk-override"
 	}
 }
 
-// token_env has no os.Getenv path in TTS/STT today. The provider dialog offers
-// the $ENV_VAR syntax, so without resolution here a user's $MINIMAX_KEY would
-// silently produce an empty key.
-func TestVoiceProviderTokenEnvResolves(t *testing.T) {
+func TestVoiceProviderAPIKeyEnvironmentReferencesResolve(t *testing.T) {
 	t.Setenv("AIDEN_TEST_TTS_KEY", "sk-from-env")
 	t.Setenv("AIDEN_TEST_STT_KEY", "sk-stt-env")
 
 	cfg := writeVoiceProviderConfig(t, `
 [tts_providers.minimax-main]
 type = "minimax"
-token_env = "AIDEN_TEST_TTS_KEY"
+api_key = "$AIDEN_TEST_TTS_KEY"
 
 [tts]
 provider = "minimax-main"
 
 [stt_providers.whisper]
 type = "openai-whisper"
-token_env = "AIDEN_TEST_STT_KEY"
+api_key = "$AIDEN_TEST_STT_KEY"
 
 [stt]
 provider = "whisper"
 `)
 
 	if cfg.TTS.APIKey != "sk-from-env" {
-		t.Errorf("tts.api_key = %q, want %q from token_env", cfg.TTS.APIKey, "sk-from-env")
+		t.Errorf("tts.api_key = %q, want %q from environment reference", cfg.TTS.APIKey, "sk-from-env")
 	}
 	if cfg.STT.APIKey != "sk-stt-env" {
-		t.Errorf("stt.api_key = %q, want %q from token_env", cfg.STT.APIKey, "sk-stt-env")
-	}
-}
-
-// An api_key on the record beats its own token_env, so a pasted key is never
-// shadowed by a stale environment variable name.
-func TestVoiceProviderAPIKeyBeatsTokenEnv(t *testing.T) {
-	t.Setenv("AIDEN_TEST_TTS_KEY", "sk-from-env")
-
-	cfg := writeVoiceProviderConfig(t, `
-[tts_providers.minimax-main]
-type = "minimax"
-api_key = "sk-explicit"
-token_env = "AIDEN_TEST_TTS_KEY"
-
-[tts]
-provider = "minimax-main"
-`)
-
-	if cfg.TTS.APIKey != "sk-explicit" {
-		t.Errorf("tts.api_key = %q, want %q", cfg.TTS.APIKey, "sk-explicit")
+		t.Errorf("stt.api_key = %q, want %q from environment reference", cfg.STT.APIKey, "sk-stt-env")
 	}
 }

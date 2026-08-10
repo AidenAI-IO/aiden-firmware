@@ -221,13 +221,13 @@ func TestBuildOpenRouterEnablesNestedReasoning(t *testing.T) {
 }
 
 func TestBuildOpenRouterMissingAPIKeyError(t *testing.T) {
-	t.Run("named token environment", func(t *testing.T) {
+	t.Run("named environment reference", func(t *testing.T) {
 		const tokenEnv = "AIDEN_TEST_MISSING_OPENROUTER_KEY"
 		t.Setenv(tokenEnv, "")
 		mgr := NewModelManager(ModelConfig{
 			Provider: "openrouter",
 			Model:    "google/gemini-3.5-flash",
-			TokenEnv: tokenEnv,
+			APIKey:   "$" + tokenEnv,
 		}, ProxyConfig{})
 
 		_, err := mgr.build(mgr.config)
@@ -240,7 +240,7 @@ func TestBuildOpenRouterMissingAPIKeyError(t *testing.T) {
 		}
 	})
 
-	t.Run("provider record without token environment", func(t *testing.T) {
+	t.Run("provider record without api key", func(t *testing.T) {
 		mgr := NewModelManager(ModelConfig{
 			Provider: "openrouter",
 			Model:    "google/gemini-3.5-flash",
@@ -250,7 +250,7 @@ func TestBuildOpenRouterMissingAPIKeyError(t *testing.T) {
 		if err == nil {
 			t.Fatal("build succeeded without an API key")
 		}
-		const want = "missing the OpenRouter API key, set api_key or token_env on the provider record"
+		const want = "missing the OpenRouter API key, set api_key on the provider record"
 		if err.Error() != want {
 			t.Fatalf("build error = %q, want %q", err, want)
 		}

@@ -559,6 +559,21 @@ verify_oem_generated_binaries_in_image() {
     echo "  ✓ Verified $verified generated OEM binaries in $(basename "$image_path")"
 }
 
+verify_oem_config_web_in_image() {
+    local image_path="$1"
+    local staged_root="$2"
+    local rel_path verified
+
+    verified=0
+    for rel_path in \
+        "usr/share/aiden/config-web/index.html" \
+        "usr/share/aiden/config-web/llm-logs.html"; do
+        verify_ext4_image_file_matches "$image_path" "$staged_root" "$rel_path"
+        verified=$((verified + 1))
+    done
+    echo "  ✓ Verified $verified config web entry pages in $(basename "$image_path")"
+}
+
 verify_rootfs_cli_tools_in_image() {
     local image_path="$1"
     local original_root="$2"
@@ -744,6 +759,8 @@ RK_PROJECT_PACKAGE_ROOTFS_DIR="${RK_PROJECT_OUTPUT}/rootfs_${RK_LIBC_TPYE}_${RK_
 RK_PROJECT_PACKAGE_OEM_DIR="${RK_PROJECT_OUTPUT}/oem"
 RK_PROJECT_PACKAGE_USERDATA_DIR="${RK_PROJECT_OUTPUT}/userdata"
 RK_PROJECT_PACKAGE_OTA_DIR="${RK_PROJECT_OUTPUT}/ota"
+CONFIG_WEB_SRC="$SCRIPT_DIR/src/config_web/web"
+CONFIG_WEB_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/config-web"
 
 cd "$PICO_SDK/project"
 echo "  → Running base firmware packaging..."
@@ -770,6 +787,20 @@ if [ -d "$OVERLAY/oem" ]; then
     echo "  ✓ OEM content copied"
     log_generated_binaries_in_dir "sdk-oem-usr-bin" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"
 fi
+
+if [ ! -d "$CONFIG_WEB_SRC" ]; then
+    echo "  ✗ Error: config web source directory not found: $CONFIG_WEB_SRC" >&2
+    exit 1
+fi
+for entry_page in index.html llm-logs.html; do
+    if [ ! -f "$CONFIG_WEB_SRC/$entry_page" ]; then
+        echo "  ✗ Error: config web entry page not found: $CONFIG_WEB_SRC/$entry_page" >&2
+        exit 1
+    fi
+done
+mkdir -p "$CONFIG_WEB_DEST"
+rsync -a --delete "$CONFIG_WEB_SRC/" "$CONFIG_WEB_DEST/"
+echo "  ✓ config web assets synced to OEM staging"
 
 QUICK_ACTIONS_SRC="$SCRIPT_DIR/src/agent/internal/agent/quick_actions.json"
 QUICK_ACTIONS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/quick_actions.json"
@@ -834,6 +865,7 @@ cd "$PICO_SDK/project"
 echo "  → Rebuilding oem.img..."
 rebuild_ext4_image oem "$RK_PROJECT_PACKAGE_OEM_DIR"
 verify_oem_generated_binaries_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"
+verify_oem_config_web_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"
 
 # The SDK firmware packager strips every executable in the assembled rootfs,
 # including already-minimized static tools copied from the Buildroot overlay.

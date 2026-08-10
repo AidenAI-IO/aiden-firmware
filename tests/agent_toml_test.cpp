@@ -569,7 +569,7 @@ TEST_CASE("agent_toml rejects the legacy providers namespace") {
             << "[providers.ollama_local]\n"
             << "provider = \"ollama\"\n"
             << "base_url = \"http://127.0.0.1:11434\"\n"
-            << "token_env = \"OLLAMA_TOKEN\"\n"
+            << "api_key = \"$OLLAMA_TOKEN\"\n"
             << "[model]\n"
             << "provider = \"openai-work\"\n";
     }

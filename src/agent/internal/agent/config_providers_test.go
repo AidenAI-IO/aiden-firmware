@@ -527,15 +527,12 @@ api_key = "sk-x"
 }
 
 // TestProviderReferencePrecedence pins that an explicit value on [model] wins
-// over the referenced provider's for every inherited field. token_env is the
-// exception: it is no longer a [model] key, so the provider's value always
-// applies (see ModelConfig.TokenEnv).
+// over the referenced provider's for every inherited field.
 func TestProviderReferencePrecedence(t *testing.T) {
 	cfg, err := loadProviderConfig(t, `
 [model_providers.p]
 type = "openai"
 api_key = "sk-from-provider"
-token_env = "PROVIDER_ENV"
 base_url = "https://provider.example.com/v1"
 
 [model]
@@ -550,29 +547,46 @@ base_url = "https://explicit.example.com/v1"
 	if cfg.Model.APIKey != "sk-explicit" {
 		t.Errorf("api_key = %q, want sk-explicit", cfg.Model.APIKey)
 	}
-	if cfg.Model.TokenEnv != "PROVIDER_ENV" {
-		t.Errorf("token_env = %q, want the provider's PROVIDER_ENV", cfg.Model.TokenEnv)
-	}
 	if cfg.Model.BaseURL != "https://explicit.example.com/v1" {
 		t.Errorf("base_url = %q, want the explicit value", cfg.Model.BaseURL)
 	}
 }
 
-// TestModelTokenEnvIsNotAConfigKey pins that token_env only exists on a named
-// provider. A stale [model] token_env from an older config must not resolve a
-// credential, so upgrades cannot keep reading a variable the UI no longer shows.
-func TestModelTokenEnvIsNotAConfigKey(t *testing.T) {
+func TestProviderAPIKeyEnvironmentReference(t *testing.T) {
+	t.Setenv("AIDEN_TEST_MODEL_KEY", "sk-from-env")
 	cfg, err := loadProviderConfig(t, `
+[model_providers.p]
+type = "openai"
+api_key = "$AIDEN_TEST_MODEL_KEY"
+
 [model]
-provider = "openai"
+provider = "p"
 model = "gpt-4o"
-token_env = "STALE_ENV"
 `)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Model.TokenEnv != "" {
-		t.Errorf("token_env = %q, want it ignored on [model]", cfg.Model.TokenEnv)
+	if got := resolveToken(cfg.Model); got != "sk-from-env" {
+		t.Errorf("resolved api_key = %q, want sk-from-env", got)
+	}
+}
+
+func TestProviderTokenEnvIsIgnored(t *testing.T) {
+	t.Setenv("STALE_ENV", "sk-stale")
+	cfg, err := loadProviderConfig(t, `
+[model_providers.p]
+type = "openai"
+token_env = "STALE_ENV"
+
+[model]
+provider = "p"
+model = "gpt-4o"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := resolveToken(cfg.Model); got != "" {
+		t.Errorf("resolved api_key = %q, want token_env to be ignored", got)
 	}
 }
 

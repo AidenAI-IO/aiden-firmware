@@ -22,7 +22,6 @@ struct ModelToml {
 struct ModelProviderToml {
     std::string type;
     std::string api_key;
-    std::string token_env;
     std::string base_url;
 };
 
@@ -35,7 +34,6 @@ struct ModelProviderToml {
 struct TTSProviderToml {
     std::string type;
     std::string api_key;
-    std::string token_env;
     std::string model;
     std::string voice_id;
     std::string emotion;
@@ -47,7 +45,6 @@ struct TTSProviderToml {
 struct STTProviderToml {
     std::string type;
     std::string api_key;
-    std::string token_env;
     std::string model;
     std::string base_url;
     std::string app_id;
@@ -235,6 +232,7 @@ struct AgentToml {
 };
 
 bool load_agent_toml(const char* path, AgentToml& config, std::string* error = nullptr);
+void migrate_flat_voice_provider_fields(AgentToml& config);
 bool save_agent_toml(const char* path, const AgentToml& config, std::string* error = nullptr);
 
 }
