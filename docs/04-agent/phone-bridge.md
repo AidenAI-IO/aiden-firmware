@@ -41,12 +41,6 @@ The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/resul
 
 PiP Bridge is a narrow exception. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. The public tool catalog remains static: `open_app` selects its internal SearchLaunchApp route, while only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) can execute through the HTTP queue.
 
-When a command enters the HTTP queue, the board also makes a best-effort
-`ble_service` `wake` call. A subscribed iOS app uses the Wake Characteristic
-notification only to start native HTTP polling; command and result bodies never
-move to BLE. Missing Bluetooth, a disconnected phone, or `delivered=false` does
-not change queue durability or the existing polling fallback.
-
 Android FGS Bridge follows the same HTTP queue contract without using WebSocket as a background transport. When the Android foreground service polls `/api/phone-bridge/commands` with `app_state=background` and `fgs_bridge_enabled=true`, the Agent keeps `open_app` unavailable and routes only background-safe data tools through the HTTP queue.
 
 ## Desktop Agent With ADB Reverse

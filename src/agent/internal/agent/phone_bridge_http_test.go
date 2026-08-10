@@ -2,14 +2,10 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/statemanager"
-	"aiden-agent/internal/ble"
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -92,58 +88,6 @@ func TestHTTPEnqueueCommand(t *testing.T) {
 
 			if tt.checkResponse != nil {
 				tt.checkResponse(t, w)
-			}
-		})
-	}
-}
-
-func TestHTTPEnqueueRetainsCommandWhenBLEWakeDoesNotDeliver(t *testing.T) {
-	tests := []struct {
-		name           string
-		wakeErr        error
-		expectWakeCall bool
-	}{
-		{name: "BLE unavailable", wakeErr: ble.ErrBluetoothUnavailable, expectWakeCall: true},
-		{name: "wake error", wakeErr: errors.New("wake failed"), expectWakeCall: true},
-		{name: "no wake subscriber", expectWakeCall: false},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			bridge := newPhoneBridgeForTest()
-			defer bridge.queue.Stop()
-			wakeCalled := make(chan struct{}, 1)
-			bridge.bleWake = nil
-			if test.expectWakeCall {
-				bridge.bleWake = func(context.Context, string) error {
-					wakeCalled <- struct{}{}
-					return test.wakeErr
-				}
-			}
-
-			commandID := "wake_retention_" + strings.ReplaceAll(test.name, " ", "_")
-			body, err := json.Marshal(EnqueueCommandRequest{Command: BridgeCommand{
-				ID:   commandID,
-				Type: "clipboard_read",
-			}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			request := httptest.NewRequest(http.MethodPost, "/api/phone-bridge/commands", bytes.NewReader(body))
-			response := httptest.NewRecorder()
-			bridge.handleEnqueueCommand(response, request)
-			if response.Code != http.StatusAccepted {
-				t.Fatalf("enqueue status=%d body=%s", response.Code, response.Body.String())
-			}
-			if test.expectWakeCall {
-				select {
-				case <-wakeCalled:
-				case <-time.After(time.Second):
-					t.Fatal("BLE wake was not attempted")
-				}
-			}
-			queued := bridge.queue.Get(commandID)
-			if queued == nil || queued.Status != StatusQueued {
-				t.Fatalf("command was not retained after wake outcome: %#v", queued)
 			}
 		})
 	}
