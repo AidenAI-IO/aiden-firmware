@@ -3,6 +3,7 @@ package tts
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -192,6 +193,43 @@ func TestProviderManagerCloseContextReturnsOnTimeout(t *testing.T) {
 	case <-provider.closed:
 	case <-time.After(time.Second):
 		t.Fatal("provider was not closed after the session drained")
+	}
+}
+
+func TestProviderManagerRepeatedCloseTimeoutsReuseWaiter(t *testing.T) {
+	provider := &blockingProvider{
+		name:    "current",
+		started: make(chan *blockingSession, 1),
+		closed:  make(chan struct{}),
+	}
+	manager := NewProviderManager(provider, nil)
+	session, err := manager.Holder().BeginStream(context.Background(), noopSink{})
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+	waitForBlockingSession(t, provider.started)
+
+	before := runtime.NumGoroutine()
+	for range 20 {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		err := manager.CloseContext(ctx)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("CloseContext() error = %v, want context deadline exceeded", err)
+		}
+	}
+	runtime.GC()
+	time.Sleep(20 * time.Millisecond)
+	after := runtime.NumGoroutine()
+	if delta := after - before; delta > 4 {
+		t.Fatalf("repeated CloseContext timeouts retained %d goroutines, want at most 4", delta)
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("session.Close() error = %v", err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("manager.Close() after session drain error = %v", err)
 	}
 }
 

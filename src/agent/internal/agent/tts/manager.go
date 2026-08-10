@@ -29,6 +29,7 @@ type ProviderManager struct {
 
 	lifecycleMu sync.Mutex
 	closed      bool
+	closeDone   chan struct{}
 	retiredWG   sync.WaitGroup
 	retiredErr  error
 	retiredMu   sync.Mutex
@@ -104,15 +105,16 @@ func (m *ProviderManager) CloseContext(ctx context.Context) error {
 		m.closed = true
 		old, wait := m.holder.replace(nil)
 		m.retire(old, wait)
+		closeDone := make(chan struct{})
+		m.closeDone = closeDone
+		go func() {
+			m.retiredWG.Wait()
+			close(closeDone)
+		}()
 	}
 
-	done := make(chan struct{})
-	go func() {
-		m.retiredWG.Wait()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-m.closeDone:
 		m.retiredMu.Lock()
 		defer m.retiredMu.Unlock()
 		return m.retiredErr

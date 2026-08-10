@@ -1930,6 +1930,111 @@ func TestServerCloseCancelsActiveRunsAndOutputs(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Server.Close() did not interrupt the active output")
 	}
+
+	lateRunCtx, cancelLateRun := context.WithCancel(context.Background())
+	defer cancelLateRun()
+	if server.registerActiveRun("req-after-close", cancelLateRun) {
+		t.Fatal("Server accepted an active run after Close()")
+	}
+	select {
+	case <-lateRunCtx.Done():
+		t.Fatal("rejected late run was unexpectedly canceled by Server")
+	default:
+	}
+
+	lateOutputCtx, cancelLateOutput := context.WithCancel(context.Background())
+	lateOutput := newActiveTTSOutput(cancelLateOutput)
+	cleanupLateOutput := server.registerActiveOutput("req-after-close", lateOutput)
+	defer cleanupLateOutput()
+	select {
+	case <-lateOutputCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Server did not interrupt an output registered after Close()")
+	}
+}
+
+func TestServerCloseStopsAcceptingAndDrainsActiveHTTPHandlers(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve HTTP address: %v", err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release HTTP address: %v", err)
+	}
+
+	server := &Server{
+		addr:             addr,
+		eventBroadcaster: NewEventBroadcaster(),
+		activeRuns:       make(map[string]context.CancelFunc),
+	}
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- server.Start()
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conn, dialErr := net.DialTimeout("tcp", addr, 20*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("HTTP server did not start: %v", dialErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	resp, err := http.Get("http://" + addr + "/api/events")
+	if err != nil {
+		t.Fatalf("open SSE request: %v", err)
+	}
+	reader := bufio.NewReader(resp.Body)
+	if _, err := reader.ReadString('\n'); err != nil {
+		_ = resp.Body.Close()
+		t.Fatalf("read SSE response: %v", err)
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		server.Close()
+		close(closeDone)
+	}()
+
+	returnedBeforeHandlerDrained := false
+	select {
+	case <-closeDone:
+		returnedBeforeHandlerDrained = true
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("close SSE response: %v", err)
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Server.Close() did not finish after the active handler drained")
+	}
+	if returnedBeforeHandlerDrained {
+		t.Error("Server.Close() returned before the active HTTP handler drained")
+	}
+
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("Server.Start() after Close() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Server.Start() did not return after Close()")
+	}
+
+	conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("HTTP server still accepted connections after Close()")
+	}
 }
 
 func TestServerHandleChatCancelEndsDanglingLiveActivity(t *testing.T) {
