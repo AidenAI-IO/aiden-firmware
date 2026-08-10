@@ -62,6 +62,10 @@ func (e *LLMExecutor) ContextManager() *contextmanager.ContextManager {
 	return e.contextManager
 }
 
+func (e *LLMExecutor) ReplaceContextManager(contextManager *contextmanager.ContextManager) {
+	e.contextManager = contextManager
+}
+
 func (e *LLMExecutor) AppendMessage(message messages.Message) error {
 	return e.contextManager.AppendMessage(message)
 }

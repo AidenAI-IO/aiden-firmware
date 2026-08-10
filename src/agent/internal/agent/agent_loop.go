@@ -52,6 +52,7 @@ type AgentLoop struct {
 	PointerMode              string
 	ToolResultObserver       ToolResultObserver
 	ToolResultPolicy         ToolResultPolicy
+	ContextOverflowRecovery  func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
 	toolExecutionHookFactory func() toolExecutionHookHandler
 	contextManager           *contextmanager.ContextManager
 }
@@ -109,6 +110,7 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 		toolExecutionHooks = l.toolExecutionHookFactory()
 	}
 	policy := l.loopGuardPolicy()
+	contextOverflowRecoveryUsed := false
 
 restartBudget:
 	for {
@@ -123,7 +125,7 @@ restartBudget:
 				}
 				continue restartBudget
 			}
-			answer, outcome, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, toolExecutionHooks, policy)
+			answer, outcome, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, toolExecutionHooks, policy, &contextOverflowRecoveryUsed)
 			if err != nil {
 				return "", err
 			}
@@ -169,7 +171,7 @@ func (l *AgentLoop) stopWithSteerCheck(ctx context.Context, executor *executor.L
 	return answer, true, err
 }
 
-func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, toolExecutionHooks toolExecutionHookHandler, policy *TerminationPolicy) (string, iterationOutcome, error) {
+func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, toolExecutionHooks toolExecutionHookHandler, policy *TerminationPolicy, contextOverflowRecoveryUsed *bool) (string, iterationOutcome, error) {
 	iterationStartTime := time.Now()
 	toolCallsInIteration := 0
 	if l.Recorder != nil {
@@ -228,6 +230,22 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
 	if err != nil {
 		l.abortStreamingResponse(ctx)
+		if contextOverflowRecoveryUsed != nil && !*contextOverflowRecoveryUsed && isProviderContextExceededError(err) && l.ContextOverflowRecovery != nil {
+			*contextOverflowRecoveryUsed = true
+			newManager, compacted, recoveryErr := l.ContextOverflowRecovery(ctx, llmExecutor.ContextManager())
+			if recoveryErr != nil {
+				return "", iterationContinue, fmt.Errorf("compact context after provider context overflow: %w", recoveryErr)
+			}
+			if compacted {
+				if newManager == nil {
+					return "", iterationContinue, fmt.Errorf("compact context after provider context overflow: context manager is nil")
+				}
+				l.contextManager = newManager
+				llmExecutor.ReplaceContextManager(newManager)
+				log.Printf("[context] provider context limit exceeded; compacted context and retrying\n")
+				return "", iterationRestartBudget, nil
+			}
+		}
 		// If LLM was canceled due to interrupt, check for pending steer
 		if errors.Is(err, context.Canceled) || errors.Is(err, errSteerInterruptToolCancel) {
 			steerInterrupted := errors.Is(context.Cause(llmCtx), errSteerInterruptToolCancel)

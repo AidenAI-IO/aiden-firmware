@@ -1102,6 +1102,31 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.TerminationPolicy = NewTerminationPolicy(r.config.TerminationPolicy)
 	agentLoop.DevicePlatform = platformFn()
 	agentLoop.PointerMode = r.devicePointerModeFromState()
+	agentLoop.ContextOverflowRecovery = func(recoveryCtx context.Context, currentManager *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
+		if r.logger != nil {
+			r.logger.Info("Compaction: provider rejected the request because the context window was exceeded; compacting and retrying")
+		}
+		newManager, compacted, compactErr := compactor.Compact(recoveryCtx, currentManager)
+		if episodeRecorder != nil {
+			episodeRecorder.RecordEvent(TaskEpisodeEvent{
+				Type: runEventHistoricalToolResultCompaction,
+				Metadata: map[string]interface{}{
+					"compacted": compacted,
+					"success":   compactErr == nil,
+					"reason":    "provider_context_exceeded",
+				},
+			})
+		}
+		if compactErr != nil || !compacted {
+			return newManager, compacted, compactErr
+		}
+		newManager.AddAppendMessageHook(r.getStateHook())
+		if switchErr := contextmanager.SwitchSession(newManager.GetSessionFolder(), newManager.GetSessionID()); switchErr != nil {
+			return nil, false, switchErr
+		}
+		r.contextManager = newManager
+		return newManager, true, nil
+	}
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
 	if err != nil {

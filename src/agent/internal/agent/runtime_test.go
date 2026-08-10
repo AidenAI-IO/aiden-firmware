@@ -2243,6 +2243,34 @@ type failingGenerateModel struct {
 	err error
 }
 
+type runtimeContextOverflowRecoveryModel struct {
+	callCount int
+}
+
+func (m *runtimeContextOverflowRecoveryModel) GenerateContent(_ context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	m.callCount++
+	switch m.callCount {
+	case 1:
+		return nil, newProviderHTTPError(http.StatusBadRequest, []byte(
+			`{"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"}}`,
+		))
+	case 2:
+		return contentResponse("compacted summary"), nil
+	default:
+		return contentResponse("ok after compaction"), nil
+	}
+}
+
+func (m *runtimeContextOverflowRecoveryModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
+func (m *runtimeContextOverflowRecoveryModel) Spec() model.ModelSpec {
+	return model.ModelSpec{Provider: "fake", Name: "context-overflow-recovery", ContextWindow: 1_000_000}
+}
+
+func (m *runtimeContextOverflowRecoveryModel) CallOptions() []chains.ChainCallOption { return nil }
+
 func (m failingGenerateModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
 	if m.err != nil {
 		return nil, m.err
@@ -2376,6 +2404,64 @@ func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 	}
 	if len(llmModel.messages) != 2 {
 		t.Fatalf("model call count = %d, want 2 (summary + planner)", len(llmModel.messages))
+	}
+}
+
+func TestRuntimeRunCompactsAndRetriesWhenProviderRejectsContextLength(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "Answer directly."},
+		{Role: messages.MessageRoleUser, Content: "old question one"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer one"},
+		{Role: messages.MessageRoleUser, Content: "old question two"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer two"},
+		{Role: messages.MessageRoleUser, Content: "old question three"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer three"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	originalSessionID := manager.GetSessionID()
+
+	llmModel := &runtimeContextOverflowRecoveryModel{}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{ContextWindow: 1_000_000},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "new question"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok after compaction" {
+		t.Fatalf("output = %q, want ok after compaction", result.Output)
+	}
+	if llmModel.callCount != 3 {
+		t.Fatalf("model call count = %d, want 3 (rejected planner + summary + retried planner)", llmModel.callCount)
+	}
+	if runtime.contextManager == nil || runtime.contextManager.GetSessionID() == originalSessionID {
+		t.Fatal("runtime did not switch to the compacted context session")
+	}
+	loaded, err := contextmanager.LoadContextManagerFromCurrentSession(sessionFolder)
+	if err != nil {
+		t.Fatalf("LoadContextManagerFromCurrentSession() error = %v", err)
+	}
+	if loaded.GetSessionID() != runtime.contextManager.GetSessionID() {
+		t.Fatalf("current session = %q, want %q", loaded.GetSessionID(), runtime.contextManager.GetSessionID())
 	}
 }
 
