@@ -72,6 +72,10 @@ pairing closes the window early. A service restart never opens the window by
 itself. While a user-initiated window is active, the service also reconciles the
 actual BlueZ `Pairable` and `Discoverable` properties because bond removal and
 other BlueZ state changes can reset them independently of the service state.
+The Wake advertisement is registered once per `ble_service`/BlueZ lifetime and
+keeps a stable service UUID and board identity. Opening, refreshing, or closing
+the pairing window never unregisters or recreates the advertisement; only the
+adapter pairing properties and pairing-agent authorization change.
 
 The app reports only the live connection state. A bond is a reconnect cache,
 not proof that the App Wake session is connected. Every explicit Connect action

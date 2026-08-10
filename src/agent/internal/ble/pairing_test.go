@@ -2,6 +2,7 @@ package ble
 
 import (
 	"bytes"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -12,6 +13,45 @@ func TestAdvertisedServiceUUIDs(t *testing.T) {
 	want := []string{WakeServiceUUID}
 	if got := advertisedServiceUUIDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("advertisedServiceUUIDs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestApplyAdapterPairingModeOnlyChangesAdapterProperties(t *testing.T) {
+	type propertyUpdate struct {
+		name  string
+		value bool
+	}
+	updates := make([]propertyUpdate, 0, 2)
+	if err := applyAdapterPairingMode(true, func(name string, value bool) error {
+		updates = append(updates, propertyUpdate{name: name, value: value})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []propertyUpdate{
+		{name: "Pairable", value: true},
+		{name: "Discoverable", value: true},
+	}
+	if !reflect.DeepEqual(updates, want) {
+		t.Fatalf("pairing mode updates = %#v, want %#v", updates, want)
+	}
+}
+
+func TestApplyAdapterPairingModeStopsAfterPropertyFailure(t *testing.T) {
+	wantErr := errors.New("set failed")
+	updates := make([]string, 0, 2)
+	err := applyAdapterPairingMode(false, func(name string, _ bool) error {
+		updates = append(updates, name)
+		if name == "Pairable" {
+			return wantErr
+		}
+		return nil
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("applyAdapterPairingMode() error = %v, want %v", err, wantErr)
+	}
+	if want := []string{"Pairable"}; !reflect.DeepEqual(updates, want) {
+		t.Fatalf("property updates after failure = %#v, want %#v", updates, want)
 	}
 }
 

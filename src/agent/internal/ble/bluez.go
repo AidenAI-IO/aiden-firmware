@@ -153,7 +153,7 @@ func (b *blueZBackend) start() error {
 	pairingDeadline := b.pairingDeadline
 	b.stateMu.Unlock()
 
-	if err := b.exportObjects(pairingOpen); err != nil {
+	if err := b.exportObjects(); err != nil {
 		return err
 	}
 	if err := b.configureAdapter(pairingOpen); err != nil {
@@ -329,7 +329,7 @@ func (b *blueZBackend) close() {
 	})
 }
 
-func (b *blueZBackend) exportObjects(pairingOpen bool) error {
+func (b *blueZBackend) exportObjects() error {
 	var err error
 	_, err = b.exportGattObject(wakeServicePath, blueZGattServiceInterface, prop.Map{
 		blueZGattServiceInterface: {
@@ -364,13 +364,16 @@ func (b *blueZBackend) exportObjects(pairingOpen bool) error {
 	// Keep the legacy advertising payload within 31 bytes: flags (3), the
 	// 128-bit Wake Service UUID (18), and manufacturer data containing the
 	// 6-byte board identity (10). The local name is emitted in scan response.
+	// Advertisement contents stay constant for the entire backend lifetime.
+	// Pairing windows are enforced through Adapter1 and the pairing agent; they
+	// must not remove and recreate the controller advertising set.
 	b.advProps, err = prop.Export(b.conn, advertisementPath, prop.Map{
 		blueZAdvertisementInterface: {
 			"Type":             {Value: "peripheral", Emit: prop.EmitConst},
-			"ServiceUUIDs":     {Value: advertisedServiceUUIDs(), Emit: prop.EmitTrue},
+			"ServiceUUIDs":     {Value: advertisedServiceUUIDs(), Emit: prop.EmitConst},
 			"ManufacturerData": {Value: advertisedManufacturerData(b.boardIdentity), Emit: prop.EmitConst},
 			"LocalName":        {Value: b.deviceName, Emit: prop.EmitConst},
-			"Discoverable":     {Value: pairingOpen, Emit: prop.EmitTrue},
+			"Discoverable":     {Value: false, Emit: prop.EmitConst},
 		},
 	})
 	if err != nil {

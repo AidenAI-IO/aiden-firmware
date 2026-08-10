@@ -241,9 +241,8 @@ func (b *blueZBackend) beginPairingWindow(now time.Time) error {
 	b.stateMu.Unlock()
 
 	if err := b.setPairingMode(true); err != nil {
-		// Reapply the complete closed state, including the advertisement. A
-		// failure may have happened after the old advertisement was removed,
-		// so only clearing the adapter flags could leave BLE unavailable.
+		// Reapply the complete closed adapter state. Advertisement registration
+		// is intentionally independent from pairing-window transitions.
 		cleanupErr := b.setPairingMode(false)
 		b.stateMu.Lock()
 		b.pairingOpen = false
@@ -343,43 +342,22 @@ func (b *blueZBackend) setPairingMode(open bool) error {
 	if b.conn == nil || !b.adapter.IsValid() {
 		return ErrBluetoothUnavailable
 	}
-	for _, name := range []string{"Pairable", "Discoverable"} {
-		if err := callWithTimeout(
+	return applyAdapterPairingMode(open, func(name string, value bool) error {
+		return callWithTimeout(
 			b.conn.Object(BlueZBusName, b.adapter),
 			dbusPropertiesInterface+".Set",
 			blueZAdapterInterface,
 			name,
-			dbus.MakeVariant(open),
-		).Err; err != nil {
+			dbus.MakeVariant(value),
+		).Err
+	})
+}
+
+func applyAdapterPairingMode(open bool, setProperty func(name string, value bool) error) error {
+	for _, name := range []string{"Pairable", "Discoverable"} {
+		if err := setProperty(name, open); err != nil {
 			return fmt.Errorf("set adapter %s: %w", name, err)
 		}
-	}
-	if b.advProps != nil {
-		unregisterErr := callWithTimeout(
-			b.conn.Object(BlueZBusName, b.adapter),
-			blueZAdvManagerInterface+".UnregisterAdvertisement",
-			advertisementPath,
-		).Err
-		if unregisterErr != nil && !isDBusErrorNamed(unregisterErr, "org.bluez.Error.DoesNotExist") {
-			b.service.status.update(func(status *RuntimeStatus) { status.Advertising = false })
-			return fmt.Errorf("unregister BLE advertisement: %w", unregisterErr)
-		}
-		// Aiden is a custom BLE accessory. Do not advertise HOGP: an iOS
-		// system-owned HID connection can hold the peripheral link and prevent
-		// the app's CoreBluetooth central from discovering Wake.
-		b.advProps.SetMust(
-			blueZAdvertisementInterface,
-			"ServiceUUIDs",
-			advertisedServiceUUIDs(),
-		)
-		b.advProps.SetMust(
-			blueZAdvertisementInterface, "Discoverable", open,
-		)
-		if err := b.registerAdvertisement(); err != nil {
-			b.service.status.update(func(status *RuntimeStatus) { status.Advertising = false })
-			return err
-		}
-		b.service.status.update(func(status *RuntimeStatus) { status.Advertising = true })
 	}
 	return nil
 }

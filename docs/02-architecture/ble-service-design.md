@@ -284,6 +284,8 @@ Phone Bridge 命令。
 - 第一版只支持一个可信 iPhone；
 - `ble_service` 启动时默认不开放新设备配对；
 - 用户从 App 发起后才开放默认 5 分钟窗口，重复发起会刷新 deadline；
+- Wake Advertisement 在 `ble_service` / BlueZ 生命周期内只注册一次；配对窗口切换只修改
+  Adapter 的 Pairable/Discoverable 与 agent 授权，不删除或重建 advertising set；
 - 5 分钟是显式用户操作后的安全上限，用来覆盖蓝牙授权和 iOS 系统确认耗时；App 会立即
   开始扫描，成功后窗口立刻关闭，不会固定暴露满 5 分钟；
 - 显式连接时即使已有 Trusted bond 也重新开放限时窗口，bond 仅作为底层重连缓存；
