@@ -43,6 +43,8 @@ require_pattern 'compatible = "rockchip,rk628-csi-v4l2";' "$DTS" \
     "Pico Zero DTS must bind the RK628 CSI driver"
 require_pattern 'rk628-csi@50' "$DTS" \
     "Pico Zero DTS must use the strapped RK628 address 0x50"
+require_pattern 'clock-frequency = <100000>;' "$DTS" \
+    "RK628 I2C must run at 100 kHz for reliable 32-bit register transfers"
 require_pattern 'reset-gpios = <&gpio3 RK_PB1 GPIO_ACTIVE_LOW>;' "$DTS" \
     "RK628 reset must use GPIO3_B1"
 require_pattern 'clocks = <&cru MCLK_REF_MIPI0>;' "$DTS" \
