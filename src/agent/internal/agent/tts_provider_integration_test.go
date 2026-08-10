@@ -141,14 +141,28 @@ func TestStreamSessionWriterFlushesProviderWithoutInterruptingLLMStream(t *testi
 	}
 }
 
-func TestHandleTTSSettingsPostInitializesManagerWhenAbsent(t *testing.T) {
+func TestHandleTTSSettingsPostEnablesAudioDialogWhenInitiallyUnconfigured(t *testing.T) {
+	provider := &recordingTTSProvider{name: "minimax-cn"}
+	manager := ttsmodule.NewProviderManagerWithFactory(nil, nil, func(cfg ttsmodule.ProviderConfig) (ttsmodule.TTSProvider, error) {
+		if cfg.Provider != "minimax-cn" || cfg.APIKey != "test-key" {
+			t.Fatalf("factory config = %#v, want minimax-cn with request API key", cfg)
+		}
+		return provider, nil
+	})
 	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
+		withTestConfigDir(t, Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     startTTSPlaybackAudioSocket(t),
+				SampleRate: 16000,
+			},
+		}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
+	runtime.ttsManager = manager
 	server := &Server{runtime: runtime}
 	dialog, err := NewAudioDialog(runtime)
 	if err != nil {
@@ -157,6 +171,9 @@ func TestHandleTTSSettingsPostInitializesManagerWhenAbsent(t *testing.T) {
 	stableManager := runtime.ttsProviderManager()
 	if dialog.ttsManager != stableManager {
 		t.Fatal("audio dialog does not reference Runtime's stable TTS manager")
+	}
+	if dialog.currentTTSManager() != nil {
+		t.Fatal("audio dialog TTS manager is configured before POST")
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/settings/tts", bytes.NewBufferString(`{"provider":"minimax-cn","api_key":"test-key"}`))
@@ -174,16 +191,34 @@ func TestHandleTTSSettingsPostInitializesManagerWhenAbsent(t *testing.T) {
 	if manager := dialog.currentTTSManager(); manager != stableManager || manager.Current() != "minimax-cn" {
 		t.Fatalf("audio dialog manager = %#v, want shared initialized minimax-cn manager", manager)
 	}
+
+	if err := dialog.Speak(context.Background(), "enabled after POST", nil); err != nil {
+		t.Fatalf("AudioDialog.Speak() error = %v", err)
+	}
+	if got := provider.beginCalls(); got != 1 {
+		t.Fatalf("new provider BeginStream calls = %d, want 1", got)
+	}
+	if got := provider.texts(); len(got) != 1 || got[0] != "enabled after POST" {
+		t.Fatalf("new provider texts = %#v, want AudioDialog speech", got)
+	}
 }
 
-func TestTTSSettingsSwitchUpdatesAudioDialogProvider(t *testing.T) {
+func TestTTSSettingsSwitchRoutesAudioDialogSpeechToNewProvider(t *testing.T) {
+	oldProvider := &recordingTTSProvider{name: "alicloud"}
+	newProvider := &recordingTTSProvider{name: "minimax-cn"}
+	manager := ttsmodule.NewProviderManagerWithFactory(oldProvider, nil, func(cfg ttsmodule.ProviderConfig) (ttsmodule.TTSProvider, error) {
+		if cfg.Provider != "minimax-cn" || cfg.APIKey != "new-key" {
+			t.Fatalf("factory config = %#v, want minimax-cn with request API key", cfg)
+		}
+		return newProvider, nil
+	})
 	cfg := withTestConfigDir(t, Config{
 		Model: ModelConfig{Provider: "fake"},
 		TTS: TTSConfig{
 			Provider: "alicloud",
 			APIKey:   "old-key",
 		},
-		Audio: AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
+		Audio: AudioConfig{Socket: startTTSPlaybackAudioSocket(t), SampleRate: 16000},
 	})
 	runtime := NewRuntimeWithDeps(
 		cfg,
@@ -192,7 +227,8 @@ func TestTTSSettingsSwitchUpdatesAudioDialogProvider(t *testing.T) {
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0")
+	runtime.ttsManager = manager
+	server := &Server{runtime: runtime}
 	dialog, err := NewAudioDialog(runtime)
 	if err != nil {
 		t.Fatalf("NewAudioDialog() error = %v", err)
@@ -214,6 +250,19 @@ func TestTTSSettingsSwitchUpdatesAudioDialogProvider(t *testing.T) {
 	}
 	if got := dialog.ttsManager.Current(); got != "minimax-cn" {
 		t.Fatalf("audio dialog provider = %q, want minimax-cn", got)
+	}
+
+	if err := dialog.Speak(context.Background(), "spoken by switched provider", nil); err != nil {
+		t.Fatalf("AudioDialog.Speak() error = %v", err)
+	}
+	if got := newProvider.beginCalls(); got != 1 {
+		t.Fatalf("new provider BeginStream calls = %d, want 1", got)
+	}
+	if got := newProvider.texts(); len(got) != 1 || got[0] != "spoken by switched provider" {
+		t.Fatalf("new provider texts = %#v, want AudioDialog speech", got)
+	}
+	if got := oldProvider.beginCalls(); got != 0 {
+		t.Fatalf("old provider BeginStream calls = %d, want 0 after POST", got)
 	}
 }
 
@@ -868,6 +917,7 @@ func (s *formatCheckingTTSSession) Err() error { return s.err }
 
 type recordingTTSProvider struct {
 	name       string
+	beginCount atomic.Int32
 	closeCalls atomic.Int32
 	mu         sync.Mutex
 	seen       []string
@@ -901,6 +951,7 @@ func (p *playbackStartedTransientErrorProvider) Capabilities() ttsmodule.Capabil
 }
 
 func (p *recordingTTSProvider) BeginStream(ctx context.Context, sink ttsmodule.AudioSink) (ttsmodule.StreamSession, error) {
+	p.beginCount.Add(1)
 	return &recordingTTSSession{provider: p, sink: sink}, nil
 }
 
@@ -916,6 +967,10 @@ func (p *recordingTTSProvider) Close() error {
 
 func (p *recordingTTSProvider) providerCloseCalls() int {
 	return int(p.closeCalls.Load())
+}
+
+func (p *recordingTTSProvider) beginCalls() int {
+	return int(p.beginCount.Load())
 }
 
 func (p *flushRecordingTTSProvider) Name() string { return p.name }

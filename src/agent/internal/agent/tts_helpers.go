@@ -190,10 +190,12 @@ func beginManagedTTSStream(ctx context.Context, manager *tts.ProviderManager, pl
 		return nil, errors.New("tts playback backend is not configured")
 	}
 	holder := manager.Holder()
-	sourceFormat := ttsPlaybackFormat(cfg, holder.Capabilities())
-	targetSink := tts.NewAudioServiceSink(playback, ttsPlaybackTargetFormat(cfg, sourceFormat))
-	providerSink := tts.NewResamplingSink(sourceFormat, targetSink)
-	session, err := holder.BeginStream(ctx, providerSink)
+	var targetSink *tts.AudioServiceSink
+	session, err := holder.BeginStreamWithCapabilities(ctx, func(caps tts.Capabilities) tts.AudioSink {
+		sourceFormat := ttsPlaybackFormat(cfg, caps)
+		targetSink = tts.NewAudioServiceSink(playback, ttsPlaybackTargetFormat(cfg, sourceFormat))
+		return tts.NewResamplingSink(sourceFormat, targetSink)
+	})
 	if err != nil {
 		return nil, err
 	}

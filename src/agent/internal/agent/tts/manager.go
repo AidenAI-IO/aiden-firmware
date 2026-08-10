@@ -1,6 +1,9 @@
 package tts
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // Logger is the minimal logging interface used by the manager.
 type Logger interface {
@@ -18,18 +21,32 @@ func (nopLogger) Warn(string, ...any) {}
 // Business code uses Holder() for actual TTS calls; SwitchTo is invoked from
 // the HTTP API when the user changes provider in the app.
 type ProviderManager struct {
-	holder *ProviderHolder
-	logger Logger
+	holder      *ProviderHolder
+	logger      Logger
+	newProvider Factory
+
+	lifecycleMu sync.Mutex
+	closed      bool
 }
 
 // NewProviderManager creates a manager around an initial provider.
 func NewProviderManager(initial TTSProvider, logger Logger) *ProviderManager {
+	return NewProviderManagerWithFactory(initial, logger, New)
+}
+
+// NewProviderManagerWithFactory creates a manager with an injectable provider
+// factory. A nil factory uses the package-level New function.
+func NewProviderManagerWithFactory(initial TTSProvider, logger Logger, factory Factory) *ProviderManager {
 	if logger == nil {
 		logger = nopLogger{}
 	}
+	if factory == nil {
+		factory = New
+	}
 	return &ProviderManager{
-		holder: NewProviderHolder(initial),
-		logger: logger,
+		holder:      NewProviderHolder(initial),
+		logger:      logger,
+		newProvider: factory,
 	}
 }
 
@@ -43,7 +60,14 @@ func (m *ProviderManager) Current() string { return m.holder.Name() }
 // Swap blocks until all in-flight sessions from the old provider have
 // completed, so the old provider can be safely closed immediately after.
 func (m *ProviderManager) SwitchTo(cfg ProviderConfig) error {
-	next, err := New(cfg)
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
+	if m.closed {
+		return ErrProviderManagerClosed
+	}
+
+	next, err := m.newProvider(cfg)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", cfg.Provider, err)
 	}
@@ -61,5 +85,12 @@ func (m *ProviderManager) SwitchTo(cfg ProviderConfig) error {
 
 // Close releases the manager and the underlying provider.
 func (m *ProviderManager) Close() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
+	if m.closed {
+		return nil
+	}
+	m.closed = true
 	return m.holder.Close()
 }

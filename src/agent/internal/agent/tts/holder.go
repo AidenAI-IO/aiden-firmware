@@ -62,17 +62,41 @@ func (h *ProviderHolder) Capabilities() Capabilities {
 }
 
 func (h *ProviderHolder) BeginStream(ctx context.Context, sink AudioSink) (StreamSession, error) {
+	p, wg, err := h.acquireProvider()
+	if err != nil {
+		return nil, err
+	}
+	return beginTrackedStream(ctx, p, wg, sink)
+}
+
+// BeginStreamWithCapabilities creates the sink from the same provider
+// generation that opens the stream. The generation is pinned before reading
+// capabilities, so a concurrent Swap cannot pair old capabilities with a new
+// provider session.
+func (h *ProviderHolder) BeginStreamWithCapabilities(ctx context.Context, makeSink func(Capabilities) AudioSink) (StreamSession, error) {
+	p, wg, err := h.acquireProvider()
+	if err != nil {
+		return nil, err
+	}
+	sink := makeSink(p.Capabilities())
+	return beginTrackedStream(ctx, p, wg, sink)
+}
+
+func (h *ProviderHolder) acquireProvider() (TTSProvider, *sync.WaitGroup, error) {
 	h.mu.RLock()
 	p := h.current
 	if p == nil {
 		h.mu.RUnlock()
-		return nil, ErrProviderNotFound
+		return nil, nil, ErrProviderNotFound
 	}
 	// Track this session in the current generation's WaitGroup.
 	wg := h.activeWG
 	wg.Add(1)
 	h.mu.RUnlock()
+	return p, wg, nil
+}
 
+func beginTrackedStream(ctx context.Context, p TTSProvider, wg *sync.WaitGroup, sink AudioSink) (StreamSession, error) {
 	session, err := p.BeginStream(ctx, sink)
 	if err != nil {
 		wg.Done()
