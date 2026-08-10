@@ -1,6 +1,7 @@
 package contextmanager
 
 import (
+	"aiden-agent/internal/agent/messages"
 	"context"
 	"os"
 	"path/filepath"
@@ -189,7 +190,7 @@ func TestArtifactStoreCleanerRemovesStaleUncommittedFiles(t *testing.T) {
 
 func TestArtifactStoreCleanerKeepsReferencedSessionArtifactsUntilLastRevisionIsRemoved(t *testing.T) {
 	sessionFolder := t.TempDir()
-	manager, err := NewContextManagerFromMessageList(sessionFolder, []Message{{Role: MessageRoleSystem, Content: "system"}})
+	manager, err := NewContextManagerFromMessageList(sessionFolder, []messages.Message{{Role: messages.MessageRoleSystem, Content: "system"}})
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
@@ -197,13 +198,13 @@ func TestArtifactStoreCleanerKeepsReferencedSessionArtifactsUntilLastRevisionIsR
 	if err != nil {
 		t.Fatalf("StoreArtifact() error = %v", err)
 	}
-	if err := manager.AppendMessage(Message{
-		Role: MessageRoleToolResult,
-		ToolResults: []ToolResult{{
+	if err := manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleToolResult,
+		ToolResults: []messages.ToolResult{{
 			ToolCallID: "call_lineage",
 			Name:       "shell",
 			Content:    "bounded lineage result",
-			Meta:       &ToolResultMeta{ArtifactPath: stored.Path, ArtifactComplete: true},
+			Meta:       &messages.ToolResultMeta{ArtifactPath: stored.Path, ArtifactComplete: true},
 		}},
 	}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)

@@ -101,6 +101,13 @@ jobs:
           bash scripts/test_check_normalized_coords.sh
       - name: Verify swap initialization
         run: sh scripts/test_swap_init.sh
+      # dnsmasq-base gives the test a real parser for the config S55 generates
+      # at runtime; without it that syntax check downgrades to a skip.
+      - name: Verify usb0 DHCP options
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dnsmasq-base
+          sh scripts/test_usb0_dhcp_options.sh
       - name: Run C++ unit tests
         run: |
           sudo apt-get update

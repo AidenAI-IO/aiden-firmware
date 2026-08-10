@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -16,14 +17,14 @@ func TestInitializeContextManagerStartsNewSessionWhenSystemPromptChanges(t *test
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}
 	rawMessages := manager.CloneMessageList()
-	messages := contextmanager.ConvertMessageList(rawMessages)
-	if len(messages) != 1 {
-		t.Fatalf("messages = %d, want 1", len(messages))
+	messageList := messages.ConvertMessageList(rawMessages)
+	if len(messageList) != 1 {
+		t.Fatalf("messages = %d, want 1", len(messageList))
 	}
-	if text := messageText(messages); text != "system v1\n" {
+	if text := messageText(messageList); text != "system v1\n" {
 		t.Fatalf("system prompt = %q, want original system v1", text)
 	}
-	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "first request"}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "first request"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 	originalSessionID := manager.GetSessionID()
@@ -32,7 +33,7 @@ func TestInitializeContextManagerStartsNewSessionWhenSystemPromptChanges(t *test
 	if err != nil {
 		t.Fatalf("reload freshNewContextManager() error = %v", err)
 	}
-	reloadedMessages := contextmanager.ConvertMessageList(reloaded.CloneMessageList())
+	reloadedMessages := messages.ConvertMessageList(reloaded.CloneMessageList())
 	if reloaded.GetSessionID() == originalSessionID {
 		t.Fatal("system prompt change reused the existing session")
 	}
@@ -47,7 +48,7 @@ func TestInitializeContextManagerStartsNewSessionWhenSystemPromptChanges(t *test
 	if err != nil {
 		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
-	if text := messageText(contextmanager.ConvertMessageList(original.CloneMessageList())); text != "system v1\nfirst request\n" {
+	if text := messageText(messages.ConvertMessageList(original.CloneMessageList())); text != "system v1\nfirst request\n" {
 		t.Fatalf("original session was modified: %q", text)
 	}
 }
@@ -58,7 +59,7 @@ func TestInitializeContextManagerReusesSessionWhenSystemPromptMatches(t *testing
 	if err != nil {
 		t.Fatalf("InitializeContextManager() error = %v", err)
 	}
-	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
@@ -69,7 +70,7 @@ func TestInitializeContextManagerReusesSessionWhenSystemPromptMatches(t *testing
 	if reloaded.GetSessionID() != manager.GetSessionID() {
 		t.Fatal("unchanged system prompt started a new session")
 	}
-	if text := messageText(contextmanager.ConvertMessageList(reloaded.CloneMessageList())); text != "system\nhello\n" {
+	if text := messageText(messages.ConvertMessageList(reloaded.CloneMessageList())); text != "system\nhello\n" {
 		t.Fatalf("reloaded session = %q", text)
 	}
 }
@@ -88,7 +89,7 @@ func TestUserMessageFromInputPreservesAttachments(t *testing.T) {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
-	messages := contextmanager.ConvertMessageList(manager.CloneMessageList())
+	messages := messages.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 2 {
 		t.Fatalf("messages = %#v", messages)
 	}
@@ -113,13 +114,13 @@ func TestVisualFollowupMarksScreenshotObservationSource(t *testing.T) {
 			llms.BinaryPart("image/jpeg", []byte("jpeg-bytes")),
 		},
 	})
-	if msg.Role != contextmanager.MessageRoleState {
+	if msg.Role != messages.MessageRoleState {
 		t.Fatalf("Role = %q, want state", msg.Role)
 	}
 	if len(msg.Attachments) != 1 {
 		t.Fatalf("attachments = %#v", msg.Attachments)
 	}
-	if msg.Attachments[0].Source != contextmanager.AttachmentSourceScreenshotObservation {
+	if msg.Attachments[0].Source != messages.AttachmentSourceScreenshotObservation {
 		t.Fatalf("Source = %q", msg.Attachments[0].Source)
 	}
 }

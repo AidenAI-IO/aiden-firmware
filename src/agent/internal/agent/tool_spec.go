@@ -30,6 +30,9 @@ type ToolSpec struct {
 	ExampleInput string
 	AgentExposed bool
 	HTTPExposed  bool
+	// AgentPlatforms lists device_type-derived platforms where the tool should
+	// be shown to the conversational model. Empty means all platforms.
+	AgentPlatforms []string
 }
 
 type ToolSpecs struct {
@@ -60,11 +63,12 @@ type ToolSkillDefinition struct {
 }
 
 type toolSpecMetadata struct {
-	Category     string
-	InputMode    string
-	ExampleInput string
-	AgentExposed *bool
-	HTTPExposed  *bool
+	Category       string
+	InputMode      string
+	ExampleInput   string
+	AgentExposed   *bool
+	HTTPExposed    *bool
+	AgentPlatforms []string
 }
 
 var builtInToolSpecMetadata = map[string]toolSpecMetadata{
@@ -89,9 +93,10 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		ExampleInput: `{"keys":["enter"]}`,
 	},
 	"enter_text": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"text":"hello你好","focus":{"x":450,"y":105,"coord_space":"normalized"}}`,
+		Category:       "input",
+		InputMode:      toolInputModeJSON,
+		ExampleInput:   `{"text":"hello你好","focus":{"x":450,"y":105,"coord_space":"normalized"}}`,
+		AgentPlatforms: []string{"ios", "android", "macos", "windows", "linux"},
 	},
 	"mouse_click": {
 		Category:     "input",
@@ -109,9 +114,10 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		ExampleInput: `{"delta":-3}`,
 	},
 	"quick_action": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"action":"list"}`,
+		Category:       "input",
+		InputMode:      toolInputModeJSON,
+		ExampleInput:   `{"action":"list"}`,
+		AgentPlatforms: []string{"ios", "android", "macos"},
 	},
 	"recall_device_memory": {
 		Category:     "memory",
@@ -240,46 +246,93 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	toolOpenApp: {
-		Category:     "bridge",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"app":"微信"}`,
+		Category:       "bridge",
+		InputMode:      toolInputModeJSON,
+		ExampleInput:   `{"app":"微信"}`,
+		AgentPlatforms: []string{"ios", "android", "macos"},
 	},
 	toolOpenURL: {
-		Category:     "bridge",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"url":"https://example.com"}`,
+		Category:       "bridge",
+		InputMode:      toolInputModeJSON,
+		ExampleInput:   `{"url":"https://example.com"}`,
+		AgentPlatforms: []string{"ios", "android"},
 	},
 	toolSearchLaunchApp: {
-		Category:     "phone",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"app":"WeChat"}`,
-		AgentExposed: toolSpecBoolPtr(false),
-		HTTPExposed:  toolSpecBoolPtr(false),
+		Category:       "phone",
+		InputMode:      toolInputModeJSON,
+		ExampleInput:   `{"app":"WeChat"}`,
+		AgentExposed:   toolSpecBoolPtr(false),
+		HTTPExposed:    toolSpecBoolPtr(false),
+		AgentPlatforms: []string{"ios", "macos"},
+	},
+	toolBridgeOpenApp: {
+		Category:       "bridge",
+		InputMode:      toolInputModeJSON,
+		ExampleInput:   `{"app":"微信"}`,
+		AgentExposed:   toolSpecBoolPtr(false),
+		HTTPExposed:    toolSpecBoolPtr(false),
+		AgentPlatforms: []string{"ios", "android"},
 	},
 	toolBridgeClipboard: {
-		Category:     "bridge",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"action":"read"}`,
+		Category:       "bridge",
+		InputMode:      toolInputModeJSON,
+		ExampleInput:   `{"action":"read"}`,
+		AgentPlatforms: []string{"ios", "android"},
 	},
 	toolBridgeCalendar: {
-		Category:     "bridge",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"action":"query","from":"2026-07-10T00:00:00+08:00","to":"2026-07-11T00:00:00+08:00"}`,
+		Category:       "bridge",
+		InputMode:      toolInputModeJSON,
+		ExampleInput:   `{"action":"query","from":"2026-07-10T00:00:00+08:00","to":"2026-07-11T00:00:00+08:00"}`,
+		AgentPlatforms: []string{"ios", "android"},
 	},
 	toolBridgeContacts: {
-		Category:     "bridge",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"action":"query","query":"Alice","limit":20}`,
+		Category:       "bridge",
+		InputMode:      toolInputModeJSON,
+		ExampleInput:   `{"action":"query","query":"Alice","limit":20}`,
+		AgentPlatforms: []string{"ios", "android"},
 	},
 	toolBridgeNotification: {
-		Category:     "bridge",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"title":"Aiden reminder","body":"Check your phone","sound":true}`,
+		Category:       "bridge",
+		InputMode:      toolInputModeJSON,
+		ExampleInput:   `{"title":"Aiden reminder","body":"Check your phone","sound":true}`,
+		AgentPlatforms: []string{"ios", "android"},
 	},
 }
 
 func toolSpecBoolPtr(value bool) *bool {
 	return &value
+}
+
+func normalizeAgentToolPlatforms(platforms []string) []string {
+	seen := make(map[string]struct{}, len(platforms))
+	result := make([]string, 0, len(platforms))
+	for _, platform := range platforms {
+		platform = normalizeAgentToolPlatform(platform)
+		if platform == "" {
+			continue
+		}
+		if _, ok := seen[platform]; ok {
+			continue
+		}
+		seen[platform] = struct{}{}
+		result = append(result, platform)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func normalizeAgentToolPlatform(platform string) string {
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		return ""
+	}
+	if deviceType := deviceTypeFromPlatform(platform); deviceType != "" {
+		return deviceTypePlatform(deviceType)
+	}
+	if deviceType, ok := normalizeDeviceType(platform); ok {
+		return deviceTypePlatform(deviceType)
+	}
+	return strings.ToLower(platform)
 }
 
 func NewToolSpecs(tools []langtools.Tool) *ToolSpecs {
@@ -327,14 +380,15 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 	}
 
 	return ToolSpec{
-		Tool:         tool,
-		Name:         name,
-		Description:  strings.TrimSpace(tool.Description()),
-		Category:     defaultString(meta.Category, "general"),
-		InputMode:    defaultString(meta.InputMode, toolInputModeText),
-		ExampleInput: exampleInput,
-		AgentExposed: agentExposed,
-		HTTPExposed:  httpExposed,
+		Tool:           tool,
+		Name:           name,
+		Description:    strings.TrimSpace(tool.Description()),
+		Category:       defaultString(meta.Category, "general"),
+		InputMode:      defaultString(meta.InputMode, toolInputModeText),
+		ExampleInput:   exampleInput,
+		AgentExposed:   agentExposed,
+		HTTPExposed:    httpExposed,
+		AgentPlatforms: normalizeAgentToolPlatforms(meta.AgentPlatforms),
 	}
 }
 
@@ -359,19 +413,47 @@ func (s *ToolSpecs) All() []ToolSpec {
 	return result
 }
 
-// AgentTools returns the tools sent to the conversational model. loadAll only
-// bypasses AgentExposed; it never changes HTTP exposure policy.
+// AgentTools returns conversational tools without device platform filtering.
+// Runtime model callers should use AgentToolsForPlatform.
 func (s *ToolSpecs) AgentTools(loadAll bool) []langtools.Tool {
+	return s.AgentToolsForPlatform(loadAll, "")
+}
+
+// AgentToolsForPlatform returns conversational tools for the current
+// device_type-derived platform. Platform-specific tools must declare their
+// allowed platforms in builtInToolSpecMetadata; empty metadata means portable.
+// loadAll only bypasses AgentExposed, not HTTP or platform exposure policy.
+func (s *ToolSpecs) AgentToolsForPlatform(loadAll bool, platform string) []langtools.Tool {
 	if s == nil {
 		return nil
 	}
 	tools := make([]langtools.Tool, 0, len(s.names))
 	for _, spec := range s.All() {
-		if loadAll || spec.AgentExposed {
-			tools = append(tools, spec.Tool)
+		if !(loadAll || spec.AgentExposed) {
+			continue
 		}
+		if !spec.AgentAvailableForPlatform(platform) {
+			continue
+		}
+		tools = append(tools, spec.Tool)
 	}
 	return tools
+}
+
+func (spec ToolSpec) AgentAvailableForPlatform(platform string) bool {
+	if len(spec.AgentPlatforms) == 0 {
+		return true
+	}
+	platform = normalizeAgentToolPlatform(platform)
+	if platform == "" {
+		return true
+	}
+	for _, allowed := range spec.AgentPlatforms {
+		if allowed == platform {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ToolSpecs) HTTPDescriptors() []ToolDescriptor {

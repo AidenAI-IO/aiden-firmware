@@ -3403,6 +3403,31 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	}
 }
 
+func TestTouchGestureSchemaFiltersEdgeGesturesForDesktopPlatforms(t *testing.T) {
+	desktopTool := &TouchGestureTool{}
+	desktopTool.SetDeviceTypeFunc(func() string { return "windows" })
+	desktopTypes := stringEnumPropertyValues(t, desktopTool.ArgsSchema(), "type")
+	for _, want := range []string{"tap", "swipe", "swipe_up"} {
+		if _, ok := desktopTypes[want]; !ok {
+			t.Fatalf("desktop touch_gesture schema missing %q: %v", want, desktopTypes)
+		}
+	}
+	for _, notWant := range []string{"back", "home"} {
+		if _, ok := desktopTypes[notWant]; ok {
+			t.Fatalf("desktop touch_gesture schema exposed edge gesture %q: %v", notWant, desktopTypes)
+		}
+	}
+
+	androidTool := &TouchGestureTool{}
+	androidTool.SetDeviceTypeFunc(func() string { return "Android" })
+	androidTypes := stringEnumPropertyValues(t, androidTool.ArgsSchema(), "type")
+	for _, want := range []string{"back", "home"} {
+		if _, ok := androidTypes[want]; !ok {
+			t.Fatalf("Android touch_gesture schema missing edge gesture %q: %v", want, androidTypes)
+		}
+	}
+}
+
 func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 	desc := (&MouseClickTool{}).Description()
 	for _, want := range []string{"normalized", "latest screenshot", "visual center", "post-action screenshot"} {
@@ -3428,18 +3453,39 @@ func TestKeyboardTapDescriptionRoutesSemanticShortcutsToQuickAction(t *testing.T
 	}
 }
 
-func TestKeyboardTapDescriptionReferencesAndroidGuidePage(t *testing.T) {
-	keysDesc := keyboardTapKeysSchemaDescription(t)
-	for _, want := range []string{"KEYCODE_*", "legacy KEY_USAGE_*", "Android key guide", "single-key taps only", "hid.pointer_mode is absolute", "KEYCODE_SCREENSHOT", "KEYCODE_BRIGHTNESS_UP"} {
-		if !strings.Contains(keysDesc, want) {
-			t.Fatalf("keys schema missing %q:\n%s", want, keysDesc)
+func TestKeyboardTapSchemaListsExtensionKeysForPlatform(t *testing.T) {
+	androidTool := &KeyboardTapTool{}
+	androidTool.SetDeviceTypeFunc(func() string { return "Android" })
+	androidDesc := keyboardTapKeysSchemaDescriptionForTool(t, androidTool)
+	for _, want := range []string{"KEYCODE_*", "Android device_type", "single-key Android"} {
+		if !strings.Contains(androidDesc, want) {
+			t.Fatalf("Android keys schema missing %q:\n%s", want, androidDesc)
+		}
+	}
+
+	desktopTool := &KeyboardTapTool{}
+	desktopTool.SetDeviceTypeFunc(func() string { return "windows" })
+	desktopDesc := keyboardTapKeysSchemaDescriptionForTool(t, desktopTool)
+	for _, want := range []string{"non-Android device_type", "KEYCODE_SCREENSHOT", "KEYCODE_BRIGHTNESS_UP", "KEYCODE_MEDIA_PLAY_PAUSE"} {
+		if !strings.Contains(desktopDesc, want) {
+			t.Fatalf("desktop keys schema missing absolute extension key %q:\n%s", want, desktopDesc)
+		}
+	}
+	for _, notWant := range []string{"KEYCODE_HOME", "KEYCODE_BACK", "KEYCODE_APP_SWITCH"} {
+		if strings.Contains(desktopDesc, notWant) {
+			t.Fatalf("desktop keys schema exposed Android-only key %q:\n%s", notWant, desktopDesc)
 		}
 	}
 }
 
 func keyboardTapKeysSchemaDescription(t *testing.T) string {
 	t.Helper()
-	props, ok := (&KeyboardTapTool{}).ArgsSchema()["properties"].(map[string]any)
+	return keyboardTapKeysSchemaDescriptionForTool(t, &KeyboardTapTool{})
+}
+
+func keyboardTapKeysSchemaDescriptionForTool(t *testing.T, tool *KeyboardTapTool) string {
+	t.Helper()
+	props, ok := tool.ArgsSchema()["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("keyboard_tap schema missing properties")
 	}

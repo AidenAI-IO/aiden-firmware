@@ -44,14 +44,14 @@ func TestEvaluateFieldCommitRejectsCandidateOnly(t *testing.T) {
 	committed, _ := evaluateFieldCommit(textInputScreenAnalysis{
 		FieldText:          "你好",
 		CompositionPending: true,
-	}, "你好")
+	})
 	if committed {
 		t.Fatal("candidate/preedit only should not commit")
 	}
 	committed, _ = evaluateFieldCommit(textInputScreenAnalysis{
 		FieldText:     "你好",
 		TargetMatched: true,
-	}, "你好")
+	})
 	if !committed {
 		t.Fatal("vision-confirmed target match should commit")
 	}
@@ -73,7 +73,7 @@ func TestEvaluateFieldCommitAcceptsASCIIDespitePendingFlag(t *testing.T) {
 		FieldText:          "hello",
 		TargetMatched:      true,
 		CompositionPending: true,
-	}, "hello")
+	})
 	if !committed {
 		t.Fatal("vision-confirmed field match should win over a contradictory pending flag")
 	}
@@ -398,10 +398,10 @@ func TestCycleIMEUsesKeyboardTapNotQuickAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if label != "ctrl+shift" {
+	if label != "KEYCODE_LANGUAGE_SWITCH" {
 		t.Fatalf("label=%q", label)
 	}
-	if len(tapped) != 1 || !strings.Contains(tapped[0], "ctrl") {
+	if len(tapped) != 1 || !strings.Contains(tapped[0], "KEYCODE_LANGUAGE_SWITCH") {
 		t.Fatalf("keyboard_tap calls=%v", tapped)
 	}
 }

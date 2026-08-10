@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/langfuse"
+	"aiden-agent/internal/agent/messages"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -398,9 +399,9 @@ func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunUsesDeviceTypeStateForRuntimePlatform(t *testing.T) {
+func TestRuntimeRunInjectsDeviceTypeStateIntoTools(t *testing.T) {
 	model := &scriptedModel{responses: roleToolResponses("enter_text", `{"text":"hello","focus":{"x":500,"y":500}}`, "done")}
-	tool := &platformCaptureTool{
+	tool := &deviceTypeCaptureTool{
 		stubTool: stubTool{
 			name:        "enter_text",
 			description: "Enter text.",
@@ -430,8 +431,8 @@ func TestRuntimeRunUsesDeviceTypeStateForRuntimePlatform(t *testing.T) {
 	if result.Output != "done" {
 		t.Fatalf("output = %q, want final answer", result.Output)
 	}
-	if len(tool.platforms) != 1 || tool.platforms[0] != "android" {
-		t.Fatalf("runtime platform = %v, want [android] from device_type state", tool.platforms)
+	if len(tool.deviceTypes) != 1 || tool.deviceTypes[0] != "Android" {
+		t.Fatalf("runtime device_type = %v, want [Android]", tool.deviceTypes)
 	}
 }
 
@@ -1962,6 +1963,35 @@ func TestRuntimeRunOmitsArchivedSkillsFromAvailableCatalog(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunFiltersAvailableSkillCatalogByDeviceType(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	skillsDir := filepath.Join(configDir, "skills")
+	writeSKILL(t, skillsDir, "android-only", "---\nname: android-only\ndescription: Android skill\nmetadata:\n  device_types: [Android]\n---\n\nUse Android.\n")
+	writeSKILL(t, skillsDir, "ios-only", "---\nname: ios-only\ndescription: iOS skill\nmetadata:\n  device_types: [iOS]\n---\n\nUse iOS.\n")
+	index, err := LoadSkillsFromDirs([]string{skillsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, SkillsDirs: []string{skillsDir}, Device: DeviceConfig{DeviceType: "Android"}, Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		index,
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !runtimeModelCallContains(model.messages[0], "- android-only: Android skill") {
+		t.Fatalf("run missing Android skill catalog entry")
+	}
+	if runtimeModelCallContains(model.messages[0], "- ios-only: iOS skill") {
+		t.Fatalf("run included incompatible iOS skill catalog entry")
+	}
+}
+
 func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	tools := &ToolSet{tools: map[string]langtools.Tool{}}
@@ -2035,6 +2065,21 @@ func TestSkillCatalogSummaryLimitsEntriesAndDescriptionLength(t *testing.T) {
 	}
 	if strings.Contains(catalog, strings.Repeat("长", maxSkillCatalogDescriptionRunes+1)) {
 		t.Fatalf("expected long descriptions to be truncated")
+	}
+}
+
+func TestSkillManagerRejectsIncompatibleDeviceTypeActivation(t *testing.T) {
+	index := NewSkillIndex()
+	index.skills["ios-only"] = &SkillDefinition{Name: "ios-only", Description: "iOS skill", DeviceTypes: []string{"iOS"}}
+	manager := NewSkillManager(index)
+	manager.SetDeviceTypeFunc(func() string { return "Android" })
+
+	err := manager.Activate(context.Background(), "ios-only")
+	if err == nil {
+		t.Fatal("expected incompatible activation to fail")
+	}
+	if !strings.Contains(err.Error(), "current device_type is Android") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -2242,6 +2287,34 @@ type failingGenerateModel struct {
 	err error
 }
 
+type runtimeContextOverflowRecoveryModel struct {
+	callCount int
+}
+
+func (m *runtimeContextOverflowRecoveryModel) GenerateContent(_ context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	m.callCount++
+	switch m.callCount {
+	case 1:
+		return nil, newProviderHTTPError(http.StatusBadRequest, []byte(
+			`{"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"}}`,
+		))
+	case 2:
+		return contentResponse("compacted summary"), nil
+	default:
+		return contentResponse("ok after compaction"), nil
+	}
+}
+
+func (m *runtimeContextOverflowRecoveryModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
+func (m *runtimeContextOverflowRecoveryModel) Spec() model.ModelSpec {
+	return model.ModelSpec{Provider: "fake", Name: "context-overflow-recovery", ContextWindow: 1_000_000}
+}
+
+func (m *runtimeContextOverflowRecoveryModel) CallOptions() []chains.ChainCallOption { return nil }
+
 func (m failingGenerateModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
 	if m.err != nil {
 		return nil, m.err
@@ -2316,27 +2389,27 @@ func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
 	// This fixture must comfortably exceed the 8192-token model's ~80% input
 	// threshold to force compaction.
-	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
-		{Role: contextmanager.MessageRoleSystem, Content: "Answer directly."},
-		{Role: contextmanager.MessageRoleUser, Content: strings.Repeat("user ", 1600)},
-		{Role: contextmanager.MessageRoleAssistant, Content: strings.Repeat("assistant ", 1600)},
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "Answer directly."},
+		{Role: messages.MessageRoleUser, Content: strings.Repeat("user ", 1600)},
+		{Role: messages.MessageRoleAssistant, Content: strings.Repeat("assistant ", 1600)},
 		{
-			Role: contextmanager.MessageRoleToolCall,
-			ToolCalls: []contextmanager.ToolCall{{
+			Role: messages.MessageRoleToolCall,
+			ToolCalls: []messages.ToolCall{{
 				ID:        "call_1",
 				Name:      "echo",
 				Arguments: `{"input":"` + strings.Repeat("x", 4000) + `"}`,
 			}},
 		},
 		{
-			Role: contextmanager.MessageRoleToolResult,
-			ToolResults: []contextmanager.ToolResult{{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
 				ToolCallID: "call_1",
 				Name:       "echo",
 				Content:    strings.Repeat("result ", 1600),
 			}},
 		},
-		{Role: contextmanager.MessageRoleAssistant, Content: "recent tail"},
+		{Role: messages.MessageRoleAssistant, Content: "recent tail"},
 	})
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
@@ -2375,6 +2448,64 @@ func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 	}
 	if len(llmModel.messages) != 2 {
 		t.Fatalf("model call count = %d, want 2 (summary + planner)", len(llmModel.messages))
+	}
+}
+
+func TestRuntimeRunCompactsAndRetriesWhenProviderRejectsContextLength(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "Answer directly."},
+		{Role: messages.MessageRoleUser, Content: "old question one"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer one"},
+		{Role: messages.MessageRoleUser, Content: "old question two"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer two"},
+		{Role: messages.MessageRoleUser, Content: "old question three"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer three"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	originalSessionID := manager.GetSessionID()
+
+	llmModel := &runtimeContextOverflowRecoveryModel{}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{ContextWindow: 1_000_000},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "new question"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok after compaction" {
+		t.Fatalf("output = %q, want ok after compaction", result.Output)
+	}
+	if llmModel.callCount != 3 {
+		t.Fatalf("model call count = %d, want 3 (rejected planner + summary + retried planner)", llmModel.callCount)
+	}
+	if runtime.contextManager == nil || runtime.contextManager.GetSessionID() == originalSessionID {
+		t.Fatal("runtime did not switch to the compacted context session")
+	}
+	loaded, err := contextmanager.LoadContextManagerFromCurrentSession(sessionFolder)
+	if err != nil {
+		t.Fatalf("LoadContextManagerFromCurrentSession() error = %v", err)
+	}
+	if loaded.GetSessionID() != runtime.contextManager.GetSessionID() {
+		t.Fatalf("current session = %q, want %q", loaded.GetSessionID(), runtime.contextManager.GetSessionID())
 	}
 }
 
@@ -2632,21 +2763,21 @@ func (t *stubTool) Call(ctx context.Context, input string) (string, error) {
 	return t.output, nil
 }
 
-type platformCaptureTool struct {
+type deviceTypeCaptureTool struct {
 	stubTool
-	platformFn func() string
-	platforms  []string
+	deviceTypeFn func() string
+	deviceTypes  []string
 }
 
-func (t *platformCaptureTool) SetPlatformFn(fn func() string) {
-	t.platformFn = fn
+func (t *deviceTypeCaptureTool) SetDeviceTypeFunc(fn func() string) {
+	t.deviceTypeFn = fn
 }
 
-func (t *platformCaptureTool) Call(ctx context.Context, input string) (string, error) {
-	if t.platformFn != nil {
-		t.platforms = append(t.platforms, t.platformFn())
+func (t *deviceTypeCaptureTool) Call(ctx context.Context, input string) (string, error) {
+	if t.deviceTypeFn != nil {
+		t.deviceTypes = append(t.deviceTypes, t.deviceTypeFn())
 	} else {
-		t.platforms = append(t.platforms, "")
+		t.deviceTypes = append(t.deviceTypes, "")
 	}
 	return t.stubTool.Call(ctx, input)
 }
