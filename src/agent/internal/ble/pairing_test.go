@@ -100,6 +100,33 @@ func TestDisconnectedDeviceClearsSubscriberStatus(t *testing.T) {
 	}
 }
 
+func TestUserDisabledConnectionStaysDisconnectedWhenLinkReturns(t *testing.T) {
+	service := NewService(1)
+	service.status.update(func(status *RuntimeStatus) {
+		status.WakeSubscriber = true
+		status.ANCSSubscribed = true
+	})
+	backend := newBlueZBackend(service, "Aiden", 0)
+	backend.setConnectionEnabled(false)
+
+	backend.updateDeviceStatus(
+		dbus.ObjectPath("/org/bluez/hci0/dev_00_11_22_33_44_55"),
+		map[string]dbus.Variant{
+			"Name":             dbus.MakeVariant("iPhone"),
+			"Address":          dbus.MakeVariant("00:11:22:33:44:55"),
+			"Connected":        dbus.MakeVariant(true),
+			"ServicesResolved": dbus.MakeVariant(true),
+		},
+		1,
+	)
+
+	status := service.Status()
+	if !status.Paired || status.Connected || status.ServicesResolved ||
+		status.WakeSubscriber || status.ANCSSubscribed {
+		t.Fatalf("user-disabled connection became active again: %#v", status)
+	}
+}
+
 func TestConnectedDevicePathsIncludesPairedAndUnpairedLinks(t *testing.T) {
 	objects := managedObjects{
 		dbus.ObjectPath("/org/bluez/hci0/dev_02"): {

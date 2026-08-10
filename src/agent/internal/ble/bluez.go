@@ -78,16 +78,19 @@ type blueZBackend struct {
 	wakeObject  *wakeCharacteristic
 	gattObjects []exportedGattObject
 
-	ancsMu           sync.Mutex
-	ancs             ancsPaths
-	wakeMu           sync.Mutex
-	closed           bool
-	pairingModeMu    sync.Mutex
-	stateMu          sync.Mutex
-	trustedDevice    dbus.ObjectPath
-	pairingOpen      bool
-	pairingDeadline  time.Time
-	pairingModeDirty bool
+	ancsMu            sync.Mutex
+	ancs              ancsPaths
+	advertisementMu   sync.Mutex
+	advertising       bool
+	wakeMu            sync.Mutex
+	closed            bool
+	pairingModeMu     sync.Mutex
+	stateMu           sync.Mutex
+	trustedDevice     dbus.ObjectPath
+	connectionEnabled bool
+	pairingOpen       bool
+	pairingDeadline   time.Time
+	pairingModeDirty  bool
 }
 
 func newBlueZBackend(service *Service, deviceName string, pairingWindow time.Duration) *blueZBackend {
@@ -98,11 +101,12 @@ func newBlueZBackend(service *Service, deviceName string, pairingWindow time.Dur
 		pairingWindow = 0
 	}
 	return &blueZBackend{
-		service:        service,
-		deviceName:     deviceName,
-		pairingWindow:  pairingWindow,
-		rescanRequests: make(chan struct{}, 1),
-		fatalErrors:    make(chan error, 1),
+		service:           service,
+		deviceName:        deviceName,
+		pairingWindow:     pairingWindow,
+		rescanRequests:    make(chan struct{}, 1),
+		fatalErrors:       make(chan error, 1),
+		connectionEnabled: true,
 	}
 }
 
@@ -158,7 +162,7 @@ func (b *blueZBackend) start() error {
 	if err := b.registerGatt(); err != nil {
 		return err
 	}
-	if err := b.registerAdvertisement(); err != nil {
+	if err := b.setAdvertising(true); err != nil {
 		return err
 	}
 	// RequestDefaultAgent can make BlueZ pairable again. Reapply the service's
@@ -275,6 +279,7 @@ func (b *blueZBackend) close() {
 	}
 	b.closed = true
 	b.wakeMu.Unlock()
+	b.setConnectionEnabled(false)
 
 	b.ancsMu.Lock()
 	paths := b.ancs
@@ -299,7 +304,7 @@ func (b *blueZBackend) close() {
 		for _, name := range []string{"Pairable", "Discoverable"} {
 			_ = callWithCleanupTimeout(adapter, dbusPropertiesInterface+".Set", blueZAdapterInterface, name, dbus.MakeVariant(false)).Err
 		}
-		_ = callWithCleanupTimeout(adapter, blueZAdvManagerInterface+".UnregisterAdvertisement", advertisementPath).Err
+		_ = b.setAdvertising(false)
 		_ = callWithCleanupTimeout(adapter, blueZGattManagerInterface+".UnregisterApplication", applicationPath).Err
 	}
 	_ = callWithCleanupTimeout(
@@ -510,16 +515,38 @@ func (b *blueZBackend) registerGatt() error {
 	return nil
 }
 
-func (b *blueZBackend) registerAdvertisement() error {
-	options := map[string]dbus.Variant{}
-	if err := callWithTimeout(
-		b.conn.Object(BlueZBusName, b.adapter),
-		blueZAdvManagerInterface+".RegisterAdvertisement",
-		advertisementPath,
-		options,
-	).Err; err != nil {
-		return fmt.Errorf("register BLE advertisement: %w", err)
+func (b *blueZBackend) setAdvertising(enabled bool) error {
+	b.advertisementMu.Lock()
+	defer b.advertisementMu.Unlock()
+	if b.advertising == enabled {
+		return nil
 	}
+
+	options := map[string]dbus.Variant{}
+	manager := b.conn.Object(BlueZBusName, b.adapter)
+	var err error
+	if enabled {
+		err = callWithTimeout(
+			manager,
+			blueZAdvManagerInterface+".RegisterAdvertisement",
+			advertisementPath,
+			options,
+		).Err
+		if err != nil {
+			return fmt.Errorf("register BLE advertisement: %w", err)
+		}
+	} else {
+		err = callWithTimeout(
+			manager,
+			blueZAdvManagerInterface+".UnregisterAdvertisement",
+			advertisementPath,
+		).Err
+		if err != nil && !isDBusErrorNamed(err, "org.bluez.Error.DoesNotExist") {
+			return fmt.Errorf("unregister BLE advertisement: %w", err)
+		}
+	}
+	b.advertising = enabled
+	b.service.status.update(func(status *RuntimeStatus) { status.Advertising = enabled })
 	return nil
 }
 
@@ -659,10 +686,18 @@ func (b *blueZBackend) rescanBluetoothState() error {
 		trustedProps = objects[trusted][blueZDeviceInterface]
 	}
 	b.updateDeviceStatus(trusted, trustedProps, bondedCount)
+	if !b.connectionsEnabled() {
+		b.clearANCS("Bluetooth disconnected by user")
+		return b.disconnectConnectedDevices(objects)
+	}
 	return b.rescanANCS(objects, trusted)
 }
 
 func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.ObjectPath) error {
+	if !b.connectionsEnabled() {
+		b.clearANCS("Bluetooth disconnected by user")
+		return nil
+	}
 	type candidate struct {
 		paths       ancsPaths
 		deviceProps map[string]dbus.Variant

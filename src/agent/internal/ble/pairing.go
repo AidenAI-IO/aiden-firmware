@@ -92,6 +92,11 @@ func (b *blueZBackend) StartPairing() error {
 	if closed {
 		return ErrBluetoothUnavailable
 	}
+	b.setConnectionEnabled(true)
+	if err := b.setAdvertising(true); err != nil {
+		b.setConnectionEnabled(false)
+		return err
+	}
 
 	// A bond is only a transport cache. An explicit Connect action must always
 	// reopen the window so the current phone can reconnect, finish an incomplete
@@ -112,6 +117,20 @@ func connectedDevicePaths(objects managedObjects) []dbus.ObjectPath {
 	return paths
 }
 
+func (b *blueZBackend) disconnectConnectedDevices(objects managedObjects) error {
+	var result error
+	for _, path := range connectedDevicePaths(objects) {
+		err := callWithTimeout(
+			b.conn.Object(BlueZBusName, path),
+			blueZDeviceInterface+".Disconnect",
+		).Err
+		if err != nil && !isDBusErrorNamed(err, "org.bluez.Error.NotConnected") {
+			result = errors.Join(result, fmt.Errorf("disconnect Bluetooth device %s: %w", path, err))
+		}
+	}
+	return result
+}
+
 func (b *blueZBackend) Disconnect() error {
 	b.wakeMu.Lock()
 	closed := b.closed
@@ -119,22 +138,16 @@ func (b *blueZBackend) Disconnect() error {
 	if closed || b.conn == nil || !b.adapter.IsValid() {
 		return ErrBluetoothUnavailable
 	}
-	if err := b.closePairingWindow(); err != nil {
-		return err
-	}
+	b.setConnectionEnabled(false)
+	var result error
+	result = errors.Join(result, b.closePairingWindow())
+	result = errors.Join(result, b.setAdvertising(false))
 
 	objects, err := b.getManagedObjects()
 	if err != nil {
-		return err
-	}
-	for _, path := range connectedDevicePaths(objects) {
-		err := callWithTimeout(
-			b.conn.Object(BlueZBusName, path),
-			blueZDeviceInterface+".Disconnect",
-		).Err
-		if err != nil && !isDBusErrorNamed(err, "org.bluez.Error.NotConnected") {
-			return fmt.Errorf("disconnect Bluetooth device %s: %w", path, err)
-		}
+		result = errors.Join(result, err)
+	} else {
+		result = errors.Join(result, b.disconnectConnectedDevices(objects))
 	}
 
 	b.clearANCS("Bluetooth disconnected by user")
@@ -142,6 +155,7 @@ func (b *blueZBackend) Disconnect() error {
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.PairingOpen = false
 		status.PairingDeadline = ""
+		status.Advertising = false
 		status.ConnectedDevicePath = ""
 		status.ConnectedDeviceName = ""
 		status.ConnectedDeviceAddr = ""
@@ -152,7 +166,7 @@ func (b *blueZBackend) Disconnect() error {
 		status.LastError = ""
 	})
 	b.requestRescan()
-	return nil
+	return result
 }
 
 func (b *blueZBackend) ForgetPairing() (int, error) {
@@ -231,8 +245,9 @@ func (b *blueZBackend) updateDeviceStatus(
 	b.stateMu.Lock()
 	pairingOpen := b.pairingOpen
 	pairingDeadline := b.pairingDeadline
+	connectionEnabled := b.connectionEnabled
 	b.stateMu.Unlock()
-	connected := trusted.IsValid() && variantBool(properties, "Connected")
+	connected := connectionEnabled && trusted.IsValid() && variantBool(properties, "Connected")
 	if !connected {
 		// BlueZ normally invokes StopNotify when the central disconnects, but an
 		// abrupt link loss or bluetoothd restart can omit that callback. Clear the
@@ -273,13 +288,25 @@ func (b *blueZBackend) updateDeviceStatus(
 		status.TrustedDeviceName = name
 		status.TrustedDeviceAddr = address
 		status.Connected = connected
-		status.ServicesResolved = variantBool(properties, "ServicesResolved")
+		status.ServicesResolved = status.Connected && variantBool(properties, "ServicesResolved")
 		if status.Connected {
 			status.ConnectedDevicePath = string(trusted)
 			status.ConnectedDeviceName = name
 			status.ConnectedDeviceAddr = address
 		}
 	})
+}
+
+func (b *blueZBackend) setConnectionEnabled(enabled bool) {
+	b.stateMu.Lock()
+	b.connectionEnabled = enabled
+	b.stateMu.Unlock()
+}
+
+func (b *blueZBackend) connectionsEnabled() bool {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	return b.connectionEnabled
 }
 
 func (b *blueZBackend) beginPairingWindow(now time.Time) error {
