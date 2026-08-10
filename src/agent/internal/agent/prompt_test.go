@@ -335,6 +335,20 @@ func TestDefaultAgentBehaviorRequiresUnifiedLeadingTTS(t *testing.T) {
 	}
 }
 
+func TestRolePromptGuidesRecoveryFromDumpedToolResults(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, want := range []string{
+		"saved to a result file",
+		"use shell to inspect only the needed fields or ranges",
+		"continuation identifiers such as session_id or cursor",
+		"do not repeat a completed action or start a replacement session",
+	} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing dumped tool-result guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
 func TestGlobalPromptsExcludeKeyboardTextInputDetails(t *testing.T) {
 	for name, prompt := range map[string]string{
 		"defaultAgentBehavior": defaultAgentBehavior(),
