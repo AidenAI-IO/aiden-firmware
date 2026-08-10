@@ -13,7 +13,6 @@ PROC_CRYPTO=${PROC_CRYPTO:-/proc/crypto}
 INITIAL_SPEED=${INITIAL_SPEED:-1500000}
 TARGET_SPEED=${TARGET_SPEED:-1500000}
 WAIT_SECONDS=${WAIT_SECONDS:-15}
-SMP_CRYPTO_CHANGED=0
 
 [ -f "$BOOT_CONF" ] && . "$BOOT_CONF"
 : "${ENABLE_BLUETOOTH_HCI:=1}"
@@ -61,8 +60,6 @@ ensure_crypto_module() {
         echo "Bluetooth SMP crypto module did not register: $module" >&2
         return 1
     fi
-
-    SMP_CRYPTO_CHANGED=1
 }
 
 crypto_available() {
@@ -90,7 +87,6 @@ wait_for_controller() {
     elapsed=0
     while [ "$elapsed" -lt "$WAIT_SECONDS" ]; do
         if hci_ready; then
-            "$HCICONFIG_BIN" hci0 up >/dev/null 2>&1 || return 1
             return 0
         fi
         sleep 1
@@ -108,15 +104,10 @@ start() {
     ensure_smp_crypto || return 1
 
     if hci_ready; then
-        if [ "$SMP_CRYPTO_CHANGED" = "1" ]; then
-            "$HCICONFIG_BIN" hci0 down >/dev/null 2>&1 || return 1
-        fi
-        "$HCICONFIG_BIN" hci0 up >/dev/null 2>&1 || return 1
-        if [ "$SMP_CRYPTO_CHANGED" = "1" ]; then
-            echo "Bluetooth HCI reinitialized after loading SMP crypto"
-        else
-            echo "Bluetooth HCI already available"
-        fi
+        # Do not power hci0 with the legacy HCIDEVUP ioctl. bluetoothd must
+        # own the management Set Powered transition so the kernel runs
+        # __hci_req_hci_power_on() and registers the LE SMP fixed channel.
+        echo "Bluetooth HCI transport already available"
         return 0
     fi
     if [ ! -x "$HCIATTACH_BIN" ]; then
@@ -155,7 +146,7 @@ start() {
         return 1
     fi
 
-    echo "Bluetooth HCI initialized (pid $pid)"
+    echo "Bluetooth HCI transport attached (pid $pid)"
 }
 
 stop() {

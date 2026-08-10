@@ -50,7 +50,11 @@ grep -Fq '1500000' "$HCI_INIT"
 grep -Fq 'ensure_smp_crypto || return 1' "$HCI_INIT"
 grep -Fq 'ensure_crypto_module aes_generic' "$HCI_INIT"
 grep -Fq 'ensure_crypto_module cmac' "$HCI_INIT"
-grep -Fq 'Bluetooth HCI reinitialized after loading SMP crypto' "$HCI_INIT"
+grep -Fq 'management Set Powered transition' "$HCI_INIT"
+if grep -Fq '"$HCICONFIG_BIN" hci0 up' "$HCI_INIT"; then
+    echo "S39hciinit must leave HCI power-on to bluetoothd management" >&2
+    exit 1
+fi
 grep -Fq '/userdata/ble_service/bluetooth' "$BLUEZ_INIT"
 grep -Fq 'bluetoothd-watchdog.pid' "$BLUEZ_INIT"
 grep -Fq 'hci0 disappeared; restarting Bluetooth stack' "$BLUEZ_INIT"
