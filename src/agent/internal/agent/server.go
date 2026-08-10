@@ -53,8 +53,7 @@ type Server struct {
 	historyStore           *ChatHistoryStore
 	episodeStore           *TaskEpisodeStore
 	sttClient              STTClient
-	ttsManager             *tts.ProviderManager
-	ttsMu                  sync.RWMutex
+	ttsManager             *tts.ProviderManager // Borrowed from Runtime.
 	audioClient            *AudioServiceClient
 	ttsPlaybackBackend     tts.AudioServiceBackend
 	screenCaptureMu        sync.Mutex
@@ -412,13 +411,9 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		s.sttClient = sttClient
 	}
 
-	// Initialize the pluggable TTS provider manager from agent.toml fields.
-	if manager, err := newTTSProviderManagerFromConfig(cfg, s.logger); err != nil {
-		if s.logger != nil {
-			s.logger.Warn("TTS init failed: %v", err)
-		}
-	} else if manager != nil {
-		s.ttsManager = manager
+	// Share the process-wide TTS provider manager with every runtime entrypoint.
+	s.ttsManager = runtime.ttsProviderManager()
+	if manager := s.currentTTSManager(); manager != nil {
 		if s.logger != nil {
 			s.logger.Info("TTS enabled: provider=%s", manager.Current())
 		}
@@ -1964,10 +1959,20 @@ func (s *Server) toolCallSpeechText(event RunEvent) string {
 	return speech.BuildText(event.Content)
 }
 
+func (s *Server) ttsProviderManager() *tts.ProviderManager {
+	manager := s.ttsManager
+	if manager == nil && s.runtime != nil {
+		manager = s.runtime.ttsProviderManager()
+	}
+	return manager
+}
+
 func (s *Server) currentTTSManager() *tts.ProviderManager {
-	s.ttsMu.RLock()
-	defer s.ttsMu.RUnlock()
-	return s.ttsManager
+	manager := s.ttsProviderManager()
+	if manager == nil || manager.Current() == "" {
+		return nil
+	}
+	return manager
 }
 
 func (s *Server) currentTTSPlaybackBackend() tts.AudioServiceBackend {

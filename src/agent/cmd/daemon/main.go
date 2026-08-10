@@ -232,7 +232,7 @@ func shouldRunConsoleAudioLoop(cfg agent.Config, stdinInteractive bool) bool {
 }
 
 func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server) {
-	dialog, err := agent.NewAudioDialog(cfg)
+	dialog, err := agent.NewAudioDialog(runtime)
 	if err != nil {
 		_ = logging.LogEvent(logging.Error, "agent", "audio", "dialog_create_failed",
 			logging.Field{Key: "error", Value: err},

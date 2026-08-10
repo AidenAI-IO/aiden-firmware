@@ -150,6 +150,14 @@ func TestHandleTTSSettingsPostInitializesManagerWhenAbsent(t *testing.T) {
 		NewSkillIndex(),
 	)
 	server := &Server{runtime: runtime}
+	dialog, err := NewAudioDialog(runtime)
+	if err != nil {
+		t.Fatalf("NewAudioDialog() error = %v", err)
+	}
+	stableManager := runtime.ttsProviderManager()
+	if dialog.ttsManager != stableManager {
+		t.Fatal("audio dialog does not reference Runtime's stable TTS manager")
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/settings/tts", bytes.NewBufferString(`{"provider":"minimax-cn","api_key":"test-key"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -160,8 +168,75 @@ func TestHandleTTSSettingsPostInitializesManagerWhenAbsent(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
-	if server.ttsManager == nil || server.ttsManager.Current() != "minimax-cn" {
-		t.Fatalf("manager = %#v, want initialized minimax-cn manager", server.ttsManager)
+	if manager := server.currentTTSManager(); manager != stableManager || manager.Current() != "minimax-cn" {
+		t.Fatalf("manager = %#v, want shared initialized minimax-cn manager", manager)
+	}
+	if manager := dialog.currentTTSManager(); manager != stableManager || manager.Current() != "minimax-cn" {
+		t.Fatalf("audio dialog manager = %#v, want shared initialized minimax-cn manager", manager)
+	}
+}
+
+func TestTTSSettingsSwitchUpdatesAudioDialogProvider(t *testing.T) {
+	cfg := withTestConfigDir(t, Config{
+		Model: ModelConfig{Provider: "fake"},
+		TTS: TTSConfig{
+			Provider: "alicloud",
+			APIKey:   "old-key",
+		},
+		Audio: AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
+	})
+	runtime := NewRuntimeWithDeps(
+		cfg,
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	dialog, err := NewAudioDialog(runtime)
+	if err != nil {
+		t.Fatalf("NewAudioDialog() error = %v", err)
+	}
+	if server.ttsProviderManager() != runtime.ttsProviderManager() || dialog.ttsManager != runtime.ttsProviderManager() {
+		t.Fatal("Server and AudioDialog do not share Runtime's TTS manager")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/tts", bytes.NewBufferString(`{"provider":"minimax-cn","api_key":"new-key"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleTTSSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := server.currentTTSManager().Current(); got != "minimax-cn" {
+		t.Fatalf("server provider = %q, want minimax-cn", got)
+	}
+	if got := dialog.ttsManager.Current(); got != "minimax-cn" {
+		t.Fatalf("audio dialog provider = %q, want minimax-cn", got)
+	}
+}
+
+func TestRuntimeCloseClosesSharedTTSManagerOnce(t *testing.T) {
+	provider := &recordingTTSProvider{name: "shared-provider"}
+	manager := ttsmodule.NewProviderManager(provider, nil)
+	runtime := &Runtime{
+		config:     Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000}},
+		ttsManager: manager,
+	}
+	dialog, err := NewAudioDialog(runtime)
+	if err != nil {
+		t.Fatalf("NewAudioDialog() error = %v", err)
+	}
+	if dialog.ttsManager != manager {
+		t.Fatal("AudioDialog does not reference Runtime's TTS manager")
+	}
+
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("Runtime.Close() error = %v", err)
+	}
+	if got := provider.providerCloseCalls(); got != 1 {
+		t.Fatalf("provider Close() calls = %d, want 1", got)
 	}
 }
 
@@ -214,15 +289,15 @@ func TestSpeakTextDoesNotRetryAfterPlaybackStarts(t *testing.T) {
 	}
 }
 
-func TestNewAudioDialogInitializesProviderManager(t *testing.T) {
-	dialog, err := NewAudioDialog(Config{
+func TestNewAudioDialogUsesRuntimeProviderManager(t *testing.T) {
+	dialog, err := NewAudioDialog(&Runtime{config: Config{
 		Model: ModelConfig{Provider: "fake"},
 		TTS: TTSConfig{
 			Provider: "alicloud",
 			APIKey:   "test-key",
 		},
 		Audio: AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
-	})
+	}})
 	if err != nil {
 		t.Fatalf("NewAudioDialog() error = %v", err)
 	}
@@ -792,9 +867,10 @@ func (s *formatCheckingTTSSession) Close() error {
 func (s *formatCheckingTTSSession) Err() error { return s.err }
 
 type recordingTTSProvider struct {
-	name string
-	mu   sync.Mutex
-	seen []string
+	name       string
+	closeCalls atomic.Int32
+	mu         sync.Mutex
+	seen       []string
 }
 
 type flushRecordingTTSProvider struct {
@@ -833,7 +909,14 @@ func (p *playbackStartedTransientErrorProvider) BeginStream(ctx context.Context,
 	return &playbackStartedTransientErrorSession{sink: sink}, nil
 }
 
-func (p *recordingTTSProvider) Close() error { return nil }
+func (p *recordingTTSProvider) Close() error {
+	p.closeCalls.Add(1)
+	return nil
+}
+
+func (p *recordingTTSProvider) providerCloseCalls() int {
+	return int(p.closeCalls.Load())
+}
 
 func (p *flushRecordingTTSProvider) Name() string { return p.name }
 

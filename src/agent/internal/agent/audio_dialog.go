@@ -143,8 +143,14 @@ func collectWarmupEndpoints(cfg Config) []string {
 	return endpoints
 }
 
-// NewAudioDialog creates a new audio dialog manager
-func NewAudioDialog(cfg Config) (*AudioDialog, error) {
+// NewAudioDialog creates a new audio dialog manager backed by Runtime's shared
+// TTS provider manager.
+func NewAudioDialog(runtime *Runtime) (*AudioDialog, error) {
+	if runtime == nil {
+		return nil, fmt.Errorf("runtime is required")
+	}
+	cfg := runtime.config
+
 	// Create audio client
 	audioClient := NewAudioServiceClient(cfg.Audio.SocketOrDefault())
 
@@ -158,11 +164,9 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 		}
 	}
 
-	// Create pluggable TTS manager if configured.
-	ttsManager, err := newTTSProviderManagerFromConfig(cfg, nil)
-	if err != nil {
-		log.Printf("[tts] init failed, continuing without TTS: %v\n", err)
-	}
+	// Borrow the process-wide provider manager. Playback and interruption remain
+	// dialog-owned, while provider selection has exactly one owner.
+	ttsManager := runtime.ttsProviderManager()
 
 	silenceMs := cfg.SilenceMs
 	if silenceMs == 0 {
@@ -591,7 +595,12 @@ func (d *AudioDialog) beginManagedTTSStreamForRun(ctx context.Context) (*streamS
 		ctx = context.Background()
 	}
 	streamCtx, streamCancel := context.WithCancel(ctx)
-	stream, err := beginManagedTTSStream(streamCtx, d.ttsManager, d.currentTTSPlaybackBackend(), d.config)
+	manager := d.currentTTSManager()
+	if manager == nil {
+		streamCancel()
+		return nil, nil, nil, errTTSNotConfigured
+	}
+	stream, err := beginManagedTTSStream(streamCtx, manager, d.currentTTSPlaybackBackend(), d.config)
 	if err != nil {
 		streamCancel()
 		return nil, nil, nil, err
@@ -980,11 +989,11 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	req.EpisodeID = strings.TrimSpace(episodeID)
 
 	var newStream *streamSessionWriter
-	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
+	if manager := d.currentTTSManager(); d.config.VoiceStreamingTTSEnabledOrDefault() && manager != nil {
 		preopenStartedAt := time.Now().UTC()
 		stream, activate, cleanup, err := d.beginManagedTTSStreamForRun(ctx)
 		metadata := map[string]interface{}{
-			"provider": d.ttsManager.Current(),
+			"provider": manager.Current(),
 		}
 		input.TelemetryEvents = append(input.TelemetryEvents, voicePreRunTelemetryEvent(
 			runEventTTSStreamPreopen,
@@ -1165,7 +1174,14 @@ func (d *AudioDialog) SpeakFinal(ctx context.Context, text string, interrupt <-c
 }
 
 func (d *AudioDialog) CanSpeakFinalText() bool {
-	return d != nil && d.currentTTSPlaybackBackend() != nil && (d.ttsManager != nil || canPlayTTSUnavailableFallback(d.config))
+	return d != nil && d.currentTTSPlaybackBackend() != nil && (d.currentTTSManager() != nil || canPlayTTSUnavailableFallback(d.config))
+}
+
+func (d *AudioDialog) currentTTSManager() *tts.ProviderManager {
+	if d == nil || d.ttsManager == nil || d.ttsManager.Current() == "" {
+		return nil
+	}
+	return d.ttsManager
 }
 
 func (d *AudioDialog) currentTTSPlaybackBackend() tts.AudioServiceBackend {
@@ -1192,7 +1208,7 @@ func (d *AudioDialog) ConfigureRuntimeTools(ctx context.Context, runtime *Runtim
 		return ctx
 	}
 	return contextWithRunScriptSpeaker(ctx, func(ctx context.Context, text string) error {
-		if d.ttsManager == nil {
+		if d.currentTTSManager() == nil {
 			return fmt.Errorf("tts is not configured")
 		}
 		return d.Speak(ctx, text, nil)
@@ -1224,7 +1240,7 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 	}
 	_ = logging.LogEvent(logging.Info, "agent", "reply", "assistant_output",
 		logging.Field{Key: "message", Value: text})
-	if d.ttsManager == nil && !allowFallback {
+	if d.currentTTSManager() == nil && !allowFallback {
 		return nil
 	}
 	if d.currentTTSPlaybackBackend() == nil {
@@ -1260,9 +1276,9 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 
 	speechStarted := false
 	ttsErr := errTTSNotConfigured
-	if d.ttsManager != nil {
+	if manager := d.currentTTSManager(); manager != nil {
 		log.Printf("[tts] Starting streaming playback...\n")
-		speechStarted, ttsErr = speakWithTTSManagerObserved(speakCtx, d.ttsManager, d.currentTTSPlaybackBackend(), d.config, text, func(stream *streamSessionWriter) func() {
+		speechStarted, ttsErr = speakWithTTSManagerObserved(speakCtx, manager, d.currentTTSPlaybackBackend(), d.config, text, func(stream *streamSessionWriter) func() {
 			stream.setCancel(cancelOutput)
 			output.setStream(stream)
 			return func() {
@@ -1365,7 +1381,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		},
 	}
 	var newStream *streamSessionWriter
-	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
+	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.currentTTSManager() != nil {
 		stream, activate, cleanup, err := d.beginManagedTTSStreamForRun(ctx)
 		if err != nil {
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
