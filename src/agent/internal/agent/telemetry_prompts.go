@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/tokencounter"
 	"aiden-agent/internal/util"
 	"context"
 	"crypto/sha256"
@@ -415,7 +416,7 @@ func telemetryPromptMetadata(options []llms.CallOption, messages ...[]llms.Messa
 		meta["tool_schema_count"] = len(opts.Tools)
 		meta["tool_schemas"] = telemetryToolDefinitions(opts.Tools)
 	}
-	if toolSchemaTokens := estimateToolSchemaTokens(opts); toolSchemaTokens > 0 {
+	if toolSchemaTokens := tokencounter.EstimateToolSchemaTokens(opts); toolSchemaTokens > 0 {
 		meta["estimated_tool_schema_tokens"] = toolSchemaTokens
 	}
 	if len(meta) == 0 {
@@ -429,9 +430,9 @@ func addPromptShapeMetadata(meta map[string]interface{}, messages []llms.Message
 		return
 	}
 	meta["message_count"] = len(messages)
-	estimatedMessageTokens := estimateMessagesTokens(messages)
+	estimatedMessageTokens := tokencounter.EstimateLLMMessageListTokens(messages)
 	meta["estimated_message_tokens"] = estimatedMessageTokens
-	meta["estimated_prompt_tokens"] = estimatedMessageTokens + estimateToolSchemaTokens(opts)
+	meta["estimated_prompt_tokens"] = estimatedMessageTokens + tokencounter.EstimateToolSchemaTokens(opts)
 
 	roleCounts := map[string]int{}
 	var textPartCount int

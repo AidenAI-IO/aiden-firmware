@@ -422,6 +422,34 @@ func TestSkillListTool(t *testing.T) {
 	}
 }
 
+func TestSkillListToolFiltersByDeviceType(t *testing.T) {
+	dir := t.TempDir()
+	writeSKILL(t, dir, "generic", "---\nname: generic\ndescription: Generic skill\n---\n\nUse anywhere.\n")
+	writeSKILL(t, dir, "android-only", "---\nname: android-only\ndescription: Android skill\nmetadata:\n  device_types: [Android]\n---\n\nUse on Android.\n")
+	writeSKILL(t, dir, "ios-only", "---\nname: ios-only\ndescription: iOS skill\nmetadata:\n  device_types: [iOS]\n---\n\nUse on iOS.\n")
+
+	tool := NewSkillListTool(dir)
+	tool.SetDeviceTypeFunc(func() string { return "Android" })
+	result, err := tool.Call(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "generic") || !strings.Contains(result, "android-only") {
+		t.Fatalf("expected generic and Android skills, got %s", result)
+	}
+	if strings.Contains(result, "ios-only") {
+		t.Fatalf("expected iOS skill to be filtered, got %s", result)
+	}
+
+	result, err = tool.Call(context.Background(), `{"include_incompatible":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "ios-only") {
+		t.Fatalf("expected include_incompatible to include iOS skill, got %s", result)
+	}
+}
+
 func TestSkillListToolFiltersArchivedByDefault(t *testing.T) {
 	configDir := t.TempDir()
 	skillsDir := filepath.Join(configDir, "skills")
@@ -690,6 +718,29 @@ func TestSkillReadToolReadsLinkedFiles(t *testing.T) {
 
 	if _, err := tool.Call(context.Background(), `{"name":"alpha","file_path":"../secret"}`); err == nil {
 		t.Fatalf("expected traversal path to be rejected")
+	}
+}
+
+func TestSkillReadToolRejectsIncompatibleDeviceTypeByDefault(t *testing.T) {
+	dir := t.TempDir()
+	writeSKILL(t, dir, "ios-only", "---\nname: ios-only\ndescription: iOS skill\nmetadata:\n  device_types: [iOS]\n---\n\nUse on iOS.\n")
+	tool := NewSkillReadTool(dir)
+	tool.SetDeviceTypeFunc(func() string { return "Android" })
+
+	_, err := tool.Call(context.Background(), `{"name":"ios-only"}`)
+	if err == nil {
+		t.Fatal("expected incompatible skill_read to fail")
+	}
+	if !strings.Contains(err.Error(), "current device_type is Android") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := tool.Call(context.Background(), `{"name":"ios-only","include_incompatible":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "Use on iOS.") {
+		t.Fatalf("expected include_incompatible to read skill, got %s", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package contextmanager
 
 import (
+	"aiden-agent/internal/agent/messages"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,9 +35,9 @@ func newAttachmentStore(sessionFolder string, sessionID string) (*attachmentStor
 	}, nil
 }
 
-func (s *attachmentStore) store(mimeType string, data []byte) (Attachment, error) {
+func (s *attachmentStore) store(mimeType string, data []byte) (messages.Attachment, error) {
 	if s.root == "" {
-		return Attachment{}, fmt.Errorf("attachment store is closed")
+		return messages.Attachment{}, fmt.Errorf("attachment store is closed")
 	}
 	for {
 		name := fmt.Sprintf("%s%s", uuid.New().String(), attachmentExtension(mimeType))
@@ -46,19 +47,19 @@ func (s *attachmentStore) store(mimeType string, data []byte) (Attachment, error
 			if os.IsExist(err) {
 				continue
 			}
-			return Attachment{}, fmt.Errorf("create attachment file: %w", err)
+			return messages.Attachment{}, fmt.Errorf("create attachment file: %w", err)
 		}
 		_, writeErr := file.Write(data)
 		closeErr := file.Close()
 		if writeErr != nil {
 			_ = os.Remove(path)
-			return Attachment{}, fmt.Errorf("write attachment file: %w", writeErr)
+			return messages.Attachment{}, fmt.Errorf("write attachment file: %w", writeErr)
 		}
 		if closeErr != nil {
 			_ = os.Remove(path)
-			return Attachment{}, fmt.Errorf("close attachment file: %w", closeErr)
+			return messages.Attachment{}, fmt.Errorf("close attachment file: %w", closeErr)
 		}
-		return Attachment{
+		return messages.Attachment{
 			MIMEType: mimeType,
 			FileSize: int64(len(data)),
 			FilePath: path,

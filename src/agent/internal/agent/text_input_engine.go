@@ -14,7 +14,7 @@ import (
 
 type textInputHardwareDeps struct {
 	pointerMode  string
-	platformFn   func() string
+	deviceTypeFn func() string
 	mouseClick   langtools.Tool
 	touchGesture langtools.Tool
 	keyboardTap  langtools.Tool
@@ -36,22 +36,26 @@ func normalizeTextInputPlatform(platform string) string {
 	}
 }
 
+func textInputPlatformFromDeviceType(deviceType string) string {
+	normalizedDeviceType, ok := normalizeDeviceType(deviceType)
+	if !ok {
+		return ""
+	}
+	return normalizeTextInputPlatform(deviceTypePlatform(normalizedDeviceType))
+}
+
 func (d textInputHardwareDeps) platform() string {
-	if d.platformFn != nil {
-		if platform := normalizeTextInputPlatform(d.platformFn()); platform != "" {
+	if d.deviceTypeFn != nil {
+		if platform := textInputPlatformFromDeviceType(d.deviceTypeFn()); platform != "" {
 			return platform
 		}
 	}
-	// An empty dependency is the same as the default HID configuration.
-	if strings.EqualFold(strings.TrimSpace(d.pointerMode), "") || strings.EqualFold(strings.TrimSpace(d.pointerMode), "absolute") {
-		return "ios"
-	}
-	return "android"
+	return textInputPlatformFromDeviceType(defaultDeviceType)
 }
 
 func textInputHardwarePlatform(hw *textInputHardwareDeps) string {
 	if hw == nil {
-		return "android"
+		return textInputPlatformFromDeviceType(defaultDeviceType)
 	}
 	return hw.platform()
 }
@@ -449,12 +453,12 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 		if analysis.CompositionPending {
 			return false, analysis.FieldText, false, vlmCalls, nil
 		}
-		if committed, fieldText := evaluateFieldCommit(analysis, args.Text); committed {
+		if committed, fieldText := evaluateFieldCommit(analysis); committed {
 			return true, fieldText, false, vlmCalls, nil
 		}
 	}
 	if requiredMode != textInputModeComposition || !imeCandidateStateActive(analysis) {
-		if committed, fieldText := evaluateFieldCommit(analysis, args.Text); committed {
+		if committed, fieldText := evaluateFieldCommit(analysis); committed {
 			return true, fieldText, false, vlmCalls, nil
 		}
 	}
@@ -517,7 +521,7 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 				return false, analysis.FieldText, false, vlmCalls, err
 			}
 			if !imeCandidateStateActive(analysis) {
-				if committed, fieldText := evaluateFieldCommit(analysis, args.Text); committed {
+				if committed, fieldText := evaluateFieldCommit(analysis); committed {
 					return true, fieldText, false, vlmCalls, nil
 				}
 				break

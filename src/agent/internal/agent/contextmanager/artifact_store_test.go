@@ -1,27 +1,18 @@
 package contextmanager
 
 import (
+	"aiden-agent/internal/agent/messages"
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 )
-
-func writeLegacySessionMetadata(sessionFolder, sessionID string, metadata sessionMetadata) error {
-	data, err := json.Marshal(metadata)
-	if err != nil {
-		return err
-	}
-	return writeArtifactFileAtomically(sessionMetadataPath(sessionFolder, sessionID), data)
-}
 
 func TestNewContextManagerStoresArtifactsBySessionWithoutMetadataSidecar(t *testing.T) {
 	sessionFolder := t.TempDir()
@@ -91,13 +82,13 @@ func TestToolResultMetadataPersistsButIsNotSentToModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
-	message := Message{
-		Role: MessageRoleToolResult,
-		ToolResults: []ToolResult{{
+	message := messages.Message{
+		Role: messages.MessageRoleToolResult,
+		ToolResults: []messages.ToolResult{{
 			ToolCallID: "call_1",
 			Name:       "shell",
 			Content:    "bounded observation",
-			Meta: &ToolResultMeta{
+			Meta: &messages.ToolResultMeta{
 				ArtifactPath:     "/tmp/tool-results/tr_example.data",
 				OriginalBytes:    12_345,
 				OriginalChars:    12_345,
@@ -120,7 +111,7 @@ func TestToolResultMetadataPersistsButIsNotSentToModel(t *testing.T) {
 		t.Fatalf("reloaded ToolResult meta = %#v", got.Meta)
 	}
 
-	standard := ConvertMessageList(reloaded.CloneMessageList())
+	standard := messages.ConvertMessageList(reloaded.CloneMessageList())
 	response, ok := standard[0].Parts[0].(llms.ToolCallResponse)
 	if !ok {
 		t.Fatalf("standard part = %T, want ToolCallResponse", standard[0].Parts[0])
@@ -130,103 +121,10 @@ func TestToolResultMetadataPersistsButIsNotSentToModel(t *testing.T) {
 	}
 }
 
-func TestLoadContextManagerMigratesLegacyArtifactRefToShellReadablePath(t *testing.T) {
-	sessionFolder := t.TempDir()
-	sessionID := "s_legacy"
-	scopeID := "s_legacy_scope"
-	artifactID := "tr_" + uuid.NewString()
-	if err := writeLegacySessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
-		t.Fatalf("writeLegacySessionMetadata() error = %v", err)
-	}
-	store, err := newArtifactStore(sessionFolder, scopeID)
-	if err != nil {
-		t.Fatalf("newArtifactStore() error = %v", err)
-	}
-	wantPath := filepath.Join(store.root, artifactID+".data")
-	if err := os.WriteFile(wantPath, []byte("legacy-result"), 0o600); err != nil {
-		t.Fatalf("WriteFile(artifact) error = %v", err)
-	}
-	legacyRef := "artifact://" + artifactID
-	line := fmt.Sprintf(`{"role":"tool_result","tool_results":[{"tool_call_id":"call_legacy","name":"shell","content":"Full result: %s","meta":{"artifact_ref":"%s","complete":false,"artifact_complete":true}}]}`+"\n", legacyRef, legacyRef)
-	if err := os.WriteFile(filepath.Join(sessionFolder, sessionID+".jsonl"), []byte(line), 0o600); err != nil {
-		t.Fatalf("WriteFile(session) error = %v", err)
-	}
-
-	manager, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
-	if err != nil {
-		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
-	}
-	result := manager.CloneMessageList()[0].ToolResults[0]
-	if result.Meta == nil || result.Meta.ArtifactPath != wantPath {
-		t.Fatalf("migrated metadata = %#v, want path %q", result.Meta, wantPath)
-	}
-	if !strings.Contains(result.Content, "Full result file: "+wantPath) || !strings.Contains(result.Content, "Use shell commands") {
-		t.Fatalf("migrated content = %q", result.Content)
-	}
-	data, err := os.ReadFile(result.Meta.ArtifactPath)
-	if err != nil || string(data) != "legacy-result" {
-		t.Fatalf("ReadFile(%s) = %q, error = %v", result.Meta.ArtifactPath, data, err)
-	}
-	encoded, err := json.Marshal(result.Meta)
-	if err != nil {
-		t.Fatalf("Marshal(meta) error = %v", err)
-	}
-	if strings.Contains(string(encoded), "artifact_ref") || !strings.Contains(string(encoded), "artifact_path") {
-		t.Fatalf("migrated metadata JSON = %s", encoded)
-	}
-}
-
-func TestLoadContextManagerKeepsLegacyArtifactRefWhenFileIsMissing(t *testing.T) {
-	sessionFolder := t.TempDir()
-	sessionID := "s_legacy_missing"
-	scopeID := "s_legacy_missing_scope"
-	artifactID := "tr_" + uuid.NewString()
-	if err := writeLegacySessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
-		t.Fatalf("writeLegacySessionMetadata() error = %v", err)
-	}
-	legacyRef := "artifact://" + artifactID
-	line := fmt.Sprintf(`{"role":"tool_result","tool_results":[{"tool_call_id":"call_legacy","name":"shell","content":"Full result: %s","meta":{"artifact_ref":"%s","complete":false,"artifact_complete":true}}]}`+"\n", legacyRef, legacyRef)
-	if err := os.WriteFile(filepath.Join(sessionFolder, sessionID+".jsonl"), []byte(line), 0o600); err != nil {
-		t.Fatalf("WriteFile(session) error = %v", err)
-	}
-
-	manager, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
-	if err != nil {
-		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
-	}
-	result := manager.CloneMessageList()[0].ToolResults[0]
-	if result.Meta == nil || result.Meta.ArtifactPath != "" || result.Meta.legacyArtifactRef != legacyRef {
-		t.Fatalf("missing artifact metadata = %#v, want legacy ref preserved", result.Meta)
-	}
-	if !strings.Contains(result.Content, legacyRef) || strings.Contains(result.Content, "Full result file:") {
-		t.Fatalf("missing artifact content was migrated: %q", result.Content)
-	}
-}
-
-func TestLoadContextManagerIgnoresUnsafeLegacyArtifactRef(t *testing.T) {
-	sessionFolder := t.TempDir()
-	sessionID := "s_legacy_unsafe"
-	if err := writeLegacySessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: sessionID}); err != nil {
-		t.Fatalf("writeLegacySessionMetadata() error = %v", err)
-	}
-	line := `{"role":"tool_result","tool_results":[{"tool_call_id":"call_legacy","name":"shell","content":"legacy","meta":{"artifact_ref":"artifact://tr_../../outside","complete":false,"artifact_complete":true}}]}` + "\n"
-	if err := os.WriteFile(filepath.Join(sessionFolder, sessionID+".jsonl"), []byte(line), 0o600); err != nil {
-		t.Fatalf("WriteFile(session) error = %v", err)
-	}
-	manager, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
-	if err != nil {
-		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
-	}
-	meta := manager.CloneMessageList()[0].ToolResults[0].Meta
-	if meta == nil || meta.ArtifactPath != "" {
-		t.Fatalf("unsafe legacy metadata = %#v, want no migrated path", meta)
-	}
-}
-
 func TestContextManagerRevisionPreservesArtifactPathWithoutSharingStore(t *testing.T) {
 	sessionFolder := t.TempDir()
-	manager, err := NewContextManagerFromMessageList(sessionFolder, []Message{
-		{Role: MessageRoleSystem, Content: "system"},
+	manager, err := NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
 	})
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
@@ -238,13 +136,13 @@ func TestContextManagerRevisionPreservesArtifactPathWithoutSharingStore(t *testi
 	if err != nil {
 		t.Fatalf("StoreArtifact() error = %v", err)
 	}
-	if err := manager.AppendMessage(Message{
-		Role: MessageRoleToolResult,
-		ToolResults: []ToolResult{{
+	if err := manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleToolResult,
+		ToolResults: []messages.ToolResult{{
 			ToolCallID: "call_1",
 			Name:       "shell",
 			Content:    "bounded result",
-			Meta:       &ToolResultMeta{ArtifactPath: stored.Path, ArtifactComplete: true},
+			Meta:       &messages.ToolResultMeta{ArtifactPath: stored.Path, ArtifactComplete: true},
 		}},
 	}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
@@ -451,21 +349,6 @@ func TestArtifactPathRecoverableRejectsUnsafeMetadataSidecars(t *testing.T) {
 	}
 	if ArtifactPathRecoverable(dataPath, time.Now()) {
 		t.Fatal("oversized metadata sidecar was accepted")
-	}
-}
-
-func TestLoadContextManagerRejectsArtifactScopePathTraversal(t *testing.T) {
-	for _, scopeID := range []string{"../outside", ".", ".."} {
-		t.Run(scopeID, func(t *testing.T) {
-			sessionFolder := t.TempDir()
-			sessionID := "s_session"
-			if err := writeLegacySessionMetadata(sessionFolder, sessionID, sessionMetadata{ArtifactScopeID: scopeID}); err != nil {
-				t.Fatalf("writeLegacySessionMetadata() error = %v", err)
-			}
-			if _, err := LoadContextManagerFromSessionID(sessionFolder, sessionID); err == nil {
-				t.Fatalf("LoadContextManagerFromSessionID() succeeded with scope %q", scopeID)
-			}
-		})
 	}
 }
 

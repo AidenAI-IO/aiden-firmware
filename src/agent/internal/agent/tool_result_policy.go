@@ -12,6 +12,7 @@ import (
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/tokencounter"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -210,11 +211,24 @@ func availableToolResultTokens(input ToolResultPrepareInput) int {
 	if softLimit <= 0 {
 		return 0
 	}
-	currentTokens := estimateToolSchemaTokens(options)
+	currentTokens := tokencounter.EstimateToolSchemaTokens(options)
 	if input.ContextManager != nil {
-		currentTokens += estimateMessagesTokens(contextmanager.ConvertMessageList(input.ContextManager.CloneMessageList()))
+		currentTokens += tokencounter.EstimateMessagesTokens(input.ContextManager.CloneMessageList())
 	}
 	return max(0, softLimit-currentTokens)
+}
+
+func inputContextBudget(contextWindow, maxResponseTokens int) int {
+	if contextWindow <= 0 {
+		return 0
+	}
+	if maxResponseTokens <= 0 {
+		return contextWindow
+	}
+	if maxResponseTokens >= contextWindow {
+		return 1
+	}
+	return contextWindow - maxResponseTokens
 }
 
 func toolResultUsableInputBudget(contextWindow, maxResponseTokens int) int {

@@ -163,7 +163,7 @@ func fieldTextExactlyMatches(fieldText, targetText string) bool {
 	return strings.TrimSpace(fieldText) == strings.TrimSpace(targetText)
 }
 
-func evaluateFieldCommit(analysis textInputScreenAnalysis, targetText string) (committed bool, fieldText string) {
+func evaluateFieldCommit(analysis textInputScreenAnalysis) (committed bool, fieldText string) {
 	fieldText = strings.TrimSpace(analysis.FieldText)
 	// field_text is a diagnostic transcription, not a reliable code-point-level
 	// representation of the screenshot. target_matched already means that the
@@ -296,10 +296,14 @@ type focusPointArgs struct {
 func textInputKeyboardKeysForIMESwitch(platform string) ([]string, error) {
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "android":
-		return []string{"ctrl", "shift"}, nil
+		return []string{"KEYCODE_LANGUAGE_SWITCH"}, nil
 	case "ios":
 		return []string{"capslock"}, nil
 	case "mac", "macos":
+		return []string{"ctrl", "space"}, nil
+	case "windows":
+		return []string{"alt", "shift"}, nil
+	case "linux":
 		return []string{"ctrl", "space"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported platform %q for IME switch", platform)
@@ -312,6 +316,8 @@ func textInputKeyboardKeysForSelectAll(platform string) ([]string, error) {
 		return []string{"ctrl", "a"}, nil
 	case "ios", "mac", "macos":
 		return []string{"meta", "a"}, nil
+	case "windows", "linux":
+		return []string{"ctrl", "a"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported platform %q for select all", platform)
 	}
@@ -323,6 +329,8 @@ func textInputKeyboardKeysForUndo(platform string) ([]string, error) {
 		return []string{"ctrl", "z"}, nil
 	case "ios", "mac", "macos":
 		return []string{"meta", "z"}, nil
+	case "windows", "linux":
+		return []string{"ctrl", "z"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported platform %q for undo", platform)
 	}

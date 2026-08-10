@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -130,7 +130,7 @@ func TestAgentLoopPersistsSoftNoticeInContext(t *testing.T) {
 	if got := countLoopGuardNotices(model.messages[1]); got != 1 {
 		t.Fatalf("soft notice count in deciding prompt = %d, want 1", got)
 	}
-	notices := collectMessagesByRole(manager.MessageListDump().Messages, contextmanager.MessageRoleNotice)
+	notices := collectMessagesByRole(manager.MessageListDump().Messages, messages.MessageRoleNotice)
 	if len(notices) != 1 {
 		t.Fatalf("persisted notice count = %d, want 1; messages=%#v", len(notices), manager.MessageListDump().Messages)
 	}
@@ -178,7 +178,7 @@ func TestAgentLoopEscalatesFromPersistedNoticeToRestrictionAndTermination(t *tes
 	if got := countLoopGuardNotices(model.messages[2]); got != 1 {
 		t.Fatalf("restriction notice count in deciding prompt = %d, want 1", got)
 	}
-	notices := collectMessagesByRole(manager.MessageListDump().Messages, contextmanager.MessageRoleNotice)
+	notices := collectMessagesByRole(manager.MessageListDump().Messages, messages.MessageRoleNotice)
 	if len(notices) != 1 {
 		t.Fatalf("persisted notice count = %d, want 1; messages=%#v", len(notices), manager.MessageListDump().Messages)
 	}
@@ -270,9 +270,9 @@ func countLoopGuardNotices(messages []llms.MessageContent) int {
 	return notices
 }
 
-func collectMessagesByRole(messages []contextmanager.Message, role contextmanager.MessageRole) []contextmanager.Message {
-	var result []contextmanager.Message
-	for _, message := range messages {
+func collectMessagesByRole(messageList []messages.Message, role messages.MessageRole) []messages.Message {
+	var result []messages.Message
+	for _, message := range messageList {
 		if message.Role == role {
 			result = append(result, message)
 		}

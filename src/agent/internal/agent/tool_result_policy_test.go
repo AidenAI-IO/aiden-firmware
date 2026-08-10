@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
 
 	"github.com/tmc/langchaingo/llms"
@@ -56,8 +57,8 @@ func TestToolResultCompactionBudgetsRequirePositiveUsableInput(t *testing.T) {
 }
 
 func TestToolResultPolicyBoundsResultWhenCurrentContextIsFull(t *testing.T) {
-	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
-		{Role: contextmanager.MessageRoleSystem, Content: strings.Repeat("context ", 3_650)},
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: strings.Repeat("context ", 3_650)},
 	})
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
@@ -127,8 +128,8 @@ func TestToolResultPolicyBoundsIntrinsicallyLargeResult(t *testing.T) {
 }
 
 func TestToolResultPolicyShrinksIntrinsicResultToCurrentBudget(t *testing.T) {
-	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []contextmanager.Message{
-		{Role: contextmanager.MessageRoleSystem, Content: strings.Repeat("context ", 3_000)},
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: strings.Repeat("context ", 3_000)},
 	})
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
