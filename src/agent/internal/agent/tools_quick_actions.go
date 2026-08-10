@@ -274,6 +274,9 @@ func (t *quickActionsTable) catalogSummary(platform string) string {
 		if platform != "" && !hasPlatform {
 			continue
 		}
+		if hasPlatform && bindingStatus(binding) != quickActionStatusActive {
+			continue
+		}
 		status := "missing"
 		tool := ""
 		if hasPlatform {
@@ -290,6 +293,30 @@ func (t *quickActionsTable) catalogSummary(platform string) string {
 		builder.WriteString("\n")
 	}
 	return strings.TrimRight(builder.String(), "\n")
+}
+
+func (t *quickActionsTable) activeActionIDs(platform string) []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	ids := make([]string, 0, len(t.document.Actions))
+	for id, action := range t.document.Actions {
+		if platform == "" {
+			for _, binding := range action.Platforms {
+				if bindingStatus(binding) == quickActionStatusActive {
+					ids = append(ids, id)
+					break
+				}
+			}
+			continue
+		}
+		binding, ok := action.Platforms[platform]
+		if ok && bindingStatus(binding) == quickActionStatusActive {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // loadQuickActionsForConfig picks the highest-priority mapping file available
@@ -326,31 +353,49 @@ func loadQuickActionsForConfig(configDir string, logger *Logger) {
 type QuickActionTool struct {
 	keyboard             *KeyboardTapTool
 	touch                *TouchGestureTool
-	platformFn           func() string
+	deviceTypeFn         func() string
 	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 func (t *QuickActionTool) Name() string { return "quick_action" }
 
-func (t *QuickActionTool) SetPlatformFn(fn func() string) {
+func (t *QuickActionTool) SetDeviceTypeFunc(fn func() string) {
 	if t != nil {
-		t.platformFn = fn
+		t.deviceTypeFn = fn
 	}
 }
 
 func (t *QuickActionTool) Description() string {
 	return strings.TrimSpace(`Execute a predefined, platform-aware shortcut from quick_actions.json. Cataloged semantic actions MUST use quick_action instead of manually constructed modifier chords. Explicit physical-key requests and uncataloged app-specific shortcuts may use keyboard_tap; a cataloged chord fallback requires a quick_action result in the current run that explicitly reports reserved/unavailable before execution. ` +
 		`For go-home/home-screen requests such as 回到桌面, call {"action":"home"} first; on Android this delegates to keyboard_tap {"keys":["KEYCODE_HOME"]}, while touch_gesture {"type":"home"} remains a fallback alternative. ` +
-		`The runtime selects platform from global device_type state. Use {"action":"list"} to inspect actions for the configured device_type.`)
+		`The runtime selects device-specific bindings from global device_type state. Use {"action":"list"} to inspect actions for the configured device_type.`)
 }
 
 func (t *QuickActionTool) ArgsSchema() map[string]any {
+	actionDescription := `Required active action id for the configured device_type, or "list" to inspect active actions.`
+	actionSchema := stringArgSchema(actionDescription)
+	if platform := t.schemaPlatform(); platform != "" {
+		actions := append([]string{"list"}, globalQuickActions.activeActionIDs(platform)...)
+		actionSchema = stringEnumArgSchema(actionDescription, actions...)
+	}
 	return objectArgsSchema(map[string]any{
-		"action":            stringArgSchema(`Required action id or alias, for example "back", "copy", "spotlight_search", or "list" to inspect actions.`),
+		"action":            actionSchema,
 		"list":              boolArgSchema("Legacy alternative to action=list. New calls should always provide action."),
 		"alternative":       boolArgSchema("Set true to execute an alternative binding listed by a previous quick_action result."),
 		"alternative_index": minIntegerArgSchema("1-based alternative binding index; defaults to 1 when alternative=true.", 1),
 	}, "action")
+}
+
+func (t *QuickActionTool) schemaPlatform() string {
+	if t != nil && t.deviceTypeFn != nil {
+		rawPlatform := quickActionPlatformFromDeviceType(t.deviceTypeFn())
+		platform, err := normalizeQuickActionPlatform(rawPlatform)
+		if err == nil {
+			return platform
+		}
+		return normalizeAgentToolPlatform(rawPlatform)
+	}
+	return ""
 }
 
 type quickActionArgs struct {
@@ -393,8 +438,8 @@ func (t *QuickActionTool) call(ctx context.Context, input string) (string, error
 	}
 
 	platformInput := args.Platform
-	if t != nil && t.platformFn != nil {
-		if runtimePlatform := strings.TrimSpace(t.platformFn()); runtimePlatform != "" {
+	if t != nil && t.deviceTypeFn != nil {
+		if runtimePlatform := strings.TrimSpace(quickActionPlatformFromDeviceType(t.deviceTypeFn())); runtimePlatform != "" {
 			platformInput = runtimePlatform
 		}
 	}
@@ -626,6 +671,14 @@ func (t *QuickActionTool) call(ctx context.Context, input string) (string, error
 	return jsonString(result), nil
 }
 
+func quickActionPlatformFromDeviceType(deviceType string) string {
+	normalized, ok := normalizeDeviceType(deviceType)
+	if !ok {
+		return ""
+	}
+	return normalizeAgentToolPlatform(deviceTypePlatform(normalized))
+}
+
 func (t *QuickActionTool) delegate(ctx context.Context, toolName, payload string) (string, *ToolError, error) {
 	subCtx, _ := WithToolError(ctx)
 	var output string
@@ -718,6 +771,9 @@ func (t *QuickActionTool) listJSON(platform string) string {
 				if !ok {
 					continue
 				}
+				if bindingStatus(binding) != quickActionStatusActive {
+					continue
+				}
 				items = append(items, listItem{
 					ID:       id,
 					Label:    action.Label,
@@ -732,6 +788,9 @@ func (t *QuickActionTool) listJSON(platform string) string {
 		}
 		binding, ok := action.Platforms[platform]
 		if !ok {
+			continue
+		}
+		if bindingStatus(binding) != quickActionStatusActive {
 			continue
 		}
 		items = append(items, listItem{
@@ -770,7 +829,7 @@ func platformNote(actionID, platform string, binding quickActionBinding) string 
 func quickActionBehaviorSummary() string {
 	return strings.Join([]string{
 		"Common actions: back, home, hide_app, quit_app, app_switch, app_switch_back, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, browser_new_tab, browser_close_tab, browser_refresh, browser_address_bar.",
-		"- Platform is selected from global device_type state; use the action id without overriding platform.",
+		"- Device-specific bindings are selected from global device_type state; use the action id without overriding platform.",
 		"- Cataloged semantic actions MUST use quick_action. keyboard_tap remains valid for explicit physical-key requests and uncataloged app-specific shortcuts.",
 		"- A raw chord fallback for a cataloged action is allowed only when a quick_action result in the current run explicitly reports status=reserved or unavailable before executing a binding. Do not infer unavailability from unrelated failures or assumptions.",
 		"- If an active binding executed but failed or had no visible effect: use a listed alternative or non-shortcut UI strategy; never replay the same binding as a raw keyboard chord.",
