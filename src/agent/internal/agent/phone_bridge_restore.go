@@ -147,6 +147,10 @@ func sendRoutedBridgeCommand(ctx context.Context, bridge *PhoneBridge, restorer 
 		resp, err := bridge.SendQueuedCommand(ctx, cmd)
 		return resp, false, err
 	}
+	if phoneBridgeCanUseBLEBackground(status, cmd.Type) && bridge.bleWakeAvailable(ctx) {
+		resp, err := bridge.SendQueuedCommand(ctx, cmd)
+		return resp, false, err
+	}
 
 	restored, err := ensurePhoneBridgeReadyForCommand(ctx, bridge, restorer)
 	if err != nil {

@@ -97,6 +97,25 @@ func phoneBridgeCanUseFGSBackground(status PhoneBridgeStatus, commandType string
 	return true
 }
 
+func phoneBridgeCanUseBLEBackground(status PhoneBridgeStatus, commandType string) bool {
+	if !phoneBridgeIsIOS(status) || !phoneBridgeBackgroundSafeCommandType(commandType) {
+		return false
+	}
+	state := strings.ToLower(strings.TrimSpace(status.AppState))
+	return state == "background" || state == "inactive"
+}
+
+func phoneBridgeShouldNotifyBLEWake(status PhoneBridgeStatus, commandType string) bool {
+	if !phoneBridgeBackgroundSafeCommandType(commandType) {
+		return false
+	}
+	if platform := phoneBridgePlatform(status); platform != "" && platform != "ios" {
+		return false
+	}
+	state := strings.ToLower(strings.TrimSpace(status.AppState))
+	return state != "active"
+}
+
 func phoneBridgeBackgroundSafeCommandType(commandType string) bool {
 	_, ok := phoneBridgeBackgroundSafeCommandTypes[strings.TrimSpace(commandType)]
 	return ok

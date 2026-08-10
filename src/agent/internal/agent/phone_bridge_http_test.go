@@ -3,7 +3,9 @@ package agent
 import (
 	"aiden-agent/internal/agent/statemanager"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -90,6 +92,73 @@ func TestHTTPEnqueueCommand(t *testing.T) {
 				tt.checkResponse(t, w)
 			}
 		})
+	}
+}
+
+func TestHTTPEnqueueRetainsCommandWhenBLEWakeFails(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.mu.Unlock()
+
+	wakeCalled := make(chan struct{}, 1)
+	bridge.bleWake = func(context.Context, string) error {
+		wakeCalled <- struct{}{}
+		return errors.New("wake failed")
+	}
+
+	body, err := json.Marshal(EnqueueCommandRequest{Command: BridgeCommand{
+		ID:   "wake_retention",
+		Type: "clipboard_read",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/phone-bridge/commands", bytes.NewReader(body))
+	response := httptest.NewRecorder()
+	bridge.handleEnqueueCommand(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("enqueue status=%d body=%s", response.Code, response.Body.String())
+	}
+	select {
+	case <-wakeCalled:
+	case <-time.After(time.Second):
+		t.Fatal("BLE wake was not attempted")
+	}
+	queued := bridge.queue.Get("wake_retention")
+	if queued == nil || queued.Status != StatusQueued {
+		t.Fatalf("command was not retained after wake failure: %#v", queued)
+	}
+}
+
+func TestHTTPEnqueueDoesNotWakeForForegroundOnlyCommand(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	wakeCalled := make(chan struct{}, 1)
+	bridge.bleWake = func(context.Context, string) error {
+		wakeCalled <- struct{}{}
+		return nil
+	}
+
+	body, err := json.Marshal(EnqueueCommandRequest{Command: BridgeCommand{
+		ID:   "no_wake_open_app",
+		Type: "open_app",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/phone-bridge/commands", bytes.NewReader(body))
+	response := httptest.NewRecorder()
+	bridge.handleEnqueueCommand(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("enqueue status=%d body=%s", response.Code, response.Body.String())
+	}
+	select {
+	case <-wakeCalled:
+		t.Fatal("BLE wake must not be sent for open_app")
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
