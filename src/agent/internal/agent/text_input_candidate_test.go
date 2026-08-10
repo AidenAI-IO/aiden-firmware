@@ -398,10 +398,10 @@ func TestCycleIMEUsesKeyboardTapNotQuickAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if label != "ctrl+shift" {
+	if label != "KEYCODE_LANGUAGE_SWITCH" {
 		t.Fatalf("label=%q", label)
 	}
-	if len(tapped) != 1 || !strings.Contains(tapped[0], "ctrl") {
+	if len(tapped) != 1 || !strings.Contains(tapped[0], "KEYCODE_LANGUAGE_SWITCH") {
 		t.Fatalf("keyboard_tap calls=%v", tapped)
 	}
 }

@@ -187,7 +187,8 @@ func TestTextInputBridgeUsesClipboardPathAndVerifiesField(t *testing.T) {
 	pb.connected = true
 	tool := &textInputBridge{
 		hw: &textInputHardwareDeps{
-			pointerMode:  "touchscreen",
+			pointerMode:  "absolute",
+			deviceTypeFn: func() string { return "Android" },
 			mouseClick:   mouse,
 			touchGesture: touch,
 			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
@@ -235,7 +236,8 @@ func TestTextInputBridgeReturnsLastObservedFieldTextAfterFailedPasteAttempts(t *
 	pb.connected = true
 	tool := &textInputBridge{
 		hw: &textInputHardwareDeps{
-			pointerMode:  "touchscreen",
+			pointerMode:  "absolute",
+			deviceTypeFn: func() string { return "Android" },
 			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 			touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
 			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},

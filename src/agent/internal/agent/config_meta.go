@@ -65,6 +65,10 @@ type ConditionalPlaceholder struct {
 // FieldMeta describes a single configurable field.
 type FieldMeta struct {
 	Key             string                   `json:"key"`
+	Label           string                   `json:"label,omitempty"`
+	Help            string                   `json:"help,omitempty"`
+	Placeholder     string                   `json:"placeholder,omitempty"`
+	Layout          string                   `json:"layout,omitempty"`
 	Widget          Widget                   `json:"widget"`
 	Enum            []EnumOption             `json:"enum,omitempty"`
 	Range           *Range                   `json:"range,omitempty"`
@@ -122,6 +126,21 @@ func placeholderWhen(value interface{}, conds ...Condition) ConditionalPlacehold
 	return ConditionalPlaceholder{When: VisibleRule{All: conds}, Value: value}
 }
 
+// withDisplayDefaults ensures every field has a stable label even when the
+// form does not need custom presentation metadata. Config keys are already the
+// labels used by the existing web UI, so using the key preserves that contract.
+func withDisplayDefaults(metadata ConfigMetadata) ConfigMetadata {
+	for sectionIndex := range metadata.Sections {
+		for fieldIndex := range metadata.Sections[sectionIndex].Fields {
+			field := &metadata.Sections[sectionIndex].Fields[fieldIndex]
+			if field.Label == "" {
+				field.Label = field.Key
+			}
+		}
+	}
+	return metadata
+}
+
 // ConfigMeta returns the full field metadata for the config web UI. Defaults
 // here are the canonical defaults for the device's agent.toml. Free-text
 // fields (custom_instruction, additional_prompt) intentionally carry no
@@ -129,12 +148,14 @@ func placeholderWhen(value interface{}, conds ...Condition) ConditionalPlacehold
 // custom_instruction is only an override.
 func ConfigMeta() ConfigMetadata {
 	defaults := DefaultConfig()
-	return ConfigMetadata{
+	tencentSTTProviderNames := sttProviderNamesForCanonical(tencentASRProvider)
+	metadata := ConfigMetadata{
 		Sections: []SectionMeta{
 			{
 				Name: "device",
 				Fields: []FieldMeta{
 					{Key: "device_type", Widget: WidgetSelect,
+						Help:    "Android uses HID touchscreen mode. iOS, macOS, windows, and linux use absolute pointer mode.",
 						Enum:    enumOptions("iOS", "Android", "macOS", "windows", "linux"),
 						Default: defaults.Device.DeviceTypeOrDefault()},
 				},
@@ -143,13 +164,13 @@ func ConfigMeta() ConfigMetadata {
 				Name: "model",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake"),
+						Layout:  "wide",
+						Enum:    enumOptions(modelProviderTypes()...),
 						Default: defaults.Model.Provider},
-					{Key: "token_env", Widget: WidgetText},
-					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},
-					{Key: "api_key", Widget: WidgetText, Secret: true},
+					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model, Layout: "wide"},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(in("model.provider", "openai", "openrouter", "kimi", "kimi-cn", "volcengine", "ollama"))},
+						Layout:      "wide",
+						VisibleWhen: all(in("model.provider", modelProviderTypesAllowingCustomBaseURL()...))},
 					// The effective default is model-dependent (resolved at load
 					// time); show the global fallback here as the UI placeholder.
 					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},
@@ -161,6 +182,7 @@ func ConfigMeta() ConfigMetadata {
 					// that accept it so the UI cannot save a value the endpoint
 					// rejects; auto plus low/medium/high stay unscoped.
 					{Key: "reasoning_effort", Widget: WidgetSelect,
+						Help: "Empty = auto (disable reasoning only for no-tool requests). Levels are provider-specific: minimal is OpenRouter and Volcengine Ark only, none is not supported by Ark.",
 						Enum: []EnumOption{
 							{Value: "", Label: "auto (default)"},
 							{Value: "minimal", Label: "minimal (no thinking)", Providers: []string{"openrouter", "volcengine"}},
@@ -170,16 +192,62 @@ func ConfigMeta() ConfigMetadata {
 							{Value: "high", Label: "high"},
 						},
 						Default: defaults.Model.ReasoningEffort},
-					{Key: "context_window", Widget: WidgetNumber, Default: defaults.Model.ContextWindow},
-					{Key: "model_max_output_tokens", Widget: WidgetNumber, Default: defaults.Model.ModelMaxOutputTokens},
+					{Key: "context_window", Widget: WidgetNumber, Default: defaults.Model.ContextWindow,
+						Placeholder: "0 = auto", Help: "0 = auto: use provider metadata when available."},
+					{Key: "model_max_output_tokens", Widget: WidgetNumber, Default: defaults.Model.ModelMaxOutputTokens,
+						Placeholder: "0 = auto", Help: "0 = auto: use provider metadata when available."},
 				},
 			},
+			// model_providers describes one [model_providers.<name>] record, the same shape
+			// [tts_providers] and [stt_providers] give voice. Each holds the
+			// credentials and settings for one LLM service, and [model] references
+			// one by putting the name in its own provider field. Several providers
+			// stay configured at once, so switching is a one-line change instead of
+			// a re-entry of keys.
+			//
+			// Every rule keys on model_providers.type — the record's own type select.
+			{
+				Name: "model_providers",
+				Fields: []FieldMeta{
+					{Key: "type", Widget: WidgetSelect,
+						Enum: enumOptions(modelProviderTypes()...)},
+					{Key: "api_key", Widget: WidgetText, Secret: true},
+					{Key: "base_url", Widget: WidgetText,
+						VisibleWhen: all(in("model_providers.type", modelProviderTypesAllowingCustomBaseURL()...))},
+				},
+			},
+			// [tts] keeps only the provider reference and the settings that are
+			// genuinely global. Everything that stops meaning anything when the
+			// provider changes lives on the record instead -- see tts_providers.
+			//
+			// The provider enum here is the legacy bare-type list, which is what
+			// a pre-records config carries. The UI replaces these options with
+			// the configured record names at runtime.
 			{
 				Name: "tts",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter", "google-cloud"),
+						Layout:  "wide",
+						Enum:    enumOptions(tts.AvailableProviders()...),
 						Default: defaults.TTS.Provider},
+					// speed is a listening preference, not a credential: it must
+					// not change when the voice changes, so it stays global.
+					{Key: "speed", Widget: WidgetSelect, Default: defaults.TTS.Speed,
+						Range: &Range{Min: 0.5, Max: 2, Step: 0.1, Precision: 1}},
+				},
+			},
+			// tts_providers describes one [tts_providers.<name>] record. The
+			// provider dialog renders straight from this, so provider knowledge
+			// stays here rather than being hardcoded per dialog in JS.
+			//
+			// Every rule keys on tts_providers.type -- the record's own type
+			// select. Keying on tts.provider would compare against a record NAME
+			// and never match, which would show every field for every type.
+			{
+				Name: "tts_providers",
+				Fields: []FieldMeta{
+					{Key: "type", Widget: WidgetSelect,
+						Enum: enumOptions(tts.AvailableProviders()...)},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "model", Widget: WidgetText,
 						Enum: []EnumOption{
@@ -193,51 +261,62 @@ func ConfigMeta() ConfigMetadata {
 							{Value: "microsoft/mai-voice-2", Label: "Microsoft MAI Voice 2", Providers: []string{"openrouter"}},
 						},
 						PlaceholderWhen: []ConditionalPlaceholder{
-							placeholderWhen("speech-2.8-hd", in("tts.provider", "minimax", "minimax-cn")),
-							placeholderWhen("s2-pro", in("tts.provider", "fish-audio")),
-							placeholderWhen("qwen-tts-realtime", in("tts.provider", "alicloud")),
-							placeholderWhen("seed-tts-2.0", in("tts.provider", "volcengine")),
-							placeholderWhen("google/gemini-3.1-flash-tts-preview", in("tts.provider", "openrouter")),
+							placeholderWhen("speech-2.8-hd", in("tts_providers.type", "minimax", "minimax-cn")),
+							placeholderWhen("s2-pro", in("tts_providers.type", "fish-audio")),
+							placeholderWhen("qwen-tts-realtime", in("tts_providers.type", "alicloud")),
+							placeholderWhen("seed-tts-2.0", in("tts_providers.type", "volcengine")),
+							placeholderWhen("google/gemini-3.1-flash-tts-preview", in("tts_providers.type", "openrouter")),
 						},
-						SelectWhen:  all(in("tts.provider", "openrouter")),
-						VisibleWhen: all(in("tts.provider", "minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter"))},
+						SelectWhen:  all(in("tts_providers.type", "openrouter")),
+						VisibleWhen: all(in("tts_providers.type", "minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter"))},
 					{Key: "voice_id", Widget: WidgetText, Default: defaults.TTS.VoiceID,
 						PlaceholderWhen: []ConditionalPlaceholder{
-							placeholderWhen("Kore", eq("tts.provider", "openrouter"), eq("tts.model", "google/gemini-3.1-flash-tts-preview")),
-							placeholderWhen("af_heart", eq("tts.provider", "openrouter"), eq("tts.model", "hexgrad/kokoro-82m")),
-							placeholderWhen("en-US-AndrewMultilingualNeural", eq("tts.provider", "openrouter"), eq("tts.model", "microsoft/mai-voice-2")),
-							placeholderWhen("alloy", in("tts.provider", "openrouter")),
-							placeholderWhen("male-qn-qingse", in("tts.provider", "minimax", "minimax-cn")),
-							placeholderWhen("Cherry", in("tts.provider", "alicloud")),
-							placeholderWhen("zh_female_vv_uranus_bigtts", in("tts.provider", "volcengine")),
-							placeholderWhen("en-US-Neural2-C", in("tts.provider", "google-cloud")),
+							placeholderWhen("Kore", eq("tts_providers.type", "openrouter"), eq("tts_providers.model", "google/gemini-3.1-flash-tts-preview")),
+							placeholderWhen("af_heart", eq("tts_providers.type", "openrouter"), eq("tts_providers.model", "hexgrad/kokoro-82m")),
+							placeholderWhen("en-US-AndrewMultilingualNeural", eq("tts_providers.type", "openrouter"), eq("tts_providers.model", "microsoft/mai-voice-2")),
+							placeholderWhen("alloy", in("tts_providers.type", "openrouter")),
+							placeholderWhen("male-qn-qingse", in("tts_providers.type", "minimax", "minimax-cn")),
+							placeholderWhen("Cherry", in("tts_providers.type", "alicloud")),
+							placeholderWhen("zh_female_vv_uranus_bigtts", in("tts_providers.type", "volcengine")),
+							placeholderWhen("en-US-Neural2-C", in("tts_providers.type", "google-cloud")),
 						},
-						VisibleWhen: all(in("tts.provider", "minimax", "minimax-cn", "alicloud", "volcengine", "openrouter", "google-cloud"))},
+						VisibleWhen: all(in("tts_providers.type", "minimax", "minimax-cn", "alicloud", "volcengine", "openrouter", "google-cloud"))},
 					{Key: "reference_id", Widget: WidgetText,
 						PlaceholderWhen: []ConditionalPlaceholder{
-							placeholderWhen(tts.DefaultFishAudioReferenceID, in("tts.provider", "fish-audio")),
+							placeholderWhen(tts.DefaultFishAudioReferenceID, in("tts_providers.type", "fish-audio")),
 						},
-						VisibleWhen: all(in("tts.provider", "fish-audio"))},
+						VisibleWhen: all(in("tts_providers.type", "fish-audio"))},
 					{Key: "emotion", Widget: WidgetText, Default: defaults.TTS.Emotion,
 						PlaceholderWhen: []ConditionalPlaceholder{
-							placeholderWhen("happy", in("tts.provider", "minimax", "minimax-cn")),
+							placeholderWhen("happy", in("tts_providers.type", "minimax", "minimax-cn")),
 						},
-						VisibleWhen: all(in("tts.provider", "minimax", "minimax-cn", "volcengine"))},
-					{Key: "speed", Widget: WidgetSelect, Default: defaults.TTS.Speed,
-						Range: &Range{Min: 0.5, Max: 2, Step: 0.1, Precision: 1}},
+						VisibleWhen: all(in("tts_providers.type", "minimax", "minimax-cn", "volcengine"))},
 				},
 			},
+			// [stt] keeps the provider reference and language. language is a user
+			// preference that holds regardless of which provider transcribes, so
+			// unlike the credential set it does not belong on a record.
 			{
 				Name: "stt",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("openai-whisper", tencentASRProvider, "openrouter", "qwen-asr", "google-cloud"),
+						Layout:  "wide",
+						Enum:    enumOptions(sttProviderTypes()...),
 						Default: defaults.STT.Provider},
 					{Key: "language", Widget: WidgetSelect,
 						Enum:    []EnumOption{{Value: "zh", Label: "中文"}, {Value: "en", Label: "English"}},
 						Default: defaults.STT.Language},
+				},
+			},
+			// stt_providers describes one [stt_providers.<name>] record. Same
+			// contract as tts_providers: every rule keys on the record's own type.
+			{
+				Name: "stt_providers",
+				Fields: []FieldMeta{
+					{Key: "type", Widget: WidgetSelect,
+						Enum: enumOptions(sttProviderTypes()...)},
 					{Key: "api_key", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(in("stt.provider", "openai-whisper", "openrouter", "qwen-asr", "google-cloud"))},
+						VisibleWhen: all(in("stt_providers.type", "openai-whisper", "openrouter", "qwen-asr", "google-cloud"))},
 					{Key: "model", Widget: WidgetSelect,
 						Enum: []EnumOption{
 							{Value: "openai/whisper-large-v3-turbo", Label: "OpenAI Whisper v3 Turbo"},
@@ -252,25 +331,25 @@ func ConfigMeta() ConfigMetadata {
 							{Value: "google/chirp-3", Label: "Google Chirp 3"},
 						},
 						Default:     defaults.STT.Model,
-						VisibleWhen: all(in("stt.provider", "openrouter"))},
+						VisibleWhen: all(in("stt_providers.type", "openrouter"))},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(in("stt.provider", "openai-whisper"))},
+						VisibleWhen: all(in("stt_providers.type", "openai-whisper"))},
 					{Key: "app_id", Widget: WidgetText, Default: "",
-						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.type", tencentSTTProviderNames...))},
 					{Key: "secret_id", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.type", tencentSTTProviderNames...))},
 					{Key: "secret_key", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.type", tencentSTTProviderNames...))},
 					{Key: "region", Widget: WidgetText, Default: defaultTencentASRRegion,
-						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.type", tencentSTTProviderNames...))},
 					{Key: "engine_model_type", Widget: WidgetText,
-						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
+						VisibleWhen: all(in("stt_providers.type", tencentSTTProviderNames...))},
 				},
 			},
 			{
 				Name: "audio",
 				Fields: []FieldMeta{
-					{Key: "socket", Widget: WidgetText, Default: defaults.Audio.Socket},
+					{Key: "socket", Widget: WidgetText, Default: defaults.Audio.Socket, Layout: "wide"},
 					{Key: "sample_rate", Widget: WidgetNumber, Default: defaults.Audio.SampleRate},
 					{Key: "channels", Widget: WidgetNumber, Default: defaults.Audio.Channels},
 					{Key: "bit_width", Widget: WidgetNumber, Default: defaults.Audio.BitWidth},
@@ -283,8 +362,10 @@ func ConfigMeta() ConfigMetadata {
 				Name: "audio_archive",
 				Fields: []FieldMeta{
 					{Key: "enabled", Widget: WidgetBoolean, Default: defaults.AudioArchive.Enabled,
+						Help:        "After enabling, save STT voice recording WAV for Web UI playback; Automatically delete old files when exceeding quantity or capacity limit.",
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "storage_path", Widget: WidgetText, Default: defaults.AudioArchive.StoragePathOrDefault(),
+						Layout:      "wide",
 						VisibleWhen: all(eq("agent.input_mode", "stt"), truthy("audio_archive.enabled"))},
 					{Key: "max_files", Widget: WidgetNumber, Default: defaults.AudioArchive.MaxFilesOrDefault(),
 						VisibleWhen: all(eq("agent.input_mode", "stt"), truthy("audio_archive.enabled"))},
@@ -313,22 +394,26 @@ func ConfigMeta() ConfigMetadata {
 			{
 				Name: "ota",
 				Fields: []FieldMeta{
-					{Key: "github_proxy_url", Widget: WidgetText, Default: ""},
+					{Key: "github_proxy_url", Label: "GitHub Proxy URL", Widget: WidgetText, Default: "",
+						Help:        "Optional proxy to accelerate GitHub downloads (e.g., https://gh-proxy.com/ or https://ghfast.top/)",
+						Placeholder: "Leave empty to disable",
+						Layout:      "wide"},
 				},
 			},
 			{
 				Name: "hid",
 				Fields: []FieldMeta{
 					{Key: "keyboard_layout", Widget: WidgetSelect,
+						Help:    "How the phone interprets the USB keyboard. Keep qwerty unless typed text comes out transposed; then switch the phone input language to match, save, and reboot the board.",
 						Enum:    keyboardLayoutEnumOptions(),
 						Default: defaults.HID.KeyboardLayoutOrDefault()},
 					{Key: "input_backend", Widget: WidgetSelect,
 						Enum:    enumOptions("hid", "adb"),
 						Default: defaults.HID.InputBackend},
-					{Key: "keyboard_device", Widget: WidgetText, Default: defaults.HID.KeyboardDevice},
-					{Key: "mouse_device", Widget: WidgetText, Default: defaults.HID.MouseDevice},
-					{Key: "android_keyboard_device", Widget: WidgetText, Default: defaults.HID.AndroidKeyboardDevice},
-					{Key: "frame_socket", Widget: WidgetText, Default: defaults.HID.FrameSocket},
+					{Key: "keyboard_device", Widget: WidgetText, Default: defaults.HID.KeyboardDevice, Layout: "wide"},
+					{Key: "mouse_device", Widget: WidgetText, Default: defaults.HID.MouseDevice, Layout: "wide"},
+					{Key: "android_keyboard_device", Widget: WidgetText, Default: defaults.HID.AndroidKeyboardDevice, Layout: "wide"},
+					{Key: "frame_socket", Widget: WidgetText, Default: defaults.HID.FrameSocket, Layout: "wide"},
 				},
 			},
 			{
@@ -337,7 +422,7 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "provider", Widget: WidgetSelect,
 						Enum:    enumOptions(searchProviderDuckDuckGo, searchProviderBrave, searchProviderTavily),
 						Default: defaults.Search.ProviderOrDefault()},
-					{Key: "api_key", Widget: WidgetText, Secret: true,
+					{Key: "api_key", Widget: WidgetText, Secret: true, Layout: "wide",
 						VisibleWhen: all(ne("search.provider", searchProviderDuckDuckGo))},
 				},
 			},
@@ -348,11 +433,11 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "provider", Widget: WidgetSelect,
 						Enum:        []EnumOption{{Value: "", Label: "langfuse (default)"}, {Value: "langfuse"}},
 						VisibleWhen: all(truthy("telemetry.enabled"))},
-					{Key: "base_url", Widget: WidgetText,
+					{Key: "base_url", Widget: WidgetText, Placeholder: "http://langfuse.example.com:3000", Layout: "wide",
 						VisibleWhen: all(truthy("telemetry.enabled"))},
-					{Key: "public_key", Widget: WidgetText, Secret: true,
+					{Key: "public_key", Widget: WidgetText, Secret: true, Layout: "wide",
 						VisibleWhen: all(truthy("telemetry.enabled"))},
-					{Key: "secret_key", Widget: WidgetText, Secret: true,
+					{Key: "secret_key", Widget: WidgetText, Secret: true, Layout: "wide",
 						VisibleWhen: all(truthy("telemetry.enabled"))},
 					{Key: "upload_screenshots", Widget: WidgetBoolean,
 						VisibleWhen: all(truthy("telemetry.enabled"))},
@@ -362,7 +447,7 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(truthy("telemetry.enabled"))},
 					{Key: "environment", Widget: WidgetText,
 						VisibleWhen: all(truthy("telemetry.enabled"))},
-					{Key: "tags", Widget: WidgetList,
+					{Key: "tags", Widget: WidgetList, Layout: "wide",
 						VisibleWhen: all(truthy("telemetry.enabled"))},
 				},
 			},
@@ -372,6 +457,9 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "enabled", Widget: WidgetBoolean, Default: true},
 					{Key: "board_id", Widget: WidgetText,
 						VisibleWhen: all(truthy("live_activity.enabled"))},
+					// phone_id is still part of the config_web TOML contract even
+					// though the Go runtime no longer consumes it directly.
+					{Key: "phone_id", Widget: WidgetText},
 				},
 			},
 			{
@@ -394,9 +482,11 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "vad_model_path", Widget: WidgetText,
 						Default:     defaults.VADModelPath,
+						Layout:      "wide",
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "vad_helper_path", Widget: WidgetText,
 						Default:     defaults.VADHelperPath,
+						Layout:      "wide",
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "vad_speech_threshold", Widget: WidgetSelect,
 						Default:     defaults.VADSpeechThreshold,
@@ -435,10 +525,11 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "default_platform", Widget: WidgetSelect,
 						Enum:    enumOptions("", "ios", "android", "mac"),
 						Default: defaults.DefaultPlatform},
-					{Key: "custom_instruction", Widget: WidgetTextarea},
-					{Key: "additional_prompt", Widget: WidgetTextarea},
+					{Key: "custom_instruction", Widget: WidgetTextarea, Layout: "wide"},
+					{Key: "additional_prompt", Widget: WidgetTextarea, Layout: "wide"},
 				},
 			},
 		},
 	}
+	return withDisplayDefaults(metadata)
 }

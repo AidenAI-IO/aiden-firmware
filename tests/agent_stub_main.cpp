@@ -54,11 +54,13 @@ const char* kDefaultCheck = "{\"valid\":true,\"errors\":[]}\n";
 
 const char* kDefaultConfig =
     "{"
+    "\"model_providers\":{\"stub-openai\":{\"type\":\"openai\",\"api_key\":\"sk-stub-secret-1234\"},"
+    "\"stub-ollama\":{\"type\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
     "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
-    "\"base_url\":\"\",\"token_env\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+    "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
     "\"context_window\":0,\"model_max_output_tokens\":0},"
-    "\"model_text\":{\"provider\":\"\",\"api_key\":\"\",\"model\":\"\",\"base_url\":\"\",\"token_env\":\"\","
-    "\"temperature\":0,\"max_response_tokens\":0,\"context_window\":0,\"model_max_output_tokens\":0},"
+    "\"tts_providers\":{\"minimax-cn\":{\"type\":\"minimax-cn\"}},"
+    "\"stt_providers\":{\"openai-whisper\":{\"type\":\"openai-whisper\"}},"
     "\"tts\":{\"provider\":\"minimax-cn\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
     "\"emotion\":\"happy\",\"speed\":1},"
     "\"stt\":{\"provider\":\"openai-whisper\",\"api_key\":\"\",\"model\":\"whisper-1\",\"base_url\":\"\","
@@ -136,6 +138,11 @@ void maybe_write_config_test_log(int argc, char** argv, const std::string& stdin
     out << "argv:";
     for (int i = 1; i < argc; ++i) {
         out << "\n" << argv[i];
+    }
+    const char* env_key = std::getenv("AIDEN_AGENT_STUB_CONFIG_TEST_ENV_KEY");
+    if (env_key && env_key[0] != '\0') {
+        const char* env_value = std::getenv(env_key);
+        out << "\nenv:" << env_key << "=" << (env_value ? env_value : "<unset>");
     }
     out << "\nstdin:\n" << stdin_body;
 }

@@ -46,6 +46,7 @@ func effectiveMaxIterations(configured int) int {
 const (
 	currentEnvironmentHintMaxAge      = 10 * time.Minute
 	runtimeSessionEventPersistTimeout = 2 * time.Second
+	maxPublicToolResultRunes          = maxToolObservationRunes
 )
 
 type Runtime struct {
@@ -407,7 +408,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	toolSet.RegisterMemoryTools(memoryDir, extractionCfg.SummaryMaxChunks, longTermStore)
-	toolSet.RegisterEnterTextTool(modelManager, nil) // platformFn set per-request
+	toolSet.RegisterEnterTextTool(modelManager, nil) // deviceTypeFn set after runtime construction
 
 	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithStructuredSummarizeFn(structuredSummarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithLongTermMemoryStore(longTermStore), WithMemoryLogger(logger)), toolSet, skillIndex)
 
@@ -416,7 +417,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if cfg.ConfigDir != "" {
 		skillsDir := filepath.Join(cfg.ConfigDir, "skills")
 		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
-		toolSet.RegisterSkillTools(skillsDir, manifestPath, rt.MarkSkillsDirty)
+		toolSet.RegisterSkillToolsWithDeviceType(skillsDir, manifestPath, rt.deviceTypeFromState, rt.MarkSkillsDirty)
 	}
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
@@ -447,8 +448,8 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger, WithMemoryPlaneLongTermStore(longTermStore))
 	rt.markInterruptedEpisodesBestEffort()
 
-	// SD/eMMC storage manager (docs/04-agent/storage-modes.md). Absent
-	// hardware degrades to eMMC-only, so starting it is safe everywhere.
+	// Start the SD/eMMC storage manager on every device. Missing or unusable
+	// card hardware degrades to eMMC-only operation.
 	rt.storage = NewStorageManager(cfg.Storage, logger)
 	rt.storage.Start()
 
@@ -554,7 +555,8 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		rt.markInterruptedEpisodesBestEffort()
 	}
 	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
-	rt.tools.SetRuntimePlatformFn(rt.devicePlatformFromState)
+	skillManager.SetDeviceTypeFunc(rt.deviceTypeFromState)
+	rt.tools.SetRuntimeDeviceTypeFn(rt.deviceTypeFromState)
 	rt.sessionManager = newMemoryManagerSessionManager(memories, func() BoundaryEpisodeContext {
 		return recentEpisodeContext(rt.memoryPlane)
 	})
@@ -1015,12 +1017,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	// Runtime target-platform decisions come from global device_type state.
-	platformFn := func() string {
-		return r.devicePlatformFromState()
-	}
-	r.tools.SetRuntimePlatformFn(platformFn)
-
 	// setup context manager if not initialized
 	if r.contextManager == nil {
 		r.contextManager, err = InitializeContextManager(profile.SystemPrompt, agentpath.ContextManagerSessionFolder(r.config.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
@@ -1100,7 +1096,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.SteerProvider = req.SteerProvider
 	agentLoop.SteerWaiter = req.SteerWaiter
 	agentLoop.TerminationPolicy = NewTerminationPolicy(r.config.TerminationPolicy)
-	agentLoop.DevicePlatform = platformFn()
+	agentLoop.DevicePlatform = r.devicePlatformFromState()
 	agentLoop.PointerMode = r.devicePointerModeFromState()
 	agentLoop.ContextOverflowRecovery = func(recoveryCtx context.Context, currentManager *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
 		if r.logger != nil {
@@ -1463,7 +1459,7 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	if r == nil || r.tools == nil {
 		return nil
 	}
-	return NewToolSpecs(r.tools.All()).AgentTools(r.config.LoadAllTools)
+	return NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
 }
 
 func toolNamesFromTools(tools []langtools.Tool) []string {
@@ -1929,12 +1925,13 @@ func (h *runtimeCallbackHandler) AfterToolCall(ctx context.Context, call ToolCal
 }
 
 func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call ToolCall, result ToolResult) {
-	output := result.EventOutput()
+	output := publicToolResultContent(result)
+	logOutput := result.EventOutput()
 	if h.logger != nil {
 		if result.IsError() {
-			h.logger.Error("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
+			h.logger.Error("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(logOutput, 240))
 		} else {
-			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
+			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(logOutput, 240))
 		}
 	}
 	h.emitRunEvent(RunEvent{
@@ -1948,6 +1945,14 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 		IsError:    result.IsError(),
 		ToolError:  cloneToolError(result.Error),
 	})
+}
+
+func publicToolResultContent(result ToolResult) string {
+	originalChars := utf8.RuneCountInString(result.Output)
+	if result.SummaryTruncated && originalChars > maxPublicToolResultRunes {
+		return fmt.Sprintf("[Large tool result omitted from public history (%d chars)]", originalChars)
+	}
+	return result.EventOutput()
 }
 
 func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action schema.AgentAction) {

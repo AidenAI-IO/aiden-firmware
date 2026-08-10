@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from typing import Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
 def _strip_toml_comment(line: str) -> str:
@@ -35,7 +33,7 @@ def _parse_toml_string(value: str) -> str:
 
 def load_agent_model_config(path: Path) -> dict[str, str]:
     section = ""
-    values: dict[str, str] = {}
+    sections: dict[str, dict[str, str]] = {}
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = _strip_toml_comment(raw_line)
         if not line:
@@ -43,11 +41,30 @@ def load_agent_model_config(path: Path) -> dict[str, str]:
         if line.startswith("[") and line.endswith("]"):
             section = line[1:-1].strip()
             continue
-        if section != "model" or "=" not in line:
+        if not section or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        values[key.strip()] = _parse_toml_string(value)
-    return values
+        sections.setdefault(section, {})[key.strip()] = _parse_toml_string(value)
+
+    model = dict(sections.get("model", {}))
+    provider_ref = model.get("provider", "").strip()
+    if not provider_ref:
+        return model
+
+    canonical = sections.get(f"model_providers.{provider_ref}")
+    legacy = sections.get(f"providers.{provider_ref}")
+    record = canonical if canonical is not None else legacy
+    if record is None:
+        return model
+
+    if "type" in record:
+        model["provider"] = record["type"].strip()
+    elif "provider" in record:
+        model["provider"] = record["provider"].strip()
+    for key in ("api_key", "base_url"):
+        if not model.get(key, "").strip() and record.get(key, "").strip():
+            model[key] = record[key]
+    return model
 
 
 def default_agent_config_path() -> Path | None:
@@ -77,13 +94,12 @@ def resolve_agent_model_api_key(
     if path is None or not path.is_file():
         return None
 
-    configured = load_agent_model_config(path).get("api_key", "").strip()
+    model = load_agent_model_config(path)
+    configured = model.get("api_key", "").strip()
     if not configured:
         return None
-    if configured in env and env[configured]:
-        return env[configured]
-    if _ENV_NAME_RE.fullmatch(configured):
-        return None
+    if configured.startswith("$"):
+        return env.get(configured[1:].strip()) or None
     return configured
 
 

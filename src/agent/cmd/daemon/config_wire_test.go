@@ -1,10 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
+
+	"aiden-agent/internal/agent"
 )
 
 // These tests exercise the real config_web <-> agent wire contract: the JSON
@@ -271,5 +276,267 @@ func TestConfigCheckPath_RejectsInvalidTOML(t *testing.T) {
 	}
 	if len(result.Errors) == 0 || !strings.Contains(result.Errors[0].Message, "TOML") {
 		t.Fatalf("expected TOML decode error, got: %+v", result.Errors)
+	}
+}
+
+// TestConfigWire_ProvidersRoundTrip guards the sync point that broke the
+// provider feature end to end: webConfigDTO had no top-level "model_providers" field,
+// so `agent config --format=json` never emitted the section. config_web.cpp
+// builds its AgentToml from that output, which made GET /api/config report zero
+// providers and made every save of an unrelated section erase them from
+// agent.toml. Validation was skipped for the same reason.
+func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
+	t.Run("providers reach the DTO with write-only credentials", func(t *testing.T) {
+		cfg := agent.Config{
+			ModelProviders: map[string]agent.ModelProvider{
+				"my-openai": {Type: "openai", APIKey: "$OPENAI_KEY"},
+				"my-ollama": {Type: "ollama", BaseURL: "http://127.0.0.1:11434"},
+			},
+			Model: agent.ModelConfig{Provider: "my-openai", Model: "gpt-4"},
+		}
+
+		dto := webConfigDTOFromAgentConfig(cfg)
+		if len(dto.ModelProviders) != 2 {
+			t.Fatalf("dto.ModelProviders = %#v, want 2 entries", dto.ModelProviders)
+		}
+		if got := dto.ModelProviders["my-openai"]; got.Type != "openai" ||
+			got.APIKey != "" || !got.HasAPIKey {
+			t.Errorf("dto.ModelProviders[my-openai] = %#v", got)
+		}
+		if got := dto.ModelProviders["my-ollama"].BaseURL; got != "http://127.0.0.1:11434" {
+			t.Errorf("dto.ModelProviders[my-ollama].BaseURL = %q", got)
+		}
+
+		back := dto.toAgentConfig()
+		if got := back.ModelProviders["my-openai"]; got.Type != "openai" || got.APIKey != "" {
+			t.Errorf("redacted model_providers conversion = %#v", back.ModelProviders)
+		}
+	})
+
+	t.Run("wire payload marshals a providers key", func(t *testing.T) {
+		dto := webConfigDTOFromAgentConfig(agent.Config{
+			ModelProviders: map[string]agent.ModelProvider{"my-openai": {Type: "openai"}},
+			Model:          agent.ModelConfig{Provider: "my-openai", Model: "gpt-4"},
+		})
+		encoded, err := json.Marshal(dto)
+		if err != nil {
+			t.Fatalf("marshal dto: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"model_providers":{"my-openai":{"type":"openai"}}`) {
+			t.Errorf("encoded payload missing model_providers section: %s", encoded)
+		}
+	})
+
+	t.Run("unsupported provider type is rejected through the wire decoder", func(t *testing.T) {
+		payload := `{
+			"model_providers":{"zz":{"type":"nonsense"}},
+			"model":{"provider":"zz","model":"gpt-4"},
+			"search":{"provider":"duckduckgo"},
+			"agent":{},
+			"hid":{"pointer_mode":"absolute"}
+		}`
+		result := checkWire(t, payload)
+		if result.Valid {
+			t.Fatal("expected an unsupported provider type to be rejected")
+		}
+		if len(result.Errors) == 0 || !strings.Contains(result.Errors[0].Message, "model_providers.zz") {
+			t.Fatalf("expected model_providers.zz error, got: %+v", result.Errors)
+		}
+	})
+
+	t.Run("provider entry without a type is rejected", func(t *testing.T) {
+		payload := `{
+			"model_providers":{"empty-one":{"api_key":"k"}},
+			"model":{"provider":"empty-one","model":"gpt-4"},
+			"search":{"provider":"duckduckgo"},
+			"agent":{},
+			"hid":{"pointer_mode":"absolute"}
+		}`
+		result := checkWire(t, payload)
+		if result.Valid {
+			t.Fatal("expected a provider without a type to be rejected")
+		}
+	})
+
+	t.Run("valid named providers pass", func(t *testing.T) {
+		payload := `{
+			"model_providers":{
+				"my-openai":{"type":"openai","api_key":"sk-x"},
+				"my-ollama":{"type":"ollama","base_url":"http://127.0.0.1:11434"}
+			},
+			"model":{"provider":"my-openai","model":"gpt-4"},
+			"search":{"provider":"duckduckgo"},
+			"agent":{},
+			"hid":{"pointer_mode":"absolute"}
+		}`
+		result := checkWire(t, payload)
+		if !result.Valid {
+			t.Fatalf("expected valid=true, got errors: %+v", result.Errors)
+		}
+	})
+}
+
+func TestConfigWire_ModelProviderCanonicalJSON(t *testing.T) {
+	t.Run("canonical payload uses model_providers and type", func(t *testing.T) {
+		payload := `{
+			"model_providers":{"work":{"type":"openai","api_key":"sk-x"}},
+			"model":{"provider":"work","model":"gpt-4"},
+			"search":{"provider":"duckduckgo"},
+			"agent":{},
+			"hid":{"pointer_mode":"absolute"}
+		}`
+		result := checkWire(t, payload)
+		if !result.Valid {
+			t.Fatalf("canonical payload rejected: %+v", result.Errors)
+		}
+	})
+
+	t.Run("legacy providers namespace is rejected", func(t *testing.T) {
+		payload := `{
+			"providers":{"work":{"provider":"openai","api_key":"sk-x"}},
+			"model":{"provider":"work","model":"gpt-4"},
+			"search":{"provider":"duckduckgo"},
+			"agent":{},
+			"hid":{"pointer_mode":"absolute"}
+		}`
+		if _, err := checkConfig(strings.NewReader(payload)); err == nil {
+			t.Fatal("expected legacy providers namespace to fail decoding")
+		} else if !strings.Contains(err.Error(), "model_providers") {
+			t.Fatalf("unexpected decode error: %v", err)
+		}
+	})
+
+	t.Run("canonical type wins over legacy record field", func(t *testing.T) {
+		payload := `{
+			"model_providers":{"work":{"type":"openai","provider":"kimi","api_key":"sk-canonical"}},
+			"model":{"provider":"work","model":"gpt-4"},
+			"search":{"provider":"duckduckgo"},
+			"agent":{},
+			"hid":{"pointer_mode":"absolute"}
+		}`
+		var dto webConfigDTO
+		if err := json.Unmarshal([]byte(payload), &dto); err != nil {
+			t.Fatalf("unmarshal mixed payload: %v", err)
+		}
+		provider := dto.ModelProviders["work"]
+		if provider.Type != "openai" || provider.APIKey != "sk-canonical" || provider.BaseURL != "" {
+			t.Fatalf("canonical provider did not win: %#v", provider)
+		}
+	})
+
+	t.Run("canonical null type does not fall back to legacy provider", func(t *testing.T) {
+		var dto webConfigDTO
+		if err := json.Unmarshal([]byte(`{
+			"model_providers":{"work":{"type":null,"provider":"openai"}}
+		}`), &dto); err != nil {
+			t.Fatalf("unmarshal null canonical type: %v", err)
+		}
+		if got := dto.ModelProviders["work"].Type; got != "" {
+			t.Fatalf("type = %q, want empty canonical value without legacy fallback", got)
+		}
+	})
+
+	t.Run("marshaled payload only uses canonical names", func(t *testing.T) {
+		dto := webConfigDTO{
+			ModelProviders: map[string]modelProviderDTO{"work": {Type: "openai", APIKey: "sk-x"}},
+			Model:          modelDTO{Provider: "work", Model: "gpt-4"},
+		}
+		encoded, err := json.Marshal(dto)
+		if err != nil {
+			t.Fatalf("marshal canonical payload: %v", err)
+		}
+		output := string(encoded)
+		if !strings.Contains(output, `"model_providers":{"work":{"type":"openai"`) {
+			t.Errorf("canonical provider missing from JSON: %s", output)
+		}
+		if strings.Contains(output, `"providers"`) || strings.Contains(output, `"provider":"openai"`) {
+			t.Errorf("legacy model provider shape leaked into JSON: %s", output)
+		}
+	})
+}
+
+// TestWebConfigDTOTopLevelSectionsAreCovered pins the set of top-level sections
+// that `agent config --format=json` emits.
+//
+// config_web.cpp builds its AgentToml from this payload, so a section the Go DTO
+// does not emit does not exist as far as the C++ read path is concerned. That is
+// exactly how the `providers` bug worked: the field was missing here, so the
+// config page always showed zero providers AND every save of an unrelated
+// section started from an empty map and erased them from agent.toml.
+//
+// The C++ fixtures (tests/agent_stub_main.cpp and the resolved_config_json()
+// helper in tests/config_web_e2e_test.cpp) are hand-maintained copies of this
+// payload, so they cannot catch drift on the Go side. This test can: when a
+// section is added to webConfigDTO, this list must be updated, which is the
+// prompt to update the C++ fixtures and the AgentToml struct in the same change.
+func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
+	want := []string{
+		"agent",
+		"audio",
+		"audio_archive",
+		"device",
+		"hid",
+		"live_activity",
+		"log",
+		"model",
+		"model_providers",
+		"ota",
+		"search",
+		"stt",
+		"stt_providers",
+		"telemetry",
+		"termination_policy",
+		"tts",
+		"tts_providers",
+		"voice_notifications",
+	}
+
+	dtoType := reflect.TypeOf(webConfigDTO{})
+	got := make([]string, 0, dtoType.NumField())
+	for i := 0; i < dtoType.NumField(); i++ {
+		tag := dtoType.Field(i).Tag.Get("json")
+		if tag == "" || tag == "-" {
+			t.Errorf("field %s has no json tag; the C++ side keys off these names",
+				dtoType.Field(i).Name)
+			continue
+		}
+		got = append(got, strings.Split(tag, ",")[0])
+	}
+
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("webConfigDTO top-level sections drifted.\n got: %v\nwant: %v\n"+
+			"If this is intentional, update this list AND the C++ fixtures in "+
+			"tests/agent_stub_main.cpp and tests/config_web_e2e_test.cpp, plus "+
+			"AgentToml in src/agent_toml.h.", got, want)
+	}
+}
+
+// TestWebConfigDTOProvidersOmittedWhenEmpty documents that `model_providers` carries
+// omitempty, so a config with no providers omits the key entirely rather than
+// emitting {}. The C++ read path must treat a missing key as "no providers"
+// rather than as an error.
+func TestWebConfigDTOProvidersOmittedWhenEmpty(t *testing.T) {
+	cfg := agent.Config{
+		Model: agent.ModelConfig{Provider: "openai", Model: "gpt-4o", APIKey: "sk-x"},
+	}
+	payload, err := json.Marshal(webConfigDTOFromAgentConfig(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(payload), `"model_providers"`) {
+		t.Errorf("expected model_providers to be omitted when empty, got: %s", payload)
+	}
+
+	// And with a provider present the key must appear.
+	cfg.ModelProviders = map[string]agent.ModelProvider{
+		"work": {Type: "openai", APIKey: "sk-work"},
+	}
+	payload, err = json.Marshal(webConfigDTOFromAgentConfig(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(payload), `"model_providers"`) {
+		t.Errorf("expected model_providers in the payload, got: %s", payload)
 	}
 }

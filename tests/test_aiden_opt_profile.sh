@@ -5,8 +5,7 @@
 # that matter are ordering and idempotency: /opt must never come before the
 # system directories (a package shipping "mount" or "mkfs.ext4" would otherwise
 # shadow the tools storage_manager.go calls by bare name), and re-sourcing must
-# not grow PATH without bound. See
-# docs/07-operations/opkg-package-management.md §6.7.
+# not grow PATH without bound.
 #
 # Set SH to re-run under a closer stand-in for the board's busybox ash, e.g.
 # "SH=dash sh tests/test_aiden_opt_profile.sh".
@@ -145,7 +144,7 @@ else
 	fail "aiden_opt_dir leaked as '$leaked'"
 fi
 
-echo "TERMINFO_DIRS: Entware's terminfo database must be findable (§6.7)"
+echo "TERMINFO_DIRS: Entware's terminfo database must be findable"
 
 # The script reads both terminfo directories from the environment so this runs
 # on a host with no /opt at all. OPT_TI is created; SYS_TI merely has to be a
@@ -217,7 +216,7 @@ else
 	fail "terminfo helper variables leaked: $leaked"
 fi
 
-echo "LD_LIBRARY_PATH is deliberately left alone (§6.7)"
+echo "LD_LIBRARY_PATH is deliberately left alone"
 ld=$(PATH_IN=/bin "$SH" -c \
 	'PATH=$PATH_IN; . "$1"; printf "%s\n" "${LD_LIBRARY_PATH-unset}"' sh "$PROFILE")
 if [ "$ld" = "unset" ]; then

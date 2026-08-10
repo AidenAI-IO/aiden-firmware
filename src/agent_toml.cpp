@@ -336,7 +336,6 @@ void apply_kv(AgentToml& cfg,
         else if (key == "model") assign_string(&m.model, raw, &sub_err);
         else if (key == "base_url") assign_string(&m.base_url, raw, &sub_err);
         else if (key == "api_key") assign_string(&m.api_key, raw, &sub_err);
-        else if (key == "token_env") assign_string(&m.token_env, raw, &sub_err);
         else if (key == "reasoning_effort") assign_string(&m.reasoning_effort, raw, &sub_err);
         else if (key == "temperature") {
             assign_double(&m.temperature, raw, &sub_err);
@@ -350,8 +349,6 @@ void apply_kv(AgentToml& cfg,
 
     if (section == "model") {
         fill_model(cfg.model);
-    } else if (section == "model_text") {
-        fill_model(cfg.model_text);
     } else if (section == "tts") {
         if (key == "provider") assign_string(&cfg.tts.provider, raw, &sub_err);
         else if (key == "api_key") assign_string(&cfg.tts.api_key, raw, &sub_err);
@@ -474,6 +471,68 @@ void apply_kv(AgentToml& cfg,
             cfg.live_activity.has_private_key_pem = !cfg.live_activity.private_key_pem.empty();
         } else if (key == "timeout_sec") assign_non_negative_int(&cfg.live_activity.timeout_sec, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section.find("tts_providers.") == 0) {
+        // Handle [tts_providers.xxx] sections. Checked before the
+        // "providers." branch would ever see it -- find() is anchored at 0, so
+        // "tts_providers.x" does not match "providers." (that substring sits at
+        // index 4), but ordering it here keeps the intent obvious.
+        std::string record_name = section.substr(14); // Skip "tts_providers."
+        if (!is_valid_bare_toml_key(record_name)) {
+            fail(record_name.empty()
+                     ? "empty tts provider name"
+                     : "invalid tts provider name \"" + record_name +
+                           "\": only letters, digits, '-' and '_' are allowed");
+            return;
+        }
+
+        TTSProviderToml& record = cfg.tts_providers[record_name];
+        if (key == "type" || key == "provider") assign_string(&record.type, raw, &sub_err);
+        else if (key == "api_key") assign_string(&record.api_key, raw, &sub_err);
+        else if (key == "model") assign_string(&record.model, raw, &sub_err);
+        else if (key == "voice_id") assign_string(&record.voice_id, raw, &sub_err);
+        else if (key == "emotion") assign_string(&record.emotion, raw, &sub_err);
+        else if (key == "reference_id") assign_string(&record.reference_id, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
+    } else if (section.find("stt_providers.") == 0) {
+        std::string record_name = section.substr(14); // Skip "stt_providers."
+        if (!is_valid_bare_toml_key(record_name)) {
+            fail(record_name.empty()
+                     ? "empty stt provider name"
+                     : "invalid stt provider name \"" + record_name +
+                           "\": only letters, digits, '-' and '_' are allowed");
+            return;
+        }
+
+        STTProviderToml& record = cfg.stt_providers[record_name];
+        if (key == "type" || key == "provider") assign_string(&record.type, raw, &sub_err);
+        else if (key == "api_key") assign_string(&record.api_key, raw, &sub_err);
+        else if (key == "model") assign_string(&record.model, raw, &sub_err);
+        else if (key == "base_url") assign_string(&record.base_url, raw, &sub_err);
+        else if (key == "app_id") assign_string(&record.app_id, raw, &sub_err);
+        else if (key == "secret_id") assign_string(&record.secret_id, raw, &sub_err);
+        else if (key == "secret_key") assign_string(&record.secret_key, raw, &sub_err);
+        else if (key == "region") assign_string(&record.region, raw, &sub_err);
+        else if (key == "engine_model_type") assign_string(&record.engine_model_type, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
+    } else if (section.find("model_providers.") == 0) {
+        std::string provider_name = section.substr(16); // Skip "model_providers."
+        // Reject here what save_agent_toml would refuse to write. Accepting a
+        // name that cannot be serialized back would make every later save fail
+        // with "invalid provider name" on a config that loaded cleanly.
+        if (!is_valid_bare_toml_key(provider_name)) {
+            fail(provider_name.empty()
+                     ? "empty provider name"
+                     : "invalid provider name \"" + provider_name +
+                           "\": only letters, digits, '-' and '_' are allowed");
+            return;
+        }
+
+        ModelProviderToml& provider = cfg.model_providers[provider_name];
+
+        if (key == "type" || key == "provider") assign_string(&provider.type, raw, &sub_err);
+        else if (key == "api_key") assign_string(&provider.api_key, raw, &sub_err);
+        else if (key == "base_url") assign_string(&provider.base_url, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     }
     // Unknown sections / keys are ignored.
 }
@@ -509,13 +568,136 @@ bool atomic_write(const std::string& path, const std::string& content, std::stri
 }
 
 struct LegacyModelMaxTokens {
+    std::string raw;
+    int lineno = 0;
+
+    LegacyModelMaxTokens(const std::string& raw_value, int line)
+        : raw(raw_value), lineno(line) {}
+};
+
+struct CanonicalProviderType {
     std::string section;
     std::string raw;
     int lineno = 0;
 
-    LegacyModelMaxTokens(const std::string& section_name, const std::string& raw_value, int line)
+    CanonicalProviderType(const std::string& section_name,
+                          const std::string& raw_value,
+                          int line)
         : section(section_name), raw(raw_value), lineno(line) {}
 };
+
+// migrate_flat_voice_provider_fields_impl moves flat [tts]/[stt] provider fields
+// onto their active record, then clears the flat copies.
+//
+// The Go runtime migrates this too, but only in memory: agent_toml.cpp is the
+// only writer of the file. Without migrating here a device's key would stay flat
+// forever, and the config page -- which edits records now -- would show no card
+// for it, leaving the key invisible and un-editable while still working.
+void migrate_flat_voice_provider_fields_impl(AgentToml& cfg) {
+    const std::string tts_provider = trim(cfg.tts.provider);
+    std::map<std::string, TTSProviderToml>::iterator tts_record =
+        cfg.tts_providers.find(tts_provider);
+    if (tts_record != cfg.tts_providers.end()) {
+        // Flat provider fields historically won at runtime. Move only
+        // non-empty overrides so an explicit empty string keeps the inherited
+        // record value, then remove every flat copy.
+        if (!cfg.tts.api_key.empty()) {
+            tts_record->second.api_key = cfg.tts.api_key;
+        }
+        if (!cfg.tts.model.empty()) {
+            tts_record->second.model = cfg.tts.model;
+        }
+        if (!cfg.tts.voice_id.empty()) {
+            tts_record->second.voice_id = cfg.tts.voice_id;
+        }
+        if (!cfg.tts.emotion.empty()) {
+            tts_record->second.emotion = cfg.tts.emotion;
+        }
+        if (!cfg.tts.reference_id.empty()) {
+            tts_record->second.reference_id = cfg.tts.reference_id;
+        }
+        cfg.tts.api_key.clear();
+        cfg.tts.model.clear();
+        cfg.tts.voice_id.clear();
+        cfg.tts.emotion.clear();
+        cfg.tts.reference_id.clear();
+    } else if (!tts_provider.empty() && is_valid_bare_toml_key(tts_provider)) {
+        TTSProviderToml& record = cfg.tts_providers[tts_provider];
+        record.type = tts_provider;
+        record.api_key = cfg.tts.api_key;
+        record.model = cfg.tts.model;
+        record.voice_id = cfg.tts.voice_id;
+        record.emotion = cfg.tts.emotion;
+        record.reference_id = cfg.tts.reference_id;
+
+        // Two editors for one credential would disagree the moment either is
+        // used. speed stays: it is global by design.
+        cfg.tts.api_key.clear();
+        cfg.tts.model.clear();
+        cfg.tts.voice_id.clear();
+        cfg.tts.emotion.clear();
+        cfg.tts.reference_id.clear();
+    }
+
+    const std::string stt_provider = trim(cfg.stt.provider);
+    std::map<std::string, STTProviderToml>::iterator stt_record =
+        cfg.stt_providers.find(stt_provider);
+    if (stt_record != cfg.stt_providers.end()) {
+        if (!cfg.stt.api_key.empty()) {
+            stt_record->second.api_key = cfg.stt.api_key;
+        }
+        if (!cfg.stt.model.empty()) {
+            stt_record->second.model = cfg.stt.model;
+        }
+        if (!cfg.stt.base_url.empty()) {
+            stt_record->second.base_url = cfg.stt.base_url;
+        }
+        if (!cfg.stt.app_id.empty()) {
+            stt_record->second.app_id = cfg.stt.app_id;
+        }
+        if (!cfg.stt.secret_id.empty()) {
+            stt_record->second.secret_id = cfg.stt.secret_id;
+        }
+        if (!cfg.stt.secret_key.empty()) {
+            stt_record->second.secret_key = cfg.stt.secret_key;
+        }
+        if (!cfg.stt.region.empty()) {
+            stt_record->second.region = cfg.stt.region;
+        }
+        if (!cfg.stt.engine_model_type.empty()) {
+            stt_record->second.engine_model_type = cfg.stt.engine_model_type;
+        }
+        cfg.stt.api_key.clear();
+        cfg.stt.model.clear();
+        cfg.stt.base_url.clear();
+        cfg.stt.app_id.clear();
+        cfg.stt.secret_id.clear();
+        cfg.stt.secret_key.clear();
+        cfg.stt.region.clear();
+        cfg.stt.engine_model_type.clear();
+    } else if (!stt_provider.empty() && is_valid_bare_toml_key(stt_provider)) {
+        STTProviderToml& record = cfg.stt_providers[stt_provider];
+        record.type = stt_provider;
+        record.api_key = cfg.stt.api_key;
+        record.model = cfg.stt.model;
+        record.base_url = cfg.stt.base_url;
+        record.app_id = cfg.stt.app_id;
+        record.secret_id = cfg.stt.secret_id;
+        record.secret_key = cfg.stt.secret_key;
+        record.region = cfg.stt.region;
+        record.engine_model_type = cfg.stt.engine_model_type;
+
+        // language stays: it holds regardless of which provider transcribes.
+        cfg.stt.api_key.clear();
+        cfg.stt.model.clear();
+        cfg.stt.base_url.clear();
+        cfg.stt.app_id.clear();
+        cfg.stt.secret_id.clear();
+        cfg.stt.secret_key.clear();
+        cfg.stt.region.clear();
+        cfg.stt.engine_model_type.clear();
+    }
+}
 
 void emit_string(std::ostringstream& out, const char* key, const std::string& value) {
     out << key << " = " << quote(value) << "\n";
@@ -549,8 +731,7 @@ void emit_model(std::ostringstream& out, const char* section, const ModelToml& m
     emit_string(out, "provider", m.provider);
     emit_string(out, "model", m.model);
     if (!m.base_url.empty()) emit_string(out, "base_url", m.base_url);
-    emit_string(out, "api_key", m.api_key);
-    if (!m.token_env.empty()) emit_string(out, "token_env", m.token_env);
+    if (!m.api_key.empty()) emit_string(out, "api_key", m.api_key);
     // Always emit reasoning_effort, even if empty (empty = "auto" default)
     emit_string(out, "reasoning_effort", m.reasoning_effort);
     if (m.has_temperature) emit_double(out, "temperature", m.temperature);
@@ -580,8 +761,10 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
     int lineno = 0;
     std::string parse_error;
     bool model_max_response_tokens_seen = false;
-    bool model_text_max_response_tokens_seen = false;
     std::vector<LegacyModelMaxTokens> legacy_model_max_tokens;
+    AgentToml canonical_model_providers;
+    bool canonical_model_providers_seen = false;
+    std::vector<CanonicalProviderType> canonical_provider_types;
 
     while (std::getline(in, line)) {
         ++lineno;
@@ -597,6 +780,15 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
                 return false;
             }
             section = trim(t.substr(1, close - 1));
+            if (section.find("model_providers.") == 0) {
+                canonical_model_providers_seen = true;
+            } else if (section == "providers" || section.find("providers.") == 0) {
+                if (error) {
+                    *error = "line " + std::to_string(lineno)
+                        + ": [providers] is unsupported; use [model_providers]";
+                }
+                return false;
+            }
             continue;
         }
 
@@ -637,47 +829,71 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
             }
         }
 
-        if ((section == "model" || section == "model_text") && key == "max_response_tokens") {
-            if (section == "model") {
-                model_max_response_tokens_seen = true;
-            } else {
-                model_text_max_response_tokens_seen = true;
-            }
+        if (section == "model" && key == "max_response_tokens") {
+            model_max_response_tokens_seen = true;
         }
-        if ((section == "model" || section == "model_text") && key == "max_tokens") {
-            legacy_model_max_tokens.push_back(LegacyModelMaxTokens(section, value, lineno));
+        if (section == "model" && key == "max_tokens") {
+            legacy_model_max_tokens.push_back(LegacyModelMaxTokens(value, lineno));
             continue;
+        }
+        AgentToml* apply_target = &cfg;
+        if (section.find("model_providers.") == 0) {
+            apply_target = &canonical_model_providers;
         }
 
         std::string apply_err;
-        apply_kv(cfg, section, key, value, &apply_err);
+        apply_kv(*apply_target, section, key, value, &apply_err);
         if (!apply_err.empty() && parse_error.empty()) {
             parse_error = "line " + std::to_string(lineno) + ": " + apply_err;
+        } else if (key == "type" &&
+                   (section.find("model_providers.") == 0 ||
+                    section.find("tts_providers.") == 0 ||
+                    section.find("stt_providers.") == 0)) {
+            canonical_provider_types.push_back(CanonicalProviderType(section, value, lineno));
         }
+    }
+
+    // Re-apply canonical record type fields after all legacy `provider` aliases,
+    // so `type` wins regardless of their order within a record.
+    if (parse_error.empty()) {
+        for (const auto& canonical : canonical_provider_types) {
+            AgentToml* apply_target = &cfg;
+            if (canonical.section.find("model_providers.") == 0) {
+                apply_target = &canonical_model_providers;
+            }
+
+            std::string apply_error;
+            apply_kv(*apply_target, canonical.section, "type", canonical.raw, &apply_error);
+            if (!apply_error.empty()) {
+                parse_error = "line " + std::to_string(canonical.lineno) + ": " + apply_error;
+                break;
+            }
+        }
+    }
+
+    if (parse_error.empty() && canonical_model_providers_seen) {
+        cfg.model_providers = canonical_model_providers.model_providers;
     }
 
     if (parse_error.empty()) {
         for (const auto& legacy : legacy_model_max_tokens) {
-            bool canonical_seen = legacy.section == "model"
-                ? model_max_response_tokens_seen
-                : model_text_max_response_tokens_seen;
-            if (canonical_seen) {
+            if (model_max_response_tokens_seen) {
                 continue;
             }
 
             int value = 0;
             std::string legacy_error;
             if (!assign_non_negative_int(&value, legacy.raw, &legacy_error)) {
-                parse_error = "line " + std::to_string(legacy.lineno) + ": ["
-                    + legacy.section + "] max_tokens: " + legacy_error;
+                parse_error = "line " + std::to_string(legacy.lineno)
+                    + ": [model] max_tokens: " + legacy_error;
                 break;
             }
-            if (legacy.section == "model") {
-                cfg.model.max_response_tokens = value;
-            } else {
-                cfg.model_text.max_response_tokens = value;
-            }
+            cfg.model.max_response_tokens = value;
         }
+    }
+
+    if (parse_error.empty()) {
+        migrate_flat_voice_provider_fields_impl(cfg);
     }
 
     if (!parse_error.empty()) {
@@ -687,12 +903,19 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
     return true;
 }
 
-bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error) {
+void migrate_flat_voice_provider_fields(AgentToml& cfg) {
+    migrate_flat_voice_provider_fields_impl(cfg);
+}
+
+bool save_agent_toml(const char* path, const AgentToml& input, std::string* error) {
     if (error) error->clear();
     if (!path) {
         if (error) *error = "null path";
         return false;
     }
+
+    AgentToml cfg = input;
+    migrate_flat_voice_provider_fields_impl(cfg);
 
     std::ostringstream out;
     if (!cfg.locale.empty()) emit_string(out, "locale", cfg.locale);
@@ -725,23 +948,89 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (!cfg.default_platform.empty()) emit_string(out, "default_platform", cfg.default_platform);
     out << "\n";
 
+    // Write [model_providers.xxx] sections
+    for (const auto& item : cfg.model_providers) {
+        const std::string& provider_name = item.first;
+        const ModelProviderToml& provider = item.second;
+
+        // Validate provider name
+        if (!is_valid_bare_toml_key(provider_name)) {
+            if (error) {
+                *error = "invalid provider name: " + provider_name;
+            }
+            return false;
+        }
+
+        out << "[model_providers." << provider_name << "]\n";
+        if (!provider.type.empty()) emit_string(out, "type", provider.type);
+        if (!provider.api_key.empty()) emit_string(out, "api_key", provider.api_key);
+        if (!provider.base_url.empty()) emit_string(out, "base_url", provider.base_url);
+        out << "\n";
+    }
+
+    // Write [tts_providers.xxx] sections
+    for (const auto& item : cfg.tts_providers) {
+        const std::string& record_name = item.first;
+        const TTSProviderToml& record = item.second;
+
+        if (!is_valid_bare_toml_key(record_name)) {
+            if (error) {
+                *error = "invalid tts provider name: " + record_name;
+            }
+            return false;
+        }
+
+        out << "[tts_providers." << record_name << "]\n";
+        if (!record.type.empty()) emit_string(out, "type", record.type);
+        if (!record.api_key.empty()) emit_string(out, "api_key", record.api_key);
+        if (!record.model.empty()) emit_string(out, "model", record.model);
+        if (!record.voice_id.empty()) emit_string(out, "voice_id", record.voice_id);
+        if (!record.emotion.empty()) emit_string(out, "emotion", record.emotion);
+        if (!record.reference_id.empty()) emit_string(out, "reference_id", record.reference_id);
+        out << "\n";
+    }
+
+    // Write [stt_providers.xxx] sections
+    for (const auto& item : cfg.stt_providers) {
+        const std::string& record_name = item.first;
+        const STTProviderToml& record = item.second;
+
+        if (!is_valid_bare_toml_key(record_name)) {
+            if (error) {
+                *error = "invalid stt provider name: " + record_name;
+            }
+            return false;
+        }
+
+        out << "[stt_providers." << record_name << "]\n";
+        if (!record.type.empty()) emit_string(out, "type", record.type);
+        if (!record.api_key.empty()) emit_string(out, "api_key", record.api_key);
+        if (!record.model.empty()) emit_string(out, "model", record.model);
+        if (!record.base_url.empty()) emit_string(out, "base_url", record.base_url);
+        if (!record.app_id.empty()) emit_string(out, "app_id", record.app_id);
+        if (!record.secret_id.empty()) emit_string(out, "secret_id", record.secret_id);
+        if (!record.secret_key.empty()) emit_string(out, "secret_key", record.secret_key);
+        if (!record.region.empty()) emit_string(out, "region", record.region);
+        if (!record.engine_model_type.empty()) {
+            emit_string(out, "engine_model_type", record.engine_model_type);
+        }
+        out << "\n";
+    }
+
     out << "[device]\n";
     if (!cfg.device.backend.empty()) emit_string(out, "backend", cfg.device.backend);
     if (!cfg.device.device_type.empty()) emit_string(out, "device_type", cfg.device.device_type);
     out << "\n";
 
     emit_model(out, "model", cfg.model);
-    if (!cfg.model_text.provider.empty() || !cfg.model_text.model.empty()) {
-        emit_model(out, "model_text", cfg.model_text);
-    }
 
     out << "[tts]\n";
     emit_string(out, "provider", cfg.tts.provider);
-    emit_string(out, "api_key", cfg.tts.api_key);
+    if (!cfg.tts.api_key.empty()) emit_string(out, "api_key", cfg.tts.api_key);
     if (!cfg.tts.model.empty()) emit_string(out, "model", cfg.tts.model);
-    emit_string(out, "voice_id", cfg.tts.voice_id);
+    if (!cfg.tts.voice_id.empty()) emit_string(out, "voice_id", cfg.tts.voice_id);
     if (!cfg.tts.reference_id.empty()) emit_string(out, "reference_id", cfg.tts.reference_id);
-    emit_string(out, "emotion", cfg.tts.emotion);
+    if (!cfg.tts.emotion.empty()) emit_string(out, "emotion", cfg.tts.emotion);
     emit_double(out, "speed", cfg.tts.speed);
     out << "\n";
 

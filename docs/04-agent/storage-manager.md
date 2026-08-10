@@ -1,8 +1,191 @@
-# Storage Manager
+# Storage Subsystem: StorageManager and StorageMonitor
 
 ## Overview
 
-The Storage Manager protects the Agent from persistent-storage exhaustion. Its Go implementation is named StorageMonitor and is responsible for:
+The Agent has two separate storage components. They share the `[storage]`
+configuration section, but they solve different problems and expose different
+HTTP APIs.
+
+| Component | Responsibility | Primary HTTP API |
+| --- | --- | --- |
+| `StorageManager` | Detects and mounts the SD card, derives eMMC-only or dual-storage mode, routes governed data, migrates older data, safely ejects the card, and formats the card | `/api/storage/status`, `/api/storage/eject`, `/api/storage/format` |
+| `StorageMonitor` | Samples persistent-storage capacity, classifies pressure levels, runs cleanup, and degrades non-essential writes when space is low | `/api/storage/monitor/status`, `/api/storage/cleanup` |
+
+`StorageManager` does not replace `StorageMonitor`. Adding an SD card provides a
+migration tier for governed data, while `StorageMonitor` continues to protect
+the configured persistent root, which defaults to `/userdata`.
+
+Related documentation:
+
+- [Paths, Artifacts & Config Cheat Sheet](../02-architecture/paths-and-artifacts.md)
+- [Agent Configuration Reference](configuration.md)
+
+## StorageManager: SD Card and Dual-Storage Routing
+
+The production Agent runtime creates and starts `StorageManager` unconditionally.
+Missing, removed, rejected, or unusable card hardware falls back to eMMC-only
+operation; there is no user preference that forces a storage mode.
+
+### Card Lifecycle and Effective Mode
+
+The manager polls for the configured SD block device and debounces insertion and
+removal. When a card appears, it:
+
+1. Prefers the first partition, falling back to the whole device when there is
+   no partition.
+2. Runs a best-effort `fsck`.
+3. Mounts the card read-write at the configured mount point.
+4. Verifies the mount with a probe write.
+5. Attempts to reject a card with less than the configured minimum free space
+   by unmounting it. If a busy filesystem cannot be unmounted, the manager
+   keeps the card mounted and reports it as usable rather than recording a false
+   unmounted state.
+
+The default mount point is `/mnt/sdcard`, the default block device base name is
+`mmcblk2`, and the default minimum free space is 64 MB. A card normally becomes
+usable only after it passes the mount and write checks; the busy-unmount case
+above is the exception to the minimum-free-space rejection.
+
+| Effective mode | JSON value | Condition |
+| --- | --- | --- |
+| eMMC only | `1` | No usable card is mounted |
+| Dual storage | `2` | A usable card is mounted |
+
+A positively identified blank card is automatically formatted as FAT32 once per
+insertion. Cards with an existing but unsupported, damaged, or otherwise
+unmountable filesystem are never automatically erased.
+
+The manager mirrors card, format, migration, and effective-mode state to
+`/run/aiden/storage.state` for other device services. This state file is
+separate from the StorageMonitor level file at `/run/agent/storage_level`.
+
+### Data Routing and Migration
+
+New governed data is always written to eMMC. The current production integration
+uses this routing for audio archives:
+
+| Operation | No mounted SD card | Mounted SD card |
+| --- | --- | --- |
+| New audio archive | `/userdata/audio` | `/userdata/audio` |
+| Read audio archives | `/userdata/audio` | eMMC first, then `/mnt/sdcard/aiden/audio` |
+| Retention cleanup roots | `/userdata/audio` | `/mnt/sdcard/aiden/audio` |
+
+Keeping new writes on eMMC avoids making active recording depend on removable
+media. When the SD tier is available and eMMC free space falls below the start
+watermark, the manager migrates older audio archives to the SD card, oldest
+first. It stops after eMMC reaches the stop watermark, no eligible files remain,
+the card becomes unavailable, or an eject or format operation cancels the run.
+
+The default migration watermarks are:
+
+- Start when eMMC free space is below 10%.
+- Stop when eMMC free space reaches 50%.
+
+Only regular files at least 60 seconds old are eligible. Each file is copied to
+an `.aiden-partial` path, synced, size-checked, renamed into place, and only then
+removed from eMMC. Readers prefer the eMMC copy during the brief window where
+both copies may exist. Failed or exhausted runs use a ten-minute retry cooldown.
+
+### Safe Eject and Formatting
+
+Safe eject cancels any active migration, syncs and unmounts the card, and latches
+the card as ejected. It is not mounted again until it is physically removed and
+reinserted.
+
+Manual formatting is destructive: it rewrites the whole card with a fresh MBR,
+one partition, and a new filesystem labeled `AIDEN`. Supported filesystems are
+FAT32, ext4, and exFAT. Formatting runs asynchronously. After `FormatDisk`
+succeeds, the manager attempts to mount the new filesystem; check `card.mounted`
+and `effective_mode` to confirm that dual-storage mode was restored, because the
+post-format mount can still fail.
+
+### StorageManager HTTP API
+
+These endpoints report and control the SD/eMMC manager. They are distinct from
+the StorageMonitor endpoints documented later.
+
+All three endpoints return HTTP 405 for the wrong method and HTTP 503 if the
+runtime has no StorageManager. A normal production runtime always creates the
+manager, even when no card is present.
+
+#### Get Manager Status
+
+~~~http
+GET /api/storage/status
+~~~
+
+Example response:
+
+~~~json
+{
+  "effective_mode": 2,
+  "card": {
+    "present": true,
+    "mounted": true,
+    "device": "/dev/mmcblk2p1",
+    "total_bytes": 68719476736,
+    "free_bytes": 64424509440
+  },
+  "mount_point": "/mnt/sdcard",
+  "format_job": {
+    "status": "idle"
+  },
+  "migration": {
+    "status": "idle"
+  }
+}
+~~~
+
+`format_job.status` and `migration.status` are `idle`, `running`, `success`, or
+`failed`. Active and completed jobs also report the applicable filesystem,
+timestamps, detail, error, moved-file count, and moved-byte count.
+
+#### Safely Eject the Card
+
+~~~http
+POST /api/storage/eject
+~~~
+
+The successful response is the updated manager status. The endpoint returns
+HTTP 409 when the card cannot be ejected, including when no card is mounted, a
+mount attempt or format is active, migration cannot stop promptly, or the
+filesystem is busy and cannot be unmounted.
+
+#### Format the Card
+
+~~~http
+POST /api/storage/format
+Content-Type: application/json
+~~~
+
+~~~json
+{
+  "fs": "fat32",
+  "confirm": "format-sd-card"
+}
+~~~
+
+`fs` may be `fat32`, `ext4`, or `exfat`; an empty value defaults to `fat32`.
+The exact confirmation token is required because formatting erases the entire
+card. HTTP 202 means that the asynchronous job was accepted, not that formatting
+has finished. Poll `GET /api/storage/status` and inspect `format_job` for the
+result. Invalid requests return HTTP 400.
+
+### StorageManager Configuration
+
+~~~toml
+[storage]
+mount_point = "/mnt/sdcard"
+device = "mmcblk2"
+min_card_free_mb = 64
+migrate_start_free_pct = 10
+migrate_stop_free_pct = 50
+~~~
+
+## StorageMonitor: Capacity Protection
+
+`StorageMonitor` protects the Agent from persistent-storage exhaustion. It is
+responsible for:
 
 - Sampling the configured storage root.
 - Classifying the final storage level.
@@ -14,14 +197,10 @@ The Storage Manager protects the Agent from persistent-storage exhaustion. Its G
 - Exposing status and manual-cleanup HTTP endpoints.
 - Publishing the final level to deployment-side guards.
 
-This module manages storage state and remediation only. Notification consumers, Companion App behavior, LED presentation, and other user-facing delivery policies are outside its scope.
+Notification consumers, Companion App behavior, LED presentation, and other
+user-facing delivery policies are outside StorageMonitor's scope.
 
-Related documentation:
-
-- [Paths, Artifacts & Config Cheat Sheet](../02-architecture/paths-and-artifacts.md)
-- [Agent Configuration Reference](configuration.md)
-
-## Implementation Status
+### Capabilities
 
 | Capability | Status | Notes |
 | --- | --- | --- |
@@ -33,16 +212,16 @@ Related documentation:
 | Post-cleanup resampling | Available | Final state always comes from statfs |
 | Degraded write controls | Available | Suspends non-essential persistence |
 | Write-error remediation | Available | Handles ENOSPC and EROFS |
-| Status endpoint | Available | GET /api/storage/monitor/status |
-| Cleanup endpoint | Available | POST /api/storage/cleanup |
+| Status endpoint | Available | `GET /api/storage/monitor/status` |
+| Cleanup endpoint | Available | `POST /api/storage/cleanup` |
 | Deployment state file | Available | /run/agent/storage_level |
 | Agent log integration | Available | Default path is /userdata/agent/log/agent.log |
 | Notification event output | Available | Publishes through the global VoiceNotificationManager |
 | LED and App presentation | Out of scope | Consumers can poll the status endpoint |
 
-## Storage Scope
+### Storage Scope
 
-### Managed Root
+#### Managed Root
 
 StorageMonitor manages one configured persistent-storage root. The default is:
 
@@ -66,9 +245,9 @@ The Agent main log has moved from /var/log/agent/agent.log to `<CONFIG_DIR>/log/
 
 Other services may still write logs under /var/log, including audio_service, frame_service, and adb. Those logs are not managed by the Agent StorageMonitor cleaners.
 
-### Protected Data
+#### Protected Data
 
-The Storage Manager does not delete:
+StorageMonitor does not delete:
 
 - The active session.
 - Long-term memory.
@@ -78,7 +257,7 @@ The Storage Manager does not delete:
 
 It also does not manage RAM, CPU, temperature, battery pressure, or volatile /tmp usage.
 
-### OTA Partition Interaction
+#### OTA Partition Interaction
 
 OTA uses a dedicated 300 MiB ext4 partition mounted at `/userdata/ota`.
 StorageMonitor still samples the `/userdata` filesystem, so OTA downloads do
@@ -90,7 +269,7 @@ coupling. Existing cleanup stages and user-facing storage notifications remain
 necessary for the non-OTA data stored on `/userdata`. See
 [OTA Dedicated Storage Partition](../08-ota/no-space-plan.md).
 
-## Runtime Flow
+### Runtime Flow
 
 ~~~text
 Startup check ───────┐
@@ -111,9 +290,9 @@ Manual cleanup ──────┘              │
 
 All entry points share the same remediation path. A monitor-wide mutex serializes checks so startup, periodic, write-failure, and manual cleanup requests cannot delete the same files concurrently.
 
-## Check Triggers
+### Check Triggers
 
-### Startup
+#### Startup
 
 The daemon calls StartStorageMonitor after creating the Agent runtime.
 
@@ -123,11 +302,11 @@ StartStorageMonitor:
 2. Starts the periodic monitor loop even if the initial check reports an error.
 3. Stops the loop and removes the deployment state file when the runtime closes.
 
-### Periodic Monitoring
+#### Periodic Monitoring
 
 The default interval is 300 seconds. Periodic checks can run maintenance cleaners while the storage level is Normal. For example, the normal LLM HTTP log stage removes files beyond the default retention window.
 
-### Write Errors
+#### Write Errors
 
 Writers pass storage-related errors to StorageMonitor. An immediate asynchronous check is scheduled only for:
 
@@ -136,7 +315,7 @@ Writers pass storage-related errors to StorageMonitor. An immediate asynchronous
 
 Repeated failures are coalesced. At most one write-failure remediation request is pending at a time.
 
-### Manual Cleanup
+#### Manual Cleanup
 
 POST /api/storage/cleanup uses the same CheckAndRemediate flow with the manual reason.
 
@@ -144,7 +323,7 @@ POST /api/storage/cleanup uses the same CheckAndRemediate flow with the manual r
 - With force=true, selected cleaners ignore ordinary retention thresholds and run their force-clean behavior.
 - Force cleanup still respects cleaner-directory boundaries and protected-data rules.
 
-## Storage Levels
+### Storage Levels
 
 Levels are based on available bytes, not percent used.
 
@@ -157,7 +336,7 @@ Levels are based on available bytes, not percent used.
 
 Threshold comparisons use exact bytes. Exactly 10 MB is Critical, and exactly 5 MB is Emergency.
 
-### Recovery Hysteresis
+#### Recovery Hysteresis
 
 Escalation takes effect immediately. De-escalation requires available space to exceed the previous level threshold plus recovery_hysteresis_mb.
 
@@ -171,15 +350,15 @@ With the default 5 MB hysteresis:
 
 This prevents repeated transitions when available space oscillates near a threshold.
 
-### Final-State Rule
+#### Final-State Rule
 
 The initial sample only decides whether remediation should begin. StorageMonitor resamples the filesystem after every cleaner.
 
 The final level, unavailable capabilities, deployment state file, and HTTP response are based on the final statfs sample after hysteresis. A cleaner's reported freed-byte count is retained for audit history but never replaces resampling.
 
-## Cleanup Pipeline
+### Cleanup Pipeline
 
-### Cleaner Interface
+#### Cleaner Interface
 
 ~~~go
 type StorageCleaner interface {
@@ -192,7 +371,7 @@ type StorageCleaner interface {
 
 Cleaners run in ascending Priority order. Non-force checks call EstimateReclaimable first and skip a cleaner when its estimate is zero.
 
-### Default Stages
+#### Default Stages
 
 The runtime builds cleanup stages from the configured retention arrays.
 
@@ -209,7 +388,7 @@ The runtime builds cleanup stages from the configured retention arrays.
 
 A retention value of 0 creates an emergency cleanup stage. The default session_archive_retention_days value is [30], so an all-session-archives emergency stage is not enabled unless 0 is explicitly added.
 
-### Stage Eligibility and Stop Conditions
+#### Stage Eligibility and Stop Conditions
 
 After each cleaner, StorageMonitor resamples and recalculates the effective level.
 
@@ -220,7 +399,7 @@ After each cleaner, StorageMonitor resamples and recalculates the effective leve
 - Force cleanup continues through all selected cleaners.
 - A cleaner failure is recorded and does not prevent later cleaners from running.
 
-### Cleanup Retry Interval
+#### Cleanup Retry Interval
 
 Automatic cleanup has a default minimum retry interval of 60 seconds to avoid repeatedly scanning directories under sustained pressure.
 
@@ -230,7 +409,7 @@ The retry interval is bypassed for:
 - Manual cleanup.
 - ENOSPC or EROFS remediation.
 
-## Degraded Writes
+### Degraded Writes
 
 Warning triggers cleanup but does not disable capabilities. Critical and Emergency compute unavailable capabilities from the degraded-mode configuration.
 
@@ -243,13 +422,13 @@ Warning triggers cleanup but does not disable capabilities. Critical and Emergen
 
 Capabilities are recalculated after every successful check and recover automatically when storage returns to a safe level.
 
-### Agent Main Log
+#### Agent Main Log
 
 The Agent main log is not completely disabled through AllowWrite. Instead, the S53agent deployment script reads /run/agent/storage_level.
 
 At Critical or Emergency, S53agent trims `<CONFIG_DIR>/log/agent.log` to storage.degraded_mode.max_agent_log_mb, which defaults to 1 MB. It preserves the newest content so storage pressure does not remove the most useful diagnostics.
 
-## Status Model
+### Status Model
 
 StorageMonitorStatus is the immutable snapshot produced by a successful check.
 
@@ -268,7 +447,7 @@ StorageMonitorStatus is the immutable snapshot produced by a successful check.
 
 Status returns copies of slice fields so callers cannot mutate the monitor's internal state.
 
-### Deployment State File
+#### Deployment State File
 
 Every successful check atomically updates:
 
@@ -280,9 +459,9 @@ The file contains normal, warning, critical, or emergency. Deployment-side guard
 
 Disabling or stopping StorageMonitor removes both the state file and its temporary file so deployment scripts do not consume stale state.
 
-## HTTP API
+### StorageMonitor HTTP API
 
-### Get Status
+#### Get Status
 
 ~~~http
 GET /api/storage/monitor/status
@@ -316,7 +495,7 @@ Example response:
 
 The endpoint provides a consistent snapshot suitable for polling. Real-time push and user-interface presentation are outside this module.
 
-### Run Cleanup
+#### Run Cleanup
 
 ~~~http
 POST /api/storage/cleanup
@@ -360,7 +539,7 @@ Example response:
 
 freed_mb reports only cleaners executed by the current POST request. It does not repeat the previous cleanup's freed-space value.
 
-## Configuration
+### StorageMonitor Configuration
 
 Default configuration:
 
@@ -397,7 +576,7 @@ Validation rules:
 - cleanup_retry_interval_seconds cannot be negative.
 - Retention values cannot be negative.
 
-## Optional Event Output
+### Optional Event Output
 
 StorageMonitor exposes a VoiceNotificationSink interface for final storage-state events. The Agent runtime injects the global VoiceNotificationManager as the production consumer.
 
@@ -409,7 +588,7 @@ StorageMonitor exposes a VoiceNotificationSink interface for final storage-state
 
 Queueing, presentation, playback, deduplication, and delivery policy remain owned by VoiceNotificationManager.
 
-## Testing
+### Testing
 
 The current test suite covers:
 
@@ -437,7 +616,7 @@ cd ../..
 ./scripts/test_agent_log_cap.sh
 ~~~
 
-## Current Limitations
+### Current Limitations
 
 - Only one root_path is managed.
 - Logs for other services under /var/log are not cleaned.

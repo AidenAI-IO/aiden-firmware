@@ -236,6 +236,88 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	}
 }
 
+func TestServerPublicHistoryOmitsLargeToolResultContent(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "shell", `{"command":"read config.py"}`),
+			contentResponse("Done"),
+		},
+	}
+	tool := &stubTool{
+		name:        "shell",
+		description: "Run a shell command.",
+		output:      strings.Repeat(" ", 4001),
+	}
+	streamingDisabled := false
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Use tools when requested.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"shell": tool}},
+		NewSkillIndex(),
+	)
+	defer runtime.Close()
+	server := newServerForTest(runtime)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"Read the large config"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleChat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chat status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+
+	var result ChatResultResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+startResp["request_id"], nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code == http.StatusOK {
+			if err := json.NewDecoder(resultRec.Body).Decode(&result); err != nil {
+				t.Fatalf("decode result response: %v", err)
+			}
+			if result.Status == "complete" {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if result.Status != "complete" {
+		t.Fatalf("result never completed: status=%q", result.Status)
+	}
+
+	const want = "[Large tool result omitted from public history (4001 chars)]"
+	resultToolMessage, ok := firstMessageOfType(result.History, "tool_result")
+	if !ok || resultToolMessage.Content != want {
+		t.Fatalf("/api/chat/result tool result = %#v, want content %q", resultToolMessage, want)
+	}
+
+	reloaded := newServerForTest(runtime)
+	historyReq := httptest.NewRequest(http.MethodGet, "/api/history", nil)
+	historyRec := httptest.NewRecorder()
+	reloaded.handleHistory(historyRec, historyReq)
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("history status = %d body=%s", historyRec.Code, historyRec.Body.String())
+	}
+	var history []Message
+	if err := json.NewDecoder(historyRec.Body).Decode(&history); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	historyToolMessage, ok := firstMessageOfType(history, "tool_result")
+	if !ok || historyToolMessage.Content != want {
+		t.Fatalf("/api/history tool result = %#v, want content %q", historyToolMessage, want)
+	}
+}
+
 func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	memoryDir := filepath.Join(configDir, "memory")
@@ -1653,6 +1735,11 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("runtime.Close() error = %v", err)
+		}
+	})
 	server := newServerForTest(runtime)
 	provider := &recordingTTSProvider{name: "server-provider"}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
@@ -1667,7 +1754,16 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
+	}
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
+	waitForServerRequestFinished(t, server, requestID)
 }
 
 func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {

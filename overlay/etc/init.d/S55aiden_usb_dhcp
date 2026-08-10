@@ -1,8 +1,9 @@
 #!/bin/sh
-# Aiden DHCP/DNS on usb0. Runs after S49usbhid has brought up usb0.
+# Aiden DHCP-only service on usb0. Runs after S49usbhid has brought up usb0.
 
 DNSMASQ_BIN=/usr/bin/dnsmasq
 CONF_FILE=/etc/dnsmasq.d/usb0.conf
+RUNTIME_CONF=/run/aiden_usb_dhcp.conf
 PID_FILE=/run/aiden_usb_dhcp.pid
 LOG_FILE=/var/log/aiden_usb_dhcp.log
 
@@ -15,7 +16,112 @@ is_running() {
 		"$DNSMASQ_BIN"|*/dnsmasq) ;;
 		*) return 1 ;;
 	esac
+	grep -aq -- "$RUNTIME_CONF" "/proc/$pid/cmdline" 2>/dev/null
+}
+
+# Recognize the process identity used before RUNTIME_CONF was introduced. An
+# in-place upgrade can leave that dnsmasq running until this script is restarted;
+# stop must still own and terminate it before starting the sanitized instance.
+is_legacy_running() {
+	pid="$1"
+	[ -n "$pid" ] || return 1
+	kill -0 "$pid" 2>/dev/null || return 1
+	exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+	case "$exe" in
+		"$DNSMASQ_BIN"|*/dnsmasq) ;;
+		*) return 1 ;;
+	esac
 	grep -aq -- "$CONF_FILE" "/proc/$pid/cmdline" 2>/dev/null
+}
+
+is_managed_running() {
+	is_running "$1" || is_legacy_running "$1"
+}
+
+# sanitize_conf builds a minimal allowlisted dnsmasq configuration for usb0.
+# The board does no NAT or IP forwarding, so it must not advertise any IPv4 or
+# IPv6 default route or a DNS server. Copying arbitrary directives would allow
+# classless routes, Router Advertisements, or included option files to bypass
+# the bare option:router and option:dns-server suppressors.
+#
+# Unknown directives are intentionally dropped and recorded as comments. This
+# makes future dnsmasq features opt-in: they must be reviewed here before they
+# can enter the local-only USB network policy.
+sanitize_conf() {
+	awk '
+		function dropped() {
+			printf "# dropped by S55aiden_usb_dhcp (outside local-only policy): %s\n", $0
+		}
+		{
+			line = $0
+			sub(/#.*/, "", line)
+			gsub(/[ \t]/, "", line)
+
+			if (line == "") {
+				print
+				next
+			}
+
+			if (line == "interface=usb0" ||
+				line == "bind-interfaces" ||
+				line == "except-interface=wlan0" ||
+				line == "except-interface=lo" ||
+				line == "port=0" ||
+				line == "no-resolv" ||
+				line == "no-hosts" ||
+				line == "dhcp-authoritative" ||
+				line == "dhcp-leasefile=/tmp/dnsmasq.leases" ||
+				line == "log-dhcp") {
+				print
+				next
+			}
+
+			# Only a valid product IPv4 host pool is accepted. The board owns
+			# 192.168.42.1, while .0 and .255 are not assignable host addresses.
+			# IPv6 ranges are excluded so dnsmasq cannot emit Router Advertisements.
+			if (line ~ /^dhcp-range=192\.168\.42\.[0-9]+,192\.168\.42\.[0-9]+,255\.255\.255\.0,[0-9]+[smhdw]$/) {
+				range = substr(line, length("dhcp-range=") + 1)
+				split(range, fields, ",")
+				split(fields[1], start_addr, "\\.")
+				split(fields[2], end_addr, "\\.")
+				pool_start = start_addr[4] + 0
+				pool_end = end_addr[4] + 0
+				if (pool_start >= 2 && pool_start <= 254 &&
+					pool_end >= 2 && pool_end <= 254 &&
+					pool_start <= pool_end) {
+					print
+					next
+				}
+				dropped()
+				next
+			}
+
+			# Canonical bare suppressors are appended once below.
+			if (line == "dhcp-option=option:router" ||
+				line == "dhcp-option=option:dns-server") {
+				next
+			}
+
+			dropped()
+		}
+	' "$1" || return 1
+
+	printf '\n'
+	printf '# Appended by S55aiden_usb_dhcp. Empty value = option omitted.\n'
+	printf 'dhcp-option=option:router\n'
+	printf 'dhcp-option=option:dns-server\n'
+}
+
+build_runtime_conf() {
+	tmp="${RUNTIME_CONF}.$$"
+	if ! sanitize_conf "$CONF_FILE" > "$tmp"; then
+		rm -f "$tmp"
+		return 1
+	fi
+	if grep -q '^# dropped by S55aiden_usb_dhcp' "$tmp"; then
+		echo "WARNING: $CONF_FILE contained directives outside the local-only usb0 policy; stripped them"
+	fi
+	mv "$tmp" "$RUNTIME_CONF"
 }
 
 current_pid() {
@@ -27,11 +133,86 @@ current_pid() {
 	echo "$pid"
 }
 
+# busybox sleep supports fractional seconds only when built with FANCY_SLEEP.
+# Probe once and derive the tick budget from the interval, so the wall-clock
+# timeout is the same either way instead of ballooning to one second per tick.
+if sleep 0.05 2>/dev/null; then
+	POLL_INTERVAL_CS=5
+else
+	POLL_INTERVAL_CS=100
+fi
+
+short_sleep() {
+	if [ "$POLL_INTERVAL_CS" = "5" ]; then
+		sleep 0.05
+	else
+		sleep 1
+	fi
+}
+
+# Poll for the daemon instead of sleeping a flat second: dnsmasq is up in a few
+# tens of milliseconds, and rcS is sequential so the wait is dead time. dnsmasq
+# is launched via a shell that execs into it, so the first polls legitimately
+# see the wrapper rather than dnsmasq.
+STARTUP_TIMEOUT_SECONDS=${STARTUP_TIMEOUT_SECONDS:-3}
+STARTUP_TIMEOUT_TICKS=${STARTUP_TIMEOUT_TICKS:-$((STARTUP_TIMEOUT_SECONDS * 100 / POLL_INTERVAL_CS))}
+[ "$STARTUP_TIMEOUT_TICKS" -ge 1 ] 2>/dev/null || STARTUP_TIMEOUT_TICKS=1
+
+# Liveness only — deliberately weaker than is_running(), which also checks the
+# exe identity and so is legitimately false during the launcher's exec window.
+pid_alive() {
+	pid="$1"
+	[ -n "$pid" ] || return 1
+	kill -0 "$pid" 2>/dev/null
+}
+
+wait_until_running() {
+	i=0
+	while [ "$i" -lt "$STARTUP_TIMEOUT_TICKS" ]; do
+		pid="$(current_pid)"
+		# A process that is gone will never become ready; fail immediately
+		# rather than sleeping out the remaining budget.
+		if ! pid_alive "$pid"; then
+			return 1
+		fi
+		if is_running "$pid"; then
+			return 0
+		fi
+		short_sleep
+		i=$((i + 1))
+	done
+	return 1
+}
+
+# Reap the process we launched before dropping its PID file, otherwise the only
+# record of it is gone while it keeps running — a later start would then spawn a
+# second instance.
+terminate_child() {
+	pid="$1"
+	[ -n "$pid" ] || return 0
+	kill -0 "$pid" 2>/dev/null || return 0
+	kill "$pid" 2>/dev/null || true
+	i=0
+	while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do
+		short_sleep
+		i=$((i + 1))
+	done
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -9 "$pid" 2>/dev/null || true
+	fi
+	wait "$pid" 2>/dev/null || true
+	return 0
+}
+
 start() {
 	pid="$(current_pid)"
 	if is_running "$pid"; then
 		echo "aiden_usb_dhcp already running (pid $pid)"
 		return 0
+	fi
+	if is_legacy_running "$pid"; then
+		echo "Stopping legacy aiden_usb_dhcp instance (pid $pid)"
+		stop
 	fi
 
 	if [ ! -x "$DNSMASQ_BIN" ]; then
@@ -58,32 +239,41 @@ start() {
 	fi
 
 	mkdir -p "$(dirname "$LOG_FILE")"
-	"$DNSMASQ_BIN" --conf-file="$CONF_FILE" \
+	if ! build_runtime_conf; then
+		echo "Failed to build $RUNTIME_CONF from $CONF_FILE"
+		return 1
+	fi
+	if ! "$DNSMASQ_BIN" --test --conf-file="$RUNTIME_CONF" >/dev/null 2>&1; then
+		echo "dnsmasq rejected generated config $RUNTIME_CONF"
+		return 1
+	fi
+
+	"$DNSMASQ_BIN" --conf-file="$RUNTIME_CONF" \
 		--pid-file="$PID_FILE" \
 		--log-facility="$LOG_FILE" \
 		--keep-in-foreground &
 	child_pid=$!
 	echo "$child_pid" > "$PID_FILE"
-	sleep 1
-	pid="$(current_pid)"
-	if ! is_running "$pid"; then
+	if ! wait_until_running; then
+		terminate_child "$child_pid"
 		rm -f "$PID_FILE"
 		echo "Failed to start aiden_usb_dhcp"
 		return 1
 	fi
+	pid="$(current_pid)"
 	echo "Started aiden_usb_dhcp (pid $pid)"
 }
 
 stop() {
 	pid="$(current_pid)"
-	if is_running "$pid"; then
+	if is_managed_running "$pid"; then
 		kill "$pid" 2>/dev/null || true
 		i=0
-		while is_running "$pid" && [ "$i" -lt 5 ]; do
+		while is_managed_running "$pid" && [ "$i" -lt 5 ]; do
 			sleep 1
 			i="$((i + 1))"
 		done
-		is_running "$pid" && kill -9 "$pid" 2>/dev/null || true
+		is_managed_running "$pid" && kill -9 "$pid" 2>/dev/null || true
 	fi
 	rm -f "$PID_FILE"
 	echo "Stopped aiden_usb_dhcp"
@@ -93,6 +283,8 @@ status() {
 	pid="$(current_pid)"
 	if is_running "$pid"; then
 		echo "aiden_usb_dhcp=running pid=$pid"
+	elif is_legacy_running "$pid"; then
+		echo "aiden_usb_dhcp=legacy pid=$pid"
 	else
 		echo "aiden_usb_dhcp=stopped"
 	fi
@@ -103,5 +295,9 @@ case "${1:-}" in
 	stop)           stop ;;
 	restart|reload) stop; start ;;
 	status)         status ;;
-	*) echo "Usage: $0 {start|stop|restart|reload|status}" >&2; exit 1 ;;
+	# Print the effective dnsmasq config to stdout without starting anything.
+	# Used on-device to inspect what dnsmasq will actually serve, and by
+	# scripts/test_usb0_dhcp_options.sh to test the sanitizer on the host.
+	sanitize-conf) sanitize_conf "${2:-$CONF_FILE}" ;;
+	*) echo "Usage: $0 {start|stop|restart|reload|status|sanitize-conf [file]}" >&2; exit 1 ;;
 esac

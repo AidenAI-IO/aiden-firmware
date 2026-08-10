@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -40,14 +41,16 @@ type ConfigTestCheck struct {
 
 // webConfigDTO mirrors the JSON produced by config_web.cpp's config_to_json().
 // It is the single definition of the config_web <-> agent wire contract: keys
-// are snake_case, agent-level settings live under "agent", and search reports
-// only whether a key is present (has_api_key) rather than echoing the key.
+// are snake_case, agent-level settings live under "agent", and write-only
+// credentials report only configured-state flags rather than echoing values.
 //
 // Keep this struct in lockstep with config_to_json(); the round-trip is covered
 // by TestConfigCheck_WireFormatContract.
 type webConfigDTO struct {
+	ModelProviders     map[string]modelProviderDTO   `json:"model_providers,omitempty"`
+	TTSProviders       map[string]ttsProviderDTO     `json:"tts_providers,omitempty"`
+	STTProviders       map[string]sttProviderDTO     `json:"stt_providers,omitempty"`
 	Model              modelDTO                      `json:"model"`
-	ModelText          modelDTO                      `json:"model_text"`
 	TTS                ttsDTO                        `json:"tts"`
 	STT                sttDTO                        `json:"stt"`
 	Audio              audioDTO                      `json:"audio"`
@@ -64,12 +67,28 @@ type webConfigDTO struct {
 	Agent              agentDTO                      `json:"agent"`
 }
 
+// UnmarshalJSON rejects the former top-level providers key so callers do not
+// get a successful response for a payload whose provider records were ignored.
+func (d *webConfigDTO) UnmarshalJSON(data []byte) error {
+	type canonicalDTO webConfigDTO
+	if err := json.Unmarshal(data, (*canonicalDTO)(d)); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if _, exists := fields["providers"]; exists {
+		return errors.New(`"providers" is unsupported; use "model_providers"`)
+	}
+	return nil
+}
+
 type modelDTO struct {
 	Provider             string   `json:"provider"`
 	APIKey               string   `json:"api_key"`
 	Model                string   `json:"model"`
 	BaseURL              string   `json:"base_url"`
-	TokenEnv             string   `json:"token_env"`
 	ReasoningEffort      string   `json:"reasoning_effort"`
 	Temperature          *float64 `json:"temperature,omitempty"`
 	MaxResponseTokens    int      `json:"max_response_tokens"`
@@ -77,9 +96,145 @@ type modelDTO struct {
 	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
 }
 
+func (d modelDTO) providerTestRequest() agent.ModelProviderTestRequest {
+	return agent.ModelProviderTestRequest{
+		Provider:        d.Provider,
+		APIKey:          d.APIKey,
+		Model:           d.Model,
+		BaseURL:         d.BaseURL,
+		Temperature:     d.Temperature,
+		ReasoningEffort: d.ReasoningEffort,
+	}
+}
+
+// modelProviderDTO mirrors a single [model_providers.<name>] section. Named providers hold
+// the credentials; a model section references one by putting the provider name
+// in its own "provider" field.
+type modelProviderDTO struct {
+	Type      string `json:"type"`
+	APIKey    string `json:"api_key,omitempty"`
+	HasAPIKey bool   `json:"has_api_key,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"`
+}
+
+func (d *modelProviderDTO) UnmarshalJSON(data []byte) error {
+	type canonical modelProviderDTO
+	var fields struct {
+		canonical
+		Type           *string `json:"type"`
+		LegacyProvider string  `json:"provider"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	typePresent, err := jsonFieldPresent(data, "type")
+	if err != nil {
+		return err
+	}
+	*d = modelProviderDTO(fields.canonical)
+	if typePresent {
+		if fields.Type != nil {
+			d.Type = *fields.Type
+		}
+		return nil
+	}
+	d.Type = fields.LegacyProvider
+	return nil
+}
+
+// ttsProviderDTO mirrors a single [tts_providers.<name>] section. [tts]
+// references one by putting the record name in its own "provider" field. speed
+// is absent on purpose: it is a listening preference that stays global on [tts]
+// so switching voice never changes playback speed.
+type ttsProviderDTO struct {
+	Type        string `json:"type"`
+	APIKey      string `json:"api_key,omitempty"`
+	HasAPIKey   bool   `json:"has_api_key,omitempty"`
+	Model       string `json:"model,omitempty"`
+	VoiceID     string `json:"voice_id,omitempty"`
+	Emotion     string `json:"emotion,omitempty"`
+	ReferenceID string `json:"reference_id,omitempty"`
+}
+
+func (d *ttsProviderDTO) UnmarshalJSON(data []byte) error {
+	type canonical ttsProviderDTO
+	var fields struct {
+		canonical
+		Type           *string `json:"type"`
+		LegacyProvider string  `json:"provider"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	typePresent, err := jsonFieldPresent(data, "type")
+	if err != nil {
+		return err
+	}
+	*d = ttsProviderDTO(fields.canonical)
+	if typePresent {
+		if fields.Type != nil {
+			d.Type = *fields.Type
+		}
+		return nil
+	}
+	d.Type = fields.LegacyProvider
+	return nil
+}
+
+// sttProviderDTO mirrors a single [stt_providers.<name>] section. language stays
+// on [stt]: it holds regardless of which provider transcribes.
+type sttProviderDTO struct {
+	Type            string `json:"type"`
+	APIKey          string `json:"api_key,omitempty"`
+	HasAPIKey       bool   `json:"has_api_key,omitempty"`
+	Model           string `json:"model,omitempty"`
+	BaseURL         string `json:"base_url,omitempty"`
+	AppID           string `json:"app_id,omitempty"`
+	SecretID        string `json:"secret_id,omitempty"`
+	HasSecretID     bool   `json:"has_secret_id,omitempty"`
+	SecretKey       string `json:"secret_key,omitempty"`
+	HasSecretKey    bool   `json:"has_secret_key,omitempty"`
+	Region          string `json:"region,omitempty"`
+	EngineModelType string `json:"engine_model_type,omitempty"`
+}
+
+func (d *sttProviderDTO) UnmarshalJSON(data []byte) error {
+	type canonical sttProviderDTO
+	var fields struct {
+		canonical
+		Type           *string `json:"type"`
+		LegacyProvider string  `json:"provider"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	typePresent, err := jsonFieldPresent(data, "type")
+	if err != nil {
+		return err
+	}
+	*d = sttProviderDTO(fields.canonical)
+	if typePresent {
+		if fields.Type != nil {
+			d.Type = *fields.Type
+		}
+		return nil
+	}
+	d.Type = fields.LegacyProvider
+	return nil
+}
+
+func jsonFieldPresent(data []byte, key string) (bool, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return false, err
+	}
+	_, exists := fields[key]
+	return exists, nil
+}
+
 type ttsDTO struct {
 	Provider    string  `json:"provider"`
-	APIKey      string  `json:"api_key"`
+	APIKey      string  `json:"api_key,omitempty"`
 	Model       string  `json:"model"`
 	VoiceID     string  `json:"voice_id"`
 	ReferenceID string  `json:"reference_id"`
@@ -103,12 +258,12 @@ func (d ttsDTO) playbackTestRequest(text string) agent.TTSPlaybackTestRequest {
 type sttDTO struct {
 	Provider        string `json:"provider"`
 	Language        string `json:"language"`
-	APIKey          string `json:"api_key"`
+	APIKey          string `json:"api_key,omitempty"`
 	Model           string `json:"model"`
 	BaseURL         string `json:"base_url"`
 	AppID           string `json:"app_id"`
-	SecretID        string `json:"secret_id"`
-	SecretKey       string `json:"secret_key"`
+	SecretID        string `json:"secret_id,omitempty"`
+	SecretKey       string `json:"secret_key,omitempty"`
 	Region          string `json:"region"`
 	EngineModelType string `json:"engine_model_type"`
 }
@@ -277,27 +432,18 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 	}
 
 	return agent.Config{
+		ModelProviders: d.modelProvidersToAgentConfig(),
+		TTSProviders:   d.ttsProvidersToAgentConfig(),
+		STTProviders:   d.sttProvidersToAgentConfig(),
 		Model: agent.ModelConfig{
 			Provider:             d.Model.Provider,
 			APIKey:               d.Model.APIKey,
 			Model:                d.Model.Model,
 			BaseURL:              d.Model.BaseURL,
-			TokenEnv:             d.Model.TokenEnv,
 			Temperature:          d.Model.Temperature,
 			MaxResponseTokens:    d.Model.MaxResponseTokens,
 			ContextWindow:        d.Model.ContextWindow,
 			ModelMaxOutputTokens: d.Model.ModelMaxOutputTokens,
-		},
-		ModelText: agent.ModelConfig{
-			Provider:             d.ModelText.Provider,
-			APIKey:               d.ModelText.APIKey,
-			Model:                d.ModelText.Model,
-			BaseURL:              d.ModelText.BaseURL,
-			TokenEnv:             d.ModelText.TokenEnv,
-			Temperature:          d.ModelText.Temperature,
-			MaxResponseTokens:    d.ModelText.MaxResponseTokens,
-			ContextWindow:        d.ModelText.ContextWindow,
-			ModelMaxOutputTokens: d.ModelText.ModelMaxOutputTokens,
 		},
 		TTS: agent.TTSConfig{
 			Provider:    d.TTS.Provider,
@@ -430,37 +576,134 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
+func modelProviderDTOsFromConfig(providers map[string]agent.ModelProvider) map[string]modelProviderDTO {
+	if len(providers) == 0 {
+		return nil
+	}
+	result := make(map[string]modelProviderDTO, len(providers))
+	for name, provider := range providers {
+		result[name] = modelProviderDTO{
+			Type:      provider.Type,
+			HasAPIKey: strings.TrimSpace(provider.APIKey) != "",
+			BaseURL:   provider.BaseURL,
+		}
+	}
+	return result
+}
+
+func (d webConfigDTO) modelProvidersToAgentConfig() map[string]agent.ModelProvider {
+	if len(d.ModelProviders) == 0 {
+		return nil
+	}
+	result := make(map[string]agent.ModelProvider, len(d.ModelProviders))
+	for name, provider := range d.ModelProviders {
+		result[name] = agent.ModelProvider{
+			Type:    provider.Type,
+			APIKey:  provider.APIKey,
+			BaseURL: provider.BaseURL,
+		}
+	}
+	return result
+}
+
+func ttsProviderDTOsFromConfig(providers map[string]agent.TTSProvider) map[string]ttsProviderDTO {
+	if len(providers) == 0 {
+		return nil
+	}
+	result := make(map[string]ttsProviderDTO, len(providers))
+	for name, provider := range providers {
+		result[name] = ttsProviderDTO{
+			Type:        provider.Type,
+			HasAPIKey:   strings.TrimSpace(provider.APIKey) != "",
+			Model:       provider.Model,
+			VoiceID:     provider.VoiceID,
+			Emotion:     provider.Emotion,
+			ReferenceID: provider.ReferenceID,
+		}
+	}
+	return result
+}
+
+func (d webConfigDTO) ttsProvidersToAgentConfig() map[string]agent.TTSProvider {
+	if len(d.TTSProviders) == 0 {
+		return nil
+	}
+	result := make(map[string]agent.TTSProvider, len(d.TTSProviders))
+	for name, provider := range d.TTSProviders {
+		result[name] = agent.TTSProvider{
+			Type:        provider.Type,
+			APIKey:      provider.APIKey,
+			Model:       provider.Model,
+			VoiceID:     provider.VoiceID,
+			Emotion:     provider.Emotion,
+			ReferenceID: provider.ReferenceID,
+		}
+	}
+	return result
+}
+
+func sttProviderDTOsFromConfig(providers map[string]agent.STTProvider) map[string]sttProviderDTO {
+	if len(providers) == 0 {
+		return nil
+	}
+	result := make(map[string]sttProviderDTO, len(providers))
+	for name, provider := range providers {
+		result[name] = sttProviderDTO{
+			Type:            provider.Type,
+			HasAPIKey:       strings.TrimSpace(provider.APIKey) != "",
+			Model:           provider.Model,
+			BaseURL:         provider.BaseURL,
+			AppID:           provider.AppID,
+			HasSecretID:     strings.TrimSpace(provider.SecretID) != "",
+			HasSecretKey:    strings.TrimSpace(provider.SecretKey) != "",
+			Region:          provider.Region,
+			EngineModelType: provider.EngineModelType,
+		}
+	}
+	return result
+}
+
+func (d webConfigDTO) sttProvidersToAgentConfig() map[string]agent.STTProvider {
+	if len(d.STTProviders) == 0 {
+		return nil
+	}
+	result := make(map[string]agent.STTProvider, len(d.STTProviders))
+	for name, provider := range d.STTProviders {
+		result[name] = agent.STTProvider{
+			Type:            provider.Type,
+			APIKey:          provider.APIKey,
+			Model:           provider.Model,
+			BaseURL:         provider.BaseURL,
+			AppID:           provider.AppID,
+			SecretID:        provider.SecretID,
+			SecretKey:       provider.SecretKey,
+			Region:          provider.Region,
+			EngineModelType: provider.EngineModelType,
+		}
+	}
+	return result
+}
+
 func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 	audioArchive := cfg.AudioArchive
 
 	return webConfigDTO{
+		ModelProviders: modelProviderDTOsFromConfig(cfg.ModelProviders),
+		TTSProviders:   ttsProviderDTOsFromConfig(cfg.TTSProviders),
+		STTProviders:   sttProviderDTOsFromConfig(cfg.STTProviders),
 		Model: modelDTO{
 			Provider:             cfg.Model.Provider,
 			APIKey:               cfg.Model.APIKey,
 			Model:                cfg.Model.Model,
 			BaseURL:              cfg.Model.BaseURL,
-			TokenEnv:             cfg.Model.TokenEnv,
 			ReasoningEffort:      cfg.Model.ReasoningEffort,
 			Temperature:          cfg.Model.Temperature,
 			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
 			ContextWindow:        cfg.Model.ContextWindow,
 			ModelMaxOutputTokens: cfg.Model.ModelMaxOutputTokens,
 		},
-		ModelText: modelDTO{
-			Provider:             cfg.ModelText.Provider,
-			APIKey:               cfg.ModelText.APIKey,
-			Model:                cfg.ModelText.Model,
-			BaseURL:              cfg.ModelText.BaseURL,
-			TokenEnv:             cfg.ModelText.TokenEnv,
-			ReasoningEffort:      cfg.ModelText.ReasoningEffort,
-			Temperature:          cfg.ModelText.Temperature,
-			MaxResponseTokens:    cfg.ModelText.MaxResponseTokens,
-			ContextWindow:        cfg.ModelText.ContextWindow,
-			ModelMaxOutputTokens: cfg.ModelText.ModelMaxOutputTokens,
-		},
 		TTS: ttsDTO{
 			Provider:    cfg.TTS.Provider,
-			APIKey:      cfg.TTS.APIKey,
 			Model:       cfg.TTS.Model,
 			VoiceID:     cfg.TTS.VoiceID,
 			ReferenceID: cfg.TTS.ReferenceID,
@@ -470,12 +713,9 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		STT: sttDTO{
 			Provider:        cfg.STT.Provider,
 			Language:        cfg.STT.Language,
-			APIKey:          cfg.STT.APIKey,
 			Model:           cfg.STT.Model,
 			BaseURL:         cfg.STT.BaseURL,
 			AppID:           cfg.STT.AppID,
-			SecretID:        cfg.STT.SecretID,
-			SecretKey:       cfg.STT.SecretKey,
 			Region:          cfg.STT.Region,
 			EngineModelType: cfg.STT.EngineModelType,
 		},
@@ -601,7 +841,7 @@ func runConfigCheck(args []string) int {
 	fs := flag.NewFlagSet("config-check", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
 	stdinFlag := fs.Bool("stdin", false, "read config from stdin")
-	configFlag := fs.String("config", "", "path to agent.toml or config directory")
+	configFlag := fs.String("config", "", "path to a TOML config file")
 
 	if err := fs.Parse(args); err != nil {
 		writeConfigCheckError("failed to parse flags: " + err.Error())
@@ -678,6 +918,16 @@ func checkConfig(r io.Reader) (ValidationResult, error) {
 	if err := cfg.Validate(); err != nil {
 		result.Valid = false
 		result.Errors = parseValidationErrors(err)
+		return result, nil
+	}
+	// Voice provider records are checked only here, on the save path. Boot stays
+	// lenient: a TTS init failure is a warning and the agent still starts, so a
+	// device whose provider reference went stale must keep booting. But a save
+	// that stores a dangling reference silently loses voice on the next restart,
+	// so it has to be rejected while the user is still looking at the form.
+	if err := cfg.ValidateVoiceProviders(); err != nil {
+		result.Valid = false
+		result.Errors = parseValidationErrors(err)
 	}
 	return result, nil
 }
@@ -723,7 +973,7 @@ func resolvedWebConfigDTO(configPath string) (webConfigDTO, error) {
 func runConfig(args []string) int {
 	fs := flag.NewFlagSet("config", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
-	configFlag := fs.String("config", "", "path to agent.toml or config directory")
+	configFlag := fs.String("config", "", "path to a TOML config file")
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse flags: %v\n", err)
@@ -763,14 +1013,14 @@ type configTestInput struct {
 	AudioBase64 string          `json:"audio_base64"`
 }
 
-// runConfigTest implements `agent config-test` for checks that need agent
-// runtime code instead of config_web's lightweight shell probes.
+// runConfigTest implements provider checks through the same runtime registries
+// and adapters used by the agent itself.
 func runConfigTest(args []string) int {
 	fs := flag.NewFlagSet("config-test", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
 	stdinFlag := fs.Bool("stdin", false, "read test request from stdin")
 	sectionFlag := fs.String("section", "", "config section to test")
-	configFlag := fs.String("config", "", "path to agent.toml or config directory")
+	configFlag := fs.String("config", "", "path to a TOML config file")
 	timeoutFlag := fs.Duration("timeout", 45*time.Second, "test timeout")
 
 	if err := fs.Parse(args); err != nil {
@@ -799,7 +1049,7 @@ func runConfigTest(args []string) int {
 	if section == "" {
 		section = strings.TrimSpace(*sectionFlag)
 	}
-	if section != "tts" && section != "stt" {
+	if section != "model" && section != "tts" && section != "stt" {
 		writeConfigTestResult(configTestFailure("request", "unsupported section: "+section))
 		return 1
 	}
@@ -817,11 +1067,43 @@ func runConfigTest(args []string) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeoutFlag)
 	defer cancel()
+	result := executeConfigTest(ctx, cfg, input, section)
+	writeConfigTestResult(result)
+	if result.OK {
+		return 0
+	}
+	return 1
+}
+
+func executeConfigTest(ctx context.Context, cfg agent.Config, input configTestInput, section string) ConfigTestResult {
+	if section == "model" {
+		var modelValues modelDTO
+		if err := json.Unmarshal(input.Values, &modelValues); err != nil {
+			return configTestFailure("request", "invalid model values: "+err.Error())
+		}
+
+		result, err := agent.RunModelProviderTest(ctx, cfg, modelValues.providerTestRequest())
+		if err != nil {
+			detail := err.Error()
+			if result.Provider != "" {
+				detail = fmt.Sprintf("[provider=%s model=%s] %s", result.Provider, result.Model, detail)
+			}
+			return configTestFailure("provider_request", detail)
+		}
+		return ConfigTestResult{
+			OK: true,
+			Results: []ConfigTestCheck{{
+				Check:  "provider_request",
+				Passed: true,
+				Detail: fmt.Sprintf("received a response from %s (model: %s)", result.Provider, result.Model),
+			}},
+		}
+	}
+
 	if section == "tts" {
 		var ttsValues ttsDTO
 		if err := json.Unmarshal(input.Values, &ttsValues); err != nil {
-			writeConfigTestResult(configTestFailure("request", "invalid tts values: "+err.Error()))
-			return 1
+			return configTestFailure("request", "invalid tts values: "+err.Error())
 		}
 
 		playback, err := agent.RunTTSPlaybackTest(ctx, cfg, ttsValues.playbackTestRequest(input.Text))
@@ -830,36 +1112,48 @@ func runConfigTest(args []string) int {
 			if ttsValues.Provider != "" {
 				detail = fmt.Sprintf("[provider=%s model=%s voice=%s] %s", ttsValues.Provider, ttsValues.Model, ttsValues.VoiceID, detail)
 			}
-			writeConfigTestResult(configTestFailure("tts_playback", detail))
-			return 1
+			return configTestFailure("tts_playback", detail)
 		}
-		writeConfigTestResult(ConfigTestResult{
+		return ConfigTestResult{
 			OK: true,
 			Results: []ConfigTestCheck{{
 				Check:  "tts_playback",
 				Passed: true,
 				Detail: fmt.Sprintf("played %q with %s", playback.Text, playback.Provider),
 			}},
-		})
-		return 0
+		}
+	}
+	if section != "stt" {
+		return configTestFailure("request", "unsupported section: "+section)
 	}
 
 	var sttValues sttDTO
 	if err := json.Unmarshal(input.Values, &sttValues); err != nil {
-		writeConfigTestResult(configTestFailure("request", "invalid stt values: "+err.Error()))
-		return 1
+		return configTestFailure("request", "invalid stt values: "+err.Error())
+	}
+	if strings.TrimSpace(input.AudioBase64) == "" {
+		result, err := agent.RunSTTProviderTest(ctx, cfg, sttValues.transcriptionTestRequest(nil))
+		if err != nil {
+			return configTestFailure("provider_config", err.Error())
+		}
+		return ConfigTestResult{
+			OK: true,
+			Results: []ConfigTestCheck{{
+				Check:  "provider_config",
+				Passed: true,
+				Detail: fmt.Sprintf("created the %s STT client", result.Provider),
+			}},
+		}
 	}
 	wavData, err := base64.StdEncoding.DecodeString(strings.TrimSpace(input.AudioBase64))
 	if err != nil {
-		writeConfigTestResult(configTestFailure("request", "invalid audio_base64: "+err.Error()))
-		return 1
+		return configTestFailure("request", "invalid audio_base64: "+err.Error())
 	}
 	transcription, err := agent.RunSTTTranscriptionTest(ctx, cfg, sttValues.transcriptionTestRequest(wavData))
 	if err != nil {
-		writeConfigTestResult(configTestFailure("stt_transcription", err.Error()))
-		return 1
+		return configTestFailure("stt_transcription", err.Error())
 	}
-	writeConfigTestResult(ConfigTestResult{
+	return ConfigTestResult{
 		OK:         true,
 		Transcript: transcription.Transcript,
 		Results: []ConfigTestCheck{{
@@ -867,8 +1161,7 @@ func runConfigTest(args []string) int {
 			Passed: true,
 			Detail: fmt.Sprintf("transcribed audio with %s", transcription.Provider),
 		}},
-	})
-	return 0
+	}
 }
 
 func configTestFailure(check, detail string) ConfigTestResult {

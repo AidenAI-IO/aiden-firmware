@@ -25,6 +25,28 @@ type STTTranscriptionTestResult struct {
 	Transcript string `json:"transcript"`
 }
 
+type STTProviderTestResult struct {
+	Provider string `json:"provider"`
+}
+
+func RunSTTProviderTest(ctx context.Context, cfg Config, req STTTranscriptionTestRequest) (STTProviderTestResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return STTProviderTestResult{}, err
+	}
+
+	applySTTTranscriptionTestRequest(&cfg, req)
+	if strings.TrimSpace(cfg.STT.Provider) == "" {
+		return STTProviderTestResult{}, errors.New("stt.provider is required")
+	}
+	if _, err := NewSTTClientFromConfig(cfg); err != nil {
+		return STTProviderTestResult{Provider: cfg.STT.Provider}, err
+	}
+	return STTProviderTestResult{Provider: cfg.STT.Provider}, nil
+}
+
 func RunSTTTranscriptionTest(ctx context.Context, cfg Config, req STTTranscriptionTestRequest) (STTTranscriptionTestResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -64,7 +86,18 @@ func applySTTTranscriptionTestRequest(cfg *Config, req STTTranscriptionTestReque
 		return
 	}
 	if provider := strings.TrimSpace(req.Provider); provider != "" {
-		cfg.STT.Provider = provider
+		if _, isRecord := cfg.STTProviders[provider]; isRecord {
+			// Runtime config has already expanded the active provider record, so
+			// its provider-specific values must not become fallbacks when the test
+			// request selects another record. Rebuild from the selected record and
+			// retain only the global preference shared by all STT providers.
+			cfg.STT = STTConfig{
+				Provider: provider,
+				Language: cfg.STT.Language,
+			}
+		} else {
+			cfg.STT.Provider = provider
+		}
 	}
 	if language := strings.TrimSpace(req.Language); language != "" {
 		cfg.STT.Language = language
@@ -80,4 +113,12 @@ func applySTTTranscriptionTestRequest(cfg *Config, req STTTranscriptionTestReque
 	cfg.STT.SecretKey = req.SecretKey
 	cfg.STT.Region = req.Region
 	cfg.STT.EngineModelType = req.EngineModelType
+
+	// Resolve an [stt_providers] reference last, for the same reason as TTS: the
+	// form posts only the reference plus language. Without this the reference
+	// reaches NewSTTClientFromConfig, which dispatches on the raw value, matches
+	// no provider type, and reports "unsupported STT provider: <record name>"
+	// for a record that is configured correctly. This also covers the live
+	// session path, which reuses this request type.
+	resolveSTTProvider(cfg)
 }

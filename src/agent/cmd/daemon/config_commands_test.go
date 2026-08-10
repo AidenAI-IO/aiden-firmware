@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +13,92 @@ import (
 
 	"aiden-agent/internal/agent"
 )
+
+func TestExecuteConfigTestUsesModelRuntime(t *testing.T) {
+	values, err := json.Marshal(modelDTO{Provider: "fake"})
+	if err != nil {
+		t.Fatalf("marshal values: %v", err)
+	}
+	result := executeConfigTest(context.Background(), agent.Config{
+		Model: agent.ModelConfig{Provider: "fake", Responses: []string{"hello"}},
+	}, configTestInput{Section: "model", Values: values}, "model")
+	if !result.OK || len(result.Results) != 1 || result.Results[0].Check != "provider_request" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestModelDTOProviderTestRequestPreservesSamplingPresenceFromJSON(t *testing.T) {
+	tests := []struct {
+		name                string
+		payload             string
+		wantTemperature     *float64
+		wantReasoningEffort string
+	}{
+		{
+			name:    "omitted fields remain unset",
+			payload: `{"provider":"openai","model":"kimi-k3"}`,
+		},
+		{
+			name:    "null temperature remains unset",
+			payload: `{"provider":"openai","model":"kimi-k3","temperature":null}`,
+		},
+		{
+			name:                "explicit zero remains present",
+			payload:             `{"provider":"openai","model":"kimi-k3","temperature":0,"reasoning_effort":"none"}`,
+			wantTemperature:     testFloat64Ptr(0),
+			wantReasoningEffort: "none",
+		},
+		{
+			name:                "explicit nonzero values are preserved",
+			payload:             `{"provider":"openai","model":"kimi-k3","temperature":0.7,"reasoning_effort":"medium"}`,
+			wantTemperature:     testFloat64Ptr(0.7),
+			wantReasoningEffort: "medium",
+		},
+		{
+			name:    "explicit empty reasoning remains auto",
+			payload: `{"provider":"openai","model":"kimi-k3","reasoning_effort":""}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var dto modelDTO
+			if err := json.Unmarshal([]byte(tt.payload), &dto); err != nil {
+				t.Fatalf("unmarshal model values: %v", err)
+			}
+			req := dto.providerTestRequest()
+			if tt.wantTemperature == nil {
+				if req.Temperature != nil {
+					t.Fatalf("temperature request = %v, want unset", req.Temperature)
+				}
+			} else if req.Temperature == nil || *req.Temperature != *tt.wantTemperature {
+				t.Fatalf("temperature request = %v, want %v", req.Temperature, *tt.wantTemperature)
+			}
+			if req.ReasoningEffort != tt.wantReasoningEffort {
+				t.Fatalf("reasoning request = %q, want %q", req.ReasoningEffort, tt.wantReasoningEffort)
+			}
+		})
+	}
+}
+
+func testFloat64Ptr(value float64) *float64 {
+	return &value
+}
+
+func TestExecuteConfigTestUsesSTTRuntimeWithoutAudio(t *testing.T) {
+	values, err := json.Marshal(sttDTO{Provider: "qwen-main", Language: "zh"})
+	if err != nil {
+		t.Fatalf("marshal values: %v", err)
+	}
+	result := executeConfigTest(context.Background(), agent.Config{
+		STTProviders: map[string]agent.STTProvider{
+			"qwen-main": {Type: "qwen-asr", APIKey: "test-key"},
+		},
+	}, configTestInput{Section: "stt", Values: values}, "stt")
+	if !result.OK || len(result.Results) != 1 || result.Results[0].Check != "provider_config" {
+		t.Fatalf("result = %+v", result)
+	}
+}
 
 func TestConfigCheck_ValidConfig(t *testing.T) {
 	validConfig := agent.Config{
@@ -289,6 +376,44 @@ func TestWebConfigDTOFromAgentConfig_RedactsSearchAPIKey(t *testing.T) {
 	}
 	if !dto.Search.HasAPIKey {
 		t.Fatal("search has_api_key = false, want true for stored API key")
+	}
+}
+
+func TestWebConfigDTOFromAgentConfig_RedactsProviderCredentials(t *testing.T) {
+	dto := webConfigDTOFromAgentConfig(agent.Config{
+		ModelProviders: map[string]agent.ModelProvider{
+			"model-main": {Type: "openai", APIKey: "model-secret"},
+		},
+		TTSProviders: map[string]agent.TTSProvider{
+			"tts-main": {Type: "fish-audio", APIKey: "tts-secret"},
+		},
+		STTProviders: map[string]agent.STTProvider{
+			"stt-main": {
+				Type: "tencent-asr", APIKey: "stt-secret",
+				SecretID: "secret-id", SecretKey: "secret-key",
+			},
+		},
+	})
+
+	if got := dto.ModelProviders["model-main"]; got.APIKey != "" || !got.HasAPIKey {
+		t.Fatalf("model provider credential DTO = %+v, want redacted configured state", got)
+	}
+	if got := dto.TTSProviders["tts-main"]; got.APIKey != "" || !got.HasAPIKey {
+		t.Fatalf("TTS provider credential DTO = %+v, want redacted configured state", got)
+	}
+	if got := dto.STTProviders["stt-main"]; got.APIKey != "" || !got.HasAPIKey ||
+		got.SecretID != "" || !got.HasSecretID || got.SecretKey != "" || !got.HasSecretKey {
+		t.Fatalf("STT provider credential DTO = %+v, want redacted configured state", got)
+	}
+
+	data, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal config DTO: %v", err)
+	}
+	for _, secret := range []string{"model-secret", "tts-secret", "stt-secret", "secret-id", "secret-key"} {
+		if strings.Contains(string(data), secret) {
+			t.Fatalf("provider secret %q leaked in JSON: %s", secret, data)
+		}
 	}
 }
 

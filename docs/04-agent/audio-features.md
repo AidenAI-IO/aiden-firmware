@@ -8,10 +8,9 @@ The Go Agent supports device-side voice interaction, primarily consisting of `in
 ┌─────────────┐
 │   daemon    │
 └──────┬──────┘
+       ├─────────────────────────► HTTP Server / Web UI (all input modes)
        │
-       ├─ input_mode=text ──────► HTTP Server / Web UI
-       │
-       └─ input_mode=stt ─────────► Audio Dialog Loop
+       └─ input_mode=stt ────────► Audio Dialog Loop
                                    │
                                    ├─ AudioServiceClient
                                    ├─ VAD
@@ -26,7 +25,7 @@ The Go Agent supports device-side voice interaction, primarily consisting of `in
 | --- | --- | --- |
 | Audio client | `audio_client.go` | Connects to `audio_service`, starts recording/playback sessions, reads/writes PCM chunks |
 | VAD | `vad.go` + `/oem/usr/bin/rknn_vad` or `/oem/usr/bin/cpu_vad` | Silero VAD inference; input is fixed at 16 kHz, 512 samples/32 ms, with `state` maintained in helper |
-| STT | `stt.go`, `tencent_asr_stt.go` | OpenAI Whisper / OpenRouter / Tencent Cloud ASR (`tencent-asr`; legacy values `tencent` / `tencent_asr` are compatible) |
+| STT | `stt.go`, provider-specific clients | OpenAI Whisper, OpenRouter, Tencent Cloud ASR, Qwen ASR, and Google Cloud STT; `tencent` / `tencent_asr` remain compatibility aliases for `tencent-asr` |
 | TTS | `tts/`, `tts_helpers.go` | Pluggable TTS provider, outputs PCM for the configured playback backend; automatically resamples to the target playback sample rate when necessary |
 | Dialog manager | `audio_dialog.go` | Orchestrates recording, VAD, STT/LLM/TTS flow |
 | Voice notifications | `voice_notification.go`, `tts_fallback.go` | Adds a persistent response tail or final-turn failure replacement before TTS, with bundled local WAV fallback when final TTS is unavailable |
@@ -35,14 +34,14 @@ The Go Agent supports device-side voice interaction, primarily consisting of `in
 
 ### `input_mode = "text"`
 
-Starts HTTP server and Web UI. Browser can upload/record audio:
+Runs the HTTP server and Web UI without starting the device-side audio loop. Browser clients can still upload or record audio:
 
 - If `[stt]` is configured, browser audio is transcribed to text first;
 - Otherwise audio is passed as model attachment.
 
 ### `input_mode = "stt"`
 
-Device-side audio loop:
+Runs the device-side audio loop alongside the HTTP server and Web UI:
 
 1. Records PCM via `audio_service`;
 2. VAD determines sentence boundaries;
@@ -71,16 +70,16 @@ vad_backend = "rknn"
 vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 vad_helper_path = "/oem/usr/bin/rknn_vad"
 vad_speech_threshold = 0.5
-silence_ms = 650
+silence_ms = 550
 min_speech_ms = 300
 voice_followup_enabled = false
-voice_followup_timeout_ms = 6000
+voice_followup_timeout_ms = 5000
 voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0
 voice_interrupt_on_wakeup = true
 voice_streaming_tts_enabled = true
 voice_tool_call_speech = true
-voice_max_response_tokens = 400
+voice_max_response_tokens = 300
 
 [audio]
 socket = "/run/audio_service/audio_service.sock"
@@ -89,21 +88,30 @@ channels = 1
 bit_width = 16
 playback_backend = "auto"
 
-[stt]
-provider = "openai-whisper"
-api_key = "sk-..."
+[stt_providers.openai-main]
+type = "openai-whisper"
+api_key = "$OPENAI_API_KEY"
 model = "whisper-1"
 
-# OpenRouter alternative:
-# provider = "openrouter"
-# api_key = "OPENROUTER_API_KEY"
-# model = "qwen/qwen3-asr-flash-2026-02-10"
+[stt]
+provider = "openai-main"
 
-[tts]
-provider = "alicloud"
+# OpenRouter alternative:
+# [stt_providers.openrouter-main]
+# type = "openrouter"
+# api_key = "$OPENROUTER_API_KEY"
+# model = "qwen/qwen3-asr-flash-2026-02-10"
+# Set [stt].provider = "openrouter-main" to select it.
+
+[tts_providers.alicloud-main]
+type = "alicloud"
+api_key = "$DASHSCOPE_API_KEY"
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
 emotion = "happy"
+
+[tts]
+provider = "alicloud-main"
 speed = 1.0
 ```
 
@@ -179,4 +187,4 @@ On success, it will output a line `P <probability>`; if there are still RKNN inp
 
 ## Known Limitations
 
-- Web UI and device voice loop currently cannot run simultaneously in the same daemon instance;
+- Web UI and device voice interactions share one Agent runtime, so only one Agent run can execute at a time;

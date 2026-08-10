@@ -124,9 +124,9 @@ func agentEnvironmentGuidance() string {
 	return strings.Join([]string{
 		"- You run on the Aiden hardware controller (" + hostRuntimeInfoContext() + "); you are not the device shown in screenshots.",
 		"- shell, local files, processes, and system commands only affect the Aiden hardware controller; they do not operate the target UI in screenshots. Use shell on the Aiden controller for diagnostics, precise controller clock or timezone queries, deterministic calculations, or when the user explicitly asks to run controller commands.",
-		"- Infer the target device and target OS from screenshots, connection metadata, behavioral probing, or user input.",
-		"- Aiden is primarily used to control a connected phone or mobile OS; this is only a weak prior, not a detected fact. Revise your judgment when screenshots, tool results, or failed actions conflict with that assumption.",
-		"- Do not infer target device information from the host OS or architecture; when operating the target UI, do not use local system commands instead of target control tools.",
+		"- Treat the global device_type state as the source of truth for the controlled target device and OS. Use screenshots, connection metadata, behavioral probing, and user input to identify the current app, page, UI state, and mismatches, not to override the device_type-derived OS.",
+		"- Aiden can control phones, tablets, or desktop OS targets depending on device_type; do not assume a mobile OS unless device_type says so.",
+		"- Do not infer target device or OS information from the host OS or architecture; when operating the target UI, do not use local system commands instead of target control tools.",
 	}, "\n")
 }
 

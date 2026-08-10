@@ -23,6 +23,113 @@ api_key = "sk-direct"
     }
 
 
+def test_load_agent_model_config_resolves_canonical_named_provider(tmp_path: Path):
+    config = tmp_path / "agent.toml"
+    config.write_text(
+        """
+[model_providers.work]
+type = "openrouter"
+api_key = "sk-record"
+base_url = "https://openrouter.ai/api/v1"
+
+[model]
+provider = "work"
+model = "google/gemini-3.5-flash"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert load_agent_model_config(config) == {
+        "provider": "openrouter",
+        "model": "google/gemini-3.5-flash",
+        "api_key": "sk-record",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+
+
+def test_load_agent_model_config_prefers_canonical_namespace_and_type(tmp_path: Path):
+    config = tmp_path / "agent.toml"
+    config.write_text(
+        """
+[providers.work]
+provider = "openai"
+api_key = "sk-legacy"
+
+[model_providers.work]
+provider = "ollama"
+type = "openrouter"
+api_key = "sk-canonical"
+
+[model]
+provider = "work"
+model = "google/gemini-3.5-flash"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    resolved = load_agent_model_config(config)
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["api_key"] == "sk-canonical"
+
+
+def test_load_agent_model_config_does_not_fall_back_from_empty_canonical_type(tmp_path: Path):
+    config = tmp_path / "agent.toml"
+    config.write_text(
+        """
+[model_providers.work]
+type = ""
+provider = "openai"
+
+[model]
+provider = "work"
+model = "gpt-4o"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert load_agent_model_config(config)["provider"] == ""
+
+
+def test_load_agent_model_config_reads_legacy_named_provider(tmp_path: Path):
+    config = tmp_path / "agent.toml"
+    config.write_text(
+        """
+[providers.work]
+provider = "openai"
+api_key = "sk-legacy"
+
+[model]
+provider = "work"
+model = "gpt-4o"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    resolved = load_agent_model_config(config)
+
+    assert resolved["provider"] == "openai"
+    assert resolved["api_key"] == "sk-legacy"
+
+
+def test_resolve_agent_model_api_key_uses_api_key_environment_reference(tmp_path: Path):
+    config = tmp_path / "agent.toml"
+    config.write_text(
+        """
+[model_providers.work]
+type = "openrouter"
+api_key = "$OPENROUTER_API_KEY"
+
+[model]
+provider = "work"
+model = "google/gemini-3.5-flash"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert resolve_agent_model_api_key(config, env={"OPENROUTER_API_KEY": "sk-env"}) == "sk-env"
+
+
 def test_resolve_agent_model_api_key_uses_direct_agent_toml_value(tmp_path: Path):
     config = tmp_path / "agent.toml"
     config.write_text('[model]\napi_key = "sk-direct"\n', encoding="utf-8")
@@ -30,18 +137,18 @@ def test_resolve_agent_model_api_key_uses_direct_agent_toml_value(tmp_path: Path
     assert resolve_agent_model_api_key(config, env={}) == "sk-direct"
 
 
-def test_resolve_agent_model_api_key_resolves_env_name_from_agent_toml(tmp_path: Path):
+def test_resolve_agent_model_api_key_treats_unprefixed_value_as_literal(tmp_path: Path):
     config = tmp_path / "agent.toml"
     config.write_text('[model]\napi_key = "OPENROUTER_API_KEY"\n', encoding="utf-8")
 
-    assert resolve_agent_model_api_key(config, env={"OPENROUTER_API_KEY": "sk-env"}) == "sk-env"
+    assert resolve_agent_model_api_key(config, env={"OPENROUTER_API_KEY": "sk-env"}) == "OPENROUTER_API_KEY"
 
 
-def test_resolve_agent_model_api_key_does_not_treat_missing_env_name_as_secret(tmp_path: Path):
+def test_resolve_agent_model_api_key_keeps_unprefixed_value_without_matching_env(tmp_path: Path):
     config = tmp_path / "agent.toml"
     config.write_text('[model]\napi_key = "OPENROUTER_API_KEY"\n', encoding="utf-8")
 
-    assert resolve_agent_model_api_key(config, env={}) is None
+    assert resolve_agent_model_api_key(config, env={}) == "OPENROUTER_API_KEY"
 
 
 def test_default_agent_config_path_ignores_directory_env_path(monkeypatch, tmp_path: Path):

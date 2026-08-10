@@ -2,7 +2,7 @@
 
 This page is the main path for anyone touching Aiden hardware for the first time. It follows the order **wire up → flash → connect Wi-Fi → configure → run → develop → upgrade → troubleshoot**, stringing the whole onboarding flow into one page. Each step covers only the key action; details are linked to the corresponding topic docs.
 
-> Voice interaction is Aiden's core usage scenario. `text` mode is mainly for development and testing—it bypasses the audio hardware (recording/playback) and provides a Web UI to validate the agent logic chain without requiring the full voice pipeline.
+> Voice interaction is Aiden's core usage scenario. The Agent Web UI is available in every input mode. `text` mode is mainly for development and testing because it disables the device-side audio loop while keeping the HTTP interface available.
 
 ## Overview
 
@@ -24,7 +24,7 @@ Follow [Hardware & Wiring](hardware.md) to complete the wiring. Key connection f
 - The target device (iPhone / PC) connects to a **USB-C hub**;
 - The hub's **HDMI output** goes to the TC358743XBG HDMI-to-CSI bridge, which feeds the Pico Zero's `/dev/video0` via CSI;
 - The hub's **USB-C output** connects to the Pico Zero for data and power;
-- The Pico Zero emulates an HID keyboard/mouse/touch device (`/dev/hidg0`, `/dev/hidg1`) back to the target over the USB connection;
+- The Pico Zero exposes `/dev/hidg0` for keyboard input, `/dev/hidg1` for pointer/touch input, and `/dev/hidg2` for Android extension keys or Consumer Control media keys back to the target over USB;
 - Audio goes through the Pico Zero's onboard codec / ALSA; networking goes through Wi-Fi or the USB gadget network.
 
 To control an iOS device over USB HID, first enable `Settings > Accessibility > Touch > AssistiveTouch` on the target device, and it is recommended to enable **Show Onscreen Keyboard** as well.
@@ -76,16 +76,16 @@ Fill in the keys for each service on the same config page. Among them:
 
 ### Choosing the Agent mode
 
-Determined by `input_mode` in `agent.toml`. Two modes:
+The Agent HTTP server and Web UI always start. `input_mode` selects whether the device-side voice loop also runs:
 
 | Mode | Behavior | Use case |
 | --- | --- | --- |
-| `stt` | Device records → VAD → STT to text → LLM → TTS playback | Voice interaction |
-| `text` | Starts the HTTP server + Web UI | Mainly for testing; use the web page on port 8080 for text interaction |
+| `stt` | HTTP server + Web UI, with device recording → VAD → STT to text → LLM → TTS playback running in parallel | Voice interaction, with the Web UI still available |
+| `text` | HTTP server + Web UI only | Mainly for testing; use the web page on port 8080 for text interaction |
 
-`stt` mode transcribes voice to text before sending it to the LLM. `text` mode is mainly for testing — open the web page on the device's port `8080` for text interaction. The removed `audio` mode (raw audio sent directly to the LLM) is no longer supported.
+`stt` mode transcribes voice to text before sending it to the LLM while serving the same HTTP interface. `text` mode is mainly for testing because it skips the device audio loop. The removed `audio` mode (raw audio sent directly to the LLM) is no longer supported.
 
-> Note the two distinct web pages: `http://192.168.42.1` (port 80) is the device config page; `http://<device-ip>:8080` is the Agent Web UI in `text` mode.
+> Note the two distinct web pages: `http://192.168.42.1` (port 80) is the device config page; `http://<device-ip>:8080` is the Agent Web UI, available in both `text` and `stt` modes.
 
 Field meanings, minimal working config examples, and TTS/STT provider values are in [Agent Configuration](../04-agent/configuration.md).
 

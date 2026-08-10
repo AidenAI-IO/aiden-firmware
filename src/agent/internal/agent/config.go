@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -127,7 +128,7 @@ func (c AudioArchiveConfig) ExplicitStoragePath() string {
 
 // StorageConfig tunes the optional microSD data store managed by
 // StorageManager. The storage mode itself is not configurable: a usable
-// card means dual storage, otherwise eMMC only (docs/04-agent/storage-modes.md).
+// card enables the SD migration tier; otherwise governed data remains on eMMC.
 type StorageConfig struct {
 	MountPoint    string `toml:"mount_point,omitempty"`
 	Device        string `toml:"device,omitempty"`
@@ -261,9 +262,18 @@ func (c OTAConfig) Validate() error {
 	return nil
 }
 
+// ModelProvider defines a model service provider configuration.
+type ModelProvider struct {
+	Type    string `toml:"type"` // Provider type: openai, kimi, ollama, etc.
+	APIKey  string `toml:"api_key,omitempty"`
+	BaseURL string `toml:"base_url,omitempty"`
+}
+
 type Config struct {
+	ModelProviders             map[string]ModelProvider `toml:"model_providers,omitempty"` // Named model provider configurations
+	TTSProviders               map[string]TTSProvider   `toml:"tts_providers,omitempty"`   // Named TTS provider configurations
+	STTProviders               map[string]STTProvider   `toml:"stt_providers,omitempty"`   // Named STT provider configurations
 	Model                      ModelConfig              `toml:"model"`
-	ModelText                  ModelConfig              `toml:"model_text,omitempty"` // Override for STT-then-text mode
 	TTS                        TTSConfig                `toml:"tts,omitempty"`
 	STT                        STTConfig                `toml:"stt,omitempty"`
 	HID                        HIDConfig                `toml:"hid"`
@@ -357,34 +367,17 @@ type TTSConfig struct {
 	Speed       float64 `toml:"speed,omitempty"`
 	ReferenceID string  `toml:"reference_id,omitempty"` // Fish Audio voice reference ID
 
-	// Credentials lets you store per-provider settings so the app can switch
-	// providers at runtime without losing each one's API key/voice. Keys are
-	// matched case-insensitively against the provider name passed to switch.
+	// ActiveProviderRecord is runtime-only: it records which
+	// [tts_providers.<name>] record the Provider field referred to before resolution
+	// replaced the reference with the provider TYPE.
 	//
-	// Example agent.toml:
-	//   [tts]
-	//   provider = "minimax-cn"
-	//   api_key = "<minimax-key>"   # used as fallback for any provider
-	//
-	//   [tts.credentials.fish-audio]
-	//   api_key = "<fish-key>"
-	//   reference_id = "<fish-reference-id>"
-	//
-	//   [tts.credentials.cartesia]
-	//   api_key = "<cartesia-key>"
-	//   voice_id = "<cartesia-voice>"
-	Credentials map[string]TTSProviderCredentials `toml:"credentials,omitempty"`
-}
-
-// TTSProviderCredentials holds per-provider override settings.
-// Any field left blank falls back to the top-level [tts] values.
-type TTSProviderCredentials struct {
-	APIKey      string  `toml:"api_key,omitempty"`
-	VoiceID     string  `toml:"voice_id,omitempty"`
-	Emotion     string  `toml:"emotion,omitempty"`
-	Model       string  `toml:"model,omitempty"`
-	Speed       float64 `toml:"speed,omitempty"`
-	ReferenceID string  `toml:"reference_id,omitempty"`
+	// Without it the two resolution steps disagree. Load time resolves the
+	// reference and rewrites Provider to the type; speak time re-resolves by
+	// type, and with two records of the same type (two accounts of one service,
+	// the whole point of named records) the type scan can return the other one.
+	// The result is speaking with the wrong account's key while the config page
+	// shows the right record selected.
+	ActiveProviderRecord string `toml:"-"`
 }
 
 type STTConfig struct {
@@ -731,7 +724,6 @@ type ModelConfig struct {
 	Model    string `toml:"model"`
 	BaseURL  string `toml:"base_url,omitempty"`
 	APIKey   string `toml:"api_key,omitempty"`
-	TokenEnv string `toml:"token_env,omitempty"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
 	// (see applyModelTemperatureDefault); an explicit value, including 0, is
@@ -853,6 +845,35 @@ func LoadRuntimeConfig(path string) (Config, error) {
 
 	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
 	applyDeviceConfigDefaults(&cfg, metadata)
+
+	// Upgrade the legacy voice shapes to named records. This must run after the
+	// defaults pass above -- that pass zeroes [tts]/[stt] when the file declares
+	// no provider, and migrating first would mint a record out of DefaultConfig
+	// for a device that never configured voice at all.
+	migrateLegacyVoiceProviders(&cfg, metadata)
+
+	// Expand the voice provider references. Neither call fails: voice is
+	// optional at runtime (a TTS init failure is a warning and the agent still
+	// starts), so a stale reference must not stop the device from booting. The
+	// config page runs Config.ValidateVoiceProviders on save for strict checks.
+	resolveTTSProvider(&cfg)
+	resolveSTTProvider(&cfg)
+
+	// Apply provider references to model configurations. This must run before
+	// the base_url whitelist below: until the reference is expanded, Provider
+	// still holds a [model_providers] section name rather than a provider type, so
+	// the whitelist would compare against the wrong value in both directions.
+	if err := applyRuntimeModelProviders(&cfg); err != nil {
+		return Config{}, err
+	}
+
+	// base_url is honored for providers whose model builders accept an
+	// OpenAI-compatible endpoint override. Drop stray overrides elsewhere to
+	// keep runtime behavior consistent with the config web UI. Applies to a
+	// base_url inherited from a [model_providers] section as well as one set
+	// directly on the model.
+	clearNonAllowedModelBaseURL(&cfg.Model)
+
 	applyRuntimeModelTemperatureDefaults(&cfg)
 	applyRuntimeModelReasoningEffortDefaults(&cfg)
 	applyRuntimeInstructionDefault(&cfg)
@@ -877,7 +898,7 @@ func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
 }
 
 // applyRuntimeModelTemperatureDefaults resolves the sampling temperature for
-// model and model_text when the user has not set it. The default is sourced
+// the model when the user has not set it. The default is sourced
 // from the model's metadata (some models, e.g. Kimi K3, require a fixed
 // temperature) and falls back to defaultModelTemperature. An explicit
 // model.temperature always takes precedence. This is only called in
@@ -888,11 +909,6 @@ func applyRuntimeModelTemperatureDefaults(cfg *Config) {
 		return
 	}
 	applyModelTemperatureDefault(&cfg.Model)
-	// model_text is an optional override; only resolve a default when it is
-	// actually configured, otherwise leave the unused section untouched.
-	if strings.TrimSpace(cfg.ModelText.Provider) != "" || strings.TrimSpace(cfg.ModelText.Model) != "" {
-		applyModelTemperatureDefault(&cfg.ModelText)
-	}
 }
 
 func applyModelTemperatureDefault(m *ModelConfig) {
@@ -909,8 +925,8 @@ func applyModelTemperatureDefault(m *ModelConfig) {
 	m.Temperature = &temp
 }
 
-// applyRuntimeModelReasoningEffortDefaults resolves reasoning_effort for model
-// and model_text when the user has not set it (empty string). The default is
+// applyRuntimeModelReasoningEffortDefaults resolves reasoning_effort for the
+// model when the user has not set it (empty string). The default is
 // sourced from the model's metadata; forced-reasoning models (e.g. Kimi K3)
 // pin a lighter effort to keep streaming responsive. Unlike temperature there
 // is no global fallback: unknown models stay in auto mode (empty). An explicit
@@ -922,11 +938,6 @@ func applyRuntimeModelReasoningEffortDefaults(cfg *Config) {
 		return
 	}
 	applyModelReasoningEffortDefault(&cfg.Model)
-	// model_text is an optional override; only resolve a default when it is
-	// actually configured, otherwise leave the unused section untouched.
-	if strings.TrimSpace(cfg.ModelText.Provider) != "" || strings.TrimSpace(cfg.ModelText.Model) != "" {
-		applyModelReasoningEffortDefault(&cfg.ModelText)
-	}
 }
 
 func applyModelReasoningEffortDefault(m *ModelConfig) {
@@ -938,6 +949,64 @@ func applyModelReasoningEffortDefault(m *ModelConfig) {
 	}
 }
 
+// applyRuntimeModelProviders resolves provider references in model configurations.
+// If model.provider refers to a named provider in [model_providers], apply that provider's
+// configuration. Otherwise, treat it as a direct provider type (backward compatibility).
+func applyRuntimeModelProviders(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+
+	if err := resolveModelProvider(cfg, &cfg.Model); err != nil {
+		return fmt.Errorf("model: %w", err)
+	}
+
+	return nil
+}
+
+// resolveModelProvider resolves a single model's provider reference.
+func resolveModelProvider(cfg *Config, m *ModelConfig) error {
+	if m == nil {
+		return nil
+	}
+
+	providerRef := strings.TrimSpace(m.Provider)
+	if providerRef == "" {
+		return errors.New("provider is required")
+	}
+
+	// Check if this is a reference to a named provider in [model_providers]
+	if cfg.ModelProviders != nil {
+		if provider, exists := cfg.ModelProviders[providerRef]; exists {
+			return applyProviderToModel(provider, providerRef, m)
+		}
+	}
+
+	// Not a reference, treat as direct provider type (backward compatibility)
+	return nil
+}
+
+// applyProviderToModel applies a provider configuration to a model config.
+func applyProviderToModel(provider ModelProvider, originalRef string, m *ModelConfig) error {
+	providerType := strings.TrimSpace(provider.Type)
+	if providerType == "" {
+		return fmt.Errorf("provider %q has no provider type specified", originalRef)
+	}
+
+	// Replace the reference with the actual provider type
+	m.Provider = providerType
+
+	// Apply provider's configuration if not overridden in model config
+	if m.APIKey == "" && provider.APIKey != "" {
+		m.APIKey = provider.APIKey
+	}
+	if m.BaseURL == "" && provider.BaseURL != "" {
+		m.BaseURL = provider.BaseURL
+	}
+
+	return nil
+}
+
 func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 	if cfg == nil {
 		return
@@ -946,7 +1015,14 @@ func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 	if !metadata.IsDefined("tts", "provider") || strings.TrimSpace(cfg.TTS.Provider) == "" {
 		cfg.TTS = TTSConfig{}
 	} else {
-		cfg.TTS.Provider = normalizeTTSProvider(cfg.TTS.Provider)
+		// Normalizing lowercases, so it must not touch a [tts_providers] record
+		// name: record names come from the config page and may carry capitals,
+		// and a lowercased name would stop matching its own record. Bare
+		// provider types still normalize, which is what folds the minimax-ws
+		// alias. resolveTTSProvider normalizes the resolved type afterwards.
+		if _, isRef := cfg.TTSProviders[strings.TrimSpace(cfg.TTS.Provider)]; !isRef {
+			cfg.TTS.Provider = normalizeTTSProvider(cfg.TTS.Provider)
+		}
 		if cfg.TTS.Provider != defaultTTSProvider {
 			clearDefaultTTSProviderFields(cfg, metadata)
 		}
@@ -956,22 +1032,14 @@ func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 	} else if !usesDefaultSTTModel(cfg.STT.Provider) && !metadata.IsDefined("stt", "model") {
 		cfg.STT.Model = ""
 	}
-
-	// base_url is honored for providers whose model builders accept an
-	// OpenAI-compatible endpoint override. Drop stray overrides elsewhere to
-	// keep runtime behavior consistent with the config web UI.
-	clearNonAllowedModelBaseURL(&cfg.Model)
-	clearNonAllowedModelBaseURL(&cfg.ModelText)
 }
 
 func clearNonAllowedModelBaseURL(m *ModelConfig) {
 	if m == nil {
 		return
 	}
-	provider := strings.ToLower(strings.TrimSpace(m.Provider))
-	switch provider {
-	case "openai", "ollama":
-	default:
+	definition, ok := lookupModelProviderDefinition(m.Provider)
+	if !ok || !definition.allowsCustomBaseURL {
 		m.BaseURL = ""
 	}
 }
@@ -1004,28 +1072,25 @@ func clearDefaultTTSProviderFields(cfg *Config, metadata toml.MetaData) {
 }
 
 func usesDefaultSTTModel(provider string) bool {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "openai", defaultSTTProvider:
-		return true
-	default:
-		return false
-	}
+	canonicalProvider, ok := canonicalSTTProviderType(provider)
+	return ok && canonicalProvider == defaultSTTProvider
 }
 
-// LoadResolvedConfig loads a config file over the canonical defaults and
-// returns the effective values used by config-editing surfaces. Missing files
-// are treated as "all defaults" so first-boot config pages can render before
+// LoadResolvedConfig loads the TOML config file at path over the canonical
+// defaults and returns the effective values used by config-editing surfaces.
+// The path must identify a file, not a config directory. Missing TOML files are
+// treated as "all defaults" so first-boot config pages can render before
 // agent.toml has been created.
 func LoadResolvedConfig(path string) (Config, error) {
-	resolvedPath, exists, err := resolveConfigPath(path)
+	exists, err := inspectConfigFilePath(path)
 	if err != nil {
 		return Config{}, err
 	}
 
 	cfg := DefaultConfig()
+	var metadata toml.MetaData
 	if exists {
-		var metadata toml.MetaData
-		if metadata, err = decodeConfigFile(resolvedPath, &cfg); err != nil {
+		if metadata, err = decodeConfigFile(path, &cfg); err != nil {
 			return Config{}, err
 		}
 		applyDeviceConfigDefaults(&cfg, metadata)
@@ -1035,6 +1100,16 @@ func LoadResolvedConfig(path string) (Config, error) {
 
 	applyRuntimeInstructionDefault(&cfg)
 
+	// Upgrade flat voice credentials to named records. This backs
+	// `agent config --format=json`, which is what the config page reads through,
+	// so it has to run here as well as in LoadRuntimeConfig: without it a flat
+	// config reaches the page as flat fields with no record, leaving the key
+	// invisible and un-editable.
+	//
+	// References are deliberately NOT resolved here. The page edits the
+	// reference, so it must come back as the name it wrote.
+	migrateLegacyVoiceProviders(&cfg, metadata)
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -1042,37 +1117,36 @@ func LoadResolvedConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
-func resolveConfigPath(path string) (string, bool, error) {
+func inspectConfigFilePath(path string) (bool, error) {
 	if strings.TrimSpace(path) == "" {
-		return "", false, errors.New("config path is required")
+		return false, errors.New("config path is required")
+	}
+	if !strings.HasSuffix(path, ".toml") {
+		return false, fmt.Errorf("config path must end with .toml: %q", path)
 	}
 
-	info, err := os.Stat(path)
-	if err == nil {
-		if !info.IsDir() {
-			return path, true, nil
-		}
-
-		tomlPath := filepath.Join(path, "agent.toml")
-		if _, err := os.Stat(tomlPath); err == nil {
-			return tomlPath, true, nil
-		} else if !os.IsNotExist(err) {
-			return "", false, fmt.Errorf("read config: %w", err)
-		}
-
-		jsonPath := filepath.Join(path, "agent.json")
-		if _, err := os.Stat(jsonPath); err == nil {
-			return jsonPath, true, nil
-		} else if !os.IsNotExist(err) {
-			return "", false, fmt.Errorf("read config: %w", err)
-		}
-
-		return tomlPath, false, nil
-	}
+	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		return path, false, nil
+		return false, nil
 	}
-	return "", false, fmt.Errorf("read config: %w", err)
+	if err != nil {
+		return false, fmt.Errorf("read config: %w", err)
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		info, err = os.Stat(path)
+		if err != nil {
+			return false, fmt.Errorf("resolve config symlink target %q: %w", path, err)
+		}
+	}
+
+	if !info.Mode().IsRegular() {
+		if info.IsDir() {
+			return false, fmt.Errorf("config path must be a regular file, got directory: %q", path)
+		}
+		return false, fmt.Errorf("config path must be a regular file: %q", path)
+	}
+	return true, nil
 }
 
 func applyRuntimeInstructionDefault(cfg *Config) {
@@ -1093,6 +1167,9 @@ func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 		if metadata, err = toml.DecodeFile(path, cfg); err != nil {
 			return toml.MetaData{}, fmt.Errorf("decode TOML config: %w", err)
 		}
+		if metadata.IsDefined("providers") {
+			return toml.MetaData{}, errors.New("[providers] is unsupported; use [model_providers]")
+		}
 	} else {
 		_, err := os.Stat(path)
 		if err != nil {
@@ -1110,9 +1187,7 @@ func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {
 	needsModel := metadata.IsDefined("model", "max_tokens") &&
 		!metadata.IsDefined("model", "max_response_tokens")
-	needsModelText := metadata.IsDefined("model_text", "max_tokens") &&
-		!metadata.IsDefined("model_text", "max_response_tokens")
-	if !needsModel && !needsModelText {
+	if !needsModel {
 		return nil
 	}
 
@@ -1126,13 +1201,6 @@ func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config)
 			return err
 		}
 		cfg.Model.MaxResponseTokens = value
-	}
-	if needsModelText {
-		value, err := legacyModelMaxTokens(raw, "model_text")
-		if err != nil {
-			return err
-		}
-		cfg.ModelText.MaxResponseTokens = value
 	}
 	return nil
 }
@@ -1154,6 +1222,23 @@ func legacyModelMaxTokens(raw map[string]interface{}, section string) (int, erro
 }
 
 func (c Config) Validate() error {
+	// Validate providers. Iterate in sorted order so a config with several
+	// broken sections reports the same error every run.
+	providerNames := make([]string, 0, len(c.ModelProviders))
+	for name := range c.ModelProviders {
+		providerNames = append(providerNames, name)
+	}
+	sort.Strings(providerNames)
+	for _, name := range providerNames {
+		if err := validateModelProvider(name, c.ModelProviders[name]); err != nil {
+			return err
+		}
+	}
+
+	if err := validateModelProviderRef("model", c.ModelProviders, c.Model.Provider); err != nil {
+		return err
+	}
+
 	locale := strings.TrimSpace(c.Locale)
 	switch locale {
 	case "", localeSimplifiedChinese, localeEnglishUS:
@@ -1202,16 +1287,6 @@ func (c Config) Validate() error {
 	if c.Model.ModelMaxOutputTokens < 0 {
 		return fmt.Errorf("model.model_max_output_tokens must be >= 0, got %d", c.Model.ModelMaxOutputTokens)
 	}
-	if c.ModelText.ContextWindow < 0 {
-		return fmt.Errorf("model_text.context_window must be >= 0, got %d", c.ModelText.ContextWindow)
-	}
-	if c.ModelText.ModelMaxOutputTokens < 0 {
-		return fmt.Errorf("model_text.model_max_output_tokens must be >= 0, got %d", c.ModelText.ModelMaxOutputTokens)
-	}
-	if c.ModelText.MaxResponseTokens < 0 {
-		return fmt.Errorf("model_text.max_response_tokens must be >= 0, got %d", c.ModelText.MaxResponseTokens)
-	}
-
 	// Validate input_mode
 	if strings.TrimSpace(c.InputMode) != "" {
 		mode := strings.ToLower(strings.TrimSpace(c.InputMode))
@@ -1351,6 +1426,59 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+// isKnownProviderType reports whether the value names a built-in model
+// provider type (as opposed to a [model_providers] section name).
+func isKnownProviderType(providerType string) bool {
+	_, ok := lookupModelProviderDefinition(providerType)
+	return ok
+}
+
+// validateModelProvider validates a single model provider configuration.
+func validateModelProvider(name string, p ModelProvider) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("provider name cannot be empty")
+	}
+
+	providerType := strings.TrimSpace(p.Type)
+	if providerType == "" {
+		return fmt.Errorf("model_providers.%s: provider type is required", name)
+	}
+
+	if !isKnownProviderType(providerType) {
+		return fmt.Errorf("model_providers.%s: unsupported provider type %q", name, providerType)
+	}
+
+	return nil
+}
+
+// validateModelProviderRef checks that a model's provider field resolves: it
+// must either name a [model_providers] section or be a built-in provider type. A
+// typo, or a reference left behind after the section was deleted, otherwise
+// passes validation and only fails later when the model client is built.
+// section is the config section being validated, e.g. "model".
+func validateModelProviderRef(section string, providers map[string]ModelProvider, provider string) error {
+	ref := strings.TrimSpace(provider)
+	if ref == "" {
+		return nil
+	}
+	if _, exists := providers[ref]; exists {
+		return nil
+	}
+	if isKnownProviderType(ref) {
+		return nil
+	}
+	if len(providers) == 0 {
+		return fmt.Errorf("%s.provider: unknown provider %q", section, ref)
+	}
+	names := make([]string, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("%s.provider: unknown provider %q (not a provider type, and no [model_providers.%s] section; configured: %s)",
+		section, ref, ref, strings.Join(names, ", "))
 }
 
 func (c Config) LocaleOrDefault() string {

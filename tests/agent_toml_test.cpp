@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <unistd.h>
 
@@ -18,6 +19,13 @@ std::string make_temp_path(const char* leaf) {
     std::remove(tmpl);
     std::string base = tmpl;
     return base + "_" + leaf;
+}
+
+std::string read_text(const std::string& path) {
+    std::ifstream in(path);
+    std::ostringstream out;
+    out << in.rdbuf();
+    return out.str();
 }
 
 }
@@ -64,7 +72,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.model.provider = "openrouter";
     cfg.model.model = "openai/gpt-4o-mini";
     cfg.model.api_key = "sk-or-test";
-    cfg.model.token_env = "OPENROUTER_API_KEY";
     cfg.model.temperature = 0.2;
     cfg.model.has_temperature = true;
     cfg.model.max_response_tokens = 1000;
@@ -188,21 +195,26 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.model.provider == "openrouter");
     CHECK(loaded.model.model == "openai/gpt-4o-mini");
     CHECK(loaded.model.api_key == "sk-or-test");
-    CHECK(loaded.model.token_env == "OPENROUTER_API_KEY");
     CHECK(loaded.model.temperature == doctest::Approx(0.2));
     CHECK(loaded.model.max_response_tokens == 1000);
     CHECK(loaded.model.context_window == 64000);
     CHECK(loaded.model.model_max_output_tokens == 4096);
 
+    // The flat voice credentials set above are written flat and then migrated
+    // onto a [tts_providers]/[stt_providers] record at load, so they arrive on
+    // the record rather than on the flat section. Nothing is lost -- which is
+    // what this round-trip guards -- it just lands where the config page can
+    // edit it. See agent_toml_voice_providers_test.cpp for the migration rules.
     CHECK(loaded.tts.provider == "minimax-cn");
-    CHECK(loaded.tts.api_key == "mx-test");
-    CHECK(loaded.tts.voice_id == "male-qn-qingse");
-    CHECK(loaded.tts.emotion == "happy");
+    CHECK(loaded.tts_providers["minimax-cn"].api_key == "mx-test");
+    CHECK(loaded.tts_providers["minimax-cn"].voice_id == "male-qn-qingse");
+    CHECK(loaded.tts_providers["minimax-cn"].emotion == "happy");
+    // speed stays flat: it is a listening preference, global by design.
     CHECK(loaded.tts.speed == doctest::Approx(1.25));
 
     CHECK(loaded.stt.provider == "openai-whisper");
-    CHECK(loaded.stt.api_key == "sk-stt");
-    CHECK(loaded.stt.model == "whisper-1");
+    CHECK(loaded.stt_providers["openai-whisper"].api_key == "sk-stt");
+    CHECK(loaded.stt_providers["openai-whisper"].model == "whisper-1");
 
     CHECK(loaded.audio.socket == "/run/audio_service/audio_service.sock");
     CHECK(loaded.audio.sample_rate == 16000);
@@ -495,7 +507,7 @@ TEST_CASE("agent_toml rejects negative model metadata overrides") {
     };
     const Case cases[] = {
         {"negative_context_window.toml", "model", "context_window"},
-        {"negative_model_max_output_tokens.toml", "model_text", "model_max_output_tokens"},
+        {"negative_model_max_output_tokens.toml", "model", "model_max_output_tokens"},
     };
 
     for (const auto& tc : cases) {
@@ -525,7 +537,7 @@ TEST_CASE("agent_toml rejects negative model response token limits") {
     };
     const Case cases[] = {
         {"negative_max_response_tokens.toml", "model", "max_response_tokens"},
-        {"negative_legacy_max_tokens.toml", "model_text", "max_tokens"},
+        {"negative_legacy_max_tokens.toml", "model", "max_tokens"},
     };
 
     for (const auto& tc : cases) {
@@ -542,6 +554,130 @@ TEST_CASE("agent_toml rejects negative model response token limits") {
         CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
         CHECK(err.find(tc.field) != std::string::npos);
         CHECK(err.find(">= 0") != std::string::npos);
+
+        std::remove(path.c_str());
+    }
+}
+
+TEST_CASE("agent_toml rejects the legacy providers namespace") {
+    std::string path = make_temp_path("legacy_providers.toml");
+    {
+        std::ofstream out(path);
+        out << "[providers.openai-work]\n"
+            << "provider = \"openai\"\n"
+            << "api_key = \"sk-work\"\n"
+            << "[providers.ollama_local]\n"
+            << "provider = \"ollama\"\n"
+            << "base_url = \"http://127.0.0.1:11434\"\n"
+            << "api_key = \"$OLLAMA_TOKEN\"\n"
+            << "[model]\n"
+            << "provider = \"openai-work\"\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    CHECK(err.find("providers") != std::string::npos);
+    CHECK(err.find("model_providers") != std::string::npos);
+    CHECK(cfg.model_providers.empty());
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml uses canonical model provider names and type fields") {
+    std::string path = make_temp_path("model_providers.toml");
+    {
+        std::ofstream out(path);
+        out << "[model_providers.openai-work]\n"
+            << "type = \"openai\"\n"
+            << "api_key = \"sk-work\"\n"
+            << "[tts_providers.voice]\n"
+            << "type = \"fish-audio\"\n"
+            << "provider = \"minimax\"\n"
+            << "[stt_providers.transcriber]\n"
+            << "type = \"openai-whisper\"\n"
+            << "provider = \"tencent-asr\"\n"
+            << "[model]\n"
+            << "provider = \"openai-work\"\n"
+            << "[tts]\n"
+            << "provider = \"voice\"\n"
+            << "[stt]\n"
+            << "provider = \"transcriber\"\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    REQUIRE(err.empty());
+    REQUIRE(cfg.model_providers.count("openai-work") == 1);
+    CHECK(cfg.model_providers["openai-work"].type == "openai");
+    CHECK(cfg.tts_providers["voice"].type == "fish-audio");
+    CHECK(cfg.stt_providers["transcriber"].type == "openai-whisper");
+    CHECK(cfg.model.provider == "openai-work");
+    CHECK(cfg.tts.provider == "voice");
+    CHECK(cfg.stt.provider == "transcriber");
+
+    std::string saved_path = make_temp_path("model_providers_saved.toml");
+    REQUIRE(aiden::save_agent_toml(saved_path.c_str(), cfg, &err));
+    const std::string saved = read_text(saved_path);
+    CHECK(saved.find("[model_providers.openai-work]") != std::string::npos);
+    CHECK(saved.find("type = \"openai\"") != std::string::npos);
+    CHECK(saved.find("[providers.") == std::string::npos);
+    CHECK(saved.find("provider = \"fish-audio\"") == std::string::npos);
+    CHECK(saved.find("provider = \"openai-whisper\"") == std::string::npos);
+
+    std::remove(path.c_str());
+    std::remove(saved_path.c_str());
+}
+
+TEST_CASE("agent_toml canonical provider type overrides its legacy field alias") {
+    std::string path = make_temp_path("provider_alias_precedence.toml");
+    {
+        std::ofstream out(path);
+        out << "[model_providers.primary]\n"
+            << "type = \"openai\"\n"
+            << "provider = \"ollama\"\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    REQUIRE(err.empty());
+    REQUIRE(cfg.model_providers.size() == 1);
+    CHECK(cfg.model_providers["primary"].type == "openai");
+
+    std::remove(path.c_str());
+}
+
+// A provider name that save_agent_toml would refuse must be rejected at load
+// time too. Accepting it would produce a config that loads cleanly but fails
+// every later save with "invalid provider name", and the empty-name case used
+// to insert a providers[""] entry into the caller's struct.
+TEST_CASE("agent_toml rejects provider names it cannot write back") {
+    struct Case {
+        const char* leaf;
+        const char* section;
+        const char* expected;
+    };
+    const Case cases[] = {
+        {"empty_model_provider_name.toml", "model_providers.", "empty provider name"},
+        {"dotted_model_provider_name.toml", "model_providers.a.b", "invalid provider name"},
+        {"spaced_model_provider_name.toml", "model_providers.my provider", "invalid provider name"},
+    };
+
+    for (const auto& tc : cases) {
+        std::string path = make_temp_path(tc.leaf);
+        {
+            std::ofstream out(path);
+            out << "[" << tc.section << "]\n"
+                << "provider = \"openai\"\n";
+        }
+
+        aiden::AgentToml cfg;
+        std::string err;
+        CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+        CHECK(err.find(tc.expected) != std::string::npos);
+        CHECK(cfg.model_providers.empty());
 
         std::remove(path.c_str());
     }

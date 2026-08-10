@@ -27,6 +27,7 @@ type SkillDefinition struct {
 	PreferredModel  string
 	AllowedTools    []string
 	AllowedChildren []string
+	DeviceTypes     []string
 	Source          string
 	CreatedBy       string
 	FilePath        string
@@ -115,7 +116,7 @@ func loadSkillMetadata(path string) (*SkillDefinition, error) {
 		return nil, fmt.Errorf("skill description is required in frontmatter")
 	}
 
-	return skillDefinitionFromMetadata(meta, body, path), nil
+	return skillDefinitionFromMetadata(meta, body, path)
 }
 
 // parseFrontmatter splits a markdown document into YAML frontmatter and body.
@@ -162,7 +163,54 @@ func interfaceSliceToStringSlice(in []interface{}, fieldName string) []string {
 	return out
 }
 
-func skillDefinitionFromMetadata(meta SkillMetadata, body, path string) *SkillDefinition {
+func metadataStringList(value interface{}, fieldName string) ([]string, error) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		return []string{typed}, nil
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, v := range typed {
+			s, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("metadata.%s must contain only strings, got %T", fieldName, v)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	case []string:
+		return append([]string{}, typed...), nil
+	default:
+		return nil, fmt.Errorf("metadata.%s must be a string or list of strings, got %T", fieldName, value)
+	}
+}
+
+func normalizeSkillDeviceTypes(value interface{}) ([]string, error) {
+	values, err := metadataStringList(value, "device_types")
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("metadata.device_types must not contain empty values")
+		}
+		deviceType, ok := normalizeDeviceType(value)
+		if !ok {
+			return nil, fmt.Errorf("invalid metadata.device_types value %q (expected iOS, Android, macOS, windows, or linux)", value)
+		}
+		if _, ok := seen[deviceType]; ok {
+			continue
+		}
+		seen[deviceType] = struct{}{}
+		out = append(out, deviceType)
+	}
+	return out, nil
+}
+
+func skillDefinitionFromMetadata(meta SkillMetadata, body, path string) (*SkillDefinition, error) {
 	skill := &SkillDefinition{
 		Name:         meta.Name,
 		Description:  meta.Description,
@@ -192,9 +240,16 @@ func skillDefinitionFromMetadata(meta SkillMetadata, body, path string) *SkillDe
 		if children, ok := meta.Metadata["allowed_children"].([]interface{}); ok {
 			skill.AllowedChildren = interfaceSliceToStringSlice(children, "allowed_children")
 		}
+		if value, ok := meta.Metadata["device_types"]; ok {
+			deviceTypes, err := normalizeSkillDeviceTypes(value)
+			if err != nil {
+				return nil, err
+			}
+			skill.DeviceTypes = deviceTypes
+		}
 	}
 
-	return skill
+	return skill, nil
 }
 
 // Get returns the skill definition for a given name
@@ -222,7 +277,7 @@ func parseSkillFromContent(content string) (*SkillDefinition, error) {
 		return nil, fmt.Errorf("skill description is required in frontmatter")
 	}
 
-	return skillDefinitionFromMetadata(meta, body, ""), nil
+	return skillDefinitionFromMetadata(meta, body, "")
 }
 
 // Names returns all registered skill names

@@ -65,7 +65,7 @@ WATCHDOG_PID_FILE=/run/audio_service/audio_service_watchdog.pid
 Default startup command:
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -config /userdata/agent -addr :8080
+/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -dir /userdata/agent -addr :8080
 ```
 
 Runtime directory:

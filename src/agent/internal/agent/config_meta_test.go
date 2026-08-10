@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -119,9 +120,155 @@ func TestConfigMeta_Valid(t *testing.T) {
 
 }
 
-// TestConfigMeta_EnumsMatchValidation guards against drift between the metadata
-// enums and the constants the validator accepts.
-func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
+func TestFieldMeta_DisplayFieldsJSONSchema(t *testing.T) {
+	payload, err := json.Marshal(FieldMeta{
+		Key:         "github_proxy_url",
+		Label:       "GitHub Proxy URL",
+		Help:        "Optional proxy for GitHub downloads.",
+		Placeholder: "Leave empty to disable",
+		Layout:      "wide",
+		Widget:      WidgetText,
+	})
+	if err != nil {
+		t.Fatalf("marshal FieldMeta: %v", err)
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal FieldMeta JSON: %v", err)
+	}
+	for key, want := range map[string]string{
+		"key":         "github_proxy_url",
+		"label":       "GitHub Proxy URL",
+		"help":        "Optional proxy for GitHub downloads.",
+		"placeholder": "Leave empty to disable",
+		"layout":      "wide",
+		"widget":      string(WidgetText),
+	} {
+		if got[key] != want {
+			t.Errorf("FieldMeta JSON %s = %#v, want %q", key, got[key], want)
+		}
+	}
+
+	minimal, err := json.Marshal(FieldMeta{Key: "enabled", Widget: WidgetBoolean})
+	if err != nil {
+		t.Fatalf("marshal minimal FieldMeta: %v", err)
+	}
+	for _, omitted := range []string{"label", "help", "placeholder", "layout"} {
+		if strings.Contains(string(minimal), `"`+omitted+`"`) {
+			t.Errorf("empty %s must be omitted from FieldMeta JSON: %s", omitted, minimal)
+		}
+	}
+}
+
+func TestConfigMeta_AllFieldsHaveStableLabels(t *testing.T) {
+	for _, section := range ConfigMeta().Sections {
+		for _, field := range section.Fields {
+			if strings.TrimSpace(field.Label) == "" {
+				t.Errorf("%s.%s has no display label", section.Name, field.Key)
+			}
+		}
+	}
+}
+
+func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
+	idx := fieldIndex(t)
+
+	type displayMeta struct {
+		label       string
+		help        string
+		placeholder string
+		layout      string
+	}
+	want := map[string]displayMeta{
+		"device.device_type": {
+			help: "Android uses HID touchscreen mode. iOS, macOS, windows, and linux use absolute pointer mode.",
+		},
+		"agent.vad_model_path":          {layout: "wide"},
+		"agent.vad_helper_path":         {layout: "wide"},
+		"agent.custom_instruction":      {layout: "wide"},
+		"agent.additional_prompt":       {layout: "wide"},
+		"model.provider":                {layout: "wide"},
+		"model.model":                   {layout: "wide"},
+		"model.base_url":                {layout: "wide"},
+		"model.reasoning_effort":        {help: "Empty = auto (disable reasoning only for no-tool requests). Levels are provider-specific: minimal is OpenRouter and Volcengine Ark only, none is not supported by Ark."},
+		"model.context_window":          {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
+		"model.model_max_output_tokens": {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
+		"tts.provider":                  {layout: "wide"},
+		"stt.provider":                  {layout: "wide"},
+		"audio.socket":                  {layout: "wide"},
+		"audio_archive.enabled":         {help: "After enabling, save STT voice recording WAV for Web UI playback; Automatically delete old files when exceeding quantity or capacity limit."},
+		"audio_archive.storage_path":    {layout: "wide"},
+		"ota.github_proxy_url": {
+			label:       "GitHub Proxy URL",
+			help:        "Optional proxy to accelerate GitHub downloads (e.g., https://gh-proxy.com/ or https://ghfast.top/)",
+			placeholder: "Leave empty to disable",
+			layout:      "wide",
+		},
+		"hid.keyboard_layout": {
+			help: "How the phone interprets the USB keyboard. Keep qwerty unless typed text comes out transposed; then switch the phone input language to match, save, and reboot the board.",
+		},
+		"hid.keyboard_device":         {layout: "wide"},
+		"hid.mouse_device":            {layout: "wide"},
+		"hid.android_keyboard_device": {layout: "wide"},
+		"hid.frame_socket":            {layout: "wide"},
+		"search.api_key":              {layout: "wide"},
+		"telemetry.base_url": {
+			placeholder: "http://langfuse.example.com:3000",
+			layout:      "wide",
+		},
+		"telemetry.public_key": {layout: "wide"},
+		"telemetry.secret_key": {layout: "wide"},
+		"telemetry.tags":       {layout: "wide"},
+	}
+
+	for path, expected := range want {
+		field, ok := idx[path]
+		if !ok {
+			t.Errorf("missing metadata field %s", path)
+			continue
+		}
+		if expected.label != "" && field.Label != expected.label {
+			t.Errorf("%s label = %q, want %q", path, field.Label, expected.label)
+		}
+		if field.Help != expected.help {
+			t.Errorf("%s help = %q, want %q", path, field.Help, expected.help)
+		}
+		if field.Placeholder != expected.placeholder {
+			t.Errorf("%s placeholder = %q, want %q", path, field.Placeholder, expected.placeholder)
+		}
+		if field.Layout != expected.layout {
+			t.Errorf("%s layout = %q, want %q", path, field.Layout, expected.layout)
+		}
+	}
+}
+
+func TestConfigMeta_SpecialRendererFieldsRemainAddressable(t *testing.T) {
+	idx := fieldIndex(t)
+	// These fields remain in metadata for read/write/default/visibility logic,
+	// but config-form.js renders them through its section.key renderer registry.
+	for _, path := range []string{
+		"model.provider",
+		"model.model",
+		"tts.provider",
+		"stt.provider",
+	} {
+		if _, ok := idx[path]; !ok {
+			t.Errorf("special renderer field %s is missing from metadata", path)
+		}
+	}
+}
+
+func TestConfigMeta_PreservesConfigWebLiveActivityPhoneID(t *testing.T) {
+	idx := fieldIndex(t)
+	if _, ok := idx["live_activity.phone_id"]; !ok {
+		t.Fatal("live_activity.phone_id is missing from config web metadata")
+	}
+}
+
+// TestConfigMeta_NonRegistryEnumsMatchValidation covers enums that do not have
+// a runtime provider registry as their canonical source.
+func TestConfigMeta_NonRegistryEnumsMatchValidation(t *testing.T) {
 	idx := fieldIndex(t)
 
 	enumValues := func(path string) []string {
@@ -150,24 +297,6 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		if !contains(searchEnum, p) {
 			t.Errorf("search.provider enum missing validated provider %q", p)
 		}
-	}
-
-	// model.provider enum must include every provider ModelManager.build accepts.
-	modelEnum := enumValues("model.provider")
-	for _, p := range []string{"openrouter", "openai", "kimi", "kimi-cn", "volcengine", "ollama", "fake"} {
-		if !contains(modelEnum, p) {
-			t.Errorf("model.provider enum missing provider %q", p)
-		}
-	}
-
-	ttsEnum := enumValues("tts.provider")
-	for _, p := range []string{"minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine"} {
-		if !contains(ttsEnum, p) {
-			t.Errorf("tts.provider enum missing provider %q", p)
-		}
-	}
-	if contains(ttsEnum, "minimax-ws") {
-		t.Errorf("tts.provider enum still includes legacy provider minimax-ws")
 	}
 
 	// device.device_type enum must match Validate()'s accepted set.
@@ -261,11 +390,14 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"model.max_response_tokens", defaults.Model.MaxResponseTokens},
 		{"model.log_raw_http", defaults.Model.LogRawHTTP},
 		{"tts.provider", defaults.TTS.Provider},
-		{"tts.voice_id", defaults.TTS.VoiceID},
-		{"tts.emotion", defaults.TTS.Emotion},
 		{"tts.speed", defaults.TTS.Speed},
+		// voice_id and emotion moved onto the record: they stop meaning
+		// anything when the provider type changes, so they are edited in the
+		// provider dialog rather than on the flat section.
+		{"tts_providers.voice_id", defaults.TTS.VoiceID},
+		{"tts_providers.emotion", defaults.TTS.Emotion},
 		{"stt.provider", defaults.STT.Provider},
-		{"stt.model", defaults.STT.Model},
+		{"stt_providers.model", defaults.STT.Model},
 		{"audio.socket", defaults.Audio.Socket},
 		{"audio.sample_rate", defaults.Audio.SampleRate},
 		{"audio.channels", defaults.Audio.Channels},
@@ -336,40 +468,40 @@ func TestConfigMeta_TTSFieldsFollowProviderCapabilities(t *testing.T) {
 		return false
 	}
 
-	referenceID, ok := idx["tts.reference_id"]
+	referenceID, ok := idx["tts_providers.reference_id"]
 	if !ok {
-		t.Fatal("missing tts.reference_id metadata")
+		t.Fatal("missing tts_providers.reference_id metadata")
 	}
 	if referenceID.Widget != WidgetText {
-		t.Fatalf("tts.reference_id widget = %q, want %q", referenceID.Widget, WidgetText)
+		t.Fatalf("tts_providers.reference_id widget = %q, want %q", referenceID.Widget, WidgetText)
 	}
-	wantReferenceVisibility := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "in", Values: []string{"fish-audio"}}}}
+	wantReferenceVisibility := VisibleRule{All: []Condition{{Field: "tts_providers.type", Op: "in", Values: []string{"fish-audio"}}}}
 	if referenceID.VisibleWhen == nil || !reflect.DeepEqual(*referenceID.VisibleWhen, wantReferenceVisibility) {
-		t.Fatalf("tts.reference_id visibleWhen = %#v, want %#v", referenceID.VisibleWhen, wantReferenceVisibility)
+		t.Fatalf("tts_providers.reference_id visibleWhen = %#v, want %#v", referenceID.VisibleWhen, wantReferenceVisibility)
 	}
 	if !hasPlaceholder(referenceID, "98655a12fa944e26b274c535e5e03842", wantReferenceVisibility) {
-		t.Fatalf("tts.reference_id missing Fish Audio conditional placeholder: %#v", referenceID.PlaceholderWhen)
+		t.Fatalf("tts_providers.reference_id missing Fish Audio conditional placeholder: %#v", referenceID.PlaceholderWhen)
 	}
 
-	model, ok := idx["tts.model"]
+	model, ok := idx["tts_providers.model"]
 	if !ok {
-		t.Fatal("missing tts.model metadata")
+		t.Fatal("missing tts_providers.model metadata")
 	}
 	if model.Widget != WidgetText {
-		t.Fatalf("tts.model widget = %q, want %q", model.Widget, WidgetText)
+		t.Fatalf("tts_providers.model widget = %q, want %q", model.Widget, WidgetText)
 	}
-	wantModelSelect := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "in", Values: []string{"openrouter"}}}}
+	wantModelSelect := VisibleRule{All: []Condition{{Field: "tts_providers.type", Op: "in", Values: []string{"openrouter"}}}}
 	if model.SelectWhen == nil || !reflect.DeepEqual(*model.SelectWhen, wantModelSelect) {
-		t.Fatalf("tts.model selectWhen = %#v, want %#v", model.SelectWhen, wantModelSelect)
+		t.Fatalf("tts_providers.model selectWhen = %#v, want %#v", model.SelectWhen, wantModelSelect)
 	}
 	if model.VisibleWhen == nil {
-		t.Fatal("tts.model has no visibleWhen rule")
+		t.Fatal("tts_providers.model has no visibleWhen rule")
 	}
-	wantModelVisibility := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "in", Values: []string{
+	wantModelVisibility := VisibleRule{All: []Condition{{Field: "tts_providers.type", Op: "in", Values: []string{
 		"minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter",
 	}}}}
 	if !reflect.DeepEqual(*model.VisibleWhen, wantModelVisibility) {
-		t.Fatalf("tts.model visibleWhen = %#v, want %#v", *model.VisibleWhen, wantModelVisibility)
+		t.Fatalf("tts_providers.model visibleWhen = %#v, want %#v", *model.VisibleWhen, wantModelVisibility)
 	}
 
 	wantModelProviders := map[string][]string{
@@ -390,33 +522,33 @@ func TestConfigMeta_TTSFieldsFollowProviderCapabilities(t *testing.T) {
 					return
 				}
 			}
-			t.Fatalf("missing tts.model option %q", value)
+			t.Fatalf("missing tts_providers.model option %q", value)
 		})
 	}
 
-	voice := idx["tts.voice_id"]
+	voice := idx["tts_providers.voice_id"]
 	voiceDefaults := []struct {
 		value string
 		when  VisibleRule
 	}{
-		{"male-qn-qingse", VisibleRule{All: []Condition{in("tts.provider", "minimax", "minimax-cn")}}},
-		{"Cherry", VisibleRule{All: []Condition{in("tts.provider", "alicloud")}}},
-		{"zh_female_vv_uranus_bigtts", VisibleRule{All: []Condition{in("tts.provider", "volcengine")}}},
-		{"en-US-Neural2-C", VisibleRule{All: []Condition{in("tts.provider", "google-cloud")}}},
-		{"Kore", VisibleRule{All: []Condition{eq("tts.provider", "openrouter"), eq("tts.model", "google/gemini-3.1-flash-tts-preview")}}},
-		{"af_heart", VisibleRule{All: []Condition{eq("tts.provider", "openrouter"), eq("tts.model", "hexgrad/kokoro-82m")}}},
-		{"en-US-AndrewMultilingualNeural", VisibleRule{All: []Condition{eq("tts.provider", "openrouter"), eq("tts.model", "microsoft/mai-voice-2")}}},
+		{"male-qn-qingse", VisibleRule{All: []Condition{in("tts_providers.type", "minimax", "minimax-cn")}}},
+		{"Cherry", VisibleRule{All: []Condition{in("tts_providers.type", "alicloud")}}},
+		{"zh_female_vv_uranus_bigtts", VisibleRule{All: []Condition{in("tts_providers.type", "volcengine")}}},
+		{"en-US-Neural2-C", VisibleRule{All: []Condition{in("tts_providers.type", "google-cloud")}}},
+		{"Kore", VisibleRule{All: []Condition{eq("tts_providers.type", "openrouter"), eq("tts_providers.model", "google/gemini-3.1-flash-tts-preview")}}},
+		{"af_heart", VisibleRule{All: []Condition{eq("tts_providers.type", "openrouter"), eq("tts_providers.model", "hexgrad/kokoro-82m")}}},
+		{"en-US-AndrewMultilingualNeural", VisibleRule{All: []Condition{eq("tts_providers.type", "openrouter"), eq("tts_providers.model", "microsoft/mai-voice-2")}}},
 	}
 	for _, want := range voiceDefaults {
 		if !hasPlaceholder(voice, want.value, want.when) {
-			t.Errorf("tts.voice_id missing conditional placeholder %q for %#v", want.value, want.when)
+			t.Errorf("tts_providers.voice_id missing conditional placeholder %q for %#v", want.value, want.when)
 		}
 	}
 
-	emotion := idx["tts.emotion"]
-	minimaxEmotion := VisibleRule{All: []Condition{in("tts.provider", "minimax", "minimax-cn")}}
+	emotion := idx["tts_providers.emotion"]
+	minimaxEmotion := VisibleRule{All: []Condition{in("tts_providers.type", "minimax", "minimax-cn")}}
 	if !hasPlaceholder(emotion, "happy", minimaxEmotion) {
-		t.Errorf("tts.emotion missing MiniMax placeholder")
+		t.Errorf("tts_providers.emotion missing MiniMax placeholder")
 	}
 }
 
@@ -481,12 +613,16 @@ func TestConfigMeta_STTTencentASRProviderMetadata(t *testing.T) {
 	for _, option := range provider.Enum {
 		values[option.Value] = true
 	}
-	if !values["tencent-asr"] {
-		t.Fatalf("stt.provider enum missing canonical tencent-asr option: %#v", provider.Enum)
+	if !values[tencentASRProvider] {
+		t.Fatalf("stt.provider enum missing canonical %s option: %#v", tencentASRProvider, provider.Enum)
 	}
-	for _, legacy := range []string{"tencent", "tencent_asr"} {
-		if values[legacy] {
-			t.Fatalf("stt.provider enum still includes legacy alias %q: %#v", legacy, provider.Enum)
+	providerNames := sttProviderNamesForCanonical(tencentASRProvider)
+	if len(providerNames) == 0 {
+		t.Fatalf("Tencent STT provider %q is not registered", tencentASRProvider)
+	}
+	for _, alias := range providerNames[1:] {
+		if values[alias] {
+			t.Fatalf("stt.provider enum still includes legacy alias %q: %#v", alias, provider.Enum)
 		}
 	}
 
@@ -494,8 +630,11 @@ func TestConfigMeta_STTTencentASRProviderMetadata(t *testing.T) {
 		path string
 		want any
 	}{
-		{"stt.app_id", ""},
-		{"stt.region", "ap-shanghai"},
+		// The Tencent credential set moved onto the record: it is meaningless
+		// for any other provider type, so it is edited in the provider dialog.
+		{"stt_providers.app_id", ""},
+		{"stt_providers.region", "ap-shanghai"},
+		// language stays flat: it holds regardless of which provider transcribes.
 		{"stt.language", "zh"},
 	}
 	for _, tt := range tests {
@@ -538,6 +677,20 @@ func TestConfigMeta_AudioArchiveRequiresSTTInputMode(t *testing.T) {
 	}
 }
 
+func TestConfigMeta_ModelAPIKeyOwnedByProvider(t *testing.T) {
+	idx := fieldIndex(t)
+	if _, ok := idx["model.api_key"]; ok {
+		t.Fatal("model.api_key must not be exposed by config web metadata")
+	}
+	field, ok := idx["model_providers.api_key"]
+	if !ok {
+		t.Fatal("model_providers.api_key is missing from config web metadata")
+	}
+	if !field.Secret {
+		t.Fatal("model_providers.api_key must remain a secret field")
+	}
+}
+
 // TestConfigMeta_CoversConfigFields uses reflection to ensure every flat,
 // UI-relevant config field has corresponding metadata, preventing silent drift
 // when new fields are added to the Config structs.
@@ -553,6 +706,11 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	}
 	sections := []sectionType{
 		{"model", reflect.TypeOf(ModelConfig{}), map[string]bool{"responses": true}},
+		// The voice credential fields are edited on a [tts_providers]/
+		// [stt_providers] record rather than on the flat section, so metadata
+		// for them lives in the record section. They still resolve onto these
+		// structs at load, so they must be covered in one place or the other --
+		// see the alt lookup below.
 		{"tts", reflect.TypeOf(TTSConfig{}), map[string]bool{"credentials": true}},
 		{"stt", reflect.TypeOf(STTConfig{}), nil},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
@@ -570,14 +728,57 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		}},
 	}
 
+	// A voice credential field may be described on the flat section or on its
+	// provider record section. Accepting either keeps the real guarantee -- no
+	// config field silently loses its UI -- without pinning down which of the
+	// two editors owns it.
+	altSection := map[string]string{"tts": "tts_providers", "stt": "stt_providers"}
+	// model.api_key remains in ModelConfig for legacy TOML compatibility, but
+	// config web edits it only through the selected provider record.
+	altFieldSection := map[string]map[string]string{
+		"model": {"api_key": "model_providers"},
+	}
+
 	for _, s := range sections {
 		for name := range tomlKeys(s.typ) {
 			if s.skip[name] {
 				continue
 			}
 			path := s.name + "." + name
+			if _, ok := idx[path]; ok {
+				continue
+			}
+			if alt, hasAlt := altSection[s.name]; hasAlt {
+				if _, ok := idx[alt+"."+name]; ok {
+					continue
+				}
+			}
+			if fields, hasFields := altFieldSection[s.name]; hasFields {
+				if alt, hasAlt := fields[name]; hasAlt {
+					if _, ok := idx[alt+"."+name]; ok {
+						continue
+					}
+				}
+			}
+			t.Errorf("config field %s has no metadata entry", path)
+		}
+	}
+
+	// The record types themselves must be fully described, or a field the
+	// backend reads would have no editor at all.
+	recordSections := []sectionType{
+		{"model_providers", reflect.TypeOf(ModelProvider{}), nil},
+		{"tts_providers", reflect.TypeOf(TTSProvider{}), nil},
+		{"stt_providers", reflect.TypeOf(STTProvider{}), nil},
+	}
+	for _, s := range recordSections {
+		for name := range tomlKeys(s.typ) {
+			if s.skip[name] {
+				continue
+			}
+			path := s.name + "." + name
 			if _, ok := idx[path]; !ok {
-				t.Errorf("config field %s has no metadata entry", path)
+				t.Errorf("voice provider record field %s has no metadata entry", path)
 			}
 		}
 	}
@@ -586,7 +787,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	// (scalar/string/bool) fields are rendered; nested structs and infra-only
 	// fields are surfaced under their own sections or not at all.
 	agentSkip := map[string]bool{
-		"model": true, "model_text": true, "tts": true, "stt": true, "device": true, "hid": true,
+		"model": true, "tts": true, "stt": true, "device": true, "hid": true,
 		"audio": true, "search": true, "log": true, "telemetry": true, "termination_policy": true, "live_activity": true,
 		"skills_dirs": true, "bundled_skills_dir": true,
 	}

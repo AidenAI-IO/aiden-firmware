@@ -220,13 +220,11 @@ func waitForPostActionScreenshot(ctx context.Context, delay time.Duration) error
 	}
 }
 
-// SetPlatformFn delegates to wrapped text-entry tools if present.
-// This allows runtime target-platform selection from global device_type state.
-func (t *postActionScreenshotTool) SetPlatformFn(fn func() string) {
-	type platformConfigurable interface {
-		SetPlatformFn(func() string)
+func (t *postActionScreenshotTool) SetDeviceTypeFunc(fn func() string) {
+	type deviceTypeConfigurable interface {
+		SetDeviceTypeFunc(func() string)
 	}
-	if tool, ok := t.inner.(platformConfigurable); ok {
-		tool.SetPlatformFn(fn)
+	if tool, ok := t.inner.(deviceTypeConfigurable); ok {
+		tool.SetDeviceTypeFunc(fn)
 	}
 }

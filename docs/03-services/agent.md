@@ -1,6 +1,6 @@
 # Agent: AI Assistant Service
 
-`agent` is the core Go service that provides AI interaction capabilities through voice and text modes. It orchestrates LLM calls, tool execution (HID control, screenshots, audio playback), and manages conversation sessions.
+`agent` is the core Go service that provides the Agent Web UI, HTTP APIs, and optional device-side voice interaction. It orchestrates model calls, tool execution (HID control, screenshots, audio playback), and conversation sessions.
 
 ## Default Parameters
 
@@ -19,25 +19,57 @@
 /etc/init.d/S53agent restart
 ```
 
-## Modes
+## Input Modes
 
-- **Voice mode**: Continuous voice interaction using audio_service for recording, the configured TTS playback backend for speech, and STT/TTS providers
-- **Text mode**: HTTP-based text interaction for testing and debugging
+The HTTP server and Web UI run in every input mode:
+
+- **`input_mode = "text"`**: HTTP-based interaction only, mainly for testing and debugging.
+- **`input_mode = "stt"`**: Runs the device audio loop in parallel with the HTTP server, using `audio_service`, VAD, the selected STT provider, the model, and the selected TTS provider.
 
 ## Configuration
 
-Key sections in `config.toml`:
+The service reads `/userdata/agent/agent.toml`. Provider tables define named provider instances, and the corresponding selection table references one of those names:
 
 ```toml
-[llm]
-provider = "anthropic"  # or "openai", "gemini"
+input_mode = "stt"
+
+[model_providers.openai-main]
+type = "openai"
+api_key = "$OPENAI_API_KEY"
+
+[model]
+provider = "openai-main"
+model = "gpt-5.5"
+# base_url = "https://api.openai.com/v1"
+# temperature = 0.2
+# max_response_tokens = 1000
 
 [audio]
-socket = "/run/audio_service/audio_service.sock"
-playback_backend = "auto"
+# socket = "/run/audio_service/audio_service.sock"
+# playback_backend = "auto"
 
 [hid]
-frame_socket = "/run/frame_service/frame_service.sock"
+# keyboard_device = "/dev/hidg0"
+# mouse_device = "/dev/hidg1"
+# android_keyboard_device = "/dev/hidg2"
+# frame_socket = "/run/frame_service/frame_service.sock"
+
+[stt_providers.openai-main]
+type = "openai-whisper"
+api_key = "$OPENAI_API_KEY"
+model = "whisper-1"
 
 [stt]
-provider = "tencent"  # or "openai"
+provider = "openai-main"
+
+[tts_providers.minimax-main]
+type = "minimax-cn"
+api_key = "$MINIMAX_API_KEY"
+voice_id = "male-qn-qingse"
+
+[tts]
+provider = "minimax-main"
+speed = 1.0
+```
+
+Built-in model provider types include `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, and `ollama`. There are no native `anthropic` or `gemini` provider types; Anthropic Claude and Google Gemini models can be selected through a registered compatible provider such as `openrouter`.

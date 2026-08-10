@@ -281,19 +281,53 @@ func TestTextInputProbeWaitsForConfiguredSettleDelayBeforeCapture(t *testing.T) 
 	}
 }
 
-func TestTextInputKeyboardKeysForUndo(t *testing.T) {
-	for _, test := range []struct {
-		platform string
-		want     []string
+func TestTextInputProbeSupportsWindowsAndLinuxPlatforms(t *testing.T) {
+	for _, platform := range []string{"windows", "linux"} {
+		t.Run(platform, func(t *testing.T) {
+			engine := newTextInputEngineWithSleep(textInputHardwareDeps{
+				keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+				keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+				screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+			}, &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}, func(_ context.Context, _ time.Duration) error {
+				return nil
+			})
+
+			mode, _, err := engine.probeTextInputMode(context.Background(), platform, focusPointArgs{})
+			if err != nil || mode != textInputModeASCII {
+				t.Fatalf("probeTextInputMode(%q) mode=%s err=%v", platform, mode, err)
+			}
+		})
+	}
+}
+
+func TestTextInputKeyboardKeysForPlatforms(t *testing.T) {
+	tests := []struct {
+		platform  string
+		imeSwitch []string
+		selectAll []string
+		undo      []string
 	}{
-		{platform: "ios", want: []string{"meta", "z"}},
-		{platform: "mac", want: []string{"meta", "z"}},
-		{platform: "android", want: []string{"ctrl", "z"}},
-	} {
-		got, err := textInputKeyboardKeysForUndo(test.platform)
-		if err != nil || strings.Join(got, ",") != strings.Join(test.want, ",") {
-			t.Errorf("undo keys for %s = %v, %v; want %v, nil", test.platform, got, err, test.want)
-		}
+		{platform: "ios", imeSwitch: []string{"capslock"}, selectAll: []string{"meta", "a"}, undo: []string{"meta", "z"}},
+		{platform: "mac", imeSwitch: []string{"ctrl", "space"}, selectAll: []string{"meta", "a"}, undo: []string{"meta", "z"}},
+		{platform: "android", imeSwitch: []string{"KEYCODE_LANGUAGE_SWITCH"}, selectAll: []string{"ctrl", "a"}, undo: []string{"ctrl", "z"}},
+		{platform: "windows", imeSwitch: []string{"alt", "shift"}, selectAll: []string{"ctrl", "a"}, undo: []string{"ctrl", "z"}},
+		{platform: "linux", imeSwitch: []string{"ctrl", "space"}, selectAll: []string{"ctrl", "a"}, undo: []string{"ctrl", "z"}},
+	}
+	for _, test := range tests {
+		t.Run(test.platform, func(t *testing.T) {
+			gotSwitch, err := textInputKeyboardKeysForIMESwitch(test.platform)
+			if err != nil || strings.Join(gotSwitch, ",") != strings.Join(test.imeSwitch, ",") {
+				t.Errorf("IME switch keys = %v, %v; want %v, nil", gotSwitch, err, test.imeSwitch)
+			}
+			gotSelectAll, err := textInputKeyboardKeysForSelectAll(test.platform)
+			if err != nil || strings.Join(gotSelectAll, ",") != strings.Join(test.selectAll, ",") {
+				t.Errorf("select all keys = %v, %v; want %v, nil", gotSelectAll, err, test.selectAll)
+			}
+			gotUndo, err := textInputKeyboardKeysForUndo(test.platform)
+			if err != nil || strings.Join(gotUndo, ",") != strings.Join(test.undo, ",") {
+				t.Errorf("undo keys = %v, %v; want %v, nil", gotUndo, err, test.undo)
+			}
+		})
 	}
 }
 
@@ -487,27 +521,36 @@ func TestEnterTextToolSchemaKeepsIMESegmentsInternal(t *testing.T) {
 	}
 }
 
-func TestTextInputPlatformFallsBackToHIDPointerMode(t *testing.T) {
+func TestTextInputPlatformDefaultsToDeviceType(t *testing.T) {
 	if got := (textInputHardwareDeps{pointerMode: "absolute"}).platform(); got != "ios" {
-		t.Fatalf("absolute pointer mode platform = %q, want ios", got)
+		t.Fatalf("absolute pointer mode platform = %q, want default device_type ios", got)
 	}
-	if got := (textInputHardwareDeps{pointerMode: "touchscreen"}).platform(); got != "android" {
-		t.Fatalf("touchscreen pointer mode platform = %q, want android", got)
+	if got := (textInputHardwareDeps{pointerMode: "touchscreen"}).platform(); got != "ios" {
+		t.Fatalf("touchscreen pointer mode platform = %q, want default device_type ios", got)
 	}
 }
 
-func TestTextInputPlatformUsesRuntimeProviderBeforeHIDPointerMode(t *testing.T) {
+func TestTextInputPlatformUsesDeviceTypeProvider(t *testing.T) {
 	if got := (textInputHardwareDeps{
-		pointerMode: "absolute",
-		platformFn:  func() string { return "Android" },
+		pointerMode:  "absolute",
+		deviceTypeFn: func() string { return "Android" },
 	}).platform(); got != "android" {
-		t.Fatalf("runtime platform = %q, want android", got)
+		t.Fatalf("device_type platform = %q, want android", got)
 	}
 	if got := (textInputHardwareDeps{
-		pointerMode: "touchscreen",
-		platformFn:  func() string { return "macOS" },
+		pointerMode:  "touchscreen",
+		deviceTypeFn: func() string { return "macOS" },
 	}).platform(); got != "mac" {
-		t.Fatalf("runtime platform = %q, want mac", got)
+		t.Fatalf("device_type platform = %q, want mac", got)
+	}
+}
+
+func TestTextInputPlatformIgnoresInvalidDeviceTypeProvider(t *testing.T) {
+	if got := (textInputHardwareDeps{
+		pointerMode:  "absolute",
+		deviceTypeFn: func() string { return "invalid" },
+	}).platform(); got != "ios" {
+		t.Fatalf("invalid device_type platform = %q, want default ios", got)
 	}
 }
 
@@ -651,16 +694,12 @@ func TestEnterTextToolPrefersAvailableBridge(t *testing.T) {
 	pb.platform = "android"
 	pb.connected = true
 	pb.appState = "background"
-	tool := &EnterTextTool{bridgeTool: &textInputBridge{hw: &textInputHardwareDeps{pointerMode: "touchscreen"}, bridgeFn: func() *PhoneBridge { return pb }}}
+	tool := &EnterTextTool{bridgeTool: &textInputBridge{hw: &textInputHardwareDeps{pointerMode: "absolute"}, bridgeFn: func() *PhoneBridge { return pb }}}
+	tool.SetDeviceTypeFunc(func() string { return "Android" })
 	if !tool.bridgeAvailable(textInputArgs{Text: "ASCII is bridged too"}) {
 		t.Fatal("available Android bridge should be preferred before local entry")
 	}
-	tool.bridgeTool.hw.pointerMode = "absolute"
-	tool.SetPlatformFn(func() string { return "android" })
-	if !tool.bridgeAvailable(textInputArgs{Text: "global device state keeps Android bridge route"}) {
-		t.Fatal("runtime platform provider should override HID pointer_mode fallback")
-	}
-	tool.SetPlatformFn(func() string { return "ios" })
+	tool.SetDeviceTypeFunc(func() string { return "iOS" })
 	if tool.bridgeAvailable(textInputArgs{Text: "hello"}) {
 		t.Fatal("iOS device_type state should not select an Android bridge clipboard route")
 	}
@@ -674,6 +713,7 @@ func TestEnterTextToolCallKeepsBridgePathEnabled(t *testing.T) {
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	hw := &textInputHardwareDeps{
 		pointerMode:  "touchscreen",
+		deviceTypeFn: func() string { return "Android" },
 		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: keyboardText,
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
@@ -692,6 +732,7 @@ func TestEnterTextToolCallKeepsBridgePathEnabled(t *testing.T) {
 			},
 		},
 	}
+	tool.SetDeviceTypeFunc(hw.deviceTypeFn)
 
 	out, err := tool.Call(context.Background(), `{"text":"Aiden","focus":{"x":500,"y":120,"coord_space":"normalized"}}`)
 	if err != nil {

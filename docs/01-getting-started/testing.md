@@ -73,7 +73,7 @@ Check the service on the device:
 /etc/init.d/S53agent status
 ```
 
-In Web UI mode, open:
+The Agent Web UI is available in every input mode. Open:
 
 ```text
 http://<device-ip>:8080
