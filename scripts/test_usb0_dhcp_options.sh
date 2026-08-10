@@ -181,7 +181,29 @@ for directive in 'interface=usb0' 'bind-interfaces' 'except-interface=wlan0' \
         || fail "sanitizer dropped a directive it must preserve: $directive"
 done
 
-# --- 7. Sanitizer strips every spelling of a gateway/DNS advertisement --
+# --- 7. Sanitizer rejects pools that can lease the board address --------
+BOARD_COLLISION="$TMP_DIR/board-collision.conf"
+cat > "$BOARD_COLLISION" <<'EOF'
+dhcp-range=192.168.42.1,192.168.42.100,255.255.255.0,12h
+dhcp-range=192.168.42.100,192.168.42.1,255.255.255.0,12h
+dhcp-range=192.168.42.2,192.168.42.254,255.255.255.0,12h
+EOF
+
+BOARD_COLLISION_OUT="$TMP_DIR/board-collision.sanitized"
+sh "$INIT" sanitize-conf "$BOARD_COLLISION" > "$BOARD_COLLISION_OUT" \
+    || fail 'sanitize-conf failed on board-address collision cases'
+
+BOARD_COLLISION_DIRECTIVES="$TMP_DIR/board-collision.directives"
+directives_of "$BOARD_COLLISION_OUT" > "$BOARD_COLLISION_DIRECTIVES"
+n=$(count_exact "$BOARD_COLLISION_DIRECTIVES" 'dhcp-range=.*')
+[ "$n" = "1" ] || fail "sanitizer must preserve only the valid DHCP pool (found $n)"
+has_exact "$BOARD_COLLISION_DIRECTIVES" \
+    'dhcp-range=192\.168\.42\.2,192\.168\.42\.254,255\.255\.255\.0,12h' \
+    || fail 'sanitizer dropped a valid DHCP pool that excludes the board address'
+[ "$(grep -c '^# dropped by .*dhcp-range=' "$BOARD_COLLISION_OUT" || true)" = "2" ] \
+    || fail 'sanitizer must record both rejected board-address collision ranges'
+
+# --- 8. Sanitizer strips every spelling of a gateway/DNS advertisement --
 POISONED="$TMP_DIR/poisoned.conf"
 cat > "$POISONED" <<'EOF'
 interface=usb0
@@ -236,7 +258,7 @@ fi
 grep -q '^# dropped by' "$POISON_OUT" \
     || fail 'sanitizer must record what it stripped so the regression is visible in the log'
 
-# --- 8. Both generated configs must parse (only if dnsmasq is available) -
+# --- 9. Both generated configs must parse (only if dnsmasq is available) -
 DNSMASQ=$(command -v dnsmasq 2>/dev/null || true)
 if [ -z "$DNSMASQ" ] && [ -x /usr/sbin/dnsmasq ]; then
     DNSMASQ=/usr/sbin/dnsmasq

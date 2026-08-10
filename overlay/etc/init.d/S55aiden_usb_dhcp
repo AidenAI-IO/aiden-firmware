@@ -76,10 +76,23 @@ sanitize_conf() {
 				next
 			}
 
-			# Only the product IPv4 pool is accepted. In particular, IPv6
-			# ranges are excluded so dnsmasq cannot emit Router Advertisements.
+			# Only a valid product IPv4 host pool is accepted. The board owns
+			# 192.168.42.1, while .0 and .255 are not assignable host addresses.
+			# IPv6 ranges are excluded so dnsmasq cannot emit Router Advertisements.
 			if (line ~ /^dhcp-range=192\.168\.42\.[0-9]+,192\.168\.42\.[0-9]+,255\.255\.255\.0,[0-9]+[smhdw]$/) {
-				print
+				range = substr(line, length("dhcp-range=") + 1)
+				split(range, fields, ",")
+				split(fields[1], start_addr, "\\.")
+				split(fields[2], end_addr, "\\.")
+				pool_start = start_addr[4] + 0
+				pool_end = end_addr[4] + 0
+				if (pool_start >= 2 && pool_start <= 254 &&
+					pool_end >= 2 && pool_end <= 254 &&
+					pool_start <= pool_end) {
+					print
+					next
+				}
+				dropped()
 				next
 			}
 
