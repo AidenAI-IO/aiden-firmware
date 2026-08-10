@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 const (
 	blueZDBusCallTimeout    = 5 * time.Second
 	blueZCleanupCallTimeout = time.Second
+	wakeStopGracePeriod     = 2 * time.Second
 
 	dbusBusName                  = "org.freedesktop.DBus"
 	dbusBusInterface             = "org.freedesktop.DBus"
@@ -78,19 +80,20 @@ type blueZBackend struct {
 	wakeObject  *wakeCharacteristic
 	gattObjects []exportedGattObject
 
-	ancsMu            sync.Mutex
-	ancs              ancsPaths
-	advertisementMu   sync.Mutex
-	advertising       bool
-	wakeMu            sync.Mutex
-	closed            bool
-	pairingModeMu     sync.Mutex
-	stateMu           sync.Mutex
-	trustedDevice     dbus.ObjectPath
-	connectionEnabled bool
-	pairingOpen       bool
-	pairingDeadline   time.Time
-	pairingModeDirty  bool
+	ancsMu              sync.Mutex
+	ancs                ancsPaths
+	advertisementMu     sync.Mutex
+	advertising         bool
+	wakeMu              sync.Mutex
+	lastWakeNotifyStart time.Time
+	closed              bool
+	pairingModeMu       sync.Mutex
+	stateMu             sync.Mutex
+	trustedDevice       dbus.ObjectPath
+	connectionEnabled   bool
+	pairingOpen         bool
+	pairingDeadline     time.Time
+	pairingModeDirty    bool
 }
 
 func newBlueZBackend(service *Service, deviceName string, pairingWindow time.Duration) *blueZBackend {
@@ -698,6 +701,10 @@ func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.Obj
 		b.clearANCS("Bluetooth disconnected by user")
 		return nil
 	}
+	if !b.wakeSubscribed() {
+		b.clearANCS("waiting for Wake subscriber")
+		return nil
+	}
 	type candidate struct {
 		paths       ancsPaths
 		deviceProps map[string]dbus.Variant
@@ -846,6 +853,16 @@ func (b *blueZBackend) NotifyWake(sequence uint64, reason string) (bool, error) 
 	return notifying, nil
 }
 
+func (b *blueZBackend) wakeSubscribed() bool {
+	b.wakeMu.Lock()
+	defer b.wakeMu.Unlock()
+	if b.wakeProps == nil {
+		return false
+	}
+	notifying, _ := b.wakeProps.GetMust(blueZGattCharInterface, "Notifying").(bool)
+	return notifying
+}
+
 func wakeReasonCode(reason string) byte {
 	switch strings.ToLower(strings.TrimSpace(reason)) {
 	case "queue", "phone_bridge", "command":
@@ -911,14 +928,19 @@ func (c *wakeCharacteristic) ReadValue(options map[string]dbus.Variant) ([]byte,
 }
 
 func (c *wakeCharacteristic) StartNotify() *dbus.Error {
+	now := time.Now()
+	c.backend.wakeMu.Lock()
 	if notifying, _ := c.properties.GetMust(blueZGattCharInterface, "Notifying").(bool); notifying {
-		c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = true })
-		c.backend.finishConnectionWindow()
-		return nil
+		c.backend.lastWakeNotifyStart = now
+	} else {
+		c.properties.SetMust(blueZGattCharInterface, "Notifying", true)
+		c.backend.lastWakeNotifyStart = now
 	}
-	c.properties.SetMust(blueZGattCharInterface, "Notifying", true)
+	c.backend.wakeMu.Unlock()
+	log.Printf("BLE Wake StartNotify")
 	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = true })
 	c.backend.finishConnectionWindow()
+	c.backend.requestRescan()
 	return nil
 }
 
@@ -931,9 +953,27 @@ func (b *blueZBackend) finishConnectionWindow() {
 }
 
 func (c *wakeCharacteristic) StopNotify() *dbus.Error {
+	now := time.Now()
+	connected := c.backend.service.Status().Connected
+	c.backend.wakeMu.Lock()
+	if shouldIgnoreWakeStop(connected, c.backend.lastWakeNotifyStart, now) {
+		age := now.Sub(c.backend.lastWakeNotifyStart)
+		c.backend.wakeMu.Unlock()
+		log.Printf("BLE Wake ignored stale StopNotify age=%s", age.Round(time.Millisecond))
+		return nil
+	}
 	c.properties.SetMust(blueZGattCharInterface, "Notifying", false)
+	c.backend.lastWakeNotifyStart = time.Time{}
+	c.backend.wakeMu.Unlock()
+	log.Printf("BLE Wake StopNotify")
 	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = false })
+	c.backend.requestRescan()
 	return nil
+}
+
+func shouldIgnoreWakeStop(connected bool, lastStart, now time.Time) bool {
+	return connected && !lastStart.IsZero() && now.Sub(lastStart) >= 0 &&
+		now.Sub(lastStart) < wakeStopGracePeriod
 }
 
 type advertisementObject struct{}
