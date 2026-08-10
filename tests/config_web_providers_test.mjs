@@ -49,7 +49,7 @@ const context = vm.createContext({
   console,
   document,
   Event,
-  fetch: async () => { throw new Error('fetch is not configured'); },
+  fetch: (...args) => fetchImpl(...args),
   setTimeout() {},
   window: {confirm: () => true},
 });
@@ -87,8 +87,10 @@ async function flushPromises() {
 }
 
 let requestImpl = async () => ({config: {}});
+let fetchImpl = async () => { throw new Error('fetch is not configured'); };
 let latestDetails = null;
 let modelSectionEditing = false;
+const selectFieldOptions = {model: {provider: []}};
 const stateModule = await loadModule(path.join(moduleRoot, 'state.js'));
 await stateModule.evaluate();
 const {appState, registerRuntime} = stateModule.namespace;
@@ -97,7 +99,7 @@ registerRuntime({
   ensureSelectOption() {},
   getActiveLocale: () => 'en-US',
   getRecordSectionFields: () => ({tts_providers: [], stt_providers: []}),
-  getSelectFieldOptions: () => ({}),
+  getSelectFieldOptions: () => selectFieldOptions,
   hydrateSelectField() {},
   isSectionEditing: (section) => section === 'model' && modelSectionEditing,
   optionValue: (option) => option.value,
@@ -112,6 +114,8 @@ await providersModule.evaluate();
 const {
   ModelProvidersManager,
   ModelSelector,
+  rememberModelProvider,
+  syncModelProvidersFromConfig,
   TtsProvidersManager,
 } = providersModule.namespace;
 
@@ -124,6 +128,98 @@ modelSectionEditing = true;
 ModelSelector.selectModel('editable-model');
 assert.equal(modelInput.value, 'editable-model', 'model selection updates while editing');
 modelSectionEditing = false;
+
+const modelSelectorContainer = new Element();
+elements.set('modelSelectorContainer', modelSelectorContainer);
+const modelSelectorSummary = new Element();
+elements.set('modelSelectorSummary', modelSelectorSummary);
+const providerSelectForModels = new Element();
+elements.set('model_provider', providerSelectForModels);
+
+const modelsByProvider = {
+  openai: [
+    {id: 'gpt-5.5', recommended: true},
+    {id: 'gpt-4o', recommended: false},
+  ],
+  openrouter: [
+    {id: 'anthropic/claude-opus-4.8', recommended: true},
+    {id: 'google/gemini-3.5-pro', recommended: false},
+  ],
+};
+fetchImpl = async (url) => {
+  const provider = new URL(String(url), 'http://config.test').searchParams.get('provider');
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({models: modelsByProvider[provider] || []}),
+  };
+};
+
+appState.config = {
+  model: {provider: 'openai-main', model: 'gpt-4o'},
+  model_providers: {
+    'openai-main': {type: 'openai'},
+    router: {type: 'openrouter'},
+  },
+};
+providerSelectForModels.value = 'openai-main';
+modelInput.value = 'gpt-4o';
+syncModelProvidersFromConfig();
+modelInput.value = 'stale-before-model-refresh';
+await flushPromises();
+await flushPromises();
+assert.equal(modelInput.value, 'gpt-4o', 'initial provider sync seeds configured model before model list load');
+
+providerSelectForModels.value = 'router';
+rememberModelProvider();
+await ModelSelector.onProviderChange('router');
+assert.equal(
+  modelInput.value,
+  'anthropic/claude-opus-4.8',
+  'provider with no remembered choice uses its recommended default',
+);
+
+modelSectionEditing = true;
+ModelSelector.selectModel('google/gemini-3.5-pro');
+modelSectionEditing = false;
+assert.equal(modelInput.value, 'google/gemini-3.5-pro', 'edited provider choice is stored');
+
+providerSelectForModels.value = 'openai-main';
+rememberModelProvider();
+await ModelSelector.onProviderChange('openai-main');
+assert.equal(modelInput.value, 'gpt-4o', 'switching back restores the previous provider model');
+
+providerSelectForModels.value = 'router';
+rememberModelProvider();
+await ModelSelector.onProviderChange('router');
+assert.equal(modelInput.value, 'google/gemini-3.5-pro', 'switching back restores the new provider model');
+
+ModelProvidersManager.loadModelProviders({'rename-old': {type: 'openai'}});
+providerSelectForModels.value = 'rename-old';
+rememberModelProvider();
+modelInput.value = 'gpt-4o';
+rememberModelProvider();
+ModelProvidersManager.modelProviders = {'rename-new': {type: 'openai'}};
+appState.config = {
+  model: {provider: 'rename-old', model: 'gpt-4o'},
+  model_providers: {'rename-new': {type: 'openai'}},
+};
+const renamePatch = ModelProvidersManager.modelRefPatch('rename-old', 'rename-new');
+assert.equal(renamePatch.model.provider, 'rename-new');
+assert.equal(providerSelectForModels.value, 'rename-new');
+modelInput.value = 'stale-renamed-refresh';
+await ModelSelector.onProviderChange('rename-new');
+assert.equal(modelInput.value, 'gpt-4o', 'provider rename refresh preserves remembered model');
+
+fetchImpl = async () => ({
+  ok: false,
+  status: 500,
+  json: async () => ({}),
+});
+providerSelectForModels.value = 'failing';
+rememberModelProvider();
+await ModelSelector.onProviderChange('failing');
+assert.equal(modelInput.value, '', 'failed model-list loads do not keep the previous provider model');
 
 assert.equal(ModelProvidersManager.sanitizeName('__proto__'), '');
 assert.equal(ModelProvidersManager.sanitizeName('constructor'), '');
