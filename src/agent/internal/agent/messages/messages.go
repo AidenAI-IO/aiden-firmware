@@ -122,8 +122,11 @@ type RecoverableToolResult struct {
 }
 
 func (m *ToolResultMeta) UnmarshalJSON(data []byte) error {
-	if err := json.Unmarshal(data, m); err != nil {
+	type toolResultMeta ToolResultMeta
+	var decoded toolResultMeta
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
+	*m = ToolResultMeta(decoded)
 	return nil
 }
