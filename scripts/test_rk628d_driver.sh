@@ -47,12 +47,22 @@ require_pattern 'clock-frequency = <100000>;' "$DTS" \
     "RK628 I2C must run at 100 kHz for reliable 32-bit register transfers"
 require_pattern 'reset-gpios = <&gpio3 RK_PB1 GPIO_ACTIVE_LOW>;' "$DTS" \
     "RK628 reset must use GPIO3_B1"
+require_pattern 'rk628_reset_pin: rk628-reset-pin' "$DTS" \
+    "RK628 reset must have an explicit pinctrl group"
+require_pattern '<3 RK_PB1 RK_FUNC_GPIO &pcfg_pull_up>' "$DTS" \
+    "RK628 reset pinctrl must switch GPIO3_B1 out of MIPI lane mode"
+require_pattern 'rk628_mipi_pins: rk628-mipi-pins' "$DTS" \
+    "RK628 capture must use a dedicated two-lane MIPI pinctrl group"
+require_pattern 'pinctrl-0 = <&rk628_mipi_pins>;' "$DTS" \
+    "CIF MIPI pinctrl must not reserve the unused RK628 lanes"
+reject_pattern 'pinctrl-0 = <&mipi_pins>;' "$DTS" \
+    "Four-lane MIPI pinctrl would conflict with the RK628 reset pin"
 require_pattern 'clocks = <&cru MCLK_REF_MIPI0>;' "$DTS" \
     "RK628 must receive the RV1106 24 MHz MIPI reference clock"
 require_pattern 'clock-names = "soc_24M";' "$DTS" \
     "RK628 reference clock must use the driver clock name"
-require_pattern 'pinctrl-0 = <&mipi_refclk_out0>;' "$DTS" \
-    "GPIO3_C4 must output the RK628 reference clock"
+require_pattern 'pinctrl-0 = <&rk628_reset_pin &mipi_refclk_out0>;' "$DTS" \
+    "RK628 pinctrl must configure both reset and the reference clock"
 require_pattern 'remote-endpoint = <&rk628_out>;' "$DTS" \
     "CSI D-PHY input must link to RK628"
 require_pattern 'remote-endpoint = <&csi_dphy_input2>;' "$DTS" \
