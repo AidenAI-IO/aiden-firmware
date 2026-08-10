@@ -1,0 +1,60 @@
+#!/bin/sh
+#
+# Aiden override: start dhcpcd without blocking rcS.
+#
+# The SDK script runs `dhcpcd -f /etc/dhcpcd.conf` in the foreground. dhcpcd
+# only detaches once every interface has a lease, or after its built-in 30s
+# timeout — and the Pico Zero has no ethernet, so at this point in boot the only
+# interface is wlan0, which has not finished associating yet. Measured on a
+# Pico Zero, that cost a flat ~30s of dead time in the middle of rcS, delaying
+# every later service (frame_service, agent, config_web) by the same amount.
+#
+# `-b` makes dhcpcd fork immediately and keep configuring interfaces in the
+# background. Nothing later in rcS needs a lease to start: the agent, NTP and
+# wlan_guard all tolerate the network arriving late, and usb0 (192.168.42.1) is
+# configured statically by S49usbhid rather than by DHCP.
+#
+
+DAEMON=/sbin/dhcpcd
+CONFIG=/etc/dhcpcd.conf
+PIDFILE=/var/run/dhcpcd/pid
+BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
+
+if [ -f "$BOOT_CONF" ]; then
+	. "$BOOT_CONF"
+fi
+# Set to 0 to restore the SDK's blocking behaviour.
+: "${DHCPCD_BACKGROUND:=1}"
+
+[ -f $CONFIG ] || exit 0
+
+start() {
+	echo "Starting dhcpcd..."
+	if [ "$DHCPCD_BACKGROUND" = "1" ]; then
+		start-stop-daemon -S -x "$DAEMON" -p "$PIDFILE" -- -b -f "$CONFIG"
+	else
+		start-stop-daemon -S -x "$DAEMON" -p "$PIDFILE" -- -f "$CONFIG"
+	fi
+}
+
+case "$1" in
+  start)
+	start
+	;;
+  stop)
+	echo "Stopping dhcpcd..."
+	start-stop-daemon -K -x "$DAEMON" -p "$PIDFILE" -o
+	;;
+  reload|force-reload)
+	echo "Reloading dhcpcd configuration..."
+	"$DAEMON" -s reload
+	;;
+  restart)
+	"$0" stop
+	sleep 1 # Prevent race condition: ensure dhcpcd stops before start.
+	start
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart|reload|force-reload}"
+	exit 1
+esac

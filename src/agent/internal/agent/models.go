@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -203,10 +202,10 @@ func (m *ModelManager) buildOpenAICompatibleModel(cfg ModelConfig, defaultBaseUR
 func (m *ModelManager) buildOpenRouterModel(cfg ModelConfig) (llms.Model, error) {
 	token := resolveToken(cfg)
 	if token == "" {
-		if env := strings.TrimSpace(cfg.TokenEnv); env != "" {
+		if env, ok := providerAPIKeyEnv(cfg.APIKey); ok && env != "" {
 			return nil, fmt.Errorf("missing the OpenRouter API key, set it in the %s environment variable", env)
 		}
-		return nil, fmt.Errorf("missing the OpenRouter API key, set api_key or token_env on the provider record")
+		return nil, fmt.Errorf("missing the OpenRouter API key, set api_key on the provider record")
 	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
@@ -271,13 +270,7 @@ func (m *ModelManager) openAICompatibleOptions(cfg ModelConfig) []openAICompatib
 }
 
 func resolveToken(cfg ModelConfig) string {
-	if cfg.APIKey != "" {
-		return cfg.APIKey
-	}
-	if cfg.TokenEnv != "" {
-		return os.Getenv(cfg.TokenEnv)
-	}
-	return ""
+	return resolveProviderAPIKey(cfg.APIKey)
 }
 
 // retryTransport retries transient HTTP and transport failures with backoff.

@@ -81,7 +81,7 @@ input_mode = "text"
 
 [model_providers.openrouter-main]
 type = "openrouter"
-token_env = "OPENROUTER_API_KEY"
+api_key = "$OPENROUTER_API_KEY"
 
 [device]
 device_type = "iOS"
@@ -113,7 +113,7 @@ android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
-> `token_env` lives on a named provider (`[model_providers.<name>]`), not on `[model]`, and means the key is read from that environment variable. In Config Web, type `$VAR_NAME` into the provider's API Key box to set it. Overlay example configs may also write the `api_key` field directly; for production, prefer environment variables or a device-side secure injection method.
+> Provider credentials use one field everywhere. Set `api_key = "$VAR_NAME"` to read from an environment variable, or set a literal key directly. Config Web accepts the same two forms in its API Key box.
 
 ### STT voice mode
 
@@ -140,7 +140,7 @@ voice_max_response_tokens = 300
 
 [model_providers.openrouter-main]
 type = "openrouter"
-token_env = "OPENROUTER_API_KEY"
+api_key = "$OPENROUTER_API_KEY"
 
 [device]
 device_type = "iOS"
@@ -151,7 +151,7 @@ model = "bytedance-seed/seed-2.0-lite"
 
 [stt_providers.openrouter-main]
 type = "openrouter"
-token_env = "OPENROUTER_API_KEY"
+api_key = "$OPENROUTER_API_KEY"
 model = "qwen/qwen3-asr-flash-2026-02-10"
 
 [stt]
@@ -159,7 +159,7 @@ provider = "openrouter-main"
 
 [tts_providers.minimax-main]
 type = "minimax"
-token_env = "MINIMAX_API_KEY"
+api_key = "$MINIMAX_API_KEY"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
@@ -269,8 +269,7 @@ so switching is a one-line change instead of a re-entry of keys.
 | Field       | Description                                                                                        |
 | ----------- | -------------------------------------------------------------------------------------------------- |
 | `type`      | Required provider type: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`   |
-| `api_key`   | API key written directly                                                                           |
-| `token_env` | Read the API key from the specified environment variable                                            |
+| `api_key`   | Literal API key, or `$VAR_NAME` to read it from an environment variable                              |
 | `base_url`  | Custom OpenAI-compatible endpoint; same `openai`/`ollama` restriction as `[model]`                  |
 
 ```toml
@@ -288,11 +287,12 @@ model = "gpt-5.5"
 ```
 
 On load, a `provider` value that names a section under `[model_providers]` is replaced
-by that section's provider type, and its `api_key`, `token_env` and `base_url`
-fill in any field the model section leaves empty — values set directly on
-`[model]` always win. `token_env` is the exception: it exists only on a named
-provider, so the provider's value always applies. A `provider` that matches no section is treated as a
+by that section's provider type, and its `api_key` and `base_url` fill in any
+field the model section leaves empty — values set directly on `[model]` always
+win. A `provider` that matches no section is treated as a
 provider type, so existing configs keep working unchanged.
+
+`token_env` is not supported. Replace it with `api_key = "$VAR_NAME"`.
 
 Only the `[model_providers.<name>]` namespace is supported. The former
 `[providers.<name>]` namespace is rejected with an error. The record-level
@@ -355,7 +355,7 @@ named provider and reference that:
 ```toml
 [model_providers.ark]
 type = "volcengine"
-token_env = "ARK_API_KEY"
+api_key = "$ARK_API_KEY"
 
 [model]
 provider = "ark"
@@ -477,7 +477,7 @@ voice_id = "female-shaonv"
 
 [tts_providers.fish]
 type = "fish-audio"
-token_env = "FISH_API_KEY"
+api_key = "$FISH_API_KEY"
 reference_id = "abc123"
 
 [tts]
@@ -503,15 +503,14 @@ changes; it stays on `[tts]` / `[stt]` when it holds regardless of provider.
 
 | | Record fields | Stays on the flat section |
 | ---- | ---- | ---- |
-| TTS | `type`, `api_key`, `token_env`, `model`, `voice_id`, `emotion`, `reference_id` | `provider` (reference), `speed` |
-| STT | `type`, `api_key`, `token_env`, `model`, `base_url`, `app_id`, `secret_id`, `secret_key`, `region`, `engine_model_type` | `provider` (reference), `language` |
+| TTS | `type`, `api_key`, `model`, `voice_id`, `emotion`, `reference_id` | `provider` (reference), `speed` |
+| STT | `type`, `api_key`, `model`, `base_url`, `app_id`, `secret_id`, `secret_key`, `region`, `engine_model_type` | `provider` (reference), `language` |
 
 `speed` is a listening preference and `language` a transcription preference:
 neither should change because the voice changed, so both stay global.
 
-`token_env` reads the key from the named environment variable, and is used when
-`api_key` is unset. Config Web folds both into one API Key box: a value starting
-with `$` is stored as `token_env`.
+For all provider records, `api_key` accepts either a literal key or `$VAR_NAME`.
+Config Web stores exactly the same representation.
 
 ### Backward compatibility
 

@@ -64,6 +64,29 @@ func TestApplySTTTestRequestFormValueOverridesRecord(t *testing.T) {
 	}
 }
 
+func TestApplySTTTestRequestSwitchesRecordCredential(t *testing.T) {
+	cfg := Config{
+		STTProviders: map[string]STTProvider{
+			"openai-main": {Type: "openai-whisper", APIKey: "sk-openai"},
+			"qwen-main":   {Type: "qwen-asr", APIKey: "sk-qwen"},
+		},
+		// Runtime config has already expanded openai-main into this effective
+		// provider configuration before the config-test request arrives.
+		STT: STTConfig{Provider: "openai-whisper", APIKey: "sk-openai"},
+	}
+
+	applySTTTranscriptionTestRequest(&cfg, STTTranscriptionTestRequest{
+		Provider: "qwen-main",
+	})
+
+	if cfg.STT.Provider != "qwen-asr" {
+		t.Errorf("stt.provider = %q, want %q", cfg.STT.Provider, "qwen-asr")
+	}
+	if cfg.STT.APIKey != "sk-qwen" {
+		t.Errorf("stt.api_key = %q, want the selected record credential %q", cfg.STT.APIKey, "sk-qwen")
+	}
+}
+
 func TestApplyTTSTestRequestResolvesRecordRef(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{

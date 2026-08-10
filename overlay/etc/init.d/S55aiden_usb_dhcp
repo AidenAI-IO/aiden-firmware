@@ -133,6 +133,77 @@ current_pid() {
 	echo "$pid"
 }
 
+# busybox sleep supports fractional seconds only when built with FANCY_SLEEP.
+# Probe once and derive the tick budget from the interval, so the wall-clock
+# timeout is the same either way instead of ballooning to one second per tick.
+if sleep 0.05 2>/dev/null; then
+	POLL_INTERVAL_CS=5
+else
+	POLL_INTERVAL_CS=100
+fi
+
+short_sleep() {
+	if [ "$POLL_INTERVAL_CS" = "5" ]; then
+		sleep 0.05
+	else
+		sleep 1
+	fi
+}
+
+# Poll for the daemon instead of sleeping a flat second: dnsmasq is up in a few
+# tens of milliseconds, and rcS is sequential so the wait is dead time. dnsmasq
+# is launched via a shell that execs into it, so the first polls legitimately
+# see the wrapper rather than dnsmasq.
+STARTUP_TIMEOUT_SECONDS=${STARTUP_TIMEOUT_SECONDS:-3}
+STARTUP_TIMEOUT_TICKS=${STARTUP_TIMEOUT_TICKS:-$((STARTUP_TIMEOUT_SECONDS * 100 / POLL_INTERVAL_CS))}
+[ "$STARTUP_TIMEOUT_TICKS" -ge 1 ] 2>/dev/null || STARTUP_TIMEOUT_TICKS=1
+
+# Liveness only — deliberately weaker than is_running(), which also checks the
+# exe identity and so is legitimately false during the launcher's exec window.
+pid_alive() {
+	pid="$1"
+	[ -n "$pid" ] || return 1
+	kill -0 "$pid" 2>/dev/null
+}
+
+wait_until_running() {
+	i=0
+	while [ "$i" -lt "$STARTUP_TIMEOUT_TICKS" ]; do
+		pid="$(current_pid)"
+		# A process that is gone will never become ready; fail immediately
+		# rather than sleeping out the remaining budget.
+		if ! pid_alive "$pid"; then
+			return 1
+		fi
+		if is_running "$pid"; then
+			return 0
+		fi
+		short_sleep
+		i=$((i + 1))
+	done
+	return 1
+}
+
+# Reap the process we launched before dropping its PID file, otherwise the only
+# record of it is gone while it keeps running — a later start would then spawn a
+# second instance.
+terminate_child() {
+	pid="$1"
+	[ -n "$pid" ] || return 0
+	kill -0 "$pid" 2>/dev/null || return 0
+	kill "$pid" 2>/dev/null || true
+	i=0
+	while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do
+		short_sleep
+		i=$((i + 1))
+	done
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -9 "$pid" 2>/dev/null || true
+	fi
+	wait "$pid" 2>/dev/null || true
+	return 0
+}
+
 start() {
 	pid="$(current_pid)"
 	if is_running "$pid"; then
@@ -183,13 +254,13 @@ start() {
 		--keep-in-foreground &
 	child_pid=$!
 	echo "$child_pid" > "$PID_FILE"
-	sleep 1
-	pid="$(current_pid)"
-	if ! is_running "$pid"; then
+	if ! wait_until_running; then
+		terminate_child "$child_pid"
 		rm -f "$PID_FILE"
 		echo "Failed to start aiden_usb_dhcp"
 		return 1
 	fi
+	pid="$(current_pid)"
 	echo "Started aiden_usb_dhcp (pid $pid)"
 }
 

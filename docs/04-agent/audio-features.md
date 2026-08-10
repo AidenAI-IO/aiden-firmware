@@ -90,7 +90,7 @@ playback_backend = "auto"
 
 [stt_providers.openai-main]
 type = "openai-whisper"
-token_env = "OPENAI_API_KEY"
+api_key = "$OPENAI_API_KEY"
 model = "whisper-1"
 
 [stt]
@@ -99,13 +99,13 @@ provider = "openai-main"
 # OpenRouter alternative:
 # [stt_providers.openrouter-main]
 # type = "openrouter"
-# token_env = "OPENROUTER_API_KEY"
+# api_key = "$OPENROUTER_API_KEY"
 # model = "qwen/qwen3-asr-flash-2026-02-10"
 # Set [stt].provider = "openrouter-main" to select it.
 
 [tts_providers.alicloud-main]
 type = "alicloud"
-token_env = "DASHSCOPE_API_KEY"
+api_key = "$DASHSCOPE_API_KEY"
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
 emotion = "happy"
