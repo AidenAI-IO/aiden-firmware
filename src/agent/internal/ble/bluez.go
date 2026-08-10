@@ -33,18 +33,12 @@ const (
 	blueZAgentManagerInterface   = "org.bluez.AgentManager1"
 	blueZAgentInterface          = "org.bluez.Agent1"
 
-	applicationPath         = dbus.ObjectPath("/com/aiden/ble")
-	wakeServicePath         = dbus.ObjectPath("/com/aiden/ble/service0")
-	wakeCharPath            = dbus.ObjectPath("/com/aiden/ble/service0/char0")
-	hidServicePath          = dbus.ObjectPath("/com/aiden/ble/service1")
-	hidInformationCharPath  = dbus.ObjectPath("/com/aiden/ble/service1/char0")
-	hidReportMapCharPath    = dbus.ObjectPath("/com/aiden/ble/service1/char1")
-	hidControlPointCharPath = dbus.ObjectPath("/com/aiden/ble/service1/char2")
-	hidReportCharPath       = dbus.ObjectPath("/com/aiden/ble/service1/char3")
-	hidReportReferencePath  = dbus.ObjectPath("/com/aiden/ble/service1/char3/desc0")
-	advertisementPath       = dbus.ObjectPath("/com/aiden/ble/advertisement0")
-	agentPath               = dbus.ObjectPath("/com/aiden/ble/agent0")
-	blueZRootPath           = dbus.ObjectPath("/")
+	applicationPath   = dbus.ObjectPath("/com/aiden/ble")
+	wakeServicePath   = dbus.ObjectPath("/com/aiden/ble/service0")
+	wakeCharPath      = dbus.ObjectPath("/com/aiden/ble/service0/char0")
+	advertisementPath = dbus.ObjectPath("/com/aiden/ble/advertisement0")
+	agentPath         = dbus.ObjectPath("/com/aiden/ble/agent0")
+	blueZRootPath     = dbus.ObjectPath("/")
 )
 
 type managedObjects map[dbus.ObjectPath]map[string]map[string]dbus.Variant
@@ -79,11 +73,10 @@ type blueZBackend struct {
 	rescanRequests chan struct{}
 	fatalErrors    chan error
 
-	wakeProps      *prop.Properties
-	advProps       *prop.Properties
-	wakeObject     *wakeCharacteristic
-	hidReportProps *prop.Properties
-	gattObjects    []exportedGattObject
+	wakeProps   *prop.Properties
+	advProps    *prop.Properties
+	wakeObject  *wakeCharacteristic
+	gattObjects []exportedGattObject
 
 	ancsMu           sync.Mutex
 	ancs             ancsPaths
@@ -189,7 +182,6 @@ func (b *blueZBackend) start() error {
 		status.AdapterAddress = adapterAddress
 		status.AdapterPowered = true
 		status.GattRegistered = true
-		status.HOGPRegistered = false
 		status.Advertising = true
 		status.PairingOpen = pairingOpen
 		status.PairingDeadline = formatDeadline(pairingDeadline)
@@ -320,7 +312,6 @@ func (b *blueZBackend) close() {
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.BackendAvailable = false
 		status.GattRegistered = false
-		status.HOGPRegistered = false
 		status.Advertising = false
 		status.PairingOpen = false
 		status.PairingDeadline = ""
@@ -854,6 +845,24 @@ func (m *gattObjectManager) GetManagedObjects() (managedObjects, *dbus.Error) {
 type wakeCharacteristic struct {
 	backend    *blueZBackend
 	properties *prop.Properties
+}
+
+func readValueAtOffset(value []byte, options map[string]dbus.Variant) ([]byte, *dbus.Error) {
+	offset := uint16(0)
+	if variant, ok := options["offset"]; ok {
+		parsed, ok := variant.Value().(uint16)
+		if !ok {
+			return nil, dbus.NewError("org.bluez.Error.InvalidArguments", []any{"offset must be uint16"})
+		}
+		offset = parsed
+	}
+	if int(offset) > len(value) {
+		return nil, dbus.NewError(
+			"org.bluez.Error.InvalidOffset",
+			[]any{fmt.Sprintf("offset %d exceeds value length %d", offset, len(value))},
+		)
+	}
+	return append([]byte(nil), value[offset:]...), nil
 }
 
 func (c *wakeCharacteristic) setGattProperties(properties *prop.Properties) {

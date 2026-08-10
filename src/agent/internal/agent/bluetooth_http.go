@@ -19,6 +19,7 @@ const defaultBLEServiceSocketPath = "/run/ble_service/ble_service.sock"
 type bluetoothStatusResponse struct {
 	OK        bool              `json:"ok"`
 	Bluetooth ble.RuntimeStatus `json:"bluetooth"`
+	Removed   int               `json:"removed,omitempty"`
 	Error     string            `json:"error,omitempty"`
 }
 
@@ -57,6 +58,51 @@ func (s *Server) handleBluetoothPairingStart(w http.ResponseWriter, r *http.Requ
 	}
 	writeBluetoothJSON(w, http.StatusOK, bluetoothStatusResponse{OK: true, Bluetooth: status})
 }
+
+func (s *Server) handleBluetoothPairingReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeBluetoothError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !bluetoothControlRequestAllowed(r) {
+		writeBluetoothError(w, http.StatusForbidden, "Bluetooth pairing reset is available only over USB")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	defer cancel()
+	result, err := s.bluetoothPairingForgetRequest()(ctx, s.bluetoothServiceSocketPath())
+	if err != nil {
+		writeBluetoothRequestError(w, err)
+		return
+	}
+	writeBluetoothJSON(w, http.StatusOK, bluetoothStatusResponse{
+		OK:        true,
+		Bluetooth: result.Bluetooth,
+		Removed:   result.Removed,
+	})
+}
+
+func (s *Server) handleBluetoothDisconnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeBluetoothError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !bluetoothControlRequestAllowed(r) {
+		writeBluetoothError(w, http.StatusForbidden, "Bluetooth disconnect control is available only over USB")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	defer cancel()
+	status, err := s.bluetoothDisconnectRequest()(ctx, s.bluetoothServiceSocketPath())
+	if err != nil {
+		writeBluetoothRequestError(w, err)
+		return
+	}
+	writeBluetoothJSON(w, http.StatusOK, bluetoothStatusResponse{OK: true, Bluetooth: status})
+}
+
 func (s *Server) bluetoothServiceSocketPath() string {
 	if path := strings.TrimSpace(s.bleSocketPath); path != "" {
 		return path
@@ -115,6 +161,20 @@ func (s *Server) bluetoothPairingStartRequest() func(context.Context, string) (b
 		return s.blePairingStartRequest
 	}
 	return ble.RequestPairingStart
+}
+
+func (s *Server) bluetoothPairingForgetRequest() func(context.Context, string) (ble.ForgetResult, error) {
+	if s.blePairingForgetRequest != nil {
+		return s.blePairingForgetRequest
+	}
+	return ble.RequestPairingForget
+}
+
+func (s *Server) bluetoothDisconnectRequest() func(context.Context, string) (ble.RuntimeStatus, error) {
+	if s.bleDisconnectRequest != nil {
+		return s.bleDisconnectRequest
+	}
+	return ble.RequestDisconnect
 }
 
 func writeBluetoothRequestError(w http.ResponseWriter, err error) {

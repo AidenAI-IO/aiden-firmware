@@ -19,7 +19,6 @@ type RuntimeStatus struct {
 	AdapterAddress         string `json:"adapter_address,omitempty"`
 	AdapterPowered         bool   `json:"adapter_powered"`
 	GattRegistered         bool   `json:"gatt_registered"`
-	HOGPRegistered         bool   `json:"hogp_registered"`
 	Advertising            bool   `json:"advertising"`
 	PairingOpen            bool   `json:"pairing_open"`
 	PairingDeadline        string `json:"pairing_deadline,omitempty"`
@@ -45,7 +44,6 @@ type RuntimeStatus struct {
 	LastEventID            string `json:"last_event_id"`
 	WakeServiceUUID        string `json:"wake_service_uuid"`
 	WakeCharacteristicUUID string `json:"wake_characteristic_uuid"`
-	HIDServiceUUID         string `json:"hid_service_uuid"`
 }
 
 type statusState struct {
@@ -58,7 +56,6 @@ func newStatusState() *statusState {
 		StartedAt:              time.Now().UTC().Format(time.RFC3339Nano),
 		WakeServiceUUID:        WakeServiceUUID,
 		WakeCharacteristicUUID: WakeCharacteristicUUID,
-		HIDServiceUUID:         HIDServiceUUID,
 	}}
 }
 
@@ -85,6 +82,7 @@ type wakeBackend interface {
 
 type pairingBackend interface {
 	StartPairing() error
+	Disconnect() error
 	ForgetPairing() (int, error)
 }
 
@@ -150,6 +148,16 @@ func (s *Service) StartPairing() error {
 	return backend.StartPairing()
 }
 
+func (s *Service) Disconnect() error {
+	s.backendMu.RLock()
+	backend, ok := s.backend.(pairingBackend)
+	s.backendMu.RUnlock()
+	if !ok || backend == nil {
+		return ErrBluetoothUnavailable
+	}
+	return backend.Disconnect()
+}
+
 func (s *Service) ForgetPairing() (int, error) {
 	s.backendMu.RLock()
 	backend, ok := s.backend.(pairingBackend)
@@ -181,7 +189,6 @@ func (s *Service) RunBlueZ(ctx context.Context, deviceName string, pairingWindow
 		s.status.update(func(status *RuntimeStatus) {
 			status.BackendAvailable = false
 			status.GattRegistered = false
-			status.HOGPRegistered = false
 			status.Advertising = false
 			status.LastError = err.Error()
 		})

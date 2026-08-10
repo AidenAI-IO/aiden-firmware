@@ -15,6 +15,8 @@ type fakeWakeBackend struct {
 	err            error
 	pairingStarted bool
 	pairingErr     error
+	disconnected   bool
+	disconnectErr  error
 	forgetRemoved  int
 	forgetErr      error
 }
@@ -28,6 +30,11 @@ func (b *fakeWakeBackend) NotifyWake(sequence uint64, reason string) (bool, erro
 func (b *fakeWakeBackend) StartPairing() error {
 	b.pairingStarted = true
 	return b.pairingErr
+}
+
+func (b *fakeWakeBackend) Disconnect() error {
+	b.disconnected = true
+	return b.disconnectErr
 }
 
 func (b *fakeWakeBackend) ForgetPairing() (int, error) {
@@ -50,13 +57,18 @@ func TestUDSOperations(t *testing.T) {
 
 	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"status"}`), nil))
 	bluetooth, ok := response["bluetooth"].(map[string]any)
-	if !ok || bluetooth["hid_service_uuid"] != HIDServiceUUID {
-		t.Fatalf("status does not expose HOGP identity: %#v", response)
+	if !ok || bluetooth["wake_service_uuid"] != WakeServiceUUID {
+		t.Fatalf("status does not expose Wake service identity: %#v", response)
 	}
 
 	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"pairing_start"}`), nil))
 	if response["status"] != "OK" || !backend.pairingStarted {
 		t.Fatalf("pairing start was not forwarded: %#v backend=%#v", response, backend)
+	}
+
+	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"disconnect"}`), nil))
+	if response["status"] != "OK" || !backend.disconnected {
+		t.Fatalf("disconnect was not forwarded: %#v backend=%#v", response, backend)
 	}
 
 	backend.forgetRemoved = 1
@@ -116,6 +128,12 @@ func TestUDSPairingFailures(t *testing.T) {
 	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"pairing_start"}`), nil))
 	if response["status"] != "INTERNAL_ERROR" {
 		t.Fatalf("pairing failure status=%#v", response)
+	}
+
+	backend.disconnectErr = errors.New("disconnect failed")
+	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"disconnect"}`), nil))
+	if response["status"] != "INTERNAL_ERROR" {
+		t.Fatalf("disconnect failure status=%#v", response)
 	}
 }
 

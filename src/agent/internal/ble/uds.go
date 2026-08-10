@@ -159,6 +159,14 @@ func (s *UDSServer) handleRequest(header, payload []byte) []byte {
 			"status":    "OK",
 			"bluetooth": s.service.Status(),
 		})
+	case "disconnect":
+		if err := s.service.Disconnect(); err != nil {
+			return marshalBLEError(err)
+		}
+		return marshalResponse(map[string]any{
+			"status":    "OK",
+			"bluetooth": s.service.Status(),
+		})
 	case "pairing_forget":
 		removed, err := s.service.ForgetPairing()
 		if err != nil {

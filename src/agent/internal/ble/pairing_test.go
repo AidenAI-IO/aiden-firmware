@@ -99,3 +99,32 @@ func TestDisconnectedDeviceClearsSubscriberStatus(t *testing.T) {
 		t.Fatalf("unexpected disconnected status: %#v", status)
 	}
 }
+
+func TestConnectedDevicePathsIncludesPairedAndUnpairedLinks(t *testing.T) {
+	objects := managedObjects{
+		dbus.ObjectPath("/org/bluez/hci0/dev_02"): {
+			blueZDeviceInterface: {
+				"Connected": dbus.MakeVariant(true),
+				"Paired":    dbus.MakeVariant(false),
+			},
+		},
+		dbus.ObjectPath("/org/bluez/hci0/dev_01"): {
+			blueZDeviceInterface: {
+				"Connected": dbus.MakeVariant(true),
+				"Paired":    dbus.MakeVariant(true),
+			},
+		},
+		dbus.ObjectPath("/org/bluez/hci0/dev_03"): {
+			blueZDeviceInterface: {
+				"Connected": dbus.MakeVariant(false),
+			},
+		},
+	}
+	want := []dbus.ObjectPath{
+		dbus.ObjectPath("/org/bluez/hci0/dev_01"),
+		dbus.ObjectPath("/org/bluez/hci0/dev_02"),
+	}
+	if got := connectedDevicePaths(objects); !reflect.DeepEqual(got, want) {
+		t.Fatalf("connectedDevicePaths() = %v, want %v", got, want)
+	}
+}

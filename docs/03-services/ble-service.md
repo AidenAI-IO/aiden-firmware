@@ -5,9 +5,6 @@
 
 - BLE Peripheral: advertises an Aiden Wake service that the iOS companion app
   subscribes to.
-- BLE HID Peripheral: exposes a minimal Consumer Control HOGP service so iOS
-  keeps a manageable system device entry and can automatically reconnect after
-  the app-orchestrated first pairing.
 - ANCS Consumer: subscribes to Apple's Notification Center Service exposed by
   a paired iPhone and normalizes system notification events.
 
@@ -29,10 +26,13 @@ Runtime startup order is:
 S35wifidrv -> S39hciinit -> S40bluetoothd -> S41ble_service
 ```
 
-`S39hciinit` attaches the AIC8800 controller on `/dev/ttyS1` at 1.5 Mbaud and
-brings up `hci0`. `S40bluetoothd` bind-mounts the BlueZ state directory before
-starting the daemon, then supervises both `hci0` and `bluetoothd`. If the
-controller disappears it reruns HCI initialization before restarting BlueZ:
+`S39hciinit` loads the AES/CMAC crypto required by LE SMP, then attaches the
+AIC8800 controller on `/dev/ttyS1` at 1.5 Mbaud without powering it through the
+legacy `HCIDEVUP` ioctl. `S40bluetoothd` bind-mounts the BlueZ state directory,
+starts the daemon, and lets BlueZ power `hci0` through the management API. This
+ordering is required for the kernel to register the LE SMP fixed channel used
+by encrypted GATT reads. If the controller disappears, the watchdog repeats
+the same initialization sequence before restarting BlueZ:
 
 ```text
 /userdata/ble_service/bluetooth -> /var/lib/bluetooth
@@ -40,7 +40,7 @@ controller disappears it reruns HCI initialization before restarting BlueZ:
 
 This preserves the iPhone bond across reboot and firmware rootfs replacement.
 
-## Pairing and HOGP
+## Pairing and Bonding
 
 The advertised name is derived from the configured base name and the final
 four hexadecimal digits of the adapter address, for example `Aiden-12AB`.
@@ -50,11 +50,10 @@ advertisement. The app requires the service UUID, display name, and full
 identity to match before pairing, so nearby boards with colliding name suffixes
 cannot be selected accidentally.
 
-The GATT application always publishes the standard HID Service
-`00001812-0000-1000-8000-00805f9b34fb`. Its report map contains only one
-Consumer Control input report. It does not expose a keyboard Usage Page and
-never emits input, so it is a pairing/reconnect anchor rather than a second
-control channel competing with USB HID.
+The Wake characteristic has an encrypted read operation. The companion app
+performs that read after connecting, causing iOS to start SMP and show the
+system pairing sheet. No HOGP service is registered; USB remains the only HID
+control path.
 
 `ble_service` starts non-pairable and non-discoverable even when no bond exists.
 The iOS app explicitly calls the Agent pairing API over USB ECM; only then does
@@ -82,6 +81,13 @@ not proof that the App Wake session is connected. Every explicit Connect action
 reopens the board window; CoreBluetooth reuses a saved peripheral when possible
 and otherwise performs the system pairing flow.
 
+An ACL/CoreBluetooth connection is not reported as an authenticated Bluetooth
+connection until the encrypted Wake read succeeds. If iOS has forgotten the
+device while BlueZ still has its old key, that read returns insufficient
+encryption. The app stops reconnecting after the first such failure and marks a
+board-bond reset as required instead of repeatedly showing the system pairing
+sheet.
+
 ## Wake GATT Contract
 
 | Item | UUID |
@@ -89,8 +95,11 @@ and otherwise performs the system pairing flow.
 | Wake Service | `a1de0001-7c4b-4f52-8d9a-6b4f6e6f7469` |
 | Wake Characteristic | `a1de0002-7c4b-4f52-8d9a-6b4f6e6f7469` |
 
-The characteristic supports encrypted `read` and `notify`. A notification is
-a 12-byte little-endian value:
+The characteristic supports encrypted `read` and standard `notify`. BlueZ 5.65
+on the board rejects CCCD writes for `encrypt-notify` even after bonding, so the
+read is the authentication and pairing trigger while the notification carries
+only a non-sensitive poll signal. A notification is a 12-byte little-endian
+value:
 
 ```text
 byte 0      protocol version (1)
@@ -135,7 +144,7 @@ The framing is the common 12-byte UDS envelope documented in
 {"op":"status"}
 ```
 
-Returns adapter, HOGP registration, pairing window, trusted bond,
+Returns adapter, GATT registration, pairing window, trusted bond,
 advertisement, Wake subscriber, connected iPhone, ANCS subscription, cursor,
 the last Wake delivery result, and last-error state. A disconnected trusted
 device always reports `wake_subscriber=false` and `ancs_subscribed=false`.
@@ -168,8 +177,19 @@ means the requested cursor is older than the bounded ring's retained history.
 ```
 
 Opens or refreshes the configured connection window. Existing bonds are kept
-and do not cause a conflict; the window closes after the App establishes the
-encrypted Wake subscription or when the deadline expires.
+and do not cause a conflict; the window closes after the App completes the
+encrypted read and subscribes to Wake notifications, or when the deadline
+expires.
+
+### `disconnect`
+
+```json
+{"op":"disconnect"}
+```
+
+Calls BlueZ `Device1.Disconnect` for the current phone connection, clears live
+Wake/ANCS state, and keeps the paired/trusted device plus its bond keys for a
+later direct reconnect.
 
 ### `pairing_forget`
 
@@ -178,9 +198,10 @@ encrypted Wake subscription or when the deadline expires.
 ```
 
 Calls BlueZ `Adapter1.RemoveDevice` for board-side bonds and returns the removal
-count plus the latest Bluetooth status. This is a local UDS maintenance
-operation and is not exposed through the companion App HTTP API. The normal App
-disconnect flow preserves both sides of the system bond.
+count plus the latest Bluetooth status. It remains a local maintenance
+operation; the Agent exposes it only through the USB-restricted
+`/api/bluetooth/pairing/reset` recovery endpoint. Normal disconnects do not use
+it and preserve both sides of the system bond.
 
 ## Agent HTTP API
 
@@ -190,12 +211,15 @@ The companion app reaches the pairing operations through the Agent on USB ECM:
 | --- | --- | --- |
 | `GET` | `/api/bluetooth/status` | Read BLE runtime and live connection state |
 | `POST` | `/api/bluetooth/pairing/start` | Open or refresh the user-initiated connection window |
+| `POST` | `/api/bluetooth/pairing/reset` | Remove a confirmed stale board bond before one fresh pairing attempt |
+| `POST` | `/api/bluetooth/disconnect` | Disconnect the physical BLE/ANCS link without deleting the bond |
 
-The pairing write is accepted only over the board's USB ECM address
+Bluetooth control writes are accepted only over the board's USB ECM address
 (`192.168.42.1/24`) or loopback; requests arriving through Wi-Fi and other
-listeners receive `403`. The normal app flow disconnects its CoreBluetooth
-session without deleting the system bond. BLE keys, ANCS bodies, and Phone
-Bridge command payloads never pass through these endpoints.
+listeners receive `403`. The normal app flow first disables its CoreBluetooth
+reconnect loop, then asks BlueZ to disconnect the shared physical link. BLE
+keys, ANCS bodies, and Phone Bridge command payloads never pass through these
+endpoints.
 
 ## Operations
 
@@ -224,6 +248,3 @@ ls -l /userdata/ble_service/bluetooth
 Before the app requests pairing, `bluetoothctl show` should report
 `Pairable: no` and `Discoverable: no`. After `pairing_start` both become `yes`
 until pairing succeeds or the configured deadline expires.
-
-Changing the HOGP report map after a phone has bonded requires clearing the old
-bond and pairing again. Do not evolve this profile silently on deployed units.

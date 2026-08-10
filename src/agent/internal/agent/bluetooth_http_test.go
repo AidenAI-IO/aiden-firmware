@@ -39,6 +39,53 @@ func TestBluetoothHTTPPairingActions(t *testing.T) {
 	}
 }
 
+func TestBluetoothHTTPDisconnectsPhysicalLink(t *testing.T) {
+	server := &Server{
+		bleDisconnectRequest: func(context.Context, string) (ble.RuntimeStatus, error) {
+			return ble.RuntimeStatus{Paired: true, Connected: false, ANCSSubscribed: false}, nil
+		},
+	}
+
+	recorder := httptest.NewRecorder()
+	server.handleBluetoothDisconnect(recorder, bluetoothControlRequestForPath(
+		http.MethodPost,
+		"/api/bluetooth/disconnect",
+	))
+	if recorder.Code != http.StatusOK || !containsAll(
+		recorder.Body.String(),
+		`"paired":true`,
+		`"connected":false`,
+		`"ancs_subscribed":false`,
+	) {
+		t.Fatalf("disconnect code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestBluetoothHTTPResetsStaleBond(t *testing.T) {
+	server := &Server{
+		blePairingForgetRequest: func(context.Context, string) (ble.ForgetResult, error) {
+			return ble.ForgetResult{
+				Removed:   1,
+				Bluetooth: ble.RuntimeStatus{Paired: false, Connected: false},
+			}, nil
+		},
+	}
+
+	recorder := httptest.NewRecorder()
+	server.handleBluetoothPairingReset(recorder, bluetoothControlRequestForPath(
+		http.MethodPost,
+		"/api/bluetooth/pairing/reset",
+	))
+	if recorder.Code != http.StatusOK || !containsAll(
+		recorder.Body.String(),
+		`"removed":1`,
+		`"paired":false`,
+		`"connected":false`,
+	) {
+		t.Fatalf("pairing reset code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestBluetoothHTTPMapsPairingConflict(t *testing.T) {
 	server := &Server{
 		blePairingStartRequest: func(context.Context, string) (ble.RuntimeStatus, error) {
@@ -110,7 +157,11 @@ func containsAll(value string, wants ...string) bool {
 }
 
 func bluetoothControlRequest(method string) *http.Request {
-	request := httptest.NewRequest(method, "/api/bluetooth/pairing/start", nil)
+	return bluetoothControlRequestForPath(method, "/api/bluetooth/pairing/start")
+}
+
+func bluetoothControlRequestForPath(method, path string) *http.Request {
+	request := httptest.NewRequest(method, path, nil)
 	request.RemoteAddr = "192.168.42.100:12345"
 	return request.WithContext(context.WithValue(
 		request.Context(),

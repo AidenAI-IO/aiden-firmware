@@ -1,6 +1,6 @@
 # Aiden BLE 基础服务设计
 
-> 状态：Draft v5
+> 状态：Draft v6
 >
 > 对应任务：`【Aiden】蓝牙基建与接入系统通知`
 >（`3590beba-a111-496e-ba6e-909e734ffc59`）。
@@ -15,10 +15,9 @@ Agent 开放限时配对窗口，再用 CoreBluetooth 连接加密 Wake Characte
 仍由 iOS 系统弹窗确认。App 不能静默绕过系统确认，也不能通过公开 API 删除 iPhone 侧
 bond。
 
-HOGP 继续作为 iOS 系统可识别的标准 Profile，使 Aiden 在系统蓝牙设置中具有可管理的
-设备条目、自动重连和“忽略此设备”入口，但不再要求用户直接从系统设置发起首次配对。
-首次绑定需要 App；绑定完成后，即使 App 未运行或被卸载，HOGP 自动重连和板端 ANCS
-消费仍由 iOS 与 `ble_service` 维持，不把持续运行能力绑定到 App 前台生命周期。
+Wake Characteristic 的加密读取用于触发 iOS 系统配对。完成 bond 后，Aiden 会出现在系统
+蓝牙设置中并可由用户“忽略此设备”；板端 BlueZ 使用持久化密钥恢复加密连接和 ANCS，
+不需要为配对额外伪装成 BLE HID 设备。
 
 ## 2. 目标与非目标
 
@@ -27,11 +26,10 @@ HOGP 继续作为 iOS 系统可识别的标准 Profile，使 Aiden 在系统蓝�
 - 为 Pico Zero 启用 Bluetooth 内核能力并初始化 AIC8800 `hci0`；
 - 默认启动 BlueZ，并将配对信息持久化到 `/userdata`；
 - 新增独立 `ble_service`，统一管理 GATT、配对、连接和 ANCS；
-- 发布最小 BLE HID/HOGP，使系统能够管理 bond、自动重连并提供“忽略此设备”入口；
 - 发布始终可用的 Aiden Control/Wake Service；
 - 作为 ANCS Consumer 接收 iOS 系统通知并转换为统一事件；
 - 通过 UDS 向 Agent 提供状态、Wake 和通知事件读取接口；
-- Agent 提供 BLE 状态、开始配对和清除板端 bond 的 HTTP API；
+- Agent 提供 BLE 状态、开始配对和物理断链 HTTP API；
 - App 提供“蓝牙与系统通知”UI，负责打开连接窗口并展示实时连接状态；
 - App 通过 CoreBluetooth 触发系统配对、状态恢复、自动连接并订阅 Wake；
 - App 打开时优先复用自己保存的 peripheral；系统 bond 只作为底层缓存；
@@ -44,7 +42,7 @@ HOGP 继续作为 iOS 系统可识别的标准 Profile，使 Aiden 在系统蓝�
 - 不通过 BLE 传输 Phone Bridge 命令、结果、截图或音频；
 - 不在本任务重构联系人、日历、剪贴板等 App 工具；
 - 不实现 Android Notification Listener；
-- 不把 BLE HID 扩展为新的完整键盘、鼠标或触控主通道。
+- 不在本版实现 BLE HID；键盘、鼠标和触控继续使用 USB HID；
 - 不尝试通过私有 API 静默确认配对或删除 iPhone 侧系统 bond。
 
 后续任务只消费本任务提供的稳定接口：
@@ -59,7 +57,7 @@ HOGP 继续作为 iOS 系统可识别的标准 Profile，使 Aiden 在系统蓝�
 
 `ble_service` 是板端唯一 BLE 业务进程，负责：
 
-- 向 BlueZ 注册 HOGP 和 Aiden Control/Wake GATT；
+- 向 BlueZ 注册 Aiden Control/Wake GATT；
 - 管理可发现、配对、bond 和已连接设备；
 - 发现并订阅 iPhone 暴露的 ANCS；
 - 解析通知并保存在有界内存队列；
@@ -74,7 +72,7 @@ Agent 不直接操作 BlueZ。这样 BLE 生命周期与 Agent 解耦，后续�
                               iPhone
         +------------------------------------------------+
         | iOS Bluetooth System                           |
-        | - 系统配对确认 / bond / HID 自动重连           |
+        | - 系统配对确认 / bond / 加密重连               |
         | - Settings “忽略此设备”                       |
         | - ANCS Notification Provider                   |
         +-----------------------+------------------------+
@@ -93,7 +91,6 @@ Agent 不直接操作 BlueZ。这样 BLE 生命周期与 Agent 解耦，后续�
 | Luckfox Pico Zero                                              |
 |                                                                |
 | AIC8800 -> hci0 -> bluetoothd -> ble_service                   |
-|                                  - HOGP server                 |
 |                                  - Control/Wake GATT server    |
 |                                  - ANCS consumer               |
 |                                  - event ring                  |
@@ -106,9 +103,9 @@ Agent 不直接操作 BlueZ。这样 BLE 生命周期与 Agent 解耦，后续�
 +----------------------------------------------------------------+
 ```
 
-BLE 同时承担两个 GATT 方向：Aiden 作为 Peripheral 向 iPhone 提供 HOGP 和 Wake；在同一
-连接上，Aiden 又作为 GATT Client 读取 iPhone 的 ANCS。这需要使用 AIC8800、BlueZ 和
-iPhone 真机验证。
+BLE 同时承担两个 GATT 方向：Aiden 作为 Peripheral 向 iPhone 提供 Wake；在同一连接上，
+Aiden 又作为 GATT Client 读取 iPhone 的 ANCS。这需要使用 AIC8800、BlueZ 和 iPhone
+真机验证。
 
 ### 3.3 启动分层
 
@@ -118,10 +115,10 @@ S35wifidrv -> S39hciinit -> S40bluetoothd -> S41ble_service
 
 | 组件 | 职责 |
 | --- | --- |
-| `S39hciinit` | 将 `/dev/ttyS1` 接入 HCI，创建并启动 `hci0` |
-| `S40bluetoothd` | 启动 BlueZ，挂载持久化 bond 目录 |
+| `S39hciinit` | 加载 SMP 所需 AES/CMAC，挂接 `/dev/ttyS1` 并创建未上电的 `hci0` |
+| `S40bluetoothd` | 启动 BlueZ，由 management 接口为 `hci0` 上电，并挂载持久化 bond 目录 |
 | `S41ble_service` | 启动并守护 `ble_service` |
-| `ble_service` | GATT、HOGP、配对、Wake、ANCS 和 UDS |
+| `ble_service` | GATT、配对、Wake、ANCS 和 UDS |
 | Agent | 消费 UDS；提供 App 配对 HTTP API；Phone Bridge 命令仍进入 HTTP Queue |
 
 内核必须同时包含现有 zram 配置和 Bluetooth 配置。板子首次启用蓝牙需要刷入包含相关
@@ -129,22 +126,14 @@ S35wifidrv -> S39hciinit -> S40bluetoothd -> S41ble_service
 
 ## 4. GATT 与连接设计
 
-### 4.1 最小 HOGP
+### 4.1 加密配对锚点
 
-系统需要一个可管理的标准 Profile，否则只有自定义 GATT 的 bond 可能缺少清晰的系统设备
-条目，用户无法可靠找到“忽略此设备”。
+Wake Characteristic 使用 `encrypt-read`。App 连接后先读取该特征，iOS 因此发起 SMP 并
+显示系统配对确认；配对成功后 BlueZ 持久化 bond，并将已绑定 iPhone 标记为 Trusted。
 
-本版实现最小 HID over GATT Profile：
-
-- 使用标准 HID Service `0x1812`；
-- 首选副作用较小的 Consumer Control 报告；
-- HOGP 本版主要用于系统 bond 管理、系统设置设备条目和连接保活，不替代现有 USB HID；
-- 默认不通过 BLE 发送键盘输入，避免 USB HID 与 BLE HID 重复执行；
-- 如果 Consumer Control 无法在目标 iOS 版本形成稳定配对和重连，再真机评估 Keyboard
-  Profile；不能为了配对而默认引入额外软键盘或密码输入体验。
-
-HOGP 类型和 Report Map 一旦与手机建立 bond，不得静默变更；修改 Profile 时需要清除
-旧 bond 后重新配对。
+Wake Notify 本身使用标准 `notify`。板载 BlueZ 5.65 对 `encrypt-notify` 的 CCCD 写入会在
+已完成 bond 后仍返回 `Writing is not permitted`，因此只让加密读取承担认证职责。Wake
+payload 只包含“请轮询 HTTP Queue”的触发信息，不包含命令、通知正文或凭据。
 
 ### 4.2 Aiden Control/Wake Service
 
@@ -155,7 +144,7 @@ Wake Service 无论是否安装 App 都始终注册：
 | Wake Service | `a1de0001-7c4b-4f52-8d9a-6b4f6e6f7469` |
 | Wake Characteristic | `a1de0002-7c4b-4f52-8d9a-6b4f6e6f7469` |
 
-Wake Characteristic 支持 `read` 和 `notify`，payload 为 12 字节小端格式：
+Wake Characteristic 支持加密 `read` 和标准 `notify`，payload 为 12 字节小端格式：
 
 ```text
 byte 0      protocol version，当前为 1
@@ -202,9 +191,9 @@ UUID、稳定广播名称和该身份全部匹配时才允许首次连接和配�
 2. App 通过 USB ECM 调用 Agent `POST /api/bluetooth/pairing/start`；
 3. Agent 通过 UDS `pairing_start` 请求 `ble_service` 开放默认 5 分钟窗口；
 4. App 从状态响应取得唯一 `device_name`，使用 Wake Service UUID 和该名称扫描当前 Aiden；
-5. App 订阅要求加密的 Wake Characteristic，iOS 自动显示系统配对确认；
+5. App 读取要求加密的 Wake Characteristic，iOS 自动显示系统配对确认；
 6. 用户点击系统“配对”后，BlueZ 保存 bond 并将首台 iPhone 标记为 Trusted；
-7. App 成功订阅 Wake 后，`ble_service` 关闭 Discoverable/Pairable，板端继续建立 ANCS；
+7. 配对后 App 订阅 Wake Notify，`ble_service` 关闭 Discoverable/Pairable，板端继续建立 ANCS；
 8. App 轮询 Agent 状态并展示当前蓝牙连接、后台唤醒和系统通知状态。
 
 App 负责发起和展示流程，但配对确认属于 iOS。App 不得模拟确认、绕过系统弹窗或把
@@ -223,13 +212,22 @@ App 负责发起和展示流程，但配对确认属于 iOS。App 不得模拟�
 7. 用户关闭 App 后 Wake subscriber 消失，页面显示未连接，bond 仅作为下次重连缓存。
 
 这里的 `connect` 是 App 建立自己的 CoreBluetooth 会话，不代表再建立一条独立物理连接。
+页面只有在加密 Wake 读取成功后才把“蓝牙连接”标为已连接；单纯
+`CBPeripheral.state == connected` 不能证明 bond 或加密会话有效。
+
+如果用户在 iOS 设置中单方面“忽略此设备”，板端会暂时保留旧密钥。App 对已有 bond 的
+第一次加密读取若返回 `Encryption is insufficient`，必须立即停止自动重连并标记
+`bond_reset_required`，不能循环触发系统配对框。用户再次点击连接时，App 通过受限 HTTP
+接口删除板端旧 bond，然后只发起一次全新配对；取消或再次失败后继续保持停止状态。
 
 ### 5.3 断开 App 蓝牙连接
 
-App 中的“断开蓝牙”只停止 App 自己的 CoreBluetooth Wake 会话并关闭自动重连，保留
-iPhone 与板端的系统 bond，以及 App 用于后续直接找回同一 `CBPeripheral` 的本地身份记录。
-正常 UI 不删除板端 bond，也不要求用户前往系统设置忽略设备；再次点击连接时恢复自动重连
-并复用已有 bond。`pairing_forget` 仅保留为板端维护操作，不对 App HTTP 接口暴露。
+App 中的“断开蓝牙”先停止 CoreBluetooth 自动重连，再调用板端
+`POST /api/bluetooth/disconnect`。`ble_service` 通过 BlueZ `Device1.Disconnect` 断开共享的
+物理 BLE/ANCS 链路，同时保留 iPhone 与板端 bond，以及 App 用于后续直接找回同一
+`CBPeripheral` 的本地身份记录。再次点击连接时复用已有 bond，不应再次弹出配对确认。
+`pairing_forget` 的通用 UDS 操作仍用于板端维护；Agent 只通过
+`POST /api/bluetooth/pairing/reset` 暴露受限恢复入口，供 App 已明确检测到 stale bond 后使用。
 
 ## 6. 板端 UDS 接口
 
@@ -239,7 +237,7 @@ iPhone 与板端的系统 bond，以及 App 用于后续直接找回同一 `CBPe
 /run/ble_service/ble_service.sock
 ```
 
-UDS 复用项目现有的 12 字节小端 envelope。本版提供五个业务操作：
+UDS 复用项目现有的 12 字节小端 envelope。本版提供六个业务操作：
 
 | 操作 | 用途 |
 | --- | --- |
@@ -247,6 +245,7 @@ UDS 复用项目现有的 12 字节小端 envelope。本版提供五个业务操
 | `wake` | best-effort 发送 Wake Notify |
 | `events_since` | 按 cursor 增量读取内存中的 ANCS 事件 |
 | `pairing_start` | 打开或刷新配置时长的连接窗口；已有 bond 不冲突 |
+| `disconnect` | 断开当前物理 BLE/ANCS 链路并保留 bond |
 | `pairing_forget` | 删除板端 BlueZ bond、Trusted 状态和当前连接状态 |
 
 示例：
@@ -254,6 +253,7 @@ UDS 复用项目现有的 12 字节小端 envelope。本版提供五个业务操
 ```json
 {"op":"status"}
 {"op":"pairing_start"}
+{"op":"disconnect"}
 {"op":"pairing_forget"}
 {"op":"wake","reason":"phone_bridge"}
 {"op":"events_since","since":"42","generation":"<service-generation>","limit":50}
@@ -272,8 +272,10 @@ App 不直接访问 UDS。Agent 将配对控制转换成手机可通过 USB ECM 
 | --- | --- | --- |
 | `GET` | `/api/bluetooth/status` | 获取完整 BLE runtime status |
 | `POST` | `/api/bluetooth/pairing/start` | 打开或刷新连接窗口；已有 Trusted bond 也可调用 |
+| `POST` | `/api/bluetooth/pairing/reset` | stale bond 恢复：删除板端旧 bond，准备一次全新配对 |
+| `POST` | `/api/bluetooth/disconnect` | 断开当前 BLE/ANCS 物理链路，但保留双方 bond |
 
-配对写接口只接受从 `192.168.42.1` USB ECM 监听地址进入的 `192.168.42.0/24` 请求或本机
+蓝牙控制写接口只接受从 `192.168.42.1` USB ECM 监听地址进入的 `192.168.42.0/24` 请求或本机
 loopback 请求；Wi-Fi 等其它监听地址返回 `403`。HTTP API 不承载 BLE 密钥、通知正文或
 Phone Bridge 命令。
 
@@ -289,9 +291,9 @@ Phone Bridge 命令。
 - 5 分钟是显式用户操作后的安全上限，用来覆盖蓝牙授权和 iOS 系统确认耗时；App 会立即
   开始扫描，成功后窗口立刻关闭，不会固定暴露满 5 分钟；
 - 显式连接时即使已有 Trusted bond 也重新开放限时窗口，bond 仅作为底层重连缓存；
-- App 完成加密 Wake 订阅后立即关闭 Discoverable/Pairable；
-- 清除或替换手机属于维护流程；正常 App UI 只断开 Wake 会话并保留 bond；
-- Wake 和 HOGP 的敏感 Characteristic 要求加密连接；
+- App 完成加密读取并订阅 Wake Notify 后立即关闭 Discoverable/Pairable；
+- 清除或替换手机属于维护流程；正常 App UI 断开物理链路并保留 bond；
+- Wake 的读取操作要求加密连接；Notify 只携带无敏感内容的轮询触发；
 - ANCS 事件只保存在有界内存，不写入磁盘、Agent memory 或普通日志；
 - App 被用户强制退出或蓝牙权限被关闭时，不承诺 Wake 能重新拉起 App。
 
@@ -322,7 +324,6 @@ Phone Bridge 命令。
 - `ble_service` 重启后没有 bond 时保持 `Pairable=false`；
 - App 点击连接后，板端开放限时窗口并由 iOS 显示系统配对确认；
 - 配对、锁屏、手机重启和板子重启后能够自动重连；
-- HOGP 不造成不可接受的额外键盘或软键盘体验；
 - 板端可以接收短信、邮件等 ANCS 通知并形成标准化事件；
 - 系统蓝牙设置中存在可管理的 Aiden 条目和“忽略此设备”入口；
 - App 断开后页面显示未连接；是否在系统设置忽略设备不属于 App 连接状态。
@@ -349,9 +350,8 @@ Phone Bridge 命令。
 当前 firmware PR #486、iOS App PR #41 和 SDK PR #28 已提供公共 BLE 底座，包括：
 
 - 内核/BlueZ 初始化、持久化 bond 和 HCI/BlueZ/业务服务恢复逻辑；
-- 最小 Consumer Control HOGP GATT server；
 - 稳定设备后缀、App 显式开启的限时配对窗口和单一可信设备策略；
-- Agent BLE 状态、配对开始和板端解绑 HTTP API；
+- Agent BLE 状态、配对开始和物理断链 HTTP API；
 - App 蓝牙设置 UI、CoreBluetooth 连接与系统配对编排；
 - Wake、ANCS、UDS 和 Agent Queue Wake；
 - ANCS 分片、超时、响应大小限制和有界队列处理。
@@ -359,8 +359,7 @@ Phone Bridge 命令。
 代码完成后仍需要新 SDK 镜像和 iPhone 真机验证以下硬件行为：
 
 - App 内发起、iOS 系统确认的首次配对、自动重连和 ANCS 授权；
-- HOGP 不产生额外软键盘或不可接受的 Consumer Control 副作用；
-- App 对已有 HOGP peripheral 的发现与复用，以及板端/iPhone 双侧解绑；
+- App 对已有 bonded peripheral 的发现与复用，以及板端/iPhone 双侧解绑；
 - iPhone 前台、后台、锁屏和重启后的 Wake/ANCS 恢复；
 - HCI、BlueZ 和业务服务在真实 AIC8800 上的故障恢复时序。
 
@@ -378,4 +377,3 @@ BLE 命令通道。
 - [Unix Domain Socket Protocol](../06-protocols/uds-protocol.md)
 - [Apple Notification Center Service Specification](https://developer.apple.com/library/archive/documentation/CoreBluetooth/Reference/AppleNotificationCenterServiceSpecification/Specification/Specification.html)
 - [Core Bluetooth Background Processing](https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileYourAppIsInTheBackground.html)
-- [Bluetooth HID over GATT Profile](https://www.bluetooth.com/specifications/specs/hid-over-gatt-profile-1-0/)

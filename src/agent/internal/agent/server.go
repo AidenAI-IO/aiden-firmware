@@ -67,6 +67,8 @@ type Server struct {
 	bleSocketPath           string
 	bleStatusRequest        func(context.Context, string) (ble.RuntimeStatus, error)
 	blePairingStartRequest  func(context.Context, string) (ble.RuntimeStatus, error)
+	blePairingForgetRequest func(context.Context, string) (ble.ForgetResult, error)
+	bleDisconnectRequest    func(context.Context, string) (ble.RuntimeStatus, error)
 	androidADB              androidADBController
 	liveActivity            *LiveActivityManager
 	pendingResults          map[string]*chatPendingResult
@@ -381,6 +383,8 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		bleSocketPath:           configuredBLEServiceSocketPath(),
 		bleStatusRequest:        ble.RequestStatus,
 		blePairingStartRequest:  ble.RequestPairingStart,
+		blePairingForgetRequest: ble.RequestPairingForget,
+		bleDisconnectRequest:    ble.RequestDisconnect,
 		androidADB:              NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
 		liveActivity:            NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:          make(map[string]*chatPendingResult),
@@ -497,6 +501,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/bluetooth/status", s.handleBluetoothStatus)
 	mux.HandleFunc("/api/bluetooth/pairing/start", s.handleBluetoothPairingStart)
+	mux.HandleFunc("/api/bluetooth/pairing/reset", s.handleBluetoothPairingReset)
+	mux.HandleFunc("/api/bluetooth/disconnect", s.handleBluetoothDisconnect)
 	mux.HandleFunc("/api/android-adb/status", s.handleAndroidADBStatus)
 	mux.HandleFunc("/api/android-adb/pair", s.handleAndroidADBPair)
 	mux.HandleFunc("/api/storage/monitor/status", s.handleStorageMonitorStatus)

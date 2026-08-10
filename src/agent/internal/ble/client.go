@@ -67,6 +67,18 @@ func RequestPairingStart(ctx context.Context, socketPath string) (RuntimeStatus,
 	return response.Bluetooth, nil
 }
 
+func RequestDisconnect(ctx context.Context, socketPath string) (RuntimeStatus, error) {
+	var response struct {
+		Status    string        `json:"status"`
+		Error     string        `json:"error"`
+		Bluetooth RuntimeStatus `json:"bluetooth"`
+	}
+	if err := request(ctx, socketPath, map[string]string{"op": "disconnect"}, &response); err != nil {
+		return RuntimeStatus{}, err
+	}
+	return response.Bluetooth, nil
+}
+
 func RequestPairingForget(ctx context.Context, socketPath string) (ForgetResult, error) {
 	var response struct {
 		Status    string        `json:"status"`

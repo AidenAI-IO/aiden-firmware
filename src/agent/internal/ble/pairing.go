@@ -99,6 +99,62 @@ func (b *blueZBackend) StartPairing() error {
 	return b.beginPairingWindow(time.Now())
 }
 
+func connectedDevicePaths(objects managedObjects) []dbus.ObjectPath {
+	paths := make([]dbus.ObjectPath, 0)
+	for path, interfaces := range objects {
+		properties, ok := interfaces[blueZDeviceInterface]
+		if !ok || !variantBool(properties, "Connected") {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	sort.Slice(paths, func(i, j int) bool { return string(paths[i]) < string(paths[j]) })
+	return paths
+}
+
+func (b *blueZBackend) Disconnect() error {
+	b.wakeMu.Lock()
+	closed := b.closed
+	b.wakeMu.Unlock()
+	if closed || b.conn == nil || !b.adapter.IsValid() {
+		return ErrBluetoothUnavailable
+	}
+	if err := b.closePairingWindow(); err != nil {
+		return err
+	}
+
+	objects, err := b.getManagedObjects()
+	if err != nil {
+		return err
+	}
+	for _, path := range connectedDevicePaths(objects) {
+		err := callWithTimeout(
+			b.conn.Object(BlueZBusName, path),
+			blueZDeviceInterface+".Disconnect",
+		).Err
+		if err != nil && !isDBusErrorNamed(err, "org.bluez.Error.NotConnected") {
+			return fmt.Errorf("disconnect Bluetooth device %s: %w", path, err)
+		}
+	}
+
+	b.clearANCS("Bluetooth disconnected by user")
+	b.service.consumer.ResetConnection("Bluetooth disconnected by user")
+	b.service.status.update(func(status *RuntimeStatus) {
+		status.PairingOpen = false
+		status.PairingDeadline = ""
+		status.ConnectedDevicePath = ""
+		status.ConnectedDeviceName = ""
+		status.ConnectedDeviceAddr = ""
+		status.WakeSubscriber = false
+		status.Connected = false
+		status.ServicesResolved = false
+		status.ANCSSubscribed = false
+		status.LastError = ""
+	})
+	b.requestRescan()
+	return nil
+}
+
 func (b *blueZBackend) ForgetPairing() (int, error) {
 	b.wakeMu.Lock()
 	closed := b.closed
