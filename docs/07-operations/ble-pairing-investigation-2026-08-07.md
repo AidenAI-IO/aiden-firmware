@@ -993,4 +993,41 @@ pairing reset removed=0
 SMP fixed channels=0x0006,0x0007
 ```
 
-当前板端不存在旧 bond，并保持非 Pairable，等待 App 主动打开配对窗口。App 修复未安装本地包；需等线上构建包含本节改动后进行最终测试。
+当次部署验证结束时板端不存在旧 bond，并保持非 Pairable，等待 App 主动打开配对窗口。App 修复未安装本地包；需等线上构建包含本节改动后进行最终测试。
+
+### 13.10 CoreBluetooth 恢复的假 Wake 订阅
+
+新一轮真机测试出现：系统蓝牙和 ANCS 已连接，但后台 Wake 未连接。2026-08-10 12:26 与 12:30 两次重启已安装的 build 119，App 都在约 120ms 内记录：
+
+```text
+[AidenBLE] Restored peripheral 413F3945-40E5-A674-AF06-A38140146EAF
+[AidenBLE] Bluetooth powered on
+[AidenBLE] Wake subscription active=true
+```
+
+同一时刻板端稳定为：
+
+```text
+paired=true
+connected=true
+services_resolved=true
+ancs_subscribed=true
+wake_subscriber=false
+```
+
+执行一次保留 bond 的物理断开，再重新打开连接窗口并建立新 ACL 后，App 仍回调 `Wake subscription active=true`，板端仍没有收到 `StartNotify`。因此这不是 HTTP 状态延迟，也不是 ANCS 假连接，而是 CoreBluetooth restoration 缓存与 BlueZ 外部 GATT 应用状态脱节：
+
+- iOS 恢复了旧 `CBCharacteristic.isNotifying=true`；
+- 板端或 `ble_service` 重启后，外部 GATT Characteristic 的 CCCD/`Notifying` 已清零；
+- App 再调用 `setNotifyValue(true)` 时，CoreBluetooth 将其视为重复请求，不重新写 CCCD；
+- App 误报订阅成功，板端无法发送 Wake。
+
+App 修复：
+
+- 不再直接使用缓存的 `characteristic.isNotifying` 作为 JS `subscribed`；
+- 新增仅在本次会话确认后置位的 `wakeSubscriptionEstablished`；
+- 如果安全读取后发现缓存 `isNotifying=true`，强制执行 `setNotifyValue(false)`，等待关闭回调后再执行 `setNotifyValue(true)`，确保 BlueZ 收到新的 `StartNotify`；
+- 实现 `didModifyServices`，板端 GATT 服务变化后自动重新发现、安全读取并刷新订阅；
+- UI 增加 `refreshing_subscription` 阶段，避免恢复过程中显示为稳定连接。
+
+该修复已通过 Jest、ESLint 和无签名 iOS native build，等待进入下一线上构建后真机验证板端 `wake_subscriber=true`。
