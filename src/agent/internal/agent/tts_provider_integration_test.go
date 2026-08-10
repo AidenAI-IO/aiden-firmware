@@ -104,6 +104,26 @@ func TestStreamSessionWriterAbortsPreopenedSessionWhenNoTextWritten(t *testing.T
 	}
 }
 
+func TestStreamSessionWriterInterruptAbortsSession(t *testing.T) {
+	session := &abortableStreamSession{}
+	w := &streamSessionWriter{session: session}
+
+	w.interrupt()
+
+	if session.abortCalls != 1 {
+		t.Fatalf("Abort() calls = %d, want 1", session.abortCalls)
+	}
+	if session.closeCalls != 0 {
+		t.Fatalf("Close() calls = %d, want 0", session.closeCalls)
+	}
+	if err := w.closeAndWait(); err != nil {
+		t.Fatalf("closeAndWait() error = %v", err)
+	}
+	if session.abortCalls != 1 {
+		t.Fatalf("Abort() calls after closeAndWait = %d, want 1", session.abortCalls)
+	}
+}
+
 func TestStreamSessionWriterClosesSessionWhenTextWritten(t *testing.T) {
 	session := &abortableStreamSession{}
 	w := &streamSessionWriter{session: session}

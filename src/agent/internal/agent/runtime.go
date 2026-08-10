@@ -47,6 +47,7 @@ func effectiveMaxIterations(configured int) int {
 const (
 	currentEnvironmentHintMaxAge      = 10 * time.Minute
 	runtimeSessionEventPersistTimeout = 2 * time.Second
+	runtimeTTSCloseTimeout            = 5 * time.Second
 	maxPublicToolResultRunes          = maxToolObservationRunes
 )
 
@@ -2451,9 +2452,11 @@ func (r *Runtime) Close() error {
 		cancel()
 	}
 	if r.ttsManager != nil {
-		if err := r.ttsManager.Close(); err != nil && r.logger != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), runtimeTTSCloseTimeout)
+		if err := r.ttsManager.CloseContext(ctx); err != nil && r.logger != nil {
 			r.logger.Warn("close TTS provider: %v", err)
 		}
+		cancel()
 	}
 	if r.logger != nil {
 		r.logger.Info("Shutting down agent runtime")

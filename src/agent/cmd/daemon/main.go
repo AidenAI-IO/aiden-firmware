@@ -149,6 +149,7 @@ func main() {
 	// HTTP server runs in all input modes so the web UI is available even
 	// during voice (audio/stt) interactions.
 	server := agent.NewServer(runtime, *addr)
+	defer server.Close()
 
 	_ = logging.LogEvent(logging.Info, "agent", "startup", "daemon_starting",
 		logging.Field{Key: "addr", Value: *addr},

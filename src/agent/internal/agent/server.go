@@ -40,6 +40,7 @@ const (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
+	closeOnce              sync.Once
 	runtime                *Runtime
 	addr                   string
 	logger                 *Logger
@@ -565,6 +566,19 @@ func (s *Server) Start() error {
 	}
 }
 
+// Close cancels background runs and releases request-owned audio resources.
+// The shared TTS provider remains owned by Runtime.
+func (s *Server) Close() {
+	if s == nil {
+		return
+	}
+	s.closeOnce.Do(func() {
+		s.cancelAllActiveRuns()
+		s.interruptAllActiveOutputs()
+		s.abortWebRecording()
+	})
+}
+
 func isLoopbackServerAddr(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -804,6 +818,20 @@ func (s *Server) cancelActiveRun(requestID string) bool {
 	}
 	cancel()
 	return true
+}
+
+func (s *Server) cancelAllActiveRuns() {
+	s.activeRunsMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(s.activeRuns))
+	for _, cancel := range s.activeRuns {
+		if cancel != nil {
+			cancels = append(cancels, cancel)
+		}
+	}
+	s.activeRunsMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 func (s *Server) markRequestTerminated(requestID string) {

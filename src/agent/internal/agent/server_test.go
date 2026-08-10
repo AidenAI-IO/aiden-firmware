@@ -1908,6 +1908,30 @@ func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
 	}
 }
 
+func TestServerCloseCancelsActiveRunsAndOutputs(t *testing.T) {
+	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	server.registerActiveRun("req-close", cancelRun)
+
+	outputCtx, cancelOutput := context.WithCancel(context.Background())
+	output := newActiveTTSOutput(cancelOutput)
+	unregisterOutput := server.registerActiveOutput("req-close", output)
+	defer unregisterOutput()
+
+	server.Close()
+
+	select {
+	case <-runCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Server.Close() did not cancel the active run")
+	}
+	select {
+	case <-outputCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Server.Close() did not interrupt the active output")
+	}
+}
+
 func TestServerHandleChatCancelEndsDanglingLiveActivity(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		activeRuns:   make(map[string]context.CancelFunc),

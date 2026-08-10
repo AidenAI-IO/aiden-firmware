@@ -29,6 +29,14 @@ func NewProviderHolder(initial TTSProvider) *ProviderHolder {
 // created from the OLD provider have been closed, then returns the old
 // provider for the caller to Close.
 func (h *ProviderHolder) Swap(next TTSProvider) TTSProvider {
+	old, wait := h.replace(next)
+	wait()
+	return old
+}
+
+// replace installs next immediately and returns the previous provider together
+// with a function that waits for that provider's sessions to drain.
+func (h *ProviderHolder) replace(next TTSProvider) (TTSProvider, func()) {
 	h.mu.Lock()
 	old := h.current
 	oldWG := h.activeWG
@@ -37,10 +45,7 @@ func (h *ProviderHolder) Swap(next TTSProvider) TTSProvider {
 	// We keep a reference to the old one to wait on.
 	h.activeWG = &sync.WaitGroup{}
 	h.mu.Unlock()
-
-	// Wait for all in-flight sessions from the old provider to finish.
-	oldWG.Wait()
-	return old
+	return old, oldWG.Wait
 }
 
 func (h *ProviderHolder) Name() string {
