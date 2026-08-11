@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -13,13 +14,16 @@ import (
 func TestHandleUserFiles_ServesExistingReport(t *testing.T) {
 	dir := t.TempDir()
 	rpt := filepath.Join(dir, "files_report.html")
-	os.WriteFile(rpt, []byte("<html>cached</html>"), 0o644)
+	os.WriteFile(rpt, []byte("<html><body>cached text mentions /user_files?refresh=1</body></html>"), 0o644)
 	s := &Server{userFilesReportPath: rpt}
 	req := httptest.NewRequest(http.MethodGet, "/user_files", nil)
 	rec := httptest.NewRecorder()
 	s.handleUserFiles(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "cached") {
 		t.Errorf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), userFilesRefreshControlMarker) {
+		t.Errorf("legacy report response is missing refresh control: %q", rec.Body.String())
 	}
 }
 
@@ -35,6 +39,126 @@ func TestHandleUserFiles_GeneratesIfMissing(t *testing.T) {
 	s.handleUserFiles(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "generated") {
 		t.Errorf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleUserFiles_RefreshQueryRegeneratesReport(t *testing.T) {
+	tools := t.TempDir()
+	rpt := filepath.Join(t.TempDir(), "report.html")
+	if err := os.WriteFile(rpt, []byte("<html>stale</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(tools, "view_agent_files.sh")
+	body := "#!/bin/sh\necho '<html>fresh</html>' > " + rpt + "\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{userFilesReportPath: rpt, userFilesToolsDir: tools}
+	req := httptest.NewRequest(http.MethodGet, "/user_files?refresh=1", nil)
+	rec := httptest.NewRecorder()
+	s.handleUserFiles(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "/user_files" {
+		t.Fatalf("Location = %q, want /user_files", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/user_files", nil)
+	rec = httptest.NewRecorder()
+	s.handleUserFiles(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "fresh") {
+		t.Fatalf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+func TestHandleUserFiles_ConcurrentRefreshCoalescesGeneration(t *testing.T) {
+	tools := t.TempDir()
+	rpt := filepath.Join(t.TempDir(), "report.html")
+	marker := filepath.Join(t.TempDir(), "runs")
+	if err := os.WriteFile(rpt, []byte("<html>stale</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(tools, "view_agent_files.sh")
+	body := "#!/bin/sh\necho run >> " + marker + "\nsleep 0.2\necho '<html>fresh</html>' > " + rpt + "\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{userFilesReportPath: rpt, userFilesToolsDir: tools}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			req := httptest.NewRequest(http.MethodGet, "/user_files?refresh=1", nil)
+			rec := httptest.NewRecorder()
+			s.handleUserFiles(rec, req)
+			if rec.Code != http.StatusSeeOther {
+				t.Errorf("code=%d body=%q", rec.Code, rec.Body.String())
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	runs, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(runs), "run\n"); got != 1 {
+		t.Fatalf("generation runs = %d, want 1", got)
+	}
+}
+
+func TestHandleUserFiles_ConcurrentRefreshSharesGenerationFailure(t *testing.T) {
+	tools := t.TempDir()
+	rpt := filepath.Join(t.TempDir(), "report.html")
+	marker := filepath.Join(t.TempDir(), "runs")
+	if err := os.WriteFile(rpt, []byte("<html>stale</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(tools, "view_agent_files.sh")
+	body := "#!/bin/sh\necho run >> " + marker + "\nsleep 0.2\necho generation-failed\nexit 1\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{userFilesReportPath: rpt, userFilesToolsDir: tools}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			req := httptest.NewRequest(http.MethodGet, "/user_files?refresh=1", nil)
+			rec := httptest.NewRecorder()
+			s.handleUserFiles(rec, req)
+			if rec.Code != http.StatusInternalServerError {
+				t.Errorf("code=%d body=%q", rec.Code, rec.Body.String())
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	runs, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(runs), "run\n"); got != 1 {
+		t.Fatalf("generation runs = %d, want 1", got)
 	}
 }
 

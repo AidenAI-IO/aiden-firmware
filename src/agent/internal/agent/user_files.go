@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"fmt"
 	"mime"
 	"net/http"
@@ -11,7 +12,14 @@ import (
 	"time"
 )
 
-const userFilesGenerateTimeout = 30 * time.Second
+const (
+	userFilesGenerateTimeout       = 30 * time.Second
+	userFilesRefreshCoalesceWindow = 2 * time.Second
+)
+
+const userFilesRefreshHref = "/user_files?refresh=1"
+
+const userFilesRefreshControlMarker = `id="user-files-refresh"`
 
 // runUserFilesScript runs view_agent_files.sh under a fixed timeout, killing
 // the process if it exceeds the deadline. Output is collected for diagnostics.
@@ -42,22 +50,43 @@ func (s *Server) runUserFilesScript(stdoutSink string) error {
 	return nil
 }
 
-func (s *Server) ensureUserFilesReport() error {
-	if _, err := os.Stat(s.userFilesReportPath); err == nil {
+func (s *Server) ensureUserFilesReport(forceRefresh bool, stdoutSink string) error {
+	if _, err := os.Stat(s.userFilesReportPath); err == nil && !forceRefresh {
 		return nil
 	}
-	if err := s.runUserFilesScript(""); err != nil {
-		return err
+
+	s.userFilesGenerateMu.Lock()
+	defer s.userFilesGenerateMu.Unlock()
+
+	_, reportErr := os.Stat(s.userFilesReportPath)
+	if reportErr == nil && !forceRefresh {
+		return nil
 	}
-	if _, err := os.Stat(s.userFilesReportPath); err != nil {
-		return fmt.Errorf("script ran but report not produced")
+	if time.Since(s.userFilesLastGenAt) <= userFilesRefreshCoalesceWindow &&
+		(forceRefresh || s.userFilesLastGenErr != nil) {
+		return s.userFilesLastGenErr
 	}
-	return nil
+
+	err := s.runUserFilesScript(stdoutSink)
+	if err == nil {
+		if _, statErr := os.Stat(s.userFilesReportPath); statErr != nil {
+			err = fmt.Errorf("script ran but report not produced")
+		}
+	}
+	s.userFilesLastGenAt = time.Now()
+	s.userFilesLastGenErr = err
+	return err
 }
 
 func (s *Server) handleUserFiles(w http.ResponseWriter, r *http.Request) {
-	if err := s.ensureUserFilesReport(); err != nil {
+	w.Header().Set("Cache-Control", "no-store")
+	forceRefresh := r.URL.Query().Get("refresh") == "1"
+	if err := s.ensureUserFilesReport(forceRefresh, ""); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if forceRefresh {
+		http.Redirect(w, r, "/user_files", http.StatusSeeOther)
 		return
 	}
 	data, err := os.ReadFile(s.userFilesReportPath)
@@ -65,8 +94,24 @@ func (s *Server) handleUserFiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	data = userFilesReportWithRefreshControl(data)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(data)
+}
+
+func userFilesReportWithRefreshControl(data []byte) []byte {
+	if bytes.Contains(data, []byte(userFilesRefreshControlMarker)) {
+		return data
+	}
+	control := []byte(fmt.Sprintf(`<a id="user-files-refresh" href="%s" style="position:fixed;top:16px;right:16px;z-index:100;padding:8px 12px;border:1px solid #ddd;border-radius:8px;background:#fff;color:#222;text-decoration:none;font:600 12px system-ui,sans-serif">Refresh data</a>`, userFilesRefreshHref))
+	if index := bytes.LastIndex(data, []byte("</body>")); index >= 0 {
+		result := make([]byte, 0, len(data)+len(control))
+		result = append(result, data[:index]...)
+		result = append(result, control...)
+		result = append(result, data[index:]...)
+		return result
+	}
+	return append(append([]byte(nil), data...), control...)
 }
 
 func (s *Server) handleUserFilesPreview(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +159,7 @@ func (s *Server) handleUserFilesRegenerate(w http.ResponseWriter, r *http.Reques
 	go func() {
 		// Reuse the same timeout budget so a hung script cannot pile up
 		// long-lived background generators on repeated calls.
-		_ = s.runUserFilesScript("/tmp/user_files_regenerate.log")
+		_ = s.ensureUserFilesReport(true, "/tmp/user_files_regenerate.log")
 	}()
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true,"regenerating":true}`))

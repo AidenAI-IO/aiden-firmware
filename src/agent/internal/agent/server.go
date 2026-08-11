@@ -56,6 +56,9 @@ type Server struct {
 	userFilesMemoryDir      string
 	userFilesSkillsDir      string
 	userFilesSkillStateDir  string
+	userFilesGenerateMu     sync.Mutex
+	userFilesLastGenAt      time.Time
+	userFilesLastGenErr     error
 	mu                      sync.Mutex
 	history                 []Message
 	historyStore            *ChatHistoryStore
