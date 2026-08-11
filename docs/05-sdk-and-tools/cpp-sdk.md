@@ -47,6 +47,9 @@ struct CameraConfig {
 };
 ```
 
+`frame_service` overrides the two timing flags above: it performs one startup
+EDID/HPD renegotiation and requires the negotiated 1920x1080 resolution.
+
 ## WakeupListener
 
 ```cpp
@@ -119,7 +122,7 @@ One-shot capture and copy to caller-owned buffer:
 
 ```cpp
 aiden::CameraConfig config;
-config.edid_path = nullptr; // Use built-in 1080p30-only CTA EDID
+config.edid_path = nullptr; // Use built-in 1080p60-only CTA EDID
 
 aiden::CameraCapture camera;
 aiden::VideoFrame frame;

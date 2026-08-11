@@ -23,6 +23,7 @@ private:
     std::string pixel_format_;
     std::string subdev_device_;
     std::string edid_path_;
+    bool force_trigger_pending_;
     CameraCapture camera_;
 };
 

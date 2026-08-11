@@ -13,9 +13,9 @@ When flashing the full firmware, you typically use `update.img`.
 This project's firmware is built on `pico-sdk` and includes the following customizations:
 
 - Wi-Fi uses the external antenna by default;
-- Kernel enables the TC358743 driver;
-- DTS adds TC358743 support;
-- Built-in 1080p30-only EDID;
+- Kernel enables the Rockchip RK628 HDMI-to-CSI V4L2 driver and disables TC358743 for the Pico Zero image;
+- DTS adds the Firefly RK628D board on I2C4 at `0x50`, using four CSI lanes and GPIO3_B1 reset;
+- Built-in 1080p60-only EDID with a one-shot HPD renegotiation;
 - USB-C port is configured as a composite gadget on boot: keyboard HID,
   pointer/touch HID, and CDC ECM networking (`usb0`, default `192.168.42.1`);
 - Injects startup scripts, configuration, and application binaries from `/overlay`.

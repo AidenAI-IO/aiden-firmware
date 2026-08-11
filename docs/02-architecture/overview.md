@@ -21,7 +21,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
            /dev/video0 + subdev        │ ALSA / RK MPI
                      │                 │
              ┌───────▼──────┐          │
-             │ TC358743 HDMI│          │
+             │  RK628D HDMI │          │
              │ capture path │          │
              └──────────────┘          │
 
@@ -56,7 +56,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
 ### Screenshot / Visual Observation
 
 ```text
-TC358743 → /dev/video0 → frame_service ring buffer → Go screenshot tool → LLM image input
+RK628D → /dev/video0 → frame_service ring buffer → Go screenshot tool → LLM image input
 ```
 
 ### Device Control

@@ -7,7 +7,8 @@ FrameCameraCaptureSource::FrameCameraCaptureSource(const CameraConfig& config)
       device_name_(config.device_name ? config.device_name : "/dev/video0"),
       pixel_format_(config.pixel_format ? config.pixel_format : "uyvy"),
       subdev_device_(config.subdev_device ? config.subdev_device : "/dev/v4l-subdev2"),
-      edid_path_(config.edid_path ? config.edid_path : "") {
+      edid_path_(config.edid_path ? config.edid_path : ""),
+      force_trigger_pending_(config.force_trigger) {
     sync_config_strings();
 }
 
@@ -20,7 +21,10 @@ void FrameCameraCaptureSource::sync_config_strings() {
 
 bool FrameCameraCaptureSource::open() {
     sync_config_strings();
-    return camera_.init(config_);
+    config_.force_trigger = force_trigger_pending_;
+    const bool opened = camera_.init(config_);
+    force_trigger_pending_ = false;
+    return opened;
 }
 
 bool FrameCameraCaptureSource::capture(CapturedFrame* frame) {

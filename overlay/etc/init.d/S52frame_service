@@ -15,6 +15,8 @@ SOCKET_PATH=/run/frame_service/frame_service.sock
 FRAME_SERVICE_FPS=30
 FRAME_SERVICE_WIDTH=1920
 FRAME_SERVICE_HEIGHT=1080
+FRAME_SERVICE_FORCE_TRIGGER=1
+FRAME_SERVICE_SUBDEV=
 FRAME_SERVICE_EDID=
 LOG_PATH=/var/log/frame_service/frame_service.log
 PID_FILE=/run/frame_service/frame_service.pid
@@ -87,6 +89,21 @@ watchdog_pid() {
     fi
 }
 
+detect_hdmi_subdev() {
+    for name_file in /sys/class/video4linux/v4l-subdev*/name; do
+        [ -r "$name_file" ] || continue
+        name="$(cat "$name_file" 2>/dev/null)"
+        case "$name" in
+            *rk628-csi*|*tc358743*)
+                node="$(basename "$(dirname "$name_file")")"
+                echo "/dev/$node"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
 start() {
     if [ "$ENABLE_FRAME_SERVICE" != "1" ]; then
         echo "frame_service disabled by config (ENABLE_FRAME_SERVICE=$ENABLE_FRAME_SERVICE)"
@@ -119,6 +136,18 @@ start() {
             if [ -n "$FRAME_SERVICE_HEIGHT" ]; then
                 set -- "$@" --height "$FRAME_SERVICE_HEIGHT"
             fi
+            if [ "$FRAME_SERVICE_FORCE_TRIGGER" = "1" ]; then
+                set -- "$@" --force-trigger
+            else
+                set -- "$@" --no-force-trigger
+            fi
+            subdev="$FRAME_SERVICE_SUBDEV"
+            if [ -z "$subdev" ]; then
+                subdev="$(detect_hdmi_subdev)"
+            fi
+            if [ -n "$subdev" ]; then
+                set -- "$@" --subdev "$subdev"
+            fi
             if [ -n "$FRAME_SERVICE_EDID" ]; then
                 set -- "$@" --edid "$FRAME_SERVICE_EDID"
             fi
@@ -134,7 +163,7 @@ start() {
                 "exited with status $status; restarting in 2s"
             sleep 2
         done
-    ) &
+    ) </dev/null >> "$LOG_PATH" 2>&1 &
     echo "$!" > "$WATCHDOG_PID_FILE"
     echo "Started frame_service"
 }
