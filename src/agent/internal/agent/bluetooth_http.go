@@ -17,7 +17,8 @@ import (
 
 const defaultBLEServiceSocketPath = "/run/ble_service/ble_service.sock"
 
-const maxPhoneNotificationRequestBytes = 64 * 1024
+// Keep this above the largest valid eight-event batch after JSON escaping.
+const maxPhoneNotificationRequestBytes = 256 * 1024
 
 type bluetoothStatusResponse struct {
 	OK        bool              `json:"ok"`

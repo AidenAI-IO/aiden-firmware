@@ -81,3 +81,22 @@ func TestEventStoreAllowsExpiredExternalEventIDAgain(t *testing.T) {
 		t.Fatalf("expired event ID was not reusable: %#v created=%v", retried, created)
 	}
 }
+
+func TestEventStoreDedupeKeyDoesNotCollideOnEmbeddedNUL(t *testing.T) {
+	store := NewEventStore(4)
+	first, firstCreated := store.AppendUnique(NotificationEvent{
+		DeviceID: "a", SourceEventID: "b\x00c", Event: "added",
+	})
+	second, secondCreated := store.AppendUnique(NotificationEvent{
+		DeviceID: "a\x00b", SourceEventID: "c", Event: "added",
+	})
+	if !firstCreated || !secondCreated || first.ID != "1" || second.ID != "2" {
+		t.Fatalf(
+			"embedded NUL values collided: first=%#v created=%v second=%#v created=%v",
+			first,
+			firstCreated,
+			second,
+			secondCreated,
+		)
+	}
+}

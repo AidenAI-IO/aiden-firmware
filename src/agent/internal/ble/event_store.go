@@ -56,7 +56,12 @@ type EventStore struct {
 	generation string
 	next       uint64
 	events     []NotificationEvent
-	sourceSeen map[string]NotificationEvent
+	sourceSeen map[notificationDedupeKey]NotificationEvent
+}
+
+type notificationDedupeKey struct {
+	deviceID      string
+	sourceEventID string
 }
 
 func NewEventStore(capacity int) *EventStore {
@@ -66,7 +71,7 @@ func NewEventStore(capacity int) *EventStore {
 	return &EventStore{
 		capacity:   capacity,
 		generation: newEventGeneration(),
-		sourceSeen: make(map[string]NotificationEvent),
+		sourceSeen: make(map[notificationDedupeKey]NotificationEvent),
 	}
 }
 
@@ -89,8 +94,8 @@ func (s *EventStore) Append(event NotificationEvent) NotificationEvent {
 func (s *EventStore) AppendUnique(event NotificationEvent) (NotificationEvent, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	dedupeKey := notificationDedupeKey(event)
-	if dedupeKey != "" {
+	dedupeKey, hasDedupeKey := notificationEventDedupeKey(event)
+	if hasDedupeKey {
 		if existing, ok := s.sourceSeen[dedupeKey]; ok {
 			return existing, false
 		}
@@ -106,14 +111,14 @@ func (s *EventStore) AppendUnique(event NotificationEvent) (NotificationEvent, b
 		event.Flags = []string{}
 	}
 	s.events = append(s.events, event)
-	if dedupeKey != "" {
+	if hasDedupeKey {
 		s.sourceSeen[dedupeKey] = event
 	}
 	if len(s.events) > s.capacity {
 		overflow := len(s.events) - s.capacity
 		for _, expired := range s.events[:overflow] {
-			expiredKey := notificationDedupeKey(expired)
-			if expiredKey == "" {
+			expiredKey, hasExpiredKey := notificationEventDedupeKey(expired)
+			if !hasExpiredKey {
 				continue
 			}
 			if seen, ok := s.sourceSeen[expiredKey]; ok && seen.sequence == expired.sequence {
@@ -126,11 +131,14 @@ func (s *EventStore) AppendUnique(event NotificationEvent) (NotificationEvent, b
 	return event, true
 }
 
-func notificationDedupeKey(event NotificationEvent) string {
+func notificationEventDedupeKey(event NotificationEvent) (notificationDedupeKey, bool) {
 	if event.SourceEventID == "" {
-		return ""
+		return notificationDedupeKey{}, false
 	}
-	return event.DeviceID + "\x00" + event.SourceEventID
+	return notificationDedupeKey{
+		deviceID:      event.DeviceID,
+		sourceEventID: event.SourceEventID,
+	}, true
 }
 
 func (s *EventStore) Page(since uint64, limit int) EventPage {

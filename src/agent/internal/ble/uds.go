@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	maxUDSHeaderBytes  = 64 * 1024
+	maxUDSHeaderBytes  = 256 * 1024
 	maxUDSPayloadBytes = 1024 * 1024
 )
 

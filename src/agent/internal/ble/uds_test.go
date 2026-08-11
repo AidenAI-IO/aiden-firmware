@@ -135,7 +135,7 @@ func TestUDSEventsSinceRejectsOversizedResponse(t *testing.T) {
 		service.store.Append(NotificationEvent{
 			NotificationUID: uint32(index + 1),
 			Event:           "added",
-			Message:         strings.Repeat("x", 8*1024),
+			Message:         strings.Repeat("x", 16*1024),
 		})
 	}
 	server := NewUDSServer("unused", service)
@@ -167,6 +167,46 @@ func TestWriteUDSMessageEnforcesFrameLimits(t *testing.T) {
 	}
 	if err := writeUDSMessage(&bytes.Buffer{}, []byte(`{}`), make([]byte, maxUDSPayloadBytes+1)); err == nil {
 		t.Fatal("oversized payload was accepted")
+	}
+}
+
+func TestWriteUDSMessageAcceptsMaximumNotificationBatch(t *testing.T) {
+	fill := func(length int) string { return strings.Repeat(`"`, length) }
+	events := make([]NotificationEvent, maxPublishedNotifications)
+	for index := range events {
+		flags := make([]string, maxNotificationFlags)
+		for flagIndex := range flags {
+			flags[flagIndex] = fill(maxNotificationFlagLength)
+		}
+		events[index] = NotificationEvent{
+			SourceID:      fill(maxSourceIDLength),
+			SourceEventID: fill(maxSourceEventIDLength),
+			Event:         "added",
+			Flags:         flags,
+			AppIdentifier: fill(maxAppIdentifierLength),
+			Title:         fill(maxNotificationTitle),
+			Subtitle:      fill(maxNotificationSubtitle),
+			Message:       fill(maxNotificationMessage),
+			Category:      fill(maxNotificationCategory),
+			Date:          fill(maxNotificationDate),
+		}
+	}
+	header, err := json.Marshal(udsRequest{
+		Op:      "notification_publish",
+		PhoneID: fill(maxPhoneIDLength),
+		Events:  events,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(header) <= 64*1024 {
+		t.Fatalf("maximum notification batch did not exercise the old limit: %d", len(header))
+	}
+	if len(header) > maxUDSHeaderBytes {
+		t.Fatalf("maximum notification batch exceeds UDS header limit: %d", len(header))
+	}
+	if err := writeUDSMessage(&bytes.Buffer{}, header, nil); err != nil {
+		t.Fatalf("maximum valid notification header was rejected: %v", err)
 	}
 }
 

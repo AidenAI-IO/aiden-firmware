@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -157,6 +158,49 @@ func TestPhoneNotificationEventsRejectsInvalidAndNonUSBRequests(t *testing.T) {
 	}
 }
 
+func TestPhoneNotificationEventsAcceptsMaximumValidatedBatch(t *testing.T) {
+	requestPayload := maximumPhoneNotificationRequest()
+	body, err := json.Marshal(requestPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) <= 64*1024 {
+		t.Fatalf("maximum notification batch did not exercise the old limit: %d", len(body))
+	}
+	if len(body) > maxPhoneNotificationRequestBytes {
+		t.Fatalf("maximum notification batch exceeds HTTP limit: %d", len(body))
+	}
+
+	server := &Server{
+		bleNotifyRequest: func(
+			_ context.Context,
+			_ string,
+			_ string,
+			events []ble.NotificationEvent,
+		) (ble.NotificationPublishResult, error) {
+			return ble.NotificationPublishResult{Accepted: len(events), LastID: "8"}, nil
+		},
+	}
+	request := bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	server.handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusOK || !containsAll(recorder.Body.String(), `"accepted":8`) {
+		t.Fatalf("maximum publish code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPhoneNotificationEventsRejectsOversizedBody(t *testing.T) {
+	body := `{"phone_id":"` + strings.Repeat("x", maxPhoneNotificationRequestBytes+1) + `","events":[]}`
+	request := bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
+	request.Body = io.NopCloser(strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+	(&Server{}).handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("oversized publish code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestBluetoothHTTPMapsPairingConflict(t *testing.T) {
 	server := &Server{
 		blePairingStartRequest: func(context.Context, string) (ble.RuntimeStatus, error) {
@@ -239,4 +283,28 @@ func bluetoothControlRequestForPath(method, path string) *http.Request {
 		http.LocalAddrContextKey,
 		&net.TCPAddr{IP: net.ParseIP("192.168.42.1"), Port: 8080},
 	))
+}
+
+func maximumPhoneNotificationRequest() phoneNotificationRequest {
+	fill := func(length int) string { return strings.Repeat(`"`, length) }
+	events := make([]ble.NotificationEvent, 8)
+	for index := range events {
+		flags := make([]string, 16)
+		for flagIndex := range flags {
+			flags[flagIndex] = fill(64)
+		}
+		events[index] = ble.NotificationEvent{
+			SourceID:      fill(512),
+			SourceEventID: fill(128),
+			Event:         "added",
+			Flags:         flags,
+			AppIdentifier: fill(255),
+			Title:         fill(512),
+			Subtitle:      fill(512),
+			Message:       fill(4096),
+			Category:      fill(128),
+			Date:          fill(64),
+		}
+	}
+	return phoneNotificationRequest{PhoneID: fill(128), Events: events}
 }
