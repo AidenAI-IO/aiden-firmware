@@ -130,6 +130,21 @@ require_pattern 'V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK' "$DRIVER" \
     "RK628 mbus configuration must report non-continuous clock mode"
 require_pattern 'link_freq->flags \|= V4L2_CTRL_FLAG_READ_ONLY' "$DRIVER" \
     "RK628 link frequency must be derived read-only state"
+require_pattern '#define SIGNAL_RECOVERY_INTERVAL_MS[[:space:]]+10000' "$DRIVER" \
+    "RK628 direct mode must throttle automatic HDMI PHY recovery"
+require_pattern 'rk628_csi_schedule_recovery\(sd\);' "$DRIVER" \
+    "RK628 polling must recover when the HDMI source starts after initial probe"
+require_pattern 'time_before\(jiffies, csi->next_recovery\)' "$DRIVER" \
+    "RK628 HDMI recovery must use a per-device retry deadline"
+require_pattern 'i2c_set_clientdata\(client, sd\);' "$DRIVER" \
+    "RK628 remove must retain the V4L2 subdevice associated with the I2C client"
+remove_body="$(sed -n '/^static int rk628_csi_remove(/,/^}/p' "$DRIVER")"
+if ! grep -q 'v4l2_async_unregister_subdev(sd);' <<< "$remove_body" || \
+        ! grep -q 'media_entity_cleanup(&sd->entity);' <<< "$remove_body" || \
+        ! grep -q 'v4l2_ctrl_handler_free(&csi->hdl);' <<< "$remove_body"; then
+    echo "FAIL: RK628 remove must unregister and release its V4L2 resources" >&2
+    exit 1
+fi
 
 for call_site in rk628_csi_s_dv_timings rk628_csi_set_fmt mipi_dphy_power_on rk628_csi_probe; do
     call_site_body="$(sed -n "/^static .*${call_site}(/,/^}/p" "$DRIVER")"
