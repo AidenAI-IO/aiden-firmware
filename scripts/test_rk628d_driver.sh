@@ -57,12 +57,18 @@ require_pattern 'pinctrl-0 = <&rk628_mipi_pins>;' "$DTS" \
     "CIF MIPI pinctrl must not reserve the unused RK628 lanes"
 reject_pattern 'pinctrl-0 = <&mipi_pins>;' "$DTS" \
     "Four-lane MIPI pinctrl would conflict with the RK628 reset pin"
-require_pattern 'clocks = <&cru MCLK_REF_MIPI0>;' "$DTS" \
-    "RK628 must receive the RV1106 24 MHz MIPI reference clock"
-require_pattern 'clock-names = "soc_24M";' "$DTS" \
-    "RK628 reference clock must use the driver clock name"
-require_pattern 'pinctrl-0 = <&rk628_reset_pin &mipi_refclk_out0>;' "$DTS" \
-    "RK628 pinctrl must configure both reset and the reference clock"
+reject_pattern 'clocks = <&cru MCLK_REF_MIPI0>;' "$DTS" \
+    "Firefly RK628D module must use its onboard reference clock"
+reject_pattern 'clock-names = "soc_24M";' "$DTS" \
+    "Firefly RK628D module must not request an external reference clock"
+reject_pattern 'assigned-clocks = <&cru CLK_REF_MIPI0>;' "$DTS" \
+    "Firefly RK628D module must not configure an unused reference clock"
+reject_pattern 'assigned-clock-rates = <24000000>;' "$DTS" \
+    "Firefly RK628D module must not configure an unused clock rate"
+require_pattern 'pinctrl-0 = <&rk628_reset_pin>;' "$DTS" \
+    "Firefly RK628D pinctrl must configure only the reset signal"
+reject_pattern 'mipi_refclk_out0' "$DTS" \
+    "Firefly RK628D module has no external reference-clock pin"
 require_pattern 'remote-endpoint = <&rk628_out>;' "$DTS" \
     "CSI D-PHY input must link to RK628"
 require_pattern 'remote-endpoint = <&csi_dphy_input2>;' "$DTS" \
