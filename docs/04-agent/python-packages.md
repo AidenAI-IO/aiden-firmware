@@ -66,7 +66,10 @@ pico-sdk/sysdrv/tools/board/buildroot/luckfox_pico_w_defconfig
 
 The pinned SDK uses Buildroot 2023.02.6, Python 3.11.6, and pip 22.3.1. The root
 repository build-policy assertion requires both defconfigs to retain the pip
-option. Runtime code must not self-upgrade the rootfs pip installation.
+option. Buildroot 2023.02.6 otherwise combines `aiohttp` 3.8.3 with incompatible
+`charset-normalizer` 3.0.1, so the SDK reproducibly overrides that package
+recipe with compatible version 2.1.1. Runtime code must not self-upgrade the
+rootfs pip installation.
 
 ## Persistent Layout
 
@@ -278,7 +281,7 @@ concurrency model.
 
 | Area | Files |
 | --- | --- |
-| Buildroot pip | Two Luckfox defconfigs in the `pico-sdk` submodule |
+| Buildroot pip and compatible Python package set | Two Luckfox defconfigs and the project-owned `python-charset-normalizer-aiden` recipe override in the `pico-sdk` submodule |
 | Build policy | `scripts/test_reproducible_rootfs_policy.sh` or a focused adjacent test |
 | Shared path helper | `src/agent/internal/agent/python_packages.go` |
 | Shell environment | `src/agent/internal/agent/tools.go` and `tools_shell_session.go` |

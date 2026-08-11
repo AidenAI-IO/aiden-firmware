@@ -4,9 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_IMAGE_SH="$ROOT_DIR/build_image.sh"
 INNER_BUILD_IMAGE_SH="$ROOT_DIR/_build_image.sh"
-# Only sysdrv/Makefile and the two Buildroot defconfigs are read below, so PR
-# CI can point this at a sparse checkout of the pinned submodule commit instead
-# of cloning the ~1GB pico-sdk working tree.
+# Only sysdrv/Makefile, the two Buildroot defconfigs, and the small project-owned
+# package override files are read below, so PR CI can point this at a sparse
+# checkout of the pinned submodule commit instead of cloning the ~1GB pico-sdk
+# working tree.
 PICO_SDK="${PICO_SDK_DIR:-$ROOT_DIR/pico-sdk}"
 
 if [ ! -f "$PICO_SDK/sysdrv/Makefile" ]; then
@@ -70,6 +71,11 @@ for defconfig in \
     exit 1
   fi
 
+  if ! grep -q '^BR2_PACKAGE_PYTHON_CHARSET_NORMALIZER=y$' "$defconfig"; then
+    echo "$(basename "$defconfig") must include charset-normalizer because the firmware aiohttp package requires it" >&2
+    exit 1
+  fi
+
   if grep -q '^BR2_PACKAGE_ANDROID_TOOLS_ADBD=y$' "$defconfig"; then
     echo "$(basename "$defconfig") must not enable adbd; Aiden expects the board to run the adb client instead" >&2
     exit 1
@@ -82,6 +88,38 @@ if ! grep -q 'define sync_buildroot_board_config' "$PICO_SDK/sysdrv/Makefile" ||
   exit 1
 fi
 
+charset_pin_dir="$PICO_SDK/sysdrv/tools/board/buildroot/python-charset-normalizer-aiden"
+charset_pin_mk="$charset_pin_dir/python-charset-normalizer.mk"
+charset_pin_hash="$charset_pin_dir/python-charset-normalizer.hash"
+for pin_file in "$charset_pin_mk" "$charset_pin_hash"; do
+  if [ ! -f "$pin_file" ]; then
+    echo "missing project-owned charset-normalizer pin: $pin_file" >&2
+    exit 1
+  fi
+done
+
+if ! grep -q '^PYTHON_CHARSET_NORMALIZER_VERSION = 2\.1\.1$' "$charset_pin_mk"; then
+  echo "firmware charset-normalizer must stay pinned to 2.1.1, which satisfies aiohttp 3.8.3's >=2.0,<3.0 requirement" >&2
+  exit 1
+fi
+
+if ! grep -q '^sha256  5a3d016c7c547f69d6f81fb0db9449ce888b418b5b9952cc5e6e66843e9dd845  charset-normalizer-2\.1\.1\.tar\.gz$' "$charset_pin_hash"; then
+  echo "charset-normalizer 2.1.1 source hash must remain pinned to the verified PyPI artifact" >&2
+  exit 1
+fi
+
+if ! grep -q '^define inject_python_charset_normalizer_aiden_pkg$' "$PICO_SDK/sysdrv/Makefile" || \
+   ! grep -Fq '$(call inject_python_charset_normalizer_aiden_pkg)' "$PICO_SDK/sysdrv/Makefile"; then
+  echo "pico-sdk sysdrv Makefile must inject the compatible charset-normalizer recipe before every Buildroot build" >&2
+  exit 1
+fi
+
+buildroot_config_state_value="$(sed -n '/^define buildroot_config_state_value$/,/^endef$/p' "$PICO_SDK/sysdrv/Makefile")"
+if ! printf '%s\n' "$buildroot_config_state_value" | grep -q 'PYTHON_CHARSET_NORMALIZER_AIDEN_SRC'; then
+  echo "pico-sdk Buildroot state must include the project-owned charset-normalizer recipe so pin changes invalidate cached package output" >&2
+  exit 1
+fi
+
 if ! grep -q 'define refresh_buildroot_config_state' "$PICO_SDK/sysdrv/Makefile" || \
    ! grep -q '.aiden_buildroot_config_state' "$PICO_SDK/sysdrv/Makefile" || \
    ! grep -q 'Buildroot configuration changed; rebuilding generated Buildroot state' "$PICO_SDK/sysdrv/Makefile"; then
@@ -89,7 +127,6 @@ if ! grep -q 'define refresh_buildroot_config_state' "$PICO_SDK/sysdrv/Makefile"
   exit 1
 fi
 
-buildroot_config_state_value="$(sed -n '/^define buildroot_config_state_value$/,/^endef$/p' "$PICO_SDK/sysdrv/Makefile")"
 refresh_buildroot_config_state="$(sed -n '/^define refresh_buildroot_config_state$/,/^endef$/p' "$PICO_SDK/sysdrv/Makefile")"
 if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -Fq '$(call buildroot_config_state_value)'; then
   echo "pico-sdk Buildroot state refresh must use the shared Buildroot state value" >&2
