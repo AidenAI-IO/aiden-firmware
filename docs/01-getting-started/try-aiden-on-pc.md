@@ -29,8 +29,8 @@ project validation matrix.
 ## 1. Clone and Install
 
 ```bash
-git clone --recursive https://github.com/AidenAI-IO/aiden-hardware-demo.git
-cd aiden-hardware-demo/benchmark
+git clone --recursive https://github.com/AidenAI-IO/aiden-firmware.git
+cd aiden-firmware/benchmark
 uv sync
 ```
 

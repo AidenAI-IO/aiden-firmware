@@ -33,7 +33,7 @@ jobs:
 
           curl --fail-with-body --silent --show-error \
             --request POST \
-            --url https://api.github.com/repos/AllWiseAI/aiden-website/dispatches \
+            --url https://api.github.com/repos/AidenAI-IO/aiden-website/dispatches \
             --header "Accept: application/vnd.github+json" \
             --header "Authorization: Bearer $GH_TOKEN" \
             --header "X-GitHub-Api-Version: 2022-11-28" \
