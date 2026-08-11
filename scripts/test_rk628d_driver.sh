@@ -45,18 +45,16 @@ require_pattern 'rk628-csi@50' "$DTS" \
     "Pico Zero DTS must use the strapped RK628 address 0x50"
 require_pattern 'clock-frequency = <100000>;' "$DTS" \
     "RK628 I2C must run at 100 kHz for reliable 32-bit register transfers"
-require_pattern 'reset-gpios = <&gpio3 RK_PB1 GPIO_ACTIVE_LOW>;' "$DTS" \
-    "RK628 reset must use GPIO3_B1"
+require_pattern 'reset-gpios = <&gpio1 RK_PC2 GPIO_ACTIVE_LOW>;' "$DTS" \
+    "RK628 reset must use Pico Zero CSI connector pin 17 (GPIO1_C2)"
 require_pattern 'rk628_reset_pin: rk628-reset-pin' "$DTS" \
     "RK628 reset must have an explicit pinctrl group"
-require_pattern '<3 RK_PB1 RK_FUNC_GPIO &pcfg_pull_up>' "$DTS" \
-    "RK628 reset pinctrl must switch GPIO3_B1 out of MIPI lane mode"
-require_pattern 'rk628_mipi_pins: rk628-mipi-pins' "$DTS" \
-    "RK628 capture must use a dedicated two-lane MIPI pinctrl group"
-require_pattern 'pinctrl-0 = <&rk628_mipi_pins>;' "$DTS" \
-    "CIF MIPI pinctrl must not reserve the unused RK628 lanes"
-reject_pattern 'pinctrl-0 = <&mipi_pins>;' "$DTS" \
-    "Four-lane MIPI pinctrl would conflict with the RK628 reset pin"
+require_pattern '<1 RK_PC2 RK_FUNC_GPIO &pcfg_pull_up>' "$DTS" \
+    "RK628 reset pinctrl must configure Pico Zero CSI connector pin 17"
+require_pattern 'pinctrl-0 = <&mipi_pins>;' "$DTS" \
+    "RK628 capture must configure the Pico Zero four-lane MIPI connector"
+reject_pattern 'rk628_mipi_pins' "$DTS" \
+    "RK628 capture must not retain the obsolete two-lane pinctrl group"
 reject_pattern 'clocks = <&cru MCLK_REF_MIPI0>;' "$DTS" \
     "Firefly RK628D module must use its onboard reference clock"
 reject_pattern 'clock-names = "soc_24M";' "$DTS" \
@@ -75,12 +73,12 @@ require_pattern 'remote-endpoint = <&csi_dphy_input2>;' "$DTS" \
     "RK628 output must link to CSI D-PHY input 2"
 dphy_endpoint="$(sed -n '/csi_dphy_input2: endpoint@2 {/,/^[[:space:]]*};/p' "$DTS")"
 rk628_endpoint="$(sed -n '/rk628_out: endpoint {/,/^[[:space:]]*};/p' "$DTS")"
-if ! grep -q 'data-lanes = <1 2>;' <<< "$dphy_endpoint"; then
-    echo "FAIL: CSI D-PHY input 2 must use two data lanes" >&2
+if ! grep -q 'data-lanes = <1 2 3 4>;' <<< "$dphy_endpoint"; then
+    echo "FAIL: CSI D-PHY input 2 must use four data lanes" >&2
     exit 1
 fi
-if ! grep -q 'data-lanes = <1 2>;' <<< "$rk628_endpoint"; then
-    echo "FAIL: RK628 output must use two data lanes" >&2
+if ! grep -q 'data-lanes = <1 2 3 4>;' <<< "$rk628_endpoint"; then
+    echo "FAIL: RK628 output must use four data lanes" >&2
     exit 1
 fi
 require_pattern 'clock-lanes = <0>;' "$DTS" \
