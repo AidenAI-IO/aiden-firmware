@@ -31,7 +31,7 @@ func TestHandleUserFiles_GeneratesIfMissing(t *testing.T) {
 	tools := t.TempDir()
 	rpt := filepath.Join(t.TempDir(), "report.html")
 	script := filepath.Join(tools, "view_agent_files.sh")
-	body := "#!/bin/sh\necho '<html>generated</html>' > " + rpt + "\n"
+	body := "#!/bin/sh\necho '<html>generated</html>' > \"$1\"\n"
 	os.WriteFile(script, []byte(body), 0o755)
 	s := &Server{userFilesReportPath: rpt, userFilesToolsDir: tools}
 	req := httptest.NewRequest(http.MethodGet, "/user_files", nil)
@@ -50,7 +50,7 @@ func TestHandleUserFiles_RefreshQueryRegeneratesReport(t *testing.T) {
 	}
 
 	script := filepath.Join(tools, "view_agent_files.sh")
-	body := "#!/bin/sh\necho '<html>fresh</html>' > " + rpt + "\n"
+	body := "#!/bin/sh\necho '<html>fresh</html>' > \"$1\"\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestHandleUserFiles_ConcurrentRefreshCoalescesGeneration(t *testing.T) {
 	}
 
 	script := filepath.Join(tools, "view_agent_files.sh")
-	body := "#!/bin/sh\necho run >> " + marker + "\nsleep 0.2\necho '<html>fresh</html>' > " + rpt + "\n"
+	body := "#!/bin/sh\necho run >> " + marker + "\nsleep 0.2\necho '<html>fresh</html>' > \"$1\"\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +117,100 @@ func TestHandleUserFiles_ConcurrentRefreshCoalescesGeneration(t *testing.T) {
 	}
 	if got := strings.Count(string(runs), "run\n"); got != 1 {
 		t.Fatalf("generation runs = %d, want 1", got)
+	}
+}
+
+func TestHandleUserFiles_SequentialRefreshRunsAgain(t *testing.T) {
+	tools := t.TempDir()
+	rpt := filepath.Join(t.TempDir(), "report.html")
+	marker := filepath.Join(t.TempDir(), "runs")
+	if err := os.WriteFile(rpt, []byte("<html>stale</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(tools, "view_agent_files.sh")
+	body := "#!/bin/sh\necho run >> " + marker + "\necho '<html>fresh</html>' > \"$1\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{userFilesReportPath: rpt, userFilesToolsDir: tools}
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/user_files?refresh=1", nil)
+		rec := httptest.NewRecorder()
+		s.handleUserFiles(rec, req)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("refresh %d: code=%d body=%q", i+1, rec.Code, rec.Body.String())
+		}
+	}
+
+	runs, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(runs), "run\n"); got != 2 {
+		t.Fatalf("generation runs = %d, want 2", got)
+	}
+}
+
+func TestHandleUserFiles_ServesCompleteReportDuringRefresh(t *testing.T) {
+	tools := t.TempDir()
+	rpt := filepath.Join(t.TempDir(), "report.html")
+	marker := filepath.Join(t.TempDir(), "writing")
+	release := filepath.Join(t.TempDir(), "release")
+	if err := os.WriteFile(rpt, []byte("<html>stale</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(tools, "view_agent_files.sh")
+	body := "#!/bin/sh\nprintf '<html>partial' > \"$1\"\ntouch \"" + marker + "\"\nwhile [ ! -e \"" + release + "\" ]; do sleep 0.01; done\nprintf '<html>fresh</html>' > \"$1\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{userFilesReportPath: rpt, userFilesToolsDir: tools}
+	refreshCode := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/user_files?refresh=1", nil)
+		rec := httptest.NewRecorder()
+		s.handleUserFiles(rec, req)
+		refreshCode <- rec.Code
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("generator did not begin writing temporary report")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/user_files", nil)
+	rec := httptest.NewRecorder()
+	s.handleUserFiles(rec, req)
+	if err := os.WriteFile(release, []byte("continue"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "stale") || strings.Contains(rec.Body.String(), "partial") {
+		t.Fatalf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	select {
+	case code := <-refreshCode:
+		if code != http.StatusSeeOther {
+			t.Fatalf("refresh code=%d, want %d", code, http.StatusSeeOther)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("refresh did not finish after generator release")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/user_files", nil)
+	rec = httptest.NewRecorder()
+	s.handleUserFiles(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "fresh") {
+		t.Fatalf("code=%d body=%q", rec.Code, rec.Body.String())
 	}
 }
 
@@ -169,7 +263,7 @@ func TestHandleUserFilesRegenerate_RunsAsync(t *testing.T) {
 	script := filepath.Join(tools, "view_agent_files.sh")
 	// 200ms sleep is long enough that a synchronous handler would not yet
 	// have created the marker by the time we check immediately afterwards.
-	body := "#!/bin/sh\nsleep 0.2\ntouch " + marker + "\necho '<html>regen</html>' > " + rpt + "\n"
+	body := "#!/bin/sh\nsleep 0.2\ntouch " + marker + "\necho '<html>regen</html>' > \"$1\"\n"
 	os.WriteFile(script, []byte(body), 0o755)
 	s := &Server{userFilesReportPath: rpt, userFilesToolsDir: tools}
 	req := httptest.NewRequest(http.MethodPost, "/user_files/regenerate", nil)

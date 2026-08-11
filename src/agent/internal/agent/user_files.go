@@ -12,21 +12,35 @@ import (
 	"time"
 )
 
-const (
-	userFilesGenerateTimeout       = 30 * time.Second
-	userFilesRefreshCoalesceWindow = 2 * time.Second
-)
+const userFilesGenerateTimeout = 30 * time.Second
 
 const userFilesRefreshHref = "/user_files?refresh=1"
 
 const userFilesRefreshControlMarker = `id="user-files-refresh"`
+
+type userFilesReportGeneration struct {
+	done chan struct{}
+	err  error
+}
 
 // runUserFilesScript runs view_agent_files.sh under a fixed timeout, killing
 // the process if it exceeds the deadline. Output is collected for diagnostics.
 // Used by both ensureUserFilesReport (synchronous) and handleUserFilesRegenerate
 // (async) so a hung script can never leak a long-lived child.
 func (s *Server) runUserFilesScript(stdoutSink string) error {
-	script := "cd " + shellQuote(s.userFilesToolsDir) + " && ./view_agent_files.sh"
+	reportDir := filepath.Dir(s.userFilesReportPath)
+	tempReport, err := os.CreateTemp(reportDir, ".files_report-*.html")
+	if err != nil {
+		return fmt.Errorf("create temporary user_files report: %w", err)
+	}
+	tempReportPath := tempReport.Name()
+	if err := tempReport.Close(); err != nil {
+		os.Remove(tempReportPath)
+		return fmt.Errorf("close temporary user_files report: %w", err)
+	}
+	defer os.Remove(tempReportPath)
+
+	script := "cd " + shellQuote(s.userFilesToolsDir) + " && ./view_agent_files.sh " + shellQuote(tempReportPath)
 	if stdoutSink != "" {
 		script += " > " + shellQuote(stdoutSink) + " 2>&1"
 	} else {
@@ -41,11 +55,26 @@ func (s *Server) runUserFilesScript(stdoutSink string) error {
 	defer timer.Stop()
 	if stdoutSink != "" {
 		// Caller redirected stdout to a file; we only need exit status.
-		return cmd.Run()
+		err = cmd.Run()
+	} else {
+		var out []byte
+		out, err = cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("user_files generation failed: %s", string(out))
+		}
 	}
-	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("user_files generation failed: %s", string(out))
+		return err
+	}
+	info, err := os.Stat(tempReportPath)
+	if err != nil || info.Size() == 0 {
+		return fmt.Errorf("script ran but report not produced")
+	}
+	if err := os.Chmod(tempReportPath, 0o644); err != nil {
+		return fmt.Errorf("set user_files report permissions: %w", err)
+	}
+	if err := os.Rename(tempReportPath, s.userFilesReportPath); err != nil {
+		return fmt.Errorf("publish user_files report: %w", err)
 	}
 	return nil
 }
@@ -56,16 +85,20 @@ func (s *Server) ensureUserFilesReport(forceRefresh bool, stdoutSink string) err
 	}
 
 	s.userFilesGenerateMu.Lock()
-	defer s.userFilesGenerateMu.Unlock()
+	if generation := s.userFilesGeneration; generation != nil {
+		s.userFilesGenerateMu.Unlock()
+		<-generation.done
+		return generation.err
+	}
 
 	_, reportErr := os.Stat(s.userFilesReportPath)
 	if reportErr == nil && !forceRefresh {
+		s.userFilesGenerateMu.Unlock()
 		return nil
 	}
-	if time.Since(s.userFilesLastGenAt) <= userFilesRefreshCoalesceWindow &&
-		(forceRefresh || s.userFilesLastGenErr != nil) {
-		return s.userFilesLastGenErr
-	}
+	generation := &userFilesReportGeneration{done: make(chan struct{})}
+	s.userFilesGeneration = generation
+	s.userFilesGenerateMu.Unlock()
 
 	err := s.runUserFilesScript(stdoutSink)
 	if err == nil {
@@ -73,8 +106,12 @@ func (s *Server) ensureUserFilesReport(forceRefresh bool, stdoutSink string) err
 			err = fmt.Errorf("script ran but report not produced")
 		}
 	}
-	s.userFilesLastGenAt = time.Now()
-	s.userFilesLastGenErr = err
+
+	s.userFilesGenerateMu.Lock()
+	generation.err = err
+	s.userFilesGeneration = nil
+	close(generation.done)
+	s.userFilesGenerateMu.Unlock()
 	return err
 }
 
