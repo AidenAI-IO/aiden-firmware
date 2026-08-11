@@ -770,32 +770,39 @@ func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.Obj
 	b.service.consumer.SetControlPointWriter(func(command []byte) error {
 		controlPoint := selected.paths.controlPoint
 		command = append([]byte(nil), command...)
-		options := map[string]dbus.Variant{"type": dbus.MakeVariant("command")}
 		object := b.conn.Object(BlueZBusName, controlPoint)
-		go func() {
-			if err := callWithTimeout(
-				object,
-				blueZGattCharInterface+".WriteValue",
-				command,
-				options,
-			).Err; err != nil {
-				b.ancsMu.Lock()
-				current := b.ancs.controlPoint
-				b.ancsMu.Unlock()
-				if current == controlPoint {
-					b.service.status.update(func(status *RuntimeStatus) {
-						status.LastError = fmt.Sprintf("write ANCS Control Point: %v", err)
-					})
-				}
-			}
-		}()
-		return nil
+		err := callWithTimeout(
+			object,
+			blueZGattCharInterface+".WriteValue",
+			command,
+			ancsControlPointWriteOptions(),
+		).Err
+		if err == nil {
+			return nil
+		}
+		writeErr := fmt.Errorf("write ANCS Control Point: %w", err)
+		b.ancsMu.Lock()
+		current := b.ancs.controlPoint
+		b.ancsMu.Unlock()
+		if current == controlPoint {
+			b.service.status.update(func(status *RuntimeStatus) {
+				status.LastError = writeErr.Error()
+			})
+		}
+		return writeErr
 	})
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.ANCSSubscribed = true
 		status.LastError = ""
 	})
 	return nil
+}
+
+func ancsControlPointWriteOptions() map[string]dbus.Variant {
+	// The iOS ANCS Control Point advertises the GATT "write" flag, not
+	// "write-without-response". BlueZ maps those operations to request and
+	// command respectively, so the Control Point must use a write request.
+	return map[string]dbus.Variant{"type": dbus.MakeVariant("request")}
 }
 
 func (b *blueZBackend) startNotify(objects managedObjects, path dbus.ObjectPath) error {
