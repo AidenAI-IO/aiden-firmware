@@ -139,7 +139,7 @@ for call_site in rk628_csi_s_dv_timings rk628_csi_set_fmt mipi_dphy_power_on rk6
     fi
 done
 
-python3 - "$DRIVER" "$ROOT_DIR/edid/1080p30.hex" "$ROOT_DIR/src/aiden_sdk.cpp" <<'PY'
+python3 - "$DRIVER" "$ROOT_DIR/edid/hdmi_1080p30_cta.hex" "$ROOT_DIR/src/aiden_sdk.cpp" <<'PY'
 import pathlib
 import re
 import sys
@@ -148,10 +148,40 @@ driver = pathlib.Path(sys.argv[1]).read_text()
 fixture = bytes.fromhex(pathlib.Path(sys.argv[2]).read_text())
 sdk = pathlib.Path(sys.argv[3]).read_text()
 
-if len(fixture) != 128 or sum(fixture) % 256 != 0:
-    raise SystemExit("FAIL: validated 1080p30 EDID must be one checksummed block")
+if len(fixture) != 256:
+    raise SystemExit("FAIL: validated HDMI 1080p30 EDID must contain two blocks")
+if any(sum(fixture[offset:offset + 128]) % 256 for offset in range(0, len(fixture), 128)):
+    raise SystemExit("FAIL: every HDMI 1080p30 EDID block must have a valid checksum")
 if fixture[20] & 0x80 == 0:
     raise SystemExit("FAIL: HDMI EDID must declare a digital video input")
+if fixture[126] != 1 or fixture[128] != 0x02:
+    raise SystemExit("FAIL: HDMI EDID must declare one CTA-861 extension")
+
+cta = fixture[128:]
+dtd_offset = cta[2]
+if dtd_offset < 4 or dtd_offset > 127:
+    raise SystemExit("FAIL: HDMI CTA extension has an invalid data-block boundary")
+
+video_vics = []
+has_hdmi_vsdb = False
+offset = 4
+while offset < dtd_offset:
+    header = cta[offset]
+    tag = header >> 5
+    length = header & 0x1f
+    payload = cta[offset + 1:offset + 1 + length]
+    if len(payload) != length:
+        raise SystemExit("FAIL: HDMI CTA extension contains a truncated data block")
+    if tag == 2:
+        video_vics.extend(value & 0x7f for value in payload)
+    elif tag == 3 and payload[:3] == bytes((0x03, 0x0c, 0x00)):
+        has_hdmi_vsdb = True
+    offset += 1 + length
+
+if video_vics != [34]:
+    raise SystemExit("FAIL: RK628D EDID must advertise only CTA VIC 34 (1080p30)")
+if not has_hdmi_vsdb:
+    raise SystemExit("FAIL: RK628D EDID must identify itself as an HDMI sink")
 
 
 def extract_edid(source, declaration, missing_message):
