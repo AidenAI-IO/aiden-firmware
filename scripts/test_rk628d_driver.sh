@@ -148,6 +148,11 @@ driver = pathlib.Path(sys.argv[1]).read_text()
 fixture = bytes.fromhex(pathlib.Path(sys.argv[2]).read_text())
 sdk = pathlib.Path(sys.argv[3]).read_text()
 
+if len(fixture) != 128 or sum(fixture) % 256 != 0:
+    raise SystemExit("FAIL: validated 1080p30 EDID must be one checksummed block")
+if fixture[20] & 0x80 == 0:
+    raise SystemExit("FAIL: HDMI EDID must declare a digital video input")
+
 
 def extract_edid(source, declaration, missing_message):
     match = re.search(
