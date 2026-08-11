@@ -1,0 +1,164 @@
+#!/bin/sh
+# Aiden BLE Peripheral/ANCS service watchdog.
+
+CONFIG_FILE=${CONFIG_FILE:-/etc/aiden_ble_service.conf}
+BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
+ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
+BLE_SERVICE_BIN=/oem/usr/bin/ble_service
+SOCKET_PATH=/run/ble_service/ble_service.sock
+LOG_PATH=/var/log/ble_service/ble_service.log
+PID_FILE=/run/ble_service/ble_service.pid
+WATCHDOG_PID_FILE=/run/ble_service/ble_service_watchdog.pid
+DEVICE_NAME=Aiden
+EVENT_CAPACITY=512
+PAIRING_WINDOW_SECONDS=300
+
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+[ -f "$BOOT_CONF" ] && . "$BOOT_CONF"
+: "${ENABLE_BLE_SERVICE:=1}"
+
+is_running() {
+    [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null
+}
+
+read_pid() {
+    file="$1"
+    [ -f "$file" ] || return 0
+    pid="$(cat "$file" 2>/dev/null)"
+    case "$pid" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    if is_running "$pid"; then
+        echo "$pid"
+    fi
+}
+
+start() {
+    if [ "$ENABLE_BLE_SERVICE" != "1" ]; then
+        echo "ble_service disabled by config (ENABLE_BLE_SERVICE=$ENABLE_BLE_SERVICE)"
+        return 0
+    fi
+    wpid="$(read_pid "$WATCHDOG_PID_FILE")"
+    if is_running "$wpid"; then
+        echo "ble_service watchdog already running (pid $wpid)"
+        return 0
+    fi
+    pid="$(read_pid "$PID_FILE")"
+    if is_running "$pid"; then
+        echo "ble_service is still running without its watchdog (pid $pid)" >&2
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$SOCKET_PATH")" "$(dirname "$LOG_PATH")"
+    rm -f "$SOCKET_PATH"
+    (
+        child=""
+        stop_child() {
+            if [ -n "$child" ]; then
+                if is_running "$child"; then
+                    kill "$child" 2>/dev/null || true
+                    elapsed=0
+                    while is_running "$child" && [ "$elapsed" -lt 5 ]; do
+                        sleep 1
+                        elapsed=$((elapsed + 1))
+                    done
+                    if is_running "$child"; then
+                        echo "$(date -Iseconds 2>/dev/null || date) ble_service did not exit (pid $child)" >> "$LOG_PATH"
+                        return 1
+                    fi
+                fi
+                wait "$child" 2>/dev/null || true
+            fi
+            child=""
+            rm -f "$PID_FILE" "$SOCKET_PATH"
+            return 0
+        }
+        shutdown() {
+            if stop_child; then
+                exit 0
+            fi
+            exit 1
+        }
+        trap '' HUP
+        trap 'shutdown' INT TERM
+        while true; do
+            if [ ! -x "$BLE_SERVICE_BIN" ]; then
+                echo "$(date -Iseconds 2>/dev/null || date) ble_service binary missing: $BLE_SERVICE_BIN" >> "$LOG_PATH"
+                sleep 5
+                continue
+            fi
+            "$ENV_RUN_BIN" "$BLE_SERVICE_BIN" \
+                --socket "$SOCKET_PATH" \
+                --device-name "$DEVICE_NAME" \
+                --event-capacity "$EVENT_CAPACITY" \
+                --pairing-window "${PAIRING_WINDOW_SECONDS}s" >> "$LOG_PATH" 2>&1 &
+            child="$!"
+            echo "$child" > "$PID_FILE"
+            wait "$child"
+            status="$?"
+            child=""
+            rm -f "$PID_FILE" "$SOCKET_PATH"
+            echo "$(date -Iseconds 2>/dev/null || date) ble_service exited status=$status; restarting in 2s" >> "$LOG_PATH"
+            sleep 2
+        done
+    ) </dev/null >/dev/null 2>&1 &
+    echo "$!" > "$WATCHDOG_PID_FILE"
+    echo "Started ble_service"
+}
+
+stop() {
+    wpid="$(read_pid "$WATCHDOG_PID_FILE")"
+    if is_running "$wpid"; then
+        kill "$wpid" 2>/dev/null || true
+        elapsed=0
+        while is_running "$wpid" && [ "$elapsed" -lt 10 ]; do
+            sleep 1
+            elapsed=$((elapsed + 1))
+        done
+        if is_running "$wpid"; then
+            echo "ble_service watchdog did not exit (pid $wpid); retaining $WATCHDOG_PID_FILE" >&2
+            return 1
+        fi
+    fi
+    rm -f "$WATCHDOG_PID_FILE"
+
+    pid="$(read_pid "$PID_FILE")"
+    if is_running "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        elapsed=0
+        while is_running "$pid" && [ "$elapsed" -lt 5 ]; do
+            sleep 1
+            elapsed=$((elapsed + 1))
+        done
+        if is_running "$pid"; then
+            echo "ble_service did not exit (pid $pid); retaining $PID_FILE and $SOCKET_PATH" >&2
+            return 1
+        fi
+    fi
+    rm -f "$PID_FILE" "$SOCKET_PATH"
+    echo "Stopped ble_service"
+}
+
+status() {
+    wpid="$(read_pid "$WATCHDOG_PID_FILE")"
+    pid="$(read_pid "$PID_FILE")"
+    if is_running "$wpid"; then
+        echo "watchdog=running pid=$wpid"
+    else
+        echo "watchdog=stopped"
+    fi
+    if is_running "$pid"; then
+        echo "ble_service=running pid=$pid socket=$SOCKET_PATH"
+        return 0
+    fi
+    echo "ble_service=stopped socket=$SOCKET_PATH"
+    return 1
+}
+
+case "${1:-}" in
+    start) start ;;
+    stop) stop ;;
+    restart|reload) stop && start ;;
+    status) status ;;
+    *) echo "Usage: $0 {start|stop|restart|reload|status}" >&2; exit 1 ;;
+esac

@@ -43,9 +43,10 @@ AGENT_LDFLAGS="-X aiden-agent/internal/agent.buildCommit=${AGENT_COMMIT} -X aide
 
 cd src/agent
 GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -ldflags "${AGENT_LDFLAGS}" -o "../../${BUILD_DIR}/bin/agent" ./cmd/daemon
+GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -o "../../${BUILD_DIR}/bin/ble_service" ./cmd/ble_service
 GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -ldflags "${AGENT_LDFLAGS}" -o "../../${BUILD_DIR}/bin/ota" ./cmd/ota
 GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -ldflags "${AGENT_LDFLAGS}" -o "../../${BUILD_DIR}/bin/abctl" ./cmd/abctl
 cd ../..
 
 echo "Go binaries built:"
-ls -lh "${BUILD_DIR}/bin/agent" "${BUILD_DIR}/bin/ota" "${BUILD_DIR}/bin/abctl"
+ls -lh "${BUILD_DIR}/bin/agent" "${BUILD_DIR}/bin/ble_service" "${BUILD_DIR}/bin/ota" "${BUILD_DIR}/bin/abctl"
