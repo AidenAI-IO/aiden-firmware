@@ -1,13 +1,20 @@
+---
+slug: /
+sidebar_position: 0
+title: Aiden Hardware Documentation
+---
+
 # Aiden Hardware Documentation Hub
 
 This documentation hub is the structured entry point for the project. The root `README.md` keeps only the project introduction, quick development info, and an index pointing to this directory.
 
-> **First time with Aiden?** Start from [Newcomer Quickstart](01-getting-started/quickstart.md). It strings the entire onboarding path into one page in the order wire up → flash → connect Wi-Fi → configure → run → develop → upgrade → troubleshoot, linking to the topic docs below.
+> **First time with Aiden?** Use [Try Aiden on PC](01-getting-started/try-aiden-on-pc.md) to experience the Agent with a simulator and no hardware. To assemble a physical device, start from [Newcomer Quickstart](01-getting-started/quickstart.md).
 
 ## Documentation Structure
 
 ### 01. Getting Started
 
+- [Try Aiden on PC](01-getting-started/try-aiden-on-pc.md)
 - [Newcomer Quickstart](01-getting-started/quickstart.md)
 - [Hardware & Wiring](01-getting-started/hardware.md)
 - [Firmware Build & Flashing](01-getting-started/firmware.md)

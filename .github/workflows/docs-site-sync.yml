@@ -1,0 +1,40 @@
+name: Notify documentation site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger aiden-website documentation build
+        env:
+          GH_TOKEN: ${{ secrets.AIDEN_WEBSITE_DISPATCH_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "AIDEN_WEBSITE_DISPATCH_TOKEN is not configured" >&2
+            exit 1
+          fi
+
+          payload=$(jq -n \
+            --arg event_type "aiden-hardware-docs-updated" \
+            --arg sha "$SOURCE_SHA" \
+            '{event_type: $event_type, client_payload: {sha: $sha}}')
+
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --url https://api.github.com/repos/AllWiseAI/aiden-website/dispatches \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --data "$payload"

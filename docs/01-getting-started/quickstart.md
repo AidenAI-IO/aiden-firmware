@@ -102,7 +102,7 @@ To control an iPhone via USB HID, enable these settings on the target device:
 1. **Settings > Accessibility > Touch > AssistiveTouch** - Required for HID touch/mouse control
 2. **Show Onscreen Keyboard** (on the AssistiveTouch page) - Recommended for stable keyboard input
 
-See [Hardware & Wiring](hardware.md#ios-device-requirements) for details.
+See [Hardware & Wiring](hardware.md#ios-hid-prerequisites) for details.
 
 ### Verification
 

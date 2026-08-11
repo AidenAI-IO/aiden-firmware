@@ -1,3 +1,8 @@
+---
+sidebar_label: Overview
+sidebar_position: 0
+---
+
 # OTA Overview
 
 This project's production OTA uses A/B partitioning, signed manifests, and boot health confirmation mechanisms. During runtime, devices only write to the inactive slot. After reboot, Rockchip SPL selects the new slot; if the new system does not confirm success within the health window, SPL automatically rolls back to the previous successful slot.

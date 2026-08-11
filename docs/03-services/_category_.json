@@ -1,0 +1,8 @@
+{
+  "label": "Hardware Services",
+  "position": 3,
+  "link": {
+    "type": "generated-index",
+    "description": "Frame capture, audio, BLE, USB HID, configuration, and device services."
+  }
+}

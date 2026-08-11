@@ -125,7 +125,7 @@ When StorageMonitor reports `critical` or `emergency`, `S53agent` trims this fil
 2026-08-05T06:30:00Z [INFO] [agent] [session] session_started session_id=abc123def456 reason=time_gap_long
 ```
 
-### /userdata/agent/log/llm-http-{YYYYMMDDHHMMSSmmm}.log
+### `/userdata/agent/log/llm-http-{YYYYMMDDHHMMSSmmm}.log`
 
 LLM HTTP request/response log (JSONL format), separate file per session.
 

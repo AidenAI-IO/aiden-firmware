@@ -1,3 +1,8 @@
+---
+sidebar_label: Overview
+sidebar_position: 0
+---
+
 # SkillOpt
 
 SkillOpt is an internal developer workflow for improving agent `SKILL.md`
