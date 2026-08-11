@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SDK_DIR="${PICO_SDK_DIR:-$ROOT_DIR/pico-sdk}"
 KERNEL_DIR="$SDK_DIR/sysdrv/source/kernel"
 DRIVER="$KERNEL_DIR/drivers/media/i2c/rk628/rk628_csi_v4l2.c"
+HDMIRX="$KERNEL_DIR/drivers/media/i2c/rk628/rk628_hdmirx.c"
+HDMIRX_HEADER="$KERNEL_DIR/drivers/media/i2c/rk628/rk628_hdmirx.h"
 DEFCONFIG="$KERNEL_DIR/arch/arm/configs/luckfox_rv1106_linux_defconfig"
 DTS="$KERNEL_DIR/arch/arm/boot/dts/rv1106-luckfox-pico-zero-ipc.dtsi"
 
@@ -144,6 +146,12 @@ require_pattern 'status & HDMI_RX_SCDC_LOCK_MASK' "$DRIVER" \
     "RK628 PHY lock detection must ignore unrelated low SCDC status flags"
 reject_pattern 'status & 0xfff' "$DRIVER" \
     "RK628 PHY lock detection must not reject a valid lock when SCDC status bit 0 is set"
+require_pattern 'rk628_is_avi_ready\(csi->rk628, &csi->avi_rcv_rdy\)' "$DRIVER" \
+    "RK628 CSI setup must observe AVI readiness changes that arrive while it waits"
+require_pattern 'const bool \*avi_rcv_rdy' "$HDMIRX_HEADER" \
+    "RK628 AVI readiness API must accept live state instead of a stale value copy"
+require_pattern 'READ_ONCE\(\*avi_rcv_rdy\)' "$HDMIRX" \
+    "RK628 AVI readiness polling must safely reload state updated by the IRQ path"
 require_pattern 'i2c_set_clientdata\(client, sd\);' "$DRIVER" \
     "RK628 remove must retain the V4L2 subdevice associated with the I2C client"
 remove_body="$(sed -n '/^static int rk628_csi_remove(/,/^}/p' "$DRIVER")"
