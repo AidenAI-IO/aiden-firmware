@@ -71,12 +71,13 @@ LLM tool call → Go HID tool → /dev/hidg0, /dev/hidg1, or /dev/hidg2 → targ
 audio_service recording → RKNN Silero VAD → STT or audio attachment → LLM → TTS → audio_service playback
 ```
 
-### Bluetooth Pairing and System Notifications
+### Bluetooth Notifications and Wake
 
 ```text
-iOS CoreBluetooth encrypted read → BlueZ/hci0 → ble_service pairing service
 iOS ANCS → BlueZ/hci0 → ble_service event ring → UDS events_since
+Phone Bridge HTTP queue → ble_service UDS wake → Wake Notify → iOS native HTTP poll
 ```
 
-The encrypted GATT read establishes the system bond. ANCS events do not enter
+BLE carries notification metadata and a wake hint only. Phone Bridge commands
+and results remain on WebSocket/HTTP transports, and ANCS events do not enter
 Agent memory in this layer.
