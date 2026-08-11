@@ -13,8 +13,8 @@ When flashing the full firmware, you typically use `update.img`.
 This project's firmware is built on `pico-sdk` and includes the following customizations:
 
 - Wi-Fi uses the external antenna by default;
-- Kernel enables the Rockchip RK628 HDMI-to-CSI V4L2 driver and disables TC358743 for the Pico Zero image;
-- DTS adds the Firefly RK628D board on I2C4 at `0x50`, using four CSI lanes and GPIO3_B1 reset;
+- Kernel builds both the Rockchip RK628 and Toshiba TC358743 HDMI-to-CSI V4L2 drivers;
+- DTS declares the Firefly RK628D board on I2C4 at `0x50` with four continuous-clock CSI lanes and the legacy TC358743 board at `0x0f` with two non-continuous-clock lanes. Only the bridge that responds on I2C registers a V4L2 subdevice;
 - Built-in 1080p60-only EDID with a one-shot HPD renegotiation;
 - USB-C port is configured as a composite gadget on boot: keyboard HID,
   pointer/touch HID, and CDC ECM networking (`usb0`, default `192.168.42.1`);

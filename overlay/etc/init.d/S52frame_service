@@ -15,7 +15,7 @@ SOCKET_PATH=/run/frame_service/frame_service.sock
 FRAME_SERVICE_FPS=30
 FRAME_SERVICE_WIDTH=1920
 FRAME_SERVICE_HEIGHT=1080
-FRAME_SERVICE_FORCE_TRIGGER=0
+FRAME_SERVICE_FORCE_TRIGGER=auto
 FRAME_SERVICE_SUBDEV=
 FRAME_SERVICE_EDID=
 LOG_PATH=/var/log/frame_service/frame_service.log
@@ -104,6 +104,37 @@ detect_hdmi_subdev() {
     return 1
 }
 
+hdmi_subdev_name() {
+    subdev="$1"
+    [ -n "$subdev" ] || return 1
+    node="$(basename "$subdev")"
+    name_file="/sys/class/video4linux/$node/name"
+    [ -r "$name_file" ] || return 1
+    cat "$name_file" 2>/dev/null
+}
+
+resolve_force_trigger() {
+    requested="$1"
+    subdev="$2"
+
+    case "$requested" in
+        0|1)
+            echo "$requested"
+            ;;
+        auto|"")
+            name="$(hdmi_subdev_name "$subdev")"
+            case "$name" in
+                *tc358743*) echo 1 ;;
+                *rk628-csi*) echo 0 ;;
+                *) echo 0 ;;
+            esac
+            ;;
+        *)
+            echo 0
+            ;;
+    esac
+}
+
 start() {
     if [ "$ENABLE_FRAME_SERVICE" != "1" ]; then
         echo "frame_service disabled by config (ENABLE_FRAME_SERVICE=$ENABLE_FRAME_SERVICE)"
@@ -136,14 +167,15 @@ start() {
             if [ -n "$FRAME_SERVICE_HEIGHT" ]; then
                 set -- "$@" --height "$FRAME_SERVICE_HEIGHT"
             fi
-            if [ "$FRAME_SERVICE_FORCE_TRIGGER" = "1" ]; then
-                set -- "$@" --force-trigger
-            else
-                set -- "$@" --no-force-trigger
-            fi
             subdev="$FRAME_SERVICE_SUBDEV"
             if [ -z "$subdev" ]; then
                 subdev="$(detect_hdmi_subdev)"
+            fi
+            force_trigger="$(resolve_force_trigger "$FRAME_SERVICE_FORCE_TRIGGER" "$subdev")"
+            if [ "$force_trigger" = "1" ]; then
+                set -- "$@" --force-trigger
+            else
+                set -- "$@" --no-force-trigger
             fi
             if [ -n "$subdev" ]; then
                 set -- "$@" --subdev "$subdev"

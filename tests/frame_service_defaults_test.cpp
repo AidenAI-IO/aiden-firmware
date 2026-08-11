@@ -2,7 +2,7 @@
 #include "camera_frame_utils.h"
 #include "frame_service_defaults.h"
 
-TEST_CASE("frame_service defaults use the RK628 1080p60 EDID without retriggering HPD") {
+TEST_CASE("frame_service library defaults avoid unconditional EDID retriggering") {
     aiden::CameraConfig camera;
     aiden_demo::set_default_camera_config(&camera);
 

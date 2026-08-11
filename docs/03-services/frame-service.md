@@ -1,6 +1,6 @@
 # Frame Service: HDMI Frame Capture Service
 
-`frame_service` is a long-running C++ service that exclusively owns `/dev/video0`, continuously reads frames from the RK628D HDMI capture path, and provides the latest frames, screenshots, and health status externally through a Unix domain socket.
+`frame_service` is a long-running C++ service that exclusively owns `/dev/video0`, continuously reads frames from the detected RK628D or TC358743 HDMI capture path, and provides the latest frames, screenshots, and health status externally through a Unix domain socket.
 
 ## Why Frame Service is Needed
 
@@ -62,7 +62,7 @@ frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
 | `--pixel-format FMT` | `nv12`, `nv16`, `uyvy`, `yuyv`, defaults to `uyvy` |
 | `--subdev PATH` | HDMI bridge subdev; the binary defaults to `/dev/v4l-subdev2` |
 | `--edid PATH` | Custom EDID hex; uses built-in 1080p60-only CTA EDID when empty |
-| `--force-trigger` / `--no-force-trigger` | Enable or disable one-shot startup EDID/HPD renegotiation; RK628 deployments default to disabled because the kernel driver already advertises 1080p60 |
+| `--force-trigger` / `--no-force-trigger` | Enable or disable one-shot startup EDID/HPD renegotiation. The init script defaults to bridge-aware `auto`: disabled for RK628D and enabled for TC358743 |
 | `--ring-size N` | Ring buffer capacity |
 | `--fps N` | Sampling FPS; `0` means as fast as possible |
 | `--no-hdmi-sync` | Skip HDMI sync helper flow |
