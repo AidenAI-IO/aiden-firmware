@@ -190,10 +190,12 @@ func beginManagedTTSStream(ctx context.Context, manager *tts.ProviderManager, pl
 		return nil, errors.New("tts playback backend is not configured")
 	}
 	holder := manager.Holder()
-	sourceFormat := ttsPlaybackFormat(cfg, holder.Capabilities())
-	targetSink := tts.NewAudioServiceSink(playback, ttsPlaybackTargetFormat(cfg, sourceFormat))
-	providerSink := tts.NewResamplingSink(sourceFormat, targetSink)
-	session, err := holder.BeginStream(ctx, providerSink)
+	var targetSink *tts.AudioServiceSink
+	session, err := holder.BeginStreamWithCapabilities(ctx, func(caps tts.Capabilities) tts.AudioSink {
+		sourceFormat := ttsPlaybackFormat(cfg, caps)
+		targetSink = tts.NewAudioServiceSink(playback, ttsPlaybackTargetFormat(cfg, sourceFormat))
+		return tts.NewResamplingSink(sourceFormat, targetSink)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -327,14 +329,16 @@ func (a *ttsLoggerAdapter) Warn(format string, args ...any) {
 // LLM streaming output is written byte-slice by byte-slice; we forward each
 // fragment to the TTS session immediately.
 type streamSessionWriter struct {
-	mu          sync.Mutex
-	session     tts.StreamSession
-	sink        *tts.AudioServiceSink
-	cancel      context.CancelFunc
-	spoke       bool
-	lastErr     error
-	interrupted bool
-	textWritten bool
+	mu           sync.Mutex
+	session      tts.StreamSession
+	sink         *tts.AudioServiceSink
+	cancel       context.CancelFunc
+	spoke        bool
+	lastErr      error
+	interrupted  bool
+	textWritten  bool
+	terminalOnce sync.Once
+	terminalErr  error
 }
 
 func (w *streamSessionWriter) setCancel(cancel context.CancelFunc) {
@@ -438,6 +442,7 @@ func (w *streamSessionWriter) interrupt() {
 	if cancel != nil {
 		cancel()
 	}
+	_ = w.terminateSession(true)
 }
 
 func (w *streamSessionWriter) spokeSuccessfully() bool {
@@ -475,20 +480,13 @@ func (w *streamSessionWriter) closeAndWait() error {
 	if w.interrupted {
 		w.spoke = false
 		w.mu.Unlock()
+		_ = w.terminateSession(true)
 		return nil
 	}
-	session := w.session
 	textWritten := w.textWritten
 	w.mu.Unlock()
 
-	var closeErr error
-	if textWritten {
-		closeErr = session.Close()
-	} else if aborter, ok := session.(interface{ Abort() error }); ok {
-		closeErr = aborter.Abort()
-	} else {
-		closeErr = session.Close()
-	}
+	closeErr := w.terminateSession(!textWritten)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -506,4 +504,17 @@ func (w *streamSessionWriter) closeAndWait() error {
 		w.spoke = true
 	}
 	return nil
+}
+
+func (w *streamSessionWriter) terminateSession(abort bool) error {
+	w.terminalOnce.Do(func() {
+		if abort {
+			if aborter, ok := w.session.(interface{ Abort() error }); ok {
+				w.terminalErr = aborter.Abort()
+				return
+			}
+		}
+		w.terminalErr = w.session.Close()
+	})
+	return w.terminalErr
 }

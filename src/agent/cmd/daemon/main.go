@@ -149,6 +149,7 @@ func main() {
 	// HTTP server runs in all input modes so the web UI is available even
 	// during voice (audio/stt) interactions.
 	server := agent.NewServer(runtime, *addr)
+	defer server.Close()
 
 	_ = logging.LogEvent(logging.Info, "agent", "startup", "daemon_starting",
 		logging.Field{Key: "addr", Value: *addr},
@@ -232,13 +233,18 @@ func shouldRunConsoleAudioLoop(cfg agent.Config, stdinInteractive bool) bool {
 }
 
 func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server) {
-	dialog, err := agent.NewAudioDialog(cfg)
+	dialog, err := agent.NewAudioDialog(runtime)
 	if err != nil {
 		_ = logging.LogEvent(logging.Error, "agent", "audio", "dialog_create_failed",
 			logging.Field{Key: "error", Value: err},
 		)
 		os.Exit(1)
 	}
+	defer func() {
+		if err := dialog.Close(); err != nil {
+			log.Printf("[audio] close dialog: %v\n", err)
+		}
+	}()
 	dialog.SetHistoryAppender(server.AppendHistory)
 	dialog.SetStorageManager(runtime.Storage())
 	dialog.SetStorageMonitor(runtime.StorageMonitor())

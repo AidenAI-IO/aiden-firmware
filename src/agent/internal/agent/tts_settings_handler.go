@@ -83,21 +83,15 @@ func (s *Server) handleTTSSwitch(w http.ResponseWriter, r *http.Request) {
 		ttsCfg.Extra["reference_id"] = req.ReferenceID
 	}
 
-	s.ttsMu.Lock()
-	if s.ttsManager == nil {
-		provider, err := tts.New(ttsCfg)
-		if err != nil {
-			s.ttsMu.Unlock()
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		s.ttsManager = tts.NewProviderManager(provider, &ttsLoggerAdapter{logger: s.logger})
-	} else if err := s.ttsManager.SwitchTo(ttsCfg); err != nil {
-		s.ttsMu.Unlock()
+	manager := s.ttsProviderManager()
+	if manager == nil {
+		http.Error(w, "TTS manager is unavailable", http.StatusInternalServerError)
+		return
+	}
+	if err := manager.SwitchTo(ttsCfg); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.ttsMu.Unlock()
 	s.respondTTSSettings(w)
 }
 

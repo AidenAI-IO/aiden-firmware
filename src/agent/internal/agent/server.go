@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -37,10 +38,16 @@ const (
 	agentHTTPReadHeaderTimeout = 10 * time.Second
 	agentHTTPReadTimeout       = 30 * time.Second
 	agentHTTPIdleTimeout       = 120 * time.Second
+	agentHTTPShutdownTimeout   = 5 * time.Second
 )
 
 // Server provides HTTP API for agent interactions
 type Server struct {
+	closeOnce               sync.Once
+	closing                 atomic.Bool
+	httpMu                  sync.Mutex
+	httpServer              *http.Server
+	httpListener            net.Listener
 	runtime                 *Runtime
 	addr                    string
 	logger                  *Logger
@@ -54,8 +61,7 @@ type Server struct {
 	historyStore            *ChatHistoryStore
 	episodeStore            *TaskEpisodeStore
 	sttClient               STTClient
-	ttsManager              *tts.ProviderManager
-	ttsMu                   sync.RWMutex
+	ttsManager              *tts.ProviderManager // Borrowed from Runtime.
 	audioClient             *AudioServiceClient
 	ttsPlaybackBackend      tts.AudioServiceBackend
 	screenCaptureMu         sync.Mutex
@@ -423,13 +429,9 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		s.sttClient = sttClient
 	}
 
-	// Initialize the pluggable TTS provider manager from agent.toml fields.
-	if manager, err := newTTSProviderManagerFromConfig(cfg, s.logger); err != nil {
-		if s.logger != nil {
-			s.logger.Warn("TTS init failed: %v", err)
-		}
-	} else if manager != nil {
-		s.ttsManager = manager
+	// Share the process-wide TTS provider manager with every runtime entrypoint.
+	s.ttsManager = runtime.ttsProviderManager()
+	if manager := s.currentTTSManager(); manager != nil {
 		if s.logger != nil {
 			s.logger.Info("TTS enabled: provider=%s", manager.Current())
 		}
@@ -523,11 +525,20 @@ func (s *Server) Handler() http.Handler {
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.closing.Load() {
+			http.Error(w, "Server is shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // Start starts the HTTP server
 func (s *Server) Start() error {
+	if s.closing.Load() {
+		return nil
+	}
 	handler := s.Handler()
 
 	srv := &http.Server{
@@ -546,6 +557,15 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.addr, err)
 	}
+	s.httpMu.Lock()
+	if s.closing.Load() {
+		s.httpMu.Unlock()
+		_ = listener.Close()
+		return nil
+	}
+	s.httpServer = srv
+	s.httpListener = listener
+	s.httpMu.Unlock()
 
 	// Milestone: the agent Web UI (http://192.168.42.1:8080) is now accepting
 	// connections. Stamped with kernel uptime so it can be lined up against the
@@ -558,7 +578,7 @@ func (s *Server) Start() error {
 	errCh := make(chan error, 1)
 	go func() {
 		err := srv.Serve(listener)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			errCh <- err
 			return
 		}
@@ -576,13 +596,51 @@ func (s *Server) Start() error {
 		if s.logger != nil {
 			s.logger.Info("Shutting down HTTP server after signal %s", sig)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			return fmt.Errorf("shutdown HTTP server: %w", err)
-		}
+		s.Close()
 		return <-errCh
 	}
+}
+
+// Close cancels background runs and releases request-owned audio resources.
+// The shared TTS provider remains owned by Runtime.
+func (s *Server) Close() {
+	if s == nil {
+		return
+	}
+	s.closing.Store(true)
+	s.closeOnce.Do(func() {
+		s.httpMu.Lock()
+		srv := s.httpServer
+		listener := s.httpListener
+		s.httpMu.Unlock()
+		if listener != nil {
+			_ = listener.Close()
+		}
+
+		s.cancelAllActiveRuns()
+		s.interruptAllActiveOutputs()
+		s.abortWebRecording()
+
+		if srv != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), agentHTTPShutdownTimeout)
+			shutdownErr := srv.Shutdown(ctx)
+			cancel()
+			if shutdownErr != nil {
+				closeErr := srv.Close()
+				if s.logger != nil {
+					s.logger.Warn("HTTP server shutdown failed: %v", errors.Join(shutdownErr, closeErr))
+				}
+			}
+		}
+		s.httpMu.Lock()
+		if s.httpServer == srv {
+			s.httpServer = nil
+		}
+		if s.httpListener == listener {
+			s.httpListener = nil
+		}
+		s.httpMu.Unlock()
+	})
 }
 
 func isLoopbackServerAddr(addr string) bool {
@@ -790,12 +848,18 @@ func (s *Server) handleChatSteerCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) registerActiveRun(requestID string, cancel context.CancelFunc) bool {
+	if s == nil || s.closing.Load() {
+		return false
+	}
 	if requestID == "" {
 		return true
 	}
 	s.clearRequestTermination(requestID)
 	s.activeRunsMu.Lock()
 	defer s.activeRunsMu.Unlock()
+	if s.closing.Load() {
+		return false
+	}
 	if s.activeRuns == nil {
 		s.activeRuns = make(map[string]context.CancelFunc)
 	}
@@ -824,6 +888,20 @@ func (s *Server) cancelActiveRun(requestID string) bool {
 	}
 	cancel()
 	return true
+}
+
+func (s *Server) cancelAllActiveRuns() {
+	s.activeRunsMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(s.activeRuns))
+	for _, cancel := range s.activeRuns {
+		if cancel != nil {
+			cancels = append(cancels, cancel)
+		}
+	}
+	s.activeRunsMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 func (s *Server) markRequestTerminated(requestID string) {
@@ -861,7 +939,16 @@ func (s *Server) registerActiveOutput(requestID string, output *activeTTSOutput)
 	if s == nil || requestID == "" || output == nil {
 		return func() {}
 	}
+	if s.closing.Load() {
+		output.interrupt()
+		return output.finish
+	}
 	s.activeOutputsMu.Lock()
+	if s.closing.Load() {
+		s.activeOutputsMu.Unlock()
+		output.interrupt()
+		return output.finish
+	}
 	if s.activeOutputs == nil {
 		s.activeOutputs = make(map[string]map[*activeTTSOutput]struct{})
 	}
@@ -1979,10 +2066,20 @@ func (s *Server) toolCallSpeechText(event RunEvent) string {
 	return speech.BuildText(event.Content)
 }
 
+func (s *Server) ttsProviderManager() *tts.ProviderManager {
+	manager := s.ttsManager
+	if manager == nil && s.runtime != nil {
+		manager = s.runtime.ttsProviderManager()
+	}
+	return manager
+}
+
 func (s *Server) currentTTSManager() *tts.ProviderManager {
-	s.ttsMu.RLock()
-	defer s.ttsMu.RUnlock()
-	return s.ttsManager
+	manager := s.ttsProviderManager()
+	if manager == nil || manager.Current() == "" {
+		return nil
+	}
+	return manager
 }
 
 func (s *Server) currentTTSPlaybackBackend() tts.AudioServiceBackend {
