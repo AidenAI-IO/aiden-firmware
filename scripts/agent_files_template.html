@@ -27,7 +27,10 @@ body { min-height: 100vh; background: linear-gradient(to bottom, var(--surface),
 .mark::before,.mark::after { content: ""; position: absolute; left: 6px; right: 6px; height: 2px; border-radius: 999px; background: white }
 .mark::before { top: 7px } .mark::after { bottom: 7px }
 .brand strong { font-size: 14px; letter-spacing: -0.01em }
+.topbar-actions { display: flex; align-items: center; gap: 10px }
 .meta-info { color: var(--muted); font-size: 12px }
+.refresh-btn { display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); text-decoration: none; font-size: 12px; font-weight: 650 }
+.refresh-btn:hover { background: color-mix(in oklch, var(--accent) 5%, white); border-color: color-mix(in oklch, var(--accent) 24%, var(--border)) }
 .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px }
 .summary-card { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 14px }
 .summary-card .label { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase }
@@ -131,7 +134,10 @@ pre.block-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-
 <main class="page">
 <header class="topbar">
   <div class="brand"><div class="mark"></div><strong>Agent Files Browser</strong></div>
-  <div class="meta-info">{{TIMESTAMP}}</div>
+  <div class="topbar-actions">
+    <div class="meta-info">Generated {{TIMESTAMP}}</div>
+    <a id="user-files-refresh" class="refresh-btn" href="/user_files?refresh=1">Refresh data</a>
+  </div>
 </header>
 <section class="summary">
   <article class="summary-card"><div class="label">Memory Files</div><div class="value">{{MEMORY_COUNT}}</div></article>

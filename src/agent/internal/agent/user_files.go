@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"fmt"
 	"mime"
 	"net/http"
@@ -13,12 +14,33 @@ import (
 
 const userFilesGenerateTimeout = 30 * time.Second
 
+const userFilesRefreshHref = "/user_files?refresh=1"
+
+const userFilesRefreshControlMarker = `id="user-files-refresh"`
+
+type userFilesReportGeneration struct {
+	done chan struct{}
+	err  error
+}
+
 // runUserFilesScript runs view_agent_files.sh under a fixed timeout, killing
 // the process if it exceeds the deadline. Output is collected for diagnostics.
 // Used by both ensureUserFilesReport (synchronous) and handleUserFilesRegenerate
 // (async) so a hung script can never leak a long-lived child.
 func (s *Server) runUserFilesScript(stdoutSink string) error {
-	script := "cd " + shellQuote(s.userFilesToolsDir) + " && ./view_agent_files.sh"
+	reportDir := filepath.Dir(s.userFilesReportPath)
+	tempReport, err := os.CreateTemp(reportDir, ".files_report-*.html")
+	if err != nil {
+		return fmt.Errorf("create temporary user_files report: %w", err)
+	}
+	tempReportPath := tempReport.Name()
+	if err := tempReport.Close(); err != nil {
+		os.Remove(tempReportPath)
+		return fmt.Errorf("close temporary user_files report: %w", err)
+	}
+	defer os.Remove(tempReportPath)
+
+	script := "cd " + shellQuote(s.userFilesToolsDir) + " && ./view_agent_files.sh " + shellQuote(tempReportPath)
 	if stdoutSink != "" {
 		script += " > " + shellQuote(stdoutSink) + " 2>&1"
 	} else {
@@ -33,31 +55,75 @@ func (s *Server) runUserFilesScript(stdoutSink string) error {
 	defer timer.Stop()
 	if stdoutSink != "" {
 		// Caller redirected stdout to a file; we only need exit status.
-		return cmd.Run()
+		err = cmd.Run()
+	} else {
+		var out []byte
+		out, err = cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("user_files generation failed: %s", string(out))
+		}
 	}
-	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("user_files generation failed: %s", string(out))
+		return err
+	}
+	info, err := os.Stat(tempReportPath)
+	if err != nil || info.Size() == 0 {
+		return fmt.Errorf("script ran but report not produced")
+	}
+	if err := os.Chmod(tempReportPath, 0o644); err != nil {
+		return fmt.Errorf("set user_files report permissions: %w", err)
+	}
+	if err := os.Rename(tempReportPath, s.userFilesReportPath); err != nil {
+		return fmt.Errorf("publish user_files report: %w", err)
 	}
 	return nil
 }
 
-func (s *Server) ensureUserFilesReport() error {
-	if _, err := os.Stat(s.userFilesReportPath); err == nil {
+func (s *Server) ensureUserFilesReport(forceRefresh bool, stdoutSink string) error {
+	if _, err := os.Stat(s.userFilesReportPath); err == nil && !forceRefresh {
 		return nil
 	}
-	if err := s.runUserFilesScript(""); err != nil {
-		return err
+
+	s.userFilesGenerateMu.Lock()
+	if generation := s.userFilesGeneration; generation != nil {
+		s.userFilesGenerateMu.Unlock()
+		<-generation.done
+		return generation.err
 	}
-	if _, err := os.Stat(s.userFilesReportPath); err != nil {
-		return fmt.Errorf("script ran but report not produced")
+
+	_, reportErr := os.Stat(s.userFilesReportPath)
+	if reportErr == nil && !forceRefresh {
+		s.userFilesGenerateMu.Unlock()
+		return nil
 	}
-	return nil
+	generation := &userFilesReportGeneration{done: make(chan struct{})}
+	s.userFilesGeneration = generation
+	s.userFilesGenerateMu.Unlock()
+
+	err := s.runUserFilesScript(stdoutSink)
+	if err == nil {
+		if _, statErr := os.Stat(s.userFilesReportPath); statErr != nil {
+			err = fmt.Errorf("script ran but report not produced")
+		}
+	}
+
+	s.userFilesGenerateMu.Lock()
+	generation.err = err
+	s.userFilesGeneration = nil
+	close(generation.done)
+	s.userFilesGenerateMu.Unlock()
+	return err
 }
 
 func (s *Server) handleUserFiles(w http.ResponseWriter, r *http.Request) {
-	if err := s.ensureUserFilesReport(); err != nil {
+	w.Header().Set("Cache-Control", "no-store")
+	forceRefresh := r.URL.Query().Get("refresh") == "1"
+	if err := s.ensureUserFilesReport(forceRefresh, ""); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if forceRefresh {
+		http.Redirect(w, r, "/user_files", http.StatusSeeOther)
 		return
 	}
 	data, err := os.ReadFile(s.userFilesReportPath)
@@ -65,8 +131,24 @@ func (s *Server) handleUserFiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	data = userFilesReportWithRefreshControl(data)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(data)
+}
+
+func userFilesReportWithRefreshControl(data []byte) []byte {
+	if bytes.Contains(data, []byte(userFilesRefreshControlMarker)) {
+		return data
+	}
+	control := []byte(fmt.Sprintf(`<a id="user-files-refresh" href="%s" style="position:fixed;top:16px;right:16px;z-index:100;padding:8px 12px;border:1px solid #ddd;border-radius:8px;background:#fff;color:#222;text-decoration:none;font:600 12px system-ui,sans-serif">Refresh data</a>`, userFilesRefreshHref))
+	if index := bytes.LastIndex(data, []byte("</body>")); index >= 0 {
+		result := make([]byte, 0, len(data)+len(control))
+		result = append(result, data[:index]...)
+		result = append(result, control...)
+		result = append(result, data[index:]...)
+		return result
+	}
+	return append(append([]byte(nil), data...), control...)
 }
 
 func (s *Server) handleUserFilesPreview(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +196,7 @@ func (s *Server) handleUserFilesRegenerate(w http.ResponseWriter, r *http.Reques
 	go func() {
 		// Reuse the same timeout budget so a hung script cannot pile up
 		// long-lived background generators on repeated calls.
-		_ = s.runUserFilesScript("/tmp/user_files_regenerate.log")
+		_ = s.ensureUserFilesReport(true, "/tmp/user_files_regenerate.log")
 	}()
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true,"regenerating":true}`))
