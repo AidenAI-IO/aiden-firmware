@@ -138,6 +138,12 @@ require_pattern 'time_before\(jiffies, csi->next_recovery\)' "$DRIVER" \
     "RK628 HDMI recovery must use a per-device retry deadline"
 require_pattern 'rk628_csi_arm_recovery_cooldown\(csi\);' "$DRIVER" \
     "RK628 HDMI recovery cooldown must begin after each PHY training attempt"
+require_pattern '#define HDMI_RX_SCDC_LOCK_MASK[[:space:]]+GENMASK\(11, 8\)' "$DRIVER" \
+    "RK628 PHY lock detection must name the four HDMI channel-lock flags"
+require_pattern 'status & HDMI_RX_SCDC_LOCK_MASK' "$DRIVER" \
+    "RK628 PHY lock detection must ignore unrelated low SCDC status flags"
+reject_pattern 'status & 0xfff' "$DRIVER" \
+    "RK628 PHY lock detection must not reject a valid lock when SCDC status bit 0 is set"
 require_pattern 'i2c_set_clientdata\(client, sd\);' "$DRIVER" \
     "RK628 remove must retain the V4L2 subdevice associated with the I2C client"
 remove_body="$(sed -n '/^static int rk628_csi_remove(/,/^}/p' "$DRIVER")"
