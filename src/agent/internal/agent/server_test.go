@@ -260,6 +260,12 @@ func TestServerPublicHistoryOmitsLargeToolResultContent(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{"shell": tool}},
 		NewSkillIndex(),
 	)
+	if plane, ok := runtime.memoryPlane.(*FilesystemMemoryPlane); ok {
+		plane.StopReflection()
+	}
+	// This test exercises persisted chat history only. Disable the unrelated
+	// asynchronous Episode maintenance so TempDir cleanup cannot race its writes.
+	runtime.memoryPlane = nil
 	defer runtime.Close()
 	server := newServerForTest(runtime)
 
@@ -294,6 +300,7 @@ func TestServerPublicHistoryOmitsLargeToolResultContent(t *testing.T) {
 	if result.Status != "complete" {
 		t.Fatalf("result never completed: status=%q", result.Status)
 	}
+	waitForServerRequestFinished(t, server, startResp["request_id"])
 
 	const want = "[Large tool result omitted from public history (4001 chars)]"
 	resultToolMessage, ok := firstMessageOfType(result.History, "tool_result")

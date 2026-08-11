@@ -17,6 +17,7 @@ import (
 
 type DeviceMemoryStore struct {
 	rootDir string
+	writeMu sync.Mutex
 	cacheMu sync.Mutex
 	cache   deviceMemoryReadCache
 }
@@ -34,6 +35,13 @@ type DeviceMemoryQuery struct {
 	DeviceID string   `json:"device_id,omitempty"`
 	Types    []string `json:"types,omitempty"`
 	Limit    int      `json:"limit,omitempty"`
+}
+
+type FailureMemoryQuery struct {
+	Terms        []string
+	PreferredIDs []string
+	DeviceID     string
+	Limit        int
 }
 
 type DeviceMemoryItem struct {
@@ -110,6 +118,9 @@ func (s *DeviceMemoryStore) Search(ctx context.Context, query DeviceMemoryQuery)
 	terms := normalizeSearchTerms(append(append([]string(nil), query.Terms...), append(query.Tags, query.Entities...)...))
 	var hits []MemoryHit
 	for _, item := range items {
+		if item.Type == "failure" && (item.Status != "active" || !hasReflectionFailureTag(item.Tags)) {
+			continue
+		}
 		conflicted := item.Status == "conflicted"
 		// Conflicted records are surfaced under the synthetic "conflict" type, so
 		// type filtering must run against the effective type, not the stored one.
@@ -170,6 +181,12 @@ func (s *DeviceMemoryStore) Upsert(ctx context.Context, item DeviceMemoryItem) (
 	if s == nil || s.rootDir == "" {
 		return "", nil
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.upsertLocked(item)
+}
+
+func (s *DeviceMemoryStore) upsertLocked(item DeviceMemoryItem) (string, error) {
 	now := time.Now().UTC()
 	if strings.TrimSpace(item.ID) == "" {
 		item.ID = "devmem_" + strconvTimeID(now)
@@ -211,6 +228,8 @@ func (s *DeviceMemoryStore) UpdateMany(ctx context.Context, ids []string, update
 	if s == nil || s.rootDir == "" || len(idSet) == 0 || update == nil {
 		return nil
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	items, err := s.readAll()
 	if err != nil {
 		return err
@@ -223,7 +242,7 @@ func (s *DeviceMemoryStore) UpdateMany(ctx context.Context, ids []string, update
 		update(&item)
 		item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		newPath := s.itemPath(item)
-		_, err := s.Upsert(ctx, item)
+		_, err := s.upsertLocked(item)
 		// Upsert writes to a type-specific path. If the callback changed item.Type,
 		// the old YAML would otherwise linger and readAll() would surface a stale
 		// duplicate ID, so remove it once the new file is written.
@@ -238,6 +257,103 @@ func (s *DeviceMemoryStore) UpdateMany(ctx context.Context, ids []string, update
 	}
 	s.invalidateReadAllCache()
 	return nil
+}
+
+// SearchFailureMemories is the reflection worker's internal candidate search.
+// Unlike normal recall it includes pending records, while still excluding
+// legacy failure memories that were written before reflection:v1.
+func (s *DeviceMemoryStore) SearchFailureMemories(ctx context.Context, query FailureMemoryQuery) ([]DeviceMemoryItem, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	if s == nil || s.rootDir == "" {
+		return nil, nil
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = reflectionCandidateLimit
+	}
+	items, err := s.readAll()
+	if err != nil {
+		return nil, err
+	}
+	normalizedTerms := normalizeSearchTerms(query.Terms)
+	preferredIDs := uniqueNonEmpty(query.PreferredIDs)
+	preferred := make(map[string]int, len(preferredIDs))
+	for index, id := range preferredIDs {
+		preferred[id] = len(preferredIDs) - index
+	}
+	type scoredItem struct {
+		item  DeviceMemoryItem
+		score int
+	}
+	var matches []scoredItem
+	for _, item := range items {
+		if item.Type != "failure" || (item.Status != "pending" && item.Status != "active") || !hasReflectionFailureTag(item.Tags) {
+			continue
+		}
+		if query.DeviceID != "" && !strings.EqualFold(query.DeviceID, item.DeviceID) {
+			continue
+		}
+		if memoryExpiresAtPassed(item.ExpiresAt, time.Now().UTC()) {
+			continue
+		}
+		score := scoreDeviceMemory(item, normalizedTerms)
+		location := strings.ToLower(strings.TrimSpace(item.AppName + " " + item.PageName))
+		for _, term := range normalizedTerms {
+			if term != "" && strings.Contains(location, strings.ToLower(term)) {
+				score++
+			}
+		}
+		if boost, ok := preferred[item.ID]; ok {
+			score += 100 + boost
+		}
+		if score == 0 {
+			continue
+		}
+		matches = append(matches, scoredItem{item: item, score: score})
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].score == matches[j].score {
+			return matches[i].item.ID < matches[j].item.ID
+		}
+		return matches[i].score > matches[j].score
+	})
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	result := make([]DeviceMemoryItem, 0, len(matches))
+	for _, match := range matches {
+		result = append(result, cloneDeviceMemoryItem(match.item))
+	}
+	return result, nil
+}
+
+func (s *DeviceMemoryStore) FindReflectionFailureByEpisode(ctx context.Context, episodeID string) (DeviceMemoryItem, bool, error) {
+	select {
+	case <-ctx.Done():
+		return DeviceMemoryItem{}, false, ctx.Err()
+	default:
+	}
+	if s == nil || s.rootDir == "" || strings.TrimSpace(episodeID) == "" {
+		return DeviceMemoryItem{}, false, nil
+	}
+	items, err := s.readAll()
+	if err != nil {
+		return DeviceMemoryItem{}, false, err
+	}
+	for _, item := range items {
+		if item.Type == "failure" &&
+			(item.Status == "pending" || item.Status == "active") &&
+			hasReflectionFailureTag(item.Tags) &&
+			!memoryExpiresAtPassed(item.ExpiresAt, time.Now().UTC()) &&
+			hasEpisodeEvidence(item.EvidenceRefs, episodeID) {
+			return cloneDeviceMemoryItem(item), true, nil
+		}
+	}
+	return DeviceMemoryItem{}, false, nil
 }
 
 // Get returns the stored item with the given ID. The second return value is
@@ -466,4 +582,13 @@ func scoreMemoryHit(hit MemoryHit, terms []string) int {
 		}
 	}
 	return score
+}
+
+func hasReflectionFailureTag(tags []string) bool {
+	for _, tag := range tags {
+		if strings.EqualFold(strings.TrimSpace(tag), reflectionFailureTag) {
+			return true
+		}
+	}
+	return false
 }

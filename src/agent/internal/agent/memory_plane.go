@@ -9,7 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"aiden-agent/internal/agent/model"
 )
 
 type MemoryPlane interface {
@@ -24,6 +27,8 @@ type FilesystemMemoryPlane struct {
 	device     *DeviceMemoryStore
 	longTerm   *LongTermMemoryStore
 	logger     *Logger
+	reflectMu  sync.RWMutex
+	reflection *reflectionWorker
 }
 
 type MemoryRetrieveRequest struct {
@@ -124,6 +129,60 @@ func (p *FilesystemMemoryPlane) LongTerm() *LongTermMemoryStore {
 	return p.longTerm
 }
 
+func (p *FilesystemMemoryPlane) StartReflection(models model.Model) error {
+	if p == nil || strings.TrimSpace(p.memoryDir) == "" || models == nil {
+		return nil
+	}
+	p.reflectMu.Lock()
+	defer p.reflectMu.Unlock()
+	if p.reflection != nil {
+		return nil
+	}
+	worker := newReflectionWorker(newFailureReflectionProcessor(p, models))
+	if err := worker.Start(); err != nil {
+		return err
+	}
+	p.reflection = worker
+	return nil
+}
+
+func (p *FilesystemMemoryPlane) StopReflection() {
+	if p == nil {
+		return
+	}
+	p.reflectMu.Lock()
+	worker := p.reflection
+	p.reflection = nil
+	p.reflectMu.Unlock()
+	if worker != nil {
+		worker.Stop()
+	}
+}
+
+func (p *FilesystemMemoryPlane) ReflectionTaskStarted() {
+	if p == nil {
+		return
+	}
+	p.reflectMu.RLock()
+	worker := p.reflection
+	p.reflectMu.RUnlock()
+	if worker != nil {
+		worker.TaskStarted()
+	}
+}
+
+func (p *FilesystemMemoryPlane) ReflectionTaskFinished() {
+	if p == nil {
+		return
+	}
+	p.reflectMu.RLock()
+	worker := p.reflection
+	p.reflectMu.RUnlock()
+	if worker != nil {
+		worker.TaskFinished()
+	}
+}
+
 func (p *FilesystemMemoryPlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
 	return NewPersistentEpisodeRecorder(req, retrieved, p.episodes)
 }
@@ -162,61 +221,45 @@ func (p *FilesystemMemoryPlane) commitEpisodeMaintenance(ctx context.Context, ep
 	if err := p.updateReferencedMemoryOutcomes(ctx, episode); err != nil && p.logger != nil {
 		p.logger.Warn("[memory] referenced memory update failed: %v", err)
 	}
+	if !episode.Outcome.Success {
+		p.reflectMu.RLock()
+		worker := p.reflection
+		p.reflectMu.RUnlock()
+		if worker != nil {
+			worker.NotifyFailure()
+		}
+	}
 }
 
 func (p *FilesystemMemoryPlane) extractLongTermLessons(ctx context.Context, episode TaskEpisode) error {
 	if p.longTerm == nil || !episodeHasTaskTrace(episode) {
 		return nil
 	}
+	if !episode.Outcome.Success {
+		return nil
+	}
 	var item MemoryItem
-	if episode.Outcome.Success {
-		tools := episodeToolSequence(episode.Events)
-		if len(tools) == 0 {
-			return nil
-		}
-		content := fmt.Sprintf("User goal: %s\nVerified tool path: %s\nVerifier reason: %s",
-			episode.UserGoal,
-			strings.Join(tools, " -> "),
-			episode.Outcome.VerifierReason,
-		)
-		item = MemoryItem{
-			Type:             "procedure",
-			Priority:         70,
-			Confidence:       0.75,
-			Tags:             episode.Tags,
-			Entities:         episode.Entities,
-			Title:            "Verified task path",
-			Content:          content,
-			EvidenceExcerpts: []string{content},
-			SourceRefs:       []MemorySourceRef{{Type: "episode", ID: episode.ID}},
-			TTL:              "45d",
-			SuccessCount:     1,
-		}
-	} else {
-		reason := episode.Outcome.FailureReason
-		if reason == "" {
-			reason = firstNonEmptyString(episode.FailureCauses)
-		}
-		if strings.TrimSpace(reason) == "" {
-			reason = "task did not complete"
-		}
-		content := fmt.Sprintf("User goal: %s\nFailure reason: %s\nAvoid approving completion without fresh observation evidence.",
-			episode.UserGoal,
-			reason,
-		)
-		item = MemoryItem{
-			Type:             "failure",
-			Priority:         80,
-			Confidence:       0.8,
-			Tags:             episode.Tags,
-			Entities:         episode.Entities,
-			Title:            "Failed task pattern",
-			Content:          content,
-			EvidenceExcerpts: []string{content},
-			SourceRefs:       []MemorySourceRef{{Type: "episode", ID: episode.ID}},
-			TTL:              "60d",
-			FailureCount:     1,
-		}
+	tools := episodeToolSequence(episode.Events)
+	if len(tools) == 0 {
+		return nil
+	}
+	content := fmt.Sprintf("User goal: %s\nVerified tool path: %s\nVerifier reason: %s",
+		episode.UserGoal,
+		strings.Join(tools, " -> "),
+		episode.Outcome.VerifierReason,
+	)
+	item = MemoryItem{
+		Type:             "procedure",
+		Priority:         70,
+		Confidence:       0.75,
+		Tags:             episode.Tags,
+		Entities:         episode.Entities,
+		Title:            "Verified task path",
+		Content:          content,
+		EvidenceExcerpts: []string{content},
+		SourceRefs:       []MemorySourceRef{{Type: "episode", ID: episode.ID}},
+		TTL:              "45d",
+		SuccessCount:     1,
 	}
 	action, existingID, err := p.longTerm.DecideAction(ctx, item)
 	if err != nil {
@@ -248,7 +291,7 @@ func (p *FilesystemMemoryPlane) extractDeviceLessons(ctx context.Context, episod
 	}
 
 	if !episode.Outcome.Success {
-		return p.recordDeviceFailure(ctx, episode, deviceID, now)
+		return nil
 	}
 
 	if err := p.recordVerifiedProcedure(ctx, episode, deviceID, now); err != nil {
@@ -419,27 +462,6 @@ func (p *FilesystemMemoryPlane) recordVerifiedProcedure(ctx context.Context, epi
 	return err
 }
 
-func (p *FilesystemMemoryPlane) recordDeviceFailure(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
-	reason := firstNonEmptyString([]string{episode.Outcome.FailureReason, firstNonEmptyString(episode.FailureCauses), "task did not complete"})
-	content := fmt.Sprintf("Goal %q failed: %s. Verifier should require fresh evidence before approving similar tasks.", episode.UserGoal, reason)
-	_, err := p.device.Upsert(ctx, DeviceMemoryItem{
-		ID:           "fail_" + stableMemoryID(episode.UserGoal, reason),
-		Type:         "failure",
-		Status:       "active",
-		Title:        "Observed task failure",
-		Content:      content,
-		DeviceID:     deviceID,
-		Tags:         append([]string(nil), episode.Tags...),
-		Entities:     append([]string(nil), episode.Entities...),
-		Confidence:   0.8,
-		Priority:     80,
-		TTL:          "60d",
-		UpdatedAt:    now,
-		EvidenceRefs: []MemorySourceRef{{Type: "episode", ID: episode.ID}},
-	})
-	return err
-}
-
 func (p *FilesystemMemoryPlane) recordNavigationFacts(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
 	transitions := pageTransitions(episode.Events)
 	for _, trans := range transitions {
@@ -530,16 +552,7 @@ func updateLongTermMemoryFromEpisode(item *MemoryItem, episode TaskEpisode) {
 	}
 	now := time.Now().UTC()
 	if episode.Outcome.Success {
-		if item.Type == "failure" {
-			item.Status = "conflicted"
-			item.ConflictsWith = appendUniqueString(item.ConflictsWith, episode.ID)
-			item.Confidence = clampConfidence(item.Confidence - 0.25)
-			return
-		}
-		item.SuccessCount++
-		item.LastValidatedAt = now.Format(time.RFC3339Nano)
-		item.Confidence = clampConfidence(item.Confidence + 0.05)
-		refreshMemoryExpiry(&item.ExpiresAt, item.TTL, now)
+		recordRecalledMemorySuccess(&item.SuccessCount, &item.LastValidatedAt, &item.Confidence, &item.ExpiresAt, item.TTL, now)
 		return
 	}
 	if shouldPenalizeMemoryType(item.Type) {
@@ -558,16 +571,7 @@ func updateDeviceMemoryFromEpisode(item *DeviceMemoryItem, episode TaskEpisode) 
 	}
 	now := time.Now().UTC()
 	if episode.Outcome.Success {
-		if item.Type == "failure" {
-			item.Status = "conflicted"
-			item.ConflictsWith = appendUniqueString(item.ConflictsWith, episode.ID)
-			item.Confidence = clampConfidence(item.Confidence - 0.25)
-			return
-		}
-		item.SuccessCount++
-		item.LastValidatedAt = now.Format(time.RFC3339Nano)
-		item.Confidence = clampConfidence(item.Confidence + 0.05)
-		refreshMemoryExpiry(&item.ExpiresAt, item.TTL, now)
+		recordRecalledMemorySuccess(&item.SuccessCount, &item.LastValidatedAt, &item.Confidence, &item.ExpiresAt, item.TTL, now)
 		return
 	}
 	if shouldPenalizeMemoryType(item.Type) {
@@ -578,6 +582,13 @@ func updateDeviceMemoryFromEpisode(item *DeviceMemoryItem, episode TaskEpisode) 
 			item.ConflictsWith = appendUniqueString(item.ConflictsWith, episode.ID)
 		}
 	}
+}
+
+func recordRecalledMemorySuccess(successCount *int, lastValidatedAt *string, confidence *float64, expiresAt *string, ttl string, now time.Time) {
+	(*successCount)++
+	*lastValidatedAt = now.Format(time.RFC3339Nano)
+	*confidence = clampConfidence(*confidence + 0.05)
+	refreshMemoryExpiry(expiresAt, ttl, now)
 }
 
 func renderMemoryHitLine(hit MemoryHit) string {

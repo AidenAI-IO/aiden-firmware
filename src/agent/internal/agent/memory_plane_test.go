@@ -367,8 +367,8 @@ func TestMemoryPlaneUpdatesReferencedMemoryOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read mem_fail_fresh: %v", err)
 	}
-	if fail.Item.Status != "conflicted" || !containsMemoryPlaneString(fail.Item.ConflictsWith, "ep_success") {
-		t.Fatalf("expected success to conflict with failure memory, got %#v", fail.Item)
+	if fail.Item.Status != "active" || fail.Item.SuccessCount != 1 || len(fail.Item.ConflictsWith) != 0 {
+		t.Fatalf("expected success to validate recalled failure memory, got %#v", fail.Item)
 	}
 }
 
@@ -496,13 +496,4 @@ func (c *cancelAfterDoneContext) Err() error {
 	default:
 		return c.Context.Err()
 	}
-}
-
-func containsMemoryPlaneString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

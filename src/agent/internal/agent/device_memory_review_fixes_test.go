@@ -131,6 +131,7 @@ func TestDeviceMemoryUpdateRemovesStaleTypeFile(t *testing.T) {
 
 	if err := store.Update(ctx, "mem_retype", func(item *DeviceMemoryItem) {
 		item.Type = "failure"
+		item.Tags = append(item.Tags, reflectionFailureTag)
 	}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
