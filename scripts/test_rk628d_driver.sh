@@ -154,6 +154,14 @@ if ! grep -q 'v4l2_async_unregister_subdev(sd);' <<< "$remove_body" || \
     exit 1
 fi
 
+poll_body="$(sed -n '/^static void rk628_csi_work_i2c_poll(/,/^}/p' "$DRIVER")"
+poll_isr_line="$(grep -n 'rk628_csi_isr(sd, 0, &handled);' <<< "$poll_body" | cut -d: -f1 || true)"
+poll_mutex_line="$(grep -n 'mutex_lock(&csi->confctl_mutex);' <<< "$poll_body" | cut -d: -f1 || true)"
+if [[ -z "$poll_isr_line" || -z "$poll_mutex_line" || "$poll_isr_line" -ge "$poll_mutex_line" ]]; then
+    echo "FAIL: RK628 no-IRQ polling must service HDMI interrupts before waiting on the config mutex" >&2
+    exit 1
+fi
+
 for call_site in rk628_csi_s_dv_timings rk628_csi_set_fmt mipi_dphy_power_on rk628_csi_probe; do
     call_site_body="$(sed -n "/^static .*${call_site}(/,/^}/p" "$DRIVER")"
     if ! grep -q 'rk628_csi_update_link_freq(csi);' <<< "$call_site_body"; then
