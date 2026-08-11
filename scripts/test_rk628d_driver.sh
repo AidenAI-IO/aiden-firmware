@@ -136,6 +136,8 @@ require_pattern 'rk628_csi_schedule_recovery\(sd\);' "$DRIVER" \
     "RK628 polling must recover when the HDMI source starts after initial probe"
 require_pattern 'time_before\(jiffies, csi->next_recovery\)' "$DRIVER" \
     "RK628 HDMI recovery must use a per-device retry deadline"
+require_pattern 'rk628_csi_arm_recovery_cooldown\(csi\);' "$DRIVER" \
+    "RK628 HDMI recovery cooldown must begin after each PHY training attempt"
 require_pattern 'i2c_set_clientdata\(client, sd\);' "$DRIVER" \
     "RK628 remove must retain the V4L2 subdevice associated with the I2C client"
 remove_body="$(sed -n '/^static int rk628_csi_remove(/,/^}/p' "$DRIVER")"
