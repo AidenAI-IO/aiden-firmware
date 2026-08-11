@@ -45,14 +45,16 @@ require_pattern 'rk628-csi@50' "$DTS" \
     "Pico Zero DTS must use the strapped RK628 address 0x50"
 require_pattern 'clock-frequency = <100000>;' "$DTS" \
     "RK628 I2C must run at 100 kHz for reliable 32-bit register transfers"
-require_pattern 'reset-gpios = <&gpio3 RK_PC5 \(GPIO_ACTIVE_LOW \| GPIO_OPEN_DRAIN\)>;' "$DTS" \
-    "RK628 reset must use Pico Zero CSI connector pin 17 as an active-low open-drain output"
+require_pattern 'reset-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_LOW>;' "$DTS" \
+    "RK628 reset must use Pico Zero CSI connector pin 17 as an active-low 1.8V push-pull output"
 require_pattern 'rk628_reset_pin: rk628-reset-pin' "$DTS" \
     "RK628 reset must have an explicit pinctrl group"
 require_pattern '<3 RK_PC5 RK_FUNC_GPIO &pcfg_pull_none>' "$DTS" \
     "RK628 reset pinctrl must use the 1.8V CSI I/O domain without an internal pull-up"
 reject_pattern 'reset-gpios = <&gpio1 RK_PC2' "$DTS" \
     "RK628 reset must not drive the unrelated GPIO1_C2 pin"
+reject_pattern 'GPIO_OPEN_DRAIN' "$DTS" \
+    "RK628 reset must drive high because the module reset input has no usable pull-up"
 require_pattern 'pinctrl-0 = <&mipi_pins>;' "$DTS" \
     "RK628 capture must configure the Pico Zero four-lane MIPI connector"
 reject_pattern 'rk628_mipi_pins' "$DTS" \
