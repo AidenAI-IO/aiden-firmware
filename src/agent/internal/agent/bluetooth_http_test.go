@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -83,6 +85,75 @@ func TestBluetoothHTTPResetsStaleBond(t *testing.T) {
 		`"connected":false`,
 	) {
 		t.Fatalf("pairing reset code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPhoneNotificationEventsPublishesAndroidBatch(t *testing.T) {
+	var gotPhoneID string
+	var gotEvents []ble.NotificationEvent
+	server := &Server{
+		bleNotifyRequest: func(
+			_ context.Context,
+			_ string,
+			phoneID string,
+			events []ble.NotificationEvent,
+		) (ble.NotificationPublishResult, error) {
+			gotPhoneID = phoneID
+			gotEvents = events
+			return ble.NotificationPublishResult{Accepted: 1, LastID: "17"}, nil
+		},
+	}
+	body := []byte(`{"phone_id":"android-1","events":[{"source_id":"key","source_event_id":"event-1","event":"added","app_identifier":"com.example"}]}`)
+	request := bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	request.ContentLength = int64(len(body))
+	recorder := httptest.NewRecorder()
+	server.handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusOK || !containsAll(
+		recorder.Body.String(),
+		`"ok":true`,
+		`"accepted":1`,
+		`"last_id":"17"`,
+	) {
+		t.Fatalf("publish code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if gotPhoneID != "android-1" || len(gotEvents) != 1 || gotEvents[0].SourceEventID != "event-1" {
+		t.Fatalf("unexpected publish request phone=%q events=%#v", gotPhoneID, gotEvents)
+	}
+}
+
+func TestPhoneNotificationEventsRejectsInvalidAndNonUSBRequests(t *testing.T) {
+	called := false
+	server := &Server{
+		bleNotifyRequest: func(
+			context.Context,
+			string,
+			string,
+			[]ble.NotificationEvent,
+		) (ble.NotificationPublishResult, error) {
+			called = true
+			return ble.NotificationPublishResult{}, nil
+		},
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/phone-notifications/events",
+		strings.NewReader(`{"phone_id":"android-1","events":[]}`),
+	)
+	request.RemoteAddr = "192.168.50.140:12345"
+	recorder := httptest.NewRecorder()
+	server.handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusForbidden || called {
+		t.Fatalf("external publish code=%d called=%v", recorder.Code, called)
+	}
+
+	request = bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
+	request.Body = io.NopCloser(strings.NewReader(`{"phone_id":`))
+	recorder = httptest.NewRecorder()
+	server.handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusBadRequest || called {
+		t.Fatalf("invalid publish code=%d called=%v body=%s", recorder.Code, called, recorder.Body.String())
 	}
 }
 

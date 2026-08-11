@@ -95,6 +95,16 @@ func TestUDSOperations(t *testing.T) {
 	if response["status"] != "INVALID_ARGUMENT" {
 		t.Fatalf("invalid cursor was accepted: %#v", response)
 	}
+
+	publishRequest := []byte(`{"op":"notification_publish","phone_id":"android-1","events":[{"source_id":"notification-key","source_event_id":"event-1","event":"added","app_identifier":"com.example","title":"Hello"}]}`)
+	response = decodeResponse(t, server.handleRequest(publishRequest, nil))
+	if response["status"] != "OK" || response["accepted"] != float64(1) || response["last_id"] != "2" {
+		t.Fatalf("notification publish failed: %#v", response)
+	}
+	response = decodeResponse(t, server.handleRequest(publishRequest, nil))
+	if response["status"] != "OK" || response["duplicates"] != float64(1) || response["last_id"] != "2" {
+		t.Fatalf("notification retry was not deduplicated: %#v", response)
+	}
 }
 
 func TestUDSPairingFailures(t *testing.T) {

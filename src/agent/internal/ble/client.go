@@ -71,6 +71,38 @@ func RequestPairingForget(ctx context.Context, socketPath string) (ForgetResult,
 	return ForgetResult{Removed: response.Removed, Bluetooth: response.Bluetooth}, nil
 }
 
+func RequestPublishNotifications(
+	ctx context.Context,
+	socketPath string,
+	phoneID string,
+	events []NotificationEvent,
+) (NotificationPublishResult, error) {
+	var response struct {
+		Status     string `json:"status"`
+		Error      string `json:"error"`
+		Accepted   int    `json:"accepted"`
+		Duplicates int    `json:"duplicates"`
+		LastID     string `json:"last_id"`
+	}
+	requestValue := struct {
+		Op      string              `json:"op"`
+		PhoneID string              `json:"phone_id"`
+		Events  []NotificationEvent `json:"events"`
+	}{
+		Op:      "notification_publish",
+		PhoneID: phoneID,
+		Events:  events,
+	}
+	if err := request(ctx, socketPath, requestValue, &response); err != nil {
+		return NotificationPublishResult{}, err
+	}
+	return NotificationPublishResult{
+		Accepted:   response.Accepted,
+		Duplicates: response.Duplicates,
+		LastID:     response.LastID,
+	}, nil
+}
+
 func request(ctx context.Context, socketPath string, requestValue any, responseValue any) error {
 	dialer := net.Dialer{Timeout: time.Second}
 	connection, err := dialer.DialContext(ctx, "unix", socketPath)

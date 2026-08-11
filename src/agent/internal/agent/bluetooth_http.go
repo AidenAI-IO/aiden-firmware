@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -16,11 +17,26 @@ import (
 
 const defaultBLEServiceSocketPath = "/run/ble_service/ble_service.sock"
 
+const maxPhoneNotificationRequestBytes = 64 * 1024
+
 type bluetoothStatusResponse struct {
 	OK        bool              `json:"ok"`
 	Bluetooth ble.RuntimeStatus `json:"bluetooth"`
 	Removed   int               `json:"removed,omitempty"`
 	Error     string            `json:"error,omitempty"`
+}
+
+type phoneNotificationRequest struct {
+	PhoneID string                  `json:"phone_id"`
+	Events  []ble.NotificationEvent `json:"events"`
+}
+
+type phoneNotificationResponse struct {
+	OK         bool   `json:"ok"`
+	Accepted   int    `json:"accepted,omitempty"`
+	Duplicates int    `json:"duplicates,omitempty"`
+	LastID     string `json:"last_id,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 func (s *Server) handleBluetoothStatus(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +119,67 @@ func (s *Server) handleBluetoothDisconnect(w http.ResponseWriter, r *http.Reques
 	writeBluetoothJSON(w, http.StatusOK, bluetoothStatusResponse{OK: true, Bluetooth: status})
 }
 
+func (s *Server) handlePhoneNotificationEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writePhoneNotificationJSON(w, http.StatusMethodNotAllowed, phoneNotificationResponse{
+			OK:    false,
+			Error: "method not allowed",
+		})
+		return
+	}
+	if !bluetoothControlRequestAllowed(r) {
+		writePhoneNotificationJSON(w, http.StatusForbidden, phoneNotificationResponse{
+			OK:    false,
+			Error: "phone notification ingestion is available only over USB",
+		})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxPhoneNotificationRequestBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var request phoneNotificationRequest
+	if err := decoder.Decode(&request); err != nil {
+		writePhoneNotificationJSON(w, http.StatusBadRequest, phoneNotificationResponse{
+			OK:    false,
+			Error: "invalid notification request: " + err.Error(),
+		})
+		return
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		writePhoneNotificationJSON(w, http.StatusBadRequest, phoneNotificationResponse{
+			OK:    false,
+			Error: "invalid notification request: multiple JSON values",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	defer cancel()
+	result, err := s.bluetoothNotificationPublishRequest()(
+		ctx,
+		s.bluetoothServiceSocketPath(),
+		request.PhoneID,
+		request.Events,
+	)
+	if err != nil {
+		statusCode := http.StatusServiceUnavailable
+		var requestErr *ble.RequestError
+		if errors.As(err, &requestErr) && requestErr.Status == "INVALID_ARGUMENT" {
+			statusCode = http.StatusBadRequest
+		}
+		writePhoneNotificationJSON(w, statusCode, phoneNotificationResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writePhoneNotificationJSON(w, http.StatusOK, phoneNotificationResponse{
+		OK:         true,
+		Accepted:   result.Accepted,
+		Duplicates: result.Duplicates,
+		LastID:     result.LastID,
+	})
+}
+
 func (s *Server) bluetoothServiceSocketPath() string {
 	if path := strings.TrimSpace(s.bleSocketPath); path != "" {
 		return path
@@ -177,6 +254,18 @@ func (s *Server) bluetoothDisconnectRequest() func(context.Context, string) (ble
 	return ble.RequestDisconnect
 }
 
+func (s *Server) bluetoothNotificationPublishRequest() func(
+	context.Context,
+	string,
+	string,
+	[]ble.NotificationEvent,
+) (ble.NotificationPublishResult, error) {
+	if s.bleNotifyRequest != nil {
+		return s.bleNotifyRequest
+	}
+	return ble.RequestPublishNotifications
+}
+
 func writeBluetoothRequestError(w http.ResponseWriter, err error) {
 	statusCode := http.StatusServiceUnavailable
 	var requestErr *ble.RequestError
@@ -200,6 +289,12 @@ func writeBluetoothError(w http.ResponseWriter, statusCode int, message string) 
 }
 
 func writeBluetoothJSON(w http.ResponseWriter, statusCode int, payload bluetoothStatusResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writePhoneNotificationJSON(w http.ResponseWriter, statusCode int, payload phoneNotificationResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	_ = json.NewEncoder(w).Encode(payload)
