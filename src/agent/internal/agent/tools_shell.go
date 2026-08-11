@@ -409,7 +409,10 @@ func shellBuildPtyCommand(ctx context.Context, command string, proxy ProxyConfig
 	}
 	cmd := ptmx.CommandContext(ctx, shellPlatformShell(), shellPlatformShellArg(), command)
 	cmd.Env = shellCommandEnv(true, proxy, environment)
-	shellSetProcessGroupPty(cmd)
+	// go-pty starts Unix commands with Setsid and Setctty. Do not also request
+	// Setpgid: a session leader cannot move process groups, so exec would fail
+	// with EPERM. Setsid already gives the PTY command its own process group for
+	// shellKillProcessGroup.
 	return ptmx, cmd, nil
 }
 
