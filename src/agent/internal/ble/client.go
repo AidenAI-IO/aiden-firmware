@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+type WakeResult struct {
+	WakeID    string `json:"wake_id"`
+	Delivered bool   `json:"delivered"`
+}
+
 type ForgetResult struct {
 	Removed   int           `json:"removed"`
 	Bluetooth RuntimeStatus `json:"bluetooth"`
@@ -20,6 +25,22 @@ type RequestError struct {
 
 func (e *RequestError) Error() string {
 	return fmt.Sprintf("ble_service request failed (%s): %s", e.Status, e.Message)
+}
+
+func RequestWake(ctx context.Context, socketPath, reason string) (WakeResult, error) {
+	var result WakeResult
+	var response struct {
+		Status    string `json:"status"`
+		Error     string `json:"error"`
+		WakeID    string `json:"wake_id"`
+		Delivered bool   `json:"delivered"`
+	}
+	if err := request(ctx, socketPath, map[string]string{"op": "wake", "reason": reason}, &response); err != nil {
+		return result, err
+	}
+	result.WakeID = response.WakeID
+	result.Delivered = response.Delivered
+	return result, nil
 }
 
 func RequestStatus(ctx context.Context, socketPath string) (RuntimeStatus, error) {
