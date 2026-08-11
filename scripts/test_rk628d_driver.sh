@@ -45,12 +45,14 @@ require_pattern 'rk628-csi@50' "$DTS" \
     "Pico Zero DTS must use the strapped RK628 address 0x50"
 require_pattern 'clock-frequency = <100000>;' "$DTS" \
     "RK628 I2C must run at 100 kHz for reliable 32-bit register transfers"
-require_pattern 'reset-gpios = <&gpio1 RK_PC2 \(GPIO_ACTIVE_LOW \| GPIO_OPEN_DRAIN\)>;' "$DTS" \
+require_pattern 'reset-gpios = <&gpio3 RK_PC5 \(GPIO_ACTIVE_LOW \| GPIO_OPEN_DRAIN\)>;' "$DTS" \
     "RK628 reset must use Pico Zero CSI connector pin 17 as an active-low open-drain output"
 require_pattern 'rk628_reset_pin: rk628-reset-pin' "$DTS" \
     "RK628 reset must have an explicit pinctrl group"
-require_pattern '<1 RK_PC2 RK_FUNC_GPIO &pcfg_pull_none>' "$DTS" \
-    "RK628 reset pinctrl must not apply the Pico 3.3V internal pull-up"
+require_pattern '<3 RK_PC5 RK_FUNC_GPIO &pcfg_pull_none>' "$DTS" \
+    "RK628 reset pinctrl must use the 1.8V CSI I/O domain without an internal pull-up"
+reject_pattern 'reset-gpios = <&gpio1 RK_PC2' "$DTS" \
+    "RK628 reset must not drive the unrelated GPIO1_C2 pin"
 require_pattern 'pinctrl-0 = <&mipi_pins>;' "$DTS" \
     "RK628 capture must configure the Pico Zero four-lane MIPI connector"
 reject_pattern 'rk628_mipi_pins' "$DTS" \
@@ -71,6 +73,20 @@ require_pattern 'remote-endpoint = <&rk628_out>;' "$DTS" \
     "CSI D-PHY input must link to RK628"
 require_pattern 'remote-endpoint = <&csi_dphy_input2>;' "$DTS" \
     "RK628 output must link to CSI D-PHY input 2"
+reject_pattern 'remote-endpoint = <&mia1321_out>;' "$DTS" \
+    "RK628 firmware must not retain the mutually exclusive MIA1321 CSI endpoint"
+reject_pattern 'remote-endpoint = <&imx415_out>;' "$DTS" \
+    "RK628 firmware must not retain the mutually exclusive IMX415 CSI endpoint"
+mia1321_node="$(sed -n '/mia1321: mia1321@60 {/,/^[[:space:]]};/p' "$DTS")"
+imx415_node="$(sed -n '/imx415: imx415@37 {/,/^[[:space:]]};/p' "$DTS")"
+if ! grep -q 'status = "disabled";' <<< "$mia1321_node"; then
+    echo "FAIL: RK628 firmware must disable the mutually exclusive MIA1321 node" >&2
+    exit 1
+fi
+if ! grep -q 'status = "disabled";' <<< "$imx415_node"; then
+    echo "FAIL: RK628 firmware must disable the mutually exclusive IMX415 node" >&2
+    exit 1
+fi
 dphy_endpoint="$(sed -n '/csi_dphy_input2: endpoint@2 {/,/^[[:space:]]*};/p' "$DTS")"
 rk628_endpoint="$(sed -n '/rk628_out: endpoint {/,/^[[:space:]]*};/p' "$DTS")"
 if ! grep -q 'data-lanes = <1 2 3 4>;' <<< "$dphy_endpoint"; then
