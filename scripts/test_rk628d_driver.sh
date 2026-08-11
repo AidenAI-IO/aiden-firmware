@@ -114,6 +114,12 @@ require_pattern '\.query_dv_timings[[:space:]]*=' "$DRIVER" \
     "RK628 driver must support HDMI timing discovery"
 require_pattern '\.set_edid[[:space:]]*=' "$DRIVER" \
     "RK628 driver must accept the existing EDID setup path"
+require_pattern 'def_edid\.blocks = ARRAY_SIZE\(edid_init_data\) / EDID_BLOCK_SIZE;' "$DRIVER" \
+    "RK628 probe must derive the default EDID block count from its data"
+require_pattern 'msleep\(200\);' "$DRIVER" \
+    "RK628 EDID updates must hold HPD low long enough for HDMI sources to detect"
+reject_pattern 'udelay\(100\);' "$DRIVER" \
+    "RK628 EDID updates must not use an undetectably short HPD pulse"
 require_pattern '\.get_mbus_config[[:space:]]*=' "$DRIVER" \
     "RK628 driver must report CSI lane and clock configuration"
 require_pattern '#define RK628_CSI_LINK_FREQ_LOW[[:space:]]+375000000' "$DRIVER" \
@@ -132,5 +138,43 @@ for call_site in rk628_csi_s_dv_timings rk628_csi_set_fmt mipi_dphy_power_on rk6
         exit 1
     fi
 done
+
+python3 - "$DRIVER" "$ROOT_DIR/edid/1080p30.hex" "$ROOT_DIR/src/aiden_sdk.cpp" <<'PY'
+import pathlib
+import re
+import sys
+
+driver = pathlib.Path(sys.argv[1]).read_text()
+fixture = bytes.fromhex(pathlib.Path(sys.argv[2]).read_text())
+sdk = pathlib.Path(sys.argv[3]).read_text()
+
+
+def extract_edid(source, declaration, missing_message):
+    match = re.search(
+        declaration + r"\s*=\s*\{(?P<body>.*?)\};",
+        source,
+        re.DOTALL,
+    )
+    if not match:
+        raise SystemExit(missing_message)
+    return bytes(
+        int(value, 16)
+        for value in re.findall(r"0x([0-9A-Fa-f]{2})", match.group("body"))
+    )
+
+
+driver_edid = extract_edid(
+    driver,
+    r"static u8 edid_init_data\[\]",
+    "FAIL: RK628 default EDID array is missing",
+)
+sdk_edid = extract_edid(
+    sdk,
+    r"static const uint8_t kDefaultHdmiEdid1080p30\[\]",
+    "FAIL: libaiden default EDID array is missing",
+)
+if driver_edid != fixture or sdk_edid != fixture:
+    raise SystemExit("FAIL: RK628 and libaiden must use the validated 1080p30 EDID")
+PY
 
 echo "PASS: RK628D driver integration contract"
