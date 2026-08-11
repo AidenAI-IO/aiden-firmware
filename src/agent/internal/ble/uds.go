@@ -117,7 +117,6 @@ type udsRequest struct {
 	Since      json.RawMessage `json:"since"`
 	Generation string          `json:"generation"`
 	Limit      int             `json:"limit"`
-	Reason     string          `json:"reason"`
 }
 
 func (s *UDSServer) handleRequest(header, payload []byte) []byte {
@@ -136,20 +135,6 @@ func (s *UDSServer) handleRequest(header, payload []byte) []byte {
 		return marshalResponse(map[string]any{
 			"status":    "OK",
 			"bluetooth": s.service.Status(),
-		})
-	case "wake":
-		sequence, delivered, err := s.service.Wake(request.Reason)
-		if err != nil {
-			status := "INTERNAL_ERROR"
-			if errors.Is(err, ErrBluetoothUnavailable) {
-				status = "SERVICE_UNAVAILABLE"
-			}
-			return marshalResponse(map[string]any{"status": status, "error": err.Error()})
-		}
-		return marshalResponse(map[string]any{
-			"status":    "OK",
-			"wake_id":   strconv.FormatUint(sequence, 10),
-			"delivered": delivered,
 		})
 	case "pairing_start":
 		if err := s.service.StartPairing(); err != nil {

@@ -8,11 +8,7 @@ import (
 	"testing"
 )
 
-type fakeWakeBackend struct {
-	delivered      bool
-	payloadID      uint64
-	reason         string
-	err            error
+type fakePairingBackend struct {
 	pairingStarted bool
 	pairingErr     error
 	disconnected   bool
@@ -21,44 +17,30 @@ type fakeWakeBackend struct {
 	forgetErr      error
 }
 
-func (b *fakeWakeBackend) NotifyWake(sequence uint64, reason string) (bool, error) {
-	b.payloadID = sequence
-	b.reason = reason
-	return b.delivered, b.err
-}
-
-func (b *fakeWakeBackend) StartPairing() error {
+func (b *fakePairingBackend) StartPairing() error {
 	b.pairingStarted = true
 	return b.pairingErr
 }
 
-func (b *fakeWakeBackend) Disconnect() error {
+func (b *fakePairingBackend) Disconnect() error {
 	b.disconnected = true
 	return b.disconnectErr
 }
 
-func (b *fakeWakeBackend) ForgetPairing() (int, error) {
+func (b *fakePairingBackend) ForgetPairing() (int, error) {
 	return b.forgetRemoved, b.forgetErr
 }
 
 func TestUDSOperations(t *testing.T) {
 	service := NewService(4)
-	backend := &fakeWakeBackend{delivered: true}
+	backend := &fakePairingBackend{}
 	service.setBackend(backend)
 	server := NewUDSServer("unused", service)
 
-	response := decodeResponse(t, server.handleRequest([]byte(`{"op":"wake","reason":"queue"}`), nil))
-	if response["status"] != "OK" || response["wake_id"] != "1" || response["delivered"] != true {
-		t.Fatalf("unexpected wake response: %#v", response)
-	}
-	if backend.payloadID != 1 || backend.reason != "queue" {
-		t.Fatalf("wake was not forwarded: %#v", backend)
-	}
-
-	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"status"}`), nil))
+	response := decodeResponse(t, server.handleRequest([]byte(`{"op":"status"}`), nil))
 	bluetooth, ok := response["bluetooth"].(map[string]any)
-	if !ok || bluetooth["wake_service_uuid"] != WakeServiceUUID {
-		t.Fatalf("status does not expose Wake service identity: %#v", response)
+	if !ok || bluetooth["pairing_service_uuid"] != PairingServiceUUID {
+		t.Fatalf("status does not expose pairing service identity: %#v", response)
 	}
 
 	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"pairing_start"}`), nil))
@@ -123,7 +105,7 @@ func TestUDSPairingFailures(t *testing.T) {
 		t.Fatalf("missing backend status=%#v", response)
 	}
 
-	backend := &fakeWakeBackend{pairingErr: errors.New("pairing failed")}
+	backend := &fakePairingBackend{pairingErr: errors.New("pairing failed")}
 	service.setBackend(backend)
 	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"pairing_start"}`), nil))
 	if response["status"] != "INTERNAL_ERROR" {
@@ -134,30 +116,6 @@ func TestUDSPairingFailures(t *testing.T) {
 	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"disconnect"}`), nil))
 	if response["status"] != "INTERNAL_ERROR" {
 		t.Fatalf("disconnect failure status=%#v", response)
-	}
-}
-
-func TestUDSWakeFailures(t *testing.T) {
-	tests := []struct {
-		name       string
-		backend    wakeBackend
-		wantStatus string
-	}{
-		{name: "backend unavailable", backend: nil, wantStatus: "SERVICE_UNAVAILABLE"},
-		{name: "backend failure", backend: &fakeWakeBackend{err: errors.New("notify failed")}, wantStatus: "INTERNAL_ERROR"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			service := NewService(4)
-			if test.backend != nil {
-				service.setBackend(test.backend)
-			}
-			server := NewUDSServer("unused", service)
-			response := decodeResponse(t, server.handleRequest([]byte(`{"op":"wake","reason":"queue"}`), nil))
-			if response["status"] != test.wantStatus || response["error"] == "" {
-				t.Fatalf("unexpected wake failure response: %#v", response)
-			}
-		})
 	}
 }
 

@@ -86,10 +86,7 @@ func (b *blueZBackend) refreshTrustedDevice(objects managedObjects) (dbus.Object
 }
 
 func (b *blueZBackend) StartPairing() error {
-	b.wakeMu.Lock()
-	closed := b.closed
-	b.wakeMu.Unlock()
-	if closed {
+	if b.isClosed() {
 		return ErrBluetoothUnavailable
 	}
 	b.setConnectionEnabled(true)
@@ -132,10 +129,7 @@ func (b *blueZBackend) disconnectConnectedDevices(objects managedObjects) error 
 }
 
 func (b *blueZBackend) Disconnect() error {
-	b.wakeMu.Lock()
-	closed := b.closed
-	b.wakeMu.Unlock()
-	if closed || b.conn == nil || !b.adapter.IsValid() {
+	if b.isClosed() || b.conn == nil || !b.adapter.IsValid() {
 		return ErrBluetoothUnavailable
 	}
 	b.setConnectionEnabled(false)
@@ -159,7 +153,6 @@ func (b *blueZBackend) Disconnect() error {
 		status.ConnectedDevicePath = ""
 		status.ConnectedDeviceName = ""
 		status.ConnectedDeviceAddr = ""
-		status.WakeSubscriber = false
 		status.Connected = false
 		status.ServicesResolved = false
 		status.ANCSSubscribed = false
@@ -170,10 +163,7 @@ func (b *blueZBackend) Disconnect() error {
 }
 
 func (b *blueZBackend) ForgetPairing() (int, error) {
-	b.wakeMu.Lock()
-	closed := b.closed
-	b.wakeMu.Unlock()
-	if closed || b.conn == nil || !b.adapter.IsValid() {
+	if b.isClosed() || b.conn == nil || !b.adapter.IsValid() {
 		return 0, ErrBluetoothUnavailable
 	}
 	if err := b.closePairingWindow(); err != nil {
@@ -211,7 +201,6 @@ func (b *blueZBackend) ForgetPairing() (int, error) {
 		status.ConnectedDevicePath = ""
 		status.ConnectedDeviceName = ""
 		status.ConnectedDeviceAddr = ""
-		status.WakeSubscriber = false
 		status.Connected = false
 		status.Paired = false
 		status.ServicesResolved = false
@@ -248,19 +237,6 @@ func (b *blueZBackend) updateDeviceStatus(
 	connectionEnabled := b.connectionEnabled
 	b.stateMu.Unlock()
 	connected := connectionEnabled && trusted.IsValid() && variantBool(properties, "Connected")
-	if !connected {
-		// BlueZ normally invokes StopNotify when the central disconnects, but an
-		// abrupt link loss or bluetoothd restart can omit that callback. Clear the
-		// exported characteristic state here as well so status and Wake delivery
-		// never claim that a disconnected iPhone is still subscribed.
-		b.wakeMu.Lock()
-		if b.wakeProps != nil {
-			if notifying, _ := b.wakeProps.GetMust(blueZGattCharInterface, "Notifying").(bool); notifying {
-				b.wakeProps.SetMust(blueZGattCharInterface, "Notifying", false)
-			}
-		}
-		b.wakeMu.Unlock()
-	}
 
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.BondedDeviceCount = bondedCount
@@ -276,7 +252,6 @@ func (b *blueZBackend) updateDeviceStatus(
 		status.Paired = trusted.IsValid()
 		status.ServicesResolved = false
 		if !connected {
-			status.WakeSubscriber = false
 			status.ANCSSubscribed = false
 		}
 		if !trusted.IsValid() {
@@ -301,6 +276,12 @@ func (b *blueZBackend) setConnectionEnabled(enabled bool) {
 	b.stateMu.Lock()
 	b.connectionEnabled = enabled
 	b.stateMu.Unlock()
+}
+
+func (b *blueZBackend) isClosed() bool {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	return b.closed
 }
 
 func (b *blueZBackend) connectionsEnabled() bool {
@@ -446,7 +427,7 @@ func applyAdapterPairingMode(open bool, setProperty func(name string, value bool
 }
 
 func advertisedServiceUUIDs() []string {
-	return []string{WakeServiceUUID}
+	return []string{PairingServiceUUID}
 }
 
 func advertisedManufacturerData(boardIdentity []byte) map[uint16]dbus.Variant {

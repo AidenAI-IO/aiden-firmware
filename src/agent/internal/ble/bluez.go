@@ -2,10 +2,8 @@ package ble
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +16,6 @@ import (
 const (
 	blueZDBusCallTimeout    = 5 * time.Second
 	blueZCleanupCallTimeout = time.Second
-	wakeStopGracePeriod     = 2 * time.Second
 
 	dbusBusName                  = "org.freedesktop.DBus"
 	dbusBusInterface             = "org.freedesktop.DBus"
@@ -35,12 +32,12 @@ const (
 	blueZAgentManagerInterface   = "org.bluez.AgentManager1"
 	blueZAgentInterface          = "org.bluez.Agent1"
 
-	applicationPath   = dbus.ObjectPath("/com/aiden/ble")
-	wakeServicePath   = dbus.ObjectPath("/com/aiden/ble/service0")
-	wakeCharPath      = dbus.ObjectPath("/com/aiden/ble/service0/char0")
-	advertisementPath = dbus.ObjectPath("/com/aiden/ble/advertisement0")
-	agentPath         = dbus.ObjectPath("/com/aiden/ble/agent0")
-	blueZRootPath     = dbus.ObjectPath("/")
+	applicationPath    = dbus.ObjectPath("/com/aiden/ble")
+	pairingServicePath = dbus.ObjectPath("/com/aiden/ble/service0")
+	pairingCharPath    = dbus.ObjectPath("/com/aiden/ble/service0/char0")
+	advertisementPath  = dbus.ObjectPath("/com/aiden/ble/advertisement0")
+	agentPath          = dbus.ObjectPath("/com/aiden/ble/agent0")
+	blueZRootPath      = dbus.ObjectPath("/")
 )
 
 type managedObjects map[dbus.ObjectPath]map[string]map[string]dbus.Variant
@@ -75,25 +72,22 @@ type blueZBackend struct {
 	rescanRequests chan struct{}
 	fatalErrors    chan error
 
-	wakeProps   *prop.Properties
-	advProps    *prop.Properties
-	wakeObject  *wakeCharacteristic
-	gattObjects []exportedGattObject
+	advProps      *prop.Properties
+	pairingObject *pairingCharacteristic
+	gattObjects   []exportedGattObject
 
-	ancsMu              sync.Mutex
-	ancs                ancsPaths
-	advertisementMu     sync.Mutex
-	advertising         bool
-	wakeMu              sync.Mutex
-	lastWakeNotifyStart time.Time
-	closed              bool
-	pairingModeMu       sync.Mutex
-	stateMu             sync.Mutex
-	trustedDevice       dbus.ObjectPath
-	connectionEnabled   bool
-	pairingOpen         bool
-	pairingDeadline     time.Time
-	pairingModeDirty    bool
+	ancsMu            sync.Mutex
+	ancs              ancsPaths
+	advertisementMu   sync.Mutex
+	advertising       bool
+	closed            bool
+	pairingModeMu     sync.Mutex
+	stateMu           sync.Mutex
+	trustedDevice     dbus.ObjectPath
+	connectionEnabled bool
+	pairingOpen       bool
+	pairingDeadline   time.Time
+	pairingModeDirty  bool
 }
 
 func newBlueZBackend(service *Service, deviceName string, pairingWindow time.Duration) *blueZBackend {
@@ -275,13 +269,13 @@ func (b *blueZBackend) close() {
 	if b.conn == nil {
 		return
 	}
-	b.wakeMu.Lock()
+	b.stateMu.Lock()
 	if b.closed {
-		b.wakeMu.Unlock()
+		b.stateMu.Unlock()
 		return
 	}
 	b.closed = true
-	b.wakeMu.Unlock()
+	b.stateMu.Unlock()
 	b.setConnectionEnabled(false)
 
 	b.ancsMu.Lock()
@@ -323,46 +317,42 @@ func (b *blueZBackend) close() {
 		status.Advertising = false
 		status.PairingOpen = false
 		status.PairingDeadline = ""
-		status.WakeSubscriber = false
 		status.ANCSSubscribed = false
 	})
 }
 
 func (b *blueZBackend) exportObjects() error {
 	var err error
-	_, err = b.exportGattObject(wakeServicePath, blueZGattServiceInterface, prop.Map{
+	_, err = b.exportGattObject(pairingServicePath, blueZGattServiceInterface, prop.Map{
 		blueZGattServiceInterface: {
-			"UUID":            {Value: WakeServiceUUID, Emit: prop.EmitConst},
+			"UUID":            {Value: PairingServiceUUID, Emit: prop.EmitConst},
 			"Primary":         {Value: true, Emit: prop.EmitConst},
-			"Characteristics": {Value: []dbus.ObjectPath{wakeCharPath}, Emit: prop.EmitConst},
+			"Characteristics": {Value: []dbus.ObjectPath{pairingCharPath}, Emit: prop.EmitConst},
 		},
 	}, &struct{}{})
 	if err != nil {
-		return fmt.Errorf("export Wake service: %w", err)
+		return fmt.Errorf("export pairing service: %w", err)
 	}
 
-	b.wakeObject = &wakeCharacteristic{backend: b}
-	b.wakeProps, err = b.exportGattObject(wakeCharPath, blueZGattCharInterface, prop.Map{
+	b.pairingObject = &pairingCharacteristic{backend: b}
+	_, err = b.exportGattObject(pairingCharPath, blueZGattCharInterface, prop.Map{
 		blueZGattCharInterface: {
-			"UUID":    {Value: WakeCharacteristicUUID, Emit: prop.EmitConst},
-			"Service": {Value: wakeServicePath, Emit: prop.EmitConst},
-			// Keep the read encrypted because it is the explicit operation that
-			// triggers the iOS system bond. BlueZ 5.65 rejects CCC writes for its
-			// encrypt-notify flag even after that bond succeeds, so expose standard
-			// notify separately. Wake payloads contain no command or notification
-			// content; they only ask the app to poll its authenticated HTTP channel.
-			"Flags":       {Value: wakeCharacteristicFlags(), Emit: prop.EmitConst},
+			"UUID":    {Value: PairingCharacteristicUUID, Emit: prop.EmitConst},
+			"Service": {Value: pairingServicePath, Emit: prop.EmitConst},
+			// The encrypted read is the explicit operation that triggers the iOS
+			// system bond. This foundation characteristic intentionally has no
+			// notify semantics or application payload.
+			"Flags":       {Value: pairingCharacteristicFlags(), Emit: prop.EmitConst},
 			"Descriptors": {Value: []dbus.ObjectPath{}, Emit: prop.EmitConst},
 			"Value":       {Value: []byte{}, Emit: prop.EmitTrue},
-			"Notifying":   {Value: false, Emit: prop.EmitTrue},
 		},
-	}, b.wakeObject)
+	}, b.pairingObject)
 	if err != nil {
-		return fmt.Errorf("export Wake characteristic: %w", err)
+		return fmt.Errorf("export pairing characteristic: %w", err)
 	}
 
 	// Keep the legacy advertising payload within 31 bytes: flags (3), the
-	// 128-bit Wake Service UUID (18), and manufacturer data containing the
+	// 128-bit pairing Service UUID (18), and manufacturer data containing the
 	// 6-byte board identity (10). The local name is emitted in scan response.
 	// Advertisement contents stay constant for the entire backend lifetime.
 	// Pairing windows are enforced through Adapter1 and the pairing agent; they
@@ -401,8 +391,8 @@ func (b *blueZBackend) exportObjects() error {
 	return exportIntrospection(b.conn, agentPath, blueZAgentInterface, agent, nil)
 }
 
-func wakeCharacteristicFlags() []string {
-	return []string{"encrypt-read", "notify"}
+func pairingCharacteristicFlags() []string {
+	return []string{"encrypt-read"}
 }
 
 func (b *blueZBackend) exportGattObject(
@@ -701,10 +691,6 @@ func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.Obj
 		b.clearANCS("Bluetooth disconnected by user")
 		return nil
 	}
-	if !b.wakeSubscribed() {
-		b.clearANCS("waiting for Wake subscriber")
-		return nil
-	}
 	type candidate struct {
 		paths       ancsPaths
 		deviceProps map[string]dbus.Variant
@@ -835,47 +821,6 @@ func (b *blueZBackend) clearANCS(reason string) {
 	b.service.status.update(func(status *RuntimeStatus) { status.ANCSSubscribed = false })
 }
 
-func (b *blueZBackend) NotifyWake(sequence uint64, reason string) (bool, error) {
-	b.wakeMu.Lock()
-	defer b.wakeMu.Unlock()
-	if b.closed {
-		return false, ErrBluetoothUnavailable
-	}
-	if b.wakeProps == nil {
-		return false, ErrBluetoothUnavailable
-	}
-	payload := make([]byte, 12)
-	payload[0] = 1
-	payload[1] = wakeReasonCode(reason)
-	binary.LittleEndian.PutUint64(payload[4:], sequence)
-	notifying, _ := b.wakeProps.GetMust(blueZGattCharInterface, "Notifying").(bool)
-	b.wakeProps.SetMust(blueZGattCharInterface, "Value", payload)
-	return notifying, nil
-}
-
-func (b *blueZBackend) wakeSubscribed() bool {
-	b.wakeMu.Lock()
-	defer b.wakeMu.Unlock()
-	if b.wakeProps == nil {
-		return false
-	}
-	notifying, _ := b.wakeProps.GetMust(blueZGattCharInterface, "Notifying").(bool)
-	return notifying
-}
-
-func wakeReasonCode(reason string) byte {
-	switch strings.ToLower(strings.TrimSpace(reason)) {
-	case "queue", "phone_bridge", "command":
-		return 1
-	case "manual", "user":
-		return 2
-	case "system", "notification":
-		return 3
-	default:
-		return 0
-	}
-}
-
 type gattObjectManager struct {
 	backend *blueZBackend
 }
@@ -894,7 +839,7 @@ func (m *gattObjectManager) GetManagedObjects() (managedObjects, *dbus.Error) {
 	return objects, nil
 }
 
-type wakeCharacteristic struct {
+type pairingCharacteristic struct {
 	backend    *blueZBackend
 	properties *prop.Properties
 }
@@ -917,31 +862,19 @@ func readValueAtOffset(value []byte, options map[string]dbus.Variant) ([]byte, *
 	return append([]byte(nil), value[offset:]...), nil
 }
 
-func (c *wakeCharacteristic) setGattProperties(properties *prop.Properties) {
+func (c *pairingCharacteristic) setGattProperties(properties *prop.Properties) {
 	c.properties = properties
-	c.backend.wakeProps = properties
 }
 
-func (c *wakeCharacteristic) ReadValue(options map[string]dbus.Variant) ([]byte, *dbus.Error) {
+func (c *pairingCharacteristic) ReadValue(options map[string]dbus.Variant) ([]byte, *dbus.Error) {
 	value, _ := c.properties.GetMust(blueZGattCharInterface, "Value").([]byte)
-	return readValueAtOffset(value, options)
-}
-
-func (c *wakeCharacteristic) StartNotify() *dbus.Error {
-	now := time.Now()
-	c.backend.wakeMu.Lock()
-	if notifying, _ := c.properties.GetMust(blueZGattCharInterface, "Notifying").(bool); notifying {
-		c.backend.lastWakeNotifyStart = now
-	} else {
-		c.properties.SetMust(blueZGattCharInterface, "Notifying", true)
-		c.backend.lastWakeNotifyStart = now
+	result, err := readValueAtOffset(value, options)
+	if err != nil {
+		return nil, err
 	}
-	c.backend.wakeMu.Unlock()
-	log.Printf("BLE Wake StartNotify")
-	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = true })
 	c.backend.finishConnectionWindow()
 	c.backend.requestRescan()
-	return nil
+	return result, nil
 }
 
 func (b *blueZBackend) finishConnectionWindow() {
@@ -950,30 +883,6 @@ func (b *blueZBackend) finishConnectionWindow() {
 			b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
 		}
 	}()
-}
-
-func (c *wakeCharacteristic) StopNotify() *dbus.Error {
-	now := time.Now()
-	connected := c.backend.service.Status().Connected
-	c.backend.wakeMu.Lock()
-	if shouldIgnoreWakeStop(connected, c.backend.lastWakeNotifyStart, now) {
-		age := now.Sub(c.backend.lastWakeNotifyStart)
-		c.backend.wakeMu.Unlock()
-		log.Printf("BLE Wake ignored stale StopNotify age=%s", age.Round(time.Millisecond))
-		return nil
-	}
-	c.properties.SetMust(blueZGattCharInterface, "Notifying", false)
-	c.backend.lastWakeNotifyStart = time.Time{}
-	c.backend.wakeMu.Unlock()
-	log.Printf("BLE Wake StopNotify")
-	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = false })
-	c.backend.requestRescan()
-	return nil
-}
-
-func shouldIgnoreWakeStop(connected bool, lastStart, now time.Time) bool {
-	return connected && !lastStart.IsZero() && now.Sub(lastStart) >= 0 &&
-		now.Sub(lastStart) < wakeStopGracePeriod
 }
 
 type advertisementObject struct{}
