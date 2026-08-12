@@ -6,6 +6,9 @@ The recommended production deployment method is to build or download a complete 
 
 ```text
 /oem/usr/bin/                  # Application binaries
+/etc/init.d/S39hciinit         # AIC8800 UART/HCI initialization
+/etc/init.d/S40bluetoothd      # BlueZ with persistent pairing state
+/etc/init.d/S41ble_service     # BLE pairing/ANCS service watchdog
 /etc/init.d/S43wlan_guard      # WLAN connectivity guard
 /etc/init.d/S49ntp             # ntpd daemon
 /etc/init.d/S49usbhid          # USB HID gadget initialization
@@ -26,17 +29,19 @@ After `./build.sh` completes, the main artifacts are in `build/bin/`. The ones d
 
 - `build/bin/frame_service`
 - `build/bin/audio_service`
+- `build/bin/ble_service`
 - `build/bin/config_web`
 - `build/bin/agent`
 - `overlay/oem/usr/bin/aiden-env-run`
 
-If the target device has already been flashed with an Aiden firmware version, the init scripts and `/etc/*.conf` typically already exist. In this case, the minimal deployment set is the above 5 files:
+If the target device has already been flashed with an Aiden firmware version, the init scripts and `/etc/*.conf` typically already exist. In this case, the minimal deployment set is the above runtime files:
 
 ```bash
 ./build.sh
 
 scp build/bin/frame_service root@<device-ip>:/oem/usr/bin/
 scp build/bin/audio_service root@<device-ip>:/oem/usr/bin/
+scp build/bin/ble_service root@<device-ip>:/oem/usr/bin/
 scp build/bin/config_web root@<device-ip>:/oem/usr/bin/
 scp build/bin/agent root@<device-ip>:/oem/usr/bin/
 scp overlay/oem/usr/bin/aiden-env-run root@<device-ip>:/oem/usr/bin/
@@ -57,11 +62,16 @@ If the target device is a more bare system lacking Aiden's init scripts and conf
 scp overlay/etc/init.d/S52frame_service root@<device-ip>:/etc/init.d/
 scp overlay/etc/init.d/S53adb_server root@<device-ip>:/etc/init.d/
 scp overlay/etc/init.d/S53audio_service root@<device-ip>:/etc/init.d/
+scp overlay/etc/init.d/S39hciinit root@<device-ip>:/etc/init.d/
+scp overlay/etc/init.d/S40bluetoothd root@<device-ip>:/etc/init.d/
+scp overlay/etc/init.d/S41ble_service root@<device-ip>:/etc/init.d/
 scp overlay/etc/init.d/S53agent root@<device-ip>:/etc/init.d/
 scp overlay/etc/init.d/S56config_web root@<device-ip>:/etc/init.d/
 
 scp overlay/etc/aiden_frame_service.conf root@<device-ip>:/etc/
 scp overlay/etc/aiden_audio_service.conf root@<device-ip>:/etc/
+scp overlay/etc/aiden_ble_service.conf root@<device-ip>:/etc/
+scp overlay/etc/bluetooth/main.conf root@<device-ip>:/etc/bluetooth/
 ```
 
 First deployment typically also requires preparing the default configuration under `/userdata`:
@@ -83,7 +93,7 @@ Notes:
 After copying, common restart commands:
 
 ```bash
-ssh root@<device-ip> "chmod +x /oem/usr/bin/frame_service /oem/usr/bin/audio_service /oem/usr/bin/config_web /oem/usr/bin/agent /oem/usr/bin/aiden-env-run"
+ssh root@<device-ip> "chmod +x /etc/init.d/S39hciinit /etc/init.d/S40bluetoothd /etc/init.d/S41ble_service /etc/init.d/S52frame_service /etc/init.d/S53adb_server /etc/init.d/S53audio_service /etc/init.d/S53agent /etc/init.d/S56config_web /oem/usr/bin/frame_service /oem/usr/bin/audio_service /oem/usr/bin/ble_service /oem/usr/bin/config_web /oem/usr/bin/agent /oem/usr/bin/aiden-env-run"
 ssh root@<device-ip> "/etc/init.d/S52frame_service restart"
 ssh root@<device-ip> "/etc/init.d/S53audio_service restart"
 ssh root@<device-ip> "/etc/init.d/S53agent restart"
@@ -94,18 +104,22 @@ ssh root@<device-ip> "/etc/init.d/S56config_web restart"
 
 When starting with the firmware, the main service relationships are as follows:
 
-1. `S43wlan_guard` monitors WLAN connectivity and recovers automatically;
-2. `S49ntp` starts `ntpd` in daemon mode, using direct IP connection to NTP server (bypassing DNS startup order);
-3. `S50ntp_watchdog` periodically checks clock sync status, triggers `S49ntp step` to force sync when not synced, exits after sync;
-4. `S49usbhid` / `S50usbdevice` configures USB gadget;
-5. `S52frame_service` exclusively uses `/dev/video0` and provides screenshot/frame service;
-6. `S53adb_server` waits 3 seconds, then runs `adb start-server` once so adb-based Android capture is ready;
-7. `S53audio_service` provides audio recording/playback service;
-8. `S53agent` starts the Go Agent;
-9. `S55aiden_usb_dhcp` configures USB network DHCP / dnsmasq related capabilities;
-10. `S56config_web` provides the configuration page;
-11. `S99rtcinit` overrides the SDK default RTC script; when RTC is abnormal, only writes default time when system time is still earlier than baseline date, avoiding overwriting system time already calibrated by NTP.
-12. `S99usb0config` performs USB network interface post-configuration.
+1. `S35wifidrv` loads the AIC8800 combo firmware;
+2. `S39hciinit` attaches `/dev/ttyS1` and brings up `hci0`;
+3. `S40bluetoothd` starts BlueZ with its pairing state under `/userdata`;
+4. `S41ble_service` registers the pairing GATT service and ANCS consumer;
+5. `S43wlan_guard` monitors WLAN connectivity and recovers automatically;
+6. `S49ntp` starts `ntpd` in daemon mode, using direct IP connection to NTP server (bypassing DNS startup order);
+7. `S50ntp_watchdog` periodically checks clock sync status, triggers `S49ntp step` to force sync when not synced, exits after sync;
+8. `S49usbhid` / `S50usbdevice` configures USB gadget;
+9. `S52frame_service` exclusively uses `/dev/video0` and provides screenshot/frame service;
+10. `S53adb_server` waits 3 seconds, then runs `adb start-server` once so adb-based Android capture is ready;
+11. `S53audio_service` provides audio recording/playback service;
+12. `S53agent` starts the Go Agent;
+13. `S55aiden_usb_dhcp` configures USB network DHCP / dnsmasq related capabilities;
+14. `S56config_web` provides the configuration page;
+15. `S99rtcinit` overrides the SDK default RTC script; when RTC is abnormal, only writes default time when system time is still earlier than baseline date, avoiding overwriting system time already calibrated by NTP.
+16. `S99usb0config` performs USB network interface post-configuration.
 
 ## Common Service Commands
 
@@ -115,6 +129,9 @@ When starting with the firmware, the main service relationships are as follows:
 /etc/init.d/S53adb_server status
 /etc/init.d/S53audio_service status
 /etc/init.d/S53audio_service restart
+/etc/init.d/S39hciinit status
+/etc/init.d/S40bluetoothd status
+/etc/init.d/S41ble_service status
 /etc/init.d/S53agent status
 /etc/init.d/S53agent restart
 /etc/init.d/S56config_web restart
@@ -126,6 +143,7 @@ When starting with the firmware, the main service relationships are as follows:
 | --- | --- |
 | `/etc/aiden_frame_service.conf` | frame service binary, socket, log, pid file paths |
 | `/etc/aiden_audio_service.conf` | audio service binary, socket, log, pid file paths |
+| `/etc/aiden_ble_service.conf` | BLE service binary, socket, log, device-name base, event capacity, and pairing-window duration |
 | `/userdata/agent/agent.toml` | Go Agent runtime configuration |
 | `/userdata/wpa_supplicant.conf` | Wi-Fi configuration |
 
@@ -136,6 +154,9 @@ When starting with the firmware, the main service relationships are as follows:
 | Frame Service | `/var/log/frame_service/frame_service.log` |
 | adb delayed startup | `/var/log/adb/adb-startup.log` |
 | Audio Service | `/var/log/audio_service/audio_service.log` |
+| Bluetooth HCI | `/var/log/aiden-hciattach.log` |
+| BlueZ | `/var/log/bluetoothd/bluetoothd.log` |
+| BLE Service | `/var/log/ble_service/ble_service.log` |
 | Agent | `/userdata/agent/log/agent.log` |
 
 ## Notes

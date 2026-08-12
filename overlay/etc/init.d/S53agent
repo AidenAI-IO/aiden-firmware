@@ -10,6 +10,7 @@ STORAGE_LEVEL_PATH=${STORAGE_LEVEL_PATH:-/run/agent/storage_level}
 PID_FILE=/run/agent/agent.pid
 WATCHDOG_PID_FILE=/run/agent/agent_watchdog.pid
 BOOT_CONF=/etc/aiden_boot.conf
+BLE_SERVICE_CONF=${BLE_SERVICE_CONF:-/etc/aiden_ble_service.conf}
 AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
 [ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
 . "$AIDEN_LOG_HELPER"
@@ -26,6 +27,12 @@ mark() {
     return 0
 }
 LOG_PATH=${LOG_PATH:-$CONFIG_DIR/log/agent.log}
+AIDEN_BLE_SERVICE_SOCKET="$(
+    SOCKET_PATH=/run/ble_service/ble_service.sock
+    [ -f "$BLE_SERVICE_CONF" ] && . "$BLE_SERVICE_CONF"
+    printf '%s' "$SOCKET_PATH"
+)"
+export AIDEN_BLE_SERVICE_SOCKET
 
 supervisor_log() {
     level="$1"

@@ -43,7 +43,7 @@ This workflow will:
 1. Compile C/C++ programs using `cmake/toolchain-arm-rockchip830.cmake`;
 2. Generate `build/lib/libaiden.a` and `build/bin/*`;
 3. Install/use Go 1.26.0;
-4. Cross-compile the Go Agent: `build/bin/agent`, targeting `linux/arm GOARM=7`.
+4. Cross-compile the Go Agent and BLE daemon: `build/bin/agent` and `build/bin/ble_service`, targeting `linux/arm GOARM=7`.
 
 ## macOS Apple Silicon + Colima
 
@@ -90,3 +90,4 @@ cd build-host && ctest --output-on-failure
 | `image_process` | Image processing CLI |
 | `example_*` | Wake word, audio, camera, USB HID examples |
 | `agent` | Go Agent daemon, additionally built by `_build.sh` |
+| `ble_service` | Go BlueZ GATT/ANCS daemon, additionally built by `_build.sh` |
