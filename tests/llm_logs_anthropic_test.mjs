@@ -38,6 +38,84 @@ function extract(body) {
   return JSON.parse(JSON.stringify(context.extractResponseMessage(body)));
 }
 
+function requestMessages(body) {
+  return JSON.parse(JSON.stringify(context.requestMessages(body)));
+}
+
+const anthropicRequest = {
+  model: 'claude-sonnet-4-6',
+  system: [
+    {type: 'text', text: 'Use the screen carefully.'},
+  ],
+  messages: [
+    {
+      role: 'user',
+      content: [
+        {type: 'text', text: 'What is shown?'},
+        {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='}},
+      ],
+    },
+    {
+      role: 'assistant',
+      content: [
+        {type: 'text', text: 'I will inspect it.'},
+        {type: 'tool_use', id: 'tool-1', name: 'inspect_screen', input: {detail: 'high'}},
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        {type: 'tool_result', tool_use_id: 'tool-1', content: 'Screen inspected.'},
+      ],
+    },
+  ],
+};
+
+assert.deepEqual(
+  requestMessages(anthropicRequest),
+  [
+    {role: 'system', content: [{type: 'text', text: 'Use the screen carefully.'}]},
+    {
+      role: 'user',
+      content: [
+        {type: 'text', text: 'What is shown?'},
+        {type: 'image_url', image_url: {url: 'data:image/png;base64,aGVsbG8='}},
+      ],
+    },
+    {
+      role: 'assistant',
+      content: [{type: 'text', text: 'I will inspect it.'}],
+      tool_calls: [
+        {
+          id: 'tool-1',
+          type: 'function',
+          function: {name: 'inspect_screen', arguments: '{"detail":"high"}'},
+        },
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        {type: 'tool_result', tool_use_id: 'tool-1', content: 'Screen inspected.'},
+      ],
+    },
+  ],
+  'Anthropic requests should expose system, images, tool calls, and tool results to the log UI',
+);
+
+const anthropicRequestHtml = context.renderMessages(requestMessages(anthropicRequest), true, 'anthropic-request');
+assert.match(anthropicRequestHtml, /Use the screen carefully\./);
+assert.match(anthropicRequestHtml, /data:image\/png;base64,aGVsbG8=/);
+assert.match(anthropicRequestHtml, /inspect_screen/);
+assert.match(anthropicRequestHtml, /Screen inspected\./);
+
+const openAIRequestMessages = [{role: 'assistant', content: [], tool_calls: [{id: 'call-1'}]}];
+assert.deepEqual(
+  requestMessages({messages: openAIRequestMessages}),
+  openAIRequestMessages,
+  'OpenAI request messages should retain their existing shape',
+);
+
 assert.deepEqual(
   extract(JSON.stringify({
     type: 'message',

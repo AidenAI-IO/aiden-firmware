@@ -26,6 +26,8 @@ class Element {
   dispatchEvent() {}
   focus() {}
   remove() {}
+  closest() { return this.parentField || null; }
+  querySelector(selector) { return selector === 'small' ? this.helpElement || null : null; }
 }
 
 const elements = new Map();
@@ -114,10 +116,49 @@ await providersModule.evaluate();
 const {
   ModelProvidersManager,
   ModelSelector,
+  providerAPIKeyHelp,
+  providerAPIKeyPlaceholder,
+  syncProviderCredentialHelp,
   rememberModelProvider,
   syncModelProvidersFromConfig,
   TtsProvidersManager,
 } = providersModule.namespace;
+
+assert.equal(
+  providerAPIKeyPlaceholder('anthropic', false),
+  'provider.anthropic_api_key_placeholder',
+  'new Anthropic providers should suggest Anthropic environment variables',
+);
+assert.equal(
+  providerAPIKeyHelp('anthropic'),
+  'provider.anthropic_api_key_help',
+  'Anthropic providers should explain bearer and x-api-key authentication',
+);
+assert.equal(providerAPIKeyPlaceholder('openai', false), 'provider.api_key_placeholder');
+assert.equal(providerAPIKeyHelp('openai'), 'provider.api_key_help');
+assert.equal(
+  providerAPIKeyPlaceholder('anthropic', true),
+  'provider.credential_saved_placeholder',
+  'editing a configured Anthropic provider should keep the write-only credential placeholder',
+);
+
+const providerTypeInput = new Element();
+providerTypeInput.value = 'anthropic';
+elements.set('providerType', providerTypeInput);
+const providerAPIKeyInput = new Element();
+elements.set('providerApiKey', providerAPIKeyInput);
+const providerAPIKeyHelpElement = new Element();
+elements.set('providerApiKeyHelp', providerAPIKeyHelpElement);
+const providerAPIKeyField = new Element();
+providerAPIKeyField.helpElement = providerAPIKeyHelpElement;
+providerAPIKeyInput.parentField = providerAPIKeyField;
+syncProviderCredentialHelp(false);
+assert.equal(providerAPIKeyInput.placeholder, 'provider.anthropic_api_key_placeholder');
+assert.equal(providerAPIKeyHelpElement.textContent, 'provider.anthropic_api_key_help');
+providerTypeInput.value = 'openai';
+syncProviderCredentialHelp(false);
+assert.equal(providerAPIKeyInput.placeholder, 'provider.api_key_placeholder');
+assert.equal(providerAPIKeyHelpElement.textContent, 'provider.api_key_help');
 
 const modelInput = new Element();
 modelInput.value = 'existing-model';

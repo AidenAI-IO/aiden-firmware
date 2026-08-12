@@ -539,7 +539,12 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("function renderDiffView") != std::string::npos);
     CHECK(llm_html.find("function renderResponseBlock") != std::string::npos);
     CHECK(llm_html.find("function extractResponseMessage") != std::string::npos);
-    CHECK(llm_html.find("renderDiff(prevReq.messages || [], req.messages || []) + renderResponseBlock(g)") != std::string::npos);
+    CHECK(llm_html.find("renderDiff(requestMessages(prevReq), requestMessages(req)) + renderResponseBlock(g)") != std::string::npos);
+    CHECK(llm_html.find("function requestMessages") != std::string::npos);
+    CHECK(llm_html.find("function normalizeAnthropicMessage") != std::string::npos);
+    CHECK(llm_html.find("part.type === 'tool_use'") != std::string::npos);
+    CHECK(llm_html.find("p.type === 'tool_result'") != std::string::npos);
+    CHECK(llm_html.find("p.source && p.source.type === 'base64'") != std::string::npos);
     CHECK(llm_html.find("response-section") != std::string::npos);
 }
 
