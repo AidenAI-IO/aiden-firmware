@@ -104,8 +104,17 @@ jobs:
     - name: Verify android-tools compatibility patches
       run: sh scripts/test_android_tools_aiden_compat.sh
 
+    - name: Verify Bluetooth initialization
+      run: sh scripts/test_ble_init.sh
+
     - name: Verify reproducible rootfs policy
       run: bash scripts/test_reproducible_rootfs_policy.sh
+
+    - name: Verify HDMI bridge startup policy
+      run: sh scripts/test_frame_service_bridge_policy.sh
+
+    - name: Verify dual-bridge RK628D driver integration
+      run: bash scripts/test_rk628d_driver.sh
 
     - name: Free hosted runner disk space
       if: ${{ inputs.free_disk_space }}

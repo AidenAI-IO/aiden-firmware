@@ -377,7 +377,7 @@ func (c *fakeWaitStableFrameClient) LatestFrame() (*frameMetadata, []byte, scree
 	return &meta, append([]byte(nil), frame.data...), screenCaptureInfo{}, nil
 }
 
-func (c *fakeWaitStableFrameClient) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, screenCaptureInfo, error) {
+func (c *fakeWaitStableFrameClient) LatestFrameWithFormat(format string, quality int, _ bool, _ int) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if format != "jpeg" {
 		return nil, nil, screenCaptureInfo{}, fmt.Errorf("unexpected format %q", format)
 	}

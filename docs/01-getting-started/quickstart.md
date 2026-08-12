@@ -22,7 +22,7 @@ This page is the main path for anyone touching Aiden hardware for the first time
 Follow [Hardware & Wiring](hardware.md) to complete the wiring. Key connection flow:
 
 - The target device (iPhone / PC) connects to a **USB-C hub**;
-- The hub's **HDMI output** goes to the TC358743XBG HDMI-to-CSI bridge, which feeds the Pico Zero's `/dev/video0` via CSI;
+- The hub's **HDMI output** goes to the Firefly RK628D HDMI-to-CSI bridge, which feeds the Pico Zero's `/dev/video0` through four CSI lanes;
 - The hub's **USB-C output** connects to the Pico Zero for data and power;
 - The Pico Zero exposes `/dev/hidg0` for keyboard input, `/dev/hidg1` for pointer/touch input, and `/dev/hidg2` for Android extension keys or Consumer Control media keys back to the target over USB;
 - Audio goes through the Pico Zero's onboard codec / ALSA; networking goes through Wi-Fi or the USB gadget network.

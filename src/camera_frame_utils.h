@@ -27,7 +27,7 @@ inline void set_default_camera_config(aiden::CameraConfig* config) {
     config->capture_retries = 2;
     config->enable_hdmi_sync = true;
     config->force_trigger = false;
-    config->require_exact_resolution = false;
+    config->require_exact_resolution = true;
     config->reject_uniform_frames = true;
 }
 

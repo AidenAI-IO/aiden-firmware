@@ -491,8 +491,9 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("Import Raw") != std::string::npos);
     CHECK(llm_html.find("function streamLogEntries") != std::string::npos);
     CHECK(llm_html.find("function processLogChunk") != std::string::npos);
-    CHECK(llm_html.find("const requestTs=String(g.request.ts||'');") != std::string::npos);
-    CHECK(llm_html.find("g.request.ts.substring(11, 19)") == std::string::npos);
+    CHECK(llm_html.find("function formatLogTimestamp") != std::string::npos);
+    CHECK(llm_html.find("formatLogTimestamp(g.request.ts)") != std::string::npos);
+    CHECK(llm_html.find("substring(11, 19)") == std::string::npos);
     CHECK(llm_html.find("response.body.getReader()") != std::string::npos);
     CHECK(llm_html.find("new TextDecoder()") != std::string::npos);
     CHECK(llm_html.find("fetch('/api/llm-logs/export/' + encodeURIComponent(name))") != std::string::npos);
@@ -539,7 +540,12 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("function renderDiffView") != std::string::npos);
     CHECK(llm_html.find("function renderResponseBlock") != std::string::npos);
     CHECK(llm_html.find("function extractResponseMessage") != std::string::npos);
-    CHECK(llm_html.find("renderDiff(prevReq.messages || [], req.messages || []) + renderResponseBlock(g)") != std::string::npos);
+    CHECK(llm_html.find("renderDiff(requestMessages(prevReq), requestMessages(req)) + renderResponseBlock(g)") != std::string::npos);
+    CHECK(llm_html.find("function requestMessages") != std::string::npos);
+    CHECK(llm_html.find("function normalizeAnthropicMessage") != std::string::npos);
+    CHECK(llm_html.find("part.type === 'tool_use'") != std::string::npos);
+    CHECK(llm_html.find("p.type === 'tool_result'") != std::string::npos);
+    CHECK(llm_html.find("p.source && p.source.type === 'base64'") != std::string::npos);
     CHECK(llm_html.find("response-section") != std::string::npos);
 }
 
@@ -2225,15 +2231,15 @@ TEST_CASE("config web html keeps provider credentials write only") {
     CHECK(fields_body.find("escRecordHtml(shown)") == std::string::npos);
 }
 
-// Only openai and ollama accept a base_url override; every other provider pins
-// its endpoint, so the field is dead config there. The backend already strips it
+// OpenAI, Anthropic, and Ollama accept a base_url override; every other provider
+// pins its endpoint, so the field is dead config there. The backend already strips it
 // (model_base_url_allowed), and the dialog must not offer it in the first place.
 TEST_CASE("config web html shows the provider base url only where it applies") {
     const std::string js = read_config_web_config_scripts();
 
     // The whitelist has to be a single source the dialog consults, mirroring the
     // C++ and Go lists.
-    CHECK(js.find("const PROVIDER_BASE_URL_TYPES = ['openai', 'ollama'];") != std::string::npos);
+    CHECK(js.find("const PROVIDER_BASE_URL_TYPES = ['openai', 'anthropic', 'ollama'];") != std::string::npos);
     CHECK(js.find("function providerBaseUrlAllowed(type)") != std::string::npos);
 
     const size_t dialog_at = js.find("showProviderDialog: function");
@@ -2256,6 +2262,28 @@ TEST_CASE("config web html shows the provider base url only where it applies") {
     // A base_url left over from a previous type must not be saved once the type
     // no longer accepts one.
     CHECK(save_body.find("providerBaseUrlAllowed(type)") != std::string::npos);
+}
+
+TEST_CASE("config web updates model provider credential hints in manager methods") {
+    const std::string js = read_config_web_config_scripts();
+
+    CHECK(js.find("function installModelProviderCredentialHints") == std::string::npos);
+
+    const size_t dialog_at = js.find("showProviderDialog: function");
+    REQUIRE(dialog_at != std::string::npos);
+    const size_t dialog_end = js.find("syncProviderBaseUrlVisibility: function", dialog_at);
+    REQUIRE(dialog_end != std::string::npos);
+    const std::string dialog_body = js.substr(dialog_at, dialog_end - dialog_at);
+    CHECK(dialog_body.find("this.dialogCredentialConfigured=credentialConfigured") != std::string::npos);
+    CHECK(dialog_body.find("syncProviderCredentialHelp(this.dialogCredentialConfigured)") != std::string::npos);
+
+    const size_t type_change_at = js.find("onProviderTypeChange: function");
+    REQUIRE(type_change_at != std::string::npos);
+    const size_t type_change_end = js.find("onProviderBaseUrlInput: function", type_change_at);
+    REQUIRE(type_change_end != std::string::npos);
+    const std::string type_change_body = js.substr(type_change_at, type_change_end - type_change_at);
+    CHECK(type_change_body.find("syncProviderCredentialHelp(this.dialogCredentialConfigured)") !=
+          std::string::npos);
 }
 
 // TTS and STT get the same named-record UX as [model_providers.*]. One factory serves

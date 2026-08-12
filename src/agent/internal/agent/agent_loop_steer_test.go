@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/executor"
 	"context"
 	"net/http"
 	"strings"
@@ -49,7 +50,7 @@ func TestAgentLoopSteerInterruptOnTermination(t *testing.T) {
 		10,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	loop.SteerProvider = steerProvider
@@ -93,7 +94,7 @@ func TestAgentLoopNoSteerProviderDoesNotBlock(t *testing.T) {
 		10,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	// No SteerProvider set
@@ -128,7 +129,7 @@ func TestAgentLoopBudgetBoundarySteerStartsFreshIterationBudget(t *testing.T) {
 		1,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	loop.SteerProvider = func(context.Context) (RunSteerMessage, bool) {
@@ -183,7 +184,7 @@ func TestAgentLoopRetriesAfterCanceledSteerInterruptWithoutReplacementText(t *te
 		1,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	loop.SteerInterrupt = func() <-chan struct{} {
@@ -237,7 +238,7 @@ func TestAgentLoopRetriesAfterCanceledSteerInterruptDuringToolWithoutReplacement
 		1,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	loop.SteerProvider = func(context.Context) (RunSteerMessage, bool) {
@@ -317,7 +318,7 @@ func TestAgentLoopDoesNotRestartBudgetForToolCancellationWithoutSteer(t *testing
 		1,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	loop.EnvironmentBridge = bridge
@@ -354,7 +355,7 @@ func TestAgentLoopPendingSteerBeforeFirstModelGetsFreshIterationBudget(t *testin
 		1,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	loop.SteerProvider = func(context.Context) (RunSteerMessage, bool) {

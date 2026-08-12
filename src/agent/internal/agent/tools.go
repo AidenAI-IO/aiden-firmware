@@ -354,7 +354,7 @@ func (s *ToolSet) SetRuntimeDeviceTypeFn(deviceTypeFn func() string) {
 	if s.textInputHW != nil {
 		s.textInputHW.deviceTypeFn = deviceTypeFn
 	}
-	for _, name := range []string{"enter_text", "keyboard_tap", "quick_action", "touch_gesture"} {
+	for _, name := range []string{"enter_text", "keyboard_tap", "quick_action", "screenshot", "touch_gesture", "wait_for_stable_screen"} {
 		tool, ok := s.tools[name]
 		if !ok {
 			continue

@@ -62,6 +62,7 @@ clean_managed_staging_paths() {
 AIDEN_GENERATED_BINARIES=(
     abctl
     agent
+    ble_service
     audio_service
     audio_service_cli
     audio_stream

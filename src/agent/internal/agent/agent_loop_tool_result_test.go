@@ -91,7 +91,7 @@ func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.
 		4,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	answer, err := loop.Run(context.Background(), "run the tool", chains.WithMaxTokens(1_000))
@@ -155,7 +155,7 @@ func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {
 		4,
 		nil,
 		recorder,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	answer, err := loop.Run(context.Background(), "run tests")
@@ -234,7 +234,7 @@ func TestAgentLoopDoesNotRepeatCompletedActionWhenArtifactPersistenceFails(t *te
 		4,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	answer, err := loop.Run(context.Background(), "perform action once")
@@ -278,7 +278,7 @@ func TestAgentLoopPersistsBoundedToolResultWhenPolicyFails(t *testing.T) {
 		4,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	loop.ToolResultPolicy = failingToolResultPolicy{err: errors.New("policy unavailable")}

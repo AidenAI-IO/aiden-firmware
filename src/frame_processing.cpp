@@ -1,4 +1,7 @@
 #include "frame_processing.h"
+#include "frame_crop_bounds.h"
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <string.h>
 
@@ -83,6 +86,132 @@ bool convert_frame_to_rgb(const FrameMetadata& metadata,
     }
 
     return false;
+}
+
+static bool is_black_rgb_column(const std::vector<uint8_t>& rgb,
+                                uint32_t width,
+                                uint32_t height,
+                                uint32_t column,
+                                double threshold,
+                                double stddev_limit) {
+    double sum = 0.0;
+    double squared_sum = 0.0;
+    for (uint32_t y = 0; y < height; ++y) {
+        const size_t offset = (static_cast<size_t>(y) * width + column) * 3;
+        const double brightness = 0.299 * rgb[offset] +
+                                  0.587 * rgb[offset + 1] +
+                                  0.114 * rgb[offset + 2];
+        sum += brightness;
+        squared_sum += brightness * brightness;
+    }
+    const double mean = sum / height;
+    const double variance = std::max(0.0, squared_sum / height - mean * mean);
+    return mean <= threshold && std::sqrt(variance) <= stddev_limit;
+}
+
+bool crop_frame_horizontal_black_bars(const FrameMetadata& metadata,
+                                      const std::vector<uint8_t>& frame,
+                                      uint32_t minimal_width,
+                                      FrameMetadata* cropped_metadata,
+                                      std::vector<uint8_t>* cropped_frame) {
+    if (!cropped_metadata || !cropped_frame || metadata.width == 0 || metadata.height == 0 ||
+        (metadata.width & 1U) != 0) {
+        return false;
+    }
+    if (metadata.pixel_format == "nv12" && (metadata.height & 1U) != 0) {
+        return false;
+    }
+
+    std::vector<uint8_t> rgb;
+    if (!convert_frame_to_rgb(metadata, frame, &rgb)) {
+        return false;
+    }
+
+    int left = 0;
+    int right = static_cast<int>(metadata.width) - 1;
+    while (left <= right && is_black_rgb_column(rgb, metadata.width, metadata.height,
+                                                 static_cast<uint32_t>(left), 15.0, 6.0)) {
+        ++left;
+    }
+    while (right >= left && is_black_rgb_column(rgb, metadata.width, metadata.height,
+                                                 static_cast<uint32_t>(right), 15.0, 6.0)) {
+        --right;
+    }
+    if (right < left) {
+        left = 0;
+        right = static_cast<int>(metadata.width) - 1;
+    }
+
+    include_centered_minimal_width(static_cast<int>(metadata.width), minimal_width, &left, &right);
+
+    // Every supported raw format shares chroma between adjacent horizontal
+    // pixels, so preserve complete pixel pairs in the cropped payload.
+    left &= ~1;
+    right = std::min(static_cast<int>(metadata.width) - 1, right | 1);
+    const uint32_t cropped_width = static_cast<uint32_t>(right - left + 1);
+    const uint32_t height = metadata.height;
+
+    cropped_frame->clear();
+    FrameMetadata result = metadata;
+    result.source_width = metadata.width;
+    result.source_height = metadata.height;
+    result.crop_x = static_cast<uint32_t>(left);
+    result.crop_y = 0;
+    result.crop_width = cropped_width;
+    result.crop_height = height;
+    result.width = cropped_width;
+    result.height = height;
+    result.planes.clear();
+
+    if (metadata.pixel_format == "uyvy" || metadata.pixel_format == "yuyv") {
+        const size_t source_row_bytes = static_cast<size_t>(metadata.width) * 2;
+        const size_t cropped_row_bytes = static_cast<size_t>(cropped_width) * 2;
+        if (frame.size() < source_row_bytes * height) {
+            return false;
+        }
+        cropped_frame->reserve(cropped_row_bytes * height);
+        for (uint32_t y = 0; y < height; ++y) {
+            const size_t begin = static_cast<size_t>(y) * source_row_bytes + static_cast<size_t>(left) * 2;
+            cropped_frame->insert(cropped_frame->end(), frame.begin() + begin,
+                                  frame.begin() + begin + cropped_row_bytes);
+        }
+        result.stride = cropped_width * 2;
+    } else if (metadata.pixel_format == "nv12" || metadata.pixel_format == "nv16") {
+        const size_t source_y_bytes = static_cast<size_t>(metadata.width) * height;
+        const uint32_t uv_rows = metadata.pixel_format == "nv12" ? height / 2 : height;
+        const size_t source_uv_bytes = static_cast<size_t>(metadata.width) * uv_rows;
+        if (frame.size() < source_y_bytes + source_uv_bytes) {
+            return false;
+        }
+        cropped_frame->reserve(static_cast<size_t>(cropped_width) * (height + uv_rows));
+        for (uint32_t y = 0; y < height; ++y) {
+            const size_t begin = static_cast<size_t>(y) * metadata.width + left;
+            cropped_frame->insert(cropped_frame->end(), frame.begin() + begin,
+                                  frame.begin() + begin + cropped_width);
+        }
+        for (uint32_t y = 0; y < uv_rows; ++y) {
+            const size_t begin = source_y_bytes + static_cast<size_t>(y) * metadata.width + left;
+            cropped_frame->insert(cropped_frame->end(), frame.begin() + begin,
+                                  frame.begin() + begin + cropped_width);
+        }
+        FramePlaneMetadata y_plane;
+        y_plane.offset = 0;
+        y_plane.stride = cropped_width;
+        y_plane.bytes = cropped_width * height;
+        result.planes.push_back(y_plane);
+        FramePlaneMetadata uv_plane;
+        uv_plane.offset = y_plane.bytes;
+        uv_plane.stride = cropped_width;
+        uv_plane.bytes = cropped_width * uv_rows;
+        result.planes.push_back(uv_plane);
+        result.stride = metadata.pixel_format == "nv16" ? cropped_width * 2 : cropped_width;
+    } else {
+        return false;
+    }
+
+    result.bytes = cropped_frame->size();
+    *cropped_metadata = result;
+    return true;
 }
 
 static void write_u16_le(std::vector<uint8_t>* out, size_t offset, uint16_t value) {

@@ -25,7 +25,7 @@ type openAICompatibleModel struct {
 	model               string
 	token               string
 	httpClient          *http.Client
-	rawLogger           *llmRawHTTPLogger
+	rawLogger           RawHTTPLogger
 	explicitPromptCache bool
 	routerMetadata      bool
 	reasoningEffort     string
@@ -85,7 +85,7 @@ func rawHTTPLogFileSessionID(ctx context.Context) (string, bool) {
 	return strings.TrimSpace(sessionID), ok
 }
 
-func withOpenAICompatibleRawHTTPLogger(logger *llmRawHTTPLogger) openAICompatibleModelOption {
+func withOpenAICompatibleRawHTTPLogger(logger RawHTTPLogger) openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.rawLogger = logger
 	}
@@ -138,90 +138,93 @@ func withOpenAICompatibleTemperature(temp *float64) openAICompatibleModelOption 
 const openRouterSessionIDMaxLen = 256
 
 type llmRawHTTPLogger struct {
-	dir               string
-	sessionID         string
-	sessionIDProvider func() string
-	storageMonitor    *StorageMonitor
-	now               func() time.Time
-	mu                sync.Mutex
+	dir      string
+	bindings *ModelRuntimeBindings
+	now      func() time.Time
+	mu       sync.Mutex
 }
 
-func newLLMRawHTTPLogger(logDir, sessionID string) *llmRawHTTPLogger {
+type RawHTTPLogEntry struct {
+	Model      string
+	Kind       string
+	StatusCode int
+	Raw        string
+}
+
+type RawHTTPLogger interface {
+	BeginScope(context.Context) context.Context
+	Log(context.Context, RawHTTPLogEntry) error
+}
+
+func newLLMRawHTTPLogger(logDir string, bindings *ModelRuntimeBindings) *llmRawHTTPLogger {
 	logDir = strings.TrimSpace(logDir)
 	if logDir == "" {
 		return nil
 	}
+	if bindings == nil {
+		bindings = NewModelRuntimeBindings()
+	}
 	return &llmRawHTTPLogger{
-		dir:       logDir,
-		sessionID: strings.TrimSpace(sessionID),
-		now:       time.Now,
+		dir:      logDir,
+		bindings: bindings,
+		now:      time.Now,
 	}
 }
 
-func (l *llmRawHTTPLogger) SetSessionIDProvider(provider func() string) {
+func (l *llmRawHTTPLogger) BeginScope(ctx context.Context) context.Context {
 	if l == nil {
-		return
+		return ctx
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.sessionIDProvider = provider
-}
-
-func (l *llmRawHTTPLogger) SetStorageMonitor(monitor *StorageMonitor) {
-	if l == nil {
-		return
+	if _, ok := rawHTTPLogFileTime(ctx); !ok {
+		ctx = contextWithRawHTTPLogFileTime(ctx, l.currentTime())
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.storageMonitor = monitor
+	if _, ok := rawHTTPLogFileSessionID(ctx); !ok {
+		ctx = contextWithRawHTTPLogFileSessionID(ctx, l.bindings.CurrentSessionID())
+	}
+	return ctx
 }
 
-func (l *llmRawHTTPLogger) Log(model, kind string, statusCode int, raw string) error {
-	return l.LogWithFileTime(model, kind, statusCode, raw, time.Time{})
-}
-
-func (l *llmRawHTTPLogger) LogWithFileTime(model, kind string, statusCode int, raw string, fileTime time.Time) error {
-	return l.LogWithFileScope(model, kind, statusCode, raw, fileTime, l.currentSessionID())
-}
-
-func (l *llmRawHTTPLogger) LogWithFileScope(model, kind string, statusCode int, raw string, fileTime time.Time, sessionID string) error {
+func (l *llmRawHTTPLogger) Log(ctx context.Context, entry RawHTTPLogEntry) error {
 	if l == nil || strings.TrimSpace(l.dir) == "" {
 		return nil
 	}
-	l.mu.Lock()
-	storageMonitor := l.storageMonitor
-	l.mu.Unlock()
-	if storageMonitor != nil && !storageMonitor.AllowWrite(StorageCapabilityLLMHTTPLog) {
+	gate := l.bindings.StorageWriteGate()
+	if gate != nil && !gate.AllowWrite(StorageCapabilityLLMHTTPLog) {
 		return nil
 	}
 	now := l.currentTime()
+	fileTime, _ := rawHTTPLogFileTime(ctx)
 	if fileTime.IsZero() {
 		fileTime = now
+	}
+	sessionID, ok := rawHTTPLogFileSessionID(ctx)
+	if !ok {
+		sessionID = l.bindings.CurrentSessionID()
 	}
 
 	// Compact JSON bodies to single line if possible
 	compacted := new(bytes.Buffer)
-	if err := json.Compact(compacted, []byte(raw)); err == nil {
-		raw = compacted.String()
+	if err := json.Compact(compacted, []byte(entry.Raw)); err == nil {
+		entry.Raw = compacted.String()
 	} else {
 		// Not JSON or malformed, escape newlines
-		raw = strings.ReplaceAll(raw, "\n", "\\n")
-		raw = strings.ReplaceAll(raw, "\r", "\\r")
+		entry.Raw = strings.ReplaceAll(entry.Raw, "\n", "\\n")
+		entry.Raw = strings.ReplaceAll(entry.Raw, "\r", "\\r")
 	}
 
 	// Create JSONL entry with ordered fields
-	entry := struct {
+	logEntry := struct {
 		TS     string `json:"ts"`
 		Kind   string `json:"kind"`
 		Status int    `json:"status"`
 		Body   string `json:"body"`
 	}{
 		TS:     now.Format("15:04:05"),
-		Kind:   strings.TrimSpace(kind),
-		Status: statusCode,
-		Body:   raw,
+		Kind:   strings.TrimSpace(entry.Kind),
+		Status: entry.StatusCode,
+		Body:   entry.Raw,
 	}
-	entryBytes, err := json.Marshal(entry)
+	entryBytes, err := json.Marshal(logEntry)
 	if err != nil {
 		return fmt.Errorf("marshal log entry: %w", err)
 	}
@@ -229,7 +232,7 @@ func (l *llmRawHTTPLogger) LogWithFileScope(model, kind string, statusCode int, 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := os.MkdirAll(l.dir, 0755); err != nil {
-		if storageMonitor != nil && storageMonitor.HandleWriteError(err) {
+		if gate != nil && gate.HandleWriteError(err) {
 			return nil
 		}
 		return err
@@ -245,14 +248,14 @@ func (l *llmRawHTTPLogger) LogWithFileScope(model, kind string, statusCode int, 
 	path := filepath.Join(l.dir, fileName)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		if storageMonitor != nil && storageMonitor.HandleWriteError(err) {
+		if gate != nil && gate.HandleWriteError(err) {
 			return nil
 		}
 		return err
 	}
 	defer file.Close()
 	_, err = file.Write(append(entryBytes, '\n'))
-	if err != nil && storageMonitor != nil && storageMonitor.HandleWriteError(err) {
+	if err != nil && gate != nil && gate.HandleWriteError(err) {
 		return nil
 	}
 	return err
@@ -263,22 +266,6 @@ func (l *llmRawHTTPLogger) currentTime() time.Time {
 		return time.Now()
 	}
 	return l.now()
-}
-
-func (l *llmRawHTTPLogger) currentSessionID() string {
-	if l == nil {
-		return ""
-	}
-	l.mu.Lock()
-	provider := l.sessionIDProvider
-	fallback := l.sessionID
-	l.mu.Unlock()
-	if provider != nil {
-		if sessionID := strings.TrimSpace(provider()); sessionID != "" {
-			return sessionID
-		}
-	}
-	return strings.TrimSpace(fallback)
 }
 
 type compatibleChatRequest struct {
@@ -945,25 +932,19 @@ func (m *openAICompatibleModel) logRawHTTP(ctx context.Context, modelName, kind 
 	if !rawHTTPLogEnabled(ctx) {
 		return nil
 	}
-	if fileTime, ok := rawHTTPLogFileTime(ctx); ok {
-		sessionID, _ := rawHTTPLogFileSessionID(ctx)
-		return m.rawLogger.LogWithFileScope(modelName, kind, statusCode, raw, fileTime, sessionID)
-	}
-	return m.rawLogger.Log(modelName, kind, statusCode, raw)
+	return m.rawLogger.Log(ctx, RawHTTPLogEntry{
+		Model:      modelName,
+		Kind:       kind,
+		StatusCode: statusCode,
+		Raw:        raw,
+	})
 }
 
 func (m *openAICompatibleModel) withRawHTTPLogFileTime(ctx context.Context) context.Context {
 	if m == nil || m.rawLogger == nil || !rawHTTPLogEnabled(ctx) {
 		return ctx
 	}
-	if _, ok := rawHTTPLogFileTime(ctx); ok {
-		if _, hasSessionID := rawHTTPLogFileSessionID(ctx); hasSessionID {
-			return ctx
-		}
-		return contextWithRawHTTPLogFileSessionID(ctx, m.rawLogger.currentSessionID())
-	}
-	ctx = contextWithRawHTTPLogFileTime(ctx, m.rawLogger.currentTime())
-	return contextWithRawHTTPLogFileSessionID(ctx, m.rawLogger.currentSessionID())
+	return m.rawLogger.BeginScope(ctx)
 }
 
 func convertMessageContent(message llms.MessageContent, explicitPromptCache bool) (compatibleMessage, error) {

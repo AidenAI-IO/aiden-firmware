@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -30,54 +31,68 @@ import (
 	_ "aiden-agent/internal/agent/tts/adapters/minimax"
 	_ "aiden-agent/internal/agent/tts/adapters/openrouter"
 	_ "aiden-agent/internal/agent/tts/adapters/volcengine"
+	"aiden-agent/internal/ble"
 )
 
 const (
 	agentHTTPReadHeaderTimeout = 10 * time.Second
 	agentHTTPReadTimeout       = 30 * time.Second
 	agentHTTPIdleTimeout       = 120 * time.Second
+	agentHTTPShutdownTimeout   = 5 * time.Second
 )
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime                *Runtime
-	addr                   string
-	logger                 *Logger
-	userFilesReportPath    string
-	userFilesToolsDir      string
-	userFilesMemoryDir     string
-	userFilesSkillsDir     string
-	userFilesSkillStateDir string
-	mu                     sync.Mutex
-	history                []Message
-	historyStore           *ChatHistoryStore
-	episodeStore           *TaskEpisodeStore
-	sttClient              STTClient
-	ttsManager             *tts.ProviderManager
-	ttsMu                  sync.RWMutex
-	audioClient            *AudioServiceClient
-	ttsPlaybackBackend     tts.AudioServiceBackend
-	screenCaptureMu        sync.Mutex
-	screenCaptureClient    *ScreenCaptureClient
-	recordMu               sync.Mutex
-	webRecording           *webAudioRecording
-	sttConfigTestSession   *sttConfigTestLiveSession
-	bridge                 *PhoneBridge
-	androidADB             androidADBController
-	liveActivity           *LiveActivityManager
-	pendingResults         map[string]*chatPendingResult
-	pendingResultsMu       sync.Mutex
-	activeRuns             map[string]context.CancelFunc
-	activeRunsMu           sync.Mutex
-	terminatedRequests     map[string]struct{}
-	terminatedRequestsMu   sync.Mutex
-	activeOutputs          map[string]map[*activeTTSOutput]struct{}
-	activeOutputsMu        sync.Mutex
-	pendingSteers          map[string]pendingSteerMessage
-	steerSignals           map[string]chan struct{}
-	steersMu               sync.Mutex
-	eventBroadcaster       *EventBroadcaster
-	storageMonitor         *StorageMonitor
+	closeOnce               sync.Once
+	closing                 atomic.Bool
+	httpMu                  sync.Mutex
+	httpServer              *http.Server
+	httpListener            net.Listener
+	runtime                 *Runtime
+	addr                    string
+	logger                  *Logger
+	userFilesReportPath     string
+	userFilesToolsDir       string
+	userFilesMemoryDir      string
+	userFilesSkillsDir      string
+	userFilesSkillStateDir  string
+	userFilesGenerateMu     sync.Mutex
+	userFilesGeneration     *userFilesReportGeneration
+	mu                      sync.Mutex
+	history                 []Message
+	historyStore            *ChatHistoryStore
+	episodeStore            *TaskEpisodeStore
+	sttClient               STTClient
+	ttsManager              *tts.ProviderManager // Borrowed from Runtime.
+	audioClient             *AudioServiceClient
+	ttsPlaybackBackend      tts.AudioServiceBackend
+	screenCaptureMu         sync.Mutex
+	screenCaptureClient     *ScreenCaptureClient
+	recordMu                sync.Mutex
+	webRecording            *webAudioRecording
+	sttConfigTestSession    *sttConfigTestLiveSession
+	bridge                  *PhoneBridge
+	bleSocketPath           string
+	bleStatusRequest        func(context.Context, string) (ble.RuntimeStatus, error)
+	blePairingStartRequest  func(context.Context, string) (ble.RuntimeStatus, error)
+	blePairingForgetRequest func(context.Context, string) (ble.ForgetResult, error)
+	bleDisconnectRequest    func(context.Context, string) (ble.RuntimeStatus, error)
+	bleNotifyRequest        func(context.Context, string, string, []ble.NotificationEvent) (ble.NotificationPublishResult, error)
+	androidADB              androidADBController
+	liveActivity            *LiveActivityManager
+	pendingResults          map[string]*chatPendingResult
+	pendingResultsMu        sync.Mutex
+	activeRuns              map[string]context.CancelFunc
+	activeRunsMu            sync.Mutex
+	terminatedRequests      map[string]struct{}
+	terminatedRequestsMu    sync.Mutex
+	activeOutputs           map[string]map[*activeTTSOutput]struct{}
+	activeOutputsMu         sync.Mutex
+	pendingSteers           map[string]pendingSteerMessage
+	steerSignals            map[string]chan struct{}
+	steersMu                sync.Mutex
+	eventBroadcaster        *EventBroadcaster
+	storageMonitor          *StorageMonitor
 }
 
 type webAudioRecording struct {
@@ -103,6 +118,8 @@ type AudioRecordStartResponse struct {
 type AudioRecordStopResponse struct {
 	Attachment MessageAttachment `json:"attachment"`
 }
+
+const maxChatImageAttachments = 4
 
 type MessageAttachment struct {
 	Kind       string `json:"kind"`
@@ -363,26 +380,32 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		userFilesBaseDir = "/userdata/agent"
 	}
 	s := &Server{
-		runtime:                runtime,
-		addr:                   addr,
-		logger:                 runtime.logger,
-		userFilesReportPath:    "/userdata/agent/files_report.html",
-		userFilesToolsDir:      "/userdata/agent_tools",
-		userFilesMemoryDir:     filepath.Join(userFilesBaseDir, "memory"),
-		userFilesSkillsDir:     filepath.Join(userFilesBaseDir, "skills"),
-		userFilesSkillStateDir: filepath.Join(userFilesBaseDir, "skill-state"),
-		history:                make([]Message, 0),
-		screenCaptureClient:    NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
-		bridge:                 runtime.PhoneBridge(),
-		androidADB:             NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
-		liveActivity:           NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
-		pendingResults:         make(map[string]*chatPendingResult),
-		activeRuns:             make(map[string]context.CancelFunc),
-		terminatedRequests:     make(map[string]struct{}),
-		pendingSteers:          make(map[string]pendingSteerMessage),
-		steerSignals:           make(map[string]chan struct{}),
-		eventBroadcaster:       NewEventBroadcaster(),
-		storageMonitor:         runtime.storageMonitor,
+		runtime:                 runtime,
+		addr:                    addr,
+		logger:                  runtime.logger,
+		userFilesReportPath:     "/userdata/agent/files_report.html",
+		userFilesToolsDir:       "/userdata/agent_tools",
+		userFilesMemoryDir:      filepath.Join(userFilesBaseDir, "memory"),
+		userFilesSkillsDir:      filepath.Join(userFilesBaseDir, "skills"),
+		userFilesSkillStateDir:  filepath.Join(userFilesBaseDir, "skill-state"),
+		history:                 make([]Message, 0),
+		screenCaptureClient:     NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
+		bridge:                  runtime.PhoneBridge(),
+		bleSocketPath:           configuredBLEServiceSocketPath(),
+		bleStatusRequest:        ble.RequestStatus,
+		blePairingStartRequest:  ble.RequestPairingStart,
+		blePairingForgetRequest: ble.RequestPairingForget,
+		bleDisconnectRequest:    ble.RequestDisconnect,
+		bleNotifyRequest:        ble.RequestPublishNotifications,
+		androidADB:              NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
+		liveActivity:            NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
+		pendingResults:          make(map[string]*chatPendingResult),
+		activeRuns:              make(map[string]context.CancelFunc),
+		terminatedRequests:      make(map[string]struct{}),
+		pendingSteers:           make(map[string]pendingSteerMessage),
+		steerSignals:            make(map[string]chan struct{}),
+		eventBroadcaster:        NewEventBroadcaster(),
+		storageMonitor:          runtime.storageMonitor,
 	}
 	if s.userFilesMemoryDir != "" {
 		s.historyStore = NewChatHistoryStore(filepath.Join(s.userFilesMemoryDir, "chat_history"))
@@ -412,13 +435,9 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		s.sttClient = sttClient
 	}
 
-	// Initialize the pluggable TTS provider manager from agent.toml fields.
-	if manager, err := newTTSProviderManagerFromConfig(cfg, s.logger); err != nil {
-		if s.logger != nil {
-			s.logger.Warn("TTS init failed: %v", err)
-		}
-	} else if manager != nil {
-		s.ttsManager = manager
+	// Share the process-wide TTS provider manager with every runtime entrypoint.
+	s.ttsManager = runtime.ttsProviderManager()
+	if manager := s.currentTTSManager(); manager != nil {
 		if s.logger != nil {
 			s.logger.Info("TTS enabled: provider=%s", manager.Current())
 		}
@@ -488,6 +507,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/phone-bridge/commands", s.handlePhoneBridgeCommands)
 	mux.HandleFunc("/api/phone-bridge/results", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
+	mux.HandleFunc("/api/bluetooth/status", s.handleBluetoothStatus)
+	mux.HandleFunc("/api/bluetooth/pairing/start", s.handleBluetoothPairingStart)
+	mux.HandleFunc("/api/bluetooth/pairing/reset", s.handleBluetoothPairingReset)
+	mux.HandleFunc("/api/bluetooth/disconnect", s.handleBluetoothDisconnect)
+	mux.HandleFunc("/api/phone-notifications/events", s.handlePhoneNotificationEvents)
 	mux.HandleFunc("/api/android-adb/status", s.handleAndroidADBStatus)
 	mux.HandleFunc("/api/android-adb/pair", s.handleAndroidADBPair)
 	mux.HandleFunc("/api/storage/monitor/status", s.handleStorageMonitorStatus)
@@ -508,11 +532,20 @@ func (s *Server) Handler() http.Handler {
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.closing.Load() {
+			http.Error(w, "Server is shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // Start starts the HTTP server
 func (s *Server) Start() error {
+	if s.closing.Load() {
+		return nil
+	}
 	handler := s.Handler()
 
 	srv := &http.Server{
@@ -531,6 +564,15 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.addr, err)
 	}
+	s.httpMu.Lock()
+	if s.closing.Load() {
+		s.httpMu.Unlock()
+		_ = listener.Close()
+		return nil
+	}
+	s.httpServer = srv
+	s.httpListener = listener
+	s.httpMu.Unlock()
 
 	// Milestone: the agent Web UI (http://192.168.42.1:8080) is now accepting
 	// connections. Stamped with kernel uptime so it can be lined up against the
@@ -543,7 +585,7 @@ func (s *Server) Start() error {
 	errCh := make(chan error, 1)
 	go func() {
 		err := srv.Serve(listener)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			errCh <- err
 			return
 		}
@@ -561,13 +603,51 @@ func (s *Server) Start() error {
 		if s.logger != nil {
 			s.logger.Info("Shutting down HTTP server after signal %s", sig)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			return fmt.Errorf("shutdown HTTP server: %w", err)
-		}
+		s.Close()
 		return <-errCh
 	}
+}
+
+// Close cancels background runs and releases request-owned audio resources.
+// The shared TTS provider remains owned by Runtime.
+func (s *Server) Close() {
+	if s == nil {
+		return
+	}
+	s.closing.Store(true)
+	s.closeOnce.Do(func() {
+		s.httpMu.Lock()
+		srv := s.httpServer
+		listener := s.httpListener
+		s.httpMu.Unlock()
+		if listener != nil {
+			_ = listener.Close()
+		}
+
+		s.cancelAllActiveRuns()
+		s.interruptAllActiveOutputs()
+		s.abortWebRecording()
+
+		if srv != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), agentHTTPShutdownTimeout)
+			shutdownErr := srv.Shutdown(ctx)
+			cancel()
+			if shutdownErr != nil {
+				closeErr := srv.Close()
+				if s.logger != nil {
+					s.logger.Warn("HTTP server shutdown failed: %v", errors.Join(shutdownErr, closeErr))
+				}
+			}
+		}
+		s.httpMu.Lock()
+		if s.httpServer == srv {
+			s.httpServer = nil
+		}
+		if s.httpListener == listener {
+			s.httpListener = nil
+		}
+		s.httpMu.Unlock()
+	})
 }
 
 func isLoopbackServerAddr(addr string) bool {
@@ -775,12 +855,18 @@ func (s *Server) handleChatSteerCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) registerActiveRun(requestID string, cancel context.CancelFunc) bool {
+	if s == nil || s.closing.Load() {
+		return false
+	}
 	if requestID == "" {
 		return true
 	}
 	s.clearRequestTermination(requestID)
 	s.activeRunsMu.Lock()
 	defer s.activeRunsMu.Unlock()
+	if s.closing.Load() {
+		return false
+	}
 	if s.activeRuns == nil {
 		s.activeRuns = make(map[string]context.CancelFunc)
 	}
@@ -809,6 +895,20 @@ func (s *Server) cancelActiveRun(requestID string) bool {
 	}
 	cancel()
 	return true
+}
+
+func (s *Server) cancelAllActiveRuns() {
+	s.activeRunsMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(s.activeRuns))
+	for _, cancel := range s.activeRuns {
+		if cancel != nil {
+			cancels = append(cancels, cancel)
+		}
+	}
+	s.activeRunsMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 func (s *Server) markRequestTerminated(requestID string) {
@@ -846,7 +946,16 @@ func (s *Server) registerActiveOutput(requestID string, output *activeTTSOutput)
 	if s == nil || requestID == "" || output == nil {
 		return func() {}
 	}
+	if s.closing.Load() {
+		output.interrupt()
+		return output.finish
+	}
 	s.activeOutputsMu.Lock()
+	if s.closing.Load() {
+		s.activeOutputsMu.Unlock()
+		output.interrupt()
+		return output.finish
+	}
 	if s.activeOutputs == nil {
 		s.activeOutputs = make(map[string]map[*activeTTSOutput]struct{})
 	}
@@ -1964,10 +2073,20 @@ func (s *Server) toolCallSpeechText(event RunEvent) string {
 	return speech.BuildText(event.Content)
 }
 
+func (s *Server) ttsProviderManager() *tts.ProviderManager {
+	manager := s.ttsManager
+	if manager == nil && s.runtime != nil {
+		manager = s.runtime.ttsProviderManager()
+	}
+	return manager
+}
+
 func (s *Server) currentTTSManager() *tts.ProviderManager {
-	s.ttsMu.RLock()
-	defer s.ttsMu.RUnlock()
-	return s.ttsManager
+	manager := s.ttsProviderManager()
+	if manager == nil || manager.Current() == "" {
+		return nil
+	}
+	return manager
 }
 
 func (s *Server) currentTTSPlaybackBackend() tts.AudioServiceBackend {
@@ -3263,6 +3382,7 @@ func (s *Server) webAudioInputMode() string {
 func decodeMessageAttachments(payloads []MessageAttachment) ([]InputAttachment, []MessageAttachment, error) {
 	decoded := make([]InputAttachment, 0, len(payloads))
 	history := make([]MessageAttachment, 0, len(payloads))
+	imageCount := 0
 
 	for _, payload := range payloads {
 		data := strings.TrimSpace(payload.Data)
@@ -3276,14 +3396,22 @@ func decodeMessageAttachments(payloads []MessageAttachment) ([]InputAttachment, 
 		}
 
 		kind := strings.ToLower(strings.TrimSpace(payload.Kind))
+		mimeType := strings.ToLower(strings.TrimSpace(payload.MIMEType))
 		if kind == "" {
 			switch {
-			case strings.HasPrefix(payload.MIMEType, "image/"):
+			case isImageMIMEType(mimeType):
 				kind = AttachmentKindImage
-			case strings.HasPrefix(payload.MIMEType, "audio/"):
+			case strings.HasPrefix(mimeType, "audio/"):
 				kind = AttachmentKindAudio
 			default:
 				kind = "file"
+			}
+		}
+		if kind == AttachmentKindImage || isImageMIMEType(mimeType) {
+			kind = AttachmentKindImage
+			imageCount++
+			if imageCount > maxChatImageAttachments {
+				return nil, nil, fmt.Errorf("at most %d image attachments are supported", maxChatImageAttachments)
 			}
 		}
 
@@ -3305,6 +3433,10 @@ func decodeMessageAttachments(payloads []MessageAttachment) ([]InputAttachment, 
 	}
 
 	return decoded, history, nil
+}
+
+func isImageMIMEType(mimeType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "image/")
 }
 
 func splitAudioAttachment(attachments []InputAttachment) (*InputAttachment, []InputAttachment, error) {
@@ -4576,6 +4708,11 @@ const webUI = `<!DOCTYPE html>
             font-size: 0.76rem;
         }
 
+        .composer-hint.error {
+            color: #b91c1c;
+            font-weight: 600;
+        }
+
         .send-btn {
             padding: 0.64rem 1rem;
             border: none;
@@ -4823,7 +4960,7 @@ const webUI = `<!DOCTYPE html>
                         <div class="composer-toolbar">
                             <button type="button" class="composer-btn" id="imageBtn" onclick="openImagePicker()">Add image</button>
                             <button type="button" class="composer-btn" id="recordBtn" onclick="toggleRecording()">Record audio</button>
-                            <div class="composer-hint">Enter to send, Shift+Enter for newline</div>
+                            <div class="composer-hint" id="composerHint" aria-live="polite">Enter to send, Shift+Enter for newline</div>
                         </div>
                         <div class="composer-actions">
                             <button type="submit" class="send-btn" id="sendBtn">Send</button>
@@ -4907,6 +5044,7 @@ const webUI = `<!DOCTYPE html>
         const imageBtn = document.getElementById('imageBtn');
         const recordBtn = document.getElementById('recordBtn');
         const draftAttachmentsEl = document.getElementById('draftAttachments');
+        const composerHintEl = document.getElementById('composerHint');
         const loadingDiv = document.getElementById('loading');
         const stopRunBtn = document.getElementById('stopRunBtn');
         const pendingSteerEl = document.getElementById('pendingSteer');
@@ -4929,9 +5067,12 @@ const webUI = `<!DOCTYPE html>
         const skillStatusEl = document.getElementById('skillStatus');
         const copySkillBtnEl = document.getElementById('copySkillBtn');
         const targetAudioSampleRate = 16000;
+        const maxDraftImageAttachments = 4;
+        const defaultComposerHint = 'Enter to send, Shift+Enter for newline';
 
         let nextAttachmentId = 1;
         let draftAttachments = [];
+        let composerHintTimer = null;
         let recorderState = createRecorderState();
         let toolCatalog = [];
         let toolSkills = [];
@@ -4963,6 +5104,7 @@ const webUI = `<!DOCTYPE html>
 
         inputEl.addEventListener('input', autoResizeInput);
         imageInputEl.addEventListener('change', handleImageSelection);
+        inputEl.addEventListener('paste', handleComposerPaste);
         toolSelectEl.addEventListener('change', syncSelectedTool);
         skillSelectEl.addEventListener('change', syncSelectedSkill);
         inputEl.addEventListener('keydown', function(event) {
@@ -6143,7 +6285,9 @@ const webUI = `<!DOCTYPE html>
         function setComposerState(isLoading) {
             sendBtn.disabled = recorderState.isStopping || pendingSteerSubmitting || (isLoading && !currentChatRequestId);
             sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';
-            imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
+            const imageSlotsFull = getDraftImageCount() >= maxDraftImageAttachments;
+            imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping || imageSlotsFull;
+            imageBtn.title = imageSlotsFull ? 'Maximum 4 images attached' : 'Add image';
             recordBtn.disabled = isLoading || recorderState.isStopping;
             stopRunBtn.disabled = !isLoading;
             if (!isLoading) {
@@ -6217,23 +6361,171 @@ const webUI = `<!DOCTYPE html>
             const files = Array.from(event.target.files || []);
             imageInputEl.value = '';
             if (files.length === 0) return;
+            await addImageFiles(files, 'selected');
+        }
 
-            for (const file of files) {
-                if (!file.type || file.type.indexOf('image/') !== 0) {
+        async function handleComposerPaste(event) {
+            const files = clipboardImageFiles(event.clipboardData);
+            if (files.length === 0) return;
+            event.preventDefault();
+            if (!canAttachImagesNow()) {
+                setComposerHint('Images can be attached after the current run finishes.', true);
+                return;
+            }
+            await addImageFiles(files, 'pasted');
+        }
+
+        function clipboardImageFiles(clipboardData) {
+            if (!clipboardData) return [];
+            const files = [];
+            const items = Array.from(clipboardData.items || []);
+            items.forEach(function(item) {
+                if (item.kind === 'file' && item.type && item.type.indexOf('image/') === 0) {
+                    const file = item.getAsFile();
+                    if (file) files.push(file);
+                }
+            });
+            if (files.length > 0) return files;
+            return Array.from(clipboardData.files || []).filter(isImageFile);
+        }
+
+        async function addImageFiles(files, source) {
+            const imageFiles = Array.from(files || []).filter(isImageFile);
+            if (imageFiles.length === 0) return;
+            if (!canAttachImagesNow()) {
+                setComposerHint('Images can be attached after the current run finishes.', true);
+                return;
+            }
+
+            let accepted = 0;
+            let skipped = 0;
+            let failed = 0;
+            for (const file of imageFiles) {
+                if (getDraftImageCount() >= maxDraftImageAttachments) {
+                    skipped++;
                     continue;
                 }
-                const dataUrl = await readFileAsDataURL(file);
-                draftAttachments.push({
-                    id: nextAttachmentId++,
-                    kind: 'image',
-                    name: file.name,
-                    mime_type: file.type,
-                    data: extractBase64(dataUrl),
-                    size: file.size
-                });
+                try {
+                    const id = nextAttachmentId++;
+                    const dataUrl = await readFileAsDataURL(file);
+                    if (!canAttachImagesNow()) {
+                        skipped++;
+                        continue;
+                    }
+                    if (getDraftImageCount() >= maxDraftImageAttachments) {
+                        skipped++;
+                        continue;
+                    }
+                    draftAttachments.push({
+                        id: id,
+                        kind: 'image',
+                        name: imageAttachmentName(file, source, id),
+                        mime_type: imageMIMEType(file, dataUrl),
+                        data: extractBase64(dataUrl),
+                        size: file.size || 0
+                    });
+                    accepted++;
+                } catch (err) {
+                    failed++;
+                    console.error('Failed to read image attachment:', err);
+                }
             }
 
             renderDraftAttachments();
+            reportImageAddResult(accepted, skipped, failed);
+        }
+
+        function isImageFile(file) {
+            if (!file) return false;
+            const mimeType = String(file.type || '').toLowerCase();
+            if (mimeType.indexOf('image/') === 0) return true;
+            return /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(file.name || '');
+        }
+
+        function getDraftImageCount() {
+            return draftAttachments.filter(function(attachment) {
+                return attachment.kind === 'image';
+            }).length;
+        }
+
+        function canAttachImagesNow() {
+            return !loadingDiv.classList.contains('active') && !recorderState.isRecording && !recorderState.isStopping;
+        }
+
+        function imageAttachmentName(file, source, id) {
+            if (file && file.name && file.name.trim()) return file.name.trim();
+            const prefix = source === 'pasted' ? 'pasted-image' : 'image';
+            return prefix + '-' + id + '.' + imageExtensionFromType(file ? file.type : '');
+        }
+
+        function imageExtensionFromType(mimeType) {
+            switch (String(mimeType || '').toLowerCase()) {
+            case 'image/jpeg':
+            case 'image/jpg':
+                return 'jpg';
+            case 'image/gif':
+                return 'gif';
+            case 'image/webp':
+                return 'webp';
+            case 'image/png':
+            default:
+                return 'png';
+            }
+        }
+
+        function imageMIMEType(file, dataUrl) {
+            const fileType = String(file && file.type || '').toLowerCase();
+            if (fileType.indexOf('image/') === 0) return fileType;
+            const name = String(file && file.name || '').toLowerCase();
+            if (/\.(jpe?g)$/.test(name)) return 'image/jpeg';
+            if (/\.gif$/.test(name)) return 'image/gif';
+            if (/\.webp$/.test(name)) return 'image/webp';
+            if (/\.bmp$/.test(name)) return 'image/bmp';
+            if (/\.tiff?$/.test(name)) return 'image/tiff';
+            return imageMIMETypeFromDataURL(dataUrl);
+        }
+
+        function imageMIMETypeFromDataURL(dataUrl) {
+            const match = String(dataUrl || '').match(/^data:([^;,]+)[;,]/);
+            const mimeType = match && match[1] ? match[1].toLowerCase() : '';
+            return mimeType.indexOf('image/') === 0 ? mimeType : 'image/png';
+        }
+
+        function reportImageAddResult(accepted, skipped, failed) {
+            if (skipped > 0) {
+                setComposerHint('Only 4 images can be attached.', true);
+                return;
+            }
+            if (failed > 0) {
+                setComposerHint('Some images could not be read.', true);
+                return;
+            }
+            if (accepted > 0) {
+                resetComposerHint();
+            }
+        }
+
+        function setComposerHint(text, isError) {
+            if (!composerHintEl) return;
+            if (composerHintTimer) {
+                clearTimeout(composerHintTimer);
+                composerHintTimer = null;
+            }
+            composerHintEl.textContent = text || defaultComposerHint;
+            composerHintEl.classList.toggle('error', !!isError);
+            if (text) {
+                composerHintTimer = setTimeout(resetComposerHint, 2800);
+            }
+        }
+
+        function resetComposerHint() {
+            if (!composerHintEl) return;
+            if (composerHintTimer) {
+                clearTimeout(composerHintTimer);
+                composerHintTimer = null;
+            }
+            composerHintEl.textContent = defaultComposerHint;
+            composerHintEl.classList.remove('error');
         }
 
         async function toggleRecording() {
@@ -6517,6 +6809,8 @@ const webUI = `<!DOCTYPE html>
 
                 draftAttachmentsEl.appendChild(row);
             });
+
+            setComposerState(loadingDiv.classList.contains('active'));
         }
 
         function removeDraftAttachment(id) {

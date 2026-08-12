@@ -21,6 +21,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
            /dev/video0 + subdev        │ ALSA / RK MPI
                      │                 │
              ┌───────▼──────┐          │
+             │ RK628D /     │          │
              │ TC358743 HDMI│          │
              │ capture path │          │
              └──────────────┘          │
@@ -39,7 +40,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
 | --- | --- | --- |
 | Hardware Abstraction | `src/aiden_sdk.*` | Encapsulates GPIO, audio, video, HID-related low-level capabilities |
 | Common Transport | `src/uds_*` | Unix domain socket one-shot request/response transport layer |
-| C++ Services | `frame_service`, `audio_service` | Centrally manage hardware resources and expose them to other processes |
+| Hardware Services | `frame_service`, `audio_service`, `ble_service` | Centrally manage hardware resources and expose them to other processes |
 | Utility Programs | `*_cli`, `example_*`, `image_process` | Debugging, validation, and single-capability examples |
 | Go Agent | `src/agent` | LLM runtime, tool invocation, Web UI, HTTP Tool API, voice pipeline |
 | Firmware Integration | `overlay/`, `pico-sdk/` | Startup scripts, configuration files, userdata/oem injection |
@@ -56,7 +57,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
 ### Screenshot / Visual Observation
 
 ```text
-TC358743 → /dev/video0 → frame_service ring buffer → Go screenshot tool → LLM image input
+RK628D or TC358743 → /dev/video0 → frame_service ring buffer → Go screenshot tool → LLM image input
 ```
 
 ### Device Control
@@ -70,3 +71,13 @@ LLM tool call → Go HID tool → /dev/hidg0, /dev/hidg1, or /dev/hidg2 → targ
 ```text
 audio_service recording → RKNN Silero VAD → STT or audio attachment → LLM → TTS → audio_service playback
 ```
+
+### Bluetooth Pairing and System Notifications
+
+```text
+iOS CoreBluetooth encrypted read → BlueZ/hci0 → ble_service pairing service
+iOS ANCS → BlueZ/hci0 → ble_service event ring → UDS events_since
+```
+
+The encrypted GATT read establishes the system bond. ANCS events do not enter
+Agent memory in this layer.

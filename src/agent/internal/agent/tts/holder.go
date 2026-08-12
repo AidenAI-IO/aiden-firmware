@@ -29,6 +29,14 @@ func NewProviderHolder(initial TTSProvider) *ProviderHolder {
 // created from the OLD provider have been closed, then returns the old
 // provider for the caller to Close.
 func (h *ProviderHolder) Swap(next TTSProvider) TTSProvider {
+	old, wait := h.replace(next)
+	wait()
+	return old
+}
+
+// replace installs next immediately and returns the previous provider together
+// with a function that waits for that provider's sessions to drain.
+func (h *ProviderHolder) replace(next TTSProvider) (TTSProvider, func()) {
 	h.mu.Lock()
 	old := h.current
 	oldWG := h.activeWG
@@ -37,10 +45,7 @@ func (h *ProviderHolder) Swap(next TTSProvider) TTSProvider {
 	// We keep a reference to the old one to wait on.
 	h.activeWG = &sync.WaitGroup{}
 	h.mu.Unlock()
-
-	// Wait for all in-flight sessions from the old provider to finish.
-	oldWG.Wait()
-	return old
+	return old, oldWG.Wait
 }
 
 func (h *ProviderHolder) Name() string {
@@ -62,17 +67,41 @@ func (h *ProviderHolder) Capabilities() Capabilities {
 }
 
 func (h *ProviderHolder) BeginStream(ctx context.Context, sink AudioSink) (StreamSession, error) {
+	p, wg, err := h.acquireProvider()
+	if err != nil {
+		return nil, err
+	}
+	return beginTrackedStream(ctx, p, wg, sink)
+}
+
+// BeginStreamWithCapabilities creates the sink from the same provider
+// generation that opens the stream. The generation is pinned before reading
+// capabilities, so a concurrent Swap cannot pair old capabilities with a new
+// provider session.
+func (h *ProviderHolder) BeginStreamWithCapabilities(ctx context.Context, makeSink func(Capabilities) AudioSink) (StreamSession, error) {
+	p, wg, err := h.acquireProvider()
+	if err != nil {
+		return nil, err
+	}
+	sink := makeSink(p.Capabilities())
+	return beginTrackedStream(ctx, p, wg, sink)
+}
+
+func (h *ProviderHolder) acquireProvider() (TTSProvider, *sync.WaitGroup, error) {
 	h.mu.RLock()
 	p := h.current
 	if p == nil {
 		h.mu.RUnlock()
-		return nil, ErrProviderNotFound
+		return nil, nil, ErrProviderNotFound
 	}
 	// Track this session in the current generation's WaitGroup.
 	wg := h.activeWG
 	wg.Add(1)
 	h.mu.RUnlock()
+	return p, wg, nil
+}
 
+func beginTrackedStream(ctx context.Context, p TTSProvider, wg *sync.WaitGroup, sink AudioSink) (StreamSession, error) {
 	session, err := p.BeginStream(ctx, sink)
 	if err != nil {
 		wg.Done()

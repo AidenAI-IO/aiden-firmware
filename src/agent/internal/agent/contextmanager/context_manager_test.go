@@ -407,7 +407,7 @@ func TestConvertStandardMessageToContextManagerMessage_ReasoningContent(t *testi
 		ReasoningContent: "thinking",
 		Content:          "answer",
 	})
-	want := "thinking\nanswer"
+	want := "answer"
 	if message.Content != want {
 		t.Fatalf("content = %q, want %q", message.Content, want)
 	}

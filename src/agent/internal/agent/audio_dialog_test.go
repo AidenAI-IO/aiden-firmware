@@ -396,14 +396,14 @@ func TestAudioDialogSTTUploadErrorIgnoresStaleSession(t *testing.T) {
 }
 
 func TestNewAudioDialogSTTWakeupCreatesSTTClient(t *testing.T) {
-	dialog, err := NewAudioDialog(Config{
+	dialog, err := NewAudioDialog(&Runtime{config: Config{
 		Model:       ModelConfig{Provider: "fake"},
 		TTS:         TTSConfig{Provider: "minimax-cn", APIKey: "test-key"},
 		STT:         STTConfig{Provider: "openai-whisper"},
 		Audio:       AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
 		InputMode:   "stt",
 		TriggerMode: "wakeup",
-	})
+	}})
 	if err != nil {
 		t.Fatalf("NewAudioDialog() error = %v", err)
 	}
@@ -423,18 +423,21 @@ func TestNewAudioDialogSTTWakeupCreatesSTTClient(t *testing.T) {
 }
 
 func TestNewAudioDialogIgnoresInvalidOptionalTTS(t *testing.T) {
-	dialog, err := NewAudioDialog(Config{
+	dialog, err := NewAudioDialog(&Runtime{config: Config{
 		Model:     ModelConfig{Provider: "fake"},
 		TTS:       TTSConfig{Provider: "missing-provider", APIKey: "test-key"},
 		STT:       STTConfig{Provider: "openai-whisper"},
 		Audio:     AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
 		InputMode: "stt",
-	})
+	}})
 	if err != nil {
 		t.Fatalf("NewAudioDialog() error = %v", err)
 	}
-	if dialog.ttsManager != nil {
-		t.Fatalf("ttsManager = %#v, want nil after optional TTS init failure", dialog.ttsManager)
+	if dialog.ttsManager == nil {
+		t.Fatal("ttsManager = nil, want stable empty manager after optional TTS init failure")
+	}
+	if dialog.currentTTSManager() != nil {
+		t.Fatalf("currentTTSManager() = %#v, want unavailable TTS after init failure", dialog.currentTTSManager())
 	}
 }
 
@@ -1427,7 +1430,7 @@ func TestAudioDialogProcessUtteranceSavesAudioFile(t *testing.T) {
 		Model: ModelConfig{Provider: "fake"},
 	}
 
-	dialog, err := NewAudioDialog(cfg)
+	dialog, err := NewAudioDialog(&Runtime{config: cfg})
 	if err != nil {
 		t.Fatal(err)
 	}

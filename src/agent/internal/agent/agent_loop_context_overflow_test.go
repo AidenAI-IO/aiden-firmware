@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/model"
 
 	"github.com/tmc/langchaingo/chains"
@@ -55,7 +56,7 @@ func TestAgentLoopCompactsAndRetriesProviderContextExceededError(t *testing.T) {
 		1,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	recoveryCalls := 0

@@ -45,7 +45,7 @@ Supports options like `--device`, `--subdev`, `--edid`, `--force-trigger`, `--ca
 Default one-shot flow:
 
 - First queries current DV timings;
-- Pushes built-in 1080p30-only CTA EDID if necessary;
+- Pushes built-in 1080p60-only CTA EDID if necessary;
 - Waits for `/dev/v4l-subdev2` HDMI sync;
 - Discards transitional frames after stream-on;
 - Captures from `/dev/video0` via V4L2 MMAP;

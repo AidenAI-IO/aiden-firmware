@@ -10,6 +10,12 @@ bool convert_frame_to_rgb(const FrameMetadata& metadata,
                           const std::vector<uint8_t>& frame,
                           std::vector<uint8_t>* rgb);
 
+bool crop_frame_horizontal_black_bars(const FrameMetadata& metadata,
+                                      const std::vector<uint8_t>& frame,
+                                      uint32_t minimal_width,
+                                      FrameMetadata* cropped_metadata,
+                                      std::vector<uint8_t>* cropped_frame);
+
 bool encode_rgb_to_bmp(const std::vector<uint8_t>& rgb,
                        uint32_t width,
                        uint32_t height,

@@ -58,14 +58,28 @@ func (d ScreenStableDefaults) InputJSON() string {
 }
 
 type WaitStableScreenTool struct {
-	client   waitStableFrameClient
-	defaults ScreenStableDefaults
-	screen   *screen.ScreenState
+	client       waitStableFrameClient
+	defaults     ScreenStableDefaults
+	screen       *screen.ScreenState
+	deviceTypeFn func() string
 }
 
 type waitStableFrameClient interface {
 	LatestFrame() (*frameMetadata, []byte, screenCaptureInfo, error)
-	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, screenCaptureInfo, error)
+	LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error)
+}
+
+func (t *WaitStableScreenTool) SetDeviceTypeFunc(fn func() string) {
+	if t != nil {
+		t.deviceTypeFn = fn
+	}
+}
+
+func (t *WaitStableScreenTool) cropBlack() bool {
+	if t == nil {
+		return cropBlackForDeviceType(nil)
+	}
+	return cropBlackForDeviceType(t.deviceTypeFn)
 }
 
 type waitStableScreenResult struct {
@@ -156,7 +170,8 @@ func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, 
 }
 
 func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
-	meta, jpegData, captureInfo, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	cropBlack := t.cropBlack()
+	meta, jpegData, captureInfo, err := captureScreenshotJPEG(t.client, t.screen, cropBlack)
 	if err != nil {
 		return screenshotResult{}, err
 	}
@@ -178,8 +193,10 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 		sourceHeight = fullHeight
 		active = sourceActive
 		alreadyCropped = true
-	} else {
+	} else if cropBlack {
 		active = detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
+	} else {
+		active = screen.ScreenActiveArea{X: 0, Y: 0, Width: sourceWidth, Height: sourceHeight, Valid: true}
 	}
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf(
@@ -199,7 +216,7 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 	displayWidth := int(meta.Width)
 	displayHeight := int(meta.Height)
 	displayData := jpegData
-	if !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
+	if cropBlack && !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
 		croppedData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
 		if err != nil {
 			return screenshotResult{}, fmt.Errorf("crop screenshot to active area: %w", err)
