@@ -79,6 +79,10 @@ Firefly pins 7 (`HDMIIN_INT`) and 8 (`HDMIRX_DET`) are also unconnected in the
 current adapter. The kernel therefore uses the RK628 driver's I2C polling path.
 The board has its own oscillator, so no Pico MCLK is required.
 
+The Pico drives `HDMIIN_RESET` from GPIO3_C5 as an active-low push-pull output
+with no internal pull-up or pull-down. I2C4 runs at 100 kHz for reliable RK628D
+32-bit register transfers; the same bus also retains support for TC358743.
+
 ## Assembly Steps
 
 1. Connect the target phone or computer to the upstream Type-C port of the Type-C hub.
