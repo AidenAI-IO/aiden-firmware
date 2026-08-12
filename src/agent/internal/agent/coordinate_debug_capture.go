@@ -161,74 +161,30 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	if client == nil {
 		return nil, nil, fmt.Errorf("screen capture client not configured")
 	}
-	if options.CropBlackBars {
-		meta, jpegData, captureInfo, err := captureScreenshotJPEG(client, s.coordinateDebugScreen())
-		if err == nil && meta != nil {
-			if meta.PixelFormat == "jpeg" {
-				if sourceWidth, sourceHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
-					screen := s.coordinateDebugScreen()
-					if screen != nil {
-						screen.UpdateActiveArea(sourceWidth, sourceHeight, sourceActive)
-					}
-					display := coordinateDebugDisplayScreenshot(jpegData, int(meta.Width), int(meta.Height))
-					applyScreenCaptureInfo(&display, captureInfo)
-					result := s.newCoordinateDebugScreenshotResult(
-						display,
-						sourceWidth,
-						sourceHeight,
-						coordinateDebugSourceActiveArea(sourceActive, sourceWidth, sourceHeight),
-					)
-					return result, jpegData, nil
-				}
-			}
-		}
+	meta, jpegData, captureInfo, err := captureScreenshotJPEG(client, s.coordinateDebugScreen(), options.CropBlackBars)
+	if err != nil {
+		return nil, nil, err
+	}
+	if meta == nil || meta.PixelFormat != "jpeg" {
+		return nil, nil, fmt.Errorf("expected jpeg frame from screen capture")
 	}
 
-	meta, frameData, captureInfo, err := client.LatestFrame()
-	if err != nil {
-		return nil, nil, err
-	}
-	rawJPEGData, err := encodeFrameAsJPEG(meta, frameData, screenshotJPEGQuality)
-	if err != nil {
-		return nil, nil, err
-	}
 	sourceWidth := int(meta.Width)
 	sourceHeight := int(meta.Height)
-	currentScreen := s.coordinateDebugScreen()
-	sourceActive := detectScreenshotActiveAreaForScreen(currentScreen, rawJPEGData, sourceWidth, sourceHeight)
-	if currentScreen != nil {
-		currentScreen.UpdateActiveArea(sourceWidth, sourceHeight, sourceActive)
-	}
-	displayJPEGData := rawJPEGData
-	displayWidth := sourceWidth
-	displayHeight := sourceHeight
-	var displayActiveArea *screen.ScreenActiveArea
-
-	if options.CropBlackBars && sourceActive.Valid {
-		croppedJPEGData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(rawJPEGData, sourceActive, screenshotJPEGQuality)
-		if err != nil {
-			return nil, nil, err
+	var sourceActive *screen.ScreenActiveArea
+	if width, height, active, ok := frameMetadataSourceActiveArea(meta); ok {
+		sourceWidth = width
+		sourceHeight = height
+		currentScreen := s.coordinateDebugScreen()
+		if currentScreen != nil {
+			currentScreen.UpdateActiveArea(sourceWidth, sourceHeight, active)
 		}
-		displayJPEGData = croppedJPEGData
-		displayWidth = croppedWidth
-		displayHeight = croppedHeight
+		sourceActive = coordinateDebugSourceActiveArea(active, sourceWidth, sourceHeight)
 	}
-	if sourceActive.Valid && (!options.CropBlackBars || sourceActive.X != 0 || sourceActive.Y != 0 || sourceActive.Width != sourceWidth || sourceActive.Height != sourceHeight) {
-		activeCopy := sourceActive
-		displayActiveArea = &activeCopy
-	}
-
-	result := s.newCoordinateDebugScreenshotResult(
-		func() screenshotResult {
-			display := coordinateDebugDisplayScreenshot(displayJPEGData, displayWidth, displayHeight)
-			applyScreenCaptureInfo(&display, captureInfo)
-			return display
-		}(),
-		sourceWidth,
-		sourceHeight,
-		displayActiveArea,
-	)
-	return result, displayJPEGData, nil
+	display := coordinateDebugDisplayScreenshot(jpegData, int(meta.Width), int(meta.Height))
+	applyScreenCaptureInfo(&display, captureInfo)
+	result := s.newCoordinateDebugScreenshotResult(display, sourceWidth, sourceHeight, sourceActive)
+	return result, jpegData, nil
 }
 
 func preferredPhoneScreenPixels(screen screen.PhoneScreenInfo) (int, int, bool) {

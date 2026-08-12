@@ -1099,11 +1099,18 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 		if method != "latest_frame" {
 			t.Fatalf("unexpected method: %#v", req["method"])
 		}
-		if format, _ := req["format"].(string); format != "raw" {
-			t.Fatalf("expected raw format request when crop_black_bars=false, got %#v", req["format"])
+		if format, _ := req["format"].(string); format != "jpeg" {
+			t.Fatalf("expected jpeg format request when crop_black_bars=false, got %#v", req["format"])
 		}
-		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
-		return header, []byte{16, 128, 235, 128}
+		if cropBlack, _ := req["crop_black"].(bool); cropBlack {
+			t.Fatalf("crop_black = %#v, want false", req["crop_black"])
+		}
+		jpegData, err := encodeJPEG([]byte{255, 255, 255, 0, 0, 0}, 2, 1, screenshotJPEGQuality)
+		if err != nil {
+			t.Fatalf("encode jpeg fixture: %v", err)
+		}
+		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
+		return header, jpegData
 	})
 
 	runtime := NewRuntimeWithDeps(
@@ -1164,6 +1171,9 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 		}
 		if format, _ := req["format"].(string); format != "jpeg" {
 			t.Fatalf("expected jpeg format request, got %#v", req["format"])
+		}
+		if cropBlack, _ := req["crop_black"].(bool); !cropBlack {
+			t.Fatalf("crop_black = %#v, want true", req["crop_black"])
 		}
 		if minimalWidth, _ := req["minimal_width"].(float64); minimalWidth != 608 {
 			t.Fatalf("minimal_width = %#v, want 608", req["minimal_width"])
@@ -1235,6 +1245,34 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
+	}
+}
+
+func TestFrameServiceClientSendsRawCropBlackOption(t *testing.T) {
+	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		if format, _ := req["format"].(string); format != "raw" {
+			t.Fatalf("format = %#v, want raw", req["format"])
+		}
+		if cropBlack, _ := req["crop_black"].(bool); !cropBlack {
+			t.Fatalf("crop_black = %#v, want true", req["crop_black"])
+		}
+		if minimalWidth, _ := req["minimal_width"].(float64); minimalWidth != 608 {
+			t.Fatalf("minimal_width = %#v, want 608", req["minimal_width"])
+		}
+		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"source_width":4,"source_height":1,"crop_x":2,"crop_y":0,"crop_width":2,"crop_height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
+		return header, []byte{128, 235, 128, 235}
+	})
+
+	client := NewFrameServiceClient(frameSocket)
+	meta, data, err := client.LatestFrameWithFormat("raw", 0, true, 608)
+	if err != nil {
+		t.Fatalf("LatestFrameWithFormat() error = %v", err)
+	}
+	if meta.Width != 2 || meta.SourceWidth != 4 || meta.CropX != 2 || meta.CropWidth != 2 {
+		t.Fatalf("unexpected raw crop metadata: %#v", meta)
+	}
+	if len(data) != 4 {
+		t.Fatalf("raw payload length = %d, want 4", len(data))
 	}
 }
 
@@ -1329,11 +1367,18 @@ func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 		if method, _ := req["method"].(string); method == "health" {
 			return `{"type":"response","method":"health","status":"OK","state":"RUNNING","latest_seq":2,"frame_age_ms":10}`, nil
 		}
-		if format, _ := req["format"].(string); format != "raw" {
-			t.Fatalf("expected raw format request when crop_black_bars=false, got %#v", req["format"])
+		if format, _ := req["format"].(string); format != "jpeg" {
+			t.Fatalf("expected jpeg format request when crop_black_bars=false, got %#v", req["format"])
 		}
-		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":2,"width":2,"height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
-		return header, []byte{16, 128, 235, 128}
+		if cropBlack, _ := req["crop_black"].(bool); cropBlack {
+			t.Fatalf("crop_black = %#v, want false", req["crop_black"])
+		}
+		jpegData, err := encodeJPEG([]byte{255, 255, 255, 0, 0, 0}, 2, 1, screenshotJPEGQuality)
+		if err != nil {
+			t.Fatalf("encode jpeg fixture: %v", err)
+		}
+		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":2,"width":2,"height":1,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
+		return header, jpegData
 	})
 	tool := &stubTool{
 		name:        "touch_gesture",

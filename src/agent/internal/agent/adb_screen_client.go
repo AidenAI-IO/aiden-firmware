@@ -61,7 +61,7 @@ func (c *ADBScreenClient) LatestFrame() (*frameMetadata, []byte, error) {
 	return c.capture("raw", 0)
 }
 
-func (c *ADBScreenClient) LatestFrameWithFormat(format string, quality, _ int) (*frameMetadata, []byte, error) {
+func (c *ADBScreenClient) LatestFrameWithFormat(format string, quality int, _ bool, _ int) (*frameMetadata, []byte, error) {
 	return c.capture(format, quality)
 }
 

@@ -98,6 +98,20 @@ void read_response_header(int fd, aiden::FrameWirePrefix* prefix) {
     read_exact_or_fail(fd, header.data(), header.size());
 }
 
+std::string read_response(int fd, std::vector<uint8_t>* payload_out) {
+    aiden::FrameWirePrefix prefix;
+    uint8_t prefix_bytes[aiden::kFrameWirePrefixSize];
+    read_exact_or_fail(fd, prefix_bytes, sizeof(prefix_bytes));
+    REQUIRE(aiden::decode_frame_wire_prefix(prefix_bytes, sizeof(prefix_bytes), &prefix));
+    std::vector<uint8_t> header(prefix.header_len);
+    read_exact_or_fail(fd, header.data(), header.size());
+    payload_out->resize(static_cast<size_t>(prefix.payload_len));
+    if (!payload_out->empty()) {
+        read_exact_or_fail(fd, payload_out->data(), payload_out->size());
+    }
+    return std::string(header.begin(), header.end());
+}
+
 bool fd_readable_within(int fd, uint32_t timeout_ms) {
     fd_set read_set;
     FD_ZERO(&read_set);
@@ -225,6 +239,37 @@ TEST_CASE("FrameServiceServer returns latest frame payload") {
     CHECK(frame.metadata.pixel_format == "uyvy");
     CHECK(frame.data == data);
 
+    server.stop();
+}
+
+TEST_CASE("FrameServiceServer crops raw frame when crop_black is true") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+    std::vector<uint8_t> data = {
+        128, 16, 128, 16,
+        128, 235, 128, 235,
+        128, 235, 128, 235,
+        128, 16, 128, 16,
+    };
+    uint64_t seq = 0;
+    REQUIRE(server.append_frame(metadata(8, 1, "uyvy", 99), data.data(), data.size(), &seq) == FrameServiceStatus::OK);
+
+    int fd = connect_raw_client(socket_path.path);
+    REQUIRE(aiden::write_frame_message(
+                fd,
+                "{\"type\":\"request\",\"method\":\"latest_frame\",\"since_seq\":\"0\",\"timeout_ms\":0,\"format\":\"raw\",\"crop_black\":true}",
+                std::vector<uint8_t>()) == FrameServiceStatus::OK);
+    std::vector<uint8_t> cropped;
+    const std::string header = read_response(fd, &cropped);
+
+    CHECK(header.find("\"width\":4") != std::string::npos);
+    CHECK(header.find("\"source_width\":8") != std::string::npos);
+    CHECK(header.find("\"crop_x\":2") != std::string::npos);
+    CHECK(header.find("\"crop_width\":4") != std::string::npos);
+    CHECK(cropped == std::vector<uint8_t>{128, 235, 128, 235, 128, 235, 128, 235});
+
+    ::close(fd);
     server.stop();
 }
 

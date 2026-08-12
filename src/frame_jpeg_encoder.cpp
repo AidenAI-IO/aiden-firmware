@@ -11,14 +11,15 @@ namespace aiden {
 namespace {
 void crop_black_bars_bgr(const cv::Mat& bgr, cv::Mat& dst,
                          uint32_t* out_crop_x = nullptr, uint32_t* out_crop_y = nullptr,
-                         unsigned char threshold = 15, uint32_t minimal_width = 0);
+                         unsigned char threshold = 15, uint32_t minimal_width = 0,
+                         bool crop_black = true);
 }
 
 bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t height,
                               int quality, std::vector<uint8_t>* output,
                               uint32_t* out_width, uint32_t* out_height,
                               uint32_t* out_crop_x, uint32_t* out_crop_y,
-                              uint32_t minimal_width) {
+                              uint32_t minimal_width, bool crop_black) {
     if (!rgb_data || !output || width == 0 || height == 0) {
         return false;
     }
@@ -30,7 +31,7 @@ bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t h
     cv::Mat cropped;
     uint32_t crop_x = 0;
     uint32_t crop_y = 0;
-    crop_black_bars_bgr(bgr, cropped, &crop_x, &crop_y, 15, minimal_width);
+    crop_black_bars_bgr(bgr, cropped, &crop_x, &crop_y, 15, minimal_width, crop_black);
 
     if (out_width) *out_width = static_cast<uint32_t>(cropped.cols);
     if (out_height) *out_height = static_cast<uint32_t>(cropped.rows);
@@ -53,9 +54,15 @@ namespace {
 // contain small bright pixels.
 void crop_black_bars_bgr(const cv::Mat& bgr, cv::Mat& dst,
                          uint32_t* out_crop_x, uint32_t* out_crop_y,
-                         unsigned char threshold, uint32_t minimal_width) {
+                         unsigned char threshold, uint32_t minimal_width, bool crop_black) {
     if (bgr.empty() || bgr.type() != CV_8UC3) {
         dst = bgr;
+        if (out_crop_x) *out_crop_x = 0;
+        if (out_crop_y) *out_crop_y = 0;
+        return;
+    }
+    if (!crop_black) {
+        bgr.copyTo(dst);
         if (out_crop_x) *out_crop_x = 0;
         if (out_crop_y) *out_crop_y = 0;
         return;
@@ -102,7 +109,7 @@ bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width,
                             std::vector<uint8_t>* output,
                             uint32_t* out_width, uint32_t* out_height,
                             uint32_t* out_crop_x, uint32_t* out_crop_y,
-                            uint32_t minimal_width) {
+                            uint32_t minimal_width, bool crop_black) {
     if (yuv_data.empty() || !output || width == 0 || height == 0) {
         return false;
     }
@@ -153,14 +160,14 @@ bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width,
         }
         return encode_frame_to_jpeg_hw(rgb.data(), width, height, quality, output,
                                        out_width, out_height, out_crop_x, out_crop_y,
-                                       minimal_width);
+                                       minimal_width, crop_black);
     }
 
     // Crop left and right black bars before encoding.
     cv::Mat cropped;
     uint32_t crop_x = 0;
     uint32_t crop_y = 0;
-    crop_black_bars_bgr(bgr, cropped, &crop_x, &crop_y, 15, minimal_width);
+    crop_black_bars_bgr(bgr, cropped, &crop_x, &crop_y, 15, minimal_width, crop_black);
 
     if (out_width) *out_width = static_cast<uint32_t>(cropped.cols);
     if (out_height) *out_height = static_cast<uint32_t>(cropped.rows);

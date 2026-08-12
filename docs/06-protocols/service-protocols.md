@@ -19,10 +19,14 @@ Default socket:
 | `list_frames` | Lists frame metadata in ring buffer |
 | `restart` | Requests service to restart capture manager |
 
-`latest_frame` accepts `format: "jpeg"` and an optional `minimal_width`.
-JPEG responses crop only uniformly dark columns at the left and right edges;
-when `minimal_width` is present, the cropped JPEG width will not be smaller
-than that value (clamped to the source width). The response includes
+`latest_frame` accepts `format: "jpeg"` or `format: "raw"`, an optional
+`crop_black` boolean, and an optional `minimal_width`. When `crop_black` is
+true, both JPEG and raw responses crop only uniformly dark columns at the left
+and right edges. When `minimal_width` is present, the cropped width will not be
+smaller than that value (clamped to the source width). Raw crops preserve the
+source pixel format and align horizontal bounds to complete chroma pairs.
+For compatibility, omitted `crop_black` defaults to true for JPEG and false
+for raw. The response includes
 `source_width`, `source_height`, and the `crop_*` rectangle for coordinate
 mapping.
 

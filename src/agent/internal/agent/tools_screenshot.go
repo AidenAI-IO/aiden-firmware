@@ -43,12 +43,15 @@ type screenshotResult struct {
 }
 
 type screenshotFrameClient interface {
-	LatestFrameWithFormat(format string, quality, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error)
+	LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error)
 }
 
-func captureScreenshotJPEG(client screenshotFrameClient, screenState *screen.ScreenState) (*frameMetadata, []byte, screenCaptureInfo, error) {
-	minimalWidth := screenshotMinimalWidth(screenState)
-	return client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, minimalWidth)
+func captureScreenshotJPEG(client screenshotFrameClient, screenState *screen.ScreenState, cropBlack bool) (*frameMetadata, []byte, screenCaptureInfo, error) {
+	minimalWidth := 0
+	if cropBlack {
+		minimalWidth = screenshotMinimalWidth(screenState)
+	}
+	return client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, cropBlack, minimalWidth)
 }
 
 func screenshotMinimalWidth(screenState *screen.ScreenState) int {
@@ -93,8 +96,31 @@ func applyScreenCaptureInfo(result *screenshotResult, info screenCaptureInfo) {
 
 // ScreenshotTool captures a screenshot from the frame service.
 type ScreenshotTool struct {
-	client screenshotFrameClient
-	screen *screen.ScreenState
+	client       screenshotFrameClient
+	screen       *screen.ScreenState
+	deviceTypeFn func() string
+}
+
+func (t *ScreenshotTool) SetDeviceTypeFunc(fn func() string) {
+	if t != nil {
+		t.deviceTypeFn = fn
+	}
+}
+
+func cropBlackForDeviceType(deviceTypeFn func() string) bool {
+	deviceType := defaultDeviceType
+	if deviceTypeFn != nil {
+		deviceType = deviceTypeFn()
+	}
+	platform := deviceTypePlatform(deviceType)
+	return platform == "ios" || platform == "android"
+}
+
+func (t *ScreenshotTool) cropBlack() bool {
+	if t == nil {
+		return cropBlackForDeviceType(nil)
+	}
+	return cropBlackForDeviceType(t.deviceTypeFn)
 }
 
 func frameMetadataSourceActiveArea(meta *frameMetadata) (sourceWidth, sourceHeight int, active screen.ScreenActiveArea, ok bool) {
@@ -149,7 +175,8 @@ func (t *ScreenshotTool) ArgsSchema() map[string]any {
 
 func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	// Request JPEG format directly from frame_service (hardware-encoded)
-	meta, jpegData, captureInfo, err := captureScreenshotJPEG(t.client, t.screen)
+	cropBlack := t.cropBlack()
+	meta, jpegData, captureInfo, err := captureScreenshotJPEG(t.client, t.screen, cropBlack)
 	if err != nil {
 		return "", err
 	}
@@ -171,8 +198,10 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		sourceHeight = fullHeight
 		active = sourceActive
 		alreadyCropped = true
-	} else {
+	} else if cropBlack {
 		active = detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
+	} else {
+		active = screen.ScreenActiveArea{X: 0, Y: 0, Width: sourceWidth, Height: sourceHeight, Valid: true}
 	}
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf(
@@ -194,7 +223,7 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	displayWidth := int(meta.Width)
 	displayHeight := int(meta.Height)
 	displayData := jpegData
-	if !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
+	if cropBlack && !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
 		croppedData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
 		if err != nil {
 			return "", fmt.Errorf("crop screenshot to active area: %w", err)

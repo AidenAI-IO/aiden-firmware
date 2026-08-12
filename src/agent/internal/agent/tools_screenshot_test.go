@@ -14,11 +14,12 @@ type fakeScreenshotFrameClient struct {
 	meta         frameMetadata
 	data         []byte
 	calls        int
+	cropBlack    bool
 	minimalWidth int
 	captureInfo  screenCaptureInfo
 }
 
-func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error) {
+func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if format != "jpeg" {
 		return nil, nil, screenCaptureInfo{}, fmt.Errorf("unexpected format %q", format)
 	}
@@ -26,6 +27,7 @@ func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality
 		return nil, nil, screenCaptureInfo{}, fmt.Errorf("quality = %d, want %d", quality, screenshotJPEGQuality)
 	}
 	c.calls++
+	c.cropBlack = cropBlack
 	c.minimalWidth = minimalWidth
 	meta := c.meta
 	return &meta, append([]byte(nil), c.data...), cloneScreenCaptureInfo(c.captureInfo), nil
@@ -56,6 +58,9 @@ func TestScreenshotToolPassesReportedScreenWidthAt1080Height(t *testing.T) {
 	if client.minimalWidth != 498 {
 		t.Fatalf("minimal_width = %d, want 498", client.minimalWidth)
 	}
+	if !client.cropBlack {
+		t.Fatal("crop_black = false, want true for default iOS device type")
+	}
 }
 
 func TestScreenshotToolOmitsMinimalWidthWithoutReportedScreen(t *testing.T) {
@@ -74,6 +79,49 @@ func TestScreenshotToolOmitsMinimalWidthWithoutReportedScreen(t *testing.T) {
 	}
 	if client.minimalWidth != 0 {
 		t.Fatalf("minimal_width = %d, want 0", client.minimalWidth)
+	}
+}
+
+func TestScreenshotToolDisablesBlackCropForDesktopDeviceTypes(t *testing.T) {
+	jpegData, err := encodeJPEG([]byte{255, 255, 255}, 1, 1, screenshotJPEGQuality)
+	if err != nil {
+		t.Fatalf("encodeJPEG() error = %v", err)
+	}
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(1920)})
+	client := &fakeScreenshotFrameClient{
+		meta: frameMetadata{Width: 1, Height: 1, PixelFormat: "jpeg", Bytes: uint64(len(jpegData))},
+		data: jpegData,
+	}
+	tool := &ScreenshotTool{client: client, screen: screenState, deviceTypeFn: func() string { return "macOS" }}
+
+	if _, err := tool.Call(context.Background(), `{}`); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if client.cropBlack {
+		t.Fatal("crop_black = true, want false for macOS")
+	}
+	if client.minimalWidth != 0 {
+		t.Fatalf("minimal_width = %d, want 0 when cropping is disabled", client.minimalWidth)
+	}
+}
+
+func TestScreenshotToolEnablesBlackCropForAndroid(t *testing.T) {
+	jpegData, err := encodeJPEG([]byte{255, 255, 255}, 1, 1, screenshotJPEGQuality)
+	if err != nil {
+		t.Fatalf("encodeJPEG() error = %v", err)
+	}
+	client := &fakeScreenshotFrameClient{
+		meta: frameMetadata{Width: 1, Height: 1, PixelFormat: "jpeg", Bytes: uint64(len(jpegData))},
+		data: jpegData,
+	}
+	tool := &ScreenshotTool{client: client, screen: &screen.ScreenState{}, deviceTypeFn: func() string { return "Android" }}
+
+	if _, err := tool.Call(context.Background(), `{}`); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if !client.cropBlack {
+		t.Fatal("crop_black = false, want true for Android")
 	}
 }
 

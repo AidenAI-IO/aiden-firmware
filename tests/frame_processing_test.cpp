@@ -6,6 +6,7 @@
 
 using aiden::FrameMetadata;
 using aiden::convert_frame_to_rgb;
+using aiden::crop_frame_horizontal_black_bars;
 using aiden::encode_frame_to_bmp;
 using aiden::encode_frame_to_png;
 using aiden::encode_rgb_to_png;
@@ -53,6 +54,79 @@ TEST_CASE("convert_frame_to_rgb converts UYVY packed pixels") {
     CHECK(rgb[3] == 0);
     CHECK(rgb[4] == 0);
     CHECK(rgb[5] == 0);
+}
+
+TEST_CASE("crop raw UYVY frame removes only horizontal black pixel pairs") {
+    FrameMetadata metadata = frame_meta(8, 1, "uyvy");
+    std::vector<uint8_t> uyvy = {
+        128, 16, 128, 16,
+        128, 235, 128, 235,
+        128, 235, 128, 235,
+        128, 16, 128, 16,
+    };
+    FrameMetadata cropped_metadata;
+    std::vector<uint8_t> cropped;
+
+    REQUIRE(crop_frame_horizontal_black_bars(metadata, uyvy, 0, &cropped_metadata, &cropped));
+    CHECK(cropped_metadata.width == 4);
+    CHECK(cropped_metadata.height == 1);
+    CHECK(cropped_metadata.source_width == 8);
+    CHECK(cropped_metadata.crop_x == 2);
+    CHECK(cropped_metadata.crop_width == 4);
+    CHECK(cropped_metadata.stride == 8);
+    CHECK(cropped_metadata.bytes == 8);
+    CHECK(cropped == std::vector<uint8_t>{128, 235, 128, 235, 128, 235, 128, 235});
+}
+
+TEST_CASE("crop raw UYVY frame honors centered minimal width") {
+    FrameMetadata metadata = frame_meta(8, 1, "uyvy");
+    std::vector<uint8_t> uyvy = {
+        128, 16, 128, 16,
+        128, 235, 128, 235,
+        128, 16, 128, 16,
+        128, 16, 128, 16,
+    };
+    FrameMetadata cropped_metadata;
+    std::vector<uint8_t> cropped;
+
+    REQUIRE(crop_frame_horizontal_black_bars(metadata, uyvy, 4, &cropped_metadata, &cropped));
+    CHECK(cropped_metadata.crop_x == 2);
+    CHECK(cropped_metadata.crop_width == 4);
+    CHECK(cropped.size() == 8);
+}
+
+TEST_CASE("crop raw NV12 frame rebuilds plane metadata") {
+    FrameMetadata metadata;
+    metadata.width = 8;
+    metadata.height = 2;
+    metadata.pixel_format = "nv12";
+    metadata.stride = 8;
+    metadata.bytes = 24;
+    std::vector<uint8_t> nv12 = {
+        16, 16, 235, 235, 235, 235, 16, 16,
+        16, 16, 235, 235, 235, 235, 16, 16,
+        128, 128, 128, 128, 128, 128, 128, 128,
+    };
+    FrameMetadata cropped_metadata;
+    std::vector<uint8_t> cropped;
+
+    REQUIRE(crop_frame_horizontal_black_bars(metadata, nv12, 0, &cropped_metadata, &cropped));
+    CHECK(cropped_metadata.width == 4);
+    CHECK(cropped_metadata.crop_x == 2);
+    CHECK(cropped_metadata.stride == 4);
+    CHECK(cropped_metadata.bytes == 12);
+    REQUIRE(cropped_metadata.planes.size() == 2);
+    CHECK(cropped_metadata.planes[0].offset == 0);
+    CHECK(cropped_metadata.planes[0].stride == 4);
+    CHECK(cropped_metadata.planes[0].bytes == 8);
+    CHECK(cropped_metadata.planes[1].offset == 8);
+    CHECK(cropped_metadata.planes[1].stride == 4);
+    CHECK(cropped_metadata.planes[1].bytes == 4);
+    CHECK(cropped == std::vector<uint8_t>{
+        235, 235, 235, 235,
+        235, 235, 235, 235,
+        128, 128, 128, 128,
+    });
 }
 
 TEST_CASE("encode_rgb_to_bmp writes top-down 24-bit BMP") {

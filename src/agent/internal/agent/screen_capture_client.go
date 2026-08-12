@@ -11,7 +11,7 @@ const frameServiceFreshFrameMaxAgeMs = 2000
 
 type screenCaptureSource interface {
 	LatestFrame() (*frameMetadata, []byte, error)
-	LatestFrameWithFormat(format string, quality, minimalWidth int) (*frameMetadata, []byte, error)
+	LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error)
 }
 
 type screenshotCaptureInfoProvider interface {
@@ -52,9 +52,9 @@ func (c *ScreenCaptureClient) LatestFrame() (*frameMetadata, []byte, screenCaptu
 	})
 }
 
-func (c *ScreenCaptureClient) LatestFrameWithFormat(format string, quality, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error) {
+func (c *ScreenCaptureClient) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	return c.captureWithFallback(func(source screenCaptureSource) (*frameMetadata, []byte, error) {
-		return source.LatestFrameWithFormat(format, quality, minimalWidth)
+		return source.LatestFrameWithFormat(format, quality, cropBlack, minimalWidth)
 	})
 }
 

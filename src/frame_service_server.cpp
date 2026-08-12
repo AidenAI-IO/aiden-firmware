@@ -1,5 +1,6 @@
 #include "frame_service_server.h"
 #include "frame_jpeg_encoder.h"
+#include "frame_processing.h"
 #include "cJSON/cJSON.h"
 #include "uds_message.h"
 #include <chrono>
@@ -127,6 +128,14 @@ static std::string json_string(cJSON* object, const char* key) {
     cJSON* item = cJSON_GetObjectItem(object, key);
     if (!item || item->type != cJSON_String || !item->valuestring) return std::string();
     return item->valuestring;
+}
+
+static bool json_optional_bool(cJSON* object, const char* key, bool default_value) {
+    cJSON* item = cJSON_GetObjectItem(object, key);
+    if (!item) return default_value;
+    if (item->type == cJSON_True) return true;
+    if (item->type == cJSON_False) return false;
+    return default_value;
 }
 
 static std::string status_response(const char* method, FrameServiceStatus status) {
@@ -338,6 +347,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         if (format.empty()) {
             format = "raw";
         }
+        const bool crop_black = json_optional_bool(root, "crop_black", format == "jpeg");
 
         std::shared_ptr<const FrameBufferFrame> frame;
         bool recovering = is_recovering();
@@ -365,23 +375,23 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                 metadata.stale = true;
             }
 
-            std::vector<uint8_t> encoded_payload;
+            std::vector<uint8_t> transformed_payload;
             const std::vector<uint8_t>* payload = &frame->data;
             if (format == "jpeg") {
-                // Encode to JPEG using hardware encoder (includes horizontal black bar cropping).
+                // Encode to JPEG, optionally cropping horizontal black bars.
                 uint32_t source_width = metadata.width;
                 uint32_t source_height = metadata.height;
                 uint32_t encoded_width = 0, encoded_height = 0;
                 uint32_t crop_x = 0, crop_y = 0;
                 if (!encode_yuv_to_jpeg_hw(frame->data, metadata.width, metadata.height,
-                                           metadata.pixel_format, quality, &encoded_payload,
+                                           metadata.pixel_format, quality, &transformed_payload,
                                            &encoded_width, &encoded_height,
-                                           &crop_x, &crop_y, minimal_width)) {
+                                           &crop_x, &crop_y, minimal_width, crop_black)) {
                     write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
                     cJSON_Delete(root);
                     return;
                 }
-                payload = &encoded_payload;
+                payload = &transformed_payload;
                 metadata.source_width = source_width;
                 metadata.source_height = source_height;
                 metadata.crop_x = crop_x;
@@ -394,6 +404,16 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                 metadata.planes.clear();
                 metadata.pixel_format = "jpeg";
                 metadata.bytes = payload->size();
+            } else if (format == "raw" && crop_black) {
+                FrameMetadata cropped_metadata;
+                if (!crop_frame_horizontal_black_bars(metadata, frame->data, minimal_width,
+                                                      &cropped_metadata, &transformed_payload)) {
+                    write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
+                    cJSON_Delete(root);
+                    return;
+                }
+                metadata = cropped_metadata;
+                payload = &transformed_payload;
             }
 
             std::string header = "{\"type\":\"response\",\"method\":\"latest_frame\",\"status\":\"OK\",\"frame\":" +

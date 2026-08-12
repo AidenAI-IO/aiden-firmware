@@ -18,13 +18,14 @@ namespace aiden {
  * @param out_height Actual encoded height after cropping (may be null)
  * @param minimal_width Minimum output width after cropping. Values larger than
  *        the source width are clamped to the source width.
+ * @param crop_black Whether to crop uniformly dark columns at the edges.
  * @return true on success
  */
 bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t height,
                               int quality, std::vector<uint8_t>* output,
                               uint32_t* out_width = nullptr, uint32_t* out_height = nullptr,
                               uint32_t* out_crop_x = nullptr, uint32_t* out_crop_y = nullptr,
-                              uint32_t minimal_width = 0);
+                              uint32_t minimal_width = 0, bool crop_black = true);
 
 /**
  * Convert YUV frame to RGB and encode to JPEG using hardware encoder.
@@ -39,6 +40,7 @@ bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t h
  * @param out_height Actual encoded height after cropping (may be null)
  * @param minimal_width Minimum output width after cropping. Values larger than
  *        the source width are clamped to the source width.
+ * @param crop_black Whether to crop uniformly dark columns at the edges.
  * @return true on success
  */
 bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width, uint32_t height,
@@ -46,6 +48,6 @@ bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width,
                             std::vector<uint8_t>* output,
                             uint32_t* out_width = nullptr, uint32_t* out_height = nullptr,
                             uint32_t* out_crop_x = nullptr, uint32_t* out_crop_y = nullptr,
-                            uint32_t minimal_width = 0);
+                            uint32_t minimal_width = 0, bool crop_black = true);
 
 }  // namespace aiden
