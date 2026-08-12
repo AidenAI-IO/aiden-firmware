@@ -1152,6 +1152,20 @@ func TestRuntimeCloseWaitsForAsyncEpisodeMaintenance(t *testing.T) {
 	}
 }
 
+func TestAsyncEpisodeMaintenanceCloseAndWaitHonorsContext(t *testing.T) {
+	var maintenance asyncEpisodeMaintenance
+	if !maintenance.begin() {
+		t.Fatal("begin() = false, want true")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := maintenance.closeAndWait(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("closeAndWait() error = %v, want deadline exceeded", err)
+	}
+	maintenance.done()
+}
+
 type capturingEpisodePlane struct {
 	episode TaskEpisode
 }

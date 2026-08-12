@@ -48,6 +48,7 @@ const (
 	currentEnvironmentHintMaxAge      = 10 * time.Minute
 	runtimeSessionEventPersistTimeout = 2 * time.Second
 	runtimeTTSCloseTimeout            = 5 * time.Second
+	runtimeEpisodeMaintenanceTimeout  = 10 * time.Second
 	maxPublicToolResultRunes          = maxToolObservationRunes
 )
 
@@ -1646,11 +1647,21 @@ func (m *asyncEpisodeMaintenance) done() {
 	m.wg.Done()
 }
 
-func (m *asyncEpisodeMaintenance) closeAndWait() {
+func (m *asyncEpisodeMaintenance) closeAndWait(ctx context.Context) error {
 	m.mu.Lock()
 	m.closing = true
 	m.mu.Unlock()
-	m.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func enrichEpisodeSessionBoundaryTelemetry(episode *TaskEpisode, boundary sessionBoundaryTelemetry) {
@@ -2460,7 +2471,11 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
-	r.episodeMaintenance.closeAndWait()
+	maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), runtimeEpisodeMaintenanceTimeout)
+	if err := r.episodeMaintenance.closeAndWait(maintenanceCtx); err != nil && r.logger != nil {
+		r.logger.Error("episode maintenance drain on close: %v", err)
+	}
+	maintenanceCancel()
 	if r.storageMonitor != nil {
 		r.storageMonitor.Stop()
 	}
