@@ -160,7 +160,11 @@ The default Agent prompt instructs the model to:
 - Use `--only-binary=:all:` so pip never builds a source distribution on the
   board.
 - Never self-upgrade the firmware-provided `pip`, `setuptools`, or `wheel`.
-- Run `pip check` after installation.
+- Check the scoped managed user base before deciding a package is absent, so an
+  existing runtime-installed package is reused instead of installed again.
+- Run `pip check` after installation with a Shell timeout of at least 120
+  seconds. If it times out, retry once with a longer bounded timeout, and do
+  not report installation success unless the check completes successfully.
 - Avoid starting a package installation while `/run/agent/storage_level`
   reports a non-Normal level or `/userdata` is visibly low on free space.
 - Inspect the pip error and retry with a compatible version when appropriate;
