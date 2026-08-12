@@ -518,6 +518,10 @@ func convertAnthropicToolChoice(choice any, behavior llms.FunctionCallBehavior) 
 }
 
 func aggregateAnthropicResponse(response anthropicResponse, callStarted time.Time) *llms.ContentResponse {
+	return aggregateAnthropicResponseWithGenerationInfo(response, callStarted, nil)
+}
+
+func aggregateAnthropicResponseWithGenerationInfo(response anthropicResponse, callStarted time.Time, generationInfo map[string]any) *llms.ContentResponse {
 	var textParts []string
 	var thinkingParts []string
 	toolCalls := make([]llms.ToolCall, 0)
@@ -549,6 +553,9 @@ func aggregateAnthropicResponse(response anthropicResponse, callStarted time.Tim
 	info["llm_tool_call_count"] = len(choice.ToolCalls)
 	info["llm_finish_reason"] = response.StopReason
 	info["llm_response_id"] = response.ID
+	for key, value := range generationInfo {
+		info[key] = value
+	}
 	choice.GenerationInfo = finalizeLLMGenerationInfo(info, callStarted)
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}
 }
@@ -571,6 +578,7 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 	stopReason := ""
 	var raw strings.Builder
 	firstContent := false
+	var firstContentAt int64
 	for scanner.Scan() {
 		line := scanner.Text()
 		raw.WriteString(line)
@@ -619,10 +627,11 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			case "text_delta":
 				chunk, _ := event.Delta["text"].(string)
 				block.Text.WriteString(chunk)
+				if chunk != "" && !firstContent {
+					firstContent = true
+					firstContentAt = time.Since(callStarted).Milliseconds()
+				}
 				if chunk != "" && opts.StreamingFunc != nil {
-					if !firstContent {
-						firstContent = true
-					}
 					if err := opts.StreamingFunc(ctx, []byte(chunk)); err != nil {
 						return nil, err
 					}
@@ -686,10 +695,12 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 	} else {
 		_ = m.logRawHTTP(ctx, model, "response", statusCode, raw.String())
 	}
-	result := aggregateAnthropicResponse(response, callStarted)
+	generationInfo := map[string]any{}
 	if firstContent {
-		result.Choices[0].GenerationInfo["llm_stream"] = true
+		generationInfo["llm_stream"] = true
+		generationInfo["llm_time_to_first_content_ms"] = firstContentAt
 	}
+	result := aggregateAnthropicResponseWithGenerationInfo(response, callStarted, generationInfo)
 	return result, nil
 }
 

@@ -446,7 +446,7 @@ base_url = "https://sneaky.example.com/v1"
 
 [model]
 provider = "my-router"
-model = "anthropic/claude-opus-4.8"
+model = "anthropic/claude-opus-4-8"
 `,
 			wantBaseURL: "",
 		},

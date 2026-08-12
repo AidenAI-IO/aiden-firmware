@@ -8,7 +8,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -38,9 +40,10 @@ func TestAnthropicModelAggregatesContentBlocksAndConvertsHistory(t *testing.T) {
 	t.Parallel()
 
 	type capturedRequest struct {
-		Model    string `json:"model"`
-		System   any    `json:"system"`
-		Messages []struct {
+		Model     string `json:"model"`
+		System    any    `json:"system"`
+		MaxTokens int    `json:"max_tokens"`
+		Messages  []struct {
 			Role    string           `json:"role"`
 			Content []map[string]any `json:"content"`
 		} `json:"messages"`
@@ -63,7 +66,8 @@ func TestAnthropicModelAggregatesContentBlocksAndConvertsHistory(t *testing.T) {
 			t.Errorf("anthropic-version = %q, want %q", got, anthropicAPIVersion)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -83,6 +87,15 @@ func TestAnthropicModelAggregatesContentBlocksAndConvertsHistory(t *testing.T) {
 	defer server.Close()
 
 	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client())
+	manager := NewModelManager(ModelConfig{MaxResponseTokens: 128}, ProxyConfig{})
+	callOptions := chains.GetLLMCallOptions(manager.CallOptions()...)
+	callOptions = append(callOptions, llms.WithTools([]llms.Tool{{
+		Type: "function",
+		Function: &llms.FunctionDefinition{
+			Name:       "tap",
+			Parameters: map[string]any{"type": "object"},
+		},
+	}}))
 	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "system one", "system two"),
 		{
@@ -107,13 +120,7 @@ func TestAnthropicModelAggregatesContentBlocksAndConvertsHistory(t *testing.T) {
 				llms.BinaryPart("image/png", []byte("png")),
 			},
 		},
-	}, llms.WithTools([]llms.Tool{{
-		Type: "function",
-		Function: &llms.FunctionDefinition{
-			Name:       "tap",
-			Parameters: map[string]any{"type": "object"},
-		},
-	}}), llms.WithMaxTokens(128))
+	}, callOptions...)
 	if err != nil {
 		t.Fatalf("GenerateContent() error = %v", err)
 	}
@@ -142,6 +149,9 @@ func TestAnthropicModelAggregatesContentBlocksAndConvertsHistory(t *testing.T) {
 
 	if captured.Model != "claude-test" || captured.Stream {
 		t.Errorf("captured request = %#v", captured)
+	}
+	if captured.MaxTokens != 128 {
+		t.Errorf("max_tokens = %d, want 128", captured.MaxTokens)
 	}
 	if len(captured.Messages) != 2 {
 		t.Fatalf("messages = %#v, want alternating assistant and merged user content", captured.Messages)
@@ -220,6 +230,9 @@ func TestAnthropicModelStreamsTextAndToolArguments(t *testing.T) {
 	if choice.GenerationInfo["prompt_tokens"] != 35 || choice.GenerationInfo["completion_tokens"] != 9 {
 		t.Errorf("generation info = %#v", choice.GenerationInfo)
 	}
+	if _, ok := choice.GenerationInfo["llm_time_to_first_content_ms"]; !ok {
+		t.Errorf("generation info missing time to first content: %#v", choice.GenerationInfo)
+	}
 }
 
 func TestAnthropicProviderUsesEnvironmentFallbacks(t *testing.T) {
@@ -292,7 +305,8 @@ func TestAnthropicModelMapsReasoningEffortToAdaptiveThinking(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			return
 		}
 		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
@@ -321,7 +335,8 @@ func TestAnthropicModelOmitsAdaptiveThinkingForToolRequests(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			return
 		}
 		_, _ = w.Write([]byte(`{"content":[{"type":"tool_use","id":"call","name":"echo","input":{}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
@@ -349,7 +364,8 @@ func TestAnthropicModelLiveRelay(t *testing.T) {
 	if modelName == "" {
 		modelName = "claude-sonnet-4-6"
 	}
-	model := newAnthropicModel(baseURL, modelName, token, http.DefaultClient,
+	client := &http.Client{Timeout: 30 * time.Second}
+	model := newAnthropicModel(baseURL, modelName, token, client,
 		withAnthropicBearerAuth(), withAnthropicReasoningEffort("low"))
 	var streamed strings.Builder
 	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{

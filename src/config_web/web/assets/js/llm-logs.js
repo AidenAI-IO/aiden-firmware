@@ -549,6 +549,11 @@ function extractResponseMessage(body) {
     let event;
     try { event = JSON.parse(data); } catch(e) { continue; }
     hasData = true;
+    if (event.type === 'error' && event.error && typeof event.error.message === 'string') {
+      if (content) content += '\n';
+      content += event.error.message;
+      continue;
+    }
     if (event.type === 'content_block_start' && event.content_block && event.content_block.type === 'tool_use') {
       const block = event.content_block;
       toolCalls[event.index] = {id: block.id, type: 'function', function: {name: block.name || '', arguments: ''}};

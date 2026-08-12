@@ -85,7 +85,8 @@ model = "gpt-5.5"
 # type = "anthropic"
 # api_key = "$ANTHROPIC_AUTH_TOKEN"
 # base_url = "https://api.anthropic.com/v1"
-# Set [model].provider = "claude-main" to select it.
+# Then edit the [model] section above to select it:
+# provider = "claude-main"
 # model = "claude-sonnet-4-6"
 
 # For Moonshot Kimi K3, use the "kimi" (global) or "kimi-cn" (mainland China)

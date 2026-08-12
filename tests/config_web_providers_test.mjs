@@ -142,7 +142,7 @@ const modelsByProvider = {
     {id: 'gpt-4o', recommended: false},
   ],
   openrouter: [
-    {id: 'anthropic/claude-opus-4.8', recommended: true},
+    {id: 'anthropic/claude-opus-4-8', recommended: true},
     {id: 'google/gemini-3.5-pro', recommended: false},
   ],
 };
@@ -175,7 +175,7 @@ rememberModelProvider();
 await ModelSelector.onProviderChange('router');
 assert.equal(
   modelInput.value,
-  'anthropic/claude-opus-4.8',
+  'anthropic/claude-opus-4-8',
   'provider with no remembered choice uses its recommended default',
 );
 

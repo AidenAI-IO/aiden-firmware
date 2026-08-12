@@ -91,7 +91,7 @@ var displayModelsByProvider = map[string][]ModelDisplayInfo{
 	},
 	"anthropic": {
 		{
-			ID: "claude-opus-4.8",
+			ID: "claude-opus-4-8",
 			Descriptions: map[string]string{
 				localeEnglishUS:         "Anthropic's most capable model",
 				localeSimplifiedChinese: "Anthropic 最强大的模型",
@@ -99,14 +99,14 @@ var displayModelsByProvider = map[string][]ModelDisplayInfo{
 			Recommended: true,
 		},
 		{
-			ID: "claude-sonnet-4.6",
+			ID: "claude-sonnet-4-6",
 			Descriptions: map[string]string{
 				localeEnglishUS:         "Balanced performance and speed",
 				localeSimplifiedChinese: "性能和速度平衡",
 			},
 		},
 		{
-			ID: "claude-haiku-4.5",
+			ID: "claude-haiku-4-5",
 			Descriptions: map[string]string{
 				localeEnglishUS:         "Fast and economical Claude model",
 				localeSimplifiedChinese: "快速且经济的 Claude 模型",
@@ -145,7 +145,7 @@ var displayModelsByProvider = map[string][]ModelDisplayInfo{
 	},
 	"openrouter": {
 		{
-			ID: "anthropic/claude-opus-4.8",
+			ID: "anthropic/claude-opus-4-8",
 			Descriptions: map[string]string{
 				localeEnglishUS:         "Anthropic's most capable model",
 				localeSimplifiedChinese: "Anthropic 最强大的模型",
@@ -153,7 +153,7 @@ var displayModelsByProvider = map[string][]ModelDisplayInfo{
 			Recommended: true,
 		},
 		{
-			ID: "anthropic/claude-sonnet-4.6",
+			ID: "anthropic/claude-sonnet-4-6",
 			Descriptions: map[string]string{
 				localeEnglishUS:         "Balanced performance and speed",
 				localeSimplifiedChinese: "性能和速度平衡",

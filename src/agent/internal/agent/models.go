@@ -211,7 +211,7 @@ func (m *ModelManager) buildAnthropicModel(cfg ModelConfig) (llms.Model, error) 
 		if env, ok := providerAPIKeyEnv(cfg.APIKey); ok && env != "" {
 			return nil, fmt.Errorf("missing the Anthropic API key, set it in the %s environment variable", env)
 		}
-		return nil, fmt.Errorf("missing the Anthropic API key, set api_key on the provider record or ANTHROPIC_AUTH_TOKEN")
+		return nil, fmt.Errorf("missing the Anthropic API key, set api_key on the provider record, ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY")
 	}
 	options := buildAnthropicModelOptions(m, cfg)
 	if useBearerAuth {

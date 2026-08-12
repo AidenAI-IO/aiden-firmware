@@ -101,3 +101,21 @@ assert.deepEqual(
   },
   'Anthropic SSE responses should aggregate text and partial tool JSON',
 );
+
+assert.deepEqual(
+  extract('data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n'),
+  {role: 'assistant', content: 'Overloaded', tool_calls: []},
+  'Anthropic SSE error-only responses should render the error message',
+);
+
+const anthropicPartialErrorSse = [
+  'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Partial output"}}',
+  'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+  '',
+].join('\n');
+
+assert.deepEqual(
+  extract(anthropicPartialErrorSse),
+  {role: 'assistant', content: 'Partial output\nOverloaded', tool_calls: []},
+  'Anthropic SSE errors should preserve partial output',
+);

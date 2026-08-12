@@ -32,12 +32,12 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	"gpt-5.4-nano":        {ContextWindow: 400_000, MaxOutput: 128_000},
 
 	// Anthropic Claude 4.x family (vision + tool calling).
-	"anthropic/claude-opus-4.8":   {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"claude-opus-4.8":             {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"anthropic/claude-sonnet-4.6": {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"claude-sonnet-4.6":           {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"anthropic/claude-haiku-4.5":  {ContextWindow: 200_000, MaxOutput: 64_000},
-	"claude-haiku-4.5":            {ContextWindow: 200_000, MaxOutput: 64_000},
+	"anthropic/claude-opus-4-8":   {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"claude-opus-4-8":             {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"anthropic/claude-sonnet-4-6": {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"claude-sonnet-4-6":           {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"anthropic/claude-haiku-4-5":  {ContextWindow: 200_000, MaxOutput: 64_000},
+	"claude-haiku-4-5":            {ContextWindow: 200_000, MaxOutput: 64_000},
 
 	// Google Gemini 3.5 family (vision + tool calling).
 	"google/gemini-3.5-pro":   {ContextWindow: 1_048_576, MaxOutput: 65_536},

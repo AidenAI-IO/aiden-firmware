@@ -30,7 +30,7 @@ func TestGetDisplayModelsForProvider(t *testing.T) {
 			name:         "anthropic has native model IDs",
 			provider:     "anthropic",
 			wantCount:    3,
-			wantFirstID:  "claude-opus-4.8",
+			wantFirstID:  "claude-opus-4-8",
 			hasRecommend: true,
 		},
 		{
