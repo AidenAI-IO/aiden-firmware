@@ -29,8 +29,17 @@ prepare_line="$(grep -n 'prepare_tc358743_edid "$subdev" "$edid"' "$init_script"
 force_arg_line="$(grep -n 'set -- "$@" --force-trigger' "$init_script" | tail -1 | cut -d: -f1)"
 no_force_arg_line="$(grep -n 'set -- "$@" --no-force-trigger' "$init_script" | tail -1 | cut -d: -f1)"
 edid_arg_line="$(grep -n 'set -- "$@" --edid "$edid"' "$init_script" | tail -1 | cut -d: -f1)"
+for marker_line in "$prepare_line" "$force_arg_line" "$no_force_arg_line" "$edid_arg_line"; do
+    case "$marker_line" in
+        ''|0|*[!0-9]*)
+            echo "FAIL: frame_service ordering marker has an invalid line number" >&2
+            exit 1
+            ;;
+    esac
+done
 if [ "$prepare_line" -ge "$force_arg_line" ] || \
         [ "$prepare_line" -ge "$no_force_arg_line" ] || \
+        [ "$force_arg_line" -ge "$edid_arg_line" ] || \
         [ "$no_force_arg_line" -ge "$edid_arg_line" ]; then
     echo "FAIL: frame_service must select the force-trigger argument after bridge preparation" >&2
     exit 1
