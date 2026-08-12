@@ -36,6 +36,19 @@ var phoneBridgeBackgroundSafeCommandTypes = map[string]struct{}{
 	"notification_send": {},
 }
 
+// iOS BLE Wake runs commands during a short system-granted background window.
+// Keep this narrower than the generic PiP/FGS background-safe set: UIKit does
+// not provide reliable clipboard access there, and contacts_update currently
+// reports success without a trustworthy update result.
+var phoneBridgeBLEBackgroundCommandTypes = map[string]struct{}{
+	"calendar_create":   {},
+	"calendar_query":    {},
+	"calendar_delete":   {},
+	"contacts_query":    {},
+	"contacts_create":   {},
+	"notification_send": {},
+}
+
 func phoneBridgeReadyForCommand(status PhoneBridgeStatus, commandTypes ...string) bool {
 	if !status.Connected {
 		return false
@@ -98,7 +111,7 @@ func phoneBridgeCanUseFGSBackground(status PhoneBridgeStatus, commandType string
 }
 
 func phoneBridgeCanUseBLEBackground(status PhoneBridgeStatus, commandType string) bool {
-	if !phoneBridgeIsIOS(status) || !phoneBridgeBackgroundSafeCommandType(commandType) {
+	if !phoneBridgeIsIOS(status) || !phoneBridgeBLEBackgroundCommandType(commandType) {
 		return false
 	}
 	state := strings.ToLower(strings.TrimSpace(status.AppState))
@@ -106,7 +119,7 @@ func phoneBridgeCanUseBLEBackground(status PhoneBridgeStatus, commandType string
 }
 
 func phoneBridgeShouldNotifyBLEWake(status PhoneBridgeStatus, commandType string) bool {
-	if !phoneBridgeBackgroundSafeCommandType(commandType) {
+	if !phoneBridgeBLEBackgroundCommandType(commandType) {
 		return false
 	}
 	if platform := phoneBridgePlatform(status); platform != "" && platform != "ios" {
@@ -118,6 +131,11 @@ func phoneBridgeShouldNotifyBLEWake(status PhoneBridgeStatus, commandType string
 
 func phoneBridgeBackgroundSafeCommandType(commandType string) bool {
 	_, ok := phoneBridgeBackgroundSafeCommandTypes[strings.TrimSpace(commandType)]
+	return ok
+}
+
+func phoneBridgeBLEBackgroundCommandType(commandType string) bool {
+	_, ok := phoneBridgeBLEBackgroundCommandTypes[strings.TrimSpace(commandType)]
 	return ok
 }
 

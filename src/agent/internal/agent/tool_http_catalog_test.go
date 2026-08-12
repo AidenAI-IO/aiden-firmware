@@ -3,6 +3,7 @@ package agent
 import (
 	"aiden-agent/internal/ble"
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -611,18 +612,44 @@ func TestAvailableToolsExposesBackgroundSafeBridgeToolsThroughBLEWake(t *testing
 	runtime.tools.RegisterPhoneBridge(bridge)
 
 	names := toolNameSet(runtime.availableTools())
-	for _, want := range []string{"bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
+	for _, want := range []string{"bridge_calendar", "bridge_contacts", "bridge_notification"} {
 		if _, ok := names[want]; !ok {
 			t.Fatalf("agent catalog missing BLE-Wake-safe %s: %v", want, names)
 		}
 	}
-	for _, notWant := range []string{"open_url"} {
+	for _, notWant := range []string{"open_url", "bridge_clipboard"} {
 		if _, ok := names[notWant]; ok {
 			t.Fatalf("agent catalog exposed foreground-only %s through BLE Wake: %v", notWant, names)
 		}
 	}
 	if _, ok := names["open_app"]; !ok {
 		t.Fatalf("agent catalog should keep fallback-capable open_app through BLE Wake: %v", names)
+	}
+	var contacts langtools.Tool
+	for _, tool := range runtime.availableTools() {
+		if tool != nil && tool.Name() == toolBridgeContacts {
+			contacts = tool
+			break
+		}
+	}
+	if contacts == nil {
+		t.Fatal("missing contacts capability tool")
+	}
+	properties := contacts.(structuredInputTool).ArgsSchema()["properties"].(map[string]any)
+	actions := properties["action"].(map[string]any)["enum"].([]string)
+	if !slices.Equal(actions, []string{"query", "create"}) {
+		t.Fatalf("BLE contacts actions = %#v, want query/create", actions)
+	}
+	if _, ok := properties["contact_id"]; ok {
+		t.Fatalf("BLE contacts schema exposed update-only contact_id: %#v", properties)
+	}
+	ctx, _ := WithToolError(context.Background())
+	out, err := contacts.Call(ctx, `{"action":"update","contact_id":"abc","name":"Alice"}`)
+	if err != nil {
+		t.Fatalf("contacts update Call() error = %v", err)
+	}
+	if te := ToolErrorFromContext(ctx); te == nil || te.Code != CodeAppBackgrounded || out != te.Message {
+		t.Fatalf("contacts update result = %q error=%#v, want app_backgrounded", out, te)
 	}
 }
 

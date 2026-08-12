@@ -111,7 +111,7 @@ func TestHTTPEnqueueRetainsCommandWhenBLEWakeFails(t *testing.T) {
 
 	body, err := json.Marshal(EnqueueCommandRequest{Command: BridgeCommand{
 		ID:   "wake_retention",
-		Type: "clipboard_read",
+		Type: "notification_send",
 	}})
 	if err != nil {
 		t.Fatal(err)

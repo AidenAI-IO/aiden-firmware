@@ -1508,8 +1508,16 @@ func (r *Runtime) filterPhoneBridgeAgentTools(tools []langtools.Tool) []langtool
 	cancel()
 
 	openURLAvailable := phoneBridgeReadyForCommand(status, "open_app") || phoneBridgeCanRestoreFromReturnEntry(status)
-	bridgeDataAvailable := phoneBridgeCommandAvailable(status, "clipboard_read", capabilities.Wake)
-	notificationSendAvailable := bridgeDataAvailable
+	clipboardAvailable := phoneBridgeCommandAvailable(status, "clipboard_read", capabilities.Wake) ||
+		phoneBridgeCommandAvailable(status, "clipboard_write", capabilities.Wake)
+	calendarAvailable := phoneBridgeCommandAvailable(status, "calendar_create", capabilities.Wake) ||
+		phoneBridgeCommandAvailable(status, "calendar_query", capabilities.Wake) ||
+		phoneBridgeCommandAvailable(status, "calendar_delete", capabilities.Wake)
+	contactsQueryAvailable := phoneBridgeCommandAvailable(status, "contacts_query", capabilities.Wake)
+	contactsCreateAvailable := phoneBridgeCommandAvailable(status, "contacts_create", capabilities.Wake)
+	contactsUpdateAvailable := phoneBridgeCommandAvailable(status, "contacts_update", capabilities.Wake)
+	contactsAvailable := contactsQueryAvailable || contactsCreateAvailable || contactsUpdateAvailable
+	notificationSendAvailable := phoneBridgeCommandAvailable(status, "notification_send", capabilities.Wake)
 	notificationQueryAvailable := capabilities.NotificationQuery
 	notificationAvailable := notificationSendAvailable || notificationQueryAvailable
 
@@ -1522,13 +1530,20 @@ func (r *Runtime) filterPhoneBridgeAgentTools(tools []langtools.Tool) []langtool
 		switch tool.Name() {
 		case toolOpenURL:
 			available = openURLAvailable
-		case toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts:
-			available = bridgeDataAvailable
+		case toolBridgeClipboard:
+			available = clipboardAvailable
+		case toolBridgeCalendar:
+			available = calendarAvailable
+		case toolBridgeContacts:
+			available = contactsAvailable
 		case toolBridgeNotification:
 			available = notificationAvailable
 		}
 		if available {
-			if tool.Name() == toolBridgeNotification {
+			switch tool.Name() {
+			case toolBridgeContacts:
+				tool = newContactsCapabilityTool(tool, contactsQueryAvailable, contactsCreateAvailable, contactsUpdateAvailable)
+			case toolBridgeNotification:
 				tool = newNotificationCapabilityTool(tool, notificationSendAvailable, notificationQueryAvailable)
 			}
 			filtered = append(filtered, tool)

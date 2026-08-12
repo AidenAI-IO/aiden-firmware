@@ -228,19 +228,23 @@ func TestPhoneBridgeCanUseFGSBackgroundOnlyForSafeDataCommands(t *testing.T) {
 
 func TestPhoneBridgeCanUseBLEBackgroundOnlyForIOSDataCommands(t *testing.T) {
 	status := PhoneBridgeStatus{Platform: "ios", AppState: "background"}
-	if !phoneBridgeCanUseBLEBackground(status, "clipboard_read") {
-		t.Fatal("background iOS clipboard command should allow BLE wake routing")
+	for _, commandType := range []string{"calendar_query", "contacts_query", "contacts_create", "notification_send"} {
+		if !phoneBridgeCanUseBLEBackground(status, commandType) {
+			t.Fatalf("background iOS %s command should allow BLE wake routing", commandType)
+		}
 	}
-	if phoneBridgeCanUseBLEBackground(status, "open_app") {
-		t.Fatal("open_app must not use BLE background routing")
+	for _, commandType := range []string{"clipboard_read", "clipboard_write", "contacts_update", "open_app"} {
+		if phoneBridgeCanUseBLEBackground(status, commandType) {
+			t.Fatalf("%s must not use BLE background routing", commandType)
+		}
 	}
 	status.Platform = "android"
-	if phoneBridgeCanUseBLEBackground(status, "clipboard_read") {
+	if phoneBridgeCanUseBLEBackground(status, "calendar_query") {
 		t.Fatal("Android command must not use iOS BLE background routing")
 	}
 	status.Platform = "ios"
 	status.AppState = "active"
-	if phoneBridgeCanUseBLEBackground(status, "clipboard_read") {
+	if phoneBridgeCanUseBLEBackground(status, "calendar_query") {
 		t.Fatal("active iOS app should use the foreground WebSocket")
 	}
 }
@@ -276,8 +280,8 @@ func TestSendRoutedBridgeCommandUsesBLEWakeQueue(t *testing.T) {
 			}
 			if err := bridge.queue.SubmitResult(BridgeCommandResponse{
 				ID:     commands[0].ID,
-				Method: "clipboard_read",
-				Data:   json.RawMessage(`{"text":"from-background"}`),
+				Method: "calendar_query",
+				Data:   json.RawMessage(`{"events":[]}`),
 			}); err != nil {
 				t.Errorf("SubmitResult() error = %v", err)
 			}
@@ -288,8 +292,8 @@ func TestSendRoutedBridgeCommandUsesBLEWakeQueue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	response, restored, err := sendRoutedBridgeCommand(ctx, bridge, nil, BridgeCommand{
-		ID:        "ble_clipboard",
-		Type:      "clipboard_read",
+		ID:        "ble_calendar",
+		Type:      "calendar_query",
 		TimeoutMs: 1000,
 	})
 	if err != nil {
@@ -298,13 +302,53 @@ func TestSendRoutedBridgeCommandUsesBLEWakeQueue(t *testing.T) {
 	if restored {
 		t.Fatal("BLE background route must not restore the app foreground")
 	}
-	if response.Error != nil || response.Method != "clipboard_read" {
+	if response.Error != nil || response.Method != "calendar_query" {
 		t.Fatalf("response = %#v", response)
 	}
 	select {
 	case <-wakeCalled:
 	case <-time.After(time.Second):
 		t.Fatal("BLE wake was not sent after queueing the command")
+	}
+}
+
+func TestSendRoutedBridgeCommandRejectsUnsupportedBLEWakeCommands(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.mu.Unlock()
+	bridge.bleStatus = func(context.Context) (ble.RuntimeStatus, error) {
+		return ble.RuntimeStatus{
+			BackendAvailable: true,
+			Connected:        true,
+			WakeSubscriber:   true,
+		}, nil
+	}
+
+	for _, commandType := range []string{"clipboard_read", "clipboard_write", "contacts_update"} {
+		t.Run(commandType, func(t *testing.T) {
+			response, restored, err := sendRoutedBridgeCommand(context.Background(), bridge, nil, BridgeCommand{
+				ID:   "unsupported_" + commandType,
+				Type: commandType,
+			})
+			if err != nil {
+				t.Fatalf("sendRoutedBridgeCommand() error = %v", err)
+			}
+			if restored {
+				t.Fatal("unsupported BLE command must not report foreground restoration")
+			}
+			if response.Error == nil || response.Error.Code != CodeAppBackgrounded {
+				t.Fatalf("response error = %#v, want app_backgrounded", response.Error)
+			}
+			if response.Error.Details["transport"] != "ios_ble_wake" {
+				t.Fatalf("response details = %#v", response.Error.Details)
+			}
+			if commands := bridge.queue.PollForPhone("ios", "", 10); len(commands) != 0 {
+				t.Fatalf("unsupported BLE command was queued: %#v", commands)
+			}
+		})
 	}
 }
 

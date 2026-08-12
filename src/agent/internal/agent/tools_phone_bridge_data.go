@@ -390,6 +390,82 @@ type contactsArgs struct {
 	Notes        string   `json:"notes"`
 }
 
+type contactsCapabilityTool struct {
+	inner       langtools.Tool
+	allowQuery  bool
+	allowCreate bool
+	allowUpdate bool
+}
+
+func newContactsCapabilityTool(inner langtools.Tool, allowQuery, allowCreate, allowUpdate bool) langtools.Tool {
+	return &contactsCapabilityTool{
+		inner:       inner,
+		allowQuery:  allowQuery,
+		allowCreate: allowCreate,
+		allowUpdate: allowUpdate,
+	}
+}
+
+func (t *contactsCapabilityTool) Name() string { return toolBridgeContacts }
+
+func (t *contactsCapabilityTool) Description() string {
+	actions := make([]string, 0, 3)
+	if t.allowQuery {
+		actions = append(actions, "query contacts")
+	}
+	if t.allowCreate {
+		actions = append(actions, "create contacts")
+	}
+	if t.allowUpdate {
+		actions = append(actions, "update contacts")
+	}
+	return fmt.Sprintf("Use the connected phone bridge to %s. Confirm details with the user before creating or updating contacts. Unlisted actions are unavailable in the current runtime state.", strings.Join(actions, ", "))
+}
+
+func (t *contactsCapabilityTool) ArgsSchema() map[string]any {
+	actions := make([]string, 0, 3)
+	if t.allowQuery {
+		actions = append(actions, "query")
+	}
+	if t.allowCreate {
+		actions = append(actions, "create")
+	}
+	if t.allowUpdate {
+		actions = append(actions, "update")
+	}
+	properties := map[string]any{
+		"action":        stringEnumArgSchema("Contacts action.", actions...),
+		"contact_id":    stringArgSchema("Contact id for update."),
+		"query":         stringArgSchema("Search query for contact lookup."),
+		"limit":         minIntegerArgSchema("Maximum query results.", 1),
+		"name":          stringArgSchema("Contact display name."),
+		"phone_numbers": stringArrayArgSchema("Contact phone numbers."),
+		"emails":        stringArrayArgSchema("Contact email addresses."),
+		"organization":  stringArgSchema("Contact organization."),
+		"notes":         stringArgSchema("Contact notes."),
+	}
+	if !t.allowUpdate {
+		delete(properties, "contact_id")
+	}
+	return objectArgsSchema(properties, "action")
+}
+
+func (t *contactsCapabilityTool) Call(ctx context.Context, input string) (string, error) {
+	var args contactsArgs
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err == nil {
+		action := strings.ToLower(strings.TrimSpace(args.Action))
+		allowed := (action == "query" && t.allowQuery) ||
+			(action == "create" && t.allowCreate) ||
+			(action == "update" && t.allowUpdate)
+		if !allowed {
+			te := NewToolError(CodeAppBackgrounded, fmt.Sprintf("contacts action %s is unavailable in the current phone bridge state", action))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+	}
+	return t.inner.Call(ctx, input)
+}
+
 func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
 	var args contactsArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
