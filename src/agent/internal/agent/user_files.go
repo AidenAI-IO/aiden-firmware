@@ -140,7 +140,7 @@ func userFilesReportWithRefreshControl(data []byte) []byte {
 	if bytes.Contains(data, []byte(userFilesRefreshControlMarker)) {
 		return data
 	}
-	control := []byte(fmt.Sprintf(`<a id="user-files-refresh" href="%s" style="position:fixed;top:16px;right:16px;z-index:100;padding:8px 12px;border:1px solid #ddd;border-radius:8px;background:#fff;color:#222;text-decoration:none;font:600 12px system-ui,sans-serif">Refresh data</a>`, userFilesRefreshHref))
+	control := fmt.Appendf(nil, `<a id="user-files-refresh" href="%s" style="position:fixed;top:16px;right:16px;z-index:100;padding:8px 12px;border:1px solid #ddd;border-radius:8px;background:#fff;color:#222;text-decoration:none;font:600 12px system-ui,sans-serif">Refresh data</a>`, userFilesRefreshHref)
 	if index := bytes.LastIndex(data, []byte("</body>")); index >= 0 {
 		result := make([]byte, 0, len(data)+len(control))
 		result = append(result, data[:index]...)

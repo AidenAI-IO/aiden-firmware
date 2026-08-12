@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
 
 	"github.com/tmc/langchaingo/llms"
@@ -58,7 +59,7 @@ func TestAgentLoopCombinesTerminationPolicyWithToolExecutionHooks(t *testing.T) 
 		10,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	loop.toolExecutionHookFactory = func() toolExecutionHookHandler {
@@ -108,7 +109,7 @@ func TestAgentLoopPersistsSoftNoticeInContext(t *testing.T) {
 		10,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	loop.TerminationPolicy = NewTerminationPolicy(TerminationPolicyConfig{
@@ -160,7 +161,7 @@ func TestAgentLoopEscalatesFromPersistedNoticeToRestrictionAndTermination(t *tes
 		10,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	loop.TerminationPolicy = NewTerminationPolicy(DefaultTerminationPolicyConfig())
@@ -207,7 +208,7 @@ func TestAgentLoopBudgetExhaustionReturnsGracefulStop(t *testing.T) {
 		1,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	loop.TerminationPolicy = NewTerminationPolicy(TerminationPolicyConfig{
@@ -239,7 +240,7 @@ func TestAgentLoopReturnsContextErrorBeforeGracefulStop(t *testing.T) {
 		10,
 		nil,
 		nil,
-		ScreenshotPruningConfig{}.WithDefaults(),
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
 		manager,
 	)
 	ctx, cancel := context.WithCancel(context.Background())
