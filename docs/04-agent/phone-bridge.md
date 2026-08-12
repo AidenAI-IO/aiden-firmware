@@ -39,9 +39,9 @@ This way there's no need to guess the phone IP, no need for the phone app to ope
 
 The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native JS, WebSocket, and polling timers in the iOS background must not be treated as a general tool execution path. On iOS, Phone Bridge is normally a foreground fast path: if Aiden is backgrounded and the app has reported `return_entry=dynamic_island`, Agent restores Aiden through Dynamic Island, waits for foreground WebSocket bridge reconnection, then executes the requested tool command. Lock-screen Live Activity entries require visual confirmation rather than fixed-coordinate tapping.
 
-PiP Bridge is a narrow exception. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. The public tool catalog remains static: `open_app` selects its internal SearchLaunchApp route, while only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) can execute through the HTTP queue.
+PiP Bridge is a narrow exception. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. The HTTP/Tool Lab catalog remains complete for direct diagnostics, while the conversational Agent catalog is filtered from live runtime capabilities before each run. `open_app` remains exposed because it can fall back to SearchLaunchApp; only executable background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) are exposed through the HTTP queue, and unavailable App actions are omitted.
 
-BLE Wake provides an on-demand iOS background route for the same background-safe data tools. Before choosing it, the Agent checks that `ble_service` reports a connected Wake subscriber. The command is then placed in the existing HTTP queue and the board makes a best-effort `wake` call. BLE carries only the wake hint: the app polls with its `phone_id`, executes the native clipboard, calendar, contacts, or notification module, and posts the structured result over HTTP. If BLE is unavailable, the normal foreground-restoration and HID fallbacks remain in effect; a failed Wake notify never removes an already queued command.
+BLE Wake provides an on-demand iOS background route for the same background-safe data tools. Before each Agent run, runtime capability filtering checks whether `ble_service` reports a connected Wake subscriber and exposes those App tools only when the route is executable. The command is then placed in the existing HTTP queue and the board makes a best-effort `wake` call. BLE carries only the wake hint: the app polls with its `phone_id`, executes the native clipboard, calendar, contacts, or notification module, and posts the structured result over HTTP. If BLE is unavailable, those App-only tools are omitted unless another route such as foreground Phone Bridge, PiP/FGS polling, or Dynamic Island restoration is usable; a failed Wake notify never removes an already queued command.
 
 Android FGS Bridge follows the same HTTP queue contract without using WebSocket as a background transport. When the Android foreground service polls `/api/phone-bridge/commands` with `app_state=background` and `fgs_bridge_enabled=true`, the Agent keeps `open_app` unavailable and routes only background-safe data tools through the HTTP queue.
 
@@ -501,8 +501,12 @@ Reply:
 }
 ```
 
-The public `bridge_notification` tool also exposes the board-side shared system
-notification ring:
+The public `bridge_notification` tool supports both companion-app local
+notification sending and board-side shared system-notification querying:
+
+```json
+{"action":"send","title":"Reminder","body":"Time to take medicine","sound":true}
+```
 
 ```json
 {"action":"query","limit":20}

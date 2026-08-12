@@ -114,6 +114,20 @@ func TestPhoneBridgeToolDescriptionsOmitSharedStateRouting(t *testing.T) {
 	}
 }
 
+func TestNotificationDescriptionDocumentsSendAndQueryFormats(t *testing.T) {
+	description := NewNotificationTool(nil, nil).Description()
+	for _, want := range []string{
+		`{"action":"send","title":"Reminder","body":"Time to take medicine","sound":true}`,
+		`{"action":"query","limit":20}`,
+		"previous last_id as since",
+		"previous generation",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("notification description missing %q: %s", want, description)
+		}
+	}
+}
+
 func TestOpenURLDescriptionDocumentsSupportedFormats(t *testing.T) {
 	description := NewOpenURLTool(nil, nil).Description()
 	for _, want := range []string{

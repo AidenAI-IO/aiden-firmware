@@ -102,7 +102,7 @@ func phoneBridgeCanUseBLEBackground(status PhoneBridgeStatus, commandType string
 		return false
 	}
 	state := strings.ToLower(strings.TrimSpace(status.AppState))
-	return state == "background" || state == "inactive"
+	return state != "active"
 }
 
 func phoneBridgeShouldNotifyBLEWake(status PhoneBridgeStatus, commandType string) bool {
@@ -119,6 +119,14 @@ func phoneBridgeShouldNotifyBLEWake(status PhoneBridgeStatus, commandType string
 func phoneBridgeBackgroundSafeCommandType(commandType string) bool {
 	_, ok := phoneBridgeBackgroundSafeCommandTypes[strings.TrimSpace(commandType)]
 	return ok
+}
+
+func phoneBridgeCommandAvailable(status PhoneBridgeStatus, commandType string, bleWakeAvailable bool) bool {
+	return phoneBridgeReadyForCommand(status, commandType) ||
+		phoneBridgeCanUsePiPBackground(status, commandType) ||
+		phoneBridgeCanUseFGSBackground(status, commandType) ||
+		(phoneBridgeCanUseBLEBackground(status, commandType) && bleWakeAvailable) ||
+		phoneBridgeCanRestoreFromReturnEntry(status)
 }
 
 func phoneBridgePiPBackgroundEnabled(status PhoneBridgeStatus) bool {

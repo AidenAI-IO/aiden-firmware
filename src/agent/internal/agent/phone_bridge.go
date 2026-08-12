@@ -160,18 +160,30 @@ func defaultBLEStatus(ctx context.Context) (ble.RuntimeStatus, error) {
 	return ble.RequestStatus(ctx, configuredBLEServiceSocketPath())
 }
 
-func (pb *PhoneBridge) bleWakeAvailable(ctx context.Context) bool {
+type phoneBridgeBLECapabilities struct {
+	Wake              bool
+	NotificationQuery bool
+}
+
+func (pb *PhoneBridge) bleCapabilities(ctx context.Context) phoneBridgeBLECapabilities {
 	if pb == nil || pb.bleStatus == nil {
-		return false
+		return phoneBridgeBLECapabilities{}
 	}
 	status, err := pb.bleStatus(ctx)
 	if err != nil {
 		if pb.logger != nil {
-			pb.logger.Warn("phone-bridge: BLE wake status unavailable: %v", err)
+			pb.logger.Warn("phone-bridge: BLE capability status unavailable: %v", err)
 		}
-		return false
+		return phoneBridgeBLECapabilities{}
 	}
-	return status.BackendAvailable && status.Connected && status.WakeSubscriber
+	return phoneBridgeBLECapabilities{
+		Wake:              status.BackendAvailable && status.Connected && status.WakeSubscriber,
+		NotificationQuery: status.EventCount > 0 || (status.BackendAvailable && status.Connected),
+	}
+}
+
+func (pb *PhoneBridge) bleWakeAvailable(ctx context.Context) bool {
+	return pb.bleCapabilities(ctx).Wake
 }
 
 func (pb *PhoneBridge) notifyBLEWake(cmd BridgeCommand) {

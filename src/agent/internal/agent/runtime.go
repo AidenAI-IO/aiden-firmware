@@ -1490,7 +1490,51 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	if r == nil || r.tools == nil {
 		return nil
 	}
-	return NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
+	tools := NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
+	return r.filterPhoneBridgeAgentTools(tools)
+}
+
+func (r *Runtime) filterPhoneBridgeAgentTools(tools []langtools.Tool) []langtools.Tool {
+	if r == nil || r.tools == nil || r.tools.phoneBridge == nil {
+		return tools
+	}
+	bridge := r.tools.phoneBridge
+	status := bridge.getStatus()
+	if strings.TrimSpace(status.Platform) == "" {
+		status.Platform = r.devicePlatformFromState()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	capabilities := bridge.bleCapabilities(ctx)
+	cancel()
+
+	openURLAvailable := phoneBridgeReadyForCommand(status, "open_app") || phoneBridgeCanRestoreFromReturnEntry(status)
+	bridgeDataAvailable := phoneBridgeCommandAvailable(status, "clipboard_read", capabilities.Wake)
+	notificationSendAvailable := bridgeDataAvailable
+	notificationQueryAvailable := capabilities.NotificationQuery
+	notificationAvailable := notificationSendAvailable || notificationQueryAvailable
+
+	filtered := make([]langtools.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		available := true
+		switch tool.Name() {
+		case toolOpenURL:
+			available = openURLAvailable
+		case toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts:
+			available = bridgeDataAvailable
+		case toolBridgeNotification:
+			available = notificationAvailable
+		}
+		if available {
+			if tool.Name() == toolBridgeNotification {
+				tool = newNotificationCapabilityTool(tool, notificationSendAvailable, notificationQueryAvailable)
+			}
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
 }
 
 func toolNamesFromTools(tools []langtools.Tool) []string {

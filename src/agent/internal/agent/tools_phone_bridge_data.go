@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	langtools "github.com/tmc/langchaingo/tools"
 )
 
 // nextBridgeCmdID builds a unique command id for a bridge command type. It
@@ -561,8 +563,11 @@ func (t *NotificationTool) Name() string { return toolBridgeNotification }
 
 func (t *NotificationTool) Description() string {
 	return `Send local notifications through the companion app or query shared phone system-notification events from the board's BLE notification ring. ` +
+		`Send format: {"action":"send","title":"Reminder","body":"Time to take medicine","sound":true}. ` +
+		`Query format: {"action":"query","limit":20}. ` +
 		`Use action=send to remind the user or bring the companion app back to foreground. ` +
-		`Use action=query only when the user asks to inspect notifications; query does not require the companion app to be foregrounded.`
+		`Use action=query only when the user asks to inspect notifications; query does not require the companion app to be foregrounded. ` +
+		`For incremental queries, also pass the previous last_id as since together with the previous generation.`
 }
 
 func (t *NotificationTool) ArgsSchema() map[string]any {
@@ -577,6 +582,78 @@ func (t *NotificationTool) ArgsSchema() map[string]any {
 		"generation":  stringArgSchema("Generation returned by a previous query. Include it with a non-zero since cursor."),
 		"limit":       rangedIntegerArgSchema("Maximum notification events to return.", 1, 100),
 	})
+}
+
+type notificationCapabilityTool struct {
+	inner      langtools.Tool
+	allowSend  bool
+	allowQuery bool
+}
+
+func newNotificationCapabilityTool(inner langtools.Tool, allowSend, allowQuery bool) langtools.Tool {
+	return &notificationCapabilityTool{inner: inner, allowSend: allowSend, allowQuery: allowQuery}
+}
+
+func (t *notificationCapabilityTool) Name() string { return toolBridgeNotification }
+
+func (t *notificationCapabilityTool) Description() string {
+	sendFormat := `Send format: {"action":"send","title":"Reminder","body":"Time to take medicine","sound":true}.`
+	queryFormat := `Query format: {"action":"query","limit":20}.`
+	switch {
+	case t.allowSend && t.allowQuery:
+		return "Send local notifications through the companion app or query shared phone system-notification events from the board's BLE notification ring. " +
+			sendFormat + " " + queryFormat +
+			" Query does not require the companion app to be foregrounded. For incremental queries, also pass the previous last_id as since together with the previous generation."
+	case t.allowSend:
+		return "Send local notifications through the companion app. " + sendFormat
+	case t.allowQuery:
+		return "Query shared phone system-notification events from the board's BLE notification ring. " + queryFormat +
+			" Query does not require the companion app to be foregrounded. For incremental queries, also pass the previous last_id as since together with the previous generation."
+	default:
+		return "Notification actions are currently unavailable."
+	}
+}
+
+func (t *notificationCapabilityTool) ArgsSchema() map[string]any {
+	switch {
+	case t.allowSend && t.allowQuery:
+		if structured, ok := t.inner.(structuredInputTool); ok {
+			return structured.ArgsSchema()
+		}
+	case t.allowSend:
+		return objectArgsSchema(map[string]any{
+			"action":      stringEnumArgSchema("Notification action.", "send"),
+			"title":       stringArgSchema("Notification title."),
+			"body":        stringArgSchema("Notification body."),
+			"schedule_at": stringArgSchema("Optional scheduled send time as RFC3339 with timezone; if omitted, sent immediately."),
+			"sound":       boolArgSchema("Whether to play a sound."),
+			"badge":       minIntegerArgSchema("Optional app badge count.", 0),
+		}, "title")
+	case t.allowQuery:
+		return objectArgsSchema(map[string]any{
+			"action":     stringEnumArgSchema("Notification action.", "query"),
+			"since":      stringArgSchema("Optional query cursor. Omit it for recent retained notifications, use 0 for the oldest event, or pass the previous last_id for incremental reads."),
+			"generation": stringArgSchema("Generation returned by a previous query. Include it with a non-zero since cursor."),
+			"limit":      rangedIntegerArgSchema("Maximum notification events to return.", 1, 100),
+		}, "action")
+	}
+	return objectArgsSchema(map[string]any{})
+}
+
+func (t *notificationCapabilityTool) Call(ctx context.Context, input string) (string, error) {
+	var args notificationArgs
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err == nil {
+		action := strings.ToLower(strings.TrimSpace(args.Action))
+		if action == "" {
+			action = "send"
+		}
+		if (action == "send" && !t.allowSend) || (action == "query" && !t.allowQuery) {
+			te := NewToolError(CodeModuleUnavailable, fmt.Sprintf("notification action %s is not available in the current runtime state", action))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+	}
+	return t.inner.Call(ctx, input)
 }
 
 type notificationArgs struct {
