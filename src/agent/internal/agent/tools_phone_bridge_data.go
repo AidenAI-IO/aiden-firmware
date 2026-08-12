@@ -460,7 +460,7 @@ func (t *contactsCapabilityTool) Call(ctx context.Context, input string) (string
 			(action == "create" && t.allowCreate) ||
 			(action == "update" && t.allowUpdate)
 		if known && !allowed {
-			te := NewToolError(CodeAppBackgrounded, fmt.Sprintf("contacts action %s is unavailable in the current phone bridge state", action))
+			te := NewToolError(CodeModuleUnavailable, fmt.Sprintf("contacts action %s is unavailable in the current phone bridge state", action))
 			SetToolError(ctx, te)
 			return toolErrorString(te), nil
 		}
@@ -723,7 +723,15 @@ func (t *notificationCapabilityTool) Call(ctx context.Context, input string) (st
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err == nil {
 		action := strings.ToLower(strings.TrimSpace(args.Action))
 		if action == "" {
-			action = "send"
+			if t.allowQuery && !t.allowSend {
+				action = "query"
+				args.Action = action
+				if encoded, err := json.Marshal(args); err == nil {
+					input = string(encoded)
+				}
+			} else {
+				action = "send"
+			}
 		}
 		if (action == "send" && !t.allowSend) || (action == "query" && !t.allowQuery) {
 			te := NewToolError(CodeModuleUnavailable, fmt.Sprintf("notification action %s is not available in the current runtime state", action))

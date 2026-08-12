@@ -236,6 +236,37 @@ func TestHTTPPollFiltersUnsupportedBLEBackgroundCommands(t *testing.T) {
 	}
 }
 
+func TestHTTPPollUsesRetainedBackgroundStateWhenQueryOmitsIt(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	bridge.noteHTTPPollState("ios", "", "background", "false", "")
+	for _, command := range []BridgeCommand{
+		{ID: "retained_unsupported", Type: "contacts_update"},
+		{ID: "retained_supported", Type: "contacts_query"},
+	} {
+		if err := bridge.queue.Enqueue(command); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/commands?platform=ios", nil)
+	response := httptest.NewRecorder()
+	bridge.handlePollCommands(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("poll status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result PollCommandsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Commands) != 1 || result.Commands[0].ID != "retained_supported" {
+		t.Fatalf("commands = %#v, want retained supported command only", result.Commands)
+	}
+	if queued := bridge.queue.Get("retained_unsupported"); queued == nil || queued.Status != StatusQueued {
+		t.Fatalf("unsupported command = %#v, want queued", queued)
+	}
+}
+
 // TestHTTPPollCommands tests GET /api/phone-bridge/commands
 func TestHTTPPollCommands(t *testing.T) {
 	tests := []struct {

@@ -22,6 +22,9 @@ const (
 	heartbeatTimeout = 60 * time.Second
 	// heartbeatCheckInterval is how often the monitor re-checks liveness.
 	heartbeatCheckInterval = 15 * time.Second
+	// phoneBridgeBLECacheTTL avoids repeated UDS status requests while keeping
+	// runtime tool availability responsive to BLE connection changes.
+	phoneBridgeBLECacheTTL = 1500 * time.Millisecond
 )
 
 type BridgeCommand struct {
@@ -134,6 +137,9 @@ type PhoneBridge struct {
 	queue              *CommandQueue // HTTP queue for background-compatible commands
 	bleWake            func(context.Context, string) error
 	bleStatus          func(context.Context) (ble.RuntimeStatus, error)
+	bleCapabilityMu    sync.Mutex
+	bleCapabilityCache phoneBridgeBLECapabilities
+	bleCapabilityAt    time.Time
 }
 
 func NewPhoneBridge(logger *Logger) *PhoneBridge {
@@ -186,17 +192,26 @@ func (pb *PhoneBridge) bleCapabilities(ctx context.Context) phoneBridgeBLECapabi
 	if pb == nil || pb.bleStatus == nil {
 		return phoneBridgeBLECapabilities{}
 	}
+	pb.bleCapabilityMu.Lock()
+	defer pb.bleCapabilityMu.Unlock()
+	if !pb.bleCapabilityAt.IsZero() && time.Since(pb.bleCapabilityAt) < phoneBridgeBLECacheTTL {
+		return pb.bleCapabilityCache
+	}
 	status, err := pb.bleStatus(ctx)
 	if err != nil {
 		if pb.logger != nil {
 			pb.logger.Warn("phone-bridge: BLE capability status unavailable: %v", err)
 		}
-		return phoneBridgeBLECapabilities{}
+		pb.bleCapabilityCache = phoneBridgeBLECapabilities{}
+		pb.bleCapabilityAt = time.Now()
+		return pb.bleCapabilityCache
 	}
-	return phoneBridgeBLECapabilities{
+	pb.bleCapabilityCache = phoneBridgeBLECapabilities{
 		Wake:              status.BackendAvailable && status.Connected && status.WakeSubscriber,
 		NotificationQuery: status.EventCount > 0 || (status.BackendAvailable && status.Connected),
 	}
+	pb.bleCapabilityAt = time.Now()
+	return pb.bleCapabilityCache
 }
 
 func (pb *PhoneBridge) bleWakeAvailable(ctx context.Context) bool {

@@ -9,8 +9,8 @@ import (
 	"github.com/godbus/dbus/v5"
 )
 
-func TestWakeCharacteristicFlagsKeepPairingProbeEncrypted(t *testing.T) {
-	want := []string{"encrypt-read", "notify"}
+func TestWakeCharacteristicFlagsRequireEncryptedSubscription(t *testing.T) {
+	want := []string{"encrypt-read", "encrypt-notify"}
 	if got := wakeCharacteristicFlags(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected Wake characteristic flags: got %v want %v", got, want)
 	}

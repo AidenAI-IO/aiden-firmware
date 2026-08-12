@@ -244,7 +244,9 @@ func TestAvailableToolsIncludesQuickAction(t *testing.T) {
 
 func TestAvailableToolsHidesUnavailablePhoneBridgeToolsWhenDisconnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
-	runtime.tools.RegisterPhoneBridge(newPhoneBridgeForTest())
+	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
+	runtime.tools.RegisterPhoneBridge(bridge)
 
 	names := toolNameSet(runtime.availableTools())
 	for _, notWant := range []string{
@@ -277,6 +279,7 @@ func TestAvailableToolsHidesUnavailablePhoneBridgeToolsWhenDisconnected(t *testi
 func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
 
@@ -435,6 +438,7 @@ func TestRuntimeAvailableToolsUsesDeviceTypePlatformFilter(t *testing.T) {
 		Device: DeviceConfig{DeviceType: "windows"},
 	})
 	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
 
@@ -544,6 +548,7 @@ func TestRuntimeLoadAllToolsIncludesScriptAuthoringTools(t *testing.T) {
 func TestPhoneBridgeToolDescriptorsHaveUsefulExamples(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
 
@@ -596,6 +601,7 @@ func TestAvailableToolsExposesOnlyBackgroundSafeBridgeToolsDuringPiP(t *testing.
 func TestAvailableToolsExposesBackgroundSafeBridgeToolsThroughBLEWake(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.mu.Lock()
 	bridge.platform = "ios"
 	bridge.appState = "background"
@@ -648,8 +654,8 @@ func TestAvailableToolsExposesBackgroundSafeBridgeToolsThroughBLEWake(t *testing
 	if err != nil {
 		t.Fatalf("contacts update Call() error = %v", err)
 	}
-	if te := ToolErrorFromContext(ctx); te == nil || te.Code != CodeAppBackgrounded || out != te.Message {
-		t.Fatalf("contacts update result = %q error=%#v, want app_backgrounded", out, te)
+	if te := ToolErrorFromContext(ctx); te == nil || te.Code != CodeModuleUnavailable || out != te.Message {
+		t.Fatalf("contacts update result = %q error=%#v, want module_unavailable", out, te)
 	}
 	for _, input := range []string{`{}`, `{"action":"delete"}`} {
 		ctx, _ := WithToolError(context.Background())
@@ -666,6 +672,7 @@ func TestAvailableToolsExposesBackgroundSafeBridgeToolsThroughBLEWake(t *testing
 func TestAvailableToolsExposesOnlyNotificationWhenBLECanOnlyQuery(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.bleStatus = func(context.Context) (ble.RuntimeStatus, error) {
 		return ble.RuntimeStatus{
 			BackendAvailable: true,
@@ -711,6 +718,45 @@ func TestAvailableToolsExposesOnlyNotificationWhenBLECanOnlyQuery(t *testing.T) 
 	}
 	if _, ok := properties["title"]; ok {
 		t.Fatalf("query-only notification schema leaked send fields: %#v", properties)
+	}
+
+	capability, ok := notification.(*notificationCapabilityTool)
+	if !ok {
+		t.Fatalf("notification tool type = %T, want *notificationCapabilityTool", notification)
+	}
+	inner, ok := capability.inner.(*NotificationTool)
+	if !ok {
+		t.Fatalf("notification inner tool type = %T, want *NotificationTool", capability.inner)
+	}
+	inner.socketPath = func() string { return "/tmp/test-ble.sock" }
+	inner.statusReader = func(_ context.Context, socketPath string) (ble.RuntimeStatus, error) {
+		if socketPath != "/tmp/test-ble.sock" {
+			t.Fatalf("notification status socket = %q", socketPath)
+		}
+		return ble.RuntimeStatus{LastEventID: "1", EventGeneration: "generation-1"}, nil
+	}
+	inner.eventsReader = func(
+		_ context.Context,
+		socketPath string,
+		since string,
+		generation string,
+		limit int,
+	) (ble.EventPage, error) {
+		if socketPath != "/tmp/test-ble.sock" || since != "0" || generation != "generation-1" || limit != 1 {
+			t.Fatalf("unexpected notification query socket=%q since=%q generation=%q limit=%d", socketPath, since, generation, limit)
+		}
+		return ble.EventPage{Generation: generation, LastID: "1"}, nil
+	}
+	ctx, _ := WithToolError(context.Background())
+	out, err := notification.Call(ctx, `{"limit":1}`)
+	if err != nil {
+		t.Fatalf("query-only notification Call() error = %v", err)
+	}
+	if te := ToolErrorFromContext(ctx); te != nil {
+		t.Fatalf("query-only notification Call() tool error = %#v, output=%q", te, out)
+	}
+	if !strings.Contains(out, `"action": "query"`) {
+		t.Fatalf("query-only notification Call() output = %q, want query action", out)
 	}
 }
 
