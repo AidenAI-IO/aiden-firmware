@@ -38,6 +38,11 @@ function formatBytes(bytes) {
   if (value < 1024 * 1024) return (value / 1024).toFixed(value < 10 * 1024 ? 1 : 0) + ' KB';
   return (value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0) + ' MB';
 }
+function formatLogTimestamp(timestamp) {
+  const value = String(timestamp || '');
+  const match = value.match(/(?:^|T)(\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+  return match ? match[1] : value;
+}
 function pauseForUi() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
@@ -278,8 +283,7 @@ function renderRequestItem(g, idx) {
   html += '<div class="request-item-head">';
   html += '<span class="request-item-index">#' + (idx + 1) + '</span>';
   html += '<span class="' + badgeClass + '">' + esc(badgeText) + '</span>';
-  const requestTs=String(g.request.ts||'');
-  html += '<span style="font-size:11px;color:#9ca3af;margin-left:auto">' + esc(requestTs.substring(11, 19)) + '</span>';
+  html += '<span style="font-size:11px;color:#9ca3af;margin-left:auto">' + esc(formatLogTimestamp(g.request.ts)) + '</span>';
   html += '</div>';
   html += '<div class="request-item-preview">' + esc(preview) + '</div>';
   html += '</button>';
@@ -596,7 +600,7 @@ function extractResponseMessage(body) {
       const m = obj.choices[0].message || {};
       return {role: m.role || 'assistant', content: m.content || '', tool_calls: m.tool_calls || []};
     }
-    if (obj && obj.type === 'message' && Array.isArray(obj.content)) {
+    if (obj && Array.isArray(obj.content) && !Array.isArray(obj.choices)) {
       let content = '';
       const toolCalls = [];
       for (const block of obj.content) {
