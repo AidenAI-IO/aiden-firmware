@@ -92,6 +92,8 @@ type asyncEpisodeMaintenance struct {
 	mu      sync.Mutex
 	wg      sync.WaitGroup
 	closing bool
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 type RunRequest struct {
@@ -1614,12 +1616,13 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 				return
 			}
 			r.exportEpisodeBestEffort(episode, promptCapture)
-			if !r.episodeMaintenance.begin() {
+			maintenanceParentCtx, started := r.episodeMaintenance.begin()
+			if !started {
 				return
 			}
 			go func() {
 				defer r.episodeMaintenance.done()
-				maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				maintenanceCtx, maintenanceCancel := context.WithTimeout(maintenanceParentCtx, 10*time.Second)
 				defer maintenanceCancel()
 				plane.commitEpisodeMaintenance(maintenanceCtx, episode)
 			}()
@@ -1633,14 +1636,17 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	r.exportEpisodeBestEffort(episode, promptCapture)
 }
 
-func (m *asyncEpisodeMaintenance) begin() bool {
+func (m *asyncEpisodeMaintenance) begin() (context.Context, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closing {
-		return false
+		return nil, false
+	}
+	if m.ctx == nil {
+		m.ctx, m.cancel = context.WithCancel(context.Background())
 	}
 	m.wg.Add(1)
-	return true
+	return m.ctx, true
 }
 
 func (m *asyncEpisodeMaintenance) done() {
@@ -1650,6 +1656,7 @@ func (m *asyncEpisodeMaintenance) done() {
 func (m *asyncEpisodeMaintenance) closeAndWait(ctx context.Context) error {
 	m.mu.Lock()
 	m.closing = true
+	cancel := m.cancel
 	m.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
@@ -1658,8 +1665,14 @@ func (m *asyncEpisodeMaintenance) closeAndWait(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		if cancel != nil {
+			cancel()
+		}
 		return nil
 	case <-ctx.Done():
+		if cancel != nil {
+			cancel()
+		}
 		return ctx.Err()
 	}
 }

@@ -1152,18 +1152,29 @@ func TestRuntimeCloseWaitsForAsyncEpisodeMaintenance(t *testing.T) {
 	}
 }
 
-func TestAsyncEpisodeMaintenanceCloseAndWaitHonorsContext(t *testing.T) {
+func TestAsyncEpisodeMaintenanceCloseAndWaitCancelsWorkOnTimeout(t *testing.T) {
 	var maintenance asyncEpisodeMaintenance
-	if !maintenance.begin() {
+	maintenanceCtx, started := maintenance.begin()
+	if !started {
 		t.Fatal("begin() = false, want true")
 	}
+	workCanceled := make(chan struct{})
+	go func() {
+		defer maintenance.done()
+		<-maintenanceCtx.Done()
+		close(workCanceled)
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	if err := maintenance.closeAndWait(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("closeAndWait() error = %v, want deadline exceeded", err)
 	}
-	maintenance.done()
+	select {
+	case <-workCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("closeAndWait() did not cancel active maintenance")
+	}
 }
 
 type capturingEpisodePlane struct {
