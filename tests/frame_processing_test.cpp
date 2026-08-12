@@ -129,6 +129,20 @@ TEST_CASE("crop raw NV12 frame rebuilds plane metadata") {
     });
 }
 
+TEST_CASE("crop raw NV12 frame rejects odd height before conversion") {
+    FrameMetadata metadata;
+    metadata.width = 2;
+    metadata.height = 3;
+    metadata.pixel_format = "nv12";
+    metadata.stride = 2;
+    metadata.bytes = 9;
+    std::vector<uint8_t> nv12(9, 128);
+    FrameMetadata cropped_metadata;
+    std::vector<uint8_t> cropped;
+
+    CHECK_FALSE(crop_frame_horizontal_black_bars(metadata, nv12, 0, &cropped_metadata, &cropped));
+}
+
 TEST_CASE("encode_rgb_to_bmp writes top-down 24-bit BMP") {
     std::vector<uint8_t> rgb = {255, 0, 0, 0, 255, 0};
     std::vector<uint8_t> bmp;

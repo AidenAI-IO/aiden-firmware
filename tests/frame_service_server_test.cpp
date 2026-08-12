@@ -273,6 +273,36 @@ TEST_CASE("FrameServiceServer crops raw frame when crop_black is true") {
     server.stop();
 }
 
+TEST_CASE("FrameServiceServer clamps oversized raw minimal width to source width") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+    std::vector<uint8_t> data = {
+        128, 16, 128, 16,
+        128, 235, 128, 235,
+        128, 235, 128, 235,
+        128, 16, 128, 16,
+    };
+    uint64_t seq = 0;
+    REQUIRE(server.append_frame(metadata(8, 1, "uyvy", 99), data.data(), data.size(), &seq) == FrameServiceStatus::OK);
+
+    int fd = connect_raw_client(socket_path.path);
+    REQUIRE(aiden::write_frame_message(
+                fd,
+                "{\"type\":\"request\",\"method\":\"latest_frame\",\"since_seq\":\"0\",\"timeout_ms\":0,\"format\":\"raw\",\"crop_black\":true,\"minimal_width\":4294967296}",
+                std::vector<uint8_t>()) == FrameServiceStatus::OK);
+    std::vector<uint8_t> cropped;
+    const std::string header = read_response(fd, &cropped);
+
+    CHECK(header.find("\"width\":8") != std::string::npos);
+    CHECK(header.find("\"crop_x\":0") != std::string::npos);
+    CHECK(header.find("\"crop_width\":8") != std::string::npos);
+    CHECK(cropped == data);
+
+    ::close(fd);
+    server.stop();
+}
+
 TEST_CASE("FrameServiceServer returns NO_NEW_FRAME for nonblocking latest request") {
     TempSocketPath socket_path;
     FrameServiceServer server(socket_path.path.c_str(), 4);

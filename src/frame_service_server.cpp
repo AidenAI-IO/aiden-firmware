@@ -337,7 +337,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         uint32_t timeout_ms = json_u32(root, "timeout_ms");
         std::string format = json_string(root, "format");
         int quality = static_cast<int>(json_u32(root, "quality"));
-        uint32_t minimal_width = json_u32(root, "minimal_width");
+        uint64_t requested_minimal_width = json_u64(root, "minimal_width");
         if (quality <= 0) {
             quality = 80;
         }
@@ -371,6 +371,9 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             if (recovering) {
                 metadata.stale = true;
             }
+            const uint32_t minimal_width = requested_minimal_width > metadata.width
+                                               ? metadata.width
+                                               : static_cast<uint32_t>(requested_minimal_width);
 
             std::vector<uint8_t> transformed_payload;
             const std::vector<uint8_t>* payload = &frame->data;

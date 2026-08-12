@@ -118,6 +118,9 @@ bool crop_frame_horizontal_black_bars(const FrameMetadata& metadata,
         (metadata.width & 1U) != 0) {
         return false;
     }
+    if (metadata.pixel_format == "nv12" && (metadata.height & 1U) != 0) {
+        return false;
+    }
 
     std::vector<uint8_t> rgb;
     if (!convert_frame_to_rgb(metadata, frame, &rgb)) {
@@ -174,9 +177,6 @@ bool crop_frame_horizontal_black_bars(const FrameMetadata& metadata,
         }
         result.stride = cropped_width * 2;
     } else if (metadata.pixel_format == "nv12" || metadata.pixel_format == "nv16") {
-        if (metadata.pixel_format == "nv12" && (height & 1U) != 0) {
-            return false;
-        }
         const size_t source_y_bytes = static_cast<size_t>(metadata.width) * height;
         const uint32_t uv_rows = metadata.pixel_format == "nv12" ? height / 2 : height;
         const size_t source_uv_bytes = static_cast<size_t>(metadata.width) * uv_rows;
