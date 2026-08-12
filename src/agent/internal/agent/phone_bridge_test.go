@@ -29,6 +29,23 @@ func TestPhoneBridgeUpdateStateDoesNotExposeUnknownValues(t *testing.T) {
 	}
 }
 
+func TestPhoneBridgeUsesConfiguredPlatformUntilAppReportsOne(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+
+	bridge.SetConfiguredPlatform("ios")
+	if got := bridge.getStatus().Platform; got != "ios" {
+		t.Fatalf("configured platform = %q, want ios", got)
+	}
+
+	bridge.mu.Lock()
+	bridge.platform = "android"
+	bridge.mu.Unlock()
+	if got := bridge.getStatus().Platform; got != "android" {
+		t.Fatalf("reported platform = %q, want android", got)
+	}
+}
+
 func TestPhoneBridgeUpdateStateExpiresBackgroundBridgeModes(t *testing.T) {
 	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()

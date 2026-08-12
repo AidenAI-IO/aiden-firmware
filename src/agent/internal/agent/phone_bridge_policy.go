@@ -139,6 +139,46 @@ func phoneBridgeBLEBackgroundCommandType(commandType string) bool {
 	return ok
 }
 
+func phoneBridgeUnsupportedBLEBackgroundCommand(status PhoneBridgeStatus, commandType string) bool {
+	if !phoneBridgeIsIOS(status) || !phoneBridgeAppNeedsForeground(status) {
+		return false
+	}
+	return !phoneBridgeBLEBackgroundCommandType(commandType) &&
+		!phoneBridgeCanUsePiPBackground(status, commandType) &&
+		!phoneBridgeCanRestoreFromReturnEntry(status)
+}
+
+func phoneBridgeUnsupportedBLEBackgroundError(status PhoneBridgeStatus, commandType string, bleWakeAvailable bool) *ToolError {
+	if !bleWakeAvailable || !phoneBridgeUnsupportedBLEBackgroundCommand(status, commandType) {
+		return nil
+	}
+	return NewToolErrorWithDetails(
+		CodeAppBackgrounded,
+		fmt.Sprintf("%s is unavailable through iOS BLE Wake; bring Aiden to the foreground and retry", commandType),
+		map[string]any{
+			"command_type": commandType,
+			"transport":    "ios_ble_wake",
+		},
+	)
+}
+
+func phoneBridgeHTTPPollCommandAllowed(platform, appState string, pipBridgeEnabled, fgsBridgeEnabled bool, commandType string) bool {
+	status := PhoneBridgeStatus{Platform: platform, AppState: appState}
+	if !phoneBridgeAppNeedsForeground(status) {
+		return true
+	}
+	if phoneBridgeIsIOS(status) {
+		if pipBridgeEnabled {
+			return phoneBridgeBackgroundSafeCommandType(commandType)
+		}
+		return phoneBridgeBLEBackgroundCommandType(commandType)
+	}
+	if phoneBridgeIsAndroid(status) && fgsBridgeEnabled {
+		return phoneBridgeBackgroundSafeCommandType(commandType)
+	}
+	return true
+}
+
 func phoneBridgeCommandAvailable(status PhoneBridgeStatus, commandType string, bleWakeAvailable bool) bool {
 	return phoneBridgeReadyForCommand(status, commandType) ||
 		phoneBridgeCanUsePiPBackground(status, commandType) ||

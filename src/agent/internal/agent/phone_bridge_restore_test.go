@@ -312,6 +312,50 @@ func TestSendRoutedBridgeCommandUsesBLEWakeQueue(t *testing.T) {
 	}
 }
 
+func TestSendRoutedBridgeCommandUsesConfiguredPlatformBeforeFirstAppPoll(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	bridge.SetConfiguredPlatform("ios")
+	bridge.bleStatus = func(context.Context) (ble.RuntimeStatus, error) {
+		return ble.RuntimeStatus{
+			BackendAvailable: true,
+			Connected:        true,
+			WakeSubscriber:   true,
+		}, nil
+	}
+	bridge.bleWake = func(context.Context, string) error { return nil }
+
+	go func() {
+		for {
+			commands := bridge.queue.PollForPhone("ios", "", 10)
+			if len(commands) == 0 {
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			_ = bridge.queue.SubmitResult(BridgeCommandResponse{
+				ID:     commands[0].ID,
+				Method: "calendar_query",
+				Data:   json.RawMessage(`{"events":[]}`),
+			})
+			return
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	response, _, err := sendRoutedBridgeCommand(ctx, bridge, nil, BridgeCommand{
+		ID:        "cold_start_calendar",
+		Type:      "calendar_query",
+		TimeoutMs: 1000,
+	})
+	if err != nil {
+		t.Fatalf("sendRoutedBridgeCommand() error = %v", err)
+	}
+	if response.Error != nil || response.Method != "calendar_query" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
 func TestSendRoutedBridgeCommandRejectsUnsupportedBLEWakeCommands(t *testing.T) {
 	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()

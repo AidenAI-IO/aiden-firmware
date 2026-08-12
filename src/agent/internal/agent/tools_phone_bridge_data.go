@@ -454,10 +454,12 @@ func (t *contactsCapabilityTool) Call(ctx context.Context, input string) (string
 	var args contactsArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err == nil {
 		action := strings.ToLower(strings.TrimSpace(args.Action))
-		allowed := (action == "query" && t.allowQuery) ||
+		known := action == "query" || action == "create" || action == "update"
+		allowed := !known ||
+			(action == "query" && t.allowQuery) ||
 			(action == "create" && t.allowCreate) ||
 			(action == "update" && t.allowUpdate)
-		if !allowed {
+		if known && !allowed {
 			te := NewToolError(CodeAppBackgrounded, fmt.Sprintf("contacts action %s is unavailable in the current phone bridge state", action))
 			SetToolError(ctx, te)
 			return toolErrorString(te), nil

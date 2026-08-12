@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/statemanager"
+	"aiden-agent/internal/ble"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -159,6 +160,79 @@ func TestHTTPEnqueueDoesNotWakeForForegroundOnlyCommand(t *testing.T) {
 	case <-wakeCalled:
 		t.Fatal("BLE wake must not be sent for open_app")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestHTTPEnqueueRejectsUnsupportedBLEBackgroundCommand(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	bridge.SetConfiguredPlatform("ios")
+	bridge.mu.Lock()
+	bridge.appState = "background"
+	bridge.mu.Unlock()
+	bridge.bleStatus = func(context.Context) (ble.RuntimeStatus, error) {
+		return ble.RuntimeStatus{
+			BackendAvailable: true,
+			Connected:        true,
+			WakeSubscriber:   true,
+		}, nil
+	}
+
+	body, err := json.Marshal(EnqueueCommandRequest{Command: BridgeCommand{
+		ID:   "unsupported_clipboard",
+		Type: "clipboard_read",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/phone-bridge/commands", bytes.NewReader(body))
+	response := httptest.NewRecorder()
+	bridge.handleEnqueueCommand(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("enqueue status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result struct {
+		ToolError *ToolError `json:"tool_error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ToolError == nil || result.ToolError.Code != CodeAppBackgrounded {
+		t.Fatalf("tool error = %#v, want app_backgrounded", result.ToolError)
+	}
+	if queued := bridge.queue.Get("unsupported_clipboard"); queued != nil {
+		t.Fatalf("unsupported command was queued: %#v", queued)
+	}
+}
+
+func TestHTTPPollFiltersUnsupportedBLEBackgroundCommands(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	for _, command := range []BridgeCommand{
+		{ID: "unsupported_update", Type: "contacts_update"},
+		{ID: "supported_query", Type: "contacts_query"},
+	} {
+		if err := bridge.queue.Enqueue(command); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/commands?platform=ios&app_state=background", nil)
+	response := httptest.NewRecorder()
+	bridge.handlePollCommands(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("poll status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result PollCommandsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Commands) != 1 || result.Commands[0].ID != "supported_query" {
+		t.Fatalf("commands = %#v, want supported query only", result.Commands)
+	}
+	if queued := bridge.queue.Get("unsupported_update"); queued == nil || queued.Status != StatusQueued {
+		t.Fatalf("unsupported command = %#v, want queued", queued)
 	}
 }
 

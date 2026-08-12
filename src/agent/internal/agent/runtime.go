@@ -459,6 +459,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	rt.screenState = screenState
 	rt.phoneBridge = NewPhoneBridge(logger)
+	rt.phoneBridge.SetConfiguredPlatform(cfg.DevicePlatformOrDefault())
 	rt.stateManager.RegisterUpdater(screenState)
 	rt.stateManager.RegisterUpdater(rt.phoneBridge)
 
@@ -1499,10 +1500,8 @@ func (r *Runtime) filterPhoneBridgeAgentTools(tools []langtools.Tool) []langtool
 		return tools
 	}
 	bridge := r.tools.phoneBridge
+	bridge.SetConfiguredPlatform(r.devicePlatformFromState())
 	status := bridge.getStatus()
-	if strings.TrimSpace(status.Platform) == "" {
-		status.Platform = r.devicePlatformFromState()
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	capabilities := bridge.bleCapabilities(ctx)
 	cancel()

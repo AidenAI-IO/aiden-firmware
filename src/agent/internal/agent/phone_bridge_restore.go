@@ -151,19 +151,10 @@ func sendRoutedBridgeCommand(ctx context.Context, bridge *PhoneBridge, restorer 
 		resp, err := bridge.SendQueuedCommand(ctx, cmd)
 		return resp, false, err
 	}
-	if phoneBridgeIsIOS(status) && phoneBridgeAppNeedsForeground(status) &&
-		!phoneBridgeBLEBackgroundCommandType(cmd.Type) &&
-		!phoneBridgeCanRestoreFromReturnEntry(status) && bridge.bleWakeAvailable(ctx) {
+	if toolErr := phoneBridgeUnsupportedBLEBackgroundError(status, cmd.Type, bridge.bleWakeAvailable(ctx)); toolErr != nil {
 		return BridgeCommandResponse{
-			ID: cmd.ID,
-			Error: NewToolErrorWithDetails(
-				CodeAppBackgrounded,
-				fmt.Sprintf("%s is unavailable through iOS BLE Wake; bring Aiden to the foreground and retry", cmd.Type),
-				map[string]any{
-					"command_type": cmd.Type,
-					"transport":    "ios_ble_wake",
-				},
-			),
+			ID:    cmd.ID,
+			Error: toolErr,
 		}, false, nil
 	}
 

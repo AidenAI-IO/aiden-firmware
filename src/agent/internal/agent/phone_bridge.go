@@ -106,33 +106,34 @@ type PhoneBridgeStatus struct {
 }
 
 type PhoneBridge struct {
-	mu                sync.Mutex
-	statusExpiryTimer *time.Timer
-	conn              *websocket.Conn
-	connected         bool
-	platform          string
-	phoneID           string
-	lastHeartbeatAt   time.Time
-	appState          string
-	appStateAt        time.Time
-	returnEntry       string
-	returnEntryOK     bool
-	returnEntrySeen   bool
-	pipBridgeEnabled  bool
-	pipBridgeSeen     bool
-	fgsBridgeEnabled  bool
-	fgsBridgeSeen     bool
-	fgsBridgeAt       time.Time
-	environment       *PhoneEnvironment
-	environmentAt     time.Time
-	clipboardText     string
-	clipboardAt       time.Time
-	pendingCmds       map[string]chan BridgeCommandResponse
-	logger            *Logger
-	done              chan struct{}
-	queue             *CommandQueue // HTTP queue for background-compatible commands
-	bleWake           func(context.Context, string) error
-	bleStatus         func(context.Context) (ble.RuntimeStatus, error)
+	mu                 sync.Mutex
+	statusExpiryTimer  *time.Timer
+	conn               *websocket.Conn
+	connected          bool
+	platform           string
+	configuredPlatform string
+	phoneID            string
+	lastHeartbeatAt    time.Time
+	appState           string
+	appStateAt         time.Time
+	returnEntry        string
+	returnEntryOK      bool
+	returnEntrySeen    bool
+	pipBridgeEnabled   bool
+	pipBridgeSeen      bool
+	fgsBridgeEnabled   bool
+	fgsBridgeSeen      bool
+	fgsBridgeAt        time.Time
+	environment        *PhoneEnvironment
+	environmentAt      time.Time
+	clipboardText      string
+	clipboardAt        time.Time
+	pendingCmds        map[string]chan BridgeCommandResponse
+	logger             *Logger
+	done               chan struct{}
+	queue              *CommandQueue // HTTP queue for background-compatible commands
+	bleWake            func(context.Context, string) error
+	bleStatus          func(context.Context) (ble.RuntimeStatus, error)
 }
 
 func NewPhoneBridge(logger *Logger) *PhoneBridge {
@@ -143,6 +144,22 @@ func NewPhoneBridge(logger *Logger) *PhoneBridge {
 		bleWake:     defaultBLEWake,
 		bleStatus:   defaultBLEStatus,
 	}
+}
+
+// SetConfiguredPlatform supplies the device_type-derived platform used before
+// the companion app has had a chance to report its platform over WebSocket or
+// HTTP polling. A live app report always takes precedence.
+func (pb *PhoneBridge) SetConfiguredPlatform(platform string) {
+	if pb == nil {
+		return
+	}
+	platform = phoneBridgePlatform(PhoneBridgeStatus{Platform: platform})
+	if platform != "ios" && platform != "android" {
+		platform = ""
+	}
+	pb.mu.Lock()
+	pb.configuredPlatform = platform
+	pb.mu.Unlock()
 }
 
 func defaultBLEWake(ctx context.Context, reason string) error {
@@ -686,9 +703,13 @@ func (pb *PhoneBridge) UpdateState() map[string]string {
 func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
+	platform := pb.platform
+	if strings.TrimSpace(platform) == "" {
+		platform = pb.configuredPlatform
+	}
 	status := PhoneBridgeStatus{
 		Connected: pb.connected,
-		Platform:  pb.platform,
+		Platform:  platform,
 		PhoneID:   pb.phoneID,
 	}
 	if pb.connected && !pb.lastHeartbeatAt.IsZero() {

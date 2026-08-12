@@ -651,6 +651,16 @@ func TestAvailableToolsExposesBackgroundSafeBridgeToolsThroughBLEWake(t *testing
 	if te := ToolErrorFromContext(ctx); te == nil || te.Code != CodeAppBackgrounded || out != te.Message {
 		t.Fatalf("contacts update result = %q error=%#v, want app_backgrounded", out, te)
 	}
+	for _, input := range []string{`{}`, `{"action":"delete"}`} {
+		ctx, _ := WithToolError(context.Background())
+		out, err := contacts.Call(ctx, input)
+		if err != nil {
+			t.Fatalf("contacts Call(%s) error = %v", input, err)
+		}
+		if te := ToolErrorFromContext(ctx); te == nil || te.Code != CodeInvalidArguments || out != te.Message {
+			t.Fatalf("contacts Call(%s) result = %q error=%#v, want invalid_arguments", input, out, te)
+		}
+	}
 }
 
 func TestAvailableToolsExposesOnlyNotificationWhenBLECanOnlyQuery(t *testing.T) {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,6 +74,21 @@ func (pb *PhoneBridge) handleEnqueueCommand(w http.ResponseWriter, r *http.Reque
 	if strings.TrimSpace(req.Command.PhoneID) == "" {
 		req.Command.PhoneID = pb.currentPhoneID()
 	}
+	status := pb.getStatus()
+	if phoneBridgeUnsupportedBLEBackgroundCommand(status, req.Command.Type) {
+		capabilityCtx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		bleWakeAvailable := pb.bleWakeAvailable(capabilityCtx)
+		cancel()
+		if toolErr := phoneBridgeUnsupportedBLEBackgroundError(status, req.Command.Type, bleWakeAvailable); toolErr != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{
+				"error":      toolErr.Message,
+				"tool_error": toolErr,
+			})
+			return
+		}
+	}
 
 	if err := pb.queue.Enqueue(req.Command); err != nil {
 		if pb.logger != nil {
@@ -142,7 +158,12 @@ func (pb *PhoneBridge) handlePollCommands(w http.ResponseWriter, r *http.Request
 
 	var commands []BridgeCommand
 	if !shouldSuppressHTTPCommandPoll(platform, r.URL.Query().Get("app_state"), r.URL.Query().Get("fgs_bridge_enabled")) {
-		commands = pb.queue.PollForPhone(platform, phoneID, limit)
+		appState, _ := normalizeAppState(r.URL.Query().Get("app_state"))
+		pipEnabled, _ := parseOptionalBoolQuery(r.URL.Query().Get("pip_bridge_enabled"))
+		fgsEnabled, _ := parseOptionalBoolQuery(r.URL.Query().Get("fgs_bridge_enabled"))
+		commands = pb.queue.PollForPhoneMatching(platform, phoneID, limit, func(cmd BridgeCommand) bool {
+			return phoneBridgeHTTPPollCommandAllowed(platform, appState, pipEnabled, fgsEnabled, cmd.Type)
+		})
 	}
 
 	if pb.logger != nil && len(commands) > 0 {
