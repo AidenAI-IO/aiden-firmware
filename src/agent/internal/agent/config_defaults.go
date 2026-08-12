@@ -1,5 +1,7 @@
 package agent
 
+import "aiden-agent/internal/agent/constants"
+
 const (
 	localeSimplifiedChinese = "zh-CN"
 	localeEnglishUS         = "en-US"
@@ -59,12 +61,11 @@ const (
 	defaultVoiceMaxResponseTokens     = 300
 	defaultTodoReminderToolCalls      = 3
 	defaultMaxIterations              = -1
-	defaultScreenshotKeepN            = 3
-	defaultScreenshotPruneInterval    = 2
-	defaultTelemetryProvider          = "langfuse"
-	defaultTelemetryTimeoutSec        = 30
-	defaultTelemetryMaxRetry          = 2
-	defaultTelemetryEnvironment       = "default"
+
+	defaultTelemetryProvider    = "langfuse"
+	defaultTelemetryTimeoutSec  = 30
+	defaultTelemetryMaxRetry    = 2
+	defaultTelemetryEnvironment = "default"
 )
 
 func defaultBoolPtr(value bool) *bool {
@@ -199,8 +200,8 @@ func DefaultConfig() Config {
 		TodoReminderToolCalls:      defaultTodoReminderToolCalls,
 		MaxIterations:              defaultMaxIterations,
 		TerminationPolicy:          DefaultTerminationPolicyConfig(),
-		ScreenshotKeepN:            defaultScreenshotKeepN,
-		ScreenshotPruneInterval:    defaultScreenshotPruneInterval,
+		ScreenshotKeepN:            constants.DefaultScreenshotKeepN,
+		ScreenshotPruneInterval:    constants.DefaultScreenshotPruneInterval,
 		ScreenStableTimeoutMs:      defaultStableWaitTimeoutMs,
 		ScreenStableMs:             defaultStableDurationMs,
 		ScreenStableDiffThreshold:  defaultDiffThreshold,

@@ -1,13 +1,40 @@
-package agent
+package executor
 
 import (
 	"strings"
 
-	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/constants"
 	"aiden-agent/internal/agent/messages"
 )
 
-var _ executor.OutboundMessageTransform = AnthropicScreenshotPruner{}
+var _ OutboundMessageTransform = AnthropicScreenshotPruner{}
+
+type ScreenshotPruningConfig struct {
+	KeepN    int
+	Interval int
+}
+
+func (c ScreenshotPruningConfig) WithDefaults() ScreenshotPruningConfig {
+	if c.KeepN <= 0 {
+		c.KeepN = constants.DefaultScreenshotKeepN
+	}
+	if c.Interval <= 0 {
+		c.Interval = constants.DefaultScreenshotPruneInterval
+	}
+	return c
+}
+
+func (c ScreenshotPruningConfig) PrunedCount(total int) int {
+	c = c.WithDefaults()
+	if total <= c.KeepN+c.Interval {
+		return 0
+	}
+	pruned := ((total - c.KeepN - 1) / c.Interval) * c.Interval
+	if maxPruned := total - c.KeepN; pruned > maxPruned {
+		return maxPruned
+	}
+	return pruned
+}
 
 const (
 	screenshotAttachedText    = "The image is attached in the next message."

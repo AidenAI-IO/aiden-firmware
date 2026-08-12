@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/executor"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -1833,8 +1834,8 @@ func (c Config) TodoReminderToolCallsOrDefault() int {
 	return defaultTodoReminderToolCalls
 }
 
-func (c Config) ScreenshotPruningOrDefault() ScreenshotPruningConfig {
-	return ScreenshotPruningConfig{
+func (c Config) ScreenshotPruningOrDefault() executor.ScreenshotPruningConfig {
+	return executor.ScreenshotPruningConfig{
 		KeepN:    c.ScreenshotKeepN,
 		Interval: c.ScreenshotPruneInterval,
 	}.WithDefaults()
