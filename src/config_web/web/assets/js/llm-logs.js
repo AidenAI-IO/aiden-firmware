@@ -439,6 +439,7 @@ function imageUrlFromPart(p) {
   let url = '';
   if (typeof p.image_url === 'string') url = p.image_url;
   else if (p.image_url && typeof p.image_url.url === 'string') url = p.image_url.url;
+  else if (p.source && p.source.type === 'url' && typeof p.source.url === 'string') url = p.source.url;
   else if (p.source && p.source.type === 'base64' && typeof p.source.data === 'string') {
     const mime = String(p.source.media_type || '');
     if (mime.toLowerCase().indexOf('image/') === 0) url = 'data:' + mime + ';base64,' + p.source.data;
@@ -448,7 +449,7 @@ function imageUrlFromPart(p) {
     const mime = imageMimeFromPart(p);
     if (mime) url = 'data:' + mime + ';base64,' + p.data;
   }
-  return isRenderableImageDataUrl(url) ? url : '';
+  return isRenderableImageDataUrl(url) || isRenderableRemoteImageUrl(url) ? url : '';
 }
 
 function normalizeAnthropicContentPart(part) {
@@ -482,7 +483,8 @@ function normalizeAnthropicMessage(message) {
 
 function requestMessages(req) {
   if (!req || typeof req !== 'object') return [];
-  const isAnthropic = Array.isArray(req.system) || (req.messages || []).some(function(message) {
+  const hasSystemPrompt = Array.isArray(req.system) || (typeof req.system === 'string' && req.system !== '');
+  const isAnthropic = hasSystemPrompt || (req.messages || []).some(function(message) {
     return Array.isArray(message && message.content) && message.content.some(function(part) {
       return part && (part.type === 'tool_use' || part.type === 'tool_result' || (part.type === 'image' && part.source));
     });
@@ -509,10 +511,27 @@ function isRenderableImageDataUrl(url) {
   const lower = String(url || '').toLowerCase();
   return lower.indexOf('data:image/') === 0 && lower.indexOf(';base64,') > 0;
 }
+function isRenderableRemoteImageUrl(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname !== '';
+  } catch (_) {
+    return false;
+  }
+}
 function imageLabelFromUrl(url) {
   const s = String(url || '');
   const end = s.toLowerCase().indexOf(';base64,');
-  return end > 5 ? s.substring(5, end) + ' base64 image' : 'base64 image';
+  if (end > 5) return s.substring(5, end) + ' base64 image';
+  if (isRenderableRemoteImageUrl(s)) {
+    try {
+      const parsed = new URL(s);
+      return parsed.pathname.split('/').filter(Boolean).pop() || parsed.hostname || 'remote image';
+    } catch (_) {
+      return 'remote image';
+    }
+  }
+  return 'image';
 }
 function messageNeedsCollapse(text) {
   const value = String(text == null ? '' : text);

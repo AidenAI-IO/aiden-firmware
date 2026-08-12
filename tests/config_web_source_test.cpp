@@ -2263,6 +2263,28 @@ TEST_CASE("config web html shows the provider base url only where it applies") {
     CHECK(save_body.find("providerBaseUrlAllowed(type)") != std::string::npos);
 }
 
+TEST_CASE("config web updates model provider credential hints in manager methods") {
+    const std::string js = read_config_web_config_scripts();
+
+    CHECK(js.find("function installModelProviderCredentialHints") == std::string::npos);
+
+    const size_t dialog_at = js.find("showProviderDialog: function");
+    REQUIRE(dialog_at != std::string::npos);
+    const size_t dialog_end = js.find("syncProviderBaseUrlVisibility: function", dialog_at);
+    REQUIRE(dialog_end != std::string::npos);
+    const std::string dialog_body = js.substr(dialog_at, dialog_end - dialog_at);
+    CHECK(dialog_body.find("this.dialogCredentialConfigured=credentialConfigured") != std::string::npos);
+    CHECK(dialog_body.find("syncProviderCredentialHelp(this.dialogCredentialConfigured)") != std::string::npos);
+
+    const size_t type_change_at = js.find("onProviderTypeChange: function");
+    REQUIRE(type_change_at != std::string::npos);
+    const size_t type_change_end = js.find("onProviderBaseUrlInput: function", type_change_at);
+    REQUIRE(type_change_end != std::string::npos);
+    const std::string type_change_body = js.substr(type_change_at, type_change_end - type_change_at);
+    CHECK(type_change_body.find("syncProviderCredentialHelp(this.dialogCredentialConfigured)") !=
+          std::string::npos);
+}
+
 // TTS and STT get the same named-record UX as [model_providers.*]. One factory serves
 // both: two copies of this logic would be two places to fix every
 // rename/mask/save bug, so assert the shared factory and the two specs rather

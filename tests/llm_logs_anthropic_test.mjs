@@ -30,6 +30,7 @@ const context = vm.createContext({
     text: async () => JSON.stringify({files: []}),
   }),
   setTimeout,
+  URL,
 });
 
 vm.runInContext(source, context, {filename: 'llm-logs.js'});
@@ -108,6 +109,44 @@ assert.match(anthropicRequestHtml, /Use the screen carefully\./);
 assert.match(anthropicRequestHtml, /data:image\/png;base64,aGVsbG8=/);
 assert.match(anthropicRequestHtml, /inspect_screen/);
 assert.match(anthropicRequestHtml, /Screen inspected\./);
+
+assert.deepEqual(
+  requestMessages({
+    system: 'Keep the spoken response concise.',
+    messages: [{role: 'user', content: [{type: 'text', text: 'Describe the screen.'}]}],
+  }),
+  [
+    {role: 'system', content: 'Keep the spoken response concise.'},
+    {role: 'user', content: [{type: 'text', text: 'Describe the screen.'}]},
+  ],
+  'Anthropic requests with string system prompts should retain the system message',
+);
+
+const remoteImageRequest = {
+  messages: [{
+    role: 'user',
+    content: [{
+      type: 'image',
+      source: {type: 'url', url: 'https://example.com/screen.png'},
+    }],
+  }],
+};
+const remoteImageRequestHtml = context.renderMessages(
+  requestMessages(remoteImageRequest),
+  true,
+  'anthropic-remote-image-request',
+);
+assert.match(
+  remoteImageRequestHtml,
+  /src="https:\/\/example\.com\/screen\.png"/,
+  'Anthropic URL image sources should render as images',
+);
+assert.match(remoteImageRequestHtml, />screen\.png</);
+assert.equal(
+  context.imageUrlFromPart({type: 'image', source: {type: 'url', url: 'javascript:alert(1)'}}),
+  '',
+  'Non-HTTP image URLs should not render',
+);
 
 const openAIRequestMessages = [{role: 'assistant', content: [], tool_calls: [{id: 'call-1'}]}];
 assert.deepEqual(
