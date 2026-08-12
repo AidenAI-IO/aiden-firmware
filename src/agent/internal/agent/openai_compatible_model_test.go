@@ -1850,7 +1850,7 @@ func TestOpenAICompatibleModelLiveUsageParsing(t *testing.T) {
 	}
 	model := os.Getenv("OPENROUTER_MODEL")
 	if model == "" {
-		model = "anthropic/claude-haiku-4.5"
+		model = "anthropic/claude-haiku-4-5"
 	}
 
 	client := newOpenAICompatibleModel("https://openrouter.ai/api/v1", model, apiKey, http.DefaultClient)

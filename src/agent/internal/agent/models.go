@@ -60,6 +60,9 @@ func (m *ModelManager) SetStorageMonitor(monitor *StorageMonitor) {
 	if model, ok := m.model.(*openAICompatibleModel); ok && model.rawLogger != nil {
 		model.rawLogger.SetStorageMonitor(monitor)
 	}
+	if model, ok := m.model.(*anthropicModel); ok && model.rawLogger != nil {
+		model.rawLogger.SetStorageMonitor(monitor)
+	}
 }
 
 func (m *ModelManager) currentStorageMonitor() *StorageMonitor {
@@ -98,6 +101,9 @@ func NewModelManager(config ModelConfig, proxy ProxyConfig, opts ...ModelManager
 func (m *ModelManager) SetRawHTTPLogSessionIDProvider(provider func() string) {
 	m.rawHTTPLogSessionID = provider
 	if model, ok := m.model.(*openAICompatibleModel); ok && model.rawLogger != nil {
+		model.rawLogger.SetSessionIDProvider(provider)
+	}
+	if model, ok := m.model.(*anthropicModel); ok && model.rawLogger != nil {
 		model.rawLogger.SetSessionIDProvider(provider)
 	}
 }
@@ -197,6 +203,27 @@ func (m *ModelManager) buildOpenAICompatibleModel(cfg ModelConfig, defaultBaseUR
 		baseURL = defaultBaseURL
 	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...)
+}
+
+func (m *ModelManager) buildAnthropicModel(cfg ModelConfig) (llms.Model, error) {
+	token, useBearerAuth := resolveAnthropicToken(cfg.APIKey)
+	if token == "" {
+		if env, ok := providerAPIKeyEnv(cfg.APIKey); ok && env != "" {
+			return nil, fmt.Errorf("missing the Anthropic API key, set it in the %s environment variable", env)
+		}
+		return nil, fmt.Errorf("missing the Anthropic API key, set api_key on the provider record, ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY")
+	}
+	options := buildAnthropicModelOptions(m, cfg)
+	if useBearerAuth {
+		options = append(options, withAnthropicBearerAuth())
+	}
+	return newAnthropicModel(
+		resolveAnthropicBaseURL(cfg.BaseURL),
+		cfg.Model,
+		token,
+		newRetryHTTPClient(m.proxy),
+		options...,
+	), nil
 }
 
 func (m *ModelManager) buildOpenRouterModel(cfg ModelConfig) (llms.Model, error) {

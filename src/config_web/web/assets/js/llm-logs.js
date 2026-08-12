@@ -267,7 +267,7 @@ function renderGroups() {
 }
 function renderRequestItem(g, idx) {
   const req = parseBody(g.request.body);
-  const messages = req.messages || [];
+  const messages = requestMessages(req);
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
   const preview = lastMsg ? (messageText(lastMsg) || JSON.stringify(lastMsg).substring(0, 100)) : 'No message content';
   const status = !g.response ? 'none' : (g.response.status >= 200 && g.response.status < 300 ? 'ok' : 'err');
@@ -308,7 +308,7 @@ function renderRequestDetail() {
   html += '<span style="font-size:12px;color:#6b7280">' + esc(g.request.ts) + '</span>';
   if (idx > 0) {
     const prevReq = parseBody(state.groups[idx - 1].request.body);
-    const diffStats = computeDiffStats(prevReq.messages || [], req.messages || []);
+    const diffStats = computeDiffStats(requestMessages(prevReq), requestMessages(req));
     html += '<div class="diff-stats">';
     if (diffStats.added > 0) html += '<div class="diff-stat added"><span class="icon">+</span><span>' + diffStats.added + '</span></div>';
     if (diffStats.removed > 0) html += '<div class="diff-stat removed"><span class="icon">-</span><span>' + diffStats.removed + '</span></div>';
@@ -392,6 +392,11 @@ function renderContentPart(p, index) {
     return '<div class="msg-part"><img src="' + escAttr(url) + '" class="msg-image" alt="Message image ' + (index + 1) + '" loading="lazy"><div class="msg-image-meta">' + esc(label) + '</div></div>';
   }
   if (p && p.type === 'text') return '<div class="msg-part msg-text">' + esc(p.text || '') + '</div>';
+  if (p && p.type === 'tool_result') {
+    const result = typeof p.content === 'string' ? p.content : JSON.stringify(p.content, null, 2);
+    const label = p.tool_use_id ? 'Tool result ' + p.tool_use_id : 'Tool result';
+    return '<div class="msg-part tool-call"><div class="tc-name">' + esc(label) + '</div><pre style="margin:4px 0 0;font-size:12px">' + esc(result || '') + '</pre></div>';
+  }
   return '<div class="msg-part msg-text">' + esc(contentPartText(p)) + '</div>';
 }
 function renderMessageHead(headClass, role, index, marker, collapseUid) {
@@ -423,6 +428,10 @@ function contentPartText(p) {
     const format = p.input_audio && p.input_audio.format ? ': ' + p.input_audio.format : '';
     return '[input_audio' + format + ']';
   }
+  if (p.type === 'tool_result') {
+    const result = typeof p.content === 'string' ? p.content : JSON.stringify(p.content, null, 2);
+    return '[Tool result' + (p.tool_use_id ? ' ' + p.tool_use_id : '') + ']\n' + (result || '');
+  }
   return '[' + (p.type || 'unknown') + ']';
 }
 function imageUrlFromPart(p) {
@@ -430,12 +439,65 @@ function imageUrlFromPart(p) {
   let url = '';
   if (typeof p.image_url === 'string') url = p.image_url;
   else if (p.image_url && typeof p.image_url.url === 'string') url = p.image_url.url;
+  else if (p.source && p.source.type === 'url' && typeof p.source.url === 'string') url = p.source.url;
+  else if (p.source && p.source.type === 'base64' && typeof p.source.data === 'string') {
+    const mime = String(p.source.media_type || '');
+    if (mime.toLowerCase().indexOf('image/') === 0) url = 'data:' + mime + ';base64,' + p.source.data;
+  }
   if (!url && typeof p.url === 'string') url = p.url;
   if (!url && typeof p.data === 'string') {
     const mime = imageMimeFromPart(p);
     if (mime) url = 'data:' + mime + ';base64,' + p.data;
   }
-  return isRenderableImageDataUrl(url) ? url : '';
+  return isRenderableImageDataUrl(url) || isRenderableRemoteImageUrl(url) ? url : '';
+}
+
+function normalizeAnthropicContentPart(part) {
+  if (!part || typeof part !== 'object') return part;
+  if (part.type === 'image' && part.source && part.source.type === 'base64') {
+    const mime = String(part.source.media_type || '');
+    if (mime.toLowerCase().indexOf('image/') === 0 && typeof part.source.data === 'string') {
+      return {type: 'image_url', image_url: {url: 'data:' + mime + ';base64,' + part.source.data}};
+    }
+  }
+  return part;
+}
+
+function normalizeAnthropicMessage(message) {
+  if (!message || !Array.isArray(message.content)) return message;
+  const content = [];
+  const toolCalls = [];
+  for (const part of message.content) {
+    if (part && part.type === 'tool_use') {
+      toolCalls.push({id: part.id, type: 'function', function: {
+        name: part.name || '', arguments: JSON.stringify(part.input || {})
+      }});
+      continue;
+    }
+    content.push(normalizeAnthropicContentPart(part));
+  }
+  const normalized = {role: message.role || 'unknown', content: content};
+  if (toolCalls.length > 0) normalized.tool_calls = toolCalls;
+  return normalized;
+}
+
+function requestMessages(req) {
+  if (!req || typeof req !== 'object') return [];
+  const hasSystemPrompt = Array.isArray(req.system) || (typeof req.system === 'string' && req.system !== '');
+  const isAnthropic = hasSystemPrompt || (req.messages || []).some(function(message) {
+    return Array.isArray(message && message.content) && message.content.some(function(part) {
+      return part && (part.type === 'tool_use' || part.type === 'tool_result' || (part.type === 'image' && part.source));
+    });
+  });
+  if (!isAnthropic) return req.messages || [];
+  const messages = [];
+  if (Array.isArray(req.system) && req.system.length > 0) {
+    messages.push({role: 'system', content: req.system.map(normalizeAnthropicContentPart)});
+  } else if (typeof req.system === 'string' && req.system) {
+    messages.push({role: 'system', content: req.system});
+  }
+  for (const message of req.messages || []) messages.push(normalizeAnthropicMessage(message));
+  return messages;
 }
 function imageMimeFromPart(p) {
   const rawMime = String(p.mime_type || p.mimeType || '');
@@ -449,10 +511,27 @@ function isRenderableImageDataUrl(url) {
   const lower = String(url || '').toLowerCase();
   return lower.indexOf('data:image/') === 0 && lower.indexOf(';base64,') > 0;
 }
+function isRenderableRemoteImageUrl(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname !== '';
+  } catch (_) {
+    return false;
+  }
+}
 function imageLabelFromUrl(url) {
   const s = String(url || '');
   const end = s.toLowerCase().indexOf(';base64,');
-  return end > 5 ? s.substring(5, end) + ' base64 image' : 'base64 image';
+  if (end > 5) return s.substring(5, end) + ' base64 image';
+  if (isRenderableRemoteImageUrl(s)) {
+    try {
+      const parsed = new URL(s);
+      return parsed.pathname.split('/').filter(Boolean).pop() || parsed.hostname || 'remote image';
+    } catch (_) {
+      return 'remote image';
+    }
+  }
+  return 'image';
 }
 function messageNeedsCollapse(text) {
   const value = String(text == null ? '' : text);
@@ -470,10 +549,10 @@ function toggleMsgCollapse(uid, btn) {
   }
 }
 function renderMessagesView(g, req) {
-  return renderMessages(req.messages || [], true, 'request-msg') + renderResponseBlock(g);
+  return renderMessages(requestMessages(req), true, 'request-msg') + renderResponseBlock(g);
 }
 function renderDiffView(g, prevReq, req) {
-  return renderDiff(prevReq.messages || [], req.messages || []) + renderResponseBlock(g);
+  return renderDiff(requestMessages(prevReq), requestMessages(req)) + renderResponseBlock(g);
 }
 function renderResponseBlock(g) {
   let head = '<div class="response-section"><div class="response-section-head"><span>Response</span>';
@@ -517,6 +596,20 @@ function extractResponseMessage(body) {
       const m = obj.choices[0].message || {};
       return {role: m.role || 'assistant', content: m.content || '', tool_calls: m.tool_calls || []};
     }
+    if (obj && obj.type === 'message' && Array.isArray(obj.content)) {
+      let content = '';
+      const toolCalls = [];
+      for (const block of obj.content) {
+        if (!block) continue;
+        if (block.type === 'text' && typeof block.text === 'string') content += block.text;
+        if (block.type === 'tool_use') {
+          toolCalls.push({id: block.id, type: 'function', function: {
+            name: block.name || '', arguments: JSON.stringify(block.input || {})
+          }});
+        }
+      }
+      return {role: obj.role || 'assistant', content: content, tool_calls: toolCalls};
+    }
     if (obj && obj.error) {
       const errStr = typeof obj.error === 'string' ? obj.error : JSON.stringify(obj.error, null, 2);
       return {role: 'assistant', content: 'Error: ' + errStr};
@@ -533,8 +626,26 @@ function extractResponseMessage(body) {
     const data = line.substring(5).trim();
     if (!data || data === '[DONE]') continue;
     let event;
-    try { event = JSON.parse(data); } catch(e) { continue; }
-    hasData = true;
+	try { event = JSON.parse(data); } catch(e) { continue; }
+	hasData = true;
+	if (event.type === 'error' && event.error && typeof event.error.message === 'string') {
+	  if (content) content += '\n';
+	  content += event.error.message;
+	  continue;
+	}
+	if (event.type === 'content_block_start' && event.content_block && event.content_block.type === 'tool_use') {
+      const block = event.content_block;
+      toolCalls[event.index] = {id: block.id, type: 'function', function: {name: block.name || '', arguments: ''}};
+      continue;
+    }
+    if (event.type === 'content_block_delta' && event.delta) {
+      if (event.delta.type === 'text_delta' && typeof event.delta.text === 'string') content += event.delta.text;
+      if (event.delta.type === 'input_json_delta') {
+        const k = event.index;
+        if (toolCalls[k]) toolCalls[k].function.arguments += event.delta.partial_json || '';
+      }
+      continue;
+    }
     const choice = (event.choices && event.choices[0]) || null;
     if (!choice) continue;
     const delta = choice.delta || choice.message || {};

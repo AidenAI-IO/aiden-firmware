@@ -31,13 +31,17 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	"openai/gpt-5.4-nano": {ContextWindow: 400_000, MaxOutput: 128_000},
 	"gpt-5.4-nano":        {ContextWindow: 400_000, MaxOutput: 128_000},
 
-	// Anthropic Claude 4.x family (vision + tool calling).
-	"anthropic/claude-opus-4.8":   {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"claude-opus-4.8":             {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"anthropic/claude-sonnet-4.6": {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"claude-sonnet-4.6":           {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"anthropic/claude-haiku-4.5":  {ContextWindow: 200_000, MaxOutput: 64_000},
-	"claude-haiku-4.5":            {ContextWindow: 200_000, MaxOutput: 64_000},
+	// Anthropic Claude family (vision + tool calling).
+	"anthropic/claude-fable-5":    {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"claude-fable-5":              {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"anthropic/claude-opus-5":     {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"claude-opus-5":               {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"anthropic/claude-opus-4-8":   {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"claude-opus-4-8":             {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"anthropic/claude-sonnet-4-6": {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"claude-sonnet-4-6":           {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"anthropic/claude-haiku-4-5":  {ContextWindow: 200_000, MaxOutput: 64_000},
+	"claude-haiku-4-5":            {ContextWindow: 200_000, MaxOutput: 64_000},
 
 	// Google Gemini 3.5 family (vision + tool calling).
 	"google/gemini-3.5-pro":   {ContextWindow: 1_048_576, MaxOutput: 65_536},
@@ -87,6 +91,25 @@ func stringPtr(v string) *string {
 	return &v
 }
 
+func lookupModelSpecKey(key string) (model.ModelSpec, bool) {
+	if spec, ok := modelSpecRegistry[key]; ok {
+		return spec, true
+	}
+
+	// Claude 4 model IDs are also commonly written with a dotted version
+	// (for example, claude-sonnet-4.6). Keep the registry canonicalized on the
+	// hyphenated IDs while accepting either spelling from provider configs.
+	if strings.Contains(key, "claude-") {
+		if hyphenated := strings.Replace(key, "-4.", "-4-", 1); hyphenated != key {
+			if spec, ok := modelSpecRegistry[hyphenated]; ok {
+				return spec, true
+			}
+		}
+	}
+
+	return model.ModelSpec{}, false
+}
+
 // LookupModelSpec returns the spec for the given (provider, model). It tries
 // the full canonical id first (e.g. "google/gemini-3.5-flash") and then falls
 // back to the bare model name without a provider prefix so configurations that
@@ -97,18 +120,18 @@ func LookupModelSpec(provider, modelName string) (model.ModelSpec, bool) {
 	if key == "" {
 		return model.ModelSpec{}, false
 	}
-	if spec, ok := modelSpecRegistry[key]; ok {
+	if spec, ok := lookupModelSpecKey(key); ok {
 		return spec, true
 	}
 	if i := strings.LastIndex(key, "/"); i >= 0 && i+1 < len(key) {
-		if spec, ok := modelSpecRegistry[key[i+1:]]; ok {
+		if spec, ok := lookupModelSpecKey(key[i+1:]); ok {
 			return spec, true
 		}
 	}
 	// Provider-prefixed retry for entries registered without a provider.
 	if provider != "" {
 		full := strings.ToLower(strings.TrimSpace(provider)) + "/" + key
-		if spec, ok := modelSpecRegistry[full]; ok {
+		if spec, ok := lookupModelSpecKey(full); ok {
 			return spec, true
 		}
 	}

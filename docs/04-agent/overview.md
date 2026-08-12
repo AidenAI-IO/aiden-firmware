@@ -22,7 +22,7 @@ In the firmware, it is installed by default to:
 
 ## Current Capabilities
 
-- Registered model providers: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`
+- Registered model providers: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`
 - Built-in tool calling: HID, screenshots, audio volume, shell
 - HTTP Tool API for Web UI, external agents, or manual invocation
 - Auto-discovery and runtime activation of skills from `SKILL.md`
