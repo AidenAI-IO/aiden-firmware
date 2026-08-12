@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,7 +52,8 @@ func TestAnthropicModelAggregatesContentBlocksAndConvertsHistory(t *testing.T) {
 			Name        string         `json:"name"`
 			InputSchema map[string]any `json:"input_schema"`
 		} `json:"tools"`
-		Stream bool `json:"stream"`
+		ToolChoice map[string]any `json:"tool_choice"`
+		Stream     bool           `json:"stream"`
 	}
 
 	var captured capturedRequest
@@ -167,6 +169,39 @@ func TestAnthropicModelAggregatesContentBlocksAndConvertsHistory(t *testing.T) {
 	if len(captured.Tools) != 1 || captured.Tools[0].Name != "tap" {
 		t.Fatalf("tools = %#v", captured.Tools)
 	}
+	if captured.ToolChoice["type"] != "auto" || captured.ToolChoice["disable_parallel_tool_use"] != true {
+		t.Fatalf("tool_choice = %#v, want serial auto tool choice", captured.ToolChoice)
+	}
+}
+
+func TestAnthropicModelDisablesParallelUseForExplicitToolChoice(t *testing.T) {
+	t.Parallel()
+
+	var captured struct {
+		ToolChoice map[string]any `json:"tool_choice"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		_, _ = w.Write([]byte(`{"content":[{"type":"tool_use","id":"call","name":"echo","input":{}}],"stop_reason":"tool_use","usage":{}}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client())
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "echo"}}}), llms.WithToolChoice(llms.ToolChoice{
+		Type:     "function",
+		Function: &llms.FunctionReference{Name: "echo"},
+	}))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if captured.ToolChoice["type"] != "tool" || captured.ToolChoice["name"] != "echo" || captured.ToolChoice["disable_parallel_tool_use"] != true {
+		t.Fatalf("tool_choice = %#v", captured.ToolChoice)
+	}
 }
 
 func TestAnthropicModelStreamsTextAndToolArguments(t *testing.T) {
@@ -232,6 +267,102 @@ func TestAnthropicModelStreamsTextAndToolArguments(t *testing.T) {
 	}
 	if _, ok := choice.GenerationInfo["llm_time_to_first_content_ms"]; !ok {
 		t.Errorf("generation info missing time to first content: %#v", choice.GenerationInfo)
+	}
+}
+
+func TestAnthropicModelRetriesEarlyStreamingOverload(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if attempts == 1 {
+			_, _ = w.Write([]byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"))
+			return
+		}
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"ok\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicStreamRetry(1, 0))
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if got := response.Choices[0].Content; got != "ok" {
+		t.Fatalf("content = %q, want ok", got)
+	}
+}
+
+func TestAnthropicModelClassifiesStreamingOverloadAfterOutputWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			``,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}`,
+			``,
+			`event: error`,
+			`data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicStreamRetry(1, 0))
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	var providerErr *ProviderHTTPError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T %v, want ProviderHTTPError", err, err)
+	}
+	if providerErr.StatusCode != 529 || providerErr.ProviderCode != "overloaded_error" {
+		t.Fatalf("provider error = %#v", providerErr)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want no retry after streamed output", attempts)
+	}
+}
+
+func TestAnthropicModelLogsResponseOnEarlyStreamFailure(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"orphan"}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(),
+		withAnthropicRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session")),
+		withAnthropicStreamRetry(0, time.Second),
+	)
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), "missing block 7") {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	logText := readRawHTTPLog(t, logDir)
+	counts := countRawHTTPKinds(t, logText)
+	if counts["request"] != 1 || counts["response"] != 1 {
+		t.Fatalf("raw HTTP log should contain one request/response pair:\n%s", logText)
+	}
+	if !strings.Contains(logText, "missing block 7") || !strings.Contains(logText, "content_block_delta") {
+		t.Fatalf("response log missing failure detail or raw SSE:\n%s", logText)
 	}
 }
 

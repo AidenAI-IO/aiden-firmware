@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+func TestProviderHTTPErrorReadsAnthropicType(t *testing.T) {
+	err := newProviderHTTPError(529, []byte(
+		`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`,
+	))
+	if err.ProviderCode != "overloaded_error" || err.Message != "Overloaded" {
+		t.Fatalf("ProviderHTTPError = %#v", err)
+	}
+}
+
 func TestIsProviderContextExceededError(t *testing.T) {
 	tests := []struct {
 		name string

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,19 +20,23 @@ import (
 )
 
 const (
-	defaultAnthropicBaseURL = "https://api.anthropic.com/v1"
-	anthropicAPIVersion     = "2023-06-01"
+	defaultAnthropicBaseURL          = "https://api.anthropic.com/v1"
+	anthropicAPIVersion              = "2023-06-01"
+	defaultAnthropicStreamMaxRetries = 5
+	defaultAnthropicStreamRetryDelay = 2 * time.Second
 )
 
 type anthropicModel struct {
-	baseURL         string
-	model           string
-	token           string
-	useBearerAuth   bool
-	httpClient      *http.Client
-	rawLogger       *llmRawHTTPLogger
-	temperature     *float64
-	reasoningEffort string
+	baseURL          string
+	model            string
+	token            string
+	useBearerAuth    bool
+	httpClient       *http.Client
+	rawLogger        *llmRawHTTPLogger
+	temperature      *float64
+	reasoningEffort  string
+	streamMaxRetries int
+	streamRetryDelay time.Duration
 }
 
 type anthropicModelOption func(*anthropicModel)
@@ -50,6 +55,17 @@ func withAnthropicBearerAuth() anthropicModelOption {
 
 func withAnthropicReasoningEffort(effort string) anthropicModelOption {
 	return func(m *anthropicModel) { m.reasoningEffort = strings.TrimSpace(effort) }
+}
+
+func withAnthropicStreamRetry(maxRetries int, delay time.Duration) anthropicModelOption {
+	return func(m *anthropicModel) {
+		if maxRetries >= 0 {
+			m.streamMaxRetries = maxRetries
+		}
+		if delay >= 0 {
+			m.streamRetryDelay = delay
+		}
+	}
 }
 
 type anthropicRequest struct {
@@ -157,10 +173,12 @@ func newAnthropicModel(baseURL, model, token string, httpClient *http.Client, op
 		httpClient = http.DefaultClient
 	}
 	result := &anthropicModel{
-		baseURL:    normalizeAnthropicBaseURL(baseURL),
-		model:      strings.TrimSpace(model),
-		token:      strings.TrimSpace(token),
-		httpClient: httpClient,
+		baseURL:          normalizeAnthropicBaseURL(baseURL),
+		model:            strings.TrimSpace(model),
+		token:            strings.TrimSpace(token),
+		httpClient:       httpClient,
+		streamMaxRetries: defaultAnthropicStreamMaxRetries,
+		streamRetryDelay: defaultAnthropicStreamRetryDelay,
 	}
 	for _, option := range opts {
 		if option != nil {
@@ -209,6 +227,9 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 		ToolChoice:    convertAnthropicToolChoice(callOpts.ToolChoice, callOpts.FunctionCallBehavior),
 		Stream:        callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil,
 	}
+	if len(request.Tools) > 0 {
+		request.ToolChoice = disableAnthropicParallelToolUse(request.ToolChoice)
+	}
 	if request.MaxTokens <= 0 {
 		request.MaxTokens = 2048
 	}
@@ -227,47 +248,67 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 		return nil, fmt.Errorf("marshal Anthropic request: %w", err)
 	}
 	ctx = m.withRawHTTPLogScope(ctx)
-	_ = m.logRawHTTP(ctx, request.Model, "request", 0, string(payload))
-
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+"/messages", bytes.NewReader(payload))
-	if err != nil {
-		_ = m.logRawHTTP(ctx, request.Model, "response", 0, "create request error: "+err.Error())
-		return nil, fmt.Errorf("create Anthropic request: %w", err)
-	}
-	httpRequest.Header.Set("Content-Type", "application/json")
-	httpRequest.Header.Set("anthropic-version", anthropicAPIVersion)
-	if m.token != "" && m.useBearerAuth {
-		httpRequest.Header.Set("Authorization", "Bearer "+m.token)
-	} else if m.token != "" {
-		httpRequest.Header.Set("x-api-key", m.token)
-	}
-
-	response, err := m.httpClient.Do(httpRequest)
-	if err != nil {
-		_ = m.logRawHTTP(ctx, request.Model, "response", 0, "transport error: "+err.Error())
-		return nil, fmt.Errorf("send Anthropic request: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
-		_ = m.logRawHTTP(ctx, request.Model, "response", response.StatusCode, string(body))
-		return nil, newProviderHTTPError(response.StatusCode, body)
-	}
-
+	maxAttempts := 1
 	if request.Stream {
-		return m.decodeStreamingResponse(ctx, response.Body, request.Model, response.StatusCode, callStarted, &callOpts)
+		maxAttempts += m.streamMaxRetries
 	}
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		_ = m.logRawHTTP(ctx, request.Model, "response", response.StatusCode, "read response error: "+err.Error())
-		return nil, fmt.Errorf("read Anthropic response: %w", err)
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		_ = m.logRawHTTP(ctx, request.Model, "request", 0, string(payload))
+
+		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+"/messages", bytes.NewReader(payload))
+		if err != nil {
+			_ = m.logRawHTTP(ctx, request.Model, "response", 0, "create request error: "+err.Error())
+			return nil, fmt.Errorf("create Anthropic request: %w", err)
+		}
+		httpRequest.Header.Set("Content-Type", "application/json")
+		httpRequest.Header.Set("anthropic-version", anthropicAPIVersion)
+		if m.token != "" && m.useBearerAuth {
+			httpRequest.Header.Set("Authorization", "Bearer "+m.token)
+		} else if m.token != "" {
+			httpRequest.Header.Set("x-api-key", m.token)
+		}
+
+		response, err := m.httpClient.Do(httpRequest)
+		if err != nil {
+			_ = m.logRawHTTP(ctx, request.Model, "response", 0, "transport error: "+err.Error())
+			return nil, fmt.Errorf("send Anthropic request: %w", err)
+		}
+		if response.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			_ = m.logRawHTTP(ctx, request.Model, "response", response.StatusCode, string(body))
+			return nil, newProviderHTTPError(response.StatusCode, body)
+		}
+
+		if request.Stream {
+			result, streamErr := m.decodeStreamingResponse(ctx, response.Body, request.Model, response.StatusCode, callStarted, &callOpts)
+			response.Body.Close()
+			if streamErr == nil {
+				return result, nil
+			}
+			if attempt+1 >= maxAttempts || !shouldRetryAnthropicStreamError(streamErr) {
+				return nil, streamErr
+			}
+			if err := m.waitBeforeAnthropicStreamRetry(ctx, attempt+1); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			_ = m.logRawHTTP(ctx, request.Model, "response", response.StatusCode, "read response error: "+err.Error())
+			return nil, fmt.Errorf("read Anthropic response: %w", err)
+		}
+		_ = m.logRawHTTP(ctx, request.Model, "response", response.StatusCode, string(body))
+		var decoded anthropicResponse
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			return nil, fmt.Errorf("decode Anthropic response: %w", err)
+		}
+		return aggregateAnthropicResponse(decoded, callStarted), nil
 	}
-	_ = m.logRawHTTP(ctx, request.Model, "response", response.StatusCode, string(body))
-	var decoded anthropicResponse
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return nil, fmt.Errorf("decode Anthropic response: %w", err)
-	}
-	return aggregateAnthropicResponse(decoded, callStarted), nil
+	return nil, fmt.Errorf("Anthropic stream retry attempts exhausted")
 }
 
 func convertAnthropicMessages(messages []llms.MessageContent) ([]anthropicContentBlock, []anthropicRequestMessage, error) {
@@ -517,6 +558,21 @@ func convertAnthropicToolChoice(choice any, behavior llms.FunctionCallBehavior) 
 	return nil
 }
 
+func disableAnthropicParallelToolUse(choice any) map[string]any {
+	converted, _ := choice.(map[string]any)
+	if converted == nil {
+		converted = map[string]any{"type": "auto"}
+	} else {
+		cloned := make(map[string]any, len(converted)+1)
+		for key, value := range converted {
+			cloned[key] = value
+		}
+		converted = cloned
+	}
+	converted["disable_parallel_tool_use"] = true
+	return converted
+}
+
 func aggregateAnthropicResponse(response anthropicResponse, callStarted time.Time) *llms.ContentResponse {
 	return aggregateAnthropicResponseWithGenerationInfo(response, callStarted, nil)
 }
@@ -569,7 +625,26 @@ type anthropicStreamBlock struct {
 	InputJSON strings.Builder
 }
 
-func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Reader, model string, statusCode int, callStarted time.Time, opts *llms.CallOptions) (*llms.ContentResponse, error) {
+type anthropicStreamError struct {
+	err             error
+	outputDelivered bool
+}
+
+func (e *anthropicStreamError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *anthropicStreamError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Reader, model string, statusCode int, callStarted time.Time, opts *llms.CallOptions) (result *llms.ContentResponse, resultErr error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	blocks := map[int]*anthropicStreamBlock{}
@@ -579,6 +654,22 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 	var raw strings.Builder
 	firstContent := false
 	var firstContentAt int64
+	outputDelivered := false
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		logStatusCode := statusCode
+		var statusErr interface{ HTTPStatusCode() int }
+		if errors.As(resultErr, &statusErr) && statusErr.HTTPStatusCode() != 0 {
+			logStatusCode = statusErr.HTTPStatusCode()
+		}
+		failureBody, _ := json.Marshal(map[string]any{
+			"stream_error": resultErr.Error(),
+			"raw_sse":      raw.String(),
+		})
+		_ = m.logRawHTTP(ctx, model, "response", logStatusCode, string(failureBody))
+	}()
 	for scanner.Scan() {
 		line := scanner.Text()
 		raw.WriteString(line)
@@ -601,7 +692,6 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			Error        map[string]any        `json:"error"`
 		}
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			_ = m.logRawHTTP(ctx, model, "response", 0, raw.String())
 			return nil, fmt.Errorf("decode Anthropic stream event: %w", err)
 		}
 		switch event.Type {
@@ -635,6 +725,7 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 					if err := opts.StreamingFunc(ctx, []byte(chunk)); err != nil {
 						return nil, err
 					}
+					outputDelivered = true
 				}
 			case "thinking_delta":
 				chunk, _ := event.Delta["thinking"].(string)
@@ -643,6 +734,7 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 					if err := opts.StreamingReasoningFunc(ctx, []byte(chunk), nil); err != nil {
 						return nil, err
 					}
+					outputDelivered = true
 				}
 			case "input_json_delta":
 				chunk, _ := event.Delta["partial_json"].(string)
@@ -656,13 +748,12 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 				usage.OutputTokens = event.Usage.OutputTokens
 			}
 		case "error":
-			_ = m.logRawHTTP(ctx, model, "response", statusCode, raw.String())
 			encoded, _ := json.Marshal(map[string]any{"error": event.Error})
-			return nil, newProviderHTTPError(statusCode, encoded)
+			providerErr := newProviderHTTPError(anthropicErrorHTTPStatus(event.Error), encoded)
+			return nil, &anthropicStreamError{err: providerErr, outputDelivered: outputDelivered}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		_ = m.logRawHTTP(ctx, model, "response", 0, raw.String())
 		return nil, fmt.Errorf("read Anthropic stream: %w", err)
 	}
 	response := anthropicResponse{ID: responseID, Model: model, StopReason: stopReason, Usage: usage}
@@ -700,8 +791,56 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 		generationInfo["llm_stream"] = true
 		generationInfo["llm_time_to_first_content_ms"] = firstContentAt
 	}
-	result := aggregateAnthropicResponseWithGenerationInfo(response, callStarted, generationInfo)
+	result = aggregateAnthropicResponseWithGenerationInfo(response, callStarted, generationInfo)
 	return result, nil
+}
+
+func anthropicErrorHTTPStatus(eventError map[string]any) int {
+	errorType, _ := eventError["type"].(string)
+	switch strings.ToLower(strings.TrimSpace(errorType)) {
+	case "invalid_request_error":
+		return http.StatusBadRequest
+	case "authentication_error":
+		return http.StatusUnauthorized
+	case "permission_error":
+		return http.StatusForbidden
+	case "not_found_error":
+		return http.StatusNotFound
+	case "request_too_large":
+		return http.StatusRequestEntityTooLarge
+	case "rate_limit_error":
+		return http.StatusTooManyRequests
+	case "overloaded_error":
+		return 529
+	case "api_error":
+		return http.StatusInternalServerError
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func shouldRetryAnthropicStreamError(err error) bool {
+	var streamErr *anthropicStreamError
+	if !errors.As(err, &streamErr) || streamErr.outputDelivered {
+		return false
+	}
+	var statusErr interface{ HTTPStatusCode() int }
+	return errors.As(err, &statusErr) && shouldRetryHTTPStatus(statusErr.HTTPStatusCode())
+}
+
+func (m *anthropicModel) waitBeforeAnthropicStreamRetry(ctx context.Context, retryNumber int) error {
+	delay := time.Duration(retryNumber) * m.streamRetryDelay
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (m *anthropicModel) withRawHTTPLogScope(ctx context.Context) context.Context {

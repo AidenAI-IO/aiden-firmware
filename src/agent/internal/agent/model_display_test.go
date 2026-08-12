@@ -89,6 +89,19 @@ func TestGetDisplayModelsForProvider(t *testing.T) {
 	}
 }
 
+func TestAnthropicDisplayModelsUseMessagesAPIIDs(t *testing.T) {
+	want := []string{"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"}
+	models := GetDisplayModelsForProvider("anthropic")
+	if len(models) != len(want) {
+		t.Fatalf("models = %#v, want %d entries", models, len(want))
+	}
+	for i, model := range models {
+		if model.ID != want[i] {
+			t.Errorf("models[%d].ID = %q, want %q", i, model.ID, want[i])
+		}
+	}
+}
+
 func TestModelDisplayInfo_GetDescription(t *testing.T) {
 	model := ModelDisplayInfo{
 		ID: "test-model",
