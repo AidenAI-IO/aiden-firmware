@@ -1,4 +1,4 @@
-name: Notify documentation site
+name: Trigger documentation site build
 
 on:
   push:
@@ -11,13 +11,15 @@ permissions:
   contents: read
 
 jobs:
-  notify:
+  trigger-build:
+    name: Trigger website documentation build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Trigger aiden-website documentation build
+      - name: Dispatch documentation build
         env:
           GH_TOKEN: ${{ secrets.AIDEN_WEBSITE_DISPATCH_TOKEN }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -27,9 +29,16 @@ jobs:
           fi
 
           payload=$(jq -n \
-            --arg event_type "aiden-hardware-docs-updated" \
+            --arg event_type "aiden-firmware-docs-updated" \
+            --arg repository "$SOURCE_REPOSITORY" \
             --arg sha "$SOURCE_SHA" \
-            '{event_type: $event_type, client_payload: {sha: $sha}}')
+            '{
+              event_type: $event_type,
+              client_payload: {
+                repository: $repository,
+                sha: $sha
+              }
+            }')
 
           curl --fail-with-body --silent --show-error \
             --request POST \

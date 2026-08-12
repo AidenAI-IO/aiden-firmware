@@ -91,3 +91,13 @@ This documentation hub is the structured entry point for the project. The root `
 - [SkillOpt Overview](10-skillopt/README.md)
 - [SkillOpt Quickstart](10-skillopt/quickstart.md)
 - [SkillOpt Architecture](10-skillopt/architecture.md)
+
+## Website Publishing
+
+This `docs/` directory is the single source of truth for the public project
+documentation. Markdown is not copied or committed into the website repository.
+
+When a documentation change reaches `main`,
+`.github/workflows/trigger-docs-site-build.yml` asks `AidenAI-IO/aiden-website`
+to build the Docusaurus site from the exact firmware commit. The website
+repository owns presentation and deployment only.
