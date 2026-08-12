@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -170,23 +172,66 @@ func TestPhoneNotificationEventsAcceptsMaximumValidatedBatch(t *testing.T) {
 	if len(body) > maxPhoneNotificationRequestBytes {
 		t.Fatalf("maximum notification batch exceeds HTTP limit: %d", len(body))
 	}
-
-	server := &Server{
-		bleNotifyRequest: func(
-			_ context.Context,
-			_ string,
-			_ string,
-			events []ble.NotificationEvent,
-		) (ble.NotificationPublishResult, error) {
-			return ble.NotificationPublishResult{Accepted: len(events), LastID: "8"}, nil
-		},
+	body = append(body, bytes.Repeat([]byte(" "), maxPhoneNotificationRequestBytes-len(body))...)
+	if len(body) != maxPhoneNotificationRequestBytes {
+		t.Fatalf("boundary notification request length=%d", len(body))
 	}
+
+	socketDir, err := os.MkdirTemp("/tmp", "aiden-ble-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(socketDir); err != nil {
+			t.Errorf("remove BLE socket directory: %v", err)
+		}
+	})
+	socketPath := filepath.Join(socketDir, "ble.sock")
+	udsServer := ble.NewUDSServer(socketPath, ble.NewService(16))
+	if err := udsServer.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := udsServer.Close(); err != nil {
+			t.Errorf("close BLE UDS server: %v", err)
+		}
+	})
+	server := &Server{bleSocketPath: socketPath}
 	request := bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
 	request.Body = io.NopCloser(bytes.NewReader(body))
 	recorder := httptest.NewRecorder()
 	server.handlePhoneNotificationEvents(recorder, request)
 	if recorder.Code != http.StatusOK || !containsAll(recorder.Body.String(), `"accepted":8`) {
 		t.Fatalf("maximum publish code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPhoneNotificationEventsRejectsUDSOversizedEncoding(t *testing.T) {
+	prefix := `{"phone_id":"`
+	suffix := `","events":[{}]}`
+	body := prefix + strings.Repeat("&", maxPhoneNotificationRequestBytes-len(prefix)-len(suffix)) + suffix
+	if len(body) != maxPhoneNotificationRequestBytes {
+		t.Fatalf("boundary request length=%d", len(body))
+	}
+
+	called := false
+	server := &Server{
+		bleNotifyRequest: func(
+			context.Context,
+			string,
+			string,
+			[]ble.NotificationEvent,
+		) (ble.NotificationPublishResult, error) {
+			called = true
+			return ble.NotificationPublishResult{}, nil
+		},
+	}
+	request := bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
+	request.Body = io.NopCloser(strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+	server.handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusBadRequest || called || !strings.Contains(recorder.Body.String(), "exceeds BLE UDS frame limit") {
+		t.Fatalf("UDS-oversized publish code=%d called=%v body=%s", recorder.Code, called, recorder.Body.String())
 	}
 }
 
@@ -295,7 +340,7 @@ func maximumPhoneNotificationRequest() phoneNotificationRequest {
 		}
 		events[index] = ble.NotificationEvent{
 			SourceID:      fill(512),
-			SourceEventID: fill(128),
+			SourceEventID: fill(127) + string(rune('0'+index)),
 			Event:         "added",
 			Flags:         flags,
 			AppIdentifier: fill(255),

@@ -155,6 +155,13 @@ func (s *Server) handlePhoneNotificationEvents(w http.ResponseWriter, r *http.Re
 		})
 		return
 	}
+	if err := ble.ValidateNotificationPublishRequestFrame(request.PhoneID, request.Events); err != nil {
+		writePhoneNotificationJSON(w, http.StatusBadRequest, phoneNotificationResponse{
+			OK:    false,
+			Error: "invalid notification request: " + err.Error(),
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
 	defer cancel()
