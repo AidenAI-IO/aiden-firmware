@@ -19,6 +19,13 @@ Default socket:
 | `list_frames` | Lists frame metadata in ring buffer |
 | `restart` | Requests service to restart capture manager |
 
+`latest_frame` accepts `format: "jpeg"` and an optional `minimal_width`.
+JPEG responses crop only uniformly dark columns at the left and right edges;
+when `minimal_width` is present, the cropped JPEG width will not be smaller
+than that value (clamped to the source width). The response includes
+`source_width`, `source_height`, and the `crop_*` rectangle for coordinate
+mapping.
+
 ### FrameMetadata
 
 Core fields:

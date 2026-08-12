@@ -65,7 +65,7 @@ type WaitStableScreenTool struct {
 
 type waitStableFrameClient interface {
 	LatestFrame() (*frameMetadata, []byte, screenCaptureInfo, error)
-	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, screenCaptureInfo, error)
+	LatestFrameWithFormat(format string, quality, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error)
 }
 
 type waitStableScreenResult struct {
@@ -156,7 +156,7 @@ func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, 
 }
 
 func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
-	meta, jpegData, captureInfo, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	meta, jpegData, captureInfo, err := captureScreenshotJPEG(t.client, t.screen)
 	if err != nil {
 		return screenshotResult{}, err
 	}

@@ -162,7 +162,7 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 		return nil, nil, fmt.Errorf("screen capture client not configured")
 	}
 	if options.CropBlackBars {
-		meta, jpegData, captureInfo, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+		meta, jpegData, captureInfo, err := captureScreenshotJPEG(client, s.coordinateDebugScreen())
 		if err == nil && meta != nil {
 			if meta.PixelFormat == "jpeg" {
 				if sourceWidth, sourceHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {

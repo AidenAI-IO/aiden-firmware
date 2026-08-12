@@ -331,6 +331,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         uint32_t timeout_ms = json_u32(root, "timeout_ms");
         std::string format = json_string(root, "format");
         int quality = static_cast<int>(json_u32(root, "quality"));
+        uint32_t minimal_width = json_u32(root, "minimal_width");
         if (quality <= 0) {
             quality = 80;
         }
@@ -367,7 +368,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             std::vector<uint8_t> encoded_payload;
             const std::vector<uint8_t>* payload = &frame->data;
             if (format == "jpeg") {
-                // Encode to JPEG using hardware encoder (includes black bar cropping)
+                // Encode to JPEG using hardware encoder (includes horizontal black bar cropping).
                 uint32_t source_width = metadata.width;
                 uint32_t source_height = metadata.height;
                 uint32_t encoded_width = 0, encoded_height = 0;
@@ -375,7 +376,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                 if (!encode_yuv_to_jpeg_hw(frame->data, metadata.width, metadata.height,
                                            metadata.pixel_format, quality, &encoded_payload,
                                            &encoded_width, &encoded_height,
-                                           &crop_x, &crop_y)) {
+                                           &crop_x, &crop_y, minimal_width)) {
                     write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
                     cJSON_Delete(root);
                     return;

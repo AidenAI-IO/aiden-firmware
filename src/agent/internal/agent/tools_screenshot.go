@@ -43,7 +43,31 @@ type screenshotResult struct {
 }
 
 type screenshotFrameClient interface {
-	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, screenCaptureInfo, error)
+	LatestFrameWithFormat(format string, quality, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error)
+}
+
+func captureScreenshotJPEG(client screenshotFrameClient, screenState *screen.ScreenState) (*frameMetadata, []byte, screenCaptureInfo, error) {
+	minimalWidth := screenshotMinimalWidth(screenState)
+	return client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, minimalWidth)
+}
+
+func screenshotMinimalWidth(screenState *screen.ScreenState) int {
+	if screenState == nil {
+		return 0
+	}
+	phoneScreen := screenState.PhoneScreenInfo()
+	width, height, ok := currentPhoneScreenDimensions(phoneScreen)
+	if !ok {
+		width, height, ok = nativePhoneScreenDimensions(phoneScreen)
+		if !ok {
+			return 0
+		}
+	}
+	minimalWidth := int(math.Round(1080 * width / height))
+	if minimalWidth < 1 {
+		return 0
+	}
+	return minimalWidth
 }
 
 func cloneADBDeviceInfo(info *adbDeviceInfo) *adbDeviceInfo {
@@ -125,7 +149,7 @@ func (t *ScreenshotTool) ArgsSchema() map[string]any {
 
 func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	// Request JPEG format directly from frame_service (hardware-encoded)
-	meta, jpegData, captureInfo, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	meta, jpegData, captureInfo, err := captureScreenshotJPEG(t.client, t.screen)
 	if err != nil {
 		return "", err
 	}
@@ -248,6 +272,9 @@ func deriveActiveAreaFromPhoneScreen(frameWidth, frameHeight int, phoneScreen sc
 	if len(candidates) > 1 && !approx.Valid {
 		return screen.ScreenActiveArea{}, false
 	}
+	if approx.Valid && (approx.Y != 0 || approx.Height != frameHeight) {
+		return screen.ScreenActiveArea{}, false
+	}
 
 	best := screen.ScreenActiveArea{}
 	bestScore := math.MaxFloat64
@@ -323,36 +350,15 @@ func projectAspectRatioToFrame(frameWidth, frameHeight int, aspectRatio float64)
 	if frameWidth <= 0 || frameHeight <= 0 || aspectRatio <= 0 || math.IsNaN(aspectRatio) || math.IsInf(aspectRatio, 0) {
 		return screen.ScreenActiveArea{}, false
 	}
-	frameAspectRatio := float64(frameWidth) / float64(frameHeight)
-	if frameAspectRatio > aspectRatio {
-		activeWidth := int(math.Round(float64(frameHeight) * aspectRatio))
-		if activeWidth < 1 {
-			return screen.ScreenActiveArea{}, false
-		}
-		if activeWidth > frameWidth {
-			activeWidth = frameWidth
-		}
-		return screen.ScreenActiveArea{
-			X:      (frameWidth - activeWidth) / 2,
-			Y:      0,
-			Width:  activeWidth,
-			Height: frameHeight,
-			Valid:  true,
-		}, true
-	}
-
-	activeHeight := int(math.Round(float64(frameWidth) / aspectRatio))
-	if activeHeight < 1 {
+	activeWidth := int(math.Round(float64(frameHeight) * aspectRatio))
+	if activeWidth < 1 || activeWidth > frameWidth {
 		return screen.ScreenActiveArea{}, false
 	}
-	if activeHeight > frameHeight {
-		activeHeight = frameHeight
-	}
 	return screen.ScreenActiveArea{
-		X:      0,
-		Y:      (frameHeight - activeHeight) / 2,
-		Width:  frameWidth,
-		Height: activeHeight,
+		X:      (frameWidth - activeWidth) / 2,
+		Y:      0,
+		Width:  activeWidth,
+		Height: frameHeight,
 		Valid:  true,
 	}, true
 }
@@ -388,27 +394,17 @@ func detectImageActiveArea(img image.Image, expectedWidth, expectedHeight int) s
 	for right >= left && imageColumnDark(img, bounds.Min.X+right, bounds.Min.Y, height, threshold) {
 		right--
 	}
-	top := 0
-	for top < height && imageRowDark(img, bounds.Min.Y+top, bounds.Min.X, width, threshold) {
-		top++
-	}
-	bottom := height - 1
-	for bottom >= top && imageRowDark(img, bounds.Min.Y+bottom, bounds.Min.X, width, threshold) {
-		bottom--
-	}
-
 	activeWidth := right - left + 1
-	activeHeight := bottom - top + 1
-	if activeWidth <= 0 || activeHeight <= 0 {
+	if activeWidth <= 0 {
 		return screen.ScreenActiveArea{}
 	}
-	if activeWidth > width*95/100 && activeHeight > height*95/100 {
+	if activeWidth > width*95/100 {
 		return screen.ScreenActiveArea{}
 	}
-	if activeWidth < width/5 && activeHeight < height/5 {
+	if activeWidth < width/5 {
 		return screen.ScreenActiveArea{}
 	}
-	return screen.ScreenActiveArea{X: left, Y: top, Width: activeWidth, Height: activeHeight, Valid: true}
+	return screen.ScreenActiveArea{X: left, Y: 0, Width: activeWidth, Height: height, Valid: true}
 }
 
 func imageColumnDark(img image.Image, x, minY, height int, threshold float64) bool {
@@ -425,27 +421,6 @@ func imageColumnDark(img image.Image, x, minY, height int, threshold float64) bo
 	bright := 0
 	for i := 0; i < samples; i++ {
 		y := minY + int(math.Round(float64(i)*float64(height-1)/float64(samples-1)))
-		if pixelBrightness(img.At(x, y)) > threshold {
-			bright++
-		}
-	}
-	return bright <= samples/20
-}
-
-func imageRowDark(img image.Image, y, minX, width int, threshold float64) bool {
-	samples := 64
-	if width < samples {
-		samples = width
-	}
-	if samples <= 0 {
-		return true
-	}
-	if samples == 1 {
-		return pixelBrightness(img.At(minX, y)) <= threshold
-	}
-	bright := 0
-	for i := 0; i < samples; i++ {
-		x := minX + int(math.Round(float64(i)*float64(width-1)/float64(samples-1)))
 		if pixelBrightness(img.At(x, y)) > threshold {
 			bright++
 		}

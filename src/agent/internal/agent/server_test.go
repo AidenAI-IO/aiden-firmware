@@ -1165,6 +1165,9 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 		if format, _ := req["format"].(string); format != "jpeg" {
 			t.Fatalf("expected jpeg format request, got %#v", req["format"])
 		}
+		if minimalWidth, _ := req["minimal_width"].(float64); minimalWidth != 608 {
+			t.Fatalf("minimal_width = %#v, want 608", req["minimal_width"])
+		}
 		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":5,"height":9,"source_width":16,"source_height":9,"crop_x":5,"crop_y":0,"crop_width":5,"crop_height":9,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
 		return header, jpegData
 	})

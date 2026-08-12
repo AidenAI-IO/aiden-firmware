@@ -1,4 +1,5 @@
 #include "frame_jpeg_encoder.h"
+#include "frame_crop_bounds.h"
 #include "frame_processing.h"
 #include "image_process.h"
 #include <opencv2/core.hpp>
@@ -8,13 +9,16 @@
 namespace aiden {
 
 namespace {
-void crop_black_bars_bgr(const cv::Mat& bgr, cv::Mat& dst, uint32_t* out_crop_x = nullptr, uint32_t* out_crop_y = nullptr, unsigned char threshold = 15);
+void crop_black_bars_bgr(const cv::Mat& bgr, cv::Mat& dst,
+                         uint32_t* out_crop_x = nullptr, uint32_t* out_crop_y = nullptr,
+                         unsigned char threshold = 15, uint32_t minimal_width = 0);
 }
 
 bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t height,
                               int quality, std::vector<uint8_t>* output,
                               uint32_t* out_width, uint32_t* out_height,
-                              uint32_t* out_crop_x, uint32_t* out_crop_y) {
+                              uint32_t* out_crop_x, uint32_t* out_crop_y,
+                              uint32_t minimal_width) {
     if (!rgb_data || !output || width == 0 || height == 0) {
         return false;
     }
@@ -26,7 +30,7 @@ bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t h
     cv::Mat cropped;
     uint32_t crop_x = 0;
     uint32_t crop_y = 0;
-    crop_black_bars_bgr(bgr, cropped, &crop_x, &crop_y);
+    crop_black_bars_bgr(bgr, cropped, &crop_x, &crop_y, 15, minimal_width);
 
     if (out_width) *out_width = static_cast<uint32_t>(cropped.cols);
     if (out_height) *out_height = static_cast<uint32_t>(cropped.rows);
@@ -42,12 +46,14 @@ bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t h
 
 namespace {
 
-// Crop black bars directly on a BGR mat (avoids extra RGB↔BGR conversion).
-// A row/column is considered "black border" only if BOTH its mean grayscale
+// Crop left and right black bars directly on a BGR mat (avoids extra RGB↔BGR conversion).
+// A column is considered "black border" only if BOTH its mean grayscale
 // is <= threshold AND its standard deviation is low (uniform darkness).
 // This prevents cropping dark UI elements (e.g. phone status bars) that
 // contain small bright pixels.
-void crop_black_bars_bgr(const cv::Mat& bgr, cv::Mat& dst, uint32_t* out_crop_x, uint32_t* out_crop_y, unsigned char threshold) {
+void crop_black_bars_bgr(const cv::Mat& bgr, cv::Mat& dst,
+                         uint32_t* out_crop_x, uint32_t* out_crop_y,
+                         unsigned char threshold, uint32_t minimal_width) {
     if (bgr.empty() || bgr.type() != CV_8UC3) {
         dst = bgr;
         if (out_crop_x) *out_crop_x = 0;
@@ -59,26 +65,12 @@ void crop_black_bars_bgr(const cv::Mat& bgr, cv::Mat& dst, uint32_t* out_crop_x,
 
     const double stddev_limit = 6.0;
 
-    auto is_border_row = [&](int row) -> bool {
-        cv::Scalar m, s;
-        cv::meanStdDev(gray.row(row), m, s);
-        return m[0] <= static_cast<double>(threshold) && s[0] <= stddev_limit;
-    };
-
     auto is_border_col = [&](int col) -> bool {
         cv::Scalar m, s;
         cv::meanStdDev(gray.col(col), m, s);
         return m[0] <= static_cast<double>(threshold) && s[0] <= stddev_limit;
     };
 
-    int top = 0;
-    for (; top < gray.rows; ++top) {
-        if (!is_border_row(top)) break;
-    }
-    int bottom = gray.rows - 1;
-    for (; bottom >= top; --bottom) {
-        if (!is_border_row(bottom)) break;
-    }
     int left = 0;
     for (; left < gray.cols; ++left) {
         if (!is_border_col(left)) break;
@@ -88,16 +80,19 @@ void crop_black_bars_bgr(const cv::Mat& bgr, cv::Mat& dst, uint32_t* out_crop_x,
         if (!is_border_col(right)) break;
     }
 
-    if (right < left || bottom < top) {
+    if (right < left) {
         dst = bgr;
         if (out_crop_x) *out_crop_x = 0;
         if (out_crop_y) *out_crop_y = 0;
         return;
     }
-    cv::Rect roi(left, top, right - left + 1, bottom - top + 1);
+
+    include_centered_minimal_width(bgr.cols, minimal_width, &left, &right);
+
+    cv::Rect roi(left, 0, right - left + 1, bgr.rows);
     bgr(roi).copyTo(dst);
     if (out_crop_x) *out_crop_x = static_cast<uint32_t>(left);
-    if (out_crop_y) *out_crop_y = static_cast<uint32_t>(top);
+    if (out_crop_y) *out_crop_y = 0;
 }
 
 }  // namespace
@@ -106,7 +101,8 @@ bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width,
                             const std::string& pixel_format, int quality,
                             std::vector<uint8_t>* output,
                             uint32_t* out_width, uint32_t* out_height,
-                            uint32_t* out_crop_x, uint32_t* out_crop_y) {
+                            uint32_t* out_crop_x, uint32_t* out_crop_y,
+                            uint32_t minimal_width) {
     if (yuv_data.empty() || !output || width == 0 || height == 0) {
         return false;
     }
@@ -155,14 +151,16 @@ bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width,
         if (!convert_frame_to_rgb(meta, yuv_data, &rgb)) {
             return false;
         }
-        return encode_frame_to_jpeg_hw(rgb.data(), width, height, quality, output, out_width, out_height, out_crop_x, out_crop_y);
+        return encode_frame_to_jpeg_hw(rgb.data(), width, height, quality, output,
+                                       out_width, out_height, out_crop_x, out_crop_y,
+                                       minimal_width);
     }
 
-    // Crop black bars before encoding
+    // Crop left and right black bars before encoding.
     cv::Mat cropped;
     uint32_t crop_x = 0;
     uint32_t crop_y = 0;
-    crop_black_bars_bgr(bgr, cropped, &crop_x, &crop_y);
+    crop_black_bars_bgr(bgr, cropped, &crop_x, &crop_y, 15, minimal_width);
 
     if (out_width) *out_width = static_cast<uint32_t>(cropped.cols);
     if (out_height) *out_height = static_cast<uint32_t>(cropped.rows);

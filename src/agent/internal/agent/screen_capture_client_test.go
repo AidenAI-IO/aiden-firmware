@@ -9,7 +9,7 @@ type fakeScreenCaptureSource struct {
 	latestFrameCalls           int
 	latestFrameWithFormatCalls int
 	latestFrameFn              func() (*frameMetadata, []byte, error)
-	latestFrameWithFormatFn    func(format string, quality int) (*frameMetadata, []byte, error)
+	latestFrameWithFormatFn    func(format string, quality, minimalWidth int) (*frameMetadata, []byte, error)
 	lastCaptureInfo            screenCaptureInfo
 }
 
@@ -30,12 +30,12 @@ func (f *fakeScreenCaptureSource) LatestFrame() (*frameMetadata, []byte, error) 
 	return f.latestFrameFn()
 }
 
-func (f *fakeScreenCaptureSource) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error) {
+func (f *fakeScreenCaptureSource) LatestFrameWithFormat(format string, quality, minimalWidth int) (*frameMetadata, []byte, error) {
 	f.latestFrameWithFormatCalls++
 	if f.latestFrameWithFormatFn == nil {
 		return nil, nil, errors.New("LatestFrameWithFormat not configured")
 	}
-	return f.latestFrameWithFormatFn(format, quality)
+	return f.latestFrameWithFormatFn(format, quality, minimalWidth)
 }
 
 func (f *fakeScreenCaptureSource) LastCaptureInfo() screenCaptureInfo {
@@ -44,19 +44,19 @@ func (f *fakeScreenCaptureSource) LastCaptureInfo() screenCaptureInfo {
 
 func TestScreenCaptureClientFallsBackWhenPrimaryFails(t *testing.T) {
 	primary := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality, minimalWidth int) (*frameMetadata, []byte, error) {
 			return nil, nil, errors.New("frame service: SERVICE_RECOVERING")
 		},
 	}
 	fallback := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality, minimalWidth int) (*frameMetadata, []byte, error) {
 			return &frameMetadata{Seq: 1, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("jpeg"), nil
 		},
 		lastCaptureInfo: screenCaptureInfo{Backend: "adb"},
 	}
 
 	client := newScreenCaptureClient(primary, fallback)
-	meta, frame, info, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	meta, frame, info, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, 0)
 	if err != nil {
 		t.Fatalf("LatestFrameWithFormat() error = %v", err)
 	}
@@ -109,21 +109,21 @@ func TestScreenCaptureClientTreatsStalePrimaryFrameAsFailure(t *testing.T) {
 func TestScreenCaptureClientTreatsOldRunningPrimaryFrameAsStale(t *testing.T) {
 	primary := &fakeHealthyScreenCaptureSource{
 		fakeScreenCaptureSource: &fakeScreenCaptureSource{
-			latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+			latestFrameWithFormatFn: func(format string, quality, minimalWidth int) (*frameMetadata, []byte, error) {
 				return &frameMetadata{Seq: 3048, Width: 2, Height: 1, PixelFormat: "jpeg", Stale: false}, []byte("old"), nil
 			},
 		},
 		health: &FrameHealthResult{State: "RUNNING", LatestSeq: 3048, FrameAgeMs: 10_000},
 	}
 	fallback := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality, minimalWidth int) (*frameMetadata, []byte, error) {
 			return &frameMetadata{Seq: 1, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("fresh"), nil
 		},
 		lastCaptureInfo: screenCaptureInfo{Backend: "adb"},
 	}
 
 	client := newScreenCaptureClient(primary, fallback)
-	_, frame, info, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	_, frame, info, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, 0)
 	if err != nil {
 		t.Fatalf("LatestFrameWithFormat() error = %v", err)
 	}
@@ -135,21 +135,21 @@ func TestScreenCaptureClientTreatsOldRunningPrimaryFrameAsStale(t *testing.T) {
 func TestScreenCaptureClientTreatsFrameOlderThanPreCaptureHealthAsStale(t *testing.T) {
 	primary := &fakeHealthyScreenCaptureSource{
 		fakeScreenCaptureSource: &fakeScreenCaptureSource{
-			latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+			latestFrameWithFormatFn: func(format string, quality, minimalWidth int) (*frameMetadata, []byte, error) {
 				return &frameMetadata{Seq: 3048, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("cached"), nil
 			},
 		},
 		health: &FrameHealthResult{State: "RUNNING", LatestSeq: 10663, FrameAgeMs: 139},
 	}
 	fallback := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality, minimalWidth int) (*frameMetadata, []byte, error) {
 			return &frameMetadata{Seq: 1, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("fresh"), nil
 		},
 		lastCaptureInfo: screenCaptureInfo{Backend: "adb"},
 	}
 
 	client := newScreenCaptureClient(primary, fallback)
-	_, frame, info, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	_, frame, info, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, 0)
 	if err != nil {
 		t.Fatalf("LatestFrameWithFormat() error = %v", err)
 	}
@@ -187,18 +187,18 @@ func TestScreenCaptureClientKeepsUsingFallbackBrieflyAfterSuccess(t *testing.T) 
 
 func TestScreenCaptureClientReturnsPrimaryErrorWhenFallbackUnavailable(t *testing.T) {
 	primary := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality, minimalWidth int) (*frameMetadata, []byte, error) {
 			return nil, nil, errors.New("frame service: SERVICE_RECOVERING")
 		},
 	}
 	fallback := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality, minimalWidth int) (*frameMetadata, []byte, error) {
 			return nil, nil, errors.New("no connected adb device")
 		},
 	}
 
 	client := newScreenCaptureClient(primary, fallback)
-	_, _, _, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	_, _, _, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, 0)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -209,12 +209,12 @@ func TestScreenCaptureClientReturnsPrimaryErrorWhenFallbackUnavailable(t *testin
 
 func TestScreenCaptureClientReportsFallbackCaptureInfo(t *testing.T) {
 	primary := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality, minimalWidth int) (*frameMetadata, []byte, error) {
 			return nil, nil, errors.New("frame service: SERVICE_RECOVERING")
 		},
 	}
 	fallback := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality, minimalWidth int) (*frameMetadata, []byte, error) {
 			return &frameMetadata{Seq: 1, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("jpeg"), nil
 		},
 		lastCaptureInfo: screenCaptureInfo{
@@ -228,7 +228,7 @@ func TestScreenCaptureClientReportsFallbackCaptureInfo(t *testing.T) {
 	}
 
 	client := newScreenCaptureClient(primary, fallback)
-	_, _, info, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	_, _, info, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, 0)
 	if err != nil {
 		t.Fatalf("LatestFrameWithFormat() error = %v", err)
 	}

@@ -111,6 +111,7 @@ add_executable(aiden_tests
     frame_service_server_test.cpp
     frame_capture_manager_test.cpp
     frame_processing_test.cpp
+    frame_crop_bounds_test.cpp
     terminal_input_test.cpp
     service_status_test.cpp
     vad_common_test.cpp
