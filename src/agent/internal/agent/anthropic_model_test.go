@@ -222,6 +222,9 @@ func TestAnthropicModelStreamsTextAndToolArguments(t *testing.T) {
 			`event: content_block_delta`,
 			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}`,
 			``,
+			`event: content_block_stop`,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
 			`event: content_block_start`,
 			`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_stream","name":"tap","input":{}}}`,
 			``,
@@ -230,6 +233,9 @@ func TestAnthropicModelStreamsTextAndToolArguments(t *testing.T) {
 			``,
 			`event: content_block_delta`,
 			`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"12}"}}`,
+			``,
+			`event: content_block_stop`,
+			`data: {"type":"content_block_stop","index":1}`,
 			``,
 			`event: message_delta`,
 			`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}`,
@@ -281,7 +287,18 @@ func TestAnthropicModelRetriesEarlyStreamingOverload(t *testing.T) {
 			_, _ = w.Write([]byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"))
 			return
 		}
-		_, _ = w.Write([]byte("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"ok\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"))
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_retry","usage":{}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"ok"}}`,
+			``,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
 	}))
 	defer server.Close()
 
@@ -308,6 +325,8 @@ func TestAnthropicModelClassifiesStreamingOverloadAfterOutputWithoutRetry(t *tes
 		attempts++
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_overload","usage":{}}}`,
+			``,
 			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 			``,
 			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}`,
@@ -335,12 +354,217 @@ func TestAnthropicModelClassifiesStreamingOverloadAfterOutputWithoutRetry(t *tes
 	}
 }
 
+func TestAnthropicModelRetriesIncompleteStreamBeforeOutput(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if attempts == 1 {
+			_, _ = w.Write([]byte(strings.Join([]string{
+				`data: {"type":"message_start","message":{"id":"msg_incomplete","usage":{}}}`,
+				``,
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_incomplete","name":"tap","input":{}}}`,
+				``,
+				`data: {"type":"content_block_stop","index":0}`,
+				``,
+			}, "\n")))
+			return
+		}
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_complete","usage":{}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"ok"}}`,
+			``,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicStreamRetry(1, 0))
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want retry before output", attempts)
+	}
+	if got := response.Choices[0].Content; got != "ok" {
+		t.Fatalf("content = %q, want ok", got)
+	}
+}
+
+func TestAnthropicModelRejectsIncompleteStreamAfterOutputWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_incomplete","usage":{}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			``,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}`,
+			``,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	var streamed strings.Builder
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicStreamRetry(1, 0))
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(_ context.Context, chunk []byte) error {
+		streamed.Write(chunk)
+		return nil
+	}))
+	if err == nil || !strings.Contains(err.Error(), "ended before message_stop") {
+		t.Fatalf("GenerateContent() error = %v, want missing message_stop protocol error", err)
+	}
+	if streamed.String() != "partial" {
+		t.Fatalf("streamed = %q, want partial", streamed.String())
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want no retry after output", attempts)
+	}
+}
+
+func TestAnthropicModelRejectsMessageStopWithOpenContentBlock(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_open_block","usage":{}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_open","name":"tap","input":{}}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicStreamRetry(0, 0))
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), "message_stop received with open content block 0") {
+		t.Fatalf("GenerateContent() error = %v, want open block protocol error", err)
+	}
+}
+
+func TestAnthropicModelRejectsMessageStopBeforeMessageDelta(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_missing_delta","usage":{}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"ok"}}`,
+			``,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicStreamRetry(0, 0))
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), "message_stop received before message_delta") {
+		t.Fatalf("GenerateContent() error = %v, want missing message_delta protocol error", err)
+	}
+}
+
+func TestAnthropicModelRejectsContentBlockAfterMessageDelta(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_late_block","usage":{}}}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"late"}}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicStreamRetry(0, 0))
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), "content_block_start received after message_delta") {
+		t.Fatalf("GenerateContent() error = %v, want late block protocol error", err)
+	}
+}
+
+func TestAnthropicModelAcceptsMultipleMessageDeltas(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_multiple_delta","usage":{"input_tokens":3}}}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			``,
+			`data: {"type":"message_delta","delta":{},"usage":{"output_tokens":2}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicStreamRetry(0, 0))
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	choice := response.Choices[0]
+	if choice.StopReason != "end_turn" {
+		t.Fatalf("stop reason = %q, want end_turn", choice.StopReason)
+	}
+	if got := choice.GenerationInfo["completion_tokens"]; got != 2 {
+		t.Fatalf("completion tokens = %#v, want cumulative value 2", got)
+	}
+}
+
 func TestAnthropicModelLogsResponseOnEarlyStreamFailure(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(`data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"orphan"}}` + "\n\n"))
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_orphan","usage":{}}}`,
+			``,
+			`data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"orphan"}}`,
+			``,
+		}, "\n")))
 	}))
 	defer server.Close()
 

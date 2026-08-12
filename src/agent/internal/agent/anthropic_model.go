@@ -623,11 +623,13 @@ type anthropicStreamBlock struct {
 	Text      strings.Builder
 	Thinking  strings.Builder
 	InputJSON strings.Builder
+	Stopped   bool
 }
 
 type anthropicStreamError struct {
 	err             error
 	outputDelivered bool
+	retryable       bool
 }
 
 func (e *anthropicStreamError) Error() string {
@@ -644,6 +646,27 @@ func (e *anthropicStreamError) Unwrap() error {
 	return e.err
 }
 
+func newAnthropicStreamProtocolError(outputDelivered bool, format string, args ...any) error {
+	return &anthropicStreamError{
+		err:             fmt.Errorf("Anthropic stream protocol error: "+format, args...),
+		outputDelivered: outputDelivered,
+		retryable:       true,
+	}
+}
+
+func firstOpenAnthropicStreamBlock(blocks map[int]*anthropicStreamBlock) (int, bool) {
+	openIndex := 0
+	found := false
+	for index, block := range blocks {
+		if block.Stopped || found && index >= openIndex {
+			continue
+		}
+		openIndex = index
+		found = true
+	}
+	return openIndex, found
+}
+
 func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Reader, model string, statusCode int, callStarted time.Time, opts *llms.CallOptions) (result *llms.ContentResponse, resultErr error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -655,6 +678,9 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 	firstContent := false
 	var firstContentAt int64
 	outputDelivered := false
+	messageStarted := false
+	messageDeltaSeen := false
+	messageStopped := false
 	defer func() {
 		if resultErr == nil {
 			return
@@ -692,13 +718,29 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			Error        map[string]any        `json:"error"`
 		}
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return nil, fmt.Errorf("decode Anthropic stream event: %w", err)
+			return nil, newAnthropicStreamProtocolError(outputDelivered, "decode event: %v", err)
+		}
+		if messageStopped {
+			return nil, newAnthropicStreamProtocolError(outputDelivered, "event %q received after message_stop", event.Type)
 		}
 		switch event.Type {
 		case "message_start":
+			if messageStarted {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "duplicate message_start")
+			}
+			messageStarted = true
 			responseID = event.Message.ID
 			usage = event.Message.Usage
 		case "content_block_start":
+			if !messageStarted {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "content_block_start received before message_start")
+			}
+			if messageDeltaSeen {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "content_block_start received after message_delta")
+			}
+			if _, exists := blocks[event.Index]; exists {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "duplicate content_block_start for block %d", event.Index)
+			}
 			block := &anthropicStreamBlock{Type: event.ContentBlock.Type, ID: event.ContentBlock.ID, Name: event.ContentBlock.Name}
 			if event.ContentBlock.Text != "" {
 				block.Text.WriteString(event.ContentBlock.Text)
@@ -708,9 +750,18 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			}
 			blocks[event.Index] = block
 		case "content_block_delta":
+			if !messageStarted {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "content_block_delta received before message_start")
+			}
+			if messageDeltaSeen {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "content_block_delta received after message_delta")
+			}
 			block := blocks[event.Index]
 			if block == nil {
-				return nil, fmt.Errorf("Anthropic stream delta references missing block %d", event.Index)
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "content_block_delta references missing block %d", event.Index)
+			}
+			if block.Stopped {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "content_block_delta received after content_block_stop for block %d", event.Index)
 			}
 			deltaType, _ := event.Delta["type"].(string)
 			switch deltaType {
@@ -740,13 +791,47 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 				chunk, _ := event.Delta["partial_json"].(string)
 				block.InputJSON.WriteString(chunk)
 			}
+		case "content_block_stop":
+			if !messageStarted {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "content_block_stop received before message_start")
+			}
+			if messageDeltaSeen {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "content_block_stop received after message_delta")
+			}
+			block := blocks[event.Index]
+			if block == nil {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "content_block_stop references missing block %d", event.Index)
+			}
+			if block.Stopped {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "duplicate content_block_stop for block %d", event.Index)
+			}
+			block.Stopped = true
 		case "message_delta":
+			if !messageStarted {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "message_delta received before message_start")
+			}
+			if index, found := firstOpenAnthropicStreamBlock(blocks); found {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "message_delta received with open content block %d", index)
+			}
 			if value, ok := event.Delta["stop_reason"].(string); ok {
 				stopReason = value
 			}
 			if event.Usage.OutputTokens > 0 {
 				usage.OutputTokens = event.Usage.OutputTokens
 			}
+			messageDeltaSeen = true
+		case "message_stop":
+			if !messageStarted {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "message_stop received before message_start")
+			}
+			if index, found := firstOpenAnthropicStreamBlock(blocks); found {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "message_stop received with open content block %d", index)
+			}
+			if !messageDeltaSeen {
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "message_stop received before message_delta")
+			}
+			messageStopped = true
+		case "ping":
 		case "error":
 			encoded, _ := json.Marshal(map[string]any{"error": event.Error})
 			providerErr := newProviderHTTPError(anthropicErrorHTTPStatus(event.Error), encoded)
@@ -754,7 +839,17 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read Anthropic stream: %w", err)
+		return nil, &anthropicStreamError{
+			err:             fmt.Errorf("read Anthropic stream: %w", err),
+			outputDelivered: outputDelivered,
+			retryable:       true,
+		}
+	}
+	if !messageStarted {
+		return nil, newAnthropicStreamProtocolError(outputDelivered, "ended before message_start")
+	}
+	if !messageStopped {
+		return nil, newAnthropicStreamProtocolError(outputDelivered, "ended before message_stop")
 	}
 	response := anthropicResponse{ID: responseID, Model: model, StopReason: stopReason, Usage: usage}
 	indexes := make([]int, 0, len(blocks))
@@ -774,7 +869,7 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			input := any(map[string]any{})
 			if rawInput := strings.TrimSpace(block.InputJSON.String()); rawInput != "" {
 				if err := json.Unmarshal([]byte(rawInput), &input); err != nil {
-					return nil, fmt.Errorf("decode Anthropic streamed tool input: %w", err)
+					return nil, newAnthropicStreamProtocolError(outputDelivered, "decode tool input for block %d: %v", index, err)
 				}
 			}
 			converted.Input = input
@@ -823,6 +918,9 @@ func shouldRetryAnthropicStreamError(err error) bool {
 	var streamErr *anthropicStreamError
 	if !errors.As(err, &streamErr) || streamErr.outputDelivered {
 		return false
+	}
+	if streamErr.retryable {
+		return true
 	}
 	var statusErr interface{ HTTPStatusCode() int }
 	return errors.As(err, &statusErr) && shouldRetryHTTPStatus(statusErr.HTTPStatusCode())
