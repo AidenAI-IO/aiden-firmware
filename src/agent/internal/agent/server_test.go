@@ -2489,6 +2489,20 @@ func TestWebUISteerModeControlsArePresent(t *testing.T) {
 	}
 }
 
+func TestWebUIImagePasteControlsArePresent(t *testing.T) {
+	for _, want := range []string{
+		"const maxDraftImageAttachments = 4;",
+		"inputEl.addEventListener('paste', handleComposerPaste);",
+		"async function handleComposerPaste(event)",
+		"await addImageFiles(files, 'pasted');",
+		"Only 4 images can be attached.",
+	} {
+		if !strings.Contains(webUI, want) {
+			t.Fatalf("web UI missing %q", want)
+		}
+	}
+}
+
 func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		activeRuns:     make(map[string]context.CancelFunc),
@@ -2955,6 +2969,54 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	assistant, ok := firstMessageOfType(resp.History, "assistant")
 	if !ok || assistant.Content != "Completed" {
 		t.Fatalf("unexpected assistant message: %#v", resp.History)
+	}
+}
+
+func TestDecodeMessageAttachmentsLimitsImages(t *testing.T) {
+	payloads := make([]MessageAttachment, maxChatImageAttachments+1)
+	for i := range payloads {
+		payloads[i] = MessageAttachment{
+			Kind:     AttachmentKindImage,
+			Name:     fmt.Sprintf("image-%d.png", i+1),
+			MIMEType: "image/png",
+			Data:     base64.StdEncoding.EncodeToString([]byte{byte(i + 1)}),
+		}
+	}
+
+	if decoded, history, err := decodeMessageAttachments(payloads[:maxChatImageAttachments]); err != nil {
+		t.Fatalf("decodeMessageAttachments(%d images) error = %v", maxChatImageAttachments, err)
+	} else if len(decoded) != maxChatImageAttachments || len(history) != maxChatImageAttachments {
+		t.Fatalf("decoded=%d history=%d, want %d", len(decoded), len(history), maxChatImageAttachments)
+	}
+
+	_, _, err := decodeMessageAttachments(payloads)
+	if err == nil || !strings.Contains(err.Error(), "at most 4 image attachments") {
+		t.Fatalf("decodeMessageAttachments(%d images) error = %v, want image limit", len(payloads), err)
+	}
+}
+
+func TestDecodeMessageAttachmentsCountsImageMIMEWithFileKind(t *testing.T) {
+	payloads := make([]MessageAttachment, maxChatImageAttachments+1)
+	for i := range payloads {
+		payloads[i] = MessageAttachment{
+			Kind:     "file",
+			Name:     fmt.Sprintf("image-%d.png", i+1),
+			MIMEType: "image/png",
+			Data:     base64.StdEncoding.EncodeToString([]byte{byte(i + 1)}),
+		}
+	}
+
+	decoded, history, err := decodeMessageAttachments(payloads[:maxChatImageAttachments])
+	if err != nil {
+		t.Fatalf("decodeMessageAttachments(%d file-kind images) error = %v", maxChatImageAttachments, err)
+	}
+	if decoded[0].Kind != AttachmentKindImage || history[0].Kind != AttachmentKindImage {
+		t.Fatalf("file-kind image was not normalized: decoded=%q history=%q", decoded[0].Kind, history[0].Kind)
+	}
+
+	_, _, err = decodeMessageAttachments(payloads)
+	if err == nil || !strings.Contains(err.Error(), "at most 4 image attachments") {
+		t.Fatalf("decodeMessageAttachments(%d file-kind images) error = %v, want image limit", len(payloads), err)
 	}
 }
 
