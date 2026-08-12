@@ -233,22 +233,30 @@ start() {
                 sleep 2
                 continue
             fi
+            if [ -n "$subdev" ]; then
+                set -- "$@" --subdev "$subdev"
+            fi
             force_trigger="$(resolve_force_trigger "$FRAME_SERVICE_FORCE_TRIGGER" "$subdev")"
+            edid="$(resolve_edid "$FRAME_SERVICE_EDID" "$subdev")"
+            bridge_name="$(hdmi_subdev_name "$subdev")"
+            case "$bridge_name" in
+                *tc358743*)
+                    if [ "$bridge_prepared" != "1" ] && [ "$force_trigger" = "1" ]; then
+                        if ! prepare_tc358743_edid "$subdev" "$edid"; then
+                            sleep 2
+                            continue
+                        fi
+                        bridge_prepared=1
+                    fi
+                    if [ "$bridge_prepared" = "1" ]; then
+                        force_trigger=0
+                    fi
+                    ;;
+            esac
             if [ "$force_trigger" = "1" ]; then
                 set -- "$@" --force-trigger
             else
                 set -- "$@" --no-force-trigger
-            fi
-            if [ -n "$subdev" ]; then
-                set -- "$@" --subdev "$subdev"
-            fi
-            edid="$(resolve_edid "$FRAME_SERVICE_EDID" "$subdev")"
-            if [ "$bridge_prepared" != "1" ] && [ "$force_trigger" = "1" ]; then
-                if ! prepare_tc358743_edid "$subdev" "$edid"; then
-                    sleep 2
-                    continue
-                fi
-                bridge_prepared=1
             fi
             if [ -n "$edid" ]; then
                 set -- "$@" --edid "$edid"

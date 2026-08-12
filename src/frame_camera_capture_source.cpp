@@ -23,7 +23,9 @@ bool FrameCameraCaptureSource::open() {
     sync_config_strings();
     config_.force_trigger = force_trigger_pending_;
     const bool opened = camera_.init(config_);
-    force_trigger_pending_ = false;
+    if (opened) {
+        force_trigger_pending_ = false;
+    }
     return opened;
 }
 

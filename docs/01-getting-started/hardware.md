@@ -117,8 +117,8 @@ It is also recommended to enable **Show Onscreen Keyboard** on the AssistiveTouc
 
 | Capability | Default node / path | Description |
 | --- | --- | --- |
-| Video capture | `/dev/video0` | RK628D output to V4L2 capture device |
-| HDMI subdev | Auto-detected `rk628-csi` node | EDID / DV timings / HDMI sync; the exact `/dev/v4l-subdevX` index can vary |
+| Video capture | `/dev/video0` | RK628D or TC358743 bridge output to the V4L2 capture device |
+| HDMI subdev | Auto-detected `rk628-csi` or `tc358743` node | EDID / DV timings / HDMI sync; the exact `/dev/v4l-subdevX` index can vary |
 | Keyboard HID | `/dev/hidg0` | Default keyboard device for Go Agent and example tools |
 | Mouse/touch HID | `/dev/hidg1` | Go Agent uses the same HID device for mouse/touch input |
 | Auxiliary control HID | `/dev/hidg2` | Android extension keys in touchscreen mode; Consumer Control media, volume, brightness, and screenshot keys in absolute mode |

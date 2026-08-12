@@ -49,7 +49,7 @@ static void usage(const char* prog) {
             "  --require-exact-resolution\n"
             "                            Fail if negotiated mode differs from requested width/height\n"
             "  --allow-resolution-mismatch\n"
-            "                            Deprecated alias; default already accepts negotiated mode\n"
+            "                            Accept negotiated width/height instead of requiring an exact match\n"
             "  --allow-uniform-frames    Keep all-same HDMI frames instead of retrying\n"
             "  --help                    Show this help\n",
             prog);

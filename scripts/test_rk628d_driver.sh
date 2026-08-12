@@ -71,6 +71,14 @@ tc358743_node="$(sed -n '/tc358743_csi: tc358743@f {/,/^[[:space:]]*};/p' "$DTS"
 rk628_input="$(sed -n '/rk628_csi_in: endpoint@0 {/,/^[[:space:]]*};/p' "$DTS")"
 tc358743_input="$(sed -n '/tc358743_csi_in: endpoint@1 {/,/^[[:space:]]*};/p' "$DTS")"
 
+if ! grep -q '^[[:space:]]*reg = <0x50>;$' <<< "$rk628_node"; then
+    echo "FAIL: RK628 node must use I2C register address 0x50" >&2
+    exit 1
+fi
+if ! grep -q '^[[:space:]]*reg = <0x0f>;$' <<< "$tc358743_node"; then
+    echo "FAIL: TC358743 node must use I2C register address 0x0f" >&2
+    exit 1
+fi
 if ! grep -q 'continues-clk;' <<< "$rk628_node" || \
         ! grep -q 'data-lanes = <1 2 3 4>;' <<< "$rk628_node" || \
         ! grep -q 'data-lanes = <1 2 3 4>;' <<< "$rk628_input"; then

@@ -56,7 +56,7 @@ void usage(const char* program) {
             "Usage: %s [--socket PATH] [--device PATH] [--width N] [--height N] "
             "[--pixel-format FMT] [--subdev PATH] [--edid PATH] [--ring-size N] "
             "[--fps N] [--no-hdmi-sync] [--force-trigger|--no-force-trigger] "
-            "[--require-exact-resolution]\n",
+            "[--require-exact-resolution|--allow-resolution-mismatch]\n",
             program);
 }
 

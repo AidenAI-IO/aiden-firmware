@@ -47,8 +47,10 @@ struct CameraConfig {
 };
 ```
 
-`frame_service` overrides the two timing flags above: it performs one startup
-EDID/HPD renegotiation and requires the negotiated 1920x1080 resolution.
+`frame_service` overrides the two timing flags above and requires the negotiated
+1920x1080 resolution. The RK628D path avoids forced EDID/HPD retriggering and
+retains the driver-provided EDID. The TC358743 path performs one startup
+EDID/HPD renegotiation, then queries the settled timings.
 
 ## WakeupListener
 
