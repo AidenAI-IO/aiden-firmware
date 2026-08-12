@@ -41,7 +41,7 @@ type AgentLoop struct {
 	CallbacksHandler         callbacks.Handler
 	MaxIterations            int
 	Recorder                 *EpisodeRecorder
-	ScreenshotPruning        ScreenshotPruningConfig
+	ScreenshotPruning        executor.ScreenshotPruningConfig
 	EnvironmentBridge        *EnvironmentBridgeClient
 	EnvironmentBridgeTools   []string
 	SteerInterrupt           func() <-chan struct{}
@@ -64,7 +64,7 @@ func NewAgentLoop(
 	maxIterations int,
 	callbacksHandler callbacks.Handler,
 	recorder *EpisodeRecorder,
-	screenshotPruning ScreenshotPruningConfig,
+	screenshotPruning executor.ScreenshotPruningConfig,
 	contextManager *contextmanager.ContextManager,
 ) *AgentLoop {
 	if contextManager == nil {
@@ -87,7 +87,7 @@ func (l *AgentLoop) outboundTransforms() []executor.OutboundMessageTransform {
 	modelName := l.Model.Spec().Name
 	modelProvider := l.Model.Spec().Provider
 	return []executor.OutboundMessageTransform{
-		AnthropicScreenshotPruner{
+		executor.AnthropicScreenshotPruner{
 			Enabled: IsAnthropicModel(modelProvider, modelName),
 			Config:  l.ScreenshotPruning,
 		},

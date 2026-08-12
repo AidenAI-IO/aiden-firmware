@@ -7,12 +7,12 @@ import (
 
 func TestCoordinateDebugScreenshotReusesSharedScreenCaptureClientFallbackState(t *testing.T) {
 	primary := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error) {
 			return nil, nil, errors.New("frame service: SERVICE_RECOVERING")
 		},
 	}
 	fallback := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error) {
 			return &frameMetadata{
 				Seq:          1,
 				Width:        2,

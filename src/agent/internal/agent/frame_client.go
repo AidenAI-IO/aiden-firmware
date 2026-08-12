@@ -202,21 +202,29 @@ func (r *frameHealthResponse) UnmarshalJSON(data []byte) error {
 
 // LatestFrame fetches the most recent frame from the service.
 func (c *FrameServiceClient) LatestFrame() (*frameMetadata, []byte, error) {
-	return c.LatestFrameWithFormat("raw", 0)
+	return c.LatestFrameWithFormat("raw", 0, false, 0)
 }
 
 // LatestFrameWithFormat fetches the most recent frame with specified format.
 // format: "raw" (YUV) or "jpeg"
 // quality: JPEG quality (1-100), ignored for raw format
-func (c *FrameServiceClient) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error) {
+// cropBlack: whether to crop uniformly dark columns at the left and right edges
+// minimalWidth: optional lower bound for width after horizontal cropping
+func (c *FrameServiceClient) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error) {
 	if format == "" {
 		format = "raw"
 	}
 	if quality <= 0 {
 		quality = 80
 	}
+	if minimalWidth < 0 {
+		minimalWidth = 0
+	}
 
-	request := fmt.Sprintf(`{"type":"request","method":"latest_frame","since_seq":"0","timeout_ms":0,"format":"%s","quality":%d}`, format, quality)
+	request := fmt.Sprintf(`{"type":"request","method":"latest_frame","since_seq":"0","timeout_ms":0,"format":"%s","quality":%d,"crop_black":%t}`, format, quality, cropBlack)
+	if minimalWidth > 0 {
+		request = fmt.Sprintf(`{"type":"request","method":"latest_frame","since_seq":"0","timeout_ms":0,"format":"%s","quality":%d,"crop_black":%t,"minimal_width":%d}`, format, quality, cropBlack, minimalWidth)
+	}
 
 	headerJSON, payload, err := c.doRequest(request, nil, 5*time.Second)
 	if err != nil {

@@ -67,9 +67,9 @@ func countBinaryAndOmitted(messages []llms.MessageContent) (binaryCount, omitted
 func TestAgentLoopExecutorPrunesForAnthropicModel(t *testing.T) {
 	manager := newScreenshotObservationManager(t, 6)
 	model := &pruneRecordingModel{}
-	pruner := AnthropicScreenshotPruner{
+	pruner := executor.AnthropicScreenshotPruner{
 		Enabled: IsAnthropicModel("openrouter", "anthropic/claude-test"),
-		Config:  ScreenshotPruningConfig{}.WithDefaults(),
+		Config:  executor.ScreenshotPruningConfig{}.WithDefaults(),
 	}
 	exec := executor.NewLLMExecutor(model, manager, pruner)
 	if _, err := exec.GenerateContent(context.Background()); err != nil {
@@ -92,9 +92,9 @@ func TestAgentLoopExecutorPrunesForAnthropicModel(t *testing.T) {
 func TestAgentLoopExecutorSkipsPruneForNonAnthropic(t *testing.T) {
 	manager := newScreenshotObservationManager(t, 6)
 	model := &pruneRecordingModel{}
-	pruner := AnthropicScreenshotPruner{
+	pruner := executor.AnthropicScreenshotPruner{
 		Enabled: IsAnthropicModel("openrouter", "openai/gpt-4o"),
-		Config:  ScreenshotPruningConfig{}.WithDefaults(),
+		Config:  executor.ScreenshotPruningConfig{}.WithDefaults(),
 	}
 	exec := executor.NewLLMExecutor(model, manager, pruner)
 	if _, err := exec.GenerateContent(context.Background()); err != nil {
@@ -109,10 +109,10 @@ func TestAgentLoopExecutorSkipsPruneForNonAnthropic(t *testing.T) {
 func TestAgentLoopOutboundTransformsEnableForAnthropic(t *testing.T) {
 	loop := &AgentLoop{
 		Model:             &ModelManager{config: ModelConfig{Provider: "openrouter", Model: "anthropic/x"}},
-		ScreenshotPruning: ScreenshotPruningConfig{}.WithDefaults(),
+		ScreenshotPruning: executor.ScreenshotPruningConfig{}.WithDefaults(),
 	}
 	transforms := loop.outboundTransforms()
-	pruner, ok := transforms[0].(AnthropicScreenshotPruner)
+	pruner, ok := transforms[0].(executor.AnthropicScreenshotPruner)
 	if !ok || !pruner.Enabled {
 		t.Fatalf("transforms = %#v", transforms)
 	}
@@ -121,10 +121,10 @@ func TestAgentLoopOutboundTransformsEnableForAnthropic(t *testing.T) {
 func TestAgentLoopOutboundTransformsDisableForNonAnthropic(t *testing.T) {
 	loop := &AgentLoop{
 		Model:             &ModelManager{config: ModelConfig{Provider: "openrouter", Model: "openai/gpt-4o"}},
-		ScreenshotPruning: ScreenshotPruningConfig{}.WithDefaults(),
+		ScreenshotPruning: executor.ScreenshotPruningConfig{}.WithDefaults(),
 	}
 	transforms := loop.outboundTransforms()
-	pruner, ok := transforms[0].(AnthropicScreenshotPruner)
+	pruner, ok := transforms[0].(executor.AnthropicScreenshotPruner)
 	if !ok || pruner.Enabled {
 		t.Fatalf("transforms = %#v", transforms)
 	}
