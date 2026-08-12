@@ -110,6 +110,12 @@ jobs:
     - name: Verify reproducible rootfs policy
       run: bash scripts/test_reproducible_rootfs_policy.sh
 
+    - name: Verify HDMI bridge startup policy
+      run: sh scripts/test_frame_service_bridge_policy.sh
+
+    - name: Verify dual-bridge RK628D driver integration
+      run: bash scripts/test_rk628d_driver.sh
+
     - name: Free hosted runner disk space
       if: ${{ inputs.free_disk_space }}
       run: |
