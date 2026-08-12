@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +25,7 @@ const (
 	anthropicAPIVersion              = "2023-06-01"
 	defaultAnthropicStreamMaxRetries = 5
 	defaultAnthropicStreamRetryDelay = 2 * time.Second
+	defaultAnthropicProtocolRetries  = 1
 )
 
 type anthropicModel struct {
@@ -37,6 +39,8 @@ type anthropicModel struct {
 	reasoningEffort  string
 	streamMaxRetries int
 	streamRetryDelay time.Duration
+	protocolRetries  int
+	protocolDelay    time.Duration
 }
 
 type anthropicModelOption func(*anthropicModel)
@@ -64,6 +68,17 @@ func withAnthropicStreamRetry(maxRetries int, delay time.Duration) anthropicMode
 		}
 		if delay >= 0 {
 			m.streamRetryDelay = delay
+		}
+	}
+}
+
+func withAnthropicProtocolRetry(maxRetries int, delay time.Duration) anthropicModelOption {
+	return func(m *anthropicModel) {
+		if maxRetries >= 0 {
+			m.protocolRetries = maxRetries
+		}
+		if delay >= 0 {
+			m.protocolDelay = delay
 		}
 	}
 }
@@ -179,6 +194,7 @@ func newAnthropicModel(baseURL, model, token string, httpClient *http.Client, op
 		httpClient:       httpClient,
 		streamMaxRetries: defaultAnthropicStreamMaxRetries,
 		streamRetryDelay: defaultAnthropicStreamRetryDelay,
+		protocolRetries:  defaultAnthropicProtocolRetries,
 	}
 	for _, option := range opts {
 		if option != nil {
@@ -248,11 +264,9 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 		return nil, fmt.Errorf("marshal Anthropic request: %w", err)
 	}
 	ctx = m.withRawHTTPLogScope(ctx)
-	maxAttempts := 1
-	if request.Stream {
-		maxAttempts += m.streamMaxRetries
-	}
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	streamRetries := 0
+	protocolRetries := 0
+	for {
 		_ = m.logRawHTTP(ctx, request.Model, "request", 0, string(payload))
 
 		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+"/messages", bytes.NewReader(payload))
@@ -281,15 +295,32 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 		}
 
 		if request.Stream {
-			result, streamErr := m.decodeStreamingResponse(ctx, response.Body, request.Model, response.StatusCode, callStarted, &callOpts)
+			result, streamErr := m.decodeStreamingResponse(ctx, response.Body, request.Model, response.StatusCode, callStarted, &callOpts, request.Thinking != nil)
 			response.Body.Close()
 			if streamErr == nil {
 				return result, nil
 			}
-			if attempt+1 >= maxAttempts || !shouldRetryAnthropicStreamError(streamErr) {
+			retryLimit := m.streamMaxRetries
+			retryDelay := m.streamRetryDelay
+			var responseProtocolErr *anthropicResponseProtocolError
+			if errors.As(streamErr, &responseProtocolErr) {
+				retryLimit = m.protocolRetries
+				retryDelay = m.protocolDelay
+				if protocolRetries >= retryLimit || !shouldRetryAnthropicStreamError(streamErr) {
+					return nil, streamErr
+				}
+				protocolRetries++
+				log.Printf("[WARN] [anthropic] retrying semantic protocol error (%d/%d): %v", protocolRetries, retryLimit, streamErr)
+				if err := waitBeforeAnthropicRetry(ctx, protocolRetries, retryDelay); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if streamRetries >= retryLimit || !shouldRetryAnthropicStreamError(streamErr) {
 				return nil, streamErr
 			}
-			if err := m.waitBeforeAnthropicStreamRetry(ctx, attempt+1); err != nil {
+			streamRetries++
+			if err := waitBeforeAnthropicRetry(ctx, streamRetries, retryDelay); err != nil {
 				return nil, err
 			}
 			continue
@@ -306,9 +337,25 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 		if err := json.Unmarshal(body, &decoded); err != nil {
 			return nil, fmt.Errorf("decode Anthropic response: %w", err)
 		}
-		return aggregateAnthropicResponse(decoded, callStarted), nil
+		normalized, recovery, protocolErr := normalizeAnthropicResponse(decoded, request.Thinking != nil)
+		if protocolErr != nil {
+			if protocolRetries >= m.protocolRetries {
+				return nil, protocolErr
+			}
+			protocolRetries++
+			log.Printf("[WARN] [anthropic] retrying semantic protocol error (%d/%d): %v", protocolRetries, m.protocolRetries, protocolErr)
+			if err := waitBeforeAnthropicRetry(ctx, protocolRetries, m.protocolDelay); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		generationInfo := map[string]any{}
+		if recovery != "" {
+			log.Printf("[WARN] [anthropic] recovered response %s as user-visible text (response_id=%s)", recovery, decoded.ID)
+			generationInfo["llm_anthropic_response_recovery"] = recovery
+		}
+		return aggregateAnthropicResponseWithGenerationInfo(normalized, callStarted, generationInfo), nil
 	}
-	return nil, fmt.Errorf("Anthropic stream retry attempts exhausted")
 }
 
 func convertAnthropicMessages(messages []llms.MessageContent) ([]anthropicContentBlock, []anthropicRequestMessage, error) {
@@ -573,8 +620,67 @@ func disableAnthropicParallelToolUse(choice any) map[string]any {
 	return converted
 }
 
-func aggregateAnthropicResponse(response anthropicResponse, callStarted time.Time) *llms.ContentResponse {
-	return aggregateAnthropicResponseWithGenerationInfo(response, callStarted, nil)
+type anthropicResponseProtocolError struct {
+	message string
+}
+
+func (e *anthropicResponseProtocolError) Error() string {
+	return "Anthropic response protocol error: " + e.message
+}
+
+func newAnthropicResponseProtocolError(message string) error {
+	return &anthropicResponseProtocolError{message: message}
+}
+
+func normalizeAnthropicResponse(response anthropicResponse, thinkingEnabled bool) (anthropicResponse, string, error) {
+	hasText := false
+	hasThinking := false
+	hasToolUse := false
+	hasSignedThinking := false
+	invalidToolUse := false
+	for _, block := range response.Content {
+		switch block.Type {
+		case "text":
+			hasText = hasText || strings.TrimSpace(block.Text) != ""
+		case "thinking":
+			hasThinking = hasThinking || strings.TrimSpace(block.Thinking) != ""
+			hasSignedThinking = hasSignedThinking || strings.TrimSpace(block.Signature) != ""
+		case "tool_use":
+			valid := strings.TrimSpace(block.ID) != "" && strings.TrimSpace(block.Name) != ""
+			hasToolUse = hasToolUse || valid
+			invalidToolUse = invalidToolUse || !valid
+		}
+	}
+	if invalidToolUse {
+		return response, "", newAnthropicResponseProtocolError("tool_use content is missing an id or name")
+	}
+
+	switch response.StopReason {
+	case "tool_use":
+		if !hasToolUse {
+			return response, "", newAnthropicResponseProtocolError("tool_use stop_reason has no valid tool_use content")
+		}
+	case "end_turn":
+		if hasText || hasToolUse {
+			return response, "", nil
+		}
+		if hasThinking && !hasSignedThinking && !thinkingEnabled {
+			for index := range response.Content {
+				block := &response.Content[index]
+				if block.Type != "thinking" {
+					continue
+				}
+				block.Type = "text"
+				block.Text = block.Thinking
+				block.Thinking = ""
+				block.Signature = ""
+			}
+			return response, "thinking_as_text", nil
+		}
+		return response, "", newAnthropicResponseProtocolError("end_turn response has no text or tool_use content")
+	}
+
+	return response, "", nil
 }
 
 func aggregateAnthropicResponseWithGenerationInfo(response anthropicResponse, callStarted time.Time, generationInfo map[string]any) *llms.ContentResponse {
@@ -622,6 +728,7 @@ type anthropicStreamBlock struct {
 	Name      string
 	Text      strings.Builder
 	Thinking  strings.Builder
+	Signature strings.Builder
 	InputJSON strings.Builder
 	Stopped   bool
 }
@@ -667,7 +774,7 @@ func firstOpenAnthropicStreamBlock(blocks map[int]*anthropicStreamBlock) (int, b
 	return openIndex, found
 }
 
-func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Reader, model string, statusCode int, callStarted time.Time, opts *llms.CallOptions) (result *llms.ContentResponse, resultErr error) {
+func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Reader, model string, statusCode int, callStarted time.Time, opts *llms.CallOptions, thinkingEnabled bool) (result *llms.ContentResponse, resultErr error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	blocks := map[int]*anthropicStreamBlock{}
@@ -748,6 +855,9 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			if event.ContentBlock.Thinking != "" {
 				block.Thinking.WriteString(event.ContentBlock.Thinking)
 			}
+			if event.ContentBlock.Signature != "" {
+				block.Signature.WriteString(event.ContentBlock.Signature)
+			}
 			blocks[event.Index] = block
 		case "content_block_delta":
 			if !messageStarted {
@@ -781,7 +891,7 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			case "thinking_delta":
 				chunk, _ := event.Delta["thinking"].(string)
 				block.Thinking.WriteString(chunk)
-				if chunk != "" && opts.StreamingReasoningFunc != nil {
+				if chunk != "" && thinkingEnabled && opts.StreamingReasoningFunc != nil {
 					if err := opts.StreamingReasoningFunc(ctx, []byte(chunk), nil); err != nil {
 						return nil, err
 					}
@@ -790,6 +900,9 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			case "input_json_delta":
 				chunk, _ := event.Delta["partial_json"].(string)
 				block.InputJSON.WriteString(chunk)
+			case "signature_delta":
+				chunk, _ := event.Delta["signature"].(string)
+				block.Signature.WriteString(chunk)
 			}
 		case "content_block_stop":
 			if !messageStarted {
@@ -865,6 +978,7 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			converted.Text = block.Text.String()
 		case "thinking":
 			converted.Thinking = block.Thinking.String()
+			converted.Signature = block.Signature.String()
 		case "tool_use":
 			input := any(map[string]any{})
 			if rawInput := strings.TrimSpace(block.InputJSON.String()); rawInput != "" {
@@ -876,8 +990,30 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 		}
 		response.Content = append(response.Content, converted)
 	}
-	if encoded, err := json.Marshal(response); err == nil {
-		_ = m.logRawHTTP(ctx, model, "response", statusCode, string(encoded))
+	encodedResponse, encodeErr := json.Marshal(response)
+	normalized, recovery, protocolErr := normalizeAnthropicResponse(response, thinkingEnabled)
+	if protocolErr != nil {
+		return nil, &anthropicStreamError{err: protocolErr, outputDelivered: outputDelivered, retryable: true}
+	}
+	response = normalized
+	if recovery != "" {
+		log.Printf("[WARN] [anthropic] recovered streamed response %s as user-visible text (response_id=%s)", recovery, response.ID)
+	}
+	if recovery != "" && opts.StreamingFunc != nil {
+		recoveredText := anthropicResponseText(response)
+		if recoveredText != "" {
+			if err := opts.StreamingFunc(ctx, []byte(recoveredText)); err != nil {
+				return nil, err
+			}
+			outputDelivered = true
+			if !firstContent {
+				firstContent = true
+				firstContentAt = time.Since(callStarted).Milliseconds()
+			}
+		}
+	}
+	if encodeErr == nil {
+		_ = m.logRawHTTP(ctx, model, "response", statusCode, string(encodedResponse))
 	} else {
 		_ = m.logRawHTTP(ctx, model, "response", statusCode, raw.String())
 	}
@@ -886,8 +1022,21 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 		generationInfo["llm_stream"] = true
 		generationInfo["llm_time_to_first_content_ms"] = firstContentAt
 	}
+	if recovery != "" {
+		generationInfo["llm_anthropic_response_recovery"] = recovery
+	}
 	result = aggregateAnthropicResponseWithGenerationInfo(response, callStarted, generationInfo)
 	return result, nil
+}
+
+func anthropicResponseText(response anthropicResponse) string {
+	var result strings.Builder
+	for _, block := range response.Content {
+		if block.Type == "text" {
+			result.WriteString(block.Text)
+		}
+	}
+	return result.String()
 }
 
 func anthropicErrorHTTPStatus(eventError map[string]any) int {
@@ -926,8 +1075,8 @@ func shouldRetryAnthropicStreamError(err error) bool {
 	return errors.As(err, &statusErr) && shouldRetryHTTPStatus(statusErr.HTTPStatusCode())
 }
 
-func (m *anthropicModel) waitBeforeAnthropicStreamRetry(ctx context.Context, retryNumber int) error {
-	delay := time.Duration(retryNumber) * m.streamRetryDelay
+func waitBeforeAnthropicRetry(ctx context.Context, retryNumber int, retryDelay time.Duration) error {
+	delay := time.Duration(retryNumber) * retryDelay
 	if delay <= 0 {
 		return nil
 	}

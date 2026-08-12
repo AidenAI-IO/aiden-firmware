@@ -204,6 +204,235 @@ func TestAnthropicModelDisablesParallelUseForExplicitToolChoice(t *testing.T) {
 	}
 }
 
+func TestAnthropicModelRecoversThinkingOnlyEndTurnWhenThinkingWasDisabled(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"id":"msg_misclassified",
+			"content":[{"type":"thinking","thinking":"<tts>Answer.</tts>\n<final_answer>(d)</final_answer>"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":10,"output_tokens":8}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client())
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	choice := response.Choices[0]
+	if choice.Content != "<tts>Answer.</tts>\n<final_answer>(d)</final_answer>" {
+		t.Fatalf("content = %q", choice.Content)
+	}
+	if choice.ReasoningContent != "" {
+		t.Fatalf("reasoning content = %q, want recovered content to be reclassified", choice.ReasoningContent)
+	}
+	if got := choice.GenerationInfo["llm_anthropic_response_recovery"]; got != "thinking_as_text" {
+		t.Fatalf("recovery info = %#v", got)
+	}
+}
+
+func TestAnthropicModelDoesNotExposeThinkingOnlyEndTurnWhenThinkingWasEnabled(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"id":"msg_thinking",
+			"content":[{"type":"thinking","thinking":"private reasoning","signature":"sig"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":10,"output_tokens":8}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(),
+		withAnthropicReasoningEffort("low"),
+		withAnthropicProtocolRetry(0, 0),
+	)
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "end_turn response has no text or tool_use content") {
+		t.Fatalf("GenerateContent() error = %v, want semantic protocol error", err)
+	}
+}
+
+func TestAnthropicModelRetriesToolUseWithoutToolBlock(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			_, _ = w.Write([]byte(`{
+				"id":"msg_empty_tool",
+				"content":[],
+				"stop_reason":"tool_use",
+				"usage":{"input_tokens":10,"output_tokens":1}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"id":"msg_tool",
+			"content":[{"type":"tool_use","id":"call_1","name":"echo","input":{"value":"ok"}}],
+			"stop_reason":"tool_use",
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicProtocolRetry(1, 0))
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "echo"}}}))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want semantic retry", attempts)
+	}
+	if len(response.Choices[0].ToolCalls) != 1 || response.Choices[0].ToolCalls[0].FunctionCall.Name != "echo" {
+		t.Fatalf("tool calls = %#v", response.Choices[0].ToolCalls)
+	}
+}
+
+func TestAnthropicModelStreamsRecoveredThinkingOnlyContent(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_misclassified","usage":{"input_tokens":10}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+			``,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"<tts>Answer.</tts>"}}`,
+			``,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	var streamed strings.Builder
+	var streamedReasoning strings.Builder
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client())
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(_ context.Context, chunk []byte) error {
+		streamed.Write(chunk)
+		return nil
+	}), llms.WithStreamingReasoningFunc(func(_ context.Context, chunk []byte, _ []byte) error {
+		streamedReasoning.Write(chunk)
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if streamed.String() != "<tts>Answer.</tts>" {
+		t.Fatalf("streamed = %q", streamed.String())
+	}
+	if streamedReasoning.Len() != 0 {
+		t.Fatalf("streamed reasoning = %q, want misclassified content hidden until recovery", streamedReasoning.String())
+	}
+	if response.Choices[0].Content != streamed.String() || response.Choices[0].ReasoningContent != "" {
+		t.Fatalf("choice = %#v", response.Choices[0])
+	}
+}
+
+func TestAnthropicModelDoesNotRecoverSignedThinkingStream(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_signed","usage":{"input_tokens":10}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+			``,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"private reasoning"}}`,
+			``,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}`,
+			``,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	var streamed strings.Builder
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicProtocolRetry(0, 0))
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(_ context.Context, chunk []byte) error {
+		streamed.Write(chunk)
+		return nil
+	}))
+	if err == nil || !strings.Contains(err.Error(), "end_turn response has no text or tool_use content") {
+		t.Fatalf("GenerateContent() error = %v, want signed thinking protocol error", err)
+	}
+	if streamed.Len() != 0 {
+		t.Fatalf("streamed = %q, want no signed thinking disclosure", streamed.String())
+	}
+}
+
+func TestAnthropicModelRetriesEmptyStreamedEndTurn(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if attempts == 1 {
+			_, _ = w.Write([]byte(strings.Join([]string{
+				`data: {"type":"message_start","message":{"id":"msg_empty","usage":{"input_tokens":10}}}`,
+				``,
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}`,
+				``,
+				`data: {"type":"message_stop"}`,
+				``,
+			}, "\n")))
+			return
+		}
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_ok","usage":{"input_tokens":10}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"ok"}}`,
+			``,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicProtocolRetry(1, 0))
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if attempts != 2 || response.Choices[0].Content != "ok" {
+		t.Fatalf("attempts = %d, choice = %#v", attempts, response.Choices[0])
+	}
+}
+
 func TestAnthropicModelStreamsTextAndToolArguments(t *testing.T) {
 	t.Parallel()
 
@@ -527,6 +756,10 @@ func TestAnthropicModelAcceptsMultipleMessageDeltas(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(strings.Join([]string{
 			`data: {"type":"message_start","message":{"id":"msg_multiple_delta","usage":{"input_tokens":3}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"ok"}}`,
+			``,
+			`data: {"type":"content_block_stop","index":0}`,
 			``,
 			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
 			``,
