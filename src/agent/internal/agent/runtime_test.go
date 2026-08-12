@@ -988,6 +988,31 @@ func (p *blockingEpisodeMaintenancePlane) releaseMaintenance() {
 	}
 }
 
+type gatedEpisodeTracePlane struct {
+	*blockingEpisodeMaintenancePlane
+	traceStarted chan struct{}
+	traceRelease chan struct{}
+}
+
+func newGatedEpisodeTracePlane() *gatedEpisodeTracePlane {
+	return &gatedEpisodeTracePlane{
+		blockingEpisodeMaintenancePlane: newBlockingEpisodeMaintenancePlane(),
+		traceStarted:                    make(chan struct{}),
+		traceRelease:                    make(chan struct{}),
+	}
+}
+
+func (p *gatedEpisodeTracePlane) commitEpisodeTrace(ctx context.Context, episode TaskEpisode) error {
+	close(p.traceStarted)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.traceRelease:
+		p.traceCommitted.Store(true)
+		return nil
+	}
+}
+
 func TestRuntimeRunAsyncEpisodeMaintenanceDoesNotBlock(t *testing.T) {
 	plane := newBlockingEpisodeMaintenancePlane()
 	defer plane.releaseMaintenance()
@@ -1024,6 +1049,106 @@ func TestRuntimeRunAsyncEpisodeMaintenanceDoesNotBlock(t *testing.T) {
 	case <-plane.started:
 	case <-time.After(time.Second):
 		t.Fatal("async episode maintenance did not start")
+	}
+}
+
+func TestRuntimeClosePreventsLateAsyncEpisodeMaintenanceRegistration(t *testing.T) {
+	plane := newGatedEpisodeTracePlane()
+	defer plane.releaseMaintenance()
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1}),
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = plane
+
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(context.Background(), RunRequest{
+			Input:                   "hello",
+			AsyncEpisodeMaintenance: true,
+		})
+		runDone <- err
+	}()
+	select {
+	case <-plane.traceStarted:
+	case <-time.After(time.Second):
+		t.Fatal("episode trace commit did not start")
+	}
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- runtime.Close()
+	}()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close() waited for episode maintenance that was not registered")
+	}
+
+	close(plane.traceRelease)
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not return after episode trace commit completed")
+	}
+	select {
+	case <-plane.started:
+		t.Fatal("async episode maintenance started after Runtime.Close()")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestRuntimeCloseWaitsForAsyncEpisodeMaintenance(t *testing.T) {
+	plane := newBlockingEpisodeMaintenancePlane()
+	defer plane.releaseMaintenance()
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1}),
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = plane
+
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input:                   "hello",
+		AsyncEpisodeMaintenance: true,
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	select {
+	case <-plane.started:
+	case <-time.After(time.Second):
+		t.Fatal("async episode maintenance did not start")
+	}
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- runtime.Close()
+	}()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close() returned before async episode maintenance completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	plane.releaseMaintenance()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not return after async episode maintenance completed")
 	}
 }
 

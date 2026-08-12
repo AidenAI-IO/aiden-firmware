@@ -1796,6 +1796,11 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("runtime.Close() error = %v", err)
+		}
+	})
 	server := newServerForTest(runtime)
 	provider := &recordingTTSProvider{name: "server-provider"}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)

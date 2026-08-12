@@ -84,6 +84,13 @@ type Runtime struct {
 	storageMonitor     *StorageMonitor
 	ttsManager         *tts.ProviderManager
 	ttsManagerOnce     sync.Once
+	episodeMaintenance asyncEpisodeMaintenance
+}
+
+type asyncEpisodeMaintenance struct {
+	mu      sync.Mutex
+	wg      sync.WaitGroup
+	closing bool
 }
 
 type RunRequest struct {
@@ -1606,7 +1613,11 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 				return
 			}
 			r.exportEpisodeBestEffort(episode, promptCapture)
+			if !r.episodeMaintenance.begin() {
+				return
+			}
 			go func() {
+				defer r.episodeMaintenance.done()
 				maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer maintenanceCancel()
 				plane.commitEpisodeMaintenance(maintenanceCtx, episode)
@@ -1619,6 +1630,27 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 		return
 	}
 	r.exportEpisodeBestEffort(episode, promptCapture)
+}
+
+func (m *asyncEpisodeMaintenance) begin() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closing {
+		return false
+	}
+	m.wg.Add(1)
+	return true
+}
+
+func (m *asyncEpisodeMaintenance) done() {
+	m.wg.Done()
+}
+
+func (m *asyncEpisodeMaintenance) closeAndWait() {
+	m.mu.Lock()
+	m.closing = true
+	m.mu.Unlock()
+	m.wg.Wait()
 }
 
 func enrichEpisodeSessionBoundaryTelemetry(episode *TaskEpisode, boundary sessionBoundaryTelemetry) {
@@ -2428,6 +2460,7 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	r.episodeMaintenance.closeAndWait()
 	if r.storageMonitor != nil {
 		r.storageMonitor.Stop()
 	}
