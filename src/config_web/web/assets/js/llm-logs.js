@@ -600,7 +600,16 @@ function extractResponseMessage(body) {
       const m = obj.choices[0].message || {};
       return {role: m.role || 'assistant', content: m.content || '', tool_calls: m.tool_calls || []};
     }
-    if (obj && Array.isArray(obj.content) && !Array.isArray(obj.choices)) {
+    if (obj && obj.error) {
+      const errStr = typeof obj.error === 'string' ? obj.error : JSON.stringify(obj.error, null, 2);
+      return {role: 'assistant', content: 'Error: ' + errStr};
+    }
+    const isAnthropicMessage = obj && Array.isArray(obj.content) && (
+      obj.type === 'message' ||
+      (typeof obj.id === 'string' && typeof obj.model === 'string' &&
+       Object.prototype.hasOwnProperty.call(obj, 'stop_reason') && obj.usage && typeof obj.usage === 'object')
+    );
+    if (isAnthropicMessage) {
       let content = '';
       const toolCalls = [];
       for (const block of obj.content) {
@@ -613,10 +622,6 @@ function extractResponseMessage(body) {
         }
       }
       return {role: obj.role || 'assistant', content: content, tool_calls: toolCalls};
-    }
-    if (obj && obj.error) {
-      const errStr = typeof obj.error === 'string' ? obj.error : JSON.stringify(obj.error, null, 2);
-      return {role: 'assistant', content: 'Error: ' + errStr};
     }
   } catch(e) {}
   // Try SSE stream — accumulate content and tool_calls across `data:` events.
