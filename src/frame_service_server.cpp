@@ -130,12 +130,9 @@ static std::string json_string(cJSON* object, const char* key) {
     return item->valuestring;
 }
 
-static bool json_optional_bool(cJSON* object, const char* key, bool default_value) {
+static bool json_bool(cJSON* object, const char* key) {
     cJSON* item = cJSON_GetObjectItem(object, key);
-    if (!item) return default_value;
-    if (item->type == cJSON_True) return true;
-    if (item->type == cJSON_False) return false;
-    return default_value;
+    return item && item->type == cJSON_True;
 }
 
 static std::string status_response(const char* method, FrameServiceStatus status) {
@@ -347,7 +344,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         if (format.empty()) {
             format = "raw";
         }
-        const bool crop_black = json_optional_bool(root, "crop_black", format == "jpeg");
+        const bool crop_black = json_bool(root, "crop_black");
 
         std::shared_ptr<const FrameBufferFrame> frame;
         bool recovering = is_recovering();
