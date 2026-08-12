@@ -1,11 +1,16 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -83,6 +88,161 @@ func TestBluetoothHTTPResetsStaleBond(t *testing.T) {
 		`"connected":false`,
 	) {
 		t.Fatalf("pairing reset code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPhoneNotificationEventsPublishesAndroidBatch(t *testing.T) {
+	var gotPhoneID string
+	var gotEvents []ble.NotificationEvent
+	server := &Server{
+		bleNotifyRequest: func(
+			_ context.Context,
+			_ string,
+			phoneID string,
+			events []ble.NotificationEvent,
+		) (ble.NotificationPublishResult, error) {
+			gotPhoneID = phoneID
+			gotEvents = events
+			return ble.NotificationPublishResult{Accepted: 1, LastID: "17"}, nil
+		},
+	}
+	body := []byte(`{"phone_id":"android-1","events":[{"source_id":"key","source_event_id":"event-1","event":"added","app_identifier":"com.example"}]}`)
+	request := bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	request.ContentLength = int64(len(body))
+	recorder := httptest.NewRecorder()
+	server.handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusOK || !containsAll(
+		recorder.Body.String(),
+		`"ok":true`,
+		`"accepted":1`,
+		`"last_id":"17"`,
+	) {
+		t.Fatalf("publish code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if gotPhoneID != "android-1" || len(gotEvents) != 1 || gotEvents[0].SourceEventID != "event-1" {
+		t.Fatalf("unexpected publish request phone=%q events=%#v", gotPhoneID, gotEvents)
+	}
+}
+
+func TestPhoneNotificationEventsRejectsInvalidAndNonUSBRequests(t *testing.T) {
+	called := false
+	server := &Server{
+		bleNotifyRequest: func(
+			context.Context,
+			string,
+			string,
+			[]ble.NotificationEvent,
+		) (ble.NotificationPublishResult, error) {
+			called = true
+			return ble.NotificationPublishResult{}, nil
+		},
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/phone-notifications/events",
+		strings.NewReader(`{"phone_id":"android-1","events":[]}`),
+	)
+	request.RemoteAddr = "192.168.50.140:12345"
+	recorder := httptest.NewRecorder()
+	server.handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusForbidden || called {
+		t.Fatalf("external publish code=%d called=%v", recorder.Code, called)
+	}
+
+	request = bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
+	request.Body = io.NopCloser(strings.NewReader(`{"phone_id":`))
+	recorder = httptest.NewRecorder()
+	server.handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusBadRequest || called {
+		t.Fatalf("invalid publish code=%d called=%v body=%s", recorder.Code, called, recorder.Body.String())
+	}
+}
+
+func TestPhoneNotificationEventsAcceptsMaximumValidatedBatch(t *testing.T) {
+	requestPayload := maximumPhoneNotificationRequest()
+	body, err := json.Marshal(requestPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) <= 64*1024 {
+		t.Fatalf("maximum notification batch did not exercise the old limit: %d", len(body))
+	}
+	if len(body) > maxPhoneNotificationRequestBytes {
+		t.Fatalf("maximum notification batch exceeds HTTP limit: %d", len(body))
+	}
+	body = append(body, bytes.Repeat([]byte(" "), maxPhoneNotificationRequestBytes-len(body))...)
+	if len(body) != maxPhoneNotificationRequestBytes {
+		t.Fatalf("boundary notification request length=%d", len(body))
+	}
+
+	socketDir, err := os.MkdirTemp("/tmp", "aiden-ble-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(socketDir); err != nil {
+			t.Errorf("remove BLE socket directory: %v", err)
+		}
+	})
+	socketPath := filepath.Join(socketDir, "ble.sock")
+	udsServer := ble.NewUDSServer(socketPath, ble.NewService(16))
+	if err := udsServer.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := udsServer.Close(); err != nil {
+			t.Errorf("close BLE UDS server: %v", err)
+		}
+	})
+	server := &Server{bleSocketPath: socketPath}
+	request := bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	server.handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusOK || !containsAll(recorder.Body.String(), `"accepted":8`) {
+		t.Fatalf("maximum publish code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPhoneNotificationEventsRejectsUDSOversizedEncoding(t *testing.T) {
+	prefix := `{"phone_id":"`
+	suffix := `","events":[{}]}`
+	body := prefix + strings.Repeat("&", maxPhoneNotificationRequestBytes-len(prefix)-len(suffix)) + suffix
+	if len(body) != maxPhoneNotificationRequestBytes {
+		t.Fatalf("boundary request length=%d", len(body))
+	}
+
+	called := false
+	server := &Server{
+		bleNotifyRequest: func(
+			context.Context,
+			string,
+			string,
+			[]ble.NotificationEvent,
+		) (ble.NotificationPublishResult, error) {
+			called = true
+			return ble.NotificationPublishResult{}, nil
+		},
+	}
+	request := bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
+	request.Body = io.NopCloser(strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+	server.handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusBadRequest || called || !strings.Contains(recorder.Body.String(), "exceeds BLE UDS frame limit") {
+		t.Fatalf("UDS-oversized publish code=%d called=%v body=%s", recorder.Code, called, recorder.Body.String())
+	}
+}
+
+func TestPhoneNotificationEventsRejectsOversizedBody(t *testing.T) {
+	body := `{"phone_id":"` + strings.Repeat("x", maxPhoneNotificationRequestBytes+1) + `","events":[]}`
+	request := bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
+	request.Body = io.NopCloser(strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+	(&Server{}).handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("oversized publish code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -168,4 +328,28 @@ func bluetoothControlRequestForPath(method, path string) *http.Request {
 		http.LocalAddrContextKey,
 		&net.TCPAddr{IP: net.ParseIP("192.168.42.1"), Port: 8080},
 	))
+}
+
+func maximumPhoneNotificationRequest() phoneNotificationRequest {
+	fill := func(length int) string { return strings.Repeat(`"`, length) }
+	events := make([]ble.NotificationEvent, 8)
+	for index := range events {
+		flags := make([]string, 16)
+		for flagIndex := range flags {
+			flags[flagIndex] = fill(64)
+		}
+		events[index] = ble.NotificationEvent{
+			SourceID:      fill(512),
+			SourceEventID: fill(127) + string(rune('0'+index)),
+			Event:         "added",
+			Flags:         flags,
+			AppIdentifier: fill(255),
+			Title:         fill(512),
+			Subtitle:      fill(512),
+			Message:       fill(4096),
+			Category:      fill(128),
+			Date:          fill(64),
+		}
+	}
+	return phoneNotificationRequest{PhoneID: fill(128), Events: events}
 }

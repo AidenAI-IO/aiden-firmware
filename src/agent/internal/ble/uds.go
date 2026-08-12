@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	maxUDSHeaderBytes  = 64 * 1024
+	maxUDSHeaderBytes  = 256 * 1024
 	maxUDSPayloadBytes = 1024 * 1024
 )
 
@@ -113,10 +113,12 @@ func (s *UDSServer) serveConnection(connection *net.UnixConn) {
 }
 
 type udsRequest struct {
-	Op         string          `json:"op"`
-	Since      json.RawMessage `json:"since"`
-	Generation string          `json:"generation"`
-	Limit      int             `json:"limit"`
+	Op         string              `json:"op"`
+	Since      json.RawMessage     `json:"since"`
+	Generation string              `json:"generation"`
+	Limit      int                 `json:"limit"`
+	PhoneID    string              `json:"phone_id"`
+	Events     []NotificationEvent `json:"events"`
 }
 
 func (s *UDSServer) handleRequest(header, payload []byte) []byte {
@@ -176,6 +178,17 @@ func (s *UDSServer) handleRequest(header, payload []byte) []byte {
 			"truncated":      page.Truncated,
 			"oldest_id":      page.OldestID,
 			"last_id":        page.LastID,
+		})
+	case "notification_publish":
+		result, err := s.service.PublishAndroidNotifications(request.PhoneID, request.Events)
+		if err != nil {
+			return marshalResponse(map[string]any{"status": "INVALID_ARGUMENT", "error": err.Error()})
+		}
+		return marshalResponse(map[string]any{
+			"status":     "OK",
+			"accepted":   result.Accepted,
+			"duplicates": result.Duplicates,
+			"last_id":    result.LastID,
 		})
 	default:
 		return marshalResponse(map[string]any{

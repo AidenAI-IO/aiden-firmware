@@ -1,4 +1,4 @@
-# BLE Service: Pairing and iOS System Notifications
+# BLE Service: Pairing and Phone System Notifications
 
 `ble_service` owns Aiden's Bluetooth Low Energy integration. It uses BlueZ on
 `hci0` in two roles at the same time:
@@ -7,9 +7,11 @@
   encrypted bond with the iOS companion app.
 - ANCS Consumer: subscribes to Apple's Notification Center Service exposed by
   the paired iPhone and normalizes system notification events.
+- Android notification sink: accepts normalized notification changes forwarded
+  by the companion app over the USB-restricted Agent HTTP API.
 
 BLE is intentionally narrow. It does not carry Phone Bridge tool commands or
-results, and ANCS events are not written to Agent memory.
+results, and phone notification events are not written to Agent memory.
 
 ## Boot and Persistence
 
@@ -88,7 +90,7 @@ before one fresh attempt.
 The characteristic supports only `encrypt-read`. Its purpose is to trigger and
 verify the encrypted system bond before ANCS is used.
 
-## ANCS Event Shape
+## Phone Notification Event Shape
 
 After the trusted iPhone is connected and its services are resolved,
 `ble_service` discovers ANCS and subscribes directly to Notification Source and
@@ -96,6 +98,8 @@ Data Source. It requests notification attributes through Control Point and
 stores a bounded in-memory ring. Events include:
 
 - monotonic string `id` for UDS cursors;
+- `source`, source notification/event IDs, and the companion `device_id` when
+  the event came from Android;
 - ANCS `notification_uid`, event type, flags, category, and category count;
 - app identifier, title, subtitle, message, and date when attribute retrieval
   succeeds;
@@ -104,6 +108,14 @@ stores a bounded in-memory ring. Events include:
 
 The ring defaults to 512 events. Reboot clears events but does not clear the
 Bluetooth bond.
+
+On Android, the companion app uses `NotificationListenerService` after the
+user grants Notification Access. It filters the Aiden app's own notifications
+and group summaries, queues added/modified/removed events locally, and posts
+batches to `/api/phone-notifications/events` over USB ECM. Each source event has
+a stable `source_event_id`; `ble_service` deduplicates retries while that event
+remains in the bounded ring. Android notification forwarding does not require
+Bluetooth pairing.
 
 ## UDS API
 
@@ -138,6 +150,30 @@ Returns the current `generation` with events after the cursor. Start with
 After `ble_service` restarts, a stale generation returns `reset_required=true`
 with no events; retry with `since=0`. Within one generation, `truncated=true`
 means the requested cursor is older than the bounded ring's retained history.
+
+### `notification_publish`
+
+```json
+{
+  "op": "notification_publish",
+  "phone_id": "android-...",
+  "events": [
+    {
+      "source_id": "0|com.example.mail|42|null|1000",
+      "source_event_id": "<sha256>",
+      "event": "added",
+      "app_identifier": "com.example.mail",
+      "title": "New message",
+      "message": "Hello"
+    }
+  ]
+}
+```
+
+Accepts 1-8 Android notification events, validates bounded metadata fields,
+sets `source=android` and the request `device_id`, and returns accepted and
+duplicate counts. This operation is intended for the Agent HTTP bridge rather
+than arbitrary local publishers.
 
 ### `pairing_start`
 
@@ -181,11 +217,12 @@ The companion app reaches the pairing operations through the Agent on USB ECM:
 | `POST` | `/api/bluetooth/pairing/start` | Open or refresh the user-initiated connection window |
 | `POST` | `/api/bluetooth/pairing/reset` | Remove a confirmed stale board bond before one fresh pairing attempt |
 | `POST` | `/api/bluetooth/disconnect` | Disconnect the physical BLE/ANCS link without deleting the bond |
+| `POST` | `/api/phone-notifications/events` | Ingest a batch of Android notification changes |
 
-Bluetooth control writes are accepted only over the board's USB ECM address
+Bluetooth control and phone-notification writes are accepted only over the board's USB ECM address
 (`192.168.42.1/24`) or loopback; requests arriving through Wi-Fi and other
-listeners receive `403`. BLE keys and ANCS bodies never pass through these
-endpoints.
+listeners receive `403`. Android notification bodies use this local USB path;
+BLE keys and iOS ANCS bodies never pass through these endpoints.
 
 ## Operations
 
