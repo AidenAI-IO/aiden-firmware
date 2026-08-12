@@ -38,6 +38,11 @@ function formatBytes(bytes) {
   if (value < 1024 * 1024) return (value / 1024).toFixed(value < 10 * 1024 ? 1 : 0) + ' KB';
   return (value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0) + ' MB';
 }
+function formatLogTimestamp(timestamp) {
+  const value = String(timestamp || '');
+  const match = value.match(/(?:^|T)(\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+  return match ? match[1] : value;
+}
 function pauseForUi() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
@@ -278,8 +283,7 @@ function renderRequestItem(g, idx) {
   html += '<div class="request-item-head">';
   html += '<span class="request-item-index">#' + (idx + 1) + '</span>';
   html += '<span class="' + badgeClass + '">' + esc(badgeText) + '</span>';
-  const requestTs=String(g.request.ts||'');
-  html += '<span style="font-size:11px;color:#9ca3af;margin-left:auto">' + esc(requestTs.substring(11, 19)) + '</span>';
+  html += '<span style="font-size:11px;color:#9ca3af;margin-left:auto">' + esc(formatLogTimestamp(g.request.ts)) + '</span>';
   html += '</div>';
   html += '<div class="request-item-preview">' + esc(preview) + '</div>';
   html += '</button>';
@@ -596,7 +600,16 @@ function extractResponseMessage(body) {
       const m = obj.choices[0].message || {};
       return {role: m.role || 'assistant', content: m.content || '', tool_calls: m.tool_calls || []};
     }
-    if (obj && obj.type === 'message' && Array.isArray(obj.content)) {
+    if (obj && obj.error) {
+      const errStr = typeof obj.error === 'string' ? obj.error : JSON.stringify(obj.error, null, 2);
+      return {role: 'assistant', content: 'Error: ' + errStr};
+    }
+    const isAnthropicMessage = obj && Array.isArray(obj.content) && (
+      obj.type === 'message' ||
+      (typeof obj.id === 'string' && typeof obj.model === 'string' &&
+       Object.prototype.hasOwnProperty.call(obj, 'stop_reason') && obj.usage && typeof obj.usage === 'object')
+    );
+    if (isAnthropicMessage) {
       let content = '';
       const toolCalls = [];
       for (const block of obj.content) {
@@ -609,10 +622,6 @@ function extractResponseMessage(body) {
         }
       }
       return {role: obj.role || 'assistant', content: content, tool_calls: toolCalls};
-    }
-    if (obj && obj.error) {
-      const errStr = typeof obj.error === 'string' ? obj.error : JSON.stringify(obj.error, null, 2);
-      return {role: 'assistant', content: 'Error: ' + errStr};
     }
   } catch(e) {}
   // Try SSE stream — accumulate content and tool_calls across `data:` events.

@@ -491,8 +491,9 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("Import Raw") != std::string::npos);
     CHECK(llm_html.find("function streamLogEntries") != std::string::npos);
     CHECK(llm_html.find("function processLogChunk") != std::string::npos);
-    CHECK(llm_html.find("const requestTs=String(g.request.ts||'');") != std::string::npos);
-    CHECK(llm_html.find("g.request.ts.substring(11, 19)") == std::string::npos);
+    CHECK(llm_html.find("function formatLogTimestamp") != std::string::npos);
+    CHECK(llm_html.find("formatLogTimestamp(g.request.ts)") != std::string::npos);
+    CHECK(llm_html.find("substring(11, 19)") == std::string::npos);
     CHECK(llm_html.find("response.body.getReader()") != std::string::npos);
     CHECK(llm_html.find("new TextDecoder()") != std::string::npos);
     CHECK(llm_html.find("fetch('/api/llm-logs/export/' + encodeURIComponent(name))") != std::string::npos);

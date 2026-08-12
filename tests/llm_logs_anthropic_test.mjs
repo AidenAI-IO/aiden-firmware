@@ -179,6 +179,57 @@ assert.deepEqual(
   'Anthropic JSON responses should preserve text and tool calls',
 );
 
+assert.deepEqual(
+  extract(JSON.stringify({
+    id: 'msg_live',
+    model: 'claude-sonnet-4-6',
+    role: '',
+    content: [
+      {type: 'text', text: 'Live response'},
+      {type: 'tool_use', id: 'tool-live', name: 'echo', input: {value: 'ok'}},
+    ],
+    stop_reason: 'tool_use',
+    usage: {input_tokens: 10, output_tokens: 4},
+  })),
+  {
+    role: 'assistant',
+    content: 'Live response',
+    tool_calls: [
+      {
+        id: 'tool-live',
+        type: 'function',
+        function: {name: 'echo', arguments: '{"value":"ok"}'},
+      },
+    ],
+  },
+  'Aggregated Anthropic streaming responses should render as assistant messages',
+);
+
+assert.deepEqual(
+  extract(JSON.stringify({
+    error: {type: 'upstream_error', message: 'Provider failed'},
+    content: [],
+  })),
+  {
+    role: 'assistant',
+    content: 'Error: {\n  "type": "upstream_error",\n  "message": "Provider failed"\n}',
+  },
+  'Error responses should take precedence over content arrays',
+);
+
+assert.equal(
+  context.extractResponseMessage(JSON.stringify({
+    content: [{type: 'text', text: 'Provider diagnostic'}],
+    error_code: 123,
+  })),
+  null,
+  'Unrecognized content-array envelopes should remain raw diagnostics',
+);
+
+assert.equal(context.formatLogTimestamp('12:34:56'), '12:34:56');
+assert.equal(context.formatLogTimestamp('2026-08-12T12:34:56Z'), '12:34:56');
+assert.equal(context.formatLogTimestamp(''), '');
+
 const anthropicSse = [
   'event: message_start',
   'data: {"type":"message_start","message":{"role":"assistant"}}',

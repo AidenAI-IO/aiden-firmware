@@ -34,7 +34,7 @@ type anthropicModel struct {
 	token            string
 	useBearerAuth    bool
 	httpClient       *http.Client
-	rawLogger        *llmRawHTTPLogger
+	rawLogger        RawHTTPLogger
 	temperature      *float64
 	reasoningEffort  string
 	streamMaxRetries int
@@ -45,7 +45,7 @@ type anthropicModel struct {
 
 type anthropicModelOption func(*anthropicModel)
 
-func withAnthropicRawHTTPLogger(logger *llmRawHTTPLogger) anthropicModelOption {
+func withAnthropicRawHTTPLogger(logger RawHTTPLogger) anthropicModelOption {
 	return func(m *anthropicModel) { m.rawLogger = logger }
 }
 
@@ -1094,31 +1094,25 @@ func (m *anthropicModel) withRawHTTPLogScope(ctx context.Context) context.Contex
 	if m == nil || m.rawLogger == nil || !rawHTTPLogEnabled(ctx) {
 		return ctx
 	}
-	if _, ok := rawHTTPLogFileTime(ctx); !ok {
-		ctx = contextWithRawHTTPLogFileTime(ctx, m.rawLogger.currentTime())
-	}
-	if _, ok := rawHTTPLogFileSessionID(ctx); !ok {
-		ctx = contextWithRawHTTPLogFileSessionID(ctx, m.rawLogger.currentSessionID())
-	}
-	return ctx
+	return m.rawLogger.BeginScope(ctx)
 }
 
 func (m *anthropicModel) logRawHTTP(ctx context.Context, model, kind string, statusCode int, raw string) error {
 	if m == nil || m.rawLogger == nil || !rawHTTPLogEnabled(ctx) {
 		return nil
 	}
-	fileTime, _ := rawHTTPLogFileTime(ctx)
-	sessionID, _ := rawHTTPLogFileSessionID(ctx)
-	return m.rawLogger.LogWithFileScope(model, kind, statusCode, raw, fileTime, sessionID)
+	return m.rawLogger.Log(ctx, RawHTTPLogEntry{
+		Model:      model,
+		Kind:       kind,
+		StatusCode: statusCode,
+		Raw:        raw,
+	})
 }
 
-func buildAnthropicModelOptions(m *ModelManager, cfg ModelConfig) []anthropicModelOption {
+func buildAnthropicModelOptions(ctx ModelBuildContext, cfg ModelConfig) []anthropicModelOption {
 	var options []anthropicModelOption
-	if cfg.LogRawHTTP && strings.TrimSpace(m.rawHTTPLogDir) != "" {
-		logger := newLLMRawHTTPLogger(m.rawHTTPLogDir, "")
-		logger.SetSessionIDProvider(m.rawHTTPLogSessionID)
-		logger.SetStorageMonitor(m.currentStorageMonitor())
-		options = append(options, withAnthropicRawHTTPLogger(logger))
+	if ctx.RawHTTPLogger != nil {
+		options = append(options, withAnthropicRawHTTPLogger(ctx.RawHTTPLogger))
 	}
 	if cfg.Temperature != nil {
 		options = append(options, withAnthropicTemperature(cfg.Temperature))
