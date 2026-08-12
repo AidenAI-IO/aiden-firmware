@@ -187,6 +187,10 @@ add_test(NAME logger_shell_format
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_logger_format.sh
 )
 
+add_test(NAME frame_service_bridge_policy
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_frame_service_bridge_policy.sh
+)
+
 find_program(NODE_EXECUTABLE node)
 if(NODE_EXECUTABLE)
     add_test(NAME config_web_dynamic_form

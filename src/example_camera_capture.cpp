@@ -39,7 +39,7 @@ static void usage(const char* prog) {
             "                           (default: /mnt/tmp/frame.ppm)\n"
             "  --no-output               Capture without saving a file\n"
             "  --subdev PATH             HDMI bridge subdev (default: /dev/v4l-subdev2)\n"
-            "  --edid PATH               Use a custom EDID hex file instead of built-in 1080p30-only CTA\n"
+            "  --edid PATH               Use a custom EDID hex file instead of built-in 1080p60-only CTA\n"
             "  --trigger-retries N       Additional EDID retrigger attempts after the first trigger (default: 0)\n"
             "  --trigger-delay-ms N      Delay after each trigger (default: 1000)\n"
             "  --capture-retries N       Full init/capture recovery retries (default: 2)\n"
@@ -49,7 +49,7 @@ static void usage(const char* prog) {
             "  --require-exact-resolution\n"
             "                            Fail if negotiated mode differs from requested width/height\n"
             "  --allow-resolution-mismatch\n"
-            "                            Deprecated alias; default already accepts negotiated mode\n"
+            "                            Accept negotiated width/height instead of requiring an exact match\n"
             "  --allow-uniform-frames    Keep all-same HDMI frames instead of retrying\n"
             "  --help                    Show this help\n",
             prog);
@@ -307,7 +307,7 @@ int main(int argc, char* argv[]) {
     if (opts.camera.enable_hdmi_sync) {
         printf("HDMI sync: enabled, subdev=%s, EDID=%s, force_trigger=%s, retries=%d\n",
                opts.camera.subdev_device,
-               opts.camera.edid_path ? opts.camera.edid_path : "built-in 1080p30-only CTA",
+               opts.camera.edid_path ? opts.camera.edid_path : "built-in 1080p60-only CTA",
                opts.camera.force_trigger ? "yes" : "no",
                opts.camera.trigger_retries);
     } else {
