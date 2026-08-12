@@ -126,6 +126,9 @@ type RunRequest struct {
 	// AsyncEpisodeMaintenance keeps the episode trace write synchronous but moves
 	// lesson extraction and referenced-memory maintenance off the response path.
 	AsyncEpisodeMaintenance bool
+	// DisableEpisodeMemory prevents benchmark and other isolated runs from
+	// persisting episode traces or extracting long-term/device lessons.
+	DisableEpisodeMemory bool
 }
 
 type RunResult struct {
@@ -256,17 +259,18 @@ const (
 )
 
 type RunEvent struct {
-	Type           string     `json:"type"`
-	Role           string     `json:"role,omitempty"`
-	EpisodeID      string     `json:"episode_id,omitempty"`
-	ToolCallID     string     `json:"tool_call_id,omitempty"`
-	ToolName       string     `json:"tool_name,omitempty"`
-	ToolInput      string     `json:"tool_input,omitempty"`
-	Content        string     `json:"content,omitempty"`
-	SpeechEligible bool       `json:"speech_eligible,omitempty"`
-	Timestamp      time.Time  `json:"timestamp"`
-	IsError        bool       `json:"is_error,omitempty"`
-	ToolError      *ToolError `json:"tool_error,omitempty"`
+	Type              string     `json:"type"`
+	Role              string     `json:"role,omitempty"`
+	EpisodeID         string     `json:"episode_id,omitempty"`
+	ToolCallID        string     `json:"tool_call_id,omitempty"`
+	ToolName          string     `json:"tool_name,omitempty"`
+	ToolInput         string     `json:"tool_input,omitempty"`
+	Content           string     `json:"content,omitempty"`
+	SpeechEligible    bool       `json:"speech_eligible,omitempty"`
+	Timestamp         time.Time  `json:"timestamp"`
+	IsError           bool       `json:"is_error,omitempty"`
+	ToolError         *ToolError `json:"tool_error,omitempty"`
+	RecalledMemoryIDs []string   `json:"recalled_memory_ids,omitempty"`
 }
 
 type usageTrackingModel struct {
@@ -853,7 +857,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	runID := "run_" + uuid.NewString()
 	episodeID := strings.TrimSpace(req.EpisodeID)
-	if episodeID == "" && r.memoryPlane != nil {
+	if episodeID == "" && r.memoryPlane != nil && !req.DisableEpisodeMemory {
 		episodeID = newTaskEpisodeID(startTime.UTC())
 	}
 	currentHints := r.currentEnvironmentHints()
@@ -868,7 +872,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			return
 		}
 		metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
-		if episodeRecorder == nil && r.memoryPlane != nil {
+		if episodeRecorder == nil && r.memoryPlane != nil && !req.DisableEpisodeMemory {
 			retrieveReq := MemoryRetrieveRequest{
 				Input:        normalizedInput,
 				Attachments:  turnInput.Attachments,
@@ -988,7 +992,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	// on demand through the recall tools, which record the referenced IDs on the
 	// episode recorder so outcome-based confidence updates only touch memories
 	// the agent actually saw.
-	if r.memoryPlane != nil {
+	if r.memoryPlane != nil && !req.DisableEpisodeMemory {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
 		if episodeRecorder != nil {
 			episodeRecorder.setStartedAtIfEarlier(episodeStartTimeWithEvents(startTime.UTC(), preRunEvents))
@@ -2013,6 +2017,7 @@ func (h *runtimeCallbackHandler) AfterToolCall(ctx context.Context, call ToolCal
 
 func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call ToolCall, result ToolResult) {
 	output := publicToolResultContent(result)
+	recalledMemoryIDs := recalledMemoryIDsFromToolResult(call.Spec.Name, result.Output)
 	logOutput := result.EventOutput()
 	if h.logger != nil {
 		if result.IsError() {
@@ -2022,16 +2027,45 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 		}
 	}
 	h.emitRunEvent(RunEvent{
-		Type:       "tool_result",
-		EpisodeID:  h.episodeID,
-		ToolCallID: call.Action.ToolID,
-		ToolName:   call.Spec.Name,
-		ToolInput:  call.Input,
-		Content:    output,
-		Timestamp:  time.Now(),
-		IsError:    result.IsError(),
-		ToolError:  cloneToolError(result.Error),
+		Type:              "tool_result",
+		EpisodeID:         h.episodeID,
+		ToolCallID:        call.Action.ToolID,
+		ToolName:          call.Spec.Name,
+		ToolInput:         call.Input,
+		Content:           output,
+		Timestamp:         time.Now(),
+		IsError:           result.IsError(),
+		ToolError:         cloneToolError(result.Error),
+		RecalledMemoryIDs: recalledMemoryIDs,
 	})
+}
+
+func recalledMemoryIDsFromToolResult(toolName, output string) []string {
+	if toolName != "recall_memory" || strings.TrimSpace(output) == "" {
+		return nil
+	}
+	var payload struct {
+		Results []struct {
+			ID string `json:"id"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(payload.Results))
+	ids := make([]string, 0, len(payload.Results))
+	for _, result := range payload.Results {
+		id := strings.TrimSpace(result.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func publicToolResultContent(result ToolResult) string {

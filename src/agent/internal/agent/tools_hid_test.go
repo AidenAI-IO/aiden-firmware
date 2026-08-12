@@ -1016,6 +1016,24 @@ func TestADBMouseClickAutoRejectsOutOfRangeCoordinates(t *testing.T) {
 	}
 }
 
+func TestADBTouchGestureRejectsOutOfRangeNormalizedCoordinates(t *testing.T) {
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	runner := &recordingADBRunner{}
+	tool := &TouchGestureTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":435,"y":1430}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "normalized coordinates") || !strings.Contains(out, "outside 0-1000 range") {
+		t.Fatalf("Call output = %q, want normalized coordinate range error", out)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("adb commands = %#v, want no command for invalid coordinates", runner.commands)
+	}
+}
+
 func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
@@ -1427,6 +1445,26 @@ func TestResolvePointerPositionNormalizedUsesActiveArea(t *testing.T) {
 	wantY := scalePixelToAbsolute(float64(1079)/2, 1080)
 	if y != wantY {
 		t.Fatalf("y = %d, want %d", y, wantY)
+	}
+}
+
+func TestResolvePointerPositionRejectsOutOfRangeNormalizedCoordinates(t *testing.T) {
+	for _, tc := range []struct {
+		x float64
+		y float64
+	}{
+		{x: -1, y: 500},
+		{x: 500, y: 1001},
+	} {
+		if _, _, err := resolvePointerPosition(nil, tc.x, tc.y, "normalized", coordinateSpaceNormalized); err == nil {
+			t.Fatalf("resolvePointerPosition(%v, %v) succeeded, want range error", tc.x, tc.y)
+		}
+	}
+}
+
+func TestResolvePointerPositionRejectsOutOfRangeAbsoluteCoordinates(t *testing.T) {
+	if _, _, err := resolvePointerPosition(nil, 100, absMouseMaxPos+1, "absolute", coordinateSpaceNormalized); err == nil {
+		t.Fatal("absolute coordinate above HID range succeeded, want error")
 	}
 }
 

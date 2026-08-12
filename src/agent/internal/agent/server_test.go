@@ -4257,6 +4257,38 @@ func TestHandleBenchmarkSeedMemorySucceeds(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedBenchmarkChatEnablesIsolation(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"benchmark"}`))
+	req.Header.Set(BenchmarkTaskIDHeader, "suite.json:task")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+
+	if !server.benchmarkChatIsolationRequested(req) {
+		t.Fatal("authenticated benchmark chat was not recognized")
+	}
+	req.Header.Del("Authorization")
+	if server.benchmarkChatIsolationRequested(req) {
+		t.Fatal("unauthenticated benchmark header enabled isolation")
+	}
+}
+
+func TestBenchmarkChatWithoutConfiguredTokenEnablesIsolation(t *testing.T) {
+	server := newServerForTest(NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	))
+	t.Cleanup(func() { server.bridge.queue.Stop() })
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"benchmark"}`))
+	req.Header.Set(BenchmarkTaskIDHeader, "suite.json:task")
+
+	if !server.benchmarkChatIsolationRequested(req) {
+		t.Fatal("benchmark chat header was ignored when no benchmark token is configured")
+	}
+}
+
 func TestHandleBenchmarkSeedMemoryRequiresBenchmarkToken(t *testing.T) {
 	server, _ := newBenchmarkSeedMemoryServer(t)
 	body := `{"id":"personamem_test_seed_1","content":"Seeded fixture content."}`

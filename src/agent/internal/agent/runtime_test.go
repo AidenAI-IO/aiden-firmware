@@ -1178,16 +1178,43 @@ func TestAsyncEpisodeMaintenanceCloseAndWaitCancelsWorkOnTimeout(t *testing.T) {
 }
 
 type capturingEpisodePlane struct {
-	episode TaskEpisode
+	episode          TaskEpisode
+	newRecorderCalls int
+	commitCalls      int
 }
 
 func (p *capturingEpisodePlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
+	p.newRecorderCalls++
 	return NewEpisodeRecorder(req, retrieved)
 }
 
 func (p *capturingEpisodePlane) CommitEpisode(_ context.Context, episode TaskEpisode) error {
+	p.commitCalls++
 	p.episode = episode
 	return nil
+}
+
+func TestRuntimeRunCanDisableEpisodeMemoryForBenchmarkIsolation(t *testing.T) {
+	plane := &capturingEpisodePlane{}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = plane
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "benchmark prompt", DisableEpisodeMemory: true})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if plane.newRecorderCalls != 0 || plane.commitCalls != 0 {
+		t.Fatalf("episode memory calls = recorder:%d commit:%d", plane.newRecorderCalls, plane.commitCalls)
+	}
 }
 
 func TestRuntimeRunCommitsTimingEventsBeforeEpisodeCommit(t *testing.T) {
@@ -2843,6 +2870,31 @@ func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 	}
 	if gotRunEvent.Content != toolErr.Message || message.Content != toolErr.Message {
 		t.Fatalf("error message content mismatch: run=%q message=%q want=%q", gotRunEvent.Content, message.Content, toolErr.Message)
+	}
+}
+
+func TestRuntimeCallbackPreservesRecalledMemoryIDsWhenPublicContentIsOmitted(t *testing.T) {
+	largeContent := strings.Repeat("x", maxPublicToolResultRunes+1)
+	output := `{"results":[{"id":"mem_first","content":"` + largeContent + `"},{"id":"mem_target"}]}`
+	var got RunEvent
+	handler := &runtimeCallbackHandler{eventHandler: func(event RunEvent) { got = event }}
+	call := ToolCall{Spec: ToolSpec{Name: "recall_memory"}}
+
+	handler.HandleToolCallResult(context.Background(), call, ToolResult{
+		Output:           output,
+		Summary:          "truncated summary",
+		SummaryTruncated: true,
+	})
+
+	if !strings.HasPrefix(got.Content, "[Large tool result omitted from public history") {
+		t.Fatalf("Content = %q, want omission marker", got.Content)
+	}
+	if !reflect.DeepEqual(got.RecalledMemoryIDs, []string{"mem_first", "mem_target"}) {
+		t.Fatalf("RecalledMemoryIDs = %#v", got.RecalledMemoryIDs)
+	}
+	message := messageFromRunEvent(got, "", "req-1")
+	if !reflect.DeepEqual(message.RecalledMemoryIDs, got.RecalledMemoryIDs) {
+		t.Fatalf("Message.RecalledMemoryIDs = %#v, want %#v", message.RecalledMemoryIDs, got.RecalledMemoryIDs)
 	}
 }
 

@@ -256,7 +256,7 @@ class ObservingClient:
     def invoke_tool(self, name, args):
         raise AssertionError("unexpected tool call")
 
-    def chat(self, message, timeout_sec=None, attachments=None, skills=None):
+    def chat(self, message, timeout_sec=None, attachments=None, skills=None, benchmark_task_id=None):
         from runner.agent_client import ChatResponse
 
         return ChatResponse(

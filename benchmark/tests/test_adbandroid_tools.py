@@ -329,11 +329,10 @@ def test_mouse_scroll_swipes_vertically(bridge):
 # ---- quick_action --------------------------------------------------------------
 
 
-def test_quick_action_requires_platform(bridge):
+def test_quick_action_defaults_to_android_platform(bridge):
     _, _, base_url = bridge
     status, body = _invoke(base_url, "quick_action", {"action": "home"})
-    assert body["is_error"] is True
-    assert "unsupported platform" in body["output"]
+    assert status == 200 and body["is_error"] is False
 
 
 def test_quick_action_list_returns_catalog(bridge):

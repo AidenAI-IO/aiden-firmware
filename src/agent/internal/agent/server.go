@@ -134,26 +134,27 @@ type MessageAttachment struct {
 
 // Message represents a public chat history message or tool call.
 type Message struct {
-	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result"
-	Role            string              `json:"role,omitempty"`
-	EpisodeID       string              `json:"episode_id,omitempty"`
-	RequestID       string              `json:"request_id,omitempty"`
-	Status          string              `json:"status,omitempty"`
-	Modality        string              `json:"modality,omitempty"`
-	OriginalText    string              `json:"original_text,omitempty"`
-	Transcript      string              `json:"transcript,omitempty"`
-	Content         string              `json:"content"`
-	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
-	ToolName        string              `json:"tool_name,omitempty"`
-	ToolInput       string              `json:"tool_input,omitempty"`
-	ToolError       *ToolError          `json:"tool_error,omitempty"`
-	Attachments     []MessageAttachment `json:"attachments,omitempty"`
-	Artifacts       []InputArtifact     `json:"artifacts,omitempty"`
-	Source          string              `json:"source,omitempty"`
-	AudioFile       string              `json:"audio_file,omitempty"`
-	AudioDurationMs int64               `json:"audio_duration_ms,omitempty"`
-	Timestamp       time.Time           `json:"timestamp"`
-	IsError         bool                `json:"is_error,omitempty"`
+	Type              string              `json:"type"` // "user", "assistant", "tool_call", "tool_result"
+	Role              string              `json:"role,omitempty"`
+	EpisodeID         string              `json:"episode_id,omitempty"`
+	RequestID         string              `json:"request_id,omitempty"`
+	Status            string              `json:"status,omitempty"`
+	Modality          string              `json:"modality,omitempty"`
+	OriginalText      string              `json:"original_text,omitempty"`
+	Transcript        string              `json:"transcript,omitempty"`
+	Content           string              `json:"content"`
+	SpeechEligible    bool                `json:"speech_eligible,omitempty"`
+	ToolName          string              `json:"tool_name,omitempty"`
+	ToolInput         string              `json:"tool_input,omitempty"`
+	ToolError         *ToolError          `json:"tool_error,omitempty"`
+	Attachments       []MessageAttachment `json:"attachments,omitempty"`
+	Artifacts         []InputArtifact     `json:"artifacts,omitempty"`
+	Source            string              `json:"source,omitempty"`
+	AudioFile         string              `json:"audio_file,omitempty"`
+	AudioDurationMs   int64               `json:"audio_duration_ms,omitempty"`
+	Timestamp         time.Time           `json:"timestamp"`
+	IsError           bool                `json:"is_error,omitempty"`
+	RecalledMemoryIDs []string            `json:"recalled_memory_ids,omitempty"`
 }
 
 func normalizeChatHistoryMessage(message Message) (Message, bool) {
@@ -182,17 +183,18 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		episodeID = fallbackEpisodeID
 	}
 	message := Message{
-		Type:           event.Type,
-		Role:           event.Role,
-		EpisodeID:      episodeID,
-		RequestID:      requestID,
-		Content:        event.Content,
-		SpeechEligible: event.SpeechEligible,
-		ToolName:       event.ToolName,
-		ToolInput:      event.ToolInput,
-		ToolError:      cloneToolError(event.ToolError),
-		Timestamp:      event.Timestamp,
-		IsError:        event.IsError,
+		Type:              event.Type,
+		Role:              event.Role,
+		EpisodeID:         episodeID,
+		RequestID:         requestID,
+		Content:           event.Content,
+		SpeechEligible:    event.SpeechEligible,
+		ToolName:          event.ToolName,
+		ToolInput:         event.ToolInput,
+		ToolError:         cloneToolError(event.ToolError),
+		Timestamp:         event.Timestamp,
+		IsError:           event.IsError,
+		RecalledMemoryIDs: append([]string(nil), event.RecalledMemoryIDs...),
 	}
 	message, ok := normalizeChatHistoryMessage(message)
 	if !ok {
@@ -273,10 +275,11 @@ func messageAttachmentsContainArtifact(attachments []MessageAttachment, artifact
 
 // ChatRequest represents an incoming chat request
 type ChatRequest struct {
-	Message     string              `json:"message"`
-	Attachments []MessageAttachment `json:"attachments,omitempty"`
-	RequestID   string              `json:"request_id,omitempty"`
-	PhoneID     string              `json:"phone_id,omitempty"`
+	Message           string              `json:"message"`
+	Attachments       []MessageAttachment `json:"attachments,omitempty"`
+	RequestID         string              `json:"request_id,omitempty"`
+	PhoneID           string              `json:"phone_id,omitempty"`
+	BenchmarkIsolated bool                `json:"-"`
 }
 
 type ChatCancelRequest struct {
@@ -686,6 +689,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	req.BenchmarkIsolated = s.benchmarkChatIsolationRequested(r)
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	if req.RequestID == "" {
 		req.RequestID = createRequestID()
@@ -1310,6 +1314,7 @@ func (s *Server) handleChatAsync(
 			DeviceEnvironment:       s.bridgeEnvironment(),
 			EventHandler:            eventHandler,
 			AsyncEpisodeMaintenance: true,
+			DisableEpisodeMemory:    req.BenchmarkIsolated,
 			SteerProvider:           steerProvider,
 			SteerInterrupt:          steerInterrupt,
 		}
@@ -1602,6 +1607,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	req.BenchmarkIsolated = s.benchmarkChatIsolationRequested(r)
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	if req.RequestID == "" {
 		req.RequestID = createRequestID()
@@ -1672,6 +1678,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		RequestID:               req.RequestID,
 		DeviceEnvironment:       s.bridgeEnvironment(),
 		AsyncEpisodeMaintenance: true,
+		DisableEpisodeMemory:    req.BenchmarkIsolated,
 		SteerProvider:           steerProvider,
 		SteerInterrupt:          steerInterrupt,
 		EventHandler: func(event RunEvent) {
@@ -2490,6 +2497,16 @@ func (s *Server) authorizeBenchmarkRequest(r *http.Request) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(supplied), []byte(expected)) == 1
+}
+
+func (s *Server) benchmarkChatIsolationRequested(r *http.Request) bool {
+	if strings.TrimSpace(r.Header.Get(BenchmarkTaskIDHeader)) == "" {
+		return false
+	}
+	if s.benchmarkToken() == "" {
+		return true
+	}
+	return s.authorizeBenchmarkRequest(r)
 }
 
 func (s *Server) handleScreen(w http.ResponseWriter, r *http.Request) {

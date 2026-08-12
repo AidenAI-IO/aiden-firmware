@@ -141,12 +141,23 @@ def clear_stale_adb_android_owner(environment_url: str, timeout: float = 2.0) ->
     return active_task_id
 
 
-def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_prefix: str = "") -> None:
+def per_task_setup(
+    client: AgentClient,
+    setup: dict[str, Any] | None,
+    *,
+    prompt_prefix: str = "",
+    benchmark_task_id: str | None = None,
+) -> None:
     if setup is None:
         return
     setup_type = setup.get("type")
     if setup_type == "agent_prompt":
-        _per_task_setup_agent_prompt(client, setup, prompt_prefix=prompt_prefix)
+        _per_task_setup_agent_prompt(
+            client,
+            setup,
+            prompt_prefix=prompt_prefix,
+            benchmark_task_id=benchmark_task_id,
+        )
         return
     if setup_type == "seed_memory":
         _per_task_setup_seed_memory(client, setup)
@@ -154,7 +165,13 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_
     raise ResetError(f"unsupported setup form: {setup!r}")
 
 
-def _per_task_setup_agent_prompt(client: AgentClient, setup: dict[str, Any], *, prompt_prefix: str = "") -> None:
+def _per_task_setup_agent_prompt(
+    client: AgentClient,
+    setup: dict[str, Any],
+    *,
+    prompt_prefix: str = "",
+    benchmark_task_id: str | None = None,
+) -> None:
     prompt = setup.get("prompt")
     if not prompt:
         raise ResetError(f"agent_prompt setup missing prompt: {setup!r}")
@@ -166,7 +183,10 @@ def _per_task_setup_agent_prompt(client: AgentClient, setup: dict[str, Any], *, 
     except (ValueError, TypeError) as e:
         raise ResetError(f"invalid timeout_sec: {setup.get('timeout_sec')!r}") from e
     try:
-        client.chat(prompt, timeout_sec=timeout)
+        chat_kwargs = {"timeout_sec": timeout}
+        if str(benchmark_task_id or "").strip():
+            chat_kwargs["benchmark_task_id"] = str(benchmark_task_id).strip()
+        client.chat(prompt, **chat_kwargs)
     except AgentTimeoutError as e:
         raise ResetError(f"setup agent_prompt timed out: {e}") from e
     except AgentRequestError as e:

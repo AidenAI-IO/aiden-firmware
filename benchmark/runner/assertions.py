@@ -243,6 +243,9 @@ def evaluate_expected_recalled_memory_ids(
     for message in history:
         if message.get("type") != "tool_result" or message.get("tool_name") != "recall_memory":
             continue
+        for memory_id in message.get("recalled_memory_ids") or []:
+            if isinstance(memory_id, str) and memory_id and memory_id not in recalled_ids:
+                recalled_ids.append(memory_id)
         content = message.get("content") or ""
         try:
             payload = json.loads(content)

@@ -132,6 +132,16 @@ func TestNumberArgSchema_WithoutExamples(t *testing.T) {
 	}
 }
 
+func TestCoordinateSchemaUsesNormalizedBounds(t *testing.T) {
+	schema := coordinateSchema("Coordinate", 500)
+	if schema["minimum"] != float64(0) {
+		t.Fatalf("minimum = %#v, want 0", schema["minimum"])
+	}
+	if schema["maximum"] != float64(1000) {
+		t.Fatalf("maximum = %#v, want 1000", schema["maximum"])
+	}
+}
+
 func TestStringArrayArgSchema_WithExamples(t *testing.T) {
 	schema := stringArrayArgSchema("Keys", []string{"ctrl", "c"})
 

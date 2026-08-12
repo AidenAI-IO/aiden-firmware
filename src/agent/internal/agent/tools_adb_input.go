@@ -200,8 +200,14 @@ func (c *ADBInputController) ResolvePosition(ctx context.Context, x, y float64, 
 		}
 		return point, nil
 	case coordinateSpaceNormalized:
+		if err := validateCoordinateRange(x, y, 0, 1000, "normalized"); err != nil {
+			return resolvedPointerPoint{}, fmt.Errorf("%w: %v", errADBInputInvalidArgument, err)
+		}
 		return normalizedToADBPoint(size, x, y), nil
 	case coordinateSpaceAbsolute:
+		if err := validateCoordinateRange(x, y, 0, absMouseMaxPos, "absolute"); err != nil {
+			return resolvedPointerPoint{}, fmt.Errorf("%w: %v", errADBInputInvalidArgument, err)
+		}
 		return absoluteToADBPoint(size, x, y), nil
 	default:
 		return resolvedPointerPoint{}, fmt.Errorf("%w: unsupported coord_space: %q", errADBInputInvalidArgument, coordSpace)

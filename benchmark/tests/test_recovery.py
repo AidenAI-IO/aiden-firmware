@@ -66,8 +66,8 @@ class SetupClient:
     def invoke_tool(self, name, args):
         raise AssertionError("unexpected agent-side tool call")
 
-    def chat(self, message, timeout_sec=None):
-        self.chats.append((message, timeout_sec))
+    def chat(self, message, timeout_sec=None, benchmark_task_id=None):
+        self.chats.append((message, timeout_sec, benchmark_task_id))
 
     def seed_memory(self, memory, timeout=30):
         self.seeded_memories.append((memory, timeout))
@@ -139,7 +139,9 @@ def test_prepare_task_isolation_runs_agent_prompt_after_environment_setup(monkey
     )
 
     assert setup_calls == [("http://127.0.0.1:9090", "suite.json:open_settings", 180)]
-    assert client.chats == [("ADB benchmark rules\n\nopen a settings sub-page", 45)]
+    assert client.chats == [
+        ("ADB benchmark rules\n\nopen a settings sub-page", 45, "suite.json:open_settings")
+    ]
     assert client.clears == 2
 
 

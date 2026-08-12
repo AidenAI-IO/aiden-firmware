@@ -215,6 +215,28 @@ def test_expected_recalled_memory_ids_pass_when_tool_result_contains_id():
     assert result.passed is True
     assert result.recalled_memory_ids == ["personamem_solo_travel"]
 
+
+def test_expected_recalled_memory_ids_use_structured_metadata_when_content_is_omitted():
+    history = [
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (12000 chars)]",
+            "recalled_memory_ids": [
+                "personamem_campfire_storytelling",
+                "personamem_solo_travel",
+            ],
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(history, ["personamem_solo_travel"])
+
+    assert result.passed is True
+    assert result.recalled_memory_ids == [
+        "personamem_campfire_storytelling",
+        "personamem_solo_travel",
+    ]
+
 def test_expected_recalled_memory_ids_fail_when_expected_id_absent():
     history = [
         {

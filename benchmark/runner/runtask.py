@@ -294,6 +294,7 @@ def run_one_task(
         }
         if active_skills:
             chat_kwargs["skills"] = active_skills
+        chat_kwargs["benchmark_task_id"] = benchmark_task_id or task.id
         chat = client.chat(prompt, **chat_kwargs)
         history = chat.history
     except AgentTimeoutError:

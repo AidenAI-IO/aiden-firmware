@@ -263,7 +263,7 @@ class ADBToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute common Android navigation actions such as back, home, or open_settings.",
+                "description": "Execute common Android navigation actions such as back, home, or open_settings. Platform is optional and defaults to Android.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
@@ -274,7 +274,7 @@ class ADBToolsAPIHandler:
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
                     },
-                    "required": ["platform"],
+                    "required": [],
                 },
             },
         ]
@@ -598,7 +598,7 @@ class ADBToolsAPIHandler:
         )
 
     def _call_quick_action(self, tool_input: dict[str, Any]) -> dict[str, Any]:
-        platform = str(tool_input.get("platform", "") or "").strip().lower()
+        platform = str(tool_input.get("platform", "android") or "android").strip().lower()
         if platform not in ("ios", "android", "mac"):
             return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}", "is_error": True}
 

@@ -27,9 +27,10 @@ class FakeClient:
     def invoke_tool(self, name, args):
         raise AssertionError(f"unexpected tool invoke: {name}")
 
-    def chat(self, message, timeout_sec=None, attachments=None, skills=None):
+    def chat(self, message, timeout_sec=None, attachments=None, skills=None, benchmark_task_id=None):
         self.messages.append(message)
         self.skill_requests.append(list(skills or []))
+        self.benchmark_task_id = benchmark_task_id
         return ChatResponse(
             response=self.response,
             history=[{"type": "assistant", "content": self.response}],
@@ -59,6 +60,24 @@ def test_run_one_task_passes_without_judge_when_hard_assertions_pass(tmp_path: P
 
     assert result.status == "passed"
     assert result.hard_assertions.response_exists is True
+
+
+def test_run_one_task_marks_chat_as_benchmark_for_memory_isolation(tmp_path: Path):
+    suite = Suite(name="smoke", global_reset={}, tasks=[], sha256="sha", source_path=tmp_path / "suite.json")
+    task = TaskSpec(
+        id="chat_smoke",
+        category="diagnostic",
+        description_for_judge="Smoke chat task.",
+        prompt="ping",
+        rubric=[],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+    )
+    client = FakeClient()
+
+    result = run_one_task(client, suite, task, 1, tmp_path / "artifacts", None, None, "run-1", benchmark_task_id="suite.json:chat_smoke")
+
+    assert result.status == "passed"
+    assert client.benchmark_task_id == "suite.json:chat_smoke"
 
 
 def test_run_one_task_fails_without_judge_when_expected_answer_is_wrong(tmp_path: Path):
@@ -282,7 +301,7 @@ class TimeoutClient(FakeClient):
             {"type": "tool_result", "content": "{}"},
         ]
 
-    def chat(self, message, timeout_sec=None, attachments=None, skills=None):
+    def chat(self, message, timeout_sec=None, attachments=None, skills=None, benchmark_task_id=None):
         raise AgentTimeoutError("deadline exceeded")
 
     def get_history(self):
@@ -320,7 +339,7 @@ class SummaryHistoryClient(FakeClient):
     """Mimics the current agent: history omits base64 image data and the
     tool_result content is a plain text summary instead."""
 
-    def chat(self, message, timeout_sec=None, attachments=None, skills=None):
+    def chat(self, message, timeout_sec=None, attachments=None, skills=None, benchmark_task_id=None):
         self.messages.append(message)
         return ChatResponse(
             response="done",

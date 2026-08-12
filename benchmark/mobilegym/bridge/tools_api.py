@@ -246,7 +246,7 @@ class ToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute common platform navigation actions such as back or home.",
+                "description": "Execute common platform navigation actions such as back or home. Platform is optional and defaults to Android for this benchmark environment.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
@@ -257,7 +257,7 @@ class ToolsAPIHandler:
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
                     },
-                    "required": ["platform"],
+                    "required": [],
                 },
             },
         ]
@@ -597,7 +597,7 @@ class ToolsAPIHandler:
 
     def _call_quick_action(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute a small MobileGym-compatible quick_action subset."""
-        platform = str(tool_input.get("platform", "") or "").strip().lower()
+        platform = str(tool_input.get("platform", "android") or "android").strip().lower()
         if platform not in ("ios", "android", "mac"):
             return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}", "is_error": True}
 

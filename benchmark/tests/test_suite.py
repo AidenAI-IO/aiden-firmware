@@ -621,7 +621,7 @@ def test_phone_control_bluetooth_task_uses_chinese_keyword():
     assert "Bluetooth" not in task.prompt
     assert any("蓝牙" in item.check for item in task.rubric)
 
-def test_loop_planning_suite_uses_tool_hard_assertions():
+def test_loop_planning_suite_matches_single_agent_architecture():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "loop_planning_v1.json"
     suite = load_suite(suite_path)
     task_by_id = {task.id: task for task in suite.tasks}
@@ -634,17 +634,12 @@ def test_loop_planning_suite_uses_tool_hard_assertions():
     assert "commit_plan" in task_by_id["two_calculation_compare_no_plan"].hard_assertions.forbidden_tools
     assert "shell" not in task_by_id["single_calculation_no_plan"].prompt.lower()
     assert "shell" not in task_by_id["two_calculation_compare_no_plan"].prompt.lower()
-    assert task_by_id["invoice_reconciliation_requires_plan"].hard_assertions.required_tools == [
-        "enter_plan_mode",
-        "commit_plan",
-        "shell",
-    ]
-    assert task_by_id["expense_summary_requires_plan"].hard_assertions.required_tools == [
-        "enter_plan_mode",
-        "commit_plan",
-    ]
+    assert task_by_id["invoice_reconciliation_requires_plan"].hard_assertions.required_tools == ["shell"]
+    assert task_by_id["expense_summary_requires_plan"].hard_assertions.required_tools == ["shell"]
     for task in suite.tasks:
         forbidden = set(task.hard_assertions.forbidden_tools)
+        assert "enter_plan_mode" in forbidden
+        assert "commit_plan" in forbidden
         assert "screenshot" in forbidden
         assert "touch_gesture" in forbidden
         assert "keyboard_text" in forbidden

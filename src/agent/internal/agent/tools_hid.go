@@ -2288,19 +2288,35 @@ func resolvePointerPositionForSurface(screen *screen.ScreenState, touchscreen bo
 		}
 		return screenshotPixelToAbsolutePoint(x, y, width, height, active, touchscreen)
 	case coordinateSpaceNormalized:
+		if err := validateCoordinateRange(x, y, 0, 1000, "normalized"); err != nil {
+			return 0, 0, err
+		}
 		absX, absY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, x, y)
 		if err != nil {
 			return 0, 0, err
 		}
 		return absX, absY, nil
 	case coordinateSpaceAbsolute:
-		return int(clampFloat(math.Round(x), 0, absMouseMaxPos)), int(clampFloat(math.Round(y), 0, absMouseMaxPos)), nil
+		if err := validateCoordinateRange(x, y, 0, absMouseMaxPos, "absolute"); err != nil {
+			return 0, 0, err
+		}
+		return int(math.Round(x)), int(math.Round(y)), nil
 	}
 
 	return 0, 0, fmt.Errorf("unsupported coord_space: %q", coordSpace)
 }
 
+func validateCoordinateRange(x, y, minimum, maximum float64, space string) error {
+	if x < minimum || x > maximum || y < minimum || y > maximum {
+		return fmt.Errorf("%s coordinates x=%.2f y=%.2f are outside %.0f-%.0f range", space, x, y, minimum, maximum)
+	}
+	return nil
+}
+
 func normalizedToAbsolutePointForSurface(screen *screen.ScreenState, touchscreen bool, x, y float64) (int, int, error) {
+	if err := validateCoordinateRange(x, y, 0, 1000, "normalized"); err != nil {
+		return 0, 0, err
+	}
 	// Normalized coordinates are always interpreted within active_area:
 	// 0-1000 maps to the mirrored phone touch region inside the HDMI frame.
 	//
@@ -2314,8 +2330,8 @@ func normalizedToAbsolutePointForSurface(screen *screen.ScreenState, touchscreen
 	// surface covers the complete mirrored frame.
 	if screen != nil {
 		if width, height, active, age, ok := screen.ActiveAreaWithAge(); ok && age < screenDimensionsStaleAfter && active.Valid {
-			activePixelX := (clampFloat(x, 0, 1000) / 1000.0) * float64(active.Width-1)
-			activePixelY := (clampFloat(y, 0, 1000) / 1000.0) * float64(active.Height-1)
+			activePixelX := (x / 1000.0) * float64(active.Width-1)
+			activePixelY := (y / 1000.0) * float64(active.Height-1)
 			if touchscreen {
 				fullFramePixelX := float64(active.X) + activePixelX
 				fullFramePixelY := float64(active.Y) + activePixelY
@@ -2386,7 +2402,7 @@ func normalizeCoordinateSpace(coordSpace string, defaultSpace string) (string, e
 }
 
 func normalizedToAbsolutePoint(x, y float64) (int, int) {
-	return int(math.Round(clampFloat(x, 0, 1000) / 1000.0 * absMouseMaxPos)), int(math.Round(clampFloat(y, 0, 1000) / 1000.0 * absMouseMaxPos))
+	return int(math.Round(x / 1000.0 * absMouseMaxPos)), int(math.Round(y / 1000.0 * absMouseMaxPos))
 }
 
 func pixelToAbsolutePoint(x, y float64, width, height int, active screen.ScreenActiveArea, touchscreen bool) (int, int, error) {
@@ -2588,11 +2604,11 @@ func directionalSwipeEndpoints(screen *screen.ScreenState, touchscreen bool, ges
 		travel = defaultDirectionalSwipeDistance
 	}
 	if distance != nil && *distance > 0 {
-		travel = clampFloat(*distance, 1, 1000)
+		travel = *distance
 	}
 	center := 500.0
 	if anchor != nil {
-		center = clampFloat(*anchor, 0, 1000)
+		center = *anchor
 	}
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf(
@@ -2621,11 +2637,17 @@ func directionalSwipeNormalizedCoordinates(gestureType string, distance, anchor 
 		travel = defaultDirectionalSwipeDistance
 	}
 	if distance != nil && *distance > 0 {
-		travel = clampFloat(*distance, 1, 1000)
+		if *distance > 1000 {
+			return 0, 0, 0, 0, fmt.Errorf("distance %.2f is outside 0-1000 normalized range", *distance)
+		}
+		travel = *distance
 	}
 	center := 500.0
 	if anchor != nil {
-		center = clampFloat(*anchor, 0, 1000)
+		if *anchor < 0 || *anchor > 1000 {
+			return 0, 0, 0, 0, fmt.Errorf("anchor %.2f is outside 0-1000 normalized range", *anchor)
+		}
+		center = *anchor
 	}
 	half := travel / 2
 

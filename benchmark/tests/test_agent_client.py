@@ -162,6 +162,16 @@ def test_invoke_tool_can_send_benchmark_task_id_header():
     assert seen["headers"]["benchmark-task-id"] == "suite.json:t1"
 
 
+def test_chat_can_send_authenticated_benchmark_task_id_header():
+    seen = {}
+    client = AgentClient(base_url="http://test", benchmark_token="secret")
+    with patch("urllib.request.urlopen", _captured(seen, body={"response": "ok", "history": []})):
+        client.chat("hello", benchmark_task_id="suite.json:t1")
+
+    assert seen["headers"]["benchmark-task-id"] == "suite.json:t1"
+    assert seen["headers"]["authorization"] == "Bearer secret"
+
+
 def test_seed_memory_sends_benchmark_token_header():
     seen = {}
     client = AgentClient(base_url="http://test", benchmark_token="seed-token")

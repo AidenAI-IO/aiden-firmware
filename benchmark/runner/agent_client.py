@@ -147,14 +147,20 @@ class AgentClient:
         timeout_sec: int | None = None,
         attachments: list[dict[str, str]] | None = None,
         skills: list[str] | None = None,
+        benchmark_task_id: str | None = None,
     ) -> ChatResponse:
         payload: dict[str, Any] = {"message": message}
         if attachments:
             payload["attachments"] = attachments
         if skills:
             payload["skills"] = skills
+        headers = {}
+        if str(benchmark_task_id or "").strip():
+            headers["benchmark-task-id"] = str(benchmark_task_id).strip()
+            if self._benchmark_token:
+                headers["Authorization"] = f"Bearer {self._benchmark_token}"
         status, body_bytes = self._post(
-            "/api/chat", payload, timeout=timeout_sec or self._default_timeout
+            "/api/chat", payload, timeout=timeout_sec or self._default_timeout, headers=headers
         )
         if status != 200:
             raise AgentRequestError(f"chat returned {status}")

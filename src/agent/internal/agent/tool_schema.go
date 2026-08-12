@@ -223,7 +223,7 @@ func rangedNumberArgSchema(description string, minimum, maximum float64, example
 }
 
 func coordinateSchema(description string, examples ...float64) map[string]any {
-	return numberArgSchema(description, examples...)
+	return rangedNumberArgSchema(description, 0, 1000, examples...)
 }
 
 func coordSpaceSchema() map[string]any {

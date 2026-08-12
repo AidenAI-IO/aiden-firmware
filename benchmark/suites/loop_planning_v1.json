@@ -1,7 +1,7 @@
 {
   "name": "loop_planning_v1",
   "suite_category": "Memory & Cognition",
-  "description": "Text-only benchmark for checking whether the agent uses plan mode only for sufficiently complex tasks. It avoids screen and phone tools so failures are easier to interpret.",
+  "description": "Text-only benchmark for checking whether the single agent selects proportionate direct tools and completes calculations accurately. It avoids screen and phone tools so failures are easier to interpret.",
   "prompt_prefix": "You are completing text-only tasks. Do not use screen, phone, UI, keyboard, mouse, touch, app, clipboard, calendar, contacts, notification, or screenshot tools. Use an available non-UI capability when deterministic computation is appropriate to avoid arithmetic mistakes. End with exactly one final line like <final_answer>(a)</final_answer>.",
   "global_reset": {},
   "tasks": [
@@ -141,18 +141,14 @@
     {
       "id": "invoice_reconciliation_requires_plan",
       "category": "multi_step",
-      "description_for_judge": "A three-stage invoice reconciliation should enter plan mode, commit a plan, use shell, and answer the net total.",
+      "description_for_judge": "A three-stage invoice reconciliation should use shell directly and answer the correct net total without legacy delegated-planning tools.",
       "prompt": "Reconcile this invoice carefully.\n\nStage 1: Order A is 18 units at 24.50 each, with a 12% discount applied to the order subtotal.\nStage 2: Order B is 7 units at 39.99 each, plus 18.75 shipping.\nStage 3: A return credit removes 2 units at 24.50 each.\n\nChoose the final net total.\n\nOptions:\n(a) 637.76\n(b) 686.76\n(c) 688.01\n(d) 588.76",
       "expected_answer": "(a)",
       "answer_format": "option_letter",
       "rubric": [
         {
-          "id": "entered_plan_mode",
-          "check": "The trace contains enter_plan_mode."
-        },
-        {
-          "id": "committed_plan",
-          "check": "The trace contains commit_plan before execution."
+          "id": "did_not_use_legacy_planning",
+          "check": "The trace does not contain enter_plan_mode or commit_plan."
         },
         {
           "id": "used_shell",
@@ -164,12 +160,14 @@
         }
       ],
       "hard_assertions": {
-        "min_tool_calls": 4,
-        "max_tool_calls": 12,
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
         "must_complete_within_sec": 120,
         "response_required": true,
-        "required_tools": ["enter_plan_mode", "commit_plan", "shell"],
+        "required_tools": ["shell"],
         "forbidden_tools": [
+          "enter_plan_mode",
+          "commit_plan",
           "screenshot",
           "mouse_click",
           "mouse_move",
@@ -189,18 +187,14 @@
     {
       "id": "expense_summary_requires_plan",
       "category": "multi_step",
-      "description_for_judge": "A multi-record expense summary should enter plan mode, commit a plan, use a non-UI computation tool, and answer the aggregate facts.",
+      "description_for_judge": "A multi-record expense summary should use a direct non-UI computation tool and answer the aggregate facts without legacy delegated-planning tools.",
       "prompt": "Analyze this expense list. Find category totals, the category with the highest total, the number of records over 100, and the grand total.\n\nData:\n- travel: 128.40\n- meal: 34.25\n- travel: 72.60\n- software: 199.99\n- meal: 83.15\n- software: 49.01\n\nOptions:\n(a) highest travel, 2 records over 100, grand total 567.40\n(b) highest software, 2 records over 100, grand total 567.40\n(c) highest software, 3 records over 100, grand total 567.40\n(d) highest meal, 2 records over 100, grand total 518.39",
       "expected_answer": "(b)",
       "answer_format": "option_letter",
       "rubric": [
         {
-          "id": "entered_plan_mode",
-          "check": "The trace contains enter_plan_mode."
-        },
-        {
-          "id": "committed_plan",
-          "check": "The trace contains commit_plan before execution."
+          "id": "did_not_use_legacy_planning",
+          "check": "The trace does not contain enter_plan_mode or commit_plan."
         },
         {
           "id": "used_computation_tool",
@@ -212,12 +206,14 @@
         }
       ],
       "hard_assertions": {
-        "min_tool_calls": 4,
-        "max_tool_calls": 14,
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
         "must_complete_within_sec": 120,
         "response_required": true,
-        "required_tools": ["enter_plan_mode", "commit_plan"],
+        "required_tools": ["shell"],
         "forbidden_tools": [
+          "enter_plan_mode",
+          "commit_plan",
           "screenshot",
           "mouse_click",
           "mouse_move",
