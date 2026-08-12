@@ -29,8 +29,8 @@ func TestGetDisplayModelsForProvider(t *testing.T) {
 		{
 			name:         "anthropic has native model IDs",
 			provider:     "anthropic",
-			wantCount:    3,
-			wantFirstID:  "claude-opus-4-8",
+			wantCount:    4,
+			wantFirstID:  "claude-fable-5",
 			hasRecommend: true,
 		},
 		{
@@ -90,7 +90,7 @@ func TestGetDisplayModelsForProvider(t *testing.T) {
 }
 
 func TestAnthropicDisplayModelsUseMessagesAPIIDs(t *testing.T) {
-	want := []string{"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"}
+	want := []string{"claude-fable-5", "claude-opus-5", "claude-sonnet-4-6", "claude-haiku-4-5"}
 	models := GetDisplayModelsForProvider("anthropic")
 	if len(models) != len(want) {
 		t.Fatalf("models = %#v, want %d entries", models, len(want))

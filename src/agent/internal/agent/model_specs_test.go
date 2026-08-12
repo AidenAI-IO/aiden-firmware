@@ -48,6 +48,8 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 		{"gpt-5.4 bare", "openai", "gpt-5.4", 1_050_000, 128_000},
 		{"gpt-5.4 mini bare", "openai", "gpt-5.4-mini", 400_000, 128_000},
 		{"gpt-5.4 nano bare", "openai", "gpt-5.4-nano", 400_000, 128_000},
+		{"claude fable 5 bare", "anthropic", "claude-fable-5", 1_000_000, 64_000},
+		{"claude opus 5 prefixed", "openrouter", "anthropic/claude-opus-5", 1_000_000, 64_000},
 		{"claude opus 4.8 bare", "anthropic", "claude-opus-4-8", 1_000_000, 64_000},
 		{"claude sonnet 4.6 prefixed", "openrouter", "anthropic/claude-sonnet-4-6", 1_000_000, 64_000},
 		{"claude haiku 4.5 bare", "anthropic", "claude-haiku-4-5", 200_000, 64_000},

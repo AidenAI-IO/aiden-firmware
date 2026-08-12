@@ -31,7 +31,11 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	"openai/gpt-5.4-nano": {ContextWindow: 400_000, MaxOutput: 128_000},
 	"gpt-5.4-nano":        {ContextWindow: 400_000, MaxOutput: 128_000},
 
-	// Anthropic Claude 4.x family (vision + tool calling).
+	// Anthropic Claude family (vision + tool calling).
+	"anthropic/claude-fable-5":    {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"claude-fable-5":              {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"anthropic/claude-opus-5":     {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"claude-opus-5":               {ContextWindow: 1_000_000, MaxOutput: 64_000},
 	"anthropic/claude-opus-4-8":   {ContextWindow: 1_000_000, MaxOutput: 64_000},
 	"claude-opus-4-8":             {ContextWindow: 1_000_000, MaxOutput: 64_000},
 	"anthropic/claude-sonnet-4-6": {ContextWindow: 1_000_000, MaxOutput: 64_000},
