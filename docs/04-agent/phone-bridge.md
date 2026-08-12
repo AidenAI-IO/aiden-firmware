@@ -501,6 +501,23 @@ Reply:
 }
 ```
 
+The public `bridge_notification` tool also exposes the board-side shared system
+notification ring:
+
+```json
+{"action":"query","limit":20}
+```
+
+`action=send` continues to use `notification_send` through the companion app.
+`action=query` reads `ble_service` directly and returns notification changes,
+the current generation, and cursor fields. Omitting `since` returns the latest
+retained events. Pass `since=0` to page forward from the oldest retained event;
+incremental queries pass the prior `last_id` as `since` together with the prior
+`generation`. Querying does not require Aiden to be foregrounded or Phone
+Bridge to be connected. On iOS the
+events come from ANCS; the same ring can contain Android events forwarded over
+the phone-notification ingestion path when that feature is installed.
+
 Reply:
 ```json
 {

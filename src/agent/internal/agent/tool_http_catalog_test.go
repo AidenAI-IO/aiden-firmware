@@ -539,7 +539,7 @@ func TestPhoneBridgeToolDescriptorsHaveUsefulExamples(t *testing.T) {
 		"bridge_clipboard":    `{"action":"read"}`,
 		"bridge_calendar":     `{"action":"query","from":"2026-07-10T00:00:00+08:00","to":"2026-07-11T00:00:00+08:00"}`,
 		"bridge_contacts":     `{"action":"query","query":"Alice","limit":20}`,
-		"bridge_notification": `{"title":"Aiden reminder","body":"Check your phone","sound":true}`,
+		"bridge_notification": `{"action":"query","limit":20}`,
 	}
 	for name, want := range expected {
 		desc, ok := runtime.ToolDescriptorByName(name)

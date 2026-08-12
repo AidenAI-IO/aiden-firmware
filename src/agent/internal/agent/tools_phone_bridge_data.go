@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"aiden-agent/internal/ble"
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -535,51 +537,82 @@ func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, e
 	return jsonString(result), nil
 }
 
-// NotificationTool sends local notifications on the connected phone.
+// NotificationTool sends local notifications through Phone Bridge and reads
+// shared system-notification events retained by ble_service.
 type NotificationTool struct {
-	bridge   *PhoneBridge
-	restorer *PhoneBridgeRestorer
+	bridge       *PhoneBridge
+	restorer     *PhoneBridgeRestorer
+	eventsReader func(context.Context, string, string, string, int) (ble.EventPage, error)
+	statusReader func(context.Context, string) (ble.RuntimeStatus, error)
+	socketPath   func() string
 }
 
 func NewNotificationTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *NotificationTool {
-	return &NotificationTool{bridge: bridge, restorer: restorer}
+	return &NotificationTool{
+		bridge:       bridge,
+		restorer:     restorer,
+		eventsReader: ble.RequestEvents,
+		statusReader: ble.RequestStatus,
+		socketPath:   configuredBLEServiceSocketPath,
+	}
 }
 
 func (t *NotificationTool) Name() string { return toolBridgeNotification }
 
 func (t *NotificationTool) Description() string {
-	return `Send local notifications on the connected phone via the phone bridge. ` +
-		`Use this to remind the user or bring the companion app back to foreground.`
+	return `Send local notifications through the companion app or query shared phone system-notification events from the board's BLE notification ring. ` +
+		`Use action=send to remind the user or bring the companion app back to foreground. ` +
+		`Use action=query only when the user asks to inspect notifications; query does not require the companion app to be foregrounded.`
 }
 
 func (t *NotificationTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
+		"action":      stringEnumArgSchema("Notification action. send is the default for backwards compatibility.", "send", "query"),
 		"title":       stringArgSchema("Notification title."),
 		"body":        stringArgSchema("Notification body."),
 		"schedule_at": stringArgSchema("Optional scheduled send time as RFC3339 with timezone; if omitted, sent immediately."),
 		"sound":       boolArgSchema("Whether to play a sound."),
 		"badge":       minIntegerArgSchema("Optional app badge count.", 0),
-	}, "title")
+		"since":       stringArgSchema("Optional query cursor. Omit it for the most recent retained notifications, use 0 to page from the oldest retained event, or use the previous last_id for incremental reads."),
+		"generation":  stringArgSchema("Generation returned by a previous query. Include it with a non-zero since cursor."),
+		"limit":       rangedIntegerArgSchema("Maximum notification events to return.", 1, 100),
+	})
 }
 
 type notificationArgs struct {
+	Action     string `json:"action"`
 	Title      string `json:"title"`
 	Body       string `json:"body"`
 	ScheduleAt string `json:"schedule_at"`
 	Sound      bool   `json:"sound"`
 	Badge      int    `json:"badge"`
+	Since      string `json:"since"`
+	Generation string `json:"generation"`
+	Limit      int    `json:"limit"`
 }
 
 func (t *NotificationTool) Call(ctx context.Context, input string) (string, error) {
 	var args notificationArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v. Expected JSON format: {\"title\":\"Reminder\",\"body\":\"Take medicine\",\"schedule_at\":\"2026-06-04T18:00:00+08:00\",\"sound\":true,\"badge\":1}. schedule_at is optional, sound and badge are boolean/number", err))
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v. Expected action=send with a title, or action=query with optional since, generation, and limit", err))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
+	action := strings.ToLower(strings.TrimSpace(args.Action))
+	if action == "" {
+		action = "send"
+	}
+	if action == "query" {
+		return t.query(ctx, args)
+	}
+	if action != "send" {
+		te := NewToolError(CodeInvalidArguments, "notification action must be send or query")
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
 
 	if strings.TrimSpace(args.Title) == "" {
-		te := NewToolError(CodeInvalidArguments, "notification requires a title")
+		te := NewToolError(CodeInvalidArguments, "notification send requires a title")
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -622,4 +655,74 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 	}
 	result["notification_id"] = data.NotificationID
 	return jsonString(result), nil
+}
+
+func (t *NotificationTool) query(ctx context.Context, args notificationArgs) (string, error) {
+	since := strings.TrimSpace(args.Since)
+	limit := args.Limit
+	if limit == 0 {
+		limit = 20
+	}
+	if limit < 1 || limit > 100 {
+		te := NewToolError(CodeInvalidArguments, "notification query limit must be between 1 and 100")
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
+	if t == nil || t.eventsReader == nil || t.statusReader == nil || t.socketPath == nil {
+		te := NewToolError(CodeModuleUnavailable, "BLE notification reader is not configured")
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
+	generation := strings.TrimSpace(args.Generation)
+	queryMode := "cursor"
+	if since == "" {
+		queryMode = "latest"
+		status, err := t.statusReader(ctx, t.socketPath())
+		if err != nil {
+			te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("inspect shared notification cursor: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+		last, err := strconv.ParseUint(defaultString(status.LastEventID, "0"), 10, 64)
+		if err != nil {
+			te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("decode shared notification cursor: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+		if last > uint64(limit) {
+			since = strconv.FormatUint(last-uint64(limit), 10)
+		} else {
+			since = "0"
+		}
+		generation = status.EventGeneration
+	} else {
+		if _, err := strconv.ParseUint(since, 10, 64); err != nil {
+			te := NewToolError(CodeInvalidArguments, "notification query since must be a non-negative decimal cursor")
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+		if since != "0" && generation == "" {
+			te := NewToolError(CodeInvalidArguments, "notification query generation is required with a non-zero since cursor")
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+	}
+	page, err := t.eventsReader(ctx, t.socketPath(), since, generation, limit)
+	if err != nil {
+		te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("query shared notifications: %v", err))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
+	return jsonString(map[string]any{
+		"ok":             true,
+		"action":         "query",
+		"query_mode":     queryMode,
+		"since":          since,
+		"events":         page.Events,
+		"generation":     page.Generation,
+		"reset_required": page.ResetRequired,
+		"truncated":      page.Truncated,
+		"oldest_id":      page.OldestID,
+		"last_id":        page.LastID,
+	}), nil
 }

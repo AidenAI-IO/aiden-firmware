@@ -701,10 +701,6 @@ func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.Obj
 		b.clearANCS("Bluetooth disconnected by user")
 		return nil
 	}
-	if !b.wakeSubscribed() {
-		b.clearANCS("waiting for Wake subscriber")
-		return nil
-	}
 	type candidate struct {
 		paths       ancsPaths
 		deviceProps map[string]dbus.Variant

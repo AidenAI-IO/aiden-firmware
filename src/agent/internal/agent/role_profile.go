@@ -12,7 +12,9 @@ type RoleProfile struct {
 	Tools        []langtools.Tool
 }
 
-const phoneBridgeToolStateRule = `Before calling open_url or a bridge data tool, inspect the latest <state>.
+const phoneBridgeToolStateRule = `bridge_notification with action=query reads the board's BLE notification ring and does not require Phone Bridge or the companion app to be foregrounded.
+
+Before calling open_url or a bridge data tool that executes through the companion app, inspect the latest <state>.
 
 open_url_available =
     (app_connected:true AND

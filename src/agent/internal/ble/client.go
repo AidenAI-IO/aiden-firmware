@@ -18,6 +18,49 @@ type ForgetResult struct {
 	Bluetooth RuntimeStatus `json:"bluetooth"`
 }
 
+// RequestEvents returns notification changes retained by ble_service. Cursors
+// stay as strings so callers do not lose uint64 precision when persisting them.
+func RequestEvents(
+	ctx context.Context,
+	socketPath string,
+	since string,
+	generation string,
+	limit int,
+) (EventPage, error) {
+	var response struct {
+		Status        string              `json:"status"`
+		Error         string              `json:"error"`
+		Events        []NotificationEvent `json:"events"`
+		Generation    string              `json:"generation"`
+		ResetRequired bool                `json:"reset_required"`
+		Truncated     bool                `json:"truncated"`
+		OldestID      string              `json:"oldest_id"`
+		LastID        string              `json:"last_id"`
+	}
+	requestValue := struct {
+		Op         string `json:"op"`
+		Since      string `json:"since"`
+		Generation string `json:"generation,omitempty"`
+		Limit      int    `json:"limit,omitempty"`
+	}{
+		Op:         "events_since",
+		Since:      since,
+		Generation: generation,
+		Limit:      limit,
+	}
+	if err := request(ctx, socketPath, requestValue, &response); err != nil {
+		return EventPage{}, err
+	}
+	return EventPage{
+		Events:        response.Events,
+		Generation:    response.Generation,
+		ResetRequired: response.ResetRequired,
+		Truncated:     response.Truncated,
+		OldestID:      response.OldestID,
+		LastID:        response.LastID,
+	}, nil
+}
+
 type RequestError struct {
 	Status  string
 	Message string

@@ -127,6 +127,12 @@ ring. Events include:
 The ring defaults to 512 events. Reboot clears events but does not clear the
 Bluetooth bond.
 
+ANCS subscription is independent of the companion app's Wake subscription.
+Wake availability controls only on-demand background Phone Bridge execution;
+it must not delay Notification Source or Data Source subscription because that
+changes the iOS/BlueZ GATT initialization order and can leave attribute reads
+without Data Source responses.
+
 ## UDS API
 
 Default socket:
