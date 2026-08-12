@@ -72,6 +72,40 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 	}
 }
 
+func TestLookupModelSpecClaude4VersionSeparators(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		model       string
+		wantContext int
+	}{
+		{"opus dotted bare", "anthropic", "claude-opus-4.8", 1_000_000},
+		{"opus dotted provider-prefixed", "openrouter", "anthropic/claude-opus-4.8", 1_000_000},
+		{"sonnet dotted bare", "anthropic", "claude-sonnet-4.6", 1_000_000},
+		{"sonnet dotted provider-prefixed", "openrouter", "anthropic/claude-sonnet-4.6", 1_000_000},
+		{"haiku dotted bare", "anthropic", "claude-haiku-4.5", 200_000},
+		{"haiku dotted provider-prefixed", "openrouter", "anthropic/claude-haiku-4.5", 200_000},
+		{"opus hyphenated bare", "anthropic", "claude-opus-4-8", 1_000_000},
+		{"sonnet hyphenated provider-prefixed", "openrouter", "anthropic/claude-sonnet-4-6", 1_000_000},
+		{"haiku hyphenated bare", "anthropic", "claude-haiku-4-5", 200_000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec, ok := LookupModelSpec(tt.provider, tt.model)
+			if !ok {
+				t.Fatalf("LookupModelSpec(%q, %q): expected ok, got !ok", tt.provider, tt.model)
+			}
+			if spec.ContextWindow != tt.wantContext {
+				t.Errorf("ContextWindow = %d, want %d", spec.ContextWindow, tt.wantContext)
+			}
+			if spec.MaxOutput != 64_000 {
+				t.Errorf("MaxOutput = %d, want 64_000", spec.MaxOutput)
+			}
+		})
+	}
+}
+
 func TestLookupModelSpecDoubaoSeedDefaults(t *testing.T) {
 	spec, ok := LookupModelSpec("volcengine", "doubao-seed-2-1-pro-260628")
 	if !ok {
