@@ -72,12 +72,12 @@ All are compatible with AGPL-3.0 for our use case.
 
 ---
 
-## TC358743 Driver
+## RK628 HDMI-to-CSI Driver
 
 - **License**: GPL-2.0
-- **Source**: Linux Kernel mainline
+- **Source**: Rockchip downstream Linux kernel
 - **Location**: `pico-sdk/` kernel modules
-- **Description**: HDMI-to-CSI bridge driver
+- **Description**: RK628D HDMI-to-CSI V4L2 bridge driver
 - **Note**: Kernel module, remains GPL-2.0 as required
 
 ---

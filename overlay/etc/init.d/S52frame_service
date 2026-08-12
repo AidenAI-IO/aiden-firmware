@@ -15,7 +15,12 @@ SOCKET_PATH=/run/frame_service/frame_service.sock
 FRAME_SERVICE_FPS=30
 FRAME_SERVICE_WIDTH=1920
 FRAME_SERVICE_HEIGHT=1080
-FRAME_SERVICE_EDID=
+FRAME_SERVICE_FORCE_TRIGGER=auto
+FRAME_SERVICE_SUBDEV=
+FRAME_SERVICE_EDID=auto
+FRAME_SERVICE_TC358743_EDID=/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex
+FRAME_SERVICE_TC358743_HPD_LOW_SECONDS=2
+FRAME_SERVICE_TC358743_SETTLE_SECONDS=5
 LOG_PATH=/var/log/frame_service/frame_service.log
 PID_FILE=/run/frame_service/frame_service.pid
 WATCHDOG_PID_FILE=/run/frame_service/frame_service_watchdog.pid
@@ -87,6 +92,105 @@ watchdog_pid() {
     fi
 }
 
+detect_hdmi_subdev() {
+    for name_file in /sys/class/video4linux/v4l-subdev*/name; do
+        [ -r "$name_file" ] || continue
+        name="$(cat "$name_file" 2>/dev/null)"
+        case "$name" in
+            *rk628-csi*|*tc358743*)
+                node="$(basename "$(dirname "$name_file")")"
+                echo "/dev/$node"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+hdmi_subdev_name() {
+    subdev="$1"
+    [ -n "$subdev" ] || return 1
+    node="$(basename "$subdev")"
+    name_file="/sys/class/video4linux/$node/name"
+    [ -r "$name_file" ] || return 1
+    cat "$name_file" 2>/dev/null
+}
+
+resolve_force_trigger() {
+    requested="$1"
+    subdev="$2"
+
+    case "$requested" in
+        0|1)
+            echo "$requested"
+            ;;
+        auto|"")
+            name="$(hdmi_subdev_name "$subdev")"
+            case "$name" in
+                *tc358743*) echo 1 ;;
+                *rk628-csi*) echo 0 ;;
+                *) echo 0 ;;
+            esac
+            ;;
+        *)
+            echo 0
+            ;;
+    esac
+}
+
+resolve_edid() {
+    requested="$1"
+    subdev="$2"
+
+    case "$requested" in
+        auto|"")
+            name="$(hdmi_subdev_name "$subdev")"
+            case "$name" in
+                *tc358743*) echo "$FRAME_SERVICE_TC358743_EDID" ;;
+                *) echo "" ;;
+            esac
+            ;;
+        *)
+            echo "$requested"
+            ;;
+    esac
+}
+
+prepare_tc358743_edid() {
+    subdev="$1"
+    edid="$2"
+    name="$(hdmi_subdev_name "$subdev")"
+
+    case "$name" in
+        *tc358743*) ;;
+        *) return 0 ;;
+    esac
+
+    if [ ! -r "$edid" ]; then
+        supervisor_log ERROR edid_missing "TC358743 EDID not readable: $edid"
+        return 1
+    fi
+    if ! command -v v4l2-ctl >/dev/null 2>&1; then
+        supervisor_log ERROR edid_tool_missing "v4l2-ctl is required for TC358743 HPD renegotiation"
+        return 1
+    fi
+
+    supervisor_log INFO edid_renegotiation \
+        "holding TC358743 HPD low for ${FRAME_SERVICE_TC358743_HPD_LOW_SECONDS}s before loading $edid"
+    if ! v4l2-ctl -d "$subdev" --clear-edid=pad=0; then
+        supervisor_log ERROR edid_clear_failed "device=$subdev"
+        return 1
+    fi
+    sleep "$FRAME_SERVICE_TC358743_HPD_LOW_SECONDS"
+    if ! v4l2-ctl -d "$subdev" \
+        --set-edid="pad=0,file=$edid" --fix-edid-checksums; then
+        supervisor_log ERROR edid_set_failed "device=$subdev path=$edid"
+        return 1
+    fi
+    sleep "$FRAME_SERVICE_TC358743_SETTLE_SECONDS"
+    return 0
+}
+
 start() {
     if [ "$ENABLE_FRAME_SERVICE" != "1" ]; then
         echo "frame_service disabled by config (ENABLE_FRAME_SERVICE=$ENABLE_FRAME_SERVICE)"
@@ -105,6 +209,7 @@ start() {
 
     (
         trap 'exit 0' INT TERM
+        bridge_prepared=0
         while true; do
             if [ ! -x "$FRAME_SERVICE_BIN" ]; then
                 supervisor_log WARN binary_wait "waiting for $FRAME_SERVICE_BIN"
@@ -119,8 +224,42 @@ start() {
             if [ -n "$FRAME_SERVICE_HEIGHT" ]; then
                 set -- "$@" --height "$FRAME_SERVICE_HEIGHT"
             fi
-            if [ -n "$FRAME_SERVICE_EDID" ]; then
-                set -- "$@" --edid "$FRAME_SERVICE_EDID"
+            subdev="$FRAME_SERVICE_SUBDEV"
+            if [ -z "$subdev" ]; then
+                subdev="$(detect_hdmi_subdev)"
+            fi
+            if [ -z "$subdev" ]; then
+                supervisor_log WARN bridge_wait "waiting for RK628D or TC358743 subdevice"
+                sleep 2
+                continue
+            fi
+            if [ -n "$subdev" ]; then
+                set -- "$@" --subdev "$subdev"
+            fi
+            force_trigger="$(resolve_force_trigger "$FRAME_SERVICE_FORCE_TRIGGER" "$subdev")"
+            edid="$(resolve_edid "$FRAME_SERVICE_EDID" "$subdev")"
+            bridge_name="$(hdmi_subdev_name "$subdev")"
+            case "$bridge_name" in
+                *tc358743*)
+                    if [ "$bridge_prepared" != "1" ] && [ "$force_trigger" = "1" ]; then
+                        if ! prepare_tc358743_edid "$subdev" "$edid"; then
+                            sleep 2
+                            continue
+                        fi
+                        bridge_prepared=1
+                    fi
+                    if [ "$bridge_prepared" = "1" ]; then
+                        force_trigger=0
+                    fi
+                    ;;
+            esac
+            if [ "$force_trigger" = "1" ]; then
+                set -- "$@" --force-trigger
+            else
+                set -- "$@" --no-force-trigger
+            fi
+            if [ -n "$edid" ]; then
+                set -- "$@" --edid "$edid"
             fi
 
             supervisor_log INFO process_starting "starting $FRAME_SERVICE_BIN $*"
@@ -134,7 +273,7 @@ start() {
                 "exited with status $status; restarting in 2s"
             sleep 2
         done
-    ) &
+    ) </dev/null >> "$LOG_PATH" 2>&1 &
     echo "$!" > "$WATCHDOG_PID_FILE"
     echo "Started frame_service"
 }

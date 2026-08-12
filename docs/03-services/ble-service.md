@@ -1,4 +1,4 @@
-# BLE Service: iOS Notifications and Background Wake
+# BLE Service: Pairing, Phone Notifications, and Background Wake
 
 `ble_service` owns Aiden's Bluetooth Low Energy integration. It uses BlueZ on
 `hci0` in two roles at the same time:
@@ -6,11 +6,14 @@
 - BLE Peripheral: advertises an Aiden Wake service that the iOS companion app
   subscribes to.
 - ANCS Consumer: subscribes to Apple's Notification Center Service exposed by
-  a paired iPhone and normalizes system notification events.
+  the paired iPhone and normalizes system notification events.
+- Android notification sink: accepts normalized notification changes forwarded
+  by the companion app over the USB-restricted Agent HTTP API.
 
-BLE is intentionally a narrow transport. It does not carry Phone Bridge tool
-commands or results, and ANCS events are not written to Agent memory. Phone
-Bridge commands continue to use WebSocket or the existing HTTP queue.
+BLE is intentionally narrow. It does not carry Phone Bridge tool commands or
+results, and phone notification events are not written to Agent memory. Phone
+Bridge commands continue to use WebSocket or the existing HTTP queue; BLE Wake
+only prompts the iOS app to poll that queue.
 
 ## Boot and Persistence
 
@@ -111,13 +114,15 @@ bytes 4-11  uint64 wake sequence
 The iOS app treats this only as a native wake hook and immediately polls the
 HTTP command queue when backgrounded. No command payload is decoded from BLE.
 
-## ANCS Event Shape
+## Phone Notification Event Shape
 
 The service subscribes to ANCS Notification Source and Data Source, requests
 notification attributes through Control Point, and stores a bounded in-memory
 ring. Events include:
 
 - monotonic string `id` for UDS cursors;
+- `source`, source notification/event IDs, and the companion `device_id` when
+  the event came from Android;
 - ANCS `notification_uid`, event type, flags, category, and category count;
 - app identifier, title, subtitle, message, and date when attribute retrieval
   succeeds;
@@ -132,6 +137,14 @@ Wake availability controls only on-demand background Phone Bridge execution;
 it must not delay Notification Source or Data Source subscription because that
 changes the iOS/BlueZ GATT initialization order and can leave attribute reads
 without Data Source responses.
+
+On Android, the companion app uses `NotificationListenerService` after the
+user grants Notification Access. It filters the Aiden app's own notifications
+and group summaries, queues added/modified/removed events locally, and posts
+batches to `/api/phone-notifications/events` over USB ECM. Each source event has
+a stable `source_event_id`; `ble_service` deduplicates retries while that event
+remains in the bounded ring. Android notification forwarding does not require
+Bluetooth pairing.
 
 ## UDS API
 
@@ -161,8 +174,11 @@ device always reports `wake_subscriber=false` and `ancs_subscribed=false`.
 {"op":"wake","reason":"phone_bridge"}
 ```
 
-Returns a string `wake_id` and `delivered`. `delivered=false` means no iOS
-central was subscribed; the HTTP queue remains intact.
+Returns a string `wake_id` and `delivered`. `delivered=true` confirms only that
+the Wake notification was delivered to the subscribed iOS central. It does not
+confirm HTTP queue polling, native tool execution, or result posting; clients
+must continue waiting for the Phone Bridge command result. `delivered=false`
+means no iOS central was subscribed, and the HTTP queue remains intact.
 
 ### `events_since`
 
@@ -175,6 +191,30 @@ Returns the current `generation` with events after the cursor. Start with
 After `ble_service` restarts, a stale generation returns `reset_required=true`
 with no events; retry with `since=0`. Within one generation, `truncated=true`
 means the requested cursor is older than the bounded ring's retained history.
+
+### `notification_publish`
+
+```json
+{
+  "op": "notification_publish",
+  "phone_id": "android-...",
+  "events": [
+    {
+      "source_id": "0|com.example.mail|42|null|1000",
+      "source_event_id": "<sha256>",
+      "event": "added",
+      "app_identifier": "com.example.mail",
+      "title": "New message",
+      "message": "Hello"
+    }
+  ]
+}
+```
+
+Accepts 1-8 Android notification events, validates bounded metadata fields,
+sets `source=android` and the request `device_id`, and returns accepted and
+duplicate counts. This operation is intended for the Agent HTTP bridge rather
+than arbitrary local publishers.
 
 ### `pairing_start`
 
@@ -219,13 +259,15 @@ The companion app reaches the pairing operations through the Agent on USB ECM:
 | `POST` | `/api/bluetooth/pairing/start` | Open or refresh the user-initiated connection window |
 | `POST` | `/api/bluetooth/pairing/reset` | Remove a confirmed stale board bond before one fresh pairing attempt |
 | `POST` | `/api/bluetooth/disconnect` | Disconnect the physical BLE/ANCS link without deleting the bond |
+| `POST` | `/api/phone-notifications/events` | Ingest a batch of Android notification changes |
 
-Bluetooth control writes are accepted only over the board's USB ECM address
-(`192.168.42.1/24`) or loopback; requests arriving through Wi-Fi and other
-listeners receive `403`. The normal app flow first disables its CoreBluetooth
-reconnect loop, then asks BlueZ to disconnect the shared physical link. BLE
-keys, ANCS bodies, and Phone Bridge command payloads never pass through these
-endpoints.
+Bluetooth control and phone-notification writes are accepted only over the
+board's USB ECM address (`192.168.42.1/24`) or loopback; requests arriving
+through Wi-Fi and other listeners receive `403`. Android notification bodies
+use this local USB path. The normal iOS app flow first disables its
+CoreBluetooth reconnect loop, then asks BlueZ to disconnect the shared physical
+link. BLE keys, iOS ANCS bodies, and Phone Bridge command payloads never pass
+through these endpoints.
 
 ## Operations
 

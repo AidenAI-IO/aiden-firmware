@@ -132,6 +132,8 @@ func (c *ANCSConsumer) HandleNotificationSource(data []byte) error {
 	var command []byte
 	for _, source := range sourceEvents {
 		event := NotificationEvent{
+			Source:          "ios_ancs",
+			SourceID:        fmt.Sprintf("%d", source.UID),
 			NotificationUID: source.UID,
 			Event:           eventName(source.EventID),
 			Flags:           eventFlags(source.EventFlags),

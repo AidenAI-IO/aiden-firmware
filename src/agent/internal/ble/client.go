@@ -135,7 +135,73 @@ func RequestPairingForget(ctx context.Context, socketPath string) (ForgetResult,
 	return ForgetResult{Removed: response.Removed, Bluetooth: response.Bluetooth}, nil
 }
 
+func RequestPublishNotifications(
+	ctx context.Context,
+	socketPath string,
+	phoneID string,
+	events []NotificationEvent,
+) (NotificationPublishResult, error) {
+	var response struct {
+		Status     string `json:"status"`
+		Error      string `json:"error"`
+		Accepted   int    `json:"accepted"`
+		Duplicates int    `json:"duplicates"`
+		LastID     string `json:"last_id"`
+	}
+	requestBytes, err := marshalNotificationPublishRequest(phoneID, events)
+	if err != nil {
+		return NotificationPublishResult{}, err
+	}
+	if err := requestEncoded(ctx, socketPath, requestBytes, &response); err != nil {
+		return NotificationPublishResult{}, err
+	}
+	return NotificationPublishResult{
+		Accepted:   response.Accepted,
+		Duplicates: response.Duplicates,
+		LastID:     response.LastID,
+	}, nil
+}
+
+// ValidateNotificationPublishRequestFrame verifies that the request's exact
+// UDS representation fits before an HTTP caller attempts to publish it.
+func ValidateNotificationPublishRequestFrame(phoneID string, events []NotificationEvent) error {
+	_, err := marshalNotificationPublishRequest(phoneID, events)
+	return err
+}
+
+func marshalNotificationPublishRequest(phoneID string, events []NotificationEvent) ([]byte, error) {
+	requestValue := struct {
+		Op      string              `json:"op"`
+		PhoneID string              `json:"phone_id"`
+		Events  []NotificationEvent `json:"events"`
+	}{
+		Op:      "notification_publish",
+		PhoneID: phoneID,
+		Events:  events,
+	}
+	requestBytes, err := json.Marshal(requestValue)
+	if err != nil {
+		return nil, err
+	}
+	if len(requestBytes) > maxUDSHeaderBytes {
+		return nil, fmt.Errorf(
+			"notification publish request exceeds BLE UDS frame limit: %d > %d bytes",
+			len(requestBytes),
+			maxUDSHeaderBytes,
+		)
+	}
+	return requestBytes, nil
+}
+
 func request(ctx context.Context, socketPath string, requestValue any, responseValue any) error {
+	requestBytes, err := json.Marshal(requestValue)
+	if err != nil {
+		return err
+	}
+	return requestEncoded(ctx, socketPath, requestBytes, responseValue)
+}
+
+func requestEncoded(ctx context.Context, socketPath string, requestBytes []byte, responseValue any) error {
 	dialer := net.Dialer{Timeout: time.Second}
 	connection, err := dialer.DialContext(ctx, "unix", socketPath)
 	if err != nil {
@@ -144,10 +210,6 @@ func request(ctx context.Context, socketPath string, requestValue any, responseV
 	defer connection.Close()
 	_ = connection.SetDeadline(requestDeadline(ctx, time.Now()))
 
-	requestBytes, err := json.Marshal(requestValue)
-	if err != nil {
-		return err
-	}
 	if err := writeUDSMessage(connection, requestBytes, nil); err != nil {
 		return fmt.Errorf("write ble_service request: %w", err)
 	}

@@ -9,10 +9,14 @@ import (
 )
 
 // NotificationEvent is the normalized, memory-independent representation of
-// one ANCS notification change. IDs are decimal strings so every UDS client can
-// safely retain cursors without losing uint64 precision.
+// one phone notification change. IDs are decimal strings so every UDS client
+// can safely retain cursors without losing uint64 precision.
 type NotificationEvent struct {
 	ID               string   `json:"id"`
+	Source           string   `json:"source,omitempty"`
+	SourceID         string   `json:"source_id,omitempty"`
+	SourceEventID    string   `json:"source_event_id,omitempty"`
+	DeviceID         string   `json:"device_id,omitempty"`
 	NotificationUID  uint32   `json:"notification_uid"`
 	Event            string   `json:"event"`
 	Flags            []string `json:"flags"`
@@ -52,13 +56,23 @@ type EventStore struct {
 	generation string
 	next       uint64
 	events     []NotificationEvent
+	sourceSeen map[notificationDedupeKey]NotificationEvent
+}
+
+type notificationDedupeKey struct {
+	deviceID      string
+	sourceEventID string
 }
 
 func NewEventStore(capacity int) *EventStore {
 	if capacity <= 0 {
 		capacity = 512
 	}
-	return &EventStore{capacity: capacity, generation: newEventGeneration()}
+	return &EventStore{
+		capacity:   capacity,
+		generation: newEventGeneration(),
+		sourceSeen: make(map[notificationDedupeKey]NotificationEvent),
+	}
 }
 
 func newEventGeneration() string {
@@ -70,8 +84,22 @@ func newEventGeneration() string {
 }
 
 func (s *EventStore) Append(event NotificationEvent) NotificationEvent {
+	appended, _ := s.AppendUnique(event)
+	return appended
+}
+
+// AppendUnique appends an event unless its source_event_id is still present in
+// the bounded ring. External publishers use this to retry safely after an HTTP
+// timeout without duplicating notification changes.
+func (s *EventStore) AppendUnique(event NotificationEvent) (NotificationEvent, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	dedupeKey, hasDedupeKey := notificationEventDedupeKey(event)
+	if hasDedupeKey {
+		if existing, ok := s.sourceSeen[dedupeKey]; ok {
+			return existing, false
+		}
+	}
 
 	s.next++
 	event.sequence = s.next
@@ -83,12 +111,34 @@ func (s *EventStore) Append(event NotificationEvent) NotificationEvent {
 		event.Flags = []string{}
 	}
 	s.events = append(s.events, event)
+	if hasDedupeKey {
+		s.sourceSeen[dedupeKey] = event
+	}
 	if len(s.events) > s.capacity {
 		overflow := len(s.events) - s.capacity
+		for _, expired := range s.events[:overflow] {
+			expiredKey, hasExpiredKey := notificationEventDedupeKey(expired)
+			if !hasExpiredKey {
+				continue
+			}
+			if seen, ok := s.sourceSeen[expiredKey]; ok && seen.sequence == expired.sequence {
+				delete(s.sourceSeen, expiredKey)
+			}
+		}
 		copy(s.events, s.events[overflow:])
 		s.events = s.events[:s.capacity]
 	}
-	return event
+	return event, true
+}
+
+func notificationEventDedupeKey(event NotificationEvent) (notificationDedupeKey, bool) {
+	if event.SourceEventID == "" {
+		return notificationDedupeKey{}, false
+	}
+	return notificationDedupeKey{
+		deviceID:      event.DeviceID,
+		sourceEventID: event.SourceEventID,
+	}, true
 }
 
 func (s *EventStore) Page(since uint64, limit int) EventPage {

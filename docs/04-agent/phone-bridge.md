@@ -45,6 +45,12 @@ BLE Wake provides an on-demand iOS background route for a narrower command set: 
 
 Android FGS Bridge follows the same HTTP queue contract without using WebSocket as a background transport. When the Android foreground service polls `/api/phone-bridge/commands` with `app_state=background` and `fgs_bridge_enabled=true`, the Agent keeps `open_app` unavailable and routes only background-safe data tools through the HTTP queue.
 
+Android system-notification ingestion is a separate one-way path. After the
+user grants Notification Access, the app's native listener posts bounded,
+retry-safe event batches to `/api/phone-notifications/events` over USB ECM. The
+Agent forwards them to the same `ble_service` event ring used by iOS ANCS;
+Android does not need BLE pairing for this path.
+
 ## Desktop Agent With ADB Reverse
 
 When running the Agent on a development computer instead of the Luckfox board, the phone cannot reach `192.168.42.1` because the USB ECM board network does not exist. For Android development, use the ADB input backend and let the phone app connect through ADB reverse:
@@ -547,6 +553,9 @@ Use the phone environment timezone when it is available. The Agent can use `shel
 - **Calendar read/write**: Both iOS and Android need runtime permissions, authorization popup on first call. When app receives command and permission not granted, should return `ok:false, error:"Calendar permission required"`; timeout controlled by board-side `timeout_ms`.
 - **Contacts read/write**: iOS needs `NSContactsUsageDescription` permission, Android needs `READ_CONTACTS` and `WRITE_CONTACTS` permissions. When unauthorized return `ok:false, error:"Contacts permission required"`.
 - **Notification permission**: iOS needs to request authorization via `UNUserNotificationCenter`, Android 13+ needs `POST_NOTIFICATIONS` permission. When unauthorized return `ok:false, error:"Notification permission required"`.
+- **Notification reading**: Android system-notification ingestion separately
+  requires the user to enable Aiden under Settings > Notification access.
+  `POST_NOTIFICATIONS` alone does not grant access to other apps' notifications.
 
 ### Implementation Notes
 
