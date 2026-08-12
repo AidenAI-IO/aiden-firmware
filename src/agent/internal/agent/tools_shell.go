@@ -502,11 +502,7 @@ func shellRunForegroundPTY(ctx context.Context, command string, workdir string, 
 	copyDone := make(chan error, 1)
 	go func() {
 		_, copyErr := io.Copy(&output, ptmx)
-		if copyErr != nil && !errors.Is(copyErr, io.EOF) {
-			copyDone <- copyErr
-			return
-		}
-		copyDone <- nil
+		copyDone <- shellPTYCopyError(copyErr)
 	}()
 
 	waitDone := make(chan error, 1)
