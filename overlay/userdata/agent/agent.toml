@@ -77,6 +77,17 @@ model = "gpt-5.5"
 # context_window = 128000
 # model_max_output_tokens = 8192
 
+# For direct Anthropic Claude access, use the native "anthropic" provider.
+# ANTHROPIC_AUTH_TOKEN uses bearer authentication (Claude Code-compatible);
+# ANTHROPIC_API_KEY and other api_key values use the x-api-key header.
+# A base_url may point to either a host or an endpoint ending in /v1.
+# [model_providers.claude-main]
+# type = "anthropic"
+# api_key = "$ANTHROPIC_AUTH_TOKEN"
+# base_url = "https://api.anthropic.com/v1"
+# Set [model].provider = "claude-main" to select it.
+# model = "claude-sonnet-4-6"
+
 # For Moonshot Kimi K3, use the "kimi" (global) or "kimi-cn" (mainland China)
 # provider. Each uses its built-in Moonshot endpoint, so only model + api_key
 # are needed. Custom base_url values are not supported for Kimi providers.

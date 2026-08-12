@@ -517,6 +517,20 @@ function extractResponseMessage(body) {
       const m = obj.choices[0].message || {};
       return {role: m.role || 'assistant', content: m.content || '', tool_calls: m.tool_calls || []};
     }
+    if (obj && obj.type === 'message' && Array.isArray(obj.content)) {
+      let content = '';
+      const toolCalls = [];
+      for (const block of obj.content) {
+        if (!block) continue;
+        if (block.type === 'text' && typeof block.text === 'string') content += block.text;
+        if (block.type === 'tool_use') {
+          toolCalls.push({id: block.id, type: 'function', function: {
+            name: block.name || '', arguments: JSON.stringify(block.input || {})
+          }});
+        }
+      }
+      return {role: obj.role || 'assistant', content: content, tool_calls: toolCalls};
+    }
     if (obj && obj.error) {
       const errStr = typeof obj.error === 'string' ? obj.error : JSON.stringify(obj.error, null, 2);
       return {role: 'assistant', content: 'Error: ' + errStr};
@@ -535,6 +549,19 @@ function extractResponseMessage(body) {
     let event;
     try { event = JSON.parse(data); } catch(e) { continue; }
     hasData = true;
+    if (event.type === 'content_block_start' && event.content_block && event.content_block.type === 'tool_use') {
+      const block = event.content_block;
+      toolCalls[event.index] = {id: block.id, type: 'function', function: {name: block.name || '', arguments: ''}};
+      continue;
+    }
+    if (event.type === 'content_block_delta' && event.delta) {
+      if (event.delta.type === 'text_delta' && typeof event.delta.text === 'string') content += event.delta.text;
+      if (event.delta.type === 'input_json_delta') {
+        const k = event.index;
+        if (toolCalls[k]) toolCalls[k].function.arguments += event.delta.partial_json || '';
+      }
+      continue;
+    }
     const choice = (event.choices && event.choices[0]) || null;
     if (!choice) continue;
     const delta = choice.delta || choice.message || {};

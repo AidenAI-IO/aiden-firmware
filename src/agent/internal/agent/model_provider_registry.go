@@ -26,6 +26,11 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		},
 	},
 	{
+		providerType:        "anthropic",
+		allowsCustomBaseURL: true,
+		build:               (*ModelManager).buildAnthropicModel,
+	},
+	{
 		providerType: "kimi",
 		build: func(m *ModelManager, cfg ModelConfig) (llms.Model, error) {
 			return m.buildOpenAICompatibleModel(cfg, moonshotGlobalBaseURL), nil

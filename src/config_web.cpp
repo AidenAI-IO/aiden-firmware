@@ -3004,12 +3004,12 @@ void set_json_string_vector(std::vector<std::string>* dst, cJSON* obj, const cha
 
 // model_base_url_allowed mirrors the agent runtime's whitelist
 // (clearNonAllowedModelBaseURL in src/agent/internal/agent/config.go). Providers
-// listed here accept a base_url override: openai for custom gateways, ollama for
-// a local server address. Anything else pins its endpoint, so a stored base_url
+// listed here accept a base_url override: openai and anthropic for custom
+// gateways, ollama for a local server address. Anything else pins its endpoint, so a stored base_url
 // would be dead config. Keep both lists in sync.
 bool model_base_url_allowed(const std::string& provider) {
     const std::string normalized = lowercase_copy(trim_copy(provider));
-    return normalized == "openai" || normalized == "ollama";
+    return normalized == "openai" || normalized == "anthropic" || normalized == "ollama";
 }
 
 std::string provider_secret_source_name(cJSON* root, const char* section,

@@ -2225,15 +2225,15 @@ TEST_CASE("config web html keeps provider credentials write only") {
     CHECK(fields_body.find("escRecordHtml(shown)") == std::string::npos);
 }
 
-// Only openai and ollama accept a base_url override; every other provider pins
-// its endpoint, so the field is dead config there. The backend already strips it
+// OpenAI, Anthropic, and Ollama accept a base_url override; every other provider
+// pins its endpoint, so the field is dead config there. The backend already strips it
 // (model_base_url_allowed), and the dialog must not offer it in the first place.
 TEST_CASE("config web html shows the provider base url only where it applies") {
     const std::string js = read_config_web_config_scripts();
 
     // The whitelist has to be a single source the dialog consults, mirroring the
     // C++ and Go lists.
-    CHECK(js.find("const PROVIDER_BASE_URL_TYPES = ['openai', 'ollama'];") != std::string::npos);
+    CHECK(js.find("const PROVIDER_BASE_URL_TYPES = ['openai', 'anthropic', 'ollama'];") != std::string::npos);
     CHECK(js.find("function providerBaseUrlAllowed(type)") != std::string::npos);
 
     const size_t dialog_at = js.find("showProviderDialog: function");

@@ -27,6 +27,13 @@ func TestGetDisplayModelsForProvider(t *testing.T) {
 			hasRecommend: true,
 		},
 		{
+			name:         "anthropic has native model IDs",
+			provider:     "anthropic",
+			wantCount:    3,
+			wantFirstID:  "claude-opus-4.8",
+			hasRecommend: true,
+		},
+		{
 			name:         "ollama has models",
 			provider:     "ollama",
 			wantCount:    4,

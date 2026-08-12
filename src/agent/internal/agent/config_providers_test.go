@@ -394,8 +394,8 @@ func loadProviderConfig(t *testing.T, body string) (Config, error) {
 }
 
 // TestProviderReferenceBaseURLWhitelist covers the interaction between
-// provider-reference expansion and the base_url whitelist (openai and ollama
-// only). Regression test: clearNonAllowedModelBaseURL used to run BEFORE the
+// provider-reference expansion and the base_url whitelist (OpenAI, Anthropic,
+// and Ollama only). Regression test: clearNonAllowedModelBaseURL used to run BEFORE the
 // reference was expanded, so it compared the whitelist against a [model_providers]
 // section NAME instead of a provider type. That broke both directions -- a
 // legitimate override was dropped, and a disallowed one survived.
