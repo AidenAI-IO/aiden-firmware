@@ -280,7 +280,7 @@ func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
 		"test-model",
 		"",
 		server.Client(),
-		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+		withOpenAICompatibleRawHTTPLogger(newTestLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
@@ -338,7 +338,7 @@ func TestOpenAICompatibleModelRawHTTPLogUsesEffectiveRequestModel(t *testing.T) 
 		"configured-model",
 		"",
 		server.Client(),
-		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+		withOpenAICompatibleRawHTTPLogger(newTestLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(
 		contextWithRawHTTPLog(context.Background()),
@@ -433,7 +433,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 		"test-model",
 		"",
 		server.Client(),
-		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+		withOpenAICompatibleRawHTTPLogger(newTestLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(
 		contextWithRawHTTPLog(context.Background()),
@@ -518,7 +518,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
 		"test-model",
 		"",
 		server.Client(),
-		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+		withOpenAICompatibleRawHTTPLogger(newTestLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(
 		contextWithRawHTTPLog(context.Background()),
@@ -586,8 +586,8 @@ func TestOpenAICompatibleModelRawHTTPLogKeepsRunInInitialSessionFile(t *testing.
 	defer server.Close()
 
 	logDir := t.TempDir()
-	logger := newLLMRawHTTPLogger(logDir, "")
-	logger.SetSessionIDProvider(func() string {
+	logger := newLLMRawHTTPLogger(logDir, NewModelRuntimeBindings())
+	logger.bindings.SetSessionIDProvider(func() string {
 		sessionMu.Lock()
 		defer sessionMu.Unlock()
 		return sessionID
@@ -644,11 +644,13 @@ func TestOpenAICompatibleModelRawHTTPLogKeepsRunInInitialSessionFile(t *testing.
 
 func TestLLMRawHTTPLoggerFallsBackToTimestampForUnsafeSessionID(t *testing.T) {
 	logDir := t.TempDir()
-	logger := newLLMRawHTTPLogger(logDir, "")
+	logger := newLLMRawHTTPLogger(logDir, NewModelRuntimeBindings())
 	fileTime := time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
 
-	if err := logger.LogWithFileScope("test-model", "request", http.StatusOK, `{"ok":true}`, fileTime, "..evil"); err != nil {
-		t.Fatalf("LogWithFileScope() error = %v", err)
+	ctx := contextWithRawHTTPLogFileTime(context.Background(), fileTime)
+	ctx = contextWithRawHTTPLogFileSessionID(ctx, "..evil")
+	if err := logger.Log(ctx, RawHTTPLogEntry{Model: "test-model", Kind: "request", StatusCode: http.StatusOK, Raw: `{"ok":true}`}); err != nil {
+		t.Fatalf("Log() error = %v", err)
 	}
 
 	matches, err := filepath.Glob(filepath.Join(logDir, "llm-http-*.log"))
@@ -691,7 +693,7 @@ func TestRuntimeConfiguresRawHTTPLogWithActiveMemorySessionID(t *testing.T) {
 	if !ok {
 		t.Fatalf("model = %T, want *openAICompatibleModel", model)
 	}
-	compatible.rawLogger.now = func() time.Time {
+	compatible.rawLogger.(*llmRawHTTPLogger).now = func() time.Time {
 		return time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
 	}
 
@@ -762,7 +764,7 @@ func TestRuntimeRawHTTPLogUsesSessionIDForFileName(t *testing.T) {
 		t.Fatalf("model = %T, want *openAICompatibleModel", model)
 	}
 	current := time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
-	compatible.rawLogger.now = func() time.Time { return current }
+	compatible.rawLogger.(*llmRawHTTPLogger).now = func() time.Time { return current }
 
 	runLLM := func(prompt string) {
 		t.Helper()
@@ -824,7 +826,7 @@ func TestRuntimeRawHTTPLogSwitchesSessionFileAfterRotation(t *testing.T) {
 	if !ok {
 		t.Fatalf("model = %T, want *openAICompatibleModel", model)
 	}
-	compatible.rawLogger.now = func() time.Time {
+	compatible.rawLogger.(*llmRawHTTPLogger).now = func() time.Time {
 		return time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
 	}
 
@@ -919,7 +921,7 @@ func TestOpenAICompatibleModelLogsResponseOnTransportError(t *testing.T) {
 		"test-model",
 		"",
 		client,
-		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+		withOpenAICompatibleRawHTTPLogger(newTestLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
@@ -962,7 +964,7 @@ func TestOpenAICompatibleModelSkipsRawHTTPLogWithoutContextMarker(t *testing.T) 
 		"test-model",
 		"",
 		server.Client(),
-		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+		withOpenAICompatibleRawHTTPLogger(newTestLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	// Plain context, no contextWithRawHTTPLog marker.
 	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
@@ -1000,7 +1002,7 @@ func TestOpenAICompatibleModelDoesNotBufferRawHTTPResponseWithoutContextMarker(t
 		"test-model",
 		"",
 		client,
-		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(t.TempDir(), "test-session-1")),
+		withOpenAICompatibleRawHTTPLogger(newTestLLMRawHTTPLogger(t.TempDir(), "test-session-1")),
 	)
 
 	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
@@ -1612,7 +1614,7 @@ func TestModelManagerSendsSessionHeaderOnlyForOpenRouter(t *testing.T) {
 			defer server.Close()
 
 			mgr := NewModelManager(ModelConfig{Provider: tc.provider, Model: "m", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
-			mgr.SetRawHTTPLogSessionIDProvider(func() string { return "sess-123" })
+			mgr.SetSessionIDProvider(func() string { return "sess-123" })
 			model, err := mgr.get()
 			if err != nil {
 				t.Fatalf("Get() error = %v", err)

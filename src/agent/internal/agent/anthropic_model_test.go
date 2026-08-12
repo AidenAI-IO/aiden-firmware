@@ -803,7 +803,7 @@ func TestAnthropicModelLogsResponseOnEarlyStreamFailure(t *testing.T) {
 
 	logDir := t.TempDir()
 	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(),
-		withAnthropicRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session")),
+		withAnthropicRawHTTPLogger(newTestLLMRawHTTPLogger(logDir, "test-session")),
 		withAnthropicStreamRetry(0, time.Second),
 	)
 	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
@@ -829,7 +829,7 @@ func TestAnthropicProviderUsesEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 
 	manager := NewModelManager(ModelConfig{Provider: "anthropic", Model: "claude-test"}, ProxyConfig{})
-	built, err := manager.build(manager.config)
+	built, err := manager.build()
 	if err != nil {
 		t.Fatalf("build() error = %v", err)
 	}
@@ -870,7 +870,7 @@ func TestAnthropicProviderAuthTokenReferenceUsesBearer(t *testing.T) {
 		Model:    "claude-test",
 		APIKey:   "$ANTHROPIC_AUTH_TOKEN",
 	}, ProxyConfig{})
-	built, err := manager.build(manager.config)
+	built, err := manager.build()
 	if err != nil {
 		t.Fatalf("build() error = %v", err)
 	}

@@ -580,7 +580,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	}
 	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
-		modelManager.SetRawHTTPLogSessionIDProvider(func() string {
+		modelManager.SetSessionIDProvider(func() string {
 			if memories == nil {
 				return ""
 			}

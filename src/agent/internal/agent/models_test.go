@@ -146,7 +146,7 @@ func TestBuildKimiProvidersResolveBaseURL(t *testing.T) {
 				BaseURL:  tt.baseURL,
 			}, ProxyConfig{})
 
-			model, err := mgr.build(mgr.config)
+			model, err := mgr.build()
 			if err != nil {
 				t.Fatalf("build: %v", err)
 			}
@@ -180,7 +180,7 @@ func TestBuildVolcengineProviderResolvesBaseURL(t *testing.T) {
 				BaseURL:  tt.baseURL,
 			}, ProxyConfig{})
 
-			model, err := mgr.build(mgr.config)
+			model, err := mgr.build()
 			if err != nil {
 				t.Fatalf("build: %v", err)
 			}
@@ -207,7 +207,7 @@ func TestBuildOpenRouterEnablesNestedReasoning(t *testing.T) {
 		APIKey:   "test-key",
 	}, ProxyConfig{})
 
-	model, err := mgr.build(mgr.config)
+	model, err := mgr.build()
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestBuildOpenRouterMissingAPIKeyError(t *testing.T) {
 			APIKey:   "$" + tokenEnv,
 		}, ProxyConfig{})
 
-		_, err := mgr.build(mgr.config)
+		_, err := mgr.build()
 		if err == nil {
 			t.Fatal("build succeeded without an API key")
 		}
@@ -246,7 +246,7 @@ func TestBuildOpenRouterMissingAPIKeyError(t *testing.T) {
 			Model:    "google/gemini-3.5-flash",
 		}, ProxyConfig{})
 
-		_, err := mgr.build(mgr.config)
+		_, err := mgr.build()
 		if err == nil {
 			t.Fatal("build succeeded without an API key")
 		}
