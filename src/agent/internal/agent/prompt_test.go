@@ -479,24 +479,23 @@ func TestRolePromptRoutesPlatformShortcutsThroughQuickAction(t *testing.T) {
 func TestRolePromptRoutesAppLaunchInsideOpenApp(t *testing.T) {
 	profile := testPromptProfile(AgentConfig{})
 	for _, want := range []string{
+		"currently exposed tool list as the runtime-validated source of truth",
 		"call open_app with a semantic app name",
 		"selects Phone Bridge or visible system search internally",
 		"HTTP or HTTPS webpages and SMS, email, or telephone links",
 		"call open_url",
-		"Before calling open_url or a bridge data tool, inspect the latest <state>",
-		"open_url_available =",
-		"app_connected:true AND",
-		"app_state is absent OR app_state:active",
-		"bridge_data_tool_available =",
-		"app_platform:android",
-		"app_platform:ios AND app_pip_enabled:true",
-		"app_platform:android AND app_fgs_enabled:true",
-		"visible_ios_dynamic_island_return_entry",
-		"Bridge data tools are:",
-		"bridge_clipboard, bridge_calendar, bridge_contacts, bridge_notification",
 	} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("system prompt missing Phone Bridge routing guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+	for _, notWant := range []string{
+		"open_url_available =",
+		"bridge_data_tool_available =",
+		"Before calling open_url or a bridge data tool",
+	} {
+		if strings.Contains(profile.SystemPrompt, notWant) {
+			t.Fatalf("system prompt should not ask the model to calculate tool availability %q:\n%s", notWant, profile.SystemPrompt)
 		}
 	}
 }

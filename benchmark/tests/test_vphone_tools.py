@@ -37,16 +37,10 @@ def invoke(base_url, tool, tool_input, task_id="vphone-ios-cli"):
         return exc.code, json.loads(exc.read())
 
 
-def test_coordinate_spaces_and_pixel_rejection():
-    assert _to_pixels(_normalized_point_arg({"point": {"x": 500, "y": 500}}, default_space="normalized"), 1290, 2796) == (645, 1398)
-    absolute = _normalized_point_arg(
-        {"point": {"x": 32767, "y": 0}, "coord_space": "absolute"}, default_space="normalized"
-    )
-    assert round(absolute["x"]) == 1000
-    with pytest.raises(ValueError, match="do not accept pixel"):
-        _normalized_point_arg(
-            {"point": {"x": 720, "y": 1000}, "coord_space": "pixel"}, default_space="normalized"
-        )
+def test_normalized_coordinates_are_the_only_input_contract():
+    assert _to_pixels(_normalized_point_arg({"point": {"x": 500, "y": 500}}), 1290, 2796) == (645, 1398)
+    with pytest.raises(ValueError, match="normalized 0-1000"):
+        _normalized_point_arg({"point": {"x": 1500, "y": 500}})
 
 
 def test_touch_gestures(bridge):

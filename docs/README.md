@@ -26,7 +26,7 @@ This documentation hub is the structured entry point for the project. The root `
 
 - [Frame Service: HDMI Frame Capture Service](03-services/frame-service.md)
 - [Audio Service: Audio Record/Playback Service](03-services/audio-service.md)
-- [BLE Service: Pairing and iOS System Notifications](03-services/ble-service.md)
+- [BLE Service: iOS Notifications and Background Wake](03-services/ble-service.md)
 - [USB HID & Device Control](03-services/usb-hid.md)
 
 ### 04. Go Agent

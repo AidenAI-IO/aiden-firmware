@@ -233,26 +233,6 @@ confidence: 0.82
 ttl: 45d
 ```
 
-### Calibration Memory
-
-Device control chain experience, must include applicability conditions and evidence.
-
-```yaml
-id: cal_normalized_coord_reliable
-type: calibration
-status: active
-title: "Prefer normalized coordinates"
-content: "normalized coordinates align better with current screenshot than pixel coordinates."
-applicability:
-  screen: "640x1200"
-  hid_profile: default
-evidence_refs:
-  - type: episode
-    id: ep_xxx
-confidence: 0.9
-ttl: 30d
-```
-
 ### Failure Memory
 
 Failure modes are retrieved as cautions, helping the Agent avoid repeated bad paths.
@@ -594,11 +574,7 @@ Phase 4: Benchmark
 - Records tools, coordinates, tool-call content, decoupled from specific task goals
 - Surfaced to Agent as execution guidance
 
-**5. Calibration Memory**
-- Records calibration info like normalized coordinate preference
-- Includes applicability conditions and evidence refs
-
-**6. Failure Memory**
+**5. Failure Memory**
 - Writes failure-type memories on failure
 - Surfaced to Agent as cautions to indicate known failure modes
 

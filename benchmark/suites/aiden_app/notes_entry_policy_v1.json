@@ -33,7 +33,7 @@
           "enter_text": {
             "input_contains": {
               "text": {"$contains": "+1 202-555-0147"},
-              "focus": {"coord_space": "normalized"}
+              "focus": {}
             },
             "screen_contains": "Apple Notes is already open",
             "output": {"ok": true},
@@ -56,7 +56,7 @@
           {"tool": "bridge_contacts", "input_contains": {"action": "query", "query": "Biden"}},
           {
             "tool": "enter_text",
-            "input_contains": {"text": {"$contains": "+1 202-555-0147"}, "focus": {"coord_space": "normalized"}}
+            "input_contains": {"text": {"$contains": "+1 202-555-0147"}}
           }
         ]
       }
@@ -87,7 +87,7 @@
             }
           },
           "mouse_click": {
-            "input_contains": {"x": 180, "y": 310, "coord_space": "normalized"},
+            "input_contains": {"x": 180, "y": 310},
             "screen_contains": "Apple Notes icon",
             "output": {"ok": true, "clicked": true},
             "screen_text": "Apple Notes is open on a blank note editor around normalized x=500, y=360."
@@ -95,7 +95,7 @@
           "enter_text": {
             "input_contains": {
               "text": {"$contains": "+1 202-555-0147"},
-              "focus": {"coord_space": "normalized"}
+              "focus": {}
             },
             "screen_contains": "Apple Notes is open",
             "output": {"ok": true},
@@ -116,7 +116,7 @@
         "forbidden_tools": ["search_launch_app", "bridge_open_app", "bridge_clipboard"],
         "required_tool_calls": [
           {"tool": "bridge_contacts", "input_contains": {"action": "query", "query": "Biden"}},
-          {"tool": "mouse_click", "input_contains": {"x": 180, "y": 310, "coord_space": "normalized"}},
+          {"tool": "mouse_click", "input_contains": {"x": 180, "y": 310}},
           {"tool": "enter_text", "input_contains": {"text": {"$contains": "+1 202-555-0147"}}}
         ]
       }

@@ -833,9 +833,8 @@ also shown, proceed in this order:
 
 ### Click Positions Are Systematically Offset
 
-Screenshots are scaled, but touch input must use `normalized` coordinates from
-0 to 1000. Do not treat screenshot dimensions as native device pixel
-coordinates. The current public tools reject the `pixel` coordinate space.
+Screenshots are scaled, but touch input always uses normalized coordinates from
+0 to 1000. Convert screenshot measurements before calling an input tool.
 
 ### The Rubric Shows 0/N With `--no-judge`
 

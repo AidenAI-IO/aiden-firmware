@@ -10,7 +10,7 @@ import (
 
 func TestWheelGestureGuardCommitsOnlySuccessfulToolCalls(t *testing.T) {
 	guard := newWheelNudgeGuard(nil)
-	call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, 0, 20, 0, 0, "normalized"))
+	call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, 0, 20, 0, 0))
 
 	if result, allowed := guard.BeforeToolCall(context.Background(), call); !allowed || result.Error != nil {
 		t.Fatalf("valid wheel call unexpectedly blocked: allowed=%v result=%#v", allowed, result)
@@ -40,7 +40,7 @@ func TestWheelGestureGuardRequiresScreenshotFromCurrentRun(t *testing.T) {
 	screen := &screen.ScreenState{}
 	screen.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 500, 1000), 500, 1000)
 	guard := newWheelNudgeGuard(screen)
-	call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, 0, 20, 0, 0, "normalized"))
+	call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, 0, 20, 0, 0))
 
 	if result, allowed := guard.BeforeToolCall(context.Background(), call); allowed || result.Error == nil {
 		t.Fatalf("prior-run screenshot should be rejected: allowed=%v result=%#v", allowed, result)
@@ -56,7 +56,7 @@ func TestWheelGestureGuardRequiresScreenshotFromCurrentRun(t *testing.T) {
 
 func TestWheelGestureGuardCountsActionWhenOnlyPostActionObservationFails(t *testing.T) {
 	guard := newWheelNudgeGuard(nil)
-	call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, 0, 20, 0, 0, "normalized"))
+	call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, 0, 20, 0, 0))
 	if result, allowed := guard.BeforeToolCall(context.Background(), call); !allowed || result.Error != nil {
 		t.Fatalf("valid wheel call unexpectedly blocked: allowed=%v result=%#v", allowed, result)
 	}
@@ -74,13 +74,13 @@ func TestWheelGestureGuardCountsActionWhenOnlyPostActionObservationFails(t *test
 
 func TestWheelGestureGuardNoMovementAllowsMicroRetry(t *testing.T) {
 	guard := newWheelNudgeGuard(nil)
-	first := wheelNudgeGuardCall(validWheelGuardInput(351, 460, 0, 20, 0, 0, "normalized"))
+	first := wheelNudgeGuardCall(validWheelGuardInput(351, 460, 0, 20, 0, 0))
 	if result, allowed := guard.BeforeToolCall(context.Background(), first); !allowed || result.Error != nil {
 		t.Fatalf("first wheel call unexpectedly blocked: allowed=%v result=%#v", allowed, result)
 	}
 	guard.AfterToolCall(context.Background(), first, ToolResult{Output: "ok"})
 
-	unchanged := wheelNudgeGuardCall(validWheelGuardInput(351, 460, 0, 20, 0, 0, "normalized"))
+	unchanged := wheelNudgeGuardCall(validWheelGuardInput(351, 460, 0, 20, 0, 0))
 	if result, allowed := guard.BeforeToolCall(context.Background(), unchanged); allowed || result.Error == nil {
 		t.Fatalf("unchanged value should request a micro retry: allowed=%v result=%#v", allowed, result)
 	}
@@ -88,7 +88,7 @@ func TestWheelGestureGuardNoMovementAllowsMicroRetry(t *testing.T) {
 		t.Fatalf("no-movement observation must clear pending state: %#v", guard.columns[0].pending)
 	}
 
-	micro := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":351,"center_y":460,"coord_space":"normalized","remaining_gap":1,"current_value":0,"target_value":20,"cycle_size":0,"cycle_start":0,"row_spacing":42}`)
+	micro := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":351,"center_y":460,"remaining_gap":1,"current_value":0,"target_value":20,"cycle_size":0,"cycle_start":0,"row_spacing":42}`)
 	if result, allowed := guard.BeforeToolCall(context.Background(), micro); !allowed || result.Error != nil {
 		t.Fatalf("micro retry after no movement should be allowed: allowed=%v result=%#v", allowed, result)
 	}
@@ -173,10 +173,10 @@ func TestWheelObservationRowsMapsZeroResidueToSmallestPositiveCycle(t *testing.T
 
 func TestWheelGestureGuardLocksFinalTargetPerColumn(t *testing.T) {
 	guard := newWheelNudgeGuard(nil)
-	probe := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":157,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":17,"target_value":1,"cycle_size":24,"cycle_start":0,"row_spacing":43}`)
+	probe := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":157,"center_y":274,"remaining_gap":1,"current_value":17,"target_value":1,"cycle_size":24,"cycle_start":0,"row_spacing":43}`)
 	allowAndCommitWheel(t, guard, probe)
 
-	intermediate := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":157,"center_y":274,"coord_space":"screenshot","remaining_gap":3,"current_value":18,"target_value":15,"cycle_size":24,"cycle_start":0,"row_spacing":43,"value_step":1}`)
+	intermediate := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":157,"center_y":274,"remaining_gap":3,"current_value":18,"target_value":15,"cycle_size":24,"cycle_start":0,"row_spacing":43,"value_step":1}`)
 	result, allowed := guard.BeforeToolCall(context.Background(), intermediate)
 	if allowed || result.Error == nil {
 		t.Fatalf("changing the final target on an active column must be blocked: allowed=%v result=%#v", allowed, result)
@@ -185,7 +185,7 @@ func TestWheelGestureGuardLocksFinalTargetPerColumn(t *testing.T) {
 		t.Fatalf("blocked output = %q, want locked target guidance", result.Output)
 	}
 
-	finalTarget := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":157,"center_y":274,"coord_space":"screenshot","remaining_gap":7,"current_value":18,"target_value":1,"cycle_size":24,"cycle_start":0,"row_spacing":43,"value_step":1}`)
+	finalTarget := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":157,"center_y":274,"remaining_gap":7,"current_value":18,"target_value":1,"cycle_size":24,"cycle_start":0,"row_spacing":43,"value_step":1}`)
 	if result, allowed := guard.BeforeToolCall(context.Background(), finalTarget); !allowed || result.Error != nil {
 		t.Fatalf("locked final target should remain usable after rejecting the intermediate target: allowed=%v result=%#v", allowed, result)
 	}
@@ -196,7 +196,7 @@ func TestWheelGestureGuardMatchesScreenshotWheelWithNormalizedTouch(t *testing.T
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	guard := newWheelNudgeGuard(screenState)
 	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
-	wheel := wheelNudgeGuardCall(validWheelGuardInput(304, 289, 48, 5, 60, 0, "screenshot"))
+	wheel := wheelNudgeGuardCall(validWheelGuardInput(612, 275, 48, 5, 60, 0))
 	if result, allowed := guard.BeforeToolCall(context.Background(), wheel); !allowed || result.Error != nil {
 		t.Fatalf("wheel call unexpectedly blocked: allowed=%v result=%#v", allowed, result)
 	}
@@ -204,10 +204,10 @@ func TestWheelGestureGuardMatchesScreenshotWheelWithNormalizedTouch(t *testing.T
 
 	tap := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"normalized","point":{"x":611,"y":488}}`,
+		Input: `{"type":"tap","point":{"x":611,"y":488}}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), tap); allowed || result.Error == nil {
-		t.Fatalf("normalized touch on screenshot-space wheel column should be blocked: allowed=%v result=%#v", allowed, result)
+		t.Fatalf("normalized touch on active wheel column should be blocked: allowed=%v result=%#v", allowed, result)
 	}
 }
 
@@ -216,7 +216,7 @@ func TestWheelGestureGuardClearsColumnsAfterSuccessfulNavigationTap(t *testing.T
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	guard := newWheelNudgeGuard(screenState)
 	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
-	wheel := wheelNudgeGuardCall(validWheelGuardInput(314, 289, 48, 5, 60, 0, "screenshot"))
+	wheel := wheelNudgeGuardCall(validWheelGuardInput(632, 275, 48, 5, 60, 0))
 	if result, allowed := guard.BeforeToolCall(context.Background(), wheel); !allowed || result.Error != nil {
 		t.Fatalf("wheel call unexpectedly blocked: allowed=%v result=%#v", allowed, result)
 	}
@@ -224,7 +224,7 @@ func TestWheelGestureGuardClearsColumnsAfterSuccessfulNavigationTap(t *testing.T
 
 	save := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"screenshot","point":{"x":452,"y":80}}`,
+		Input: `{"type":"tap","point":{"x":452,"y":80}}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), save); !allowed || result.Error != nil {
 		t.Fatalf("save tap unexpectedly blocked: allowed=%v result=%#v", allowed, result)
@@ -237,7 +237,7 @@ func TestWheelGestureGuardClearsColumnsAfterSuccessfulNavigationTap(t *testing.T
 
 func TestWheelGestureGuardClearsColumnsAfterOtherNavigationTool(t *testing.T) {
 	guard := newWheelNudgeGuard(nil)
-	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(314, 289, 48, 5, 60, 0, "screenshot")))
+	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(314, 289, 48, 5, 60, 0)))
 
 	navigation := ToolCall{Spec: ToolSpec{Name: "quick_action"}, Input: `{"action":"back"}`}
 	if result, allowed := guard.BeforeToolCall(context.Background(), navigation); !allowed || result.Error != nil {
@@ -251,9 +251,9 @@ func TestWheelGestureGuardClearsColumnsAfterOtherNavigationTool(t *testing.T) {
 
 func TestWheelGestureGuardKeepsColumnsAfterNonNavigationScreenChange(t *testing.T) {
 	guard := newWheelNudgeGuard(nil)
-	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(314, 289, 48, 5, 60, 0, "screenshot")))
+	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(314, 289, 48, 5, 60, 0)))
 
-	toggle := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: `{"type":"tap","coord_space":"screenshot","point":{"x":450,"y":500}}`}
+	toggle := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: `{"type":"tap","point":{"x":450,"y":500}}`}
 	if result, allowed := guard.BeforeToolCall(context.Background(), toggle); !allowed || result.Error != nil {
 		t.Fatalf("outside toggle unexpectedly blocked: allowed=%v result=%#v", allowed, result)
 	}
@@ -269,7 +269,7 @@ func TestWheelGestureGuardAllowsDistantYearPickerProgress(t *testing.T) {
 	target := 1970
 	steps := 0
 	for current != target {
-		input := validWheelGuardInput(351, 460, current, target, 0, 0, "normalized")
+		input := validWheelGuardInput(351, 460, current, target, 0, 0)
 		call := wheelNudgeGuardCall(input)
 		if result, allowed := guard.BeforeToolCall(context.Background(), call); !allowed || result.Error != nil {
 			t.Fatalf("year progress blocked after %d steps at %d: allowed=%v result=%#v", steps, current, allowed, result)
@@ -321,11 +321,11 @@ func TestWheelGestureGuardStopsNudgeAfterPerColumnLimit(t *testing.T) {
 	var guard wheelNudgeGuard
 	limit := wheelNudgeLimitForGap(200)
 	for attempt := 0; attempt < limit; attempt++ {
-		call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, attempt, 200, 0, 0, "normalized"))
+		call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, attempt, 200, 0, 0))
 		allowAndCommitWheel(t, &guard, call)
 	}
 
-	result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(validWheelGuardInput(351, 460, limit, 200, 0, 0, "normalized")))
+	result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(validWheelGuardInput(351, 460, limit, 200, 0, 0)))
 	if allowed {
 		t.Fatal("nudge after per-column limit should be blocked")
 	}
@@ -344,14 +344,14 @@ func TestWheelGestureGuardStopsNudgeAfterPerColumnLimit(t *testing.T) {
 func TestWheelGestureGuardStopsNudgeAfterTotalLimit(t *testing.T) {
 	var guard wheelNudgeGuard
 	for index := 0; index < wheelNudgeMaxTotal; index++ {
-		input := validWheelGuardInput(100+float64(index)*100, 460, 0, 20, 0, 0, "screenshot")
+		input := validWheelGuardInput(500, 460, 0, 20, 0, 0)
 		input = strings.Replace(input, `"test-picker"`, fmt.Sprintf(`"picker-%d"`, index), 1)
 		allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(input))
 	}
 
 	result, allowed := guard.BeforeToolCall(
 		context.Background(),
-		wheelNudgeGuardCall(validWheelGuardInput(99999, 460, 0, 10, 0, 0, "screenshot")),
+		wheelNudgeGuardCall(validWheelGuardInput(500, 460, 0, 10, 0, 0)),
 	)
 	if allowed {
 		t.Fatal("nudge after total limit should be blocked")
@@ -371,39 +371,32 @@ func TestWheelGestureGuardBucketsNearbyColumnCoordinates(t *testing.T) {
 	limit := wheelNudgeLimitForGap(28)
 	for attempt := 0; attempt < limit; attempt++ {
 		x := xs[attempt%len(xs)]
-		input := validWheelGuardInput(x, 460, attempt, 28, 0, 0, "normalized")
+		input := validWheelGuardInput(x, 460, attempt, 28, 0, 0)
 		allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(input))
 	}
 
 	if _, allowed := guard.BeforeToolCall(
 		context.Background(),
-		wheelNudgeGuardCall(validWheelGuardInput(352, 460, limit, 28, 0, 0, "normalized")),
+		wheelNudgeGuardCall(validWheelGuardInput(352, 460, limit, 28, 0, 0)),
 	); allowed {
 		t.Fatal("nearby coordinates should share the same per-column limit")
 	}
 }
 
-func TestWheelGestureGuardBucketsCoordinatesAfterToolClamping(t *testing.T) {
+func TestWheelGestureGuardRejectsNegativeCoordinates(t *testing.T) {
 	var guard wheelNudgeGuard
-	xs := []float64{-25, 0, 20, 10}
-	limit := wheelNudgeLimitForGap(28)
-	for attempt := 0; attempt < limit; attempt++ {
-		x := xs[attempt%len(xs)]
-		input := validWheelGuardInput(x, 460, attempt, 28, 0, 0, "normalized")
-		allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(input))
+	call := wheelNudgeGuardCall(validWheelGuardInput(-25, 460, 0, 28, 0, 0))
+	if result, allowed := guard.BeforeToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("guard should defer invalid input to the tool parser: allowed=%v result=%#v", allowed, result)
 	}
-
-	if _, allowed := guard.BeforeToolCall(
-		context.Background(),
-		wheelNudgeGuardCall(validWheelGuardInput(10, 460, limit, 28, 0, 0, "normalized")),
-	); allowed {
-		t.Fatal("coordinates clamped to the same screen edge should share one column limit")
+	if _, err := parseWheelNudgeArgs(call.Input); err == nil || !strings.Contains(err.Error(), "normalized 0-1000") {
+		t.Fatalf("parseWheelNudgeArgs error = %v, want normalized range error", err)
 	}
 }
 
 func TestWheelGestureGuardAllowsKnownDirectionWithoutProbe(t *testing.T) {
 	var guard wheelNudgeGuard
-	call := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	call := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":184,"center_y":274,"remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	allowAndCommitWheel(t, &guard, call)
 	if guard.total != 1 || len(guard.columns) != 1 || guard.columns[0].direction != "up" {
 		t.Fatalf("known-direction nudge state = total=%d columns=%#v", guard.total, guard.columns)
@@ -412,7 +405,7 @@ func TestWheelGestureGuardAllowsKnownDirectionWithoutProbe(t *testing.T) {
 
 func TestWheelGestureGuardTracksAdjacentMicroDragWithoutVisibleTarget(t *testing.T) {
 	var guard wheelNudgeGuard
-	call := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	call := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":184,"center_y":274,"remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	allowAndCommitWheel(t, &guard, call)
 	if len(guard.columns) != 1 || guard.columns[0].pending == nil {
 		t.Fatalf("adjacent target without visible_target_y executes a drag and must remain pending: %#v", guard.columns)
@@ -421,7 +414,7 @@ func TestWheelGestureGuardTracksAdjacentMicroDragWithoutVisibleTarget(t *testing
 
 func TestWheelGestureGuardDoesNotTrackVerifiedAdjacentTap(t *testing.T) {
 	var guard wheelNudgeGuard
-	call := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1,"visible_target_y":316}`)
+	call := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":184,"center_y":274,"remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1,"visible_target_y":316}`)
 	allowAndCommitWheel(t, &guard, call)
 	if len(guard.columns) != 1 || guard.columns[0].pending != nil {
 		t.Fatalf("verified adjacent tap must not create drag observation state: %#v", guard.columns)
@@ -430,10 +423,10 @@ func TestWheelGestureGuardDoesNotTrackVerifiedAdjacentTap(t *testing.T) {
 
 func TestWheelGestureGuardExpandsBudgetAfterDirectionProbe(t *testing.T) {
 	var guard wheelNudgeGuard
-	probe := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":0,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42}`)
+	probe := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"remaining_gap":1,"current_value":0,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42}`)
 	allowAndCommitWheel(t, &guard, probe)
 
-	known := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":199,"current_value":1,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	known := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"remaining_gap":199,"current_value":1,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	if result, allowed := guard.BeforeToolCall(context.Background(), known); !allowed || result.Error != nil {
 		t.Fatalf("known step after probe unexpectedly blocked: allowed=%v result=%#v", allowed, result)
 	}
@@ -449,11 +442,11 @@ func TestWheelGestureGuardExpandsBudgetAfterDirectionProbe(t *testing.T) {
 
 func TestWheelGestureGuardRejectedObservationDoesNotExpandBudget(t *testing.T) {
 	var guard wheelNudgeGuard
-	probe := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":0,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42}`)
+	probe := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"remaining_gap":1,"current_value":0,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42}`)
 	allowAndCommitWheel(t, &guard, probe)
 	originalLimit := guard.columns[0].limit
 
-	wrongStep := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":199,"current_value":1,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":-1}`)
+	wrongStep := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"remaining_gap":199,"current_value":1,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":-1}`)
 	if result, allowed := guard.BeforeToolCall(context.Background(), wrongStep); allowed || result.Error == nil {
 		t.Fatalf("step contradicting the probe should be rejected: allowed=%v result=%#v", allowed, result)
 	}
@@ -465,38 +458,33 @@ func TestWheelGestureGuardRejectedObservationDoesNotExpandBudget(t *testing.T) {
 func TestWheelGestureGuardKeepsPhysicalHourAndMinuteColumnsSeparate(t *testing.T) {
 	var guard wheelNudgeGuard
 	for attempt := 0; attempt < wheelNudgeMinPerColumn; attempt++ {
-		call := wheelNudgeGuardCall(validWheelGuardInput(196, 274, attempt, 28, 0, 0, "screenshot"))
+		call := wheelNudgeGuardCall(validWheelGuardInput(196, 274, attempt, 28, 0, 0))
 		allowAndCommitWheel(t, &guard, call)
 	}
 
-	minute := wheelNudgeGuardCall(validWheelGuardInput(291, 274, 0, 10, 0, 0, "screenshot"))
+	minute := wheelNudgeGuardCall(validWheelGuardInput(291, 274, 0, 10, 0, 0))
 	if result, allowed := guard.BeforeToolCall(context.Background(), minute); !allowed {
 		t.Fatalf("minute column should have a fresh budget: %#v", result)
 	}
 }
 
-func TestWheelGestureGuardDoesNotClampHighResolutionScreenshotColumns(t *testing.T) {
+func TestWheelGestureGuardRejectsCoordinatesOutsideNormalizedRange(t *testing.T) {
 	var guard wheelNudgeGuard
-	first := wheelNudgeGuardCall(validWheelGuardInput(1100, 274, 0, 10, 0, 0, "screenshot"))
-	allowAndCommitWheel(t, &guard, first)
-
-	secondColumnWithoutProbe := wheelNudgeGuardCall(validWheelGuardInput(1200, 274, 0, 10, 0, 0, "screenshot"))
-	result, allowed := guard.BeforeToolCall(context.Background(), secondColumnWithoutProbe)
-	if !allowed || result.Error != nil {
-		t.Fatalf("distinct screenshot columns above x=1000 must stay separate: allowed=%v result=%#v", allowed, result)
+	call := wheelNudgeGuardCall(validWheelGuardInput(1100, 274, 0, 10, 0, 0))
+	if result, allowed := guard.BeforeToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("guard should defer invalid input to the tool parser: allowed=%v result=%#v", allowed, result)
 	}
-	guard.AfterToolCall(context.Background(), secondColumnWithoutProbe, ToolResult{Output: "ok"})
-	if len(guard.columns) != 2 {
-		t.Fatalf("high-resolution columns were merged: %#v", guard.columns)
+	if _, err := parseWheelNudgeArgs(call.Input); err == nil || !strings.Contains(err.Error(), "normalized 0-1000") {
+		t.Fatalf("parseWheelNudgeArgs error = %v, want normalized range error", err)
 	}
 }
 
 func TestWheelGestureGuardSeparatesSameXColumnsByPickerID(t *testing.T) {
 	var guard wheelNudgeGuard
-	hour := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":196,"remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
+	hour := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":196,"remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1,"center_y":274}`)
 	allowAndCommitWheel(t, &guard, hour)
 
-	month := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
+	month := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1,"center_y":274}`)
 	result, allowed := guard.BeforeToolCall(context.Background(), month)
 	if !allowed || result.Error != nil {
 		t.Fatalf("same-x column on another picker should have independent state: allowed=%v result=%#v", allowed, result)
@@ -509,10 +497,10 @@ func TestWheelGestureGuardSeparatesSameXColumnsByPickerID(t *testing.T) {
 
 func TestWheelGestureGuardKeepsColumnIdentityWhenDomainChanges(t *testing.T) {
 	var guard wheelNudgeGuard
-	first := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"remaining_gap":4,"current_value":1,"target_value":5,"cycle_size":31,"cycle_start":1,"row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
+	first := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"remaining_gap":4,"current_value":1,"target_value":5,"cycle_size":31,"cycle_start":1,"row_spacing":42,"value_step":1,"center_y":274}`)
 	allowAndCommitWheel(t, &guard, first)
 
-	second := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"remaining_gap":3,"current_value":2,"target_value":5,"cycle_size":30,"cycle_start":1,"row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
+	second := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"remaining_gap":3,"current_value":2,"target_value":5,"cycle_size":30,"cycle_start":1,"row_spacing":42,"value_step":1,"center_y":274}`)
 	if result, allowed := guard.BeforeToolCall(context.Background(), second); !allowed {
 		t.Fatalf("day-column nudge after month-domain change unexpectedly blocked: %#v", result)
 	}
@@ -538,10 +526,10 @@ func TestWheelNudgePlanDerivesShortestCyclicDirection(t *testing.T) {
 
 func TestWheelGestureGuardValidatesObservedProbeDirection(t *testing.T) {
 	var guard wheelNudgeGuard
-	probe := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":1,"current_value":2,"target_value":12,"cycle_size":60,"cycle_start":0,"row_spacing":42}`)
+	probe := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":314,"center_y":270,"remaining_gap":1,"current_value":2,"target_value":12,"cycle_size":60,"cycle_start":0,"row_spacing":42}`)
 	allowAndCommitWheel(t, &guard, probe)
 
-	wrongMapping := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":9,"current_value":3,"target_value":12,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":-1}`)
+	wrongMapping := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":314,"center_y":270,"remaining_gap":9,"current_value":3,"target_value":12,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":-1}`)
 	result, allowed := guard.BeforeToolCall(context.Background(), wrongMapping)
 	if allowed {
 		t.Fatal("mapping that contradicts the observed 2 -> 3 probe must be blocked")
@@ -553,10 +541,10 @@ func TestWheelGestureGuardValidatesObservedProbeDirection(t *testing.T) {
 
 func TestWheelGestureGuardValidatesObservedMovementUsingDeclaredStep(t *testing.T) {
 	var guard wheelNudgeGuard
-	first := wheelNudgeGuardCall(`{"picker_id":"stepped-cycle","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":2,"current_value":0,"target_value":20,"cycle_size":100,"cycle_start":0,"row_spacing":42,"value_step":40}`)
+	first := wheelNudgeGuardCall(`{"picker_id":"stepped-cycle","column_x":314,"center_y":270,"remaining_gap":2,"current_value":0,"target_value":20,"cycle_size":100,"cycle_start":0,"row_spacing":42,"value_step":40}`)
 	allowAndCommitWheel(t, &guard, first)
 
-	second := wheelNudgeGuardCall(`{"picker_id":"stepped-cycle","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":1,"current_value":60,"target_value":20,"cycle_size":100,"cycle_start":0,"row_spacing":42,"value_step":40}`)
+	second := wheelNudgeGuardCall(`{"picker_id":"stepped-cycle","column_x":314,"center_y":270,"remaining_gap":1,"current_value":60,"target_value":20,"cycle_size":100,"cycle_start":0,"row_spacing":42,"value_step":40}`)
 	if result, allowed := guard.BeforeToolCall(context.Background(), second); !allowed || result.Error != nil {
 		t.Fatalf("0 -> 60 must validate as one finger-down step toward a stable target on a 100-value cycle: allowed=%v result=%#v", allowed, result)
 	}
@@ -602,7 +590,7 @@ func TestWheelGestureGuardIgnoresTouchGestureWithProviderPopulatedWheelMetadata(
 	var guard wheelNudgeGuard
 	swipe := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"swipe_down","coord_space":"normalized","start":{"x":500,"y":200},"end":{"x":500,"y":520},"wheel":{"is_picker_row":true,"picker_id":"bad","column_x":0,"center_y":0,"current_value":0,"tapped_value":0,"target_value":0,"cycle_size":0,"cycle_start":0,"row_offset":0,"row_spacing":0,"value_step":0}}`,
+		Input: `{"type":"swipe_down","start":{"x":500,"y":200},"end":{"x":500,"y":520},"wheel":{"is_picker_row":true,"picker_id":"bad","column_x":0,"center_y":0,"current_value":0,"tapped_value":0,"target_value":0,"cycle_size":0,"cycle_start":0,"row_offset":0,"row_spacing":0,"value_step":0}}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); !allowed || result.Error != nil {
 		t.Fatalf("generic touch gesture must not be inspected by wheel guard: allowed=%v result=%#v", allowed, result)
@@ -611,11 +599,11 @@ func TestWheelGestureGuardIgnoresTouchGestureWithProviderPopulatedWheelMetadata(
 
 func TestWheelGestureGuardBlocksTouchGestureOnActiveWheelColumn(t *testing.T) {
 	var guard wheelNudgeGuard
-	allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(validWheelGuardInput(314, 289, 48, 5, 60, 0, "screenshot")))
+	allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(validWheelGuardInput(632, 275, 48, 5, 60, 0)))
 
 	drag := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"drag","coord_space":"screenshot","start":{"x":313,"y":513},"end":{"x":313,"y":513},"steps":20}`,
+		Input: `{"type":"drag","start":{"x":632,"y":275},"end":{"x":632,"y":300},"steps":20}`,
 	}
 	result, allowed := guard.BeforeToolCall(context.Background(), drag)
 	if allowed {
@@ -631,7 +619,7 @@ func TestWheelGestureGuardBlocksDirectionalSwipeWhilePickerIsActive(t *testing.T
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	guard := newWheelNudgeGuard(screenState)
 	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
-	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(304, 289, 48, 5, 60, 0, "screenshot")))
+	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(612, 275, 48, 5, 60, 0)))
 
 	swipe := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
@@ -644,7 +632,7 @@ func TestWheelGestureGuardBlocksDirectionalSwipeWhilePickerIsActive(t *testing.T
 
 func TestWheelGestureGuardBlocksDirectionalSwipeWithExplicitWheelPoints(t *testing.T) {
 	guard := newWheelNudgeGuard(nil)
-	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(400, 260, 15, 7, 24, 0, "normalized")))
+	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(400, 260, 15, 7, 24, 0)))
 
 	// This is the exact malformed fallback emitted after wheel_nudge failed on
 	// the alarm picker. Directional aliases ignore start/end at execution time,
@@ -663,7 +651,7 @@ func TestWheelGestureGuardAllowsDirectionalSwipeOutsidePickerColumns(t *testing.
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	guard := newWheelNudgeGuard(screenState)
 	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
-	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(304, 289, 48, 5, 60, 0, "screenshot")))
+	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(612, 275, 48, 5, 60, 0)))
 
 	swipe := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: `{"type":"swipe_up","strength":"small","anchor":150}`}
 	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); !allowed || result.Error != nil {
@@ -671,16 +659,16 @@ func TestWheelGestureGuardAllowsDirectionalSwipeOutsidePickerColumns(t *testing.
 	}
 }
 
-func TestWheelGestureGuardBlocksMouseClickAcrossCoordinateSpaces(t *testing.T) {
+func TestWheelGestureGuardBlocksMouseClickOnActiveColumn(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	guard := newWheelNudgeGuard(screenState)
 	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
-	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(304, 289, 48, 5, 60, 0, "screenshot")))
+	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(612, 275, 48, 5, 60, 0)))
 
 	click := ToolCall{
 		Spec:  ToolSpec{Name: "mouse_click"},
-		Input: `{"x":611,"y":488,"coord_space":"normalized"}`,
+		Input: `{"x":611,"y":488}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), click); allowed || result.Error == nil {
 		t.Fatalf("mouse click should not bypass active wheel ownership: allowed=%v result=%#v", allowed, result)
@@ -691,13 +679,13 @@ func TestWheelGestureGuardBlocksMouseClickOnExhaustedColumnWithoutRetry(t *testi
 	var guard wheelNudgeGuard
 	limit := wheelNudgeLimitForGap(200)
 	for attempt := 0; attempt < limit; attempt++ {
-		call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, attempt, 200, 0, 0, "normalized"))
+		call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, attempt, 200, 0, 0))
 		allowAndCommitWheel(t, &guard, call)
 	}
 
 	click := ToolCall{
 		Spec:  ToolSpec{Name: "mouse_click"},
-		Input: `{"x":351,"y":460,"coord_space":"normalized"}`,
+		Input: `{"x":351,"y":460}`,
 	}
 	result, allowed := guard.BeforeToolCall(context.Background(), click)
 	if allowed {
@@ -711,26 +699,26 @@ func TestWheelGestureGuardBlocksMouseClickOnExhaustedColumnWithoutRetry(t *testi
 	}
 }
 
-func TestWheelGestureGuardBlocksPixelTouchAcrossCoordinateSpaces(t *testing.T) {
+func TestWheelGestureGuardBlocksTouchOnActiveColumn(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	guard := newWheelNudgeGuard(screenState)
 	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
-	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(304, 289, 48, 5, 60, 0, "screenshot")))
+	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(612, 275, 48, 5, 60, 0)))
 
-	tap := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: `{"type":"tap","coord_space":"pixel","point":{"x":304,"y":513}}`}
+	tap := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: `{"type":"tap","point":{"x":612,"y":488}}`}
 	if result, allowed := guard.BeforeToolCall(context.Background(), tap); allowed || result.Error == nil {
-		t.Fatalf("pixel touch should not bypass screenshot-space wheel ownership: allowed=%v result=%#v", allowed, result)
+		t.Fatalf("touch should not bypass active wheel ownership: allowed=%v result=%#v", allowed, result)
 	}
 }
 
 func TestWheelGestureGuardAllowsTouchGestureOutsideActiveWheelColumn(t *testing.T) {
 	var guard wheelNudgeGuard
-	allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(validWheelGuardInput(314, 289, 48, 5, 60, 0, "screenshot")))
+	allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(validWheelGuardInput(632, 275, 48, 5, 60, 0)))
 
 	saveTap := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"screenshot","point":{"x":450,"y":95}}`,
+		Input: `{"type":"tap","point":{"x":450,"y":95}}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), saveTap); !allowed || result.Error != nil {
 		t.Fatalf("touch outside active wheel columns should remain allowed: allowed=%v result=%#v", allowed, result)
@@ -759,7 +747,7 @@ func TestWheelNudgeGuardDoesNotCountSemanticallyInvalidCalls(t *testing.T) {
 	invalidInputs := []string{
 		`{"column_x":350,"direction":"left"}`,
 		`{"column_x":350,"distance":"huge"}`,
-		`{"column_x":350,"coord_space":"pixel"}`,
+		`{"column_x":350}`,
 		`{"column_x":350,"duration_ms":-1}`,
 		`{"column_x":"350"}`,
 		`{"column_x":350,"travel":80}`,
@@ -795,16 +783,15 @@ func allowAndCommitWheel(t *testing.T, guard *wheelNudgeGuard, call ToolCall) {
 	guard.AfterToolCall(context.Background(), call, ToolResult{Output: "ok"})
 }
 
-func validWheelGuardInput(columnX, centerY float64, currentValue, targetValue, cycleSize, cycleStart int, coordSpace string) string {
+func validWheelGuardInput(columnX, centerY float64, currentValue, targetValue, cycleSize, cycleStart int) string {
 	gap, ok := wheelDomainDistance(currentValue, targetValue, cycleSize, cycleStart)
 	if !ok || gap == 0 {
 		panic("validWheelGuardInput requires distinct values inside the declared domain")
 	}
 	return fmt.Sprintf(
-		`{"picker_id":"test-picker","column_x":%g,"center_y":%g,"coord_space":%q,"remaining_gap":%d,"current_value":%d,"target_value":%d,"cycle_size":%d,"cycle_start":%d,"row_spacing":42,"value_step":1}`,
+		`{"picker_id":"test-picker","column_x":%g,"center_y":%g,"remaining_gap":%d,"current_value":%d,"target_value":%d,"cycle_size":%d,"cycle_start":%d,"row_spacing":42,"value_step":1}`,
 		columnX,
 		centerY,
-		coordSpace,
 		gap,
 		currentValue,
 		targetValue,

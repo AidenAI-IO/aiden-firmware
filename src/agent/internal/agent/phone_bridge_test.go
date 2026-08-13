@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"aiden-agent/internal/ble"
+	"context"
 	"encoding/json"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -26,6 +30,63 @@ func TestPhoneBridgeUpdateStateDoesNotExposeUnknownValues(t *testing.T) {
 		if value == "unknown" {
 			t.Errorf("%s exposes unknown value", key)
 		}
+	}
+}
+
+func TestPhoneBridgeUsesConfiguredPlatformUntilAppReportsOne(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+
+	bridge.SetConfiguredPlatform("ios")
+	if got := bridge.getStatus().Platform; got != "ios" {
+		t.Fatalf("configured platform = %q, want ios", got)
+	}
+
+	bridge.mu.Lock()
+	bridge.platform = "android"
+	bridge.mu.Unlock()
+	if got := bridge.getStatus().Platform; got != "android" {
+		t.Fatalf("reported platform = %q, want android", got)
+	}
+}
+
+func TestPhoneBridgeBLECapabilitiesCachesConcurrentStatusRequests(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	var calls atomic.Int32
+	bridge.bleStatus = func(context.Context) (ble.RuntimeStatus, error) {
+		calls.Add(1)
+		time.Sleep(10 * time.Millisecond)
+		return ble.RuntimeStatus{
+			BackendAvailable: true,
+			Connected:        true,
+			WakeSubscriber:   true,
+		}, nil
+	}
+
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if got := bridge.bleCapabilities(context.Background()); !got.Wake {
+				t.Errorf("cached capabilities = %#v, want Wake", got)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("concurrent BLE status calls = %d, want 1", got)
+	}
+
+	bridge.bleCapabilityMu.Lock()
+	bridge.bleCapabilityAt = time.Now().Add(-phoneBridgeBLECacheTTL - time.Millisecond)
+	bridge.bleCapabilityMu.Unlock()
+	if got := bridge.bleCapabilities(context.Background()); !got.Wake {
+		t.Fatalf("refreshed capabilities = %#v, want Wake", got)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("BLE status calls after expiry = %d, want 2", got)
 	}
 }
 

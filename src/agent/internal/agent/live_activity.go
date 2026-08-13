@@ -762,10 +762,17 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 			"update": "Updating contact",
 		}, "Checking contacts")
 	case toolBridgeNotification:
-		status.phase = LiveActivityPhasePhoneBridge
-		status.action = "notification"
-		status.requiresApp = true
-		status.step = "Sending notification"
+		payload, _ := liveActivityJSONObject(event.ToolInput)
+		if strings.EqualFold(liveActivityString(payload, "action"), "query") {
+			status.phase = LiveActivityPhaseVerifying
+			status.action = "notification"
+			status.step = "Checking notifications"
+		} else {
+			status.phase = LiveActivityPhasePhoneBridge
+			status.action = "notification"
+			status.requiresApp = true
+			status.step = "Sending notification"
+		}
 	case "request_human_handoff":
 		status.phase = LiveActivityPhaseWaitingUser
 		status.action = "request_user_input"
@@ -1115,7 +1122,7 @@ func liveActivityToolCallStep(tool string) string {
 	case toolBridgeContacts:
 		return "Checking contacts"
 	case toolBridgeNotification:
-		return "Sending notification"
+		return "Using notifications"
 	case "web_search", "wikipedia", "web_scraper":
 		return "Searching"
 	case "audio_volume":
