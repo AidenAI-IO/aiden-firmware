@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-import urllib.parse
 import urllib.request
 from typing import Any
+
+from runner.environment_endpoint import EnvironmentEndpoint
 
 VALID_TARGET_PLATFORMS = {"ios", "android", "mac"}
 DEVICE_TYPE_BY_TARGET_PLATFORM = {
@@ -11,12 +12,6 @@ DEVICE_TYPE_BY_TARGET_PLATFORM = {
     "android": "Android",
     "mac": "macOS",
 }
-ENVIRONMENT_API_SUFFIXES = (
-    "/api/setup",
-    "/api/release",
-    "/api/screen",
-    "/api/concurrent",
-)
 
 
 def platform_from_environment_health(health: dict[str, Any]) -> str:
@@ -57,25 +52,9 @@ def target_platform_from_device_type(device_type: str) -> str:
     return ""
 
 
-def environment_health_endpoint(environment_url: str) -> str:
-    raw = str(environment_url or "").strip()
-    parsed = urllib.parse.urlsplit(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(f"invalid environment endpoint: {environment_url!r}")
-
-    path = parsed.path.rstrip("/")
-    for suffix in ENVIRONMENT_API_SUFFIXES:
-        if path == suffix or path.endswith(suffix):
-            path = path[: -len(suffix)]
-            break
-    if path != "/health" and not path.endswith("/health"):
-        path = f"{path}/health" if path else "/health"
-    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
-
-
 def read_environment_health(environment_url: str, *, timeout: float = 5.0) -> dict[str, Any]:
     try:
-        url = environment_health_endpoint(environment_url)
+        url = EnvironmentEndpoint(environment_url).health
     except ValueError:
         return {}
     with urllib.request.urlopen(url, timeout=timeout) as response:

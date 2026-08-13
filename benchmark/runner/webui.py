@@ -25,6 +25,7 @@ from typing import Any, Callable, Mapping
 
 from runner.agent_client import AgentClient
 from runner.analysis import AnalysisResult, analyze_run, config_from_env
+from runner.environment_endpoint import EnvironmentEndpoint
 from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
 from runner.agent_config import set_agent_device_type
@@ -1891,33 +1892,12 @@ def webui_task_screen_url(job_id: str, task_record_id: str) -> str:
     )
 
 
-def environment_bridge_api_path(path: str, endpoint: str) -> str:
-    path = path.rstrip("/")
-    if path in {"", "/"}:
-        return f"/api/{endpoint}"
-    for suffix in ("/api/setup", "/api/release", "/api/screen", "/api/concurrent"):
-        if path == suffix or path.endswith(suffix):
-            return f"{path[:-len(suffix)]}/api/{endpoint}"
-    return f"{path}/api/{endpoint}"
-
-
-def environment_bridge_screen_endpoint(endpoint: str) -> str:
-    raw = str(endpoint or "").strip()
-    if not raw:
-        raise ValueError("environment bridge endpoint is required")
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(f"invalid environment bridge endpoint: {endpoint!r}")
-    path = environment_bridge_api_path(parsed.path, "screen")
-    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
-
-
 def read_environment_bridge_screen(endpoint: str, benchmark_task_id: str, *, timeout: float = 5.0) -> dict[str, Any]:
     headers: dict[str, str] = {}
     task_id = str(benchmark_task_id or "").strip()
     if task_id:
         headers["benchmark-task-id"] = task_id
-    req = urllib.request.Request(environment_bridge_screen_endpoint(endpoint), headers=headers, method="GET")
+    req = urllib.request.Request(EnvironmentEndpoint(endpoint).screen, headers=headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             body = response.read()
@@ -1935,20 +1915,9 @@ def read_environment_bridge_screen(endpoint: str, benchmark_task_id: str, *, tim
     return payload
 
 
-def environment_bridge_concurrent_endpoint(endpoint: str) -> str:
-    raw = str(endpoint or "").strip()
-    if not raw:
-        raise ValueError("environment bridge endpoint is required")
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(f"invalid environment bridge endpoint: {endpoint!r}")
-    path = environment_bridge_api_path(parsed.path, "concurrent")
-    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
-
-
 def read_environment_bridge_concurrency(endpoint: str, *, timeout: float = 2.0) -> int | None:
     try:
-        url = environment_bridge_concurrent_endpoint(endpoint)
+        url = EnvironmentEndpoint(endpoint).concurrent
         with urllib.request.urlopen(url, timeout=timeout) as response:
             body = response.read()
         payload = json.loads(body.decode("utf-8")) if body else {}

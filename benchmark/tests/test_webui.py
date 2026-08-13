@@ -144,30 +144,38 @@ def test_task_screen_payload_proxies_bridge_screen_with_task_header(tmp_path: Pa
     assert seen["headers"]["benchmark-task-id"] == "suite.json:t1"
 
 
-def test_environment_bridge_screen_endpoint_normalizes_api_suffixes():
-    assert webui.environment_bridge_screen_endpoint("http://127.0.0.1:19090/api/setup") == "http://127.0.0.1:19090/api/screen"
-    assert webui.environment_bridge_screen_endpoint("http://127.0.0.1:19090/api/release") == "http://127.0.0.1:19090/api/screen"
-    assert webui.environment_bridge_screen_endpoint("http://127.0.0.1:19090/api/concurrent") == "http://127.0.0.1:19090/api/screen"
-
-
 def test_task_screen_html_fetches_webui_screen_api():
     assert "/api/jobs/" in webui.TASK_SCREEN_HTML
     assert "/api/screen" not in webui.TASK_SCREEN_HTML
 
 
-def test_environment_bridge_concurrent_endpoint_points_at_bridge_api():
-    assert (
-        webui.environment_bridge_concurrent_endpoint("http://127.0.0.1:19090")
-        == "http://127.0.0.1:19090/api/concurrent"
-    )
-    assert (
-        webui.environment_bridge_concurrent_endpoint("http://127.0.0.1:19090/bridge/")
-        == "http://127.0.0.1:19090/bridge/api/concurrent"
-    )
-    assert (
-        webui.environment_bridge_concurrent_endpoint("http://127.0.0.1:19090/api/setup")
-        == "http://127.0.0.1:19090/api/concurrent"
-    )
+def test_read_environment_bridge_concurrency_uses_base_url(monkeypatch):
+    seen = {}
+
+    class FakeResponse:
+        def read(self):
+            return b'{"ok": true, "data": {"concurrent": 3}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(url, timeout=None):
+        seen["url"] = url
+        seen["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(webui.urllib.request, "urlopen", fake_urlopen)
+
+    assert webui.read_environment_bridge_concurrency(
+        "http://127.0.0.1:19090/bridge/", timeout=1.5
+    ) == 3
+    assert seen == {
+        "url": "http://127.0.0.1:19090/bridge/api/concurrent",
+        "timeout": 1.5,
+    }
 
 
 def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):

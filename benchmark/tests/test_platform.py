@@ -35,7 +35,7 @@ def test_read_environment_health_preserves_endpoint_path_prefix(monkeypatch):
     assert seen == {"url": "https://example.com/bridge/health", "timeout": 1.5}
 
 
-def test_read_environment_health_normalizes_bridge_api_endpoint(monkeypatch):
+def test_read_environment_health_treats_input_as_base_url(monkeypatch):
     seen = {}
 
     def fake_urlopen(url, timeout=None):
@@ -44,10 +44,10 @@ def test_read_environment_health_normalizes_bridge_api_endpoint(monkeypatch):
 
     monkeypatch.setattr("runner.platform.urllib.request.urlopen", fake_urlopen)
 
-    assert read_environment_health("https://example.com/bridge/api/screen?task=1") == {
+    assert read_environment_health("https://example.com/bridge/api") == {
         "platform": "ios"
     }
-    assert seen["url"] == "https://example.com/bridge/health"
+    assert seen["url"] == "https://example.com/bridge/api/health"
 
 
 def test_platform_from_environment_health_rejects_invalid_canonical_platform():
