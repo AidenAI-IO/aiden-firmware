@@ -167,14 +167,21 @@ def test_enter_text_requires_json_focus_and_returns_compact_failures(bridge):
 
 def test_quick_actions(bridge):
     _, device, base_url = bridge
-    invoke(base_url, "quick_action", {"platform": "ios", "action": "home"})
-    status, body = invoke(base_url, "quick_action", {"platform": "ios", "action": "open_settings"})
-    invoke(base_url, "quick_action", {"platform": "ios", "action": "send"})
+    invoke(base_url, "quick_action", {"action": "home"})
+    status, body = invoke(base_url, "quick_action", {"action": "open_settings"})
+    invoke(base_url, "quick_action", {"action": "send"})
     assert ("reset_home",) in device.calls
     assert ("launch_app", "com.apple.Preferences") in device.calls
     assert ("keyboard_key", "enter") in device.calls
     assert status == 200 and body["is_error"] is False
     assert json.loads(body["output"])["source_width"] == 1290
+
+
+def test_quick_action_ignores_legacy_platform_override(bridge):
+    _, device, base_url = bridge
+    status, body = invoke(base_url, "quick_action", {"platform": "android", "action": "home"})
+    assert status == 200 and body["is_error"] is False
+    assert ("reset_home",) in device.calls
 
 
 def test_quick_action_catalog_does_not_extend_beyond_supported_actions(bridge):

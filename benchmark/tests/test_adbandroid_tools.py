@@ -300,11 +300,11 @@ def test_mouse_scroll_swipes_vertically(bridge):
 # ---- quick_action --------------------------------------------------------------
 
 
-def test_quick_action_requires_platform(bridge):
-    _, _, base_url = bridge
+def test_quick_action_uses_android_platform_from_environment(bridge):
+    _, device, base_url = bridge
     status, body = _invoke(base_url, "quick_action", {"action": "home"})
-    assert body["is_error"] is True
-    assert "unsupported platform" in body["output"]
+    assert status == 200 and body["is_error"] is False
+    assert ("keyevent", "KEYCODE_HOME") in device.calls
 
 
 def test_quick_action_list_returns_catalog(bridge):
@@ -316,15 +316,11 @@ def test_quick_action_list_returns_catalog(bridge):
     assert {"back", "home", "app_switch", "open_settings", "notification_center", "send"} <= ids
 
 
-def test_quick_action_non_android_platform_is_reserved(bridge):
+def test_quick_action_ignores_legacy_platform_override(bridge):
     _, device, base_url = bridge
     status, body = _invoke(base_url, "quick_action", {"platform": "ios", "action": "home"})
     assert status == 200 and body["is_error"] is False
-    output = json.loads(body["output"])
-    assert output["ok"] is False
-    assert output["platform"] == "ios"
-    assert output["status"] == "reserved"
-    assert device.calls == []
+    assert ("keyevent", "KEYCODE_HOME") in device.calls
 
 
 def test_quick_action_open_settings(bridge):

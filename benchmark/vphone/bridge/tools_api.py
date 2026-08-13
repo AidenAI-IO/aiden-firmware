@@ -150,17 +150,16 @@ class VPhoneToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute iOS navigation such as home, back, app_switch, open_settings, notification_center, or control_center.",
+                "description": "Execute iOS navigation such as home, back, app_switch, open_settings, notification_center, or control_center. The bridge selects iOS bindings automatically.",
                 "args_schema": {
                     "type": "object", "additionalProperties": False,
                     "properties": {
                         "action": {"type": "string"},
-                        "platform": {"type": "string", "enum": ["ios"]},
                         "list": {"type": "boolean"},
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
                     },
-                    "required": ["platform"],
+                    "required": ["action"],
                 },
             },
         ]
@@ -552,9 +551,6 @@ class VPhoneToolsAPIHandler:
         return {"output": json.dumps({"ok": True}), "is_error": False}
 
     def _call_quick_action(self, tool_input: dict[str, Any]) -> dict[str, Any]:
-        platform = str(tool_input.get("platform", "") or "").strip().lower()
-        if platform != "ios":
-            return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}; expected 'ios'", "is_error": True}
         action = _quick_action_id(tool_input)
         if bool(tool_input.get("list")) or action == "list":
             keyboard_available = "keyboard" in self.state.device.capabilities()
