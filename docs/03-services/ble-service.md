@@ -63,9 +63,10 @@ The iOS app explicitly calls the Agent pairing API over USB ECM; only then does
 the service open a five-minute pairing window. The app reads the board's stable
 `device_name` and collision-resistant `board_identity` first and only connects
 a Wake-service advertiser carrying both values. A successful encrypted Wake
-subscription closes the window; an existing bond does not prevent an explicit
-Connect action from reopening it. Outside that window, only the selected
-trusted phone is authorized. `PAIRING_WINDOW_SECONDS` in
+read followed by an active standard notification subscription closes the
+window; an existing bond does not prevent an explicit Connect action from
+reopening it. Outside that window, only the selected trusted phone is
+authorized. `PAIRING_WINDOW_SECONDS` in
 `/etc/aiden_ble_service.conf` controls the maximum user-initiated window.
 
 The five-minute value is an upper bound that tolerates Bluetooth permission and
@@ -233,9 +234,11 @@ expires.
 {"op":"disconnect"}
 ```
 
-Calls BlueZ `Device1.Disconnect` for the current phone connection, clears live
-Wake/ANCS state, and keeps the paired/trusted device plus its bond keys for a
-later direct reconnect.
+Calls BlueZ `Device1.Disconnect` for the current phone connection, closes the
+pairing window, disables advertising, clears live Wake/ANCS state, and keeps the
+paired/trusted device plus its bond keys. Reconnecting requires another explicit
+Connect action, which calls `pairing_start`; the existing bond can then be
+reused without repeating system pairing.
 
 ### `pairing_forget`
 

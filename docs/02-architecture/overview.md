@@ -80,5 +80,6 @@ Phone Bridge HTTP queue → ble_service UDS wake → Wake Notify → iOS native 
 ```
 
 BLE carries notification metadata and a wake hint only. Phone Bridge commands
-and results remain on WebSocket/HTTP transports, and ANCS events do not enter
-Agent memory in this layer.
+and results remain on WebSocket/HTTP transports over USB ECM, so BLE Wake still
+requires the phone's wired board network. ANCS events do not enter Agent memory
+in this layer.
