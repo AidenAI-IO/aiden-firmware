@@ -16,7 +16,7 @@
         },
         {
           "id": "does_not_use_0_1_coordinates",
-          "check": "No touch_gesture, mouse_click, or mouse_move call uses 0-1 style normalized coordinates. If coord_space is normalized, coordinates should use the 0-1000 convention, not x/y values between 0 and 1."
+          "check": "No touch_gesture, mouse_click, or mouse_move call uses 0-1 style normalized coordinates. Coordinates must use the 0-1000 convention, not x/y values between 0 and 1."
         },
         {
           "id": "click_targets_settings",

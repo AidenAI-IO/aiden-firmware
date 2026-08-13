@@ -257,9 +257,6 @@ func (p *FilesystemMemoryPlane) extractDeviceLessons(ctx context.Context, episod
 	if err := p.recordNavigationFacts(ctx, episode, deviceID, now); err != nil {
 		return err
 	}
-	if err := p.recordCoordinateCalibration(ctx, episode, deviceID, now); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -505,27 +502,6 @@ func (p *FilesystemMemoryPlane) recordNavigationFacts(ctx context.Context, episo
 	return nil
 }
 
-func (p *FilesystemMemoryPlane) recordCoordinateCalibration(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
-	if episodeUsesNormalizedCoordinates(episode.Events) {
-		_, err := p.device.Upsert(ctx, DeviceMemoryItem{
-			ID:           "cal_normalized_coordinates",
-			Type:         "calibration",
-			Status:       "active",
-			Title:        "Prefer normalized coordinates",
-			Content:      "A successful task used normalized coordinates; keep preferring normalized coordinates unless current calibration contradicts it.",
-			DeviceID:     deviceID,
-			Tags:         []string{"calibration", "coordinates"},
-			Confidence:   0.8,
-			Priority:     75,
-			TTL:          "30d",
-			UpdatedAt:    now,
-			EvidenceRefs: []MemorySourceRef{{Type: "episode", ID: episode.ID}},
-		})
-		return err
-	}
-	return nil
-}
-
 func (p *FilesystemMemoryPlane) updateReferencedMemoryOutcomes(ctx context.Context, episode TaskEpisode) error {
 	refs := uniqueNonEmpty(episode.RetrievedMemoryRefs)
 	if len(refs) == 0 {
@@ -604,7 +580,6 @@ func updateDeviceMemoryFromEpisode(item *DeviceMemoryItem, episode TaskEpisode) 
 	}
 }
 
-
 func renderMemoryHitLine(hit MemoryHit) string {
 	label := hit.ID
 	if label == "" {
@@ -663,7 +638,6 @@ func readTextFileIfExists(path string) string {
 	}
 	return strings.TrimSpace(string(data))
 }
-
 
 func normalizeSearchTerms(values []string) []string {
 	seen := map[string]bool{}
@@ -834,20 +808,6 @@ func inferEpisodeApps(episode TaskEpisode) []string {
 		apps = append(apps, app)
 	}
 	return apps
-}
-
-func episodeUsesNormalizedCoordinates(events []TaskEpisodeEvent) bool {
-	for _, event := range events {
-		if event.Type != runEventToolCall {
-			continue
-		}
-		input := strings.ToLower(event.ToolInput)
-		if strings.Contains(input, `"coord_space":"normalized"`) ||
-			strings.Contains(input, `"coord_space": "normalized"`) {
-			return true
-		}
-	}
-	return false
 }
 
 func shouldPenalizeMemoryType(memoryType string) bool {

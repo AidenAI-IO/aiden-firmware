@@ -98,7 +98,7 @@ def test_required_tool_calls_match_nested_input_subset():
                 input={
                     "text": "+1 202-555-0147",
                     "platform": "ios",
-                    "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
+                    "focus": {"x": 500, "y": 360},
                 },
             )
         ],

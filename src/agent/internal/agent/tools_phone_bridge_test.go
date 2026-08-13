@@ -236,7 +236,7 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 		sleep:      testNoWaitSleep,
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
 			called++
-			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "Aiden"}, nil
+			return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 200}, Label: "Aiden"}, nil
 		},
 		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 			return bridgeAppOpenResult{Opened: true, Reason: "Aiden app visible"}, nil
@@ -322,7 +322,7 @@ func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T
 		sleep:                testNoWaitSleep,
 		iosKeyboardIsolation: newTestIOSKeyboardIsolationController(&[]string{}),
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
-			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "WeChat"}, nil
+			return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 200}, Label: "WeChat"}, nil
 		},
 		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 			return bridgeAppOpenResult{Opened: true, Reason: "WeChat visible"}, nil
@@ -392,7 +392,7 @@ func TestSearchLaunchAppUsesRealQuickActionDeviceType(t *testing.T) {
 			sleep:                testNoWaitSleep,
 			iosKeyboardIsolation: controller,
 			findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
-				return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "WeChat"}, nil
+				return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 200}, Label: "WeChat"}, nil
 			},
 			confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 				return bridgeAppOpenResult{Opened: true, Reason: "WeChat visible"}, nil
@@ -510,7 +510,7 @@ func TestSearchLaunchAppBatchesIOSModifierIsolationAcrossSubtools(t *testing.T) 
 		sleep:                testNoWaitSleep,
 		iosKeyboardIsolation: controller,
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
-			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "WeChat"}, nil
+			return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 200}, Label: "WeChat"}, nil
 		},
 		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 			return bridgeAppOpenResult{Opened: true, Reason: "WeChat visible"}, nil
@@ -560,9 +560,9 @@ func TestAppSearchOpenFlowFallsBackToShorterTerm(t *testing.T) {
 		findAppTapFn: func(_ context.Context, _ screenshotResult, term string) (bridgeSearchResult, error) {
 			terms = append(terms, term)
 			if term == "Aiden" {
-				return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden"}, nil
+				return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 220}, Label: "Aiden"}, nil
 			}
-			return bridgeSearchResult{Found: false, TapPoint: focusPointArgs{CoordSpace: "normalized"}}, nil
+			return bridgeSearchResult{Found: false}, nil
 		},
 		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 			return bridgeAppOpenResult{Opened: true, Reason: "Aiden app visible"}, nil
@@ -608,11 +608,11 @@ func TestAppSearchOpenFlowRechecksSameTermBeforeFallback(t *testing.T) {
 			if term == "Aiden Bridge" {
 				findCalls++
 				if findCalls == 1 {
-					return bridgeSearchResult{Found: false, TapPoint: focusPointArgs{CoordSpace: "normalized"}}, nil
+					return bridgeSearchResult{Found: false}, nil
 				}
-				return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden Bridge"}, nil
+				return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 220}, Label: "Aiden Bridge"}, nil
 			}
-			return bridgeSearchResult{Found: false, TapPoint: focusPointArgs{CoordSpace: "normalized"}}, nil
+			return bridgeSearchResult{Found: false}, nil
 		},
 		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 			return bridgeAppOpenResult{Opened: true, Reason: "Aiden app visible"}, nil

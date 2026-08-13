@@ -581,12 +581,8 @@ func (e *textInputEngine) decideCandidateAction(ctx context.Context, platform st
 }
 
 func (e *textInputEngine) applyFocus(ctx context.Context, focus focusPointArgs) error {
-	coordSpace := strings.TrimSpace(focus.CoordSpace)
-	if coordSpace == "" {
-		coordSpace = "normalized"
-	}
 	_, err := callTextInputTool(ctx, e.hw.mouseClick, jsonString(map[string]any{
-		"x": focus.X, "y": focus.Y, "coord_space": coordSpace,
+		"x": focus.X, "y": focus.Y,
 	}))
 	if err != nil {
 		return err

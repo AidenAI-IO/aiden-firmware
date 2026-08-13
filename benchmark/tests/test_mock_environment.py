@@ -89,7 +89,7 @@ def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
                 "input": json.dumps(
                     {
                         "text": "+1 202-555-0147",
-                        "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
+                        "focus": {"x": 500, "y": 360},
                     }
                 )
             },
@@ -113,7 +113,6 @@ def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
                         "focus": {
                             "x": 500,
                             "y": 360,
-                            "coord_space": "normalized",
                         },
                     }
                 )
@@ -148,7 +147,7 @@ def test_mock_environment_requires_visible_icon_click_before_text_entry():
                 "input": json.dumps(
                     {
                         "text": "+1 202-555-0147",
-                        "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
+                        "focus": {"x": 500, "y": 360},
                     }
                 )
             },
@@ -160,7 +159,7 @@ def test_mock_environment_requires_visible_icon_click_before_text_entry():
             "POST",
             {
                 "input": json.dumps(
-                    {"x": 180, "y": 310, "coord_space": "normalized"}
+                    {"x": 180, "y": 310}
                 )
             },
         )
@@ -173,7 +172,7 @@ def test_mock_environment_requires_visible_icon_click_before_text_entry():
                 "input": json.dumps(
                     {
                         "text": "+1 202-555-0147",
-                        "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
+                        "focus": {"x": 500, "y": 360},
                     }
                 )
             },
@@ -198,7 +197,7 @@ def test_mock_environment_allows_direct_entry_when_notes_is_already_open():
                 "input": json.dumps(
                     {
                         "text": "+1 202-555-0147",
-                        "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
+                        "focus": {"x": 500, "y": 360},
                     }
                 )
             },

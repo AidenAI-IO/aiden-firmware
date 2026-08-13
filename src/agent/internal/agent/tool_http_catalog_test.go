@@ -38,6 +38,22 @@ func TestHTTPToolSkillDocumentsAllOpenURLSchemes(t *testing.T) {
 	}
 }
 
+func TestHTTPToolSkillDocumentsNormalizedCoordinatesAsTheOnlyInputContract(t *testing.T) {
+	markdown := buildHTTPToolSkillMarkdown("tools", "tools", defaultHTTPToolSkillBaseURL, nil)
+	if !strings.Contains(markdown, "coordinates always use the normalized 0-1000 scale") {
+		t.Fatalf("normalized coordinate contract missing:\n%s", markdown)
+	}
+	for _, retired := range []string{
+		"pixel-based pointer actions",
+		"unless calibrated",
+		"if you must use them",
+	} {
+		if strings.Contains(markdown, retired) {
+			t.Fatalf("retired coordinate mode guidance %q is still present:\n%s", retired, markdown)
+		}
+	}
+}
+
 func TestHTTPToolSkillDocumentsRuntimeFilteredAgentCatalog(t *testing.T) {
 	markdown := buildHTTPToolSkillMarkdown("tools", "tools", defaultHTTPToolSkillBaseURL, nil)
 	for _, want := range []string{

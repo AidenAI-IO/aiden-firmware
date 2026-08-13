@@ -26,13 +26,40 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
-from check_normalized_coords import check_go_test_file
+from check_normalized_coords import (
+    check_go_test_file,
+    check_retired_coord_mode_guidance,
+    check_retired_coord_space,
+)
 
 bad_go_test = Path(sys.argv[2])
 violations = check_go_test_file(bad_go_test)
 if not violations:
     raise SystemExit("expected fixture Go test to fail coordinate check")
 print("fixture rejected as expected")
+
+bad_contract = bad_go_test.with_name("bad_contract.md")
+bad_contract.write_text('Use coord_space: "pixel".\n', encoding="utf-8")
+violations = check_retired_coord_space(bad_contract)
+if not violations:
+    raise SystemExit("expected retired coord_space fixture to fail coordinate check")
+print("retired coord_space fixture rejected as expected")
+
+bad_go_identifier = bad_go_test.with_name("bad_identifier.go")
+bad_go_identifier.write_text("type args struct { CoordSpace string }\n", encoding="utf-8")
+violations = check_retired_coord_space(bad_go_identifier)
+if not violations or "CoordSpace" not in violations[0]:
+    raise SystemExit("expected retired Go coordinate-space identifier fixture to fail")
+print("retired Go coordinate-space identifier fixture rejected as expected")
+
+bad_guidance = bad_go_test.with_name("bad-guidance.md")
+bad_guidance.write_text(
+    "Avoid pixel-based pointer actions unless calibrated.\n", encoding="utf-8"
+)
+violations = check_retired_coord_mode_guidance(bad_guidance)
+if not violations:
+    raise SystemExit("expected retired coordinate mode guidance fixture to fail")
+print("retired coordinate mode guidance fixture rejected as expected")
 PY
 
 echo "check normalized coords script tests passed"

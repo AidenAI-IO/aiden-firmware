@@ -134,15 +134,14 @@ func formatTouchscreenRCAQuickActionMappingSummary(tool *QuickActionTool) string
 	return formatTouchscreenRCAMappingSummary(tool.touch.screen)
 }
 
-func touchscreenRCALogResolvedPoint(label string, screen *screen.ScreenState, pc *pointerController, raw *pointerPoint, coordSpace string, resolved resolvedPointerPoint) {
+func touchscreenRCALogResolvedPoint(label string, screen *screen.ScreenState, pc *pointerController, raw *pointerPoint, resolved resolvedPointerPoint) {
 	if !touchscreenRCADebugEnabledCached() {
 		return
 	}
 	touchscreenRCALogf(
-		"%s resolved raw_point=%s coord_space=%q pointer_mode=%s absolute=(%d,%d) mapping_at_resolve={%s}",
+		"%s resolved raw_point=%s pointer_mode=%s absolute=(%d,%d) mapping_at_resolve={%s}",
 		label,
 		formatTouchscreenRCAPointerPoint(raw),
-		coordSpace,
 		touchscreenRCAPointerMode(pc),
 		resolved.x,
 		resolved.y,
