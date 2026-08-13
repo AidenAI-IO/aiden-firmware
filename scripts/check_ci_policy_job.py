@@ -38,6 +38,17 @@ FULL_CHECKOUT_MARKERS = (
 
 REQUIRED_SPARSE_MARKERS = ("filter=blob:none", "sparse-checkout")
 
+# Every project-owned SDK input read directly by the policy script must be
+# present in the sparse checkout. Otherwise a policy addition can pass locally
+# against the full submodule while the pull-request job fails with a missing
+# file before it evaluates the policy itself.
+REQUIRED_POLICY_INPUTS = (
+    "/sysdrv/Makefile",
+    "/sysdrv/tools/board/buildroot/luckfox_pico_defconfig",
+    "/sysdrv/tools/board/buildroot/luckfox_pico_w_defconfig",
+    "/sysdrv/tools/board/buildroot/python-charset-normalizer-aiden/",
+)
+
 
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
@@ -170,6 +181,14 @@ def main() -> None:
                 f"without a blobless sparse checkout (missing: "
                 f"{', '.join(missing)}); fetch only the files the check reads "
                 "instead of the multi-GB pico-sdk worktree"
+            )
+
+        missing_inputs = [path for path in REQUIRED_POLICY_INPUTS if path not in text]
+        if missing_inputs:
+            fail(
+                f"job '{name}' does not sparse-fetch every SDK policy input "
+                f"(missing: {', '.join(missing_inputs)}); keep the sparse "
+                "checkout aligned with the files read by the policy script"
             )
 
         for marker in FULL_CHECKOUT_MARKERS:
