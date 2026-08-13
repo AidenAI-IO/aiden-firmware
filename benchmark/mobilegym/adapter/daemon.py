@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses as dc
 import json
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -177,31 +178,81 @@ def render_agent_toml(
         rendered = Path(template_path).read_text()
         for name, value in values.items():
             rendered = rendered.replace("{{" + name + "}}", value)
-        return rendered
+    else:
+        lines = [
+            f"instruction = {_toml_string(instruction)}",
+            f"input_mode = {_toml_string(input_mode)}",
+            f"max_iterations = {int(max_iterations)}",
+            "",
+            "[model_providers.benchmark]",
+            f"type = {_toml_string(model_provider)}",
+            f"base_url = {_toml_string(model_base_url)}",
+            f"api_key = {_toml_string(model_api_key)}",
+            "",
+            "[model]",
+            'provider = "benchmark"',
+            f"model = {_toml_string(model_name)}",
+            "",
+            "[device]",
+            'backend = "mobilegym"',
+            f"bridge_url = {_toml_string(bridge_url)}",
+            f"bridge_token_file = {_toml_string(str(bridge_token_file))}",
+            f"control_token_file = {_toml_string(str(control_token_file))}",
+            "",
+        ]
+        rendered = "\n".join(lines)
+    return _set_android_device_type(rendered)
 
-    lines = [
-        f"instruction = {_toml_string(instruction)}",
-        f"input_mode = {_toml_string(input_mode)}",
-        f"max_iterations = {int(max_iterations)}",
-        "",
-        "[model_providers.benchmark]",
-        f"type = {_toml_string(model_provider)}",
-        f"base_url = {_toml_string(model_base_url)}",
-        f"api_key = {_toml_string(model_api_key)}",
-        "",
-        "[model]",
-        'provider = "benchmark"',
-        f"model = {_toml_string(model_name)}",
-        "",
-        "[device]",
-        'device_type = "Android"',
-        'backend = "mobilegym"',
-        f"bridge_url = {_toml_string(bridge_url)}",
-        f"bridge_token_file = {_toml_string(str(bridge_token_file))}",
-        f"control_token_file = {_toml_string(str(control_token_file))}",
-        "",
-    ]
-    return "\n".join(lines)
+
+def _set_android_device_type(content: str) -> str:
+    lines = content.splitlines()
+    setting = 'device_type = "Android"'
+    dotted_key = re.compile(
+        r'''^(?P<indent>\s*)(?:device|"device"|'device')\s*\.\s*'''
+        r'''(?:device_type|"device_type"|'device_type')\s*=.*$'''
+    )
+    first_table = next(
+        (index for index, line in enumerate(lines) if line.lstrip().startswith("[")),
+        len(lines),
+    )
+    dotted_index = next(
+        (index for index, line in enumerate(lines[:first_table]) if dotted_key.match(line)),
+        None,
+    )
+    if dotted_index is not None:
+        indent = dotted_key.match(lines[dotted_index]).group("indent")
+        lines[dotted_index] = f'{indent}device.device_type = "Android"'
+        return "\n".join(lines) + "\n"
+
+    device_table = re.compile(
+        r'''^\s*\[\s*(?:device|"device"|'device')\s*\]\s*(?:#.*)?$'''
+    )
+    device_header = next((index for index, line in enumerate(lines) if device_table.match(line)), None)
+    if device_header is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(["[device]", setting])
+    else:
+        section_end = next(
+            (index for index in range(device_header + 1, len(lines)) if lines[index].lstrip().startswith("[")),
+            len(lines),
+        )
+        existing = next(
+            (
+                index
+                for index in range(device_header + 1, section_end)
+                if re.match(
+                    r'''^\s*(?:device_type|"device_type"|'device_type')\s*=''',
+                    lines[index],
+                )
+            ),
+            None,
+        )
+        if existing is None:
+            lines.insert(device_header + 1, setting)
+        else:
+            lines[existing] = setting
+    return "\n".join(lines) + "\n"
 
 
 def launch_daemon(

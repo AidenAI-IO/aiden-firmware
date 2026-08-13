@@ -266,7 +266,10 @@ class ADBToolsAPIHandler:
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
                     },
-                    "required": ["action"],
+                    "anyOf": [
+                        {"required": ["action"]},
+                        {"required": ["list"], "properties": {"list": {"const": True}}},
+                    ],
                 },
             },
         ]

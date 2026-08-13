@@ -320,7 +320,10 @@ def test_catalog_omits_keyboard_when_host_does_not_support_it():
     quick_action = next(tool for tool in body["tools"] if tool["name"] == "quick_action")
     assert quick_action["args_schema"]["additionalProperties"] is False
     assert "platform" not in quick_action["args_schema"]["properties"]
-    assert quick_action["args_schema"]["required"] == ["action"]
+    assert quick_action["args_schema"]["anyOf"] == [
+        {"required": ["action"]},
+        {"required": ["list"], "properties": {"list": {"const": True}}},
+    ]
     assert "url" not in quick_action["args_schema"]["properties"]
 
 

@@ -136,7 +136,10 @@ def test_get_tools_catalog(bridge_server):
     quick_action_props = tools["quick_action"]["args_schema"]["properties"]
     assert tools["quick_action"]["args_schema"]["additionalProperties"] is False
     assert "platform" not in quick_action_props
-    assert tools["quick_action"]["args_schema"]["required"] == ["action"]
+    assert tools["quick_action"]["args_schema"]["anyOf"] == [
+        {"required": ["action"]},
+        {"required": ["list"], "properties": {"list": {"const": True}}},
+    ]
     assert "alternative" in quick_action_props
     assert "alternative_index" in quick_action_props
 
@@ -432,7 +435,7 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
 
 
 def test_invoke_quick_action_ignores_legacy_platform_override(bridge_server):
-    server, base_url, state = bridge_server
+    _server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-legacy-platform"
 
     req = Request(
