@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+root_mount=${LUCKFOX_ROOTFS_GROW_MOUNT:-/}
+root_device=${LUCKFOX_ROOTFS_GROW_ROOT_DEVICE:-}
+oem_device=${LUCKFOX_ROOTFS_GROW_OEM_DEVICE:-/dev/mmcblk0p5}
+userdata_device=${LUCKFOX_ROOTFS_GROW_USERDATA_DEVICE:-/dev/mmcblk0p6}
+marker=${LUCKFOX_ROOTFS_GROW_MARKER:-${root_mount%/}/var/lib/luckfox/rootfs-grown}
+
+if [ -z "${root_device}" ]; then
+    # findmnt formats columns to a display width unless raw output is
+    # requested. On the RV1106 image this produced "179:7  ", so the
+    # trailing padding became part of the /sys/dev/block lookup path.
+    root_major_minor=$(findmnt -nr -o MAJ:MIN --target "${root_mount}" \
+        | tr -d '[:space:]')
+    case "${root_major_minor}" in
+    *[!0-9:]* | *:*:* | :* | *: | '')
+        echo "Invalid root device number: ${root_major_minor}" >&2
+        exit 1
+        ;;
+    esac
+    root_sysfs=$(readlink -f "/sys/dev/block/${root_major_minor}")
+    root_name=$(basename "${root_sysfs}")
+    if [ "${root_name}" != mmcblk0p7 ]; then
+        echo "Unexpected root device: ${root_name} (${root_major_minor})" >&2
+        exit 1
+    fi
+    root_device=/dev/${root_name}
+fi
+
+resize2fs "${root_device}"
+resize2fs "${oem_device}"
+resize2fs "${userdata_device}"
+mkdir -p "$(dirname "${marker}")"
+printf '%s\n' "${root_device}" >"${marker}"
