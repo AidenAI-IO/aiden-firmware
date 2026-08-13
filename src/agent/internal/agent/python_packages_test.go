@@ -77,7 +77,10 @@ func TestQueryRunningPythonVersionHonorsContextDeadline(t *testing.T) {
 	if err := os.WriteFile(pythonPath, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
 		t.Fatalf("WriteFile(fake python3) error = %v", err)
 	}
-	t.Setenv("PATH", binDir)
+	// Keep the real utility path available to the fake interpreter script.
+	// Replacing PATH entirely makes `sleep` fail with exit 127 on Linux before
+	// CommandContext has a chance to exercise cancellation.
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
