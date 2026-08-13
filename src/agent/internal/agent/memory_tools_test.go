@@ -181,6 +181,24 @@ func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
 		}
 	}
 
+	deviceDescription := NewRecallDeviceMemoryTool(NewDeviceMemoryStore(t.TempDir())).Description()
+	for _, want := range []string{
+		"device and UI memory",
+		"before planning or answering",
+		"procedures",
+		"failure-prevention",
+		"calibration",
+	} {
+		if !strings.Contains(deviceDescription, want) {
+			t.Fatalf("recall_device_memory description missing %q:\n%s", want, deviceDescription)
+		}
+	}
+	for _, unwanted := range []string{"Debug recall", "automatically retrieves", "only when inspecting memory state"} {
+		if strings.Contains(deviceDescription, unwanted) {
+			t.Fatalf("recall_device_memory description still contains %q:\n%s", unwanted, deviceDescription)
+		}
+	}
+
 	saveDescription := NewSaveMemoryTool(NewLongTermMemoryStore(t.TempDir())).Description()
 	for _, want := range []string{
 		"Mandatory when the user asks to remember/save",

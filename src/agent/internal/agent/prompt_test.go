@@ -371,6 +371,25 @@ func TestDefaultAgentBehaviorRequiresUnifiedLeadingTTS(t *testing.T) {
 	}
 }
 
+func TestDefaultAgentBehaviorRequiresRelevantDeviceMemoryRecall(t *testing.T) {
+	behavior := defaultAgentBehavior()
+	for _, want := range []string{
+		"call recall_device_memory first",
+		"specific device, app, page, or UI workflow",
+		"saved procedure, failure-prevention lesson, profile, calibration, or conflict",
+		"even when the user only asks for advice",
+		"does not operate or inspect the current screen",
+		"Do not call it for unrelated text-only questions",
+	} {
+		if !strings.Contains(behavior, want) {
+			t.Fatalf("defaultAgentBehavior missing device recall guidance %q:\n%s", want, behavior)
+		}
+	}
+	if strings.Contains(behavior, "For text-only arithmetic, comparison, summarization, translation, or simple Q&A tasks, answer directly") {
+		t.Fatalf("defaultAgentBehavior retains conflicting unconditional text-only guidance:\n%s", behavior)
+	}
+}
+
 func TestRolePromptGuidesRecoveryFromDumpedToolResults(t *testing.T) {
 	profile := testPromptProfile(AgentConfig{})
 	for _, want := range []string{

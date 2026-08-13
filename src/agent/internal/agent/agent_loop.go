@@ -52,6 +52,8 @@ type AgentLoop struct {
 	PointerMode              string
 	ToolResultObserver       ToolResultObserver
 	ToolResultPolicy         ToolResultPolicy
+	FirstToolChoice          string
+	FirstToolMemoryIDs       []string
 	ContextOverflowRecovery  func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
 	toolExecutionHookFactory func() toolExecutionHookHandler
 	contextManager           *contextmanager.ContextManager
@@ -111,6 +113,7 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 	}
 	policy := l.loopGuardPolicy()
 	contextOverflowRecoveryUsed := false
+	firstToolChoicePending := strings.TrimSpace(l.FirstToolChoice) != ""
 
 restartBudget:
 	for {
@@ -125,7 +128,7 @@ restartBudget:
 				}
 				continue restartBudget
 			}
-			answer, outcome, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, toolExecutionHooks, policy, &contextOverflowRecoveryUsed)
+			answer, outcome, err := l.runIteration(ctx, i+1, input, callOptions, llmExecutor, parser, toolSpecs, toolExecutionHooks, policy, &contextOverflowRecoveryUsed, &firstToolChoicePending)
 			if err != nil {
 				return "", err
 			}
@@ -171,7 +174,7 @@ func (l *AgentLoop) stopWithSteerCheck(ctx context.Context, executor *executor.L
 	return answer, true, err
 }
 
-func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, toolExecutionHooks toolExecutionHookHandler, policy *TerminationPolicy, contextOverflowRecoveryUsed *bool) (string, iterationOutcome, error) {
+func (l *AgentLoop) runIteration(ctx context.Context, iteration int, taskInput string, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, toolExecutionHooks toolExecutionHookHandler, policy *TerminationPolicy, contextOverflowRecoveryUsed *bool, firstToolChoicePending *bool) (string, iterationOutcome, error) {
 	iterationStartTime := time.Now()
 	toolCallsInIteration := 0
 	if l.Recorder != nil {
@@ -226,6 +229,15 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	turnOptions := append([]llms.CallOption{}, callOptions...)
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
+	forceFirstTool := firstToolChoicePending != nil && *firstToolChoicePending && strings.TrimSpace(l.FirstToolChoice) != ""
+	if forceFirstTool {
+		turnOptions = append(turnOptions, llms.WithToolChoice(llms.ToolChoice{
+			Type: "function",
+			Function: &llms.FunctionReference{
+				Name: strings.TrimSpace(l.FirstToolChoice),
+			},
+		}))
+	}
 
 	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
 	if err != nil {
@@ -350,7 +362,13 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	}
 
 	action := actions[0]
-	if err := llmExecutor.AppendMessage(messages.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))); err != nil {
+	if forceFirstTool && toolNameEqual(action.Tool, l.FirstToolChoice) {
+		action.ToolInput = forcedFirstToolInput(action.Tool, action.ToolInput, taskInput, l.FirstToolMemoryIDs)
+		*firstToolChoicePending = false
+	}
+	contextChoice := choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID)
+	contextChoice = choiceWithToolCallArguments(contextChoice, action.ToolID, action.ToolInput)
+	if err := llmExecutor.AppendMessage(messages.ConvertChoiceToContextManagerMessage(contextChoice)); err != nil {
 		return "", iterationContinue, err
 	}
 	var after AfterToolCallHook
@@ -529,6 +547,51 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	l.applyLoopGuardDecision(decision)
 
 	return "", iterationContinue, nil
+}
+
+func choiceWithToolCallArguments(choice llms.ContentChoice, toolID, arguments string) llms.ContentChoice {
+	for i := range choice.ToolCalls {
+		call := &choice.ToolCalls[i]
+		if call.FunctionCall == nil {
+			continue
+		}
+		if strings.TrimSpace(toolID) != "" && strings.TrimSpace(call.ID) != strings.TrimSpace(toolID) {
+			continue
+		}
+		call.FunctionCall.Arguments = arguments
+		choice.FuncCall = call.FunctionCall
+		return choice
+	}
+	if choice.FuncCall != nil {
+		choice.FuncCall.Arguments = arguments
+	}
+	return choice
+}
+
+func forcedFirstToolInput(toolName, toolInput, taskInput string, routedMemoryIDs []string) string {
+	if !toolNameEqual(toolName, "recall_device_memory") {
+		return toolInput
+	}
+	query, err := decodeDeviceMemoryQuery(toolInput)
+	if err != nil {
+		query = DeviceMemoryQuery{}
+	}
+	query.Terms = uniqueNonEmpty(routedMemoryIDs)
+	if len(query.Terms) == 0 {
+		query.Terms = []string{strings.TrimSpace(taskInput)}
+	}
+	query.Tags = nil
+	query.Entities = nil
+	query.Types = nil
+	if strings.TrimSpace(query.DeviceID) == "" {
+		query.DeviceID = defaultMemoryDeviceID
+	}
+	query.Limit = deviceMemoryRecallLimit
+	encoded, err := json.Marshal(query)
+	if err != nil {
+		return toolInput
+	}
+	return string(encoded)
 }
 
 func (l *AgentLoop) finishStopDecision(ctx context.Context, policy *TerminationPolicy, decision TerminationDecision) (string, iterationOutcome, error) {

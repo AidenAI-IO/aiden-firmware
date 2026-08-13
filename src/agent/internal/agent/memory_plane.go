@@ -20,6 +20,16 @@ type MemoryPlane interface {
 	CommitEpisode(ctx context.Context, episode TaskEpisode) error
 }
 
+type deviceMemoryRecallRoute struct {
+	MemoryIDs []string
+}
+
+type deviceMemoryRecallRouter interface {
+	RouteDeviceMemoryRecall(ctx context.Context, req MemoryRetrieveRequest) (deviceMemoryRecallRoute, error)
+}
+
+const deviceMemoryRecallLimit = 5
+
 type FilesystemMemoryPlane struct {
 	memoryDir  string
 	extraction MemoryExtractionConfig
@@ -127,6 +137,89 @@ func (p *FilesystemMemoryPlane) LongTerm() *LongTermMemoryStore {
 		return nil
 	}
 	return p.longTerm
+}
+
+// RouteDeviceMemoryRecall performs a lightweight relevance check used only to
+// decide whether the agent's first model turn must select recall_device_memory
+// and which matching IDs should constrain that call. It never injects memory
+// content or records references; the normal tool call remains the only path
+// that surfaces memories to the agent and episode.
+func (p *FilesystemMemoryPlane) RouteDeviceMemoryRecall(ctx context.Context, req MemoryRetrieveRequest) (deviceMemoryRecallRoute, error) {
+	if p == nil || p.device == nil || strings.TrimSpace(req.Input) == "" {
+		return deviceMemoryRecallRoute{}, nil
+	}
+	inputTerms := normalizeSearchTerms([]string{req.Input})
+	terms := normalizeSearchTerms([]string{req.Input, req.CurrentHints.AppName})
+	hits, err := p.device.Search(ctx, DeviceMemoryQuery{
+		Terms:    terms,
+		DeviceID: req.DeviceID,
+		Limit:    12,
+	})
+	if err != nil {
+		return deviceMemoryRecallRoute{}, err
+	}
+	var memoryIDs []string
+	for _, hit := range hits {
+		if !memoryHitApplicable(hit, req) || !isAgentRelevantDeviceMemory(hit) {
+			continue
+		}
+		// Current UI hints may refine candidate search, but they must not create
+		// recall relevance by themselves. Otherwise an unrelated question can
+		// recall memory merely because the screen is still on a remembered app.
+		if scoreMemoryHit(hit, inputTerms) >= 2 || hasDistinctiveDeviceMemoryTerm(hit, inputTerms) {
+			memoryIDs = append(memoryIDs, hit.ID)
+			if len(memoryIDs) >= deviceMemoryRecallLimit {
+				break
+			}
+		}
+	}
+	return deviceMemoryRecallRoute{MemoryIDs: uniqueNonEmpty(memoryIDs)}, nil
+}
+
+func isAgentRelevantDeviceMemory(hit MemoryHit) bool {
+	switch strings.ToLower(strings.TrimSpace(hit.Type)) {
+	case "failure", "calibration", "conflict", "device_profile", "app_profile":
+		return true
+	case "procedure":
+		for _, step := range hit.Steps {
+			if isDeviceInteractionTool(step.Tool) {
+				return true
+			}
+		}
+	}
+	return strings.TrimSpace(hit.AppName) != "" || strings.TrimSpace(hit.PageName) != ""
+}
+
+func isDeviceInteractionTool(name string) bool {
+	meta, ok := builtInToolSpecMetadata[strings.ToLower(strings.TrimSpace(name))]
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(meta.Category)) {
+	case "audio", "bridge", "demo", "input", "observation", "phone":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasDistinctiveDeviceMemoryTerm(hit MemoryHit, terms []string) bool {
+	identity := strings.ToLower(strings.Join(append(append([]string(nil), hit.Entities...), hit.AppName, hit.PageName), " "))
+	content := strings.ToLower(strings.Join([]string{hit.Title, hit.Summary, hit.Content}, " "))
+	for _, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" {
+			continue
+		}
+		if identity != "" && strings.Contains(identity, term) {
+			return true
+		}
+		runeCount := len([]rune(term))
+		if runeCount >= 4 && strings.Contains(content, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *FilesystemMemoryPlane) StartReflection(models model.Model) error {

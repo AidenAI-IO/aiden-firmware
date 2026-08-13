@@ -1042,6 +1042,17 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		DeviceID:     defaultMemoryDeviceID,
 		CurrentHints: currentHints,
 	}
+	var deviceMemoryRoute deviceMemoryRecallRoute
+	if router, ok := r.memoryPlane.(deviceMemoryRecallRouter); ok {
+		route, recallErr := router.RouteDeviceMemoryRecall(ctx, retrieveReq)
+		if recallErr != nil {
+			if r.logger != nil {
+				r.logger.Warn("[memory] device recall routing failed: %v", recallErr)
+			}
+		} else {
+			deviceMemoryRoute = route
+		}
+	}
 	// Memories are no longer retrieved up front. The agent pulls what it needs
 	// on demand through the recall tools, which record the referenced IDs on the
 	// episode recorder so outcome-based confidence updates only touch memories
@@ -1192,6 +1203,10 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.EnvironmentBridge = r.environmentBridge
 	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
 	agentLoop.ToolResultObserver = newScreenToolResultObserver(r.screenState)
+	if len(deviceMemoryRoute.MemoryIDs) > 0 {
+		agentLoop.FirstToolChoice = "recall_device_memory"
+		agentLoop.FirstToolMemoryIDs = deviceMemoryRoute.MemoryIDs
+	}
 	agentLoop.SteerInterrupt = req.SteerInterrupt
 	agentLoop.SteerProvider = req.SteerProvider
 	agentLoop.SteerWaiter = req.SteerWaiter
