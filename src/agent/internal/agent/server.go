@@ -1759,6 +1759,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("Running runtime")
 	result, err := s.runtime.Run(ctx, runReq)
+	releaseMemoryScope()
 	if newStream != nil {
 		finalSpeechStreamed := speechWriter.FinalizeResponse()
 		closeErr := newStream.closeAndWait()
