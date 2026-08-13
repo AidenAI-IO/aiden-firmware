@@ -59,6 +59,7 @@ func main() {
 	var (
 		dataDir                   = flag.String("dir", "", "path to the agent data directory holding agent.toml, skills, memory, cache and logs (required)")
 		addr                      = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
+		targetPlatform            = registerTargetPlatformFlag(flag.CommandLine)
 		environmentBridgeMode     = flag.Bool("environment-bridge-mode", false, "Enable environment bridge mode (forward selected tool calls to an environment bridge; see --environment-bridge-tools)")
 		environmentBridgeEndpoint = flag.String("environment-bridge-endpoint", "", "Environment bridge endpoint (e.g., http://192.168.50.123:8080)")
 		environmentBridgeTools    = flag.String("environment-bridge-tools", "", "Comma-separated tool names or glob patterns to forward when environment-bridge-mode is on, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\". Required with --environment-bridge-mode.")
@@ -77,6 +78,13 @@ func main() {
 	if err != nil {
 		_ = logging.LogEvent(logging.Error, "agent", "startup", "config_load_failed",
 			logging.Field{Key: "dir", Value: dir},
+			logging.Field{Key: "error", Value: err},
+		)
+		os.Exit(1)
+	}
+	if err := applyTargetPlatformOverride(&cfg, *targetPlatform); err != nil {
+		_ = logging.LogEvent(logging.Error, "agent", "startup", "target_platform_override_invalid",
+			logging.Field{Key: "target_platform", Value: strings.TrimSpace(*targetPlatform)},
 			logging.Field{Key: "error", Value: err},
 		)
 		os.Exit(1)
@@ -213,6 +221,18 @@ func main() {
 		)
 		os.Exit(1)
 	}
+}
+
+func registerTargetPlatformFlag(fs *flag.FlagSet) *string {
+	return fs.String("target-platform", "", "Override the target platform for this daemon process")
+}
+
+func applyTargetPlatformOverride(cfg *agent.Config, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return cfg.OverrideTargetPlatform(value)
 }
 
 func stdinIsInteractive() bool {

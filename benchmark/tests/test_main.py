@@ -115,20 +115,19 @@ def test_resolve_target_platform_rejects_explicit_mismatch_without_auto_setup(mo
         main._resolve_target_platform(args)
 
 
-def test_resolve_target_platform_uses_pre_resolved_value_without_health_call(monkeypatch):
+def test_resolve_target_platform_does_not_accept_pre_resolved_override(monkeypatch):
     args = type(
         "Args",
         (),
         {
             "target_platform": "auto",
-            "resolved_target_platform": "android",
             "environment_url": "http://127.0.0.1:8899",
         },
     )()
     monkeypatch.setattr(
         main,
         "_read_environment_health",
-        lambda environment_url: (_ for _ in ()).throw(AssertionError("unexpected health call")),
+        lambda environment_url: {"platform": "android"},
     )
 
     assert main._resolve_target_platform(args) == "android"
@@ -219,8 +218,8 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
         def health(self):
             return True
 
-        def device_type(self):
-            return "Android"
+        def target_platform(self):
+            return "android"
 
         def close(self):
             pass
@@ -286,6 +285,9 @@ def test_run_state_file_records_incremental_totals(monkeypatch, tmp_path):
 
         def health(self):
             return True
+
+        def target_platform(self):
+            return "android"
 
         def close(self):
             pass
@@ -389,6 +391,9 @@ def test_run_skips_tasks_outside_target_platform(monkeypatch, tmp_path):
         def health(self):
             return True
 
+        def target_platform(self):
+            return "android"
+
         def close(self):
             pass
 
@@ -445,7 +450,7 @@ def test_run_skips_tasks_outside_target_platform(monkeypatch, tmp_path):
     }
 
 
-def test_run_all_platform_skipped_tasks_does_not_require_agent(monkeypatch, tmp_path):
+def test_run_all_platform_skipped_tasks_uses_daemon_as_platform_source(monkeypatch, tmp_path):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(
         json.dumps(
@@ -466,10 +471,20 @@ def test_run_all_platform_skipped_tasks_does_not_require_agent(monkeypatch, tmp_
         encoding="utf-8",
     )
 
-    def fail_client(*args, **kwargs):
-        raise AssertionError("AgentClient should not be constructed when every task is platform-skipped")
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            self.base_url = base_url
 
-    monkeypatch.setattr(main, "AgentClient", fail_client)
+        def health(self):
+            return True
+
+        def target_platform(self):
+            return "android"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
     monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
 
     rc = main.cli(
@@ -490,6 +505,62 @@ def test_run_all_platform_skipped_tasks_does_not_require_agent(monkeypatch, tmp_
     assert rc == 0
     manifest = json.loads((tmp_path / "runs" / "all-skipped-run" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["totals"]["skipped"] == 1
+    assert manifest["platform_source"] == "daemon_status"
+
+
+def test_run_validates_cli_constraint_against_daemon_before_platform_skips(
+    monkeypatch, tmp_path, capsys
+):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "platform_suite",
+                "tasks": [
+                    {
+                        "id": "ios_task",
+                        "platforms": ["ios"],
+                        "category": "diagnostic",
+                        "prompt": "ios",
+                        "description_for_judge": "ios",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            pass
+
+        def health(self):
+            return True
+
+        def target_platform(self):
+            return "ios"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--target-platform",
+            "android",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 2
+    assert "expected android, reported ios" in capsys.readouterr().err
 
 
 def test_run_triggers_llm_analysis_when_enabled(monkeypatch, tmp_path):
@@ -504,6 +575,9 @@ def test_run_triggers_llm_analysis_when_enabled(monkeypatch, tmp_path):
 
         def health(self):
             return True
+
+        def target_platform(self):
+            return "android"
 
         def close(self):
             pass
@@ -550,6 +624,9 @@ def test_run_llm_analysis_env_limits_fall_back_on_invalid_values(monkeypatch, tm
         def health(self):
             return True
 
+        def target_platform(self):
+            return "android"
+
         def close(self):
             pass
 
@@ -585,6 +662,9 @@ def test_run_keeps_exit_code_when_analysis_fails(monkeypatch, tmp_path):
 
         def health(self):
             return True
+
+        def target_platform(self):
+            return "android"
 
         def close(self):
             pass
@@ -722,11 +802,12 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert captured["kwargs"]["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert captured["kwargs"]["environment_bridge_mode"] is True
     assert captured["task_kwargs"]["active_skills"] == ["device-operator"]
-    assert captured["prepare_config_kwargs"]["device_type"] == "Android"
+    assert "device_type" not in captured["prepare_config_kwargs"]
+    assert captured["kwargs"]["target_platform"] == "android"
     assert stale_clears == ["http://127.0.0.1:19090"]
 
 
-def test_run_rejects_external_daemon_device_type_mismatch(monkeypatch, tmp_path, capsys):
+def test_run_rejects_external_daemon_platform_mismatch(monkeypatch, tmp_path, capsys):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(
         json.dumps(
@@ -753,8 +834,8 @@ def test_run_rejects_external_daemon_device_type_mismatch(monkeypatch, tmp_path,
         def health(self):
             return True
 
-        def device_type(self):
-            return "iOS"
+        def target_platform(self):
+            return "ios"
 
         def close(self):
             pass
@@ -778,7 +859,7 @@ def test_run_rejects_external_daemon_device_type_mismatch(monkeypatch, tmp_path,
     )
 
     assert rc == 2
-    assert "does not match environment platform" in capsys.readouterr().err
+    assert "expected android, reported ios" in capsys.readouterr().err
 
 
 def test_mock_environment_suite_requires_auto_agent_setup(tmp_path, capsys):
@@ -912,7 +993,9 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
     )
 
     assert rc == 0
-    assert captured["phone_state"] == phone_state
+    assert captured["phone_state"] == {
+        key: value for key, value in phone_state.items() if key != "platform"
+    }
     assert captured["benchmark_token"] == "mock-token"
     assert captured["job"].endpoint.startswith("http://127.0.0.1:")
     assert captured["job"].docker_endpoint.startswith(
@@ -925,14 +1008,19 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
     assert captured["daemon_kwargs"]["environment_bridge_endpoint"] == captured[
         "job"
     ].docker_endpoint
-    assert captured["prepare_config_kwargs"]["device_type"] == "iOS"
+    assert "device_type" not in captured["prepare_config_kwargs"]
+    assert captured["daemon_kwargs"]["target_platform"] == "ios"
     manifest = json.loads(
         (tmp_path / "runs" / "mock-run" / "manifest.json").read_text(
             encoding="utf-8"
         )
     )
     assert manifest["mock_environment"]["default"] is None
-    assert manifest["mock_environment"]["tasks"]["policy"]["phone_bridge"] == phone_state
+    mock_spec = manifest["mock_environment"]["tasks"]["policy"]
+    assert mock_spec["platform"] == "ios"
+    assert mock_spec["phone_bridge"] == {
+        key: value for key, value in phone_state.items() if key != "platform"
+    }
     assert manifest["environment_url"].endswith("/_aiden_mock/REDACTED")
 
 
@@ -1002,6 +1090,26 @@ def test_mock_environment_platform_uses_each_task_effective_override(tmp_path):
                     }
                     for task_id in ("one", "two")
                 ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main._mock_environment_platform(main.load_suite(suite_path)) == "ios"
+
+
+def test_mock_environment_platform_supports_empty_suite_default(tmp_path):
+    suite_path = tmp_path / "mock-suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mock_suite",
+                "mock_environment": {
+                    "platform": "ios",
+                    "phone_bridge": {},
+                    "tools": {},
+                },
+                "tasks": [],
             }
         ),
         encoding="utf-8",
@@ -1239,8 +1347,8 @@ def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_pa
         def health(self):
             return True
 
-        def device_type(self):
-            return "Android"
+        def target_platform(self):
+            return "android"
 
         def close(self):
             pass

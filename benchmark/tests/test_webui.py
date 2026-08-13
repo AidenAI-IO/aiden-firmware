@@ -224,40 +224,6 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     assert (dest / "memory").is_dir()
 
 
-def test_prepare_run_config_injects_device_type_into_runtime_copy(tmp_path: Path):
-    base = tmp_path / "base"
-    base.mkdir()
-    agent_config = 'instruction = "custom"\n[device]\ndevice_type = "iOS"\n'
-
-    dest = tmp_path / "dest"
-    webui.prepare_run_config(
-        base,
-        dest,
-        agent_config_text=agent_config,
-        device_type="Android",
-    )
-
-    config = tomllib.loads((dest / "agent.toml").read_text(encoding="utf-8"))
-    assert config["device"]["device_type"] == "Android"
-    assert agent_config == 'instruction = "custom"\n[device]\ndevice_type = "iOS"\n'
-
-
-def test_prepare_run_config_adds_missing_device_table(tmp_path: Path):
-    base = tmp_path / "base"
-    base.mkdir()
-
-    dest = tmp_path / "dest"
-    webui.prepare_run_config(
-        base,
-        dest,
-        agent_config_text='instruction = "custom"\n',
-        device_type="iOS",
-    )
-
-    config = tomllib.loads((dest / "agent.toml").read_text(encoding="utf-8"))
-    assert config["device"]["device_type"] == "iOS"
-
-
 def test_prepare_run_config_includes_bundled_skills(tmp_path: Path):
     base = tmp_path / "base"
     base.mkdir()
@@ -1046,8 +1012,9 @@ def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
 
     expected = webui.job_benchmark_task_id("job-test")
     assert captured["daemon_task_id"] == expected
-    resolved_index = captured["cmd"].index("--resolved-target-platform")
-    assert captured["cmd"][resolved_index + 1] == "ios"
+    platform_index = captured["cmd"].index("--target-platform")
+    assert captured["cmd"][platform_index + 1] == "ios"
+    assert "--resolved-target-platform" not in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--benchmark-task-id") + 1] == expected
     # A stopped or crashed job must not leave the lease behind: the id is never
     # reused, so a leak would 429 every later job.
@@ -1101,6 +1068,8 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
         daemon_log=str(tmp_path / "runs" / "job-test" / "daemon.log"),
         no_judge=True,
         parallel_tasks=2,
+        target_platform="android",
+        platform_source="environment_health",
     )
     captured = {}
     releases = []
@@ -1710,7 +1679,7 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     base = tmp_path / "base"
     base.mkdir()
     app = webui.BenchmarkWebApp(webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=base, build_daemon_image=False))
-    saved = 'instruction = "from web ui"\n[model]\nprovider = "fake"\n[device]\ndevice_type = "Android"\n'
+    saved = 'instruction = "from web ui"\n[model]\nprovider = "fake"\n[device]\ndevice_type = "iOS"\n'
     app.save_agent_config({"content": saved})
     job = webui.Job(
         id="job-test",
@@ -1735,6 +1704,13 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
         "read_environment_health",
         lambda endpoint: {"platform": "android"},
     )
+    captured = {}
+
+    def fake_start_daemon_compose(*args, **kwargs):
+        captured.update(kwargs)
+        return "container-id"
+
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
     monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_wait_for_daemon", lambda job: None)
 
@@ -1742,7 +1718,6 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
         job.suite_results.append({"suite": suite_key, "exit_code": 0})
 
     monkeypatch.setattr(app, "_run_suite", fake_run_suite)
-    monkeypatch.setattr(webui, "start_daemon_compose", lambda *args, **kwargs: "container-id")
     monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
 
     app._run_job(job)
@@ -1753,7 +1728,8 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     assert "voice_tool_call_speech = false" in saved_content
     assert "voice_progress_speech_enabled = false" in saved_content
     assert 'provider = "fake"' in saved_content
-    assert 'device_type = "Android"' in saved_content
+    assert 'device_type = "iOS"' in saved_content
+    assert captured["target_platform"] == "android"
     assert job.status == "passed"
 
 
@@ -1774,6 +1750,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
         config_dir=config,
         environment_bridge_endpoint="http://host.docker.internal:18080",
         benchmark_task_id="suite.json:t1",
+        target_platform="android",
     )
 
     assert cmd[:4] == ["docker", "compose", "-f", str(webui.AGENT_DAEMON_COMPOSE_FILE)]
@@ -1786,6 +1763,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     assert env["ENVIRONMENT_BRIDGE_ENDPOINT"] == "http://host.docker.internal:18080"
     assert env["AIDEN_BENCHMARK_TASK_ID"] == "suite.json:t1"
     assert env["AIDEN_ENVIRONMENT_BRIDGE_MODE"] == "1"
+    assert env["AIDEN_TARGET_PLATFORM"] == "android"
     assert "host.docker.internal" in env["NO_PROXY"]
     compose_text = webui.AGENT_DAEMON_COMPOSE_FILE.read_text(encoding="utf-8")
     entrypoint_text = (webui.BENCHMARK_DOCKER_DIR / "agent-daemon-entrypoint.sh").read_text(
@@ -1801,9 +1779,11 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}" in compose_text
     assert f'AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "{expected_forward_tools}"' in compose_text
     assert "AIDEN_BENCHMARK_TASK_ID" in compose_text
+    assert "AIDEN_TARGET_PLATFORM" in compose_text
     assert "--environment-bridge-mode" in entrypoint_text
     assert '--environment-bridge-endpoint "$ENVIRONMENT_BRIDGE_ENDPOINT"' in entrypoint_text
     assert '--environment-bridge-tools "${AIDEN_ENVIRONMENT_BRIDGE_TOOLS:-$default_forward_tools}"' in entrypoint_text
+    assert '--target-platform "$AIDEN_TARGET_PLATFORM"' in entrypoint_text
 
 
 def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path: Path):
@@ -2197,12 +2177,36 @@ def test_run_mock_suite_uses_auto_agent_setup_and_updates_task_records(
 def test_run_job_mock_mode_skips_shared_agent_daemon(tmp_path: Path, monkeypatch):
     app = webui.BenchmarkWebApp(
         webui.WebUIConfig(
+            suites_dir=tmp_path,
             runs_dir=tmp_path / "runs",
             base_config_dir=tmp_path / "config",
         )
     )
     job_dir = tmp_path / "runs" / "job-mock"
     job_dir.mkdir(parents=True)
+    suite_path = tmp_path / "mock.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mock",
+                "mock_environment": {
+                    "platform": "ios",
+                    "phone_bridge": {},
+                    "tools": {},
+                },
+                "tasks": [
+                    {
+                        "id": "task",
+                        "category": "diagnostic",
+                        "prompt": "test",
+                        "description_for_judge": "test",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     job = webui.Job(
         id="job-mock",
         endpoint="",
@@ -2244,6 +2248,11 @@ def test_run_job_mock_mode_skips_shared_agent_daemon(tmp_path: Path, monkeypatch
 
     assert calls == ["mock.json"]
     assert job.status == "passed"
+    assert job.target_platform == "ios"
+    assert job.platform_source == "mock_environment"
+    persisted = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+    assert persisted["target_platform"] == "ios"
+    assert persisted["platform_source"] == "mock_environment"
 
 
 def test_webui_html_exposes_mock_environment_run_mode():

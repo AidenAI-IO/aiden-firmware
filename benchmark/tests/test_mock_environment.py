@@ -40,7 +40,7 @@ def _task_mock_environment(suite_name: str, task_id: str):
 
 
 def test_mock_environment_wildcard_bind_advertises_loopback(tmp_path):
-    spec = MockEnvironmentSpec(phone_bridge={}, tools={})
+    spec = MockEnvironmentSpec(platform="ios", phone_bridge={}, tools={})
     server = MockEnvironmentServer(spec, tmp_path, host="0.0.0.0")
     base_url = server.start()
     try:
@@ -49,7 +49,9 @@ def test_mock_environment_wildcard_bind_advertises_loopback(tmp_path):
         parsed = urllib.parse.urlparse(base_url)
         assert parsed.hostname == "127.0.0.1"
         assert parsed.path == f"/_aiden_mock/{server.auth_token}"
-        assert _json_request(f"{base_url}/health")["ok"] is True
+        health = _json_request(f"{base_url}/health")
+        assert health["ok"] is True
+        assert health["data"]["platform"] == "ios"
         catalog = _json_request(f"{base_url}/api/tools")
         assert catalog["tools"][0]["http"]["path"].startswith(parsed.path)
 
@@ -283,7 +285,8 @@ def test_mock_environment_rejects_unconfigured_input_when_no_default_matches(tmp
 
 def test_mock_environment_activate_switches_task_fixture(tmp_path):
     ios = MockEnvironmentSpec(
-        phone_bridge={"platform": "ios"},
+        platform="ios",
+        phone_bridge={},
         tools={
             "bridge_contacts": [
                 MockToolResponseSpec(output={"ok": True, "platform": "ios"})
@@ -292,7 +295,8 @@ def test_mock_environment_activate_switches_task_fixture(tmp_path):
         screen_text="iOS fixture",
     )
     android = MockEnvironmentSpec(
-        phone_bridge={"platform": "android"},
+        platform="android",
+        phone_bridge={},
         tools={
             "bridge_calendar": [
                 MockToolResponseSpec(output={"ok": True, "platform": "android"})
@@ -317,7 +321,8 @@ def test_mock_environment_activate_switches_task_fixture(tmp_path):
             "screenshot",
         ]
         state = _json_request(f"{base_url}/api/state")
-        assert state["data"]["phone_bridge"]["platform"] == "android"
+        assert state["data"]["platform"] == "android"
+        assert "platform" not in state["data"]["phone_bridge"]
         assert state["data"]["screen_text"] == "Android fixture"
     finally:
         server.stop()
@@ -325,6 +330,7 @@ def test_mock_environment_activate_switches_task_fixture(tmp_path):
 
 def test_mock_environment_missing_screen_falls_back_to_placeholder(tmp_path):
     spec = MockEnvironmentSpec(
+        platform="ios",
         phone_bridge={},
         tools={},
         screen="missing-screen.jpg",
@@ -344,6 +350,7 @@ def test_mock_environment_normalizes_fixture_screen_metadata(tmp_path):
     image = Image.new("RGBA", (320, 640), (12, 34, 56, 128))
     image.save(fixture, format="PNG")
     spec = MockEnvironmentSpec(
+        platform="ios",
         phone_bridge={},
         tools={},
         screen=fixture.name,
@@ -362,7 +369,7 @@ def test_mock_environment_normalizes_fixture_screen_metadata(tmp_path):
 
 @pytest.mark.parametrize("content_length", [-1, MAX_REQUEST_BODY_BYTES + 1])
 def test_mock_environment_rejects_invalid_content_length(tmp_path, content_length):
-    spec = MockEnvironmentSpec(phone_bridge={}, tools={})
+    spec = MockEnvironmentSpec(platform="ios", phone_bridge={}, tools={})
     server = MockEnvironmentServer(spec, tmp_path)
     base_url = server.start()
     parsed = urllib.parse.urlparse(base_url)
@@ -383,7 +390,7 @@ def test_mock_environment_rejects_invalid_content_length(tmp_path, content_lengt
 
 def test_mock_environment_times_out_incomplete_request_body(tmp_path, monkeypatch):
     monkeypatch.setattr(mock_environment_module, "REQUEST_TIMEOUT_SECONDS", 0.05)
-    spec = MockEnvironmentSpec(phone_bridge={}, tools={})
+    spec = MockEnvironmentSpec(platform="ios", phone_bridge={}, tools={})
     server = MockEnvironmentServer(spec, tmp_path)
     base_url = server.start()
     parsed = urllib.parse.urlparse(base_url)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"flag"
 	"log"
 	"os"
 	"strings"
@@ -15,6 +16,27 @@ import (
 
 	"aiden-agent/internal/agent"
 )
+
+func TestDaemonTargetPlatformFlag(t *testing.T) {
+	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	targetPlatform := registerTargetPlatformFlag(fs)
+	if err := fs.Parse([]string{"--target-platform", "android"}); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if *targetPlatform != "android" {
+		t.Fatalf("target platform flag = %q, want android", *targetPlatform)
+	}
+}
+
+func TestApplyTargetPlatformOverride(t *testing.T) {
+	var cfg agent.Config
+	if err := applyTargetPlatformOverride(&cfg, "android"); err != nil {
+		t.Fatalf("applyTargetPlatformOverride() error = %v", err)
+	}
+	if cfg.RuntimeTargetPlatform != "android" || cfg.Device.DeviceType != "Android" {
+		t.Fatalf("config = %+v, want Android runtime platform override", cfg)
+	}
+}
 
 type fakeAudioDialog struct {
 	chunks               []*agent.AudioChunkResult

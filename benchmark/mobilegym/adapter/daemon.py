@@ -10,9 +10,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from runner.agent_config import set_agent_device_type
-
-
 DEFAULT_INSTRUCTION = "You are controlling an Android-like MobileGym simulator. Use screenshot and touch tools."
 DEFAULT_INPUT_MODE = "text"
 DEFAULT_MAX_ITERATIONS = 20
@@ -202,7 +199,7 @@ def render_agent_toml(
             "",
         ]
         rendered = "\n".join(lines)
-    return set_agent_device_type(rendered, "Android")
+    return rendered
 
 
 def launch_daemon(
@@ -215,8 +212,14 @@ def launch_daemon(
     log_path = attempt_config.log_dir / "daemon.log"
     log_file = log_path.open("ab")
     try:
+        daemon_command = list(command)
+        if not any(
+            arg == "--target-platform" or arg.startswith("--target-platform=")
+            for arg in daemon_command
+        ):
+            daemon_command.extend(["--target-platform", "android"])
         process = subprocess.Popen(  # noqa: S603
-            list(command),
+            daemon_command,
             env=dict(os.environ, **dict(env or {})),
             stdout=log_file,
             stderr=subprocess.STDOUT,

@@ -402,7 +402,9 @@ func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		runtime: &Runtime{
 			config: Config{
-				LiveActivity: LiveActivityConfig{BoardID: "board-1"},
+				LiveActivity:          LiveActivityConfig{BoardID: "board-1"},
+				Device:                DeviceConfig{DeviceType: "Android"},
+				RuntimeTargetPlatform: "android",
 			},
 		},
 	}
@@ -420,6 +422,15 @@ func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
 	}
 	if status.BoardID != "board-1" {
 		t.Fatalf("board_id = %q, want board-1", status.BoardID)
+	}
+	if status.DeviceType != "Android" {
+		t.Fatalf("device_type = %q, want Android", status.DeviceType)
+	}
+	if status.PointerMode != "touchscreen" {
+		t.Fatalf("pointer_mode = %q, want touchscreen", status.PointerMode)
+	}
+	if status.TargetPlatform != "android" {
+		t.Fatalf("target_platform = %q, want android", status.TargetPlatform)
 	}
 	if status.Connected {
 		t.Fatalf("connected = true, want false")

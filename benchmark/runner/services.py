@@ -13,9 +13,9 @@ from typing import Any
 
 from runner.agent_client import AgentClient
 from runner.platform import (
-    device_type_from_target_platform,
-    platform_from_environment_health,
+    PlatformSource,
     read_environment_health,
+    resolve_environment_platform,
 )
 from runner.adb_android_environment import (
     DEFAULT_ADB_BRIDGE_READY_TIMEOUT_SEC,
@@ -64,6 +64,12 @@ def add_service_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     p_agent.add_argument("--daemon-image", default=DEFAULT_DAEMON_IMAGE)
     p_agent.add_argument("--no-build-daemon-image", action="store_true")
     p_agent.add_argument("--environment-bridge-endpoint", default="", help="Environment bridge endpoint to forward device tools to")
+    p_agent.add_argument(
+        "--target-platform",
+        default="",
+        choices=["", "ios", "android", "mac"],
+        help="Required without an environment bridge; otherwise constrains the bridge-reported platform",
+    )
     p_agent.add_argument("--benchmark-task-id", default=DEFAULT_CLI_BENCHMARK_TASK_ID)
     p_agent.add_argument("--ready-timeout-sec", type=int, default=DEFAULT_DAEMON_READY_TIMEOUT_SEC)
     p_agent.add_argument("--json", action="store_true", help="Print machine-readable JSON")
@@ -134,22 +140,29 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
     service_dir.mkdir(parents=True, exist_ok=True)
 
     environment_bridge_endpoint = str(args.environment_bridge_endpoint or "").strip().rstrip("/")
+    requested_platform = str(args.target_platform or "").strip().lower()
     target_platform = ""
+    platform_source = ""
     if environment_bridge_endpoint:
         try:
-            target_platform = platform_from_environment_health(
-                read_environment_health(environment_bridge_endpoint)
+            resolution = resolve_environment_platform(
+                read_environment_health(environment_bridge_endpoint),
+                constraint=requested_platform or None,
             )
+            target_platform = resolution.platform.value
+            platform_source = resolution.source.value
         except Exception as exc:
             print(f"Error: failed to resolve environment platform: {exc}", file=sys.stderr)
             return 2
-        if not target_platform:
-            print(
-                "Error: environment bridge health did not report a supported platform",
-                file=sys.stderr,
-            )
-            return 2
-
+    elif requested_platform:
+        target_platform = requested_platform
+        platform_source = PlatformSource.CLI_CONSTRAINT.value
+    else:
+        print(
+            "Error: --target-platform is required without --environment-bridge-endpoint",
+            file=sys.stderr,
+        )
+        return 2
     agent_config_text = None
     if args.agent_config:
         agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
@@ -157,7 +170,6 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
         Path(args.base_config_dir),
         config_dir,
         agent_config_text=agent_config_text,
-        device_type=device_type_from_target_platform(target_platform),
     )
     docker_environment_bridge_endpoint = endpoint_for_docker(environment_bridge_endpoint) if environment_bridge_endpoint else ""
     benchmark_task_id = str(args.benchmark_task_id or "").strip()
@@ -182,6 +194,7 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
             config_dir=config_dir,
             environment_bridge_endpoint=docker_environment_bridge_endpoint,
             benchmark_task_id=benchmark_task_id if docker_environment_bridge_endpoint else "",
+            target_platform=target_platform,
             environment_bridge_mode=bool(docker_environment_bridge_endpoint),
             log_path=log_path,
         )
@@ -207,6 +220,7 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
         "docker_environment_bridge_endpoint": docker_environment_bridge_endpoint,
         "benchmark_task_id": benchmark_task_id if docker_environment_bridge_endpoint else "",
         "target_platform": target_platform,
+        "platform_source": platform_source,
         "stop_command": " ".join(
             daemon_compose_command(
                 "down",
@@ -476,4 +490,6 @@ def _agent_run_command(payload: dict[str, Any]) -> str:
         parts.append(f"--environment-url {payload['environment_bridge_endpoint']}")
     if payload.get("benchmark_task_id"):
         parts.append(f"--benchmark-task-id {payload['benchmark_task_id']}")
+    if payload.get("target_platform") and not payload.get("environment_bridge_endpoint"):
+        parts.append(f"--target-platform {payload['target_platform']}")
     return " ".join(parts)

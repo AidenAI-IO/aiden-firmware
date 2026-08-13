@@ -685,6 +685,22 @@ max_tokens = 777
 	}
 }
 
+func TestOverrideTargetPlatformDerivesRuntimeDeviceSettings(t *testing.T) {
+	var cfg Config
+	if err := cfg.OverrideTargetPlatform("android"); err != nil {
+		t.Fatalf("OverrideTargetPlatform() error = %v", err)
+	}
+	if cfg.RuntimeTargetPlatform != "android" {
+		t.Fatalf("target platform = %q, want android", cfg.RuntimeTargetPlatform)
+	}
+	if cfg.Device.DeviceType != "Android" {
+		t.Fatalf("device type = %q, want Android", cfg.Device.DeviceType)
+	}
+	if cfg.HID.PointerMode != "touchscreen" {
+		t.Fatalf("pointer mode = %q, want touchscreen", cfg.HID.PointerMode)
+	}
+}
+
 func TestLoadRuntimeConfigFromDirAppliesRuntimeDefaultsWithoutActivatingSpeech(t *testing.T) {
 	configDir := t.TempDir()
 	config := `

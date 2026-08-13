@@ -28,11 +28,10 @@ from runner.analysis import AnalysisResult, analyze_run, config_from_env
 from runner.environment_endpoint import EnvironmentEndpoint
 from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
-from runner.agent_config import set_agent_device_type
 from runner.platform import (
-    device_type_from_target_platform,
-    platform_from_environment_health,
     read_environment_health,
+    resolve_environment_platform,
+    resolve_mock_platform,
 )
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
@@ -166,6 +165,7 @@ class Job:
     repeats: int | None = None
     parallel_tasks: int = 1
     target_platform: str = ""
+    platform_source: str = ""
 
 
 class BenchmarkWebApp:
@@ -798,18 +798,28 @@ class BenchmarkWebApp:
             self._raise_if_job_stop_requested(job)
             self._set_job(job, status="preparing", started_at=now_iso(), message="preparing config")
             agent_config_text = self.get_agent_config()["content"]
-            device_type = ""
-            if job.environment_type != "mock":
+            if job.environment_type == "mock":
+                resolution = resolve_mock_suites_platform(
+                    self.config.suites_dir,
+                    job.suites,
+                )
+                self._set_job(
+                    job,
+                    target_platform=resolution.platform.value,
+                    platform_source=resolution.source.value,
+                )
+            else:
                 health = read_environment_health(job.environment_endpoint or job.endpoint)
-                job.target_platform = platform_from_environment_health(health)
-                if not job.target_platform:
-                    raise ValueError("environment bridge health did not report a supported platform")
-                device_type = device_type_from_target_platform(job.target_platform)
+                resolution = resolve_environment_platform(health)
+                self._set_job(
+                    job,
+                    target_platform=resolution.platform.value,
+                    platform_source=resolution.source.value,
+                )
             prepare_run_config(
                 self.config.base_config_dir,
                 Path(job.config_dir),
                 agent_config_text=agent_config_text,
-                device_type=device_type,
             )
             self._raise_if_job_stop_requested(job)
             if job.environment_type == "mock":
@@ -861,6 +871,7 @@ class BenchmarkWebApp:
                 config_dir=Path(job.config_dir),
                 environment_bridge_endpoint=job.docker_endpoint,
                 benchmark_task_id=job_benchmark_task_id(job.id),
+                target_platform=job.target_platform,
                 log_path=Path(job.runner_log),
                 stop_requested=lambda: self._job_stop_requested(job),
             )
@@ -1111,6 +1122,7 @@ class BenchmarkWebApp:
                     config_dir=Path(job.config_dir),
                     environment_bridge_endpoint=job.docker_endpoint,
                     benchmark_task_id=benchmark_task_id,
+                    target_platform=job.target_platform,
                     log_path=Path(worker_job.runner_log),
                     stop_requested=lambda: (
                         self._job_stop_requested(job)
@@ -1159,7 +1171,7 @@ class BenchmarkWebApp:
                 str(Path(job.config_dir) / "control_token"),
                 "--environment-url",
                 job.environment_endpoint,
-                "--resolved-target-platform",
+                "--target-platform",
                 job.target_platform,
             ]
             if job.no_judge:
@@ -1364,7 +1376,7 @@ class BenchmarkWebApp:
         cmd.extend(["--benchmark-token-file", str(Path(job.config_dir) / "control_token")])
         if job.environment_endpoint:
             cmd.extend(["--environment-url", job.environment_endpoint])
-            cmd.extend(["--resolved-target-platform", job.target_platform])
+            cmd.extend(["--target-platform", job.target_platform])
             # Must match the id the shared daemon was started with, or the
             # bridge rejects the daemon's tool calls as another task's.
             cmd.extend(["--benchmark-task-id", job_benchmark_task_id(job.id)])
@@ -1603,6 +1615,24 @@ def suite_uses_mock_environment(path: Path) -> bool:
     return isinstance(data, dict) and suite_data_uses_mock_environment(data)
 
 
+def resolve_mock_suites_platform(suites_dir: Path, suite_keys: list[str]):
+    platforms = set()
+    for suite_key in suite_keys:
+        suite = load_suite(resolve_suite_path(suites_dir, suite_key))
+        if suite.mock_environment is not None and not suite.tasks:
+            platforms.add(suite.mock_environment.platform)
+        for task in suite.tasks:
+            spec = task.mock_environment or suite.mock_environment
+            if spec is None:
+                raise ValueError(
+                    f"mock environment suite {suite_key!r} task {task.id!r} has no mock environment"
+                )
+            platforms.add(spec.platform)
+    if len(platforms) != 1:
+        raise ValueError("mock environment suites must declare exactly one target platform")
+    return resolve_mock_platform(next(iter(platforms)))
+
+
 def resolve_suite_path(suites_dir: Path, key: str) -> Path:
     pure = Path(key)
     if pure.is_absolute() or ".." in pure.parts or not key.endswith(".json"):
@@ -1666,8 +1696,6 @@ def prepare_run_config(
     base_config_dir: Path,
     dest_dir: Path,
     agent_config_text: str | None = None,
-    *,
-    device_type: str = "",
 ) -> None:
     if dest_dir.exists():
         shutil.rmtree(dest_dir)
@@ -1700,12 +1728,6 @@ def prepare_run_config(
             config.write_text(render_agent_template(template.read_text(encoding="utf-8")), encoding="utf-8")
         if not config.exists():
             config.write_text(default_agent_toml(), encoding="utf-8")
-    if device_type:
-        content = set_agent_device_type(config.read_text(encoding="utf-8"), device_type)
-        validate_agent_toml(content)
-        config.write_text(content, encoding="utf-8")
-
-
 def ensure_webui_agent_config(base_config_dir: Path, agent_config_path: Path) -> tuple[str, str]:
     if agent_config_path.exists():
         return agent_config_path.read_text(encoding="utf-8"), "saved"
@@ -2151,6 +2173,7 @@ def daemon_compose_env(
     config_dir: Path | None = None,
     environment_bridge_endpoint: str = "",
     benchmark_task_id: str = "",
+    target_platform: str = "",
     environment_bridge_mode: bool | None = None,
 ) -> dict[str, str]:
     env = dict(os.environ)
@@ -2176,6 +2199,8 @@ def daemon_compose_env(
         env["no_proxy"] = no_proxy
     if benchmark_task_id:
         env["AIDEN_BENCHMARK_TASK_ID"] = benchmark_task_id
+    if target_platform:
+        env["AIDEN_TARGET_PLATFORM"] = target_platform
     return env
 
 
@@ -2188,6 +2213,7 @@ def start_daemon_compose(
     environment_bridge_endpoint: str,
     log_path: Path,
     benchmark_task_id: str = "",
+    target_platform: str = "",
     environment_bridge_mode: bool | None = None,
     stop_requested: Callable[[], bool] | None = None,
 ) -> str:
@@ -2198,6 +2224,7 @@ def start_daemon_compose(
         config_dir=config_dir,
         environment_bridge_endpoint=environment_bridge_endpoint,
         benchmark_task_id=benchmark_task_id,
+        target_platform=target_platform,
         environment_bridge_mode=environment_bridge_mode,
     )
     run_logged_command(

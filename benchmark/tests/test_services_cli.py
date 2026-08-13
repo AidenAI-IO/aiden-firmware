@@ -121,6 +121,7 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp
         daemon_image="aiden-agent-daemon:test",
         no_build_daemon_image=True,
         environment_bridge_endpoint="http://127.0.0.1:19090",
+        target_platform="",
         benchmark_task_id="suite.json:t1",
         ready_timeout_sec=9,
         json=True,
@@ -147,7 +148,7 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp
     assert kwargs["environment_bridge_mode"] is True
 
 
-def test_start_agent_daemon_injects_environment_platform_into_runtime_config(
+def test_start_agent_daemon_passes_environment_platform_as_runtime_override(
     tmp_path: Path, monkeypatch
 ):
     base = tmp_path / "base"
@@ -163,18 +164,26 @@ def test_start_agent_daemon_injects_environment_platform_into_runtime_config(
         "read_environment_health",
         lambda endpoint: {"platform": "android"},
     )
-    monkeypatch.setattr(services, "start_daemon_compose", lambda *args, **kwargs: "agent-container")
+    captured = {}
+
+    def fake_start_daemon_compose(*args, **kwargs):
+        captured.update(kwargs)
+        return "agent-container"
+
+    monkeypatch.setattr(services, "start_daemon_compose", fake_start_daemon_compose)
     monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
 
     args = _agent_daemon_args(tmp_path, base_config_dir=base)
 
     assert services.cmd_start_agent_daemon(args) == 0
     config = (tmp_path / "agent-smoke" / "config" / "agent.toml").read_text(encoding="utf-8")
-    assert 'device_type = "Android"' in config
-    assert 'device_type = "iOS"' in (base / "agent.toml").read_text(encoding="utf-8")
+    assert 'device_type = "iOS"' in config
+    assert captured["target_platform"] == "android"
 
 
-def test_start_agent_daemon_allows_no_environment_bridge(tmp_path: Path, monkeypatch, capsys):
+def test_start_agent_daemon_uses_explicit_platform_without_environment_bridge(
+    tmp_path: Path, monkeypatch, capsys
+):
     captured = {}
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
@@ -196,6 +205,7 @@ def test_start_agent_daemon_allows_no_environment_bridge(tmp_path: Path, monkeyp
         daemon_image="aiden-agent-daemon:test",
         no_build_daemon_image=True,
         environment_bridge_endpoint="",
+        target_platform="android",
         benchmark_task_id="suite.json:t1",
         ready_timeout_sec=9,
         json=True,
@@ -209,6 +219,36 @@ def test_start_agent_daemon_allows_no_environment_bridge(tmp_path: Path, monkeyp
     assert captured["kwargs"]["environment_bridge_endpoint"] == ""
     assert captured["kwargs"]["benchmark_task_id"] == ""
     assert captured["kwargs"]["environment_bridge_mode"] is False
+    assert captured["kwargs"]["target_platform"] == "android"
+    assert payload["platform_source"] == "cli_constraint"
+    assert "--target-platform android" in payload["run_command"]
+
+
+def test_start_agent_daemon_requires_platform_without_environment_bridge(
+    tmp_path: Path, capsys
+):
+    args = _agent_daemon_args(
+        tmp_path,
+        environment_bridge_endpoint="",
+        target_platform="",
+    )
+
+    assert services.cmd_start_agent_daemon(args) == 2
+    assert "--target-platform is required" in capsys.readouterr().err
+
+
+def test_start_agent_daemon_validates_platform_constraint_against_environment(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        services,
+        "read_environment_health",
+        lambda endpoint: {"platform": "ios"},
+    )
+    args = _agent_daemon_args(tmp_path, target_platform="android")
+
+    assert services.cmd_start_agent_daemon(args) == 2
+    assert "expected android, reported ios" in capsys.readouterr().err
 
 
 def test_start_agent_daemon_uses_docker_assigned_port_when_auto(tmp_path: Path, monkeypatch, capsys):
@@ -235,6 +275,7 @@ def test_start_agent_daemon_uses_docker_assigned_port_when_auto(tmp_path: Path, 
         daemon_image="aiden-agent-daemon:test",
         no_build_daemon_image=True,
         environment_bridge_endpoint="",
+        target_platform="ios",
         benchmark_task_id="suite.json:t1",
         ready_timeout_sec=9,
         json=True,
@@ -289,6 +330,15 @@ def test_daemon_compose_env_enables_benchmark_token_for_config_dir(tmp_path: Pat
     )
 
     assert env["AIDEN_BENCHMARK_TOKEN_FILE"] == "/config/control_token"
+
+
+def test_daemon_compose_env_passes_runtime_target_platform():
+    env = webui.daemon_compose_env(
+        image="aiden-agent-daemon:test",
+        target_platform="android",
+    )
+
+    assert env["AIDEN_TARGET_PLATFORM"] == "android"
 
 
 def test_start_adb_android_env_prints_environment_urls(tmp_path: Path, monkeypatch, capsys):
@@ -402,6 +452,7 @@ def _agent_daemon_args(tmp_path: Path, **overrides):
         "daemon_image": "aiden-agent-daemon:test",
         "no_build_daemon_image": True,
         "environment_bridge_endpoint": "http://127.0.0.1:19090",
+        "target_platform": "",
         "benchmark_task_id": "suite.json:t1",
         "ready_timeout_sec": 9,
         "json": True,

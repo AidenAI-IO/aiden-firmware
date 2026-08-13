@@ -6,8 +6,9 @@ import re
 from pathlib import Path
 from typing import Any
 
+from runner.platform import TargetPlatform, normalize_target_platform
+
 VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory", "perception", "device_operation"}
-VALID_PLATFORMS = {"ios", "android", "mac"}
 
 class SuiteValidationError(ValueError):
     pass
@@ -52,6 +53,7 @@ class MockToolResponseSpec:
 
 @dc.dataclass
 class MockEnvironmentSpec:
+    platform: TargetPlatform
     phone_bridge: dict[str, Any]
     tools: dict[str, list[MockToolResponseSpec]]
     screen: str | None = None
@@ -283,9 +285,13 @@ def _platform_list(raw: Any, task_id: str) -> list[str]:
         raise SuiteValidationError(f"task {task_id}: platforms must be a list of ios/android/mac")
     out: list[str] = []
     for item in raw:
-        platform = str(item or "").strip().lower()
-        if platform not in VALID_PLATFORMS:
-            raise SuiteValidationError(f"task {task_id}: invalid platform {item!r}")
+        try:
+            platform = normalize_target_platform(item).value
+        except ValueError as exc:
+            raise SuiteValidationError(
+                f"task {task_id}: invalid platform {item!r}"
+            ) from exc
+
         if platform not in out:
             out.append(platform)
     return out
@@ -330,11 +336,37 @@ def _parse_mock_environment(
     phone_bridge = raw.get("phone_bridge") or {}
     if not isinstance(phone_bridge, dict):
         raise SuiteValidationError(f"{path}.phone_bridge must be an object")
-    platform = str(phone_bridge.get("platform") or "").strip().lower()
-    if platform and platform not in {"ios", "android"}:
+    top_level_platform = raw.get("platform")
+    legacy_platform = phone_bridge.get("platform")
+    if top_level_platform is None and legacy_platform is None:
         raise SuiteValidationError(
-            f"{path}.phone_bridge.platform must be ios or android"
+            f"{path} must declare a phone platform (ios, android, or mac)"
         )
+    try:
+        platform = normalize_target_platform(
+            top_level_platform if top_level_platform is not None else legacy_platform,
+            field=f"{path}.platform",
+        )
+    except ValueError as exc:
+        raise SuiteValidationError(
+            f"{path}.platform must be ios, android, or mac"
+        ) from exc
+    if top_level_platform is not None and legacy_platform is not None:
+        try:
+            normalized_legacy_platform = normalize_target_platform(
+                legacy_platform,
+                field=f"{path}.phone_bridge.platform",
+            )
+        except ValueError as exc:
+            raise SuiteValidationError(
+                f"{path}.phone_bridge.platform must be ios, android, or mac"
+            ) from exc
+        if normalized_legacy_platform is not platform:
+            raise SuiteValidationError(
+                f"{path}.phone_bridge.platform conflicts with {path}.platform"
+            )
+    phone_bridge = dict(phone_bridge)
+    phone_bridge.pop("platform", None)
     app_state = str(phone_bridge.get("app_state") or "").strip().lower()
     if app_state and app_state not in {"active", "background", "inactive"}:
         raise SuiteValidationError(
@@ -382,7 +414,8 @@ def _parse_mock_environment(
     if not isinstance(screen_text, str):
         raise SuiteValidationError(f"{path}.screen_text must be a string")
     return MockEnvironmentSpec(
-        phone_bridge=dict(phone_bridge),
+        platform=platform,
+        phone_bridge=phone_bridge,
         tools=tools,
         screen=screen.strip() if isinstance(screen, str) else None,
         screen_text=screen_text,

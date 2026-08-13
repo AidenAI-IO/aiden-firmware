@@ -3484,6 +3484,7 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 	if s.runtime != nil {
 		status.BoardID = s.runtime.config.LiveActivity.BoardIDOrDefault()
 		status.DeviceType = s.runtime.deviceTypeFromState()
+		status.TargetPlatform = s.runtime.config.RuntimeTargetPlatform
 		status.PointerMode = s.runtime.devicePointerModeFromState()
 	}
 	json.NewEncoder(w).Encode(status)

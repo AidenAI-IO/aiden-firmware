@@ -13,11 +13,11 @@ from runner.analysis import AnalysisConfig, _int_env, analyze_run
 from runner.html_report import generate_report_html, upload_report
 from runner.judge import DEFAULT_JUDGE_BASE_URL, JudgeConfig
 from runner.platform import (
-    VALID_TARGET_PLATFORMS,
-    device_type_from_target_platform,
-    platform_from_environment_health,
+    PlatformResolution,
     read_environment_health,
-    target_platform_from_device_type,
+    resolve_daemon_platform,
+    resolve_environment_platform,
+    resolve_mock_platform,
 )
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
@@ -95,8 +95,6 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--target-platform", default=os.environ.get("AIDEN_BENCHMARK_TARGET_PLATFORM", "auto"),
                        choices=["auto", "ios", "android", "mac"],
                        help="Filter suite tasks by platform; auto resolves platform from environment bridge health")
-    p_run.add_argument("--resolved-target-platform", default="", choices=["", "ios", "android", "mac"],
-                       help=argparse.SUPPRESS)
     p_run.add_argument("--skip-clock-wait", action="store_true")
     p_run.add_argument("--clock-timeout-sec", type=int, default=180)
     p_run.add_argument("--agent-ready-timeout-sec", type=int, default=120)
@@ -319,48 +317,48 @@ def _task_route_id(args: argparse.Namespace, suite: Suite, task_id: str, attempt
 
 
 def _resolve_target_platform(args: argparse.Namespace, *, required: bool = False) -> str:
+    resolution = _resolve_target_platform_resolution(args, required=required)
+    return resolution.platform.value if resolution is not None else ""
+
+
+def _resolve_target_platform_resolution(
+    args: argparse.Namespace,
+    *,
+    required: bool = False,
+) -> PlatformResolution | None:
     requested = str(getattr(args, "target_platform", "") or "").strip().lower()
     explicit = requested if requested and requested != "auto" else ""
-    resolved = str(getattr(args, "resolved_target_platform", "") or "").strip().lower()
-    if resolved:
-        if explicit and explicit != resolved:
-            raise ValueError(
-                f"target platform {explicit!r} does not match resolved environment platform {resolved!r}"
-            )
-        return resolved
     environment_url = str(getattr(args, "environment_url", "") or "").strip()
     if not environment_url:
-        return explicit
+        return None
     try:
         health = _read_environment_health(environment_url)
     except Exception:
         if required:
             raise
-        return explicit
-    platform = platform_from_environment_health(health)
-    if not platform:
-        if required:
-            raise ValueError("environment bridge health did not report a supported platform")
-        return explicit
-    if explicit and explicit != platform:
-        raise ValueError(
-            f"target platform {explicit!r} does not match environment platform {platform!r}"
+        return None
+    try:
+        return resolve_environment_platform(
+            health,
+            constraint=explicit or None,
         )
-    return explicit or platform
+    except ValueError:
+        if "platform" in health or required or explicit:
+            raise
+        return None
 
 
 def _mock_environment_platform(suite: Suite) -> str:
-    platforms: set[str] = set()
+    platforms: set[str] = (
+        {resolve_mock_platform(suite.mock_environment.platform).platform.value}
+        if suite.mock_environment is not None and not suite.tasks
+        else set()
+    )
     for task in suite.tasks:
         spec = _task_mock_environment(suite, task)
         if spec is None:
             continue
-        platform = str(spec.phone_bridge.get("platform") or "").strip().lower()
-        if not platform:
-            raise ValueError(f"mock environment for task {task.id!r} must declare a phone platform")
-        if platform not in VALID_TARGET_PLATFORMS:
-            raise ValueError(f"unsupported mock environment platform: {platform!r}")
-        platforms.add(platform)
+        platforms.add(resolve_mock_platform(spec.platform).platform.value)
     if len(platforms) != 1:
         raise ValueError("mock environment suite must declare exactly one phone platform")
     return next(iter(platforms))
@@ -400,6 +398,7 @@ def _cmd_run_auto_agent_setup(
     suite: Suite,
     selected_task_ids: list[str],
     target_platform: str,
+    platform_source: str,
     run_id: str,
     run_dir: Path,
 ) -> int:
@@ -432,7 +431,7 @@ def _cmd_run_auto_agent_setup(
         print(f"mock environment started: {mock_server.redacted_url}", flush=True)
     try:
         return _cmd_run_auto_agent_setup_inner(
-            args, suite, selected_task_ids, target_platform, run_id, run_dir, mock_server=mock_server
+            args, suite, selected_task_ids, target_platform, platform_source, run_id, run_dir, mock_server=mock_server
         )
     finally:
         if mock_server is not None:
@@ -444,6 +443,7 @@ def _cmd_run_auto_agent_setup_inner(
     suite: Suite,
     selected_task_ids: list[str],
     target_platform: str,
+    platform_source: str,
     run_id: str,
     run_dir: Path,
     mock_server=None,
@@ -530,7 +530,6 @@ def _cmd_run_auto_agent_setup_inner(
             Path(args.base_config_dir),
             config_dir,
             agent_config_text=agent_config_text,
-            device_type=device_type_from_target_platform(target_platform),
         )
         benchmark_token = _read_optional_token(config_dir / "control_token")
         host_port = 0
@@ -571,6 +570,7 @@ def _cmd_run_auto_agent_setup_inner(
                 config_dir=config_dir,
                 environment_bridge_endpoint=docker_environment_url,
                 benchmark_task_id=route_id,
+                target_platform=target_platform,
                 environment_bridge_mode=True,
                 log_path=runner_log,
             )
@@ -662,6 +662,7 @@ def _cmd_run_auto_agent_setup_inner(
         "judge_config": {"provider": "openrouter", "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "target_platform": target_platform or None,
+        "platform_source": platform_source or None,
         "auto_agent_setup": True,
         "concurrency": max_workers,
         "mock_environment": _mock_environment_manifest(suite),
@@ -712,7 +713,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print("Error: max-concurrency must be non-negative", file=sys.stderr)
         return 2
     try:
-        target_platform = _resolve_target_platform(args, required=bool(args.environment_url))
+        platform_resolution = _resolve_target_platform_resolution(
+            args,
+            required=bool(args.environment_url),
+        )
+        target_platform = (
+            platform_resolution.platform.value if platform_resolution is not None else ""
+        )
+        platform_source = (
+            platform_resolution.source.value if platform_resolution is not None else ""
+        )
     except Exception as exc:
         print(f"Error: failed to resolve target platform: {exc}", file=sys.stderr)
         return 2
@@ -727,23 +737,33 @@ def _cmd_run(args: argparse.Namespace) -> int:
         try:
             mock_platform = _mock_environment_platform(suite)
             requested_platform = str(args.target_platform or "").strip().lower()
-            if requested_platform and requested_platform != "auto" and requested_platform != mock_platform:
-                raise ValueError(
-                    f"target platform {requested_platform!r} does not match mock environment platform {mock_platform!r}"
-                )
-            target_platform = mock_platform
+            mock_resolution = resolve_mock_platform(
+                mock_platform,
+                constraint=requested_platform or None,
+            )
+            target_platform = mock_resolution.platform.value
+            platform_source = mock_resolution.source.value
         except ValueError as exc:
             print(f"Error: failed to resolve target platform: {exc}", file=sys.stderr)
             return 2
     if args.auto_agent_setup:
-        return _cmd_run_auto_agent_setup(args, suite, selected_task_ids, target_platform, run_id, run_dir)
+        return _cmd_run_auto_agent_setup(
+            args,
+            suite,
+            selected_task_ids,
+            target_platform,
+            platform_source,
+            run_id,
+            run_dir,
+        )
     if args.repeats is not None and args.repeats <= 0:
         print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
         return 2
     units = _build_task_units(args, suite, target_platform)
     has_runnable_units = any(not unit[4] for unit in units)
     client = None
-    if has_runnable_units:
+    needs_daemon_platform = not args.environment_url
+    if has_runnable_units or needs_daemon_platform:
         if args.environment_url:
             clear_stale_adb_android_owner(args.environment_url)
         client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
@@ -751,28 +771,33 @@ def _cmd_run(args: argparse.Namespace) -> int:
             print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
             client.close()
             return 2
-        if args.environment_url:
-            try:
-                agent_platform = target_platform_from_device_type(client.device_type())
-            except Exception as exc:
-                print(f"failed to read agent daemon device_type: {exc}", file=sys.stderr)
-                client.close()
-                return 2
-            if not agent_platform:
-                print(
-                    "agent daemon did not report a supported configured device_type",
-                    file=sys.stderr,
-                )
-                client.close()
-                return 2
-            if agent_platform != target_platform:
-                print(
-                    f"agent device platform {agent_platform!r} does not match environment platform {target_platform!r}",
-                    file=sys.stderr,
-                )
-                client.close()
-                return 2
-        if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
+        try:
+            daemon_resolution = resolve_daemon_platform(
+                client.target_platform(),
+                constraint=target_platform or args.target_platform,
+            )
+        except Exception as exc:
+            print(f"failed to validate agent daemon target platform: {exc}", file=sys.stderr)
+            client.close()
+            return 2
+        if args.environment_url and daemon_resolution.platform.value != target_platform:
+            print(
+                f"agent platform {daemon_resolution.platform.value!r} does not match "
+                f"environment platform {target_platform!r}",
+                file=sys.stderr,
+            )
+            client.close()
+            return 2
+        if not args.environment_url:
+            target_platform = daemon_resolution.platform.value
+            platform_source = daemon_resolution.source.value
+            units = _build_task_units(args, suite, target_platform)
+            has_runnable_units = any(not unit[4] for unit in units)
+        if (
+            has_runnable_units
+            and not args.skip_clock_wait
+            and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec)
+        ):
             print("agent board clock did not sync before benchmark start", file=sys.stderr)
             client.close()
             return 2
@@ -910,6 +935,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "judge_config": {"provider": "openrouter", "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "target_platform": target_platform or None,
+        "platform_source": platform_source or None,
         "mock_environment": _mock_environment_manifest(suite),
         "started_at": started, "finished_at": now_iso(),
         "totals": totals,
@@ -990,6 +1016,7 @@ def _serialize_mock_environment(spec) -> dict[str, object] | None:
     if spec is None:
         return None
     return {
+        "platform": spec.platform,
         "phone_bridge": dict(spec.phone_bridge),
         "tools": sorted(spec.tools),
         "screen": spec.screen,

@@ -320,6 +320,7 @@ type Config struct {
 	ScreenStableMs             int                      `toml:"screen_stable_ms,omitempty"`
 	ScreenStableDiffThreshold  float64                  `toml:"screen_stable_diff_threshold,omitempty"`
 	DefaultPlatform            string                   `toml:"default_platform,omitempty"` // "ios", "android", "mac"
+	RuntimeTargetPlatform      string                   `toml:"-"`
 	SkillsDirs                 []string                 `toml:"skills_dirs"`
 	BundledSkillsDir           string                   `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel            SkillMergeModel          `toml:"-"`
@@ -659,6 +660,33 @@ func (c Config) HIDConfigForDevice() HIDConfig {
 	hid := c.HID
 	hid.PointerMode = c.PointerModeOrDefault()
 	return hid
+}
+
+// OverrideTargetPlatform applies a process-local target platform override and
+// derives the daemon device settings from that canonical platform.
+func (c *Config) OverrideTargetPlatform(value string) error {
+	if c == nil {
+		return errors.New("cannot override target platform on nil config")
+	}
+	platform := strings.ToLower(strings.TrimSpace(value))
+	switch platform {
+	case "ios":
+		platform = "ios"
+	case "android":
+		platform = "android"
+	case "mac", "macos", "darwin":
+		platform = "mac"
+	default:
+		return fmt.Errorf("invalid target platform override: %s (expected ios, android, or mac)", value)
+	}
+	deviceType := deviceTypeFromPlatform(platform)
+	if deviceType == "" {
+		return fmt.Errorf("target platform has no device type mapping: %s", platform)
+	}
+	c.RuntimeTargetPlatform = platform
+	c.Device.DeviceType = deviceType
+	c.HID.PointerMode = DeviceConfig{DeviceType: deviceType}.PointerModeOrDefault()
+	return nil
 }
 
 func (h HIDConfig) KeyboardDeviceOrDefault() string {

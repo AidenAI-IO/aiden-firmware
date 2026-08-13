@@ -137,6 +137,7 @@ class MockEnvironmentServer:
             calls = list(self.calls)
             screen_text = self.screen_text
         return {
+            "platform": self.spec.platform,
             "phone_bridge": dict(self.spec.phone_bridge),
             "screen_text": screen_text,
             "calls": calls,
@@ -186,7 +187,7 @@ def _handler_for(server: MockEnvironmentServer):
                         "ok": True,
                         "data": {
                             "bridge_type": "mock",
-                            "platform": str(server.spec.phone_bridge.get("platform") or "").strip().lower(),
+                            "platform": server.spec.platform,
                         },
                     },
                 )

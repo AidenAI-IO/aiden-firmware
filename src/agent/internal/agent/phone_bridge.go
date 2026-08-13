@@ -93,6 +93,7 @@ type PhoneBridgeStatus struct {
 	Connected            bool              `json:"connected"`
 	Platform             string            `json:"platform,omitempty"`
 	DeviceType           string            `json:"device_type,omitempty"`
+	TargetPlatform       string            `json:"target_platform,omitempty"`
 	PointerMode          string            `json:"pointer_mode,omitempty"`
 	PhoneID              string            `json:"phone_id,omitempty"`
 	BoardID              string            `json:"board_id,omitempty"`

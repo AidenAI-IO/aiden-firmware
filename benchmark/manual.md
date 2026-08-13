@@ -762,6 +762,7 @@ Common parameters:
 | --- | --- | --- |
 | `--port` | auto | Agent daemon API port |
 | `--environment-bridge-endpoint` | empty | Device or MobileGym bridge endpoint; empty disables the environment bridge |
+| `--target-platform` | empty | Required without a bridge; with a bridge, constrains its reported platform |
 | `--benchmark-task-id` | `cli-task` | Route id used by environment bridge requests |
 | `--agent-config` | empty | Specify agent.toml |
 | `--base-config-dir` | `benchmark/config` | Agent config template directory |
@@ -772,12 +773,14 @@ Common parameters:
 The agent config rules used by `start-agent-daemon` are the same as
 `run --auto-agent-setup`: copy `--base-config-dir` first, then override the
 generated `agent.toml` with `--agent-config`; if `--agent-config` is absent, use
-`agent.toml.template` or the default config. When an environment bridge is
-provided, the command resolves its platform once and writes the corresponding
-`[device].device_type` into the generated runtime copy. The source config is not
-modified. After starting the daemon manually, pass the printed `agent_url` to
-`runner run --agent-url`; the runner validates the daemon's reported
-`device_type` against the environment platform.
+`agent.toml.template` or the default config. Platform resolution never rewrites
+that copy. When an environment bridge is provided, the command resolves its
+platform once and passes it to the daemon through process-local
+`--target-platform`; without a bridge, the caller must provide that option.
+The daemon derives its runtime device settings from the canonical platform and
+reports it as `status.target_platform`. After starting the daemon manually,
+pass the printed `agent_url` to `runner run --agent-url`; the runner validates
+that status value against the environment platform or CLI constraint.
 
 Recommended CLI MobileGym debug flow:
 
