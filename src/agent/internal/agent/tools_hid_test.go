@@ -3174,6 +3174,71 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	}
 }
 
+func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndShowsCompleteExamples(t *testing.T) {
+	schema := (&TouchGestureTool{}).ArgsSchema()
+	description, _ := schema["description"].(string)
+	for _, want := range []string{"Strict JSON object", "point", "start", "end", "both x and y"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("root schema description missing %q:\n%s", want, description)
+		}
+	}
+
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %#v", schema["properties"])
+	}
+	for _, name := range []string{"point", "start", "end"} {
+		coordinate, ok := properties[name].(map[string]any)
+		if !ok {
+			t.Fatalf("%s schema = %#v", name, properties[name])
+		}
+		if coordinate["type"] != "object" || coordinate["additionalProperties"] != false {
+			t.Fatalf("%s schema is not a strict object: %#v", name, coordinate)
+		}
+		required, ok := coordinate["required"].([]string)
+		if !ok || !slices.Equal(required, []string{"x", "y"}) {
+			t.Fatalf("%s required = %#v, want x and y", name, coordinate["required"])
+		}
+		desc, _ := coordinate["description"].(string)
+		for _, want := range []string{`named keys "x" and "y"`, "do not use an array", "bare value"} {
+			if !strings.Contains(desc, want) {
+				t.Fatalf("%s description missing %q:\n%s", name, want, desc)
+			}
+		}
+	}
+
+	examples, ok := schema["examples"].([]map[string]any)
+	if !ok || len(examples) != 3 {
+		t.Fatalf("schema examples = %#v, want three complete examples", schema["examples"])
+	}
+	encoded, err := json.Marshal(examples)
+	if err != nil || !json.Valid(encoded) {
+		t.Fatalf("schema examples are not valid JSON: encoded=%s err=%v", encoded, err)
+	}
+	for _, want := range []string{
+		`{"point":{"x":500,"y":500},"type":"tap"}`,
+		`"start":{"x":500,"y":800}`,
+		`"end":{"x":500,"y":200}`,
+		`{"strength":"medium","type":"swipe_up"}`,
+	} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("schema examples missing %q: %s", want, encoded)
+		}
+	}
+
+	typeSchema, _ := properties["type"].(map[string]any)
+	typeDesc, _ := typeSchema["description"].(string)
+	for _, want := range []string{
+		"tap, double_tap, and long_press require point",
+		"swipe and drag require start and end",
+		"Directional swipe types accept optional strength, distance, and anchor",
+	} {
+		if !strings.Contains(typeDesc, want) {
+			t.Fatalf("type schema missing %q:\n%s", want, typeDesc)
+		}
+	}
+}
+
 func TestTouchGestureSchemaFiltersEdgeGesturesForDesktopPlatforms(t *testing.T) {
 	desktopTool := &TouchGestureTool{}
 	desktopTool.SetDeviceTypeFunc(func() string { return "windows" })

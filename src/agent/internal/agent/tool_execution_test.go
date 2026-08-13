@@ -263,6 +263,42 @@ func TestExecuteToolCallValidationFailureEmitsToolCallAndResult(t *testing.T) {
 	if recorder.results[0].Duration <= 0 {
 		t.Fatalf("expected validation failure duration to be recorded, got %s", recorder.results[0].Duration)
 	}
+	if got := recorder.results[0].Output; got != "shell input must be valid JSON after compatibility conversion" {
+		t.Fatalf("generic validation output = %q", got)
+	}
+}
+
+func TestExecuteToolCallTouchGestureValidationFailureRequestsStrictRetry(t *testing.T) {
+	tool := &stubTool{name: "touch_gesture", description: "Perform a gesture.", output: "should-not-run"}
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: NewToolSpecs([]langtools.Tool{tool}),
+		Action: schema.AgentAction{
+			Tool:      "touch_gesture",
+			ToolInput: `{"type":"tap","point":{"x":500,500}}`,
+		},
+	})
+
+	if !result.Result.IsError() || result.Result.Error.Code != CodeInvalidArguments {
+		t.Fatalf("result = %#v, want invalid_arguments", result.Result)
+	}
+	if result.ActionCompleted {
+		t.Fatal("invalid touch_gesture marked action_completed=true")
+	}
+	if len(tool.inputs) != 0 {
+		t.Fatalf("touch_gesture executed with malformed input: %#v", tool.inputs)
+	}
+	for _, want := range []string{
+		"no touch action was executed",
+		"Retry touch_gesture now with strict JSON",
+		`both named keys "x" and "y"`,
+		`Invalid: {"type":"tap","point":{"x":500,500}}`,
+		`Correct: {"type":"tap","point":{"x":500,"y":500}}`,
+		"Do not continue with another action until the corrected call succeeds",
+	} {
+		if !strings.Contains(result.Result.Output, want) {
+			t.Fatalf("touch_gesture validation output missing %q:\n%s", want, result.Result.Output)
+		}
+	}
 }
 
 func TestExecuteToolCallBeforeMayRejectWithToolResult(t *testing.T) {
