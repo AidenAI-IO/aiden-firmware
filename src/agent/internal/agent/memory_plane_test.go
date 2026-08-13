@@ -212,6 +212,57 @@ func TestLongTermMemorySearchSkipsExpiredMemory(t *testing.T) {
 	}
 }
 
+func TestMemoryPlaneDoesNotRecordNormalizedCoordinatesAsCalibration(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+
+	if err := plane.CommitEpisode(ctx, TaskEpisode{
+		ID:        "ep_normalized_coordinates",
+		Status:    "active",
+		StartedAt: "2026-06-02T00:00:00Z",
+		EndedAt:   "2026-06-02T00:00:10Z",
+		UserGoal:  "Tap the visible control",
+		Outcome:   TaskEpisodeOutcome{Success: true},
+		Events: []TaskEpisodeEvent{
+			{
+				EventID:   "evt_touch",
+				Type:      runEventToolCall,
+				ToolName:  "touch_gesture",
+				ToolInput: `{"type":"tap","point":{"x":500,"y":500}}`,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CommitEpisode() error = %v", err)
+	}
+
+	if item, found, err := plane.device.Get(ctx, "cal_normalized_coordinates"); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	} else if found {
+		t.Fatalf("normalized coordinates are the fixed contract, not a calibration: %#v", item)
+	}
+}
+
+func TestDeviceMemoryIgnoresRetiredCoordinateModeCalibration(t *testing.T) {
+	ctx := context.Background()
+	store := NewDeviceMemoryStore(filepath.Join(t.TempDir(), "device"))
+	if _, err := store.Upsert(ctx, DeviceMemoryItem{
+		ID:      "cal_normalized_coordinates",
+		Type:    "calibration",
+		Status:  "active",
+		Title:   "Prefer normalized coordinates",
+		Content: "Keep preferring normalized coordinates unless calibration contradicts it.",
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	if item, found, err := store.Get(ctx, "cal_normalized_coordinates"); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	} else if found {
+		t.Fatalf("retired coordinate mode calibration must not be loaded: %#v", item)
+	}
+}
+
 func TestMemoryPlaneUpdatesReferencedMemoryOutcomes(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")

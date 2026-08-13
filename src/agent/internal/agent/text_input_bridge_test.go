@@ -332,7 +332,7 @@ func TestTextInputBridgeFallsBackToLongPressPasteMenuWhenShortcutHasNoEffect(t *
 		findPasteMenuFn: func(context.Context, screenshotResult, string) (pasteMenuResult, error) {
 			return pasteMenuResult{
 				Found:    true,
-				TapPoint: focusPointArgs{X: 430, Y: 720},
+				TapPoint: &focusPointArgs{X: 430, Y: 720},
 				Label:    "粘贴",
 			}, nil
 		},

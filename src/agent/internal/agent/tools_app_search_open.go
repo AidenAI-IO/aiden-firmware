@@ -231,7 +231,11 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 				break
 			}
 			foundForTerm = true
-			if err := tapSearchOpenResult(ctx, cfg.hw, findResult.TapPoint); err != nil {
+			if findResult.TapPoint == nil {
+				result.Steps = append(steps, "app result is missing tap point")
+				return result, fmt.Errorf("app search result is missing tap_point")
+			}
+			if err := tapSearchOpenResult(ctx, cfg.hw, *findResult.TapPoint); err != nil {
 				result.Steps = append(steps, "tap app result failed")
 				return result, err
 			}
@@ -354,6 +358,9 @@ func findSearchOpenAppResult(ctx context.Context, cfg appSearchOpenFlowConfig, e
 	var result bridgeSearchResult
 	if err := decodeStrictJSONObject(raw, &result); err != nil {
 		return bridgeSearchResult{}, 1, fmt.Errorf("parse app search result: %w", err)
+	}
+	if result.Found && result.TapPoint == nil {
+		return bridgeSearchResult{}, 1, fmt.Errorf("parse app search result: found result is missing tap_point")
 	}
 	return result, 1, nil
 }

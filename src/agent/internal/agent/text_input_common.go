@@ -291,6 +291,22 @@ type focusPointArgs struct {
 	Y float64 `json:"y"`
 }
 
+func (p *focusPointArgs) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		X *float64 `json:"x"`
+		Y *float64 `json:"y"`
+	}
+	if err := decodeStrictJSONObject(string(data), &raw); err != nil {
+		return err
+	}
+	if raw.X == nil || raw.Y == nil {
+		return fmt.Errorf("x and y are required")
+	}
+	p.X = *raw.X
+	p.Y = *raw.Y
+	return nil
+}
+
 func textInputKeyboardKeysForIMESwitch(platform string) ([]string, error) {
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "android":

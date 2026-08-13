@@ -11,7 +11,13 @@ GO_TEST_PATTERN = re.compile(
     r'"point"\s*:\s*\{[^}]*"(?:x|y)"\s*:\s*0\.\d+',
     re.DOTALL,
 )
-RETIRED_COORD_SPACE_PATTERN = re.compile(r"\bcoord_space\b", re.IGNORECASE)
+RETIRED_COORD_SPACE_PATTERN = re.compile(
+    r"\b(?:coord_space|coordSpace|CoordSpace)\b"
+)
+RETIRED_COORD_MODE_GUIDANCE_PATTERN = re.compile(
+    r"\bpixel-based pointer actions?\b|\bnormalized coordinate preference\b",
+    re.IGNORECASE,
+)
 
 
 def is_zero_to_one_coord(value: object) -> bool:
@@ -37,8 +43,18 @@ def check_go_test_file(path: Path) -> list[str]:
 
 def check_retired_coord_space(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8")
-    if RETIRED_COORD_SPACE_PATTERN.search(text):
-        return [f"{path}: retired coord_space field is still present"]
+    match = RETIRED_COORD_SPACE_PATTERN.search(text)
+    if match:
+        return [
+            f"{path}: retired coordinate-space field is still present: {match.group(0)}"
+        ]
+    return []
+
+
+def check_retired_coord_mode_guidance(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8")
+    if RETIRED_COORD_MODE_GUIDANCE_PATTERN.search(text):
+        return [f"{path}: retired coordinate mode guidance is still present"]
     return []
 
 
@@ -57,6 +73,20 @@ def main() -> int:
             if path.suffix.lower() not in {".go", ".md", ".json", ".yaml", ".yml", ".toml"}:
                 continue
             violations.extend(check_retired_coord_space(path))
+            violations.extend(check_retired_coord_mode_guidance(path))
+
+    benchmark_contract_paths = [
+        repo_root / "benchmark" / "adbandroid" / "bridge" / "tools_api.py",
+        repo_root / "benchmark" / "adbandroid" / "README.md",
+        repo_root / "benchmark" / "mobilegym" / "bridge" / "tools_api.py",
+        repo_root / "benchmark" / "vphone" / "bridge" / "tools_api.py",
+    ]
+    benchmark_contract_paths.extend(
+        sorted((repo_root / "benchmark" / "suites").rglob("*.json"))
+    )
+    for path in benchmark_contract_paths:
+        violations.extend(check_retired_coord_space(path))
+        violations.extend(check_retired_coord_mode_guidance(path))
 
     if violations:
         print("Found normalized coordinate contract violations:", file=sys.stderr)

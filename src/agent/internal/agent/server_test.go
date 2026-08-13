@@ -955,6 +955,24 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	}
 }
 
+func TestHandleCoordinateDebugTapRejectsUnknownFieldsAndTrailingJSON(t *testing.T) {
+	server := newServerForTest(&Runtime{tools: &ToolSet{tools: map[string]langtools.Tool{}}})
+	for _, body := range []string{
+		`{"x":123,"y":456,"coord_space":"pixel"}`,
+		`{"x":123,"y":456} {"x":1,"y":2}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		server.handleCoordinateDebugTap(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %q status = %d, want %d; response=%s", body, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+	}
+}
+
 func TestHandleCoordinateDebugTapMapsStructuredToolErrorStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

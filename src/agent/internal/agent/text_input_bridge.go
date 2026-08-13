@@ -17,9 +17,9 @@ const (
 )
 
 type bridgeSearchResult struct {
-	Found    bool           `json:"found"`
-	TapPoint focusPointArgs `json:"tap_point"`
-	Label    string         `json:"label,omitempty"`
+	Found    bool            `json:"found"`
+	TapPoint *focusPointArgs `json:"tap_point"`
+	Label    string          `json:"label,omitempty"`
 }
 
 type bridgeAppOpenResult struct {
@@ -28,9 +28,9 @@ type bridgeAppOpenResult struct {
 }
 
 type pasteMenuResult struct {
-	Found    bool           `json:"found"`
-	TapPoint focusPointArgs `json:"tap_point"`
-	Label    string         `json:"label,omitempty"`
+	Found    bool            `json:"found"`
+	TapPoint *focusPointArgs `json:"tap_point"`
+	Label    string          `json:"label,omitempty"`
 }
 
 type textViaBridgeResult struct {
@@ -326,6 +326,9 @@ func (t *textInputBridge) pasteViaContextMenu(ctx context.Context, engine *textI
 	if !menu.Found {
 		return fmt.Errorf("Paste/粘贴 menu action was not visible after long press")
 	}
+	if menu.TapPoint == nil {
+		return fmt.Errorf("paste menu action is missing tap_point")
+	}
 	if _, err := callTextInputTool(ctx, t.hw.touchGesture, jsonString(map[string]any{
 		"type":  "tap",
 		"point": map[string]any{"x": menu.TapPoint.X, "y": menu.TapPoint.Y},
@@ -365,6 +368,9 @@ Rules:
 	var result pasteMenuResult
 	if err := decodeStrictJSONObject(raw, &result); err != nil {
 		return pasteMenuResult{}, fmt.Errorf("parse paste menu action: %w", err)
+	}
+	if result.Found && result.TapPoint == nil {
+		return pasteMenuResult{}, fmt.Errorf("parse paste menu action: found result is missing tap_point")
 	}
 	return result, nil
 }

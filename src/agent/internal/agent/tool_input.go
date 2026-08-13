@@ -11,7 +11,11 @@ import (
 )
 
 func decodeStrictJSONObject(input string, value any) error {
-	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(input)))
+	input = strings.TrimSpace(input)
+	if !strings.HasPrefix(input, "{") {
+		return fmt.Errorf("expected exactly one JSON object")
+	}
+	decoder := json.NewDecoder(strings.NewReader(input))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {
 		return err

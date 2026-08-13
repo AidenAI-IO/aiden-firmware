@@ -300,6 +300,9 @@ func (s *DeviceMemoryStore) readAll() ([]DeviceMemoryItem, error) {
 		if item.ID == "" {
 			item.ID = strings.TrimSuffix(entry.Name(), ".yaml")
 		}
+		if isRetiredCoordinateModeCalibration(item) {
+			return nil
+		}
 		items = append(items, item)
 		return nil
 	})
@@ -308,6 +311,19 @@ func (s *DeviceMemoryStore) readAll() ([]DeviceMemoryItem, error) {
 	}
 	s.storeReadAllCache(fingerprint, items)
 	return cloneDeviceMemoryItems(items), nil
+}
+
+func isRetiredCoordinateModeCalibration(item DeviceMemoryItem) bool {
+	if item.Type != "calibration" {
+		return false
+	}
+	if item.ID == "cal_normalized_coordinates" || item.ID == "cal_normalized_coord_reliable" {
+		return true
+	}
+	text := strings.ToLower(strings.Join([]string{item.Title, item.Content}, " "))
+	return strings.Contains(text, "normalized coordinate") ||
+		strings.Contains(text, "pixel coordinate") ||
+		strings.Contains(text, "absolute coordinate")
 }
 
 func (s *DeviceMemoryStore) cachedReadAll(fingerprint string) ([]DeviceMemoryItem, bool) {

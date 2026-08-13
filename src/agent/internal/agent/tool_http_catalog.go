@@ -123,7 +123,6 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	}
 	builder.WriteString("\nExecution rules:\n")
 	builder.WriteString("- Treat `is_error=true` or outputs that start with `error:` as failures.\n")
-	builder.WriteString("- Avoid pixel-based pointer actions unless calibrated; if you must use them, call `screenshot` first because stale or mismatched screen dimensions will be rejected.\n")
 	builder.WriteString("- For successful keyboard, mouse, and touch calls, inspect the returned post-action screenshot before deciding the next step. `screen_changed=false` means no visible change was observed during the wait window. `screen_stable=false` means the wait timed out while the screen kept changing; continue if the screenshot is still useful. For separate observations after an action, call `wait_for_stable_screen` and inspect its returned screenshot.\n")
 	builder.WriteString("- Do not use repeated scrolling as the first search strategy on phone UIs; try available search controls first.\n")
 	builder.WriteString("- Keep tool input minimal and deterministic; prefer the example payloads as a starting point.\n")

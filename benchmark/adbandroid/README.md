@@ -203,14 +203,9 @@ The tools match MobileGym: `screenshot` `touch_gesture` `keyboard_text`
 `keyboard_tap` `enter_text` `mouse_click`
 `mouse_move` `mouse_scroll` `quick_action`.
 
-Coordinate spaces (`coord_space`):
-
-- `normalized` (default): 0-1000 → converted to pixels via `adb shell wm size`
-  (Override wins over Physical).
-- `absolute`: 0-32767 (HID space) → pixels.
-- `auto`: only accepts 0-1000, errors when out of range (same as MobileGym).
-- `pixel`: real pixel coordinates additionally supported by the ADB bridge; must
-  be requested explicitly and is clamped to the screen bounds.
+All pointer and touch inputs use normalized 0-1000 coordinates. The bridge
+converts them to device pixels using `adb shell wm size` (Override wins over
+Physical). Values outside 0-1000 are rejected.
 
 `quick_action` (`platform=android`): `back` / `home` / `app_switch` / `send` /
 `open_settings` (`am start -a android.settings.SETTINGS`) / `notification_center`

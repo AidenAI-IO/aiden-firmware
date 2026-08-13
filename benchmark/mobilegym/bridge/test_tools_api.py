@@ -99,7 +99,7 @@ def test_get_tools_catalog(bridge_server):
     touch_props = tools["touch_gesture"]["args_schema"]["properties"]
     assert touch_props["point"]["additionalProperties"] is False
     assert touch_props["point"]["required"] == ["x", "y"]
-    assert touch_props["coord_space"]["enum"] == ["auto", "pixel", "normalized", "absolute"]
+    assert "coord_space" not in touch_props
     assert touch_props["button"]["enum"] == ["left", "right", "middle"]
     assert touch_props["strength"]["enum"] == ["large", "medium", "small", "tiny"]
     assert "hold_before_ms" in touch_props
@@ -121,20 +121,15 @@ def test_get_tools_catalog(bridge_server):
     assert "max_attempts" not in enter_text_props
     assert "platform" not in enter_text_props
     assert enter_text_props["focus"]["additionalProperties"] is False
-    assert enter_text_props["focus"]["properties"]["coord_space"]["enum"] == ["auto", "normalized", "absolute"]
+    assert "coord_space" not in enter_text_props["focus"]["properties"]
 
     mouse_click_props = tools["mouse_click"]["args_schema"]["properties"]
     assert tools["mouse_click"]["args_schema"]["additionalProperties"] is False
     assert tools["mouse_move"]["args_schema"]["additionalProperties"] is False
     assert tools["mouse_scroll"]["args_schema"]["additionalProperties"] is False
     assert mouse_click_props["button"]["enum"] == ["left", "right", "middle"]
-    assert mouse_click_props["coord_space"]["enum"] == ["auto", "pixel", "normalized", "absolute"]
-    assert tools["mouse_move"]["args_schema"]["properties"]["coord_space"]["enum"] == [
-        "auto",
-        "pixel",
-        "normalized",
-        "absolute",
-    ]
+    assert "coord_space" not in mouse_click_props
+    assert "coord_space" not in tools["mouse_move"]["args_schema"]["properties"]
     assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["minimum"] == -127
     assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["maximum"] == 127
 
@@ -210,7 +205,7 @@ def test_invoke_touch_gesture_tap_accepts_top_level_string_coordinates(bridge_se
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-002b"
 
-    request_body = json.dumps({"input": {"type": "tap", "coord_space": "normalized", "x": "135", "y": "705"}}).encode()
+    request_body = json.dumps({"input": {"type": "tap", "x": "135", "y": "705"}}).encode()
     req = Request(
         f"{base_url}/api/tools/touch_gesture",
         data=request_body,
@@ -308,7 +303,7 @@ def test_invoke_enter_text_maps_to_mobilegym_type_action(bridge_server):
         {
             "input": {
                 "text": "微信读书",
-                "focus": {"x": 500, "y": 120, "coord_space": "normalized"},
+                "focus": {"x": 500, "y": 120},
             }
         }
     ).encode()
@@ -340,7 +335,7 @@ def test_invoke_enter_text_supports_ascii(bridge_server):
         {
             "input": {
                 "text": "Trip report",
-                "focus": {"x": 250, "y": 800, "coord_space": "normalized"},
+                "focus": {"x": 250, "y": 800},
             }
         }
     ).encode()
@@ -512,7 +507,7 @@ def test_invoke_enter_text_focuses_and_types_unicode(bridge_server):
         {
             "input": {
                 "text": "隐私",
-                "focus": {"coord_space": "normalized", "x": 500, "y": 80},
+                "focus": {"x": 500, "y": 80},
             }
         }
     ).encode()

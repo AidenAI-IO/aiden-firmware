@@ -408,7 +408,7 @@ def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordi
             bridge.base_url,
             "POST",
             "/api/tools/touch_gesture",
-            {"input": {"type": "tap", "coord_space": "normalized", "x": "135", "y": "705"}},
+            {"input": {"type": "tap", "x": "135", "y": "705"}},
         )
         assert status == 200
         assert body["is_error"] is False
@@ -451,7 +451,7 @@ def test_tools_api_actions_are_visible_in_screen_action_log():
             bridge.base_url,
             "POST",
             "/api/tools/mouse_click",
-            {"input": {"x": 321, "y": 654, "button": "left", "coord_space": "normalized"}},
+            {"input": {"x": 321, "y": 654, "button": "left"}},
         )
         assert status == 200
         assert body["is_error"] is False
@@ -464,7 +464,7 @@ def test_tools_api_actions_are_visible_in_screen_action_log():
                 "episode_id": "reset-ep1",
                 "action_id": "reset-ep1:0001",
                 "tool_name": "mouse_click",
-                "tool_input": {"x": 321, "y": 654, "button": "left", "coord_space": "normalized"},
+                "tool_input": {"x": 321, "y": 654, "button": "left"},
                 "duration_ms": body["data"]["actions"][0]["duration_ms"],
                 "error": None,
                 "has_screenshot": True,
@@ -482,7 +482,7 @@ def test_tools_api_mouse_and_quick_action_inputs_map_to_mobilegym_actions():
             bridge.base_url,
             "POST",
             "/api/tools/mouse_click",
-            {"input": {"x": 321, "y": 654, "button": "right", "coord_space": "normalized"}},
+            {"input": {"x": 321, "y": 654, "button": "right"}},
         )
         assert status == 200
         assert body["is_error"] is False
@@ -496,7 +496,7 @@ def test_tools_api_mouse_and_quick_action_inputs_map_to_mobilegym_actions():
             bridge.base_url,
             "POST",
             "/api/tools/mouse_move",
-            {"input": {"x": 111, "y": 222, "coord_space": "normalized"}},
+            {"input": {"x": 111, "y": 222}},
         )
         assert status == 200
         assert body["is_error"] is False
@@ -506,7 +506,7 @@ def test_tools_api_mouse_and_quick_action_inputs_map_to_mobilegym_actions():
             bridge.base_url,
             "POST",
             "/api/tools/mouse_move",
-            {"input": {"y": 222, "coord_space": "normalized"}},
+            {"input": {"y": 222}},
         )
         assert status == 200
         assert body["is_error"] is True
@@ -611,10 +611,7 @@ def test_tools_api_mobilegym_text_entry_tools_do_not_depend_on_hid_devices():
             {
                 "input": {
                     "text": "微信读书",
-                    "platform": "android",
-                    "mode": "search",
-                    "focus": {"x": 500, "y": 120, "coord_space": "normalized"},
-                    "segments": ["wei", "xin", "du", "shu"],
+                    "focus": {"x": 500, "y": 120},
                 }
             },
         )
@@ -635,8 +632,7 @@ def test_tools_api_mobilegym_text_entry_tools_do_not_depend_on_hid_devices():
             {
                 "input": {
                     "text": "Camera note",
-                    "platform": "android",
-                    "focus": {"x": 400, "y": 700, "coord_space": "normalized"},
+                    "focus": {"x": 400, "y": 700},
                 }
             },
         )

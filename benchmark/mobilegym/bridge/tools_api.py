@@ -33,7 +33,6 @@ DIRECTIONAL_SWIPE_PRESETS = {
     "small": (200.0, 420),
     "tiny": (40.0, 320),
 }
-HID_ABSOLUTE_MAX = 32767.0
 US_KEYBOARD_TEXT_CHARS = set(
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -94,10 +93,9 @@ class ToolsAPIHandler:
             "properties": {
                 "x": {"type": "number"},
                 "y": {"type": "number"},
-                "coord_space": {"type": "string", "enum": ["auto", "normalized", "absolute"]},
             },
             "required": ["x", "y"],
-            "description": "Input field coordinates. Prefer normalized 0-1000 coordinates.",
+            "description": "Input field coordinates in normalized 0-1000 units.",
         }
         tools = [
             {
@@ -150,7 +148,6 @@ class ToolsAPIHandler:
                         "steps": {"type": "integer", "minimum": 1, "description": "Number of movement steps for swipe or drag."},
                         "distance": {"type": "number", "description": "Directional swipe travel in normalized 0-1000 units"},
                         "anchor": {"type": "number", "description": "Directional swipe fixed-axis coordinate in normalized 0-1000 units"},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"], "description": "Coordinate space; normalized uses 0-1000 screen coordinates."},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
                         "strength": {
                             "type": "string",
@@ -215,7 +212,6 @@ class ToolsAPIHandler:
                         "x": {"type": "number"},
                         "y": {"type": "number"},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
                     },
                     "required": ["x", "y"],
                 },
@@ -229,7 +225,6 @@ class ToolsAPIHandler:
                     "properties": {
                         "x": {"type": "number"},
                         "y": {"type": "number"},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
                     },
                     "required": ["x", "y"],
                 },
@@ -439,6 +434,9 @@ class ToolsAPIHandler:
 
     def _submit_tool_call(self, state: BridgeEpisodeState, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         """Submit tool call to MobileGym environment."""
+        unknown = _unknown_coordinate_tool_fields(tool_name, tool_input)
+        if unknown:
+            return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
         episode_id = state.active_episode_id
 
         if tool_name == "screenshot":
@@ -494,13 +492,13 @@ class ToolsAPIHandler:
         # Map gesture type to bridge action
         try:
             if gesture_type == "tap":
-                point = _normalized_point_arg(tool_input, default_space="normalized")
+                point = _normalized_point_arg(tool_input)
                 action = build_action("tap", point)
             elif gesture_type == "double_tap":
-                point = _normalized_point_arg(tool_input, default_space="normalized")
+                point = _normalized_point_arg(tool_input)
                 action = build_action("tap", {**point, "count": 2})
             elif gesture_type == "long_press":
-                point = _normalized_point_arg(tool_input, default_space="normalized")
+                point = _normalized_point_arg(tool_input)
                 action = build_action(
                     "tap",
                     {
@@ -515,14 +513,12 @@ class ToolsAPIHandler:
                     field="start",
                     x_key="start_x",
                     y_key="start_y",
-                    default_space="normalized",
                 )
                 end = _normalized_point_arg(
                     tool_input,
                     field="end",
                     x_key="end_x",
                     y_key="end_y",
-                    default_space="normalized",
                 )
                 action = build_action(
                     gesture_type,
@@ -559,7 +555,7 @@ class ToolsAPIHandler:
         if button not in ("", "left", "right", "middle"):
             return {"output": f"error: unsupported mouse button: {button!r}", "is_error": True}
         try:
-            point = _normalized_point_arg(tool_input, default_space="auto")
+            point = _normalized_point_arg(tool_input)
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         action = build_action("tap", point)
@@ -572,7 +568,7 @@ class ToolsAPIHandler:
         proxy contract aligned with the local HID tools.
         """
         try:
-            _normalized_point_arg(tool_input, default_space="auto")
+            _normalized_point_arg(tool_input)
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         return self._call_noop_with_screenshot(state, episode_id)
@@ -696,15 +692,13 @@ class ToolsAPIHandler:
         if not isinstance(focus, dict):
             output = {"ok": False, "suggestion": "Provide focus as an object with x and y coordinates, then retry enter_text."}
             return {"output": json.dumps(output), "is_error": False}
-        unknown_focus = sorted(set(focus) - {"x", "y", "coord_space"})
+        unknown_focus = sorted(set(focus) - {"x", "y"})
         if unknown_focus:
             output = {"ok": False, "suggestion": f"Remove unsupported focus arguments: {unknown_focus!r}."}
             return {"output": json.dumps(output), "is_error": False}
         point_input: dict[str, Any] = {"focus": focus}
-        if "coord_space" in focus:
-            point_input["coord_space"] = focus["coord_space"]
         try:
-            action_input["point"] = _normalized_point_arg(point_input, field="focus", default_space="normalized")
+            action_input["point"] = _normalized_point_arg(point_input, field="focus")
         except (TypeError, ValueError) as exc:
             output = {"ok": False, "suggestion": f"Correct the focus coordinates: {exc}"}
             return {"output": json.dumps(output), "is_error": False}
@@ -935,6 +929,9 @@ def _point_arg(
 ) -> dict[str, float]:
     point = tool_input.get(field)
     if isinstance(point, dict):
+        unknown = sorted(set(point) - {"x", "y"})
+        if unknown:
+            raise ValueError(f"unknown {field} fields: {unknown!r}")
         if "x" not in point or "y" not in point:
             raise ValueError(f"{field}.x and {field}.y are required")
         return {"x": _finite_float(point["x"], f"{field}.x"), "y": _finite_float(point["y"], f"{field}.y")}
@@ -955,24 +952,24 @@ def _normalized_point_arg(
     field: str = "point",
     x_key: str = "x",
     y_key: str = "y",
-    default_space: str,
 ) -> dict[str, float]:
     point = _point_arg(tool_input, field=field, x_key=x_key, y_key=y_key)
-    coord_space = str(tool_input.get("coord_space", "") or "").strip().lower() or default_space
-    if coord_space == "normalized":
-        return {"x": _clamp(point["x"], 0.0, 1000.0), "y": _clamp(point["y"], 0.0, 1000.0)}
-    if coord_space == "auto":
-        if 0.0 <= point["x"] <= 1000.0 and 0.0 <= point["y"] <= 1000.0:
-            return point
-        raise ValueError("mobilegym coord_space auto only supports 0-1000 normalized coordinates")
-    if coord_space == "absolute":
-        return {
-            "x": _clamp(point["x"], 0.0, HID_ABSOLUTE_MAX) / HID_ABSOLUTE_MAX * 1000.0,
-            "y": _clamp(point["y"], 0.0, HID_ABSOLUTE_MAX) / HID_ABSOLUTE_MAX * 1000.0,
-        }
-    if coord_space == "pixel":
-        raise ValueError("mobilegym coord_space pixel is not supported; use normalized coordinates")
-    raise ValueError(f"unsupported coord_space: {coord_space!r}")
+    if not 0.0 <= point["x"] <= 1000.0 or not 0.0 <= point["y"] <= 1000.0:
+        raise ValueError("coordinates must use the normalized 0-1000 scale")
+    return point
+
+
+def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+    allowed = {
+        "touch_gesture": {
+            "type", "point", "start", "end", "x", "y", "start_x", "start_y",
+            "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
+            "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
+        },
+        "mouse_click": {"x", "y", "button"},
+        "mouse_move": {"x", "y"},
+    }.get(tool_name)
+    return [] if allowed is None else sorted(set(tool_input) - allowed)
 
 
 def _finite_float(value: Any, name: str) -> float:

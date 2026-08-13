@@ -2134,7 +2134,7 @@ func (p *pointerPoint) UnmarshalJSON(data []byte) error {
 	}
 	// Normal object format {"x":N,"y":M}
 	type plain pointerPoint
-	return json.Unmarshal(data, (*plain)(p))
+	return decodeStrictJSONObject(string(data), (*plain)(p))
 }
 
 type pointerCoordinate float64
@@ -2203,6 +2203,9 @@ func resolvePointerPosition(screen *screen.ScreenState, x, y float64) (int, int,
 }
 
 func resolvePointerPositionForSurface(screen *screen.ScreenState, touchscreen bool, x, y float64) (int, int, error) {
+	if math.IsNaN(x) || math.IsInf(x, 0) || math.IsNaN(y) || math.IsInf(y, 0) {
+		return 0, 0, fmt.Errorf("coordinates must be finite")
+	}
 	if x < 0 || x > 1000 || y < 0 || y > 1000 {
 		return 0, 0, fmt.Errorf("coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f", x, y)
 	}
@@ -2506,7 +2509,8 @@ func directionalSwipeNormalizedCoordinates(gestureType string, distance, anchor 
 		return 0, 0, 0, 0, fmt.Errorf("unsupported directional swipe: %q", gestureType)
 	}
 
-	return startX, startY, endX, endY, nil
+	return clampFloat(startX, 0, 1000), clampFloat(startY, 0, 1000),
+		clampFloat(endX, 0, 1000), clampFloat(endY, 0, 1000), nil
 }
 
 func dragPointer(pc *pointerController, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, holdAfterMs, steps int) (dragErr error) {

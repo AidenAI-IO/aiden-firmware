@@ -168,6 +168,9 @@ func (c *ADBInputController) ResolvePointOrDefaultNormalized(ctx context.Context
 }
 
 func (c *ADBInputController) ResolvePosition(ctx context.Context, x, y float64) (resolvedPointerPoint, error) {
+	if math.IsNaN(x) || math.IsInf(x, 0) || math.IsNaN(y) || math.IsInf(y, 0) {
+		return resolvedPointerPoint{}, fmt.Errorf("%w: coordinates must be finite", errADBInputInvalidArgument)
+	}
 	if x < 0 || x > 1000 || y < 0 || y > 1000 {
 		return resolvedPointerPoint{}, fmt.Errorf("%w: coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f", errADBInputInvalidArgument, x, y)
 	}

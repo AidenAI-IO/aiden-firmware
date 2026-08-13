@@ -1016,7 +1016,36 @@ func TestADBMouseClickRejectsOutOfRangeCoordinates(t *testing.T) {
 		t.Fatalf("Call output = %q, want normalized coordinate error", out)
 	}
 	if len(runner.commands) != 0 {
-		t.Fatalf("adb commands = %#v, want no command for invalid auto coordinates", runner.commands)
+		t.Fatalf("adb commands = %#v, want no command for out-of-range normalized coordinates", runner.commands)
+	}
+}
+
+func TestPointerResolversRejectNonFiniteCoordinates(t *testing.T) {
+	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if _, _, err := resolvePointerPositionForSurface(nil, false, value, 500); err == nil || !strings.Contains(err.Error(), "finite") {
+			t.Fatalf("resolvePointerPositionForSurface(%v, 500) error = %v, want finite-coordinate error", value, err)
+		}
+		controller := &ADBInputController{}
+		if _, err := controller.ResolvePosition(context.Background(), value, 500); err == nil || !strings.Contains(err.Error(), "finite") {
+			t.Fatalf("ResolvePosition(%v, 500) error = %v, want finite-coordinate error", value, err)
+		}
+	}
+}
+
+func TestDirectionalSwipeCoordinatesClampDerivedEdgeEndpoints(t *testing.T) {
+	distance := 1000.0
+	anchor := 1000.0
+	startX, startY, endX, endY, err := directionalSwipeNormalizedCoordinates(
+		"swipe_left",
+		&distance,
+		&anchor,
+		directionalSwipeSettings{},
+	)
+	if err != nil {
+		t.Fatalf("directionalSwipeNormalizedCoordinates() error = %v", err)
+	}
+	if startX != 1000 || startY != 1000 || endX != 500 || endY != 1000 {
+		t.Fatalf("coordinates = (%.0f,%.0f)->(%.0f,%.0f), want (1000,1000)->(500,1000)", startX, startY, endX, endY)
 	}
 }
 
@@ -3257,13 +3286,51 @@ func TestTouchGestureRejectsRetiredCoordSpaceField(t *testing.T) {
 	}
 }
 
+func TestTouchGestureRejectsRetiredCoordSpaceFieldInPoints(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "point",
+			input: `{"type":"tap","point":{"x":500,"y":500,"coord_space":"pixel"}}`,
+		},
+		{
+			name:  "start",
+			input: `{"type":"swipe","start":{"x":500,"y":800,"coord_space":"pixel"},"end":{"x":500,"y":200}}`,
+		},
+		{
+			name:  "end",
+			input: `{"type":"swipe","start":{"x":500,"y":800},"end":{"x":500,"y":200,"coord_space":"pixel"}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dev, path := newTestHIDDevice(t)
+			tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+
+			out, err := tool.Call(context.Background(), tt.input)
+			if err != nil {
+				t.Fatalf("Call error: %v", err)
+			}
+			if !strings.Contains(out, `unknown field "coord_space"`) {
+				t.Fatalf("output = %q, want unknown coord_space field error", out)
+			}
+			if reports := readMouseReports(t, dev, path); len(reports) != 0 {
+				t.Fatalf("len(reports) = %d, want no HID writes", len(reports))
+			}
+		})
+	}
+}
+
 func TestMouseToolsRejectRetiredCoordSpaceField(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
 	tools := []struct {
 		name string
 		call func(context.Context, string) (string, error)
 	}{
-		{name: "mouse_click", call: (&MouseClickTool{pc: testPointerController(&HIDDevice{}, &pointerState{})}).Call},
-		{name: "mouse_move", call: (&MouseMoveTool{pc: testPointerController(&HIDDevice{}, &pointerState{})}).Call},
+		{name: "mouse_click", call: (&MouseClickTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}).Call},
+		{name: "mouse_move", call: (&MouseMoveTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}).Call},
 	}
 	for _, tool := range tools {
 		out, err := tool.call(context.Background(), `{"x":500,"y":500,"coord_space":"normalized"}`)
@@ -3273,6 +3340,9 @@ func TestMouseToolsRejectRetiredCoordSpaceField(t *testing.T) {
 		if !strings.Contains(out, `unknown field "coord_space"`) {
 			t.Fatalf("%s output = %q, want unknown coord_space field error", tool.name, out)
 		}
+	}
+	if reports := readMouseReports(t, dev, path); len(reports) != 0 {
+		t.Fatalf("len(reports) = %d, want no HID writes for rejected input", len(reports))
 	}
 }
 
