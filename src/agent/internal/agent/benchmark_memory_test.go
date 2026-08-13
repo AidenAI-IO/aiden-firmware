@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBenchmarkMemoryScopeKeepsLongTermToolsOutOfDefaultMemory(t *testing.T) {
@@ -138,5 +139,137 @@ func TestBenchmarkClearMemoryScopeEndpointWorksWithoutBenchmarkToken(t *testing.
 	}
 	if _, err := os.Stat(scopeDir); !os.IsNotExist(err) {
 		t.Fatalf("scope still exists or stat failed: %v", err)
+	}
+}
+
+func TestBenchmarkClearMemoryScopeWaitsForCanceledScopedActivity(t *testing.T) {
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	scope := "run-2026"
+	scopeDir := benchmarkMemoryScopeDir(memoryDir, scope)
+	server := &Server{runtime: &Runtime{
+		memoryPlane: NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil),
+	}}
+
+	activityCtx, cancelActivity := context.WithCancel(context.Background())
+	releaseActivity, ok := server.beginBenchmarkMemoryScopeActivity(scope, cancelActivity)
+	if !ok {
+		t.Fatal("benchmark memory scope activity was rejected")
+	}
+	activityFinished := make(chan struct{})
+	go func() {
+		defer close(activityFinished)
+		defer releaseActivity()
+		<-activityCtx.Done()
+		if err := os.MkdirAll(scopeDir, 0o755); err != nil {
+			return
+		}
+		_ = os.WriteFile(filepath.Join(scopeDir, "late-marker"), []byte("x"), 0o644)
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/memory_scope/clear", nil)
+	req.Header.Set(BenchmarkMemoryScopeHeader, scope)
+	rec := httptest.NewRecorder()
+	server.handleBenchmarkClearMemoryScope(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-activityFinished:
+	case <-time.After(time.Second):
+		t.Fatal("scoped activity did not finish before cleanup returned")
+	}
+	if _, err := os.Stat(scopeDir); !os.IsNotExist(err) {
+		t.Fatalf("scope was recreated by late activity or stat failed: %v", err)
+	}
+}
+
+func TestBenchmarkMemoryScopeRejectsNewActivityWhileClearing(t *testing.T) {
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	scope := "run-2026"
+	server := &Server{}
+
+	releaseActivity, ok := server.beginBenchmarkMemoryScopeActivity(scope, nil)
+	if !ok {
+		t.Fatal("benchmark memory scope activity was rejected")
+	}
+	cleanupStarted := make(chan struct{})
+	cleanupFinished := make(chan error, 1)
+	go func() {
+		close(cleanupStarted)
+		cleanupFinished <- server.clearBenchmarkMemoryScopeAfterActivities(memoryDir, scope)
+	}()
+	<-cleanupStarted
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if release, accepted := server.beginBenchmarkMemoryScopeActivity(scope, nil); !accepted {
+			break
+		} else {
+			release()
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("scope did not enter closing state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	releaseActivity()
+	select {
+	case err := <-cleanupFinished:
+		if err != nil {
+			t.Fatalf("clear benchmark memory scope: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("scope cleanup did not finish after activity was released")
+	}
+}
+
+func TestBenchmarkMemoryScopeConcurrentCleanupWaitsForSameResult(t *testing.T) {
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	scope := "run-2026"
+	server := &Server{}
+
+	releaseActivity, ok := server.beginBenchmarkMemoryScopeActivity(scope, nil)
+	if !ok {
+		t.Fatal("benchmark memory scope activity was rejected")
+	}
+	firstCleanup := make(chan error, 1)
+	secondCleanup := make(chan error, 1)
+	go func() {
+		firstCleanup <- server.clearBenchmarkMemoryScopeAfterActivities(memoryDir, scope)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if release, accepted := server.beginBenchmarkMemoryScopeActivity(scope, nil); !accepted {
+			break
+		} else {
+			release()
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("scope did not enter closing state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	go func() {
+		secondCleanup <- server.clearBenchmarkMemoryScopeAfterActivities(memoryDir, scope)
+	}()
+
+	select {
+	case err := <-secondCleanup:
+		t.Fatalf("concurrent cleanup returned before activity finished: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseActivity()
+	for index, cleanup := range []<-chan error{firstCleanup, secondCleanup} {
+		select {
+		case err := <-cleanup:
+			if err != nil {
+				t.Fatalf("cleanup %d: %v", index+1, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("cleanup %d did not finish", index+1)
+		}
 	}
 }
