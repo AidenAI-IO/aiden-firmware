@@ -1,7 +1,54 @@
 from pathlib import Path
+import tomllib
 
 from runner import agent_config
-from runner.agent_config import default_agent_config_path, load_agent_model_config, resolve_agent_model_api_key
+from runner.agent_config import (
+    default_agent_config_path,
+    load_agent_model_config,
+    resolve_agent_model_api_key,
+    set_agent_device_type,
+)
+
+
+def test_set_agent_device_type_ignores_device_header_in_multiline_string():
+    content = '''notes = """
+[device]
+description = "not a table"
+"""
+'''
+
+    rendered = set_agent_device_type(content, "Android")
+
+    config = tomllib.loads(rendered)
+    assert config["notes"] == '[device]\ndescription = "not a table"\n'
+    assert config["device"]["device_type"] == "Android"
+
+
+def test_set_agent_device_type_ignores_device_key_in_multiline_string():
+    content = """[device]\nnotes = '''
+device_type = "not a key"
+'''\n"""
+
+    rendered = set_agent_device_type(content, "iOS")
+
+    config = tomllib.loads(rendered)
+    assert config["device"]["notes"] == 'device_type = "not a key"\n'
+    assert config["device"]["device_type"] == "iOS"
+
+
+def test_set_agent_device_type_replaces_multiline_device_type_value():
+    content = '''[device]
+device_type = """
+iOS
+"""
+backend = "external"
+'''
+
+    rendered = set_agent_device_type(content, "Android")
+
+    config = tomllib.loads(rendered)
+    assert config["device"]["device_type"] == "Android"
+    assert config["device"]["backend"] == "external"
 
 
 def test_load_agent_model_config_reads_model_section(tmp_path: Path):
