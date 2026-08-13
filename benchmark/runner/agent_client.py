@@ -35,10 +35,20 @@ class AgentClient:
         base_url: str = "http://localhost:8080",
         default_timeout_sec: int = 180,
         benchmark_token: str = "",
+        benchmark_memory_scope: str = "",
     ):
         self.base_url = base_url.rstrip("/")
         self._default_timeout = default_timeout_sec
         self._benchmark_token = str(benchmark_token or "").strip()
+        self._benchmark_memory_scope = str(benchmark_memory_scope or "").strip()
+
+    def _benchmark_headers(self, *, authorize: bool = False) -> dict[str, str]:
+        headers = {}
+        if self._benchmark_memory_scope:
+            headers["benchmark-memory-scope"] = self._benchmark_memory_scope
+        if authorize and self._benchmark_token:
+            headers["Authorization"] = f"Bearer {self._benchmark_token}"
+        return headers
 
     def _post(
         self,
@@ -103,9 +113,7 @@ class AgentClient:
         self._post("/api/clear", timeout=timeout)
 
     def seed_memory(self, memory: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
-        headers = {}
-        if self._benchmark_token:
-            headers["Authorization"] = f"Bearer {self._benchmark_token}"
+        headers = self._benchmark_headers(authorize=True)
         status, body_bytes = self._post(
             "/api/benchmark/seed_memory", memory, timeout=timeout, headers=headers
         )
@@ -113,6 +121,17 @@ class AgentClient:
             raise AgentRequestError(f"seed_memory returned {status}")
         body = json.loads(body_bytes)
         return body if isinstance(body, dict) else {}
+
+    def clear_benchmark_memory_scope(self, timeout: int = 30) -> None:
+        if not self._benchmark_memory_scope:
+            return
+        status, _ = self._post(
+            "/api/benchmark/memory_scope/clear",
+            timeout=timeout,
+            headers=self._benchmark_headers(authorize=True),
+        )
+        if status != 200:
+            raise AgentRequestError(f"clear benchmark memory scope returned {status}")
 
     def set_phone_bridge_state(
         self, state: dict[str, Any], timeout: int = 30
@@ -154,7 +173,10 @@ class AgentClient:
         if skills:
             payload["skills"] = skills
         status, body_bytes = self._post(
-            "/api/chat", payload, timeout=timeout_sec or self._default_timeout
+            "/api/chat",
+            payload,
+            timeout=timeout_sec or self._default_timeout,
+            headers=self._benchmark_headers(),
         )
         if status != 200:
             raise AgentRequestError(f"chat returned {status}")
@@ -205,7 +227,7 @@ class AgentClient:
         timeout: int = 90,
         benchmark_task_id: str | None = None,
     ) -> ToolInvokeResult:
-        headers = {}
+        headers = self._benchmark_headers()
         if str(benchmark_task_id or "").strip():
             headers["benchmark-task-id"] = str(benchmark_task_id).strip()
         status, body_bytes = self._post(
@@ -247,3 +269,6 @@ class AgentClient:
     def close(self) -> None:
         # urllib doesn't keep persistent connections by default; nothing to clean up.
         pass
+
+    def set_benchmark_memory_scope(self, scope: str) -> None:
+        self._benchmark_memory_scope = str(scope or "").strip()

@@ -9,6 +9,12 @@ are:
 
 For the full manual, see [`benchmark/manual.md`](../../benchmark/manual.md).
 
+Each run uses a dedicated benchmark memory scope. Long-term memory, device
+memory, and task-episode lessons created during evaluation stay inside that
+scope and are cleared when the run ends, so they cannot affect normal usage or
+later benchmark runs. Memory suites still exercise real save, recall, update,
+and forget behavior within the isolated scope.
+
 ## Quick Start
 
 ### Existing Agent

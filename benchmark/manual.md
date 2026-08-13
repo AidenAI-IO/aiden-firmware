@@ -30,6 +30,12 @@ and similar tasks. It separates "running the task" from "scoring":
 6. An optional judge model then scores offline against the rubric, trace, and
    screenshots.
 
+Every runner invocation assigns a dedicated benchmark memory scope. Long-term
+memory, device memory, and task-episode lessons written by setup turns or task
+turns remain inside that scope, and the runner clears it when the run finishes.
+This preserves end-to-end memory evaluation without contaminating normal agent
+usage or later benchmark runs.
+
 The benefit of this design: task execution depends on a real agent and
 environment, but scoring can be re-run offline; on failure you can inspect the
 full trace and screenshots without re-operating the device.

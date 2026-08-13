@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -13,23 +14,52 @@ type RecallSessionChunksTool struct {
 }
 
 type RecallMemoryTool struct {
-	store *LongTermMemoryStore
+	store     *LongTermMemoryStore
+	memoryDir string
 }
 
 type SaveMemoryTool struct {
-	store *LongTermMemoryStore
+	store     *LongTermMemoryStore
+	memoryDir string
 }
 
 type ForgetMemoryTool struct {
-	store *LongTermMemoryStore
+	store     *LongTermMemoryStore
+	memoryDir string
 }
 
 type RecallDeviceMemoryTool struct {
-	store *DeviceMemoryStore
+	store     *DeviceMemoryStore
+	memoryDir string
 }
 
 type InspectEpisodeTool struct {
-	store *TaskEpisodeStore
+	store     *TaskEpisodeStore
+	memoryDir string
+}
+
+func scopedLongTermMemoryStore(ctx context.Context, fallback *LongTermMemoryStore, memoryDir string) *LongTermMemoryStore {
+	scopeDir := benchmarkMemoryScopeDir(memoryDir, BenchmarkMemoryScopeFromContext(ctx))
+	if scopeDir == "" {
+		return fallback
+	}
+	return NewLongTermMemoryStore(filepath.Join(scopeDir, "long_term"), WithLifecycleDir(filepath.Join(scopeDir, "lifecycle")))
+}
+
+func scopedDeviceMemoryStore(ctx context.Context, fallback *DeviceMemoryStore, memoryDir string) *DeviceMemoryStore {
+	scopeDir := benchmarkMemoryScopeDir(memoryDir, BenchmarkMemoryScopeFromContext(ctx))
+	if scopeDir == "" {
+		return fallback
+	}
+	return NewDeviceMemoryStore(filepath.Join(scopeDir, "device"))
+}
+
+func scopedEpisodeStore(ctx context.Context, fallback *TaskEpisodeStore, memoryDir string) *TaskEpisodeStore {
+	scopeDir := benchmarkMemoryScopeDir(memoryDir, BenchmarkMemoryScopeFromContext(ctx))
+	if scopeDir == "" {
+		return fallback
+	}
+	return NewTaskEpisodeStore(filepath.Join(scopeDir, "episodes"))
 }
 
 func NewRecallSessionChunksTool(store *SessionMemoryStore, archived *ArchivedSessionStore) *RecallSessionChunksTool {
@@ -126,14 +156,15 @@ func (t *RecallMemoryTool) ArgsSchema() map[string]any {
 }
 
 func (t *RecallMemoryTool) Call(ctx context.Context, input string) (string, error) {
-	if t.store == nil {
+	store := scopedLongTermMemoryStore(ctx, t.store, t.memoryDir)
+	if store == nil {
 		return "", fmt.Errorf("long-term memory store is not configured")
 	}
 	query, err := decodeMemoryQuery(input)
 	if err != nil {
 		return "", fmt.Errorf("decode recall_memory input: %w", err)
 	}
-	results, err := t.store.Search(ctx, query)
+	results, err := store.Search(ctx, query)
 	if err != nil {
 		return "", err
 	}
@@ -194,7 +225,8 @@ func (t *SaveMemoryTool) ArgsSchema() map[string]any {
 }
 
 func (t *SaveMemoryTool) Call(ctx context.Context, input string) (string, error) {
-	if t.store == nil {
+	store := scopedLongTermMemoryStore(ctx, t.store, t.memoryDir)
+	if store == nil {
 		return "", fmt.Errorf("long-term memory store is not configured")
 	}
 	req, err := decodeSaveMemoryRequest(input)
@@ -220,7 +252,7 @@ func (t *SaveMemoryTool) Call(ctx context.Context, input string) (string, error)
 		Entities:         req.Entities,
 		EvidenceExcerpts: req.Evidence,
 	}
-	action, existingID, err := t.store.DecideAction(ctx, item)
+	action, existingID, err := store.DecideAction(ctx, item)
 	if err != nil {
 		return "", err
 	}
@@ -229,14 +261,14 @@ func (t *SaveMemoryTool) Call(ctx context.Context, input string) (string, error)
 	case "ignore":
 		return encodeToolJSON(map[string]string{"status": "ignored", "reason": "duplicate of " + existingID})
 	case "supersede":
-		id, err = t.store.SupersedeMemory(ctx, existingID, item)
+		id, err = store.SupersedeMemory(ctx, existingID, item)
 	default:
-		id, err = t.store.AddMemory(ctx, item)
+		id, err = store.AddMemory(ctx, item)
 	}
 	if err != nil {
 		return "", err
 	}
-	t.store.RequestProfileRebuild()
+	store.RequestProfileRebuild()
 	return encodeToolJSON(map[string]string{"status": "saved", "id": id})
 }
 
@@ -263,7 +295,8 @@ func (t *ForgetMemoryTool) ArgsSchema() map[string]any {
 }
 
 func (t *ForgetMemoryTool) Call(ctx context.Context, input string) (string, error) {
-	if t.store == nil {
+	store := scopedLongTermMemoryStore(ctx, t.store, t.memoryDir)
+	if store == nil {
 		return "", fmt.Errorf("long-term memory store is not configured")
 	}
 	req, err := decodeForgetMemoryRequest(input)
@@ -276,7 +309,7 @@ func (t *ForgetMemoryTool) Call(ctx context.Context, input string) (string, erro
 	if req.Reason == "" {
 		req.Reason = "user requested"
 	}
-	if err := t.store.Forget(ctx, req.ID, req.Reason); err != nil {
+	if err := store.Forget(ctx, req.ID, req.Reason); err != nil {
 		return "", err
 	}
 	return encodeToolJSON(map[string]string{"status": "deleted", "id": req.ID})
@@ -308,14 +341,15 @@ func (t *RecallDeviceMemoryTool) ArgsSchema() map[string]any {
 }
 
 func (t *RecallDeviceMemoryTool) Call(ctx context.Context, input string) (string, error) {
-	if t.store == nil {
+	store := scopedDeviceMemoryStore(ctx, t.store, t.memoryDir)
+	if store == nil {
 		return "", fmt.Errorf("device memory store is not configured")
 	}
 	query, err := decodeDeviceMemoryQuery(input)
 	if err != nil {
 		return "", fmt.Errorf("decode recall_device_memory input: %w", err)
 	}
-	results, err := t.store.Search(ctx, query)
+	results, err := store.Search(ctx, query)
 	if err != nil {
 		return "", err
 	}
@@ -344,7 +378,8 @@ func (t *InspectEpisodeTool) ArgsSchema() map[string]any {
 }
 
 func (t *InspectEpisodeTool) Call(ctx context.Context, input string) (string, error) {
-	if t.store == nil {
+	store := scopedEpisodeStore(ctx, t.store, t.memoryDir)
+	if store == nil {
 		return "", fmt.Errorf("episode store is not configured")
 	}
 	req, err := decodeInspectEpisodeRequest(input)
@@ -354,7 +389,7 @@ func (t *InspectEpisodeTool) Call(ctx context.Context, input string) (string, er
 	if strings.TrimSpace(req.ID) == "" {
 		return "", fmt.Errorf("episode id is required")
 	}
-	episode, err := t.store.Get(ctx, req.ID)
+	episode, err := store.Get(ctx, req.ID)
 	if err != nil {
 		return "", err
 	}

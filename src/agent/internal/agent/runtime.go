@@ -126,6 +126,7 @@ type RunRequest struct {
 	// AsyncEpisodeMaintenance keeps the episode trace write synchronous but moves
 	// lesson extraction and referenced-memory maintenance off the response path.
 	AsyncEpisodeMaintenance bool
+	MemoryScope             string
 }
 
 type RunResult struct {
@@ -783,6 +784,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = WithBenchmarkMemoryScope(ctx, req.MemoryScope)
 
 	// Preempt any currently active run and its resources.
 	r.Preempt()
@@ -876,6 +878,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 				EpisodeID:    episodeID,
 				DeviceID:     defaultMemoryDeviceID,
 				CurrentHints: currentHints,
+				MemoryScope:  req.MemoryScope,
 			}
 			episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
 			if episodeRecorder != nil {
@@ -894,7 +897,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		episodeID = episodeRecorder.ID()
 		r.persistRunStatusBestEffort(episodeID, req.RequestID, runID, runErr)
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, runErr, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, runErr, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance, req.MemoryScope)
 		episodeCommitted = true
 	}()
 
@@ -983,6 +986,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		EpisodeID:    episodeID,
 		DeviceID:     defaultMemoryDeviceID,
 		CurrentHints: currentHints,
+		MemoryScope:  req.MemoryScope,
 	}
 	// Memories are no longer retrieved up front. The agent pulls what it needs
 	// on demand through the recall tools, which record the referenced IDs on the
@@ -1216,7 +1220,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if streamCallbackHandler != nil {
 		streamCallbackHandler.HandleAssistantOutput(ctx, output)
 	}
-	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
+	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance, req.MemoryScope)
 	episodeCommitted = true
 
 	waitForWakeupRequested, waitForWakeupReason := false, ""
@@ -1591,7 +1595,7 @@ type episodeMaintenancePlane interface {
 	commitEpisodeMaintenance(ctx context.Context, episode TaskEpisode)
 }
 
-func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture, boundary sessionBoundaryTelemetry, asyncMaintenance bool) {
+func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture, boundary sessionBoundaryTelemetry, asyncMaintenance bool, memoryScope string) {
 	if recorder == nil || r.memoryPlane == nil {
 		return
 	}
@@ -1604,6 +1608,7 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	tags := cfg.extractTagsFromText(input)
 	entities := cfg.extractEntitiesFromText(input)
 	episode := recorder.Finish(output, metrics, runErr, tags, entities)
+	episode.MemoryScope = strings.TrimSpace(memoryScope)
 	enrichEpisodeTelemetry(&episode, r.config)
 	r.enrichEpisodeRuntimeTelemetry(&episode)
 	enrichEpisodeSessionBoundaryTelemetry(&episode, boundary)
@@ -1611,6 +1616,9 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	defer cancel()
 	if asyncMaintenance {
 		if plane, ok := r.memoryPlane.(episodeMaintenancePlane); ok {
+			if filesystemPlane, scoped := plane.(*FilesystemMemoryPlane); scoped {
+				plane = filesystemPlane.forBenchmarkScope(memoryScope)
+			}
 			if err := plane.commitEpisodeTrace(ctx, episode); err != nil && r.logger != nil {
 				r.logger.Warn("[memory] commit episode trace failed: %v", err)
 				return

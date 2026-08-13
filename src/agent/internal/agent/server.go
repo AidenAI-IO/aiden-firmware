@@ -277,6 +277,7 @@ type ChatRequest struct {
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
 	RequestID   string              `json:"request_id,omitempty"`
 	PhoneID     string              `json:"phone_id,omitempty"`
+	MemoryScope string              `json:"-"`
 }
 
 type ChatCancelRequest struct {
@@ -478,6 +479,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/context-dump", s.handleContextDump)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/setup", s.handleSetup)
+	mux.HandleFunc("/api/benchmark/memory_scope/clear", s.handleBenchmarkClearMemoryScope)
 	if s.benchmarkToken() != "" {
 		mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
 		mux.HandleFunc("/api/benchmark/phone_bridge_state", s.handleBenchmarkPhoneBridgeState)
@@ -686,6 +688,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	req.MemoryScope = strings.TrimSpace(r.Header.Get(BenchmarkMemoryScopeHeader))
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	if req.RequestID == "" {
 		req.RequestID = createRequestID()
@@ -1309,7 +1312,8 @@ func (s *Server) handleChatAsync(
 			RequestID:               requestID,
 			DeviceEnvironment:       s.bridgeEnvironment(),
 			EventHandler:            eventHandler,
-			AsyncEpisodeMaintenance: true,
+			AsyncEpisodeMaintenance: req.MemoryScope == "",
+			MemoryScope:             req.MemoryScope,
 			SteerProvider:           steerProvider,
 			SteerInterrupt:          steerInterrupt,
 		}
@@ -1602,6 +1606,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	req.MemoryScope = strings.TrimSpace(r.Header.Get(BenchmarkMemoryScopeHeader))
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	if req.RequestID == "" {
 		req.RequestID = createRequestID()
@@ -1671,7 +1676,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		EpisodeID:               episodeID,
 		RequestID:               req.RequestID,
 		DeviceEnvironment:       s.bridgeEnvironment(),
-		AsyncEpisodeMaintenance: true,
+		AsyncEpisodeMaintenance: req.MemoryScope == "",
+		MemoryScope:             req.MemoryScope,
 		SteerProvider:           steerProvider,
 		SteerInterrupt:          steerInterrupt,
 		EventHandler: func(event RunEvent) {
@@ -2403,6 +2409,7 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "long-term memory not configured", http.StatusServiceUnavailable)
 		return
 	}
+	plane = plane.forBenchmarkScope(r.Header.Get(BenchmarkMemoryScopeHeader))
 	priority := req.Priority
 	if priority <= 0 {
 		priority = 80
@@ -2435,6 +2442,36 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 		"status": "seeded",
 		"id":     id,
 	})
+}
+
+func (s *Server) handleBenchmarkClearMemoryScope(w http.ResponseWriter, r *http.Request) {
+	if s.benchmarkToken() != "" && !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	scope := strings.TrimSpace(r.Header.Get(BenchmarkMemoryScopeHeader))
+	if scope == "" {
+		http.Error(w, "benchmark memory scope is required", http.StatusBadRequest)
+		return
+	}
+	memoryDir := ""
+	if plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane); ok && plane != nil {
+		memoryDir = plane.memoryDir
+	}
+	if memoryDir == "" {
+		http.Error(w, "memory is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if err := clearBenchmarkMemoryScope(memoryDir, scope); err != nil {
+		http.Error(w, "clear benchmark memory scope: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"status": "cleared"})
 }
 
 func (s *Server) handleBenchmarkPhoneBridgeState(w http.ResponseWriter, r *http.Request) {
@@ -3049,10 +3086,11 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startedAt := time.Now()
-	executionCtx := r.Context()
+	executionCtx := WithBenchmarkMemoryScope(r.Context(), r.Header.Get(BenchmarkMemoryScopeHeader))
 	cancelExecution := context.CancelFunc(func() {})
 	if httpToolExecutionSurvivesClientDisconnect(toolName) {
 		executionCtx, cancelExecution = detachedHTTPToolExecutionContext(r.Context())
+		executionCtx = WithBenchmarkMemoryScope(executionCtx, r.Header.Get(BenchmarkMemoryScopeHeader))
 	}
 	defer cancelExecution()
 	execution := executeToolCall(executionCtx, ToolCallExecution{

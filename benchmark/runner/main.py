@@ -545,7 +545,11 @@ def _cmd_run_auto_agent_setup_inner(
             )
             published_port = docker_published_port(container_id, 8080)
             job.agent_url = f"http://127.0.0.1:{published_port}"
-            client = _new_agent_client(job.agent_url, benchmark_token)
+            client = _new_agent_client(
+                job.agent_url,
+                benchmark_token,
+                args.benchmark_memory_scope,
+            )
             append_log(runner_log, f"container {container_id}")
             log_proc = start_daemon_logs(job, daemon_log)
             if not wait_for_agent_ready(client, timeout_sec=args.agent_ready_timeout_sec):
@@ -585,6 +589,10 @@ def _cmd_run_auto_agent_setup_inner(
                 except ResetError as exc:
                     print(f"warning: failed to release environment task route for {route_id}: {exc}", file=sys.stderr, flush=True)
             if client is not None:
+                try:
+                    client.clear_benchmark_memory_scope()
+                except Exception as exc:
+                    append_log(runner_log, f"warning: failed to clear benchmark memory scope: {exc}")
                 client.close()
             if log_proc is not None:
                 log_proc.terminate()
@@ -677,6 +685,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"Error: invalid --run-id: {run_id!r}", file=sys.stderr)
         return 2
     run_dir = Path(args.out) / run_id
+    args.benchmark_memory_scope = f"{run_id}:{os.urandom(16).hex()}"
     target_platform = _resolve_target_platform(args)
     if _suite_has_mock_environment(suite) and not args.auto_agent_setup:
         print(
@@ -696,7 +705,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if has_runnable_units:
         if args.environment_url:
             clear_stale_adb_android_owner(args.environment_url)
-        client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
+        client = _new_agent_client(
+            args.agent_url,
+            _read_optional_token(args.benchmark_token_file),
+            args.benchmark_memory_scope,
+        )
         if not client.health():
             print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
             client.close()
@@ -826,6 +839,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
                         print(f"warning: failed to release environment task route for {task_benchmark_id}: {exc}", file=sys.stderr, flush=True)
     finally:
         if client is not None:
+            try:
+                client.clear_benchmark_memory_scope()
+            except Exception as exc:
+                print(f"warning: failed to clear benchmark memory scope: {exc}", file=sys.stderr, flush=True)
             client.close()
     totals = _result_totals(results, total_runs)
     manifest = {
@@ -949,10 +966,20 @@ def _read_optional_token(path: str | Path | None) -> str:
     return token
 
 
-def _new_agent_client(base_url: str, benchmark_token: str = "") -> AgentClient:
+def _new_agent_client(
+    base_url: str,
+    benchmark_token: str = "",
+    benchmark_memory_scope: str = "",
+) -> AgentClient:
     if benchmark_token:
-        return AgentClient(base_url=base_url, benchmark_token=benchmark_token)
-    return AgentClient(base_url=base_url)
+        client = AgentClient(base_url=base_url, benchmark_token=benchmark_token)
+    else:
+        client = AgentClient(base_url=base_url)
+    if hasattr(client, "set_benchmark_memory_scope"):
+        client.set_benchmark_memory_scope(benchmark_memory_scope)
+    else:
+        client._benchmark_memory_scope = str(benchmark_memory_scope or "").strip()
+    return client
 
 
 if __name__ == "__main__":

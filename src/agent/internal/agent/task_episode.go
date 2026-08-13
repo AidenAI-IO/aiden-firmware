@@ -35,6 +35,7 @@ type TaskEpisodeWriter struct {
 
 type TaskEpisode struct {
 	ID                  string                 `yaml:"id" json:"id"`
+	MemoryScope         string                 `yaml:"memory_scope,omitempty" json:"memory_scope,omitempty"`
 	Status              string                 `yaml:"status" json:"status"`
 	StartedAt           string                 `yaml:"started_at" json:"started_at"`
 	EndedAt             string                 `yaml:"ended_at" json:"ended_at"`
@@ -408,6 +409,7 @@ func (r *EpisodeRecorder) append(event TaskEpisodeEvent) {
 func (r *EpisodeRecorder) baseEpisodeLocked(status string, endedAt time.Time) TaskEpisode {
 	episode := TaskEpisode{
 		ID:                  r.id,
+		MemoryScope:         strings.TrimSpace(r.request.MemoryScope),
 		Status:              status,
 		StartedAt:           r.startedAt.Format(time.RFC3339Nano),
 		UserGoal:            strings.TrimSpace(r.request.Input),
