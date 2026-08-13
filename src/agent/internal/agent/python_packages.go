@@ -13,6 +13,7 @@ import (
 
 const (
 	managedPythonRoot                = "/userdata/agent/python"
+	managedPythonTmp                 = "/userdata/tmp"
 	managedPythonVersionQueryTimeout = 5 * time.Second
 	firmwarePythonInterpreter        = "/usr/bin/python3"
 )
@@ -65,7 +66,7 @@ func resolveManagedPythonPaths(ctx context.Context, root string, query managedPy
 	return managedPythonPaths{
 		Root:     root,
 		UserBase: filepath.Join(root, "py"+version),
-		Tmp:      filepath.Join(root, "tmp"),
+		Tmp:      managedPythonTmp,
 	}, nil
 }
 

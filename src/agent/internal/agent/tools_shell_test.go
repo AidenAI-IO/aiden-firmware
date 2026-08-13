@@ -104,13 +104,13 @@ func TestShellToolInjectsManagedPythonHintsWithoutChangingPythonEnvironment(t *t
 
 	tool := &ShellTool{environment: shellEnvironmentHints{
 		pythonUserBase: "/userdata/agent/python/py3.11",
-		pythonTmp:      "/userdata/agent/python/tmp",
+		pythonTmp:      "/userdata/tmp",
 	}}
 	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s|%s|%s|%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$AIDEN_PYTHON_TMP\" \"$PYTHONUSERBASE\" \"$PIP_USER\" \"$TMPDIR\" \"$PATH\""}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	want := "/userdata/agent/python/py3.11|/userdata/agent/python/tmp|inherited-userbase|inherited-pip-user|inherited-tmp|/bin:/usr/bin"
+	want := "/userdata/agent/python/py3.11|/userdata/tmp|inherited-userbase|inherited-pip-user|inherited-tmp|/bin:/usr/bin"
 	if out != want {
 		t.Fatalf("Call output = %q, want %q", out, want)
 	}
@@ -125,7 +125,7 @@ func TestBuiltinToolSetWiresManagedPythonHintsIntoShell(t *testing.T) {
 		ProxyConfig{},
 		WithManagedPythonShellHints(managedPythonPaths{
 			UserBase: "/userdata/agent/python/py3.12",
-			Tmp:      "/userdata/agent/python/tmp",
+			Tmp:      "/userdata/tmp",
 		}),
 	)
 	tool, ok := toolSet.Get("shell")
@@ -137,22 +137,20 @@ func TestBuiltinToolSetWiresManagedPythonHintsIntoShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if want := "/userdata/agent/python/py3.12|/userdata/agent/python/tmp"; out != want {
+	if want := "/userdata/agent/python/py3.12|/userdata/tmp"; out != want {
 		t.Fatalf("Call output = %q, want %q", out, want)
 	}
 }
 
 func TestShellCommandEnvAppliesManagedPythonHintsInPTYAndNonPTYModes(t *testing.T) {
-	// Python environment variables are now configured globally by
-	// /etc/profile.d/aiden-python.sh and inherited from the parent environment,
-	// so they are no longer injected command-scoped. This test verifies that
-	// shellCommandEnv does not overwrite them.
+	// AIDEN_PYTHON_USERBASE is now configured globally and inherited from the
+	// parent environment. TMPDIR is injected command-scoped to avoid storage
+	// wear from a global override.
 	t.Setenv("AIDEN_PYTHON_USERBASE", "/userdata/agent/python/py3.11")
-	t.Setenv("AIDEN_PYTHON_TMP", "/userdata/agent/python/tmp")
 
 	hints := shellEnvironmentHints{
 		pythonUserBase: "/should/not/be/used",
-		pythonTmp:      "/should/not/be/used",
+		pythonTmp:      "/userdata/tmp",
 	}
 	for _, usePTY := range []bool{false, true} {
 		env := shellCommandEnv(usePTY, ProxyConfig{}, hints)
@@ -166,8 +164,8 @@ func TestShellCommandEnvAppliesManagedPythonHintsInPTYAndNonPTYModes(t *testing.
 		if got := values["AIDEN_PYTHON_USERBASE"]; got != "/userdata/agent/python/py3.11" {
 			t.Errorf("usePTY=%v AIDEN_PYTHON_USERBASE = %q, want %q (should inherit from parent env)", usePTY, got, "/userdata/agent/python/py3.11")
 		}
-		if got := values["AIDEN_PYTHON_TMP"]; got != "/userdata/agent/python/tmp" {
-			t.Errorf("usePTY=%v AIDEN_PYTHON_TMP = %q, want %q (should inherit from parent env)", usePTY, got, "/userdata/agent/python/tmp")
+		if got := values["TMPDIR"]; got != hints.pythonTmp {
+			t.Errorf("usePTY=%v TMPDIR = %q, want %q (should be injected command-scoped)", usePTY, got, hints.pythonTmp)
 		}
 	}
 }
@@ -176,13 +174,13 @@ func TestShellToolManagedPythonHintsReachForegroundPTY(t *testing.T) {
 	skipOnWindows(t)
 	tool := &ShellTool{environment: shellEnvironmentHints{
 		pythonUserBase: "/userdata/agent/python/py3.11",
-		pythonTmp:      "/userdata/agent/python/tmp",
+		pythonTmp:      "/userdata/tmp",
 	}}
 	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$AIDEN_PYTHON_TMP\"","pty":true}`)
 	if err != nil {
 		t.Fatalf("PTY Call returned error: %v", err)
 	}
-	want := "/userdata/agent/python/py3.11|/userdata/agent/python/tmp"
+	want := "/userdata/agent/python/py3.11|/userdata/tmp"
 	if !strings.Contains(out, want) {
 		t.Fatalf("PTY Call output = %q, want it to contain %q", out, want)
 	}
@@ -192,9 +190,9 @@ func TestShellToolManagedPythonHintsReachBackgroundCommands(t *testing.T) {
 	skipOnWindows(t)
 	tool := &ShellTool{environment: shellEnvironmentHints{
 		pythonUserBase: "/userdata/agent/python/py3.11",
-		pythonTmp:      "/userdata/agent/python/tmp",
+		pythonTmp:      "/userdata/tmp",
 	}}
-	want := "/userdata/agent/python/py3.11|/userdata/agent/python/tmp"
+	want := "/userdata/agent/python/py3.11|/userdata/tmp"
 
 	startOut, err := tool.Call(context.Background(), `{"action":"start","command":"printf '%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$AIDEN_PYTHON_TMP\"; sleep 1"}`)
 	if err != nil {

@@ -108,30 +108,34 @@ site-packages directory on `sys.path`, so global injection could make an
 Agent-installed package shadow a firmware package for unrelated system Python
 commands.
 
-Instead, the Agent shell receives neutral path hints:
+The firmware configures `AIDEN_PYTHON_USERBASE` at system startup
+(`/etc/profile.d/aiden-python.sh` for login shells, `/etc/init.d/S53agent` for
+the agent service):
 
 ```text
 AIDEN_PYTHON_USERBASE=/userdata/agent/python/py<major>.<minor>
-AIDEN_PYTHON_TMP=/userdata/agent/python/tmp
 ```
 
-These names have no built-in meaning to Python or pip. The firmware configures
-these variables at system startup (`/etc/profile.d/aiden-python.sh` for login
-shells, `/etc/init.d/S53agent` for the agent service), deriving the version
-suffix from the firmware `/usr/bin/python3` interpreter. Both the agent and user
-shells inherit the same environment, so runtime-installed packages are shared.
+This name has no built-in meaning to Python or pip. The version suffix is
+derived from the firmware `/usr/bin/python3` interpreter. Both the agent and
+user shells inherit the same environment, so runtime-installed packages are
+shared.
+
+The agent's shell tool injects `TMPDIR=/userdata/tmp` command-scoped to avoid
+the small `/tmp` tmpfs (73 MB) when running pip, while preventing storage wear
+from a global `TMPDIR` override that would affect all services.
 
 When installing a package, the Agent scopes the Python variables to that shell
 command:
 
 ```bash
-mkdir -p "$AIDEN_PYTHON_USERBASE" "$AIDEN_PYTHON_TMP"
+mkdir -p "$AIDEN_PYTHON_USERBASE" /userdata/tmp
 
 PYTHONUSERBASE="$AIDEN_PYTHON_USERBASE" \
 PIP_USER=1 \
 PIP_NO_CACHE_DIR=1 \
 PIP_DISABLE_PIP_VERSION_CHECK=1 \
-TMPDIR="$AIDEN_PYTHON_TMP" \
+TMPDIR=/userdata/tmp \
 /usr/bin/python3 -m pip install --only-binary=:all: --no-cache-dir \
   'packaging==24.2'
 

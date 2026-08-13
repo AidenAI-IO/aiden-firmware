@@ -35,20 +35,17 @@ AIDEN_BLE_SERVICE_SOCKET="$(
 export AIDEN_BLE_SERVICE_SOCKET
 
 # Configure managed Python package environment for the agent service.
-# Login shells load this from /etc/profile.d/aiden-python.sh, but services
-# started through init.d do not inherit profile.d settings, so we set them
-# explicitly here to ensure the agent and user shells share the same environment.
+# Login shells load AIDEN_PYTHON_USERBASE from /etc/profile.d/aiden-python.sh,
+# but services started through init.d do not inherit profile.d settings, so we
+# set it explicitly here to ensure the agent and user shells share the same
+# package environment. TMPDIR is not set globally; the agent's shell tool
+# injects it command-scoped when needed to avoid storage wear from other services.
 AIDEN_PYTHON_VERSION=$(/usr/bin/python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
 if [ -n "$AIDEN_PYTHON_VERSION" ]; then
     AIDEN_PYTHON_ROOT="/userdata/agent/python"
     AIDEN_PYTHON_USERBASE="$AIDEN_PYTHON_ROOT/py$AIDEN_PYTHON_VERSION"
-    AIDEN_PYTHON_TMP="$AIDEN_PYTHON_ROOT/tmp"
     export AIDEN_PYTHON_USERBASE
-    export AIDEN_PYTHON_TMP
-    mkdir -p "$AIDEN_PYTHON_USERBASE" "$AIDEN_PYTHON_TMP" 2>/dev/null || true
-    PYTHONPYCACHEPREFIX="$AIDEN_PYTHON_TMP/pycache"
-    export PYTHONPYCACHEPREFIX
-    mkdir -p "$PYTHONPYCACHEPREFIX" 2>/dev/null || true
+    mkdir -p "$AIDEN_PYTHON_USERBASE" 2>/dev/null || true
 fi
 unset AIDEN_PYTHON_VERSION AIDEN_PYTHON_ROOT
 

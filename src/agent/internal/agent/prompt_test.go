@@ -315,7 +315,6 @@ func TestAgentEnvironmentGuidanceIncludesManagedPythonPackagePolicy(t *testing.T
 	for _, want := range []string{
 		"Prefer the Python standard library",
 		"AIDEN_PYTHON_USERBASE",
-		"AIDEN_PYTHON_TMP",
 		"name==version",
 		"--only-binary=:all:",
 		"PIP_NO_CACHE_DIR=1",
@@ -329,7 +328,7 @@ func TestAgentEnvironmentGuidanceIncludesManagedPythonPackagePolicy(t *testing.T
 		"/run/agent/storage_level",
 		"avoid unbounded retries",
 		"$AIDEN_PYTHON_USERBASE/bin",
-		"system provides AIDEN_PYTHON_USERBASE and AIDEN_PYTHON_TMP",
+		"system provides AIDEN_PYTHON_USERBASE",
 		"--user",
 	} {
 		if !strings.Contains(guidance, want) {

@@ -340,9 +340,13 @@ func shellPlatformShellArg() string {
 func shellCommandEnv(usePTY bool, proxy ProxyConfig, environment shellEnvironmentHints) []string {
 	env := os.Environ()
 	env = shellApplyProxyEnv(env, proxy)
-	// Python environment variables (AIDEN_PYTHON_USERBASE, AIDEN_PYTHON_TMP) are
-	// configured globally by /etc/profile.d/aiden-python.sh and inherited from
-	// the parent environment, so they do not need command-scoped injection.
+	// AIDEN_PYTHON_USERBASE is configured globally by /etc/profile.d/aiden-python.sh
+	// and inherited from the parent environment. TMPDIR is injected command-scoped
+	// to use /userdata/agent/python/tmp for agent shell commands, avoiding the small
+	// /tmp tmpfs (73 MB) while preventing storage wear from a global TMPDIR override.
+	if environment.pythonTmp != "" {
+		env = shellEnsureEnv(env, "TMPDIR", environment.pythonTmp)
+	}
 	if usePTY {
 		env = shellEnsureEnv(env, "TERM", "dumb")
 		env = shellEnsureEnv(env, "NO_COLOR", "1")
