@@ -734,7 +734,7 @@ func TestEnterTextToolCallKeepsBridgePathEnabled(t *testing.T) {
 	}
 	tool.SetDeviceTypeFunc(hw.deviceTypeFn)
 
-	out, err := tool.Call(context.Background(), `{"text":"Aiden","focus":{"x":500,"y":120,"coord_space":"normalized"}}`)
+	out, err := tool.Call(context.Background(), `{"text":"Aiden","focus":{"x":500,"y":120}}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}

@@ -242,7 +242,7 @@ id: cal_normalized_coord_reliable
 type: calibration
 status: active
 title: "Prefer normalized coordinates"
-content: "normalized coordinates align better with current screenshot than pixel coordinates."
+content: "the normalized 0-1000 scale aligns reliably with the current screenshot."
 applicability:
   screen: "640x1200"
   hid_profile: default

@@ -838,16 +838,20 @@ func inferEpisodeApps(episode TaskEpisode) []string {
 
 func episodeUsesNormalizedCoordinates(events []TaskEpisodeEvent) bool {
 	for _, event := range events {
-		if event.Type != runEventToolCall {
-			continue
-		}
-		input := strings.ToLower(event.ToolInput)
-		if strings.Contains(input, `"coord_space":"normalized"`) ||
-			strings.Contains(input, `"coord_space": "normalized"`) {
+		if event.Type == runEventToolCall && toolUsesNormalizedCoordinates(event.ToolName) {
 			return true
 		}
 	}
 	return false
+}
+
+func toolUsesNormalizedCoordinates(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "mouse_click", "mouse_move", "touch_gesture", "wheel_nudge", "enter_text":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldPenalizeMemoryType(memoryType string) bool {

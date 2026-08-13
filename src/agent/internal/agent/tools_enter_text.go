@@ -117,7 +117,7 @@ func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disabl
 			return enterTextToolFailure(batchCtx, CodeModuleUnavailable, "Configure enter_text dependencies, then retry."), nil
 		}
 		var publicArgs enterTextArgs
-		if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &publicArgs); err != nil {
+		if err := decodeStrictJSONObject(input, &publicArgs); err != nil {
 			return enterTextToolFailure(batchCtx, CodeInvalidArguments, "Call enter_text again with valid JSON containing text and focus."), nil
 		}
 		metrics.characters.Store(int64(len([]rune(publicArgs.Text))))

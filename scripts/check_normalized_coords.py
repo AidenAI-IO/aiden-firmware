@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject 0-1 style normalized UI coordinates; canonical range is 0-1000."""
+"""Enforce the single normalized 0-1000 UI coordinate contract."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ GO_TEST_PATTERN = re.compile(
     r'"point"\s*:\s*\{[^}]*"(?:x|y)"\s*:\s*0\.\d+',
     re.DOTALL,
 )
+RETIRED_COORD_SPACE_PATTERN = re.compile(r"\bcoord_space\b", re.IGNORECASE)
 
 
 def is_zero_to_one_coord(value: object) -> bool:
@@ -34,6 +35,13 @@ def check_go_test_file(path: Path) -> list[str]:
     return violations
 
 
+def check_retired_coord_space(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8")
+    if RETIRED_COORD_SPACE_PATTERN.search(text):
+        return [f"{path}: retired coord_space field is still present"]
+    return []
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     violations: list[str] = []
@@ -42,8 +50,16 @@ def main() -> int:
     for path in sorted(test_root.rglob("*_test.go")):
         violations.extend(check_go_test_file(path))
 
+    for root in (repo_root / "src" / "agent", repo_root / "docs"):
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.name.endswith("_test.go"):
+                continue
+            if path.suffix.lower() not in {".go", ".md", ".json", ".yaml", ".yml", ".toml"}:
+                continue
+            violations.extend(check_retired_coord_space(path))
+
     if violations:
-        print("Found 0-1 style normalized UI coordinates:", file=sys.stderr)
+        print("Found normalized coordinate contract violations:", file=sys.stderr)
         for item in violations:
             print(f"  - {item}", file=sys.stderr)
         return 1

@@ -161,8 +161,7 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 	}
 
 	toolInput, err := json.Marshal(map[string]any{
-		"type":        gestureType,
-		"coord_space": "normalized",
+		"type": gestureType,
 		"point": map[string]int{
 			"x": req.X,
 			"y": req.Y,

@@ -913,8 +913,8 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	if got := input["type"]; got != "double_tap" {
 		t.Fatalf("gesture type = %#v, want double_tap", got)
 	}
-	if got := input["coord_space"]; got != "normalized" {
-		t.Fatalf("coord_space = %#v, want normalized", got)
+	if _, exists := input["coord_space"]; exists {
+		t.Fatalf("coordinate debug input must not include coord_space: %#v", input)
 	}
 	point, ok := input["point"].(map[string]any)
 	if !ok {

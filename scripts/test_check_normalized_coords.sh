@@ -26,13 +26,20 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
-from check_normalized_coords import check_go_test_file
+from check_normalized_coords import check_go_test_file, check_retired_coord_space
 
 bad_go_test = Path(sys.argv[2])
 violations = check_go_test_file(bad_go_test)
 if not violations:
     raise SystemExit("expected fixture Go test to fail coordinate check")
 print("fixture rejected as expected")
+
+bad_contract = bad_go_test.with_name("bad_contract.md")
+bad_contract.write_text('Use coord_space: "pixel".\n', encoding="utf-8")
+violations = check_retired_coord_space(bad_contract)
+if not violations:
+    raise SystemExit("expected retired coord_space fixture to fail coordinate check")
+print("retired coord_space fixture rejected as expected")
 PY
 
 echo "check normalized coords script tests passed"

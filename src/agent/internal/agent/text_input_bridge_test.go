@@ -133,7 +133,7 @@ func TestTextInputBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	out, err := callEnterTextBridgeForTest(ctx, tool, `{"text":"`+message+`","focus":{"x":400,"y":950,"coord_space":"normalized"}}`)
+	out, err := callEnterTextBridgeForTest(ctx, tool, `{"text":"`+message+`","focus":{"x":400,"y":950}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestTextInputBridgeFallsBackToKeyboardPasteWhenQuickActionFails(t *testing.
 		bridgeFn: func() *PhoneBridge { return pb },
 		sleep:    testNoWaitSleep,
 	}
-	out, err := callEnterTextBridgeForTest(context.Background(), tool, `{"text":"`+message+`","focus":{"x":400,"y":950,"coord_space":"normalized"}}`)
+	out, err := callEnterTextBridgeForTest(context.Background(), tool, `{"text":"`+message+`","focus":{"x":400,"y":950}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,13 +332,13 @@ func TestTextInputBridgeFallsBackToLongPressPasteMenuWhenShortcutHasNoEffect(t *
 		findPasteMenuFn: func(context.Context, screenshotResult, string) (pasteMenuResult, error) {
 			return pasteMenuResult{
 				Found:    true,
-				TapPoint: focusPointArgs{X: 430, Y: 720, CoordSpace: "normalized"},
+				TapPoint: focusPointArgs{X: 430, Y: 720},
 				Label:    "粘贴",
 			}, nil
 		},
 	}
 
-	out, err := callEnterTextBridgeForTest(context.Background(), tool, `{"text":"`+message+`","focus":{"x":300,"y":940,"coord_space":"normalized"}}`)
+	out, err := callEnterTextBridgeForTest(context.Background(), tool, `{"text":"`+message+`","focus":{"x":300,"y":940}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +386,7 @@ func TestTextInputBridgeObservesFieldBeforeFallbackAfterShortcutError(t *testing
 		},
 	}
 
-	out, err := callEnterTextBridgeForTest(context.Background(), tool, `{"text":"`+message+`","focus":{"x":300,"y":940,"coord_space":"normalized"}}`)
+	out, err := callEnterTextBridgeForTest(context.Background(), tool, `{"text":"`+message+`","focus":{"x":300,"y":940}}`)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,10 +4,23 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"strconv"
 	"strings"
 )
+
+func decodeStrictJSONObject(input string, value any) error {
+	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(input)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("expected exactly one JSON object")
+	}
+	return nil
+}
 
 // LLMs frequently stringify structured tool arguments, emitting `"tags": "[]"`
 // or `"limit": "3"` instead of a real JSON array or number. Strict decoding

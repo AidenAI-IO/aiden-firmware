@@ -286,7 +286,7 @@ func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term str
 	}
 	input := map[string]any{
 		"text":  term,
-		"focus": map[string]any{"x": 500, "y": 120, "coord_space": "normalized"},
+		"focus": map[string]any{"x": 500, "y": 120},
 	}
 	out, err := cfg.entryTool.enterTextInner(ctx, jsonString(input), true)
 	if err != nil {
@@ -340,9 +340,6 @@ func findSearchOpenAppResult(ctx context.Context, cfg appSearchOpenFlowConfig, e
 	}
 	if cfg.findAppTapFn != nil {
 		result, err := cfg.findAppTapFn(ctx, shot, searchTerm)
-		if strings.TrimSpace(result.TapPoint.CoordSpace) == "" {
-			result.TapPoint.CoordSpace = "normalized"
-		}
 		return result, 0, err
 	}
 	modelVision, ok := cfg.vision.(*llmTextInputVision)
@@ -355,11 +352,8 @@ func findSearchOpenAppResult(ctx context.Context, cfg appSearchOpenFlowConfig, e
 		return bridgeSearchResult{}, 1, err
 	}
 	var result bridgeSearchResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+	if err := decodeStrictJSONObject(raw, &result); err != nil {
 		return bridgeSearchResult{}, 1, fmt.Errorf("parse app search result: %w", err)
-	}
-	if strings.TrimSpace(result.TapPoint.CoordSpace) == "" {
-		result.TapPoint.CoordSpace = "normalized"
 	}
 	return result, 1, nil
 }
@@ -370,7 +364,7 @@ Find the visible direct app-launch result for query %q.
 Return JSON only:
 {
   "found": true,
-  "tap_point": {"x": 180, "y": 180, "coord_space": "normalized"},
+  "tap_point": {"x": 180, "y": 180},
   "label": "App"
 }
 
@@ -380,7 +374,7 @@ Rules:
 - First discard every result that is not a direct app launch. If multiple valid direct app-launch results remain, scan from top to bottom and choose the topmost one.
 - tap_point must be centered inside the actual app icon or its directly associated app-launch tile, using normalized 0-1000 coordinates. Do not use the center of the screen or a large container's empty area.
 - Return found=true only when the direct app-launch result is clearly identifiable and tappable. If it cannot be distinguished from Settings or content results, return found=false.
-- If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`, searchTerm))
+- If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0}}.`, searchTerm))
 }
 
 func confirmSearchOpenApp(ctx context.Context, cfg appSearchOpenFlowConfig, engine *textInputEngine, searchTerm string) (bridgeAppOpenResult, int, error) {
@@ -421,9 +415,8 @@ Rules:
 
 func tapSearchOpenResult(ctx context.Context, hw *textInputHardwareDeps, point focusPointArgs) error {
 	out, err := hw.touchGesture.Call(ctx, jsonString(map[string]any{
-		"type":        "tap",
-		"point":       map[string]any{"x": point.X, "y": point.Y},
-		"coord_space": firstNonEmptyString([]string{strings.TrimSpace(point.CoordSpace), "normalized"}),
+		"type":  "tap",
+		"point": map[string]any{"x": point.X, "y": point.Y},
 	}))
 	if err != nil {
 		return err
