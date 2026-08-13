@@ -1,3 +1,8 @@
+---
+sidebar_label: Overview
+sidebar_position: 0
+---
+
 # Agent Benchmark
 
 Agent benchmark evaluates the Aiden Go agent on phone UI, memory, planning,

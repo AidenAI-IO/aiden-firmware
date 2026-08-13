@@ -1542,6 +1542,9 @@ func (l LiveActivityConfig) Validate() error {
 		if _, err := normalizeLiveActivityRelayURL(relayURL); err != nil {
 			return err
 		}
+		if strings.TrimSpace(l.RelayAPIKey) == "" {
+			return errors.New("live_activity.relay_api_key is required when relay_url is configured")
+		}
 	}
 	if !l.APNsConfigured() {
 		return nil
@@ -1593,7 +1596,8 @@ func (l LiveActivityConfig) APNsConfigured() bool {
 }
 
 func (l LiveActivityConfig) RelayConfigured() bool {
-	return strings.TrimSpace(l.RelayURL) != ""
+	return strings.TrimSpace(l.RelayURL) != "" &&
+		strings.TrimSpace(l.RelayAPIKey) != ""
 }
 
 func (l LiveActivityConfig) BoardIDOrDefault() string {

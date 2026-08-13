@@ -47,8 +47,9 @@ const (
 )
 
 var (
-	errLiveActivityRelayBoardIDRequired = errors.New("live activity relay board_id is required")
-	errLiveActivityRelayPhoneIDRequired = errors.New("live activity relay phone_id is required")
+	errLiveActivityRelayBoardIDRequired    = errors.New("live activity relay board_id is required")
+	errLiveActivityRelayCredentialRequired = errors.New("live activity relay device credential is required")
+	errLiveActivityRelayPhoneIDRequired    = errors.New("live activity relay phone_id is required")
 )
 
 type LiveActivityState struct {
@@ -1256,10 +1257,14 @@ func NewLiveActivityRelayClient(cfg LiveActivityConfig) (*LiveActivityRelayClien
 	if boardID == "" {
 		return nil, errLiveActivityRelayBoardIDRequired
 	}
+	apiKey := strings.TrimSpace(cfg.RelayAPIKey)
+	if apiKey == "" {
+		return nil, errLiveActivityRelayCredentialRequired
+	}
 	return &LiveActivityRelayClient{
 		httpClient: &http.Client{Timeout: cfg.TimeoutOrDefault()},
 		endpoint:   endpoint,
-		apiKey:     strings.TrimSpace(cfg.RelayAPIKey),
+		apiKey:     apiKey,
 		boardID:    boardID,
 		timeout:    cfg.TimeoutOrDefault(),
 	}, nil

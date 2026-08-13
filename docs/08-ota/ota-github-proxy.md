@@ -1,12 +1,26 @@
+---
+sidebar_position: 6
+---
+
 # OTA GitHub Proxy Configuration
 
 ## Overview
 
 When downloading OTA updates from GitHub, network connectivity can be unstable in some regions. The OTA system now supports configuring GitHub proxy services to accelerate downloads.
 
-## Configuration
+## Configure in Config Web
 
-### Option 1: OTA Config File (`/userdata/ota/config.json`)
+Connect the device over USB, open `http://192.168.42.1`, and find **OTA → GitHub Proxy URL**. Enter the complete HTTPS URL for the proxy service, for example:
+
+```text
+https://gh-proxy.com/
+```
+
+Save the configuration to apply it. Leave the field empty to disable the proxy.
+
+## Configure in a File
+
+### OTA Config File (`/userdata/ota/config.json`)
 
 Add the `github_proxy_url` field to your OTA configuration:
 
@@ -16,7 +30,7 @@ Add the `github_proxy_url` field to your OTA configuration:
 }
 ```
 
-### Option 2: Agent Config File (`agent.toml`)
+### Agent Config File (`/userdata/agent/agent.toml`)
 
 Add the OTA section to your agent configuration:
 
@@ -25,21 +39,7 @@ Add the OTA section to your agent configuration:
 github_proxy_url = "https://gh-proxy.com/"
 ```
 
-## Supported Proxy Services
-
-### Pre-configured Options
-
-1. **gh-proxy.com**
-   ```json
-   {"github_proxy_url": "https://gh-proxy.com/"}
-   ```
-
-2. **ghfast.top**
-   ```json
-   {"github_proxy_url": "https://ghfast.top/"}
-   ```
-
-### Custom Proxy
+## Proxy URL Format
 
 You can use any GitHub proxy service that follows the standard pattern:
 
@@ -70,7 +70,9 @@ With proxy: https://gh-proxy.com/https://github.com/AidenAI-IO/aiden-firmware/re
 
 Non-GitHub URLs are not affected by this setting.
 
-## Disabling Proxy
+The URL must be an absolute HTTPS URL. Common examples include `https://gh-proxy.com/` and `https://ghfast.top/`, but you can use any trusted service that accepts the original GitHub URL as a suffix.
+
+## Disabling the Proxy
 
 To disable the proxy, remove the `github_proxy_url` field or set it to an empty string:
 
@@ -85,7 +87,7 @@ To disable the proxy, remove the `github_proxy_url` field or set it to an empty 
 If downloads fail with a proxy configured:
 
 1. Verify the proxy URL is accessible from your device
-2. Check that the proxy URL ends with a `/` (it will be added automatically if missing)
+2. Check that the proxy URL is a complete HTTPS URL
 3. Try a different proxy service
 4. Temporarily disable the proxy to verify it's not a GitHub connectivity issue
 

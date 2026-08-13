@@ -1,3 +1,7 @@
+---
+sidebar_position: 1
+---
+
 # Unix Domain Socket Protocol
 
 This project uses Unix domain sockets to connect C++ hardware services with other processes. The protocol is designed to be simple, cross-language, and capable of carrying large binary data blocks.

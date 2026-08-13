@@ -1,3 +1,7 @@
+---
+sidebar_position: 2
+---
+
 # Agent Configuration Reference
 
 The Agent daemon takes `-dir`, the data directory it works out of. `agent.toml` is only one of the things that live there: skills, memory, cache and logs are all resolved relative to it (see [Directory layout](#directory-layout)). The `config`, `config-check` and `config-test` subcommands take `-config` with the path to a TOML config file. Every field below lives in `agent.toml`. Most fields can be edited through the on-device [Config Web page](#config-web-the-device-config-page); sections without dedicated controls are preserved by Config Web and can be edited by hand. TOML is the only supported config format; JSON config is deprecated.
@@ -698,9 +702,9 @@ For the iOS companion app's Live Activity / Dynamic Island task status. The agen
 
 | Field           | Default                                 | Description                                                                                       |
 | --------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `relay_url`     | preconfigured in official firmware      | Aiden Live Activity relay URL; only advanced deployments need to override it                      |
-| `relay_api_key` | preconfigured in official firmware      | Shared relay Bearer token; must match the app build config and relay server `AIDEN_RELAY_API_KEY` |
-| `board_id`      | generated in `/userdata/agent/board_id` | Board ID in relay; generated on first run. Empty or `default` is not a valid relay identity       |
+| `relay_url`     | -                                       | Aiden Live Activity relay URL; remote updates are disabled until the URL and credential are provisioned |
+| `relay_api_key` | -                                       | Device-scoped relay credential; the relay must bind it to the effective `board_id` and reject cross-board use |
+| `board_id`      | generated in `/userdata/agent/board_id` | Effective board ID in relay. The persisted generated value is the default; an explicit configuration value overrides it. Empty or `default` is not valid |
 
 **APNs-based updates** (for remote updates when the app is backgrounded, on lock screen, or not open):
 
@@ -773,4 +777,3 @@ Optional. Place `memory/extraction.yaml` under the config directory to control s
 ## Known limitations
 
 - `preferred_model` and `allowed_children` are currently parsed but not fully wired into execution;
-- Example skills may reference old tools and should be checked before production use.

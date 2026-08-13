@@ -1,3 +1,7 @@
+---
+sidebar_position: 2
+---
+
 # OTA Key Management
 
 Production OTA manifests use Ed25519 signatures. Devices verify `manifest.json` through `/oem/etc/ota_pubkey.pem`, and only write to the inactive slot when both signature and image hash verification pass.

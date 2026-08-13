@@ -1,86 +1,31 @@
-# Aiden Hardware Documentation Hub
+---
+slug: /
+sidebar_position: 0
+title: Aiden Hardware Documentation
+---
 
-This documentation hub is the structured entry point for the project. The root `README.md` keeps only the project introduction, quick development info, and an index pointing to this directory.
+# Aiden Hardware Documentation
 
-> **First time with Aiden?** Start from [Newcomer Quickstart](01-getting-started/quickstart.md). It strings the entire onboarding path into one page in the order wire up → flash → connect Wi-Fi → configure → run → develop → upgrade → troubleshoot, linking to the topic docs below.
+Build, configure, operate, and extend Aiden hardware and its Agent runtime.
 
-## Documentation Structure
+## Start Here
 
-### 01. Getting Started
+- [Try Aiden on PC](01-getting-started/try-aiden-on-pc.md) without assembling hardware.
+- Follow the [Newcomer Quickstart](01-getting-started/quickstart.md) for a physical device.
+- Review [Hardware & Wiring](01-getting-started/hardware.md) before powering a self-assembled device.
+- Set up the [Build Environment](01-getting-started/build.md), then [deploy to the device](01-getting-started/deployment.md).
+- Use [Troubleshooting](07-operations/troubleshooting.md) when a service or peripheral is not working as expected.
 
-- [Newcomer Quickstart](01-getting-started/quickstart.md)
-- [Hardware & Wiring](01-getting-started/hardware.md)
-- [Firmware Build & Flashing](01-getting-started/firmware.md)
-- [Build & Development Environment](01-getting-started/build.md)
-- [Deployment to Device](01-getting-started/deployment.md)
-- [Testing & Verification](01-getting-started/testing.md)
+## Core Reference
 
-### 02. Architecture
+- [Architecture](02-architecture/overview.md): system boundaries, boot services, source layout, and runtime paths.
+- [Device Services](03-services/agent.md): Agent, configuration, terminal, frame capture, audio, BLE, and USB HID services.
+- [Agent](04-agent/overview.md): runtime configuration, tools, skills, memory, voice, and phone integration.
+- [SDK & Tools](05-sdk-and-tools/cpp-sdk.md): C++ SDK, examples, and image utilities.
+- [Protocols](06-protocols/uds-protocol.md): Unix domain socket and service protocol contracts.
+- [OTA](08-ota/README.md): signed releases, A/B updates, rollback, verification, and custom distribution.
 
-- [Architecture Overview](02-architecture/overview.md)
-- [Source Tree & Directory Layout](02-architecture/source-tree.md)
-- [Boot Services & Runtime Layout](02-architecture/boot-services.md)
-- [Paths, Artifacts & Config Cheat Sheet](02-architecture/paths-and-artifacts.md)
+## Developer Workflows
 
-### 03. Hardware Services
-
-- [Frame Service: HDMI Frame Capture Service](03-services/frame-service.md)
-- [Audio Service: Audio Record/Playback Service](03-services/audio-service.md)
-- [BLE Service: iOS Notifications and Background Wake](03-services/ble-service.md)
-- [USB HID & Device Control](03-services/usb-hid.md)
-
-### 04. Go Agent
-
-- [Agent Overview](04-agent/overview.md)
-- [Agent Configuration Reference](04-agent/configuration.md)
-- [Agent Context Lifecycle](04-agent/context-lifecycle.md)
-- [Session Memory Compaction](04-agent/session-memory.md)
-- [Memory Plane: Long-Term Memory](04-agent/memory-plane.md)
-- [Tools HTTP API](04-agent/tools-http-api.md)
-- [Voice Capabilities: VAD / STT / TTS](04-agent/audio-features.md)
-- [Voice Notifications](04-agent/voice-notifications.md)
-- [Skills Mechanism](04-agent/skills.md)
-- [Skills Merge Design](04-agent/skills-merge-design.md)
-- [Human Handoff](04-agent/human-handoff.md)
-- [Live Activity / Dynamic Island](04-agent/live-activity.md)
-- [Phone Bridge](04-agent/phone-bridge.md)
-- [Phone Bridge Protocol](04-agent/phone-bridge-protocol.md)
-- [Swipe Interaction](04-agent/swipe-interaction.md)
-- [Telemetry with Langfuse](04-agent/telemetry-langfuse.md)
-- [Storage subsystem (StorageManager and StorageMonitor)](04-agent/storage-manager.md)
-
-### 05. SDK & Tools
-
-- [C++ SDK Reference](05-sdk-and-tools/cpp-sdk.md)
-- [Image Processing Tools](05-sdk-and-tools/image-processing.md)
-- [Example Programs](05-sdk-and-tools/examples.md)
-
-### 06. Protocols
-
-- [Unix Domain Socket Common Protocol](06-protocols/uds-protocol.md)
-- [Frame / Audio Service Protocol Reference](06-protocols/service-protocols.md)
-
-### 07. Operations
-
-- [Volume Initialization & Adjustment](07-operations/audio-volume.md)
-- [Troubleshooting](07-operations/troubleshooting.md)
-
-### 08. OTA
-
-- [OTA Overview](08-ota/README.md)
-- [OTA Architecture & Runtime](08-ota/architecture.md)
-- [OTA Key Management](08-ota/key-management.md)
-- [Device Acceptance Process](08-ota/device-acceptance.md)
-- [A/B & abctl Verification](08-ota/verification.md)
-
-### 09. Benchmark
-
-- [Quick Start](09-benchmark/README.md)
-- [Architecture Design](09-benchmark/architecture.md)
-- [Detailed Guide](09-benchmark/quickstart.md)
-
-### 10. SkillOpt
-
-- [SkillOpt Overview](10-skillopt/README.md)
-- [SkillOpt Quickstart](10-skillopt/quickstart.md)
-- [SkillOpt Architecture](10-skillopt/architecture.md)
+- [Benchmark](09-benchmark/README.md): run and evaluate Agent tasks against device or simulated environments.
+- [SkillOpt](10-skillopt/README.md): improve Agent skills through rollout and held-out validation.

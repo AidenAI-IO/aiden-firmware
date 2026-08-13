@@ -1,3 +1,7 @@
+---
+sidebar_position: 4
+---
+
 # Frame Service: HDMI Frame Capture Service
 
 `frame_service` is a long-running C++ service that exclusively owns `/dev/video0`, continuously reads frames from the detected RK628D or TC358743 HDMI capture path, and provides the latest frames, screenshots, and health status externally through a Unix domain socket.

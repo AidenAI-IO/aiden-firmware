@@ -1,3 +1,7 @@
+---
+sidebar_position: 3
+---
+
 # OTA Device Acceptance Process
 
 Before enabling production OTA rollout, the following acceptance tests should be completed on representative hardware. It is recommended to record device serial number, hardware version, starting slot, target release version, and `abctl read` and `ota status` output at each step.

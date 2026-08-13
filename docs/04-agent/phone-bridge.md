@@ -1,36 +1,37 @@
-# Phone Bridge: Phone Relay App Solution
+---
+sidebar_position: 11
+---
+
+# Phone Bridge
 
 ## Purpose
 
-Install a relay app on the controlled phone that connects to the hardware board via USB ECM network channel, receives quick commands from the board, and executes system-allowed local operations to compensate for the slowness of pure hardware "find icon, swipe, tap, wait for animation" approach.
+# Purpose
 
-Hardware handles screen viewing, decision-making, and HID fallback; relay app handles fast execution of public system capabilities.
+The Aiden companion app connects to the hardware board over USB ECM and executes phone-side operations available through public iOS and Android APIs.
 
-## Current Capabilities
+The board remains responsible for screen observation, task planning, and HID fallback. Phone Bridge is a software fast path for operations such as launching apps, accessing the clipboard, and working with calendars, contacts, and notifications.
+
+## Capabilities
 
 | Capability | iOS | Android | Problem Solved |
 | --- | --- | --- | --- |
-| Open specified App | URL Scheme / Universal Link / `openURL` | Package name / Intent | Skip icon finding and tapping process |
-| Clipboard read/write | UIPasteboard | Clipboard API | Serve as cross-app content relay |
-| Calendar events | EventKit | CalendarContract | Query, create, and delete events |
-| Contacts | Contacts | Contacts Provider | Query / add contacts |
-| Notification | Local Notification | Notification | Deliver local reminders |
-| Communicate with board | WebSocket client | WebSocket client / foreground service | Receive board quick commands |
+| Open an app or URL | URL scheme / Universal Link / `openURL` | Package name / Intent / deep link | Avoid searching for an icon when the OS exposes a direct launch path. |
+| Clipboard read/write | `UIPasteboard` | Clipboard API | Exchange text without UI-driven copy and paste. |
+| Calendar | EventKit | Calendar provider | Query, create, and delete calendar events. |
+| Contacts | Contacts framework | Contacts provider | Query, create, and update contacts. |
+| Notification | Local notification and ANCS query | Local notification and Notification Access query | Deliver reminders and query the shared notification event ring. |
+| Board communication | Foreground WebSocket with limited background recovery | Foreground WebSocket and FGS HTTP polling | Receive commands and return structured results. |
 
 ## Communication Method
 
-The board's fixed address in the USB network is `192.168.42.1`. The phone relay
-app actively connects to the board at the implemented endpoint:
+The board has the fixed USB-network address `192.168.42.1`. The companion app acts as the client and connects to:
 
 ```text
 Phone relay app -> ws://192.168.42.1:8080/api/phone-bridge
 ```
 
-In other words: the board acts as WebSocket server, the app as WebSocket client.
-
-This way there's no need to guess the phone IP or run an HTTP server on the
-phone. The Agent also exposes its HTTP APIs on port `8080`; port `18080` is not
-part of the current implementation.
+The board is the WebSocket server, so it does not need to discover the phone's DHCP address and the app does not need to expose a local server. The Agent HTTP APIs use the same port, `8080`.
 
 The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native JS, WebSocket, and polling timers in the iOS background must not be treated as a general tool execution path. On iOS, Phone Bridge is normally a foreground fast path: if Aiden is backgrounded and the app has reported `return_entry=dynamic_island`, Agent restores Aiden through Dynamic Island, waits for foreground WebSocket bridge reconnection, then executes the requested tool command. Lock-screen Live Activity entries require visual confirmation rather than fixed-coordinate tapping.
 
@@ -126,58 +127,16 @@ service, with stronger background polling capability.
 - Android 11+ has package visibility restrictions, need to configure `<queries>`, or evaluate `QUERY_ALL_PACKAGES` for specific scenarios.
 - Background Activity launching has system restrictions, but availability after foreground service, notifications, and user authorization is stronger than iOS.
 
-## Current App Architecture
+## Companion App Implementation
 
-The companion app uses bare React Native for UI and orchestration, with native
-modules where platform APIs require them:
+The companion app is a bare React Native application. React Native owns the UI, WebSocket client, foreground command dispatch, and shared business logic. Native Swift and Kotlin/Java modules provide platform capabilities that are not exposed directly to JavaScript.
 
-- Simple `openURL`, WebSocket, UI: RN can cover directly.
-- Android package name launch, foreground service, package visibility: need Kotlin / Java native module.
-- iOS local network permissions, calendar, contacts, HealthKit, App Intents: need Swift / native configuration.
-- The checked-in app is bare React Native; Expo Go is not used.
+Important native areas include:
 
-The current package source of truth is the App repository's `package.json`.
+- iOS local-network permissions, URL launching, calendar, contacts, notifications, Live Activity, PiP Bridge, and BLE Wake integration.
+- Android package and intent launching, package visibility, notifications, Notification Access, board-network binding, and foreground-service polling.
 
-<details>
-<summary>Historical design notes (not current setup guidance)</summary>
-
-The following template-selection notes explain the original project choice.
-They are retained for context and are not current setup instructions or a list
-of installed dependencies.
-
-### Whether to Modify Existing Template
-
-The final form will evolve to "chat + config + Skill + memory management + bridge execution", a complete app, not a simple dispatcher. But **not recommended to directly fork AI conversation templates from GitHub**:
-
-- Most are tied to OpenAI / direct LLM connection, conflicting with "connect to board WebSocket" positioning
-- Often bundled with login, subscription, cloud sync and other unrelated features; removal cost higher than building from scratch
-- Most based on Expo Go, conflicting with this project's need for native modules
-- Tutorial-level projects mostly, not production-grade code
-
-Can **reference** structure and fragments (like `react-native-gifted-chat` official example, chatbot-ui project message flow handling ideas), but not directly as code baseline.
-
-### Original Recommended Combination
-
-Don't look for complete templates; stand on wheels and assemble:
-
-| Need | Recommendation |
-| --- | --- |
-| Project skeleton | `npx @react-native-community/cli init AidenBridge` (bare RN) |
-| Navigation | `@react-navigation/native` + native-stack |
-| Chat UI | `react-native-gifted-chat`, or build with `FlashList` |
-| State management | `zustand` (lightweight, not as heavy as Redux) |
-| Config / memory storage | `react-native-mmkv` (tens of times faster than AsyncStorage) |
-| Markdown rendering | `react-native-markdown-display` |
-| WebSocket | RN built-in `WebSocket` API |
-
-Rationale:
-
-1. Phase one only needs WebSocket + `openURL`, can get on board for joint debugging in a few days, won't be blocked by UI
-2. Chat interface can be added incrementally later, doesn't affect core bridge link
-3. Native modules (package name launch, Calendar, Contacts, foreground service) must be written yourself, templates can't help
-4. Maintaining your own understood codebase > maintaining a modified someone else's codebase
-
-</details>
+See the related `aiden-app` repository for the companion-app source and platform permission declarations. Its `package.json` is the source of truth for the current React Native and toolchain versions.
 
 ## Why WebSocket on Top of USB Network
 
@@ -211,6 +170,11 @@ WebSocket's core value:
 4. Before each conversational run, the Agent filters App-only tools and actions
    using foreground Phone Bridge, Dynamic Island restore, PiP/FGS polling, BLE
    Wake, and BLE notification-query capabilities.
+
+`GET /api/phone-bridge/status` reports `board_id` from
+`runtime.config.LiveActivity.BoardIDOrDefault()`. Phone-app state messages and
+the benchmark-only `ApplyBenchmarkStatus` path do not set or modify this field;
+the runtime Live Activity configuration remains its owner.
 
 `bridge_connected` only means the WebSocket is currently active. It is not equivalent to USB cable connectivity. After the iOS app enters background, WebSocket may disconnect while USB ECM remains reachable; real-time background Dynamic Island updates should go through Live Activity relay/APNs, not the phone bridge WebSocket.
 
@@ -596,7 +560,7 @@ Use the phone environment timezone when it is available. The Agent can use `shel
   requires the user to enable Aiden under Settings > Notification access.
   `POST_NOTIFICATIONS` alone does not grant access to other apps' notifications.
 
-### Implementation Notes
+### Runtime Routing
 
 1. `open_app` reads live companion-app state. When foreground Phone Bridge is
    ready it uses BridgeOpenApp; otherwise it uses SearchLaunchApp through the
@@ -612,13 +576,13 @@ Use the phone environment timezone when it is available. The Agent can use `shel
 5. Bridge data tools return a clear bridge-unavailable error when no executable
    foreground, restoration, background queue, or BLE route exists.
 
-## Final Positioning
+## Control Boundary
 
-This solution doesn't replace hardware control, but adds a software fast path:
+Phone Bridge does not replace hardware control. It adds a software fast path:
 
 ```text
 What can be completed quickly via software, go through relay app;
 What software cannot do or is unstable, continue via HDMI + HID.
 ```
 
-iOS focuses on "foreground fast path + hardware fallback". Android can gradually enhance to "background resident relay + hardware fallback".
+iOS uses a foreground fast path with limited background recovery and hardware fallback. Android additionally supports background-safe commands through foreground-service polling. In both cases, HDMI observation remains the final verification path when task completion depends on visible phone state.
