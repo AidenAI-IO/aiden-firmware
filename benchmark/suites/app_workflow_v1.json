@@ -271,45 +271,6 @@
       }
     },
     {
-      "id": "wechat_forward_message",
-      "category": "multi_step",
-      "description_for_judge": "Agent must open WeChat, find a received message in one chat, long-press to forward it to another contact.",
-      "setup": {
-        "type": "agent_prompt",
-        "prompt": "请打开微信，进入「文件传输助手」对话，发送一条消息「待转发内容」，然后回到微信主界面。",
-        "timeout_sec": 120,
-        "clear_history_after": true
-      },
-      "prompt": "请进入「文件传输助手」对话，找到最近一条消息，长按转发给任意一个其他联系人或群聊。转发后截图确认消息已发送到目标对话。",
-      "rubric": [
-        {
-          "id": "entered_chat",
-          "check": "Trace shows agent entered 文件传输助手 chat."
-        },
-        {
-          "id": "long_pressed_message",
-          "check": "Trace shows agent long-pressed on a message to trigger context menu."
-        },
-        {
-          "id": "selected_forward",
-          "check": "Trace shows agent selected the forward option from the context menu."
-        },
-        {
-          "id": "chose_target",
-          "check": "Trace shows agent selected a target contact or group for forwarding."
-        },
-        {
-          "id": "forward_confirmed",
-          "check": "Post-screenshot shows the forwarded message in the target chat or a send-success confirmation."
-        }
-      ],
-      "hard_assertions": {
-        "min_tool_calls": 6,
-        "max_tool_calls": 35,
-        "must_complete_within_sec": 360
-      }
-    },
-    {
       "id": "xiaohongshu_browse_and_like",
       "category": "multi_step",
       "description_for_judge": "Agent must open Xiaohongshu, search for a topic, open the first post, like it, save/collect it, then return to the feed.",

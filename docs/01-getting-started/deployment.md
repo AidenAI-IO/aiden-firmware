@@ -12,7 +12,7 @@ The recommended production deployment method is to build or download a complete 
 /oem/usr/bin/                  # Application binaries
 /etc/init.d/S39hciinit         # AIC8800 UART/HCI initialization
 /etc/init.d/S40bluetoothd      # BlueZ with persistent pairing state
-/etc/init.d/S41ble_service     # BLE pairing/ANCS service watchdog
+/etc/init.d/S41ble_service     # BLE Wake/ANCS service watchdog
 /etc/init.d/S43wlan_guard      # WLAN connectivity guard
 /etc/init.d/S49ntp             # ntpd daemon
 /etc/init.d/S49usbhid          # USB HID gadget initialization
@@ -111,7 +111,7 @@ When starting with the firmware, the main service relationships are as follows:
 1. `S35wifidrv` loads the AIC8800 combo firmware;
 2. `S39hciinit` attaches `/dev/ttyS1` and brings up `hci0`;
 3. `S40bluetoothd` starts BlueZ with its pairing state under `/userdata`;
-4. `S41ble_service` registers the pairing GATT service and ANCS consumer;
+4. `S41ble_service` registers the Wake GATT service and ANCS consumer;
 5. `S43wlan_guard` monitors WLAN connectivity and recovers automatically;
 6. `S49ntp` starts `ntpd` in daemon mode, using direct IP connection to NTP server (bypassing DNS startup order);
 7. `S50ntp_watchdog` periodically checks clock sync status, triggers `S49ntp step` to force sync when not synced, exits after sync;

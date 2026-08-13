@@ -182,7 +182,7 @@ func ConfigMeta() ConfigMetadata {
 					// that accept it so the UI cannot save a value the endpoint
 					// rejects; auto plus low/medium/high stay unscoped.
 					{Key: "reasoning_effort", Widget: WidgetSelect,
-						Help: "Empty = auto (disable reasoning only for no-tool requests). Levels are provider-specific: minimal is OpenRouter and Volcengine Ark only, none is not supported by Ark.",
+						Help: "Empty = auto. For no-tool requests, Anthropic maps low/medium/high to adaptive thinking; tool requests use Claude's default reasoning because thinking signatures are not persisted. Minimal is OpenRouter and Volcengine Ark only; none is not supported by Anthropic or Ark.",
 						Enum: []EnumOption{
 							{Value: "", Label: "auto (default)"},
 							{Value: "minimal", Label: "minimal (no thinking)", Providers: []string{"openrouter", "volcengine"}},

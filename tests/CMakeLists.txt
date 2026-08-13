@@ -111,6 +111,7 @@ add_executable(aiden_tests
     frame_service_server_test.cpp
     frame_capture_manager_test.cpp
     frame_processing_test.cpp
+    frame_crop_bounds_test.cpp
     terminal_input_test.cpp
     service_status_test.cpp
     vad_common_test.cpp
@@ -187,6 +188,10 @@ add_test(NAME logger_shell_format
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_logger_format.sh
 )
 
+add_test(NAME frame_service_bridge_policy
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_frame_service_bridge_policy.sh
+)
+
 find_program(NODE_EXECUTABLE node)
 if(NODE_EXECUTABLE)
     add_test(NAME config_web_dynamic_form
@@ -197,6 +202,9 @@ if(NODE_EXECUTABLE)
     )
     add_test(NAME config_web_providers
         COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_providers_test.mjs
+    )
+    add_test(NAME llm_logs_anthropic
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/llm_logs_anthropic_test.mjs
     )
 endif()
 

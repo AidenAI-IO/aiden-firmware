@@ -89,6 +89,9 @@ The Aiden App cases are consolidated into two suites:
   read/write, and notification cases for iOS Dynamic Island restoration, iOS PiP,
   and Android FGS.
 
+These mock fixtures do not emulate `ble_service` or a live iOS Wake subscriber,
+so they do not cover the BLE Wake-specific allowlist or runtime tool filtering.
+
 For iOS background without PiP, a reachable Dynamic Island return entry keeps the
 data tools visible. The Agent calls the requested `bridge_*` tool directly; the
 tool restores Aiden internally before executing, so the Agent must not click the
@@ -110,9 +113,10 @@ clipboard, `quick_action` paste, direct keyboard paste if the action errors,
 visual verification, then long-press Paste/粘贴 if the shortcut had no visible
 effect. Ordinary typing fallback belongs to `enter_text`.
 
-Use real devices separately for iOS PiP/Android FGS lifecycle, USB ECM, native
-permissions, actual background queue delivery, app launch behavior, and HID paste
-validation. Mock suites test policy and tool selection, not OS integration.
+Use real devices separately for iOS BLE pairing/Wake, the narrower BLE Wake
+allowlist, iOS PiP/Android FGS lifecycle, USB ECM, native permissions, actual
+background queue delivery, app launch behavior, and HID paste validation. Mock
+suites test their modeled policy and tool selection, not OS integration.
 
 ## Reports
 

@@ -1034,10 +1034,9 @@ func (t *MouseClickTool) Description() string {
 
 func (t *MouseClickTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"x":           coordinateSchema("X coordinate.", 500),
-		"y":           coordinateSchema("Y coordinate.", 300),
-		"button":      stringEnumArgSchema("Mouse button; defaults to left.", "left", "right", "middle"),
-		"coord_space": coordSpaceSchema(),
+		"x":      coordinateSchema("Normalized 0-1000 X coordinate.", 500),
+		"y":      coordinateSchema("Normalized 0-1000 Y coordinate.", 300),
+		"button": stringEnumArgSchema("Mouse button; defaults to left.", "left", "right", "middle"),
 	}, "x", "y")
 }
 
@@ -1053,20 +1052,19 @@ func (t *MouseClickTool) Call(ctx context.Context, input string) (string, error)
 
 func (t *MouseClickTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
-		X          pointerCoordinate `json:"x"`
-		Y          pointerCoordinate `json:"y"`
-		Button     string            `json:"button"`
-		CoordSpace string            `json:"coord_space"`
+		X      pointerCoordinate `json:"x"`
+		Y      pointerCoordinate `json:"y"`
+		Button string            `json:"button"`
 	}
-	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"button\": \"left\", \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
+	if err := decodeStrictJSONObject(input, &args); err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"button\": \"left\"}. Coordinates always use the normalized 0-1000 scale", err), nil
 	}
 
 	if t.adb != nil {
 		if button := strings.ToLower(strings.TrimSpace(args.Button)); button != "" && button != "left" {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "adb mouse_click supports only left button taps, got %q", args.Button), nil
 		}
-		point, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
+		point, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64())
 		if err != nil {
 			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 		}
@@ -1076,7 +1074,7 @@ func (t *MouseClickTool) call(ctx context.Context, input string) (string, error)
 		return "ok", nil
 	}
 
-	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
+	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64())
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
@@ -1104,9 +1102,8 @@ func (t *MouseMoveTool) Description() string {
 
 func (t *MouseMoveTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"x":           coordinateSchema("X coordinate.", 500),
-		"y":           coordinateSchema("Y coordinate.", 300),
-		"coord_space": coordSpaceSchema(),
+		"x": coordinateSchema("Normalized 0-1000 X coordinate.", 500),
+		"y": coordinateSchema("Normalized 0-1000 Y coordinate.", 300),
 	}, "x", "y")
 }
 
@@ -1122,22 +1119,21 @@ func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) 
 
 func (t *MouseMoveTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
-		X          pointerCoordinate `json:"x"`
-		Y          pointerCoordinate `json:"y"`
-		CoordSpace string            `json:"coord_space"`
+		X pointerCoordinate `json:"x"`
+		Y pointerCoordinate `json:"y"`
 	}
-	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
+	if err := decodeStrictJSONObject(input, &args); err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300}. Coordinates always use the normalized 0-1000 scale", err), nil
 	}
 
 	if t.adb != nil {
-		if _, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto); err != nil {
+		if _, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64()); err != nil {
 			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 		}
 		return toolErrorResultString(ctx, CodeModuleUnavailable, "adb mouse_move is unsupported because adb input has no hover/pointer move primitive; use touch_gesture for taps, swipes, or drags"), nil
 	}
 
-	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
+	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64())
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
@@ -1195,7 +1191,6 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		"point":          pointSchema("Point for tap, double_tap, or long_press."),
 		"start":          pointSchema("Start point for swipe or drag."),
 		"end":            pointSchema("End point for swipe or drag."),
-		"coord_space":    coordSpaceSchema(),
 		"button":         stringEnumArgSchema("Mouse button for drag.", "left", "right", "middle"),
 		"duration_ms":    nonNegativeIntegerSchema("Gesture duration in milliseconds."),
 		"hold_before_ms": nonNegativeIntegerSchema("Optional dwell after pressing before a swipe begins."),
@@ -1254,7 +1249,6 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		End          *pointerPoint      `json:"end"`
 		X            *pointerCoordinate `json:"x"`
 		Y            *pointerCoordinate `json:"y"`
-		CoordSpace   string             `json:"coord_space"`
 		Button       string             `json:"button"`
 		DurationMs   *int               `json:"duration_ms"`
 		HoldBeforeMs *int               `json:"hold_before_ms"`
@@ -1266,7 +1260,7 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		Anchor       *float64           `json:"anchor"`
 		Strength     string             `json:"strength"`
 	}
-	if err := json.Unmarshal([]byte(input), &args); err != nil {
+	if err := decodeStrictJSONObject(input, &args); err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Common mistakes: missing quotes around string values, incorrect comma placement, point/start/end must be objects with named keys like {\"x\":500,\"y\":300} not bare values. Example: {\"type\":\"tap\",\"point\":{\"x\":500,\"y\":500}}", err), nil
 	}
 	if args.Point == nil && args.X != nil && args.Y != nil {
@@ -1278,10 +1272,6 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		return toolErrorResultString(ctx, CodeInvalidArguments, "type is required"), nil
 	}
 
-	coordSpace := strings.TrimSpace(args.CoordSpace)
-	if coordSpace == "" {
-		coordSpace = coordinateSpaceNormalized
-	}
 	button := mouseButtonByte(args.Button)
 
 	if t.adb != nil {
@@ -1290,7 +1280,7 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		}
 		switch gestureType {
 		case "tap":
-			point, err := t.adb.ResolveRequiredPoint(ctx, args.Point, coordSpace)
+			point, err := t.adb.ResolveRequiredPoint(ctx, args.Point)
 			if err != nil {
 				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 			}
@@ -1298,7 +1288,7 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 			}
 		case "double_tap":
-			point, err := t.adb.ResolveRequiredPoint(ctx, args.Point, coordSpace)
+			point, err := t.adb.ResolveRequiredPoint(ctx, args.Point)
 			if err != nil {
 				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 			}
@@ -1310,7 +1300,7 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 			}
 		case "long_press":
-			point, err := t.adb.ResolveRequiredPoint(ctx, args.Point, coordSpace)
+			point, err := t.adb.ResolveRequiredPoint(ctx, args.Point)
 			if err != nil {
 				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 			}
@@ -1333,11 +1323,11 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 			if gestureType == "swipe" && args.Start == nil && args.Point != nil {
 				return toolErrorResultString(ctx, CodeInvalidArguments, "swipe requires start and end, not point; use swipe_up/down/left/right for directional swipes from center"), nil
 			}
-			start, err := t.adb.ResolveRequiredPoint(ctx, args.Start, coordSpace)
+			start, err := t.adb.ResolveRequiredPoint(ctx, args.Start)
 			if err != nil {
 				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 			}
-			end, err := t.adb.ResolveRequiredPoint(ctx, args.End, coordSpace)
+			end, err := t.adb.ResolveRequiredPoint(ctx, args.End)
 			if err != nil {
 				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 			}
@@ -1365,34 +1355,33 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		return "ok", nil
 	}
 
-	if err := t.ensureTouchscreenMapping(ctx, coordSpace); err != nil {
+	if err := t.ensureTouchscreenMapping(ctx); err != nil {
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "touchscreen mapping unavailable: %v", err), nil
 	}
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf(
-			"touch_gesture start type=%q coord_space=%q mapping_before={%s}",
+			"touch_gesture start type=%q mapping_before={%s}",
 			gestureType,
-			coordSpace,
 			formatTouchscreenRCAMappingSummary(t.screen),
 		)
 	}
 
 	switch gestureType {
 	case "tap":
-		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point, coordSpace)
+		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture tap", t.screen, t.pc, args.Point, coordSpace, point)
+		touchscreenRCALogResolvedPoint("touch_gesture tap", t.screen, t.pc, args.Point, point)
 		if err := tapPointerWithHold(t.pc, point.x, point.y, button, intOrDefault(args.HoldMs, defaultTapHoldMs)); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "double_tap":
-		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point, coordSpace)
+		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture double_tap", t.screen, t.pc, args.Point, coordSpace, point)
+		touchscreenRCALogResolvedPoint("touch_gesture double_tap", t.screen, t.pc, args.Point, point)
 		holdMs := intOrDefault(args.HoldMs, defaultTapHoldMs)
 		if err := tapPointerWithHold(t.pc, point.x, point.y, button, holdMs); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
@@ -1402,11 +1391,11 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "long_press":
-		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point, coordSpace)
+		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture long_press", t.screen, t.pc, args.Point, coordSpace, point)
+		touchscreenRCALogResolvedPoint("touch_gesture long_press", t.screen, t.pc, args.Point, point)
 		if err := settlePointer(t.pc, point.x, point.y); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
@@ -1435,13 +1424,12 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		}
 		if touchscreenRCADebugEnabledCached() {
 			touchscreenRCALogf(
-				"touch_gesture directional resolved type=%q start_abs=(%d,%d) end_abs=(%d,%d) coord_space=%q pointer_mode=%s mapping_at_resolve={%s}",
+				"touch_gesture directional resolved type=%q start_abs=(%d,%d) end_abs=(%d,%d) pointer_mode=%s mapping_at_resolve={%s}",
 				gestureType,
 				start.x,
 				start.y,
 				end.x,
 				end.y,
-				coordinateSpaceNormalized,
 				touchscreenRCAPointerMode(t.pc),
 				t.screen.Format(),
 			)
@@ -1465,16 +1453,16 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		if samePointerPoint(args.Start, args.End) {
 			return toolErrorResultString(ctx, CodeInvalidArguments, "drag requires distinct start and end points; a zero-distance drag behaves like a press and may activate the control instead of moving it"), nil
 		}
-		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start, coordSpace)
+		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture drag start", t.screen, t.pc, args.Start, coordSpace, start)
-		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End, coordSpace)
+		touchscreenRCALogResolvedPoint("touch_gesture drag start", t.screen, t.pc, args.Start, start)
+		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture drag end", t.screen, t.pc, args.End, coordSpace, end)
+		touchscreenRCALogResolvedPoint("touch_gesture drag end", t.screen, t.pc, args.End, end)
 		if sameResolvedPointerPoint(start, end) {
 			return toolErrorResultString(ctx, CodeInvalidArguments, "drag start and end resolve to the same HID point"), nil
 		}
@@ -1497,16 +1485,16 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		if samePointerPoint(args.Start, args.End) {
 			return toolErrorResultString(ctx, CodeInvalidArguments, "swipe requires distinct start and end points"), nil
 		}
-		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start, coordSpace)
+		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture swipe start", t.screen, t.pc, args.Start, coordSpace, start)
-		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End, coordSpace)
+		touchscreenRCALogResolvedPoint("touch_gesture swipe start", t.screen, t.pc, args.Start, start)
+		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture swipe end", t.screen, t.pc, args.End, coordSpace, end)
+		touchscreenRCALogResolvedPoint("touch_gesture swipe end", t.screen, t.pc, args.End, end)
 		if sameResolvedPointerPoint(start, end) {
 			return toolErrorResultString(ctx, CodeInvalidArguments, "swipe start and end resolve to the same HID point"), nil
 		}
@@ -1523,16 +1511,16 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "back", "edge_back", "left_edge_back":
-		start, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.Start, coordSpace, phoneBackStartX, phoneBackY)
+		start, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.Start, phoneBackStartX, phoneBackY)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture back start", t.screen, t.pc, args.Start, coordSpace, start)
-		end, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.End, coordSpace, phoneBackEndX, phoneBackY)
+		touchscreenRCALogResolvedPoint("touch_gesture back start", t.screen, t.pc, args.Start, start)
+		end, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.End, phoneBackEndX, phoneBackY)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture back end", t.screen, t.pc, args.End, coordSpace, end)
+		touchscreenRCALogResolvedPoint("touch_gesture back end", t.screen, t.pc, args.End, end)
 		if err := runPositionedDragGesture(
 			t.pc,
 			start,
@@ -1546,16 +1534,16 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "home", "home_swipe", "bottom_edge_home":
-		start, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.Start, coordSpace, phoneHomeX, phoneHomeStartY)
+		start, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.Start, phoneHomeX, phoneHomeStartY)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture home start", t.screen, t.pc, args.Start, coordSpace, start)
-		end, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.End, coordSpace, phoneHomeX, phoneHomeEndY)
+		touchscreenRCALogResolvedPoint("touch_gesture home start", t.screen, t.pc, args.Start, start)
+		end, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.End, phoneHomeX, phoneHomeEndY)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture home end", t.screen, t.pc, args.End, coordSpace, end)
+		touchscreenRCALogResolvedPoint("touch_gesture home end", t.screen, t.pc, args.End, end)
 		if err := runPositionedDragGesture(
 			t.pc,
 			start,
@@ -1578,22 +1566,15 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 	return "ok", nil
 }
 
-func (t *TouchGestureTool) ensureTouchscreenMapping(ctx context.Context, coordSpace string) error {
+func (t *TouchGestureTool) ensureTouchscreenMapping(ctx context.Context) error {
 	if t == nil || t.pc == nil || !t.pc.touchscreen || t.screen == nil || t.primeScreenMapping == nil {
-		return nil
-	}
-	space, err := normalizeCoordinateSpace(coordSpace, coordinateSpaceNormalized)
-	if err != nil {
-		return nil
-	}
-	if space != coordinateSpaceNormalized && space != coordinateSpaceAuto {
 		return nil
 	}
 	if t.screen.FreshActiveArea(screenDimensionsStaleAfter) {
 		return nil
 	}
 	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf("touch_gesture prime mapping before input coord_space=%q mapping_before={%s}", coordSpace, t.screen.Format())
+		touchscreenRCALogf("touch_gesture prime mapping before input mapping_before={%s}", t.screen.Format())
 	}
 	if err := t.primeScreenMapping(ctx); err != nil {
 		return err
@@ -1634,7 +1615,6 @@ type wheelNudgeArgs struct {
 	ValueStep      *int     `json:"value_step"`
 	CenterY        *float64 `json:"center_y"`
 	VisibleTargetY *float64 `json:"visible_target_y"`
-	CoordSpace     string   `json:"coord_space"`
 }
 
 type wheelNudgePlan struct {
@@ -1699,35 +1679,29 @@ func (t *WheelNudgeTool) call(ctx context.Context, input string) (string, error)
 	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "current_value, target_value, cycle_size, and cycle_start are required"), nil
 	}
-	coordSpace := args.CoordSpace
-	if coordSpace == "" || coordSpace == coordinateSpaceAuto {
-		coordSpace = coordinateSpaceNormalized
-	}
 	modelRowSpacing := *args.RowSpacing
 	measurementSummary := ""
 	imageCalibrated := false
-	if coordSpace == coordinateSpaceNormalized {
-		if t.screen == nil {
-			if t.requireFreshScreenshot {
-				return toolErrorResultString(ctx, CodeInvalidArguments, "wheel_nudge requires a fresh screenshot from the current screen before moving a picker"), nil
-			}
-		} else if jpegData, _, _, _, ok := t.screen.LatestScreenshot(screenDimensionsStaleAfter); ok {
-			startedAt := time.Now()
-			if measurement, measured := measureWheelRowSpacingJPEG(jpegData, *args.ColumnX, *args.CenterY); measured {
-				measuredRowSpacing := measurement.Normalized
-				args.RowSpacing = &measuredRowSpacing
-				imageCalibrated = true
-				measurementSummary = fmt.Sprintf(
-					" row_spacing_source=image measured_row_spacing=%.1f model_row_spacing=%.1f confidence=%.2f measurement_ms=%.1f",
-					measurement.Normalized,
-					modelRowSpacing,
-					measurement.Confidence,
-					float64(time.Since(startedAt).Microseconds())/1000.0,
-				)
-			}
-		} else if t.requireFreshScreenshot {
+	if t.screen == nil {
+		if t.requireFreshScreenshot {
 			return toolErrorResultString(ctx, CodeInvalidArguments, "wheel_nudge requires a fresh screenshot from the current screen before moving a picker"), nil
 		}
+	} else if jpegData, _, _, _, ok := t.screen.LatestScreenshot(screenDimensionsStaleAfter); ok {
+		startedAt := time.Now()
+		if measurement, measured := measureWheelRowSpacingJPEG(jpegData, *args.ColumnX, *args.CenterY); measured {
+			measuredRowSpacing := measurement.Normalized
+			args.RowSpacing = &measuredRowSpacing
+			imageCalibrated = true
+			measurementSummary = fmt.Sprintf(
+				" row_spacing_source=image measured_row_spacing=%.1f model_row_spacing=%.1f confidence=%.2f measurement_ms=%.1f",
+				measurement.Normalized,
+				modelRowSpacing,
+				measurement.Confidence,
+				float64(time.Since(startedAt).Microseconds())/1000.0,
+			)
+		}
+	} else if t.requireFreshScreenshot {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "wheel_nudge requires a fresh screenshot from the current screen before moving a picker"), nil
 	}
 	plan, err := planWheelNudge(args)
 	if err != nil {
@@ -1747,16 +1721,6 @@ func (t *WheelNudgeTool) call(ctx context.Context, input string) (string, error)
 	centerY := *args.CenterY
 	gestureTravel := travel
 	maxY := 1000.0
-	if coordSpace == coordinateSpaceScreenshot {
-		if t.screen == nil {
-			return toolErrorResultString(ctx, CodeInvalidArguments, "screenshot coordinates require a recent screenshot"), nil
-		}
-		_, _, active, age, ok := t.screen.ActiveAreaWithAge()
-		if !ok || age >= screenDimensionsStaleAfter {
-			return toolErrorResultString(ctx, CodeInvalidArguments, "screenshot coordinates require a fresh screenshot"), nil
-		}
-		maxY = float64(active.Height - 1)
-	}
 	if centerY < 0 || centerY > maxY {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "center_y=%.0f is outside the visible coordinate range 0..%.0f", centerY, maxY), nil
 	}
@@ -1767,7 +1731,7 @@ func (t *WheelNudgeTool) call(ctx context.Context, input string) (string, error)
 		if tapY < 0 || tapY > maxY {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "adjacent wheel row y=%.0f is outside the visible coordinate range 0..%.0f", tapY, maxY), nil
 		}
-		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(tapY)}, coordSpace)
+		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(tapY)})
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
@@ -1791,11 +1755,11 @@ func (t *WheelNudgeTool) call(ctx context.Context, input string) (string, error)
 	}
 	physicalTravel := math.Abs(endY - startY)
 
-	start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(startY)}, coordSpace)
+	start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(startY)})
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
-	end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(endY)}, coordSpace)
+	end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(endY)})
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
@@ -1895,6 +1859,9 @@ func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
 	if args.ColumnX == nil || math.IsNaN(*args.ColumnX) || math.IsInf(*args.ColumnX, 0) {
 		return wheelNudgeArgs{}, fmt.Errorf("column_x is required and must be a finite number")
 	}
+	if *args.ColumnX < 0 || *args.ColumnX > 1000 {
+		return wheelNudgeArgs{}, fmt.Errorf("column_x must use the normalized 0-1000 scale")
+	}
 	args.PickerID = strings.TrimSpace(args.PickerID)
 	if args.PickerID == "" {
 		return wheelNudgeArgs{}, fmt.Errorf("picker_id is required and must identify the current visible picker instance")
@@ -1908,18 +1875,23 @@ func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
 	if args.RowSpacing != nil && (*args.RowSpacing <= 0 || math.IsNaN(*args.RowSpacing) || math.IsInf(*args.RowSpacing, 0)) {
 		return wheelNudgeArgs{}, fmt.Errorf("row_spacing must be a positive finite number")
 	}
+	if args.RowSpacing != nil && *args.RowSpacing > 1000 {
+		return wheelNudgeArgs{}, fmt.Errorf("row_spacing must use the normalized 0-1000 scale")
+	}
 	if args.ValueStep != nil && *args.ValueStep == 0 {
 		return wheelNudgeArgs{}, fmt.Errorf("value_step must be non-zero")
-	}
-	args.CoordSpace = strings.ToLower(strings.TrimSpace(args.CoordSpace))
-	if args.CoordSpace != "" && args.CoordSpace != coordinateSpaceAuto && args.CoordSpace != coordinateSpaceScreenshot && args.CoordSpace != coordinateSpaceNormalized {
-		return wheelNudgeArgs{}, fmt.Errorf("unsupported coord_space for wheel_nudge: %q", args.CoordSpace)
 	}
 	if args.CenterY == nil || math.IsNaN(*args.CenterY) || math.IsInf(*args.CenterY, 0) {
 		return wheelNudgeArgs{}, fmt.Errorf("center_y is required and must be a finite number measured from the selected row in the latest screenshot")
 	}
+	if *args.CenterY < 0 || *args.CenterY > 1000 {
+		return wheelNudgeArgs{}, fmt.Errorf("center_y must use the normalized 0-1000 scale")
+	}
 	if args.VisibleTargetY != nil && (math.IsNaN(*args.VisibleTargetY) || math.IsInf(*args.VisibleTargetY, 0)) {
 		return wheelNudgeArgs{}, fmt.Errorf("visible_target_y must be a finite number")
+	}
+	if args.VisibleTargetY != nil && (*args.VisibleTargetY < 0 || *args.VisibleTargetY > 1000) {
+		return wheelNudgeArgs{}, fmt.Errorf("visible_target_y must use the normalized 0-1000 scale")
 	}
 	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil || args.RowSpacing == nil {
 		return wheelNudgeArgs{}, fmt.Errorf("complete wheel metadata required: provide current_value, target_value, cycle_size, cycle_start, and measured row_spacing")
@@ -2162,7 +2134,7 @@ func (p *pointerPoint) UnmarshalJSON(data []byte) error {
 	}
 	// Normal object format {"x":N,"y":M}
 	type plain pointerPoint
-	return json.Unmarshal(data, (*plain)(p))
+	return decodeStrictJSONObject(string(data), (*plain)(p))
 }
 
 type pointerCoordinate float64
@@ -2202,102 +2174,42 @@ type resolvedPointerPoint struct {
 	y int
 }
 
-const (
-	coordinateSpaceAuto       = "auto"
-	coordinateSpaceScreenshot = "screenshot"
-	coordinateSpacePixel      = "pixel"
-	coordinateSpaceNormalized = "normalized"
-	coordinateSpaceAbsolute   = "absolute"
-)
-
-func resolveRequiredPoint(screen *screen.ScreenState, touchscreen bool, point *pointerPoint, coordSpace string) (resolvedPointerPoint, error) {
+func resolveRequiredPoint(screen *screen.ScreenState, touchscreen bool, point *pointerPoint) (resolvedPointerPoint, error) {
 	if point == nil {
 		return resolvedPointerPoint{}, fmt.Errorf("point is required")
 	}
 
-	x, y, err := resolvePointerPositionForSurface(screen, touchscreen, point.X.Float64(), point.Y.Float64(), coordSpace, coordinateSpaceNormalized)
+	x, y, err := resolvePointerPositionForSurface(screen, touchscreen, point.X.Float64(), point.Y.Float64())
 	if err != nil {
 		return resolvedPointerPoint{}, err
 	}
 	return resolvedPointerPoint{x: x, y: y}, nil
 }
 
-func resolvePointOrDefaultNormalized(screen *screen.ScreenState, touchscreen bool, point *pointerPoint, coordSpace string, defaultX, defaultY float64) (resolvedPointerPoint, error) {
+func resolvePointOrDefaultNormalized(screen *screen.ScreenState, touchscreen bool, point *pointerPoint, defaultX, defaultY float64) (resolvedPointerPoint, error) {
 	if point != nil {
-		return resolveRequiredPoint(screen, touchscreen, point, coordSpace)
+		return resolveRequiredPoint(screen, touchscreen, point)
 	}
 
-	if _, err := normalizeCoordinateSpace(coordSpace, coordinateSpaceNormalized); err != nil {
-		return resolvedPointerPoint{}, err
-	}
-
-	x, y, err := resolvePointerPositionForSurface(screen, touchscreen, defaultX, defaultY, coordinateSpaceNormalized, coordinateSpaceNormalized)
+	x, y, err := resolvePointerPositionForSurface(screen, touchscreen, defaultX, defaultY)
 	if err != nil {
 		return resolvedPointerPoint{}, err
 	}
 	return resolvedPointerPoint{x: x, y: y}, nil
 }
 
-func resolvePointerPosition(screen *screen.ScreenState, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
-	return resolvePointerPositionForSurface(screen, false, x, y, coordSpace, defaultSpace)
+func resolvePointerPosition(screen *screen.ScreenState, x, y float64) (int, int, error) {
+	return resolvePointerPositionForSurface(screen, false, x, y)
 }
 
-func resolvePointerPositionForSurface(screen *screen.ScreenState, touchscreen bool, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
-	space, err := normalizeCoordinateSpace(coordSpace, defaultSpace)
-	if err != nil {
-		return 0, 0, err
+func resolvePointerPositionForSurface(screen *screen.ScreenState, touchscreen bool, x, y float64) (int, int, error) {
+	if math.IsNaN(x) || math.IsInf(x, 0) || math.IsNaN(y) || math.IsInf(y, 0) {
+		return 0, 0, fmt.Errorf("coordinates must be finite")
 	}
-
-	switch space {
-	case coordinateSpaceAuto:
-		if looksLikeNormalizedPoint(x, y) {
-			absX, absY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, x, y)
-			if err != nil {
-				return 0, 0, err
-			}
-			return absX, absY, nil
-		}
-		if screen != nil {
-			if width, height, active, age, ok := screen.ActiveAreaWithAge(); ok && age < screenDimensionsStaleAfter {
-				return pixelToAbsolutePoint(x, y, width, height, active, touchscreen)
-			}
-		}
-		return int(clampFloat(math.Round(x), 0, absMouseMaxPos)), int(clampFloat(math.Round(y), 0, absMouseMaxPos)), nil
-	case coordinateSpacePixel:
-		if screen == nil {
-			return 0, 0, fmt.Errorf("pixel coordinates require known screen dimensions; call screenshot first or use coord_space normalized/absolute")
-		}
-		width, height, active, age, ok := screen.ActiveAreaWithAge()
-		if !ok {
-			return 0, 0, fmt.Errorf("pixel coordinates require known screen dimensions; call screenshot first or use coord_space normalized/absolute")
-		}
-		if age >= screenDimensionsStaleAfter {
-			return 0, 0, fmt.Errorf("cached screen dimensions are %.0fs old; call screenshot to refresh before using pixel coordinates", age.Seconds())
-		}
-		return pixelToAbsolutePoint(x, y, width, height, active, touchscreen)
-	case coordinateSpaceScreenshot:
-		if screen == nil {
-			return 0, 0, fmt.Errorf("screenshot coordinates require a recent screenshot")
-		}
-		width, height, active, age, ok := screen.ActiveAreaWithAge()
-		if !ok {
-			return 0, 0, fmt.Errorf("screenshot coordinates require a recent screenshot")
-		}
-		if age >= screenDimensionsStaleAfter {
-			return 0, 0, fmt.Errorf("cached screenshot dimensions are %.0fs old; call screenshot again before using screenshot coordinates", age.Seconds())
-		}
-		return screenshotPixelToAbsolutePoint(x, y, width, height, active, touchscreen)
-	case coordinateSpaceNormalized:
-		absX, absY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, x, y)
-		if err != nil {
-			return 0, 0, err
-		}
-		return absX, absY, nil
-	case coordinateSpaceAbsolute:
-		return int(clampFloat(math.Round(x), 0, absMouseMaxPos)), int(clampFloat(math.Round(y), 0, absMouseMaxPos)), nil
+	if x < 0 || x > 1000 || y < 0 || y > 1000 {
+		return 0, 0, fmt.Errorf("coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f", x, y)
 	}
-
-	return 0, 0, fmt.Errorf("unsupported coord_space: %q", coordSpace)
+	return normalizedToAbsolutePointForSurface(screen, touchscreen, x, y)
 }
 
 func normalizedToAbsolutePointForSurface(screen *screen.ScreenState, touchscreen bool, x, y float64) (int, int, error) {
@@ -2367,58 +2279,8 @@ func normalizedToAbsolutePointForSurface(screen *screen.ScreenState, touchscreen
 	return absX, absY, nil
 }
 
-func looksLikeNormalizedPoint(x, y float64) bool {
-	return x >= 0 && x <= 1000 && y >= 0 && y <= 1000
-}
-
-func normalizeCoordinateSpace(coordSpace string, defaultSpace string) (string, error) {
-	space := strings.ToLower(strings.TrimSpace(coordSpace))
-	if space == "" {
-		space = defaultSpace
-	}
-
-	switch space {
-	case coordinateSpaceAuto, coordinateSpaceScreenshot, coordinateSpacePixel, coordinateSpaceNormalized, coordinateSpaceAbsolute:
-		return space, nil
-	default:
-		return "", fmt.Errorf("unsupported coord_space: %q", coordSpace)
-	}
-}
-
 func normalizedToAbsolutePoint(x, y float64) (int, int) {
 	return int(math.Round(clampFloat(x, 0, 1000) / 1000.0 * absMouseMaxPos)), int(math.Round(clampFloat(y, 0, 1000) / 1000.0 * absMouseMaxPos))
-}
-
-func pixelToAbsolutePoint(x, y float64, width, height int, active screen.ScreenActiveArea, touchscreen bool) (int, int, error) {
-	if width <= 0 || height <= 0 {
-		return 0, 0, fmt.Errorf("invalid screen dimensions: %dx%d", width, height)
-	}
-	if !active.Valid {
-		active = screen.ScreenActiveArea{X: 0, Y: 0, Width: width, Height: height, Valid: true}
-	}
-	// Pixel coordinates are relative to the cropped active area image that the
-	// LLM sees, not the full HDMI frame. Bounds check against active area size.
-	if x < 0 || y < 0 || x > float64(active.Width-1) || y > float64(active.Height-1) {
-		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside screenshot bounds %dx%d; use coord_space normalized with 0-1000 coordinates, where 500,500 is center", x, y, active.Width, active.Height)
-	}
-	// pointer_mode touchscreen: HID surface covers the full mirrored frame.
-	if touchscreen {
-		return scalePixelToAbsolute(float64(active.X)+x, width), scalePixelToAbsolute(float64(active.Y)+y, height), nil
-	}
-	return scalePixelToAbsolute(x, active.Width), scalePixelToAbsolute(y, active.Height), nil
-}
-
-func screenshotPixelToAbsolutePoint(x, y float64, sourceWidth, sourceHeight int, active screen.ScreenActiveArea, touchscreen bool) (int, int, error) {
-	if sourceWidth <= 0 || sourceHeight <= 0 || !active.Valid || active.Width <= 0 || active.Height <= 0 {
-		return 0, 0, fmt.Errorf("invalid screenshot mapping: source=%dx%d active=%+v", sourceWidth, sourceHeight, active)
-	}
-	if x < 0 || y < 0 || x > float64(active.Width-1) || y > float64(active.Height-1) {
-		return 0, 0, fmt.Errorf("screenshot coordinates x=%.2f y=%.2f are outside latest returned screenshot bounds %dx%d", x, y, active.Width, active.Height)
-	}
-	if touchscreen {
-		return scalePixelToAbsolute(float64(active.X)+x, sourceWidth), scalePixelToAbsolute(float64(active.Y)+y, sourceHeight), nil
-	}
-	return activeLocalAxisToAbsolute(x, active.X, active.Width, sourceWidth), activeLocalAxisToAbsolute(y, active.Y, active.Height, sourceHeight), nil
 }
 
 const nearlyFullSourceAxisRatio = 0.9
@@ -2647,7 +2509,8 @@ func directionalSwipeNormalizedCoordinates(gestureType string, distance, anchor 
 		return 0, 0, 0, 0, fmt.Errorf("unsupported directional swipe: %q", gestureType)
 	}
 
-	return startX, startY, endX, endY, nil
+	return clampFloat(startX, 0, 1000), clampFloat(startY, 0, 1000),
+		clampFloat(endX, 0, 1000), clampFloat(endY, 0, 1000), nil
 }
 
 func dragPointer(pc *pointerController, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, holdAfterMs, steps int) (dragErr error) {

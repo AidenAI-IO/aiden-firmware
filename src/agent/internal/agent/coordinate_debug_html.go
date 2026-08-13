@@ -3,7 +3,7 @@ package agent
 // coordinateDebugHTML is the normalized-coordinate debug tool served at
 // /coordinate-debug. It loads the live device screen via /api/screenshot.jpg
 // (or a local upload) and maps clicks to the agent's 0-1000 normalized
-// coordinate space used by the HID tools.
+// scale used by the HID tools.
 const coordinateDebugHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/executor"
 	"encoding/base64"
 	"encoding/json"
 	"reflect"
@@ -646,7 +647,7 @@ func TestFunctionAgentScratchpadPrunesScreenshotsInBatches(t *testing.T) {
 func TestFunctionAgentScratchpadUsesConfiguredScreenshotPruning(t *testing.T) {
 	agent := &FunctionAgent{
 		Tools:             []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
-		ScreenshotPruning: ScreenshotPruningConfig{KeepN: 2, Interval: 4},
+		ScreenshotPruning: executor.ScreenshotPruningConfig{KeepN: 2, Interval: 4},
 	}
 
 	messages := agent.constructFunctionScratchPad(screenshotSteps(7))

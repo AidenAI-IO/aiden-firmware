@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/executor"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -15,7 +16,7 @@ import (
 type FunctionAgent struct {
 	Tools             []langtools.Tool
 	OutputKey         string
-	ScreenshotPruning ScreenshotPruningConfig
+	ScreenshotPruning executor.ScreenshotPruningConfig
 }
 
 type visualObservationTool interface {
@@ -35,33 +36,6 @@ type structuredInputTool interface {
 const toolActionLogVersion = 1
 const maxToolObservationRunes = 4000
 const maxSkillReadObservationRunes = 20000
-
-type ScreenshotPruningConfig struct {
-	KeepN    int
-	Interval int
-}
-
-func (c ScreenshotPruningConfig) WithDefaults() ScreenshotPruningConfig {
-	if c.KeepN <= 0 {
-		c.KeepN = defaultScreenshotKeepN
-	}
-	if c.Interval <= 0 {
-		c.Interval = defaultScreenshotPruneInterval
-	}
-	return c
-}
-
-func (c ScreenshotPruningConfig) PrunedCount(total int) int {
-	c = c.WithDefaults()
-	if total <= c.KeepN+c.Interval {
-		return 0
-	}
-	pruned := ((total - c.KeepN - 1) / c.Interval) * c.Interval
-	if maxPruned := total - c.KeepN; pruned > maxPruned {
-		return maxPruned
-	}
-	return pruned
-}
 
 type toolActionLog struct {
 	Version     int    `json:"aiden_action_log_version"`

@@ -10,7 +10,7 @@ import (
 )
 
 func TestAdvertisedServiceUUIDs(t *testing.T) {
-	want := []string{PairingServiceUUID}
+	want := []string{WakeServiceUUID}
 	if got := advertisedServiceUUIDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("advertisedServiceUUIDs() = %#v, want %#v", got, want)
 	}
@@ -76,9 +76,10 @@ func TestBoardIdentityRejectsInvalidAdapterAddress(t *testing.T) {
 	}
 }
 
-func TestDisconnectedDeviceClearsANCSStatus(t *testing.T) {
+func TestDisconnectedDeviceClearsSubscriberStatus(t *testing.T) {
 	service := NewService(1)
 	service.status.update(func(status *RuntimeStatus) {
+		status.WakeSubscriber = true
 		status.ANCSSubscribed = true
 	})
 	backend := newBlueZBackend(service, "Aiden", 0)
@@ -94,7 +95,7 @@ func TestDisconnectedDeviceClearsANCSStatus(t *testing.T) {
 	)
 
 	status := service.Status()
-	if !status.Paired || status.Connected || status.ANCSSubscribed {
+	if !status.Paired || status.Connected || status.WakeSubscriber || status.ANCSSubscribed {
 		t.Fatalf("unexpected disconnected status: %#v", status)
 	}
 }
@@ -102,6 +103,7 @@ func TestDisconnectedDeviceClearsANCSStatus(t *testing.T) {
 func TestUserDisabledConnectionStaysDisconnectedWhenLinkReturns(t *testing.T) {
 	service := NewService(1)
 	service.status.update(func(status *RuntimeStatus) {
+		status.WakeSubscriber = true
 		status.ANCSSubscribed = true
 	})
 	backend := newBlueZBackend(service, "Aiden", 0)
@@ -119,7 +121,8 @@ func TestUserDisabledConnectionStaysDisconnectedWhenLinkReturns(t *testing.T) {
 	)
 
 	status := service.Status()
-	if !status.Paired || status.Connected || status.ServicesResolved || status.ANCSSubscribed {
+	if !status.Paired || status.Connected || status.ServicesResolved ||
+		status.WakeSubscriber || status.ANCSSubscribed {
 		t.Fatalf("user-disabled connection became active again: %#v", status)
 	}
 }

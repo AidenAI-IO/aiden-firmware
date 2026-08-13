@@ -272,9 +272,9 @@ so switching is a one-line change instead of a re-entry of keys.
 
 | Field       | Description                                                                                        |
 | ----------- | -------------------------------------------------------------------------------------------------- |
-| `type`      | Required provider type: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`   |
+| `type`      | Required provider type: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`   |
 | `api_key`   | Literal API key, or `$VAR_NAME` to read it from an environment variable                              |
-| `base_url`  | Custom OpenAI-compatible endpoint; same `openai`/`ollama` restriction as `[model]`                  |
+| `base_url`  | Custom endpoint; supported by `openai`, `anthropic`, and `ollama`                                  |
 
 ```toml
 [model_providers.openai-work]
@@ -284,6 +284,11 @@ api_key = "sk-..."
 [model_providers.ollama-local]
 type = "ollama"
 base_url = "http://127.0.0.1:11434"
+
+[model_providers.claude-work]
+type = "anthropic"
+api_key = "$ANTHROPIC_AUTH_TOKEN"
+base_url = "https://api.anthropic.com/v1"
 
 [model]
 provider = "openai-work"   # references [model_providers.openai-work]
@@ -312,12 +317,12 @@ built. When a section is named exactly like a provider type, the section wins.
 
 | Field                     | Description                                                                                                                                                                                                                                          |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider`                | A provider type, or the name of a `[model_providers.<name>]` section. Types: `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
+| `provider`                | A provider type, or the name of a `[model_providers.<name>]` section. Types: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
-| `base_url`                | Custom OpenAI-compatible endpoint. Only `openai` and `ollama` accept a `base_url` override; other providers use their built-in endpoints and a stored value is dropped on load. |
+| `base_url`                | Custom provider endpoint. `openai`, `anthropic`, and `ollama` accept overrides; other providers use built-in endpoints and a stored value is dropped on load. Anthropic accepts either a host URL or a URL ending in `/v1`. |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
 | `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
-| `reasoning_effort`        | Thinking budget. Unset is auto: the field is omitted and the provider decides, except that reasoning is disabled for no-tool requests. `low`/`medium`/`high` work everywhere; `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, Ollama, and the fake provider, but not by Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
+| `reasoning_effort`        | Thinking effort. Unset is auto. For no-tool requests, native Anthropic maps `low`/`medium`/`high` to adaptive thinking `output_config.effort`; tool requests retain Claude's default reasoning because Aiden does not persist Anthropic thinking signatures. `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, Ollama, and the fake provider, but not by native Anthropic or Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
 | `max_response_tokens`     | Maximum output tokens passed to the model on request                                                                                                                                                                                                 |
 | `context_window`          | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback.                                                                        |
 | `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry.                                                                                                                     |

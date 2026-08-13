@@ -63,5 +63,5 @@ The `tool` of a call step must be one of the script-callable device or utility t
 
 - `tts` lines do not block, so insert a following `wait` step if later actions should happen after speech.
 - A `wait` duration must be greater than zero and no more than 30 seconds.
-- Coordinate-based call steps follow the same coordinate discipline as direct device operation: prefer `coord_space: "normalized"` (0-1000) and target the visible control center.
+- Coordinate-based call steps follow the same coordinate discipline as direct device operation: use normalized 0-1000 coordinates and target the visible control center.
 - Treat scripts as internal automation. When running them for ordinary user tasks, describe progress in terms of the user goal; do not expose script files, JSONL, or step details unless the user is explicitly debugging or authoring scripts.

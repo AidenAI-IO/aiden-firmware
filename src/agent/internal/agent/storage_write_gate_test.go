@@ -43,13 +43,15 @@ func TestLLMRawHTTPLoggerHonorsStorageCapability(t *testing.T) {
 	config := DefaultStorageConfig()
 	config.Cleanup.Enabled = false
 	monitor := NewStorageMonitor(config, sampler, nil, nil, nil)
-	logger := newLLMRawHTTPLogger(dir, "session")
-	logger.SetStorageMonitor(monitor)
+	bindings := NewModelRuntimeBindings()
+	bindings.SetSessionIDProvider(func() string { return "session" })
+	bindings.SetStorageWriteGate(monitor)
+	logger := newLLMRawHTTPLogger(dir, bindings)
 
 	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
 		t.Fatalf("critical CheckAndRemediate() error = %v", err)
 	}
-	if err := logger.Log("model", "request", 200, `{}`); err != nil {
+	if err := logger.Log(context.Background(), RawHTTPLogEntry{Model: "model", Kind: "request", StatusCode: 200, Raw: `{}`}); err != nil {
 		t.Fatalf("Log() at critical error = %v", err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -63,7 +65,7 @@ func TestLLMRawHTTPLoggerHonorsStorageCapability(t *testing.T) {
 	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
 		t.Fatalf("recovery CheckAndRemediate() error = %v", err)
 	}
-	if err := logger.Log("model", "request", 200, `{}`); err != nil {
+	if err := logger.Log(context.Background(), RawHTTPLogEntry{Model: "model", Kind: "request", StatusCode: 200, Raw: `{}`}); err != nil {
 		t.Fatalf("Log() after recovery error = %v", err)
 	}
 	entries, err = os.ReadDir(dir)

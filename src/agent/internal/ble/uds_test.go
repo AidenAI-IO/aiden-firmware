@@ -8,7 +8,11 @@ import (
 	"testing"
 )
 
-type fakePairingBackend struct {
+type fakeWakeBackend struct {
+	delivered      bool
+	payloadID      uint64
+	reason         string
+	err            error
 	pairingStarted bool
 	pairingErr     error
 	disconnected   bool
@@ -17,30 +21,44 @@ type fakePairingBackend struct {
 	forgetErr      error
 }
 
-func (b *fakePairingBackend) StartPairing() error {
+func (b *fakeWakeBackend) NotifyWake(sequence uint64, reason string) (bool, error) {
+	b.payloadID = sequence
+	b.reason = reason
+	return b.delivered, b.err
+}
+
+func (b *fakeWakeBackend) StartPairing() error {
 	b.pairingStarted = true
 	return b.pairingErr
 }
 
-func (b *fakePairingBackend) Disconnect() error {
+func (b *fakeWakeBackend) Disconnect() error {
 	b.disconnected = true
 	return b.disconnectErr
 }
 
-func (b *fakePairingBackend) ForgetPairing() (int, error) {
+func (b *fakeWakeBackend) ForgetPairing() (int, error) {
 	return b.forgetRemoved, b.forgetErr
 }
 
 func TestUDSOperations(t *testing.T) {
 	service := NewService(4)
-	backend := &fakePairingBackend{}
+	backend := &fakeWakeBackend{delivered: true}
 	service.setBackend(backend)
 	server := NewUDSServer("unused", service)
 
-	response := decodeResponse(t, server.handleRequest([]byte(`{"op":"status"}`), nil))
+	response := decodeResponse(t, server.handleRequest([]byte(`{"op":"wake","reason":"queue"}`), nil))
+	if response["status"] != "OK" || response["wake_id"] != "1" || response["delivered"] != true {
+		t.Fatalf("unexpected wake response: %#v", response)
+	}
+	if backend.payloadID != 1 || backend.reason != "queue" {
+		t.Fatalf("wake was not forwarded: %#v", backend)
+	}
+
+	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"status"}`), nil))
 	bluetooth, ok := response["bluetooth"].(map[string]any)
-	if !ok || bluetooth["pairing_service_uuid"] != PairingServiceUUID {
-		t.Fatalf("status does not expose pairing service identity: %#v", response)
+	if !ok || bluetooth["wake_service_uuid"] != WakeServiceUUID {
+		t.Fatalf("status does not expose Wake service identity: %#v", response)
 	}
 
 	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"pairing_start"}`), nil))
@@ -95,6 +113,16 @@ func TestUDSOperations(t *testing.T) {
 	if response["status"] != "INVALID_ARGUMENT" {
 		t.Fatalf("invalid cursor was accepted: %#v", response)
 	}
+
+	publishRequest := []byte(`{"op":"notification_publish","phone_id":"android-1","events":[{"source_id":"notification-key","source_event_id":"event-1","event":"added","app_identifier":"com.example","title":"Hello"}]}`)
+	response = decodeResponse(t, server.handleRequest(publishRequest, nil))
+	if response["status"] != "OK" || response["accepted"] != float64(1) || response["last_id"] != "2" {
+		t.Fatalf("notification publish failed: %#v", response)
+	}
+	response = decodeResponse(t, server.handleRequest(publishRequest, nil))
+	if response["status"] != "OK" || response["duplicates"] != float64(1) || response["last_id"] != "2" {
+		t.Fatalf("notification retry was not deduplicated: %#v", response)
+	}
 }
 
 func TestUDSPairingFailures(t *testing.T) {
@@ -105,7 +133,7 @@ func TestUDSPairingFailures(t *testing.T) {
 		t.Fatalf("missing backend status=%#v", response)
 	}
 
-	backend := &fakePairingBackend{pairingErr: errors.New("pairing failed")}
+	backend := &fakeWakeBackend{pairingErr: errors.New("pairing failed")}
 	service.setBackend(backend)
 	response = decodeResponse(t, server.handleRequest([]byte(`{"op":"pairing_start"}`), nil))
 	if response["status"] != "INTERNAL_ERROR" {
@@ -119,13 +147,37 @@ func TestUDSPairingFailures(t *testing.T) {
 	}
 }
 
+func TestUDSWakeFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		backend    wakeBackend
+		wantStatus string
+	}{
+		{name: "backend unavailable", backend: nil, wantStatus: "SERVICE_UNAVAILABLE"},
+		{name: "backend failure", backend: &fakeWakeBackend{err: errors.New("notify failed")}, wantStatus: "INTERNAL_ERROR"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := NewService(4)
+			if test.backend != nil {
+				service.setBackend(test.backend)
+			}
+			server := NewUDSServer("unused", service)
+			response := decodeResponse(t, server.handleRequest([]byte(`{"op":"wake","reason":"queue"}`), nil))
+			if response["status"] != test.wantStatus || response["error"] == "" {
+				t.Fatalf("unexpected wake failure response: %#v", response)
+			}
+		})
+	}
+}
+
 func TestUDSEventsSinceRejectsOversizedResponse(t *testing.T) {
 	service := NewService(20)
 	for index := 0; index < 20; index++ {
 		service.store.Append(NotificationEvent{
 			NotificationUID: uint32(index + 1),
 			Event:           "added",
-			Message:         strings.Repeat("x", 8*1024),
+			Message:         strings.Repeat("x", 16*1024),
 		})
 	}
 	server := NewUDSServer("unused", service)
@@ -157,6 +209,46 @@ func TestWriteUDSMessageEnforcesFrameLimits(t *testing.T) {
 	}
 	if err := writeUDSMessage(&bytes.Buffer{}, []byte(`{}`), make([]byte, maxUDSPayloadBytes+1)); err == nil {
 		t.Fatal("oversized payload was accepted")
+	}
+}
+
+func TestWriteUDSMessageAcceptsMaximumNotificationBatch(t *testing.T) {
+	fill := func(length int) string { return strings.Repeat(`"`, length) }
+	events := make([]NotificationEvent, maxPublishedNotifications)
+	for index := range events {
+		flags := make([]string, maxNotificationFlags)
+		for flagIndex := range flags {
+			flags[flagIndex] = fill(maxNotificationFlagLength)
+		}
+		events[index] = NotificationEvent{
+			SourceID:      fill(maxSourceIDLength),
+			SourceEventID: fill(maxSourceEventIDLength),
+			Event:         "added",
+			Flags:         flags,
+			AppIdentifier: fill(maxAppIdentifierLength),
+			Title:         fill(maxNotificationTitle),
+			Subtitle:      fill(maxNotificationSubtitle),
+			Message:       fill(maxNotificationMessage),
+			Category:      fill(maxNotificationCategory),
+			Date:          fill(maxNotificationDate),
+		}
+	}
+	header, err := json.Marshal(udsRequest{
+		Op:      "notification_publish",
+		PhoneID: fill(maxPhoneIDLength),
+		Events:  events,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(header) <= 64*1024 {
+		t.Fatalf("maximum notification batch did not exercise the old limit: %d", len(header))
+	}
+	if len(header) > maxUDSHeaderBytes {
+		t.Fatalf("maximum notification batch exceeds UDS header limit: %d", len(header))
+	}
+	if err := writeUDSMessage(&bytes.Buffer{}, header, nil); err != nil {
+		t.Fatalf("maximum valid notification header was rejected: %v", err)
 	}
 }
 

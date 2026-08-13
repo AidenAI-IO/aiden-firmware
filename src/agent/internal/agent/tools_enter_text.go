@@ -21,8 +21,8 @@ type EnterTextTool struct {
 // enterTextArgs is the public tool payload. textInputArgs adds only the
 // internal state needed while processing an IME part.
 type enterTextArgs struct {
-	Text  string         `json:"text"`
-	Focus focusPointArgs `json:"focus"`
+	Text  string          `json:"text"`
+	Focus *focusPointArgs `json:"focus"`
 }
 
 type enterTextToolResult struct {
@@ -33,7 +33,7 @@ type enterTextToolResult struct {
 func (a enterTextArgs) toEngineArgs() textInputArgs {
 	return textInputArgs{
 		Text:  a.Text,
-		Focus: a.Focus,
+		Focus: *a.Focus,
 	}
 }
 
@@ -117,7 +117,10 @@ func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disabl
 			return enterTextToolFailure(batchCtx, CodeModuleUnavailable, "Configure enter_text dependencies, then retry."), nil
 		}
 		var publicArgs enterTextArgs
-		if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &publicArgs); err != nil {
+		if err := decodeStrictJSONObject(input, &publicArgs); err != nil {
+			return enterTextToolFailure(batchCtx, CodeInvalidArguments, "Call enter_text again with valid JSON containing text and focus."), nil
+		}
+		if publicArgs.Focus == nil {
 			return enterTextToolFailure(batchCtx, CodeInvalidArguments, "Call enter_text again with valid JSON containing text and focus."), nil
 		}
 		metrics.characters.Store(int64(len([]rune(publicArgs.Text))))

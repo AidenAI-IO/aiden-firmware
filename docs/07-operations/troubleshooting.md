@@ -37,7 +37,7 @@ Common causes:
 - `frame_service` is not running;
 - `[hid].frame_socket` path in `agent.toml` is inconsistent;
 - HDMI input is not synced;
-- TC358743 / `/dev/v4l-subdev2` status is abnormal.
+- RK628D or TC358743 HDMI subdevice status is abnormal.
 
 ## Frame Service keeps restarting
 
@@ -50,9 +50,20 @@ tail -f /var/log/frame_service/frame_service.log
 Check:
 
 - Whether `/oem/usr/bin/frame_service` exists and is executable;
-- Whether `/dev/video0`, `/dev/v4l-subdev2` exist;
+- Whether `/dev/video0` and an RK628D or TC358743 subdevice exist;
 - Whether EDID / HDMI signal is normal;
 - Whether other processes are using `/dev/video0`.
+
+Find the HDMI bridge subdevice without assuming a fixed index. RK628D reports
+`rk628-csi`; TC358743 reports `tc358743`:
+
+```bash
+for f in /sys/class/video4linux/v4l-subdev*/name; do echo "$f: $(cat "$f")"; done
+```
+
+If the matching `rk628-csi` or `tc358743` node was not selected, set
+`FRAME_SERVICE_SUBDEV=/dev/v4l-subdevX` in
+`/etc/aiden_frame_service.conf` to that node and restart `S52frame_service`.
 
 ## Agent Web UI won't open
 

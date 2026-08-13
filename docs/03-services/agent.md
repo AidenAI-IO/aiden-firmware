@@ -76,4 +76,4 @@ provider = "minimax-main"
 speed = 1.0
 ```
 
-Built-in model provider types include `openai`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, and `ollama`. There are no native `anthropic` or `gemini` provider types; Anthropic Claude and Google Gemini models can be selected through a registered compatible provider such as `openrouter`.
+Built-in model provider types include `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, and `ollama`. Anthropic Claude can be accessed directly through the native `anthropic` provider or through a compatible provider such as OpenRouter. Google Gemini models use a compatible provider such as OpenRouter.

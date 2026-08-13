@@ -16,7 +16,7 @@ It is not a final integrated hardware product.
 The current development setup centers on:
 
 - [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero), RV1106 / Rockchip platform running Buildroot Linux;
-- [TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html), HDMI-to-CSI bridge for external screen capture;
+- [Firefly HDMI TO MIPI CSI RK628D](https://wiki.t-firefly.com/HDMI-TO-MIPI-CSI-RK628D/rk628d.html), four-lane HDMI-to-CSI bridge for external screen capture, or the legacy TC358743 two-lane bridge;
 - [ASRPRO 2.0](https://item.taobao.com/item.htm?id=676711841241) for voice recognition, connected to the Pico Zero alongside a 1 W / 8 Ω speaker connected directly to the Pico Zero speaker output;
 - A USB-C hub that provides HDMI output for capture and a USB data path back to the target device;
 - The Pico Zero Linux USB gadget stack for keyboard, pointer/touch, and ECM networking.
@@ -29,7 +29,7 @@ For the complete parts list, self-assembly instructions, wiring diagram, and tar
 
 The current hardware setup connects to a phone or computer through a USB-C hub:
 
-- the target device's display output is captured through HDMI and the TC358743 HDMI-to-CSI path;
+- the target device's display output is captured through HDMI and the detected RK628D or TC358743 HDMI-to-CSI path;
 - the Luckfox Pico Zero exposes a composite USB gadget with keyboard, pointer/touch, auxiliary control HID, and USB ECM networking;
 - the Go Agent sends screenshots to a configured multimodal model, decides the next action, and writes keyboard, pointer/touch, and Android extension or Consumer Control reports to `/dev/hidg0`, `/dev/hidg1`, and `/dev/hidg2`;
 - voice mode records audio on the board, applies VAD, then uses configured STT, LLM, and TTS providers.
@@ -41,7 +41,9 @@ The basic control path does not require jailbreak, ADB, developer mode, or a cus
 ### 1. **True Portability**
 Most mobile agent projects are lab prototypes that require a laptop or desktop to run. Aiden is:
 - **Pocket-sized** — Powered entirely by your phone's USB-C port (future versions will be credit-card-sized and magnetically attach to phone backs)
-- **Plug-and-play** — No setup, no pairing, no configuration wizards. Connect and start.
+- **Plug-and-play core control** — HDMI observation and USB HID control work
+  without pairing or a companion app. Optional Phone Bridge, BLE Wake, and
+  notification features require the companion app and their documented setup.
 - **Production-ready** — Designed for daily use, not just research prototypes
 
 ### 2. **Fully Open**
@@ -81,7 +83,7 @@ The firmware has no required Aiden-hosted backend. Screenshots, audio, and text 
 
 ```text
 Target display
-    -> HDMI / TC358743 / CSI
+    -> HDMI / RK628D or TC358743 / CSI
     -> /dev/video0
     -> frame_service
     -> screenshot tool

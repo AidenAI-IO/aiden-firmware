@@ -48,6 +48,7 @@ const (
 	currentEnvironmentHintMaxAge      = 10 * time.Minute
 	runtimeSessionEventPersistTimeout = 2 * time.Second
 	runtimeTTSCloseTimeout            = 5 * time.Second
+	runtimeEpisodeMaintenanceTimeout  = 10 * time.Second
 	maxPublicToolResultRunes          = maxToolObservationRunes
 )
 
@@ -84,6 +85,15 @@ type Runtime struct {
 	storageMonitor     *StorageMonitor
 	ttsManager         *tts.ProviderManager
 	ttsManagerOnce     sync.Once
+	episodeMaintenance asyncEpisodeMaintenance
+}
+
+type asyncEpisodeMaintenance struct {
+	mu      sync.Mutex
+	wg      sync.WaitGroup
+	closing bool
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 type RunRequest struct {
@@ -459,6 +469,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	rt.screenState = screenState
 	rt.phoneBridge = NewPhoneBridge(logger)
+	rt.phoneBridge.SetConfiguredPlatform(cfg.DevicePlatformOrDefault())
 	rt.stateManager.RegisterUpdater(screenState)
 	rt.stateManager.RegisterUpdater(rt.phoneBridge)
 
@@ -570,7 +581,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	}
 	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
-		modelManager.SetRawHTTPLogSessionIDProvider(func() string {
+		modelManager.SetSessionIDProvider(func() string {
 			if memories == nil {
 				return ""
 			}
@@ -1490,7 +1501,64 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	if r == nil || r.tools == nil {
 		return nil
 	}
-	return NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
+	tools := NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
+	return r.filterPhoneBridgeAgentTools(tools)
+}
+
+func (r *Runtime) filterPhoneBridgeAgentTools(tools []langtools.Tool) []langtools.Tool {
+	if r == nil || r.tools == nil || r.tools.phoneBridge == nil {
+		return tools
+	}
+	bridge := r.tools.phoneBridge
+	bridge.SetConfiguredPlatform(r.devicePlatformFromState())
+	status := bridge.getStatus()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	capabilities := bridge.bleCapabilities(ctx)
+	cancel()
+
+	openURLAvailable := phoneBridgeReadyForCommand(status, "open_app") || phoneBridgeCanRestoreFromReturnEntry(status)
+	clipboardAvailable := phoneBridgeCommandAvailable(status, "clipboard_read", capabilities.Wake) ||
+		phoneBridgeCommandAvailable(status, "clipboard_write", capabilities.Wake)
+	calendarAvailable := phoneBridgeCommandAvailable(status, "calendar_create", capabilities.Wake) ||
+		phoneBridgeCommandAvailable(status, "calendar_query", capabilities.Wake) ||
+		phoneBridgeCommandAvailable(status, "calendar_delete", capabilities.Wake)
+	contactsQueryAvailable := phoneBridgeCommandAvailable(status, "contacts_query", capabilities.Wake)
+	contactsCreateAvailable := phoneBridgeCommandAvailable(status, "contacts_create", capabilities.Wake)
+	contactsUpdateAvailable := phoneBridgeCommandAvailable(status, "contacts_update", capabilities.Wake)
+	contactsAvailable := contactsQueryAvailable || contactsCreateAvailable || contactsUpdateAvailable
+	notificationSendAvailable := phoneBridgeCommandAvailable(status, "notification_send", capabilities.Wake)
+	notificationQueryAvailable := capabilities.NotificationQuery
+	notificationAvailable := notificationSendAvailable || notificationQueryAvailable
+
+	filtered := make([]langtools.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		available := true
+		switch tool.Name() {
+		case toolOpenURL:
+			available = openURLAvailable
+		case toolBridgeClipboard:
+			available = clipboardAvailable
+		case toolBridgeCalendar:
+			available = calendarAvailable
+		case toolBridgeContacts:
+			available = contactsAvailable
+		case toolBridgeNotification:
+			available = notificationAvailable
+		}
+		if available {
+			switch tool.Name() {
+			case toolBridgeContacts:
+				tool = newContactsCapabilityTool(tool, contactsQueryAvailable, contactsCreateAvailable, contactsUpdateAvailable)
+			case toolBridgeNotification:
+				tool = newNotificationCapabilityTool(tool, notificationSendAvailable, notificationQueryAvailable)
+			}
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
 }
 
 func toolNamesFromTools(tools []langtools.Tool) []string {
@@ -1606,8 +1674,13 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 				return
 			}
 			r.exportEpisodeBestEffort(episode, promptCapture)
+			maintenanceParentCtx, started := r.episodeMaintenance.begin()
+			if !started {
+				return
+			}
 			go func() {
-				maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer r.episodeMaintenance.done()
+				maintenanceCtx, maintenanceCancel := context.WithTimeout(maintenanceParentCtx, 10*time.Second)
 				defer maintenanceCancel()
 				plane.commitEpisodeMaintenance(maintenanceCtx, episode)
 			}()
@@ -1619,6 +1692,47 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 		return
 	}
 	r.exportEpisodeBestEffort(episode, promptCapture)
+}
+
+func (m *asyncEpisodeMaintenance) begin() (context.Context, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closing {
+		return nil, false
+	}
+	if m.ctx == nil {
+		m.ctx, m.cancel = context.WithCancel(context.Background())
+	}
+	m.wg.Add(1)
+	return m.ctx, true
+}
+
+func (m *asyncEpisodeMaintenance) done() {
+	m.wg.Done()
+}
+
+func (m *asyncEpisodeMaintenance) closeAndWait(ctx context.Context) error {
+	m.mu.Lock()
+	m.closing = true
+	cancel := m.cancel
+	m.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		if cancel != nil {
+			cancel()
+		}
+		return nil
+	case <-ctx.Done():
+		if cancel != nil {
+			cancel()
+		}
+		return ctx.Err()
+	}
 }
 
 func enrichEpisodeSessionBoundaryTelemetry(episode *TaskEpisode, boundary sessionBoundaryTelemetry) {
@@ -2428,6 +2542,11 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), runtimeEpisodeMaintenanceTimeout)
+	if err := r.episodeMaintenance.closeAndWait(maintenanceCtx); err != nil && r.logger != nil {
+		r.logger.Error("episode maintenance drain on close: %v", err)
+	}
+	maintenanceCancel()
 	if r.storageMonitor != nil {
 		r.storageMonitor.Stop()
 	}

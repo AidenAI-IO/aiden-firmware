@@ -4,8 +4,8 @@ sidebar_position: 12
 
 # Phone Bridge Protocol Contract
 
-**Version**: 1.1
-**Date**: 2026-06-10
+**Version**: 1.2
+**Date**: 2026-08-13
 
 This document defines the WebSocket command protocol between the hardware board (aiden-firmware) and phone app (aiden-app).
 
@@ -15,7 +15,23 @@ This document defines the WebSocket command protocol between the hardware board 
 - **Direction**: App acts as WebSocket client actively connecting to board (WebSocket server)
 - **Network**: Via USB ECM established `192.168.42.0/24` subnet, board fixed IP `192.168.42.1`
 
-WebSocket is the foreground fast path. The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native app execution, JS timers, and WebSocket in the iOS background must not be treated as a general tool execution path. On iOS, Phone Bridge tools are foreground capabilities: if the app is backgrounded and reports `return_entry=dynamic_island` with `return_entry_available=true`, board-side tools restore Aiden through Dynamic Island, wait for WebSocket reconnection and active app state, then execute the command. Lock-screen Live Activity entries require visual confirmation instead of blind tapping.
+WebSocket is the foreground fast path. The board also exposes
+`/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue
+endpoints. React Native timers and WebSocket in the iOS background must not be
+treated as a permanent execution path, so the Agent selects among foreground
+WebSocket, Dynamic Island restoration, PiP Bridge, Android FGS Bridge, and iOS
+BLE Wake according to live capabilities. Lock-screen Live Activity entries
+require visual confirmation instead of blind tapping.
+
+iOS BLE Wake is an on-demand route for `calendar_create`, `calendar_query`,
+`calendar_delete`, `contacts_query`, `contacts_create`, and
+`notification_send`. The board first durably enqueues the command, then sends a
+non-sensitive 12-byte GATT Wake hint. The app opens a short background window,
+polls the HTTP queue with its stable `phone_id`, executes the native command,
+and posts the result over HTTP. BLE never carries command or result payloads,
+so the phone must remain connected to the board's USB ECM network while using
+BLE Wake. Clipboard read/write and contacts update are not supported by this
+route.
 
 PiP Bridge is a narrow background queue mode. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. In that state, the public `open_app` tool selects visible system search instead of its internal Phone Bridge route; only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) backed by command types (`clipboard_*`, `calendar_*`, `contacts_*`, `notification_send`) may use the HTTP queue.
 
@@ -23,11 +39,13 @@ Android FGS Bridge is also an HTTP queue mode. The foreground service polls `/ap
 
 ## Heartbeat
 
-The app should send a heartbeat message every 10-15 seconds (JSON with id `"heartbeat"` or `"ping"`), and the board will echo it back. The app uses this to detect connection liveness.
+The current app sends a heartbeat every 5 seconds (JSON with id `"heartbeat"`
+or `"ping"`), and the board echoes it back. The app uses this to detect
+connection liveness.
 
 Example:
 ```json
-{"id": "heartbeat", "ok": true}
+{"id": "heartbeat"}
 ```
 
 The board records `last_heartbeat_at` timestamp; no heartbeat for more than 60 seconds is considered unhealthy connection.
@@ -53,13 +71,20 @@ The board records `last_heartbeat_at` timestamp; no heartbeat for more than 60 s
 
 ```typescript
 {
-  id: string;       // Matches BridgeCommand.id
-  ok: boolean;      // Execution success true, failure false
-  method?: string;  // Execution method (optional)
-  error?: string;   // Filled when ok=false with error info
-  data?: object;    // Return data (optional, used by read commands)
+  id: string;          // Matches BridgeCommand.id
+  method?: string;     // Execution method (optional)
+  error?: {            // Omitted on success
+    category: string;
+    code: string;
+    message: string;
+    details?: object;
+  };
+  data?: object;       // Return data (optional, used by read commands)
 }
 ```
+
+Success is represented by an absent `error` field; the current protocol does
+not send an `ok` boolean.
 
 ### AppEvent (app → board)
 
@@ -75,7 +100,6 @@ Example:
 ```json
 {
   "id": "phone_environment",
-  "ok": true,
   "method": "phone_environment",
   "data": {
     "captured_at": "2026-06-10T03:20:00Z",
@@ -122,14 +146,26 @@ Example:
 }
 ```
 
-The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`, and keeps `app_state`, `return_entry`, `return_entry_available`, `pip_bridge_enabled`, and `fgs_bridge_enabled` for Agent runtime context and internal routing. Runtime context carries compact state facts such as connection status, app foreground/background state, return-entry visibility, PiP/Dynamic Island visibility state, Android FGS bridge state, system type/version, language/region/timezone, screen dimensions, and confirmed openable third-party candidate apps. The public tool catalog is static: `open_app` selects BridgeOpenApp or SearchLaunchApp internally, while background-safe data tools enforce HTTP queue availability during execution. Environment is cleared on disconnection to avoid using stale information, but the latest app foreground/background state can be retained for Dynamic Island recovery.
+The board writes the latest complete environment to the `environment` field of
+`GET /api/phone-bridge/status`, and keeps `app_state`, `return_entry`,
+`return_entry_available`, `pip_bridge_enabled`, and `fgs_bridge_enabled` for
+Agent runtime context and internal routing. Runtime context carries compact
+state facts such as connection status, app foreground/background state,
+return-entry visibility, PiP/Dynamic Island visibility state, Android FGS
+Bridge state, system type/version, language/region/timezone, screen dimensions,
+and confirmed openable third-party candidate apps. Before each conversational
+run, the Agent separately filters App-only tools and actions from live Phone
+Bridge and BLE capabilities. `open_app` remains available because it can fall
+back to visible system search; iOS BLE Wake omits clipboard read/write and
+contacts update. Environment is cleared on disconnection to avoid using stale
+information, but the latest app foreground/background state can be retained
+for Dynamic Island recovery.
 
 `phone_app_state` example:
 
 ```json
 {
   "id": "phone_app_state",
-  "ok": true,
   "method": "phone_app_state",
   "data": {
     "app_state": "background",
@@ -168,7 +204,6 @@ The board sends semantic launch targets and the companion app resolves platform 
 ```json
 {
   "id": "open_001",
-  "ok": true,
   "method": "ios_url_scheme"
 }
 ```
@@ -180,8 +215,11 @@ On failure:
 ```json
 {
   "id": "open_001",
-  "ok": false,
-  "error": "App not installed"
+  "error": {
+    "category": "precondition_failed",
+    "code": "app_not_installed",
+    "message": "App not installed"
+  }
 }
 ```
 
@@ -207,7 +245,6 @@ Read system clipboard content.
 ```json
 {
   "id": "clip_read_001",
-  "ok": true,
   "data": {
     "text": "clipboard content"
   }
@@ -245,7 +282,7 @@ Write to system clipboard.
 ```json
 {
   "id": "clip_write_001",
-  "ok": true
+  "method": "clipboard_write"
 }
 ```
 
@@ -266,8 +303,7 @@ Create calendar event.
     "end_at": "2026-06-02T16:00:00+08:00",
     "all_day": false,
     "location": "Clinic",
-    "notes": "Bring insurance card",
-    "alarm_minutes_before": 30
+    "notes": "Bring insurance card"
   },
   "timeout_ms": 8000
 }
@@ -276,11 +312,10 @@ Create calendar event.
 **Field descriptions**:
 - `title` (required): Event title
 - `start_at` (required): Start time (RFC3339 format with timezone)
-- `end_at` (optional): End time, defaults to start_at + 1 hour if not provided
+- `end_at` (required): End time (RFC3339 format with timezone)
 - `all_day` (optional): Whether all-day event, default false
 - `location` (optional): Location
 - `notes` (optional): Notes
-- `alarm_minutes_before` (optional): Reminder minutes before, default no reminder
 
 **iOS implementation**: Uses `EventKit` framework, requires `NSCalendarsUsageDescription` or `NSCalendarsWriteOnlyAccessUsageDescription` permission.
 **Android implementation**: Uses `CalendarContract` API, requires `WRITE_CALENDAR` permission.
@@ -289,7 +324,6 @@ Create calendar event.
 ```json
 {
   "id": "cal_create_001",
-  "ok": true,
   "data": {
     "event_id": "ios_calendar_id_123"
   }
@@ -310,21 +344,21 @@ Query calendar events within specified time range.
   "id": "cal_query_001",
   "type": "calendar_query",
   "payload": {
-    "start_at": "2026-06-02T00:00:00+08:00",
-    "end_at": "2026-06-03T00:00:00+08:00"
+    "from": "2026-06-02T00:00:00+08:00",
+    "to": "2026-06-03T00:00:00+08:00"
   },
   "timeout_ms": 8000
 }
 ```
 
-**iOS implementation**: `EKEventStore.events(matching:)` queries `start_at` to `end_at` range.
+**iOS implementation**: `EKEventStore.events(matching:)` queries the `from` to
+`to` range.
 **Android implementation**: Queries `CalendarContract.Instances` table, requires `READ_CALENDAR` permission.
 
 **Response**:
 ```json
 {
   "id": "cal_query_001",
-  "ok": true,
   "data": {
     "events": [
       {
@@ -366,11 +400,12 @@ Delete specified calendar event.
 ```json
 {
   "id": "cal_delete_001",
-  "ok": true
+  "method": "calendar_delete"
 }
 ```
 
-If event doesn't exist, can return `ok: false, error: "Event not found"` or return `ok: true` (idempotent deletion).
+If the event does not exist, the app returns a structured `invalid_arguments`
+error with the native not-found code in `details.native_code`.
 
 ---
 
@@ -402,7 +437,6 @@ Query contacts.
 ```json
 {
   "id": "contacts_query_001",
-  "ok": true,
   "data": {
     "contacts": [
       {
@@ -445,7 +479,8 @@ Add new contact.
 - `phone_numbers` (optional): Phone number array
 - `emails` (optional): Email address array
 - `organization` (optional): Company/organization name
-- `notes` (optional): Notes
+- `notes` (optional): Notes on Android. iOS ignores this field because reading
+  or updating `CNContactNoteKey` requires an entitlement not requested by Aiden.
 
 **iOS implementation**: Uses `CNContactStore.add(CNSaveRequest)` to create, requires `NSContactsUsageDescription` permission.
 **Android implementation**: Uses `ContentResolver.insert(ContactsContract.RawContacts.CONTENT_URI)`, requires `WRITE_CONTACTS` permission.
@@ -454,7 +489,6 @@ Add new contact.
 ```json
 {
   "id": "contacts_create_001",
-  "ok": true,
   "data": {
     "contact_id": "new_contact_id_123"
   }
@@ -495,11 +529,12 @@ Update existing contact.
 ```json
 {
   "id": "contacts_update_001",
-  "ok": true
+  "method": "contacts_update"
 }
 ```
 
-If contact doesn't exist, return `ok: false, error: "Contact not found"`.
+If the contact does not exist, the app returns a structured `invalid_arguments`
+error with the native not-found code in `details.native_code`.
 
 ---
 
@@ -537,41 +572,46 @@ Send local notification.
 ```json
 {
   "id": "notification_001",
-  "ok": true,
   "data": {
     "notification_id": "notification_123"
   }
 }
 ```
 
-`notification_id` can be used for subsequent notification cancellation (future extension).
+`notification_id` identifies the local notification in the app result. The
+current Phone Bridge command set does not expose notification cancellation.
 
 ---
 
 ## Error Handling
 
-When the app cannot execute a command, should return `ok: false` and `error` field:
+When the app cannot execute a command, it returns a structured `error` field:
 
 ```json
 {
   "id": "...",
-  "ok": false,
-  "error": "Calendar permission required"
+  "error": {
+    "category": "user_action_required",
+    "code": "permission_denied",
+    "message": "Calendar access not granted"
+  }
 }
 ```
 
 Common error scenarios:
-- Permission not granted: `"Calendar permission required"` / `"Clipboard permission required"` / `"Contacts permission required"` / `"Notification permission required"`
-- App not installed: `"App not installed"`
-- Invalid parameters: `"Invalid start time format"`
-- System API failure: `"Calendar API error: ..."` / `"Contacts API error: ..."`
-- Contact doesn't exist: `"Contact not found"`
+- Permission not granted: `permission_denied`
+- App not installed: `app_not_installed`
+- Invalid parameters: `invalid_arguments`
+- Native system API failure: `native_module_failed`
+- Unsupported background route: `app_backgrounded`
 
 ## Timeout and Reconnection
 
 - **Timeout**: Each command on the board side has `timeout_ms`; stops waiting for response after timeout. App should respond before timeout as much as possible.
 - **Reconnection**: After WebSocket disconnects, app should auto-reconnect, retrying at 3-5 second intervals. Board side has no active reconnection mechanism.
-- **Idempotence**: Board may resend commands due to timeout; app should be as idempotent as possible (e.g., deleting non-existent event returns success).
+- **Idempotence**: WebSocket/HTTP deduplication caches command IDs, and the HTTP
+  queue retries timed-out in-flight commands. Reuse the same unique ID only for
+  the same logical command.
 
 ## Time Format
 
@@ -607,7 +647,8 @@ Use standard libraries for parsing (iOS `ISO8601DateFormatter`, Android `Instant
   <uses-permission android:name="android.permission.READ_CALENDAR" />
   <uses-permission android:name="android.permission.WRITE_CALENDAR" />
   ```
-  Authorization popup on first call; after rejection return `ok: false, error: "Calendar permission required"`.
+  Authorization appears on first use; denial returns a structured
+  `permission_denied` error.
 - **Contacts**: Requires runtime permissions:
   ```xml
   <uses-permission android:name="android.permission.READ_CONTACTS" />
@@ -620,15 +661,21 @@ Use standard libraries for parsing (iOS `ISO8601DateFormatter`, Android `Instant
 
 ## Testing Recommendations
 
-1. **Mock testing**: App can enter mock mode when WebSocket connection fails, locally simulating command responses for development debugging convenience.
-2. **Timeout scenarios**: Test timeout during permission popup, confirm app correctly handles subsequent commands after user authorization.
-3. **Edge cases**: Empty clipboard, no calendar events, invalid `event_id`, all-day events, cross-timezone queries, empty contacts query, duplicate contacts, invalid `contact_id`, scheduled notification cancellation, etc.
+1. **Focused unit tests**: Cover command routing, HTTP queue filtering,
+   deduplication, and structured-error handling on both repositories.
+2. **Timeout scenarios**: Test timeout during permission prompts and confirm the
+   app correctly handles later commands after authorization.
+3. **Real-device routes**: Verify foreground WebSocket, PiP/FGS polling, Dynamic
+   Island recovery, and iOS BLE Wake with the phone on the board USB ECM link.
+4. **Edge cases**: Empty clipboard, no calendar events, invalid `event_id`,
+   all-day events, cross-timezone queries, empty contacts query, duplicate
+   contacts, invalid `contact_id`, and scheduled notifications.
 
 ## Version Compatibility
 
-Current protocol version 1.1. When extending with new commands in the future:
+Current protocol version 1.2. When extending with new commands in the future:
 - New fields are backward compatible (old app ignores unknown fields)
-- New command types, old app returns `ok: false, error: "Unknown command type"`
+- New command types require a coordinated board/App release and compatibility tests
 - Modifying existing field semantics requires version number upgrade
 
 ---
@@ -638,12 +685,12 @@ Current protocol version 1.1. When extending with new commands in the future:
 ### Heartbeat
 **App → board**:
 ```json
-{"id": "heartbeat", "ok": true}
+{"id": "heartbeat"}
 ```
 
 **Board → app (echo)**:
 ```json
-{"id": "heartbeat", "ok": true}
+{"id": "heartbeat"}
 ```
 
 ### Open WeChat
@@ -661,7 +708,6 @@ Current protocol version 1.1. When extending with new commands in the future:
 ```json
 {
   "id": "open_1717667890123_1",
-  "ok": true,
   "method": "ios_url_scheme"
 }
 ```
@@ -680,7 +726,6 @@ Current protocol version 1.1. When extending with new commands in the future:
 ```json
 {
   "id": "clip_read_1717667890234_2",
-  "ok": true,
   "data": {
     "text": "https://example.com"
   }
@@ -698,8 +743,7 @@ Current protocol version 1.1. When extending with new commands in the future:
     "start_at": "2026-06-05T10:00:00+08:00",
     "end_at": "2026-06-05T11:00:00+08:00",
     "location": "Meeting room A",
-    "notes": "Discuss Q2 planning",
-    "alarm_minutes_before": 15
+    "notes": "Discuss Q2 planning"
   },
   "timeout_ms": 8000
 }
@@ -709,7 +753,6 @@ Current protocol version 1.1. When extending with new commands in the future:
 ```json
 {
   "id": "cal_create_1717667890345_3",
-  "ok": true,
   "data": {
     "event_id": "12345678-ABCD-1234-5678-1234567890AB"
   }

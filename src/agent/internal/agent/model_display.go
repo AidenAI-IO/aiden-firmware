@@ -89,6 +89,37 @@ var displayModelsByProvider = map[string][]ModelDisplayInfo{
 			},
 		},
 	},
+	"anthropic": {
+		{
+			ID: "claude-fable-5",
+			Descriptions: map[string]string{
+				localeEnglishUS:         "Anthropic's most capable model",
+				localeSimplifiedChinese: "Anthropic 最强大的模型",
+			},
+			Recommended: true,
+		},
+		{
+			ID: "claude-opus-5",
+			Descriptions: map[string]string{
+				localeEnglishUS:         "Newest flagship for agentic coding and enterprise workflows",
+				localeSimplifiedChinese: "面向智能体编程和企业工作流的最新旗舰模型",
+			},
+		},
+		{
+			ID: "claude-sonnet-4-6",
+			Descriptions: map[string]string{
+				localeEnglishUS:         "Balanced performance and speed",
+				localeSimplifiedChinese: "性能和速度平衡",
+			},
+		},
+		{
+			ID: "claude-haiku-4-5",
+			Descriptions: map[string]string{
+				localeEnglishUS:         "Fast and economical Claude model",
+				localeSimplifiedChinese: "快速且经济的 Claude 模型",
+			},
+		},
+	},
 	"kimi": {
 		{
 			ID: "kimi-k3",
@@ -121,7 +152,7 @@ var displayModelsByProvider = map[string][]ModelDisplayInfo{
 	},
 	"openrouter": {
 		{
-			ID: "anthropic/claude-opus-4.8",
+			ID: "anthropic/claude-fable-5",
 			Descriptions: map[string]string{
 				localeEnglishUS:         "Anthropic's most capable model",
 				localeSimplifiedChinese: "Anthropic 最强大的模型",
@@ -129,7 +160,14 @@ var displayModelsByProvider = map[string][]ModelDisplayInfo{
 			Recommended: true,
 		},
 		{
-			ID: "anthropic/claude-sonnet-4.6",
+			ID: "anthropic/claude-opus-5",
+			Descriptions: map[string]string{
+				localeEnglishUS:         "Newest flagship for agentic coding and enterprise workflows",
+				localeSimplifiedChinese: "面向智能体编程和企业工作流的最新旗舰模型",
+			},
+		},
+		{
+			ID: "anthropic/claude-sonnet-4-6",
 			Descriptions: map[string]string{
 				localeEnglishUS:         "Balanced performance and speed",
 				localeSimplifiedChinese: "性能和速度平衡",

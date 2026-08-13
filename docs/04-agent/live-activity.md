@@ -17,18 +17,33 @@ Live Activity provides a system-level status entry after the user leaves the com
 
 - `ready` / `connected`: app has connected to hardware, starts a "Aiden Ready" Live Activity when switching to background, showing device is available and tapping can return to Aiden. This state is mainly an entry point and connection indicator, does not represent the app gaining background persistence capability.
 - `running`: when agent is executing a task, Live Activity displays task title, current step, progress, whether user needs to return to app. Tasks can be initiated from app foreground chat or from agent Web UI.
-- `needs_app`: when agent needs Phone Bridge, clipboard, contacts, calendar, open app, or other companion app capabilities, Live Activity is the system entry point for restoring foreground bridge. Board-side tools can automatically click Dynamic Island when `return_entry=dynamic_island` and `return_entry_available=true`, wait for reconnection, and then send the command. Lock-screen Live Activity entries require screenshot/HID confirmation instead of blind tapping.
+- `needs_app`: when an App-only operation has no executable foreground or
+  background route, Live Activity is the system entry point for restoring
+  foreground Phone Bridge. Board-side tools can automatically click Dynamic
+  Island when `return_entry=dynamic_island` and `return_entry_available=true`,
+  wait for reconnection, and then send the command. A live BLE Wake subscriber
+  can execute its narrower calendar, contacts query/create, and notification
+  allowlist without this restoration step. Lock-screen Live Activity entries
+  require screenshot/HID confirmation instead of blind tapping.
 - `completed` / `failed` / `canceled`: displays brief result after task ends. If hardware is still connected, can return to `ready`; if device disconnects, session expires, or user closes entry point, end Live Activity.
 
 Key boundaries:
 
 - Live Activity is a status panel and entry point back to app, not a background agent control console.
 - It cannot make RN JS, WebSocket, or phone bridge run long-term in iOS background.
+- BLE Wake can open only a short on-demand HTTP Queue window. It does not change
+  the long-term background limit, and its command/result payloads still require
+  USB ECM.
 - If app is in foreground or just switched to background and already created Live Activity, can display last local state first; continuous background refresh must go through APNs.
 - If app has already been suspended/killed by system and there is no existing Live Activity, making Live Activity appear remotely requires APNs push-to-start or waiting for user to reopen app.
 - USB ECM connectivity only means the phone and board can still exchange IP packets; it does not mean the iOS app is running in background. `phone_bridge.connected=true` primarily means the app WebSocket is still active, usually while the app is foreground or inside the short background window.
 - When `phone_bridge.connected=false` but USB is still physically connected, the agent cannot push status to the app over WebSocket. If relay has a valid Live Activity token for the board, the agent should still update Dynamic Island through relay/APNs.
-- When `open_url` or a bridge data tool needs Phone Bridge capability and a visible Aiden Dynamic Island entry exists, treat it as the automatic recovery entry: tap back to Aiden, wait for bridge recovery, then send the command. `open_app` owns its own BridgeOpenApp-versus-SearchLaunchApp routing. For lock-screen Live Activity cards, use screenshot/HID fallback or visual confirmation.
+- When `open_url` or a bridge data tool has no executable PiP, FGS, BLE Wake, or
+  direct notification-query route and a visible Aiden Dynamic Island entry
+  exists, treat it as the automatic recovery entry: tap back to Aiden, wait for
+  bridge recovery, then send the command. `open_app` owns its own
+  BridgeOpenApp-versus-SearchLaunchApp routing. For lock-screen Live Activity
+  cards, use screenshot/HID fallback or visual confirmation.
 
 ## State Model
 
@@ -67,7 +82,10 @@ Structured fields:
 - `current_action`: machine-consumable action key, e.g. `open_app`, `observe_screen`, `control_phone`, `clipboard`, `calendar`.
 - `current_target`: current action target, e.g. app name, contact, calendar title, search term; can be empty when not suitable to display sensitive input.
 - `current_app`: current target app, usually inferred from `open_app` tool input.
-- `requires_app`: current action depends on companion app/Phone Bridge. If bridge is unavailable, `status` switches to `needs_app`, and Dynamic Island should prompt user to return to Aiden.
+- `requires_app`: current action depends on returning to the foreground
+  companion app. App-backed operations that are executable through PiP/FGS or
+  BLE Wake do not require this foreground-return state merely because the
+  WebSocket is disconnected.
 - `phone_app_state` events additionally report `return_entry` and `return_entry_available`. When the iOS app is backgrounded or inactive, it usually reports `return_entry="dynamic_island"` to indicate that the user can tap Dynamic Island / lock screen Live Activity to return to Aiden and restore Phone Bridge.
 
 `GET /api/chat/result?request_id=<id>&offset=<n>` maintains original response compatibility and additionally returns a `live_activity` field. iOS app uses this field to locally update Live Activity when polling in foreground. This foreground path does not use APNs.

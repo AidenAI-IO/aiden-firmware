@@ -913,8 +913,8 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	if got := input["type"]; got != "double_tap" {
 		t.Fatalf("gesture type = %#v, want double_tap", got)
 	}
-	if got := input["coord_space"]; got != "normalized" {
-		t.Fatalf("coord_space = %#v, want normalized", got)
+	if _, exists := input["coord_space"]; exists {
+		t.Fatalf("coordinate debug input must not include coord_space: %#v", input)
 	}
 	point, ok := input["point"].(map[string]any)
 	if !ok {
@@ -952,6 +952,24 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	}
 	if active != (screen.ScreenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true}) {
 		t.Fatalf("screen state active area = %+v", active)
+	}
+}
+
+func TestHandleCoordinateDebugTapRejectsUnknownFieldsAndTrailingJSON(t *testing.T) {
+	server := newServerForTest(&Runtime{tools: &ToolSet{tools: map[string]langtools.Tool{}}})
+	for _, body := range []string{
+		`{"x":123,"y":456,"coord_space":"pixel"}`,
+		`{"x":123,"y":456} {"x":1,"y":2}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		server.handleCoordinateDebugTap(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %q status = %d, want %d; response=%s", body, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
 	}
 }
 
@@ -1099,11 +1117,18 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 		if method != "latest_frame" {
 			t.Fatalf("unexpected method: %#v", req["method"])
 		}
-		if format, _ := req["format"].(string); format != "raw" {
-			t.Fatalf("expected raw format request when crop_black_bars=false, got %#v", req["format"])
+		if format, _ := req["format"].(string); format != "jpeg" {
+			t.Fatalf("expected jpeg format request when crop_black_bars=false, got %#v", req["format"])
 		}
-		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
-		return header, []byte{16, 128, 235, 128}
+		if cropBlack, _ := req["crop_black"].(bool); cropBlack {
+			t.Fatalf("crop_black = %#v, want false", req["crop_black"])
+		}
+		jpegData, err := encodeJPEG([]byte{255, 255, 255, 0, 0, 0}, 2, 1, screenshotJPEGQuality)
+		if err != nil {
+			t.Fatalf("encode jpeg fixture: %v", err)
+		}
+		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
+		return header, jpegData
 	})
 
 	runtime := NewRuntimeWithDeps(
@@ -1164,6 +1189,12 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 		}
 		if format, _ := req["format"].(string); format != "jpeg" {
 			t.Fatalf("expected jpeg format request, got %#v", req["format"])
+		}
+		if cropBlack, _ := req["crop_black"].(bool); !cropBlack {
+			t.Fatalf("crop_black = %#v, want true", req["crop_black"])
+		}
+		if minimalWidth, _ := req["minimal_width"].(float64); minimalWidth != 608 {
+			t.Fatalf("minimal_width = %#v, want 608", req["minimal_width"])
 		}
 		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":5,"height":9,"source_width":16,"source_height":9,"crop_x":5,"crop_y":0,"crop_width":5,"crop_height":9,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
 		return header, jpegData
@@ -1232,6 +1263,34 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
+	}
+}
+
+func TestFrameServiceClientSendsRawCropBlackOption(t *testing.T) {
+	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		if format, _ := req["format"].(string); format != "raw" {
+			t.Fatalf("format = %#v, want raw", req["format"])
+		}
+		if cropBlack, _ := req["crop_black"].(bool); !cropBlack {
+			t.Fatalf("crop_black = %#v, want true", req["crop_black"])
+		}
+		if minimalWidth, _ := req["minimal_width"].(float64); minimalWidth != 608 {
+			t.Fatalf("minimal_width = %#v, want 608", req["minimal_width"])
+		}
+		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"source_width":4,"source_height":1,"crop_x":2,"crop_y":0,"crop_width":2,"crop_height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
+		return header, []byte{128, 235, 128, 235}
+	})
+
+	client := NewFrameServiceClient(frameSocket)
+	meta, data, err := client.LatestFrameWithFormat("raw", 0, true, 608)
+	if err != nil {
+		t.Fatalf("LatestFrameWithFormat() error = %v", err)
+	}
+	if meta.Width != 2 || meta.SourceWidth != 4 || meta.CropX != 2 || meta.CropWidth != 2 {
+		t.Fatalf("unexpected raw crop metadata: %#v", meta)
+	}
+	if len(data) != 4 {
+		t.Fatalf("raw payload length = %d, want 4", len(data))
 	}
 }
 
@@ -1326,11 +1385,18 @@ func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 		if method, _ := req["method"].(string); method == "health" {
 			return `{"type":"response","method":"health","status":"OK","state":"RUNNING","latest_seq":2,"frame_age_ms":10}`, nil
 		}
-		if format, _ := req["format"].(string); format != "raw" {
-			t.Fatalf("expected raw format request when crop_black_bars=false, got %#v", req["format"])
+		if format, _ := req["format"].(string); format != "jpeg" {
+			t.Fatalf("expected jpeg format request when crop_black_bars=false, got %#v", req["format"])
 		}
-		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":2,"width":2,"height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
-		return header, []byte{16, 128, 235, 128}
+		if cropBlack, _ := req["crop_black"].(bool); cropBlack {
+			t.Fatalf("crop_black = %#v, want false", req["crop_black"])
+		}
+		jpegData, err := encodeJPEG([]byte{255, 255, 255, 0, 0, 0}, 2, 1, screenshotJPEGQuality)
+		if err != nil {
+			t.Fatalf("encode jpeg fixture: %v", err)
+		}
+		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":2,"width":2,"height":1,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
+		return header, jpegData
 	})
 	tool := &stubTool{
 		name:        "touch_gesture",
@@ -1796,6 +1862,11 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("runtime.Close() error = %v", err)
+		}
+	})
 	server := newServerForTest(runtime)
 	provider := &recordingTTSProvider{name: "server-provider"}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
@@ -2489,6 +2560,20 @@ func TestWebUISteerModeControlsArePresent(t *testing.T) {
 	}
 }
 
+func TestWebUIImagePasteControlsArePresent(t *testing.T) {
+	for _, want := range []string{
+		"const maxDraftImageAttachments = 4;",
+		"inputEl.addEventListener('paste', handleComposerPaste);",
+		"async function handleComposerPaste(event)",
+		"await addImageFiles(files, 'pasted');",
+		"Only 4 images can be attached.",
+	} {
+		if !strings.Contains(webUI, want) {
+			t.Fatalf("web UI missing %q", want)
+		}
+	}
+}
+
 func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		activeRuns:     make(map[string]context.CancelFunc),
@@ -2955,6 +3040,54 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	assistant, ok := firstMessageOfType(resp.History, "assistant")
 	if !ok || assistant.Content != "Completed" {
 		t.Fatalf("unexpected assistant message: %#v", resp.History)
+	}
+}
+
+func TestDecodeMessageAttachmentsLimitsImages(t *testing.T) {
+	payloads := make([]MessageAttachment, maxChatImageAttachments+1)
+	for i := range payloads {
+		payloads[i] = MessageAttachment{
+			Kind:     AttachmentKindImage,
+			Name:     fmt.Sprintf("image-%d.png", i+1),
+			MIMEType: "image/png",
+			Data:     base64.StdEncoding.EncodeToString([]byte{byte(i + 1)}),
+		}
+	}
+
+	if decoded, history, err := decodeMessageAttachments(payloads[:maxChatImageAttachments]); err != nil {
+		t.Fatalf("decodeMessageAttachments(%d images) error = %v", maxChatImageAttachments, err)
+	} else if len(decoded) != maxChatImageAttachments || len(history) != maxChatImageAttachments {
+		t.Fatalf("decoded=%d history=%d, want %d", len(decoded), len(history), maxChatImageAttachments)
+	}
+
+	_, _, err := decodeMessageAttachments(payloads)
+	if err == nil || !strings.Contains(err.Error(), "at most 4 image attachments") {
+		t.Fatalf("decodeMessageAttachments(%d images) error = %v, want image limit", len(payloads), err)
+	}
+}
+
+func TestDecodeMessageAttachmentsCountsImageMIMEWithFileKind(t *testing.T) {
+	payloads := make([]MessageAttachment, maxChatImageAttachments+1)
+	for i := range payloads {
+		payloads[i] = MessageAttachment{
+			Kind:     "file",
+			Name:     fmt.Sprintf("image-%d.png", i+1),
+			MIMEType: "image/png",
+			Data:     base64.StdEncoding.EncodeToString([]byte{byte(i + 1)}),
+		}
+	}
+
+	decoded, history, err := decodeMessageAttachments(payloads[:maxChatImageAttachments])
+	if err != nil {
+		t.Fatalf("decodeMessageAttachments(%d file-kind images) error = %v", maxChatImageAttachments, err)
+	}
+	if decoded[0].Kind != AttachmentKindImage || history[0].Kind != AttachmentKindImage {
+		t.Fatalf("file-kind image was not normalized: decoded=%q history=%q", decoded[0].Kind, history[0].Kind)
+	}
+
+	_, _, err = decodeMessageAttachments(payloads)
+	if err == nil || !strings.Contains(err.Error(), "at most 4 image attachments") {
+		t.Fatalf("decodeMessageAttachments(%d file-kind images) error = %v, want image limit", len(payloads), err)
 	}
 }
 

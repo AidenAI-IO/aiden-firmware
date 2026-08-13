@@ -191,7 +191,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"model.provider":                {layout: "wide"},
 		"model.model":                   {layout: "wide"},
 		"model.base_url":                {layout: "wide"},
-		"model.reasoning_effort":        {help: "Empty = auto (disable reasoning only for no-tool requests). Levels are provider-specific: minimal is OpenRouter and Volcengine Ark only, none is not supported by Ark."},
+		"model.reasoning_effort":        {help: "Empty = auto. For no-tool requests, Anthropic maps low/medium/high to adaptive thinking; tool requests use Claude's default reasoning because thinking signatures are not persisted. Minimal is OpenRouter and Volcengine Ark only; none is not supported by Anthropic or Ark."},
 		"model.context_window":          {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
 		"model.model_max_output_tokens": {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
 		"tts.provider":                  {layout: "wide"},
@@ -587,7 +587,7 @@ func TestConfigMeta_ModelReasoningEffortProviderScoping(t *testing.T) {
 		t.Errorf("option \"minimal\" providers = %#v, want [openrouter volcengine]", minimal.Providers)
 	}
 
-	// "none" is not an Ark level; offering it there would produce a 400.
+	// "none" is not supported by native Anthropic or Ark; offering it there would produce a 400.
 	none, ok := options["none"]
 	if !ok {
 		t.Fatal("model.reasoning_effort enum missing option \"none\"")
@@ -596,8 +596,8 @@ func TestConfigMeta_ModelReasoningEffortProviderScoping(t *testing.T) {
 		t.Fatal("option \"none\" is unscoped, want it hidden for the volcengine provider")
 	}
 	for _, provider := range none.Providers {
-		if provider == "volcengine" {
-			t.Error("option \"none\" is offered for volcengine, which rejects it")
+		if provider == "volcengine" || provider == "anthropic" {
+			t.Errorf("option \"none\" is offered for %s, which rejects it", provider)
 		}
 	}
 }

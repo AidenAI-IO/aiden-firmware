@@ -48,9 +48,11 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 		{"gpt-5.4 bare", "openai", "gpt-5.4", 1_050_000, 128_000},
 		{"gpt-5.4 mini bare", "openai", "gpt-5.4-mini", 400_000, 128_000},
 		{"gpt-5.4 nano bare", "openai", "gpt-5.4-nano", 400_000, 128_000},
-		{"claude opus 4.8 bare", "anthropic", "claude-opus-4.8", 1_000_000, 64_000},
-		{"claude sonnet 4.6 prefixed", "openrouter", "anthropic/claude-sonnet-4.6", 1_000_000, 64_000},
-		{"claude haiku 4.5 bare", "anthropic", "claude-haiku-4.5", 200_000, 64_000},
+		{"claude fable 5 bare", "anthropic", "claude-fable-5", 1_000_000, 64_000},
+		{"claude opus 5 prefixed", "openrouter", "anthropic/claude-opus-5", 1_000_000, 64_000},
+		{"claude opus 4.8 bare", "anthropic", "claude-opus-4-8", 1_000_000, 64_000},
+		{"claude sonnet 4.6 prefixed", "openrouter", "anthropic/claude-sonnet-4-6", 1_000_000, 64_000},
+		{"claude haiku 4.5 bare", "anthropic", "claude-haiku-4-5", 200_000, 64_000},
 		{"gemini 3.5 pro bare", "google", "gemini-3.5-pro", 1_048_576, 65_536},
 		{"kimi k3 bare", "openai", "kimi-k3", 1_048_576, 131_072},
 		{"kimi k3 prefixed", "openrouter", "moonshotai/kimi-k3", 1_048_576, 131_072},
@@ -67,6 +69,40 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 			}
 			if spec.MaxOutput != tt.wantMaxOutput {
 				t.Errorf("MaxOutput = %d, want %d", spec.MaxOutput, tt.wantMaxOutput)
+			}
+		})
+	}
+}
+
+func TestLookupModelSpecClaude4VersionSeparators(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		model       string
+		wantContext int
+	}{
+		{"opus dotted bare", "anthropic", "claude-opus-4.8", 1_000_000},
+		{"opus dotted provider-prefixed", "openrouter", "anthropic/claude-opus-4.8", 1_000_000},
+		{"sonnet dotted bare", "anthropic", "claude-sonnet-4.6", 1_000_000},
+		{"sonnet dotted provider-prefixed", "openrouter", "anthropic/claude-sonnet-4.6", 1_000_000},
+		{"haiku dotted bare", "anthropic", "claude-haiku-4.5", 200_000},
+		{"haiku dotted provider-prefixed", "openrouter", "anthropic/claude-haiku-4.5", 200_000},
+		{"opus hyphenated bare", "anthropic", "claude-opus-4-8", 1_000_000},
+		{"sonnet hyphenated provider-prefixed", "openrouter", "anthropic/claude-sonnet-4-6", 1_000_000},
+		{"haiku hyphenated bare", "anthropic", "claude-haiku-4-5", 200_000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec, ok := LookupModelSpec(tt.provider, tt.model)
+			if !ok {
+				t.Fatalf("LookupModelSpec(%q, %q): expected ok, got !ok", tt.provider, tt.model)
+			}
+			if spec.ContextWindow != tt.wantContext {
+				t.Errorf("ContextWindow = %d, want %d", spec.ContextWindow, tt.wantContext)
+			}
+			if spec.MaxOutput != 64_000 {
+				t.Errorf("MaxOutput = %d, want 64_000", spec.MaxOutput)
 			}
 		})
 	}

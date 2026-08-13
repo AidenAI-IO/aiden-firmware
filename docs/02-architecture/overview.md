@@ -25,6 +25,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
            /dev/video0 + subdev        │ ALSA / RK MPI
                      │                 │
              ┌───────▼──────┐          │
+             │ RK628D /     │          │
              │ TC358743 HDMI│          │
              │ capture path │          │
              └──────────────┘          │
@@ -60,7 +61,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
 ### Screenshot / Visual Observation
 
 ```text
-TC358743 → /dev/video0 → frame_service ring buffer → Go screenshot tool → LLM image input
+RK628D or TC358743 → /dev/video0 → frame_service ring buffer → Go screenshot tool → LLM image input
 ```
 
 ### Device Control
@@ -75,12 +76,14 @@ LLM tool call → Go HID tool → /dev/hidg0, /dev/hidg1, or /dev/hidg2 → targ
 audio_service recording → RKNN Silero VAD → STT or audio attachment → LLM → TTS → audio_service playback
 ```
 
-### Bluetooth Pairing and System Notifications
+### Bluetooth Notifications and Wake
 
 ```text
-iOS CoreBluetooth encrypted read → BlueZ/hci0 → ble_service pairing service
 iOS ANCS → BlueZ/hci0 → ble_service event ring → UDS events_since
+Phone Bridge HTTP queue → ble_service UDS wake → Wake Notify → iOS native HTTP poll
 ```
 
-The encrypted GATT read establishes the system bond. ANCS events do not enter
-Agent memory in this layer.
+BLE carries notification metadata and a wake hint only. Phone Bridge commands
+and results remain on WebSocket/HTTP transports over USB ECM, so BLE Wake still
+requires the phone's wired board network. ANCS events do not enter Agent memory
+in this layer.

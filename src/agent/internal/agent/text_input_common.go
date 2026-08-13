@@ -279,18 +279,32 @@ func parseObservedTextInputMode(raw string) (textInputMode, error) {
 
 func focusPointArgSchema(description string) map[string]any {
 	schema := objectArgsSchema(map[string]any{
-		"x":           coordinateSchema("X coordinate.", 500),
-		"y":           coordinateSchema("Y coordinate.", 300),
-		"coord_space": stringEnumArgSchema("Coordinate space.", "normalized"),
+		"x": coordinateSchema("Normalized 0-1000 X coordinate.", 500),
+		"y": coordinateSchema("Normalized 0-1000 Y coordinate.", 300),
 	}, "x", "y")
 	schema["description"] = description
 	return schema
 }
 
 type focusPointArgs struct {
-	X          float64 `json:"x"`
-	Y          float64 `json:"y"`
-	CoordSpace string  `json:"coord_space,omitempty"`
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+func (p *focusPointArgs) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		X *float64 `json:"x"`
+		Y *float64 `json:"y"`
+	}
+	if err := decodeStrictJSONObject(string(data), &raw); err != nil {
+		return err
+	}
+	if raw.X == nil || raw.Y == nil {
+		return fmt.Errorf("x and y are required")
+	}
+	p.X = *raw.X
+	p.Y = *raw.Y
+	return nil
 }
 
 func textInputKeyboardKeysForIMESwitch(platform string) ([]string, error) {

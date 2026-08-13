@@ -96,14 +96,7 @@ func contentChoiceHasToolCalls(choice llms.ContentChoice) bool {
 }
 
 func contentChoiceText(choice llms.ContentChoice) string {
-	parts := make([]string, 0, 2)
-	if reasoning := strings.TrimSpace(choice.ReasoningContent); reasoning != "" {
-		parts = append(parts, reasoning)
-	}
-	if content := strings.TrimSpace(choice.Content); content != "" {
-		parts = append(parts, content)
-	}
-	return strings.Join(parts, "\n")
+	return strings.TrimSpace(choice.Content)
 }
 
 func toolCallsFromContentChoice(choice llms.ContentChoice) []ToolCall {

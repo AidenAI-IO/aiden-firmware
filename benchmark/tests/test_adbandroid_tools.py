@@ -51,42 +51,13 @@ def _text_entry_output(body):
 
 
 def test_normalized_point_converts_to_pixels():
-    point = _normalized_point_arg({"point": {"x": 500, "y": 500}}, default_space="normalized")
+    point = _normalized_point_arg({"point": {"x": 500, "y": 500}})
     assert _to_pixels(point, 1080, 1920) == (540, 960)
 
 
-def test_absolute_point_converts_via_hid_space():
-    point = _normalized_point_arg(
-        {"point": {"x": 32767, "y": 0}, "coord_space": "absolute"}, default_space="normalized"
-    )
-    assert round(point["x"]) == 1000
-    assert point["y"] == 0
-
-
-def test_auto_rejects_out_of_range_coordinates():
-    with pytest.raises(ValueError, match="auto only supports 0-1000"):
-        _normalized_point_arg(
-            {"point": {"x": 1500, "y": 500}, "coord_space": "auto"}, default_space="auto"
-        )
-
-
-def test_pixel_coord_space_requires_screen_size_and_clamps():
-    with pytest.raises(ValueError, match="requires a known screen size"):
-        _normalized_point_arg(
-            {"point": {"x": 540, "y": 960}, "coord_space": "pixel"}, default_space="normalized"
-        )
-    point = _normalized_point_arg(
-        {"point": {"x": 540, "y": 960}, "coord_space": "pixel"},
-        default_space="normalized",
-        screen_size=(1080, 1920),
-    )
-    assert _to_pixels(point, 1080, 1920) == (540, 960)
-    clamped = _normalized_point_arg(
-        {"point": {"x": 99999, "y": 99999}, "coord_space": "pixel"},
-        default_space="normalized",
-        screen_size=(1080, 1920),
-    )
-    assert clamped["x"] <= 1000 and clamped["y"] <= 1000
+def test_normalized_point_rejects_out_of_range_coordinates():
+    with pytest.raises(ValueError, match="normalized 0-1000"):
+        _normalized_point_arg({"point": {"x": 1500, "y": 500}})
 
 
 # ---- touch_gesture ----------------------------------------------------------
@@ -101,16 +72,16 @@ def test_touch_gesture_tap(bridge):
     assert ("tap", 540, 960) in device.calls
 
 
-def test_touch_gesture_tap_with_pixel_coord_space(bridge):
-    _, device, base_url = bridge
+def test_touch_gesture_rejects_retired_coord_space(bridge):
+    _, _, base_url = bridge
     status, body = _invoke(
         base_url,
         "touch_gesture",
         {"type": "tap", "point": {"x": 540, "y": 960}, "coord_space": "pixel"},
     )
     assert status == 200
-    assert body["is_error"] is False
-    assert ("tap", 540, 960) in device.calls
+    assert body["is_error"] is True
+    assert "coord_space" in body["output"]
 
 
 def test_touch_gesture_swipe(bridge):
@@ -146,16 +117,16 @@ def test_touch_gesture_home_and_back(bridge):
     assert ("keyevent", "KEYCODE_BACK") in device.calls
 
 
-def test_touch_gesture_auto_out_of_range_is_error(bridge):
+def test_touch_gesture_out_of_range_is_error(bridge):
     _, _, base_url = bridge
     status, body = _invoke(
         base_url,
         "touch_gesture",
-        {"type": "tap", "point": {"x": 1500, "y": 500}, "coord_space": "auto"},
+        {"type": "tap", "point": {"x": 1500, "y": 500}},
     )
     assert status == 200
     assert body["is_error"] is True
-    assert "auto only supports 0-1000" in body["output"]
+    assert "normalized 0-1000" in body["output"]
 
 
 # ---- keyboard tools ----------------------------------------------------------

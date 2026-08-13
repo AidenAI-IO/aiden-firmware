@@ -26,7 +26,6 @@ Use `touch_gesture` for ordinary lists, carousels, maps, and other free-scrollin
 ```json
 {
   "type": "swipe",
-  "coord_space": "normalized",
   "start": {"x": 500, "y": 650},
   "end": {"x": 500, "y": 350},
   "duration_ms": 400,

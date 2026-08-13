@@ -8,9 +8,57 @@ import (
 	"time"
 )
 
+type WakeResult struct {
+	WakeID    string `json:"wake_id"`
+	Delivered bool   `json:"delivered"`
+}
+
 type ForgetResult struct {
 	Removed   int           `json:"removed"`
 	Bluetooth RuntimeStatus `json:"bluetooth"`
+}
+
+// RequestEvents returns notification changes retained by ble_service. Cursors
+// stay as strings so callers do not lose uint64 precision when persisting them.
+func RequestEvents(
+	ctx context.Context,
+	socketPath string,
+	since string,
+	generation string,
+	limit int,
+) (EventPage, error) {
+	var response struct {
+		Status        string              `json:"status"`
+		Error         string              `json:"error"`
+		Events        []NotificationEvent `json:"events"`
+		Generation    string              `json:"generation"`
+		ResetRequired bool                `json:"reset_required"`
+		Truncated     bool                `json:"truncated"`
+		OldestID      string              `json:"oldest_id"`
+		LastID        string              `json:"last_id"`
+	}
+	requestValue := struct {
+		Op         string `json:"op"`
+		Since      string `json:"since"`
+		Generation string `json:"generation,omitempty"`
+		Limit      int    `json:"limit,omitempty"`
+	}{
+		Op:         "events_since",
+		Since:      since,
+		Generation: generation,
+		Limit:      limit,
+	}
+	if err := request(ctx, socketPath, requestValue, &response); err != nil {
+		return EventPage{}, err
+	}
+	return EventPage{
+		Events:        response.Events,
+		Generation:    response.Generation,
+		ResetRequired: response.ResetRequired,
+		Truncated:     response.Truncated,
+		OldestID:      response.OldestID,
+		LastID:        response.LastID,
+	}, nil
 }
 
 type RequestError struct {
@@ -20,6 +68,22 @@ type RequestError struct {
 
 func (e *RequestError) Error() string {
 	return fmt.Sprintf("ble_service request failed (%s): %s", e.Status, e.Message)
+}
+
+func RequestWake(ctx context.Context, socketPath, reason string) (WakeResult, error) {
+	var result WakeResult
+	var response struct {
+		Status    string `json:"status"`
+		Error     string `json:"error"`
+		WakeID    string `json:"wake_id"`
+		Delivered bool   `json:"delivered"`
+	}
+	if err := request(ctx, socketPath, map[string]string{"op": "wake", "reason": reason}, &response); err != nil {
+		return result, err
+	}
+	result.WakeID = response.WakeID
+	result.Delivered = response.Delivered
+	return result, nil
 }
 
 func RequestStatus(ctx context.Context, socketPath string) (RuntimeStatus, error) {
@@ -71,7 +135,73 @@ func RequestPairingForget(ctx context.Context, socketPath string) (ForgetResult,
 	return ForgetResult{Removed: response.Removed, Bluetooth: response.Bluetooth}, nil
 }
 
+func RequestPublishNotifications(
+	ctx context.Context,
+	socketPath string,
+	phoneID string,
+	events []NotificationEvent,
+) (NotificationPublishResult, error) {
+	var response struct {
+		Status     string `json:"status"`
+		Error      string `json:"error"`
+		Accepted   int    `json:"accepted"`
+		Duplicates int    `json:"duplicates"`
+		LastID     string `json:"last_id"`
+	}
+	requestBytes, err := marshalNotificationPublishRequest(phoneID, events)
+	if err != nil {
+		return NotificationPublishResult{}, err
+	}
+	if err := requestEncoded(ctx, socketPath, requestBytes, &response); err != nil {
+		return NotificationPublishResult{}, err
+	}
+	return NotificationPublishResult{
+		Accepted:   response.Accepted,
+		Duplicates: response.Duplicates,
+		LastID:     response.LastID,
+	}, nil
+}
+
+// ValidateNotificationPublishRequestFrame verifies that the request's exact
+// UDS representation fits before an HTTP caller attempts to publish it.
+func ValidateNotificationPublishRequestFrame(phoneID string, events []NotificationEvent) error {
+	_, err := marshalNotificationPublishRequest(phoneID, events)
+	return err
+}
+
+func marshalNotificationPublishRequest(phoneID string, events []NotificationEvent) ([]byte, error) {
+	requestValue := struct {
+		Op      string              `json:"op"`
+		PhoneID string              `json:"phone_id"`
+		Events  []NotificationEvent `json:"events"`
+	}{
+		Op:      "notification_publish",
+		PhoneID: phoneID,
+		Events:  events,
+	}
+	requestBytes, err := json.Marshal(requestValue)
+	if err != nil {
+		return nil, err
+	}
+	if len(requestBytes) > maxUDSHeaderBytes {
+		return nil, fmt.Errorf(
+			"notification publish request exceeds BLE UDS frame limit: %d > %d bytes",
+			len(requestBytes),
+			maxUDSHeaderBytes,
+		)
+	}
+	return requestBytes, nil
+}
+
 func request(ctx context.Context, socketPath string, requestValue any, responseValue any) error {
+	requestBytes, err := json.Marshal(requestValue)
+	if err != nil {
+		return err
+	}
+	return requestEncoded(ctx, socketPath, requestBytes, responseValue)
+}
+
+func requestEncoded(ctx context.Context, socketPath string, requestBytes []byte, responseValue any) error {
 	dialer := net.Dialer{Timeout: time.Second}
 	connection, err := dialer.DialContext(ctx, "unix", socketPath)
 	if err != nil {
@@ -80,10 +210,6 @@ func request(ctx context.Context, socketPath string, requestValue any, responseV
 	defer connection.Close()
 	_ = connection.SetDeadline(requestDeadline(ctx, time.Now()))
 
-	requestBytes, err := json.Marshal(requestValue)
-	if err != nil {
-		return err
-	}
 	if err := writeUDSMessage(connection, requestBytes, nil); err != nil {
 		return fmt.Errorf("write ble_service request: %w", err)
 	}

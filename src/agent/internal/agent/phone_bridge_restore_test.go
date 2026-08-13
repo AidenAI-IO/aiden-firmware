@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"aiden-agent/internal/ble"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -221,6 +223,176 @@ func TestPhoneBridgeCanUseFGSBackgroundOnlyForSafeDataCommands(t *testing.T) {
 	status.FgsBridgeUpdatedAt = ptrTime(time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second))
 	if phoneBridgeCanUseFGSBackground(status, "clipboard_read") {
 		t.Fatal("stale FGS bridge status should not allow background queue")
+	}
+}
+
+func TestPhoneBridgeCanUseBLEBackgroundOnlyForIOSDataCommands(t *testing.T) {
+	status := PhoneBridgeStatus{Platform: "ios", AppState: "background"}
+	for _, commandType := range []string{"calendar_query", "contacts_query", "contacts_create", "notification_send"} {
+		if !phoneBridgeCanUseBLEBackground(status, commandType) {
+			t.Fatalf("background iOS %s command should allow BLE wake routing", commandType)
+		}
+	}
+	for _, commandType := range []string{"clipboard_read", "clipboard_write", "contacts_update", "open_app"} {
+		if phoneBridgeCanUseBLEBackground(status, commandType) {
+			t.Fatalf("%s must not use BLE background routing", commandType)
+		}
+	}
+	status.Platform = "android"
+	if phoneBridgeCanUseBLEBackground(status, "calendar_query") {
+		t.Fatal("Android command must not use iOS BLE background routing")
+	}
+	status.Platform = "ios"
+	status.AppState = "active"
+	if phoneBridgeCanUseBLEBackground(status, "calendar_query") {
+		t.Fatal("active iOS app should use the foreground WebSocket")
+	}
+}
+
+func TestSendRoutedBridgeCommandUsesBLEWakeQueue(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.phoneID = "ios-phone"
+	bridge.appState = "background"
+	bridge.mu.Unlock()
+
+	bridge.bleStatus = func(context.Context) (ble.RuntimeStatus, error) {
+		return ble.RuntimeStatus{
+			BackendAvailable: true,
+			Connected:        true,
+			WakeSubscriber:   true,
+		}, nil
+	}
+	wakeCalled := make(chan struct{}, 1)
+	bridge.bleWake = func(context.Context, string) error {
+		wakeCalled <- struct{}{}
+		return nil
+	}
+
+	go func() {
+		for {
+			commands := bridge.queue.PollForPhone("ios", "ios-phone", 10)
+			if len(commands) == 0 {
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			if err := bridge.queue.SubmitResult(BridgeCommandResponse{
+				ID:     commands[0].ID,
+				Method: "calendar_query",
+				Data:   json.RawMessage(`{"events":[]}`),
+			}); err != nil {
+				t.Errorf("SubmitResult() error = %v", err)
+			}
+			return
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	response, restored, err := sendRoutedBridgeCommand(ctx, bridge, nil, BridgeCommand{
+		ID:        "ble_calendar",
+		Type:      "calendar_query",
+		TimeoutMs: 1000,
+	})
+	if err != nil {
+		t.Fatalf("sendRoutedBridgeCommand() error = %v", err)
+	}
+	if restored {
+		t.Fatal("BLE background route must not restore the app foreground")
+	}
+	if response.Error != nil || response.Method != "calendar_query" {
+		t.Fatalf("response = %#v", response)
+	}
+	select {
+	case <-wakeCalled:
+	case <-time.After(time.Second):
+		t.Fatal("BLE wake was not sent after queueing the command")
+	}
+}
+
+func TestSendRoutedBridgeCommandUsesConfiguredPlatformBeforeFirstAppPoll(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	bridge.SetConfiguredPlatform("ios")
+	bridge.bleStatus = func(context.Context) (ble.RuntimeStatus, error) {
+		return ble.RuntimeStatus{
+			BackendAvailable: true,
+			Connected:        true,
+			WakeSubscriber:   true,
+		}, nil
+	}
+	bridge.bleWake = func(context.Context, string) error { return nil }
+
+	go func() {
+		for {
+			commands := bridge.queue.PollForPhone("ios", "", 10)
+			if len(commands) == 0 {
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			_ = bridge.queue.SubmitResult(BridgeCommandResponse{
+				ID:     commands[0].ID,
+				Method: "calendar_query",
+				Data:   json.RawMessage(`{"events":[]}`),
+			})
+			return
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	response, _, err := sendRoutedBridgeCommand(ctx, bridge, nil, BridgeCommand{
+		ID:        "cold_start_calendar",
+		Type:      "calendar_query",
+		TimeoutMs: 1000,
+	})
+	if err != nil {
+		t.Fatalf("sendRoutedBridgeCommand() error = %v", err)
+	}
+	if response.Error != nil || response.Method != "calendar_query" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestSendRoutedBridgeCommandRejectsUnsupportedBLEWakeCommands(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.mu.Unlock()
+	bridge.bleStatus = func(context.Context) (ble.RuntimeStatus, error) {
+		return ble.RuntimeStatus{
+			BackendAvailable: true,
+			Connected:        true,
+			WakeSubscriber:   true,
+		}, nil
+	}
+
+	for _, commandType := range []string{"clipboard_read", "clipboard_write", "contacts_update"} {
+		t.Run(commandType, func(t *testing.T) {
+			response, restored, err := sendRoutedBridgeCommand(context.Background(), bridge, nil, BridgeCommand{
+				ID:   "unsupported_" + commandType,
+				Type: commandType,
+			})
+			if err != nil {
+				t.Fatalf("sendRoutedBridgeCommand() error = %v", err)
+			}
+			if restored {
+				t.Fatal("unsupported BLE command must not report foreground restoration")
+			}
+			if response.Error == nil || response.Error.Code != CodeAppBackgrounded {
+				t.Fatalf("response error = %#v, want app_backgrounded", response.Error)
+			}
+			if response.Error.Details["transport"] != "ios_ble_wake" {
+				t.Fatalf("response details = %#v", response.Error.Details)
+			}
+			if commands := bridge.queue.PollForPhone("ios", "", 10); len(commands) != 0 {
+				t.Fatalf("unsupported BLE command was queued: %#v", commands)
+			}
+		})
 	}
 }
 

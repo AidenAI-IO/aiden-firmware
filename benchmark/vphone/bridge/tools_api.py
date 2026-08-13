@@ -14,7 +14,6 @@ from .protocol import encode_screenshot
 from .state import NoBridgeEnvAvailableError, VPhoneBridgeState, benchmark_task_id_from_headers
 
 
-HID_ABSOLUTE_MAX = 32767.0
 MAX_ACTION_DURATION_MS = 10_000
 MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024
 DEFAULT_ACTION_SETTLE_SEC = 0.6
@@ -73,15 +72,10 @@ class VPhoneToolsAPIHandler:
             "x": {"type": "number"},
             "y": {"type": "number"},
         }
-        coordinate_space = {
-            "type": "string",
-            "enum": ["auto", "normalized", "absolute"],
-            "description": "Prefer normalized 0-1000 coordinates. Public VPhone tools do not accept screenshot-pixel coordinates.",
-        }
         focus_schema = {
             "type": "object",
             "additionalProperties": False,
-            "properties": {**coordinate_properties, "coord_space": coordinate_space},
+            "properties": coordinate_properties,
             "required": ["x", "y"],
         }
         tools: list[dict[str, Any]] = [
@@ -92,7 +86,7 @@ class VPhoneToolsAPIHandler:
             },
             {
                 "name": "touch_gesture",
-                "description": "Perform an iOS touch gesture. Prefer normalized 0-1000 coordinates.",
+                "description": "Perform an iOS touch gesture using normalized 0-1000 coordinates.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
@@ -121,7 +115,6 @@ class VPhoneToolsAPIHandler:
                         "pause_ms": {"type": "integer", "minimum": 20, "maximum": 180},
                         "distance": {"type": "number"},
                         "anchor": {"type": "number"},
-                        "coord_space": coordinate_space,
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
                         "strength": {"type": "string", "enum": ["large", "medium", "small", "tiny"]},
                     },
@@ -130,10 +123,10 @@ class VPhoneToolsAPIHandler:
             },
             {
                 "name": "mouse_click",
-                "description": "Tap the iOS VM. Prefer normalized 0-1000 coordinates.",
+                "description": "Tap the iOS VM using normalized 0-1000 coordinates.",
                 "args_schema": {
                     "type": "object", "additionalProperties": False,
-                    "properties": {**coordinate_properties, "coord_space": coordinate_space, "button": {"type": "string"}},
+                    "properties": {**coordinate_properties, "button": {"type": "string"}},
                     "required": ["x", "y"],
                 },
             },
@@ -142,7 +135,7 @@ class VPhoneToolsAPIHandler:
                 "description": "Validate a point and return a screenshot; iOS has no hover state.",
                 "args_schema": {
                     "type": "object", "additionalProperties": False,
-                    "properties": {**coordinate_properties, "coord_space": coordinate_space},
+                    "properties": coordinate_properties,
                     "required": ["x", "y"],
                 },
             },
@@ -304,6 +297,9 @@ class VPhoneToolsAPIHandler:
         return payload
 
     def _submit_tool_call(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+        unknown = _unknown_coordinate_tool_fields(tool_name, tool_input)
+        if unknown:
+            return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
         dispatch: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "screenshot": lambda _: self._call_screenshot(),
             "touch_gesture": self._call_touch_gesture,
@@ -349,7 +345,7 @@ class VPhoneToolsAPIHandler:
         try:
             if gesture_type in {"tap", "double_tap", "long_press"}:
                 width, height = device.screen_size()
-                point = _normalized_point_arg(tool_input, default_space="normalized")
+                point = _normalized_point_arg(tool_input)
                 x, y = _to_pixels(point, width, height)
                 if gesture_type == "tap":
                     return self._execute_device(
@@ -372,8 +368,8 @@ class VPhoneToolsAPIHandler:
                 )
             if gesture_type in {"swipe", "drag"}:
                 width, height = device.screen_size()
-                start = _normalized_point_arg(tool_input, field="start", x_key="start_x", y_key="start_y", default_space="normalized")
-                end = _normalized_point_arg(tool_input, field="end", x_key="end_x", y_key="end_y", default_space="normalized")
+                start = _normalized_point_arg(tool_input, field="start", x_key="start_x", y_key="start_y")
+                end = _normalized_point_arg(tool_input, field="end", x_key="end_x", y_key="end_y")
                 x1, y1 = _to_pixels(start, width, height)
                 x2, y2 = _to_pixels(end, width, height)
                 duration = _duration_ms_arg(tool_input.get("duration_ms"), 300)
@@ -404,7 +400,7 @@ class VPhoneToolsAPIHandler:
         if button not in {"", "left", "right", "middle"}:
             return {"output": f"error: unsupported mouse button: {button!r}", "is_error": True}
         try:
-            point = _normalized_point_arg(tool_input, default_space="auto")
+            point = _normalized_point_arg(tool_input)
             width, height = self.state.device.screen_size()
             x, y = _to_pixels(point, width, height)
         except (TypeError, ValueError) as exc:
@@ -415,7 +411,7 @@ class VPhoneToolsAPIHandler:
 
     def _call_mouse_move(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         try:
-            _normalized_point_arg(tool_input, default_space="auto")
+            _normalized_point_arg(tool_input)
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         return self._call_noop_with_screenshot()
@@ -532,15 +528,13 @@ class VPhoneToolsAPIHandler:
         if not isinstance(focus, dict):
             output = {"ok": False, "suggestion": "Provide focus as an object with x and y coordinates, then retry enter_text."}
             return {"output": json.dumps(output), "is_error": False}
-        unknown_focus = sorted(set(focus) - {"x", "y", "coord_space"})
+        unknown_focus = sorted(set(focus) - {"x", "y"})
         if unknown_focus:
             output = {"ok": False, "suggestion": f"Remove unsupported focus arguments: {unknown_focus!r}."}
             return {"output": json.dumps(output), "is_error": False}
         point_input = {"focus": focus}
-        if focus.get("coord_space"):
-            point_input["coord_space"] = focus["coord_space"]
         try:
-            point = _normalized_point_arg(point_input, field="focus", default_space="normalized")
+            point = _normalized_point_arg(point_input, field="focus")
             width, height = self.state.device.screen_size()
             x, y = _to_pixels(point, width, height)
         except (TypeError, ValueError) as exc:
@@ -726,6 +720,9 @@ def _point_arg(
 ) -> dict[str, float]:
     point = tool_input.get(field)
     if isinstance(point, dict):
+        unknown = sorted(set(point) - {"x", "y"})
+        if unknown:
+            raise ValueError(f"unknown {field} fields: {unknown!r}")
         if "x" not in point or "y" not in point:
             raise ValueError(f"{field}.x and {field}.y are required")
         return {"x": _finite_float(point["x"], f"{field}.x"), "y": _finite_float(point["y"], f"{field}.y")}
@@ -739,24 +736,25 @@ def _point_arg(
 
 
 def _normalized_point_arg(
-    tool_input: dict[str, Any], *, field: str = "point", x_key: str = "x", y_key: str = "y", default_space: str
+    tool_input: dict[str, Any], *, field: str = "point", x_key: str = "x", y_key: str = "y"
 ) -> dict[str, float]:
     point = _point_arg(tool_input, field=field, x_key=x_key, y_key=y_key)
-    coord_space = str(tool_input.get("coord_space", "") or "").strip().lower() or default_space
-    if coord_space == "normalized":
-        return {"x": _clamp(point["x"], 0, 1000), "y": _clamp(point["y"], 0, 1000)}
-    if coord_space == "auto":
-        if 0 <= point["x"] <= 1000 and 0 <= point["y"] <= 1000:
-            return point
-        raise ValueError("VPhone coord_space auto only supports 0-1000 normalized coordinates")
-    if coord_space == "absolute":
-        return {
-            "x": _clamp(point["x"], 0, HID_ABSOLUTE_MAX) / HID_ABSOLUTE_MAX * 1000,
-            "y": _clamp(point["y"], 0, HID_ABSOLUTE_MAX) / HID_ABSOLUTE_MAX * 1000,
-        }
-    if coord_space == "pixel":
-        raise ValueError("public VPhone tools do not accept pixel coordinates; use normalized 0-1000")
-    raise ValueError(f"unsupported coord_space: {coord_space!r}")
+    if not 0 <= point["x"] <= 1000 or not 0 <= point["y"] <= 1000:
+        raise ValueError("coordinates must use the normalized 0-1000 scale")
+    return point
+
+
+def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+    allowed = {
+        "touch_gesture": {
+            "type", "point", "start", "end", "x", "y", "start_x", "start_y",
+            "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
+            "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
+        },
+        "mouse_click": {"x", "y", "button"},
+        "mouse_move": {"x", "y"},
+    }.get(tool_name)
+    return [] if allowed is None else sorted(set(tool_input) - allowed)
 
 
 def _to_pixels(point: dict[str, float], width: int, height: int) -> tuple[int, int]:

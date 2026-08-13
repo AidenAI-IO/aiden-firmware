@@ -154,7 +154,7 @@ For `touch_gesture`, `back` swipes from near the left physical edge, and `home` 
 - Prioritize capability discovery via `GET /api/tools`
 - When screen operations are needed, `screenshot` first, then click/input
 - After successful click/input actions, directly check the post-action screenshot returned by that tool; no need to immediately call `screenshot` again
-- For mouse and touch, prefer `coord_space: "normalized"` with 0-1000 coordinates
+- For mouse and touch, use normalized 0-1000 coordinates
 - When accessing via private IP or USB network adapter, note proxy bypass: set `NO_PROXY` / `no_proxy`
 - For long-running `shell` tasks, use background sessions as described in the tool documentation, and stop them when done
 - When the user requests "sleep / stop listening / wait for my next wakeup", use `wait_for_wakeup` rather than pretending to return to waiting for wakeup with a normal text reply
