@@ -10,6 +10,14 @@ import (
 	"time"
 )
 
+func init() {
+	// Override managedPythonTmpPath for tests to use a relative tmp directory
+	// instead of the hardcoded /userdata/tmp.
+	managedPythonTmpPath = func(root string) string {
+		return filepath.Join(root, "tmp")
+	}
+}
+
 func TestResolveManagedPythonPathsUsesInterpreterMajorMinor(t *testing.T) {
 	root := t.TempDir()
 	paths, err := resolveManagedPythonPaths(context.Background(), root, func(context.Context) (string, error) {
@@ -39,7 +47,9 @@ func TestPrepareManagedPythonPathsCreatesAndTouchesManagedDirectories(t *testing
 		t.Fatalf("prepareManagedPythonPaths() error = %v", err)
 	}
 
-	for _, path := range []string{paths.Root, paths.UserBase, paths.Tmp} {
+	// prepareManagedPythonPaths only creates Root and UserBase, not Tmp.
+	// Tmp is a system-level shared directory that should be created by system initialization.
+	for _, path := range []string{paths.Root, paths.UserBase} {
 		info, statErr := os.Stat(path)
 		if statErr != nil {
 			t.Fatalf("Stat(%q) error = %v", path, statErr)
