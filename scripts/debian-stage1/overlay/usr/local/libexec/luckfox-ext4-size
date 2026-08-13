@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    echo "Usage: luckfox-ext4-size DEVICE" >&2
+    exit 2
+fi
+
+device=$1
+metadata=$(LC_ALL=C /usr/sbin/tune2fs -l "${device}" 2>/dev/null) || {
+    echo "Unable to read ext4 metadata from ${device}" >&2
+    exit 1
+}
+block_count=$(printf '%s\n' "${metadata}" \
+    | awk -F: '$1 == "Block count" {gsub(/[[:space:]]/, "", $2); print $2; exit}')
+block_size=$(printf '%s\n' "${metadata}" \
+    | awk -F: '$1 == "Block size" {gsub(/[[:space:]]/, "", $2); print $2; exit}')
+
+case "${block_count}" in
+'' | *[!0-9]*)
+    echo "Invalid ext4 block count for ${device}: ${block_count}" >&2
+    exit 1
+    ;;
+esac
+case "${block_size}" in
+'' | *[!0-9]*)
+    echo "Invalid ext4 block size for ${device}: ${block_size}" >&2
+    exit 1
+    ;;
+esac
+
+printf '%s\n' "$((block_count * block_size))"

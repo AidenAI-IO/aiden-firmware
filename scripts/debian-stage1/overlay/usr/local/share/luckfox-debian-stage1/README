@@ -1,0 +1,15 @@
+Debian 13 armhf stage-1 development image for Luckfox Pico Zero.
+
+Development login:
+  user: luckfox
+  password: luckfox
+
+This credential is intentionally limited to the bring-up image and must not be
+used for production. Original uClibc IPC applications are not installed.
+
+BlueZ and the AIC8800 UART attach service are configured, but Bluetooth HCI and
+radio operation still require physical-board validation.
+
+Run `sudo luckfox-stage1-validate --help` for the staged hardware acceptance
+checks. Network access, APT updates and Bluetooth scanning require explicit
+options; the validator never reboots or changes Wi-Fi configuration.
