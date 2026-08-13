@@ -346,9 +346,9 @@ func (b *blueZBackend) exportObjects() error {
 		blueZGattCharInterface: {
 			"UUID":    {Value: WakeCharacteristicUUID, Emit: prop.EmitConst},
 			"Service": {Value: wakeServicePath, Emit: prop.EmitConst},
-			// Require encryption both for the pairing probe and notification
-			// subscription. If the deployed BlueZ cannot register this security
-			// policy, backend startup fails instead of exposing unencrypted Wake.
+			// Keep the pairing probe encrypted, but use a standard notification
+			// subscription. BlueZ 5.65 on the board rejects encrypt-notify CCCD
+			// writes even for the bonded phone; Wake carries only a poll hint.
 			"Flags":       {Value: wakeCharacteristicFlags(), Emit: prop.EmitConst},
 			"Descriptors": {Value: []dbus.ObjectPath{}, Emit: prop.EmitConst},
 			"Value":       {Value: []byte{}, Emit: prop.EmitTrue},
@@ -400,7 +400,7 @@ func (b *blueZBackend) exportObjects() error {
 }
 
 func wakeCharacteristicFlags() []string {
-	return []string{"encrypt-read", "encrypt-notify"}
+	return []string{"encrypt-read", "notify"}
 }
 
 func (b *blueZBackend) exportGattObject(
