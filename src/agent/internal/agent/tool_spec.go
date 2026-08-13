@@ -95,18 +95,18 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"enter_text": {
 		Category:       "input",
 		InputMode:      toolInputModeJSON,
-		ExampleInput:   `{"text":"hello你好","focus":{"x":450,"y":105,"coord_space":"normalized"}}`,
+		ExampleInput:   `{"text":"hello你好","focus":{"x":450,"y":105}}`,
 		AgentPlatforms: []string{"ios", "android", "macos", "windows", "linux"},
 	},
 	"mouse_click": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"x":500,"y":500,"button":"left","coord_space":"normalized"}`,
+		ExampleInput: `{"x":500,"y":500,"button":"left"}`,
 	},
 	"mouse_move": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"x":500,"y":500,"coord_space":"normalized"}`,
+		ExampleInput: `{"x":500,"y":500}`,
 	},
 	"mouse_scroll": {
 		Category:     "input",
@@ -294,7 +294,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	toolBridgeNotification: {
 		Category:       "bridge",
 		InputMode:      toolInputModeJSON,
-		ExampleInput:   `{"title":"Aiden reminder","body":"Check your phone","sound":true}`,
+		ExampleInput:   `{"action":"query","limit":20}`,
 		AgentPlatforms: []string{"ios", "android"},
 	},
 }

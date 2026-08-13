@@ -153,59 +153,32 @@ func (c *ADBInputController) TextViaKeyEvents(ctx context.Context, text string) 
 	return nil
 }
 
-func (c *ADBInputController) ResolveRequiredPoint(ctx context.Context, point *pointerPoint, coordSpace string) (resolvedPointerPoint, error) {
+func (c *ADBInputController) ResolveRequiredPoint(ctx context.Context, point *pointerPoint) (resolvedPointerPoint, error) {
 	if point == nil {
 		return resolvedPointerPoint{}, fmt.Errorf("%w: point is required", errADBInputInvalidArgument)
 	}
-	return c.ResolvePosition(ctx, point.X.Float64(), point.Y.Float64(), coordSpace, coordinateSpaceNormalized)
+	return c.ResolvePosition(ctx, point.X.Float64(), point.Y.Float64())
 }
 
-func (c *ADBInputController) ResolvePointOrDefaultNormalized(ctx context.Context, point *pointerPoint, coordSpace string, defaultX, defaultY float64) (resolvedPointerPoint, error) {
+func (c *ADBInputController) ResolvePointOrDefaultNormalized(ctx context.Context, point *pointerPoint, defaultX, defaultY float64) (resolvedPointerPoint, error) {
 	if point != nil {
-		return c.ResolveRequiredPoint(ctx, point, coordSpace)
+		return c.ResolveRequiredPoint(ctx, point)
 	}
-	if _, err := normalizeCoordinateSpace(coordSpace, coordinateSpaceNormalized); err != nil {
-		return resolvedPointerPoint{}, fmt.Errorf("%w: %v", errADBInputInvalidArgument, err)
-	}
-	return c.ResolvePosition(ctx, defaultX, defaultY, coordinateSpaceNormalized, coordinateSpaceNormalized)
+	return c.ResolvePosition(ctx, defaultX, defaultY)
 }
 
-func (c *ADBInputController) ResolvePosition(ctx context.Context, x, y float64, coordSpace string, defaultSpace string) (resolvedPointerPoint, error) {
-	space, err := normalizeCoordinateSpace(coordSpace, defaultSpace)
-	if err != nil {
-		return resolvedPointerPoint{}, fmt.Errorf("%w: %v", errADBInputInvalidArgument, err)
+func (c *ADBInputController) ResolvePosition(ctx context.Context, x, y float64) (resolvedPointerPoint, error) {
+	if math.IsNaN(x) || math.IsInf(x, 0) || math.IsNaN(y) || math.IsInf(y, 0) {
+		return resolvedPointerPoint{}, fmt.Errorf("%w: coordinates must be finite", errADBInputInvalidArgument)
 	}
-
-	if space == coordinateSpaceAuto && !looksLikeNormalizedPoint(x, y) {
-		return resolvedPointerPoint{}, fmt.Errorf("%w: adb coord_space auto only supports 0-1000 normalized coordinates; use coord_space pixel for screenshot pixels or absolute for HID-space coordinates", errADBInputInvalidArgument)
+	if x < 0 || x > 1000 || y < 0 || y > 1000 {
+		return resolvedPointerPoint{}, fmt.Errorf("%w: coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f", errADBInputInvalidArgument, x, y)
 	}
-
 	size, err := c.screenSize(ctx)
 	if err != nil {
 		return resolvedPointerPoint{}, err
 	}
-
-	switch space {
-	case coordinateSpaceAuto:
-		return normalizedToADBPoint(size, x, y), nil
-	case coordinateSpacePixel, coordinateSpaceScreenshot:
-		displayWidth, displayHeight, ok := c.displayPixelBounds()
-		if !ok {
-			displayWidth = size.width
-			displayHeight = size.height
-		}
-		point, err := pixelToADBPoint(size, x, y, displayWidth, displayHeight)
-		if err != nil {
-			return resolvedPointerPoint{}, err
-		}
-		return point, nil
-	case coordinateSpaceNormalized:
-		return normalizedToADBPoint(size, x, y), nil
-	case coordinateSpaceAbsolute:
-		return absoluteToADBPoint(size, x, y), nil
-	default:
-		return resolvedPointerPoint{}, fmt.Errorf("%w: unsupported coord_space: %q", errADBInputInvalidArgument, coordSpace)
-	}
+	return normalizedToADBPoint(size, x, y), nil
 }
 
 func (c *ADBInputController) DirectionalSwipeEndpoints(ctx context.Context, gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {
@@ -213,11 +186,11 @@ func (c *ADBInputController) DirectionalSwipeEndpoints(ctx context.Context, gest
 	if err != nil {
 		return resolvedPointerPoint{}, resolvedPointerPoint{}, fmt.Errorf("%w: %v", errADBInputInvalidArgument, err)
 	}
-	start, err := c.ResolvePosition(ctx, startX, startY, coordinateSpaceNormalized, coordinateSpaceNormalized)
+	start, err := c.ResolvePosition(ctx, startX, startY)
 	if err != nil {
 		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
 	}
-	end, err := c.ResolvePosition(ctx, endX, endY, coordinateSpaceNormalized, coordinateSpaceNormalized)
+	end, err := c.ResolvePosition(ctx, endX, endY)
 	if err != nil {
 		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
 	}
@@ -286,23 +259,6 @@ func (c *ADBInputController) fallbackScreenSize() (adbInputScreenSize, bool) {
 		}
 	}
 	return adbInputScreenSize{}, false
-}
-
-func (c *ADBInputController) displayPixelBounds() (int, int, bool) {
-	if c == nil || c.screen == nil {
-		return 0, 0, false
-	}
-	width, height, active, age, ok := c.screen.ActiveAreaWithAge()
-	if !ok || age >= screenDimensionsStaleAfter {
-		return 0, 0, false
-	}
-	if active.Valid && active.Width > 0 && active.Height > 0 {
-		return active.Width, active.Height, true
-	}
-	if width > 0 && height > 0 {
-		return width, height, true
-	}
-	return 0, 0, false
 }
 
 func (c *ADBInputController) runShell(ctx context.Context, args ...string) error {
@@ -427,26 +383,6 @@ func normalizedToADBPoint(size adbInputScreenSize, x, y float64) resolvedPointer
 		x: scaleFloatToPixel(clampFloat(x, 0, 1000), 1001, size.width),
 		y: scaleFloatToPixel(clampFloat(y, 0, 1000), 1001, size.height),
 	}
-}
-
-func absoluteToADBPoint(size adbInputScreenSize, x, y float64) resolvedPointerPoint {
-	return resolvedPointerPoint{
-		x: scaleFloatToPixel(clampFloat(x, 0, absMouseMaxPos), absMouseMaxPos+1, size.width),
-		y: scaleFloatToPixel(clampFloat(y, 0, absMouseMaxPos), absMouseMaxPos+1, size.height),
-	}
-}
-
-func pixelToADBPoint(size adbInputScreenSize, x, y float64, displayWidth, displayHeight int) (resolvedPointerPoint, error) {
-	if displayWidth <= 0 || displayHeight <= 0 {
-		return resolvedPointerPoint{}, fmt.Errorf("%w: invalid screenshot dimensions: %dx%d", errADBInputInvalidArgument, displayWidth, displayHeight)
-	}
-	if x < 0 || y < 0 || x > float64(displayWidth-1) || y > float64(displayHeight-1) {
-		return resolvedPointerPoint{}, fmt.Errorf("%w: pixel coordinates x=%.2f y=%.2f are outside screenshot bounds %dx%d; use coord_space normalized with 0-1000 coordinates", errADBInputInvalidArgument, x, y, displayWidth, displayHeight)
-	}
-	return resolvedPointerPoint{
-		x: scaleFloatToPixel(x, displayWidth, size.width),
-		y: scaleFloatToPixel(y, displayHeight, size.height),
-	}, nil
 }
 
 func scaleFloatToPixel(value float64, sourceSize int, targetSize int) int {

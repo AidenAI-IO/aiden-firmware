@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -18,9 +17,9 @@ const (
 )
 
 type bridgeSearchResult struct {
-	Found    bool           `json:"found"`
-	TapPoint focusPointArgs `json:"tap_point"`
-	Label    string         `json:"label,omitempty"`
+	Found    bool            `json:"found"`
+	TapPoint *focusPointArgs `json:"tap_point"`
+	Label    string          `json:"label,omitempty"`
 }
 
 type bridgeAppOpenResult struct {
@@ -29,9 +28,9 @@ type bridgeAppOpenResult struct {
 }
 
 type pasteMenuResult struct {
-	Found    bool           `json:"found"`
-	TapPoint focusPointArgs `json:"tap_point"`
-	Label    string         `json:"label,omitempty"`
+	Found    bool            `json:"found"`
+	TapPoint *focusPointArgs `json:"tap_point"`
+	Label    string          `json:"label,omitempty"`
 }
 
 type textViaBridgeResult struct {
@@ -305,15 +304,10 @@ func (t *textInputBridge) pasteViaContextMenu(ctx context.Context, engine *textI
 	if t == nil || t.hw == nil || t.hw.touchGesture == nil {
 		return fmt.Errorf("touch_gesture is not configured for long-press paste fallback")
 	}
-	coordSpace := strings.TrimSpace(focus.CoordSpace)
-	if coordSpace == "" {
-		coordSpace = "normalized"
-	}
 	_, err := callTextInputTool(ctx, t.hw.touchGesture, jsonString(map[string]any{
-		"type":        "long_press",
-		"point":       map[string]any{"x": focus.X, "y": focus.Y},
-		"coord_space": coordSpace,
-		"hold_ms":     textViaBridgeLongPressMS,
+		"type":    "long_press",
+		"point":   map[string]any{"x": focus.X, "y": focus.Y},
+		"hold_ms": textViaBridgeLongPressMS,
 	}))
 	if err != nil {
 		return fmt.Errorf("long-press focused field: %w", err)
@@ -332,10 +326,12 @@ func (t *textInputBridge) pasteViaContextMenu(ctx context.Context, engine *textI
 	if !menu.Found {
 		return fmt.Errorf("Paste/粘贴 menu action was not visible after long press")
 	}
+	if menu.TapPoint == nil {
+		return fmt.Errorf("paste menu action is missing tap_point")
+	}
 	if _, err := callTextInputTool(ctx, t.hw.touchGesture, jsonString(map[string]any{
-		"type":        "tap",
-		"point":       map[string]any{"x": menu.TapPoint.X, "y": menu.TapPoint.Y},
-		"coord_space": menu.TapPoint.CoordSpace,
+		"type":  "tap",
+		"point": map[string]any{"x": menu.TapPoint.X, "y": menu.TapPoint.Y},
 	})); err != nil {
 		return fmt.Errorf("tap paste menu action: %w", err)
 	}
@@ -345,9 +341,6 @@ func (t *textInputBridge) pasteViaContextMenu(ctx context.Context, engine *textI
 func (t *textInputBridge) findPasteMenuAction(ctx context.Context, shot screenshotResult, platform string) (pasteMenuResult, error) {
 	if t != nil && t.findPasteMenuFn != nil {
 		result, err := t.findPasteMenuFn(ctx, shot, platform)
-		if strings.TrimSpace(result.TapPoint.CoordSpace) == "" {
-			result.TapPoint.CoordSpace = "normalized"
-		}
 		return result, err
 	}
 	modelVision, ok := t.vision.(*llmTextInputVision)
@@ -359,7 +352,7 @@ Find the visible system context-menu action that pastes the clipboard into that 
 Return JSON only:
 {
   "found": true,
-  "tap_point": {"x": 500, "y": 700, "coord_space": "normalized"},
+  "tap_point": {"x": 500, "y": 700},
   "label": "Paste"
 }
 
@@ -367,17 +360,17 @@ Rules:
 - Return found=true only when a visible paste action is clearly tappable.
 - Prefer the plain Paste/粘贴 action over unrelated actions such as Select, Look Up, Share, or Autofill.
 - tap_point must be centered inside the visible paste action using normalized 0-1000 coordinates.
-- If no paste action is visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`, platform))
+- If no paste action is visible, return {"found": false, "tap_point": {"x": 0, "y": 0}}.`, platform))
 	raw, err := modelVision.visionJSON(ctx, "paste_menu", prompt, shot)
 	if err != nil {
 		return pasteMenuResult{}, err
 	}
 	var result pasteMenuResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+	if err := decodeStrictJSONObject(raw, &result); err != nil {
 		return pasteMenuResult{}, fmt.Errorf("parse paste menu action: %w", err)
 	}
-	if strings.TrimSpace(result.TapPoint.CoordSpace) == "" {
-		result.TapPoint.CoordSpace = "normalized"
+	if result.Found && result.TapPoint == nil {
+		return pasteMenuResult{}, fmt.Errorf("parse paste menu action: found result is missing tap_point")
 	}
 	return result, nil
 }

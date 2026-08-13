@@ -925,7 +925,6 @@ def test_notes_entry_policy_suite_covers_three_screen_states():
     assert icon_task.hard_assertions.required_tool_calls[1].input_contains == {
         "x": 180,
         "y": 310,
-        "coord_space": "normalized",
     }
     assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in icon_task.prompt
 

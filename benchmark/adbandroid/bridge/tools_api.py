@@ -5,8 +5,6 @@ agent defines the tool schemas and forwards matching calls verbatim), then
 executes each tool through adb instead of a MobileGym env.
 
 Differences from the MobileGym bridge, kept deliberately small:
-- coord_space "pixel" is supported explicitly (the device has real pixels);
-  "auto" still rejects out-of-range values exactly like MobileGym.
 - quick_action executes Android navigation through keyevents / `cmd statusbar`
   / activity intents.
 """
@@ -45,7 +43,6 @@ DIRECTIONAL_SWIPE_PRESETS = {
     "small": (200.0, 420),
     "tiny": (40.0, 320),
 }
-HID_ABSOLUTE_MAX = 32767.0
 ADB_RESERVED_QUICK_ACTIONS = {
     "browser_refresh",
     "browser_new_tab",
@@ -111,10 +108,9 @@ class ADBToolsAPIHandler:
             "properties": {
                 "x": {"type": "number"},
                 "y": {"type": "number"},
-                "coord_space": {"type": "string", "enum": ["auto", "normalized", "absolute", "pixel"]},
             },
             "required": ["x", "y"],
-            "description": "Input field coordinates. Prefer normalized 0-1000 coordinates.",
+            "description": "Input field coordinates in normalized 0-1000 units.",
         }
         tools = [
             {
@@ -167,7 +163,6 @@ class ADBToolsAPIHandler:
                         "steps": {"type": "integer", "minimum": 1, "description": "Number of movement steps for swipe or drag."},
                         "distance": {"type": "number", "description": "Directional swipe travel in normalized 0-1000 units"},
                         "anchor": {"type": "number", "description": "Directional swipe fixed-axis coordinate in normalized 0-1000 units"},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"], "description": "Coordinate space; normalized uses 0-1000 screen coordinates."},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
                         "strength": {
                             "type": "string",
@@ -232,7 +227,6 @@ class ADBToolsAPIHandler:
                         "x": {"type": "number"},
                         "y": {"type": "number"},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
                     },
                     "required": ["x", "y"],
                 },
@@ -246,7 +240,6 @@ class ADBToolsAPIHandler:
                     "properties": {
                         "x": {"type": "number"},
                         "y": {"type": "number"},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
                     },
                     "required": ["x", "y"],
                 },
@@ -411,6 +404,9 @@ class ADBToolsAPIHandler:
 
     def _submit_tool_call(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         """Dispatch tool call to the ADB device."""
+        unknown = _unknown_coordinate_tool_fields(tool_name, tool_input)
+        if unknown:
+            return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
         if tool_name == "screenshot":
             return self._call_screenshot()
         elif tool_name == "touch_gesture":
@@ -460,9 +456,7 @@ class ADBToolsAPIHandler:
         try:
             if gesture_type in ("tap", "double_tap", "long_press"):
                 width, height = device.screen_size()
-                point = _normalized_point_arg(
-                    tool_input, default_space="normalized", screen_size=(width, height)
-                )
+                point = _normalized_point_arg(tool_input)
                 x, y = _to_pixels(point, width, height)
                 if gesture_type == "tap":
                     return self._execute_device(
@@ -504,16 +498,12 @@ class ADBToolsAPIHandler:
                     field="start",
                     x_key="start_x",
                     y_key="start_y",
-                    default_space="normalized",
-                    screen_size=(width, height),
                 )
                 end = _normalized_point_arg(
                     tool_input,
                     field="end",
                     x_key="end_x",
                     y_key="end_y",
-                    default_space="normalized",
-                    screen_size=(width, height),
                 )
                 duration_ms = _duration_ms_arg(tool_input.get("duration_ms"), 300)
                 x1, y1 = _to_pixels(start, width, height)
@@ -562,7 +552,7 @@ class ADBToolsAPIHandler:
         device = self.state.device
         try:
             width, height = device.screen_size()
-            point = _normalized_point_arg(tool_input, default_space="auto", screen_size=(width, height))
+            point = _normalized_point_arg(tool_input)
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         x, y = _to_pixels(point, width, height)
@@ -577,7 +567,7 @@ class ADBToolsAPIHandler:
         """Validate mouse_move input and return a screenshot (no adb action)."""
         try:
             width, height = self.state.device.screen_size()
-            _normalized_point_arg(tool_input, default_space="auto", screen_size=(width, height))
+            _normalized_point_arg(tool_input)
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         return self._call_noop_with_screenshot()
@@ -720,18 +710,14 @@ class ADBToolsAPIHandler:
         if not isinstance(focus, dict):
             output = {"ok": False, "suggestion": "Provide focus as an object with x and y coordinates, then retry enter_text."}
             return {"output": json.dumps(output), "is_error": False}
-        unknown_focus = sorted(set(focus) - {"x", "y", "coord_space"})
+        unknown_focus = sorted(set(focus) - {"x", "y"})
         if unknown_focus:
             output = {"ok": False, "suggestion": f"Remove unsupported focus arguments: {unknown_focus!r}."}
             return {"output": json.dumps(output), "is_error": False}
         point_input: dict[str, Any] = {"focus": focus}
-        if "coord_space" in focus:
-            point_input["coord_space"] = focus["coord_space"]
         try:
             width, height = device.screen_size()
-            point = _normalized_point_arg(
-                point_input, field="focus", default_space="normalized", screen_size=(width, height)
-            )
+            point = _normalized_point_arg(point_input, field="focus")
         except (TypeError, ValueError) as exc:
             output = {"ok": False, "suggestion": f"Correct the focus coordinates: {exc}"}
             return {"output": json.dumps(output), "is_error": False}
@@ -1062,6 +1048,9 @@ def _point_arg(
 ) -> dict[str, float]:
     point = tool_input.get(field)
     if isinstance(point, dict):
+        unknown = sorted(set(point) - {"x", "y"})
+        if unknown:
+            raise ValueError(f"unknown {field} fields: {unknown!r}")
         if "x" not in point or "y" not in point:
             raise ValueError(f"{field}.x and {field}.y are required")
         return {"x": _finite_float(point["x"], f"{field}.x"), "y": _finite_float(point["y"], f"{field}.y")}
@@ -1082,36 +1071,25 @@ def _normalized_point_arg(
     field: str = "point",
     x_key: str = "x",
     y_key: str = "y",
-    default_space: str,
-    screen_size: tuple[int, int] | None = None,
 ) -> dict[str, float]:
-    """Return a normalized 0-1000 point from tool input.
-
-    Mirrors the MobileGym helper, plus explicit "pixel" support (requires
-    screen_size). "auto" stays strict: values outside 0-1000 are rejected so
-    bad LLM output produces a deterministic error rather than a mis-tap.
-    """
+    """Return a strictly validated normalized 0-1000 point."""
     point = _point_arg(tool_input, field=field, x_key=x_key, y_key=y_key)
-    coord_space = str(tool_input.get("coord_space", "") or "").strip().lower() or default_space
-    if coord_space == "normalized":
-        return {"x": _clamp(point["x"], 0.0, 1000.0), "y": _clamp(point["y"], 0.0, 1000.0)}
-    if coord_space == "auto":
-        if 0.0 <= point["x"] <= 1000.0 and 0.0 <= point["y"] <= 1000.0:
-            return point
-        raise ValueError("adb bridge coord_space auto only supports 0-1000 normalized coordinates")
-    if coord_space == "absolute":
-        return {
-            "x": _clamp(point["x"], 0.0, HID_ABSOLUTE_MAX) / HID_ABSOLUTE_MAX * 1000.0,
-            "y": _clamp(point["y"], 0.0, HID_ABSOLUTE_MAX) / HID_ABSOLUTE_MAX * 1000.0,
-        }
-    if coord_space == "pixel":
-        if screen_size is None:
-            raise ValueError("coord_space pixel requires a known screen size")
-        width, height = screen_size
-        px = _clamp(point["x"], 0.0, max(0.0, width - 1.0))
-        py = _clamp(point["y"], 0.0, max(0.0, height - 1.0))
-        return {"x": px / width * 1000.0, "y": py / height * 1000.0}
-    raise ValueError(f"unsupported coord_space: {coord_space!r}")
+    if not 0.0 <= point["x"] <= 1000.0 or not 0.0 <= point["y"] <= 1000.0:
+        raise ValueError("coordinates must use the normalized 0-1000 scale")
+    return point
+
+
+def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+    allowed = {
+        "touch_gesture": {
+            "type", "point", "start", "end", "x", "y", "start_x", "start_y",
+            "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
+            "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
+        },
+        "mouse_click": {"x", "y", "button"},
+        "mouse_move": {"x", "y"},
+    }.get(tool_name)
+    return [] if allowed is None else sorted(set(tool_input) - allowed)
 
 
 def _to_pixels(point: dict[str, float], width: int, height: int) -> tuple[int, int]:

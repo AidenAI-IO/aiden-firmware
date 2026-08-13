@@ -4,6 +4,7 @@ import (
 	"aiden-agent/internal/agent/screen"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"mime"
 	"net/http"
@@ -124,7 +125,13 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 	}
 
 	var req coordinateDebugTapRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeCoordinateDebugTapError(w, http.StatusBadRequest, "invalid JSON request")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		writeCoordinateDebugTapError(w, http.StatusBadRequest, "invalid JSON request")
 		return
 	}
@@ -161,8 +168,7 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 	}
 
 	toolInput, err := json.Marshal(map[string]any{
-		"type":        gestureType,
-		"coord_space": "normalized",
+		"type": gestureType,
 		"point": map[string]int{
 			"x": req.X,
 			"y": req.Y,

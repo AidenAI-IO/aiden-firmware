@@ -68,6 +68,33 @@ func TestEnqueueAndPoll(t *testing.T) {
 	q.mu.RUnlock()
 }
 
+func TestPollForPhoneMatchingLeavesRejectedCommandsQueued(t *testing.T) {
+	q := NewCommandQueue(nil)
+	defer q.Stop()
+
+	for _, command := range []BridgeCommand{
+		{ID: "unsupported", Type: "clipboard_read"},
+		{ID: "supported", Type: "calendar_query"},
+	} {
+		if err := q.Enqueue(command); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	commands := q.PollForPhoneMatching("ios", "", 10, func(command BridgeCommand) bool {
+		return phoneBridgeBLEBackgroundCommandType(command.Type)
+	})
+	if len(commands) != 1 || commands[0].ID != "supported" {
+		t.Fatalf("matched commands = %#v, want supported only", commands)
+	}
+	if got := q.Get("unsupported"); got == nil || got.Status != StatusQueued {
+		t.Fatalf("rejected command = %#v, want queued", got)
+	}
+	if got := q.Get("supported"); got == nil || got.Status != StatusInFlight {
+		t.Fatalf("accepted command = %#v, want in_flight", got)
+	}
+}
+
 func TestSendQueuedCommandWaitsForHTTPResult(t *testing.T) {
 	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
