@@ -94,7 +94,7 @@ def cli(argv: list[str] | None = None) -> int:
                        help="Task routing id to use for environment setup/screen/release")
     p_run.add_argument("--target-platform", default=os.environ.get("AIDEN_BENCHMARK_TARGET_PLATFORM", "auto"),
                        choices=["auto", "ios", "android", "mac"],
-                       help="Filter suite tasks by platform; auto infers adb_android environments as android")
+                       help="Filter suite tasks by platform; auto resolves platform from environment bridge health")
     p_run.add_argument("--resolved-target-platform", default="", choices=["", "ios", "android", "mac"],
                        help=argparse.SUPPRESS)
     p_run.add_argument("--skip-clock-wait", action="store_true")
@@ -332,11 +332,12 @@ def _resolve_target_platform(args: argparse.Namespace, *, required: bool = False
     if not environment_url:
         return explicit
     try:
-        platform = platform_from_environment_health(_read_environment_health(environment_url))
+        health = _read_environment_health(environment_url)
     except Exception:
         if required:
             raise
         return explicit
+    platform = platform_from_environment_health(health)
     if not platform:
         if required:
             raise ValueError("environment bridge health did not report a supported platform")

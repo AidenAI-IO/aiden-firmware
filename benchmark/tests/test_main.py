@@ -75,6 +75,18 @@ def test_resolve_target_platform_rejects_unknown_environment_platform(monkeypatc
         main._resolve_target_platform(args, required=True)
 
 
+def test_resolve_target_platform_rejects_invalid_canonical_platform_without_legacy_fallback(monkeypatch):
+    args = type("Args", (), {"target_platform": "auto", "environment_url": "http://127.0.0.1:8899"})()
+    monkeypatch.setattr(
+        main,
+        "_read_environment_health",
+        lambda environment_url: {"platform": "windows", "bridge_type": "mobilegym"},
+    )
+
+    with pytest.raises(ValueError, match="unsupported environment platform"):
+        main._resolve_target_platform(args)
+
+
 def test_resolve_target_platform_propagates_environment_health_failure(monkeypatch):
     args = type("Args", (), {"target_platform": "auto", "environment_url": "http://127.0.0.1:8899"})()
 

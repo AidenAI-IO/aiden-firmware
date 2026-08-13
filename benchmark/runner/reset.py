@@ -5,6 +5,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
+from runner.platform import environment_health_endpoint as _platform_health_endpoint
 
 
 class ResetError(RuntimeError):
@@ -43,13 +44,10 @@ def environment_release_endpoint(environment_url: str) -> str:
 
 
 def environment_health_endpoint(environment_url: str) -> str:
-    raw = str(environment_url or "").strip()
-    if not raw:
-        raise ResetError("environment_url is required")
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ResetError(f"invalid environment_url: {environment_url!r}")
-    return urllib.parse.urlunparse(parsed._replace(path="/health", params="", query="", fragment=""))
+    try:
+        return _platform_health_endpoint(environment_url)
+    except ValueError as exc:
+        raise ResetError(str(exc)) from exc
 
 
 def _environment_headers(task_id: str | None = None) -> dict[str, str]:

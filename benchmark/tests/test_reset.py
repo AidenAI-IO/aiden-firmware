@@ -119,6 +119,8 @@ def test_environment_release_endpoint_is_derived_from_environment_endpoint():
 def test_environment_health_endpoint_is_derived_from_environment_endpoint():
     assert environment_health_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/health"
     assert environment_health_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/health"
+    assert environment_health_endpoint("http://127.0.0.1:9090/bridge") == "http://127.0.0.1:9090/bridge/health"
+    assert environment_health_endpoint("http://127.0.0.1:9090/bridge/api/setup") == "http://127.0.0.1:9090/bridge/health"
 
 
 def test_call_environment_setup_posts_to_api_setup(monkeypatch):

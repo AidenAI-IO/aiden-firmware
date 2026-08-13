@@ -11,10 +11,24 @@ DEVICE_TYPE_BY_TARGET_PLATFORM = {
     "android": "Android",
     "mac": "macOS",
 }
+ENVIRONMENT_API_SUFFIXES = (
+    "/api/setup",
+    "/api/release",
+    "/api/screen",
+    "/api/concurrent",
+)
 
 
 def platform_from_environment_health(health: dict[str, Any]) -> str:
-    platform = str(health.get("platform") or health.get("device_platform") or "").strip().lower()
+    if "platform" in health:
+        platform = str(health.get("platform") or "").strip().lower()
+        if platform in {"macos", "darwin"}:
+            platform = "mac"
+        if platform in VALID_TARGET_PLATFORMS:
+            return platform
+        raise ValueError(f"unsupported environment platform: {health.get('platform')!r}")
+
+    platform = str(health.get("device_platform") or "").strip().lower()
     if platform in {"macos", "darwin"}:
         platform = "mac"
     if platform in VALID_TARGET_PLATFORMS:
@@ -43,11 +57,27 @@ def target_platform_from_device_type(device_type: str) -> str:
     return ""
 
 
+def environment_health_endpoint(environment_url: str) -> str:
+    raw = str(environment_url or "").strip()
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"invalid environment endpoint: {environment_url!r}")
+
+    path = parsed.path.rstrip("/")
+    for suffix in ENVIRONMENT_API_SUFFIXES:
+        if path == suffix or path.endswith(suffix):
+            path = path[: -len(suffix)]
+            break
+    if path != "/health" and not path.endswith("/health"):
+        path = f"{path}/health" if path else "/health"
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
 def read_environment_health(environment_url: str, *, timeout: float = 0.5) -> dict[str, Any]:
-    parsed = urllib.parse.urlsplit(str(environment_url).strip())
-    if not parsed.scheme or not parsed.netloc:
+    try:
+        url = environment_health_endpoint(environment_url)
+    except ValueError:
         return {}
-    url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "/health", "", ""))
     with urllib.request.urlopen(url, timeout=timeout) as response:
         payload = json.loads(response.read().decode("utf-8"))
     if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
