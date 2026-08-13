@@ -150,6 +150,13 @@ func (q *CommandQueue) Poll(platform string, limit int) []BridgeCommand {
 // Commands without a phone_id remain compatible and can be picked up by any
 // matching platform client.
 func (q *CommandQueue) PollForPhone(platform, phoneID string, limit int) []BridgeCommand {
+	return q.PollForPhoneMatching(platform, phoneID, limit, nil)
+}
+
+// PollForPhoneMatching retrieves queued commands accepted by the optional
+// predicate and marks only those commands as in-flight. Rejected commands stay
+// queued so a later foreground or broader-capability poll can execute them.
+func (q *CommandQueue) PollForPhoneMatching(platform, phoneID string, limit int, allowed func(BridgeCommand) bool) []BridgeCommand {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -173,6 +180,9 @@ func (q *CommandQueue) PollForPhone(platform, phoneID string, limit int) []Bridg
 			continue
 		}
 		if !q.matchesPhoneID(&cmd.Command, phoneID) {
+			continue
+		}
+		if allowed != nil && !allowed(cmd.Command) {
 			continue
 		}
 

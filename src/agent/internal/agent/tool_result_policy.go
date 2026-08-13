@@ -425,7 +425,7 @@ func projectToolSpecificJSONResult(call ToolCall, output string, maxTokens int) 
 	case toolBridgeContacts:
 		requestFields = []string{"action", "contact_id", "query", "limit", "name", "organization"}
 	case toolBridgeNotification:
-		requestFields = []string{"title", "schedule_at", "sound", "badge"}
+		requestFields = []string{"action", "title", "schedule_at", "sound", "badge", "since", "generation", "limit"}
 	default:
 		return "", false
 	}

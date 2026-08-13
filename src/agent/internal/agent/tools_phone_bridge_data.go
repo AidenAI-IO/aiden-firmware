@@ -1,11 +1,15 @@
 package agent
 
 import (
+	"aiden-agent/internal/ble"
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+
+	langtools "github.com/tmc/langchaingo/tools"
 )
 
 // nextBridgeCmdID builds a unique command id for a bridge command type. It
@@ -386,6 +390,84 @@ type contactsArgs struct {
 	Notes        string   `json:"notes"`
 }
 
+type contactsCapabilityTool struct {
+	inner       langtools.Tool
+	allowQuery  bool
+	allowCreate bool
+	allowUpdate bool
+}
+
+func newContactsCapabilityTool(inner langtools.Tool, allowQuery, allowCreate, allowUpdate bool) langtools.Tool {
+	return &contactsCapabilityTool{
+		inner:       inner,
+		allowQuery:  allowQuery,
+		allowCreate: allowCreate,
+		allowUpdate: allowUpdate,
+	}
+}
+
+func (t *contactsCapabilityTool) Name() string { return toolBridgeContacts }
+
+func (t *contactsCapabilityTool) Description() string {
+	actions := make([]string, 0, 3)
+	if t.allowQuery {
+		actions = append(actions, "query contacts")
+	}
+	if t.allowCreate {
+		actions = append(actions, "create contacts")
+	}
+	if t.allowUpdate {
+		actions = append(actions, "update contacts")
+	}
+	return fmt.Sprintf("Use the connected phone bridge to %s. Confirm details with the user before creating or updating contacts. Unlisted actions are unavailable in the current runtime state.", strings.Join(actions, ", "))
+}
+
+func (t *contactsCapabilityTool) ArgsSchema() map[string]any {
+	actions := make([]string, 0, 3)
+	if t.allowQuery {
+		actions = append(actions, "query")
+	}
+	if t.allowCreate {
+		actions = append(actions, "create")
+	}
+	if t.allowUpdate {
+		actions = append(actions, "update")
+	}
+	properties := map[string]any{
+		"action":        stringEnumArgSchema("Contacts action.", actions...),
+		"contact_id":    stringArgSchema("Contact id for update."),
+		"query":         stringArgSchema("Search query for contact lookup."),
+		"limit":         minIntegerArgSchema("Maximum query results.", 1),
+		"name":          stringArgSchema("Contact display name."),
+		"phone_numbers": stringArrayArgSchema("Contact phone numbers."),
+		"emails":        stringArrayArgSchema("Contact email addresses."),
+		"organization":  stringArgSchema("Contact organization."),
+		"notes":         stringArgSchema("Contact notes."),
+	}
+	if !t.allowUpdate {
+		delete(properties, "contact_id")
+	}
+	return objectArgsSchema(properties, "action")
+}
+
+func (t *contactsCapabilityTool) Call(ctx context.Context, input string) (string, error) {
+	var args contactsArgs
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err == nil {
+		action := strings.ToLower(strings.TrimSpace(args.Action))
+		known := action == "query" || action == "create" || action == "update"
+		allowed := !known ||
+			(action == "query" && t.allowQuery) ||
+			(action == "create" && t.allowCreate) ||
+			(action == "update" && t.allowUpdate)
+		if known && !allowed {
+			te := NewToolError(CodeModuleUnavailable, fmt.Sprintf("contacts action %s is unavailable in the current phone bridge state", action))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+	}
+	return t.inner.Call(ctx, input)
+}
+
 func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
 	var args contactsArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
@@ -535,51 +617,165 @@ func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, e
 	return jsonString(result), nil
 }
 
-// NotificationTool sends local notifications on the connected phone.
+// NotificationTool sends local notifications through Phone Bridge and reads
+// shared system-notification events retained by ble_service.
 type NotificationTool struct {
-	bridge   *PhoneBridge
-	restorer *PhoneBridgeRestorer
+	bridge       *PhoneBridge
+	restorer     *PhoneBridgeRestorer
+	eventsReader func(context.Context, string, string, string, int) (ble.EventPage, error)
+	statusReader func(context.Context, string) (ble.RuntimeStatus, error)
+	socketPath   func() string
 }
 
 func NewNotificationTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *NotificationTool {
-	return &NotificationTool{bridge: bridge, restorer: restorer}
+	return &NotificationTool{
+		bridge:       bridge,
+		restorer:     restorer,
+		eventsReader: ble.RequestEvents,
+		statusReader: ble.RequestStatus,
+		socketPath:   configuredBLEServiceSocketPath,
+	}
 }
 
 func (t *NotificationTool) Name() string { return toolBridgeNotification }
 
 func (t *NotificationTool) Description() string {
-	return `Send local notifications on the connected phone via the phone bridge. ` +
-		`Use this to remind the user or bring the companion app back to foreground.`
+	return `Send local notifications through the companion app or query shared phone system-notification events from the board's BLE notification ring. ` +
+		`Send format: {"action":"send","title":"Reminder","body":"Time to take medicine","sound":true}. ` +
+		`Query format: {"action":"query","limit":20}. ` +
+		`Use action=send to remind the user or bring the companion app back to foreground. ` +
+		`Use action=query only when the user asks to inspect notifications; query does not require the companion app to be foregrounded. ` +
+		`For incremental queries, also pass the previous last_id as since together with the previous generation.`
 }
 
 func (t *NotificationTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
+		"action":      stringEnumArgSchema("Notification action. send is the default for backwards compatibility.", "send", "query"),
 		"title":       stringArgSchema("Notification title."),
 		"body":        stringArgSchema("Notification body."),
 		"schedule_at": stringArgSchema("Optional scheduled send time as RFC3339 with timezone; if omitted, sent immediately."),
 		"sound":       boolArgSchema("Whether to play a sound."),
 		"badge":       minIntegerArgSchema("Optional app badge count.", 0),
-	}, "title")
+		"since":       stringArgSchema("Optional query cursor. Omit it for the most recent retained notifications, use 0 to page from the oldest retained event, or use the previous last_id for incremental reads."),
+		"generation":  stringArgSchema("Generation returned by a previous query. Include it with a non-zero since cursor."),
+		"limit":       rangedIntegerArgSchema("Maximum notification events to return.", 1, 100),
+	})
+}
+
+type notificationCapabilityTool struct {
+	inner      langtools.Tool
+	allowSend  bool
+	allowQuery bool
+}
+
+func newNotificationCapabilityTool(inner langtools.Tool, allowSend, allowQuery bool) langtools.Tool {
+	return &notificationCapabilityTool{inner: inner, allowSend: allowSend, allowQuery: allowQuery}
+}
+
+func (t *notificationCapabilityTool) Name() string { return toolBridgeNotification }
+
+func (t *notificationCapabilityTool) Description() string {
+	sendFormat := `Send format: {"action":"send","title":"Reminder","body":"Time to take medicine","sound":true}.`
+	queryFormat := `Query format: {"action":"query","limit":20}.`
+	switch {
+	case t.allowSend && t.allowQuery:
+		return "Send local notifications through the companion app or query shared phone system-notification events from the board's BLE notification ring. " +
+			sendFormat + " " + queryFormat +
+			" Query does not require the companion app to be foregrounded. For incremental queries, also pass the previous last_id as since together with the previous generation."
+	case t.allowSend:
+		return "Send local notifications through the companion app. " + sendFormat
+	case t.allowQuery:
+		return "Query shared phone system-notification events from the board's BLE notification ring. " + queryFormat +
+			" Query does not require the companion app to be foregrounded. For incremental queries, also pass the previous last_id as since together with the previous generation."
+	default:
+		return "Notification actions are currently unavailable."
+	}
+}
+
+func (t *notificationCapabilityTool) ArgsSchema() map[string]any {
+	switch {
+	case t.allowSend && t.allowQuery:
+		if structured, ok := t.inner.(structuredInputTool); ok {
+			return structured.ArgsSchema()
+		}
+	case t.allowSend:
+		return objectArgsSchema(map[string]any{
+			"action":      stringEnumArgSchema("Notification action.", "send"),
+			"title":       stringArgSchema("Notification title."),
+			"body":        stringArgSchema("Notification body."),
+			"schedule_at": stringArgSchema("Optional scheduled send time as RFC3339 with timezone; if omitted, sent immediately."),
+			"sound":       boolArgSchema("Whether to play a sound."),
+			"badge":       minIntegerArgSchema("Optional app badge count.", 0),
+		}, "title")
+	case t.allowQuery:
+		return objectArgsSchema(map[string]any{
+			"action":     stringEnumArgSchema("Notification action.", "query"),
+			"since":      stringArgSchema("Optional query cursor. Omit it for recent retained notifications, use 0 for the oldest event, or pass the previous last_id for incremental reads."),
+			"generation": stringArgSchema("Generation returned by a previous query. Include it with a non-zero since cursor."),
+			"limit":      rangedIntegerArgSchema("Maximum notification events to return.", 1, 100),
+		}, "action")
+	}
+	return objectArgsSchema(map[string]any{})
+}
+
+func (t *notificationCapabilityTool) Call(ctx context.Context, input string) (string, error) {
+	var args notificationArgs
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err == nil {
+		action := strings.ToLower(strings.TrimSpace(args.Action))
+		if action == "" {
+			if t.allowQuery && !t.allowSend {
+				action = "query"
+				args.Action = action
+				if encoded, err := json.Marshal(args); err == nil {
+					input = string(encoded)
+				}
+			} else {
+				action = "send"
+			}
+		}
+		if (action == "send" && !t.allowSend) || (action == "query" && !t.allowQuery) {
+			te := NewToolError(CodeModuleUnavailable, fmt.Sprintf("notification action %s is not available in the current runtime state", action))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+	}
+	return t.inner.Call(ctx, input)
 }
 
 type notificationArgs struct {
+	Action     string `json:"action"`
 	Title      string `json:"title"`
 	Body       string `json:"body"`
 	ScheduleAt string `json:"schedule_at"`
 	Sound      bool   `json:"sound"`
 	Badge      int    `json:"badge"`
+	Since      string `json:"since"`
+	Generation string `json:"generation"`
+	Limit      int    `json:"limit"`
 }
 
 func (t *NotificationTool) Call(ctx context.Context, input string) (string, error) {
 	var args notificationArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v. Expected JSON format: {\"title\":\"Reminder\",\"body\":\"Take medicine\",\"schedule_at\":\"2026-06-04T18:00:00+08:00\",\"sound\":true,\"badge\":1}. schedule_at is optional, sound and badge are boolean/number", err))
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v. Expected action=send with a title, or action=query with optional since, generation, and limit", err))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
+	action := strings.ToLower(strings.TrimSpace(args.Action))
+	if action == "" {
+		action = "send"
+	}
+	if action == "query" {
+		return t.query(ctx, args)
+	}
+	if action != "send" {
+		te := NewToolError(CodeInvalidArguments, "notification action must be send or query")
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
 
 	if strings.TrimSpace(args.Title) == "" {
-		te := NewToolError(CodeInvalidArguments, "notification requires a title")
+		te := NewToolError(CodeInvalidArguments, "notification send requires a title")
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -622,4 +818,74 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 	}
 	result["notification_id"] = data.NotificationID
 	return jsonString(result), nil
+}
+
+func (t *NotificationTool) query(ctx context.Context, args notificationArgs) (string, error) {
+	since := strings.TrimSpace(args.Since)
+	limit := args.Limit
+	if limit == 0 {
+		limit = 20
+	}
+	if limit < 1 || limit > 100 {
+		te := NewToolError(CodeInvalidArguments, "notification query limit must be between 1 and 100")
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
+	if t == nil || t.eventsReader == nil || t.statusReader == nil || t.socketPath == nil {
+		te := NewToolError(CodeModuleUnavailable, "BLE notification reader is not configured")
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
+	generation := strings.TrimSpace(args.Generation)
+	queryMode := "cursor"
+	if since == "" {
+		queryMode = "latest"
+		status, err := t.statusReader(ctx, t.socketPath())
+		if err != nil {
+			te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("inspect shared notification cursor: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+		last, err := strconv.ParseUint(defaultString(status.LastEventID, "0"), 10, 64)
+		if err != nil {
+			te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("decode shared notification cursor: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+		if last > uint64(limit) {
+			since = strconv.FormatUint(last-uint64(limit), 10)
+		} else {
+			since = "0"
+		}
+		generation = status.EventGeneration
+	} else {
+		if _, err := strconv.ParseUint(since, 10, 64); err != nil {
+			te := NewToolError(CodeInvalidArguments, "notification query since must be a non-negative decimal cursor")
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+		if since != "0" && generation == "" {
+			te := NewToolError(CodeInvalidArguments, "notification query generation is required with a non-zero since cursor")
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+	}
+	page, err := t.eventsReader(ctx, t.socketPath(), since, generation, limit)
+	if err != nil {
+		te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("query shared notifications: %v", err))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
+	return jsonString(map[string]any{
+		"ok":             true,
+		"action":         "query",
+		"query_mode":     queryMode,
+		"since":          since,
+		"events":         page.Events,
+		"generation":     page.Generation,
+		"reset_required": page.ResetRequired,
+		"truncated":      page.Truncated,
+		"oldest_id":      page.OldestID,
+		"last_id":        page.LastID,
+	}), nil
 }
