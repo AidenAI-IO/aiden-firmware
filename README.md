@@ -41,7 +41,9 @@ The basic control path does not require jailbreak, ADB, developer mode, or a cus
 ### 1. **True Portability**
 Most mobile agent projects are lab prototypes that require a laptop or desktop to run. Aiden is:
 - **Pocket-sized** — Powered entirely by your phone's USB-C port (future versions will be credit-card-sized and magnetically attach to phone backs)
-- **Plug-and-play** — No setup, no pairing, no configuration wizards. Connect and start.
+- **Plug-and-play core control** — HDMI observation and USB HID control work
+  without pairing or a companion app. Optional Phone Bridge, BLE Wake, and
+  notification features require the companion app and their documented setup.
 - **Production-ready** — Designed for daily use, not just research prototypes
 
 ### 2. **Fully Open**

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/ble"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,7 +20,11 @@ func callEnterTextBridgeForTest(ctx context.Context, tool *textInputBridge, inpu
 }
 
 func newPhoneBridgeForTest() *PhoneBridge {
-	return NewPhoneBridge(newTestLogger())
+	bridge := NewPhoneBridge(newTestLogger())
+	bridge.bleStatus = func(context.Context) (ble.RuntimeStatus, error) {
+		return ble.RuntimeStatus{}, nil
+	}
+	return bridge
 }
 
 func newTestPhoneBridge(t *testing.T) *PhoneBridge {

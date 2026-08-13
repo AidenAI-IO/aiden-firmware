@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"aiden-agent/internal/ble"
+	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +50,21 @@ func TestHTTPToolSkillDocumentsNormalizedCoordinatesAsTheOnlyInputContract(t *te
 	} {
 		if strings.Contains(markdown, retired) {
 			t.Fatalf("retired coordinate mode guidance %q is still present:\n%s", retired, markdown)
+		}
+	}
+}
+
+func TestHTTPToolSkillDocumentsRuntimeFilteredAgentCatalog(t *testing.T) {
+	markdown := buildHTTPToolSkillMarkdown("tools", "tools", defaultHTTPToolSkillBaseURL, nil)
+	for _, want := range []string{
+		"HTTP catalog stays complete",
+		"conversational Agent receives a runtime-filtered subset",
+		"`open_app` stays available",
+		"iOS BLE Wake",
+		"bridge_notification",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("runtime-filtered catalog guidance missing %q:\n%s", want, markdown)
 		}
 	}
 }
@@ -240,34 +258,32 @@ func TestAvailableToolsIncludesQuickAction(t *testing.T) {
 	}
 }
 
-func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
+func TestAvailableToolsHidesUnavailablePhoneBridgeToolsWhenDisconnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
-	runtime.tools.RegisterPhoneBridge(newPhoneBridgeForTest())
+	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
+	runtime.tools.RegisterPhoneBridge(bridge)
 
-	tools := runtime.availableTools()
-	names := toolNamesFromTools(tools)
-	for _, want := range []string{
-		"open_app",
+	names := toolNameSet(runtime.availableTools())
+	for _, notWant := range []string{
 		"open_url",
 		"bridge_clipboard",
 		"bridge_calendar",
 		"bridge_contacts",
 		"bridge_notification",
-		"enter_text",
 	} {
-		found := false
-		for _, name := range names {
-			if name == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("static tool catalog missing %s while Phone Bridge is disconnected: %v", want, names)
+		if _, ok := names[notWant]; ok {
+			t.Fatalf("agent catalog exposed unavailable %s while Phone Bridge and BLE are disconnected: %v", notWant, names)
 		}
 	}
+	if _, ok := names["open_app"]; !ok {
+		t.Fatalf("agent catalog should keep open_app because it can fall back to visible system search: %v", names)
+	}
+	if _, ok := names["enter_text"]; !ok {
+		t.Fatalf("agent catalog should keep non-bridge input fallback enter_text: %v", names)
+	}
 	for _, internal := range []string{"bridge_open_app", "search_launch_app"} {
-		if _, ok := toolNameSet(tools)[internal]; ok {
+		if _, ok := names[internal]; ok {
 			t.Fatalf("internal launch route %s leaked into agent catalog: %v", internal, names)
 		}
 		if _, ok := runtime.ToolDescriptorByName(internal); ok {
@@ -279,6 +295,7 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
 
@@ -437,6 +454,7 @@ func TestRuntimeAvailableToolsUsesDeviceTypePlatformFilter(t *testing.T) {
 		Device: DeviceConfig{DeviceType: "windows"},
 	})
 	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
 
@@ -546,6 +564,7 @@ func TestRuntimeLoadAllToolsIncludesScriptAuthoringTools(t *testing.T) {
 func TestPhoneBridgeToolDescriptorsHaveUsefulExamples(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
 
@@ -555,7 +574,7 @@ func TestPhoneBridgeToolDescriptorsHaveUsefulExamples(t *testing.T) {
 		"bridge_clipboard":    `{"action":"read"}`,
 		"bridge_calendar":     `{"action":"query","from":"2026-07-10T00:00:00+08:00","to":"2026-07-11T00:00:00+08:00"}`,
 		"bridge_contacts":     `{"action":"query","query":"Alice","limit":20}`,
-		"bridge_notification": `{"title":"Aiden reminder","body":"Check your phone","sound":true}`,
+		"bridge_notification": `{"action":"query","limit":20}`,
 	}
 	for name, want := range expected {
 		desc, ok := runtime.ToolDescriptorByName(name)
@@ -568,30 +587,192 @@ func TestPhoneBridgeToolDescriptorsHaveUsefulExamples(t *testing.T) {
 	}
 }
 
-func TestAvailableToolsKeepsPhoneBridgeCatalogStaticDuringPiPBackground(t *testing.T) {
+func TestAvailableToolsExposesOnlyBackgroundSafeBridgeToolsDuringPiP(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newIOSPiPBackgroundBridge(t)
 	runtime.tools.RegisterPhoneBridge(bridge)
 
-	tools := runtime.availableTools()
-	names := toolNamesFromTools(tools)
-	for _, want := range []string{"open_app", "open_url", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
-		found := false
-		for _, name := range names {
-			if name == want {
-				found = true
-				break
-			}
+	names := toolNameSet(runtime.availableTools())
+	for _, want := range []string{"bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
+		if _, ok := names[want]; !ok {
+			t.Fatalf("agent catalog missing PiP-safe %s: %v", want, names)
 		}
-		if !found {
-			t.Fatalf("static tool catalog missing %s during PiP background state: %v", want, names)
+	}
+	for _, notWant := range []string{"open_url"} {
+		if _, ok := names[notWant]; ok {
+			t.Fatalf("agent catalog exposed foreground-only %s during PiP background state: %v", notWant, names)
 		}
+	}
+	if _, ok := names["open_app"]; !ok {
+		t.Fatalf("agent catalog should keep fallback-capable open_app during PiP: %v", names)
 	}
 	if _, ok := runtime.ToolDescriptorByName("open_app"); !ok {
-		t.Fatalf("ToolDescriptorByName missing static open_app descriptor: %v", names)
+		t.Fatalf("HTTP catalog should keep open_app available for direct diagnostics: %v", names)
 	}
 	if _, ok := runtime.ToolDescriptorByName("bridge_clipboard"); !ok {
-		t.Fatalf("ToolDescriptorByName missing PiP background bridge_clipboard: %v", names)
+		t.Fatalf("HTTP catalog missing PiP background bridge_clipboard: %v", names)
+	}
+}
+
+func TestAvailableToolsExposesBackgroundSafeBridgeToolsThroughBLEWake(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.appStateAt = time.Now()
+	bridge.mu.Unlock()
+	bridge.bleStatus = func(context.Context) (ble.RuntimeStatus, error) {
+		return ble.RuntimeStatus{
+			BackendAvailable: true,
+			Connected:        true,
+			WakeSubscriber:   true,
+			ANCSSubscribed:   true,
+		}, nil
+	}
+	runtime.tools.RegisterPhoneBridge(bridge)
+
+	names := toolNameSet(runtime.availableTools())
+	for _, want := range []string{"bridge_calendar", "bridge_contacts", "bridge_notification"} {
+		if _, ok := names[want]; !ok {
+			t.Fatalf("agent catalog missing BLE-Wake-safe %s: %v", want, names)
+		}
+	}
+	for _, notWant := range []string{"open_url", "bridge_clipboard"} {
+		if _, ok := names[notWant]; ok {
+			t.Fatalf("agent catalog exposed foreground-only %s through BLE Wake: %v", notWant, names)
+		}
+	}
+	if _, ok := names["open_app"]; !ok {
+		t.Fatalf("agent catalog should keep fallback-capable open_app through BLE Wake: %v", names)
+	}
+	var contacts langtools.Tool
+	for _, tool := range runtime.availableTools() {
+		if tool != nil && tool.Name() == toolBridgeContacts {
+			contacts = tool
+			break
+		}
+	}
+	if contacts == nil {
+		t.Fatal("missing contacts capability tool")
+	}
+	properties := contacts.(structuredInputTool).ArgsSchema()["properties"].(map[string]any)
+	actions := properties["action"].(map[string]any)["enum"].([]string)
+	if !slices.Equal(actions, []string{"query", "create"}) {
+		t.Fatalf("BLE contacts actions = %#v, want query/create", actions)
+	}
+	if _, ok := properties["contact_id"]; ok {
+		t.Fatalf("BLE contacts schema exposed update-only contact_id: %#v", properties)
+	}
+	ctx, _ := WithToolError(context.Background())
+	out, err := contacts.Call(ctx, `{"action":"update","contact_id":"abc","name":"Alice"}`)
+	if err != nil {
+		t.Fatalf("contacts update Call() error = %v", err)
+	}
+	if te := ToolErrorFromContext(ctx); te == nil || te.Code != CodeModuleUnavailable || out != te.Message {
+		t.Fatalf("contacts update result = %q error=%#v, want module_unavailable", out, te)
+	}
+	for _, input := range []string{`{}`, `{"action":"delete"}`} {
+		ctx, _ := WithToolError(context.Background())
+		out, err := contacts.Call(ctx, input)
+		if err != nil {
+			t.Fatalf("contacts Call(%s) error = %v", input, err)
+		}
+		if te := ToolErrorFromContext(ctx); te == nil || te.Code != CodeInvalidArguments || out != te.Message {
+			t.Fatalf("contacts Call(%s) result = %q error=%#v, want invalid_arguments", input, out, te)
+		}
+	}
+}
+
+func TestAvailableToolsExposesOnlyNotificationWhenBLECanOnlyQuery(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
+	bridge.bleStatus = func(context.Context) (ble.RuntimeStatus, error) {
+		return ble.RuntimeStatus{
+			BackendAvailable: true,
+			Connected:        true,
+			ANCSSubscribed:   true,
+		}, nil
+	}
+	runtime.tools.RegisterPhoneBridge(bridge)
+
+	tools := runtime.availableTools()
+	names := toolNameSet(tools)
+	if _, ok := names["bridge_notification"]; !ok {
+		t.Fatalf("agent catalog missing BLE notification query tool: %v", names)
+	}
+	for _, notWant := range []string{"open_url", "bridge_clipboard", "bridge_calendar", "bridge_contacts"} {
+		if _, ok := names[notWant]; ok {
+			t.Fatalf("agent catalog exposed unavailable %s with query-only BLE: %v", notWant, names)
+		}
+	}
+	if _, ok := names["open_app"]; !ok {
+		t.Fatalf("agent catalog should keep fallback-capable open_app with query-only BLE: %v", names)
+	}
+	var notification langtools.Tool
+	for _, tool := range tools {
+		if tool != nil && tool.Name() == "bridge_notification" {
+			notification = tool
+			break
+		}
+	}
+	if notification == nil {
+		t.Fatal("missing query-only notification tool")
+	}
+	description := notification.Description()
+	if !strings.Contains(description, `{"action":"query","limit":20}`) || strings.Contains(description, `{"action":"send"`) {
+		t.Fatalf("query-only notification description exposed wrong actions: %s", description)
+	}
+	schema := notification.(structuredInputTool).ArgsSchema()
+	properties := schema["properties"].(map[string]any)
+	action := properties["action"].(map[string]any)
+	enum := action["enum"].([]string)
+	if len(enum) != 1 || enum[0] != "query" {
+		t.Fatalf("query-only notification action enum = %#v", enum)
+	}
+	if _, ok := properties["title"]; ok {
+		t.Fatalf("query-only notification schema leaked send fields: %#v", properties)
+	}
+
+	capability, ok := notification.(*notificationCapabilityTool)
+	if !ok {
+		t.Fatalf("notification tool type = %T, want *notificationCapabilityTool", notification)
+	}
+	inner, ok := capability.inner.(*NotificationTool)
+	if !ok {
+		t.Fatalf("notification inner tool type = %T, want *NotificationTool", capability.inner)
+	}
+	inner.socketPath = func() string { return "/tmp/test-ble.sock" }
+	inner.statusReader = func(_ context.Context, socketPath string) (ble.RuntimeStatus, error) {
+		if socketPath != "/tmp/test-ble.sock" {
+			t.Fatalf("notification status socket = %q", socketPath)
+		}
+		return ble.RuntimeStatus{LastEventID: "1", EventGeneration: "generation-1"}, nil
+	}
+	inner.eventsReader = func(
+		_ context.Context,
+		socketPath string,
+		since string,
+		generation string,
+		limit int,
+	) (ble.EventPage, error) {
+		if socketPath != "/tmp/test-ble.sock" || since != "0" || generation != "generation-1" || limit != 1 {
+			t.Fatalf("unexpected notification query socket=%q since=%q generation=%q limit=%d", socketPath, since, generation, limit)
+		}
+		return ble.EventPage{Generation: generation, LastID: "1"}, nil
+	}
+	ctx, _ := WithToolError(context.Background())
+	out, err := notification.Call(ctx, `{"limit":1}`)
+	if err != nil {
+		t.Fatalf("query-only notification Call() error = %v", err)
+	}
+	if te := ToolErrorFromContext(ctx); te != nil {
+		t.Fatalf("query-only notification Call() tool error = %#v, output=%q", te, out)
+	}
+	if !strings.Contains(out, `"action": "query"`) {
+		t.Fatalf("query-only notification Call() output = %q, want query action", out)
 	}
 }
 

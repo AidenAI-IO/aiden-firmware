@@ -29,9 +29,10 @@ JSON header describes the request or response; large binary data (such as raw HD
 | `src/frame_ipc.*` | Frame service compatibility wrapper |
 
 `ble_service` implements the same envelope in Go at
-`/run/ble_service/ble_service.sock`. Its `status`, pairing, `events_since`, and
-Android `notification_publish`
-operations are documented in [BLE Service](../03-services/ble-service.md).
+`/run/ble_service/ble_service.sock`. Its `status`, `wake`, `pairing_start`,
+`disconnect`, `pairing_forget`, `events_since`, and Android
+`notification_publish` operations are documented in
+[BLE Service](../03-services/ble-service.md).
 
 ## Cross-Language Clients
 

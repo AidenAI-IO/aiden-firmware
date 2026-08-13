@@ -294,7 +294,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	toolBridgeNotification: {
 		Category:       "bridge",
 		InputMode:      toolInputModeJSON,
-		ExampleInput:   `{"title":"Aiden reminder","body":"Check your phone","sound":true}`,
+		ExampleInput:   `{"action":"query","limit":20}`,
 		AgentPlatforms: []string{"ios", "android"},
 	},
 }
