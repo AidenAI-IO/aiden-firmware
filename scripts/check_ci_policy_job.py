@@ -18,6 +18,7 @@ tell which job a line belongs to.
 
 from __future__ import annotations
 
+import shlex
 import sys
 from pathlib import Path
 
@@ -113,6 +114,57 @@ def job_shell_text(job: dict) -> str:
     return "\n".join(parts)
 
 
+def shell_logical_lines(text: str) -> list[str]:
+    """Join backslash-continued shell lines without executing the script."""
+    commands: list[str] = []
+    current: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        continued = line.endswith("\\")
+        if continued:
+            line = line[:-1].rstrip()
+        current.append(line)
+        if not continued:
+            commands.append(" ".join(current))
+            current = []
+    if current:
+        commands.append(" ".join(current))
+    return commands
+
+
+def sparse_checkout_paths(job: dict) -> set[str]:
+    """Return literal paths passed to `git sparse-checkout set` commands."""
+    paths: set[str] = set()
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return paths
+    for step in steps:
+        if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+            continue
+        for command in shell_logical_lines(step["run"]):
+            try:
+                lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+                lexer.whitespace_split = True
+                lexer.commenters = ""
+                tokens = list(lexer)
+            except ValueError:
+                continue
+            if not tokens or tokens[0] != "git":
+                continue
+            for index in range(1, len(tokens) - 1):
+                if tokens[index : index + 2] != ["sparse-checkout", "set"]:
+                    continue
+                for token in tokens[index + 2 :]:
+                    if token in {"&&", "||", ";", "|"}:
+                        break
+                    if not token.startswith("-"):
+                        paths.add(token)
+                break
+    return paths
+
+
 def main() -> None:
     try:
         import yaml
@@ -147,7 +199,7 @@ def main() -> None:
             continue
         text = strip_comments(job_shell_text(job))
         if POLICY_SCRIPT in text:
-            policy_jobs[name] = text
+            policy_jobs[name] = (job, text)
         if RELEASE_SCRIPT_MARKER in text:
             release_jobs.add(name)
 
@@ -164,7 +216,7 @@ def main() -> None:
         )
 
     for name in sorted(policy_jobs):
-        text = policy_jobs[name]
+        job, text = policy_jobs[name]
 
         if name in release_jobs:
             fail(
@@ -183,7 +235,10 @@ def main() -> None:
                 "instead of the multi-GB pico-sdk worktree"
             )
 
-        missing_inputs = [path for path in REQUIRED_POLICY_INPUTS if path not in text]
+        checked_out_paths = sparse_checkout_paths(job)
+        missing_inputs = [
+            path for path in REQUIRED_POLICY_INPUTS if path not in checked_out_paths
+        ]
         if missing_inputs:
             fail(
                 f"job '{name}' does not sparse-fetch every SDK policy input "

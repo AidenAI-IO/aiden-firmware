@@ -14,6 +14,7 @@ import (
 const (
 	managedPythonRoot                = "/userdata/agent/python"
 	managedPythonVersionQueryTimeout = 5 * time.Second
+	firmwarePythonInterpreter        = "/usr/bin/python3"
 )
 
 var managedPythonVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
@@ -27,13 +28,17 @@ type managedPythonPaths struct {
 type managedPythonVersionQuery func(context.Context) (string, error)
 
 func queryRunningPythonVersion(ctx context.Context) (string, error) {
+	return queryPythonVersion(ctx, firmwarePythonInterpreter)
+}
+
+func queryPythonVersion(ctx context.Context, interpreter string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, managedPythonVersionQueryTimeout)
 	defer cancel()
 
-	output, err := exec.CommandContext(queryCtx, "python3", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Output()
+	output, err := exec.CommandContext(queryCtx, interpreter, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Output()
 	if err != nil {
 		if contextErr := queryCtx.Err(); contextErr != nil {
 			return "", contextErr

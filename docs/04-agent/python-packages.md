@@ -14,7 +14,7 @@ Runtime-installed packages live under the fixed root:
 /userdata/agent/python
 ```
 
-The active user base is derived from the running interpreter's major/minor
+The active user base is derived from the firmware interpreter's major/minor
 version:
 
 ```text
@@ -92,7 +92,7 @@ The executable remains the firmware-provided `/usr/bin/python3`. With Python
 └── lib/python3.11/site-packages/
 ```
 
-The Agent queries `python3` for `sys.version_info.major` and
+The Agent queries `/usr/bin/python3` for `sys.version_info.major` and
 `sys.version_info.minor`. Python 3.11 selects `py3.11`; a later Python 3.12
 firmware automatically selects `py3.12`.
 
@@ -116,7 +116,7 @@ AIDEN_PYTHON_TMP=/userdata/agent/python/tmp
 ```
 
 These names have no built-in meaning to Python or pip. The runtime derives the
-version suffix once from the running `python3` interpreter and injects the same
+version suffix once from the firmware `/usr/bin/python3` interpreter and injects the same
 values into foreground, background, and PTY shell commands.
 
 When installing a package, the Agent scopes the Python variables to that shell
@@ -130,17 +130,17 @@ PIP_USER=1 \
 PIP_NO_CACHE_DIR=1 \
 PIP_DISABLE_PIP_VERSION_CHECK=1 \
 TMPDIR="$AIDEN_PYTHON_TMP" \
-python3 -m pip install --only-binary=:all: --no-cache-dir \
+/usr/bin/python3 -m pip install --only-binary=:all: --no-cache-dir \
   'packaging==24.2'
 
-PYTHONUSERBASE="$AIDEN_PYTHON_USERBASE" python3 -m pip check
+PYTHONUSERBASE="$AIDEN_PYTHON_USERBASE" /usr/bin/python3 -m pip check
 ```
 
 When running Python code that needs an installed dependency, the Agent scopes
 the same user base to that command:
 
 ```bash
-PYTHONUSERBASE="$AIDEN_PYTHON_USERBASE" python3 script.py
+PYTHONUSERBASE="$AIDEN_PYTHON_USERBASE" /usr/bin/python3 script.py
 ```
 
 For a package-provided CLI, append its directory only for that invocation:
@@ -191,7 +191,7 @@ creating a new `pythonenv` package.
 The helper is responsible for:
 
 - Returning the fixed root and temporary directory.
-- Querying the running interpreter and deriving the active `py<major>.<minor>`
+- Querying the firmware `/usr/bin/python3` interpreter and deriving the active `py<major>.<minor>`
   directory.
 - Creating the root, active version directory, and temporary directory when
   needed.
@@ -318,8 +318,8 @@ phone companion app change is required.
 ### Board verification
 
 1. Build and install a full rootfs image.
-2. Verify `python3 -m pip --version` reports the firmware pip.
-3. Verify ordinary `python3` commands do not include the managed user site.
+2. Verify `/usr/bin/python3 -m pip --version` reports the firmware pip.
+3. Verify ordinary `/usr/bin/python3` commands do not include the managed user site.
 4. Install an exact binary wheel through the scoped shell command.
 5. Verify the package is importable only when `PYTHONUSERBASE` is scoped into
    the command.

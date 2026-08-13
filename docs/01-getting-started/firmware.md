@@ -65,12 +65,12 @@ The current SDK uses Buildroot 2023.02.6, Python 3.11, and pip 22.3.1. The
 repository build-policy test requires the option in both defconfigs. The SDK
 also overrides Buildroot's `charset-normalizer` 3.0.1 recipe with 2.1.1 because
 the bundled `aiohttp` 3.8.3 requires `charset-normalizer>=2.0,<3.0`; this keeps
-the firmware package set valid under `python3 -m pip check`.
+the firmware package set valid under `/usr/bin/python3 -m pip check`.
 
 After a full image build, verify the rootfs package on the board with:
 
 ```bash
-python3 -m pip --version
+/usr/bin/python3 -m pip --version
 ```
 
 Runtime-installed packages do not go into the rootfs. See

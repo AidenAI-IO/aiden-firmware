@@ -72,20 +72,15 @@ func TestQueryRunningPythonVersionHonorsContextDeadline(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a POSIX shell script")
 	}
-	binDir := t.TempDir()
-	pythonPath := filepath.Join(binDir, "python3")
+	pythonPath := filepath.Join(t.TempDir(), "python3")
 	if err := os.WriteFile(pythonPath, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
 		t.Fatalf("WriteFile(fake python3) error = %v", err)
 	}
-	// Keep the real utility path available to the fake interpreter script.
-	// Replacing PATH entirely makes `sleep` fail with exit 127 on Linux before
-	// CommandContext has a chance to exercise cancellation.
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	_, err := queryRunningPythonVersion(ctx)
+	_, err := queryPythonVersion(ctx, pythonPath)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("queryRunningPythonVersion() error = %v, want context deadline exceeded", err)
 	}

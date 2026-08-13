@@ -82,9 +82,31 @@ for defconfig in \
   fi
 done
 
-if ! grep -q 'define sync_buildroot_board_config' "$PICO_SDK/sysdrv/Makefile" || \
-   ! grep -q '$(call sync_buildroot_board_config)' "$PICO_SDK/sysdrv/Makefile"; then
+make_define_body() {
+  local name="$1"
+  sed -n "/^define ${name}$/,/^endef$/p" "$PICO_SDK/sysdrv/Makefile" |
+    sed '/^[[:space:]]*#/d'
+}
+
+make_target_recipe() {
+  local name="$1"
+  awk -v target="$name" '
+    $0 ~ "^" target ":[^=]*$" { in_target = 1; next }
+    in_target && $0 ~ /^[^[:space:]#][^=]*:/ { exit }
+    in_target && $0 !~ /^[[:space:]]*#/ { print }
+  ' "$PICO_SDK/sysdrv/Makefile"
+}
+
+active_buildroot_recipe="$(make_target_recipe buildroot)"
+sync_buildroot_board_config="$(make_define_body sync_buildroot_board_config)"
+if [ -z "$active_buildroot_recipe" ] || \
+   ! printf '%s\n' "$active_buildroot_recipe" | grep -Fq '$(call sync_buildroot_board_config)'; then
   echo "pico-sdk sysdrv Makefile must sync Buildroot board config before each Buildroot build" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$active_buildroot_recipe" | grep -Fq '$(call refresh_buildroot_config_state)'; then
+  echo "pico-sdk active Buildroot target must refresh the Buildroot configuration state before building packages" >&2
   exit 1
 fi
 
@@ -108,13 +130,13 @@ if ! grep -q '^sha256  5a3d016c7c547f69d6f81fb0db9449ce888b418b5b9952cc5e6e66843
   exit 1
 fi
 
-if ! grep -q '^define inject_python_charset_normalizer_aiden_pkg$' "$PICO_SDK/sysdrv/Makefile" || \
-   ! grep -Fq '$(call inject_python_charset_normalizer_aiden_pkg)' "$PICO_SDK/sysdrv/Makefile"; then
+if [ -z "$sync_buildroot_board_config" ] || \
+   ! printf '%s\n' "$sync_buildroot_board_config" | grep -Fq '$(call inject_python_charset_normalizer_aiden_pkg)'; then
   echo "pico-sdk sysdrv Makefile must inject the compatible charset-normalizer recipe before every Buildroot build" >&2
   exit 1
 fi
 
-buildroot_config_state_value="$(sed -n '/^define buildroot_config_state_value$/,/^endef$/p' "$PICO_SDK/sysdrv/Makefile")"
+buildroot_config_state_value="$(make_define_body buildroot_config_state_value)"
 if ! printf '%s\n' "$buildroot_config_state_value" | grep -q 'PYTHON_CHARSET_NORMALIZER_AIDEN_SRC'; then
   echo "pico-sdk Buildroot state must include the project-owned charset-normalizer recipe so pin changes invalidate cached package output" >&2
   exit 1
