@@ -1,0 +1,14 @@
+[Unit]
+Description=Register Luckfox OEM glibc libraries
+After=oem.mount
+Requires=oem.mount
+Before=luckfox-wifi.service
+ConditionDirectoryNotEmpty=/oem/usr/lib
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/ldconfig
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Record Debian stage-1 boot diagnostics
+After=userdata.mount luckfox-wifi.service systemd-networkd.service ssh.service
+After=luckfox-bluetooth-attach.service bluetooth.service
+Wants=systemd-networkd.service
+RequiresMountsFor=/userdata
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/luckfox-stage1-report
+
+[Install]
+WantedBy=multi-user.target

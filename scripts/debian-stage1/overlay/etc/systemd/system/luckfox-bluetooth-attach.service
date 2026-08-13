@@ -1,0 +1,17 @@
+[Unit]
+Description=Attach the Luckfox AIC8800 Bluetooth UART
+After=luckfox-wifi.service dev-ttyS1.device
+Requires=luckfox-wifi.service
+Wants=dev-ttyS1.device bluetooth.service
+Before=bluetooth.service
+ConditionPathExists=/dev/ttyS1
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/hciattach -n -s 1500000 /dev/ttyS1 any 1500000 flow nosleep
+ExecStartPost=/usr/local/sbin/luckfox-bluetooth-hci-wait
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

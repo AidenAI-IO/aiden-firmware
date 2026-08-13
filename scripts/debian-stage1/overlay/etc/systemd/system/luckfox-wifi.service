@@ -1,0 +1,15 @@
+[Unit]
+Description=Load Luckfox AIC8800 Wi-Fi modules and firmware
+After=oem.mount systemd-udevd.service
+Requires=oem.mount
+Before=wpa_supplicant@wlan0.service systemd-networkd.service
+ConditionPathExists=/oem/usr/ko/aic8800_bsp.ko
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/luckfox-wifi-init
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+
