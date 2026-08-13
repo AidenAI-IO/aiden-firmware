@@ -191,6 +191,35 @@ func TestSendQueuedCommandReturnsLateResultBeforeContextCancel(t *testing.T) {
 	}
 }
 
+func TestSendQueuedCommandReportsRetainedResultCollision(t *testing.T) {
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+
+	cmd := BridgeCommand{ID: "retained_result", Type: "clipboard_read"}
+	if err := bridge.queue.Enqueue(cmd); err != nil {
+		t.Fatal(err)
+	}
+	if err := bridge.queue.SubmitResult(BridgeCommandResponse{
+		ID:     cmd.ID,
+		Method: "clipboard",
+		Data:   json.RawMessage(`{"text":"old"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := bridge.SendQueuedCommand(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("SendQueuedCommand() error = %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != CodeCommandIDCollision {
+		t.Fatalf("SendQueuedCommand() response error = %#v, want command ID collision", resp.Error)
+	}
+	want := `duplicate command ID "retained_result" is already queued or has a retained result`
+	if resp.Error.Message != want {
+		t.Fatalf("collision message = %q, want %q", resp.Error.Message, want)
+	}
+}
+
 // TestPollPlatformFilter tests platform filtering
 func TestPollPlatformFilter(t *testing.T) {
 	q := NewCommandQueue(nil)

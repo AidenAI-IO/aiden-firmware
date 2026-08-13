@@ -703,8 +703,8 @@ For the iOS companion app's Live Activity / Dynamic Island task status. The agen
 | Field           | Default                                 | Description                                                                                       |
 | --------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `relay_url`     | -                                       | Aiden Live Activity relay URL; remote updates are disabled until the URL and credential are provisioned |
-| `relay_api_key` | -                                       | Device-scoped relay credential; the relay must bind it to the generated `board_id` and reject cross-board use |
-| `board_id`      | generated in `/userdata/agent/board_id` | Board ID in relay; generated on first run. Empty or `default` is not a valid relay identity             |
+| `relay_api_key` | -                                       | Device-scoped relay credential; the relay must bind it to the effective `board_id` and reject cross-board use |
+| `board_id`      | generated in `/userdata/agent/board_id` | Effective board ID in relay. The persisted generated value is the default; an explicit configuration value overrides it. Empty or `default` is not valid |
 
 **APNs-based updates** (for remote updates when the app is backgrounded, on lock screen, or not open):
 

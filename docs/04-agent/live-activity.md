@@ -161,7 +161,7 @@ In ordinary deployments, the app registers tokens directly with relay, and the a
 
 ## Configuration
 
-Agent-side state snapshot is enabled by default. App foreground local updates do not read relay config. Background, lock-screen, and Dynamic Island remote updates require an explicitly provisioned relay URL and device-scoped credential. Each board generates a persistent `board_id` in `/userdata/agent/board_id`; empty or `default` board IDs are not valid relay identities.
+Agent-side state snapshot is enabled by default. App foreground local updates do not read relay config. Relay-based background, lock-screen, and Dynamic Island updates require an explicitly provisioned relay URL and device-scoped credential; advanced deployments can instead use the direct APNs configuration described below. Each board generates a persistent `board_id` in `/userdata/agent/board_id`; an explicit non-default `board_id` configuration overrides that generated value. Empty or `default` board IDs are not valid relay identities.
 
 Advanced deployments can override relay config. Do not put Apple APNs `.p8` files on the board:
 
