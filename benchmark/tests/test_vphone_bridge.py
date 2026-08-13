@@ -103,6 +103,7 @@ def test_health_and_concurrency(bridge):
     status, body = request(base_url, "/health")
     assert status == 200
     assert body["data"]["bridge_type"] == "vphone_ios"
+    assert body["data"]["platform"] == "ios"
     assert body["data"]["screen_width"] == 1290
     status, body = request(base_url, "/api/concurrent")
     assert status == 200 and body["data"]["concurrent"] == 1

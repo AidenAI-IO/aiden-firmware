@@ -6,14 +6,17 @@ import os
 import re
 import sys
 import time
-import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from runner.agent_client import AgentClient
 from runner.analysis import AnalysisConfig, _int_env, analyze_run
 from runner.html_report import generate_report_html, upload_report
 from runner.judge import DEFAULT_JUDGE_BASE_URL, JudgeConfig
+from runner.platform import (
+    VALID_TARGET_PLATFORMS,
+    platform_from_environment_health,
+    read_environment_health,
+)
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
 from runner.reset import ResetError, call_environment_release, clear_stale_adb_android_owner
@@ -21,7 +24,6 @@ from runner.runtask import run_one_task, skipped_task_result
 from runner.suite import Suite, TaskSpec, load_suite
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-VALID_TARGET_PLATFORMS = {"ios", "android", "mac"}
 
 
 def wait_for_agent_clock(
@@ -323,25 +325,11 @@ def _resolve_target_platform(args: argparse.Namespace) -> str:
         health = _read_environment_health(environment_url)
     except Exception:
         return ""
-    bridge_type = str(health.get("bridge_type") or "").strip().lower()
-    if bridge_type in {"adb_android", "mobilegym"}:
-        return "android"
-    platform = str(health.get("platform") or health.get("device_platform") or "").strip().lower()
-    if platform in VALID_TARGET_PLATFORMS:
-        return platform
-    return ""
+    return platform_from_environment_health(health)
 
 
 def _read_environment_health(environment_url: str) -> dict:
-    parsed = urllib.parse.urlsplit(str(environment_url).strip())
-    if not parsed.scheme or not parsed.netloc:
-        return {}
-    url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "/health", "", ""))
-    with urllib.request.urlopen(url, timeout=0.5) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
-        return payload["data"]
-    return payload if isinstance(payload, dict) else {}
+    return read_environment_health(environment_url)
 
 
 def _task_repeats(args: argparse.Namespace, task: TaskSpec) -> int:

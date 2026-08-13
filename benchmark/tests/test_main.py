@@ -49,6 +49,24 @@ def test_resolve_target_platform_infers_mobilegym_android(monkeypatch):
     assert main._resolve_target_platform(args) == "android"
 
 
+def test_resolve_target_platform_reads_vphone_ios_health(monkeypatch):
+    args = type("Args", (), {"target_platform": "auto", "environment_url": "http://127.0.0.1:8899"})()
+    monkeypatch.setattr(
+        main,
+        "_read_environment_health",
+        lambda environment_url: {"bridge_type": "vphone_ios", "platform": "ios"},
+    )
+
+    assert main._resolve_target_platform(args) == "ios"
+
+
+def test_resolve_target_platform_infers_vphone_ios_for_legacy_health(monkeypatch):
+    args = type("Args", (), {"target_platform": "auto", "environment_url": "http://127.0.0.1:8899"})()
+    monkeypatch.setattr(main, "_read_environment_health", lambda environment_url: {"bridge_type": "vphone_ios"})
+
+    assert main._resolve_target_platform(args) == "ios"
+
+
 def _task_result_with_details():
     return TaskResult(
         suite="suite",

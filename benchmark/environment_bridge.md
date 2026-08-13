@@ -13,6 +13,26 @@ Implementations in this repository:
 
 ## Required Endpoints
 
+### `GET /health`
+
+Returns bridge readiness and the controlled platform. Fixed-platform bridges
+should expose canonical lowercase `platform` values such as `ios` or `android`:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "status": "ok",
+    "bridge_type": "vphone_ios",
+    "platform": "ios"
+  }
+}
+```
+
+Benchmark runners use this field to set the Agent's global
+`[device].device_type`. For compatibility with older bridges, known
+`bridge_type` values may still be used as a fallback.
+
 ### `GET /api/tools`
 
 Returns the tool catalog used by agent daemons.

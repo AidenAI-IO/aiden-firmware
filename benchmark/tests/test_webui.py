@@ -1694,13 +1694,15 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     base = tmp_path / "base"
     base.mkdir()
     app = webui.BenchmarkWebApp(webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=base, build_daemon_image=False))
-    saved = 'instruction = "from web ui"\n[model]\nprovider = "fake"\n'
+    saved = 'instruction = "from web ui"\n[model]\nprovider = "fake"\n[device]\ndevice_type = "Android"\n'
     app.save_agent_config({"content": saved})
     job = webui.Job(
         id="job-test",
         endpoint="http://127.0.0.1:19090",
         docker_endpoint="http://host.docker.internal:19090",
+        environment_endpoint="http://127.0.0.1:19090",
         suites=["mobilegym_basic.json"],
+        environment_type="device",
         agent_url="http://127.0.0.1:18080",
         container_name="aiden-benchmark-agent-job-test",
         config_dir=str(tmp_path / "runs" / "job-test" / "config"),
@@ -1721,6 +1723,7 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(app, "_run_suite", fake_run_suite)
     monkeypatch.setattr(webui, "start_daemon_compose", lambda *args, **kwargs: "container-id")
     monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "read_environment_bridge_platform", lambda endpoint: "ios")
 
     app._run_job(job)
 
@@ -1730,7 +1733,50 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     assert "voice_tool_call_speech = false" in saved_content
     assert "voice_progress_speech_enabled = false" in saved_content
     assert 'provider = "fake"' in saved_content
+    assert 'device_type = "iOS"' in saved_content
     assert job.status == "passed"
+
+
+def test_run_job_falls_back_to_android_for_known_android_environment(tmp_path: Path, monkeypatch):
+    base = tmp_path / "base"
+    base.mkdir()
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=base, build_daemon_image=False)
+    )
+    app.save_agent_config({"content": '[model]\nprovider = "fake"\n[device]\ndevice_type = "iOS"\n'})
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        environment_endpoint="http://127.0.0.1:19090",
+        suites=["mobilegym_basic.json"],
+        environment_type="mobilegym",
+        agent_url="http://127.0.0.1:18080",
+        container_name="aiden-benchmark-agent-job-test",
+        config_dir=str(tmp_path / "runs" / "job-test" / "config"),
+        raw_runs_dir=str(tmp_path / "runs" / "job-test" / "raw"),
+        state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        daemon_log=str(tmp_path / "runs" / "job-test" / "daemon.log"),
+    )
+    app._jobs[job.id] = job
+
+    monkeypatch.setattr(webui, "read_environment_bridge_platform", lambda endpoint: "")
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_wait_for_daemon", lambda run_job: None)
+    monkeypatch.setattr(
+        app,
+        "_run_suite",
+        lambda run_job, suite_key: run_job.suite_results.append({"suite": suite_key, "exit_code": 0}),
+    )
+    monkeypatch.setattr(webui, "start_daemon_compose", lambda *args, **kwargs: "container-id")
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+
+    app._run_job(job)
+
+    saved_content = (Path(job.config_dir) / "agent.toml").read_text(encoding="utf-8")
+    assert 'device_type = "Android"' in saved_content
 
 
 def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: Path):

@@ -391,11 +391,11 @@ curl -sS "$VPHONE_BRIDGE_ENDPOINT/health"
 The result should include:
 
 ```json
-{"ok":true,"data":{"bridge_type":"vphone_ios","concurrent":1}}
+{"ok":true,"data":{"bridge_type":"vphone_ios","platform":"ios","concurrent":1}}
 ```
 
-Additional fields are permitted, but `ok`, `bridge_type`, and `concurrent` must
-have the expected values.
+Additional fields are permitted, but `ok`, `bridge_type`, `platform`, and
+`concurrent` must have the expected values.
 
 ### 6.2 Run the Automated Validation Script
 

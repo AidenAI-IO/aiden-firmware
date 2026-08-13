@@ -108,6 +108,7 @@ def test_health_reports_ok(bridge):
     assert status == 200
     assert body["ok"] is True
     assert body["data"]["bridge_type"] == "adb_android"
+    assert body["data"]["platform"] == "android"
     assert body["data"]["concurrent"] == 1
 
 

@@ -27,6 +27,7 @@ from runner.agent_client import AgentClient
 from runner.analysis import AnalysisResult, analyze_run, config_from_env
 from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
+from runner.platform import read_environment_platform
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
 
@@ -790,11 +791,16 @@ class BenchmarkWebApp:
             self._raise_if_job_stop_requested(job)
             self._set_job(job, status="preparing", started_at=now_iso(), message="preparing config")
             agent_config_text = self.get_agent_config()["content"]
+            device_type = ""
+            if job.environment_type != "mock":
+                device_type = read_environment_bridge_platform(job.environment_endpoint or job.endpoint)
+            if not device_type and job.environment_type in {"mobilegym", "adb_android"}:
+                device_type = "android"
             prepare_run_config(
                 self.config.base_config_dir,
                 Path(job.config_dir),
                 agent_config_text=agent_config_text,
-                device_type="Android" if job.environment_type in {"mobilegym", "adb_android"} else "",
+                device_type=device_type,
             )
             self._raise_if_job_stop_requested(job)
             if job.environment_type == "mock":
@@ -1986,6 +1992,10 @@ def read_environment_bridge_concurrency(endpoint: str, *, timeout: float = 2.0) 
     except (AttributeError, TypeError, ValueError):
         return None
     return concurrent_value if concurrent_value > 0 else None
+
+
+def read_environment_bridge_platform(endpoint: str, *, timeout: float = 0.5) -> str:
+    return read_environment_platform(endpoint, timeout=timeout)
 
 
 def reserve_free_port() -> int:
