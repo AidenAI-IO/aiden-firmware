@@ -441,16 +441,16 @@ def test_report_embeds_mobilegym_failed_task_error_log(tmp_path):
     from mobilegym import report
 
     batch = tmp_path / "batch-evidence"
-    shard = batch / "loop_planning_v1" / "shard-0"
+    shard = batch / "report_fixture_v1" / "shard-0"
     write_json(
         shard / "shard.json",
         {
             "batch_id": "batch-evidence",
-            "suite": "loop_planning_v1",
+            "suite": "report_fixture_v1",
             "shard_index": 0,
             "shard_count": 1,
             "selected_task_count": 1,
-            "selected_task_ids": ["loop_planning_v1.invoice"],
+            "selected_task_ids": ["report_fixture_v1.invoice"],
             "exit_code": 0,
         },
     )
@@ -458,15 +458,15 @@ def test_report_embeds_mobilegym_failed_task_error_log(tmp_path):
         shard / "raw" / "run" / "results.jsonl",
         [
             {
-                "id": "loop_planning_v1.invoice",
-                "suite": "loop_planning_v1",
+                "id": "report_fixture_v1.invoice",
+                "suite": "report_fixture_v1",
                 "is_success": False,
                 "execution": {"agent_answer": "wrong", "stop_reason": "max_steps"},
                 "aiden_last_chat_history": [{"type": "assistant", "content": "Need one more calculation"}],
             }
         ],
     )
-    write_jsonl(shard / "raw" / "run" / "errors.jsonl", [{"id": "loop_planning_v1.invoice", "error": "JudgeBoom"}])
+    write_jsonl(shard / "raw" / "run" / "errors.jsonl", [{"id": "report_fixture_v1.invoice", "error": "JudgeBoom"}])
 
     report.generate_reports(batch)
 
@@ -482,18 +482,18 @@ def test_report_falls_back_to_compose_log_tool_calls_when_bridge_artifact_is_mis
     from mobilegym import report
 
     batch = tmp_path / "batch-compose-tools"
-    shard = batch / "loop_planning_v1" / "shard-0"
+    shard = batch / "report_fixture_v1" / "shard-0"
     write_json(
         shard / "shard.json",
         {
             "batch_id": "batch-compose-tools",
-            "suite": "loop_planning_v1",
+            "suite": "report_fixture_v1",
             "shard_index": 0,
             "shard_count": 1,
             "selected_task_count": 2,
             "selected_task_ids": [
-                "loop_planning_v1.direct_answer_no_plan",
-                "loop_planning_v1.expense_summary_requires_plan",
+                "report_fixture_v1.direct_answer",
+                "report_fixture_v1.expense_summary",
             ],
             "exit_code": 0,
         },
@@ -502,16 +502,16 @@ def test_report_falls_back_to_compose_log_tool_calls_when_bridge_artifact_is_mis
         shard / "raw" / "run" / "results.jsonl",
         [
             {
-                "id": "loop_planning_v1.direct_answer_no_plan",
+                "id": "report_fixture_v1.direct_answer",
                 "task_name": "Select option (b).",
-                "suite": "loop_planning_v1",
+                "suite": "report_fixture_v1",
                 "is_success": True,
                 "execution": {"steps": 1},
             },
             {
-                "id": "loop_planning_v1.expense_summary_requires_plan",
+                "id": "report_fixture_v1.expense_summary",
                 "task_name": "Analyze the expense list.",
-                "suite": "loop_planning_v1",
+                "suite": "report_fixture_v1",
                 "is_success": True,
             },
         ],
