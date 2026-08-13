@@ -325,6 +325,8 @@ type Config struct {
 	SkillMergeModel            SkillMergeModel          `toml:"-"`
 	Telemetry                  TelemetryConfig          `toml:"telemetry,omitempty"`
 	ConfigDir                  string                   `toml:"-"`
+
+	deviceTypeConfigured bool
 }
 
 func (c Config) TerminationPolicyOrDefault() TerminationPolicyConfig {
@@ -890,7 +892,8 @@ func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
 	if cfg == nil {
 		return
 	}
-	if !metadata.IsDefined("device", "device_type") || strings.TrimSpace(cfg.Device.DeviceType) == "" {
+	cfg.deviceTypeConfigured = metadata.IsDefined("device", "device_type") && strings.TrimSpace(cfg.Device.DeviceType) != ""
+	if !cfg.deviceTypeConfigured {
 		cfg.Device.DeviceType = inferredDeviceTypeFromLegacyConfig(cfg.HID, cfg.DefaultPlatform)
 	} else if deviceType, ok := normalizeDeviceType(cfg.Device.DeviceType); ok {
 		cfg.Device.DeviceType = deviceType

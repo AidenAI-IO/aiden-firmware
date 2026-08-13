@@ -22,6 +22,12 @@ type EnvironmentBridgeClient struct {
 
 type EnvironmentBridgeClientOption func(*EnvironmentBridgeClient)
 
+type environmentBridgeHealth struct {
+	Platform       string `json:"platform"`
+	DevicePlatform string `json:"device_platform"`
+	BridgeType     string `json:"bridge_type"`
+}
+
 func WithEnvironmentBridgeBenchmarkTaskID(taskID string) EnvironmentBridgeClientOption {
 	return func(c *EnvironmentBridgeClient) {
 		c.benchmarkTaskID = strings.TrimSpace(taskID)
@@ -43,6 +49,93 @@ func NewEnvironmentBridgeClient(endpoint string, opts ...EnvironmentBridgeClient
 		}
 	}
 	return c
+}
+
+// ApplyEnvironmentBridgePlatform makes bridge health the runtime platform
+// authority without changing agent.toml. An explicitly configured device type
+// is accepted only when it agrees with the bridge.
+func ApplyEnvironmentBridgePlatform(ctx context.Context, cfg *Config) error {
+	if cfg == nil || !cfg.EnvironmentBridge.Enabled {
+		return nil
+	}
+	endpoint := strings.TrimSpace(cfg.EnvironmentBridge.Endpoint)
+	if endpoint == "" {
+		return fmt.Errorf("environment bridge endpoint is required")
+	}
+	platform, err := NewEnvironmentBridgeClient(endpoint).Platform(ctx)
+	if err != nil {
+		return err
+	}
+	deviceType := deviceTypeFromPlatform(platform)
+	if deviceType == "" {
+		return fmt.Errorf("environment bridge health did not report a supported platform")
+	}
+	if cfg.deviceTypeConfigured && cfg.DevicePlatformOrDefault() != deviceTypePlatform(deviceType) {
+		return fmt.Errorf(
+			"configured device type %q does not match environment bridge platform %q",
+			cfg.DeviceTypeOrDefault(),
+			platform,
+		)
+	}
+	cfg.Device.DeviceType = deviceType
+	cfg.HID.PointerMode = cfg.PointerModeOrDefault()
+	return nil
+}
+
+// Platform reads the controlled platform from the bridge health endpoint.
+func (c *EnvironmentBridgeClient) Platform(ctx context.Context) (string, error) {
+	url := c.endpoint + "/health"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("create environment bridge health request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("read environment bridge health: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read environment bridge health response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("environment bridge health returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	var envelope struct {
+		Data *environmentBridgeHealth `json:"data"`
+		environmentBridgeHealth
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return "", fmt.Errorf("parse environment bridge health: %w", err)
+	}
+	health := envelope.environmentBridgeHealth
+	if envelope.Data != nil {
+		health = *envelope.Data
+	}
+	platform := strings.ToLower(strings.TrimSpace(health.Platform))
+	if platform == "" {
+		platform = strings.ToLower(strings.TrimSpace(health.DevicePlatform))
+	}
+	switch platform {
+	case "ios", "iphone", "ipad", "ipados":
+		return "ios", nil
+	case "android":
+		return "android", nil
+	case "mac", "macos", "darwin":
+		return "macos", nil
+	case "windows", "win":
+		return "windows", nil
+	case "linux":
+		return "linux", nil
+	}
+	switch strings.ToLower(strings.TrimSpace(health.BridgeType)) {
+	case "adb_android", "mobilegym":
+		return "android", nil
+	case "vphone_ios":
+		return "ios", nil
+	default:
+		return "", fmt.Errorf("environment bridge health did not report a supported platform")
+	}
 }
 
 // CallTool forwards a tool invocation to the environment bridge and returns the result

@@ -27,8 +27,6 @@ from runner.agent_client import AgentClient
 from runner.analysis import AnalysisResult, analyze_run, config_from_env
 from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
-from runner.config import agent_config_with_device_type
-from runner.platform import platform_to_device_type, read_environment_platform
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
 
@@ -792,18 +790,7 @@ class BenchmarkWebApp:
             self._raise_if_job_stop_requested(job)
             self._set_job(job, status="preparing", started_at=now_iso(), message="preparing config")
             agent_config_text = self.get_agent_config()["content"]
-            device_type = ""
-            if job.environment_type != "mock":
-                platform = read_environment_bridge_platform(job.environment_endpoint or job.endpoint)
-                if not platform:
-                    raise RuntimeError("environment bridge health did not report a supported platform")
-                device_type = platform_to_device_type(platform)
-            prepare_run_config(
-                self.config.base_config_dir,
-                Path(job.config_dir),
-                agent_config_text=agent_config_text,
-                device_type=device_type,
-            )
+            prepare_run_config(self.config.base_config_dir, Path(job.config_dir), agent_config_text=agent_config_text)
             self._raise_if_job_stop_requested(job)
             if job.environment_type == "mock":
                 self._set_job(
@@ -1652,13 +1639,7 @@ def runner_procs_for_stop(value: Any) -> list[subprocess.Popen]:
     return [value]
 
 
-def prepare_run_config(
-    base_config_dir: Path,
-    dest_dir: Path,
-    agent_config_text: str | None = None,
-    *,
-    device_type: str = "",
-) -> None:
+def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text: str | None = None) -> None:
     if dest_dir.exists():
         shutil.rmtree(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1690,11 +1671,6 @@ def prepare_run_config(
             config.write_text(render_agent_template(template.read_text(encoding="utf-8")), encoding="utf-8")
         if not config.exists():
             config.write_text(default_agent_toml(), encoding="utf-8")
-    if device_type:
-        config.write_text(
-            agent_config_with_device_type(config.read_text(encoding="utf-8"), device_type),
-            encoding="utf-8",
-        )
 
 
 def ensure_webui_agent_config(base_config_dir: Path, agent_config_path: Path) -> tuple[str, str]:
@@ -1954,10 +1930,6 @@ def read_environment_bridge_concurrency(endpoint: str, *, timeout: float = 2.0) 
     except (AttributeError, TypeError, ValueError):
         return None
     return concurrent_value if concurrent_value > 0 else None
-
-
-def read_environment_bridge_platform(endpoint: str, *, timeout: float = 0.5) -> str:
-    return read_environment_platform(endpoint, timeout=timeout)
 
 
 def reserve_free_port() -> int:

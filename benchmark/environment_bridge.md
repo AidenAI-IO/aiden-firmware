@@ -29,9 +29,12 @@ should expose canonical lowercase `platform` values such as `ios` or `android`:
 }
 ```
 
-Benchmark runners use this field to set the Agent's global
-`[device].device_type`. For compatibility with older bridges, known
-`bridge_type` values may still be used as a fallback.
+Agent daemons running in environment bridge mode use this field as the runtime
+device platform authority. The daemon derives its effective `device_type`
+without rewriting `agent.toml`; an explicitly configured, conflicting
+`[device].device_type` causes startup to fail. Benchmark runners may also use
+the field to filter platform-specific tasks. For compatibility with older
+bridges, known `bridge_type` values may still be used as a fallback.
 
 ### `GET /api/tools`
 

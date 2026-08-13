@@ -180,7 +180,16 @@ def _handler_for(server: MockEnvironmentServer):
                 self._json(404, {"ok": False, "error": {"code": "not_found"}})
                 return
             if path == "/health":
-                self._json(200, {"ok": True, "data": {"bridge_type": "mock"}})
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "data": {
+                            "bridge_type": "mock",
+                            "platform": str(server.spec.phone_bridge.get("platform") or "").strip().lower(),
+                        },
+                    },
+                )
                 return
             if path == "/api/concurrent":
                 self._json(

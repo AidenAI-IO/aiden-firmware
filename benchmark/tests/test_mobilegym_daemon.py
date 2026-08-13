@@ -15,7 +15,7 @@ def test_render_agent_toml_sets_android_device_type():
     assert config["device"]["backend"] == "mobilegym"
 
 
-def test_render_agent_toml_template_sets_android_device_type(tmp_path):
+def test_render_agent_toml_template_preserves_explicit_device_type(tmp_path):
     template = tmp_path / "agent.toml.template"
     template.write_text(
         '\n'.join(
@@ -39,5 +39,5 @@ def test_render_agent_toml_template_sets_android_device_type(tmp_path):
     )
 
     config = tomllib.loads(rendered)
-    assert config["device"]["device_type"] == "Android"
+    assert config["device"]["device_type"] == "iOS"
     assert config["device"]["bridge_url"] == "http://127.0.0.1:9090"

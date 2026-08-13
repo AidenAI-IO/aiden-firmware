@@ -687,7 +687,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert captured["kwargs"]["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert captured["kwargs"]["environment_bridge_mode"] is True
     assert captured["task_kwargs"]["active_skills"] == ["device-operator"]
-    assert captured["prepare_config_kwargs"]["device_type"] == "android"
+    assert "device_type" not in captured["prepare_config_kwargs"]
     assert stale_clears == ["http://127.0.0.1:19090"]
 
 
@@ -835,7 +835,7 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
     assert captured["daemon_kwargs"]["environment_bridge_endpoint"] == captured[
         "job"
     ].docker_endpoint
-    assert captured["prepare_config_kwargs"]["device_type"] == "ios"
+    assert "device_type" not in captured["prepare_config_kwargs"]
     manifest = json.loads(
         (tmp_path / "runs" / "mock-run" / "manifest.json").read_text(
             encoding="utf-8"

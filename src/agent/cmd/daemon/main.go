@@ -114,6 +114,18 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if cfg.EnvironmentBridge.Enabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := agent.ApplyEnvironmentBridgePlatform(ctx, &cfg)
+		cancel()
+		if err != nil {
+			_ = logging.LogEvent(logging.Error, "agent", "startup", "environment_bridge_platform_failed",
+				logging.Field{Key: "endpoint", Value: cfg.EnvironmentBridge.Endpoint},
+				logging.Field{Key: "error", Value: err},
+			)
+			os.Exit(1)
+		}
+	}
 
 	proxyConfig := agent.ProxyConfigFromEnvironment()
 	if err := proxyConfig.Validate(); err != nil {

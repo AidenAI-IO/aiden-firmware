@@ -99,8 +99,6 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
-    monkeypatch.setattr(services, "read_environment_platform", lambda endpoint: "android")
-
     def fake_start_daemon_compose(job, **kwargs):
         captured["job"] = job
         captured["kwargs"] = kwargs
@@ -144,8 +142,8 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp
     assert kwargs["environment_bridge_mode"] is True
 
 
-def test_start_agent_daemon_infers_device_type_from_environment_health(
-    tmp_path: Path, monkeypatch, capsys
+def test_start_agent_daemon_preserves_agent_config_for_runtime_platform_resolution(
+    tmp_path: Path, monkeypatch
 ):
     base = tmp_path / "base"
     base.mkdir()
@@ -153,76 +151,12 @@ def test_start_agent_daemon_infers_device_type_from_environment_health(
         '[model]\nprovider = "fake"\n[device]\ndevice_type = "iOS"\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(services, "read_environment_platform", lambda endpoint: "android", raising=False)
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "start_daemon_compose", lambda *args, **kwargs: "agent-container")
     monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
 
     args = _agent_daemon_args(tmp_path, base_config_dir=base)
-
-    assert services.cmd_start_agent_daemon(args) == 0
-    config = (tmp_path / "agent-smoke" / "config" / "agent.toml").read_text(encoding="utf-8")
-    assert 'device_type = "Android"' in config
-
-
-def test_start_agent_daemon_fails_when_environment_platform_is_unknown(
-    tmp_path: Path, monkeypatch, capsys
-):
-    started = []
-    monkeypatch.setattr(services, "read_environment_platform", lambda endpoint: "", raising=False)
-    monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
-    monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
-    monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        services,
-        "start_daemon_compose",
-        lambda *args, **kwargs: started.append(True) or "agent-container",
-    )
-
-    assert services.cmd_start_agent_daemon(_agent_daemon_args(tmp_path)) == 1
-    assert started == []
-    assert "platform" in capsys.readouterr().err.lower()
-
-
-def test_start_agent_daemon_fails_when_environment_health_request_fails(
-    tmp_path: Path, monkeypatch, capsys
-):
-    started = []
-
-    def fail_platform_read(endpoint):
-        raise RuntimeError("health unavailable")
-
-    monkeypatch.setattr(services, "read_environment_platform", fail_platform_read, raising=False)
-    monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
-    monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
-    monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        services,
-        "start_daemon_compose",
-        lambda *args, **kwargs: started.append(True) or "agent-container",
-    )
-
-    assert services.cmd_start_agent_daemon(_agent_daemon_args(tmp_path)) == 1
-    assert started == []
-    assert "health unavailable" in capsys.readouterr().err
-
-
-def test_start_agent_daemon_explicit_device_type_bypasses_environment_health(
-    tmp_path: Path, monkeypatch
-):
-    monkeypatch.setattr(
-        services,
-        "read_environment_platform",
-        lambda endpoint: (_ for _ in ()).throw(AssertionError("health must not be read")),
-        raising=False,
-    )
-    monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
-    monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
-    monkeypatch.setattr(services, "start_daemon_compose", lambda *args, **kwargs: "agent-container")
-    monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
-
-    args = _agent_daemon_args(tmp_path, device_type="ios")
 
     assert services.cmd_start_agent_daemon(args) == 0
     config = (tmp_path / "agent-smoke" / "config" / "agent.toml").read_text(encoding="utf-8")
@@ -457,7 +391,6 @@ def _agent_daemon_args(tmp_path: Path, **overrides):
         "daemon_image": "aiden-agent-daemon:test",
         "no_build_daemon_image": True,
         "environment_bridge_endpoint": "http://127.0.0.1:19090",
-        "device_type": "",
         "benchmark_task_id": "suite.json:t1",
         "ready_timeout_sec": 9,
         "json": True,

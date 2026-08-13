@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"aiden-agent/internal/agent/statemanager"
@@ -367,5 +370,130 @@ forward_tools = ["*"]
 	}
 	if len(cfg.EnvironmentBridge.Tools) != 0 {
 		t.Errorf("EnvironmentBridge.Tools must stay empty; got %v", cfg.EnvironmentBridge.Tools)
+	}
+}
+
+func TestApplyEnvironmentBridgePlatformUsesHealthForImplicitDeviceType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":   true,
+			"data": map[string]any{"bridge_type": "adb_android", "platform": "android"},
+		})
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	original := "[model]\nprovider = \"fake\"\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadRuntimeConfigFromDir(dir)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfigFromDir() error = %v", err)
+	}
+	cfg.EnvironmentBridge = EnvironmentBridgeConfig{Enabled: true, Endpoint: server.URL}
+
+	if err := ApplyEnvironmentBridgePlatform(context.Background(), &cfg); err != nil {
+		t.Fatalf("ApplyEnvironmentBridgePlatform() error = %v", err)
+	}
+	if got := cfg.DeviceTypeOrDefault(); got != "Android" {
+		t.Fatalf("device type = %q, want Android", got)
+	}
+	if got := cfg.PointerModeOrDefault(); got != "touchscreen" {
+		t.Fatalf("pointer mode = %q, want touchscreen", got)
+	}
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatalf("read config: %v", err)
+	} else if string(data) != original {
+		t.Fatalf("agent.toml was modified:\n%s", data)
+	}
+}
+
+func TestApplyEnvironmentBridgePlatformRejectsExplicitConflict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":   true,
+			"data": map[string]any{"platform": "android"},
+		})
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(dir, "agent.toml"),
+		[]byte("[model]\nprovider = \"fake\"\n[device]\ndevice_type = \"iOS\"\n"),
+		0o600,
+	); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadRuntimeConfigFromDir(dir)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfigFromDir() error = %v", err)
+	}
+	cfg.EnvironmentBridge = EnvironmentBridgeConfig{Enabled: true, Endpoint: server.URL}
+
+	err = ApplyEnvironmentBridgePlatform(context.Background(), &cfg)
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("ApplyEnvironmentBridgePlatform() error = %v, want mismatch", err)
+	}
+}
+
+func TestApplyEnvironmentBridgePlatformRejectsMissingPlatform(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": map[string]any{"status": "ok"}})
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.deviceTypeConfigured = false
+	cfg.EnvironmentBridge = EnvironmentBridgeConfig{Enabled: true, Endpoint: server.URL}
+	err := ApplyEnvironmentBridgePlatform(context.Background(), &cfg)
+	if err == nil || !strings.Contains(err.Error(), "supported platform") {
+		t.Fatalf("ApplyEnvironmentBridgePlatform() error = %v, want unsupported platform", err)
+	}
+}
+
+func TestEnvironmentBridgePlatformHealthContracts(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "nested canonical platform",
+			body: `{"ok":true,"data":{"platform":"ios","bridge_type":"vphone_ios"}}`,
+			want: "ios",
+		},
+		{
+			name: "top level legacy platform field",
+			body: `{"device_platform":"darwin"}`,
+			want: "macos",
+		},
+		{
+			name: "known bridge type fallback",
+			body: `{"ok":true,"data":{"bridge_type":"mobilegym"}}`,
+			want: "android",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+
+			got, err := NewEnvironmentBridgeClient(server.URL).Platform(context.Background())
+			if err != nil {
+				t.Fatalf("Platform() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("Platform() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
