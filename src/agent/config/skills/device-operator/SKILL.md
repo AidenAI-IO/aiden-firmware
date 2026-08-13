@@ -71,7 +71,7 @@ If a semantic tool fails, read the message and choose a different approach. Do n
 Before using coordinates:
 
 - Inspect the screenshot and identify the intended target visually.
-- Use `coord_space: "normalized"` with 0-1000 coordinates: `(0,0)` is top-left, `(1000,1000)` is bottom-right, `(500,500)` is center.
+- All model-facing screen coordinates implicitly use normalized 0-1000 values: `(0,0)` is top-left, `(1000,1000)` is bottom-right, and `(500,500)` is center. Do not pass a `coord_space` field.
 - Never pass screenshot pixels directly to a coordinate tool. Convert point measurements from the latest returned image first: `x_normalized = pixel_x / max(screenshot_width - 1, 1) * 1000` and `y_normalized = pixel_y / max(screenshot_height - 1, 1) * 1000`.
 - Choose the visual center of the target. For small controls, estimate the control bounds and aim for the midpoint, biased slightly inward.
 - Avoid edges unless performing an edge gesture. For phone edge gestures, do not use conservative insets like 50-100: left-edge `back` starts at normalized `x=1`, and bottom-edge `home` starts at normalized `y=999`.
@@ -87,7 +87,7 @@ Required pattern:
 ```json
 {
   "text": "你好",
-  "focus": { "x": 450, "y": 105, "coord_space": "normalized" }
+  "focus": { "x": 450, "y": 105 }
 }
 ```
 
@@ -237,7 +237,7 @@ After a failed attempt:
 1. Observe with `screenshot`.
 2. Compare expected vs observed result.
 3. Avoid repeating the exact same failed action; if one repeat is justified, change one variable and verify the result before trying again.
-4. Change one variable at a time: target location, gesture type, coordinate space, navigation path, input method, or semantic shortcut.
+4. Change one variable at a time: target location, gesture type, navigation path, input method, or semantic shortcut.
 5. After 2 failed attempts on the same goal, change strategy instead of retrying the same path.
 6. After 3 failed attempts total on the same goal, pause repeated UI actions, summarize what changed, then switch to diagnosis, a different path, user-facing blocker, or human handoff if no new evidence suggests progress.
 

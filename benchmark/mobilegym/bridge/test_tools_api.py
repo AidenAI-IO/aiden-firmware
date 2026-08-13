@@ -144,20 +144,22 @@ def test_get_tools_catalog(bridge_server):
     assert "max_attempts" not in enter_text_props
     assert "platform" not in enter_text_props
     assert enter_text_props["focus"]["additionalProperties"] is False
-    assert enter_text_props["focus"]["properties"]["coord_space"]["enum"] == ["auto", "normalized", "absolute"]
+    assert "coord_space" not in enter_text_props["focus"]["properties"]
+    for axis in ("x", "y"):
+        assert enter_text_props["focus"]["properties"][axis]["minimum"] == 0
+        assert enter_text_props["focus"]["properties"][axis]["maximum"] == 1000
 
     mouse_click_props = tools["mouse_click"]["args_schema"]["properties"]
     assert tools["mouse_click"]["args_schema"]["additionalProperties"] is False
     assert tools["mouse_move"]["args_schema"]["additionalProperties"] is False
     assert tools["mouse_scroll"]["args_schema"]["additionalProperties"] is False
     assert mouse_click_props["button"]["enum"] == ["left", "right", "middle"]
-    assert mouse_click_props["coord_space"]["enum"] == ["auto", "pixel", "normalized", "absolute"]
-    assert tools["mouse_move"]["args_schema"]["properties"]["coord_space"]["enum"] == [
-        "auto",
-        "pixel",
-        "normalized",
-        "absolute",
-    ]
+    assert "coord_space" not in mouse_click_props
+    assert "coord_space" not in tools["mouse_move"]["args_schema"]["properties"]
+    for tool_name in ("mouse_click", "mouse_move"):
+        for axis in ("x", "y"):
+            assert tools[tool_name]["args_schema"]["properties"][axis]["minimum"] == 0
+            assert tools[tool_name]["args_schema"]["properties"][axis]["maximum"] == 1000
     assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["minimum"] == -127
     assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["maximum"] == 127
     wheel_props = tools["wheel_nudge"]["args_schema"]["properties"]
@@ -190,6 +192,22 @@ def test_normalized_coordinates_reject_out_of_range_values():
             {"point": {"x": 500, "y": 1305}, "coord_space": "normalized"},
             default_space="normalized",
         )
+
+
+def test_mouse_click_defaults_to_normalized_and_rejects_out_of_range(bridge_server):
+    _, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-mouse-range"
+    req = Request(
+        f"{base_url}/api/tools/mouse_click",
+        data=json.dumps({"input": {"x": 500, "y": 1001}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        body = json.loads(resp.read().decode())
+    assert body["is_error"] is True
+    assert "normalized coordinates must be within 0-1000" in body["output"]
 
 
 def test_invoke_open_app_uses_mobilegym_awake_action(bridge_server):

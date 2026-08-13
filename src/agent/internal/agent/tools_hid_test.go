@@ -1027,6 +1027,24 @@ func TestADBMouseClickAutoRejectsOutOfRangeCoordinates(t *testing.T) {
 	}
 }
 
+func TestMouseClickDefaultsToNormalizedCoordinates(t *testing.T) {
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	runner := &recordingADBRunner{}
+	tool := &MouseClickTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
+
+	out, err := tool.Call(context.Background(), `{"x":500,"y":1001}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "normalized coordinates") || !strings.Contains(out, "outside 0-1000 range") {
+		t.Fatalf("Call output = %q, want normalized coordinate range error", out)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("adb commands = %#v, want no command for invalid implicit normalized coordinates", runner.commands)
+	}
+}
+
 func TestADBTouchGestureRejectsOutOfRangeNormalizedCoordinates(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
@@ -1561,7 +1579,7 @@ func TestResolvePointerPositionScreenshotUsesReturnedCropPixels(t *testing.T) {
 	}
 }
 
-func TestScreenshotCoordinateSpaceIsNotExposedToModel(t *testing.T) {
+func TestCoordinateSpaceIsNotExposedToModelFacingPointerSchemas(t *testing.T) {
 	// screenshot was a renamed "pixel" space; LLMs pass cropped-screenshot
 	// pixels that overflow the active-area width and fail bounds checks. It is
 	// no longer advertised on any tool, only kept as an internal alias for
@@ -1572,10 +1590,29 @@ func TestScreenshotCoordinateSpaceIsNotExposedToModel(t *testing.T) {
 		t.Fatalf("touch schema must not expose redundant coord_space: %#v", touchProps)
 	}
 
+	clickSchema := (&MouseClickTool{}).ArgsSchema()
+	clickProps := clickSchema["properties"].(map[string]any)
+	if _, ok := clickProps["coord_space"]; ok {
+		t.Fatalf("mouse_click schema must not expose redundant coord_space: %#v", clickProps)
+	}
+
+	moveSchema := (&MouseMoveTool{}).ArgsSchema()
+	moveProps := moveSchema["properties"].(map[string]any)
+	if _, ok := moveProps["coord_space"]; ok {
+		t.Fatalf("mouse_move schema must not expose redundant coord_space: %#v", moveProps)
+	}
+
 	wheelSchema := (&WheelNudgeTool{}).ArgsSchema()
 	wheelProps := wheelSchema["properties"].(map[string]any)
 	if _, ok := wheelProps["coord_space"]; ok {
 		t.Fatalf("wheel coord_space must not be exposed to the model: %#v", wheelProps)
+	}
+
+	enterSchema := (&EnterTextTool{}).ArgsSchema()
+	enterProps := enterSchema["properties"].(map[string]any)
+	focusProps := enterProps["focus"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := focusProps["coord_space"]; ok {
+		t.Fatalf("enter_text focus must not expose redundant coord_space: %#v", focusProps)
 	}
 }
 
@@ -1607,8 +1644,11 @@ func TestModelFacingDeviceGuidanceUsesNormalizedCoordinatesOnly(t *testing.T) {
 	}
 	content := string(data)
 	assertNoScreenshotCoordinateGuidance("device-operator SKILL.md", content)
-	if !strings.Contains(content, `coord_space: "normalized"`) {
-		t.Fatalf("device-operator SKILL.md must direct coordinate tools to normalized space")
+	if strings.Contains(content, `coord_space: "normalized"`) {
+		t.Fatalf("device-operator SKILL.md must describe normalized coordinates as implicit: %q", content)
+	}
+	if !strings.Contains(content, "All model-facing screen coordinates implicitly use normalized 0-1000 values") {
+		t.Fatalf("device-operator SKILL.md must explain the implicit normalized contract")
 	}
 }
 
@@ -1926,7 +1966,7 @@ func TestMouseMoveAutoFallsBackToAbsoluteWithoutScreenDimensions(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &MouseMoveTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
 
-	out, err := tool.Call(context.Background(), `{"x":2000,"y":3000}`)
+	out, err := tool.Call(context.Background(), `{"x":2000,"y":3000,"coord_space":"auto"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -2635,7 +2675,7 @@ func TestMouseScrollUsesLastPointerPosition(t *testing.T) {
 	moveTool := &MouseMoveTool{pc: testPointerController(dev, state), screen: &screen.ScreenState{}}
 	scrollTool := &MouseScrollTool{pc: testPointerController(dev, state)}
 
-	if out, err := moveTool.Call(context.Background(), `{"x":2000,"y":3000}`); err != nil || out != "ok" {
+	if out, err := moveTool.Call(context.Background(), `{"x":2000,"y":3000,"coord_space":"auto"}`); err != nil || out != "ok" {
 		t.Fatalf("move output=%q err=%v", out, err)
 	}
 	if out, err := scrollTool.Call(context.Background(), `{"delta":-3}`); err != nil || out != "ok" {

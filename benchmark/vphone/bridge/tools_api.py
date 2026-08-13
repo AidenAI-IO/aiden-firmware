@@ -70,18 +70,13 @@ class VPhoneToolsAPIHandler:
 
     def catalog(self) -> list[dict[str, Any]]:
         coordinate_properties = {
-            "x": {"type": "number"},
-            "y": {"type": "number"},
-        }
-        coordinate_space = {
-            "type": "string",
-            "enum": ["auto", "normalized", "absolute"],
-            "description": "Prefer normalized 0-1000 coordinates. Public VPhone tools do not accept screenshot-pixel coordinates.",
+            "x": {"type": "number", "minimum": 0, "maximum": 1000},
+            "y": {"type": "number", "minimum": 0, "maximum": 1000},
         }
         focus_schema = {
             "type": "object",
             "additionalProperties": False,
-            "properties": {**coordinate_properties, "coord_space": coordinate_space},
+            "properties": coordinate_properties,
             "required": ["x", "y"],
         }
         tools: list[dict[str, Any]] = [
@@ -119,9 +114,8 @@ class VPhoneToolsAPIHandler:
                         "duration_ms": {"type": "integer", "minimum": 1, "maximum": MAX_ACTION_DURATION_MS},
                         "hold_ms": {"type": "integer", "minimum": 1, "maximum": MAX_ACTION_DURATION_MS},
                         "pause_ms": {"type": "integer", "minimum": 20, "maximum": 180},
-                        "distance": {"type": "number"},
-                        "anchor": {"type": "number"},
-                        "coord_space": coordinate_space,
+                        "distance": {"type": "number", "minimum": 0, "maximum": 1000},
+                        "anchor": {"type": "number", "minimum": 0, "maximum": 1000},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
                         "strength": {"type": "string", "enum": ["large", "medium", "small", "tiny"]},
                     },
@@ -133,7 +127,7 @@ class VPhoneToolsAPIHandler:
                 "description": "Tap the iOS VM. Prefer normalized 0-1000 coordinates.",
                 "args_schema": {
                     "type": "object", "additionalProperties": False,
-                    "properties": {**coordinate_properties, "coord_space": coordinate_space, "button": {"type": "string"}},
+                    "properties": {**coordinate_properties, "button": {"type": "string"}},
                     "required": ["x", "y"],
                 },
             },
@@ -142,7 +136,7 @@ class VPhoneToolsAPIHandler:
                 "description": "Validate a point and return a screenshot; iOS has no hover state.",
                 "args_schema": {
                     "type": "object", "additionalProperties": False,
-                    "properties": {**coordinate_properties, "coord_space": coordinate_space},
+                    "properties": coordinate_properties,
                     "required": ["x", "y"],
                 },
             },
@@ -404,7 +398,7 @@ class VPhoneToolsAPIHandler:
         if button not in {"", "left", "right", "middle"}:
             return {"output": f"error: unsupported mouse button: {button!r}", "is_error": True}
         try:
-            point = _normalized_point_arg(tool_input, default_space="auto")
+            point = _normalized_point_arg(tool_input, default_space="normalized")
             width, height = self.state.device.screen_size()
             x, y = _to_pixels(point, width, height)
         except (TypeError, ValueError) as exc:
@@ -415,7 +409,7 @@ class VPhoneToolsAPIHandler:
 
     def _call_mouse_move(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         try:
-            _normalized_point_arg(tool_input, default_space="auto")
+            _normalized_point_arg(tool_input, default_space="normalized")
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         return self._call_noop_with_screenshot()
@@ -744,15 +738,19 @@ def _normalized_point_arg(
     point = _point_arg(tool_input, field=field, x_key=x_key, y_key=y_key)
     coord_space = str(tool_input.get("coord_space", "") or "").strip().lower() or default_space
     if coord_space == "normalized":
-        return {"x": _clamp(point["x"], 0, 1000), "y": _clamp(point["y"], 0, 1000)}
+        if not (0 <= point["x"] <= 1000 and 0 <= point["y"] <= 1000):
+            raise ValueError("normalized coordinates must be within 0-1000")
+        return point
     if coord_space == "auto":
         if 0 <= point["x"] <= 1000 and 0 <= point["y"] <= 1000:
             return point
         raise ValueError("VPhone coord_space auto only supports 0-1000 normalized coordinates")
     if coord_space == "absolute":
+        if not (0 <= point["x"] <= HID_ABSOLUTE_MAX and 0 <= point["y"] <= HID_ABSOLUTE_MAX):
+            raise ValueError(f"absolute coordinates must be within 0-{int(HID_ABSOLUTE_MAX)}")
         return {
-            "x": _clamp(point["x"], 0, HID_ABSOLUTE_MAX) / HID_ABSOLUTE_MAX * 1000,
-            "y": _clamp(point["y"], 0, HID_ABSOLUTE_MAX) / HID_ABSOLUTE_MAX * 1000,
+            "x": point["x"] / HID_ABSOLUTE_MAX * 1000,
+            "y": point["y"] / HID_ABSOLUTE_MAX * 1000,
         }
     if coord_space == "pixel":
         raise ValueError("public VPhone tools do not accept pixel coordinates; use normalized 0-1000")

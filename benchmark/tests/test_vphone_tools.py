@@ -43,10 +43,43 @@ def test_coordinate_spaces_and_pixel_rejection():
         {"point": {"x": 32767, "y": 0}, "coord_space": "absolute"}, default_space="normalized"
     )
     assert round(absolute["x"]) == 1000
+    with pytest.raises(ValueError, match="normalized coordinates must be within 0-1000"):
+        _normalized_point_arg({"point": {"x": 500, "y": 1001}}, default_space="normalized")
     with pytest.raises(ValueError, match="do not accept pixel"):
         _normalized_point_arg(
             {"point": {"x": 720, "y": 1000}, "coord_space": "pixel"}, default_space="normalized"
         )
+
+
+def test_catalog_uses_implicit_normalized_coordinates(bridge):
+    server, _, _ = bridge
+    tools = {tool["name"]: tool for tool in server.tools_api.catalog()}
+
+    touch = tools["touch_gesture"]["args_schema"]
+    assert "coord_space" not in touch["properties"]
+    for field in ("point", "start", "end"):
+        for axis in ("x", "y"):
+            assert touch["properties"][field]["properties"][axis]["minimum"] == 0
+            assert touch["properties"][field]["properties"][axis]["maximum"] == 1000
+
+    for tool_name in ("mouse_click", "mouse_move"):
+        schema = tools[tool_name]["args_schema"]
+        assert "coord_space" not in schema["properties"]
+        for axis in ("x", "y"):
+            assert schema["properties"][axis]["minimum"] == 0
+            assert schema["properties"][axis]["maximum"] == 1000
+
+    focus = tools["enter_text"]["args_schema"]["properties"]["focus"]
+    assert "coord_space" not in focus["properties"]
+
+
+def test_mouse_click_defaults_to_normalized_and_rejects_out_of_range(bridge):
+    _, device, base_url = bridge
+    status, body = invoke(base_url, "mouse_click", {"x": 500, "y": 1001})
+    assert status == 200
+    assert body["is_error"] is True
+    assert "normalized coordinates must be within 0-1000" in body["output"]
+    assert all(call[0] != "tap" for call in device.calls)
 
 
 def test_touch_gestures(bridge):

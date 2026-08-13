@@ -1035,10 +1035,9 @@ func (t *MouseClickTool) Description() string {
 
 func (t *MouseClickTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"x":           coordinateSchema("X coordinate.", 500),
-		"y":           coordinateSchema("Y coordinate.", 300),
-		"button":      stringEnumArgSchema("Mouse button; defaults to left.", "left", "right", "middle"),
-		"coord_space": coordSpaceSchema(),
+		"x":      coordinateSchema("Normalized 0-1000 X coordinate.", 500),
+		"y":      coordinateSchema("Normalized 0-1000 Y coordinate.", 300),
+		"button": stringEnumArgSchema("Mouse button; defaults to left.", "left", "right", "middle"),
 	}, "x", "y")
 }
 
@@ -1060,14 +1059,14 @@ func (t *MouseClickTool) call(ctx context.Context, input string) (string, error)
 		CoordSpace string            `json:"coord_space"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"button\": \"left\", \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"button\": \"left\"}. Coordinates implicitly use normalized 0-1000 values. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
 	}
 
 	if t.adb != nil {
 		if button := strings.ToLower(strings.TrimSpace(args.Button)); button != "" && button != "left" {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "adb mouse_click supports only left button taps, got %q", args.Button), nil
 		}
-		point, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
+		point, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceNormalized)
 		if err != nil {
 			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 		}
@@ -1077,7 +1076,7 @@ func (t *MouseClickTool) call(ctx context.Context, input string) (string, error)
 		return "ok", nil
 	}
 
-	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
+	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceNormalized)
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
@@ -1105,9 +1104,8 @@ func (t *MouseMoveTool) Description() string {
 
 func (t *MouseMoveTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"x":           coordinateSchema("X coordinate.", 500),
-		"y":           coordinateSchema("Y coordinate.", 300),
-		"coord_space": coordSpaceSchema(),
+		"x": coordinateSchema("Normalized 0-1000 X coordinate.", 500),
+		"y": coordinateSchema("Normalized 0-1000 Y coordinate.", 300),
 	}, "x", "y")
 }
 
@@ -1128,17 +1126,17 @@ func (t *MouseMoveTool) call(ctx context.Context, input string) (string, error) 
 		CoordSpace string            `json:"coord_space"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300}. Coordinates implicitly use normalized 0-1000 values. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
 	}
 
 	if t.adb != nil {
-		if _, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto); err != nil {
+		if _, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceNormalized); err != nil {
 			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 		}
 		return toolErrorResultString(ctx, CodeModuleUnavailable, "adb mouse_move is unsupported because adb input has no hover/pointer move primitive; use touch_gesture for taps, swipes, or drags"), nil
 	}
 
-	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
+	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceNormalized)
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}

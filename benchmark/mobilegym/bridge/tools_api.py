@@ -96,9 +96,8 @@ class ToolsAPIHandler:
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "x": {"type": "number"},
-                "y": {"type": "number"},
-                "coord_space": {"type": "string", "enum": ["auto", "normalized", "absolute"]},
+                "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                "y": {"type": "number", "minimum": 0, "maximum": 1000},
             },
             "required": ["x", "y"],
             "description": "Input field coordinates. Prefer normalized 0-1000 coordinates.",
@@ -239,10 +238,9 @@ class ToolsAPIHandler:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"},
+                        "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                        "y": {"type": "number", "minimum": 0, "maximum": 1000},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
                     },
                     "required": ["x", "y"],
                 },
@@ -254,9 +252,8 @@ class ToolsAPIHandler:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
+                        "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                        "y": {"type": "number", "minimum": 0, "maximum": 1000},
                     },
                     "required": ["x", "y"],
                 },
@@ -705,7 +702,7 @@ class ToolsAPIHandler:
         if button not in ("", "left", "right", "middle"):
             return {"output": f"error: unsupported mouse button: {button!r}", "is_error": True}
         try:
-            point = _normalized_point_arg(tool_input, default_space="auto")
+            point = _normalized_point_arg(tool_input, default_space="normalized")
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         action = build_action("tap", point)
@@ -718,7 +715,7 @@ class ToolsAPIHandler:
         proxy contract aligned with the local HID tools.
         """
         try:
-            _normalized_point_arg(tool_input, default_space="auto")
+            _normalized_point_arg(tool_input, default_space="normalized")
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         return self._call_noop_with_screenshot(state, episode_id)

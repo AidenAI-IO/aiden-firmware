@@ -109,9 +109,8 @@ class ADBToolsAPIHandler:
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "x": {"type": "number"},
-                "y": {"type": "number"},
-                "coord_space": {"type": "string", "enum": ["auto", "normalized", "absolute", "pixel"]},
+                "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                "y": {"type": "number", "minimum": 0, "maximum": 1000},
             },
             "required": ["x", "y"],
             "description": "Input field coordinates. Prefer normalized 0-1000 coordinates.",
@@ -252,10 +251,9 @@ class ADBToolsAPIHandler:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"},
+                        "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                        "y": {"type": "number", "minimum": 0, "maximum": 1000},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
                     },
                     "required": ["x", "y"],
                 },
@@ -267,9 +265,8 @@ class ADBToolsAPIHandler:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
+                        "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                        "y": {"type": "number", "minimum": 0, "maximum": 1000},
                     },
                     "required": ["x", "y"],
                 },
@@ -600,7 +597,7 @@ class ADBToolsAPIHandler:
         device = self.state.device
         try:
             width, height = device.screen_size()
-            point = _normalized_point_arg(tool_input, default_space="auto", screen_size=(width, height))
+            point = _normalized_point_arg(tool_input, default_space="normalized", screen_size=(width, height))
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         x, y = _to_pixels(point, width, height)
@@ -615,7 +612,7 @@ class ADBToolsAPIHandler:
         """Validate mouse_move input and return a screenshot (no adb action)."""
         try:
             width, height = self.state.device.screen_size()
-            _normalized_point_arg(tool_input, default_space="auto", screen_size=(width, height))
+            _normalized_point_arg(tool_input, default_space="normalized", screen_size=(width, height))
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         return self._call_noop_with_screenshot()

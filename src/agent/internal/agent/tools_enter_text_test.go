@@ -519,6 +519,17 @@ func TestEnterTextToolSchemaKeepsIMESegmentsInternal(t *testing.T) {
 	if _, found := props["send_after_commit"]; found {
 		t.Fatal("enter_text must not expose send_after_commit")
 	}
+	focus, ok := props["focus"].(map[string]any)
+	if !ok {
+		t.Fatal("enter_text focus schema missing")
+	}
+	focusProps, ok := focus["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("enter_text focus properties missing")
+	}
+	if _, found := focusProps["coord_space"]; found {
+		t.Fatalf("enter_text focus must use implicit normalized coordinates: %#v", focusProps)
+	}
 }
 
 func TestTextInputPlatformDefaultsToDeviceType(t *testing.T) {

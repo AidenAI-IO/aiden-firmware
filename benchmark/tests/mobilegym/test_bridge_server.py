@@ -611,10 +611,7 @@ def test_tools_api_mobilegym_text_entry_tools_do_not_depend_on_hid_devices():
             {
                 "input": {
                     "text": "微信读书",
-                    "platform": "android",
-                    "mode": "search",
-                    "focus": {"x": 500, "y": 120, "coord_space": "normalized"},
-                    "segments": ["wei", "xin", "du", "shu"],
+                    "focus": {"x": 500, "y": 120},
                 }
             },
         )
@@ -635,8 +632,7 @@ def test_tools_api_mobilegym_text_entry_tools_do_not_depend_on_hid_devices():
             {
                 "input": {
                     "text": "Camera note",
-                    "platform": "android",
-                    "focus": {"x": 400, "y": 700, "coord_space": "normalized"},
+                    "focus": {"x": 400, "y": 700},
                 }
             },
         )

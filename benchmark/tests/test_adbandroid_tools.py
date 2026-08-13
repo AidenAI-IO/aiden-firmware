@@ -124,6 +124,35 @@ def test_touch_gesture_catalog_uses_implicit_normalized_coordinates(bridge):
             assert schema["properties"][field]["properties"][axis]["maximum"] == 1000
 
 
+def test_pointer_catalog_uses_implicit_normalized_coordinates(bridge):
+    _, _, base_url = bridge
+    req = urllib.request.Request(f"{base_url}/api/tools", method="GET")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        tools = {tool["name"]: tool for tool in json.loads(resp.read().decode("utf-8"))["tools"]}
+
+    for tool_name in ("mouse_click", "mouse_move"):
+        schema = tools[tool_name]["args_schema"]
+        assert "coord_space" not in schema["properties"]
+        for axis in ("x", "y"):
+            assert schema["properties"][axis]["minimum"] == 0
+            assert schema["properties"][axis]["maximum"] == 1000
+
+    focus = tools["enter_text"]["args_schema"]["properties"]["focus"]
+    assert "coord_space" not in focus["properties"]
+    for axis in ("x", "y"):
+        assert focus["properties"][axis]["minimum"] == 0
+        assert focus["properties"][axis]["maximum"] == 1000
+
+
+def test_mouse_click_defaults_to_normalized_and_rejects_out_of_range(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(base_url, "mouse_click", {"x": 500, "y": 1001})
+    assert status == 200
+    assert body["is_error"] is True
+    assert "normalized coordinates must be within 0-1000" in body["output"]
+    assert all(call[0] != "tap" for call in device.calls)
+
+
 def test_touch_gesture_tap_with_pixel_coord_space(bridge):
     _, device, base_url = bridge
     status, body = _invoke(

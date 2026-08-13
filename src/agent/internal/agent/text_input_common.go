@@ -279,9 +279,8 @@ func parseObservedTextInputMode(raw string) (textInputMode, error) {
 
 func focusPointArgSchema(description string) map[string]any {
 	schema := objectArgsSchema(map[string]any{
-		"x":           coordinateSchema("X coordinate.", 500),
-		"y":           coordinateSchema("Y coordinate.", 300),
-		"coord_space": stringEnumArgSchema("Coordinate space.", "normalized"),
+		"x": coordinateSchema("Normalized 0-1000 X coordinate.", 500),
+		"y": coordinateSchema("Normalized 0-1000 Y coordinate.", 300),
 	}, "x", "y")
 	schema["description"] = description
 	return schema

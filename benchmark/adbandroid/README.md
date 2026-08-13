@@ -203,14 +203,11 @@ The tools match MobileGym: `screenshot` `touch_gesture` `keyboard_text`
 `keyboard_tap` `enter_text` `mouse_click`
 `mouse_move` `mouse_scroll` `quick_action`.
 
-Coordinate spaces (`coord_space`):
-
-- `normalized` (default): 0-1000 → converted to pixels via `adb shell wm size`
-  (Override wins over Physical).
-- `absolute`: 0-32767 (HID space) → pixels.
-- `auto`: only accepts 0-1000, errors when out of range (same as MobileGym).
-- `pixel`: real pixel coordinates additionally supported by the ADB bridge; must
-  be requested explicitly and is clamped to the screen bounds.
+All model-facing screen coordinates implicitly use normalized 0-1000 values and
+must omit `coord_space`. The bridge converts them to pixels via `adb shell wm
+size` (Override wins over Physical). The parser still accepts explicit legacy
+`normalized`, `absolute`, `auto`, and `pixel` inputs for direct callers, but they
+are not advertised in the public tool catalog.
 
 `quick_action` (`platform=android`): `back` / `home` / `app_switch` / `send` /
 `open_settings` (`am start -a android.settings.SETTINGS`) / `notification_center`

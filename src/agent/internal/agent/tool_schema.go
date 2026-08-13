@@ -226,10 +226,6 @@ func coordinateSchema(description string, examples ...float64) map[string]any {
 	return rangedNumberArgSchema(description, 0, 1000, examples...)
 }
 
-func coordSpaceSchema() map[string]any {
-	return stringEnumArgSchema("Coordinate space; normalized uses 0-1000 screen coordinates where (500,500) is center.", "auto", "normalized", "absolute")
-}
-
 func nonNegativeIntegerSchema(description string) map[string]any {
 	return minIntegerArgSchema(description, 0)
 }
