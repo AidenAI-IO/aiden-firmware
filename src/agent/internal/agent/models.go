@@ -16,7 +16,6 @@ import (
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/ollama"
 )
 
 // Moonshot Kimi OpenAI-compatible endpoints. "kimi" targets the global site and
@@ -34,9 +33,12 @@ const (
 const arkBeijingBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
 
 type ModelManager struct {
-	config ModelConfig
-	proxy  ProxyConfig
-	model  llms.Model
+	config          ModelConfig
+	proxy           ProxyConfig
+	model           llms.Model
+	modelMu         sync.Mutex
+	bindingsMu      sync.Mutex
+	runtimeBindings *ModelRuntimeBindings
 
 	specMu                    sync.Mutex
 	providerSpec              model.ModelSpec
@@ -45,30 +47,17 @@ type ModelManager struct {
 	metadataHTTPClient        *http.Client
 	providerMetadataCachePath string
 	rawHTTPLogDir             string
-	rawHTTPLogSessionID       func() string
-	storageMu                 sync.RWMutex
-	storageMonitor            *StorageMonitor
 }
 
 func (m *ModelManager) SetStorageMonitor(monitor *StorageMonitor) {
 	if m == nil {
 		return
 	}
-	m.storageMu.Lock()
-	m.storageMonitor = monitor
-	m.storageMu.Unlock()
-	if model, ok := m.model.(*openAICompatibleModel); ok && model.rawLogger != nil {
-		model.rawLogger.SetStorageMonitor(monitor)
+	if monitor == nil {
+		m.bindings().SetStorageWriteGate(nil)
+		return
 	}
-}
-
-func (m *ModelManager) currentStorageMonitor() *StorageMonitor {
-	if m == nil {
-		return nil
-	}
-	m.storageMu.RLock()
-	defer m.storageMu.RUnlock()
-	return m.storageMonitor
+	m.bindings().SetStorageWriteGate(monitor)
 }
 
 type ModelManagerOption func(*ModelManager)
@@ -86,7 +75,11 @@ func WithLLMRawHTTPLogDir(path string) ModelManagerOption {
 }
 
 func NewModelManager(config ModelConfig, proxy ProxyConfig, opts ...ModelManagerOption) *ModelManager {
-	m := &ModelManager{config: config, proxy: proxy}
+	m := &ModelManager{
+		config:          config,
+		proxy:           proxy,
+		runtimeBindings: NewModelRuntimeBindings(),
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(m)
@@ -95,29 +88,30 @@ func NewModelManager(config ModelConfig, proxy ProxyConfig, opts ...ModelManager
 	return m
 }
 
-func (m *ModelManager) SetRawHTTPLogSessionIDProvider(provider func() string) {
-	m.rawHTTPLogSessionID = provider
-	if model, ok := m.model.(*openAICompatibleModel); ok && model.rawLogger != nil {
-		model.rawLogger.SetSessionIDProvider(provider)
+func (m *ModelManager) SetSessionIDProvider(provider func() string) {
+	if m == nil {
+		return
 	}
+	m.bindings().SetSessionIDProvider(provider)
 }
 
-// activeSessionID resolves the current session id via the configured provider.
-// It reads m.rawHTTPLogSessionID at call time so the value is picked up even
-// when the provider is set after the model is built.
-func (m *ModelManager) activeSessionID() string {
-	if m.rawHTTPLogSessionID == nil {
-		return ""
+func (m *ModelManager) bindings() *ModelRuntimeBindings {
+	m.bindingsMu.Lock()
+	defer m.bindingsMu.Unlock()
+	if m.runtimeBindings == nil {
+		m.runtimeBindings = NewModelRuntimeBindings()
 	}
-	return m.rawHTTPLogSessionID()
+	return m.runtimeBindings
 }
 
 func (m *ModelManager) get() (llms.Model, error) {
+	m.modelMu.Lock()
+	defer m.modelMu.Unlock()
 	if m.model != nil {
 		return m.model, nil
 	}
 
-	built, err := m.build(m.config)
+	built, err := m.build()
 	if err != nil {
 		return nil, fmt.Errorf("build model: %w", err)
 	}
@@ -183,50 +177,26 @@ func (m *ModelManager) Spec() model.ModelSpec {
 	return spec
 }
 
-func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
-	definition, ok := lookupModelProviderDefinition(cfg.Provider)
+func (m *ModelManager) build() (llms.Model, error) {
+	definition, ok := lookupModelProviderDefinition(m.config.Provider)
 	if !ok {
-		return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
+		return nil, fmt.Errorf("unsupported provider %q", m.config.Provider)
 	}
-	return definition.build(m, cfg)
+	return definition.build(m.buildContext(), m.config)
 }
 
-func (m *ModelManager) buildOpenAICompatibleModel(cfg ModelConfig, defaultBaseURL string) llms.Model {
-	baseURL := cfg.BaseURL
-	if baseURL == "" {
-		baseURL = defaultBaseURL
+func (m *ModelManager) buildContext() ModelBuildContext {
+	var logger RawHTTPLogger
+	if m.config.LogRawHTTP && strings.TrimSpace(m.rawHTTPLogDir) != "" {
+		logger = newLLMRawHTTPLogger(m.rawHTTPLogDir, m.bindings())
 	}
-	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...)
-}
-
-func (m *ModelManager) buildOpenRouterModel(cfg ModelConfig) (llms.Model, error) {
-	token := resolveToken(cfg)
-	if token == "" {
-		if env, ok := providerAPIKeyEnv(cfg.APIKey); ok && env != "" {
-			return nil, fmt.Errorf("missing the OpenRouter API key, set it in the %s environment variable", env)
-		}
-		return nil, fmt.Errorf("missing the OpenRouter API key, set api_key on the provider record")
+	return ModelBuildContext{
+		HTTPClient:        newRetryHTTPClient(m.proxy),
+		OllamaHTTPClient:  newProxyHTTPClient(m.proxy),
+		RawHTTPLogger:     logger,
+		SessionIDProvider: m.bindings().CurrentSessionID,
+		PromptCachePolicy: m.cachedOpenRouterPromptCachePolicy(),
 	}
-	baseURL := cfg.BaseURL
-	if baseURL == "" {
-		baseURL = "https://openrouter.ai/api/v1"
-	}
-	opts := append(m.openAICompatibleOptions(cfg),
-		withOpenAICompatibleSessionSticky(m.activeSessionID),
-		withOpenAICompatibleRouterMetadata(),
-		withOpenAICompatibleOpenRouterReasoning())
-	if m.cachedOpenRouterPromptCachePolicy().UsesExplicitCacheControl() {
-		opts = append(opts, withOpenAICompatibleExplicitPromptCache())
-	}
-	return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy), opts...), nil
-}
-
-func (m *ModelManager) buildOllamaModel(cfg ModelConfig) (llms.Model, error) {
-	options := []ollama.Option{ollama.WithModel(cfg.Model), ollama.WithHTTPClient(newProxyHTTPClient(m.proxy))}
-	if cfg.BaseURL != "" {
-		options = append(options, ollama.WithServerURL(cfg.BaseURL))
-	}
-	return ollama.New(options...)
 }
 
 func openRouterExplicitPromptCacheSupported(model string) bool {
@@ -252,13 +222,10 @@ func openRouterExplicitPromptCacheSupported(model string) bool {
 	}
 }
 
-func (m *ModelManager) openAICompatibleOptions(cfg ModelConfig) []openAICompatibleModelOption {
+func openAICompatibleOptions(ctx ModelBuildContext, cfg ModelConfig) []openAICompatibleModelOption {
 	var opts []openAICompatibleModelOption
-	if cfg.LogRawHTTP && strings.TrimSpace(m.rawHTTPLogDir) != "" {
-		logger := newLLMRawHTTPLogger(m.rawHTTPLogDir, "")
-		logger.SetSessionIDProvider(m.rawHTTPLogSessionID)
-		logger.SetStorageMonitor(m.currentStorageMonitor())
-		opts = append(opts, withOpenAICompatibleRawHTTPLogger(logger))
+	if ctx.RawHTTPLogger != nil {
+		opts = append(opts, withOpenAICompatibleRawHTTPLogger(ctx.RawHTTPLogger))
 	}
 	if cfg.ReasoningEffort != "" {
 		opts = append(opts, withOpenAICompatibleReasoningEffort(cfg.ReasoningEffort))

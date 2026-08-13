@@ -27,6 +27,13 @@ func TestGetDisplayModelsForProvider(t *testing.T) {
 			hasRecommend: true,
 		},
 		{
+			name:         "anthropic has native model IDs",
+			provider:     "anthropic",
+			wantCount:    4,
+			wantFirstID:  "claude-fable-5",
+			hasRecommend: true,
+		},
+		{
 			name:         "ollama has models",
 			provider:     "ollama",
 			wantCount:    4,
@@ -79,6 +86,19 @@ func TestGetDisplayModelsForProvider(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAnthropicDisplayModelsUseMessagesAPIIDs(t *testing.T) {
+	want := []string{"claude-fable-5", "claude-opus-5", "claude-sonnet-4-6", "claude-haiku-4-5"}
+	models := GetDisplayModelsForProvider("anthropic")
+	if len(models) != len(want) {
+		t.Fatalf("models = %#v, want %d entries", models, len(want))
+	}
+	for i, model := range models {
+		if model.ID != want[i] {
+			t.Errorf("models[%d].ID = %q, want %q", i, model.ID, want[i])
+		}
 	}
 }
 

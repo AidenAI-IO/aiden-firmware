@@ -48,6 +48,7 @@ const (
 	currentEnvironmentHintMaxAge      = 10 * time.Minute
 	runtimeSessionEventPersistTimeout = 2 * time.Second
 	runtimeTTSCloseTimeout            = 5 * time.Second
+	runtimeEpisodeMaintenanceTimeout  = 10 * time.Second
 	maxPublicToolResultRunes          = maxToolObservationRunes
 )
 
@@ -84,6 +85,15 @@ type Runtime struct {
 	storageMonitor     *StorageMonitor
 	ttsManager         *tts.ProviderManager
 	ttsManagerOnce     sync.Once
+	episodeMaintenance asyncEpisodeMaintenance
+}
+
+type asyncEpisodeMaintenance struct {
+	mu      sync.Mutex
+	wg      sync.WaitGroup
+	closing bool
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 type RunRequest struct {
@@ -571,7 +581,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	}
 	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
-		modelManager.SetRawHTTPLogSessionIDProvider(func() string {
+		modelManager.SetSessionIDProvider(func() string {
 			if memories == nil {
 				return ""
 			}
@@ -1664,8 +1674,13 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 				return
 			}
 			r.exportEpisodeBestEffort(episode, promptCapture)
+			maintenanceParentCtx, started := r.episodeMaintenance.begin()
+			if !started {
+				return
+			}
 			go func() {
-				maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer r.episodeMaintenance.done()
+				maintenanceCtx, maintenanceCancel := context.WithTimeout(maintenanceParentCtx, 10*time.Second)
 				defer maintenanceCancel()
 				plane.commitEpisodeMaintenance(maintenanceCtx, episode)
 			}()
@@ -1677,6 +1692,47 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 		return
 	}
 	r.exportEpisodeBestEffort(episode, promptCapture)
+}
+
+func (m *asyncEpisodeMaintenance) begin() (context.Context, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closing {
+		return nil, false
+	}
+	if m.ctx == nil {
+		m.ctx, m.cancel = context.WithCancel(context.Background())
+	}
+	m.wg.Add(1)
+	return m.ctx, true
+}
+
+func (m *asyncEpisodeMaintenance) done() {
+	m.wg.Done()
+}
+
+func (m *asyncEpisodeMaintenance) closeAndWait(ctx context.Context) error {
+	m.mu.Lock()
+	m.closing = true
+	cancel := m.cancel
+	m.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		if cancel != nil {
+			cancel()
+		}
+		return nil
+	case <-ctx.Done():
+		if cancel != nil {
+			cancel()
+		}
+		return ctx.Err()
+	}
 }
 
 func enrichEpisodeSessionBoundaryTelemetry(episode *TaskEpisode, boundary sessionBoundaryTelemetry) {
@@ -2486,6 +2542,11 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), runtimeEpisodeMaintenanceTimeout)
+	if err := r.episodeMaintenance.closeAndWait(maintenanceCtx); err != nil && r.logger != nil {
+		r.logger.Error("episode maintenance drain on close: %v", err)
+	}
+	maintenanceCancel()
 	if r.storageMonitor != nil {
 		r.storageMonitor.Stop()
 	}
