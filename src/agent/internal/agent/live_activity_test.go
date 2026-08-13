@@ -236,6 +236,16 @@ func TestLiveActivityRelayRequiresNonDefaultBoardID(t *testing.T) {
 	}
 }
 
+func TestLiveActivityRelayRequiresDeviceCredential(t *testing.T) {
+	_, err := NewLiveActivityRelayClient(LiveActivityConfig{
+		RelayURL: "https://relay.example.com",
+		BoardID:  "board-1",
+	})
+	if !errors.Is(err, errLiveActivityRelayCredentialRequired) {
+		t.Fatalf("NewLiveActivityRelayClient() error = %v, want device credential required", err)
+	}
+}
+
 func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T) {
 	requests := make(chan map[string]interface{}, 3)
 	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -251,8 +261,9 @@ func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T)
 	defer relay.Close()
 
 	manager := NewLiveActivityManager(LiveActivityConfig{
-		RelayURL: relay.URL,
-		BoardID:  "board-1",
+		RelayURL:    relay.URL,
+		RelayAPIKey: "board-1-secret",
+		BoardID:     "board-1",
 	}, newTestLogger())
 	manager.relay.httpClient = relay.Client()
 	manager.StartTask("req-1", "Open Settings", "phone-1")
@@ -306,8 +317,9 @@ func TestLiveActivityManagerSkipsRelayWithoutPhoneID(t *testing.T) {
 	defer relay.Close()
 
 	manager := NewLiveActivityManager(LiveActivityConfig{
-		RelayURL: relay.URL,
-		BoardID:  "board-1",
+		RelayURL:    relay.URL,
+		RelayAPIKey: "board-1-secret",
+		BoardID:     "board-1",
 	}, newTestLogger())
 	manager.relay.httpClient = relay.Client()
 	manager.StartTask("req-1", "Open Settings")

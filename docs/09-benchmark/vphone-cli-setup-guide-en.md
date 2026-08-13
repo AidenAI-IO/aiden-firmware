@@ -276,6 +276,7 @@ ssh-keygen \
   -t ecdsa \
   -b 521 \
   -f ~/.ssh/vphone_ecdsa \
+  -N "" \
   -C "vphone-benchmark"
 ```
 

@@ -801,12 +801,24 @@ TEST_CASE("ota documentation index references current docs paths") {
     doc_buffer << doc_in.rdbuf();
     const std::string doc = doc_buffer.str();
 
-    CHECK(doc.find("ota-external-developers.md") != std::string::npos);
-    CHECK(doc.find("ota-quick-examples.md") != std::string::npos);
-    CHECK(doc.find("ota-release-channels.md") != std::string::npos);
-    CHECK(doc.find("docs/ota-external-developers.md") == std::string::npos);
-    CHECK(doc.find("docs/ota-quick-examples.md") == std::string::npos);
-    CHECK(doc.find("docs/ota-release-channels.md") == std::string::npos);
+    const std::vector<std::pair<std::string, std::string> > links = {
+        std::make_pair("[OTA Architecture and Runtime](architecture.md)", "architecture.md"),
+        std::make_pair("[OTA Key Management](key-management.md)", "key-management.md"),
+        std::make_pair("[Device Acceptance Process](device-acceptance.md)", "device-acceptance.md"),
+        std::make_pair("[A/B and `abctl` Verification](verification.md)", "verification.md"),
+        std::make_pair("[OTA Dedicated Storage Partition](no-space-plan.md)", "no-space-plan.md"),
+        std::make_pair("[GitHub Proxy Configuration](ota-github-proxy.md)", "ota-github-proxy.md"),
+        std::make_pair("[External Developer Guide](ota-external-developers.md)", "ota-external-developers.md"),
+        std::make_pair("[Distribution Quick Examples](ota-quick-examples.md)", "ota-quick-examples.md"),
+        std::make_pair("[Release Channel Strategy](ota-release-channels.md)", "ota-release-channels.md"),
+    };
+    for (std::vector<std::pair<std::string, std::string> >::const_iterator it = links.begin();
+         it != links.end(); ++it) {
+        CHECK(doc.find(it->first) != std::string::npos);
+        const std::string target_path = std::string(AIDEN_SOURCE_DIR) + "/docs/08-ota/" + it->second;
+        std::ifstream target_in(target_path.c_str());
+        CHECK(target_in.good());
+    }
 }
 
 TEST_CASE("config web exposes screenshot pruning config fields") {

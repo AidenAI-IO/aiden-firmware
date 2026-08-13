@@ -25,7 +25,8 @@ const (
 	MaxRetries = 3
 )
 
-// ErrCommandExists indicates a queued command already uses the requested ID.
+// ErrCommandExists indicates a queued command or retained result already uses
+// the requested ID.
 var ErrCommandExists = errors.New("phone bridge command already exists")
 
 // CommandStatus represents the lifecycle state of a command
@@ -98,6 +99,9 @@ func (q *CommandQueue) Enqueue(cmd BridgeCommand) error {
 
 	if _, exists := q.commands[cmd.ID]; exists {
 		return fmt.Errorf("command %s already exists: %w", cmd.ID, ErrCommandExists)
+	}
+	if _, exists := q.results[cmd.ID]; exists {
+		return fmt.Errorf("command %s already has a retained result: %w", cmd.ID, ErrCommandExists)
 	}
 
 	now := time.Now()

@@ -304,6 +304,12 @@ func TestSubmitAndQueryResult(t *testing.T) {
 		t.Errorf("expected method=clipboard, got %v", result.Response.Method)
 	}
 
+	// Reusing the ID while its result is retained would make QueryResult return
+	// the previous response for the new command.
+	if err := q.Enqueue(cmd); !errors.Is(err, ErrCommandExists) {
+		t.Fatalf("enqueue with retained result error = %v, want ErrCommandExists", err)
+	}
+
 	// Command should be removed from pending
 	q.mu.RLock()
 	if _, exists := q.commands["cmd_1"]; exists {

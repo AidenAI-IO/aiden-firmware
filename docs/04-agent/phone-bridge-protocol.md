@@ -637,7 +637,7 @@ Use standard libraries for parsing (iOS `ISO8601DateFormatter`, Android `Instant
   <key>NSContactsUsageDescription</key>
   <string>Used to query and manage contacts</string>
   ```
-- **Notification**: Request user authorization through `UNUserNotificationCenter.requestAuthorization` before scheduling notifications.
+- **Notification**: Request user authorization through `UNUserNotificationCenter.current().requestAuthorization(...)` before scheduling notifications.
 
 ### Android
 

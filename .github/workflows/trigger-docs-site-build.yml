@@ -41,6 +41,8 @@ jobs:
             }')
 
           curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 60 \
             --request POST \
             --url https://api.github.com/repos/AidenAI-IO/aiden-website/dispatches \
             --header "Accept: application/vnd.github+json" \

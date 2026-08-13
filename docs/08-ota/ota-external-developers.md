@@ -55,7 +55,8 @@ Upload the manifest and images to any web server that can serve static files.
 
 ```bash
 # Copy your public key to device
-scp ota_public_key.pem root@<device-ip>:/userdata/ota/custom_pubkey.pem
+DEVICE_IP="192.168.50.188" # Replace with the device address.
+scp ota_public_key.pem "root@$DEVICE_IP:/userdata/ota/custom_pubkey.pem"
 
 # On device, update from your manifest
 ota update \
