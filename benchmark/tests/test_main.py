@@ -257,6 +257,26 @@ def test_run_state_file_records_incremental_totals(monkeypatch, tmp_path):
     }
 
 
+def test_result_totals_keep_timeout_separate_from_failed():
+    results = [
+        TaskResult(suite="s", run_id="r", task_id="pass", category="c", attempt=1, status="passed", rubric=[]),
+        TaskResult(suite="s", run_id="r", task_id="fail", category="c", attempt=1, status="failed", rubric=[]),
+        TaskResult(suite="s", run_id="r", task_id="timeout", category="c", attempt=1, status="timeout", rubric=[]),
+    ]
+
+    totals = main._result_totals(results, total_tasks=3)
+
+    assert totals == {
+        "tasks": 3,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0,
+        "judge_error": 0,
+        "timeout": 1,
+    }
+    assert sum(totals[key] for key in ("passed", "failed", "skipped", "judge_error", "timeout")) == totals["tasks"]
+
+
 def test_run_skips_tasks_outside_target_platform(monkeypatch, tmp_path):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(
@@ -565,6 +585,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "read_environment_bridge_concurrency", lambda *args, **kwargs: 1)
     def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
+        captured["prepare_config_kwargs"] = kwargs
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "control_token").write_text("test-token", encoding="utf-8")
 
@@ -608,6 +629,8 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
             "auto-run",
             "--environment-url",
             "http://127.0.0.1:19090",
+            "--target-platform",
+            "android",
             "--auto-agent-setup",
             "--skill",
             "device-operator",
@@ -624,6 +647,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert captured["kwargs"]["host_port"] == 0
     assert captured["kwargs"]["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert captured["kwargs"]["environment_bridge_mode"] is True
+    assert captured["prepare_config_kwargs"]["target_platform"] == "android"
     assert captured["task_kwargs"]["active_skills"] == ["device-operator"]
     assert stale_clears == ["http://127.0.0.1:19090"]
 

@@ -127,6 +127,21 @@ class ADBToolsAPIHandler:
                 },
             },
             {
+                "name": "wait_for_stable_screen",
+                "description": "Return the current Android screenshot after navigation or animation.",
+                "args_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "open_app",
+                "description": "Open an Android app by semantic app name or package name.",
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {"app": {"type": "string"}},
+                    "required": ["app"],
+                },
+            },
+            {
                 "name": "touch_gesture",
                 "description": "Perform touch gestures on the Android device (tap, swipe, drag, long_press, etc.).",
                 "args_schema": {
@@ -141,21 +156,30 @@ class ADBToolsAPIHandler:
                         "point": {
                             "type": "object",
                             "additionalProperties": False,
-                            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "properties": {
+                                "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                                "y": {"type": "number", "minimum": 0, "maximum": 1000},
+                            },
                             "required": ["x", "y"],
                             "description": "Point for tap/double_tap/long_press (normalized 0-1000)",
                         },
                         "start": {
                             "type": "object",
                             "additionalProperties": False,
-                            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "properties": {
+                                "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                                "y": {"type": "number", "minimum": 0, "maximum": 1000},
+                            },
                             "required": ["x", "y"],
                             "description": "Start point for swipe/drag",
                         },
                         "end": {
                             "type": "object",
                             "additionalProperties": False,
-                            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "properties": {
+                                "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                                "y": {"type": "number", "minimum": 0, "maximum": 1000},
+                            },
                             "required": ["x", "y"],
                             "description": "End point for swipe/drag",
                         },
@@ -167,7 +191,6 @@ class ADBToolsAPIHandler:
                         "steps": {"type": "integer", "minimum": 1, "description": "Number of movement steps for swipe or drag."},
                         "distance": {"type": "number", "description": "Directional swipe travel in normalized 0-1000 units"},
                         "anchor": {"type": "number", "description": "Directional swipe fixed-axis coordinate in normalized 0-1000 units"},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"], "description": "Coordinate space; normalized uses 0-1000 screen coordinates."},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
                         "strength": {
                             "type": "string",
@@ -413,6 +436,10 @@ class ADBToolsAPIHandler:
         """Dispatch tool call to the ADB device."""
         if tool_name == "screenshot":
             return self._call_screenshot()
+        elif tool_name == "wait_for_stable_screen":
+            return self._call_noop_with_screenshot()
+        elif tool_name == "open_app":
+            return self._call_open_app(tool_input)
         elif tool_name == "touch_gesture":
             return self._call_touch_gesture(tool_input)
         elif tool_name == "keyboard_text":
@@ -439,6 +466,17 @@ class ADBToolsAPIHandler:
             jpeg, width, height = self.state.device.screenshot_jpeg()
         screenshot = encode_screenshot(jpeg, "image/jpeg", width, height)
         return {"output": json.dumps(screenshot), "is_error": False}
+
+    def _call_open_app(self, tool_input: dict[str, Any]) -> dict[str, Any]:
+        app = str(tool_input.get("app", "") or "").strip()
+        if not app:
+            return {"output": "error: app is required", "is_error": True}
+        return self._execute_device(
+            lambda: self.state.device.open_app(app),
+            tool_name="open_app",
+            tool_input=tool_input,
+            adb_summary=f"open app {app}",
+        )
 
     def _call_touch_gesture(
         self,
@@ -1094,7 +1132,9 @@ def _normalized_point_arg(
     point = _point_arg(tool_input, field=field, x_key=x_key, y_key=y_key)
     coord_space = str(tool_input.get("coord_space", "") or "").strip().lower() or default_space
     if coord_space == "normalized":
-        return {"x": _clamp(point["x"], 0.0, 1000.0), "y": _clamp(point["y"], 0.0, 1000.0)}
+        if not (0.0 <= point["x"] <= 1000.0 and 0.0 <= point["y"] <= 1000.0):
+            raise ValueError("normalized coordinates must be within 0-1000")
+        return point
     if coord_space == "auto":
         if 0.0 <= point["x"] <= 1000.0 and 0.0 <= point["y"] <= 1000.0:
             return point

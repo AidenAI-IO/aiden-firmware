@@ -53,6 +53,10 @@ MOBILEGYM_RESERVED_QUICK_ACTIONS = {
     "select_all",
     "undo",
 }
+MOBILEGYM_APP_ALIASES = {
+    "notepad": "notes",
+    "notepad free": "notes",
+}
 
 
 def _mobilegym_app_switch_action() -> Any:
@@ -110,6 +114,21 @@ class ToolsAPIHandler:
                 },
             },
             {
+                "name": "wait_for_stable_screen",
+                "description": "Return the current MobileGym screenshot after navigation or animation.",
+                "args_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "open_app",
+                "description": "Open a MobileGym app by semantic app name.",
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {"app": {"type": "string"}},
+                    "required": ["app"],
+                },
+            },
+            {
                 "name": "touch_gesture",
                 "description": "Perform touch gestures on the MobileGym simulator (tap, swipe, drag, long_press, etc.).",
                 "args_schema": {
@@ -124,21 +143,30 @@ class ToolsAPIHandler:
                         "point": {
                             "type": "object",
                             "additionalProperties": False,
-                            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "properties": {
+                                "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                                "y": {"type": "number", "minimum": 0, "maximum": 1000},
+                            },
                             "required": ["x", "y"],
                             "description": "Point for tap/double_tap/long_press (normalized 0-1000)",
                         },
                         "start": {
                             "type": "object",
                             "additionalProperties": False,
-                            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "properties": {
+                                "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                                "y": {"type": "number", "minimum": 0, "maximum": 1000},
+                            },
                             "required": ["x", "y"],
                             "description": "Start point for swipe/drag",
                         },
                         "end": {
                             "type": "object",
                             "additionalProperties": False,
-                            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "properties": {
+                                "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                                "y": {"type": "number", "minimum": 0, "maximum": 1000},
+                            },
                             "required": ["x", "y"],
                             "description": "End point for swipe/drag",
                         },
@@ -150,7 +178,6 @@ class ToolsAPIHandler:
                         "steps": {"type": "integer", "minimum": 1, "description": "Number of movement steps for swipe or drag."},
                         "distance": {"type": "number", "description": "Directional swipe travel in normalized 0-1000 units"},
                         "anchor": {"type": "number", "description": "Directional swipe fixed-axis coordinate in normalized 0-1000 units"},
-                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"], "description": "Coordinate space; normalized uses 0-1000 screen coordinates."},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
                         "strength": {
                             "type": "string",
@@ -242,6 +269,30 @@ class ToolsAPIHandler:
                     "additionalProperties": False,
                     "properties": {"delta": {"type": "integer", "minimum": -127, "maximum": 127}},
                     "required": ["delta"],
+                },
+            },
+            {
+                "name": "wheel_nudge",
+                "description": "Move one numeric picker wheel toward a target value using a slow bounded swipe.",
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "picker_id": {"type": "string", "minLength": 1},
+                        "column_x": {"type": "number", "minimum": 0, "maximum": 1000},
+                        "current_value": {"type": "integer", "minimum": 0},
+                        "target_value": {"type": "integer", "minimum": 0},
+                        "cycle_size": {"type": "integer", "minimum": 0},
+                        "cycle_start": {"type": "integer", "minimum": 0},
+                        "row_spacing": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000},
+                        "value_step": {"type": "integer"},
+                        "center_y": {"type": "number", "minimum": 0, "maximum": 1000},
+                        "visible_target_y": {"type": "number", "minimum": 0, "maximum": 1000},
+                    },
+                    "required": [
+                        "picker_id", "column_x", "current_value", "target_value",
+                        "cycle_size", "cycle_start", "row_spacing", "center_y",
+                    ],
                 },
             },
             {
@@ -443,6 +494,16 @@ class ToolsAPIHandler:
 
         if tool_name == "screenshot":
             return self._call_screenshot(state, episode_id)
+        elif tool_name == "wait_for_stable_screen":
+            return self._execute_action(
+                state,
+                build_action("wait", {"duration": 0.5}),
+                episode_id,
+                tool_name="wait_for_stable_screen",
+                tool_input=tool_input,
+            )
+        elif tool_name == "open_app":
+            return self._call_open_app(state, tool_input, episode_id)
         elif tool_name == "touch_gesture":
             return self._call_touch_gesture(state, tool_input, episode_id)
         elif tool_name == "keyboard_text":
@@ -457,6 +518,8 @@ class ToolsAPIHandler:
             return self._call_mouse_move(state, tool_input, episode_id)
         elif tool_name == "mouse_scroll":
             return self._call_mouse_scroll(state, tool_input, episode_id)
+        elif tool_name == "wheel_nudge":
+            return self._call_wheel_nudge(state, tool_input, episode_id)
         elif tool_name == "quick_action":
             return self._call_quick_action(state, tool_input, episode_id)
         else:
@@ -473,6 +536,89 @@ class ToolsAPIHandler:
 
         future = asyncio.run_coroutine_threadsafe(state.run_env(get_screenshot), state.owner_loop)
         return future.result(timeout=self.request_timeout_sec)
+
+    def _call_open_app(
+        self,
+        state: BridgeEpisodeState,
+        tool_input: dict[str, Any],
+        episode_id: str,
+    ) -> dict[str, Any]:
+        app = str(tool_input.get("app", "") or "").strip()
+        if not app:
+            return {"output": "error: app is required", "is_error": True}
+
+        async def validate_and_open(env: Any) -> dict[str, Any]:
+            app_name_map = getattr(env, "APP_NAME_MAP", {})
+            known_app_ids = getattr(env, "_KNOWN_APP_IDS", frozenset())
+            mapped_app_ids = set(app_name_map.values()) if isinstance(app_name_map, dict) else set()
+            canonical_app = MOBILEGYM_APP_ALIASES.get(app.lower())
+            if canonical_app is None and isinstance(app_name_map, dict):
+                canonical_app = app_name_map.get(app)
+            known = set(known_app_ids or ()) | {str(item).lower() for item in mapped_app_ids}
+            if canonical_app is None and app.lower() in known:
+                canonical_app = app.lower()
+            if canonical_app is None:
+                return {"output": f"error: unsupported MobileGym app: {app!r}", "is_error": True}
+            action = build_action("open_app", {"app": canonical_app})
+            result = await self._execute_action_async(
+                state,
+                env,
+                action,
+                episode_id,
+                tool_name="open_app",
+                tool_input=tool_input,
+            )
+            get_route = getattr(env, "get_route", None)
+            if callable(get_route):
+                route = await _maybe_await(get_route())
+                route_app = str(route.get("app") or "").strip().lower() if isinstance(route, dict) else ""
+                if route_app and route_app != canonical_app.lower():
+                    return {
+                        "output": f"error: MobileGym opened {route_app!r} instead of {canonical_app!r}",
+                        "is_error": True,
+                    }
+            return result
+
+        future = asyncio.run_coroutine_threadsafe(state.run_env(validate_and_open), state.owner_loop)
+        return future.result(timeout=self.request_timeout_sec)
+
+    async def _execute_action_async(
+        self,
+        state: BridgeEpisodeState,
+        env: Any,
+        action: Any,
+        episode_id: str,
+        *,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Execute an action on an already acquired environment owner loop."""
+        state.require_active(episode_id)
+        action_payload = action_to_dict(action)
+        started = time.monotonic()
+        step_result = await _maybe_await(env.step(action))
+        duration_ms = int((time.monotonic() - started) * 1000)
+        observation = _observation_value(step_result, "observation")
+        if observation is None:
+            observation = await _maybe_await(env.get_observation())
+        screenshot = _encode_observation_screenshot(observation)
+        state.log_action(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            mobilegym_action=action_payload,
+            duration_ms=duration_ms,
+            error=None,
+            episode_id=episode_id,
+            screenshot=screenshot,
+        )
+        output_data = {
+            "action_output": "ok",
+            "data": screenshot["data"],
+            "width": screenshot["width"],
+            "height": screenshot["height"],
+            "format": screenshot.get("format", "jpeg"),
+        }
+        return {"output": json.dumps(output_data), "is_error": False}
 
     def _call_touch_gesture(
         self,
@@ -595,6 +741,202 @@ class ToolsAPIHandler:
             log_tool_input=tool_input,
         )
 
+    def _call_wheel_nudge(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+        """Move a numeric picker using the same bounded semantics as the firmware tool."""
+        allowed = {
+            "picker_id", "column_x", "current_value", "target_value", "cycle_size",
+            "cycle_start", "row_spacing", "value_step", "center_y", "visible_target_y",
+        }
+        unknown = sorted(set(tool_input) - allowed)
+        if unknown:
+            return {"output": f"error: unsupported wheel_nudge arguments: {unknown!r}", "is_error": True}
+        try:
+            column_x = float(tool_input["column_x"])
+            current = int(tool_input["current_value"])
+            target = int(tool_input["target_value"])
+            cycle_size = int(tool_input["cycle_size"])
+            cycle_start = int(tool_input["cycle_start"])
+            row_spacing = float(tool_input["row_spacing"])
+            center_y = float(tool_input["center_y"])
+            value_step = tool_input.get("value_step")
+            value_step = int(value_step) if value_step is not None else None
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"output": f"error: invalid wheel_nudge arguments: {exc}", "is_error": True}
+        if not str(tool_input.get("picker_id", "")).strip() or row_spacing <= 0 or value_step == 0:
+            return {"output": "error: picker_id, positive row_spacing, and non-zero value_step are required", "is_error": True}
+        if not all(0 <= value <= 1000 for value in (column_x, center_y)):
+            return {"output": "error: wheel coordinates must be within 0-1000", "is_error": True}
+
+        if value_step is None:
+            signed_rows = 1
+        else:
+            signed_rows = _wheel_signed_row_gap(current, target, value_step, cycle_size, cycle_start)
+            if signed_rows is None:
+                return {"output": "error: target is not reachable by value_step", "is_error": True}
+        if signed_rows == 0:
+            return self._call_noop_with_screenshot(state, episode_id)
+
+        rows = min(abs(signed_rows), 2 if abs(signed_rows) <= 4 else 3 if abs(signed_rows) <= 8 else 5)
+        precise_result = self._call_browser_wheel_nudge(
+            state,
+            episode_id,
+            column_x=column_x,
+            center_y=center_y,
+            rows=signed_rows,
+            cycle_size=cycle_size,
+            current_value=current,
+            tool_input=tool_input,
+        )
+        if precise_result is not None:
+            return precise_result
+
+        travel = rows * row_spacing
+        half = travel / 2.0
+        if signed_rows > 0:
+            start_y, end_y = center_y + half, center_y - half
+        else:
+            start_y, end_y = center_y - half, center_y + half
+        action = build_action(
+            "swipe",
+            {
+                "start_x": column_x,
+                "start_y": max(0.0, min(1000.0, start_y)),
+                "end_x": column_x,
+                "end_y": max(0.0, min(1000.0, end_y)),
+                "duration_ms": 700,
+            },
+        )
+        return self._execute_action(state, action, episode_id, tool_name="wheel_nudge", tool_input=tool_input)
+
+    def _call_browser_wheel_nudge(
+        self,
+        state: BridgeEpisodeState,
+        episode_id: str,
+        *,
+        column_x: float,
+        center_y: float,
+        rows: int,
+        cycle_size: int,
+        current_value: int,
+        tool_input: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Scroll a simulator wheel by exact DOM rows, without swipe inertia."""
+
+        async def scroll_picker(env: Any) -> dict[str, Any] | None:
+            state.require_active(episode_id)
+            page = getattr(env, "page", None)
+            evaluate = getattr(page, "evaluate", None)
+            if not callable(evaluate):
+                return None
+
+            started = time.monotonic()
+            result = await _maybe_await(
+                evaluate(
+                    r"""async ({column_x, center_y, rows, cycle_size, current_value}) => {
+                        const x = column_x / 1000 * window.innerWidth;
+                        const y = center_y / 1000 * window.innerHeight;
+                        const isScrollable = element => {
+                            const style = getComputedStyle(element);
+                            return element.scrollHeight > element.clientHeight + 1 &&
+                                /(auto|scroll)/.test(style.overflowY);
+                        };
+                        const numericChildren = element => Array.from(element.children)
+                            .filter(child => /^\s*\d+\s*$/.test(child.textContent || ''));
+                        const rowHeightFor = children => {
+                            const heights = children
+                                .map(child => Math.round(child.getBoundingClientRect().height))
+                                .filter(height => height > 1);
+                            const counts = new Map();
+                            for (const height of heights) counts.set(height, (counts.get(height) || 0) + 1);
+                            return Array.from(counts.entries())
+                                .sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0];
+                        };
+                        const candidates = Array.from(document.querySelectorAll('*'))
+                            .filter(isScrollable)
+                            .map(element => {
+                                const children = numericChildren(element);
+                                const rowHeight = rowHeightFor(children);
+                                const center = element.getBoundingClientRect().top + element.clientHeight / 2;
+                                const selected = children
+                                    .map(child => ({
+                                        child,
+                                        distance: Math.abs(
+                                            child.getBoundingClientRect().top +
+                                            child.getBoundingClientRect().height / 2 -
+                                            center
+                                        ),
+                                    }))
+                                    .sort((a, b) => a.distance - b.distance)[0]?.child;
+                                const selectedValue = Number(selected?.textContent?.trim());
+                                return {element, children, rowHeight, selectedValue};
+                            })
+                            .filter(candidate => candidate.rowHeight &&
+                                candidate.children.length === cycle_size + 6 &&
+                                candidate.selectedValue === current_value);
+
+                        let scroller = candidates.length === 1 ? candidates[0].element : document.elementFromPoint(x, y);
+                        while (scroller && scroller !== document.body && !isScrollable(scroller)) {
+                            scroller = scroller.parentElement;
+                        }
+                        if (!scroller || scroller === document.body) return {ok: false};
+
+                        const children = Array.from(scroller.children);
+                        const optionChildren = cycle_size > 0 && children.length >= cycle_size
+                            ? children.filter(child => /^\s*\d+\s*$/.test(child.textContent || ''))
+                            : children;
+                        const heights = optionChildren
+                            .map(child => Math.round(child.getBoundingClientRect().height))
+                            .filter(height => height > 1);
+                        const counts = new Map();
+                        for (const height of heights) counts.set(height, (counts.get(height) || 0) + 1);
+                        const rowHeight = Array.from(counts.entries())
+                            .sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0];
+                        if (!rowHeight) return {ok: false};
+
+                        scroller.scrollTop = Math.round(scroller.scrollTop / rowHeight + rows) * rowHeight;
+                        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                        return {ok: true, row_height: rowHeight};
+                    }""",
+                    {
+                        "column_x": column_x,
+                        "center_y": center_y,
+                        "rows": rows,
+                        "cycle_size": cycle_size,
+                        "current_value": current_value,
+                    },
+                )
+            )
+            if not isinstance(result, dict) or not result.get("ok"):
+                return None
+
+            await asyncio.sleep(0.1)
+            observation = await _maybe_await(env.get_observation())
+            screenshot = _encode_observation_screenshot(observation)
+            action_payload = {
+                "action_type": "WHEEL_NUDGE",
+                "data": {"rows": rows, "row_height": result.get("row_height")},
+            }
+            state.log_action(
+                tool_name="wheel_nudge",
+                tool_input=tool_input,
+                mobilegym_action=action_payload,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                error=None,
+                episode_id=episode_id,
+                screenshot=screenshot,
+            )
+            output_data = {
+                "action_output": "ok",
+                "data": screenshot["data"],
+                "width": screenshot["width"],
+                "height": screenshot["height"],
+                "format": screenshot.get("format", "jpeg"),
+            }
+            return {"output": json.dumps(output_data), "is_error": False}
+
+        future = asyncio.run_coroutine_threadsafe(state.run_env(scroll_picker), state.owner_loop)
+        return future.result(timeout=self.request_timeout_sec)
+
     def _call_quick_action(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute a small MobileGym-compatible quick_action subset."""
         platform = str(tool_input.get("platform", "android") or "android").strip().lower()
@@ -629,6 +971,9 @@ class ToolsAPIHandler:
             action = _mobilegym_app_switch_action()
             return self._execute_action(state, action, episode_id, tool_name="quick_action", tool_input=tool_input)
         if action == "spotlight_search":
+            if platform == "android":
+                action = build_action("tap", {"x": 500, "y": 825})
+                return self._execute_action(state, action, episode_id, tool_name="quick_action", tool_input=tool_input)
             return self._call_touch_gesture(
                 state,
                 {"type": "swipe_down", "strength": "medium", "anchor": 500},
@@ -637,19 +982,9 @@ class ToolsAPIHandler:
                 log_tool_input=tool_input,
             )
         if action == "notification_center":
-            return self._call_touch_gesture(
-                state,
-                {"type": "swipe_down", "strength": "medium", "anchor": 500},
-                episode_id,
-                log_tool_name="quick_action",
-                log_tool_input=tool_input,
-            )
+            return self._call_system_shade(state, "notifications", tool_input, episode_id)
         if action == "control_center":
-            action = build_action(
-                "swipe",
-                {"start_x": 850, "start_y": 0, "end_x": 850, "end_y": 700, "duration_ms": 500},
-            )
-            return self._execute_action(state, action, episode_id, tool_name="quick_action", tool_input=tool_input)
+            return self._call_system_shade(state, "control", tool_input, episode_id)
         if action == "dismiss_panel":
             return self._call_touch_gesture(
                 state,
@@ -672,6 +1007,71 @@ class ToolsAPIHandler:
             )
 
         return {"output": f"error: unsupported quick_action: {tool_input.get('action')!r}", "is_error": True}
+
+    def _call_system_shade(
+        self,
+        state: BridgeEpisodeState,
+        kind: str,
+        tool_input: dict[str, Any],
+        episode_id: str,
+    ) -> dict[str, Any]:
+        """Open a simulator system shade and verify the requested panel is visible."""
+
+        async def open_shade(env: Any) -> dict[str, Any]:
+            state.require_active(episode_id)
+            started = time.monotonic()
+
+            open_for_test = getattr(env, "open_system_shade", None)
+            if callable(open_for_test):
+                observation = await _maybe_await(open_for_test(kind))
+            else:
+                page = getattr(env, "page", None)
+                if page is None:
+                    return {
+                        "output": "error: MobileGym system shade API is unavailable",
+                        "is_error": True,
+                    }
+                result = await _maybe_await(
+                    page.evaluate(
+                        """async ({kind}) => {
+                            const shade = window.__OS__?.shade;
+                            if (!shade?.open || !shade?.getState) {
+                                return {ok: false, reason: 'shade API unavailable'};
+                            }
+                            shade.open(kind);
+                            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                            const current = shade.getState();
+                            return {ok: current?.open === true && current?.kind === kind, state: current};
+                        }""",
+                        {"kind": kind},
+                    )
+                )
+                if not isinstance(result, dict) or not result.get("ok"):
+                    reason = result.get("reason") if isinstance(result, dict) else "state verification failed"
+                    return {"output": f"error: failed to open MobileGym {kind} shade: {reason}", "is_error": True}
+                observation = await _maybe_await(env.get_observation())
+
+            screenshot = _encode_observation_screenshot(observation)
+            state.log_action(
+                tool_name="quick_action",
+                tool_input=tool_input,
+                mobilegym_action={"action_type": "SYSTEM_SHADE", "data": {"kind": kind}},
+                duration_ms=int((time.monotonic() - started) * 1000),
+                error=None,
+                episode_id=episode_id,
+                screenshot=screenshot,
+            )
+            output_data = {
+                "action_output": "ok",
+                "data": screenshot["data"],
+                "width": screenshot["width"],
+                "height": screenshot["height"],
+                "format": screenshot.get("format", "jpeg"),
+            }
+            return {"output": json.dumps(output_data), "is_error": False}
+
+        future = asyncio.run_coroutine_threadsafe(state.run_env(open_shade), state.owner_loop)
+        return future.result(timeout=self.request_timeout_sec)
 
     def _call_enter_text(
         self,
@@ -794,39 +1194,15 @@ class ToolsAPIHandler:
         tool_input: dict[str, Any],
     ) -> dict[str, Any]:
         """Execute a MobileGym action and return result with screenshot."""
-        action_payload = action_to_dict(action)
-
         async def step_env(env: Any) -> dict[str, Any]:
-            state.require_active(episode_id)
-            started = time.monotonic()
-            step_result = await _maybe_await(env.step(action))
-            duration_ms = int((time.monotonic() - started) * 1000)
-
-            observation = _observation_value(step_result, "observation")
-            if observation is None:
-                observation = await _maybe_await(env.get_observation())
-
-            screenshot = _encode_observation_screenshot(observation)
-            state.log_action(
+            return await self._execute_action_async(
+                state,
+                env,
+                action,
+                episode_id,
                 tool_name=tool_name,
                 tool_input=tool_input,
-                mobilegym_action=action_payload,
-                duration_ms=duration_ms,
-                error=None,
-                episode_id=episode_id,
-                screenshot=screenshot,
             )
-
-            # Format output as post-action screenshot result
-            output_data = {
-                "action_output": "ok",
-                "data": screenshot["data"],
-                "width": screenshot["width"],
-                "height": screenshot["height"],
-                "format": screenshot.get("format", "jpeg"),
-            }
-
-            return {"output": json.dumps(output_data), "is_error": False}
 
         future = asyncio.run_coroutine_threadsafe(state.run_env(step_env), state.owner_loop)
         return future.result(timeout=self.request_timeout_sec)
@@ -920,6 +1296,20 @@ def _positive_float(value: Any, default: float) -> float:
     return parsed if parsed > 0 else default
 
 
+def _wheel_signed_row_gap(current: int, target: int, value_step: int, cycle_size: int, cycle_start: int) -> int | None:
+    if cycle_size <= 0:
+        delta = target - current
+        return delta // value_step if delta % value_step == 0 else None
+    candidates: list[int] = []
+    for rows in range(-cycle_size, cycle_size + 1):
+        candidate = cycle_start + ((current + rows * value_step - cycle_start) % cycle_size)
+        if candidate == target:
+            candidates.append(rows)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda rows: (abs(rows), rows < 0))
+
+
 def _float_or_default(value: Any, default: float) -> float:
     if value in (None, ""):
         return default
@@ -960,7 +1350,9 @@ def _normalized_point_arg(
     point = _point_arg(tool_input, field=field, x_key=x_key, y_key=y_key)
     coord_space = str(tool_input.get("coord_space", "") or "").strip().lower() or default_space
     if coord_space == "normalized":
-        return {"x": _clamp(point["x"], 0.0, 1000.0), "y": _clamp(point["y"], 0.0, 1000.0)}
+        if not (0.0 <= point["x"] <= 1000.0 and 0.0 <= point["y"] <= 1000.0):
+            raise ValueError("normalized coordinates must be within 0-1000")
+        return point
     if coord_space == "auto":
         if 0.0 <= point["x"] <= 1000.0 and 0.0 <= point["y"] <= 1000.0:
             return point
@@ -1009,6 +1401,8 @@ def _quick_action_id(tool_input: dict[str, Any]) -> str:
         "global_search": "spotlight_search",
         "search": "spotlight_search",
         "search_launch_app": "spotlight_search",
+        "app_drawer": "spotlight_search",
+        "all_apps": "spotlight_search",
         "搜索": "spotlight_search",
         "notifications": "notification_center",
         "notification_shade": "notification_center",
@@ -1037,6 +1431,7 @@ def _mobilegym_quick_action_catalog() -> list[dict[str, str]]:
         {"id": "app_switch", "status": "active", "tool": "touch_gesture"},
         {"id": "spotlight_search", "status": "active", "tool": "touch_gesture"},
         {"id": "search_launch_app", "status": "active", "tool": "touch_gesture"},
+        {"id": "app_drawer", "status": "active", "tool": "touch_gesture"},
         {"id": "notification_center", "status": "active", "tool": "touch_gesture"},
         {"id": "control_center", "status": "active", "tool": "touch_gesture"},
         {"id": "dismiss_panel", "status": "active", "tool": "touch_gesture"},

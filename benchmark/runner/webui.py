@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -1639,7 +1640,13 @@ def runner_procs_for_stop(value: Any) -> list[subprocess.Popen]:
     return [value]
 
 
-def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text: str | None = None) -> None:
+def prepare_run_config(
+    base_config_dir: Path,
+    dest_dir: Path,
+    agent_config_text: str | None = None,
+    *,
+    target_platform: str = "",
+) -> None:
     if dest_dir.exists():
         shutil.rmtree(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1671,6 +1678,27 @@ def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text:
             config.write_text(render_agent_template(template.read_text(encoding="utf-8")), encoding="utf-8")
         if not config.exists():
             config.write_text(default_agent_toml(), encoding="utf-8")
+    if target_platform:
+        config.write_text(
+            apply_benchmark_device_type(config.read_text(encoding="utf-8"), target_platform),
+            encoding="utf-8",
+        )
+
+
+def apply_benchmark_device_type(content: str, target_platform: str) -> str:
+    platform = str(target_platform or "").strip().lower()
+    device_type = {"android": "Android", "ios": "iOS", "mac": "macOS"}.get(platform)
+    if not device_type:
+        return content
+    try:
+        parsed = tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        return content
+    device = parsed.get("device")
+    if isinstance(device, dict) and str(device.get("device_type") or "").strip():
+        return content
+    separator = "" if content.endswith("\n\n") else ("\n" if content.endswith("\n") else "\n\n")
+    return f'{content}{separator}[device]\ndevice_type = "{device_type}"\n'
 
 
 def ensure_webui_agent_config(base_config_dir: Path, agent_config_path: Path) -> tuple[str, str]:

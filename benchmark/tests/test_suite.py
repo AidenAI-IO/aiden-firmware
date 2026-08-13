@@ -47,6 +47,9 @@ def test_mobilegym_basic_suite_loads_device_operation_tasks():
     assert suite.name == "mobilegym_basic"
     assert {task.category for task in suite.tasks} == {"device_operation"}
     assert all(task.rubric and task.rubric[0].check for task in suite.tasks)
+    clock_task = next(task for task in suite.tasks if task.id == "clock_count_alarms")
+    assert clock_task.expected_answer == "7"
+    assert clock_task.answer_format == "integer"
 
 
 def test_adb_android_basic_suite_loads_device_operation_tasks():
@@ -524,6 +527,20 @@ def test_phone_control_navigation_tasks_have_setup_pages():
         assert setup["type"] == "agent_prompt"
         assert "系统设置" in setup["prompt"]
         assert setup["clear_history_after"] is True
+
+
+def test_phone_control_tasks_do_not_require_actions_that_conflict_with_visible_state():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    scroll_task = task_by_id["scroll_to_bottom"]
+    multiple_scrolls = next(item for item in scroll_task.rubric if item.id == "multiple_scrolls")
+    assert "at least three" not in multiple_scrolls.check
+
+    for task_id in ("toggle_wifi_off", "toggle_wifi_on"):
+        wifi_task = task_by_id[task_id]
+        assert all(item.id != "wifi_page_reached" for item in wifi_task.rubric)
 
 
 def test_phone_control_text_editing_tasks_have_input_setup():

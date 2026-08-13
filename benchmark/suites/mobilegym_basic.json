@@ -17,6 +17,8 @@
       "category": "device_operation",
       "prompt": "打开时钟应用，告诉我当前有多少个闹钟。",
       "description_for_judge": "Agent 应该：1) 打开时钟应用 2) 查看闹钟列表 3) 正确报告闹钟数量",
+      "expected_answer": "7",
+      "answer_format": "integer",
       "rubric": [
         {
           "id": "opened_clock_app",
@@ -25,10 +27,6 @@
         {
           "id": "viewed_alarm_list",
           "description": "查看了闹钟列表页面"
-        },
-        {
-          "id": "counted_correctly",
-          "description": "正确识别并报告了闹钟数量"
         }
       ],
       "hard_assertions": {

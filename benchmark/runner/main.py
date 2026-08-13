@@ -13,7 +13,7 @@ from pathlib import Path
 from runner.agent_client import AgentClient
 from runner.analysis import AnalysisConfig, _int_env, analyze_run
 from runner.html_report import generate_report_html, upload_report
-from runner.judge import DEFAULT_JUDGE_BASE_URL, JudgeConfig
+from runner.judge import DEFAULT_JUDGE_BASE_URL, JUDGE_PROMPT_VERSION, JudgeConfig
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
 from runner.reset import ResetError, call_environment_release, clear_stale_adb_android_owner
@@ -500,7 +500,12 @@ def _cmd_run_auto_agent_setup_inner(
         runner_log = worker_dir / "runner.log"
         daemon_log = worker_dir / "daemon.log"
         worker_dir.mkdir(parents=True, exist_ok=True)
-        prepare_run_config(Path(args.base_config_dir), config_dir, agent_config_text=agent_config_text)
+        prepare_run_config(
+            Path(args.base_config_dir),
+            config_dir,
+            agent_config_text=agent_config_text,
+            target_platform=target_platform,
+        )
         benchmark_token = _read_optional_token(config_dir / "control_token")
         host_port = 0
         agent_url = f"http://127.0.0.1:{host_port}"
@@ -629,7 +634,7 @@ def _cmd_run_auto_agent_setup_inner(
         "agent_model": args.agent_model,
         "active_skills": active_skills,
         "judge_config": {"provider": "openrouter", "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
-        "judge_prompt_version": "v1",
+        "judge_prompt_version": JUDGE_PROMPT_VERSION,
         "target_platform": target_platform or None,
         "auto_agent_setup": True,
         "concurrency": max_workers,
@@ -656,6 +661,10 @@ def _cmd_run_auto_agent_setup_inner(
     print(f"Passed:        {manifest['totals']['passed']}", flush=True)
     print(f"Failed:        {manifest['totals']['failed']}", flush=True)
     print(f"Skipped:       {manifest['totals']['skipped']}", flush=True)
+    if manifest['totals']['timeout'] > 0:
+        print(f"Timeout:       {manifest['totals']['timeout']}", flush=True)
+    if manifest['totals']['judge_error'] > 0:
+        print(f"Judge Error:   {manifest['totals']['judge_error']}", flush=True)
     print(f"Results saved to: {run_dir}", flush=True)
     print("="*60 + "\n", flush=True)
     return _run_exit_code(manifest["totals"])
@@ -837,7 +846,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "agent_model": args.agent_model,
         "active_skills": active_skills,
         "judge_config": {"provider": "openrouter", "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
-        "judge_prompt_version": "v1",
+        "judge_prompt_version": JUDGE_PROMPT_VERSION,
         "target_platform": target_platform or None,
         "mock_environment": _mock_environment_manifest(suite),
         "started_at": started, "finished_at": now_iso(),

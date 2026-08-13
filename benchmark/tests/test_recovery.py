@@ -3,6 +3,7 @@ import time
 import pytest
 
 from runner.agent_client import AgentRequestError, AgentTimeoutError
+from runner.agent_client import ChatResponse
 from runner.recovery import prepare_task_isolation, wait_for_agent_ready
 from runner.reset import ResetError
 from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec
@@ -68,6 +69,7 @@ class SetupClient:
 
     def chat(self, message, timeout_sec=None, benchmark_task_id=None):
         self.chats.append((message, timeout_sec, benchmark_task_id))
+        return ChatResponse(response="done", history=[])
 
     def seed_memory(self, memory, timeout=30):
         self.seeded_memories.append((memory, timeout))

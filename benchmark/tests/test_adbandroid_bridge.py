@@ -49,6 +49,9 @@ class FakeADBAndroidDevice:
         self.calls.append(("input_text", text))
         self.last_input_text = text
 
+    def open_app(self, app_name):
+        self.calls.append(("open_app", app_name))
+
     def dump_window_xml(self):
         self.calls.append(("dump_window_xml",))
         text = self.window_text_override
@@ -290,6 +293,8 @@ def test_tools_catalog_lists_expected_tools(bridge):
         "keyboard_text",
         "keyboard_tap",
         "enter_text",
+        "open_app",
+        "wait_for_stable_screen",
         "mouse_click",
         "mouse_move",
         "mouse_scroll",

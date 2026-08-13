@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -186,11 +187,13 @@ def _per_task_setup_agent_prompt(
         chat_kwargs = {"timeout_sec": timeout}
         if str(benchmark_task_id or "").strip():
             chat_kwargs["benchmark_task_id"] = str(benchmark_task_id).strip()
-        client.chat(prompt, **chat_kwargs)
+        chat = client.chat(prompt, **chat_kwargs)
     except AgentTimeoutError as e:
         raise ResetError(f"setup agent_prompt timed out: {e}") from e
     except AgentRequestError as e:
         raise ResetError(f"setup agent_prompt failed: {e}") from e
+    if _setup_response_reports_blocker(chat.response, chat.history):
+        raise ResetError("setup agent_prompt did not establish a usable state: agent reported an operation blocker")
     clear_history_after = setup.get("clear_history_after", True)
     if not isinstance(clear_history_after, bool):
         raise ResetError(f"clear_history_after must be boolean: {clear_history_after!r}")
@@ -199,6 +202,28 @@ def _per_task_setup_agent_prompt(
             client.clear_history()
         except AgentRequestError as e:
             raise ResetError(f"setup agent_prompt clear_history failed: {e}") from e
+
+
+_SETUP_BLOCKER_PATTERNS = (
+    re.compile(r"\bstop reason\s*:\s*(?:no_progress|budget_exceeded)\b", re.IGNORECASE),
+    re.compile(r"\bapp_connected\s*:\s*false\b", re.IGNORECASE),
+    re.compile(r"\bcurrent environment\b.{0,80}\btools?\b.{0,40}\bunavailable\b", re.IGNORECASE | re.DOTALL),
+    re.compile(r"无法(?:直接)?(?:获取截图|执行触控|操作(?:手机|设备|界面))"),
+    re.compile(r"(?:手机控制|截图|触控).{0,30}(?:工具|功能).{0,20}(?:不可用|有限|缺失)"),
+    re.compile(r"please (?:confirm|connect|open).{0,80}(?:device|phone|page)", re.IGNORECASE | re.DOTALL),
+)
+
+
+def _setup_response_reports_blocker(response: str, history: list[dict[str, Any]]) -> bool:
+    text = str(response or "").strip()
+    if any(pattern.search(text) for pattern in _SETUP_BLOCKER_PATTERNS):
+        return True
+    for message in history or []:
+        if message.get("type") != "tool_call":
+            continue
+        if str(message.get("tool_name") or "").strip() == "request_human_handoff":
+            return True
+    return False
 
 
 def _per_task_setup_seed_memory(client: AgentClient, setup: dict[str, Any]) -> None:

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from runner.judge import JudgeConfig, judge_task
+from runner.judge import JUDGE_PROMPT_VERSION, JUDGE_TEMPLATE, JudgeConfig, judge_task
 from runner.suite import RubricItem
 
 
@@ -50,6 +50,24 @@ def test_judge_uses_configured_api_key_env(monkeypatch):
         "url": "https://judge.example.com/v1/chat/completions",
         "timeout": 120,
     }
+
+
+def test_judge_requires_identity_consistency_for_chosen_targets():
+    assert "target identity consistent" in JUDGE_TEMPLATE
+    assert "Do not substitute" in JUDGE_TEMPLATE
+
+
+def test_judge_uses_visual_outcome_instead_of_gesture_wording():
+    assert "judge scrolling by the visible before/after content" in JUDGE_TEMPLATE
+
+
+def test_judge_does_not_import_task_goal_requirements_into_rubric():
+    assert "Even if TASK GOAL mentions a page, path, or starting state" in JUDGE_TEMPLATE
+
+
+def test_judge_prompt_version_tracks_evidence_contract():
+    assert JUDGE_PROMPT_VERSION == "v3-evidence-consistency"
+    assert "status-bar icon" in JUDGE_TEMPLATE
 
 
 def test_judge_sends_only_pre_and_post_screenshots(monkeypatch, tmp_path: Path):

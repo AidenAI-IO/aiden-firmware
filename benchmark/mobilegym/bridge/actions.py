@@ -17,6 +17,7 @@ class ActionType(str, Enum):
     BACK = "BACK"
     HOME = "HOME"
     WAIT = "WAIT"
+    AWAKE = "AWAKE"
 
 
 @dc.dataclass(frozen=True)
@@ -49,6 +50,8 @@ def build_action(name: str, payload: dict[str, Any]) -> Any:
         return _make_action("HOME", {})
     if action_name == "wait":
         return _make_action("WAIT", {"value": _duration_seconds(payload)})
+    if action_name == "open_app":
+        return _make_action("AWAKE", {"value": str(payload.get("app", "")).strip()})
     raise ValueError(f"unsupported action: {name}")
 
 

@@ -1,5 +1,5 @@
 import runner.assertions as assertions
-from runner.assertions import evaluate_hard_assertions, AssertionOutcome
+from runner.assertions import evaluate_expected_answer, evaluate_hard_assertions, AssertionOutcome
 from runner.suite import HardAssertions, RequiredToolCallSpec
 from runner.models import Trace, ToolCall
 
@@ -69,6 +69,32 @@ def test_required_tools_fail_when_missing():
     assert out.failures[0].id == "required_tools"
     assert out.failures[0].requirement == "Must call: enter_plan_mode."
     assert out.failures[0].actual == "Missing: enter_plan_mode. Used: x."
+
+
+def test_required_screenshot_accepts_visual_observation_returned_by_action_tool():
+    trace = Trace(
+        tool_calls=[ToolCall(step=1, tool="open_app", input={"app": "Clock"}, has_screenshot=True)],
+        final_response="done",
+        total_tool_calls=1,
+        total_duration_ms=0,
+    )
+    spec = HardAssertions(required_tools=["screenshot"])
+
+    out = evaluate_hard_assertions(trace, spec, timed_out=False)
+
+    assert out.results.required_tools is True
+    assert out.failures == []
+
+
+def test_expected_integer_answer_extracts_reported_count():
+    result = evaluate_expected_answer("当前共有 7 个闹钟。", "7", "integer")
+    assert result.passed is True
+    assert result.predicted_answer == "7"
+
+
+def test_expected_integer_answer_rejects_different_count():
+    result = evaluate_expected_answer("当前共有 6 个闹钟。", "7", "integer")
+    assert result.passed is False
 
 
 def test_forbidden_tools_fail_when_present():

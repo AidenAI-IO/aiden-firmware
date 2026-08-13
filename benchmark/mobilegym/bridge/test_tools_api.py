@@ -9,6 +9,7 @@ import pytest
 from .episode import BridgeEpisodeState, BridgeTaskRouter
 from .actions import action_to_dict
 from .server import BridgeServer
+from .tools_api import _normalized_point_arg
 
 
 @pytest.fixture
@@ -19,10 +20,13 @@ def mock_env():
 
 def mock_env_factory():
     class MockEnv:
+        APP_NAME_MAP = {"Clock": "clock", "时钟": "clock"}
+
         def __init__(self):
             self.last_action = None
             self.actions = []
             self.step_count = 0
+            self.opened_shade = None
 
         async def get_observation(self):
             # Return mock screenshot
@@ -33,6 +37,18 @@ def mock_env_factory():
             self.actions.append(action)
             self.step_count += 1
             return MockStepResult()
+
+        async def open_system_shade(self, kind):
+            self.opened_shade = kind
+            return await self.get_observation()
+
+        async def get_route(self):
+            if self.last_action is None:
+                return {}
+            action = action_to_dict(self.last_action)
+            if action["action_type"] != "AWAKE":
+                return {}
+            return {"app": action["data"]["value"]}
 
     class MockObservation:
         def __init__(self):
@@ -88,6 +104,7 @@ def test_get_tools_catalog(bridge_server):
     assert "mouse_click" in tools
     assert "mouse_move" in tools
     assert "mouse_scroll" in tools
+    assert "wheel_nudge" in tools
     assert "quick_action" in tools
 
     # Verify tool structure
@@ -99,7 +116,13 @@ def test_get_tools_catalog(bridge_server):
     touch_props = tools["touch_gesture"]["args_schema"]["properties"]
     assert touch_props["point"]["additionalProperties"] is False
     assert touch_props["point"]["required"] == ["x", "y"]
-    assert touch_props["coord_space"]["enum"] == ["auto", "pixel", "normalized", "absolute"]
+    assert "coord_space" not in touch_props
+    assert tools["touch_gesture"]["args_schema"]["required"] == ["type"]
+    for field in ("point", "start", "end"):
+        assert touch_props[field]["properties"]["x"]["minimum"] == 0
+        assert touch_props[field]["properties"]["x"]["maximum"] == 1000
+        assert touch_props[field]["properties"]["y"]["minimum"] == 0
+        assert touch_props[field]["properties"]["y"]["maximum"] == 1000
     assert touch_props["button"]["enum"] == ["left", "right", "middle"]
     assert touch_props["strength"]["enum"] == ["large", "medium", "small", "tiny"]
     assert "hold_before_ms" in touch_props
@@ -137,6 +160,19 @@ def test_get_tools_catalog(bridge_server):
     ]
     assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["minimum"] == -127
     assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["maximum"] == 127
+    wheel_props = tools["wheel_nudge"]["args_schema"]["properties"]
+    assert tools["wheel_nudge"]["args_schema"]["additionalProperties"] is False
+    assert set(tools["wheel_nudge"]["args_schema"]["required"]) == {
+        "picker_id",
+        "column_x",
+        "current_value",
+        "target_value",
+        "cycle_size",
+        "cycle_start",
+        "row_spacing",
+        "center_y",
+    }
+    assert "value_step" in wheel_props
 
     quick_action_props = tools["quick_action"]["args_schema"]["properties"]
     assert tools["quick_action"]["args_schema"]["additionalProperties"] is False
@@ -144,6 +180,96 @@ def test_get_tools_catalog(bridge_server):
     assert "platform" not in tools["quick_action"]["args_schema"]["required"]
     assert "alternative" in quick_action_props
     assert "alternative_index" in quick_action_props
+    assert "open_app" in tools
+    assert "wait_for_stable_screen" in tools
+
+
+def test_normalized_coordinates_reject_out_of_range_values():
+    with pytest.raises(ValueError, match="normalized coordinates must be within 0-1000"):
+        _normalized_point_arg(
+            {"point": {"x": 500, "y": 1305}, "coord_space": "normalized"},
+            default_space="normalized",
+        )
+
+
+def test_invoke_open_app_uses_mobilegym_awake_action(bridge_server):
+    _, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-open-app"
+    req = Request(
+        f"{base_url}/api/tools/open_app",
+        data=json.dumps({"input": {"app": "Clock"}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "AWAKE",
+        "data": {"value": "clock"},
+    }
+
+
+def test_invoke_open_app_maps_common_notepad_name_to_notes(bridge_server):
+    _, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-open-app-notepad"
+    req = Request(
+        f"{base_url}/api/tools/open_app",
+        data=json.dumps({"input": {"app": "Notepad Free"}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "AWAKE",
+        "data": {"value": "notes"},
+    }
+
+
+def test_invoke_open_app_rejects_unknown_app_instead_of_silently_succeeding(bridge_server):
+    _, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-open-app-unknown"
+    req = Request(
+        f"{base_url}/api/tools/open_app",
+        data=json.dumps({"input": {"app": "not-a-real-app"}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is True
+    assert "unsupported MobileGym app" in data["output"]
+    assert state.env.last_action is None
+
+
+def test_invoke_wait_for_stable_screen_returns_screenshot(bridge_server):
+    _, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-wait-stable"
+    req = Request(
+        f"{base_url}/api/tools/wait_for_stable_screen",
+        data=json.dumps({"input": {}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    output = json.loads(data["output"])
+    assert output["data"]
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "WAIT",
+        "data": {"value": 0.5},
+    }
 
 
 def test_invoke_screenshot_tool(bridge_server):
@@ -394,9 +520,6 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
     state.active_episode_id = "test-episode-quick-actions"
 
     for action, expected_type in [
-        ("spotlight_search", "SWIPE"),
-        ("search", "SWIPE"),
-        ("search_launch_app", "SWIPE"),
         ("app_switch", "SWIPE"),
         ("send", "ENTER"),
     ]:
@@ -414,6 +537,23 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
         assert data["is_error"] is False
         assert "unsupported quick_action" not in data["output"]
         assert action_to_dict(state.env.last_action)["action_type"] == expected_type
+
+    for action in ["spotlight_search", "search", "search_launch_app", "app_drawer", "all_apps"]:
+        req = Request(
+            f"{base_url}/api/tools/quick_action",
+            data=json.dumps({"input": {"action": action, "platform": "android"}}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+
+        assert data["is_error"] is False
+        assert action_to_dict(state.env.last_action) == {
+            "action_type": "CLICK",
+            "data": {"point": [500.0, 825.0]},
+        }
 
     no_action_count = state.env.step_count
     for action in ["select_all", "delete_backward", "copy", "paste", "undo", "find", "cut", "browser_refresh", "browser_new_tab"]:
@@ -451,6 +591,42 @@ def test_invoke_quick_action_defaults_to_android_platform(bridge_server):
 
     assert data["is_error"] is False
     assert action_to_dict(state.env.last_action)["action_type"] == "HOME"
+
+
+def test_invoke_notification_center_opens_and_verifies_system_shade(bridge_server):
+    _, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-notification-center"
+    req = Request(
+        f"{base_url}/api/tools/quick_action",
+        data=json.dumps({"input": {"action": "notification_center"}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert state.env.opened_shade == "notifications"
+    assert state.env.last_action is None
+
+
+def test_invoke_control_center_opens_and_verifies_system_shade(bridge_server):
+    _, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-control-center"
+    req = Request(
+        f"{base_url}/api/tools/quick_action",
+        data=json.dumps({"input": {"action": "control_center"}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert state.env.opened_shade == "control"
+    assert state.env.last_action is None
 
 
 def test_invoke_keyboard_tap_keycode_app_switch_uses_swipe(bridge_server):
@@ -552,6 +728,167 @@ def test_invoke_enter_text_focuses_and_types_unicode(bridge_server):
         "action_type": "TYPE",
         "data": {"value": "隐私", "point": [500.0, 80.0]},
     }
+
+
+def test_invoke_wheel_nudge_maps_numeric_picker_step_to_slow_swipe(bridge_server):
+    _server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-wheel-nudge"
+    request_body = json.dumps(
+        {
+            "input": {
+                "picker_id": "alarm-time",
+                "column_x": 247,
+                "current_value": 5,
+                "target_value": 7,
+                "cycle_size": 24,
+                "cycle_start": 0,
+                "row_spacing": 83,
+                "value_step": 1,
+                "center_y": 500,
+            }
+        }
+    ).encode()
+    req = Request(
+        f"{base_url}/api/tools/wheel_nudge",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "SWIPE",
+        "data": {
+            "point1": [247.0, 583.0],
+            "point2": [247.0, 417.0],
+            "duration": 700.0,
+        },
+    }
+
+
+def test_invoke_wheel_nudge_scrolls_browser_picker_by_exact_rows():
+    import asyncio
+
+    class FakePage:
+        def __init__(self):
+            self.payload = None
+
+        async def evaluate(self, _script, payload):
+            self.payload = payload
+            return {"ok": True, "row_height": 48}
+
+    env = mock_env_factory()
+    env.page = FakePage()
+    loop = asyncio.new_event_loop()
+    thread = Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    state = BridgeEpisodeState(env, loop)
+    state.active_episode_id = "test-episode-wheel-browser"
+    server = BridgeServer(state, host="127.0.0.1", port=0)
+    base_url = server.start()
+
+    try:
+        req = Request(
+            f"{base_url}/api/tools/wheel_nudge",
+            data=json.dumps(
+                {
+                    "input": {
+                        "picker_id": "alarm-hour",
+                        "column_x": 247,
+                        "current_value": 6,
+                        "target_value": 7,
+                        "cycle_size": 24,
+                        "cycle_start": 0,
+                        "row_spacing": 83,
+                        "value_step": 1,
+                        "center_y": 500,
+                    }
+                }
+            ).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+
+        assert data["is_error"] is False
+        assert env.page.payload == {
+            "column_x": 247.0,
+            "center_y": 500.0,
+            "rows": 1,
+            "cycle_size": 24,
+            "current_value": 6,
+        }
+        assert env.last_action is None
+        assert state.action_log[-1]["mobilegym_action"] == {
+            "action_type": "WHEEL_NUDGE",
+            "data": {"rows": 1, "row_height": 48},
+        }
+    finally:
+        server.stop()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+
+def test_invoke_wheel_nudge_browser_path_moves_full_safe_gap():
+    import asyncio
+
+    class FakePage:
+        def __init__(self):
+            self.payload = None
+
+        async def evaluate(self, _script, payload):
+            self.payload = payload
+            return {"ok": True, "row_height": 48}
+
+    env = mock_env_factory()
+    env.page = FakePage()
+    loop = asyncio.new_event_loop()
+    thread = Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    state = BridgeEpisodeState(env, loop)
+    state.active_episode_id = "test-episode-wheel-browser-full-gap"
+    server = BridgeServer(state, host="127.0.0.1", port=0)
+    base_url = server.start()
+
+    try:
+        req = Request(
+            f"{base_url}/api/tools/wheel_nudge",
+            data=json.dumps(
+                {
+                    "input": {
+                        "picker_id": "alarm-minute",
+                        "column_x": 630,
+                        "current_value": 20,
+                        "target_value": 30,
+                        "cycle_size": 60,
+                        "cycle_start": 0,
+                        "row_spacing": 55,
+                        "value_step": 1,
+                        "center_y": 530,
+                    }
+                }
+            ).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+
+        assert data["is_error"] is False
+        assert env.page.payload["rows"] == 10
+        assert state.action_log[-1]["mobilegym_action"]["data"]["rows"] == 10
+    finally:
+        server.stop()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
 
 
 def test_invoke_enter_text_rejects_removed_or_missing_arguments(bridge_server):

@@ -70,6 +70,14 @@ def test_auto_rejects_out_of_range_coordinates():
         )
 
 
+def test_normalized_rejects_out_of_range_coordinates():
+    with pytest.raises(ValueError, match="normalized coordinates must be within 0-1000"):
+        _normalized_point_arg(
+            {"point": {"x": 500, "y": 1305}, "coord_space": "normalized"},
+            default_space="normalized",
+        )
+
+
 def test_pixel_coord_space_requires_screen_size_and_clamps():
     with pytest.raises(ValueError, match="requires a known screen size"):
         _normalized_point_arg(
@@ -99,6 +107,21 @@ def test_touch_gesture_tap(bridge):
     output = _post_action_output(body)
     assert output["action_output"] == "ok"
     assert ("tap", 540, 960) in device.calls
+
+
+def test_touch_gesture_catalog_uses_implicit_normalized_coordinates(bridge):
+    _, _, base_url = bridge
+    req = urllib.request.Request(f"{base_url}/api/tools", method="GET")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        tools = {tool["name"]: tool for tool in json.loads(resp.read().decode("utf-8"))["tools"]}
+
+    schema = tools["touch_gesture"]["args_schema"]
+    assert "coord_space" not in schema["properties"]
+    assert schema["required"] == ["type"]
+    for field in ("point", "start", "end"):
+        for axis in ("x", "y"):
+            assert schema["properties"][field]["properties"][axis]["minimum"] == 0
+            assert schema["properties"][field]["properties"][axis]["maximum"] == 1000
 
 
 def test_touch_gesture_tap_with_pixel_coord_space(bridge):
@@ -156,6 +179,22 @@ def test_touch_gesture_auto_out_of_range_is_error(bridge):
     assert status == 200
     assert body["is_error"] is True
     assert "auto only supports 0-1000" in body["output"]
+
+
+def test_open_app_is_forwarded_to_android_device(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(base_url, "open_app", {"app": "Clock"})
+    assert status == 200
+    assert body["is_error"] is False
+    assert ("open_app", "Clock") in device.calls
+
+
+def test_wait_for_stable_screen_returns_screenshot(bridge):
+    _, _, base_url = bridge
+    status, body = _invoke(base_url, "wait_for_stable_screen", {})
+    assert status == 200
+    output = _post_action_output(body)
+    assert output["data"]
 
 
 # ---- keyboard tools ----------------------------------------------------------

@@ -106,7 +106,7 @@ def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool
     results = HardAssertionResults(
         min_tool_calls=trace.total_tool_calls >= spec.min_tool_calls,
         max_tool_calls=trace.total_tool_calls <= spec.max_tool_calls,
-        required_tools=all(tool in tools_used for tool in spec.required_tools),
+        required_tools=all(_required_tool_satisfied(trace, tool) for tool in spec.required_tools),
         forbidden_tools=not any(tool in tools_used for tool in spec.forbidden_tools),
         prohibited_actions=not prohibited_action_offenders if spec.prohibited_actions else None,
         required_tool_calls=not missing_tool_calls if spec.required_tool_calls else None,
@@ -151,7 +151,7 @@ def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool
             )
         )
     if results.required_tools is False:
-        missing = [tool for tool in spec.required_tools if tool not in tools_used]
+        missing = [tool for tool in spec.required_tools if not _required_tool_satisfied(trace, tool)]
         failures.append(
             HardAssertionFailure(
                 id="required_tools",
@@ -215,6 +215,15 @@ def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool
     return AssertionOutcome(all_passed=bool(all_passed), results=results, failures=failures)
 
 
+def _required_tool_satisfied(trace: Trace, tool: str) -> bool:
+    if any(tc.tool == tool for tc in trace.tool_calls):
+        return True
+    # Post-action screenshot tools provide the same visual observation as an
+    # explicit screenshot call. Treat that evidence as satisfying suites that
+    # require a screenshot, while keeping all other required tools exact.
+    return tool == "screenshot" and any(tc.has_screenshot for tc in trace.tool_calls)
+
+
 def _required_tool_call_description(tool: str, input_contains: dict[str, Any]) -> str:
     if not input_contains:
         return tool
@@ -224,10 +233,23 @@ def _required_tool_call_description(tool: str, input_contains: dict[str, Any]) -
 def evaluate_expected_answer(
     final_response: str, expected_answer: str, answer_format: str
 ) -> ExpectedAnswerResult:
-    if answer_format != "option_letter":
+    if answer_format == "option_letter":
+        expected = _normalize_option_answer(expected_answer)
+        predicted = _extract_option_answer(final_response)
+    elif answer_format == "integer":
+        expected_match = re.fullmatch(r"\s*[-+]?\d+\s*", expected_answer)
+        expected = str(int(expected_answer)) if expected_match else None
+        count_match = re.search(
+            r"(?:当前)?(?:共有|共|总共|合计)\s*\**\s*([-+]?\d+)\s*\**\s*(?:个|条|项)?",
+            final_response,
+        )
+        if count_match:
+            predicted = str(int(count_match.group(1)))
+        else:
+            matches = re.findall(r"(?<![\d:.])[-+]?\d+(?![\d:.])", final_response)
+            predicted = str(int(matches[0])) if len(set(matches)) == 1 else None
+    else:
         raise ValueError(f"unsupported answer_format: {answer_format!r}")
-    expected = _normalize_option_answer(expected_answer)
-    predicted = _extract_option_answer(final_response)
     return ExpectedAnswerResult(
         passed=expected is not None and predicted == expected,
         expected_answer=expected,

@@ -1,6 +1,6 @@
 import pytest
 
-from runner.agent_client import AgentRequestError, AgentTimeoutError
+from runner.agent_client import AgentRequestError, AgentTimeoutError, ChatResponse
 from runner.reset import (
     ResetError,
     call_environment_release,
@@ -20,7 +20,7 @@ class FailingChatClient:
 
 class FailingClearHistoryClient:
     def chat(self, message, timeout_sec=None):
-        return None
+        return ChatResponse(response="done", history=[])
 
     def clear_history(self):
         raise AgentRequestError("HTTP 500: clear failed")
@@ -37,6 +37,7 @@ class RecordingSetupClient:
 
     def chat(self, message, timeout_sec=None):
         self.calls.append(("chat", message, timeout_sec))
+        return ChatResponse(response="done", history=[])
 
     def clear_history(self):
         self.calls.append(("clear_history",))
@@ -100,6 +101,63 @@ def test_agent_prompt_setup_includes_prompt_prefix():
     )
 
     assert client.calls[0] == ("chat", "ADB benchmark rules\n\nprepare editor", 5)
+
+
+def test_agent_prompt_setup_rejects_explicit_operation_blocker():
+    class BlockedSetupClient(RecordingSetupClient):
+        def chat(self, message, timeout_sec=None):
+            self.calls.append(("chat", message, timeout_sec))
+            return ChatResponse(
+                response="当前 app_connected: false，我无法直接获取截图或执行触控操作。",
+                history=[],
+            )
+
+    client = BlockedSetupClient()
+
+    with pytest.raises(ResetError, match="setup agent_prompt did not establish a usable state"):
+        per_task_setup(client, {"type": "agent_prompt", "prompt": "prepare editor"})
+
+    assert all(call[0] != "clear_history" for call in client.calls)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "I'm stopping here because the task is not making measurable progress. Stop reason: no_progress.",
+        "I'm stopping here because the task is not making measurable progress. Stop reason: budget_exceeded.",
+    ],
+)
+def test_agent_prompt_setup_rejects_agent_termination_without_completion(response):
+    class StoppedSetupClient(RecordingSetupClient):
+        def chat(self, message, timeout_sec=None):
+            self.calls.append(("chat", message, timeout_sec))
+            return ChatResponse(response=response, history=[])
+
+    client = StoppedSetupClient()
+
+    with pytest.raises(ResetError, match="setup agent_prompt did not establish a usable state"):
+        per_task_setup(client, {"type": "agent_prompt", "prompt": "prepare editor"})
+
+    assert all(call[0] != "clear_history" for call in client.calls)
+
+
+def test_agent_prompt_setup_accepts_successful_tool_activity():
+    class SuccessfulSetupClient(RecordingSetupClient):
+        def chat(self, message, timeout_sec=None):
+            self.calls.append(("chat", message, timeout_sec))
+            return ChatResponse(
+                response="准备完成。",
+                history=[
+                    {"type": "tool_call", "tool_name": "open_app", "tool_input": "{}"},
+                    {"type": "tool_result", "content": "ok"},
+                ],
+            )
+
+    client = SuccessfulSetupClient()
+
+    per_task_setup(client, {"type": "agent_prompt", "prompt": "prepare editor"})
+
+    assert client.calls[-1] == ("clear_history",)
 
 
 def test_environment_setup_endpoint_is_derived_from_environment_endpoint():

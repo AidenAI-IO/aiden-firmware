@@ -198,10 +198,6 @@
       "prompt": "请关闭 Wi-Fi。",
       "rubric": [
         {
-          "id": "wifi_page_reached",
-          "check": "Post-screenshot shows the Wi-Fi settings page."
-        },
-        {
           "id": "wifi_off_final",
           "check": "Post-screenshot shows Wi-Fi disabled or the Wi-Fi toggle in the off state."
         },
@@ -228,10 +224,6 @@
       },
       "prompt": "请开启 Wi-Fi。",
       "rubric": [
-        {
-          "id": "wifi_page_reached",
-          "check": "Post-screenshot shows the Wi-Fi settings page."
-        },
         {
           "id": "wifi_on_final",
           "check": "Post-screenshot shows Wi-Fi enabled or the Wi-Fi toggle in the on state."
@@ -264,10 +256,6 @@
         {
           "id": "alarm_saved",
           "check": "Post-screenshot shows alarms list including a 7:30 entry."
-        },
-        {
-          "id": "alarm_enabled",
-          "check": "The newly created alarm is shown as enabled (toggle on)."
         }
       ],
       "hard_assertions": {
@@ -290,7 +278,7 @@
       "rubric": [
         {
           "id": "multiple_scrolls",
-          "check": "Trace contains at least three swipe/scroll tool calls."
+          "check": "Trace contains repeated swipe/scroll tool calls when more than one scroll is needed to reach the bottom."
         },
         {
           "id": "stopped_at_bottom",

@@ -270,6 +270,54 @@ def test_runner_default_agent_toml_disables_voice_side_effects():
     assert config["model"]["provider"] == "benchmark"
 
 
+def test_prepare_run_config_injects_target_device_type(tmp_path: Path):
+    base = tmp_path / "base"
+    dest = tmp_path / "dest"
+    base.mkdir()
+    (base / "agent.toml").write_text('[model]\nprovider = "benchmark"\n', encoding="utf-8")
+
+    webui.prepare_run_config(base, dest, target_platform="android")
+
+    rendered = tomllib.loads((dest / "agent.toml").read_text(encoding="utf-8"))
+    assert rendered["device"]["device_type"] == "Android"
+
+
+def test_prepare_run_config_injects_ios_target_device_type(tmp_path: Path):
+    base = tmp_path / "base"
+    dest = tmp_path / "dest"
+    base.mkdir()
+    (base / "agent.toml").write_text('[model]\nprovider = "benchmark"\n', encoding="utf-8")
+
+    webui.prepare_run_config(base, dest, target_platform="ios")
+
+    rendered = tomllib.loads((dest / "agent.toml").read_text(encoding="utf-8"))
+    assert rendered["device"]["device_type"] == "iOS"
+
+
+def test_prepare_run_config_does_not_inject_unknown_target_platform(tmp_path: Path):
+    base = tmp_path / "base"
+    dest = tmp_path / "dest"
+    base.mkdir()
+    original = '[model]\nprovider = "benchmark"\n'
+    (base / "agent.toml").write_text(original, encoding="utf-8")
+
+    webui.prepare_run_config(base, dest, target_platform="")
+
+    assert (dest / "agent.toml").read_text(encoding="utf-8") == original
+
+
+def test_prepare_run_config_preserves_explicit_device_type(tmp_path: Path):
+    base = tmp_path / "base"
+    dest = tmp_path / "dest"
+    base.mkdir()
+    (base / "agent.toml").write_text('[device]\ndevice_type = "iOS"\n', encoding="utf-8")
+
+    webui.prepare_run_config(base, dest, target_platform="android")
+
+    rendered = tomllib.loads((dest / "agent.toml").read_text(encoding="utf-8"))
+    assert rendered["device"]["device_type"] == "iOS"
+
+
 def test_agent_config_manager_migrates_saved_config_missing_voice_defaults(tmp_path: Path):
     base = tmp_path / "base"
     base.mkdir()
@@ -1737,13 +1785,14 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     expected_forward_tools = (
         "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
         "enter_text,"
-        "search_launch_app,mouse_click,mouse_move,mouse_scroll,quick_action,"
+        "open_app,wait_for_stable_screen,mouse_click,mouse_move,mouse_scroll,wheel_nudge,quick_action,"
         "bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,"
         "bridge_notification"
     )
     assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}" in compose_text
     assert f'AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "{expected_forward_tools}"' in compose_text
     assert "AIDEN_BENCHMARK_TASK_ID" in compose_text
+    assert "ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}" in compose_text
     assert "--environment-bridge-mode" in entrypoint_text
     assert '--environment-bridge-endpoint "$ENVIRONMENT_BRIDGE_ENDPOINT"' in entrypoint_text
     assert '--environment-bridge-tools "${AIDEN_ENVIRONMENT_BRIDGE_TOOLS:-$default_forward_tools}"' in entrypoint_text

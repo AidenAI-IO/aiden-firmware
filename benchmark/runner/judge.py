@@ -13,7 +13,7 @@ from typing import Any
 from runner.models import RubricVerdict
 from runner.suite import RubricItem
 
-JUDGE_PROMPT_VERSION = "v1"
+JUDGE_PROMPT_VERSION = "v3-evidence-consistency"
 DEFAULT_JUDGE_BASE_URL = "https://openrouter.ai/api/v1"
 
 @dc.dataclass
@@ -45,6 +45,19 @@ Below are:
 For each rubric item, answer ONLY "yes" or "no" with a one-sentence reason
 grounded in the screenshots/trace/response. Do not be lenient. If evidence
 does not clearly show the required state, answer "no".
+Each rubric item's check is the complete requirement for that item. TASK GOAL
+is context only: do not add navigation paths, intermediate states, or other
+requirements that are absent from the item's check.
+Even if TASK GOAL mentions a page, path, or starting state, do not require it
+unless the current rubric item's check explicitly does.
+When rubric items describe successive evidence about a chosen target, keep the
+target identity consistent across the trace and screenshots. Do not substitute
+a different object merely because that different object changed successfully.
+For scroll outcomes, judge scrolling by the visible before/after content and
+the rubric's requested content direction, not by swipe gesture names alone.
+Treat a status-bar icon or other system indicator as valid final-state evidence
+when the rubric asks only whether a feature is enabled or disabled; do not
+require a settings page or toggle widget unless the rubric explicitly says so.
 
 RUBRIC:
 {rubric_lines}

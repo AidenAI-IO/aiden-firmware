@@ -176,7 +176,9 @@ def load_suite(path: Path) -> Suite:
                     raise SuiteValidationError(
                         f"task {tid}: expected_answer must contain exactly one option A-D, got {expected_answer!r}"
                     )
-        if answer_format is not None and answer_format != "option_letter":
+        if answer_format == "integer" and not re.fullmatch(r"\s*[-+]?\d+\s*", expected_answer or ""):
+            raise SuiteValidationError(f"task {tid}: integer expected_answer must be an integer")
+        if answer_format is not None and answer_format not in {"option_letter", "integer"}:
             raise SuiteValidationError(f"task {tid}: unsupported answer_format {answer_format!r}")
         expected_recalled_memory_ids = raw.get("expected_recalled_memory_ids", [])
         if not isinstance(expected_recalled_memory_ids, list) or not all(

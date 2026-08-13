@@ -189,6 +189,28 @@ class ADBAndroidDevice:
         finally:
             self._restore_input_method(restore_ime)
 
+    def open_app(self, app_name: str) -> None:
+        app_name = str(app_name or "").strip()
+        if not app_name:
+            raise ValueError("app is required")
+        aliases = {
+            "settings": "com.android.settings",
+            "设置": "com.android.settings",
+            "clock": "com.android.deskclock",
+            "时钟": "com.android.deskclock",
+            "contacts": "com.android.contacts",
+            "联系人": "com.android.contacts",
+            "通讯录": "com.android.contacts",
+            "chrome": "com.android.chrome",
+            "browser": "com.android.chrome",
+            "浏览器": "com.android.chrome",
+        }
+        package = aliases.get(app_name.lower(), aliases.get(app_name, app_name))
+        self._run(
+            ["shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"],
+            timeout=max(self.timeout_sec, 15),
+        )
+
     def dump_window_xml(self) -> str:
         """Return the current Android UI hierarchy XML."""
         try:
