@@ -1,3 +1,7 @@
+---
+sidebar_position: 3
+---
+
 # Tools HTTP API
 
 In every input mode, the Agent exposes Agent-owned tools that can be safely invoked via HTTP for the browser Tool Lab, external agents, or manual calls. Internal maintenance tools (such as `skill_manage`) are not exposed via HTTP.

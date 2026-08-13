@@ -1,3 +1,7 @@
+---
+sidebar_position: 2
+---
+
 # SkillOpt Architecture
 
 SkillOpt optimizes skill text by running the current skill, extracting failure

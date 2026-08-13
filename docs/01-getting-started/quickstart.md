@@ -1,3 +1,7 @@
+---
+sidebar_position: 2
+---
+
 # Newcomer Quickstart
 
 This page is the main path for anyone touching Aiden hardware for the first time. It follows the order **wire up → flash → connect Wi-Fi → configure → run → develop → upgrade → troubleshoot**, stringing the whole onboarding flow into one page. Each step covers only the key action; details are linked to the corresponding topic docs.

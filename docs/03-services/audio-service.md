@@ -1,3 +1,7 @@
+---
+sidebar_position: 5
+---
+
 # Audio Service: Audio Recording and Playback Service
 
 `audio_service` is a long-running C++ service that provides recording, playback, and volume control capabilities. The Go Agent's device voice pipeline and the `audio_volume` tool call this service through a Unix domain socket.

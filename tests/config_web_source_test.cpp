@@ -786,8 +786,8 @@ TEST_CASE("config web exposes running firmware version and ota health status sep
     CHECK(html.find("previous_version") != std::string::npos);
 }
 
-TEST_CASE("ota open sources documentation references current docs paths") {
-    const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/08-ota/OTA_OPEN_SOURCES.md";
+TEST_CASE("ota documentation index references current docs paths") {
+    const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/08-ota/README.md";
     std::ifstream doc_in(doc_path.c_str());
     REQUIRE(doc_in.good());
 
@@ -795,9 +795,9 @@ TEST_CASE("ota open sources documentation references current docs paths") {
     doc_buffer << doc_in.rdbuf();
     const std::string doc = doc_buffer.str();
 
-    CHECK(doc.find("docs/08-ota/ota-external-developers.md") != std::string::npos);
-    CHECK(doc.find("docs/08-ota/ota-quick-examples.md") != std::string::npos);
-    CHECK(doc.find("docs/08-ota/ota-release-channels.md") != std::string::npos);
+    CHECK(doc.find("ota-external-developers.md") != std::string::npos);
+    CHECK(doc.find("ota-quick-examples.md") != std::string::npos);
+    CHECK(doc.find("ota-release-channels.md") != std::string::npos);
     CHECK(doc.find("docs/ota-external-developers.md") == std::string::npos);
     CHECK(doc.find("docs/ota-quick-examples.md") == std::string::npos);
     CHECK(doc.find("docs/ota-release-channels.md") == std::string::npos);

@@ -1,44 +1,34 @@
-# Universal Swipe Interaction Design
-
-> Implementation update (2026-07): picker testing on physical devices showed
-> that generic `touch_gesture` swipes could reverse direction, fling past the
-> target, or activate editable fields below a picker. Picker interaction now
-> uses the dedicated, run-scoped `wheel_nudge` policy described below. The
-> earlier prompt-only strategy remains applicable to ordinary scrolling, not
-> wheel controls.
-
-## I. Challenges and Reality Boundaries
-
-The current architecture simulates touch via USB HID absolute coordinate mouse and obtains visual feedback via HDMI screenshots. Compared to native test frameworks (iOS XCTest, Android UIAutomator), it lacks key feedback channels:
-
-| Capability | Native Framework | Current Architecture |
-|------|----------|----------|
-| Touch event confirmation | ✅ AccessibilityEvent | ❌ No |
-| Widget value reading | ✅ AXPickerWheel | ❌ Visual recognition only |
-| Scroll boundary detection | ✅ Event callback | ❌ Image diff only |
-| Inertia control | ✅ Precise MotionEvent | ⚠️ Parameter tuning, uncertain |
-
-**Core constraints**:
-
-- iOS/Android inertial scrolling is system-level behavior; parameters vary by device/version/widget implementation (native/Flutter/React Native), cannot be precisely controlled
-- Image diff can determine "whether it moved", but **cannot reliably quantify "how much it moved"** (JPEG compression noise, animation intermediate frames, similar content interference)
-- LLM visual value reading has errors and cannot be the sole basis, but is viable as final confirmation method
-
-**Conclusion**: Ordinary scrolling avoids precise displacement claims and uses **small-step iteration + visual confirmation**. Picker wheels additionally use measured adjacent-row spacing only to bound each `wheel_nudge`; every step still requires a fresh visual observation.
-
+---
+sidebar_position: 15
 ---
 
-## II. Existing Capabilities (No Changes Needed)
+# Swipe Interaction
 
-### touch_gesture Tool
+Aiden controls phone scrolling and picker wheels through USB HID while observing the result through HDMI screenshots. Because it does not receive native accessibility or scroll events, every gesture must be verified from the visible screen.
 
-Supports `type: "swipe"` with complete parameters:
+## Constraints
+
+| Capability | Aiden behavior |
+| --- | --- |
+| Touch confirmation | Infer success from the screenshot returned after the action. |
+| Widget value reading | Read visible values from the screen; no native picker value API is available. |
+| Scroll boundary detection | Compare before/after screenshots and inspect the resulting page. |
+| Inertia control | Use bounded gestures and re-observe instead of assuming an exact displacement. |
+
+JPEG noise, animation frames, and repeated content make exact pixel displacement unreliable. Treat scrolling as an iterative observe-act-verify loop.
+
+## Tools
+
+### `touch_gesture`
+
+Use `touch_gesture` for ordinary lists, carousels, maps, and other free-scrolling surfaces:
 
 ```json
 {
   "type": "swipe",
-  "start": {"x": 500, "y": 600},
-  "end":   {"x": 500, "y": 400},
+  "coord_space": "normalized",
+  "start": {"x": 500, "y": 650},
+  "end": {"x": 500, "y": 350},
   "duration_ms": 400,
   "steps": 16,
   "hold_before_ms": 80,
@@ -46,167 +36,103 @@ Supports `type: "swipe"` with complete parameters:
 }
 ```
 
-Defaults: 700ms / 24 steps / hold_before 80ms / hold_after 0ms. Coordinate system prioritizes `normalized` (0-1000, center at `500,500`).
+Normalized coordinates use a `0..1000` range on each axis. HID action tools return a post-action screenshot after the screen settles.
 
-### screenshot Tool
+Do not use `touch_gesture`, mouse clicks, or keyboard input to change an active picker wheel. Use `wheel_nudge` for the entire picker interaction.
 
-Returns base64 JPEG + width/height. In Agent context, each visual observation is persisted as an attachment and shown to the model with a unique `screenshot_attachment_id`. HID action tools automatically return a post-action screenshot after the action settles; take a manual screenshot first when there is no suitable pre-action observation to compare.
+### `image_diff`
 
-### save_memory / recall_memory
-
-Persist cross-session memory for caching widget parameters (see Section V).
-
----
-
-## III. New Tool: image_diff
-
-**Only tool that needs to be added**, pure computation, no LLM involved, used to quickly determine if swipe was effective.
-
-### Interface
-
-```text
-Input:
-  before:    string  — screenshot_attachment_id for the pre-action observation
-  after:     string  — screenshot_attachment_id for the post-action observation
-  region:    object  — Optional, {x, y, w, h}, 0-1000 normalized coordinates, limits comparison area
-
-Copy attachment IDs exactly from the labels shown beside screenshot observations.
-The tool resolves only screenshot attachments registered in the active Agent
-context, so arbitrary paths and non-screenshot attachments are rejected. Direct
-HTTP callers may pass base64 JPEG data in `before` and `after` instead.
-
-Output:
-  changed:       bool    — diff_ratio > 0.01
-  diff_ratio:    float   — Changed pixel ratio (0-1)
-  primary_axis:  string  — "horizontal" | "vertical" | "none"
-```
-
-### Use Cases
-
-- `changed: false`: Swipe had no effect, need to increase distance or check widget position
-- `diff_ratio < 0.03`: Very small change, possibly inertia hasn't stopped, wait and retry
-- `primary_axis`: Helps determine if swipe direction matches expectation
-
-### Fields Not Output
-
-`shift_y_normalized` (quantified displacement) not output. Reason: JPEG compression introduces block artifacts that pollute row brightness curves, making cross-correlation results unreliable; giving wrong displacement amounts is more dangerous than not giving any.
-
----
-
-## IV. Swipe Strategies by Scenario
-
-### General Principles
-
-1. **Wait for screenshot confirmation after each swipe**, don't swipe blindly multiple times
-2. **Prioritize small steps** (distance ≤ 50), increase after confirming effectiveness
-3. **Use image_diff to determine "whether it moved"**, diff_ratio < 0.03 means no effect
-4. **Iteration is more reliable than precision**, don't try to get it right in one swipe
-5. **Maximum 10 retries for generic swipe calibration**, report failure after exceeding. `wheel_nudge` instead derives a per-column allowance from the initial remaining gap, with bounded per-action travel and a hard run-level ceiling.
-
-### Picker / Wheel
-
-Typical scenarios: time picker, date picker, city picker.
-
-```text
-Strategy:
-1. Screenshot, recognize picker current value and target value
-2. Read visible row ordering, selected value, target value, an estimated row spacing, and the column center
-   - Convert all wheel geometry to normalized 0-1000 coordinates before calling `wheel_nudge`; use `max(screenshot width - 1, 1)` for `column_x`, but `max(screenshot height - 1, 1)` for `center_y`, `row_spacing`, and `visible_target_y`; `center_y` is required and must be measured from the selected row in the latest screenshot; the model-facing wheel contract does not expose a coordinate-space selector
-   - For stepped cyclic wheels, `cycle_size` is the numeric modulus rather than visible row count (for example `00..59` by fives still uses `cycle_size:60`, `value_step:5`)
-   - If row ordering is unknown, omit `value_step` for the single-row probe
-3. Call `wheel_nudge` directly. Do not tap the selected row to expose keyboard/edit mode, and do not use `keyboard_text` or `keyboard_tap` to change picker values
-4. `wheel_nudge` validates that the target is reachable by `value_step`, requires a screenshot captured during the current Agent run, measures repeated text-row geometry, overrides an inaccurate row-spacing estimate when confidence is sufficient, and derives the shortest direction and row gap internally. Confident image measurement enables at most 6/4/3/2/1 measured rows for gaps of 9+/5-8/3-4/2/1; low-confidence fallback remains at 5/3/2/1
-5. When the target is an actually visible adjacent row, pass its exact `visible_target_y`; otherwise omit it and use the bounded drag path
-6. Wait for the returned screenshot and read the new centered value
-7. Continue from the new observation; if no movement occurred, retry one micro probe rather than repeating a large gesture
-8. Stop when the target is centered or the run-scoped safety policy reports no progress
-```
-
-**Key parameters**: callers provide their best `row_spacing` estimate from the latest screenshot. Runtime uses a low-latency horizontal-gradient/autocorrelation measurement when confident and falls back to that estimate otherwise. Confident measurements unlock the faster bounded profile, and wheel drags briefly dwell at the final HID coordinate before release so the phone processes the complete intended travel. Usage is committed only after a successful tool result.
-
-### List Scrolling
-
-Typical scenarios: contacts list, settings list, message list.
-
-```text
-Strategy:
-1. Screenshot, check for search box → prioritize search, avoid blind scrolling
-2. When no search:
-   - Coarse scroll: distance=350, duration_ms=500
-   - Use image_diff to confirm scroll occurred (diff_ratio > 0.05)
-   - Screenshot to determine if target is visible
-3. Target visible but needs fine-tuning: distance=50
-4. image_diff.changed=false → reached boundary, stop
-```
-
-### Horizontal Carousel / Tab Switching
-
-Typical scenarios: image browsing, tab page switching, onboarding pages.
-
-```text
-Strategy:
-- distance: 400 (don't use < 300, easily recognized as accidental touch and bounces back)
-- duration_ms: 400
-- Screenshot confirms page switch (diff_ratio usually > 0.3)
-- If switch unsuccessful, check if in correct swipeable area
-```
-
-### Map / Canvas Panning
-
-Typical scenarios: map navigation, image editing.
-
-```text
-Strategy:
-- Estimate target direction, start with distance=200
-- Screenshot to confirm if target entered viewport, iterate and adjust
-- No need for image_diff, directly judge from screenshot
-- Use distance=50 for fine positioning
-```
-
----
-
-## V. Widget Parameter Caching
-
-Implemented via existing `save_memory`, LLM autonomously decides storage timing, no new tool needed.
-
-### Storage Format
+`image_diff` compares two JPEG screenshots. Agent calls use screenshot attachment IDs from the current context; direct HTTP calls may pass Base64 JPEG data.
 
 ```json
 {
-  "type": "procedure",
-  "title": "[AppName] [Widget name] swipe parameters",
-  "content": "app: WeChat, screen: time picker, picker: hour column, effective distance: 35, hold_after_ms: 100, center position: x=500 y=380",
-  "tags": ["swipe", "picker", "calibration"],
-  "entities": ["WeChat"],
-  "priority": 70
+  "before": "<before-screenshot-attachment-id>",
+  "after": "<after-screenshot-attachment-id>",
+  "region": {"x": 100, "y": 150, "w": 800, "h": 700}
 }
 ```
 
-### Trigger Timing
+Output fields:
 
-- **Store**: After first successful operation of a swipe widget, actively save_memory
-- **Retrieve**: When encountering similar widget, first recall_memory to check for cached parameters; if yes, use directly, skip exploration phase
+| Field | Meaning |
+| --- | --- |
+| `changed` | `true` when more than 1% of compared pixels changed significantly. |
+| `diff_ratio` | Fraction of compared pixels that changed, from `0` to `1`. |
+| `primary_axis` | Dominant change axis: `horizontal`, `vertical`, or `none`. |
 
----
+Use a region to exclude static navigation bars or overlays. A `diff_ratio` below about `0.03` is weak evidence of movement and should be followed by another visual check.
 
-## VI. Things Not Done
+`image_diff` deliberately does not report exact scroll distance. The screenshot artifacts that are acceptable for change detection are not reliable enough for precise displacement measurement.
 
-| Solution | Reason for Abandoning |
-|------|----------|
-| Image diff quantify displacement (shift_y_normalized) | JPEG noise + animation frames + similar content, unreliable results |
-| Adaptive step calibration tool | LLM + save_memory already sufficient, no need for dedicated tool |
-| anti_overshoot reverse micro-movement | Empirical parameters, large effect differences across devices/versions |
-| Prompt-only picker control | Superseded after physical-device testing; dedicated `wheel_nudge` prevents generic touch fallbacks, bounds travel, and validates observed direction/progress |
-| OCR tool (current phase) | Not needed when LLM visual value reading accuracy > 90%, can add as needed later |
+### `wheel_nudge`
 
----
+`wheel_nudge` performs one bounded interaction inside a visible numeric picker column. It requires a fresh screenshot from the current Agent run.
 
-## VII. Engineering Change List
+```json
+{
+  "picker_id": "alarm-create",
+  "column_x": 393,
+  "current_value": 10,
+  "target_value": 16,
+  "cycle_size": 24,
+  "cycle_start": 0,
+  "row_spacing": 39,
+  "value_step": 1,
+  "center_y": 253
+}
+```
 
-| File | Change Type | Description |
-|------|----------|------|
-| `src/agent/internal/agent/tools_image_diff.go` | New | ImageDiffTool implementation |
-| `src/agent/internal/agent/tools.go` | Modify | Register image_diff |
-| `src/agent/internal/agent/tools_hid.go` | Modify | Add bounded `wheel_nudge` picker interaction |
-| `src/agent/internal/agent/wheel_gesture_guard.go` | New | Add run-scoped wheel progress, budget, and generic-input policy |
-| `src/agent/internal/agent/prompt.go` | Modify | Add swipe strategy guidance |
+All geometry uses normalized `0..1000` coordinates:
+
+- Normalize `column_x` using screenshot width.
+- Normalize `center_y`, `row_spacing`, and `visible_target_y` using screenshot height.
+- `cycle_size` is the numeric modulus, not the number of visible rows. A `00..59` minute wheel stepping by five still uses `cycle_size: 60` and `value_step: 5`.
+- `value_step` is the signed numeric change represented by one visible row downward.
+- Use `visible_target_y` only when the target is visibly one adjacent row above or below the selected row.
+
+The runtime derives the shortest reachable row gap and gesture direction. It also measures repeated row geometry from the latest screenshot and may replace an inaccurate `row_spacing` estimate when confidence is sufficient.
+
+## Picker Workflow
+
+1. Capture a screenshot and identify the picker, active column, selected value, target value, and selected-row center.
+2. Read the visible row order to determine `value_step`. If the order is genuinely unknown, omit `value_step` for one probe.
+3. Call `wheel_nudge` with the latest values and geometry.
+4. Read the returned screenshot and update `current_value` from what is visibly centered.
+5. Continue from the new observation until the target is centered or the safety policy stops the run.
+
+The run-scoped safety policy:
+
+- requires fresh screenshot evidence;
+- limits per-column and total wheel actions;
+- checks that observed movement agrees with the declared `value_step`;
+- blocks generic taps or drags on a picker column once `wheel_nudge` owns it;
+- stops repeated attempts that make no progress.
+
+## Ordinary Scrolling
+
+### Lists
+
+1. Prefer a visible search field over blind scrolling.
+2. Use a moderate swipe for exploration.
+3. Inspect the returned screenshot or use `image_diff` on the scrollable region.
+4. Switch to a shorter swipe when the target approaches the viewport.
+5. Stop when the screen no longer changes or a visible boundary is reached.
+
+### Horizontal carousels
+
+Swipe within the carousel rather than across global navigation or system gesture areas. Confirm the page or selected item changed before continuing.
+
+### Maps and canvases
+
+Use short pans, re-observe the viewport, and adjust direction iteratively. Screenshot interpretation is more useful than global image-diff ratios for these surfaces.
+
+## Reusing Stable Parameters
+
+When a widget has been operated successfully across repeated observations, the Agent can save a procedure memory containing the app, page, picker location, row spacing, and effective interaction pattern. Recalled values are hints only: current screenshot geometry always takes precedence.
+
+## Operational Boundaries
+
+- Visual reading can misidentify similar picker values; verify the centered result.
+- Exact scroll distance is not available.
+- Layouts can change across device size, language, OS version, and app version.
+- A successful gesture does not prove the task succeeded; verify the resulting page or value separately.

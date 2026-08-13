@@ -1,3 +1,7 @@
+---
+sidebar_position: 3
+---
+
 # WeTTY Browser Terminal
 
 The firmware image integrates WeTTY as an optional browser terminal for board-side maintenance.

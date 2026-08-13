@@ -1,3 +1,7 @@
+---
+sidebar_position: 6
+---
+
 # BLE Service: Pairing and iOS System Notifications
 
 `ble_service` owns Aiden's Bluetooth Low Energy integration. It uses BlueZ on

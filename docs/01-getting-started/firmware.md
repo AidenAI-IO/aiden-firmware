@@ -1,3 +1,7 @@
+---
+sidebar_position: 4
+---
+
 # Firmware Build and Flashing
 
 ## Getting Prebuilt Firmware

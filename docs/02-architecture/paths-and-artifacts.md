@@ -1,3 +1,7 @@
+---
+sidebar_position: 4
+---
+
 # Paths, Artifacts, and Configuration Quick Reference
 
 ## Build Artifacts

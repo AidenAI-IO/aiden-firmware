@@ -1,3 +1,7 @@
+---
+sidebar_position: 1
+---
+
 # Agent: AI Assistant Service
 
 `agent` is the core Go service that provides the Agent Web UI, HTTP APIs, and optional device-side voice interaction. It orchestrates model calls, tool execution (HID control, screenshots, audio playback), and conversation sessions.

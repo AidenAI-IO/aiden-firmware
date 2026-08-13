@@ -1,3 +1,7 @@
+---
+sidebar_position: 2
+---
+
 # Example Programs
 
 CMake builds multiple `example_*` executables to verify SDK and device capabilities.

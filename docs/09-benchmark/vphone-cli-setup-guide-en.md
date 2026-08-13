@@ -1,3 +1,7 @@
+---
+sidebar_position: 3
+---
+
 # vphone-cli Setup and Usage Guide
 
 Project: https://github.com/Lakr233/vphone-cli
@@ -265,14 +269,14 @@ When exiting, prefer the project window's normal exit method or shut down the vi
 
 Dropbear currently supports ECDSA. Create a dedicated ECDSA P-521 key for `vphone` so that future SSH logins do not require a password.
 
-Run the following command on `mac-black`:
+Run the following command on the host Mac:
 
 ```bash
 ssh-keygen \
   -t ecdsa \
   -b 521 \
   -f ~/.ssh/vphone_ecdsa \
-  -C "miao@vphone"
+  -C "vphone-benchmark"
 ```
 
 Check the virtual machine's IP address.
@@ -282,8 +286,6 @@ Obtain the IP address from the top of the iOS simulator interface. For example:
 ```text
 192.168.64.7
 ```
-
-[Image]
 
 Then install the public key. Replace the IP address in the command with the correct address:
 
