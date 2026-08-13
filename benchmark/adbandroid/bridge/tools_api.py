@@ -406,7 +406,7 @@ class ADBToolsAPIHandler:
 
     def _submit_tool_call(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         """Dispatch tool call to the ADB device."""
-        unknown = _unknown_coordinate_tool_fields(tool_name, tool_input)
+        unknown = _unknown_tool_fields(tool_name, tool_input)
         if unknown:
             return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
         if tool_name == "screenshot":
@@ -1072,7 +1072,7 @@ def _normalized_point_arg(
     return point
 
 
-def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
     allowed = {
         "touch_gesture": {
             "type", "point", "start", "end", "x", "y", "start_x", "start_y",
@@ -1081,6 +1081,7 @@ def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) 
         },
         "mouse_click": {"x", "y", "button"},
         "mouse_move": {"x", "y"},
+        "quick_action": {"action", "list", "alternative", "alternative_index"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)
 

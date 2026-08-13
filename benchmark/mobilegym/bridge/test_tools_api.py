@@ -434,7 +434,7 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
         assert state.env.step_count == no_action_count
 
 
-def test_invoke_quick_action_ignores_legacy_platform_override(bridge_server):
+def test_invoke_quick_action_rejects_legacy_platform_argument(bridge_server):
     _server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-legacy-platform"
 
@@ -449,8 +449,8 @@ def test_invoke_quick_action_ignores_legacy_platform_override(bridge_server):
         assert resp.status == 200
         data = json.loads(resp.read().decode())
 
-    assert data["is_error"] is False
-    assert action_to_dict(state.env.last_action)["action_type"] == "HOME"
+    assert data["is_error"] is True
+    assert "unknown fields" in data["output"]
 
 
 def test_invoke_keyboard_tap_keycode_app_switch_uses_swipe(bridge_server):

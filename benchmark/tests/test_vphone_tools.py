@@ -111,9 +111,9 @@ def test_keyboard_tools_and_send_are_unsupported_without_host_capability():
     try:
         _, body = invoke(base_url, "keyboard_text", {"text": "hello"})
         assert body["is_error"] is True and body["error"] == "unsupported"
-        _, body = invoke(base_url, "quick_action", {"platform": "ios", "action": "send"})
+        _, body = invoke(base_url, "quick_action", {"action": "send"})
         assert body["is_error"] is True and body["error"] == "unsupported"
-        _, body = invoke(base_url, "quick_action", {"platform": "ios", "list": True})
+        _, body = invoke(base_url, "quick_action", {"list": True})
         actions = {item["id"]: item for item in json.loads(body["output"])["actions"]}
         assert actions["send"]["status"] == "unsupported"
     finally:
@@ -177,18 +177,18 @@ def test_quick_actions(bridge):
     assert json.loads(body["output"])["source_width"] == 1290
 
 
-def test_quick_action_ignores_legacy_platform_override(bridge):
-    _, device, base_url = bridge
+def test_quick_action_rejects_legacy_platform_argument(bridge):
+    _, _, base_url = bridge
     status, body = invoke(base_url, "quick_action", {"platform": "android", "action": "home"})
-    assert status == 200 and body["is_error"] is False
-    assert ("reset_home",) in device.calls
+    assert status == 200 and body["is_error"] is True
+    assert "unknown fields" in body["output"]
 
 
 def test_quick_action_catalog_does_not_extend_beyond_supported_actions(bridge):
     # The bridge must not invent capabilities the agent's own quick_action
     # catalog does not have; open_url used to be advertised here and was removed.
     _, _, base_url = bridge
-    _, body = invoke(base_url, "quick_action", {"platform": "ios", "list": True})
+    _, body = invoke(base_url, "quick_action", {"list": True})
     actions = {item["id"]: item for item in json.loads(body["output"])["actions"]}
     assert actions["open_settings"]["status"] == "active"
     assert "open_url" not in actions
@@ -196,16 +196,16 @@ def test_quick_action_catalog_does_not_extend_beyond_supported_actions(bridge):
     status, body = invoke(
         base_url,
         "quick_action",
-        {"platform": "ios", "action": "open_url", "url": "https://www.baidu.com"},
+        {"action": "open_url", "url": "https://www.baidu.com"},
     )
     assert status == 200 and body["is_error"] is True
-    assert "unsupported quick_action" in body["output"]
+    assert "unknown fields" in body["output"]
 
 
 def test_quick_action_panels_and_app_switcher(bridge):
     _, device, base_url = bridge
     for action in ("notification_center", "control_center", "app_switch", "dismiss_panel"):
-        status, body = invoke(base_url, "quick_action", {"platform": "ios", "action": action})
+        status, body = invoke(base_url, "quick_action", {"action": action})
         assert status == 200 and body["is_error"] is False
     swipes = [call for call in device.calls if call[0] == "swipe"]
     assert len(swipes) == 4

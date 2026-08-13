@@ -110,9 +110,9 @@ func TestQuickActionsSuggestUnknownAction(t *testing.T) {
 	}
 }
 
-func TestQuickActionListForPlatform(t *testing.T) {
-	tool := &QuickActionTool{}
-	out, err := tool.Call(context.Background(), `{"list":true,"platform":"ios"}`)
+func TestQuickActionListForRuntimePlatform(t *testing.T) {
+	tool := &QuickActionTool{deviceTypeFn: func() string { return "iOS" }}
+	out, err := tool.Call(context.Background(), `{"list":true}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -142,8 +142,8 @@ func TestQuickActionListForPlatform(t *testing.T) {
 }
 
 func TestQuickActionListOnlyReturnsActivePlatformActions(t *testing.T) {
-	tool := &QuickActionTool{}
-	out, err := tool.Call(context.Background(), `{"action":"list","platform":"android"}`)
+	tool := &QuickActionTool{deviceTypeFn: func() string { return "Android" }}
+	out, err := tool.Call(context.Background(), `{"action":"list"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -167,8 +167,8 @@ func TestQuickActionListOnlyReturnsActivePlatformActions(t *testing.T) {
 }
 
 func TestQuickActionListActionAlias(t *testing.T) {
-	tool := &QuickActionTool{}
-	out, err := tool.Call(context.Background(), `{"action":"list","platform":"android"}`)
+	tool := &QuickActionTool{deviceTypeFn: func() string { return "Android" }}
+	out, err := tool.Call(context.Background(), `{"action":"list"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestQuickActionListActionAlias(t *testing.T) {
 func TestQuickActionUsesRuntimeDeviceTypeProvider(t *testing.T) {
 	tool := &QuickActionTool{}
 	tool.SetDeviceTypeFunc(func() string { return "Android" })
-	out, err := tool.Call(context.Background(), `{"action":"list","platform":"ios"}`)
+	out, err := tool.Call(context.Background(), `{"action":"list"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -205,6 +205,23 @@ func TestQuickActionUsesRuntimeDeviceTypeProvider(t *testing.T) {
 	}
 	if !payload.OK || payload.Platform != "android" || len(payload.Actions) == 0 {
 		t.Fatalf("expected Android list response from runtime provider, got %s", out)
+	}
+}
+
+func TestQuickActionRejectsLegacyPlatformArgument(t *testing.T) {
+	tool := &QuickActionTool{}
+	tool.SetDeviceTypeFunc(func() string { return "Android" })
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{"action":"list","platform":"ios"}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	te := ToolErrorFromContext(ctx)
+	if te == nil || te.Code != CodeInvalidArguments {
+		t.Fatalf("expected invalid_arguments; got %+v (output %q)", te, out)
+	}
+	if !strings.Contains(te.Message, `unknown field "platform"`) {
+		t.Fatalf("unexpected message: %s", te.Message)
 	}
 }
 
@@ -254,9 +271,9 @@ func TestQuickActionPlaybookLivesInSkill(t *testing.T) {
 }
 
 func TestQuickActionReservedBinding(t *testing.T) {
-	tool := &QuickActionTool{}
+	tool := &QuickActionTool{deviceTypeFn: func() string { return "iOS" }}
 	ctx, _ := WithToolError(context.Background())
-	out, err := tool.Call(ctx, `{"action":"app_drawer","platform":"ios"}`)
+	out, err := tool.Call(ctx, `{"action":"app_drawer"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -278,12 +295,13 @@ func TestQuickActionExecutesDelegatedTouchGesture(t *testing.T) {
 
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
+		deviceTypeFn: func() string { return "iOS" },
 		touch: &TouchGestureTool{
 			pc:     testPointerController(dev, &pointerState{}),
 			screen: &screen.ScreenState{},
 		},
 	}
-	out, err := tool.Call(context.Background(), `{"action":"back","platform":"ios"}`)
+	out, err := tool.Call(context.Background(), `{"action":"back"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -301,9 +319,10 @@ func TestQuickActionExecutesDelegatedKeyboardTap(t *testing.T) {
 
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
-		keyboard: &KeyboardTapTool{dev: dev},
+		keyboard:     &KeyboardTapTool{dev: dev},
+		deviceTypeFn: func() string { return "macOS" },
 	}
-	out, err := tool.Call(context.Background(), `{"action":"copy","platform":"mac"}`)
+	out, err := tool.Call(context.Background(), `{"action":"copy"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -325,9 +344,10 @@ func TestQuickActionSpotlightSearchClearsSearchField(t *testing.T) {
 
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
-		keyboard: &KeyboardTapTool{dev: dev},
+		keyboard:     &KeyboardTapTool{dev: dev},
+		deviceTypeFn: func() string { return "iOS" },
 	}
-	out, err := tool.Call(context.Background(), `{"action":"spotlight_search","platform":"ios"}`)
+	out, err := tool.Call(context.Background(), `{"action":"spotlight_search"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -361,10 +381,11 @@ func TestQuickActionSpotlightSearchBatchesIOSModifierIsolation(t *testing.T) {
 	controller.keyboardDev = dev
 	tool := &QuickActionTool{
 		keyboard:             &KeyboardTapTool{dev: dev, iosKeyboardIsolation: controller},
+		deviceTypeFn:         func() string { return "iOS" },
 		iosKeyboardIsolation: controller,
 	}
 
-	out, err := tool.Call(context.Background(), `{"action":"spotlight_search","platform":"ios"}`)
+	out, err := tool.Call(context.Background(), `{"action":"spotlight_search"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -389,10 +410,11 @@ func TestQuickActionRestoresIOSPointerWhenCanceledMidSequence(t *testing.T) {
 	controller.keyboardDev = dev
 	tool := &QuickActionTool{
 		keyboard:             &KeyboardTapTool{dev: dev, iosKeyboardIsolation: controller},
+		deviceTypeFn:         func() string { return "iOS" },
 		iosKeyboardIsolation: controller,
 	}
 
-	_, err := tool.Call(context.Background(), `{"action":"spotlight_search","platform":"ios"}`)
+	_, err := tool.Call(context.Background(), `{"action":"spotlight_search"}`)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Call error = %v, want context canceled", err)
 	}
@@ -441,9 +463,10 @@ func TestQuickActionDeleteBackwardUsesBackspace(t *testing.T) {
 
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
-		keyboard: &KeyboardTapTool{dev: dev},
+		keyboard:     &KeyboardTapTool{dev: dev},
+		deviceTypeFn: func() string { return "macOS" },
 	}
-	out, err := tool.Call(context.Background(), `{"action":"delete_backward","platform":"mac"}`)
+	out, err := tool.Call(context.Background(), `{"action":"delete_backward"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -468,13 +491,14 @@ func TestQuickActionAlternativeBinding(t *testing.T) {
 
 	dev, _ := newTestHIDDevice(t)
 	tool := &QuickActionTool{
-		keyboard: &KeyboardTapTool{dev: dev},
+		keyboard:     &KeyboardTapTool{dev: dev},
+		deviceTypeFn: func() string { return "Android" },
 		touch: &TouchGestureTool{
 			pc:     testPointerController(dev, &pointerState{}),
 			screen: &screen.ScreenState{},
 		},
 	}
-	out, err := tool.Call(context.Background(), `{"action":"back","platform":"android","alternative":true}`)
+	out, err := tool.Call(context.Background(), `{"action":"back","alternative":true}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -488,9 +512,9 @@ func TestQuickActionAlternativeBinding(t *testing.T) {
 }
 
 func TestQuickActionUnknownAction(t *testing.T) {
-	tool := &QuickActionTool{}
+	tool := &QuickActionTool{deviceTypeFn: func() string { return "iOS" }}
 	ctx, _ := WithToolError(context.Background())
-	out, err := tool.Call(ctx, `{"action":"browser backward","platform":"ios"}`)
+	out, err := tool.Call(ctx, `{"action":"browser backward"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -514,7 +538,7 @@ func TestQuickActionUnknownAction(t *testing.T) {
 // quick_actions.json bindings, so the action the model picked must reach the
 // bridge untouched.
 func TestQuickActionForwardsInputToEnvironmentBridge(t *testing.T) {
-	input := `{"action":"app_switch","platform":"ios"}`
+	input := `{"action":"app_switch"}`
 
 	var gotBody string
 	bridge := NewEnvironmentBridgeClient("http://bridge.local")
@@ -552,8 +576,8 @@ func TestQuickActionForwardsInputToEnvironmentBridge(t *testing.T) {
 	if err := json.Unmarshal([]byte(forwarded.Input), &args); err != nil {
 		t.Fatalf("forwarded tool input is not JSON (%q): %v", forwarded.Input, err)
 	}
-	if args["action"] != "app_switch" || args["platform"] != "ios" {
-		t.Fatalf("action/platform lost in forwarding: %s", forwarded.Input)
+	if args["action"] != "app_switch" || len(args) != 1 {
+		t.Fatalf("quick_action input changed in forwarding: %s", forwarded.Input)
 	}
 }
 

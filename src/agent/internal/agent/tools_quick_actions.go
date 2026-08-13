@@ -400,7 +400,6 @@ func (t *QuickActionTool) schemaPlatform() string {
 
 type quickActionArgs struct {
 	Action       string `json:"action"`
-	Platform     string `json:"platform"`
 	List         bool   `json:"list"`
 	Alternative  bool   `json:"alternative"`
 	AlternativeN int    `json:"alternative_index"`
@@ -428,7 +427,7 @@ func (t *QuickActionTool) call(ctx context.Context, input string) (string, error
 		return toolErrorString(te), nil
 	}
 	if strings.HasPrefix(trimmed, "{") {
-		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+		if err := decodeStrictJSONObject(trimmed, &args); err != nil {
 			te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v", err))
 			SetToolError(ctx, te)
 			return toolErrorString(te), nil
@@ -437,11 +436,9 @@ func (t *QuickActionTool) call(ctx context.Context, input string) (string, error
 		args.Action = trimmed
 	}
 
-	platformInput := args.Platform
+	platformInput := ""
 	if t != nil && t.deviceTypeFn != nil {
-		if runtimePlatform := strings.TrimSpace(quickActionPlatformFromDeviceType(t.deviceTypeFn())); runtimePlatform != "" {
-			platformInput = runtimePlatform
-		}
+		platformInput = strings.TrimSpace(quickActionPlatformFromDeviceType(t.deviceTypeFn()))
 	}
 	platform, err := normalizeQuickActionPlatform(platformInput)
 	if err != nil {
