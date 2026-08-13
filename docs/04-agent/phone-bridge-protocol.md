@@ -1,3 +1,7 @@
+---
+sidebar_position: 12
+---
+
 # Phone Bridge Protocol Contract
 
 **Version**: 1.2
@@ -633,7 +637,7 @@ Use standard libraries for parsing (iOS `ISO8601DateFormatter`, Android `Instant
   <key>NSContactsUsageDescription</key>
   <string>Used to query and manage contacts</string>
   ```
-- **Notification**: Need to request user authorization via `UNUserNotificationCenter.requestAuthorization`.
+- **Notification**: Request user authorization through `UNUserNotificationCenter.current().requestAuthorization(...)` before scheduling notifications.
 
 ### Android
 

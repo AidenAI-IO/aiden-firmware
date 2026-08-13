@@ -1,3 +1,7 @@
+---
+sidebar_position: 2
+---
+
 # Audio Volume Initialization and Adjustment
 
 `scripts/setup_audio_volume.sh` is used to set audio output mixer volumes to maximum on Luckfox Pico Zero.

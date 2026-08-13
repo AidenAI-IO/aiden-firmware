@@ -1,4 +1,8 @@
-# Benchmark Architecture Design
+---
+sidebar_position: 2
+---
+
+# Benchmark Architecture
 
 Benchmark uses an HTTP API-driven execution model plus offline scoring. Task
 execution happens through the real agent and an optional environment bridge;

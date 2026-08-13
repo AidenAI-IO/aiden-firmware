@@ -1,3 +1,7 @@
+---
+sidebar_position: 3
+---
+
 # Image Processing Tools
 
 The project provides `libaiden_image.a` and `image_process` CLI for basic screenshot and image processing.

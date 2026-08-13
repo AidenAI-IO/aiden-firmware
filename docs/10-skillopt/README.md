@@ -1,6 +1,11 @@
+---
+sidebar_label: Overview
+sidebar_position: 0
+---
+
 # SkillOpt
 
-SkillOpt is an internal developer workflow for improving agent `SKILL.md`
+SkillOpt is a developer workflow for improving Agent `SKILL.md`
 files through repeated rollout, reflection, patching, and held-out validation.
 It optimizes skill text, not model weights or benchmark suite definitions.
 

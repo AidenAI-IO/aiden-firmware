@@ -1,3 +1,7 @@
+---
+sidebar_position: 2
+---
+
 # Newcomer Quickstart
 
 This page is the main path for anyone touching Aiden hardware for the first time. It follows the order **wire up → flash → connect Wi-Fi → configure → run → develop → upgrade → troubleshoot**, stringing the whole onboarding flow into one page. Each step covers only the key action; details are linked to the corresponding topic docs.
@@ -102,7 +106,7 @@ To control an iPhone via USB HID, enable these settings on the target device:
 1. **Settings > Accessibility > Touch > AssistiveTouch** - Required for HID touch/mouse control
 2. **Show Onscreen Keyboard** (on the AssistiveTouch page) - Recommended for stable keyboard input
 
-See [Hardware & Wiring](hardware.md#ios-device-requirements) for details.
+See [Hardware & Wiring](hardware.md#ios-hid-prerequisites) for details.
 
 ### Verification
 

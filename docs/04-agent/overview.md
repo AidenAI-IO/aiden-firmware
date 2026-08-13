@@ -1,3 +1,7 @@
+---
+sidebar_position: 1
+---
+
 # Agent Overview
 
 The Aiden Go Agent is located in `src/agent/` and is built on `github.com/tmc/langchaingo`. It serves as both a long-running daemon and the device-side tool control plane.

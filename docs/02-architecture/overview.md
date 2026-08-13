@@ -1,3 +1,7 @@
+---
+sidebar_position: 1
+---
+
 # System Architecture Overview
 
 Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID control, and LLM Agent into an automated system that runs on-device.
