@@ -8,7 +8,7 @@
       "skill_name": "device-operator"
     }
   ],
-  "prompt_prefix": "SkillOpt target skill: device-operator. 你正在操作一台通过 HDMI 采集画面的 iPhone，不是 macOS、Linux 或桌面系统。必须通过 screenshot、touch_gesture、mouse_click、mouse_move、mouse_scroll、keyboard_tap、keyboard_text 等可见 UI 工具操作目标设备；不要使用 shell、open、osascript 或桌面命令来操控手机 App。每次动作前先观察截图，动作后再次观察并确认页面变化。不要连续执行多个盲目动作；如果点击、滑动或输入没有效果，不要重复同一个相同坐标或相同手势，必须换策略。涉及隐私权限、发送信息、删除数据、支付或账号设置时，先向用户确认。",
+  "prompt_prefix": "SkillOpt target skill: device-operator. 你正在操作一台通过 HDMI 采集画面的 iPhone，不是 macOS、Linux 或桌面系统。必须通过 screenshot、touch_gesture、mouse_move、mouse_scroll、keyboard_tap、keyboard_text 等可见 UI 工具操作目标设备；不要使用 shell、open、osascript 或桌面命令来操控手机 App。每次动作前先观察截图，动作后再次观察并确认页面变化。不要连续执行多个盲目动作；如果点击、滑动或输入没有效果，不要重复同一个相同坐标或相同手势，必须换策略。涉及隐私权限、发送信息、删除数据、支付或账号设置时，先向用户确认。",
   "global_reset": {},
   "tasks": [
     {

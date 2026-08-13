@@ -8,15 +8,15 @@
       "category": "perception",
       "input_screenshot": "screenshots/home_iphone.jpg",
       "prompt": "请打开设置 app。",
-      "description_for_judge": "Agent should identify the Settings (设置) app icon on the iPhone home screen and call touch_gesture or mouse_click with coordinates targeting it.",
+      "description_for_judge": "Agent should identify the Settings (设置) app icon on the iPhone home screen and call touch_gesture with coordinates targeting it.",
       "rubric": [
         {
           "id": "called_click_tool",
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call."
+          "check": "The tool trace contains at least one touch_gesture call."
         },
         {
           "id": "does_not_use_0_1_coordinates",
-          "check": "No touch_gesture, mouse_click, or mouse_move call uses 0-1 style normalized coordinates. Coordinates must use the 0-1000 convention, not x/y values between 0 and 1."
+          "check": "No touch_gesture or mouse_move call uses 0-1 style normalized coordinates. Coordinates must use the 0-1000 convention, not x/y values between 0 and 1."
         },
         {
           "id": "click_targets_settings",
@@ -44,7 +44,7 @@
       "prompt": "关闭广告",
       "rubric": [
         {
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "check": "The tool trace contains at least one touch_gesture call.",
           "id": "called_click_tool"
         },
         {
@@ -67,7 +67,7 @@
       "prompt": "打开右上角的聊天详情",
       "rubric": [
         {
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "check": "The tool trace contains at least one touch_gesture call.",
           "id": "called_click_tool"
         },
         {
@@ -90,7 +90,7 @@
       "prompt": "点击刷新页面按钮",
       "rubric": [
         {
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "check": "The tool trace contains at least one touch_gesture call.",
           "id": "called_click_tool"
         },
         {
@@ -113,7 +113,7 @@
       "prompt": "点击“从相册选择”",
       "rubric": [
         {
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "check": "The tool trace contains at least one touch_gesture call.",
           "id": "called_click_tool"
         },
         {
@@ -136,7 +136,7 @@
       "prompt": "点击查找",
       "rubric": [
         {
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "check": "The tool trace contains at least one touch_gesture call.",
           "id": "called_click_tool"
         },
         {
@@ -159,7 +159,7 @@
       "prompt": "点击屏幕右上角的扫一扫图标。",
       "rubric": [
         {
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "check": "The tool trace contains at least one touch_gesture call.",
           "id": "called_click_tool"
         },
         {
@@ -182,7 +182,7 @@
       "prompt": "关闭广告",
       "rubric": [
         {
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "check": "The tool trace contains at least one touch_gesture call.",
           "id": "called_click_tool"
         },
         {
@@ -205,7 +205,7 @@
       "prompt": "点击屏幕右上角的更多聊天详情按钮",
       "rubric": [
         {
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "check": "The tool trace contains at least one touch_gesture call.",
           "id": "called_click_tool"
         },
         {
@@ -228,7 +228,7 @@
       "prompt": "选中第一幅图",
       "rubric": [
         {
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "check": "The tool trace contains at least one touch_gesture call.",
           "id": "called_click_tool"
         },
         {
@@ -251,7 +251,7 @@
       "prompt": "点击跳过广告",
       "rubric": [
         {
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "check": "The tool trace contains at least one touch_gesture call.",
           "id": "called_click_tool"
         },
         {
@@ -274,7 +274,7 @@
       "prompt": "关闭通知弹框",
       "rubric": [
         {
-          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "check": "The tool trace contains at least one touch_gesture call.",
           "id": "called_click_tool"
         },
         {

@@ -891,11 +891,11 @@ def test_notes_entry_policy_suite_covers_three_screen_states():
     assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in open_task.prompt
 
     icon_task = tasks["ios_pip_notes_icon_visible"]
-    assert "mouse_click" in icon_task.hard_assertions.required_tools
+    assert "touch_gesture" in icon_task.hard_assertions.required_tools
     assert "search_launch_app" in icon_task.hard_assertions.forbidden_tools
     assert icon_task.hard_assertions.required_tool_calls[1].input_contains == {
-        "x": 180,
-        "y": 310,
+        "type": "tap",
+        "point": {"x": 180, "y": 310},
     }
     assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in icon_task.prompt
 
