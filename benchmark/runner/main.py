@@ -314,18 +314,44 @@ def _task_route_id(args: argparse.Namespace, suite: Suite, task_id: str, attempt
     return route_id
 
 
-def _resolve_target_platform(args: argparse.Namespace) -> str:
-    raw = str(getattr(args, "target_platform", "") or "").strip().lower()
-    if raw and raw != "auto":
-        return raw
+def _resolve_target_platform(args: argparse.Namespace, *, required: bool = False) -> str:
+    requested = str(getattr(args, "target_platform", "") or "").strip().lower()
+    explicit = requested if requested and requested != "auto" else ""
     environment_url = str(getattr(args, "environment_url", "") or "").strip()
     if not environment_url:
-        return ""
+        return explicit
     try:
-        health = _read_environment_health(environment_url)
+        platform = platform_from_environment_health(_read_environment_health(environment_url))
     except Exception:
-        return ""
-    return platform_from_environment_health(health)
+        if required:
+            raise
+        return explicit
+    if not platform:
+        if required:
+            raise ValueError("environment bridge health did not report a supported platform")
+        return explicit
+    if required and explicit and explicit != platform:
+        raise ValueError(
+            f"target platform {explicit!r} does not match environment platform {platform!r}"
+        )
+    return explicit or platform
+
+
+def _mock_environment_platform(suite: Suite) -> str:
+    platforms: set[str] = set()
+    for task in suite.tasks:
+        spec = _task_mock_environment(suite, task)
+        if spec is None:
+            continue
+        platform = str(spec.phone_bridge.get("platform") or "").strip().lower()
+        if not platform:
+            raise ValueError(f"mock environment for task {task.id!r} must declare a phone platform")
+        if platform not in VALID_TARGET_PLATFORMS:
+            raise ValueError(f"unsupported mock environment platform: {platform!r}")
+        platforms.add(platform)
+    if len(platforms) != 1:
+        raise ValueError("mock environment suite must declare exactly one phone platform")
+    return next(iter(platforms))
 
 
 def _read_environment_health(environment_url: str) -> dict:
@@ -670,7 +696,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"Error: invalid --run-id: {run_id!r}", file=sys.stderr)
         return 2
     run_dir = Path(args.out) / run_id
-    target_platform = _resolve_target_platform(args)
+    if args.auto_agent_setup and args.max_concurrency < 0:
+        print("Error: max-concurrency must be non-negative", file=sys.stderr)
+        return 2
+    try:
+        target_platform = _resolve_target_platform(args, required=args.auto_agent_setup)
+    except Exception as exc:
+        print(f"Error: failed to resolve target platform: {exc}", file=sys.stderr)
+        return 2
     if _suite_has_mock_environment(suite) and not args.auto_agent_setup:
         print(
             "Error: suites or tasks with mock_environment require --auto-agent-setup so tool calls "
@@ -678,6 +711,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.auto_agent_setup and _suite_has_mock_environment(suite):
+        try:
+            mock_platform = _mock_environment_platform(suite)
+            requested_platform = str(args.target_platform or "").strip().lower()
+            if requested_platform and requested_platform != "auto" and requested_platform != mock_platform:
+                raise ValueError(
+                    f"target platform {requested_platform!r} does not match mock environment platform {mock_platform!r}"
+                )
+            target_platform = mock_platform
+        except ValueError as exc:
+            print(f"Error: failed to resolve target platform: {exc}", file=sys.stderr)
+            return 2
     if args.auto_agent_setup:
         return _cmd_run_auto_agent_setup(args, suite, selected_task_ids, target_platform, run_id, run_dir)
     if args.repeats is not None and args.repeats <= 0:

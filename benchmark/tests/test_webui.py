@@ -249,6 +249,58 @@ def test_prepare_run_config_adds_missing_device_section(tmp_path: Path):
     assert config["device"]["device_type"] == "Android"
 
 
+@pytest.mark.parametrize(
+    "agent_config",
+    [
+        '[device] # target settings\ndevice_type = "iOS"\nbackend = "hid"\n',
+        '["device"]\ndevice_type = "iOS"\nbackend = "hid"\n',
+        'device.device_type = "iOS"\ndevice.backend = "hid"\n',
+    ],
+)
+def test_prepare_run_config_updates_valid_device_table_variants(
+    tmp_path: Path, agent_config: str
+):
+    base = tmp_path / "base"
+    base.mkdir()
+    dest = tmp_path / "dest"
+
+    webui.prepare_run_config(
+        base,
+        dest,
+        agent_config_text=agent_config,
+        device_type="Android",
+    )
+
+    config = tomllib.loads((dest / "agent.toml").read_text(encoding="utf-8"))
+    assert config["device"]["device_type"] == "Android"
+    assert config["device"]["backend"] == "hid"
+
+
+def test_prepare_run_config_does_not_treat_nested_dotted_key_as_root_device(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    dest = tmp_path / "dest"
+    agent_config = (
+        '[profile]\n'
+        'device.device_type = "iOS"\n'
+        '\n'
+        '[device]\n'
+        'device_type = "iOS"\n'
+        'backend = "hid"\n'
+    )
+
+    webui.prepare_run_config(
+        base,
+        dest,
+        agent_config_text=agent_config,
+        device_type="Android",
+    )
+
+    config = tomllib.loads((dest / "agent.toml").read_text(encoding="utf-8"))
+    assert config["profile"]["device"]["device_type"] == "iOS"
+    assert config["device"]["device_type"] == "Android"
+
+
 def test_prepare_run_config_includes_bundled_skills(tmp_path: Path):
     base = tmp_path / "base"
     base.mkdir()
@@ -1015,6 +1067,7 @@ def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
         return FakeProc()
 
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "read_environment_bridge_platform", lambda endpoint: "ios")
     monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
     monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
@@ -1737,7 +1790,7 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     assert job.status == "passed"
 
 
-def test_run_job_falls_back_to_android_for_known_android_environment(tmp_path: Path, monkeypatch):
+def test_run_job_fails_when_environment_platform_is_unknown(tmp_path: Path, monkeypatch):
     base = tmp_path / "base"
     base.mkdir()
     app = webui.BenchmarkWebApp(
@@ -1770,13 +1823,54 @@ def test_run_job_falls_back_to_android_for_known_android_environment(tmp_path: P
         "_run_suite",
         lambda run_job, suite_key: run_job.suite_results.append({"suite": suite_key, "exit_code": 0}),
     )
-    monkeypatch.setattr(webui, "start_daemon_compose", lambda *args, **kwargs: "container-id")
+    started = []
+    monkeypatch.setattr(
+        webui,
+        "start_daemon_compose",
+        lambda *args, **kwargs: started.append(True) or "container-id",
+    )
     monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
 
     app._run_job(job)
 
-    saved_content = (Path(job.config_dir) / "agent.toml").read_text(encoding="utf-8")
-    assert 'device_type = "Android"' in saved_content
+    assert job.status == "failed"
+    assert "platform" in job.message.lower()
+    assert started == []
+
+
+def test_run_job_fails_when_environment_platform_request_fails(tmp_path: Path, monkeypatch):
+    base = tmp_path / "base"
+    base.mkdir()
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=base, build_daemon_image=False)
+    )
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        environment_endpoint="http://127.0.0.1:19090",
+        suites=["mobilegym_basic.json"],
+        environment_type="mobilegym",
+        agent_url="http://127.0.0.1:18080",
+        container_name="aiden-benchmark-agent-job-test",
+        config_dir=str(tmp_path / "runs" / "job-test" / "config"),
+        raw_runs_dir=str(tmp_path / "runs" / "job-test" / "raw"),
+        state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        daemon_log=str(tmp_path / "runs" / "job-test" / "daemon.log"),
+    )
+    app._jobs[job.id] = job
+
+    def fail_platform_read(endpoint):
+        raise RuntimeError("health unavailable")
+
+    monkeypatch.setattr(webui, "read_environment_bridge_platform", fail_platform_read)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+
+    app._run_job(job)
+
+    assert job.status == "failed"
+    assert job.message == "health unavailable"
 
 
 def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: Path):

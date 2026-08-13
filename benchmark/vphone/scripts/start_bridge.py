@@ -31,8 +31,7 @@ def _agent_daemon_command(environment_url: str, benchmark_task_id: str) -> str:
     return (
         "uv run python -m runner start-agent-daemon "
         f"--environment-bridge-endpoint {environment_url} "
-        f"--benchmark-task-id {benchmark_task_id} "
-        "--device-type iOS"
+        f"--benchmark-task-id {benchmark_task_id}"
     )
 
 

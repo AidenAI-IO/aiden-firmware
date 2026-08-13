@@ -234,7 +234,6 @@ case "$SUBCMD" in
       --environment-bridge-endpoint "$VPHONE_BRIDGE_ENDPOINT" \
       --benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID" \
       --agent-config "$VPHONE_AGENT_CONFIG" \
-      --device-type iOS \
       "$@"
     ;;
   run)

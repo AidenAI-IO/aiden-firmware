@@ -16,6 +16,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "tenacity" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
 
 [package.dev-dependencies]
@@ -34,6 +35,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "tenacity", specifier = ">=8.2.3" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.0" },
 ]
 
 [package.metadata.requires-dev]

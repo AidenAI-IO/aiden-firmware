@@ -27,7 +27,8 @@ from runner.agent_client import AgentClient
 from runner.analysis import AnalysisResult, analyze_run, config_from_env
 from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
-from runner.platform import read_environment_platform
+from runner.config import agent_config_with_device_type
+from runner.platform import platform_to_device_type, read_environment_platform
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
 
@@ -793,9 +794,10 @@ class BenchmarkWebApp:
             agent_config_text = self.get_agent_config()["content"]
             device_type = ""
             if job.environment_type != "mock":
-                device_type = read_environment_bridge_platform(job.environment_endpoint or job.endpoint)
-            if not device_type and job.environment_type in {"mobilegym", "adb_android"}:
-                device_type = "android"
+                platform = read_environment_bridge_platform(job.environment_endpoint or job.endpoint)
+                if not platform:
+                    raise RuntimeError("environment bridge health did not report a supported platform")
+                device_type = platform_to_device_type(platform)
             prepare_run_config(
                 self.config.base_config_dir,
                 Path(job.config_dir),
@@ -1693,46 +1695,6 @@ def prepare_run_config(
             agent_config_with_device_type(config.read_text(encoding="utf-8"), device_type),
             encoding="utf-8",
         )
-
-
-def agent_config_with_device_type(content: str, device_type: str) -> str:
-    normalized = {
-        "ios": "iOS",
-        "android": "Android",
-        "mac": "macOS",
-        "macos": "macOS",
-        "windows": "windows",
-        "linux": "linux",
-    }.get(str(device_type).strip().lower())
-    if not normalized:
-        raise ValueError(f"unsupported device type: {device_type!r}")
-
-    lines = content.splitlines()
-    device_header = next((index for index, line in enumerate(lines) if line.strip() == "[device]"), None)
-    setting = f'device_type = "{normalized}"'
-    if device_header is None:
-        if lines and lines[-1].strip():
-            lines.append("")
-        lines.extend(["[device]", setting])
-    else:
-        section_end = next(
-            (index for index in range(device_header + 1, len(lines)) if lines[index].lstrip().startswith("[")),
-            len(lines),
-        )
-        existing = next(
-            (
-                index
-                for index in range(device_header + 1, section_end)
-                if lines[index].split("#", 1)[0].partition("=")[0].strip() == "device_type"
-                and "=" in lines[index].split("#", 1)[0]
-            ),
-            None,
-        )
-        if existing is None:
-            lines.insert(device_header + 1, setting)
-        else:
-            lines[existing] = setting
-    return "\n".join(lines) + "\n"
 
 
 def ensure_webui_agent_config(base_config_dir: Path, agent_config_path: Path) -> tuple[str, str]:

@@ -40,7 +40,7 @@ def test_start_mobilegym_env_prints_environment_urls(tmp_path: Path, monkeypatch
     assert payload["parallel_envs"] == 3
     assert payload["agent_daemon_command"] == (
         "uv run python -m runner start-agent-daemon "
-        "--environment-bridge-endpoint http://127.0.0.1:19090 --device-type Android"
+        "--environment-bridge-endpoint http://127.0.0.1:19090"
     )
     assert payload["stop_command"] == "docker rm -f aiden-mobilegym-env-mobilegym-smoke"
     assert health_urls == [("http://127.0.0.1:19090/health", 12)]
@@ -99,6 +99,7 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "read_environment_platform", lambda endpoint: "android")
 
     def fake_start_daemon_compose(job, **kwargs):
         captured["job"] = job
@@ -141,6 +142,91 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp
     assert kwargs["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert kwargs["benchmark_task_id"] == "suite.json:t1"
     assert kwargs["environment_bridge_mode"] is True
+
+
+def test_start_agent_daemon_infers_device_type_from_environment_health(
+    tmp_path: Path, monkeypatch, capsys
+):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "agent.toml").write_text(
+        '[model]\nprovider = "fake"\n[device]\ndevice_type = "iOS"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(services, "read_environment_platform", lambda endpoint: "android", raising=False)
+    monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "start_daemon_compose", lambda *args, **kwargs: "agent-container")
+    monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
+
+    args = _agent_daemon_args(tmp_path, base_config_dir=base)
+
+    assert services.cmd_start_agent_daemon(args) == 0
+    config = (tmp_path / "agent-smoke" / "config" / "agent.toml").read_text(encoding="utf-8")
+    assert 'device_type = "Android"' in config
+
+
+def test_start_agent_daemon_fails_when_environment_platform_is_unknown(
+    tmp_path: Path, monkeypatch, capsys
+):
+    started = []
+    monkeypatch.setattr(services, "read_environment_platform", lambda endpoint: "", raising=False)
+    monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        services,
+        "start_daemon_compose",
+        lambda *args, **kwargs: started.append(True) or "agent-container",
+    )
+
+    assert services.cmd_start_agent_daemon(_agent_daemon_args(tmp_path)) == 1
+    assert started == []
+    assert "platform" in capsys.readouterr().err.lower()
+
+
+def test_start_agent_daemon_fails_when_environment_health_request_fails(
+    tmp_path: Path, monkeypatch, capsys
+):
+    started = []
+
+    def fail_platform_read(endpoint):
+        raise RuntimeError("health unavailable")
+
+    monkeypatch.setattr(services, "read_environment_platform", fail_platform_read, raising=False)
+    monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        services,
+        "start_daemon_compose",
+        lambda *args, **kwargs: started.append(True) or "agent-container",
+    )
+
+    assert services.cmd_start_agent_daemon(_agent_daemon_args(tmp_path)) == 1
+    assert started == []
+    assert "health unavailable" in capsys.readouterr().err
+
+
+def test_start_agent_daemon_explicit_device_type_bypasses_environment_health(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(
+        services,
+        "read_environment_platform",
+        lambda endpoint: (_ for _ in ()).throw(AssertionError("health must not be read")),
+        raising=False,
+    )
+    monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "start_daemon_compose", lambda *args, **kwargs: "agent-container")
+    monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
+
+    args = _agent_daemon_args(tmp_path, device_type="ios")
+
+    assert services.cmd_start_agent_daemon(args) == 0
+    config = (tmp_path / "agent-smoke" / "config" / "agent.toml").read_text(encoding="utf-8")
+    assert 'device_type = "iOS"' in config
 
 
 def test_start_agent_daemon_allows_no_environment_bridge(tmp_path: Path, monkeypatch, capsys):
@@ -296,7 +382,7 @@ def test_start_adb_android_env_prints_environment_urls(tmp_path: Path, monkeypat
     assert payload["stop_command"] == "kill -TERM 4242"
     assert payload["agent_daemon_command"] == (
         "uv run python -m runner start-agent-daemon "
-        "--environment-bridge-endpoint http://127.0.0.1:18899 --device-type Android"
+        "--environment-bridge-endpoint http://127.0.0.1:18899"
     )
     assert health_urls == [("http://127.0.0.1:18899/health", 12)]
     assert launched[0]["serial"] == "127.0.0.1:6555"
@@ -359,3 +445,22 @@ def _ns(**kwargs):
     for key, value in kwargs.items():
         setattr(ns, key, value)
     return ns
+
+
+def _agent_daemon_args(tmp_path: Path, **overrides):
+    values = {
+        "port": 18081,
+        "name": "smoke",
+        "runs_dir": str(tmp_path),
+        "base_config_dir": str(tmp_path / "base"),
+        "agent_config": "",
+        "daemon_image": "aiden-agent-daemon:test",
+        "no_build_daemon_image": True,
+        "environment_bridge_endpoint": "http://127.0.0.1:19090",
+        "device_type": "",
+        "benchmark_task_id": "suite.json:t1",
+        "ready_timeout_sec": 9,
+        "json": True,
+    }
+    values.update(overrides)
+    return _ns(**values)

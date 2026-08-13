@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from runner.config import agent_config_with_device_type
+
 
 DEFAULT_INSTRUCTION = "You are controlling an Android-like MobileGym simulator. Use screenshot and touch tools."
 DEFAULT_INPUT_MODE = "text"
@@ -177,7 +179,7 @@ def render_agent_toml(
         rendered = Path(template_path).read_text()
         for name, value in values.items():
             rendered = rendered.replace("{{" + name + "}}", value)
-        return rendered
+        return agent_config_with_device_type(rendered, "Android")
 
     lines = [
         f"instruction = {_toml_string(instruction)}",

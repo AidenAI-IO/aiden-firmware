@@ -112,7 +112,7 @@ def validate_agent_toml(content: str) -> None:
     try:
         import tomllib
     except ModuleNotFoundError:
-        return  # Skip validation if tomllib not available
+        import tomli as tomllib
     try:
         tomllib.loads(content)
     except tomllib.TOMLDecodeError as exc:
@@ -148,6 +148,78 @@ def apply_agent_toml_runtime_defaults(content: str) -> str:
         insert_lines.append("")
     lines[insert_at:insert_at] = insert_lines
     return "\n".join(lines) + "\n"
+
+
+def normalize_device_type(device_type: str) -> str:
+    normalized = {
+        "ios": "iOS",
+        "android": "Android",
+        "mac": "macOS",
+        "macos": "macOS",
+        "windows": "windows",
+        "linux": "linux",
+    }.get(str(device_type).strip().lower())
+    if not normalized:
+        raise ValueError(f"unsupported device type: {device_type!r}")
+    return normalized
+
+
+def agent_config_with_device_type(content: str, device_type: str) -> str:
+    """Set device.device_type while preserving the rest of agent.toml."""
+    normalized = normalize_device_type(device_type)
+
+    lines = content.splitlines()
+    setting = f'device_type = "{normalized}"'
+    dotted_key = re.compile(
+        r'''^(?P<indent>\s*)(?:device|"device"|'device')\s*\.\s*'''
+        r'''(?:device_type|"device_type"|'device_type')\s*=.*$'''
+    )
+    first_table = next(
+        (index for index, line in enumerate(lines) if line.lstrip().startswith("[")),
+        len(lines),
+    )
+    dotted_index = next(
+        (index for index, line in enumerate(lines[:first_table]) if dotted_key.match(line)),
+        None,
+    )
+    if dotted_index is not None:
+        indent = dotted_key.match(lines[dotted_index]).group("indent")
+        lines[dotted_index] = f"{indent}device.device_type = \"{normalized}\""
+        updated = "\n".join(lines) + "\n"
+        validate_agent_toml(updated)
+        return updated
+
+    device_table = re.compile(
+        r'''^\s*\[\s*(?:device|"device"|'device')\s*\]\s*(?:#.*)?$'''
+    )
+    device_header = next((index for index, line in enumerate(lines) if device_table.match(line)), None)
+    if device_header is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(["[device]", setting])
+    else:
+        section_end = next(
+            (index for index in range(device_header + 1, len(lines)) if lines[index].lstrip().startswith("[")),
+            len(lines),
+        )
+        existing = next(
+            (
+                index
+                for index in range(device_header + 1, section_end)
+                if re.match(
+                    r'''^\s*(?:device_type|"device_type"|'device_type')\s*=''',
+                    lines[index],
+                )
+            ),
+            None,
+        )
+        if existing is None:
+            lines.insert(device_header + 1, setting)
+        else:
+            lines[existing] = setting
+    updated = "\n".join(lines) + "\n"
+    validate_agent_toml(updated)
+    return updated
 
 
 def render_agent_template(text: str) -> str:

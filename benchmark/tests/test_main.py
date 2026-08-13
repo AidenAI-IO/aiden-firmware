@@ -67,6 +67,41 @@ def test_resolve_target_platform_infers_vphone_ios_for_legacy_health(monkeypatch
     assert main._resolve_target_platform(args) == "ios"
 
 
+def test_resolve_target_platform_rejects_unknown_environment_platform(monkeypatch):
+    args = type("Args", (), {"target_platform": "auto", "environment_url": "http://127.0.0.1:8899"})()
+    monkeypatch.setattr(main, "_read_environment_health", lambda environment_url: {"bridge_type": "custom"})
+
+    with pytest.raises(ValueError, match="supported platform"):
+        main._resolve_target_platform(args, required=True)
+
+
+def test_resolve_target_platform_propagates_environment_health_failure(monkeypatch):
+    args = type("Args", (), {"target_platform": "auto", "environment_url": "http://127.0.0.1:8899"})()
+
+    def fail_health(environment_url):
+        raise RuntimeError("health unavailable")
+
+    monkeypatch.setattr(main, "_read_environment_health", fail_health)
+
+    with pytest.raises(RuntimeError, match="health unavailable"):
+        main._resolve_target_platform(args, required=True)
+
+
+def test_resolve_target_platform_validates_explicit_platform_against_environment(monkeypatch):
+    args = type("Args", (), {"target_platform": "ios", "environment_url": "http://127.0.0.1:8899"})()
+    monkeypatch.setattr(main, "_read_environment_health", lambda environment_url: {"platform": "android"})
+
+    with pytest.raises(ValueError, match="does not match"):
+        main._resolve_target_platform(args, required=True)
+
+
+def test_resolve_target_platform_preserves_explicit_non_auto_filter(monkeypatch):
+    args = type("Args", (), {"target_platform": "ios", "environment_url": "http://127.0.0.1:8899"})()
+    monkeypatch.setattr(main, "_read_environment_health", lambda environment_url: {"platform": "android"})
+
+    assert main._resolve_target_platform(args) == "ios"
+
+
 def _task_result_with_details():
     return TaskResult(
         suite="suite",
@@ -734,6 +769,7 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
             pass
 
     def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
+        captured["prepare_config_kwargs"] = kwargs
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "control_token").write_text("mock-token", encoding="utf-8")
 
@@ -799,6 +835,7 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
     assert captured["daemon_kwargs"]["environment_bridge_endpoint"] == captured[
         "job"
     ].docker_endpoint
+    assert captured["prepare_config_kwargs"]["device_type"] == "ios"
     manifest = json.loads(
         (tmp_path / "runs" / "mock-run" / "manifest.json").read_text(
             encoding="utf-8"
@@ -807,6 +844,119 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
     assert manifest["mock_environment"]["default"] is None
     assert manifest["mock_environment"]["tasks"]["policy"]["phone_bridge"] == phone_state
     assert manifest["environment_url"].endswith("/_aiden_mock/REDACTED")
+
+
+def test_auto_agent_setup_rejects_mock_target_platform_mismatch(tmp_path, capsys):
+    suite_path = tmp_path / "mock-suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mock_suite",
+                "tasks": [
+                    {
+                        "id": "policy",
+                        "category": "diagnostic",
+                        "prompt": "test policy",
+                        "description_for_judge": "test policy",
+                        "rubric": [{"id": "done", "check": "done"}],
+                        "mock_environment": {
+                            "phone_bridge": {"platform": "android"},
+                            "tools": {"screenshot": {"output": {"ok": True}}},
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--auto-agent-setup",
+            "--target-platform",
+            "ios",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 2
+    assert "does not match" in capsys.readouterr().err
+
+
+def test_mock_environment_platform_uses_each_task_effective_override(tmp_path):
+    suite_path = tmp_path / "mock-suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mock_suite",
+                "mock_environment": {
+                    "phone_bridge": {"platform": "android"},
+                    "tools": {"screenshot": {"output": {"ok": True}}},
+                },
+                "tasks": [
+                    {
+                        "id": task_id,
+                        "category": "diagnostic",
+                        "prompt": "test policy",
+                        "description_for_judge": "test policy",
+                        "rubric": [{"id": "done", "check": "done"}],
+                        "mock_environment": {
+                            "phone_bridge": {"platform": "ios"},
+                            "tools": {"screenshot": {"output": {"ok": True}}},
+                        },
+                    }
+                    for task_id in ("one", "two")
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main._mock_environment_platform(main.load_suite(suite_path)) == "ios"
+
+
+def test_mock_environment_platform_rejects_effective_spec_without_platform(tmp_path):
+    suite_path = tmp_path / "mock-suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mock_suite",
+                "tasks": [
+                    {
+                        "id": "ios",
+                        "category": "diagnostic",
+                        "prompt": "test policy",
+                        "description_for_judge": "test policy",
+                        "rubric": [{"id": "done", "check": "done"}],
+                        "mock_environment": {
+                            "phone_bridge": {"platform": "ios"},
+                            "tools": {"screenshot": {"output": {"ok": True}}},
+                        },
+                    },
+                    {
+                        "id": "missing",
+                        "category": "diagnostic",
+                        "prompt": "test policy",
+                        "description_for_judge": "test policy",
+                        "rubric": [{"id": "done", "check": "done"}],
+                        "mock_environment": {
+                            "phone_bridge": {},
+                            "tools": {"screenshot": {"output": {"ok": True}}},
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="declare a phone platform"):
+        main._mock_environment_platform(main.load_suite(suite_path))
 
 
 def test_auto_agent_setup_caps_environment_concurrency(monkeypatch, tmp_path):
@@ -839,6 +989,7 @@ def test_auto_agent_setup_caps_environment_concurrency(monkeypatch, tmp_path):
             pass
 
     monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "_read_environment_health", lambda url: {"platform": "android"})
     monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
     monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
     monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")

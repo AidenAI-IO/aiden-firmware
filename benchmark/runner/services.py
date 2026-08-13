@@ -20,6 +20,7 @@ from runner.adb_android_environment import (
     start_adb_bridge_process,
     terminate_pid,
 )
+from runner.platform import platform_to_device_type, read_environment_platform
 from runner.webui import (
     BENCHMARK_ROOT,
     DEFAULT_BASE_CONFIG_DIR,
@@ -127,19 +128,26 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
     except FileNotFoundError:
         pass  # docker not available, proceed
 
-    service_dir.mkdir(parents=True, exist_ok=True)
-
-    agent_config_text = None
-    if args.agent_config:
-        agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
-    prepare_run_config(
-        Path(args.base_config_dir),
-        config_dir,
-        agent_config_text=agent_config_text,
-        device_type=getattr(args, "device_type", ""),
-    )
-
     environment_bridge_endpoint = str(args.environment_bridge_endpoint or "").strip().rstrip("/")
+    device_type = str(getattr(args, "device_type", "") or "").strip()
+    try:
+        if environment_bridge_endpoint and not device_type:
+            device_type = platform_to_device_type(read_environment_platform(environment_bridge_endpoint))
+        service_dir.mkdir(parents=True, exist_ok=True)
+        agent_config_text = None
+        if args.agent_config:
+            agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
+        prepare_run_config(
+            Path(args.base_config_dir),
+            config_dir,
+            agent_config_text=agent_config_text,
+            device_type=device_type,
+        )
+    except Exception as exc:
+        append_log(log_path, f"ERROR: {exc}")
+        print(f"Error: failed to prepare agent daemon config: {exc}", file=sys.stderr)
+        return 1
+
     docker_environment_bridge_endpoint = endpoint_for_docker(environment_bridge_endpoint) if environment_bridge_endpoint else ""
     benchmark_task_id = str(args.benchmark_task_id or "").strip()
     agent_url = f"http://127.0.0.1:{host_port}"
@@ -259,7 +267,7 @@ def cmd_start_mobilegym_env(args: argparse.Namespace) -> int:
     }
     payload["agent_daemon_command"] = (
         "uv run python -m runner start-agent-daemon "
-        f"--environment-bridge-endpoint {public_endpoint} --device-type Android"
+        f"--environment-bridge-endpoint {public_endpoint}"
     )
     _print_mobilegym_payload(payload, json_output=bool(args.json))
     return 0
@@ -350,7 +358,7 @@ def cmd_start_adb_android_env(args: argparse.Namespace) -> int:
         "stop_command": f"kill -TERM {pid}",
         "agent_daemon_command": (
             "uv run python -m runner start-agent-daemon "
-            f"--environment-bridge-endpoint {environment_url} --device-type Android"
+            f"--environment-bridge-endpoint {environment_url}"
         ),
     }
     _print_adb_android_payload(payload, json_output=bool(args.json))
