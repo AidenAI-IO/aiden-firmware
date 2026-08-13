@@ -1,3 +1,7 @@
+---
+sidebar_position: 1
+---
+
 # C++ SDK Reference
 
 `libaiden.a` is the project's C++ hardware SDK, with the main header file:

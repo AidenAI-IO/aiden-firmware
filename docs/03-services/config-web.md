@@ -1,3 +1,7 @@
+---
+sidebar_position: 2
+---
+
 # Config Web: Web-based Configuration Interface
 
 `config_web` is a lightweight HTTP service providing a web UI for configuring the Agent's LLM provider, API keys, STT/TTS settings, and other runtime parameters. Changes are persisted to `/userdata/agent/agent.toml` and can trigger Agent restart.

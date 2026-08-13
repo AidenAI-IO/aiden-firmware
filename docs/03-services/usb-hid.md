@@ -1,3 +1,7 @@
+---
+sidebar_position: 7
+---
+
 # USB HID and Device Control
 
 The project configures the Luckfox Pico Zero's USB-C port through the Linux USB gadget framework. The firmware startup script creates a composite gadget with keyboard HID, pointer/touch HID, and CDC ECM networking; the HID nodes are used to simulate keyboard, mouse, and touch input.

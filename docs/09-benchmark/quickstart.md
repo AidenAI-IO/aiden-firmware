@@ -1,3 +1,7 @@
+---
+sidebar_position: 1
+---
+
 # Agent-Driven Benchmark Quickstart
 
 This page is a compact quickstart. The complete guide is
@@ -115,9 +119,3 @@ uv run python -m runner rejudge --run-dir runs/<id> --judge-model claude-sonnet-
 ```bash
 uv run python -m runner compare --runs runs/<id_a> runs/<id_b>
 ```
-
-## Legacy
-
-The previous benchmark (`benchmark/suites/full_smoke.json`) is deprecated and
-retained for reference only. The legacy entry point
-`scripts/aiden_benchmark.py` forwards to the new runner.

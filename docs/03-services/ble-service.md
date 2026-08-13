@@ -1,3 +1,7 @@
+---
+sidebar_position: 6
+---
+
 # BLE Service: Pairing, Phone Notifications, and Background Wake
 
 `ble_service` owns Aiden's Bluetooth Low Energy integration. It uses BlueZ on

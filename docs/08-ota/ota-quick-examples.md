@@ -1,4 +1,8 @@
-# OTA Open Sources - Quick Examples
+---
+sidebar_position: 8
+---
+
+# OTA Distribution Quick Examples
 
 ## Example 1: GitHub Releases (Recommended)
 

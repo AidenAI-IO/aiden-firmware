@@ -1,3 +1,7 @@
+---
+sidebar_position: 8
+---
+
 # Session Memory Compaction
 
 This document describes Aiden Agent's session-level conversation memory compaction. The mechanism turns a growing event stream into chunk summaries and keeps only the latest hot window available to the Agent as native chat messages.
