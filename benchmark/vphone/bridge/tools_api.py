@@ -150,7 +150,7 @@ class VPhoneToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute iOS navigation such as home, back, app_switch, open_settings, notification_center, or control_center. The bridge selects iOS bindings automatically.",
+                "description": "Execute iOS navigation such as home, back, app_switch, open_settings, notification_center, or control_center.",
                 "args_schema": {
                     "type": "object", "additionalProperties": False,
                     "properties": {

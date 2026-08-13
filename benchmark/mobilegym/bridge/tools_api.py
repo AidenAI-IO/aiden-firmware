@@ -241,7 +241,7 @@ class ToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute common Android navigation actions such as back or home. The bridge selects Android bindings automatically.",
+                "description": "Execute common Android navigation actions such as back or home.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,

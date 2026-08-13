@@ -256,7 +256,7 @@ class ADBToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute common Android navigation actions such as back, home, or open_settings. The bridge selects Android bindings automatically.",
+                "description": "Execute common Android navigation actions such as back, home, or open_settings.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
