@@ -143,9 +143,16 @@ func TestBuiltinToolSetWiresManagedPythonHintsIntoShell(t *testing.T) {
 }
 
 func TestShellCommandEnvAppliesManagedPythonHintsInPTYAndNonPTYModes(t *testing.T) {
+	// Python environment variables are now configured globally by
+	// /etc/profile.d/aiden-python.sh and inherited from the parent environment,
+	// so they are no longer injected command-scoped. This test verifies that
+	// shellCommandEnv does not overwrite them.
+	t.Setenv("AIDEN_PYTHON_USERBASE", "/userdata/agent/python/py3.11")
+	t.Setenv("AIDEN_PYTHON_TMP", "/userdata/agent/python/tmp")
+
 	hints := shellEnvironmentHints{
-		pythonUserBase: "/userdata/agent/python/py3.11",
-		pythonTmp:      "/userdata/agent/python/tmp",
+		pythonUserBase: "/should/not/be/used",
+		pythonTmp:      "/should/not/be/used",
 	}
 	for _, usePTY := range []bool{false, true} {
 		env := shellCommandEnv(usePTY, ProxyConfig{}, hints)
@@ -156,11 +163,11 @@ func TestShellCommandEnvAppliesManagedPythonHintsInPTYAndNonPTYModes(t *testing.
 				values[parts[0]] = parts[1]
 			}
 		}
-		if got := values["AIDEN_PYTHON_USERBASE"]; got != hints.pythonUserBase {
-			t.Errorf("usePTY=%v AIDEN_PYTHON_USERBASE = %q, want %q", usePTY, got, hints.pythonUserBase)
+		if got := values["AIDEN_PYTHON_USERBASE"]; got != "/userdata/agent/python/py3.11" {
+			t.Errorf("usePTY=%v AIDEN_PYTHON_USERBASE = %q, want %q (should inherit from parent env)", usePTY, got, "/userdata/agent/python/py3.11")
 		}
-		if got := values["AIDEN_PYTHON_TMP"]; got != hints.pythonTmp {
-			t.Errorf("usePTY=%v AIDEN_PYTHON_TMP = %q, want %q", usePTY, got, hints.pythonTmp)
+		if got := values["AIDEN_PYTHON_TMP"]; got != "/userdata/agent/python/tmp" {
+			t.Errorf("usePTY=%v AIDEN_PYTHON_TMP = %q, want %q (should inherit from parent env)", usePTY, got, "/userdata/agent/python/tmp")
 		}
 	}
 }

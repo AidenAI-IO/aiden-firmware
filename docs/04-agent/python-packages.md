@@ -115,9 +115,11 @@ AIDEN_PYTHON_USERBASE=/userdata/agent/python/py<major>.<minor>
 AIDEN_PYTHON_TMP=/userdata/agent/python/tmp
 ```
 
-These names have no built-in meaning to Python or pip. The runtime derives the
-version suffix once from the firmware `/usr/bin/python3` interpreter and injects the same
-values into foreground, background, and PTY shell commands.
+These names have no built-in meaning to Python or pip. The firmware configures
+these variables at system startup (`/etc/profile.d/aiden-python.sh` for login
+shells, `/etc/init.d/S53agent` for the agent service), deriving the version
+suffix from the firmware `/usr/bin/python3` interpreter. Both the agent and user
+shells inherit the same environment, so runtime-installed packages are shared.
 
 When installing a package, the Agent scopes the Python variables to that shell
 command:
@@ -184,21 +186,19 @@ retry only when the error is recoverable, and report persistent failure.
 
 ## Shared Path Helper
 
-Shell environment injection and Python cleanup need the same path rules. Keep
-those rules in one small helper inside the existing `agent` package rather than
+System startup scripts and Python cleanup need the same path rules. Keep those
+rules in one small helper inside the existing `agent` package rather than
 creating a new `pythonenv` package.
 
 The helper is responsible for:
 
 - Returning the fixed root and temporary directory.
-- Querying the firmware `/usr/bin/python3` interpreter and deriving the active `py<major>.<minor>`
-  directory.
+- Querying the firmware `/usr/bin/python3` interpreter and deriving the active
+  `py<major>.<minor>` directory.
 - Creating the root, active version directory, and temporary directory when
   needed.
 - Touching the active version directory during Agent startup and periodic
   storage maintenance.
-- Applying the neutral `AIDEN_PYTHON_USERBASE` and `AIDEN_PYTHON_TMP` hints to
-  shell environments.
 
 Host tests may inject a temporary root and a fake interpreter-version command.
 Those are internal test seams, not device configuration fields.
@@ -259,14 +259,14 @@ concurrency model.
 
 ## OTA Behavior
 
-| Event | pip in rootfs | Dynamic packages |
-| --- | --- | --- |
-| Reboot | Remains installed | Reuse the active version directory |
-| A/B switch with Python 3.11 | Present in selected rootfs | Reuse `py3.11` |
+| Event                       | pip in rootfs                        | Dynamic packages                                           |
+| --------------------------- | ------------------------------------ | ---------------------------------------------------------- |
+| Reboot                      | Remains installed                    | Reuse the active version directory                         |
+| A/B switch with Python 3.11 | Present in selected rootfs           | Reuse `py3.11`                                             |
 | Rootfs OTA with Python 3.11 | Present if the new image retains pip | Reuse `py3.11`; reinstall packages that prove incompatible |
-| Upgrade to Python 3.12 | New rootfs pip is used | Start with `py3.12`; retain `py3.11` for 7 days |
-| Rollback during retention | Old rootfs pip is used | Reuse retained `py3.11` |
-| Rollback after cleanup | Old rootfs pip is used | Packages must be reinstalled |
+| Upgrade to Python 3.12      | New rootfs pip is used               | Start with `py3.12`; retain `py3.11` for 7 days            |
+| Rollback during retention   | Old rootfs pip is used               | Reuse retained `py3.11`                                    |
+| Rollback after cleanup      | Old rootfs pip is used               | Packages must be reinstalled                               |
 
 ## Security and Reliability Constraints
 
@@ -283,15 +283,15 @@ concurrency model.
 
 ## Implementation Locations
 
-| Area | Files |
-| --- | --- |
+| Area                                            | Files                                                                                                                      |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | Buildroot pip and compatible Python package set | Two Luckfox defconfigs and the project-owned `python-charset-normalizer-aiden` recipe override in the `pico-sdk` submodule |
-| Build policy | `scripts/test_reproducible_rootfs_policy.sh` or a focused adjacent test |
-| Shared path helper | `src/agent/internal/agent/python_packages.go` |
-| Shell environment | `src/agent/internal/agent/tools.go` and `tools_shell_session.go` |
-| Storage cleanup | `storage_cleaner_python_userbase.go` and `storage_runtime.go` |
-| Agent guidance | `src/agent/internal/agent/prompt.go` |
-| Documentation | This document, firmware guide, StorageMonitor guide, and Agent overview |
+| Build policy                                    | `scripts/test_reproducible_rootfs_policy.sh` or a focused adjacent test                                                    |
+| Shared path helper                              | `src/agent/internal/agent/python_packages.go`                                                                              |
+| Shell environment                               | `src/agent/internal/agent/tools.go` and `tools_shell_session.go`                                                           |
+| Storage cleanup                                 | `storage_cleaner_python_userbase.go` and `storage_runtime.go`                                                              |
+| Agent guidance                                  | `src/agent/internal/agent/prompt.go`                                                                                       |
+| Documentation                                   | This document, firmware guide, StorageMonitor guide, and Agent overview                                                    |
 
 No new Agent tool, HTTP tool metadata, package configuration, C++ service, or
 phone companion app change is required.

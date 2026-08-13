@@ -340,12 +340,9 @@ func shellPlatformShellArg() string {
 func shellCommandEnv(usePTY bool, proxy ProxyConfig, environment shellEnvironmentHints) []string {
 	env := os.Environ()
 	env = shellApplyProxyEnv(env, proxy)
-	if environment.pythonUserBase != "" {
-		env = shellEnsureEnv(env, "AIDEN_PYTHON_USERBASE", environment.pythonUserBase)
-	}
-	if environment.pythonTmp != "" {
-		env = shellEnsureEnv(env, "AIDEN_PYTHON_TMP", environment.pythonTmp)
-	}
+	// Python environment variables (AIDEN_PYTHON_USERBASE, AIDEN_PYTHON_TMP) are
+	// configured globally by /etc/profile.d/aiden-python.sh and inherited from
+	// the parent environment, so they do not need command-scoped injection.
 	if usePTY {
 		env = shellEnsureEnv(env, "TERM", "dumb")
 		env = shellEnsureEnv(env, "NO_COLOR", "1")
