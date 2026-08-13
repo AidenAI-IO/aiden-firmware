@@ -1,3 +1,7 @@
+---
+sidebar_position: 1
+---
+
 # SkillOpt Quickstart
 
 This page covers the shortest path to run SkillOpt. For internals, see

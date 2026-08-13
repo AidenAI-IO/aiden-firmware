@@ -1,3 +1,7 @@
+---
+sidebar_position: 16
+---
+
 # Episode Telemetry and Langfuse Integration
 
 After each task completes, Aiden Agent can asynchronously report the complete task episode (metadata, event chain, screenshots) to [Langfuse](https://langfuse.com/) for trace browsing, dataset construction, and evaluation.
@@ -222,7 +226,7 @@ Screenshot upload complete flow:
 3. Agent `PATCH {base_url}/api/public/media/{mediaId}` writes `uploadHttpStatus=200` (**missing this step shows media not yet uploaded**)
 4. Agent `POST /api/public/ingestion` sends trace containing `@@@langfuseMedia:...@@@`
 
-If Agent runs on devices like Luckfox, Langfuse `.env` needs to set a device-reachable MinIO address:
+When Agent runs on a device such as Luckfox, the Langfuse `.env` must use a MinIO address reachable from that device:
 
 ```bash
 LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT=http://192.168.50.246:9090

@@ -1,3 +1,7 @@
+---
+sidebar_position: 1
+---
+
 # Troubleshooting
 
 ## `example_camera_capture` reports `Device or resource busy`

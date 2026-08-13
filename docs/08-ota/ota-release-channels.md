@@ -1,3 +1,7 @@
+---
+sidebar_position: 9
+---
+
 # OTA Release Channels
 
 This document explains how the official repository distinguishes releases by branch, so that development builds never interfere with production OTA updates.

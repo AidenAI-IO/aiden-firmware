@@ -1,3 +1,7 @@
+---
+sidebar_position: 4
+---
+
 # A/B and `abctl` Verification
 
 `abctl` is a diagnostic and factory test tool for OTA A/B metadata. It can operate on regular files or `/dev/block/by-name/misc` on devices.

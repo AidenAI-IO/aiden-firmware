@@ -1,3 +1,7 @@
+---
+sidebar_position: 4
+---
+
 # Skills and RoleProfile Mechanism
 
 The Agent automatically discovers `SKILL.md` files from the config directory, displays an Available skills catalog in the system prompt, and loads the complete instructions of relevant skills on demand via `skill_read`. Activated skills are injected into the Agent's `RoleProfile`, which contains the system prompt, skill instructions, and available tools.
@@ -110,33 +114,3 @@ This endpoint generates a skill bundle describing the Aiden HTTP Tool API, makin
 - `allowed_tools` should be kept narrow for documentation and forward compatibility, but current runtime tool availability does not expand based on active skills;
 - `allowed_tools` can only reference currently registered tools or `delegate_<child>` form child Agent delegation pseudo-tools;
 - Do not write one-time task progress, temporary state, secrets, raw logs, or personal facts into skills; these do not belong to reusable procedures.
-
-## Future Design: Bundled Sync + LLM Merge
-
-The latest design adopts a single runtime source:
-
-```text
-Read-only bundled skills
-  ↓ seed / sync / merge
-configDir/skills as effective skill source of truth
-  ↓
-Runtime only loads configDir/skills
-```
-
-Core rules:
-
-- Bundled skills are released with firmware / code, but runtime does not directly scan the bundled directory;
-- On startup or update, sync bundled skills to `configDir/skills`;
-- `.bundled_manifest.json` records `origin_hash`, `effective_hash`, `base_path`, and recent merge results;
-- `origin_hash` represents the bundled baseline corresponding to the last sync / merge;
-- `effective_hash` represents the effective copy hash after the syncer last wrote to the user directory, used to stably identify `merged` status;
-- When local effective copy differs from bundled baseline and bundled has also updated, background serial LLM generates merge candidate based on base / upstream / local;
-- LLM result is first written to a temp file; only overwritten to `configDir/skills/<name>/SKILL.md` after validation passes and user file has not been asynchronously modified;
-- All merge failures, validation failures, or application failures record `last_failed_merge_key` to avoid repeated retry of the same input set;
-- MVP does not support restoring historical user versions before overwrite; temp files only prevent failed candidates from polluting user directory, not a rollback mechanism.
-
-For detailed design, see:
-
-```text
-docs/04-agent/skills-merge-design.md
-```

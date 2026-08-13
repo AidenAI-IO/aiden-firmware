@@ -1,3 +1,7 @@
+---
+sidebar_position: 3
+---
+
 # Hardware, Wiring & Self-Assembly
 
 ## Target Hardware

@@ -1,3 +1,7 @@
+---
+sidebar_position: 2
+---
+
 # Source Code and Directory Structure
 
 ```text

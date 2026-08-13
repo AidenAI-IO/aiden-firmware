@@ -1,3 +1,8 @@
+---
+sidebar_label: Overview
+sidebar_position: 0
+---
+
 # OTA Overview
 
 This project's production OTA uses A/B partitioning, signed manifests, and boot health confirmation mechanisms. During runtime, devices only write to the inactive slot. After reboot, Rockchip SPL selects the new slot; if the new system does not confirm success within the health window, SPL automatically rolls back to the previous successful slot.
@@ -5,30 +10,21 @@ This project's production OTA uses A/B partitioning, signed manifests, and boot 
 ## Scope
 
 - Target hardware: Luckfox Pico Zero / RV1106 + eMMC.
-- Distribution: GitHub Releases. Published assets contain `manifest.json` plus compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`, `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`. The extracted images still use the slot-neutral `oem.img` and `rootfs.img` layout introduced in PR #112; older releases used `oem_a.img`, `oem_b.img`, `rootfs_a.img`, and `rootfs_b.img`.
+- Distribution: GitHub Releases. Published assets contain `manifest.json` plus compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`, `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`.
 - Update method: The device-side `/oem/usr/bin/ota` fetches the manifest, verifies signatures, validates SHA256, writes to the inactive slot, switches `misc`, and reboots.
 - Rollback method: Rockchip SPL A/B metadata controls boot tries; mark successful only after application health confirmation.
 
 ## Documentation Index
-
-### Core Documentation
 
 - [OTA Architecture and Runtime](architecture.md)
 - [OTA Key Management](key-management.md)
 - [Device Acceptance Process](device-acceptance.md)
 - [A/B and `abctl` Verification](verification.md)
 - [OTA Dedicated Storage Partition](no-space-plan.md)
-
-### Openness and External Developers
-
-- [OTA Openness Improvements](OTA_OPEN_SOURCES.md) - manifest supports direct URLs, external developer firmware distribution
-- [External Developer Guide](ota-external-developers.md) - how to distribute firmware using custom sources
-- [Quick Examples](ota-quick-examples.md) - GitHub Releases, self-hosted backend, hybrid mode examples
-- [Release Channel Strategy](ota-release-channels.md) - branch and channel isolation mechanisms
-
-### Technical Analysis
-
-- [Neutral Resource Compatibility Analysis](OTA_COMPATIBILITY_ANALYSIS.md) - PR #112 backward compatibility assessment
+- [GitHub Proxy Configuration](ota-github-proxy.md)
+- [External Developer Guide](ota-external-developers.md)
+- [Distribution Quick Examples](ota-quick-examples.md)
+- [Release Channel Strategy](ota-release-channels.md)
 
 ## Core Constraints
 

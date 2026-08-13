@@ -1,3 +1,7 @@
+---
+sidebar_position: 1
+---
+
 # OTA Architecture and Runtime
 
 OTA is accomplished through three layers: `pico-sdk` generates A/B images and factory `misc.img`, GitHub Actions publishes signed releases, and the device-side `ota` completes download, write, and switching on manual trigger, with one-shot health handling at boot responsible for health commitment after startup.

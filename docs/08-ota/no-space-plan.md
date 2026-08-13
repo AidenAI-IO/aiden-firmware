@@ -1,3 +1,7 @@
+---
+sidebar_position: 5
+---
+
 # OTA Dedicated Storage Partition
 
 ## Purpose
