@@ -297,7 +297,7 @@ class ToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute common platform navigation actions such as back or home. Platform is optional and defaults to Android for this benchmark environment.",
+                "description": "Execute common platform navigation actions such as back or home.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
