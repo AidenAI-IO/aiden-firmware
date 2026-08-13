@@ -224,6 +224,7 @@ def test_prepare_run_config_does_not_copy_runtime_state(tmp_path: Path):
         state_dir = base / name
         state_dir.mkdir()
         (state_dir / "stale-state").write_text("stale", encoding="utf-8")
+    (base / "memory" / "extraction.yaml").write_text("hot_window_events: 20\n", encoding="utf-8")
 
     dest = tmp_path / "dest"
     webui.prepare_run_config(base, dest)
@@ -231,6 +232,7 @@ def test_prepare_run_config_does_not_copy_runtime_state(tmp_path: Path):
     for name in ("memory", "log", "cache", "sessions", "skill-state"):
         assert not (dest / name / "stale-state").exists()
     assert (dest / "memory").is_dir()
+    assert (dest / "memory" / "extraction.yaml").read_text(encoding="utf-8") == "hot_window_events: 20\n"
     assert (dest / "log").is_dir()
     assert (dest / "skill-state").is_dir()
 
