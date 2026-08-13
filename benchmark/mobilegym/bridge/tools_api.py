@@ -241,18 +241,17 @@ class ToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute common platform navigation actions such as back or home.",
+                "description": "Execute common Android navigation actions such as back or home. The bridge selects Android bindings automatically.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "action": {"type": "string"},
-                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
                         "list": {"type": "boolean"},
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
                     },
-                    "required": ["platform"],
+                    "required": ["action"],
                 },
             },
         ]
@@ -593,10 +592,7 @@ class ToolsAPIHandler:
 
     def _call_quick_action(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute a small MobileGym-compatible quick_action subset."""
-        platform = str(tool_input.get("platform", "") or "").strip().lower()
-        if platform not in ("ios", "android", "mac"):
-            return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}", "is_error": True}
-
+        platform = "android"
         action = _quick_action_id(tool_input)
         if bool(tool_input.get("list")) or action == "list":
             output = {"ok": True, "platform": platform, "actions": _mobilegym_quick_action_catalog()}

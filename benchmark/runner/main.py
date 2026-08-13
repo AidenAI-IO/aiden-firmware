@@ -324,7 +324,7 @@ def _resolve_target_platform(args: argparse.Namespace) -> str:
     except Exception:
         return ""
     bridge_type = str(health.get("bridge_type") or "").strip().lower()
-    if bridge_type == "adb_android":
+    if bridge_type in {"adb_android", "mobilegym"}:
         return "android"
     platform = str(health.get("platform") or health.get("device_platform") or "").strip().lower()
     if platform in VALID_TARGET_PLATFORMS:
@@ -500,7 +500,12 @@ def _cmd_run_auto_agent_setup_inner(
         runner_log = worker_dir / "runner.log"
         daemon_log = worker_dir / "daemon.log"
         worker_dir.mkdir(parents=True, exist_ok=True)
-        prepare_run_config(Path(args.base_config_dir), config_dir, agent_config_text=agent_config_text)
+        prepare_run_config(
+            Path(args.base_config_dir),
+            config_dir,
+            agent_config_text=agent_config_text,
+            device_type=target_platform,
+        )
         benchmark_token = _read_optional_token(config_dir / "control_token")
         host_port = 0
         agent_url = f"http://127.0.0.1:{host_port}"

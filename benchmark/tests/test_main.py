@@ -42,6 +42,13 @@ def test_resolve_target_platform_infers_adb_android(monkeypatch):
     assert main._resolve_target_platform(args) == "android"
 
 
+def test_resolve_target_platform_infers_mobilegym_android(monkeypatch):
+    args = type("Args", (), {"target_platform": "auto", "environment_url": "http://127.0.0.1:18899"})()
+    monkeypatch.setattr(main, "_read_environment_health", lambda environment_url: {"bridge_type": "mobilegym"})
+
+    assert main._resolve_target_platform(args) == "android"
+
+
 def _task_result_with_details():
     return TaskResult(
         suite="suite",
@@ -559,12 +566,14 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     monkeypatch.setattr(main, "AgentClient", FakeClient)
     monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
     monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "_read_environment_health", lambda url: {"bridge_type": "mobilegym"})
     monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
     monkeypatch.setattr(main, "call_environment_release", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "clear_stale_adb_android_owner", lambda url: stale_clears.append(url))
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "read_environment_bridge_concurrency", lambda *args, **kwargs: 1)
     def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
+        captured["prepare_config_kwargs"] = kwargs
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "control_token").write_text("test-token", encoding="utf-8")
 
@@ -625,6 +634,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert captured["kwargs"]["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert captured["kwargs"]["environment_bridge_mode"] is True
     assert captured["task_kwargs"]["active_skills"] == ["device-operator"]
+    assert captured["prepare_config_kwargs"]["device_type"] == "android"
     assert stale_clears == ["http://127.0.0.1:19090"]
 
 

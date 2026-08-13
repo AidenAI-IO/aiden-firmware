@@ -216,6 +216,39 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     assert (dest / "memory").is_dir()
 
 
+def test_prepare_run_config_sets_android_device_type(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    agent_config = 'instruction = "custom"\n[device]\ndevice_type = "iOS"\n'
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(
+        base,
+        dest,
+        agent_config_text=agent_config,
+        device_type="Android",
+    )
+
+    config = tomllib.loads((dest / "agent.toml").read_text(encoding="utf-8"))
+    assert config["device"]["device_type"] == "Android"
+
+
+def test_prepare_run_config_adds_missing_device_section(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(
+        base,
+        dest,
+        agent_config_text='instruction = "custom"\n',
+        device_type="android",
+    )
+
+    config = tomllib.loads((dest / "agent.toml").read_text(encoding="utf-8"))
+    assert config["device"]["device_type"] == "Android"
+
+
 def test_prepare_run_config_includes_bundled_skills(tmp_path: Path):
     base = tmp_path / "base"
     base.mkdir()

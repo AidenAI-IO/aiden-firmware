@@ -194,6 +194,7 @@ def render_agent_toml(
         f"model = {_toml_string(model_name)}",
         "",
         "[device]",
+        'device_type = "Android"',
         'backend = "mobilegym"',
         f"bridge_url = {_toml_string(bridge_url)}",
         f"bridge_token_file = {_toml_string(str(bridge_token_file))}",

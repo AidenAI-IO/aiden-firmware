@@ -269,6 +269,7 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         status, body = request_json(bridge.base_url, "GET", "/health")
         assert status == 200
         assert body["data"]["status"] == "ok"
+        assert body["data"]["platform"] == "android"
         assert body["data"]["concurrent"] == 1
         assert "/api/concurrent" in body["data"]["interfaces"]
 

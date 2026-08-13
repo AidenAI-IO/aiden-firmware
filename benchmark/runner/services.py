@@ -59,6 +59,7 @@ def add_service_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     p_agent.add_argument("--daemon-image", default=DEFAULT_DAEMON_IMAGE)
     p_agent.add_argument("--no-build-daemon-image", action="store_true")
     p_agent.add_argument("--environment-bridge-endpoint", default="", help="Environment bridge endpoint to forward device tools to")
+    p_agent.add_argument("--device-type", default="", help="Controlled device type to write into agent.toml")
     p_agent.add_argument("--benchmark-task-id", default=DEFAULT_CLI_BENCHMARK_TASK_ID)
     p_agent.add_argument("--ready-timeout-sec", type=int, default=DEFAULT_DAEMON_READY_TIMEOUT_SEC)
     p_agent.add_argument("--json", action="store_true", help="Print machine-readable JSON")
@@ -131,7 +132,12 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
     agent_config_text = None
     if args.agent_config:
         agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
-    prepare_run_config(Path(args.base_config_dir), config_dir, agent_config_text=agent_config_text)
+    prepare_run_config(
+        Path(args.base_config_dir),
+        config_dir,
+        agent_config_text=agent_config_text,
+        device_type=getattr(args, "device_type", ""),
+    )
 
     environment_bridge_endpoint = str(args.environment_bridge_endpoint or "").strip().rstrip("/")
     docker_environment_bridge_endpoint = endpoint_for_docker(environment_bridge_endpoint) if environment_bridge_endpoint else ""
@@ -253,7 +259,7 @@ def cmd_start_mobilegym_env(args: argparse.Namespace) -> int:
     }
     payload["agent_daemon_command"] = (
         "uv run python -m runner start-agent-daemon "
-        f"--environment-bridge-endpoint {public_endpoint}"
+        f"--environment-bridge-endpoint {public_endpoint} --device-type Android"
     )
     _print_mobilegym_payload(payload, json_output=bool(args.json))
     return 0
@@ -344,7 +350,7 @@ def cmd_start_adb_android_env(args: argparse.Namespace) -> int:
         "stop_command": f"kill -TERM {pid}",
         "agent_daemon_command": (
             "uv run python -m runner start-agent-daemon "
-            f"--environment-bridge-endpoint {environment_url}"
+            f"--environment-bridge-endpoint {environment_url} --device-type Android"
         ),
     }
     _print_adb_android_payload(payload, json_output=bool(args.json))

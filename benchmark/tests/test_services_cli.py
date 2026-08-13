@@ -40,7 +40,7 @@ def test_start_mobilegym_env_prints_environment_urls(tmp_path: Path, monkeypatch
     assert payload["parallel_envs"] == 3
     assert payload["agent_daemon_command"] == (
         "uv run python -m runner start-agent-daemon "
-        "--environment-bridge-endpoint http://127.0.0.1:19090"
+        "--environment-bridge-endpoint http://127.0.0.1:19090 --device-type Android"
     )
     assert payload["stop_command"] == "docker rm -f aiden-mobilegym-env-mobilegym-smoke"
     assert health_urls == [("http://127.0.0.1:19090/health", 12)]
@@ -296,7 +296,7 @@ def test_start_adb_android_env_prints_environment_urls(tmp_path: Path, monkeypat
     assert payload["stop_command"] == "kill -TERM 4242"
     assert payload["agent_daemon_command"] == (
         "uv run python -m runner start-agent-daemon "
-        "--environment-bridge-endpoint http://127.0.0.1:18899"
+        "--environment-bridge-endpoint http://127.0.0.1:18899 --device-type Android"
     )
     assert health_urls == [("http://127.0.0.1:18899/health", 12)]
     assert launched[0]["serial"] == "127.0.0.1:6555"
