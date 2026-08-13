@@ -29,12 +29,13 @@ should expose canonical lowercase `platform` values such as `ios` or `android`:
 }
 ```
 
-Agent daemons running in environment bridge mode use this field as the runtime
-device platform authority. The daemon derives its effective `device_type`
-without rewriting `agent.toml`; an explicitly configured, conflicting
-`[device].device_type` causes startup to fail. Benchmark runners may also use
-the field to filter platform-specific tasks. For compatibility with older
-bridges, known `bridge_type` values may still be used as a fallback.
+Benchmark orchestration uses this field for environment discovery, task
+filtering, and platform consistency checks. When benchmark starts an agent
+daemon, it writes the resolved platform as `[device].device_type` in that
+worker's runtime `agent.toml` copy; saved WebUI and user configuration files are
+not modified. A pre-started external daemon must be configured explicitly by
+its caller. For compatibility with older bridges, known `bridge_type` values
+may still be used as a fallback.
 
 ### `GET /api/tools`
 

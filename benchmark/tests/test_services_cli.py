@@ -99,6 +99,11 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        services,
+        "read_environment_health",
+        lambda endpoint: {"platform": "android"},
+    )
     def fake_start_daemon_compose(job, **kwargs):
         captured["job"] = job
         captured["kwargs"] = kwargs
@@ -142,7 +147,7 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp
     assert kwargs["environment_bridge_mode"] is True
 
 
-def test_start_agent_daemon_preserves_agent_config_for_runtime_platform_resolution(
+def test_start_agent_daemon_injects_environment_platform_into_runtime_config(
     tmp_path: Path, monkeypatch
 ):
     base = tmp_path / "base"
@@ -153,6 +158,11 @@ def test_start_agent_daemon_preserves_agent_config_for_runtime_platform_resoluti
     )
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        services,
+        "read_environment_health",
+        lambda endpoint: {"platform": "android"},
+    )
     monkeypatch.setattr(services, "start_daemon_compose", lambda *args, **kwargs: "agent-container")
     monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
 
@@ -160,7 +170,8 @@ def test_start_agent_daemon_preserves_agent_config_for_runtime_platform_resoluti
 
     assert services.cmd_start_agent_daemon(args) == 0
     config = (tmp_path / "agent-smoke" / "config" / "agent.toml").read_text(encoding="utf-8")
-    assert 'device_type = "iOS"' in config
+    assert 'device_type = "Android"' in config
+    assert 'device_type = "iOS"' in (base / "agent.toml").read_text(encoding="utf-8")
 
 
 def test_start_agent_daemon_allows_no_environment_bridge(tmp_path: Path, monkeypatch, capsys):

@@ -95,11 +95,31 @@ def test_resolve_target_platform_validates_explicit_platform_against_environment
         main._resolve_target_platform(args, required=True)
 
 
-def test_resolve_target_platform_preserves_explicit_non_auto_filter(monkeypatch):
+def test_resolve_target_platform_rejects_explicit_mismatch_without_auto_setup(monkeypatch):
     args = type("Args", (), {"target_platform": "ios", "environment_url": "http://127.0.0.1:8899"})()
     monkeypatch.setattr(main, "_read_environment_health", lambda environment_url: {"platform": "android"})
 
-    assert main._resolve_target_platform(args) == "ios"
+    with pytest.raises(ValueError, match="does not match"):
+        main._resolve_target_platform(args)
+
+
+def test_resolve_target_platform_uses_pre_resolved_value_without_health_call(monkeypatch):
+    args = type(
+        "Args",
+        (),
+        {
+            "target_platform": "auto",
+            "resolved_target_platform": "android",
+            "environment_url": "http://127.0.0.1:8899",
+        },
+    )()
+    monkeypatch.setattr(
+        main,
+        "_read_environment_health",
+        lambda environment_url: (_ for _ in ()).throw(AssertionError("unexpected health call")),
+    )
+
+    assert main._resolve_target_platform(args) == "android"
 
 
 def _task_result_with_details():
@@ -186,6 +206,9 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
 
         def health(self):
             return True
+
+        def device_type(self):
+            return "Android"
 
         def close(self):
             pass
@@ -687,8 +710,63 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert captured["kwargs"]["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert captured["kwargs"]["environment_bridge_mode"] is True
     assert captured["task_kwargs"]["active_skills"] == ["device-operator"]
-    assert "device_type" not in captured["prepare_config_kwargs"]
+    assert captured["prepare_config_kwargs"]["device_type"] == "Android"
     assert stale_clears == ["http://127.0.0.1:19090"]
+
+
+def test_run_rejects_external_daemon_device_type_mismatch(monkeypatch, tmp_path, capsys):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mobile_suite",
+                "tasks": [
+                    {
+                        "id": "open_clock",
+                        "category": "diagnostic",
+                        "prompt": "open clock",
+                        "description_for_judge": "open clock",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        def health(self):
+            return True
+
+        def device_type(self):
+            return "iOS"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "_read_environment_health", lambda url: {"platform": "android"})
+    monkeypatch.setattr(main, "clear_stale_adb_android_owner", lambda url: None)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--environment-url",
+            "http://127.0.0.1:19090",
+            "--skip-clock-wait",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 2
+    assert "does not match environment platform" in capsys.readouterr().err
 
 
 def test_mock_environment_suite_requires_auto_agent_setup(tmp_path, capsys):
@@ -835,7 +913,7 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
     assert captured["daemon_kwargs"]["environment_bridge_endpoint"] == captured[
         "job"
     ].docker_endpoint
-    assert "device_type" not in captured["prepare_config_kwargs"]
+    assert captured["prepare_config_kwargs"]["device_type"] == "iOS"
     manifest = json.loads(
         (tmp_path / "runs" / "mock-run" / "manifest.json").read_text(
             encoding="utf-8"
@@ -1149,6 +1227,9 @@ def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_pa
         def health(self):
             return True
 
+        def device_type(self):
+            return "Android"
+
         def close(self):
             pass
 
@@ -1179,6 +1260,7 @@ def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_pa
         lambda environment_url, task_id=None, **kwargs: releases.append((environment_url, task_id)),
     )
     monkeypatch.setattr(main, "clear_stale_adb_android_owner", lambda url: stale_clears.append(url))
+    monkeypatch.setattr(main, "_read_environment_health", lambda url: {"platform": "android"})
 
     rc = main.cli(
         [

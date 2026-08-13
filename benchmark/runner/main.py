@@ -14,8 +14,10 @@ from runner.html_report import generate_report_html, upload_report
 from runner.judge import DEFAULT_JUDGE_BASE_URL, JudgeConfig
 from runner.platform import (
     VALID_TARGET_PLATFORMS,
+    device_type_from_target_platform,
     platform_from_environment_health,
     read_environment_health,
+    target_platform_from_device_type,
 )
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
@@ -93,6 +95,8 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--target-platform", default=os.environ.get("AIDEN_BENCHMARK_TARGET_PLATFORM", "auto"),
                        choices=["auto", "ios", "android", "mac"],
                        help="Filter suite tasks by platform; auto infers adb_android environments as android")
+    p_run.add_argument("--resolved-target-platform", default="", choices=["", "ios", "android", "mac"],
+                       help=argparse.SUPPRESS)
     p_run.add_argument("--skip-clock-wait", action="store_true")
     p_run.add_argument("--clock-timeout-sec", type=int, default=180)
     p_run.add_argument("--agent-ready-timeout-sec", type=int, default=120)
@@ -317,6 +321,13 @@ def _task_route_id(args: argparse.Namespace, suite: Suite, task_id: str, attempt
 def _resolve_target_platform(args: argparse.Namespace, *, required: bool = False) -> str:
     requested = str(getattr(args, "target_platform", "") or "").strip().lower()
     explicit = requested if requested and requested != "auto" else ""
+    resolved = str(getattr(args, "resolved_target_platform", "") or "").strip().lower()
+    if resolved:
+        if explicit and explicit != resolved:
+            raise ValueError(
+                f"target platform {explicit!r} does not match resolved environment platform {resolved!r}"
+            )
+        return resolved
     environment_url = str(getattr(args, "environment_url", "") or "").strip()
     if not environment_url:
         return explicit
@@ -330,7 +341,7 @@ def _resolve_target_platform(args: argparse.Namespace, *, required: bool = False
         if required:
             raise ValueError("environment bridge health did not report a supported platform")
         return explicit
-    if required and explicit and explicit != platform:
+    if explicit and explicit != platform:
         raise ValueError(
             f"target platform {explicit!r} does not match environment platform {platform!r}"
         )
@@ -514,7 +525,12 @@ def _cmd_run_auto_agent_setup_inner(
         runner_log = worker_dir / "runner.log"
         daemon_log = worker_dir / "daemon.log"
         worker_dir.mkdir(parents=True, exist_ok=True)
-        prepare_run_config(Path(args.base_config_dir), config_dir, agent_config_text=agent_config_text)
+        prepare_run_config(
+            Path(args.base_config_dir),
+            config_dir,
+            agent_config_text=agent_config_text,
+            device_type=device_type_from_target_platform(target_platform),
+        )
         benchmark_token = _read_optional_token(config_dir / "control_token")
         host_port = 0
         agent_url = f"http://127.0.0.1:{host_port}"
@@ -695,7 +711,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print("Error: max-concurrency must be non-negative", file=sys.stderr)
         return 2
     try:
-        target_platform = _resolve_target_platform(args, required=args.auto_agent_setup)
+        target_platform = _resolve_target_platform(args, required=bool(args.environment_url))
     except Exception as exc:
         print(f"Error: failed to resolve target platform: {exc}", file=sys.stderr)
         return 2
@@ -734,6 +750,27 @@ def _cmd_run(args: argparse.Namespace) -> int:
             print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
             client.close()
             return 2
+        if args.environment_url:
+            try:
+                agent_platform = target_platform_from_device_type(client.device_type())
+            except Exception as exc:
+                print(f"failed to read agent daemon device_type: {exc}", file=sys.stderr)
+                client.close()
+                return 2
+            if not agent_platform:
+                print(
+                    "agent daemon did not report a supported configured device_type",
+                    file=sys.stderr,
+                )
+                client.close()
+                return 2
+            if agent_platform != target_platform:
+                print(
+                    f"agent device platform {agent_platform!r} does not match environment platform {target_platform!r}",
+                    file=sys.stderr,
+                )
+                client.close()
+                return 2
         if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
             print("agent board clock did not sync before benchmark start", file=sys.stderr)
             client.close()

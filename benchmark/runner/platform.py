@@ -6,6 +6,11 @@ import urllib.request
 from typing import Any
 
 VALID_TARGET_PLATFORMS = {"ios", "android", "mac"}
+DEVICE_TYPE_BY_TARGET_PLATFORM = {
+    "ios": "iOS",
+    "android": "Android",
+    "mac": "macOS",
+}
 
 
 def platform_from_environment_health(health: dict[str, Any]) -> str:
@@ -20,6 +25,21 @@ def platform_from_environment_health(health: dict[str, Any]) -> str:
         return "android"
     if bridge_type == "vphone_ios":
         return "ios"
+    return ""
+
+
+def device_type_from_target_platform(platform: str) -> str:
+    return DEVICE_TYPE_BY_TARGET_PLATFORM.get(str(platform or "").strip().lower(), "")
+
+
+def target_platform_from_device_type(device_type: str) -> str:
+    normalized = str(device_type or "").strip().lower()
+    if normalized == "ios":
+        return "ios"
+    if normalized == "android":
+        return "android"
+    if normalized in {"mac", "macos"}:
+        return "mac"
     return ""
 
 

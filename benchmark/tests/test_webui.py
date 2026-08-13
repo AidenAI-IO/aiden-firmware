@@ -216,13 +216,35 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     assert (dest / "memory").is_dir()
 
 
-def test_prepare_run_config_preserves_device_type(tmp_path: Path):
+def test_prepare_run_config_injects_device_type_into_runtime_copy(tmp_path: Path):
     base = tmp_path / "base"
     base.mkdir()
     agent_config = 'instruction = "custom"\n[device]\ndevice_type = "iOS"\n'
 
     dest = tmp_path / "dest"
-    webui.prepare_run_config(base, dest, agent_config_text=agent_config)
+    webui.prepare_run_config(
+        base,
+        dest,
+        agent_config_text=agent_config,
+        device_type="Android",
+    )
+
+    config = tomllib.loads((dest / "agent.toml").read_text(encoding="utf-8"))
+    assert config["device"]["device_type"] == "Android"
+    assert agent_config == 'instruction = "custom"\n[device]\ndevice_type = "iOS"\n'
+
+
+def test_prepare_run_config_adds_missing_device_table(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(
+        base,
+        dest,
+        agent_config_text='instruction = "custom"\n',
+        device_type="iOS",
+    )
 
     config = tomllib.loads((dest / "agent.toml").read_text(encoding="utf-8"))
     assert config["device"]["device_type"] == "iOS"
@@ -994,6 +1016,11 @@ def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
         return FakeProc()
 
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        webui,
+        "read_environment_health",
+        lambda endpoint: {"platform": "ios"},
+    )
     monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
     monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
@@ -1011,6 +1038,8 @@ def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
 
     expected = webui.job_benchmark_task_id("job-test")
     assert captured["daemon_task_id"] == expected
+    resolved_index = captured["cmd"].index("--resolved-target-platform")
+    assert captured["cmd"][resolved_index + 1] == "ios"
     assert captured["cmd"][captured["cmd"].index("--benchmark-task-id") + 1] == expected
     # A stopped or crashed job must not leave the lease behind: the id is never
     # reused, so a leak would 429 every later job.
@@ -1693,6 +1722,11 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     app._jobs[job.id] = job
 
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        webui,
+        "read_environment_health",
+        lambda endpoint: {"platform": "android"},
+    )
     monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_wait_for_daemon", lambda job: None)
 

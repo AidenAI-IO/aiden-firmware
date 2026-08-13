@@ -27,6 +27,12 @@ from runner.agent_client import AgentClient
 from runner.analysis import AnalysisResult, analyze_run, config_from_env
 from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
+from runner.agent_config import set_agent_device_type
+from runner.platform import (
+    device_type_from_target_platform,
+    platform_from_environment_health,
+    read_environment_health,
+)
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
 
@@ -158,6 +164,7 @@ class Job:
     judge_api_key_set: bool = False
     repeats: int | None = None
     parallel_tasks: int = 1
+    target_platform: str = ""
 
 
 class BenchmarkWebApp:
@@ -790,7 +797,19 @@ class BenchmarkWebApp:
             self._raise_if_job_stop_requested(job)
             self._set_job(job, status="preparing", started_at=now_iso(), message="preparing config")
             agent_config_text = self.get_agent_config()["content"]
-            prepare_run_config(self.config.base_config_dir, Path(job.config_dir), agent_config_text=agent_config_text)
+            device_type = ""
+            if job.environment_type != "mock":
+                health = read_environment_health(job.environment_endpoint or job.endpoint)
+                job.target_platform = platform_from_environment_health(health)
+                if not job.target_platform:
+                    raise ValueError("environment bridge health did not report a supported platform")
+                device_type = device_type_from_target_platform(job.target_platform)
+            prepare_run_config(
+                self.config.base_config_dir,
+                Path(job.config_dir),
+                agent_config_text=agent_config_text,
+                device_type=device_type,
+            )
             self._raise_if_job_stop_requested(job)
             if job.environment_type == "mock":
                 self._set_job(
@@ -1139,6 +1158,8 @@ class BenchmarkWebApp:
                 str(Path(job.config_dir) / "control_token"),
                 "--environment-url",
                 job.environment_endpoint,
+                "--resolved-target-platform",
+                job.target_platform,
             ]
             if job.no_judge:
                 cmd.append("--no-judge")
@@ -1342,6 +1363,7 @@ class BenchmarkWebApp:
         cmd.extend(["--benchmark-token-file", str(Path(job.config_dir) / "control_token")])
         if job.environment_endpoint:
             cmd.extend(["--environment-url", job.environment_endpoint])
+            cmd.extend(["--resolved-target-platform", job.target_platform])
             # Must match the id the shared daemon was started with, or the
             # bridge rejects the daemon's tool calls as another task's.
             cmd.extend(["--benchmark-task-id", job_benchmark_task_id(job.id)])
@@ -1639,7 +1661,13 @@ def runner_procs_for_stop(value: Any) -> list[subprocess.Popen]:
     return [value]
 
 
-def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text: str | None = None) -> None:
+def prepare_run_config(
+    base_config_dir: Path,
+    dest_dir: Path,
+    agent_config_text: str | None = None,
+    *,
+    device_type: str = "",
+) -> None:
     if dest_dir.exists():
         shutil.rmtree(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1671,6 +1699,10 @@ def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text:
             config.write_text(render_agent_template(template.read_text(encoding="utf-8")), encoding="utf-8")
         if not config.exists():
             config.write_text(default_agent_toml(), encoding="utf-8")
+    if device_type:
+        content = set_agent_device_type(config.read_text(encoding="utf-8"), device_type)
+        validate_agent_toml(content)
+        config.write_text(content, encoding="utf-8")
 
 
 def ensure_webui_agent_config(base_config_dir: Path, agent_config_path: Path) -> tuple[str, str]:

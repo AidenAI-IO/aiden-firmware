@@ -753,6 +753,7 @@ The command prints:
 - `docker_environment_bridge_endpoint`: the environment endpoint from inside the
   container.
 - `benchmark_task_id`: the route id the daemon's environment bridge requests carry.
+- `target_platform`: the platform resolved from the environment bridge health.
 - `stop_command`: the command to stop this daemon.
 
 Common parameters:
@@ -771,8 +772,12 @@ Common parameters:
 The agent config rules used by `start-agent-daemon` are the same as
 `run --auto-agent-setup`: copy `--base-config-dir` first, then override the
 generated `agent.toml` with `--agent-config`; if `--agent-config` is absent, use
-`agent.toml.template` or the default config. After starting the daemon manually,
-pass the printed `agent_url` to `runner run --agent-url`.
+`agent.toml.template` or the default config. When an environment bridge is
+provided, the command resolves its platform once and writes the corresponding
+`[device].device_type` into the generated runtime copy. The source config is not
+modified. After starting the daemon manually, pass the printed `agent_url` to
+`runner run --agent-url`; the runner validates the daemon's reported
+`device_type` against the environment platform.
 
 Recommended CLI MobileGym debug flow:
 

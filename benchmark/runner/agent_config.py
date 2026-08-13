@@ -1,11 +1,77 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+VALID_DEVICE_TYPES = {"iOS", "Android", "macOS", "windows", "linux"}
+
+
+def set_agent_device_type(content: str, device_type: str) -> str:
+    """Set device.device_type in a runtime TOML copy while preserving other text."""
+    canonical = str(device_type or "").strip()
+    if canonical not in VALID_DEVICE_TYPES:
+        raise ValueError(f"unsupported device type: {device_type!r}")
+
+    lines = content.splitlines()
+    setting = f'device_type = "{canonical}"'
+    dotted_key = re.compile(
+        r'''^(?P<indent>\s*)(?:device|"device"|'device')\s*\.\s*'''
+        r'''(?:device_type|"device_type"|'device_type')\s*=.*$'''
+    )
+    first_table = next(
+        (index for index, line in enumerate(lines) if line.lstrip().startswith("[")),
+        len(lines),
+    )
+    dotted_index = next(
+        (index for index, line in enumerate(lines[:first_table]) if dotted_key.match(line)),
+        None,
+    )
+    if dotted_index is not None:
+        match = dotted_key.match(lines[dotted_index])
+        indent = match.group("indent") if match is not None else ""
+        lines[dotted_index] = f'{indent}device.device_type = "{canonical}"'
+        return "\n".join(lines) + "\n"
+
+    device_table = re.compile(
+        r'''^\s*\[\s*(?:device|"device"|'device')\s*\]\s*(?:#.*)?$'''
+    )
+    device_header = next(
+        (index for index, line in enumerate(lines) if device_table.match(line)),
+        None,
+    )
+    if device_header is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(["[device]", setting])
+    else:
+        section_end = next(
+            (
+                index
+                for index in range(device_header + 1, len(lines))
+                if lines[index].lstrip().startswith("[")
+            ),
+            len(lines),
+        )
+        existing = next(
+            (
+                index
+                for index in range(device_header + 1, section_end)
+                if re.match(
+                    r'''^\s*(?:device_type|"device_type"|'device_type')\s*=''',
+                    lines[index],
+                )
+            ),
+            None,
+        )
+        if existing is None:
+            lines.insert(device_header + 1, setting)
+        else:
+            lines[existing] = setting
+    return "\n".join(lines) + "\n"
 
 
 def _strip_toml_comment(line: str) -> str:

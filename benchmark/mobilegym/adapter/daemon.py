@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from runner.agent_config import set_agent_device_type
+
 
 DEFAULT_INSTRUCTION = "You are controlling an Android-like MobileGym simulator. Use screenshot and touch tools."
 DEFAULT_INPUT_MODE = "text"
@@ -177,30 +179,30 @@ def render_agent_toml(
         rendered = Path(template_path).read_text()
         for name, value in values.items():
             rendered = rendered.replace("{{" + name + "}}", value)
-        return rendered
-
-    lines = [
-        f"instruction = {_toml_string(instruction)}",
-        f"input_mode = {_toml_string(input_mode)}",
-        f"max_iterations = {int(max_iterations)}",
-        "",
-        "[model_providers.benchmark]",
-        f"type = {_toml_string(model_provider)}",
-        f"base_url = {_toml_string(model_base_url)}",
-        f"api_key = {_toml_string(model_api_key)}",
-        "",
-        "[model]",
-        'provider = "benchmark"',
-        f"model = {_toml_string(model_name)}",
-        "",
-        "[device]",
-        'backend = "mobilegym"',
-        f"bridge_url = {_toml_string(bridge_url)}",
-        f"bridge_token_file = {_toml_string(str(bridge_token_file))}",
-        f"control_token_file = {_toml_string(str(control_token_file))}",
-        "",
-    ]
-    return "\n".join(lines)
+    else:
+        lines = [
+            f"instruction = {_toml_string(instruction)}",
+            f"input_mode = {_toml_string(input_mode)}",
+            f"max_iterations = {int(max_iterations)}",
+            "",
+            "[model_providers.benchmark]",
+            f"type = {_toml_string(model_provider)}",
+            f"base_url = {_toml_string(model_base_url)}",
+            f"api_key = {_toml_string(model_api_key)}",
+            "",
+            "[model]",
+            'provider = "benchmark"',
+            f"model = {_toml_string(model_name)}",
+            "",
+            "[device]",
+            'backend = "mobilegym"',
+            f"bridge_url = {_toml_string(bridge_url)}",
+            f"bridge_token_file = {_toml_string(str(bridge_token_file))}",
+            f"control_token_file = {_toml_string(str(control_token_file))}",
+            "",
+        ]
+        rendered = "\n".join(lines)
+    return set_agent_device_type(rendered, "Android")
 
 
 def launch_daemon(

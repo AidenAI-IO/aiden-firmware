@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from runner.agent_client import AgentClient
+from runner.platform import (
+    device_type_from_target_platform,
+    platform_from_environment_health,
+    read_environment_health,
+)
 from runner.adb_android_environment import (
     DEFAULT_ADB_BRIDGE_READY_TIMEOUT_SEC,
     DEFAULT_ADB_SERIAL,
@@ -128,12 +133,32 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
 
     service_dir.mkdir(parents=True, exist_ok=True)
 
+    environment_bridge_endpoint = str(args.environment_bridge_endpoint or "").strip().rstrip("/")
+    target_platform = ""
+    if environment_bridge_endpoint:
+        try:
+            target_platform = platform_from_environment_health(
+                read_environment_health(environment_bridge_endpoint)
+            )
+        except Exception as exc:
+            print(f"Error: failed to resolve environment platform: {exc}", file=sys.stderr)
+            return 2
+        if not target_platform:
+            print(
+                "Error: environment bridge health did not report a supported platform",
+                file=sys.stderr,
+            )
+            return 2
+
     agent_config_text = None
     if args.agent_config:
         agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
-    prepare_run_config(Path(args.base_config_dir), config_dir, agent_config_text=agent_config_text)
-
-    environment_bridge_endpoint = str(args.environment_bridge_endpoint or "").strip().rstrip("/")
+    prepare_run_config(
+        Path(args.base_config_dir),
+        config_dir,
+        agent_config_text=agent_config_text,
+        device_type=device_type_from_target_platform(target_platform),
+    )
     docker_environment_bridge_endpoint = endpoint_for_docker(environment_bridge_endpoint) if environment_bridge_endpoint else ""
     benchmark_task_id = str(args.benchmark_task_id or "").strip()
     agent_url = f"http://127.0.0.1:{host_port}"
@@ -181,6 +206,7 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
         "environment_bridge_endpoint": environment_bridge_endpoint,
         "docker_environment_bridge_endpoint": docker_environment_bridge_endpoint,
         "benchmark_task_id": benchmark_task_id if docker_environment_bridge_endpoint else "",
+        "target_platform": target_platform,
         "stop_command": " ".join(
             daemon_compose_command(
                 "down",
