@@ -826,7 +826,6 @@ func platformNote(actionID, platform string, binding quickActionBinding) string 
 func quickActionBehaviorSummary() string {
 	return strings.Join([]string{
 		"Common actions: back, home, hide_app, quit_app, app_switch, app_switch_back, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, browser_new_tab, browser_close_tab, browser_refresh, browser_address_bar.",
-		"- Device-specific bindings are selected from global device_type state; use the action id without overriding platform.",
 		"- Cataloged semantic actions MUST use quick_action. keyboard_tap remains valid for explicit physical-key requests and uncataloged app-specific shortcuts.",
 		"- A raw chord fallback for a cataloged action is allowed only when a quick_action result in the current run explicitly reports status=reserved or unavailable before executing a binding. Do not infer unavailability from unrelated failures or assumptions.",
 		"- If an active binding executed but failed or had no visible effect: use a listed alternative or non-shortcut UI strategy; never replay the same binding as a raw keyboard chord.",
