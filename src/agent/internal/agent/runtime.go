@@ -470,6 +470,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	rt.screenState = screenState
 	rt.phoneBridge = NewPhoneBridge(logger)
+	rt.phoneBridge.SetConfiguredPlatform(cfg.DevicePlatformOrDefault())
 	rt.stateManager.RegisterUpdater(screenState)
 	rt.stateManager.RegisterUpdater(rt.phoneBridge)
 
@@ -1504,7 +1505,64 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	if r == nil || r.tools == nil {
 		return nil
 	}
-	return NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
+	tools := NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
+	return r.filterPhoneBridgeAgentTools(tools)
+}
+
+func (r *Runtime) filterPhoneBridgeAgentTools(tools []langtools.Tool) []langtools.Tool {
+	if r == nil || r.tools == nil || r.tools.phoneBridge == nil {
+		return tools
+	}
+	bridge := r.tools.phoneBridge
+	bridge.SetConfiguredPlatform(r.devicePlatformFromState())
+	status := bridge.getStatus()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	capabilities := bridge.bleCapabilities(ctx)
+	cancel()
+
+	openURLAvailable := phoneBridgeReadyForCommand(status, "open_app") || phoneBridgeCanRestoreFromReturnEntry(status)
+	clipboardAvailable := phoneBridgeCommandAvailable(status, "clipboard_read", capabilities.Wake) ||
+		phoneBridgeCommandAvailable(status, "clipboard_write", capabilities.Wake)
+	calendarAvailable := phoneBridgeCommandAvailable(status, "calendar_create", capabilities.Wake) ||
+		phoneBridgeCommandAvailable(status, "calendar_query", capabilities.Wake) ||
+		phoneBridgeCommandAvailable(status, "calendar_delete", capabilities.Wake)
+	contactsQueryAvailable := phoneBridgeCommandAvailable(status, "contacts_query", capabilities.Wake)
+	contactsCreateAvailable := phoneBridgeCommandAvailable(status, "contacts_create", capabilities.Wake)
+	contactsUpdateAvailable := phoneBridgeCommandAvailable(status, "contacts_update", capabilities.Wake)
+	contactsAvailable := contactsQueryAvailable || contactsCreateAvailable || contactsUpdateAvailable
+	notificationSendAvailable := phoneBridgeCommandAvailable(status, "notification_send", capabilities.Wake)
+	notificationQueryAvailable := capabilities.NotificationQuery
+	notificationAvailable := notificationSendAvailable || notificationQueryAvailable
+
+	filtered := make([]langtools.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		available := true
+		switch tool.Name() {
+		case toolOpenURL:
+			available = openURLAvailable
+		case toolBridgeClipboard:
+			available = clipboardAvailable
+		case toolBridgeCalendar:
+			available = calendarAvailable
+		case toolBridgeContacts:
+			available = contactsAvailable
+		case toolBridgeNotification:
+			available = notificationAvailable
+		}
+		if available {
+			switch tool.Name() {
+			case toolBridgeContacts:
+				tool = newContactsCapabilityTool(tool, contactsQueryAvailable, contactsCreateAvailable, contactsUpdateAvailable)
+			case toolBridgeNotification:
+				tool = newNotificationCapabilityTool(tool, notificationSendAvailable, notificationQueryAvailable)
+			}
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
 }
 
 func toolNamesFromTools(tools []langtools.Tool) []string {

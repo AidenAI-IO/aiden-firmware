@@ -38,7 +38,6 @@ type wheelNudgeColumnUsage struct {
 	centerX     float64
 	centerY     float64
 	rowSpacing  float64
-	coordSpace  string
 	used        int
 	limit       int
 	direction   string
@@ -54,7 +53,6 @@ type wheelNudgeAttempt struct {
 	columnX     float64
 	centerY     float64
 	rowSpacing  float64
-	coordSpace  string
 	columnLimit int
 }
 
@@ -101,8 +99,10 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 		// touching the device. Calls that cannot execute do not consume budget.
 		return ToolResult{}, true
 	}
-	columnX, centerY, rowSpacing, coordSpace := g.guardCoordinates(args.CoordSpace, *args.ColumnX, wheelCenterY(args), *args.RowSpacing)
-	columnIndex := g.columnIndex(args.PickerID, columnX, centerY, coordSpace)
+	columnX := clampFloat(*args.ColumnX, 0, 1000)
+	centerY := clampFloat(wheelCenterY(args), 0, 1000)
+	rowSpacing := *args.RowSpacing
+	columnIndex := g.columnIndex(args.PickerID, columnX, centerY)
 	columnUsed := 0
 	representativeX := columnX
 	if columnIndex >= 0 {
@@ -202,7 +202,6 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 		columnX:     columnX,
 		centerY:     centerY,
 		rowSpacing:  rowSpacing,
-		coordSpace:  coordSpace,
 		columnLimit: columnLimit,
 	}
 	return ToolResult{}, true
@@ -229,7 +228,6 @@ func (g *wheelNudgeGuard) AfterToolCall(_ context.Context, call ToolCall, result
 				centerX:     attempt.columnX,
 				centerY:     attempt.centerY,
 				rowSpacing:  attempt.rowSpacing,
-				coordSpace:  attempt.coordSpace,
 				limit:       attempt.columnLimit,
 			})
 			columnIndex = len(g.columns) - 1
@@ -336,11 +334,11 @@ func wheelObservationRows(observation wheelNudgeObservation, afterValue, valueSt
 	return rows, true
 }
 
-func (g *wheelNudgeGuard) columnIndex(pickerID string, columnX, centerY float64, coordSpace string) int {
+func (g *wheelNudgeGuard) columnIndex(pickerID string, columnX, centerY float64) int {
 	closest := -1
 	closestDistance := math.MaxFloat64
 	for index, column := range g.columns {
-		if column.pickerID != pickerID || column.coordSpace != coordSpace {
+		if column.pickerID != pickerID {
 			continue
 		}
 		if math.Abs(column.centerY-centerY) > wheelNudgeCenterTolerance {
@@ -471,38 +469,6 @@ func invalidWheelResult(message string, details map[string]any) ToolResult {
 	}
 }
 
-func normalizedWheelCoordSpace(coordSpace string) string {
-	coordSpace = strings.ToLower(strings.TrimSpace(coordSpace))
-	if coordSpace == "" || coordSpace == coordinateSpaceAuto {
-		return coordinateSpaceNormalized
-	}
-	return coordSpace
-}
-
-func (g *wheelNudgeGuard) guardCoordinates(coordSpace string, x, y, rowSpacing float64) (float64, float64, float64, string) {
-	coordSpace = normalizedWheelCoordSpace(coordSpace)
-	switch coordSpace {
-	case coordinateSpaceNormalized:
-		return clampFloat(x, 0, 1000), clampFloat(y, 0, 1000), rowSpacing, coordinateSpaceNormalized
-	case coordinateSpaceAbsolute:
-		return clampFloat(x, 0, absMouseMaxPos) / absMouseMaxPos * 1000,
-			clampFloat(y, 0, absMouseMaxPos) / absMouseMaxPos * 1000,
-			rowSpacing / absMouseMaxPos * 1000,
-			coordinateSpaceNormalized
-	case coordinateSpaceScreenshot, coordinateSpacePixel:
-		if g != nil && g.screen != nil {
-			_, _, active, age, ok := g.screen.ActiveAreaWithAge()
-			if ok && age < screenDimensionsStaleAfter && active.Width > 1 && active.Height > 1 {
-				return clampFloat(x, 0, float64(active.Width-1)) / float64(active.Width-1) * 1000,
-					clampFloat(y, 0, float64(active.Height-1)) / float64(active.Height-1) * 1000,
-					rowSpacing / float64(active.Height-1) * 1000,
-					coordinateSpaceNormalized
-			}
-		}
-	}
-	return math.Max(0, x), math.Max(0, y), rowSpacing, coordSpace
-}
-
 func wheelCenterY(args wheelNudgeArgs) float64 {
 	return *args.CenterY
 }
@@ -512,12 +478,11 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 		return ToolResult{}, true
 	}
 	var args struct {
-		Type       string        `json:"type"`
-		Point      *pointerPoint `json:"point"`
-		Start      *pointerPoint `json:"start"`
-		End        *pointerPoint `json:"end"`
-		CoordSpace string        `json:"coord_space"`
-		Anchor     *float64      `json:"anchor"`
+		Type   string        `json:"type"`
+		Point  *pointerPoint `json:"point"`
+		Start  *pointerPoint `json:"start"`
+		End    *pointerPoint `json:"end"`
+		Anchor *float64      `json:"anchor"`
 	}
 	if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 		return ToolResult{}, true
@@ -534,22 +499,16 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 		if args.Anchor != nil {
 			anchor = *args.Anchor
 		}
-		type directionalAnchor struct {
-			x          float64
-			coordSpace string
-		}
-		candidateAnchors := []directionalAnchor{
-			{x: anchor, coordSpace: coordinateSpaceNormalized},
-		}
+		candidateAnchors := []float64{anchor}
 		for _, point := range []*pointerPoint{args.Start, args.End} {
 			if point != nil {
-				candidateAnchors = append(candidateAnchors, directionalAnchor{x: point.X.Float64(), coordSpace: normalizedWheelCoordSpace(args.CoordSpace)})
+				candidateAnchors = append(candidateAnchors, point.X.Float64())
 			}
 		}
 		for _, candidate := range candidateAnchors {
 			for _, column := range g.columns {
-				x, _, _, pointSpace := g.guardCoordinates(candidate.coordSpace, candidate.x, column.centerY, 0)
-				if column.coordSpace == pointSpace && math.Abs(column.centerX-x) <= wheelNudgeColumnTolerance {
+				x := clampFloat(candidate, 0, 1000)
+				if math.Abs(column.centerX-x) <= wheelNudgeColumnTolerance {
 					message := "active picker column is owned by wheel_nudge: refusing a directional swipe anchored on that column"
 					return invalidWheelResult(message, map[string]any{"column_x": column.centerX, "retry_same_column": true}), false
 				}
@@ -564,18 +523,18 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 	default:
 		return ToolResult{}, true
 	}
-	coordSpace := normalizedWheelCoordSpace(args.CoordSpace)
 	navigationCandidate := false
 	for _, point := range points {
 		if point == nil {
 			continue
 		}
 		for _, column := range g.columns {
-			x, y, _, pointSpace := g.guardCoordinates(coordSpace, point.X.Float64(), point.Y.Float64(), 0)
-			if pointSpace == coordinateSpaceNormalized && wheelPointInActionBar(y) {
+			x := clampFloat(point.X.Float64(), 0, 1000)
+			y := clampFloat(point.Y.Float64(), 0, 1000)
+			if wheelPointInActionBar(y) {
 				navigationCandidate = true
 			}
-			if column.coordSpace != pointSpace || !wheelPointInsideColumnSafetyZone(column, x, y) {
+			if !wheelPointInsideColumnSafetyZone(column, x, y) {
 				continue
 			}
 			if column.used >= column.limit {
@@ -601,21 +560,20 @@ func (g *wheelNudgeGuard) beforeMouseClick(call ToolCall) (ToolResult, bool) {
 		return ToolResult{}, true
 	}
 	var args struct {
-		X          pointerCoordinate `json:"x"`
-		Y          pointerCoordinate `json:"y"`
-		CoordSpace string            `json:"coord_space"`
+		X pointerCoordinate `json:"x"`
+		Y pointerCoordinate `json:"y"`
 	}
 	if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 		return ToolResult{}, true
 	}
-	coordSpace := normalizedWheelCoordSpace(args.CoordSpace)
 	navigationCandidate := false
 	for _, column := range g.columns {
-		x, y, _, pointSpace := g.guardCoordinates(coordSpace, args.X.Float64(), args.Y.Float64(), 0)
-		if pointSpace == coordinateSpaceNormalized && wheelPointInActionBar(y) {
+		x := clampFloat(args.X.Float64(), 0, 1000)
+		y := clampFloat(args.Y.Float64(), 0, 1000)
+		if wheelPointInActionBar(y) {
 			navigationCandidate = true
 		}
-		if column.coordSpace != pointSpace || !wheelPointInsideColumnSafetyZone(column, x, y) {
+		if !wheelPointInsideColumnSafetyZone(column, x, y) {
 			continue
 		}
 		if column.used >= column.limit {
@@ -667,7 +625,7 @@ func wheelPointInsideColumnSafetyZone(column wheelNudgeColumnUsage, x, y float64
 	if math.Abs(column.centerX-x) > wheelNudgeColumnTolerance {
 		return false
 	}
-	if column.coordSpace == coordinateSpaceNormalized && wheelPointInActionBar(y) {
+	if wheelPointInActionBar(y) {
 		return false
 	}
 	halfHeight := max(wheelNudgeMinSafetyHeight, 6*column.rowSpacing)

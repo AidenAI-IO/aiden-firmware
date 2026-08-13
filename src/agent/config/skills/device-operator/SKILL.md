@@ -71,7 +71,7 @@ If a semantic tool fails, read the message and choose a different approach. Do n
 Before using coordinates:
 
 - Inspect the screenshot and identify the intended target visually.
-- Use `coord_space: "normalized"` with 0-1000 coordinates: `(0,0)` is top-left, `(1000,1000)` is bottom-right, `(500,500)` is center.
+- Use normalized 0-1000 coordinates: `(0,0)` is top-left, `(1000,1000)` is bottom-right, `(500,500)` is center.
 - Never pass screenshot pixels directly to a coordinate tool. Convert point measurements from the latest returned image first: `x_normalized = pixel_x / max(screenshot_width - 1, 1) * 1000` and `y_normalized = pixel_y / max(screenshot_height - 1, 1) * 1000`.
 - Choose the visual center of the target. For small controls, estimate the control bounds and aim for the midpoint, biased slightly inward.
 - Avoid edges unless performing an edge gesture. For phone edge gestures, do not use conservative insets like 50-100: left-edge `back` starts at normalized `x=1`, and bottom-edge `home` starts at normalized `y=999`.
@@ -87,7 +87,7 @@ Required pattern:
 ```json
 {
   "text": "你好",
-  "focus": { "x": 450, "y": 105, "coord_space": "normalized" }
+  "focus": { "x": 450, "y": 105 }
 }
 ```
 
@@ -170,7 +170,7 @@ If the same list boundary appears again, stop searching in that direction. Try s
 
 For picker/wheel controls, discover columns from the current UI rather than assuming hour/minute positions. Give the current visible picker screen a stable `picker_id` (for example `alarm-create` or `date-editor`) and change it after navigating to another picker screen. Before the first `wheel_nudge` in a task, take a fresh screenshot of the current screen; do not reuse picker state remembered from an earlier task or a screen the user may have changed manually. For each column, identify the selected value, target value, adjacent values, `column_x`, `center_y`, and a best estimate of `row_spacing`. `center_y` is mandatory on every `wheel_nudge` call: measure it from the selected center row in the latest screenshot, and never omit it or substitute a fixed default. Runtime independently measures repeated row geometry from the latest screenshot and replaces an inaccurate `row_spacing` estimate when confidence is sufficient. Use numeric values or stable ordinal indices for textual lists.
 
-All `wheel_nudge` geometry uses normalized 0-1000 coordinates. Convert horizontal `column_x` with `pixel_x / max(screenshot_width - 1, 1) * 1000`. Convert vertical `center_y`, the caller's `row_spacing` estimate, and `visible_target_y` with `pixel_y_or_distance / max(screenshot_height - 1, 1) * 1000`; never divide a vertical distance by screenshot width. Runtime uses image-derived row spacing when confident and falls back to the caller estimate otherwise. Do not pass a coordinate-space selector to `wheel_nudge`.
+All `wheel_nudge` geometry uses normalized 0-1000 coordinates. Convert horizontal `column_x` with `pixel_x / max(screenshot_width - 1, 1) * 1000`. Convert vertical `center_y`, the caller's `row_spacing` estimate, and `visible_target_y` with `pixel_y_or_distance / max(screenshot_height - 1, 1) * 1000`; never divide a vertical distance by screenshot width. Runtime uses image-derived row spacing when confident and falls back to the caller estimate otherwise.
 
 Use `wheel_nudge` as the conservative path for the whole picker interaction. Do not tap the selected row to expose a hidden editor and do not use `enter_text` or `keyboard_tap` to change picker values, even if the control appears temporarily editable. Picker focus and replacement behavior varies across apps and cannot be verified reliably from HID success alone. Read the latest screenshot, issue one bounded `wheel_nudge`, then read the returned screenshot before the next move. Direct taps on unselected picker rows and all picker drags also belong to `wheel_nudge`.
 
@@ -237,7 +237,7 @@ After a failed attempt:
 1. Observe with `screenshot`.
 2. Compare expected vs observed result.
 3. Avoid repeating the exact same failed action; if one repeat is justified, change one variable and verify the result before trying again.
-4. Change one variable at a time: target location, gesture type, coordinate space, navigation path, input method, or semantic shortcut.
+4. Change one variable at a time: target location, gesture type, navigation path, input method, or semantic shortcut.
 5. After 2 failed attempts on the same goal, change strategy instead of retrying the same path.
 6. After 3 failed attempts total on the same goal, pause repeated UI actions, summarize what changed, then switch to diagnosis, a different path, user-facing blocker, or human handoff if no new evidence suggests progress.
 

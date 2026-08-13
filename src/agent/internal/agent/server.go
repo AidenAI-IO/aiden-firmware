@@ -411,6 +411,9 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		eventBroadcaster:        NewEventBroadcaster(),
 		storageMonitor:          runtime.storageMonitor,
 	}
+	if s.bridge != nil {
+		s.bridge.SetConfiguredPlatform(runtime.devicePlatformFromState())
+	}
 	if s.userFilesMemoryDir != "" {
 		s.historyStore = NewChatHistoryStore(filepath.Join(s.userFilesMemoryDir, "chat_history"))
 		s.episodeStore = NewTaskEpisodeStore(filepath.Join(s.userFilesMemoryDir, "episodes"))

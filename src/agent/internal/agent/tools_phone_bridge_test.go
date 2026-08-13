@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/ble"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -113,6 +114,20 @@ func TestPhoneBridgeToolDescriptionsOmitSharedStateRouting(t *testing.T) {
 	}
 }
 
+func TestNotificationDescriptionDocumentsSendAndQueryFormats(t *testing.T) {
+	description := NewNotificationTool(nil, nil).Description()
+	for _, want := range []string{
+		`{"action":"send","title":"Reminder","body":"Time to take medicine","sound":true}`,
+		`{"action":"query","limit":20}`,
+		"previous last_id as since",
+		"previous generation",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("notification description missing %q: %s", want, description)
+		}
+	}
+}
+
 func TestOpenURLDescriptionDocumentsSupportedFormats(t *testing.T) {
 	description := NewOpenURLTool(nil, nil).Description()
 	for _, want := range []string{
@@ -221,7 +236,7 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 		sleep:      testNoWaitSleep,
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
 			called++
-			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "Aiden"}, nil
+			return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 200}, Label: "Aiden"}, nil
 		},
 		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 			return bridgeAppOpenResult{Opened: true, Reason: "Aiden app visible"}, nil
@@ -307,7 +322,7 @@ func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T
 		sleep:                testNoWaitSleep,
 		iosKeyboardIsolation: newTestIOSKeyboardIsolationController(&[]string{}),
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
-			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "WeChat"}, nil
+			return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 200}, Label: "WeChat"}, nil
 		},
 		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 			return bridgeAppOpenResult{Opened: true, Reason: "WeChat visible"}, nil
@@ -377,7 +392,7 @@ func TestSearchLaunchAppUsesRealQuickActionDeviceType(t *testing.T) {
 			sleep:                testNoWaitSleep,
 			iosKeyboardIsolation: controller,
 			findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
-				return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "WeChat"}, nil
+				return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 200}, Label: "WeChat"}, nil
 			},
 			confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 				return bridgeAppOpenResult{Opened: true, Reason: "WeChat visible"}, nil
@@ -495,7 +510,7 @@ func TestSearchLaunchAppBatchesIOSModifierIsolationAcrossSubtools(t *testing.T) 
 		sleep:                testNoWaitSleep,
 		iosKeyboardIsolation: controller,
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
-			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "WeChat"}, nil
+			return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 200}, Label: "WeChat"}, nil
 		},
 		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 			return bridgeAppOpenResult{Opened: true, Reason: "WeChat visible"}, nil
@@ -545,9 +560,9 @@ func TestAppSearchOpenFlowFallsBackToShorterTerm(t *testing.T) {
 		findAppTapFn: func(_ context.Context, _ screenshotResult, term string) (bridgeSearchResult, error) {
 			terms = append(terms, term)
 			if term == "Aiden" {
-				return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden"}, nil
+				return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 220}, Label: "Aiden"}, nil
 			}
-			return bridgeSearchResult{Found: false, TapPoint: focusPointArgs{CoordSpace: "normalized"}}, nil
+			return bridgeSearchResult{Found: false}, nil
 		},
 		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 			return bridgeAppOpenResult{Opened: true, Reason: "Aiden app visible"}, nil
@@ -593,11 +608,11 @@ func TestAppSearchOpenFlowRechecksSameTermBeforeFallback(t *testing.T) {
 			if term == "Aiden Bridge" {
 				findCalls++
 				if findCalls == 1 {
-					return bridgeSearchResult{Found: false, TapPoint: focusPointArgs{CoordSpace: "normalized"}}, nil
+					return bridgeSearchResult{Found: false}, nil
 				}
-				return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden Bridge"}, nil
+				return bridgeSearchResult{Found: true, TapPoint: &focusPointArgs{X: 500, Y: 220}, Label: "Aiden Bridge"}, nil
 			}
-			return bridgeSearchResult{Found: false, TapPoint: focusPointArgs{CoordSpace: "normalized"}}, nil
+			return bridgeSearchResult{Found: false}, nil
 		},
 		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
 			return bridgeAppOpenResult{Opened: true, Reason: "Aiden app visible"}, nil
@@ -872,6 +887,113 @@ func TestNotificationInvalidInputReturnsStructuredError(t *testing.T) {
 	}
 	if out != te.Message {
 		t.Fatalf("Call output (%q) must equal Error.Message (%q)", out, te.Message)
+	}
+}
+
+func TestNotificationQueryReadsBLEEventRingWithoutPhoneBridge(t *testing.T) {
+	tool := NewNotificationTool(nil, nil)
+	tool.socketPath = func() string { return "/tmp/test-ble.sock" }
+	tool.statusReader = func(context.Context, string) (ble.RuntimeStatus, error) {
+		t.Fatal("explicit cursor query must not read status")
+		return ble.RuntimeStatus{}, nil
+	}
+	tool.eventsReader = func(
+		_ context.Context,
+		socketPath string,
+		since string,
+		generation string,
+		limit int,
+	) (ble.EventPage, error) {
+		if socketPath != "/tmp/test-ble.sock" || since != "7" || generation != "generation-1" || limit != 5 {
+			t.Fatalf("unexpected query socket=%q since=%q generation=%q limit=%d", socketPath, since, generation, limit)
+		}
+		return ble.EventPage{
+			Events: []ble.NotificationEvent{{
+				ID:               "8",
+				NotificationUID:  42,
+				Event:            "added",
+				AppIdentifier:    "com.example.chat",
+				Title:            "Alice",
+				Message:          "hello",
+				MetadataComplete: true,
+			}},
+			Generation: "generation-1",
+			OldestID:   "1",
+			LastID:     "8",
+		}, nil
+	}
+
+	out, err := tool.Call(context.Background(), `{"action":"query","since":"7","generation":"generation-1","limit":5}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"action": "query"`, `"title": "Alice"`, `"message": "hello"`, `"last_id": "8"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("query output missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestNotificationQueryDefaultsToLatestEvents(t *testing.T) {
+	tool := NewNotificationTool(nil, nil)
+	tool.socketPath = func() string { return "/tmp/test-ble.sock" }
+	tool.statusReader = func(_ context.Context, socketPath string) (ble.RuntimeStatus, error) {
+		if socketPath != "/tmp/test-ble.sock" {
+			t.Fatalf("socket = %q", socketPath)
+		}
+		return ble.RuntimeStatus{LastEventID: "32", EventGeneration: "generation-2"}, nil
+	}
+	tool.eventsReader = func(
+		_ context.Context,
+		_ string,
+		since string,
+		generation string,
+		limit int,
+	) (ble.EventPage, error) {
+		if since != "27" || generation != "generation-2" || limit != 5 {
+			t.Fatalf("unexpected latest query since=%q generation=%q limit=%d", since, generation, limit)
+		}
+		return ble.EventPage{Events: []ble.NotificationEvent{}, Generation: generation, LastID: "32"}, nil
+	}
+
+	out, err := tool.Call(context.Background(), `{"action":"query","limit":5}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"query_mode": "latest"`, `"since": "27"`, `"last_id": "32"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("latest output missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestNotificationQueryRequiresGenerationForIncrementalCursor(t *testing.T) {
+	tool := NewNotificationTool(nil, nil)
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{"action":"query","since":"7"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	te := ToolErrorFromContext(ctx)
+	if te == nil || te.Code != CodeInvalidArguments || out != te.Message {
+		t.Fatalf("expected invalid cursor error, got error=%#v output=%q", te, out)
+	}
+}
+
+func TestNotificationLegacyPayloadStillSends(t *testing.T) {
+	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+		if cmd.Type != "notification_send" {
+			t.Fatalf("command type = %q", cmd.Type)
+		}
+		return BridgeCommandResponse{ID: cmd.ID, Data: json.RawMessage(`{"notification_id":"legacy-1"}`)}
+	})
+	tool := NewNotificationTool(bridge, nil)
+	out, err := tool.Call(context.Background(), `{"title":"Legacy","body":"still sends"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"notification_id": "legacy-1"`) {
+		t.Fatalf("legacy send failed: %s", out)
 	}
 }
 

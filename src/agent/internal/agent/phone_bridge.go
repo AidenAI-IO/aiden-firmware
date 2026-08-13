@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/ble"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,9 @@ const (
 	heartbeatTimeout = 60 * time.Second
 	// heartbeatCheckInterval is how often the monitor re-checks liveness.
 	heartbeatCheckInterval = 15 * time.Second
+	// phoneBridgeBLECacheTTL avoids repeated UDS status requests while keeping
+	// runtime tool availability responsive to BLE connection changes.
+	phoneBridgeBLECacheTTL = 1500 * time.Millisecond
 )
 
 type BridgeCommand struct {
@@ -105,31 +109,37 @@ type PhoneBridgeStatus struct {
 }
 
 type PhoneBridge struct {
-	mu                sync.Mutex
-	statusExpiryTimer *time.Timer
-	conn              *websocket.Conn
-	connected         bool
-	platform          string
-	phoneID           string
-	lastHeartbeatAt   time.Time
-	appState          string
-	appStateAt        time.Time
-	returnEntry       string
-	returnEntryOK     bool
-	returnEntrySeen   bool
-	pipBridgeEnabled  bool
-	pipBridgeSeen     bool
-	fgsBridgeEnabled  bool
-	fgsBridgeSeen     bool
-	fgsBridgeAt       time.Time
-	environment       *PhoneEnvironment
-	environmentAt     time.Time
-	clipboardText     string
-	clipboardAt       time.Time
-	pendingCmds       map[string]chan BridgeCommandResponse
-	logger            *Logger
-	done              chan struct{}
-	queue             *CommandQueue // HTTP queue for background-compatible commands
+	mu                 sync.Mutex
+	statusExpiryTimer  *time.Timer
+	conn               *websocket.Conn
+	connected          bool
+	platform           string
+	configuredPlatform string
+	phoneID            string
+	lastHeartbeatAt    time.Time
+	appState           string
+	appStateAt         time.Time
+	returnEntry        string
+	returnEntryOK      bool
+	returnEntrySeen    bool
+	pipBridgeEnabled   bool
+	pipBridgeSeen      bool
+	fgsBridgeEnabled   bool
+	fgsBridgeSeen      bool
+	fgsBridgeAt        time.Time
+	environment        *PhoneEnvironment
+	environmentAt      time.Time
+	clipboardText      string
+	clipboardAt        time.Time
+	pendingCmds        map[string]chan BridgeCommandResponse
+	logger             *Logger
+	done               chan struct{}
+	queue              *CommandQueue // HTTP queue for background-compatible commands
+	bleWake            func(context.Context, string) error
+	bleStatus          func(context.Context) (ble.RuntimeStatus, error)
+	bleCapabilityMu    sync.Mutex
+	bleCapabilityCache phoneBridgeBLECapabilities
+	bleCapabilityAt    time.Time
 }
 
 func NewPhoneBridge(logger *Logger) *PhoneBridge {
@@ -137,7 +147,88 @@ func NewPhoneBridge(logger *Logger) *PhoneBridge {
 		pendingCmds: make(map[string]chan BridgeCommandResponse),
 		logger:      logger,
 		queue:       NewCommandQueue(logger),
+		bleWake:     defaultBLEWake,
+		bleStatus:   defaultBLEStatus,
 	}
+}
+
+// SetConfiguredPlatform supplies the device_type-derived platform used before
+// the companion app has had a chance to report its platform over WebSocket or
+// HTTP polling. A live app report always takes precedence.
+func (pb *PhoneBridge) SetConfiguredPlatform(platform string) {
+	if pb == nil {
+		return
+	}
+	platform = phoneBridgePlatform(PhoneBridgeStatus{Platform: platform})
+	if platform != "ios" && platform != "android" {
+		platform = ""
+	}
+	pb.mu.Lock()
+	pb.configuredPlatform = platform
+	pb.mu.Unlock()
+}
+
+func defaultBLEWake(ctx context.Context, reason string) error {
+	result, err := ble.RequestWake(ctx, configuredBLEServiceSocketPath(), reason)
+	if err != nil {
+		return err
+	}
+	if !result.Delivered {
+		return errors.New("BLE wake has no active subscriber")
+	}
+	return nil
+}
+
+func defaultBLEStatus(ctx context.Context) (ble.RuntimeStatus, error) {
+	return ble.RequestStatus(ctx, configuredBLEServiceSocketPath())
+}
+
+type phoneBridgeBLECapabilities struct {
+	Wake              bool
+	NotificationQuery bool
+}
+
+func (pb *PhoneBridge) bleCapabilities(ctx context.Context) phoneBridgeBLECapabilities {
+	if pb == nil || pb.bleStatus == nil {
+		return phoneBridgeBLECapabilities{}
+	}
+	pb.bleCapabilityMu.Lock()
+	defer pb.bleCapabilityMu.Unlock()
+	if !pb.bleCapabilityAt.IsZero() && time.Since(pb.bleCapabilityAt) < phoneBridgeBLECacheTTL {
+		return pb.bleCapabilityCache
+	}
+	status, err := pb.bleStatus(ctx)
+	if err != nil {
+		if pb.logger != nil {
+			pb.logger.Warn("phone-bridge: BLE capability status unavailable: %v", err)
+		}
+		pb.bleCapabilityCache = phoneBridgeBLECapabilities{}
+		pb.bleCapabilityAt = time.Now()
+		return pb.bleCapabilityCache
+	}
+	pb.bleCapabilityCache = phoneBridgeBLECapabilities{
+		Wake:              status.BackendAvailable && status.Connected && status.WakeSubscriber,
+		NotificationQuery: status.EventCount > 0 || (status.BackendAvailable && status.Connected),
+	}
+	pb.bleCapabilityAt = time.Now()
+	return pb.bleCapabilityCache
+}
+
+func (pb *PhoneBridge) bleWakeAvailable(ctx context.Context) bool {
+	return pb.bleCapabilities(ctx).Wake
+}
+
+func (pb *PhoneBridge) notifyBLEWake(cmd BridgeCommand) {
+	if pb == nil || pb.bleWake == nil || !phoneBridgeShouldNotifyBLEWake(pb.getStatus(), cmd.Type) {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := pb.bleWake(ctx, "phone_bridge"); err != nil && pb.logger != nil {
+			pb.logger.Warn("phone-bridge: BLE wake unavailable: %v", err)
+		}
+	}()
 }
 
 func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -411,6 +502,7 @@ func (pb *PhoneBridge) SendQueuedCommand(ctx context.Context, cmd BridgeCommand)
 			Error: NewToolError(CodeToolExecutionFailed, fmt.Sprintf("enqueue command: %v", err)),
 		}, nil
 	}
+	pb.notifyBLEWake(cmd)
 
 	timeout := 10 * time.Second
 	if cmd.TimeoutMs > 0 {
@@ -626,9 +718,13 @@ func (pb *PhoneBridge) UpdateState() map[string]string {
 func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
+	platform := pb.platform
+	if strings.TrimSpace(platform) == "" {
+		platform = pb.configuredPlatform
+	}
 	status := PhoneBridgeStatus{
 		Connected: pb.connected,
-		Platform:  pb.platform,
+		Platform:  platform,
 		PhoneID:   pb.phoneID,
 	}
 	if pb.connected && !pb.lastHeartbeatAt.IsZero() {

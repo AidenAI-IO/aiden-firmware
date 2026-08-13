@@ -913,8 +913,8 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	if got := input["type"]; got != "double_tap" {
 		t.Fatalf("gesture type = %#v, want double_tap", got)
 	}
-	if got := input["coord_space"]; got != "normalized" {
-		t.Fatalf("coord_space = %#v, want normalized", got)
+	if _, exists := input["coord_space"]; exists {
+		t.Fatalf("coordinate debug input must not include coord_space: %#v", input)
 	}
 	point, ok := input["point"].(map[string]any)
 	if !ok {
@@ -952,6 +952,24 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	}
 	if active != (screen.ScreenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true}) {
 		t.Fatalf("screen state active area = %+v", active)
+	}
+}
+
+func TestHandleCoordinateDebugTapRejectsUnknownFieldsAndTrailingJSON(t *testing.T) {
+	server := newServerForTest(&Runtime{tools: &ToolSet{tools: map[string]langtools.Tool{}}})
+	for _, body := range []string{
+		`{"x":123,"y":456,"coord_space":"pixel"}`,
+		`{"x":123,"y":456} {"x":1,"y":2}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		server.handleCoordinateDebugTap(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %q status = %d, want %d; response=%s", body, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
 	}
 }
 

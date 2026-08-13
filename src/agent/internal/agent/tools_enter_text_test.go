@@ -521,6 +521,24 @@ func TestEnterTextToolSchemaKeepsIMESegmentsInternal(t *testing.T) {
 	}
 }
 
+func TestEnterTextToolRejectsMissingNullAndIncompleteFocus(t *testing.T) {
+	tool := &EnterTextTool{engine: &textInputEngine{}}
+	for _, input := range []string{
+		`{"text":"hello"}`,
+		`{"text":"hello","focus":null}`,
+		`{"text":"hello","focus":{"x":500}}`,
+		`{"text":"hello","focus":{"y":500}}`,
+	} {
+		out, err := tool.Call(context.Background(), input)
+		if err != nil {
+			t.Fatalf("Call(%s) error = %v", input, err)
+		}
+		if !strings.Contains(out, `"ok": false`) || !strings.Contains(out, "valid JSON containing text and focus") {
+			t.Fatalf("Call(%s) output = %q, want invalid focus failure", input, out)
+		}
+	}
+}
+
 func TestTextInputPlatformDefaultsToDeviceType(t *testing.T) {
 	if got := (textInputHardwareDeps{pointerMode: "absolute"}).platform(); got != "ios" {
 		t.Fatalf("absolute pointer mode platform = %q, want default device_type ios", got)
@@ -734,7 +752,7 @@ func TestEnterTextToolCallKeepsBridgePathEnabled(t *testing.T) {
 	}
 	tool.SetDeviceTypeFunc(hw.deviceTypeFn)
 
-	out, err := tool.Call(context.Background(), `{"text":"Aiden","focus":{"x":500,"y":120,"coord_space":"normalized"}}`)
+	out, err := tool.Call(context.Background(), `{"text":"Aiden","focus":{"x":500,"y":120}}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
