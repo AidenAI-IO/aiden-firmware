@@ -310,21 +310,11 @@ func (s *ToolSet) RegisterMemoryTools(memoryDir string, summaryMaxChunks int, lo
 	deviceStore := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
 	episodeStore := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
 	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore, archivedStore)
-	recallMemory := NewRecallMemoryTool(longTermStore)
-	recallMemory.memoryDir = memoryDir
-	saveMemory := NewSaveMemoryTool(longTermStore)
-	saveMemory.memoryDir = memoryDir
-	forgetMemory := NewForgetMemoryTool(longTermStore)
-	forgetMemory.memoryDir = memoryDir
-	recallDeviceMemory := NewRecallDeviceMemoryTool(deviceStore)
-	recallDeviceMemory.memoryDir = memoryDir
-	inspectEpisode := NewInspectEpisodeTool(episodeStore)
-	inspectEpisode.memoryDir = memoryDir
-	s.tools["recall_memory"] = recallMemory
-	s.tools["save_memory"] = saveMemory
-	s.tools["forget_memory"] = forgetMemory
-	s.tools["recall_device_memory"] = recallDeviceMemory
-	s.tools["inspect_episode"] = inspectEpisode
+	s.tools["recall_memory"] = NewRecallMemoryTool(longTermStore)
+	s.tools["save_memory"] = NewSaveMemoryTool(longTermStore)
+	s.tools["forget_memory"] = NewForgetMemoryTool(longTermStore)
+	s.tools["recall_device_memory"] = NewRecallDeviceMemoryTool(deviceStore)
+	s.tools["inspect_episode"] = NewInspectEpisodeTool(episodeStore)
 }
 
 func (s *ToolSet) RegisterSkillTools(skillsDir, manifestPath string, onModify ...func()) {

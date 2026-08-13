@@ -601,68 +601,6 @@ func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 	}
 }
 
-func TestServerHandleChatStreamReleasesBenchmarkScopeBeforeDetachedFinalTTS(t *testing.T) {
-	const (
-		requestID = "benchmark-detached-final-tts"
-		scope     = "benchmark-run-2026"
-		response  = "<tts>Final answer.</tts>\nFinal answer."
-		spoken    = "Final answer."
-	)
-	streamingDisabled := false
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Instruction:              "Answer directly.",
-			VoiceStreamingTTSEnabled: &streamingDisabled,
-		}),
-		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses(response)}},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	defer runtime.Close()
-	server := newServerForTest(runtime)
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: spoken}
-	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
-	server.audioClient = NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
-	memoryDir := t.TempDir()
-
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"Finish the task.","request_id":"`+requestID+`"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/x-ndjson")
-	req.Header.Set("X-Aiden-Stream", "ndjson")
-	req.Header.Set(BenchmarkMemoryScopeHeader, scope)
-	rec := httptest.NewRecorder()
-
-	server.handleChat(rec, req)
-	waitForTestSignal(t, provider.started, "detached final TTS to start")
-
-	clearDone := make(chan error, 1)
-	go func() {
-		clearDone <- server.clearBenchmarkMemoryScopeAfterActivities(memoryDir, scope)
-	}()
-
-	select {
-	case err := <-clearDone:
-		if err != nil {
-			t.Fatalf("clear benchmark memory scope: %v", err)
-		}
-	case <-time.After(100 * time.Millisecond):
-		cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"`+requestID+`"}`))
-		cancelReq.Header.Set("Content-Type", "application/json")
-		server.handleChatCancel(httptest.NewRecorder(), cancelReq)
-		select {
-		case <-clearDone:
-		case <-time.After(time.Second):
-		}
-		t.Fatal("benchmark scope cleanup waited for detached final TTS")
-	}
-
-	cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"`+requestID+`"}`))
-	cancelReq.Header.Set("Content-Type", "application/json")
-	server.handleChatCancel(httptest.NewRecorder(), cancelReq)
-}
-
 func TestServerHandleChatStreamsLeadingToolSpeechWithoutDuplicatePlayback(t *testing.T) {
 	const requestID = "streaming-tts-cleanup"
 	toolSpeech := true

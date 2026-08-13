@@ -18,13 +18,12 @@ type MemoryPlane interface {
 }
 
 type FilesystemMemoryPlane struct {
-	memoryDir      string
-	benchmarkScope string
-	extraction     MemoryExtractionConfig
-	episodes       *TaskEpisodeStore
-	device         *DeviceMemoryStore
-	longTerm       *LongTermMemoryStore
-	logger         *Logger
+	memoryDir  string
+	extraction MemoryExtractionConfig
+	episodes   *TaskEpisodeStore
+	device     *DeviceMemoryStore
+	longTerm   *LongTermMemoryStore
+	logger     *Logger
 }
 
 type MemoryRetrieveRequest struct {
@@ -34,7 +33,6 @@ type MemoryRetrieveRequest struct {
 	EpisodeID    string
 	DeviceID     string
 	CurrentHints CurrentEnvironmentHints
-	MemoryScope  string
 }
 
 type CurrentEnvironmentHints struct {
@@ -127,36 +125,18 @@ func (p *FilesystemMemoryPlane) LongTerm() *LongTermMemoryStore {
 }
 
 func (p *FilesystemMemoryPlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
-	target := p.forBenchmarkScope(req.MemoryScope)
-	return NewPersistentEpisodeRecorder(req, retrieved, target.episodes)
+	return NewPersistentEpisodeRecorder(req, retrieved, p.episodes)
 }
 
 func (p *FilesystemMemoryPlane) CommitEpisode(ctx context.Context, episode TaskEpisode) error {
 	if p == nil || p.memoryDir == "" || strings.TrimSpace(episode.UserGoal) == "" {
 		return nil
 	}
-	target := p.forBenchmarkScope(episode.MemoryScope)
-	if err := target.commitEpisodeTrace(ctx, episode); err != nil {
+	if err := p.commitEpisodeTrace(ctx, episode); err != nil {
 		return err
 	}
-	target.commitEpisodeMaintenance(ctx, episode)
+	p.commitEpisodeMaintenance(ctx, episode)
 	return nil
-}
-
-func (p *FilesystemMemoryPlane) forBenchmarkScope(scope string) *FilesystemMemoryPlane {
-	if p == nil || strings.TrimSpace(scope) == "" {
-		return p
-	}
-	if p.benchmarkScope != "" {
-		return p
-	}
-	scopeDir := benchmarkMemoryScopeDir(p.memoryDir, scope)
-	if scopeDir == "" {
-		return p
-	}
-	target := NewFilesystemMemoryPlane(scopeDir, p.extraction, p.logger)
-	target.benchmarkScope = strings.TrimSpace(scope)
-	return target
 }
 
 func (p *FilesystemMemoryPlane) commitEpisodeTrace(ctx context.Context, episode TaskEpisode) error {

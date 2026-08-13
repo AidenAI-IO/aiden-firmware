@@ -1645,6 +1645,8 @@ def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text:
     dest_dir.mkdir(parents=True, exist_ok=True)
     if base_config_dir.exists():
         for item in base_config_dir.iterdir():
+            if item.name in {"cache", "log", "memory", "sessions", "skill-state"}:
+                continue
             target = dest_dir / item.name
             if item.is_dir():
                 shutil.copytree(item, target)

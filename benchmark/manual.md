@@ -30,12 +30,6 @@ and similar tasks. It separates "running the task" from "scoring":
 6. An optional judge model then scores offline against the rubric, trace, and
    screenshots.
 
-Every runner invocation assigns a dedicated benchmark memory scope. Long-term
-memory, device memory, and task-episode lessons written by setup turns or task
-turns remain inside that scope, and the runner clears it when the run finishes.
-This preserves end-to-end memory evaluation without contaminating normal agent
-usage or later benchmark runs.
-
 The benefit of this design: task execution depends on a real agent and
 environment, but scoring can be re-run offline; on failure you can inspect the
 full trace and screenshots without re-operating the device.
@@ -635,9 +629,9 @@ Agent configuration notes:
   starts a daemon automatically for each concurrent task worker. Here you can use
   `--agent-config path/to/agent.toml` to specify the agent config the benchmark
   uses.
-- `--base-config-dir` defaults to `benchmark/config`; the runner copies this
-  directory into the worker config directory first, preserving the skills, control
-  token template, and other files in it.
+- `--base-config-dir` defaults to `benchmark/config`; the runner copies static
+  configuration assets into the worker config directory. Runtime state such as
+  memory, logs, caches, sessions, and skill state is always created fresh.
 - If `--agent-config` is specified, its content is written as the worker's
   `agent.toml`; if not, the runner prefers rendering `agent.toml` from
   `--base-config-dir/agent.toml.template`, then falls back to the default config.

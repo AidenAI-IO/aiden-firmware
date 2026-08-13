@@ -108,16 +108,6 @@ def test_chat_includes_skills_when_provided():
     assert body["skills"] == ["device-operator"]
 
 
-def test_chat_sends_benchmark_memory_scope_header():
-    seen = {}
-    client = AgentClient(base_url="http://test", benchmark_memory_scope="run-2026")
-    with patch("urllib.request.urlopen",
-               _captured(seen, body={"response": "ok", "history": []})):
-        client.chat("remember this")
-
-    assert seen["headers"]["benchmark-memory-scope"] == "run-2026"
-
-
 def test_recover_after_timeout_waits_until_clear_succeeds(monkeypatch):
     sleeps = []
     monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
@@ -181,45 +171,6 @@ def test_seed_memory_sends_benchmark_token_header():
     assert seen["url"].endswith("/api/benchmark/seed_memory")
     assert seen["headers"]["authorization"] == "Bearer seed-token"
     assert result == {"status": "seeded", "id": "mem-1"}
-
-
-def test_seed_memory_sends_benchmark_memory_scope_header():
-    seen = {}
-    client = AgentClient(
-        base_url="http://test",
-        benchmark_token="seed-token",
-        benchmark_memory_scope="memory-run",
-    )
-    with patch("urllib.request.urlopen", _captured(seen, body={"status": "seeded", "id": "mem-1"})):
-        client.seed_memory({"id": "mem-1", "content": "remember this"})
-
-    assert seen["headers"]["benchmark-memory-scope"] == "memory-run"
-
-
-def test_clear_benchmark_memory_scope_uses_token_and_scope_headers():
-    seen = {}
-    client = AgentClient(
-        base_url="http://test",
-        benchmark_token="seed-token",
-        benchmark_memory_scope="memory-run",
-    )
-    with patch("urllib.request.urlopen", _captured(seen, body={"status": "cleared"})):
-        client.clear_benchmark_memory_scope()
-
-    assert seen["url"].endswith("/api/benchmark/memory_scope/clear")
-    assert seen["headers"]["authorization"] == "Bearer seed-token"
-    assert seen["headers"]["benchmark-memory-scope"] == "memory-run"
-
-
-def test_clear_benchmark_memory_scope_works_without_token():
-    seen = {}
-    client = AgentClient(base_url="http://test", benchmark_memory_scope="memory-run")
-    with patch("urllib.request.urlopen", _captured(seen, body={"status": "cleared"})):
-        client.clear_benchmark_memory_scope()
-
-    assert seen["url"].endswith("/api/benchmark/memory_scope/clear")
-    assert "authorization" not in seen["headers"]
-    assert seen["headers"]["benchmark-memory-scope"] == "memory-run"
 
 
 def test_set_phone_bridge_state_sends_benchmark_token_header():

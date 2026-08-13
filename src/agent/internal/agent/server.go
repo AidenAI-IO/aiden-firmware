@@ -84,8 +84,6 @@ type Server struct {
 	pendingResultsMu        sync.Mutex
 	activeRuns              map[string]context.CancelFunc
 	activeRunsMu            sync.Mutex
-	benchmarkMemoryScopes   map[string]*benchmarkMemoryScopeActivity
-	benchmarkMemoryScopesMu sync.Mutex
 	terminatedRequests      map[string]struct{}
 	terminatedRequestsMu    sync.Mutex
 	activeOutputs           map[string]map[*activeTTSOutput]struct{}
@@ -279,7 +277,6 @@ type ChatRequest struct {
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
 	RequestID   string              `json:"request_id,omitempty"`
 	PhoneID     string              `json:"phone_id,omitempty"`
-	MemoryScope string              `json:"-"`
 }
 
 type ChatCancelRequest struct {
@@ -404,7 +401,6 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		liveActivity:            NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:          make(map[string]*chatPendingResult),
 		activeRuns:              make(map[string]context.CancelFunc),
-		benchmarkMemoryScopes:   make(map[string]*benchmarkMemoryScopeActivity),
 		terminatedRequests:      make(map[string]struct{}),
 		pendingSteers:           make(map[string]pendingSteerMessage),
 		steerSignals:            make(map[string]chan struct{}),
@@ -485,7 +481,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/context-dump", s.handleContextDump)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/setup", s.handleSetup)
-	mux.HandleFunc("/api/benchmark/memory_scope/clear", s.handleBenchmarkClearMemoryScope)
 	if s.benchmarkToken() != "" {
 		mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
 		mux.HandleFunc("/api/benchmark/phone_bridge_state", s.handleBenchmarkPhoneBridgeState)
@@ -694,7 +689,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
-	req.MemoryScope = strings.TrimSpace(r.Header.Get(BenchmarkMemoryScopeHeader))
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	if req.RequestID == "" {
 		req.RequestID = createRequestID()
@@ -1248,17 +1242,7 @@ func (s *Server) handleChatAsync(
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
 	runCtx, cancel := context.WithCancel(context.Background())
-	releaseMemoryScope, scopeAccepted := s.beginBenchmarkMemoryScopeActivity(req.MemoryScope, cancel)
-	if !scopeAccepted {
-		cancel()
-		s.pendingResultsMu.Lock()
-		delete(s.pendingResults, requestID)
-		s.pendingResultsMu.Unlock()
-		http.Error(w, benchmarkMemoryScopeClosingMessage, http.StatusConflict)
-		return
-	}
 	if !s.registerActiveRun(requestID, cancel) {
-		releaseMemoryScope()
 		cancel()
 		s.pendingResultsMu.Lock()
 		delete(s.pendingResults, requestID)
@@ -1280,7 +1264,6 @@ func (s *Server) handleChatAsync(
 	steerProvider, steerInterrupt := s.prepareRunSteerCallbacks(requestID)
 	go func() {
 		defer func() {
-			releaseMemoryScope()
 			s.unregisterActiveRun(requestID)
 			s.clearSteerState(requestID)
 			// Keep the completed result available for polling for 60s,
@@ -1329,8 +1312,7 @@ func (s *Server) handleChatAsync(
 			RequestID:               requestID,
 			DeviceEnvironment:       s.bridgeEnvironment(),
 			EventHandler:            eventHandler,
-			AsyncEpisodeMaintenance: req.MemoryScope == "",
-			MemoryScope:             req.MemoryScope,
+			AsyncEpisodeMaintenance: true,
 			SteerProvider:           steerProvider,
 			SteerInterrupt:          steerInterrupt,
 		}
@@ -1623,7 +1605,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
-	req.MemoryScope = strings.TrimSpace(r.Header.Get(BenchmarkMemoryScopeHeader))
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	if req.RequestID == "" {
 		req.RequestID = createRequestID()
@@ -1654,15 +1635,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	// A request_id marks a resumable run. Keep it alive if the streaming
 	// HTTP client disconnects; only /api/chat/cancel should stop it.
 	runCtx, cancel := context.WithCancel(context.Background())
-	releaseMemoryScope, scopeAccepted := s.beginBenchmarkMemoryScopeActivity(req.MemoryScope, cancel)
-	if !scopeAccepted {
-		cancel()
-		http.Error(w, benchmarkMemoryScopeClosingMessage, http.StatusConflict)
-		return
-	}
 	if !s.registerActiveRun(req.RequestID, cancel) {
 		s.logger.Error("Request ID already in use: %s", req.RequestID)
-		releaseMemoryScope()
 		cancel()
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
@@ -1670,7 +1644,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var cleanupOnce sync.Once
 	cleanupRun := func() {
 		cleanupOnce.Do(func() {
-			releaseMemoryScope()
 			s.unregisterActiveRun(req.RequestID)
 			s.clearSteerState(req.RequestID)
 			cancel()
@@ -1701,8 +1674,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		EpisodeID:               episodeID,
 		RequestID:               req.RequestID,
 		DeviceEnvironment:       s.bridgeEnvironment(),
-		AsyncEpisodeMaintenance: req.MemoryScope == "",
-		MemoryScope:             req.MemoryScope,
+		AsyncEpisodeMaintenance: true,
 		SteerProvider:           steerProvider,
 		SteerInterrupt:          steerInterrupt,
 		EventHandler: func(event RunEvent) {
@@ -1759,7 +1731,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("Running runtime")
 	result, err := s.runtime.Run(ctx, runReq)
-	releaseMemoryScope()
 	if newStream != nil {
 		finalSpeechStreamed := speechWriter.FinalizeResponse()
 		closeErr := newStream.closeAndWait()
@@ -2430,18 +2401,11 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "content is required", http.StatusBadRequest)
 		return
 	}
-	releaseMemoryScope, scopeAccepted := s.beginBenchmarkMemoryScopeActivity(r.Header.Get(BenchmarkMemoryScopeHeader), nil)
-	if !scopeAccepted {
-		http.Error(w, benchmarkMemoryScopeClosingMessage, http.StatusConflict)
-		return
-	}
-	defer releaseMemoryScope()
 	plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane)
 	if !ok || plane == nil || plane.LongTerm() == nil {
 		http.Error(w, "long-term memory not configured", http.StatusServiceUnavailable)
 		return
 	}
-	plane = plane.forBenchmarkScope(r.Header.Get(BenchmarkMemoryScopeHeader))
 	priority := req.Priority
 	if priority <= 0 {
 		priority = 80
@@ -2474,36 +2438,6 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 		"status": "seeded",
 		"id":     id,
 	})
-}
-
-func (s *Server) handleBenchmarkClearMemoryScope(w http.ResponseWriter, r *http.Request) {
-	if s.benchmarkToken() != "" && !s.authorizeBenchmarkRequest(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	scope := strings.TrimSpace(r.Header.Get(BenchmarkMemoryScopeHeader))
-	if scope == "" {
-		http.Error(w, "benchmark memory scope is required", http.StatusBadRequest)
-		return
-	}
-	memoryDir := ""
-	if plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane); ok && plane != nil {
-		memoryDir = plane.memoryDir
-	}
-	if memoryDir == "" {
-		http.Error(w, "memory is not configured", http.StatusServiceUnavailable)
-		return
-	}
-	if err := s.clearBenchmarkMemoryScopeAfterActivities(memoryDir, scope); err != nil {
-		http.Error(w, "clear benchmark memory scope: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"status": "cleared"})
 }
 
 func (s *Server) handleBenchmarkPhoneBridgeState(w http.ResponseWriter, r *http.Request) {
@@ -3118,23 +3052,12 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startedAt := time.Now()
-	memoryScope := strings.TrimSpace(r.Header.Get(BenchmarkMemoryScopeHeader))
-	executionCtx := WithBenchmarkMemoryScope(r.Context(), memoryScope)
+	executionCtx := r.Context()
 	cancelExecution := context.CancelFunc(func() {})
 	if httpToolExecutionSurvivesClientDisconnect(toolName) {
 		executionCtx, cancelExecution = detachedHTTPToolExecutionContext(r.Context())
-		executionCtx = WithBenchmarkMemoryScope(executionCtx, r.Header.Get(BenchmarkMemoryScopeHeader))
 	}
-	releaseMemoryScope, scopeAccepted := s.beginBenchmarkMemoryScopeActivity(memoryScope, cancelExecution)
-	if !scopeAccepted {
-		cancelExecution()
-		http.Error(w, benchmarkMemoryScopeClosingMessage, http.StatusConflict)
-		return
-	}
-	defer func() {
-		cancelExecution()
-		releaseMemoryScope()
-	}()
+	defer cancelExecution()
 	execution := executeToolCall(executionCtx, ToolCallExecution{
 		Specs:  NewToolSpecs([]langtools.Tool{spec.Tool}),
 		Action: schema.AgentAction{Tool: spec.Name, ToolInput: rawInput},

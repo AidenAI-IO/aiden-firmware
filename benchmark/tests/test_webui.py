@@ -216,6 +216,25 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     assert (dest / "memory").is_dir()
 
 
+def test_prepare_run_config_does_not_copy_runtime_state(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "agent.toml").write_text('[model]\nprovider = "fake"\n', encoding="utf-8")
+    for name in ("memory", "log", "cache", "sessions", "skill-state"):
+        state_dir = base / name
+        state_dir.mkdir()
+        (state_dir / "stale-state").write_text("stale", encoding="utf-8")
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest)
+
+    for name in ("memory", "log", "cache", "sessions", "skill-state"):
+        assert not (dest / name / "stale-state").exists()
+    assert (dest / "memory").is_dir()
+    assert (dest / "log").is_dir()
+    assert (dest / "skill-state").is_dir()
+
+
 def test_prepare_run_config_includes_bundled_skills(tmp_path: Path):
     base = tmp_path / "base"
     base.mkdir()
