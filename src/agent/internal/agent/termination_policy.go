@@ -247,6 +247,12 @@ func (p *TerminationPolicy) BeforeToolCall(toolName, input string) (ToolResult, 
 	if !isLoopRestrictedActionTool(toolName) {
 		return ToolResult{}, true
 	}
+	// Restrict repetition, not strategy changes. One materially different UI
+	// action remains available; if it also makes no progress, AfterToolCall will
+	// immediately escalate the accumulated stall score to termination.
+	if signature := toolCallSignature(toolName, input); signature != "" && signature != p.lastToolSig {
+		return ToolResult{}, true
+	}
 	message := fmt.Sprintf(
 		"Loop guard blocked %q: repeated actions produced no progress. Use observation tools, request_human_handoff, or explain the blocker to the user instead of repeating UI actions.",
 		strings.TrimSpace(toolName),

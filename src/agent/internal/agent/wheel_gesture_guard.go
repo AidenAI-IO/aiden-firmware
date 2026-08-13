@@ -575,7 +575,11 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 			if pointSpace == coordinateSpaceNormalized && wheelPointInActionBar(y) {
 				navigationCandidate = true
 			}
-			if column.coordSpace != pointSpace || !wheelPointInsideColumnSafetyZone(column, x, y) {
+			insideSafetyZone := wheelPointInsideColumnSafetyZone(column, x, y)
+			if gestureType == "tap" || gestureType == "double_tap" {
+				insideSafetyZone = wheelPointInsideColumnTapSafetyZone(column, x, y)
+			}
+			if column.coordSpace != pointSpace || !insideSafetyZone {
 				continue
 			}
 			if column.used >= column.limit {
@@ -668,6 +672,23 @@ func wheelPointInsideColumnSafetyZone(column wheelNudgeColumnUsage, x, y float64
 		return false
 	}
 	if column.coordSpace == coordinateSpaceNormalized && wheelPointInActionBar(y) {
+		return false
+	}
+	halfHeight := max(wheelNudgeMinSafetyHeight, 6*column.rowSpacing)
+	return math.Abs(column.centerY-y) <= halfHeight
+}
+
+func wheelPointInsideColumnTapSafetyZone(column wheelNudgeColumnUsage, x, y float64) bool {
+	if math.Abs(column.centerX-x) > wheelNudgeColumnTolerance {
+		return false
+	}
+	if column.coordSpace == coordinateSpaceNormalized && wheelPointInActionBar(y) {
+		return false
+	}
+	// Picker confirmation actions commonly live in the lower dialog region.
+	// Keep the full picker safety zone elsewhere, but do not claim that
+	// separate action area merely because its button aligns with a wheel column.
+	if column.coordSpace == coordinateSpaceNormalized && y >= 700 && y > column.centerY {
 		return false
 	}
 	halfHeight := max(wheelNudgeMinSafetyHeight, 6*column.rowSpacing)

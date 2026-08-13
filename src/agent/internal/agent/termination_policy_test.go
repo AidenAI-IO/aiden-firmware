@@ -41,6 +41,9 @@ func TestTerminationPolicyRestrictsActionToolsAndRecoversAfterProgress(t *testin
 	if _, allowed := policy.BeforeToolCall("touch_gesture", `{"gesture":"swipe_up"}`); allowed {
 		t.Fatal("expected action tool blocked at restrict tier")
 	}
+	if _, allowed := policy.BeforeToolCall("quick_action", `{"action":"app_drawer"}`); !allowed {
+		t.Fatal("a different action tool should remain available as a strategy change")
+	}
 
 	changedScreen := terminationPolicyScreenshotObservation(t, 200, 400, image.Rect(20, 100, 120, 200))
 	progress := policy.AfterToolCall("screenshot", `{}`, changedScreen, false)

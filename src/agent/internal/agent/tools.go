@@ -148,6 +148,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 
 	tools := map[string]langtools.Tool{
 		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"keyboard_text":          newPostActionStableScreenshotTool(keyboardText, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_click":            newPostActionStableScreenshotTool(mouseClick, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),

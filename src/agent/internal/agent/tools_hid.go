@@ -732,7 +732,7 @@ func (t *KeyboardTapTool) extensionKeyDescription() string {
 }
 
 func (t *KeyboardTapTool) Description() string {
-	description := `Press and release literal keyboard keys (e.g. {"keys":["enter"]}). Use for simple keys such as enter, escape, tab, or arrows; for exact physical chords explicitly requested by the user; and for app-specific shortcuts not represented by quick_action. For cataloged semantic actions—including copy, paste, cut, select_all, delete_backward, delete_forward, undo, redo, find, send, back, home, app switching, and browser actions—you MUST use quick_action and let runtime select the device-specific binding from global device_type state. A ctrl/meta chord fallback is allowed only after a quick_action result in the current run explicitly reports the action as reserved/unavailable before executing a binding. Do not infer unavailability from another tool's failure. Never replay an active quick_action binding as a raw chord after failure or no visible effect.`
+	description := `Press and release literal non-text keyboard keys (e.g. {"keys":["enter"]}). Use for simple keys such as enter, escape, tab, backspace, or arrows; for exact physical chords explicitly requested by the user; and for app-specific shortcuts not represented by quick_action. Do not type words or individual letters with keyboard_tap. When an input field is already focused, use keyboard_text with the complete ASCII string instead. For cataloged semantic actions—including copy, paste, cut, select_all, delete_backward, delete_forward, undo, redo, find, send, back, home, app switching, and browser actions—you MUST use quick_action and let runtime select the device-specific binding from global device_type state. A ctrl/meta chord fallback is allowed only after a quick_action result in the current run explicitly reports the action as reserved/unavailable before executing a binding. Do not infer unavailability from another tool's failure. Never replay an active quick_action binding as a raw chord after failure or no visible effect.`
 	if t.fullAndroidExtensionKeysVisible() {
 		description += ` On Android device_type, single-key Android KEYCODE_* aliases are available through the Android extension keyboard device.`
 	} else {
@@ -947,6 +947,7 @@ func (t *KeyboardTextTool) Description() string {
 		`Do not transliterate Chinese/CJK targets to pinyin or guessed ASCII keywords; if enter_text is unavailable, report the blocker instead. ` +
 		`If a Chinese IME is active but the target text is English, switch to the English/Latin keyboard first, commonly with the globe/input-method key; do not leave English text in Chinese IME preedit/candidate state. ` +
 		`Do not use keyboard_text for picker/wheel values, even if tapping the selected row appears to expose edit mode; use wheel_nudge and verify each returned screenshot instead. ` +
+		`When a visible input field is already focused and the target is ASCII, use keyboard_text with the entire string; it types without clicking or changing focus. Do not use keyboard_tap for letters or one character at a time. ` +
 		`keyboard_text remains for simple standalone ASCII typing outside the enter_text workflow. ` +
 		`Bare plain text is accepted only as a legacy compatibility fallback.`
 }
@@ -1195,7 +1196,6 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		"point":          pointSchema("Point for tap, double_tap, or long_press."),
 		"start":          pointSchema("Start point for swipe or drag."),
 		"end":            pointSchema("End point for swipe or drag."),
-		"coord_space":    coordSpaceSchema(),
 		"button":         stringEnumArgSchema("Mouse button for drag.", "left", "right", "middle"),
 		"duration_ms":    nonNegativeIntegerSchema("Gesture duration in milliseconds."),
 		"hold_before_ms": nonNegativeIntegerSchema("Optional dwell after pressing before a swipe begins."),

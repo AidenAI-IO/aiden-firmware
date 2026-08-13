@@ -626,6 +626,19 @@ func TestWheelGestureGuardBlocksTouchGestureOnActiveWheelColumn(t *testing.T) {
 	}
 }
 
+func TestWheelGestureGuardAllowsTapBelowActivePickerForDialogAction(t *testing.T) {
+	var guard wheelNudgeGuard
+	allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(validWheelGuardInput(456, 547, 29, 30, 60, 0, "normalized")))
+
+	tap := ToolCall{
+		Spec:  ToolSpec{Name: "touch_gesture"},
+		Input: `{"type":"tap","coord_space":"normalized","point":{"x":481,"y":743}}`,
+	}
+	if result, allowed := guard.BeforeToolCall(context.Background(), tap); !allowed || result.Error != nil {
+		t.Fatalf("tap below the active picker should remain available for dialog actions: allowed=%v result=%#v", allowed, result)
+	}
+}
+
 func TestWheelGestureGuardBlocksDirectionalSwipeWhilePickerIsActive(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})

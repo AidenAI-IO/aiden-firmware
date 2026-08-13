@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -297,6 +299,157 @@ func TestAnthropicModelRetriesToolUseWithoutToolBlock(t *testing.T) {
 	}
 	if len(response.Choices[0].ToolCalls) != 1 || response.Choices[0].ToolCalls[0].FunctionCall.Name != "echo" {
 		t.Fatalf("tool calls = %#v", response.Choices[0].ToolCalls)
+	}
+}
+
+func TestAnthropicModelRecoversTextMisclassifiedAsToolUse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"id":"msg_text_tool_reason",
+			"content":[{"type":"text","text":"done"}],
+			"stop_reason":"tool_use",
+			"usage":{"input_tokens":10,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicProtocolRetry(0, 0))
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	choice := response.Choices[0]
+	if choice.Content != "done" || choice.StopReason != "end_turn" {
+		t.Fatalf("choice = %#v, want recovered end_turn text", choice)
+	}
+	if got := choice.GenerationInfo["llm_anthropic_response_recovery"]; got != "tool_use_as_end_turn" {
+		t.Fatalf("recovery = %#v", got)
+	}
+}
+
+func TestAnthropicModelRetriesTextMisclassifiedAsToolUseWhenToolsAreAvailable(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	toolChoiceTypes := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		var request struct {
+			ToolChoice map[string]any `json:"tool_choice"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		toolChoiceTypes = append(toolChoiceTypes, fmt.Sprint(request.ToolChoice["type"]))
+		if attempts == 1 {
+			_, _ = w.Write([]byte(`{
+				"id":"msg_text_tool_reason",
+				"content":[{"type":"text","text":"I will take a screenshot now."}],
+				"stop_reason":"tool_use",
+				"usage":{"input_tokens":10,"output_tokens":8}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"id":"msg_tool",
+			"content":[{"type":"tool_use","id":"call_1","name":"screenshot","input":{}}],
+			"stop_reason":"tool_use",
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicProtocolRetry(1, 0))
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "inspect the screen"),
+	}, llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "screenshot"}}}))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if attempts != 2 || len(response.Choices[0].ToolCalls) != 1 {
+		t.Fatalf("attempts = %d, tool calls = %#v", attempts, response.Choices[0].ToolCalls)
+	}
+	if !slices.Equal(toolChoiceTypes, []string{"auto", "any"}) {
+		t.Fatalf("tool choice types = %#v, want auto then any", toolChoiceTypes)
+	}
+}
+
+func TestAnthropicModelDefaultRetriesRepeatedEmptyToolUseResponses(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 4 {
+			_, _ = w.Write([]byte(`{"id":"msg_empty_tool","content":[],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":1}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"msg_tool","content":[{"type":"tool_use","id":"call_1","name":"echo","input":{}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client())
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "echo"}}}))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if attempts != 4 {
+		t.Fatalf("attempts = %d, want four attempts", attempts)
+	}
+	if len(response.Choices[0].ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v", response.Choices[0].ToolCalls)
+	}
+}
+
+func TestAnthropicModelFallsBackToScreenshotAfterRepeatedEmptyToolUseResponses(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		_, _ = w.Write([]byte(`{"id":"msg_empty_tool","content":[],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicProtocolRetry(2, 0))
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "inspect the screen"),
+	}, llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "screenshot"}}}))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want three attempts", attempts)
+	}
+	choice := response.Choices[0]
+	if len(choice.ToolCalls) != 1 || choice.ToolCalls[0].FunctionCall.Name != "screenshot" {
+		t.Fatalf("tool calls = %#v, want synthetic screenshot", choice.ToolCalls)
+	}
+	if got := choice.GenerationInfo["llm_anthropic_response_recovery"]; got != "synthetic_screenshot_tool_use" {
+		t.Fatalf("recovery = %#v", got)
+	}
+}
+
+func TestAnthropicModelDoesNotSynthesizeUnavailableScreenshot(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"msg_empty_tool","content":[],"stop_reason":"tool_use","usage":{}}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicProtocolRetry(0, 0))
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "use the echo tool"),
+	}, llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "echo"}}}))
+	if err == nil || !strings.Contains(err.Error(), "tool_use stop_reason has no valid tool_use content") {
+		t.Fatalf("GenerateContent() error = %v, want protocol error", err)
 	}
 }
 

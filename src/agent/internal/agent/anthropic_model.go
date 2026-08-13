@@ -25,7 +25,7 @@ const (
 	anthropicAPIVersion              = "2023-06-01"
 	defaultAnthropicStreamMaxRetries = 5
 	defaultAnthropicStreamRetryDelay = 2 * time.Second
-	defaultAnthropicProtocolRetries  = 1
+	defaultAnthropicProtocolRetries  = 3
 )
 
 type anthropicModel struct {
@@ -307,9 +307,18 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 				retryLimit = m.protocolRetries
 				retryDelay = m.protocolDelay
 				if protocolRetries >= retryLimit || !shouldRetryAnthropicStreamError(streamErr) {
+					if fallback := anthropicObservationFallback(request.Tools, callStarted); fallback != nil {
+						log.Printf("[WARN] [anthropic] exhausted semantic protocol retries; falling back to screenshot tool call")
+						return fallback, nil
+					}
 					return nil, streamErr
 				}
 				protocolRetries++
+				request.ToolChoice = requireAnthropicToolUse(request.ToolChoice)
+				payload, err = json.Marshal(request)
+				if err != nil {
+					return nil, fmt.Errorf("marshal Anthropic retry request: %w", err)
+				}
 				log.Printf("[WARN] [anthropic] retrying semantic protocol error (%d/%d): %v", protocolRetries, retryLimit, streamErr)
 				if err := waitBeforeAnthropicRetry(ctx, protocolRetries, retryDelay); err != nil {
 					return nil, err
@@ -337,12 +346,25 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 		if err := json.Unmarshal(body, &decoded); err != nil {
 			return nil, fmt.Errorf("decode Anthropic response: %w", err)
 		}
-		normalized, recovery, protocolErr := normalizeAnthropicResponse(decoded, request.Thinking != nil)
+		normalized, recovery, protocolErr := normalizeAnthropicResponse(
+			decoded,
+			request.Thinking != nil,
+			len(request.Tools) > 0,
+		)
 		if protocolErr != nil {
 			if protocolRetries >= m.protocolRetries {
+				if fallback := anthropicObservationFallback(request.Tools, callStarted); fallback != nil {
+					log.Printf("[WARN] [anthropic] exhausted semantic protocol retries; falling back to screenshot tool call")
+					return fallback, nil
+				}
 				return nil, protocolErr
 			}
 			protocolRetries++
+			request.ToolChoice = requireAnthropicToolUse(request.ToolChoice)
+			payload, err = json.Marshal(request)
+			if err != nil {
+				return nil, fmt.Errorf("marshal Anthropic retry request: %w", err)
+			}
 			log.Printf("[WARN] [anthropic] retrying semantic protocol error (%d/%d): %v", protocolRetries, m.protocolRetries, protocolErr)
 			if err := waitBeforeAnthropicRetry(ctx, protocolRetries, m.protocolDelay); err != nil {
 				return nil, err
@@ -620,6 +642,37 @@ func disableAnthropicParallelToolUse(choice any) map[string]any {
 	return converted
 }
 
+func requireAnthropicToolUse(choice any) map[string]any {
+	converted := disableAnthropicParallelToolUse(choice)
+	if converted["type"] == "auto" {
+		converted["type"] = "any"
+	}
+	return converted
+}
+
+func anthropicObservationFallback(tools []anthropicTool, callStarted time.Time) *llms.ContentResponse {
+	for _, tool := range tools {
+		if tool.Name != "screenshot" {
+			continue
+		}
+		response := anthropicResponse{
+			ID:         fmt.Sprintf("protocol-fallback-%d", time.Now().UnixNano()),
+			Role:       "assistant",
+			StopReason: "tool_use",
+			Content: []anthropicContentBlock{{
+				Type:  "tool_use",
+				ID:    fmt.Sprintf("protocol-fallback-call-%d", time.Now().UnixNano()),
+				Name:  "screenshot",
+				Input: map[string]any{},
+			}},
+		}
+		return aggregateAnthropicResponseWithGenerationInfo(response, callStarted, map[string]any{
+			"llm_anthropic_response_recovery": "synthetic_screenshot_tool_use",
+		})
+	}
+	return nil
+}
+
 type anthropicResponseProtocolError struct {
 	message string
 }
@@ -632,7 +685,7 @@ func newAnthropicResponseProtocolError(message string) error {
 	return &anthropicResponseProtocolError{message: message}
 }
 
-func normalizeAnthropicResponse(response anthropicResponse, thinkingEnabled bool) (anthropicResponse, string, error) {
+func normalizeAnthropicResponse(response anthropicResponse, thinkingEnabled, toolsAvailable bool) (anthropicResponse, string, error) {
 	hasText := false
 	hasThinking := false
 	hasToolUse := false
@@ -658,6 +711,10 @@ func normalizeAnthropicResponse(response anthropicResponse, thinkingEnabled bool
 	switch response.StopReason {
 	case "tool_use":
 		if !hasToolUse {
+			if hasText && !toolsAvailable {
+				response.StopReason = "end_turn"
+				return response, "tool_use_as_end_turn", nil
+			}
 			return response, "", newAnthropicResponseProtocolError("tool_use stop_reason has no valid tool_use content")
 		}
 	case "end_turn":
@@ -991,7 +1048,7 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 		response.Content = append(response.Content, converted)
 	}
 	encodedResponse, encodeErr := json.Marshal(response)
-	normalized, recovery, protocolErr := normalizeAnthropicResponse(response, thinkingEnabled)
+	normalized, recovery, protocolErr := normalizeAnthropicResponse(response, thinkingEnabled, len(opts.Tools) > 0 || len(opts.Functions) > 0)
 	if protocolErr != nil {
 		return nil, &anthropicStreamError{err: protocolErr, outputDelivered: outputDelivered, retryable: true}
 	}

@@ -85,6 +85,17 @@ func TestBuiltinToolSetWiresConfiguredKeyboardLayout(t *testing.T) {
 	}
 }
 
+func TestBuiltinToolSetRegistersKeyboardTextForDirectFocusedInput(t *testing.T) {
+	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
+	tool, ok := tools.Get("keyboard_text")
+	if !ok {
+		t.Fatal("keyboard_text must be registered for direct input into an already focused field")
+	}
+	if tool.Name() != "keyboard_text" {
+		t.Fatalf("registered tool name = %q, want keyboard_text", tool.Name())
+	}
+}
+
 func TestHIDToolsExposeStructuredSchemas(t *testing.T) {
 	for name, tool := range map[string]structuredInputTool{
 		"keyboard_tap":  &KeyboardTapTool{},
@@ -1557,12 +1568,8 @@ func TestScreenshotCoordinateSpaceIsNotExposedToModel(t *testing.T) {
 	// backward compatibility. See resolvePointerPositionForSurface.
 	touchSchema := (&TouchGestureTool{}).ArgsSchema()
 	touchProps := touchSchema["properties"].(map[string]any)
-	touchSpaces := touchProps["coord_space"].(map[string]any)["enum"].([]string)
-	if slices.Contains(touchSpaces, "screenshot") {
-		t.Fatalf("touch coord_space enum = %#v, must not expose screenshot", touchSpaces)
-	}
-	if !slices.Contains(touchSpaces, "normalized") {
-		t.Fatalf("touch coord_space enum = %#v, want normalized", touchSpaces)
+	if _, ok := touchProps["coord_space"]; ok {
+		t.Fatalf("touch schema must not expose redundant coord_space: %#v", touchProps)
 	}
 
 	wheelSchema := (&WheelNudgeTool{}).ArgsSchema()
@@ -2075,6 +2082,8 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 		"English/Latin keyboard",
 		`{"text":"App Store"}`,
 		"do not pass a bare string",
+		"already focused",
+		"Do not use keyboard_tap for letters",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
@@ -2087,6 +2096,15 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 	} {
 		if strings.Contains(desc, unexpected) {
 			t.Fatalf("description should not contain misleading phrase %q:\n%s", unexpected, desc)
+		}
+	}
+}
+
+func TestKeyboardTapDescriptionDirectsTextToKeyboardText(t *testing.T) {
+	desc := (&KeyboardTapTool{}).Description()
+	for _, want := range []string{"Do not type words", "keyboard_text", "already focused"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
 	}
 }
