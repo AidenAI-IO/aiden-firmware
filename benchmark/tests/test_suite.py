@@ -897,6 +897,8 @@ def test_notes_entry_policy_suite_covers_three_screen_states():
         "type": "tap",
         "point": {"x": 180, "y": 310},
     }
+    assert "必须使用 point 对象" in icon_task.prompt
+    assert "不要使用 point 数组或顶层 x/y" in icon_task.prompt
     assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in icon_task.prompt
 
     missing_task = tasks["ios_pip_notes_icon_missing"]
