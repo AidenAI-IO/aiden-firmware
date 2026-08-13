@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -104,6 +105,92 @@ func (m *reflectionScriptedModel) firstCallHasImage() bool {
 		}
 	}
 	return false
+}
+
+func (m *reflectionScriptedModel) firstCallText() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.calls) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, message := range m.calls[0] {
+		for _, part := range message.Parts {
+			if textPart, ok := part.(llms.TextContent); ok {
+				parts = append(parts, textPart.Text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func TestFailureReflectionPromptPrioritizesVisibleEvidenceAndSeparatesCauseFromGuard(t *testing.T) {
+	episode := reflectionTestFailureEpisode("ep_prompt_contract", "restore the requested Safari page")
+	model := &reflectionScriptedModel{responses: []string{`{"action":"ignore"}`}}
+	processor := newFailureReflectionProcessor(
+		NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil),
+		model,
+	)
+
+	if _, err := processor.summarizeFailure(context.Background(), episode); err != nil {
+		t.Fatalf("summarizeFailure() error = %v", err)
+	}
+
+	prompt := strings.ToLower(model.firstCallText())
+	for _, want := range []string{
+		"visible screenshot evidence",
+		"higher priority",
+		"why the user goal failed",
+		"what the agent should do differently",
+		"address bar",
+		"hide the scheme or port",
+		"repeated ineffective actions",
+		"do not strengthen",
+		"diagnostic tool",
+		"supported and valid",
+		"cause must closely paraphrase",
+		"do not express uncertainty as alternatives",
+		"remove every diagnosis",
+		"bad: the service is unavailable",
+		"good: safari kept showing",
+		"bad: this is a server-side or network issue",
+		"good: the same visible error remained",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("reflection model prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestFailureReflectionModelInputHidesInternalScreenshotPaths(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &reflectionScriptedModel{responses: []string{`{"action":"ignore"}`}}
+	processor := newFailureReflectionProcessor(plane, model)
+	episode := reflectionTestFailureEpisode("ep_screenshot_path", "inspect the visible error")
+	episode.Events[1].RawObservation = `{"width":10,"height":10,"format":"jpeg","data":"` + base64.StdEncoding.EncodeToString([]byte("jpeg")) + `"}`
+	if _, err := plane.episodes.AddEpisode(ctx, episode); err != nil {
+		t.Fatalf("AddEpisode() error = %v", err)
+	}
+	stored, err := plane.episodes.Get(ctx, episode.ID)
+	if err != nil {
+		t.Fatalf("Get() error=%v", err)
+	}
+
+	if _, err := processor.summarizeFailure(ctx, stored); err != nil {
+		t.Fatalf("summarizeFailure() error = %v", err)
+	}
+
+	prompt := model.firstCallText()
+	if strings.Contains(prompt, "artifacts/") || strings.Contains(prompt, "step_002") {
+		t.Fatalf("reflection model input leaked an internal screenshot path:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, stored.Events[1].EventID) {
+		t.Fatalf("reflection model input missing screenshot event id %q:\n%s", stored.Events[1].EventID, prompt)
+	}
+	if !model.firstCallHasImage() {
+		t.Fatal("reflection model input did not include screenshot binary content")
+	}
 }
 
 func TestFailureReflectionCreatesPendingThenMergesToActive(t *testing.T) {

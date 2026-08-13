@@ -102,6 +102,23 @@ func TestReflectionQualityCasesAreValid(t *testing.T) {
 	}
 }
 
+func TestReflectionQualityCorpusCoversVisibleExternalFailureWithActionableAgentGuard(t *testing.T) {
+	fixtures := loadReflectionQualityCases(t)
+	for _, fixture := range fixtures.Cases {
+		if fixture.Name != "safari_connection_interrupted_repeated_actions" {
+			continue
+		}
+		if fixture.Expected.Action != reflectionActionKeep {
+			t.Fatalf("Safari connection case action = %q, want keep", fixture.Expected.Action)
+		}
+		if len(fixture.Expected.MustMention) < 2 || len(fixture.Expected.MustAvoid) == 0 {
+			t.Fatalf("Safari connection case expectations are incomplete: %#v", fixture.Expected)
+		}
+		return
+	}
+	t.Fatal("quality corpus missing Safari connection-interrupted case")
+}
+
 // TestReflectionQualityCasesAgainstLiveModel executes the quality corpus against
 // the real reflection prompts. It is opt-in because it requires a provider key:
 //

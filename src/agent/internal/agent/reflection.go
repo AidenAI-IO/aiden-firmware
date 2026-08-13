@@ -542,7 +542,7 @@ func (p *failureReflectionProcessor) summarizeFailure(ctx context.Context, episo
 	}
 	parts := []llms.ContentPart{llms.TextPart(buildFailureSummaryPrompt(string(payload)))}
 	for _, screenshot := range loadReflectionScreenshots(p.plane.episodes.rootDir, episode) {
-		parts = append(parts, llms.TextPart("Screenshot: "+screenshot.Ref))
+		parts = append(parts, llms.TextPart("Attached screenshot evidence for Episode event id: "+screenshot.EventID))
 		parts = append(parts, llms.BinaryContent{MIMEType: screenshot.MIMEType, Data: screenshot.Data})
 	}
 	messages := []llms.MessageContent{
@@ -822,7 +822,21 @@ type reflectionEventPayload struct {
 	PageName      string     `json:"page_name,omitempty"`
 }
 
+type reflectionOutcomePayload struct {
+	Success        bool   `json:"success"`
+	FinalState     string `json:"final_state,omitempty"`
+	FinalAnswer    string `json:"final_answer,omitempty"`
+	VerifierReason string `json:"verifier_reason,omitempty"`
+	FailureReason  string `json:"failure_reason,omitempty"`
+}
+
 func reflectionEpisodePayload(episode TaskEpisode) map[string]interface{} {
+	screenshotEvents := make(map[string]string)
+	for _, event := range episode.Events {
+		if ref := strings.TrimSpace(event.ScreenshotRef); ref != "" {
+			screenshotEvents[ref] = event.EventID
+		}
+	}
 	events := episode.Events
 	if len(events) > 60 {
 		events = events[len(events)-60:]
@@ -830,18 +844,20 @@ func reflectionEpisodePayload(episode TaskEpisode) map[string]interface{} {
 	views := make([]reflectionEventPayload, 0, len(events))
 	for _, event := range events {
 		view := reflectionEventPayload{
-			EventID:       event.EventID,
-			Type:          event.Type,
-			Role:          event.Role,
-			Objective:     truncateForLog(event.Objective, 500),
-			ToolName:      event.ToolName,
-			ToolInput:     truncateForLog(event.ToolInput, 800),
-			ToolError:     event.ToolError,
-			Content:       truncateForLog(event.Content, 1200),
-			Observation:   truncateForLog(event.Observation, 1600),
-			ScreenshotRef: event.ScreenshotRef,
-			Reason:        truncateForLog(event.Reason, 800),
-			CanFinish:     event.CanFinish,
+			EventID:     event.EventID,
+			Type:        event.Type,
+			Role:        event.Role,
+			Objective:   truncateForLog(event.Objective, 500),
+			ToolName:    event.ToolName,
+			ToolInput:   truncateForLog(event.ToolInput, 800),
+			ToolError:   event.ToolError,
+			Content:     truncateForLog(sanitizeReflectionScreenshotPaths(event.Content, screenshotEvents), 1200),
+			Observation: truncateForLog(sanitizeReflectionScreenshotPaths(event.Observation, screenshotEvents), 1600),
+			Reason:      truncateForLog(event.Reason, 800),
+			CanFinish:   event.CanFinish,
+		}
+		if strings.TrimSpace(event.ScreenshotRef) != "" {
+			view.ScreenshotRef = "attached screenshot for event " + event.EventID
 		}
 		if event.ObservedState != nil {
 			view.AppName = event.ObservedState.AppName
@@ -850,16 +866,29 @@ func reflectionEpisodePayload(episode TaskEpisode) map[string]interface{} {
 		views = append(views, view)
 	}
 	return map[string]interface{}{
-		"episode_id":        episode.ID,
-		"user_goal":         episode.UserGoal,
-		"device_scope":      episode.DeviceScope,
-		"outcome":           episode.Outcome,
+		"episode_id":   episode.ID,
+		"user_goal":    episode.UserGoal,
+		"device_scope": episode.DeviceScope,
+		"outcome": reflectionOutcomePayload{
+			Success:        episode.Outcome.Success,
+			FinalState:     sanitizeReflectionScreenshotPaths(episode.Outcome.FinalState, screenshotEvents),
+			FinalAnswer:    sanitizeReflectionScreenshotPaths(episode.Outcome.FinalAnswer, screenshotEvents),
+			VerifierReason: sanitizeReflectionScreenshotPaths(episode.Outcome.VerifierReason, screenshotEvents),
+			FailureReason:  sanitizeReflectionScreenshotPaths(episode.Outcome.FailureReason, screenshotEvents),
+		},
 		"failure_causes":    episode.FailureCauses,
 		"tags":              episode.Tags,
 		"entities":          episode.Entities,
 		"recalled_memories": episode.RetrievedMemoryRefs,
 		"events":            views,
 	}
+}
+
+func sanitizeReflectionScreenshotPaths(text string, screenshotEvents map[string]string) string {
+	for ref, eventID := range screenshotEvents {
+		text = strings.ReplaceAll(text, ref, "attached screenshot for event "+eventID)
+	}
+	return text
 }
 
 func buildFailureSummaryPrompt(payload string) string {
@@ -869,22 +898,40 @@ Return one JSON object with exactly these fields:
 {
   "action": "keep" or "ignore",
   "pattern": "reproducible mistake or failure pattern",
-  "cause": "why it happened",
-  "missed_signal": "evidence the agent overlooked",
-  "guard": "specific check or action to prevent recurrence",
+  "cause": "evidence-backed reason why the user goal failed",
+  "missed_signal": "direct evidence the agent overlooked",
+  "guard": "what the agent should do differently to prevent recurrence",
   "scope": "known app/page/task scope, or empty string",
   "tags": ["up to 8 short search terms"],
   "evidence_refs": ["event ids that support the lesson"]
 }
 
-Use action=ignore for cancellation, infrastructure/provider failure, insufficient evidence, or a one-off failure with no actionable guard. For action=keep, pattern, cause, missed_signal, and guard must all be non-empty, and evidence_refs must contain at least one real event id from the Episode. Do not invent app, page, verifier output, user correction, or screenshot content. Keep the lesson in the episode's language. Output JSON only.
+Evidence rules:
+- Visible screenshot evidence and direct tool errors or verifier observations have higher priority than the Agent's own commentary, guesses, or outcome explanation. When they conflict, trust the direct evidence and avoid unsupported causal claims.
+- Use attached screenshots as evidence only for what is visibly shown. Describe the visible signal instead of copying screenshot filenames into the lesson. Cite the event id whose screenshot_ref identifies that screenshot; never put a screenshot filename in evidence_refs.
+- Preserve the evidence's level of certainty. Do not strengthen a visible message such as "the server unexpectedly interrupted the connection" into "the server is unreachable", "the service is down", or another diagnosis unless independent Episode evidence establishes it.
+- Do not label an error as client-side, server-side, network-side, or browser-side unless independent Episode evidence establishes that ownership. Prefer the exact visible failure wording over a broader diagnosis.
+- When the primary evidence is a visible error message, cause must closely paraphrase that message and the observed unmet goal. Do not express uncertainty as alternatives such as "unreachable or dropped the connection"; keep only the directly supported statement.
+- Evidence-preserving examples:
+  - Bad: The service is unavailable or the connection is unstable. Good: Safari kept showing that the server unexpectedly interrupted the connection, so the requested page did not load.
+  - Bad: This is a server-side or network issue. Good: The same visible error remained after the attempted actions, so those actions made no progress.
+- Separate why the user goal failed from what the Agent should do differently: cause records the actual evidence-backed task failure; guard records the corrective Agent behavior. Do not rewrite an external failure as an Agent input mistake merely to make it actionable.
+- A browser address bar may hide the scheme or port after navigation. Its simplified display alone is not evidence that the Agent omitted them; require corroborating input, navigation, or error evidence before making that claim.
+
+Decision rules:
+- Use action=ignore for cancellation, insufficient evidence, or a one-off infrastructure/provider failure with no reusable Agent guard.
+- When an external failure is directly visible but the Agent also repeated ineffective actions, ignored no-progress evidence, or claimed success without verification, action=keep may capture that reusable Agent behavior. Preserve the visible external cause accurately and put the stop, escalation, retry, or verification rule in guard.
+- Do not prescribe a diagnostic tool or environment-specific action unless the Episode shows it is supported and valid for the controlled target. A safe guard may instead stop repeated actions, report the direct evidence, and request human handoff or an appropriate target-side check.
+- For action=keep, pattern, cause, missed_signal, and guard must all be non-empty, and evidence_refs must contain at least one real event id from the Episode.
+
+Before output, remove every diagnosis, ownership label, or proposed tool that is not directly supported by an Episode event or attached screenshot. Do not invent app, page, verifier output, user correction, screenshot content, or causal details. Keep the lesson in the episode's language. Output JSON only.
 
 Episode:
 ` + payload
 }
 
 type reflectionScreenshot struct {
-	Ref      string
+	EventID  string
 	MIMEType string
 	Data     []byte
 }
@@ -912,7 +959,17 @@ func loadReflectionScreenshots(episodesRoot string, episode TaskEpisode) []refle
 		case ".webp":
 			mimeType = "image/webp"
 		}
-		screenshots = append(screenshots, reflectionScreenshot{Ref: filepath.ToSlash(clean), MIMEType: mimeType, Data: data})
+		eventID := ""
+		for _, event := range episode.Events {
+			if strings.TrimSpace(event.ScreenshotRef) == ref {
+				eventID = event.EventID
+				break
+			}
+		}
+		if eventID == "" {
+			continue
+		}
+		screenshots = append(screenshots, reflectionScreenshot{EventID: eventID, MIMEType: mimeType, Data: data})
 	}
 	return screenshots
 }

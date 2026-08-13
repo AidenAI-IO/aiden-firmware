@@ -227,6 +227,50 @@
       }
     },
     {
+      "name": "safari_connection_interrupted_repeated_actions",
+      "expected": {
+        "action": "keep",
+        "group": "no-progress-after-visible-external-error",
+        "evidence_refs": ["evt_visible_connection_error", "evt_repeated_reload"],
+        "must_mention": ["服务器意外中断连接|server unexpectedly interrupted the connection|connection interrupted", "停止重复|stop repeating|no progress", "检查|check|验证|verify|升级处理|escalate"],
+        "must_avoid": ["遗漏端口|missing port|omitted port", "地址栏缺少|address bar omitted|address bar missing", "服务器不可达|server unreachable", "ping|curl", "artifacts/|step_012"]
+      },
+      "episode": {
+        "id": "ep_quality_safari_connection_interrupted",
+        "status": "active",
+        "started_at": "2026-08-13T03:53:00Z",
+        "ended_at": "2026-08-13T03:54:10Z",
+        "user_goal": "在 Safari 恢复访问 192.168.31.108:8080",
+        "outcome": {
+          "success": false,
+          "failure_reason": "最终页面仍无法打开"
+        },
+        "tags": ["safari", "connection", "no-progress"],
+        "events": [
+          {
+            "event_id": "evt_enter_requested_url",
+            "type": "tool_result",
+            "tool_name": "enter_text",
+            "observation": "已输入用户要求的地址并发起导航"
+          },
+          {
+            "event_id": "evt_visible_connection_error",
+            "type": "verifier_decision",
+            "reason": "最终截图明确显示 Safari 无法打开页面，因为服务器意外中断了连接",
+            "screenshot_ref": "screenshots/step-012.jpeg",
+            "can_finish": false
+          },
+          {
+            "event_id": "evt_repeated_reload",
+            "type": "tool_result",
+            "tool_name": "mouse_click",
+            "observation": "相同连接错误下继续重复交互，没有出现进展，也没有停止并报告外部连接问题",
+            "is_error": true
+          }
+        ]
+      }
+    },
+    {
       "name": "canceled_tool_only",
       "expected": {
         "action": "ignore",
