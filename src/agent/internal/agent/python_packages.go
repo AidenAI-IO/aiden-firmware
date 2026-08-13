@@ -20,6 +20,11 @@ const (
 
 var managedPythonVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
 
+// managedPythonTmpPath can be overridden in tests to use a relative tmp directory.
+var managedPythonTmpPath = func(root string) string {
+	return managedPythonTmp
+}
+
 type managedPythonPaths struct {
 	Root     string
 	UserBase string
@@ -66,7 +71,7 @@ func resolveManagedPythonPaths(ctx context.Context, root string, query managedPy
 	return managedPythonPaths{
 		Root:     root,
 		UserBase: filepath.Join(root, "py"+version),
-		Tmp:      managedPythonTmp,
+		Tmp:      managedPythonTmpPath(root),
 	}, nil
 }
 
@@ -82,7 +87,9 @@ func prepareManagedPythonPaths(ctx context.Context, root string, query managedPy
 }
 
 func ensureManagedPythonPaths(paths managedPythonPaths, now time.Time) error {
-	for _, path := range []string{paths.Root, paths.UserBase, paths.Tmp} {
+	// Only ensure Root and UserBase exist. Tmp is a system-level shared directory
+	// (/userdata/tmp) that should be created by system initialization, not by the agent.
+	for _, path := range []string{paths.Root, paths.UserBase} {
 		if err := ensureManagedPythonDirectory(path); err != nil {
 			return fmt.Errorf("create managed python directory %q: %w", path, err)
 		}

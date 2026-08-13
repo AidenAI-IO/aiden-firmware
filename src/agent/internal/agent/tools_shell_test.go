@@ -97,20 +97,23 @@ func TestShellToolForegroundInjectsProxyEnv(t *testing.T) {
 
 func TestShellToolInjectsManagedPythonHintsWithoutChangingPythonEnvironment(t *testing.T) {
 	skipOnWindows(t)
+	// AIDEN_PYTHON_USERBASE is inherited from the parent environment.
+	// TMPDIR is injected command-scoped by the shell tool.
+	t.Setenv("AIDEN_PYTHON_USERBASE", "/userdata/agent/python/py3.11")
 	t.Setenv("PYTHONUSERBASE", "inherited-userbase")
 	t.Setenv("PIP_USER", "inherited-pip-user")
 	t.Setenv("TMPDIR", "inherited-tmp")
 	t.Setenv("PATH", "/bin:/usr/bin")
 
 	tool := &ShellTool{environment: shellEnvironmentHints{
-		pythonUserBase: "/userdata/agent/python/py3.11",
+		pythonUserBase: "/should/not/be/used",
 		pythonTmp:      "/userdata/tmp",
 	}}
-	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s|%s|%s|%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$AIDEN_PYTHON_TMP\" \"$PYTHONUSERBASE\" \"$PIP_USER\" \"$TMPDIR\" \"$PATH\""}`)
+	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s|%s|%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$PYTHONUSERBASE\" \"$PIP_USER\" \"$TMPDIR\" \"$PATH\""}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	want := "/userdata/agent/python/py3.11|/userdata/tmp|inherited-userbase|inherited-pip-user|inherited-tmp|/bin:/usr/bin"
+	want := "/userdata/agent/python/py3.11|inherited-userbase|inherited-pip-user|/userdata/tmp|/bin:/usr/bin"
 	if out != want {
 		t.Fatalf("Call output = %q, want %q", out, want)
 	}
@@ -118,13 +121,16 @@ func TestShellToolInjectsManagedPythonHintsWithoutChangingPythonEnvironment(t *t
 
 func TestBuiltinToolSetWiresManagedPythonHintsIntoShell(t *testing.T) {
 	skipOnWindows(t)
+	// AIDEN_PYTHON_USERBASE is inherited from the parent environment.
+	t.Setenv("AIDEN_PYTHON_USERBASE", "/userdata/agent/python/py3.12")
+
 	toolSet := NewBuiltinToolSet(
 		HIDConfig{},
 		AudioConfig{},
 		SearchConfig{},
 		ProxyConfig{},
 		WithManagedPythonShellHints(managedPythonPaths{
-			UserBase: "/userdata/agent/python/py3.12",
+			UserBase: "/should/not/be/used",
 			Tmp:      "/userdata/tmp",
 		}),
 	)
@@ -133,7 +139,7 @@ func TestBuiltinToolSetWiresManagedPythonHintsIntoShell(t *testing.T) {
 		t.Fatal("shell tool is not registered")
 	}
 
-	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$AIDEN_PYTHON_TMP\""}`)
+	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$TMPDIR\""}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -172,11 +178,14 @@ func TestShellCommandEnvAppliesManagedPythonHintsInPTYAndNonPTYModes(t *testing.
 
 func TestShellToolManagedPythonHintsReachForegroundPTY(t *testing.T) {
 	skipOnWindows(t)
+	// AIDEN_PYTHON_USERBASE is inherited from parent environment.
+	t.Setenv("AIDEN_PYTHON_USERBASE", "/userdata/agent/python/py3.11")
+
 	tool := &ShellTool{environment: shellEnvironmentHints{
-		pythonUserBase: "/userdata/agent/python/py3.11",
+		pythonUserBase: "/should/not/be/used",
 		pythonTmp:      "/userdata/tmp",
 	}}
-	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$AIDEN_PYTHON_TMP\"","pty":true}`)
+	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$TMPDIR\"","pty":true}`)
 	if err != nil {
 		t.Fatalf("PTY Call returned error: %v", err)
 	}
@@ -188,13 +197,16 @@ func TestShellToolManagedPythonHintsReachForegroundPTY(t *testing.T) {
 
 func TestShellToolManagedPythonHintsReachBackgroundCommands(t *testing.T) {
 	skipOnWindows(t)
+	// AIDEN_PYTHON_USERBASE is inherited from parent environment.
+	t.Setenv("AIDEN_PYTHON_USERBASE", "/userdata/agent/python/py3.11")
+
 	tool := &ShellTool{environment: shellEnvironmentHints{
-		pythonUserBase: "/userdata/agent/python/py3.11",
+		pythonUserBase: "/should/not/be/used",
 		pythonTmp:      "/userdata/tmp",
 	}}
 	want := "/userdata/agent/python/py3.11|/userdata/tmp"
 
-	startOut, err := tool.Call(context.Background(), `{"action":"start","command":"printf '%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$AIDEN_PYTHON_TMP\"; sleep 1"}`)
+	startOut, err := tool.Call(context.Background(), `{"action":"start","command":"printf '%s|%s' \"$AIDEN_PYTHON_USERBASE\" \"$TMPDIR\"; sleep 1"}`)
 	if err != nil {
 		t.Fatalf("background start returned error: %v", err)
 	}

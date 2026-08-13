@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+func init() {
+	// Override managedPythonTmpPath for tests to use a relative tmp directory
+	// instead of the hardcoded /userdata/tmp.
+	managedPythonTmpPath = func(root string) string {
+		return filepath.Join(root, "tmp")
+	}
+}
+
 func TestPythonUserBaseCleanerNormalCleanupProtectsActiveAndRecentEntries(t *testing.T) {
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	root := t.TempDir()
@@ -92,6 +100,11 @@ func TestPythonUserBaseCleanerIgnoresSymlinksAndUnknownDirectories(t *testing.T)
 	if err := os.Symlink(target, symlink); err != nil {
 		t.Skipf("Symlink() unavailable: %v", err)
 	}
+	// Create tmp directory so cleaner doesn't error
+	tmpDir := filepath.Join(root, "tmp")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(tmp) error = %v", err)
+	}
 
 	cleaner := NewPythonUserBaseCleaner(root, 1, func(context.Context) (string, error) {
 		return "3.11", nil
@@ -120,6 +133,11 @@ func TestPythonUserBaseCleanerDoesNotFollowNestedSymlinks(t *testing.T) {
 	}
 	if err := os.Chtimes(staleVersion, now.Add(-8*24*time.Hour), now.Add(-8*24*time.Hour)); err != nil {
 		t.Fatalf("Chtimes(stale version) error = %v", err)
+	}
+	// Create tmp directory so cleaner doesn't error
+	tmpDir := filepath.Join(root, "tmp")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(tmp) error = %v", err)
 	}
 
 	cleaner := NewPythonUserBaseCleaner(root, 1, func(context.Context) (string, error) {
