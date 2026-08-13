@@ -73,7 +73,7 @@ def environment_health_endpoint(environment_url: str) -> str:
     return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
-def read_environment_health(environment_url: str, *, timeout: float = 0.5) -> dict[str, Any]:
+def read_environment_health(environment_url: str, *, timeout: float = 5.0) -> dict[str, Any]:
     try:
         url = environment_health_endpoint(environment_url)
     except ValueError:
