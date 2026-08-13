@@ -1,0 +1,14 @@
+[Unit]
+Description=Configure compressed swap for Debian stage 1
+After=systemd-modules-load.service
+ConditionPathExists=/sys/class/zram-control
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/luckfox-zram-start
+ExecStop=/usr/local/sbin/luckfox-zram-stop
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+
