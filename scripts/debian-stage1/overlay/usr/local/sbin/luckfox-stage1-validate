@@ -1,0 +1,493 @@
+#!/bin/sh
+set -u
+
+usage() {
+    cat <<'EOF'
+Usage: luckfox-stage1-validate [options]
+
+Run the Debian stage-1 acceptance checks on the Luckfox board. Base checks are
+read-only. Network access, APT metadata updates and Bluetooth scanning require
+explicit options.
+
+Options:
+  --output DIR                    Result directory (must not already exist).
+  --network                       Check Wi-Fi association, DHCP, DNS and time.
+  --apt                           Run apt-get update (implies --network).
+  --bluetooth                     Check ttyS1, hci0, attach service and BlueZ.
+  --scan-seconds N                Scan for Bluetooth devices for 5-120 seconds.
+  --require-bluetooth-device MAC  Require MAC to appear after the scan.
+  --record-identity-baseline      Save machine-id and SSH key hashes to userdata.
+  --verify-identity-baseline      Compare identity with the saved baseline.
+  -h, --help                      Show this help without running checks.
+
+The script never reboots, changes Wi-Fi configuration or installs packages.
+Run it as root, normally through sudo from the serial console or SSH.
+EOF
+}
+
+network=no
+apt_check=no
+bluetooth=no
+scan_seconds=0
+required_bt_device=
+identity_action=none
+output=
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --output)
+        [ "$#" -ge 2 ] || { echo "--output requires a directory" >&2; exit 2; }
+        output=$2
+        shift 2
+        ;;
+    --network)
+        network=yes
+        shift
+        ;;
+    --apt)
+        apt_check=yes
+        network=yes
+        shift
+        ;;
+    --bluetooth)
+        bluetooth=yes
+        shift
+        ;;
+    --scan-seconds)
+        [ "$#" -ge 2 ] || { echo "--scan-seconds requires a value" >&2; exit 2; }
+        scan_seconds=$2
+        bluetooth=yes
+        shift 2
+        ;;
+    --require-bluetooth-device)
+        [ "$#" -ge 2 ] || {
+            echo "--require-bluetooth-device requires a MAC address" >&2
+            exit 2
+        }
+        required_bt_device=$2
+        bluetooth=yes
+        if [ "${scan_seconds}" -eq 0 ] 2>/dev/null; then
+            scan_seconds=15
+        fi
+        shift 2
+        ;;
+    --record-identity-baseline)
+        [ "${identity_action}" = none ] || {
+            echo "Choose only one identity baseline action" >&2
+            exit 2
+        }
+        identity_action=record
+        shift
+        ;;
+    --verify-identity-baseline)
+        [ "${identity_action}" = none ] || {
+            echo "Choose only one identity baseline action" >&2
+            exit 2
+        }
+        identity_action=verify
+        shift
+        ;;
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    *)
+        echo "Unknown option: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+done
+
+case "${scan_seconds}" in
+'' | *[!0-9]*)
+    echo "--scan-seconds must be an integer" >&2
+    exit 2
+    ;;
+esac
+if [ "${scan_seconds}" -ne 0 ] \
+    && { [ "${scan_seconds}" -lt 5 ] || [ "${scan_seconds}" -gt 120 ]; }; then
+    echo "--scan-seconds must be between 5 and 120" >&2
+    exit 2
+fi
+if [ -n "${required_bt_device}" ] \
+    && ! printf '%s\n' "${required_bt_device}" \
+        | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$'; then
+    echo "Invalid Bluetooth MAC address: ${required_bt_device}" >&2
+    exit 2
+fi
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Run luckfox-stage1-validate as root" >&2
+    exit 1
+fi
+
+boot_id=$(cat /proc/sys/kernel/random/boot_id)
+uptime_seconds=$(cut -d. -f1 /proc/uptime)
+if [ -z "${output}" ]; then
+    userdata_source=$(findmnt -n -o SOURCE --target /userdata 2>/dev/null || true)
+    if [ "$(readlink -f "${userdata_source}")" != /dev/mmcblk0p6 ]; then
+        echo "/userdata is not mounted from /dev/mmcblk0p6; refusing to write evidence" >&2
+        exit 1
+    fi
+    output=/userdata/debian-stage1/validation/${boot_id}-${uptime_seconds}
+fi
+if [ -e "${output}" ]; then
+    echo "Validation output already exists: ${output}" >&2
+    exit 1
+fi
+
+output_parent=$(dirname "${output}")
+mkdir -p "${output_parent}"
+work_dir=$(mktemp -d "${output_parent}/.stage1-validation.XXXXXX")
+cleanup() {
+    if [ -n "${work_dir:-}" ] && [ -d "${work_dir}" ]; then
+        case "${work_dir}" in
+        "${output_parent}"/.stage1-validation.*)
+            rm -rf -- "${work_dir}"
+            ;;
+        esac
+    fi
+}
+trap cleanup EXIT HUP INT TERM
+
+mkdir -p "${work_dir}/checks"
+summary=${work_dir}/summary.tsv
+printf 'status\tcheck\tdetail\n' >"${summary}"
+pass_count=0
+fail_count=0
+skip_count=0
+
+record_result() {
+    status=$1
+    check=$2
+    detail=$3
+    clean_detail=$(printf '%s' "${detail}" | tr '\t\r\n' '   ')
+    printf '%s\t%s\t%s\n' "${status}" "${check}" "${clean_detail}" \
+        >>"${summary}"
+    case "${status}" in
+    PASS) pass_count=$((pass_count + 1)) ;;
+    FAIL) fail_count=$((fail_count + 1)) ;;
+    SKIP) skip_count=$((skip_count + 1)) ;;
+    esac
+}
+
+run_check() {
+    check=$1
+    detail=$2
+    shift 2
+    log=${work_dir}/checks/${check}.txt
+    if "$@" >"${log}" 2>&1; then
+        record_result PASS "${check}" "${detail}"
+    else
+        status=$?
+        record_result FAIL "${check}" "${detail}; exit=${status}; log=checks/${check}.txt"
+    fi
+}
+
+skip_check() {
+    record_result SKIP "$1" "$2"
+}
+
+check_debian_identity() {
+    . /etc/os-release
+    printf 'ID=%s\nVERSION_ID=%s\nARCH=%s\n' \
+        "${ID:-}" "${VERSION_ID:-}" "$(dpkg --print-architecture)"
+    [ "${ID:-}" = debian ]
+    [ "${VERSION_ID:-}" = 13 ]
+    [ "$(dpkg --print-architecture)" = armhf ]
+}
+
+check_kernel() {
+    uname -a
+    [ "$(uname -r)" = 5.10.160 ]
+    [ "$(cat /proc/1/comm)" = systemd ]
+}
+
+check_mount() {
+    target=$1
+    expected=$2
+    source=$(findmnt -n -o SOURCE --target "${target}")
+    fstype=$(findmnt -n -o FSTYPE --target "${target}")
+    printf 'target=%s\nsource=%s\nfstype=%s\n' "${target}" "${source}" "${fstype}"
+    [ "$(readlink -f "${source}")" = "${expected}" ]
+    [ "${fstype}" = ext4 ]
+}
+
+check_filesystem_grown() {
+    target=$1
+    expected=$2
+    source=$(findmnt -n -o SOURCE --target "${target}")
+    source=$(readlink -f "${source}")
+    [ "${source}" = "${expected}" ]
+    partition_bytes=$(blockdev --getsize64 "${source}")
+    filesystem_bytes=$(/usr/local/libexec/luckfox-ext4-size "${source}")
+    minimum_bytes=$((partition_bytes * 95 / 100))
+    printf 'target=%s\npartition_bytes=%s\nfilesystem_bytes=%s\nminimum_bytes=%s\n' \
+        "${target}" "${partition_bytes}" "${filesystem_bytes}" "${minimum_bytes}"
+    [ "${filesystem_bytes}" -ge "${minimum_bytes}" ]
+}
+
+check_growth_marker() {
+    cat /var/lib/luckfox/rootfs-grown
+    [ "$(cat /var/lib/luckfox/rootfs-grown)" = /dev/mmcblk0p7 ]
+    [ "$(systemctl show -p Result --value luckfox-rootfs-grow.service)" = success ]
+    [ "$(systemctl show -p ExecMainStatus --value luckfox-rootfs-grow.service)" = 0 ]
+}
+
+check_active_units() {
+    for unit in \
+        systemd-networkd.service systemd-resolved.service ssh.service \
+        wpa_supplicant@wlan0.service luckfox-wifi.service luckfox-zram.service; do
+        systemctl is-active "${unit}"
+    done
+    for unit in luckfox-rootfs-grow.service luckfox-stage1-report.service; do
+        systemctl show "${unit}" -p LoadState -p Result -p ExecMainStatus
+        [ "$(systemctl show -p LoadState --value "${unit}")" = loaded ]
+        [ "$(systemctl show -p Result --value "${unit}")" = success ]
+        [ "$(systemctl show -p ExecMainStatus --value "${unit}")" = 0 ]
+    done
+}
+
+check_no_failed_units() {
+    failed=$(systemctl --failed --no-legend --plain)
+    printf '%s\n' "${failed}"
+    [ -z "${failed}" ]
+}
+
+check_machine_identity() {
+    machine_id=$(cat /etc/machine-id)
+    printf 'machine-id=%s\n' "${machine_id}"
+    printf '%s\n' "${machine_id}" | grep -Eq '^[[:xdigit:]]{32}$'
+    [ ! -e /var/lib/systemd/random-seed ] || [ -s /var/lib/systemd/random-seed ]
+}
+
+check_package_database() {
+    audit=$(dpkg --audit)
+    printf '%s\n' "${audit}"
+    [ -z "${audit}" ]
+    for package in \
+        systemd openssh-server wpasupplicant bluez adb e2fsprogs; do
+        status=$(dpkg-query -W -f='${db:Status-Status}' "${package}")
+        printf '%s\t%s\n' "${package}" "${status}"
+        [ "${status}" = installed ]
+    done
+}
+
+check_ssh() {
+    /usr/sbin/sshd -t
+    set -- /etc/ssh/ssh_host_*_key.pub
+    [ -e "$1" ]
+    sha256sum /etc/ssh/ssh_host_*_key.pub
+    ss -lnt | grep -Eq 'LISTEN.+:22[[:space:]]'
+}
+
+check_zram() {
+    swapon --show --bytes
+    swapon --noheadings --raw --output NAME | grep -qx /dev/zram0
+    [ "$(cat /sys/block/zram0/disksize)" = 67108864 ]
+}
+
+check_tmpfs() {
+    [ "$(findmnt -n -o FSTYPE --target /tmp)" = tmpfs ]
+    options=$(findmnt -n -o OPTIONS --target /tmp)
+    printf 'options=%s\nmode=%s\n' "${options}" "$(stat -c %a /tmp)"
+    printf '%s\n' "${options}" | tr ',' '\n' | grep -qx nosuid
+    printf '%s\n' "${options}" | tr ',' '\n' | grep -qx nodev
+    [ "$(stat -c %a /tmp)" = 1777 ]
+}
+
+check_no_buildroot_opt() {
+    if findmnt -rn --target /opt | grep -q '/userdata/opt'; then
+        findmnt -rn --target /opt
+        return 1
+    fi
+    [ "$(readlink -f /opt)" != /userdata/opt ]
+}
+
+check_network_stack() {
+    test -e /sys/class/net/wlan0
+    systemctl is-active luckfox-wifi.service
+    systemctl is-active wpa_supplicant@wlan0.service
+    systemctl is-active systemd-networkd.service
+    systemctl is-active systemd-resolved.service
+    iw dev wlan0 link | tee /dev/stderr | grep -q '^Connected to '
+    ip -4 -brief address show dev wlan0
+    ip -4 -o address show dev wlan0 scope global | grep -q .
+    ip route show default | tee /dev/stderr | grep -qw wlan0
+    networkctl status wlan0 --no-pager
+    resolvectl query deb.debian.org
+    ping -c 3 -W 3 deb.debian.org
+}
+
+check_time_sync() {
+    timedatectl status
+    [ "$(timedatectl show -p NTPSynchronized --value)" = yes ]
+}
+
+check_apt() {
+    apt-get update || return
+    apt-cache policy
+}
+
+check_bluetooth_stack() {
+    test -c /dev/ttyS1
+    test -d /sys/class/bluetooth/hci0
+    systemctl is-active luckfox-bluetooth-attach.service
+    systemctl is-active bluetooth.service
+    rfkill list bluetooth
+    bluetoothctl show
+}
+
+check_bluetooth_scan() {
+    bluetoothctl --timeout "${scan_seconds}" scan on
+    bluetoothctl scan off || true
+    bluetoothctl devices
+}
+
+check_required_bluetooth_device() {
+    bluetoothctl devices \
+        | grep -i -E "^Device[[:space:]]+${required_bt_device}[[:space:]]"
+}
+
+identity_snapshot() {
+    printf 'machine-id  %s\n' "$(cat /etc/machine-id)"
+    sha256sum /etc/ssh/ssh_host_*_key.pub | sort
+}
+
+record_identity_baseline() {
+    baseline=/userdata/debian-stage1/identity-baseline.txt
+    [ ! -e "${baseline}" ] || {
+        echo "Identity baseline already exists: ${baseline}"
+        return 1
+    }
+    umask 077
+    mkdir -p "$(dirname "${baseline}")"
+    identity_snapshot >"${baseline}.tmp"
+    mv "${baseline}.tmp" "${baseline}"
+    cat "${baseline}"
+}
+
+verify_identity_baseline() {
+    baseline=/userdata/debian-stage1/identity-baseline.txt
+    test -s "${baseline}"
+    identity_snapshot >"${work_dir}/identity-current.txt"
+    diff -u "${baseline}" "${work_dir}/identity-current.txt"
+}
+
+{
+    date -u '+UTC %Y-%m-%dT%H:%M:%SZ'
+    printf 'boot_id=%s\n' "${boot_id}"
+    printf 'uptime_seconds=%s\n' "${uptime_seconds}"
+    uname -a
+    cat /etc/os-release
+    printf '\n## mounts\n'
+    for target in / /oem /userdata /tmp; do
+        findmnt --target "${target}" || true
+    done
+    printf '\n## space\n'
+    df -h / /oem /userdata /tmp || true
+    printf '\n## memory\n'
+    free -h || true
+    cat /proc/meminfo
+    printf '\n## pressure\n'
+    cat /proc/pressure/memory 2>/dev/null || true
+    printf '\n## swap\n'
+    swapon --show --bytes || true
+    printf '\n## network\n'
+    ip -brief link || true
+    ip -brief address || true
+    ip route || true
+    printf '\n## modules\n'
+    lsmod || true
+    printf '\n## failed units\n'
+    systemctl --failed --no-pager || true
+    printf '\n## kernel warnings\n'
+    dmesg --level=emerg,alert,crit,err,warn 2>/dev/null || true
+} >"${work_dir}/system-snapshot.txt" 2>&1
+
+run_check debian_identity 'Debian 13 armhf userspace' check_debian_identity
+run_check kernel_and_pid1 'Linux 5.10.160 with systemd as PID 1' check_kernel
+run_check root_mount 'root is ext4 on mmcblk0p7' check_mount / /dev/mmcblk0p7
+run_check oem_mount 'OEM is ext4 on mmcblk0p5' check_mount /oem /dev/mmcblk0p5
+run_check userdata_mount 'userdata is ext4 on mmcblk0p6' check_mount /userdata /dev/mmcblk0p6
+run_check rootfs_grown 'rootfs occupies at least 95% of its partition' \
+    check_filesystem_grown / /dev/mmcblk0p7
+run_check oem_grown 'OEM occupies at least 95% of its partition' \
+    check_filesystem_grown /oem /dev/mmcblk0p5
+run_check userdata_grown 'userdata occupies at least 95% of its partition' \
+    check_filesystem_grown /userdata /dev/mmcblk0p6
+run_check growth_marker 'first-boot grow service completed successfully' check_growth_marker
+run_check base_units 'required base systemd units are healthy' check_active_units
+run_check failed_units 'systemd has no failed units' check_no_failed_units
+run_check machine_identity 'machine-id is initialized' check_machine_identity
+run_check package_database 'dpkg database and required packages are healthy' \
+    check_package_database
+run_check ssh_local 'sshd configuration, host keys and listener are ready' check_ssh
+run_check zram '64 MiB zram swap is active' check_zram
+run_check tmpfs '/tmp is a mode-1777 nosuid,nodev tmpfs' check_tmpfs
+run_check no_buildroot_opt 'no Buildroot /userdata/opt mount or link' check_no_buildroot_opt
+
+if [ "${network}" = yes ]; then
+    run_check network 'Wi-Fi association, DHCP, route, DNS and ping' check_network_stack
+    run_check time_sync 'system clock synchronized through systemd-timesyncd' check_time_sync
+else
+    skip_check network 'enable with --network'
+    skip_check time_sync 'enable with --network'
+fi
+
+if [ "${apt_check}" = yes ]; then
+    run_check apt_update 'signed Debian repositories update successfully' check_apt
+else
+    skip_check apt_update 'enable with --apt; this updates APT metadata'
+fi
+
+if [ "${bluetooth}" = yes ]; then
+    run_check bluetooth 'UART HCI transport and BlueZ are healthy' check_bluetooth_stack
+else
+    skip_check bluetooth 'enable with --bluetooth'
+fi
+
+if [ "${scan_seconds}" -gt 0 ]; then
+    run_check bluetooth_scan "Bluetooth scan for ${scan_seconds} seconds" \
+        check_bluetooth_scan
+else
+    skip_check bluetooth_scan 'enable with --scan-seconds N'
+fi
+
+if [ -n "${required_bt_device}" ]; then
+    run_check bluetooth_required_device \
+        "required Bluetooth device ${required_bt_device} was discovered" \
+        check_required_bluetooth_device
+else
+    skip_check bluetooth_required_device \
+        'enable with --require-bluetooth-device MAC'
+fi
+
+case "${identity_action}" in
+record)
+    run_check identity_baseline 'record reboot identity baseline in userdata' \
+        record_identity_baseline
+    ;;
+verify)
+    run_check identity_baseline 'machine-id and SSH keys match reboot baseline' \
+        verify_identity_baseline
+    ;;
+none)
+    skip_check identity_baseline \
+        'use --record-identity-baseline before reboot and --verify-identity-baseline after'
+    ;;
+esac
+
+{
+    printf 'passes=%s\n' "${pass_count}"
+    printf 'failures=%s\n' "${fail_count}"
+    printf 'skipped=%s\n' "${skip_count}"
+    printf 'result=%s\n' "$(if [ "${fail_count}" -eq 0 ]; then echo PASS; else echo FAIL; fi)"
+} >"${work_dir}/result.txt"
+
+mv "${work_dir}" "${output}"
+work_dir=
+trap - EXIT HUP INT TERM
+printf 'Validation results: %s\n' "${output}"
+cat "${output}/result.txt"
+[ "${fail_count}" -eq 0 ]

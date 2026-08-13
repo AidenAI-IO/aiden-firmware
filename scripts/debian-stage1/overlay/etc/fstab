@@ -1,0 +1,5 @@
+/dev/mmcblk0p7  /          ext4  defaults,noatime                        0  1
+/dev/mmcblk0p5  /oem       ext4  defaults,nofail,x-systemd.device-timeout=10s  0  2
+/dev/mmcblk0p6  /userdata  ext4  defaults,nofail,x-systemd.device-timeout=10s  0  2
+tmpfs           /tmp       tmpfs mode=1777,nosuid,nodev,size=24M        0  0
+
