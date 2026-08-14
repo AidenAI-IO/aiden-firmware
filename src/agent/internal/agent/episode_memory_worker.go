@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const episodeMemoryIdleDelay = 2 * time.Minute
+const defaultEpisodeMemoryIdleDelay = 5 * time.Minute
 
 // episodeMemoryWorker owns one resettable timer and never processes more than one
 // Episode at a time. A foreground run does not wait for consolidation: it stops
@@ -38,7 +38,7 @@ func newEpisodeMemoryWorker(processor episodeMemoryBatchProcessor) *episodeMemor
 	ctx, cancel := context.WithCancel(context.Background())
 	return &episodeMemoryWorker{
 		processor: processor,
-		idleDelay: episodeMemoryIdleDelay,
+		idleDelay: defaultEpisodeMemoryIdleDelay,
 		idleSince: time.Now(),
 		ctx:       ctx,
 		cancel:    cancel,

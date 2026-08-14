@@ -31,14 +31,15 @@ type deviceMemoryRecallRouter interface {
 const deviceMemoryRecallLimit = 5
 
 type FilesystemMemoryPlane struct {
-	memoryDir       string
-	extraction      MemoryExtractionConfig
-	episodes        *TaskEpisodeStore
-	device          *DeviceMemoryStore
-	longTerm        *LongTermMemoryStore
-	logger          *Logger
-	episodeMemoryMu sync.RWMutex
-	episodeMemory   *episodeMemoryWorker
+	memoryDir        string
+	extraction       MemoryExtractionConfig
+	episodes         *TaskEpisodeStore
+	device           *DeviceMemoryStore
+	longTerm         *LongTermMemoryStore
+	logger           *Logger
+	episodeMemoryMu  sync.RWMutex
+	episodeMemory    *episodeMemoryWorker
+	episodeIdleDelay time.Duration
 }
 
 type MemoryRetrieveRequest struct {
@@ -116,12 +117,14 @@ func NewFilesystemMemoryPlane(memoryDir string, extraction MemoryExtractionConfi
 	if strings.TrimSpace(memoryDir) == "" {
 		return nil
 	}
+	idleDelay := extraction.EpisodeMemoryIdleDelayOrDefault()
 	p := &FilesystemMemoryPlane{
-		memoryDir:  memoryDir,
-		extraction: extraction,
-		episodes:   NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes")),
-		device:     NewDeviceMemoryStore(filepath.Join(memoryDir, "device")),
-		logger:     logger,
+		memoryDir:        memoryDir,
+		extraction:       extraction,
+		episodes:         NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes")),
+		device:           NewDeviceMemoryStore(filepath.Join(memoryDir, "device")),
+		logger:           logger,
+		episodeIdleDelay: idleDelay,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -232,6 +235,7 @@ func (p *FilesystemMemoryPlane) StartEpisodeMemory(models model.Model) error {
 		return nil
 	}
 	worker := newEpisodeMemoryWorker(newEpisodeMemoryProcessor(p, models))
+	worker.idleDelay = p.episodeIdleDelay
 	if err := worker.Start(); err != nil {
 		return err
 	}

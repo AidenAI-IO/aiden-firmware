@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -48,6 +49,9 @@ type MemoryExtractionConfig struct {
 	// SessionBoundaryLongGapSeconds is the gap above which a new turn is
 	// treated as a fresh session regardless of lexical signals.
 	SessionBoundaryLongGapSeconds int `yaml:"session_boundary_long_gap_seconds"`
+	// EpisodeMemoryIdleDelaySeconds is the idle time in seconds before starting
+	// Episode Memory extraction in the background. Default is 300 (5 minutes).
+	EpisodeMemoryIdleDelaySeconds int `yaml:"episode_memory_idle_delay_seconds"`
 
 	countCompressAfterEventsConfigured bool
 	SessionBoundaryEnabledConfigured   bool `yaml:"-"`
@@ -66,6 +70,7 @@ type rawMemoryExtractionConfig struct {
 	SessionBoundaryEnabled         *bool     `yaml:"session_boundary_enabled"`
 	SessionBoundaryShortGapSeconds *int      `yaml:"session_boundary_short_gap_seconds"`
 	SessionBoundaryLongGapSeconds  *int      `yaml:"session_boundary_long_gap_seconds"`
+	EpisodeMemoryIdleDelaySeconds  *int      `yaml:"episode_memory_idle_delay_seconds"`
 }
 
 const (
@@ -94,6 +99,7 @@ func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
 		SessionBoundaryEnabled:         true,
 		SessionBoundaryShortGapSeconds: DefaultBoundaryConfig().ShortGapSeconds,
 		SessionBoundaryLongGapSeconds:  DefaultBoundaryConfig().LongGapSeconds,
+		EpisodeMemoryIdleDelaySeconds:  int(defaultEpisodeMemoryIdleDelay / time.Second),
 	}
 }
 
@@ -134,6 +140,9 @@ func normalizeMemoryExtractionConfig(cfg MemoryExtractionConfig) MemoryExtractio
 	}
 	if cfg.SessionBoundaryLongGapSeconds <= cfg.SessionBoundaryShortGapSeconds {
 		cfg.SessionBoundaryLongGapSeconds = cfg.SessionBoundaryShortGapSeconds + defaultBoundary.LongGapSeconds
+	}
+	if cfg.EpisodeMemoryIdleDelaySeconds <= 0 {
+		cfg.EpisodeMemoryIdleDelaySeconds = int(defaultEpisodeMemoryIdleDelay / time.Second)
 	}
 	return cfg
 }
@@ -194,5 +203,14 @@ func LoadMemoryExtractionConfig(configDir string) MemoryExtractionConfig {
 	if raw.SessionBoundaryLongGapSeconds != nil {
 		cfg.SessionBoundaryLongGapSeconds = *raw.SessionBoundaryLongGapSeconds
 	}
+	if raw.EpisodeMemoryIdleDelaySeconds != nil {
+		cfg.EpisodeMemoryIdleDelaySeconds = *raw.EpisodeMemoryIdleDelaySeconds
+	}
 	return normalizeMemoryExtractionConfig(cfg)
+}
+
+// EpisodeMemoryIdleDelayOrDefault returns the configured idle delay duration
+// for Episode Memory extraction, or the default 5 minutes if not configured.
+func (cfg MemoryExtractionConfig) EpisodeMemoryIdleDelayOrDefault() time.Duration {
+	return time.Duration(normalizeMemoryExtractionConfig(cfg).EpisodeMemoryIdleDelaySeconds) * time.Second
 }
