@@ -20,6 +20,10 @@ PROHIBITED_ACTION_PATTERNS = {
     "cancel": re.compile(r"\bcancel\b", re.IGNORECASE),
 }
 
+MEMORY_REF_AGGREGATING_RECALL_TOOLS = frozenset(
+    {"recall_memory", "recall_device_memory"}
+)
+
 @dc.dataclass
 class AssertionOutcome:
     all_passed: bool
@@ -35,9 +39,11 @@ class ExpectedAnswerResult:
 
 @dc.dataclass
 class ExpectedRecallResult:
-    passed: bool
+    passed: bool | None
     expected_memory_ids: list[str]
     recalled_memory_ids: list[str]
+    evidence_source: str
+    recall_memory_called: bool
 
 @dc.dataclass
 class TraceObservationResult:
@@ -237,30 +243,158 @@ def evaluate_expected_answer(
 
 
 def evaluate_expected_recalled_memory_ids(
-    history: list[dict[str, Any]], expected_memory_ids: list[str]
+    history: list[dict[str, Any]],
+    expected_memory_ids: list[str],
+    *,
+    episode: dict[str, Any] | None = None,
 ) -> ExpectedRecallResult:
+    expected_ids = _unique_non_empty_strings(expected_memory_ids)
+    recall_called, result_contents, call_count = _recall_memory_result_contents(history)
+    if not recall_called:
+        return ExpectedRecallResult(
+            passed=False,
+            expected_memory_ids=expected_ids,
+            recalled_memory_ids=[],
+            evidence_source="unavailable",
+            recall_memory_called=False,
+        )
+
+    other_aggregate_recall_tools = MEMORY_REF_AGGREGATING_RECALL_TOOLS - {
+        "recall_memory"
+    }
+    episode_is_unambiguous = not _history_uses_any_tool(
+        history,
+        other_aggregate_recall_tools,
+    )
+    if episode is not None:
+        episode_recalled_ids = _unique_non_empty_strings(
+            episode.get("retrieved_memory_refs")
+            if isinstance(episode.get("retrieved_memory_refs"), list)
+            else []
+        )
+        episode_has_all_expected = all(
+            memory_id in episode_recalled_ids for memory_id in expected_ids
+        )
+        if episode_is_unambiguous or not episode_has_all_expected:
+            return ExpectedRecallResult(
+                passed=episode_has_all_expected,
+                expected_memory_ids=expected_ids,
+                recalled_memory_ids=(
+                    episode_recalled_ids if episode_is_unambiguous else []
+                ),
+                evidence_source="episode",
+                recall_memory_called=True,
+            )
+
     recalled_ids: list[str] = []
-    for message in history:
-        if message.get("type") != "tool_result" or message.get("tool_name") != "recall_memory":
+    inline_complete = bool(result_contents)
+    if call_count and len(result_contents) < call_count:
+        inline_complete = False
+    for content in result_contents:
+        payload = _parse_inline_recall_result(content)
+        if payload is None:
+            inline_complete = False
             continue
-        content = message.get("content") or ""
+        for memory_id in payload:
+            if memory_id not in recalled_ids:
+                recalled_ids.append(memory_id)
+
+    if not inline_complete:
+        return ExpectedRecallResult(
+            passed=None,
+            expected_memory_ids=expected_ids,
+            recalled_memory_ids=[],
+            evidence_source="unavailable",
+            recall_memory_called=True,
+        )
+    return ExpectedRecallResult(
+        passed=all(memory_id in recalled_ids for memory_id in expected_ids),
+        expected_memory_ids=expected_ids,
+        recalled_memory_ids=recalled_ids,
+        evidence_source="inline",
+        recall_memory_called=True,
+    )
+
+
+def _history_uses_any_tool(
+    history: list[dict[str, Any]],
+    tool_names: set[str] | frozenset[str],
+) -> bool:
+    pending_tool_name = ""
+    for message in history:
+        message_type = message.get("type")
+        if message_type == "tool_call":
+            pending_tool_name = str(message.get("tool_name") or "")
+            if pending_tool_name in tool_names:
+                return True
+            continue
+        if message_type != "tool_result":
+            continue
+        tool_name = str(message.get("tool_name") or pending_tool_name)
+        pending_tool_name = ""
+        if tool_name in tool_names:
+            return True
+    return False
+
+
+def _recall_memory_result_contents(
+    history: list[dict[str, Any]],
+) -> tuple[bool, list[Any], int]:
+    recall_called = False
+    recall_call_count = 0
+    result_contents: list[Any] = []
+    pending_tool_name = ""
+    for message in history:
+        message_type = message.get("type")
+        if message_type == "tool_call":
+            pending_tool_name = str(message.get("tool_name") or "")
+            if pending_tool_name == "recall_memory":
+                recall_called = True
+                recall_call_count += 1
+            continue
+        if message_type != "tool_result":
+            continue
+        tool_name = str(message.get("tool_name") or pending_tool_name)
+        pending_tool_name = ""
+        if tool_name != "recall_memory":
+            continue
+        recall_called = True
+        result_contents.append(message.get("content"))
+    return recall_called, result_contents, recall_call_count
+
+
+def _parse_inline_recall_result(content: Any) -> list[str] | None:
+    if isinstance(content, dict):
+        payload = content
+    else:
         try:
             payload = json.loads(content)
         except (TypeError, json.JSONDecodeError):
+            return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        return None
+    recalled_ids: list[str] = []
+    for item in payload["results"]:
+        if not isinstance(item, dict):
+            return None
+        memory_id = item.get("id")
+        if not isinstance(memory_id, str) or not memory_id.strip():
+            return None
+        memory_id = memory_id.strip()
+        if memory_id not in recalled_ids:
+            recalled_ids.append(memory_id)
+    return recalled_ids
+
+
+def _unique_non_empty_strings(items: Any) -> list[str]:
+    result: list[str] = []
+    for item in items or []:
+        if not isinstance(item, str):
             continue
-        if not isinstance(payload, dict):
-            continue
-        for item in payload.get("results") or []:
-            if not isinstance(item, dict):
-                continue
-            memory_id = item.get("id")
-            if isinstance(memory_id, str) and memory_id and memory_id not in recalled_ids:
-                recalled_ids.append(memory_id)
-    return ExpectedRecallResult(
-        passed=all(memory_id in recalled_ids for memory_id in expected_memory_ids),
-        expected_memory_ids=list(expected_memory_ids),
-        recalled_memory_ids=recalled_ids,
-    )
+        value = item.strip()
+        if value and value not in result:
+            result.append(value)
+    return result
 
 
 def _normalize_option_answer(text: str) -> str | None:
