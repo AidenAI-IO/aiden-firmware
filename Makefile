@@ -1,4 +1,4 @@
-.PHONY: all configure build clean test test-clean sandbox-update sandbox-logs sandbox-stop
+.PHONY: all configure build clean test test-clean sandbox-start sandbox-update sandbox-logs sandbox-stop
 
 BUILD_DIR := build
 TEST_BUILD_DIR := build-host
@@ -25,6 +25,9 @@ test-clean:
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+sandbox-start:
+	./scripts/start_docker_sandbox.sh
 
 sandbox-update:
 	./scripts/update_docker_sandbox.sh

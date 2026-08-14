@@ -39,11 +39,12 @@ cd aiden-firmware
 From the repository root:
 
 ```bash
-docker compose up --build
+make sandbox-start
 ```
 
-The first run builds the local images. Later runs reuse Docker's build cache.
-When the services are ready, open:
+The command starts the sandbox in the background and waits for both web services
+to become healthy. The first run builds the image if it does not exist; later
+runs reuse the existing image. When the services are ready, open:
 
 | Page | URL | Purpose |
 | --- | --- | --- |
@@ -57,10 +58,10 @@ enter them through Config Web instead. Saving a supported Agent setting requests
 an Agent restart automatically, so the new configuration takes effect without
 restarting the whole Compose stack.
 
-To start in the background, add `-d`:
+To build and run the sandbox in the foreground instead:
 
 ```bash
-docker compose up --build -d
+docker compose up --build
 ```
 
 Follow service output with:

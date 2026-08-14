@@ -74,15 +74,19 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("AIDEN_AGENT_INIT_SCRIPT", entrypoint)
         self.assertIn("config_web", entrypoint)
 
-    def test_update_helper_rebuilds_the_sandbox_and_waits_until_it_is_healthy(self):
+    def test_start_and_update_helpers_share_health_checked_startup(self):
+        start_script = read_repo_file("scripts/start_docker_sandbox.sh")
         script = read_repo_file("scripts/update_docker_sandbox.sh")
         makefile = read_repo_file("Makefile")
 
-        self.assertIn("docker compose", script)
+        self.assertIn("docker compose", start_script)
+        self.assertIn("--wait", start_script)
+        self.assertIn("--wait-timeout", start_script)
+        self.assertIn("sandbox-start:", makefile)
+        self.assertIn("./scripts/start_docker_sandbox.sh", makefile)
         self.assertIn("--build", script)
-        self.assertIn("--wait", script)
-        self.assertIn("--wait-timeout", script)
-        self.assertNotIn("down -v", script)
+        self.assertIn("scripts/start_docker_sandbox.sh", script)
+        self.assertNotIn("down -v", start_script)
         self.assertIn("sandbox-update:", makefile)
         self.assertIn("./scripts/update_docker_sandbox.sh", makefile)
 
@@ -91,6 +95,7 @@ class DockerSandboxContractTest(unittest.TestCase):
         readme = read_repo_file("README.md")
 
         self.assertIn("docker compose up --build", guide)
+        self.assertIn("make sandbox-start", guide)
         self.assertIn("make sandbox-update", guide)
         self.assertNotIn("python -m runner webui", guide)
         self.assertNotIn("docker-sandbox.md", readme)
