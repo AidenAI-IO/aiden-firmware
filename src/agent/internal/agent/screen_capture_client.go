@@ -108,7 +108,14 @@ func (c *ScreenCaptureClient) captureFromSource(source screenCaptureSource, call
 		if healthErr != nil {
 			return nil, nil, screenCaptureInfo{}, fmt.Errorf("frame service health: %w", healthErr)
 		}
-		if health == nil || health.State != "RUNNING" || health.FrameAgeMs > frameServiceFreshFrameMaxAgeMs {
+		// Buffered capture should always have a recent frame before we ask for
+		// one. In on-demand mode, however, frame_age_ms describes the previous
+		// request (or no frame at all) while the service is intentionally idle.
+		// Let latest_frame trigger a fresh capture instead of rejecting it here.
+		staleBufferedFrame := health != nil &&
+			health.CaptureMode != "on_demand" &&
+			health.FrameAgeMs > frameServiceFreshFrameMaxAgeMs
+		if health == nil || health.State != "RUNNING" || staleBufferedFrame {
 			state := "UNKNOWN"
 			var age uint64
 			if health != nil {

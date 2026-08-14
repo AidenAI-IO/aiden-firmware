@@ -11,6 +11,8 @@ public:
     explicit FrameCameraCaptureSource(const CameraConfig& config);
 
     bool open() override;
+    bool pause() override;
+    bool resume() override;
     bool capture(CapturedFrame* frame) override;
     bool discard() override;
     void close() override;

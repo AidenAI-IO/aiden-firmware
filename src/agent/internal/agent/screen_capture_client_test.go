@@ -132,6 +132,42 @@ func TestScreenCaptureClientTreatsOldRunningPrimaryFrameAsStale(t *testing.T) {
 	}
 }
 
+func TestScreenCaptureClientRequestsFreshOnDemandFrameAfterLongIdle(t *testing.T) {
+	primary := &fakeHealthyScreenCaptureSource{
+		fakeScreenCaptureSource: &fakeScreenCaptureSource{
+			latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error) {
+				return &frameMetadata{Seq: 3049, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("fresh"), nil
+			},
+		},
+		health: &FrameHealthResult{
+			State:       "RUNNING",
+			CaptureMode: "on_demand",
+			LatestSeq:   3048,
+			FrameAgeMs:  10_000,
+		},
+	}
+	fallback := &fakeScreenCaptureSource{
+		latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error) {
+			return &frameMetadata{Seq: 1, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("fallback"), nil
+		},
+	}
+
+	client := newScreenCaptureClient(primary, fallback)
+	meta, frame, info, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, true, 0)
+	if err != nil {
+		t.Fatalf("LatestFrameWithFormat() error = %v", err)
+	}
+	if meta.Seq != 3049 || string(frame) != "fresh" || info.Backend != "" {
+		t.Fatalf("capture = seq %d payload %q backend %q, want fresh primary", meta.Seq, string(frame), info.Backend)
+	}
+	if primary.latestFrameWithFormatCalls != 1 {
+		t.Fatalf("primary calls = %d, want 1", primary.latestFrameWithFormatCalls)
+	}
+	if fallback.latestFrameWithFormatCalls != 0 {
+		t.Fatalf("fallback calls = %d, want 0", fallback.latestFrameWithFormatCalls)
+	}
+}
+
 func TestScreenCaptureClientTreatsFrameOlderThanPreCaptureHealthAsStale(t *testing.T) {
 	primary := &fakeHealthyScreenCaptureSource{
 		fakeScreenCaptureSource: &fakeScreenCaptureSource{

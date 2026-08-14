@@ -74,7 +74,7 @@ struct SingleReplyServer {
 
 TEST_CASE("FrameServiceClient health sends request and parses health response") {
     SingleReplyServer server(
-        R"({"type":"response","method":"health","status":"OK","state":"RUNNING","latest_seq":42,"frame_age_ms":7,"ring_buffer_size":8,"ring_buffer_used":3,"consecutive_failures":0,"last_recovery_ts":"9007199254740993","avg_frame_serve_latency_ms":1.5})",
+        R"({"type":"response","method":"health","status":"OK","state":"RUNNING","capture_mode":"on_demand","latest_seq":42,"frame_age_ms":7,"ring_buffer_size":8,"ring_buffer_used":3,"consecutive_failures":0,"last_recovery_ts":"9007199254740993","avg_frame_serve_latency_ms":1.5})",
         std::vector<uint8_t>());
     FrameServiceClient client(server.path.path.c_str());
     HealthResult result;
@@ -82,6 +82,7 @@ TEST_CASE("FrameServiceClient health sends request and parses health response") 
     REQUIRE(client.health(&result) == FrameServiceStatus::OK);
     CHECK(server.request_header.find(R"("method":"health")") != std::string::npos);
     CHECK(result.state == "RUNNING");
+    CHECK(result.capture_mode == "on_demand");
     CHECK(result.latest_seq == 42);
     CHECK(result.frame_age_ms == 7);
     CHECK(result.ring_buffer_size == 8);

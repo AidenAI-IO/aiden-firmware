@@ -26,8 +26,13 @@ void signal_handler(int) {
 struct Options {
     Options() : socket_path("/tmp/frame_service.sock"),
                 ring_size(aiden::kDefaultFrameServiceRingSize),
-                fps(aiden::kDefaultFrameServiceFps) {
+                fps(aiden::kDefaultFrameServiceFps),
+                warmup_frames(12) {
         aiden_demo::set_default_camera_config(&camera);
+        // A uniformly black or single-colour phone screen is a valid
+        // screenshot. On-demand capture relies on warm-up frames, rather than
+        // content, to discard transitional output after STREAMON.
+        camera.reject_uniform_frames = false;
         device_name = camera.device_name;
         pixel_format = camera.pixel_format;
         subdev_device = camera.subdev_device;
@@ -48,6 +53,7 @@ struct Options {
     std::string edid_path;
     size_t ring_size;
     double fps;
+    int warmup_frames;
     aiden::CameraConfig camera;
 };
 
@@ -56,7 +62,10 @@ void usage(const char* program) {
             "Usage: %s [--socket PATH] [--device PATH] [--width N] [--height N] "
             "[--pixel-format FMT] [--subdev PATH] [--edid PATH] [--ring-size N] "
             "[--fps N] [--no-hdmi-sync] [--force-trigger|--no-force-trigger] "
-            "[--require-exact-resolution|--allow-resolution-mismatch]\n",
+            "[--warmup-frames N] "
+            "[--allow-uniform-frames|--reject-uniform-frames] "
+            "[--require-exact-resolution|--allow-resolution-mismatch]\n"
+            "  --ring-size and --fps are accepted for compatibility but ignored in on-demand mode.\n",
             program);
 }
 
@@ -106,6 +115,13 @@ bool parse_options(int argc, char** argv, Options* options) {
             options->ring_size = static_cast<size_t>(value);
         } else if (arg == "--fps" && i + 1 < argc) {
             if (!parse_double_arg(argv[++i], &options->fps) || options->fps < 0.0) return false;
+        } else if (arg == "--warmup-frames" && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], &options->warmup_frames) ||
+                options->warmup_frames < 0) return false;
+        } else if (arg == "--allow-uniform-frames") {
+            options->camera.reject_uniform_frames = false;
+        } else if (arg == "--reject-uniform-frames") {
+            options->camera.reject_uniform_frames = true;
         } else if (arg == "--no-hdmi-sync") {
             options->camera.enable_hdmi_sync = false;
         } else if (arg == "--force-trigger") {
@@ -172,13 +188,23 @@ int main(int argc, char** argv) {
 
     aiden::FrameCameraCaptureSource source(options.camera);
     aiden::FrameCaptureManagerOptions manager_options;
-    if (options.fps > 0.0) {
-        manager_options.capture_interval_ms = static_cast<int>(1000.0 / options.fps + 0.5);
-        if (manager_options.capture_interval_ms < 1) {
-            manager_options.capture_interval_ms = 1;
-        }
-    }
+    manager_options.warmup_frames = options.warmup_frames;
     aiden::FrameCaptureManager manager(&source, &server, manager_options);
+    server.set_capture_handler(
+        [&manager](uint32_t timeout_ms,
+                   aiden::FrameMetadata* metadata,
+                   std::vector<uint8_t>* data) {
+            if (!metadata || !data) {
+                return aiden::FrameServiceStatus::INTERNAL_ERROR;
+            }
+            aiden::CapturedFrame frame;
+            const aiden::FrameServiceStatus status = manager.capture(timeout_ms, &frame);
+            if (status == aiden::FrameServiceStatus::OK) {
+                *metadata = frame.metadata;
+                *data = std::move(frame.data);
+            }
+            return status;
+        });
     server.set_restart_handler([&manager]() { manager.request_restart(); });
     if (!manager.start()) {
         AIDEN_LOG_ERROR("capture", "manager_start_failed", "device=%s",
@@ -188,7 +214,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    AIDEN_LOG_INFO("server", "listening", "socket_path=%s", options.socket_path.c_str());
+    AIDEN_LOG_INFO("server", "listening",
+                   "socket_path=%s capture_mode=on_demand warmup_frames=%d reject_uniform_frames=%d deprecated_fps=%.3f",
+                   options.socket_path.c_str(), options.warmup_frames,
+                   options.camera.reject_uniform_frames ? 1 : 0, options.fps);
     while (!g_quit) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }

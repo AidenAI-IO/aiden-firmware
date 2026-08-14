@@ -15,6 +15,7 @@
 #include <vector>
 
 using aiden::FrameMetadata;
+using aiden::FrameListResult;
 using aiden::FrameResult;
 using aiden::FrameServiceClient;
 using aiden::FrameServiceServer;
@@ -137,6 +138,47 @@ TEST_CASE("FrameServiceServer serves health over UDS") {
     CHECK(health.latest_seq == 0);
     CHECK(health.ring_buffer_size == 4);
     CHECK(health.ring_buffer_used == 0);
+
+    server.stop();
+}
+
+TEST_CASE("FrameServiceServer captures fresh frames on demand without filling the ring") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    std::atomic<int> captures(0);
+    server.set_capture_handler(
+        [&captures](uint32_t, FrameMetadata* meta, std::vector<uint8_t>* data) {
+            const int capture = ++captures;
+            *meta = metadata(1, 1, "uyvy", static_cast<uint64_t>(capture) * 10);
+            *data = payload({static_cast<uint8_t>(capture), 2});
+            return FrameServiceStatus::OK;
+        });
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+
+    FrameServiceClient client(socket_path.path.c_str());
+    FrameResult first;
+    REQUIRE(client.latest_frame(0, 0, &first) == FrameServiceStatus::OK);
+    CHECK(first.metadata.capture_ts_ns == 10);
+    CHECK(first.data == payload({1, 2}));
+
+    FrameResult second;
+    REQUIRE(client.latest_frame(first.metadata.seq, 0, &second) == FrameServiceStatus::OK);
+    CHECK(second.metadata.seq > first.metadata.seq);
+    CHECK(second.metadata.capture_ts_ns == 20);
+    CHECK(second.data == payload({2, 2}));
+    CHECK(captures == 2);
+
+    HealthResult health;
+    REQUIRE(client.health(&health) == FrameServiceStatus::OK);
+    CHECK(health.latest_seq == second.metadata.seq);
+    CHECK(health.ring_buffer_size == 0);
+    CHECK(health.ring_buffer_used == 0);
+
+    FrameResult missing;
+    CHECK(client.get_frame(second.metadata.seq, &missing) == FrameServiceStatus::FRAME_NOT_FOUND);
+    FrameListResult frames;
+    REQUIRE(client.list_frames(4, &frames) == FrameServiceStatus::OK);
+    CHECK(frames.frames.empty());
 
     server.stop();
 }
