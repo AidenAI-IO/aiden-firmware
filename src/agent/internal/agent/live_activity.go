@@ -44,6 +44,8 @@ const (
 	liveActivityFinalStateRetention = 5 * time.Minute
 	liveActivityAPNsQueueSize       = 16
 	liveActivityRelayQueueSize      = 32
+	liveActivityLocalNotifyInterval = 750 * time.Millisecond
+	liveActivityLocalNotifyTimeout  = time.Second
 )
 
 var (
@@ -122,15 +124,19 @@ type liveActivityPushRequest struct {
 }
 
 type LiveActivityManager struct {
-	mu              sync.Mutex
-	states          map[string]LiveActivityState
-	registrations   map[string]liveActivityRegistration
-	activeRequestID string
-	apns            *APNsClient
-	apnsQueue       chan liveActivityPushRequest
-	relay           *LiveActivityRelayClient
-	relayQueue      chan liveActivityPushRequest
-	logger          *Logger
+	mu                 sync.Mutex
+	states             map[string]LiveActivityState
+	registrations      map[string]liveActivityRegistration
+	activeRequestID    string
+	apns               *APNsClient
+	apnsQueue          chan liveActivityPushRequest
+	relay              *LiveActivityRelayClient
+	relayQueue         chan liveActivityPushRequest
+	logger             *Logger
+	localNotifyMu      sync.RWMutex
+	localNotifier      func(context.Context, string) error
+	localNotifyQueue   chan struct{}
+	localNotifyStarted bool
 }
 
 func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivityManager {
@@ -142,51 +148,84 @@ func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivit
 		registrations: make(map[string]liveActivityRegistration),
 		logger:        logger,
 	}
-	if cfg.APNsConfigured() {
-		client, err := NewAPNsClient(cfg)
-		if err != nil {
-			if logger != nil {
-				logger.Error("live activity: APNs disabled: %v", err)
-			}
-		} else {
-			manager.apns = client
-			manager.apnsQueue = make(chan liveActivityPushRequest, liveActivityAPNsQueueSize)
-			go manager.runAPNsPublisher(client, manager.apnsQueue)
-			if logger != nil {
-				logger.Info("live activity: APNs enabled environment=%s topic=%s", cfg.EnvironmentOrDefault(), cfg.APNsTopic())
-			}
-		}
-	}
-	if cfg.RelayConfigured() {
-		client, err := NewLiveActivityRelayClient(cfg)
-		if err != nil {
-			if logger != nil {
-				logger.Error("live activity: relay disabled: %v", err)
-			}
-		} else {
-			manager.relay = client
-			manager.relayQueue = make(chan liveActivityPushRequest, liveActivityRelayQueueSize)
-			go manager.runRelayPublisher(client, manager.relayQueue)
-			if logger != nil {
-				logger.Info("live activity: relay enabled url=%s board_id=%s", client.endpoint, client.boardID)
-			}
-		}
+	if logger != nil && (cfg.APNsConfigured() || cfg.RelayConfigured()) {
+		logger.Warn("live activity: remote APNs/relay configuration is ignored; updates use local BLE wake and USB ECM only")
 	}
 	return manager
 }
 
 func (m *LiveActivityManager) APNsStatus() string {
-	if m == nil || m.apns == nil {
-		return "not_configured"
-	}
-	return "configured"
+	return "disabled_local_only"
 }
 
 func (m *LiveActivityManager) RelayStatus() string {
-	if m == nil || m.relay == nil {
-		return "not_configured"
+	return "disabled_local_only"
+}
+
+func (m *LiveActivityManager) SetLocalUpdateNotifier(notifier func(context.Context, string) error) {
+	if m == nil {
+		return
 	}
-	return "configured"
+	m.localNotifyMu.Lock()
+	m.localNotifier = notifier
+	queue := m.localNotifyQueue
+	start := false
+	if notifier != nil && queue == nil {
+		queue = make(chan struct{}, 1)
+		m.localNotifyQueue = queue
+	}
+	if notifier != nil && !m.localNotifyStarted {
+		m.localNotifyStarted = true
+		start = true
+	}
+	m.localNotifyMu.Unlock()
+	if start && queue != nil {
+		go m.runLocalUpdateNotifier(queue)
+	}
+}
+
+func (m *LiveActivityManager) enqueueLocalUpdate() {
+	if m == nil {
+		return
+	}
+	m.localNotifyMu.RLock()
+	queue := m.localNotifyQueue
+	m.localNotifyMu.RUnlock()
+	if queue == nil {
+		return
+	}
+	select {
+	case queue <- struct{}{}:
+	default:
+	}
+}
+
+func (m *LiveActivityManager) runLocalUpdateNotifier(queue <-chan struct{}) {
+	var lastAttempt time.Time
+	for range queue {
+		if wait := liveActivityLocalNotifyInterval - time.Since(lastAttempt); !lastAttempt.IsZero() && wait > 0 {
+			timer := time.NewTimer(wait)
+			<-timer.C
+		}
+		m.localNotifyMu.RLock()
+		notifier := m.localNotifier
+		m.localNotifyMu.RUnlock()
+		if notifier == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), liveActivityLocalNotifyTimeout)
+		err := notifier(ctx, "live_activity")
+		cancel()
+		lastAttempt = time.Now()
+		if m.logger == nil {
+			continue
+		}
+		if err != nil {
+			m.logger.Debug("live activity: local BLE update wake unavailable: %v", err)
+		} else {
+			m.logger.Debug("live activity: local BLE update wake delivered")
+		}
+	}
 }
 
 func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...string) *LiveActivityState {
@@ -362,29 +401,7 @@ func (m *LiveActivityManager) Register(req LiveActivityRegistrationRequest) (*Li
 	if m == nil {
 		return nil, "disabled", errors.New("live activity is disabled")
 	}
-	req.RequestID = strings.TrimSpace(req.RequestID)
-	req.PushToken = strings.TrimSpace(req.PushToken)
-	if req.RequestID == "" {
-		return nil, "invalid", errors.New("request_id is required")
-	}
-	if req.PushToken == "" {
-		return nil, "invalid", errors.New("push_token is required")
-	}
-	m.mu.Lock()
-	m.registrations[req.RequestID] = liveActivityRegistration{
-		RequestID:    req.RequestID,
-		ActivityID:   strings.TrimSpace(req.ActivityID),
-		PushToken:    req.PushToken,
-		Platform:     strings.TrimSpace(req.Platform),
-		RegisteredAt: time.Now(),
-	}
-	state, ok := m.states[req.RequestID]
-	m.mu.Unlock()
-	if ok {
-		m.publish(req.RequestID, isFinalLiveActivityStatus(state.Status))
-		return &state, m.APNsStatus(), nil
-	}
-	return nil, m.APNsStatus(), nil
+	return nil, m.APNsStatus(), errors.New("remote Live Activity registration is disabled; use local BLE updates")
 }
 
 func (m *LiveActivityManager) Unregister(requestID string) bool {
@@ -472,36 +489,10 @@ func (m *LiveActivityManager) publish(requestID string, final bool) {
 	if m == nil {
 		return
 	}
-	m.logger.Info("Publishing live activity: %s, %t", requestID, final)
-	m.mu.Lock()
-	state, stateOK := m.states[requestID]
-	registration, regOK := m.registrations[requestID]
-	apnsQueue := m.apnsQueue
-	relayQueue := m.relayQueue
-	hasAPNs := m.apns != nil
-	hasRelay := m.relay != nil
-	m.mu.Unlock()
-	if !stateOK {
-		m.logger.Error("Live activity state not found: %s", requestID)
-		return
+	if m.logger != nil {
+		m.logger.Info("Publishing live activity locally: %s, %t", requestID, final)
 	}
-	if hasAPNs && regOK {
-		m.logger.Info("Enqueuing APNs push: %s", requestID)
-		m.enqueueAPNsPush(liveActivityPushRequest{
-			requestID: requestID,
-			pushToken: registration.PushToken,
-			state:     state,
-			final:     final,
-		}, apnsQueue)
-	}
-	if hasRelay {
-		m.logger.Info("Enqueuing relay push: %s", requestID)
-		m.enqueueRelayPush(liveActivityPushRequest{
-			requestID: requestID,
-			state:     state,
-			final:     final,
-		}, relayQueue)
-	}
+	m.enqueueLocalUpdate()
 }
 
 func (m *LiveActivityManager) enqueueAPNsPush(req liveActivityPushRequest, queue chan liveActivityPushRequest) {
@@ -663,7 +654,8 @@ func liveActivityStateMatchesPhoneID(state LiveActivityState, phoneID string) bo
 	if phoneID == "" {
 		return true
 	}
-	return strings.TrimSpace(state.PhoneID) == phoneID
+	statePhoneID := strings.TrimSpace(state.PhoneID)
+	return statePhoneID == "" || statePhoneID == phoneID
 }
 
 func bumpLiveActivityProgress(current float64) float64 {

@@ -14,10 +14,11 @@ sidebar_position: 6
 - Android notification sink: accepts normalized notification changes forwarded
   by the companion app over the USB-restricted Agent HTTP API.
 
-BLE is intentionally narrow. It does not carry Phone Bridge tool commands or
-results, and phone notification events are not written to Agent memory. Phone
-Bridge commands continue to use WebSocket or the existing HTTP queue; BLE Wake
-only prompts the iOS app to poll that queue.
+BLE is intentionally narrow. It does not carry Phone Bridge tool commands,
+results, Live Activity text, or task metadata, and phone notification events
+are not written to Agent memory. Phone Bridge commands continue to use
+WebSocket or the existing HTTP queue. A Live Activity Wake prompts the iOS
+native layer to read the newest task snapshot over USB ECM.
 
 ## Boot and Persistence
 
@@ -111,13 +112,16 @@ value:
 
 ```text
 byte 0      protocol version (1)
-byte 1      reason (0 unknown, 1 Phone Bridge queue, 2 manual, 3 system)
+byte 1      reason (0 unknown, 1 Phone Bridge queue, 2 manual, 3 system,
+            4 Live Activity state refresh)
 bytes 2-3   reserved
 bytes 4-11  uint64 wake sequence
 ```
 
-The iOS app treats this only as a native wake hook and immediately polls the
-HTTP command queue when backgrounded. No command payload is decoded from BLE.
+The iOS app treats this only as a native wake hook. Reason 1 opens the narrow
+background Phone Bridge command window; reason 4 reads
+`/api/live-activity/current` and updates ActivityKit locally. No command or task
+payload is decoded from BLE.
 
 ## Phone Notification Event Shape
 

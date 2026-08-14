@@ -236,14 +236,11 @@ provider = "duckduckgo"
 api_key = ""
 
 # Live Activity / Dynamic Island.
-# Foreground ActivityKit updates work without relay configuration. For remote
-# updates, provision a relay URL and a device-scoped credential bound to the
-# board_id generated at /userdata/agent/board_id. Do not reuse credentials
-# across boards.
+# State updates stay local: BLE carries only a wake hint and the iOS app reads
+# the current snapshot over USB ECM before updating ActivityKit. Relay/APNs
+# credentials are not used.
 [live_activity]
 enabled = true
-# relay_url = "https://relay.example.com"
-# relay_api_key = "device-scoped-credential"
 
 # Episode telemetry (Langfuse). Disabled by default.
 # Set enabled = true and configure base_url + public_key + secret_key.

@@ -872,6 +872,8 @@ func wakeReasonCode(reason string) byte {
 		return 2
 	case "system", "notification":
 		return 3
+	case "live_activity":
+		return 4
 	default:
 		return 0
 	}

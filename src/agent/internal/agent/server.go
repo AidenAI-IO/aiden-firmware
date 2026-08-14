@@ -410,6 +410,9 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	if s.bridge != nil {
 		s.bridge.SetConfiguredPlatform(runtime.devicePlatformFromState())
 	}
+	if s.liveActivity != nil {
+		s.liveActivity.SetLocalUpdateNotifier(defaultBLEWake)
+	}
 	if s.userFilesMemoryDir != "" {
 		s.historyStore = NewChatHistoryStore(filepath.Join(s.userFilesMemoryDir, "chat_history"))
 		s.episodeStore = NewTaskEpisodeStore(filepath.Join(s.userFilesMemoryDir, "episodes"))
@@ -3496,24 +3499,7 @@ func (s *Server) handleLiveActivityRegistrations(w http.ResponseWriter, r *http.
 	}
 	switch r.Method {
 	case http.MethodPost:
-		var req LiveActivityRegistrationRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
-			return
-		}
-		state, apnsStatus, err := s.liveActivity.Register(req)
-		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(LiveActivityRegistrationResponse{
-			OK:      true,
-			State:   state,
-			APNs:    apnsStatus,
-			Relay:   s.liveActivity.RelayStatus(),
-			Message: "registered",
-		})
+		http.Error(w, `{"error":"remote Live Activity registration is disabled; updates use local BLE and USB ECM"}`, http.StatusGone)
 	case http.MethodDelete:
 		requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
 		if requestID == "" {

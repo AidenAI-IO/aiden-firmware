@@ -16,6 +16,12 @@ func TestWakeCharacteristicFlagsKeepPairingProbeEncrypted(t *testing.T) {
 	}
 }
 
+func TestWakeReasonCodeIncludesLocalLiveActivityRefresh(t *testing.T) {
+	if got := wakeReasonCode("live_activity"); got != 4 {
+		t.Fatalf("wakeReasonCode(live_activity) = %d, want 4", got)
+	}
+}
+
 func TestWakeStopGracePeriodRejectsPreviousConnectionCleanup(t *testing.T) {
 	started := time.Unix(100, 0)
 	if !shouldIgnoreWakeStop(true, started, started.Add(time.Second)) {

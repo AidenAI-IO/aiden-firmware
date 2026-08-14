@@ -176,7 +176,7 @@ WebSocket's core value:
 the benchmark-only `ApplyBenchmarkStatus` path do not set or modify this field;
 the runtime Live Activity configuration remains its owner.
 
-`bridge_connected` only means the WebSocket is currently active. It is not equivalent to USB cable connectivity. After the iOS app enters background, WebSocket may disconnect while USB ECM remains reachable; real-time background Dynamic Island updates should go through Live Activity relay/APNs, not the phone bridge WebSocket.
+`bridge_connected` only means the WebSocket is currently active. It is not equivalent to USB cable connectivity. After the iOS app enters background, WebSocket may disconnect while USB ECM remains reachable; Dynamic Island updates use a local BLE Wake followed by a USB ECM read of `/api/live-activity/current`, not the phone bridge WebSocket or a remote relay.
 
 When `app_state=background|inactive`, `return_entry=dynamic_island`,
 `return_entry_available=true`, and PiP Bridge mode is not enabled, `open_url`

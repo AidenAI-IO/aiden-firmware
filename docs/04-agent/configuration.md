@@ -696,28 +696,19 @@ speed = 1.0
 
 ## `[live_activity]`
 
-For the iOS companion app's Live Activity / Dynamic Island task status. The agent-side status snapshot is enabled by default. See the full flow in [Live Activity / Dynamic Island](./live-activity.md).
+For the iOS companion app's Live Activity / Dynamic Island task status.
+Snapshots are enabled by default and delivered locally through BLE Wake plus
+USB ECM. See [Live Activity / Dynamic Island](./live-activity.md).
 
-**Relay-based updates** (legacy, used when APNs credentials are not configured):
+| Field     | Default | Description |
+| --------- | ------- | ----------- |
+| `enabled` | `true`  | Maintain local task-status snapshots and send coalesced `live_activity` BLE Wake notifications |
 
-| Field           | Default                                 | Description                                                                                       |
-| --------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `relay_url`     | -                                       | Aiden Live Activity relay URL; remote updates are disabled until the URL and credential are provisioned |
-| `relay_api_key` | -                                       | Device-scoped relay credential; the relay must bind it to the effective `board_id` and reject cross-board use |
-| `board_id`      | generated in `/userdata/agent/board_id` | Effective board ID in relay. The persisted generated value is the default; an explicit configuration value overrides it. Empty or `default` is not valid |
-
-**APNs-based updates** (for remote updates when the app is backgrounded, on lock screen, or not open):
-
-| Field              | Default                              | Description                                                                                                                        |
-| ------------------ | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `bundle_id`        | -                                    | iOS app bundle id; required only when configuring background APNs and `topic` is not explicitly set                                |
-| `topic`            | `<bundle_id>.push-type.liveactivity` | APNs topic; usually does not need to be set manually                                                                               |
-| `environment`      | `sandbox`                            | `sandbox` or `production`                                                                                                          |
-| `team_id`          | -                                    | Apple Developer Team ID; used only by background APNs                                                                              |
-| `key_id`           | -                                    | APNs Auth Key ID; used only by background APNs                                                                                     |
-| `private_key_path` | -                                    | APNs `.p8` private key path; used only by background APNs                                                                          |
-| `private_key_pem`  | -                                    | Inline APNs `.p8` PEM directly; for development/debugging only, do not place in open-source config or on user boards in production |
-| `timeout_sec`      | `10`                                 | Background APNs request timeout                                                                                                    |
+Legacy relay/APNs fields (`relay_url`, `relay_api_key`, `bundle_id`, `topic`,
+`environment`, `team_id`, `key_id`, `private_key_path`, `private_key_pem`, and
+`timeout_sec`) may still parse when loading an older config, but the Agent
+ignores them and does not initialize any remote publisher. Remove those fields
+from deployed configuration.
 
 ## Episode telemetry (Langfuse)
 
