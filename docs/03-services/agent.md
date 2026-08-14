@@ -40,11 +40,11 @@ input_mode = "stt"
 [model_providers.openai-main]
 type = "openai"
 api_key = "$OPENAI_API_KEY"
+# base_url = "https://api.openai.com/v1"
 
 [model]
 provider = "openai-main"
 model = "gpt-5.5"
-# base_url = "https://api.openai.com/v1"
 # temperature = 0.2
 # max_response_tokens = 1000
 

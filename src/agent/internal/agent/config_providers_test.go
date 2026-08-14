@@ -395,10 +395,8 @@ func loadProviderConfig(t *testing.T, body string) (Config, error) {
 
 // TestProviderReferenceBaseURLWhitelist covers the interaction between
 // provider-reference expansion and the base_url whitelist (OpenAI, Anthropic,
-// and Ollama only). Regression test: clearNonAllowedModelBaseURL used to run BEFORE the
-// reference was expanded, so it compared the whitelist against a [model_providers]
-// section NAME instead of a provider type. That broke both directions -- a
-// legitimate override was dropped, and a disallowed one survived.
+// and Ollama only). base_url is read only from [model_providers.*]; a stale
+// [model] value must not affect runtime selection.
 func TestProviderReferenceBaseURLWhitelist(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -406,9 +404,7 @@ func TestProviderReferenceBaseURLWhitelist(t *testing.T) {
 		wantBaseURL string
 	}{
 		{
-			// The name "my-openai" is not in the whitelist, so the early
-			// clear discarded a base_url that openai actually accepts.
-			name: "model base_url survives a named openai provider",
+			name: "model base_url is ignored for a named openai provider",
 			config: `
 [model_providers.my-openai]
 type = "openai"
@@ -419,7 +415,7 @@ provider = "my-openai"
 model = "gpt-4o"
 base_url = "https://gateway.example.com/v1"
 `,
-			wantBaseURL: "https://gateway.example.com/v1",
+			wantBaseURL: "",
 		},
 		{
 			name: "provider base_url survives for ollama",
@@ -433,6 +429,20 @@ provider = "local"
 model = "qwen2.5:7b"
 `,
 			wantBaseURL: "http://127.0.0.1:11434",
+		},
+		{
+			name: "provider base_url survives for anthropic",
+			config: `
+[model_providers.claude]
+type = "anthropic"
+api_key = "sk-ant-x"
+base_url = "https://relay.example.com/v1"
+
+[model]
+provider = "claude"
+model = "claude-sonnet-4-6"
+`,
+			wantBaseURL: "https://relay.example.com/v1",
 		},
 		{
 			// The mirror image: the clear ran before expansion, so a
@@ -451,7 +461,7 @@ model = "anthropic/claude-opus-4-8"
 			wantBaseURL: "",
 		},
 		{
-			name: "model base_url is dropped for a named volcengine provider",
+			name: "model base_url is ignored for a named volcengine provider",
 			config: `
 [model_providers.ark]
 type = "volcengine"
@@ -526,8 +536,8 @@ api_key = "sk-x"
 	})
 }
 
-// TestProviderReferencePrecedence pins that an explicit value on [model] wins
-// over the referenced provider's for every inherited field.
+// TestProviderReferencePrecedence pins that api_key may still be overridden on
+// [model], while base_url follows the selected provider record.
 func TestProviderReferencePrecedence(t *testing.T) {
 	cfg, err := loadProviderConfig(t, `
 [model_providers.p]
@@ -547,8 +557,8 @@ base_url = "https://explicit.example.com/v1"
 	if cfg.Model.APIKey != "sk-explicit" {
 		t.Errorf("api_key = %q, want sk-explicit", cfg.Model.APIKey)
 	}
-	if cfg.Model.BaseURL != "https://explicit.example.com/v1" {
-		t.Errorf("base_url = %q, want the explicit value", cfg.Model.BaseURL)
+	if cfg.Model.BaseURL != "https://provider.example.com/v1" {
+		t.Errorf("base_url = %q, want the provider value", cfg.Model.BaseURL)
 	}
 }
 

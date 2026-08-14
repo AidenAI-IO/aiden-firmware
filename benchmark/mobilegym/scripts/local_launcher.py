@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -567,7 +568,14 @@ def apply_analysis_env_from_payload(env: dict[str, str], payload: dict[str, Any]
 
 
 def fetch_board_model_config(board_url: str) -> dict[str, str]:
-    return parse_agent_model_assignments(fetch_board_toml_section(board_url, "model"))
+    model_values = parse_agent_model_values(fetch_board_toml_section(board_url, "model"))
+    provider_ref = model_values.get("provider", "")
+    provider_values: dict[str, str] = {}
+    if provider_ref:
+        provider_values = parse_agent_model_provider_values(
+            fetch_board_toml_section(board_url, f"model_providers.{provider_ref}")
+        )
+    return agent_model_environment(model_values, provider_values)
 
 
 def fetch_board_benchmark_config(board_url: str) -> dict[str, str]:
@@ -579,7 +587,8 @@ def fetch_board_toml_section(board_url: str, section: str) -> str:
     if not base.startswith(("http://", "https://")):
         raise LauncherError("invalid board_url")
     command = (
-        "awk '/^\\[" + section + "\\]/{in_section=1;next} "
+        "awk -v target=" + shlex.quote(section) + " "
+        "'index($0, \"[\" target \"]\") == 1 {in_section=1; next} "
         "/^\\[/{in_section=0} in_section{print}' /userdata/agent/agent.toml"
     )
     body = json.dumps({"input": {"command": command, "timeout": 5}}).encode("utf-8")
@@ -605,18 +614,41 @@ def fetch_board_toml_section(board_url: str, section: str) -> str:
 
 
 def parse_agent_model_config(text: str) -> dict[str, str]:
-    return parse_agent_model_assignments(toml_section(text, "model"))
+    model_values = parse_agent_model_values(toml_section(text, "model"))
+    provider_ref = model_values.get("provider", "")
+    provider_values = parse_agent_model_provider_values(
+        toml_section(text, f"model_providers.{provider_ref}")
+    )
+    return agent_model_environment(model_values, provider_values)
 
 
 def parse_agent_model_assignments(text: str) -> dict[str, str]:
-    values = parse_toml_assignments(text, {"provider", "model", "base_url", "api_key"})
-    mapping = {
-        "provider": "MODEL_PROVIDER",
-        "model": "MODEL_NAME",
-        "base_url": "MODEL_BASE_URL",
-        "api_key": "MODEL_API_KEY",
-    }
-    return {env_key: values[key] for key, env_key in mapping.items() if key in values}
+    return agent_model_environment(parse_agent_model_values(text), {})
+
+
+def parse_agent_model_values(text: str) -> dict[str, str]:
+    return parse_toml_assignments(text, {"provider", "model", "api_key"})
+
+
+def parse_agent_model_provider_values(text: str) -> dict[str, str]:
+    return parse_toml_assignments(text, {"type", "provider", "base_url", "api_key"})
+
+
+def agent_model_environment(
+    model_values: dict[str, str], provider_values: dict[str, str]
+) -> dict[str, str]:
+    provider = provider_values.get("type") or provider_values.get("provider") or model_values.get("provider")
+    api_key = model_values.get("api_key") or provider_values.get("api_key")
+    env: dict[str, str] = {}
+    if provider:
+        env["MODEL_PROVIDER"] = provider
+    if model := model_values.get("model"):
+        env["MODEL_NAME"] = model
+    if base_url := provider_values.get("base_url"):
+        env["MODEL_BASE_URL"] = base_url
+    if api_key:
+        env["MODEL_API_KEY"] = api_key
+    return env
 
 
 def parse_agent_benchmark_config(text: str) -> dict[str, str]:

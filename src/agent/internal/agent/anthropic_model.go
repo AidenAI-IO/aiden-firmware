@@ -1136,9 +1136,6 @@ func resolveAnthropicBaseURL(configured string) string {
 	if configured = strings.TrimSpace(configured); configured != "" {
 		return configured
 	}
-	if environment := strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")); environment != "" {
-		return environment
-	}
 	return defaultAnthropicBaseURL
 }
 

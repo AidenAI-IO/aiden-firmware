@@ -66,7 +66,7 @@ The firmware starts `config_web` on port 80.
 The page fields cover the following config sections (all detailed later on this page). The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
 - `agent`: `locale`, `input_mode`, `trigger_mode`, VAD params, `load_all_tools`, `max_iterations`, `custom_instruction`, `additional_prompt`
-- `model`: provider, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
+- `model`: provider, model, api_key, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, playback_backend
@@ -302,10 +302,11 @@ model = "gpt-5.5"
 ```
 
 On load, a `provider` value that names a section under `[model_providers]` is replaced
-by that section's provider type, and its `api_key` and `base_url` fill in any
-field the model section leaves empty — values set directly on `[model]` always
-win. A `provider` that matches no section is treated as a
-provider type, so existing configs keep working unchanged.
+by that section's provider type. Its `api_key` fills an empty `[model].api_key`,
+while its `base_url` always controls the endpoint. A legacy `[model].base_url`
+is ignored; configure custom endpoints only through the selected
+`[model_providers.<name>].base_url`. A `provider` that matches no section is
+treated as a provider type, so existing configs keep working unchanged.
 
 `token_env` is not supported. Replace it with `api_key = "$VAR_NAME"`.
 
@@ -325,7 +326,6 @@ built. When a section is named exactly like a provider type, the section wins.
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `provider`                | A provider type, or the name of a `[model_providers.<name>]` section. Types: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
-| `base_url`                | Custom provider endpoint. `openai`, `anthropic`, and `ollama` accept overrides; other providers use built-in endpoints and a stored value is dropped on load. Anthropic accepts either a host URL or a URL ending in `/v1`. |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
 | `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
 | `reasoning_effort`        | Thinking effort. Unset is auto. For no-tool requests, native Anthropic maps `low`/`medium`/`high` to adaptive thinking `output_config.effort`; tool requests retain Claude's default reasoning because Aiden does not persist Anthropic thinking signatures. `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, Ollama, and the fake provider, but not by native Anthropic or Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
