@@ -59,6 +59,16 @@ Follow service output with:
 docker compose logs -f
 ```
 
+After changing Aiden source code, rebuild the image, replace the running
+container, and wait for both web services to become healthy with:
+
+```bash
+make sandbox-update
+```
+
+The update preserves the `aiden-data` volume. Use `make sandbox-logs` to follow
+the Agent logs and `make sandbox-stop` to stop the sandbox.
+
 ## Connect an Environment Bridge
 
 Without an environment bridge, Config Web and Agent Web work, but the Agent has

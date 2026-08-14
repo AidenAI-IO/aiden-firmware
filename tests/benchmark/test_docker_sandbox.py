@@ -55,6 +55,18 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("AIDEN_AGENT_INIT_SCRIPT", entrypoint)
         self.assertIn("config_web", entrypoint)
 
+    def test_update_helper_rebuilds_the_sandbox_and_waits_until_it_is_healthy(self):
+        script = read_repo_file("scripts/update_docker_sandbox.sh")
+        makefile = read_repo_file("Makefile")
+
+        self.assertIn("docker compose", script)
+        self.assertIn("--build", script)
+        self.assertIn("--wait", script)
+        self.assertIn("--wait-timeout", script)
+        self.assertNotIn("down -v", script)
+        self.assertIn("sandbox-update:", makefile)
+        self.assertIn("./scripts/update_docker_sandbox.sh", makefile)
+
 
 if __name__ == "__main__":
     unittest.main()
