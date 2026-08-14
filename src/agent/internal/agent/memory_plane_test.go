@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	langtools "github.com/tmc/langchaingo/tools"
@@ -74,7 +73,7 @@ func TestRouteDeviceMemoryRecallDoesNotUseCurrentAppAsSoleRelevanceSignal(t *tes
 		Title:      "Verify edited title before Save",
 		Content:    "Before clicking Save in QA Notes, verify that the title field shows the new value.",
 		DeviceID:   defaultMemoryDeviceID,
-		Tags:       []string{reflectionFailureTag, "save-action"},
+		Tags:       []string{legacyReflectionFailureTag, "save-action"},
 		Entities:   []string{"QA Notes", "Save button"},
 		AppName:    "QA Notes",
 		Confidence: 0.8,
@@ -299,7 +298,7 @@ func TestDeviceMemoryIgnoresRetiredCoordinateModeCalibration(t *testing.T) {
 	}
 }
 
-func TestMemoryPlaneUpdatesReferencedMemoryOutcomes(t *testing.T) {
+func TestCommitEpisodeDoesNotUpdateRecalledMemoryFromUnverifiedOutcome(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")
 	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
@@ -357,15 +356,15 @@ func TestMemoryPlaneUpdatesReferencedMemoryOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read mem_proc: %v", err)
 	}
-	if proc.Item.Status != "conflicted" || proc.Item.FailureCount != 2 || proc.Item.Confidence >= 0.8 {
-		t.Fatalf("expected referenced procedure to be conflicted with lower confidence, got %#v", proc.Item)
+	if proc.Item.Status != "active" || proc.Item.FailureCount != 0 || proc.Item.Confidence != 0.8 {
+		t.Fatalf("CommitEpisode changed long-term memory from unverified outcome: %#v", proc.Item)
 	}
 	devHits, err := device.Search(ctx, DeviceMemoryQuery{Terms: []string{"设备旧流程"}, Limit: 10})
 	if err != nil {
 		t.Fatalf("device search: %v", err)
 	}
-	if len(devHits) == 0 || devHits[0].ID != "dev_proc" || devHits[0].Type != "conflict" {
-		t.Fatalf("expected device procedure to become conflict, got %#v", devHits)
+	if len(devHits) == 0 || devHits[0].ID != "dev_proc" || devHits[0].Type != "procedure" {
+		t.Fatalf("CommitEpisode changed device memory from unverified outcome: %#v", devHits)
 	}
 
 	if _, err := longTerm.AddMemory(ctx, MemoryItem{
@@ -403,133 +402,7 @@ func TestMemoryPlaneUpdatesReferencedMemoryOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read mem_fail_fresh: %v", err)
 	}
-	if fail.Item.Status != "active" || fail.Item.SuccessCount != 1 || len(fail.Item.ConflictsWith) != 0 {
-		t.Fatalf("expected success to validate recalled failure memory, got %#v", fail.Item)
-	}
-}
-
-func TestMemoryPlaneUpdatesReferencedLongTermOutcomesInBatch(t *testing.T) {
-	ctx := context.Background()
-	memoryDir := filepath.Join(t.TempDir(), "memory")
-	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
-	refs := []string{"mem_batch_one", "mem_batch_two", "mem_batch_three"}
-	for _, id := range refs {
-		if _, err := longTerm.AddMemory(ctx, MemoryItem{
-			ID:               id,
-			Type:             "procedure",
-			Status:           "active",
-			Priority:         80,
-			Confidence:       0.8,
-			Title:            id,
-			Content:          "Reusable procedure.",
-			EvidenceExcerpts: []string{"Reusable procedure succeeded."},
-			TTL:              "45d",
-		}); err != nil {
-			t.Fatalf("AddMemory(%s): %v", id, err)
-		}
-	}
-	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
-	plane.device = nil
-
-	limitedCtx := newCancelAfterDoneContext(ctx, 5)
-	if err := plane.updateReferencedMemoryOutcomes(limitedCtx, TaskEpisode{
-		ID:                  "ep_batch_success",
-		RetrievedMemoryRefs: refs,
-		Outcome:             TaskEpisodeOutcome{Success: true},
-	}); err != nil {
-		t.Fatalf("updateReferencedMemoryOutcomes() error = %v", err)
-	}
-
-	for _, id := range refs {
-		parsed, err := readMemoryMarkdown(longTerm.memoryPath(id))
-		if err != nil {
-			t.Fatalf("read %s: %v", id, err)
-		}
-		if parsed.Item.SuccessCount != 1 {
-			t.Fatalf("%s SuccessCount = %d, want 1", id, parsed.Item.SuccessCount)
-		}
-	}
-}
-
-func TestMemoryPlaneUpdatesReferencedDeviceOutcomesInBatch(t *testing.T) {
-	ctx := context.Background()
-	memoryDir := filepath.Join(t.TempDir(), "memory")
-	device := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
-	refs := []string{"dev_batch_one", "dev_batch_two", "dev_batch_three"}
-	for _, id := range refs {
-		if _, err := device.Upsert(ctx, DeviceMemoryItem{
-			ID:         id,
-			Type:       "procedure",
-			Status:     "active",
-			Title:      id,
-			Content:    "Device procedure.",
-			DeviceID:   defaultMemoryDeviceID,
-			Confidence: 0.8,
-			TTL:        "45d",
-		}); err != nil {
-			t.Fatalf("Upsert(%s): %v", id, err)
-		}
-	}
-	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
-	plane.longTerm = nil
-
-	limitedCtx := newCancelAfterDoneContext(ctx, 5)
-	if err := plane.updateReferencedMemoryOutcomes(limitedCtx, TaskEpisode{
-		ID:                  "ep_batch_failure",
-		RetrievedMemoryRefs: refs,
-		Outcome:             TaskEpisodeOutcome{Success: false, FailureReason: "procedure failed"},
-	}); err != nil {
-		t.Fatalf("updateReferencedMemoryOutcomes() error = %v", err)
-	}
-
-	for _, id := range refs {
-		item, found, err := device.Get(ctx, id)
-		if err != nil {
-			t.Fatalf("Get(%s): %v", id, err)
-		}
-		if !found {
-			t.Fatalf("Get(%s) not found", id)
-		}
-		if item.FailureCount != 1 {
-			t.Fatalf("%s FailureCount = %d, want 1", id, item.FailureCount)
-		}
-	}
-}
-
-type cancelAfterDoneContext struct {
-	context.Context
-	allowedOpenDoneCalls int
-
-	mu    sync.Mutex
-	calls int
-	done  chan struct{}
-	once  sync.Once
-}
-
-func newCancelAfterDoneContext(parent context.Context, allowedOpenDoneCalls int) *cancelAfterDoneContext {
-	return &cancelAfterDoneContext{
-		Context:              parent,
-		allowedOpenDoneCalls: allowedOpenDoneCalls,
-		done:                 make(chan struct{}),
-	}
-}
-
-func (c *cancelAfterDoneContext) Done() <-chan struct{} {
-	c.mu.Lock()
-	c.calls++
-	if c.calls > c.allowedOpenDoneCalls {
-		c.once.Do(func() { close(c.done) })
-	}
-	done := c.done
-	c.mu.Unlock()
-	return done
-}
-
-func (c *cancelAfterDoneContext) Err() error {
-	select {
-	case <-c.done:
-		return context.Canceled
-	default:
-		return c.Context.Err()
+	if fail.Item.Status != "active" || fail.Item.SuccessCount != 0 || len(fail.Item.ConflictsWith) != 0 {
+		t.Fatalf("CommitEpisode changed recalled failure memory from unverified success: %#v", fail.Item)
 	}
 }

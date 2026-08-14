@@ -208,7 +208,7 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 		if entry.Status != "active" {
 			continue
 		}
-		// Failure lessons are now owned by the Device Memory reflection flow.
+		// Failure lessons are now owned by Episode Memory consolidation.
 		// Keep legacy long-term files for traceability, but do not recall them.
 		if entry.Type == "failure" {
 			continue

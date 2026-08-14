@@ -53,40 +53,40 @@ const (
 )
 
 type Runtime struct {
-	config             Config
-	models             model.Model
-	memories           *MemoryManager
-	tools              *ToolSet
-	skills             *SkillManager
-	skillsLoaded       bool
-	skillsReloadMu     sync.Mutex
-	skillsDirty        bool
-	runGateInit        sync.Once
-	mergeWorker        *MergeWorker
-	logger             *Logger
-	profileDebouncer   *ProfileDebouncer
-	waitForWakeup      *WaitForWakeupController
-	voiceNotifications *VoiceNotificationManager
-	memoryPlane        MemoryPlane
-	sessionManager     SessionManager
-	contextManager     *contextmanager.ContextManager
-	stateManager       *statemanager.StateManager
-	runtimeID          string
-	telemetrySessionID string
-	environmentBridge  *EnvironmentBridgeClient
-	runGate            chan struct{}
-	preemptMu          sync.Mutex
-	activeCancel       context.CancelFunc
-	preemptHooks       []func()
-	lastPreemptTime    time.Time
-	storage            *StorageManager
-	screenState        *screen.ScreenState
-	phoneBridge        *PhoneBridge
-	storageMonitor     *StorageMonitor
-	ttsManager         *tts.ProviderManager
-	ttsManagerOnce     sync.Once
-	episodeMaintenance asyncEpisodeMaintenance
-	reflectionInitErr  error
+	config               Config
+	models               model.Model
+	memories             *MemoryManager
+	tools                *ToolSet
+	skills               *SkillManager
+	skillsLoaded         bool
+	skillsReloadMu       sync.Mutex
+	skillsDirty          bool
+	runGateInit          sync.Once
+	mergeWorker          *MergeWorker
+	logger               *Logger
+	profileDebouncer     *ProfileDebouncer
+	waitForWakeup        *WaitForWakeupController
+	voiceNotifications   *VoiceNotificationManager
+	memoryPlane          MemoryPlane
+	sessionManager       SessionManager
+	contextManager       *contextmanager.ContextManager
+	stateManager         *statemanager.StateManager
+	runtimeID            string
+	telemetrySessionID   string
+	environmentBridge    *EnvironmentBridgeClient
+	runGate              chan struct{}
+	preemptMu            sync.Mutex
+	activeCancel         context.CancelFunc
+	preemptHooks         []func()
+	lastPreemptTime      time.Time
+	storage              *StorageManager
+	screenState          *screen.ScreenState
+	phoneBridge          *PhoneBridge
+	storageMonitor       *StorageMonitor
+	ttsManager           *tts.ProviderManager
+	ttsManagerOnce       sync.Once
+	episodeMaintenance   asyncEpisodeMaintenance
+	episodeMemoryInitErr error
 }
 
 type asyncEpisodeMaintenance struct {
@@ -479,7 +479,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger, WithMemoryPlaneLongTermStore(longTermStore))
 		rt.markInterruptedEpisodesBestEffort()
 	}
-	rt.startReflection(logger)
+	rt.startEpisodeMemory(logger)
 
 	// Start the SD/eMMC storage manager on every device. Missing or unusable
 	// card hardware degrades to eMMC-only operation.
@@ -614,7 +614,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, LoadMemoryExtractionConfig(cfg.ConfigDir), nil, WithMemoryPlaneLongTermStore(longTermStore))
 		rt.markInterruptedEpisodesBestEffort()
-		rt.startReflection(nil)
+		rt.startEpisodeMemory(nil)
 	}
 	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
 	skillManager.SetDeviceTypeFunc(rt.deviceTypeFromState)
@@ -626,37 +626,37 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	return rt
 }
 
-func (r *Runtime) startReflection(runtimeLogger *Logger) {
+func (r *Runtime) startEpisodeMemory(runtimeLogger *Logger) {
 	if r == nil {
 		return
 	}
 	plane, ok := r.memoryPlane.(*FilesystemMemoryPlane)
 	if !ok || plane == nil {
-		r.reflectionInitErr = nil
+		r.episodeMemoryInitErr = nil
 		return
 	}
 	if runtimeLogger != nil {
 		plane.logger = runtimeLogger
 	}
-	err := plane.StartReflection(r.models)
-	r.reflectionInitErr = err
+	err := plane.StartEpisodeMemory(r.models)
+	r.episodeMemoryInitErr = err
 	if err == nil {
 		return
 	}
 	if runtimeLogger != nil {
-		runtimeLogger.Warn("[reflection] worker disabled: %v", err)
+		runtimeLogger.Warn("[episode-memory] worker disabled: %v", err)
 		return
 	}
-	log.Printf("[reflection] worker disabled: %v", err)
+	log.Printf("[episode-memory] worker disabled: %v", err)
 }
 
-// ReflectionInitializationError reports why the background reflection worker
-// could not start. A nil error means reflection is running or not configured.
-func (r *Runtime) ReflectionInitializationError() error {
+// EpisodeMemoryInitializationError reports why the background consolidation
+// worker could not start. A nil error means it is running or not configured.
+func (r *Runtime) EpisodeMemoryInitializationError() error {
 	if r == nil {
 		return nil
 	}
-	return r.reflectionInitErr
+	return r.episodeMemoryInitErr
 }
 
 func (r *Runtime) initRunGate() {
@@ -838,8 +838,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		ctx = context.Background()
 	}
 	if plane, ok := r.memoryPlane.(*FilesystemMemoryPlane); ok {
-		plane.ReflectionTaskStarted()
-		defer plane.ReflectionTaskFinished()
+		plane.EpisodeMemoryTaskStarted()
+		defer plane.EpisodeMemoryTaskFinished()
 	}
 
 	// Preempt any currently active run and its resources.
@@ -1055,8 +1055,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	// Memories are no longer retrieved up front. The agent pulls what it needs
 	// on demand through the recall tools, which record the referenced IDs on the
-	// episode recorder so outcome-based confidence updates only touch memories
-	// the agent actually saw.
+	// episode recorder so Episode Memory consolidation checks those records first
+	// for updates and conflicts.
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
 		if episodeRecorder != nil {
@@ -2630,7 +2630,7 @@ func (r *Runtime) Close() error {
 	}
 	maintenanceCancel()
 	if plane, ok := r.memoryPlane.(*FilesystemMemoryPlane); ok {
-		plane.StopReflection()
+		plane.StopEpisodeMemory()
 	}
 	if r.storageMonitor != nil {
 		r.storageMonitor.Stop()

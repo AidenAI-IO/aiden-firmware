@@ -261,7 +261,7 @@ func TestServerPublicHistoryOmitsLargeToolResultContent(t *testing.T) {
 		NewSkillIndex(),
 	)
 	if plane, ok := runtime.memoryPlane.(*FilesystemMemoryPlane); ok {
-		plane.StopReflection()
+		plane.StopEpisodeMemory()
 	}
 	// This test exercises persisted chat history only. Disable the unrelated
 	// asynchronous Episode maintenance so TempDir cleanup cannot race its writes.

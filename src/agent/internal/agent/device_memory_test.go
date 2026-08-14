@@ -87,3 +87,23 @@ func TestDeviceMemorySearchReflectsUpsertAfterCache(t *testing.T) {
 		t.Fatalf("Search() returned stale hits: %#v", hits)
 	}
 }
+
+func TestDeviceMemorySearchTreatsLegacyMissingStatusAsActive(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "device")
+	path := filepath.Join(root, "procedures", "legacy.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(): %v", err)
+	}
+	if err := os.WriteFile(path, []byte("id: legacy\ntype: procedure\ntitle: Legacy path\ncontent: open legacy settings\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(): %v", err)
+	}
+
+	hits, err := NewDeviceMemoryStore(root).Search(ctx, DeviceMemoryQuery{Terms: []string{"legacy"}, Limit: 5})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != "legacy" {
+		t.Fatalf("legacy memory with omitted status was hidden: %#v", hits)
+	}
+}

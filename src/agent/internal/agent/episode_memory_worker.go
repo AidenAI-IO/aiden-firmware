@@ -6,38 +6,46 @@ import (
 	"time"
 )
 
-const reflectionIdleDelay = 2 * time.Minute
+const episodeMemoryIdleDelay = 2 * time.Minute
 
-// reflectionWorker owns one resettable timer and never processes more than one
-// Episode at a time. A foreground run does not wait for reflection: it stops
-// the idle timer, and an in-flight reflection finishes its current Episode only.
-type reflectionWorker struct {
-	mu         sync.Mutex
-	processor  *failureReflectionProcessor
-	idleDelay  time.Duration
-	timer      *time.Timer
-	activeRuns int
-	running    bool
-	pending    bool
-	stopped    bool
-	idleSince  time.Time
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+// episodeMemoryWorker owns one resettable timer and never processes more than one
+// Episode at a time. A foreground run does not wait for consolidation: it stops
+// the idle timer and cancels an in-flight background model call.
+type episodeMemoryWorker struct {
+	mu          sync.Mutex
+	processor   episodeMemoryBatchProcessor
+	idleDelay   time.Duration
+	timer       *time.Timer
+	activeRuns  int
+	running     bool
+	pending     bool
+	stopped     bool
+	idleSince   time.Time
+	ctx         context.Context
+	cancel      context.CancelFunc
+	batchCancel context.CancelFunc
+	wg          sync.WaitGroup
 }
 
-func newReflectionWorker(processor *failureReflectionProcessor) *reflectionWorker {
+type episodeMemoryBatchProcessor interface {
+	Initialize() error
+	NextRunAt(context.Context) (time.Time, error)
+	ProcessBatch(context.Context, int, func() bool) (episodeMemoryBatchResult, error)
+	logBatchError(error)
+}
+
+func newEpisodeMemoryWorker(processor episodeMemoryBatchProcessor) *episodeMemoryWorker {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &reflectionWorker{
+	return &episodeMemoryWorker{
 		processor: processor,
-		idleDelay: reflectionIdleDelay,
+		idleDelay: episodeMemoryIdleDelay,
 		idleSince: time.Now(),
 		ctx:       ctx,
 		cancel:    cancel,
 	}
 }
 
-func (w *reflectionWorker) Start() error {
+func (w *episodeMemoryWorker) Start() error {
 	if w == nil || w.processor == nil {
 		return nil
 	}
@@ -58,7 +66,7 @@ func (w *reflectionWorker) Start() error {
 	return nil
 }
 
-func (w *reflectionWorker) NotifyFailure() {
+func (w *episodeMemoryWorker) NotifyEpisode() {
 	if w == nil {
 		return
 	}
@@ -73,7 +81,7 @@ func (w *reflectionWorker) NotifyFailure() {
 	}
 }
 
-func (w *reflectionWorker) TaskStarted() {
+func (w *episodeMemoryWorker) TaskStarted() {
 	if w == nil {
 		return
 	}
@@ -85,9 +93,12 @@ func (w *reflectionWorker) TaskStarted() {
 	w.activeRuns++
 	w.idleSince = time.Time{}
 	w.stopTimerLocked()
+	if w.batchCancel != nil {
+		w.batchCancel()
+	}
 }
 
-func (w *reflectionWorker) TaskFinished() {
+func (w *episodeMemoryWorker) TaskFinished() {
 	if w == nil {
 		return
 	}
@@ -105,7 +116,7 @@ func (w *reflectionWorker) TaskFinished() {
 	w.scheduleLocked(w.idleDelay)
 }
 
-func (w *reflectionWorker) Stop() {
+func (w *episodeMemoryWorker) Stop() {
 	if w == nil {
 		return
 	}
@@ -117,17 +128,20 @@ func (w *reflectionWorker) Stop() {
 	w.stopped = true
 	w.stopTimerLocked()
 	w.cancel()
+	if w.batchCancel != nil {
+		w.batchCancel()
+	}
 	w.mu.Unlock()
 	w.wg.Wait()
 }
 
-func (w *reflectionWorker) shouldStopBatch() bool {
+func (w *episodeMemoryWorker) shouldStopBatch() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.stopped || w.activeRuns > 0
 }
 
-func (w *reflectionWorker) scheduleLocked(delay time.Duration) {
+func (w *episodeMemoryWorker) scheduleLocked(delay time.Duration) {
 	if w.stopped || w.activeRuns > 0 || w.running {
 		return
 	}
@@ -142,14 +156,14 @@ func (w *reflectionWorker) scheduleLocked(delay time.Duration) {
 	w.timer.Reset(delay)
 }
 
-func (w *reflectionWorker) stopTimerLocked() {
+func (w *episodeMemoryWorker) stopTimerLocked() {
 	if w.timer != nil {
 		w.timer.Stop()
 		w.timer = nil
 	}
 }
 
-func (w *reflectionWorker) runBatch() {
+func (w *episodeMemoryWorker) runBatch() {
 	w.mu.Lock()
 	if w.stopped || w.activeRuns > 0 || w.running {
 		w.mu.Unlock()
@@ -158,13 +172,17 @@ func (w *reflectionWorker) runBatch() {
 	w.timer = nil
 	w.running = true
 	w.pending = false
+	batchCtx, batchCancel := context.WithCancel(w.ctx)
+	w.batchCancel = batchCancel
 	w.wg.Add(1)
 	w.mu.Unlock()
 
-	result, err := w.processor.ProcessBatch(w.ctx, reflectionBatchLimit, w.shouldStopBatch)
+	result, err := w.processor.ProcessBatch(batchCtx, episodeMemoryBatchLimit, w.shouldStopBatch)
+	batchCancel()
 	w.processor.logBatchError(err)
 
 	w.mu.Lock()
+	w.batchCancel = nil
 	w.running = false
 	if err != nil {
 		w.pending = true
@@ -185,7 +203,7 @@ func (w *reflectionWorker) runBatch() {
 	w.wg.Done()
 }
 
-func (w *reflectionWorker) delayFor(due time.Time) time.Duration {
+func (w *episodeMemoryWorker) delayFor(due time.Time) time.Duration {
 	now := time.Now()
 	runAt := due
 	if runAt.IsZero() || runAt.Before(now) {
