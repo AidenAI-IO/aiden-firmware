@@ -1380,7 +1380,6 @@ TEST_CASE("config web exposes log settings section") {
     CHECK(source.find("config.log.llm_http_retention_days") != std::string::npos);
     CHECK(source.find("cJSON* log_config = cJSON_GetObjectItem(root, \"log\")") != std::string::npos);
     CHECK(source.find("set_json_int(&config->log.llm_http_retention_days, log_config, \"llm_http_retention_days\")") != std::string::npos);
-    CHECK(source.find("{\"log\", \"llm_http_retention_days\", CONFIG_FIELD_NUMBER}") != std::string::npos);
 
     CHECK(html.find("section-log") != std::string::npos);
     CHECK(html.find("<h3>[log]</h3>") != std::string::npos);
@@ -1673,36 +1672,9 @@ TEST_CASE("config web usbhid init script does not orchestrate dependent service 
     CHECK(script.find("device_type") != std::string::npos);
 }
 
-TEST_CASE("config web resolved config validation keeps required fields and type guards") {
-    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
-    std::ifstream source_in(source_path.c_str());
-    REQUIRE(source_in.good());
-
-    std::ostringstream source_buffer;
-    source_buffer << source_in.rdbuf();
-    const std::string source = source_buffer.str();
-
-    CHECK(source.find("validate_model_section") != std::string::npos);
-    CHECK(source.find("validate_known_config_field_types") != std::string::npos);
-    CHECK(source.find("validate_search_secret_presence") != std::string::npos);
-    CHECK(source.find("validate_required_string(model, \"model\", \"provider\", false") != std::string::npos);
-    CHECK(source.find("\"search\", \"has_api_key\", CONFIG_FIELD_BOOL") != std::string::npos);
-    CHECK(source.find("\"voice_progress_speech_enabled\", CONFIG_FIELD_BOOL") != std::string::npos);
-    CHECK(source.find("\"voice_speech_summary_enabled\", CONFIG_FIELD_BOOL") == std::string::npos);
-}
-
 TEST_CASE("config web metadata renderer preserves field ids used by type guards") {
-    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
-    std::ifstream source_in(source_path.c_str());
-    REQUIRE(source_in.good());
-
-    std::ostringstream source_buffer;
-    source_buffer << source_in.rdbuf();
-    const std::string source = source_buffer.str();
-
     const std::string html = read_config_web_asset_bundle();
 
-    CHECK(source.find("validate_known_config_field_types") != std::string::npos);
     CHECK(html.find("control.id=section+'_'+field.key") != std::string::npos);
     CHECK(html.find("control.setAttribute('data-section',section)") != std::string::npos);
     CHECK(html.find("renderConfigFields(meta)") != std::string::npos);

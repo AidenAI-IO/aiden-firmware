@@ -4,8 +4,9 @@ import "aiden-agent/internal/agent/tts"
 
 // This file is the single source of truth for config field metadata consumed
 // by the config web UI (via the `agent config-meta` CLI subcommand). It
-// describes how each field is rendered and defaulted, and the conditions under
-// which it is shown. Validation rules still live in Config.Validate(); the
+// describes how each field is rendered, typed and defaulted, and the conditions
+// under which it is shown. Config web derives JSON field type checks from the
+// widget metadata; semantic validation still lives in Config.Validate(). The
 // enums here are kept consistent with the constants used there.
 
 // Widget identifies how the config web UI should render a field.
