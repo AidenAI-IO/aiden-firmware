@@ -12,6 +12,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from setup_token_registry import SetupTokenRegistry, setup_token_from_payload
+
 from .adb import ADBAndroidDevice, ADBCommandError
 from .protocol import bridge_error, bridge_ok, encode_screenshot
 from .state import (
@@ -44,6 +46,7 @@ class ADBBridgeServer:
         self.base_url = ""
         tools_kwargs = {} if action_settle_sec is None else {"action_settle_sec": action_settle_sec}
         self.tools_api = ADBToolsAPIHandler(self.state, request_timeout_sec, **tools_kwargs)
+        self.setup_tokens = SetupTokenRegistry()
 
     def start(self) -> str:
         if self._httpd is not None:
@@ -136,27 +139,36 @@ def _handler_for(bridge: ADBBridgeServer):
 
         def _handle_setup(self, payload: dict[str, Any]) -> None:
             task_id = benchmark_task_id_from_headers(self.headers)
-            episode_id, newly_acquired = bridge.state.acquire(task_id)
-            try:
-                bridge.state.device.check_device()
-                bridge.state.device.reset_home()
-            except Exception:
-                # Roll back ownership taken by THIS call so a failed setup does
-                # not leave the device 429-locked for every other task. Keep
-                # ownership held before this call (idempotent re-setup): a
-                # transient adb error must not let another task steal the
-                # device from a task that is still running.
-                if newly_acquired:
-                    bridge.state.release(task_id)
-                raise
+            setup_token = setup_token_from_payload(payload)
+
+            def setup() -> dict[str, Any]:
+                episode_id, newly_acquired = bridge.state.acquire(task_id)
+                try:
+                    bridge.state.device.check_device()
+                    bridge.state.device.reset_home()
+                except Exception:
+                    # Roll back ownership taken by THIS call so a failed setup
+                    # does not leave the device locked for every other task.
+                    # Keep ownership held before this call: a transient adb
+                    # error must not let another task steal a running device.
+                    if newly_acquired:
+                        bridge.state.release(task_id)
+                    raise
+                return {"episode_id": episode_id, "reset": True, "task_id": task_id}
+
+            if setup_token:
+                result = bridge.setup_tokens.run((task_id, setup_token), setup)
+            else:
+                result = setup()
             self._send_json(
                 200,
-                bridge_ok({"episode_id": episode_id, "reset": True, "task_id": task_id}),
+                bridge_ok(result),
             )
 
         def _handle_release(self) -> None:
             task_id = benchmark_task_id_from_headers(self.headers)
             released = bridge.state.release(task_id)
+            bridge.setup_tokens.clear_completed_for_task(task_id)
             self._send_json(200, bridge_ok({"released": released}))
 
         def _handle_api_screen(self) -> None:

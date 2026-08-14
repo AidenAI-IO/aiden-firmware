@@ -102,11 +102,24 @@ custom headers is not practical.
 
 Initializes or resets the environment route for a benchmark task.
 
+Optional request body:
+
 ```json
-{"ok": true, "data": {"setup": true}}
+{"episode_id": "task-episode", "setup_token": "optional-idempotency-token"}
 ```
 
 For bridges that do not need setup, return success with `setup: false`.
+
+`setup_token` is optional. When present, a bridge runs at most one concurrent
+setup operation for the same `benchmark-task-id` and token. Concurrent
+duplicates wait for the original operation, and successful results are replayed
+without another reset. Failed operations are not cached, so a later request may
+retry. Calls without a token retain the traditional behavior: every request
+performs setup/reset. The cache is process-local, so a restarted bridge may
+execute the same token once to recreate a lost route.
+After `/api/release`, a client that starts a new logical session must use a new
+token. Bridges may discard completed token entries for the released task, so an
+old token no longer identifies an idempotent operation after release.
 
 ### `POST /api/release`
 

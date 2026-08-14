@@ -1,7 +1,8 @@
 """Tests for unified /api/tools endpoint."""
 
 import json
-from threading import Thread
+import time
+from threading import Event, Thread
 from urllib.request import Request, urlopen
 
 import pytest
@@ -832,6 +833,89 @@ def test_reset_episode_retries_after_reset_timeout(monkeypatch):
         assert env.calls == ["close", "start", "reset", "close", "start", "reset"]
 
     asyncio.run(run())
+
+
+def test_setup_token_deduplicates_concurrent_and_completed_requests():
+    import asyncio
+
+    class BlockingResetEnv:
+        def __init__(self):
+            self.reset_calls = 0
+            self.reset_entered = Event()
+            self.allow_reset = Event()
+
+        def reset(self):
+            self.reset_calls += 1
+            self.reset_entered.set()
+            self.allow_reset.wait(timeout=5)
+
+    loop = asyncio.new_event_loop()
+    loop_thread = Thread(target=loop.run_forever, daemon=True)
+    loop_thread.start()
+    env = BlockingResetEnv()
+    state = BridgeEpisodeState(env, loop)
+    server = BridgeServer(state, host="127.0.0.1", port=0)
+    base_url = server.start()
+    responses = []
+
+    def setup(payload):
+        request = Request(
+            f"{base_url}/api/setup",
+            data=json.dumps(payload).encode(),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "benchmark-task-id": "task.setup-token",
+            },
+        )
+        with urlopen(request, timeout=5) as response:
+            responses.append((response.status, json.loads(response.read().decode())))
+
+    first = Thread(target=setup, args=({"episode_id": "episode-1", "setup_token": "token-1"},))
+    second = Thread(target=setup, args=({"episode_id": "episode-1", "setup_token": "token-1"},))
+    try:
+        first.start()
+        assert env.reset_entered.wait(timeout=2)
+        second.start()
+        time.sleep(0.1)
+        assert env.reset_calls == 1
+        env.allow_reset.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert [status for status, _ in responses] == [200, 200]
+        assert env.reset_calls == 1
+
+        setup({"episode_id": "episode-1", "setup_token": "token-1"})
+        assert env.reset_calls == 1
+
+        setup({"episode_id": "episode-1", "setup_token": "token-2"})
+        assert env.reset_calls == 2
+
+        release = Request(
+            f"{base_url}/api/release",
+            data=b"{}",
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "benchmark-task-id": "task.setup-token",
+            },
+        )
+        with urlopen(release, timeout=5) as response:
+            assert response.status == 200
+        setup({"episode_id": "episode-1", "setup_token": "token-2"})
+        assert env.reset_calls == 3
+
+        setup({"episode_id": "episode-1"})
+        setup({"episode_id": "episode-1"})
+        assert env.reset_calls == 5
+    finally:
+        env.allow_reset.set()
+        server.stop()
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2)
+        loop.close()
 
 
 def test_multi_env_tools_route_by_benchmark_task_id_header():

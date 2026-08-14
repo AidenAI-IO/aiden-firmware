@@ -234,22 +234,34 @@ class DockerSandboxContractTest(unittest.TestCase):
         service = REPO_ROOT / "docker/dev/agent-service.sh"
 
         class BridgeServer:
-            def __init__(self, block_setup=False, bridge_type="mobilegym"):
+            def __init__(
+                self,
+                block_setup=False,
+                bridge_type="mobilegym",
+                fail_setup_once=False,
+            ):
                 self.requests = []
                 self.routes = {}
+                self.reset_count = 0
+                self.setup_entries = {}
+                self.lock = threading.Lock()
+                self.fail_setup_once = fail_setup_once
                 self.setup_gate = threading.Event()
                 if not block_setup:
                     self.setup_gate.set()
                 requests = self.requests
                 routes = self.routes
+                setup_entries = self.setup_entries
+                state_lock = self.lock
                 setup_gate = self.setup_gate
+                bridge = self
 
                 class Handler(BaseHTTPRequestHandler):
                     def log_message(self, *_args):
                         return
 
-                    def reply(self, payload=b'{"ok":true}'):
-                        self.send_response(200)
+                    def reply(self, payload=b'{"ok":true}', status=200):
+                        self.send_response(status)
                         self.send_header("Content-Type", "application/json")
                         self.send_header("Content-Length", str(len(payload)))
                         self.end_headers()
@@ -259,27 +271,77 @@ class DockerSandboxContractTest(unittest.TestCase):
                             pass
 
                     def do_GET(self):
-                        data = {"bridge_type": bridge_type}
-                        if bridge_type == "mobilegym":
-                            data["active_routes"] = routes
-                        else:
-                            data["active_task_id"] = next(iter(routes), "")
+                        with state_lock:
+                            data = {"bridge_type": bridge_type}
+                            if bridge_type == "mobilegym":
+                                data["active_routes"] = dict(routes)
+                            else:
+                                data["active_task_id"] = next(iter(routes), "")
                         payload = json.dumps({"ok": True, "data": data}).encode()
-                        requests.append(
-                            ("GET", self.path, "", payload.decode("utf-8"))
-                        )
+                        with state_lock:
+                            requests.append(
+                                ("GET", self.path, "", payload.decode("utf-8"))
+                            )
                         self.reply(payload)
 
                     def do_POST(self):
                         size = int(self.headers.get("Content-Length", "0"))
                         body = self.rfile.read(size).decode()
                         task_id = self.headers.get("benchmark-task-id", "")
-                        requests.append(("POST", self.path, task_id, body))
+                        with state_lock:
+                            requests.append(("POST", self.path, task_id, body))
                         if self.path == "/api/setup":
-                            routes[task_id] = 0
-                            setup_gate.wait(timeout=10)
+                            setup_token = str(
+                                (json.loads(body) if body else {}).get(
+                                    "setup_token", ""
+                                )
+                            )
+                            entry_key = (task_id, setup_token)
+                            if setup_token:
+                                with state_lock:
+                                    entry = setup_entries.get(entry_key)
+                                    if entry is None:
+                                        entry = {
+                                            "completed": threading.Event(),
+                                            "status": None,
+                                        }
+                                        setup_entries[entry_key] = entry
+                                        owns_setup = True
+                                    else:
+                                        owns_setup = False
+                            else:
+                                entry = None
+                                owns_setup = True
+                            if owns_setup:
+                                with state_lock:
+                                    routes[task_id] = 0
+                                setup_gate.wait(timeout=10)
+                                with state_lock:
+                                    if bridge.fail_setup_once:
+                                        bridge.fail_setup_once = False
+                                        setup_status = 500
+                                        if setup_token:
+                                            setup_entries.pop(entry_key, None)
+                                    else:
+                                        bridge.reset_count += 1
+                                        setup_status = 200
+                                if entry is not None:
+                                    entry["status"] = setup_status
+                                    entry["completed"].set()
+                            else:
+                                entry["completed"].wait(timeout=10)
+                                setup_status = entry["status"] or 500
+                            if setup_status != 200:
+                                self.reply(b'{"ok":false}', status=setup_status)
+                                return
                         elif self.path == "/api/release":
-                            routes.pop(task_id, None)
+                            with state_lock:
+                                routes.pop(task_id, None)
+                                for key, entry in list(setup_entries.items()):
+                                    if key[0] == task_id and entry[
+                                        "completed"
+                                    ].is_set():
+                                        setup_entries.pop(key, None)
                         self.reply()
 
                 self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -299,10 +361,19 @@ class DockerSandboxContractTest(unittest.TestCase):
                 self.thread.join(timeout=5)
 
             def lose_routes(self):
-                self.routes.clear()
+                with self.lock:
+                    self.routes.clear()
 
             def allow_setup(self):
                 self.setup_gate.set()
+
+            def request_snapshot(self):
+                with self.lock:
+                    return list(self.requests)
+
+            def reset_count_snapshot(self):
+                with self.lock:
+                    return self.reset_count
 
         def wait_until(predicate, message):
             deadline = time.monotonic() + 8
@@ -351,7 +422,7 @@ class DockerSandboxContractTest(unittest.TestCase):
                     "AIDEN_FAKE_AGENT_STARTS": str(starts_file),
                 }
             )
-            first_bridge = BridgeServer()
+            first_bridge = BridgeServer(fail_setup_once=True)
             second_bridge = BridgeServer(
                 block_setup=True, bridge_type="adb_android"
             )
@@ -383,18 +454,28 @@ class DockerSandboxContractTest(unittest.TestCase):
 
             def stop_supervisor(supervisor):
                 if supervisor.poll() is None:
-                    os.killpg(supervisor.pid, signal.SIGTERM)
+                    try:
+                        os.killpg(supervisor.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
                     try:
                         supervisor.wait(timeout=5)
                     except subprocess.TimeoutExpired:
-                        supervisor.kill()
+                        try:
+                            os.killpg(supervisor.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
                         supervisor.wait(timeout=5)
                 stderr = supervisor.stderr.read()
                 supervisor.stderr.close()
                 self.assertEqual(supervisor.returncode, 0, stderr)
 
             def setup_requests(bridge):
-                return [request for request in bridge.requests if request[1] == "/api/setup"]
+                return [
+                    request
+                    for request in bridge.request_snapshot()
+                    if request[1] == "/api/setup"
+                ]
 
             try:
                 first_environment = environment(
@@ -406,7 +487,18 @@ class DockerSandboxContractTest(unittest.TestCase):
                     and len(starts_file.read_text(encoding="utf-8").splitlines()) >= 2,
                     "watchdog did not restart the fake Agent",
                 )
-                self.assertEqual(len(setup_requests(first_bridge)), 1)
+                self.assertEqual(len(setup_requests(first_bridge)), 2)
+                first_setup_token = json.loads(
+                    setup_requests(first_bridge)[0][3]
+                ).get("setup_token")
+                self.assertTrue(first_setup_token)
+                self.assertEqual(
+                    json.loads(setup_requests(first_bridge)[1][3]).get(
+                        "setup_token"
+                    ),
+                    first_setup_token,
+                )
+                self.assertEqual(first_bridge.reset_count_snapshot(), 1)
                 stop_supervisor(first_supervisor)
 
                 first_environment["AIDEN_FAKE_AGENT_CRASH"] = "0"
@@ -415,7 +507,7 @@ class DockerSandboxContractTest(unittest.TestCase):
                     lambda: len(starts_file.read_text(encoding="utf-8").splitlines()) >= 3,
                     "replacement supervisor did not start the fake Agent",
                 )
-                self.assertEqual(len(setup_requests(first_bridge)), 1)
+                self.assertEqual(len(setup_requests(first_bridge)), 2)
                 stop_supervisor(second_supervisor)
 
                 first_bridge.lose_routes()
@@ -424,8 +516,14 @@ class DockerSandboxContractTest(unittest.TestCase):
                 )
                 route_recovery_supervisor = start_supervisor(first_environment)
                 wait_until(
-                    lambda: len(setup_requests(first_bridge)) == 2,
+                    lambda: len(setup_requests(first_bridge)) == 3,
                     "lost remote bridge route was not set up again",
+                )
+                self.assertNotEqual(
+                    json.loads(setup_requests(first_bridge)[2][3]).get(
+                        "setup_token"
+                    ),
+                    first_setup_token,
                 )
                 wait_until(
                     lambda: len(starts_file.read_text(encoding="utf-8").splitlines())
@@ -442,7 +540,7 @@ class DockerSandboxContractTest(unittest.TestCase):
                 )
                 third_supervisor = start_supervisor(episode_environment)
                 wait_until(
-                    lambda: len(setup_requests(first_bridge)) == 3,
+                    lambda: len(setup_requests(first_bridge)) == 4,
                     "new bridge episode was not set up",
                 )
                 wait_until(
@@ -453,11 +551,16 @@ class DockerSandboxContractTest(unittest.TestCase):
                 wait_until(
                     lambda: any(
                         request[1:3] == ("/api/release", "task-one")
-                        for request in first_bridge.requests
+                        for request in first_bridge.request_snapshot()
                     ),
                     "old bridge episode was not released",
                 )
                 self.assertIn("episode-two", setup_requests(first_bridge)[-1][3])
+                episode_setup_token = json.loads(
+                    setup_requests(first_bridge)[-1][3]
+                ).get("setup_token")
+                self.assertTrue(episode_setup_token)
+                self.assertNotEqual(episode_setup_token, first_setup_token)
                 stop_supervisor(third_supervisor)
 
                 task_environment = environment(
@@ -468,7 +571,7 @@ class DockerSandboxContractTest(unittest.TestCase):
                 )
                 fourth_supervisor = start_supervisor(task_environment)
                 wait_until(
-                    lambda: len(setup_requests(first_bridge)) == 4,
+                    lambda: len(setup_requests(first_bridge)) == 5,
                     "new bridge task was not set up",
                 )
                 wait_until(
@@ -477,6 +580,11 @@ class DockerSandboxContractTest(unittest.TestCase):
                     "new bridge task did not reach the fake Agent",
                 )
                 self.assertEqual(setup_requests(first_bridge)[-1][2], "task-two")
+                task_setup_token = json.loads(
+                    setup_requests(first_bridge)[-1][3]
+                ).get("setup_token")
+                self.assertTrue(task_setup_token)
+                self.assertNotEqual(task_setup_token, episode_setup_token)
                 stop_supervisor(fourth_supervisor)
 
                 second_environment = environment(
@@ -495,7 +603,10 @@ class DockerSandboxContractTest(unittest.TestCase):
                 try:
                     fifth_supervisor.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    fifth_supervisor.kill()
+                    try:
+                        os.killpg(fifth_supervisor.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     fifth_supervisor.wait(timeout=5)
                 fifth_supervisor.stderr.close()
 
@@ -504,15 +615,32 @@ class DockerSandboxContractTest(unittest.TestCase):
                 )
                 sixth_supervisor = start_supervisor(second_environment)
                 wait_until(
+                    lambda: len(setup_requests(second_bridge)) == 2,
+                    "restart did not retry the in-flight setup token",
+                )
+                blocked_setup_requests = setup_requests(second_bridge)
+                setup_tokens = [
+                    json.loads(request[3]).get("setup_token")
+                    for request in blocked_setup_requests
+                ]
+                self.assertTrue(setup_tokens[0])
+                self.assertEqual(setup_tokens[0], setup_tokens[1])
+                time.sleep(0.2)
+                self.assertEqual(
+                    len(starts_file.read_text(encoding="utf-8").splitlines()),
+                    starts_before_blocked_restart,
+                )
+                second_bridge.allow_setup()
+                wait_until(
                     lambda: len(starts_file.read_text(encoding="utf-8").splitlines())
                     > starts_before_blocked_restart,
                     "restart after blocked setup did not reach the fake Agent",
                 )
-                self.assertEqual(len(setup_requests(second_bridge)), 1)
+                self.assertEqual(second_bridge.reset_count_snapshot(), 1)
                 wait_until(
                     lambda: any(
                         request[1:3] == ("/api/release", "task-two")
-                        for request in first_bridge.requests
+                        for request in first_bridge.request_snapshot()
                     ),
                     "old bridge endpoint was not released",
                 )
@@ -530,19 +658,23 @@ class DockerSandboxContractTest(unittest.TestCase):
                 self.assertTrue(
                     any(
                         request[1:3] == ("/api/release", "task-two")
-                        for request in second_bridge.requests
+                        for request in second_bridge.request_snapshot()
                     )
                 )
 
-                second_bridge.allow_setup()
                 starts_before_fresh_start = len(
                     starts_file.read_text(encoding="utf-8").splitlines()
                 )
                 seventh_supervisor = start_supervisor(second_environment)
                 wait_until(
-                    lambda: len(setup_requests(second_bridge)) == 2,
+                    lambda: len(setup_requests(second_bridge)) == 3,
                     "full stop did not clear the bridge session",
                 )
+                fresh_setup_token = json.loads(
+                    setup_requests(second_bridge)[-1][3]
+                ).get("setup_token")
+                self.assertTrue(fresh_setup_token)
+                self.assertNotEqual(fresh_setup_token, setup_tokens[0])
                 wait_until(
                     lambda: len(starts_file.read_text(encoding="utf-8").splitlines())
                     > starts_before_fresh_start,
@@ -551,8 +683,11 @@ class DockerSandboxContractTest(unittest.TestCase):
                 stop_supervisor(seventh_supervisor)
             finally:
                 for supervisor in supervisors:
+                    try:
+                        os.killpg(supervisor.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     if supervisor.poll() is None:
-                        supervisor.kill()
                         supervisor.wait(timeout=5)
                     if not supervisor.stderr.closed:
                         supervisor.stderr.close()

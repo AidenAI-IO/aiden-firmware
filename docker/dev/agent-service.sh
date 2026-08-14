@@ -116,6 +116,7 @@ load_bridge_session() {
     bridge_session_task_id=""
     bridge_session_episode_id=""
     bridge_session_state="ready"
+    bridge_session_setup_token=""
     if [ ! -f "$bridge_session_file" ]; then
         return 1
     fi
@@ -123,7 +124,11 @@ load_bridge_session() {
         IFS= read -r bridge_session_endpoint \
             && IFS= read -r bridge_session_task_id \
             && IFS= read -r bridge_session_episode_id \
-            && { IFS= read -r bridge_session_state || bridge_session_state="ready"; }
+            && {
+                IFS= read -r bridge_session_state || bridge_session_state="ready"
+                IFS= read -r bridge_session_setup_token \
+                    || bridge_session_setup_token=""
+            }
     } < "$bridge_session_file" || return 1
     case "$bridge_session_state" in
         pending|ready) ;;
@@ -131,7 +136,9 @@ load_bridge_session() {
     esac
     [ -n "$bridge_session_endpoint" ] \
         && valid_bridge_identifier "$bridge_session_task_id" \
-        && valid_bridge_identifier "$bridge_session_episode_id"
+        && valid_bridge_identifier "$bridge_session_episode_id" \
+        && { [ -z "$bridge_session_setup_token" ] \
+            || valid_bridge_identifier "$bridge_session_setup_token"; }
 }
 
 bridge_session_matches() {
@@ -149,14 +156,20 @@ save_bridge_session() {
     task_id="$2"
     episode_id="$3"
     state="${4:-ready}"
+    setup_token="${5:-}"
     temporary_file="$bridge_session_file.$$"
     {
         printf '%s\n' "$endpoint"
         printf '%s\n' "$task_id"
         printf '%s\n' "$episode_id"
         printf '%s\n' "$state"
+        printf '%s\n' "$setup_token"
     } > "$temporary_file"
     mv -f "$temporary_file" "$bridge_session_file"
+}
+
+new_bridge_setup_token() {
+    python3 -c 'import uuid; print(uuid.uuid4().hex)'
 }
 
 bridge_session_remote_state() {
@@ -200,6 +213,7 @@ except Exception:
 }
 
 prepare_bridge_episode() {
+    setup_token="${1:-}"
     endpoint="${AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT:-${ENVIRONMENT_BRIDGE_ENDPOINT:-}}"
     endpoint="${endpoint%/}"
     task_id="${AIDEN_BENCHMARK_TASK_ID:-docker-sandbox}"
@@ -225,14 +239,19 @@ prepare_bridge_episode() {
         return 1
     fi
 
-    save_bridge_session "$endpoint" "$task_id" "$episode_id" pending
+    if [ -z "$setup_token" ]; then
+        setup_token="$(new_bridge_setup_token)"
+    fi
+    save_bridge_session \
+        "$endpoint" "$task_id" "$episode_id" pending "$setup_token"
     response_file="$run_dir/bridge-setup.$$.json"
     if setup_status="$(curl -sS -o "$response_file" -w '%{http_code}' \
         --connect-timeout 2 --max-time 30 \
         -X POST "$endpoint/api/setup" \
         -H 'Content-Type: application/json' \
         -H "benchmark-task-id: $task_id" \
-        --data "{\"episode_id\":\"$episode_id\"}" 2>/dev/null)"; then
+        --data "{\"episode_id\":\"$episode_id\",\"setup_token\":\"$setup_token\"}" \
+        2>/dev/null)"; then
         setup_curl_status=0
     else
         setup_curl_status="$?"
@@ -242,12 +261,14 @@ prepare_bridge_episode() {
 
     case "$setup_status" in
         2??)
-            save_bridge_session "$endpoint" "$task_id" "$episode_id" ready
+            save_bridge_session \
+                "$endpoint" "$task_id" "$episode_id" ready "$setup_token"
             service_log INFO bridge_setup_ready "endpoint=$endpoint task_id=$task_id episode_id=$episode_id"
             return 0
             ;;
         404|405)
-            save_bridge_session "$endpoint" "$task_id" "$episode_id" ready
+            save_bridge_session \
+                "$endpoint" "$task_id" "$episode_id" ready "$setup_token"
             service_log INFO bridge_setup_unsupported "endpoint=$endpoint status=$setup_status; continuing with generic bridge"
             return 0
             ;;
@@ -300,19 +321,21 @@ ensure_bridge_episode() {
 
     if bridge_session_matches "$endpoint" "$task_id" "$episode_id"; then
         remote_state="$(bridge_session_remote_state "$endpoint" "$task_id")"
-        case "$remote_state" in
-            active)
-                if [ "$bridge_session_state" = "pending" ]; then
-                    save_bridge_session "$endpoint" "$task_id" "$episode_id" ready
-                    service_log INFO bridge_session_confirmed \
-                        "endpoint=$endpoint task_id=$task_id episode_id=$episode_id"
-                fi
+        case "$bridge_session_state:$remote_state" in
+            ready:active)
                 return 0
                 ;;
-            missing)
+            pending:active|pending:missing)
+                service_log INFO bridge_setup_resuming \
+                    "endpoint=$endpoint task_id=$task_id episode_id=$episode_id"
+                prepare_bridge_episode "$bridge_session_setup_token" || true
+                return 0
+                ;;
+            ready:missing)
                 service_log INFO bridge_session_missing \
                     "endpoint=$endpoint task_id=$task_id; setting up a new route"
-                rm -f "$bridge_session_file"
+                prepare_bridge_episode || true
+                return 0
                 ;;
             *)
                 return 0
