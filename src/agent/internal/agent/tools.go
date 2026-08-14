@@ -34,6 +34,7 @@ type builtinToolSetOptions struct {
 	screenStable            ScreenStableDefaults
 	scriptsDir              string
 	screenState             *screen.ScreenState
+	shellTemporaryDirectory string
 }
 
 func WithWaitForWakeupController(controller *WaitForWakeupController) BuiltinToolSetOption {
@@ -51,6 +52,12 @@ func WithScreenStableDefaults(defaults ScreenStableDefaults) BuiltinToolSetOptio
 func WithRunScriptScriptsDir(dir string) BuiltinToolSetOption {
 	return func(options *builtinToolSetOptions) {
 		options.scriptsDir = dir
+	}
+}
+
+func WithShellTemporaryDirectory(dir string) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.shellTemporaryDirectory = dir
 	}
 }
 
@@ -154,11 +161,14 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"wait_for_stable_screen": waitStable,
 		"image_diff":             &ImageDiffTool{},
 		"audio_volume":           NewAudioVolumeTool(audioCfg.SocketOrDefault()),
-		"shell":                  &ShellTool{proxy: proxyCfg},
-		"weather":                NewWeatherTool(proxyCfg),
-		"web_search":             NewWebSearchTool(searchCfg, proxyCfg),
-		"wikipedia":              NewWikipediaTool(proxyCfg),
-		"web_scraper":            NewWebScraperTool(proxyCfg),
+		"shell": &ShellTool{execution: shellExecutionConfig{
+			proxy:              proxyCfg,
+			temporaryDirectory: toolOptions.shellTemporaryDirectory,
+		}},
+		"weather":     NewWeatherTool(proxyCfg),
+		"web_search":  NewWebSearchTool(searchCfg, proxyCfg),
+		"wikipedia":   NewWikipediaTool(proxyCfg),
+		"web_scraper": NewWebScraperTool(proxyCfg),
 	}
 	if toolOptions.waitForWakeupController != nil {
 		tools[toolWaitForWakeup] = NewWaitForWakeupTool(toolOptions.waitForWakeupController)

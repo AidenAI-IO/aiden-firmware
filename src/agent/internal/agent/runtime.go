@@ -387,12 +387,25 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
 	screenState := &screen.ScreenState{}
-	toolSet := NewBuiltinToolSetFromConfig(
-		cfg,
-		proxy,
+	toolOptions := []BuiltinToolSetOption{
 		WithScreenState(screenState),
 		WithWaitForWakeupController(waitForWakeupController),
 		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
+	}
+	pythonErr := prepareManagedPythonPaths(managedPythonRoot, managedPythonTmp)
+	if pythonErr != nil {
+		if logger != nil {
+			logger.Warn("managed python environment unavailable: %v", pythonErr)
+		} else {
+			log.Printf("managed python environment unavailable: %v", pythonErr)
+		}
+	} else {
+		toolOptions = append(toolOptions, WithShellTemporaryDirectory(managedPythonTmp))
+	}
+	toolSet := NewBuiltinToolSetFromConfig(
+		cfg,
+		proxy,
+		toolOptions...,
 	)
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
 	modelManagerOptions := []ModelManagerOption{}
