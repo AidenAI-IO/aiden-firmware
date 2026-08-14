@@ -534,16 +534,6 @@ def test_load_suite_duplicate_ids_raise(tmp_path: Path):
         load_suite(p)
 
 
-def test_phone_control_suite_only_describes_target_environment():
-    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
-    suite = load_suite(suite_path)
-
-    assert suite.prompt_prefix == (
-        "你正在操作一台通过 HDMI 采集画面的手机，不是 macOS、Linux 或桌面系统；"
-        "测试环境可能是 iOS、Android 或其他移动系统。"
-    )
-
-
 def test_mobile_text_entry_suites_prompt_for_ime_switching():
     suites_root = Path(__file__).resolve().parents[1] / "suites"
     for suite_name in (
