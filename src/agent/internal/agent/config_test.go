@@ -1740,6 +1740,7 @@ provider = "fake"
 
 [live_activity]
 relay_url = "https://relay.example.com"
+relay_api_key = "board-secret"
 board_id = "default"
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -1846,5 +1847,22 @@ func TestLiveActivityRelayURLValidation(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "live_activity.relay_url") {
 			t.Fatalf("Validate() with relay_url %q error = %v, want live_activity.relay_url validation error", relayURL, err)
 		}
+	}
+}
+
+func TestLiveActivityRelayRequiresCredential(t *testing.T) {
+	cfg := LiveActivityConfig{RelayURL: "https://relay.example.com"}
+	if cfg.RelayConfigured() {
+		t.Fatal("RelayConfigured() = true without a device-scoped credential")
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "live_activity.relay_api_key") {
+		t.Fatalf("Validate() error = %v, want missing relay credential", err)
+	}
+	cfg.RelayAPIKey = "board-secret"
+	if !cfg.RelayConfigured() {
+		t.Fatal("RelayConfigured() = false with URL and credential")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with URL and credential error = %v", err)
 	}
 }

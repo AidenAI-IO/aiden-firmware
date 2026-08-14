@@ -1,3 +1,7 @@
+---
+sidebar_position: 3
+---
+
 # Boot Services and Runtime Layout
 
 Firmware integration is done through scripts in `overlay/etc/init.d/`. Most long-running services come with a lightweight watchdog: the script itself starts a loop that waits 2 seconds and restarts the child process after it exits.

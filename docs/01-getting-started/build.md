@@ -1,3 +1,7 @@
+---
+sidebar_position: 5
+---
+
 # Build and Development Environment
 
 ## Clone the Project

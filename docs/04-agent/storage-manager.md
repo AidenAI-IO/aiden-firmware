@@ -1,3 +1,7 @@
+---
+sidebar_position: 10
+---
+
 # Storage Subsystem: StorageManager and StorageMonitor
 
 ## Overview

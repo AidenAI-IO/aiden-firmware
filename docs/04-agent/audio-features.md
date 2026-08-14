@@ -1,3 +1,7 @@
+---
+sidebar_position: 5
+---
+
 # Voice Capabilities: VAD / STT / TTS
 
 The Go Agent supports device-side voice interaction, primarily consisting of `internal/agent/audio_client.go`, `audio_dialog.go`, `vad.go`, `stt.go`, and the `tts/` provider.

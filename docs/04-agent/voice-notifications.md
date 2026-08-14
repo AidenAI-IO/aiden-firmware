@@ -1,3 +1,7 @@
+---
+sidebar_position: 6
+---
+
 # Voice Notifications
 
 Voice notifications let the Agent attach short system reminders to its normal spoken reply without starting an independent announcement. The implementation lives in `internal/agent/voice_notification.go` and is shared by every final TTS reply path through the Agent runtime.

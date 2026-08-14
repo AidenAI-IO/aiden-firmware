@@ -493,7 +493,7 @@ func (pb *PhoneBridge) SendQueuedCommand(ctx context.Context, cmd BridgeCommand)
 			return BridgeCommandResponse{
 				ID: cmd.ID,
 				Error: NewToolErrorWithDetails(CodeCommandIDCollision,
-					fmt.Sprintf("duplicate command ID %q already queued", cmd.ID),
+					fmt.Sprintf("duplicate command ID %q is already queued or has a retained result", cmd.ID),
 					map[string]any{"command_id": cmd.ID}),
 			}, nil
 		}
