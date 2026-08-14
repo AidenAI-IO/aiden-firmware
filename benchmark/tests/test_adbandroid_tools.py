@@ -1,3 +1,4 @@
+import base64
 import json
 import urllib.error
 import urllib.request
@@ -7,7 +8,7 @@ import pytest
 from adbandroid.bridge.server import ADBBridgeServer
 from adbandroid.bridge.tools_api import _normalized_point_arg, _to_pixels
 
-from tests.test_adbandroid_bridge import FakeADBAndroidDevice
+from tests.test_adbandroid_bridge import FakeADBAndroidDevice, _request
 
 
 @pytest.fixture()
@@ -378,13 +379,19 @@ def test_quick_action_reserved_and_alternative(bridge):
 
 def test_screenshot_output_shape(bridge):
     _, _, base_url = bridge
-    status, body = _invoke(base_url, "screenshot", {})
-    assert status == 200 and body["is_error"] is False
-    output = json.loads(body["output"])
-    assert set(output) == {"width", "height", "format", "size", "data"}
-    assert output["width"] == 720 and output["height"] == 1280
-    assert output["format"] == "jpeg"
-    assert output["size"] == len(b"fake-jpeg-bytes")
+    status, body = _request(
+        base_url,
+        "/api/providers/screenshot",
+        method="POST",
+        payload={"format": "jpeg", "quality": 80},
+    )
+    assert status == 200 and body["ok"] is True
+    data = body["data"]
+    assert set(data) == {"meta", "capture_info", "image"}
+    assert data["meta"]["width"] == 720 and data["meta"]["height"] == 1280
+    assert data["meta"]["pixel_format"] == "jpeg"
+    assert data["capture_info"]["capture_backend"] == "adb"
+    assert base64.b64decode(data["image"]) == b"fake-jpeg-bytes"
 
 
 def test_tool_response_envelope_matches_mobilegym(bridge):

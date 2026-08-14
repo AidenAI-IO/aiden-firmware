@@ -99,15 +99,6 @@ class ToolsAPIHandler:
         }
         tools = [
             {
-                "name": "screenshot",
-                "description": "Capture a screenshot from the MobileGym simulator. No input required (pass empty JSON {} or \"\"). Returns a JSON object with width, height, and base64-encoded JPEG image data.",
-                "args_schema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": False,
-                },
-            },
-            {
                 "name": "touch_gesture",
                 "description": "Perform touch gestures on the MobileGym simulator (tap, swipe, drag, long_press, etc.).",
                 "args_schema": {
@@ -439,9 +430,7 @@ class ToolsAPIHandler:
             return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
         episode_id = state.active_episode_id
 
-        if tool_name == "screenshot":
-            return self._call_screenshot(state, episode_id)
-        elif tool_name == "touch_gesture":
+        if tool_name == "touch_gesture":
             return self._call_touch_gesture(state, tool_input, episode_id)
         elif tool_name == "keyboard_text":
             return self._call_keyboard_text(state, tool_input, episode_id)
@@ -459,18 +448,6 @@ class ToolsAPIHandler:
             return self._call_quick_action(state, tool_input, episode_id)
         else:
             return {"output": f"unknown tool: {tool_name}", "is_error": True, "error": "unknown_tool"}
-
-    def _call_screenshot(self, state: BridgeEpisodeState, episode_id: str) -> dict[str, Any]:
-        """Execute screenshot tool."""
-
-        async def get_screenshot(env: Any) -> dict[str, Any]:
-            state.require_active(episode_id)
-            observation = await _maybe_await(env.get_observation())
-            screenshot = _encode_observation_screenshot(observation)
-            return {"output": json.dumps(screenshot), "is_error": False}
-
-        future = asyncio.run_coroutine_threadsafe(state.run_env(get_screenshot), state.owner_loop)
-        return future.result(timeout=self.request_timeout_sec)
 
     def _call_touch_gesture(
         self,

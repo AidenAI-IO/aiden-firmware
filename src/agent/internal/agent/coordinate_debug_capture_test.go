@@ -2,8 +2,37 @@ package agent
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
+
+type fakeScreenCaptureSource struct {
+	latestFrameCalls           int
+	latestFrameWithFormatCalls int
+	latestFrameFn              func() (*frameMetadata, []byte, error)
+	latestFrameWithFormatFn    func(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error)
+	lastCaptureInfo            screenCaptureInfo
+}
+
+func (f *fakeScreenCaptureSource) LatestFrame() (*frameMetadata, []byte, error) {
+	f.latestFrameCalls++
+	if f.latestFrameFn == nil {
+		return nil, nil, errors.New("LatestFrame not configured")
+	}
+	return f.latestFrameFn()
+}
+
+func (f *fakeScreenCaptureSource) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error) {
+	f.latestFrameWithFormatCalls++
+	if f.latestFrameWithFormatFn == nil {
+		return nil, nil, errors.New("LatestFrameWithFormat not configured")
+	}
+	return f.latestFrameWithFormatFn(format, quality, cropBlack, minimalWidth)
+}
+
+func (f *fakeScreenCaptureSource) LastCaptureInfo() screenCaptureInfo {
+	return cloneScreenCaptureInfo(f.lastCaptureInfo)
+}
 
 func TestCoordinateDebugScreenshotReusesSharedScreenCaptureClientFallbackState(t *testing.T) {
 	primary := &fakeScreenCaptureSource{
@@ -51,5 +80,14 @@ func TestCoordinateDebugScreenshotReusesSharedScreenCaptureClientFallbackState(t
 	}
 	if fallback.latestFrameWithFormatCalls != 2 {
 		t.Fatalf("fallback calls = %d, want 2", fallback.latestFrameWithFormatCalls)
+	}
+}
+
+func TestCoordinateDebugHTMLUsesProviderScreenshot(t *testing.T) {
+	if !strings.Contains(coordinateDebugHTML, "/api/providers/screenshot") {
+		t.Fatal("coordinate debug page should load frames from POST /api/providers/screenshot")
+	}
+	if strings.Contains(coordinateDebugHTML, "/api/screenshot.jpg") {
+		t.Fatal("coordinate debug page should not call /api/screenshot.jpg")
 	}
 }

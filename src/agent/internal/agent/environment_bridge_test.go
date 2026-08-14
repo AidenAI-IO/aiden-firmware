@@ -209,8 +209,8 @@ func TestEnvironmentBridgeCallToolHTTPErrorIsStructuredTransientError(t *testing
 func TestShouldForwardToolWithExplicitList(t *testing.T) {
 	environmentBridgeTools := []string{"screenshot", "touch_gesture"}
 
-	if !shouldForwardToEnvironmentBridge("screenshot", environmentBridgeTools) {
-		t.Error("screenshot should be forwarded when in explicit list")
+	if shouldForwardToEnvironmentBridge("screenshot", environmentBridgeTools) {
+		t.Error("screenshot should not be forwarded; it uses the remote screen provider")
 	}
 	if !shouldForwardToEnvironmentBridge("touch_gesture", environmentBridgeTools) {
 		t.Error("touch_gesture should be forwarded when in explicit list")
@@ -241,18 +241,18 @@ func TestShouldForwardToolWildcard(t *testing.T) {
 		wantForwarded bool
 	}{
 		{"star matches everything", []string{"*"}, "local_utility", true},
-		{"star matches device tool", []string{"*"}, "screenshot", true},
+		{"star matches device tool", []string{"*"}, "screenshot", false},
 		{"prefix glob matches", []string{"keyboard_*"}, "keyboard_tap", true},
 		{"prefix glob matches text", []string{"keyboard_*"}, "keyboard_text", true},
 		{"prefix glob non-match", []string{"keyboard_*"}, "mouse_click", false},
 		{"suffix glob matches", []string{"*_click"}, "mouse_click", true},
 		{"suffix glob non-match", []string{"*_click"}, "mouse_scroll", false},
 		{"multiple patterns first", []string{"mouse_*", "screenshot"}, "mouse_move", true},
-		{"multiple patterns second", []string{"mouse_*", "screenshot"}, "screenshot", true},
+		{"multiple patterns second", []string{"mouse_*", "screenshot"}, "screenshot", false},
 		{"multiple patterns none", []string{"mouse_*", "screenshot"}, "keyboard_tap", false},
-		{"exact name match", []string{"screenshot"}, "screenshot", true},
+		{"exact name match", []string{"screenshot"}, "screenshot", false},
 		{"exact name non-match", []string{"screenshot"}, "screensho", false},
-		{"blank pattern ignored", []string{"", "screenshot"}, "screenshot", true},
+		{"blank pattern ignored", []string{"", "screenshot"}, "screenshot", false},
 		{"only blank forwards nothing", []string{"  "}, "screenshot", false},
 	}
 	for _, tc := range tests {
@@ -303,29 +303,37 @@ func TestEnvironmentBridgeOnlyForwardsSpecifiedTools(t *testing.T) {
 	// Create a mock environment bridge with both screenshot and a local utility.
 	screenshot := &stubTool{name: "screenshot", description: "Screenshot", output: "remote screenshot"}
 	utility := &stubTool{name: "local_utility", description: "Utility", output: "remote utility"}
-	server := newMockEnvironmentBridge(t, screenshot, utility)
+	touch := &stubTool{name: "touch_gesture", description: "Touch", output: "remote touch"}
+	server := newMockEnvironmentBridge(t, screenshot, utility, touch)
 	defer server.Close()
 
-	// Create local specs for both tools with different outputs
 	localScreenshot := &stubTool{name: "screenshot", description: "Screenshot", output: "local screenshot"}
 	localUtility := &stubTool{name: "local_utility", description: "Utility", output: "local utility"}
-	specs := NewToolSpecs([]langtools.Tool{localScreenshot, localUtility})
+	localTouch := &stubTool{name: "touch_gesture", description: "Touch", output: "local touch"}
+	specs := NewToolSpecs([]langtools.Tool{localScreenshot, localUtility, localTouch})
 
-	// Forward only screenshot
-	environmentBridgeTools := []string{"screenshot"}
+	environmentBridgeTools := []string{"screenshot", "touch_gesture"}
 
-	// Screenshot should be forwarded (remote output)
 	screenshotRes := executeToolCall(context.Background(), ToolCallExecution{
 		Specs:                  specs,
 		Action:                 schema.AgentAction{Tool: "screenshot", ToolInput: "{}"},
 		EnvironmentBridge:      NewEnvironmentBridgeClient(server.URL),
 		EnvironmentBridgeTools: environmentBridgeTools,
 	})
-	if screenshotRes.Result.Output != "remote screenshot" {
-		t.Errorf("screenshot should be forwarded, got output: %q", screenshotRes.Result.Output)
+	if screenshotRes.Result.Output != "local screenshot" {
+		t.Errorf("screenshot should run locally via screen provider, got output: %q", screenshotRes.Result.Output)
 	}
 
-	// The local utility should run locally.
+	touchRes := executeToolCall(context.Background(), ToolCallExecution{
+		Specs:                  specs,
+		Action:                 schema.AgentAction{Tool: "touch_gesture", ToolInput: "{}"},
+		EnvironmentBridge:      NewEnvironmentBridgeClient(server.URL),
+		EnvironmentBridgeTools: environmentBridgeTools,
+	})
+	if touchRes.Result.Output != "remote touch" {
+		t.Errorf("touch_gesture should be forwarded, got output: %q", touchRes.Result.Output)
+	}
+
 	utilityRes := executeToolCall(context.Background(), ToolCallExecution{
 		Specs:                  specs,
 		Action:                 schema.AgentAction{Tool: "local_utility", ToolInput: "{}"},

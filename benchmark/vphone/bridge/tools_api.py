@@ -45,7 +45,7 @@ class VPhoneToolsAPIHandler:
     def __init__(
         self,
         state: VPhoneBridgeState,
-        request_timeout_sec: float = 120,
+        request_timeout_sec: float = 30,
         action_settle_sec: float = DEFAULT_ACTION_SETTLE_SEC,
     ):
         self.state = state
@@ -79,11 +79,6 @@ class VPhoneToolsAPIHandler:
             "required": ["x", "y"],
         }
         tools: list[dict[str, Any]] = [
-            {
-                "name": "screenshot",
-                "description": "Capture the current iOS VM screen as a scaled JPEG. Coordinates should use normalized 0-1000 space.",
-                "args_schema": {"type": "object", "properties": {}, "additionalProperties": False},
-            },
             {
                 "name": "touch_gesture",
                 "description": "Perform an iOS touch gesture using normalized 0-1000 coordinates.",
@@ -301,7 +296,6 @@ class VPhoneToolsAPIHandler:
         if unknown:
             return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
         dispatch: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-            "screenshot": lambda _: self._call_screenshot(),
             "touch_gesture": self._call_touch_gesture,
             "keyboard_text": self._call_keyboard_text,
             "keyboard_tap": self._call_keyboard_tap,
@@ -315,11 +309,6 @@ class VPhoneToolsAPIHandler:
         if fn is None:
             return {"output": f"unknown tool: {tool_name}", "is_error": True, "error": "unknown_tool"}
         return fn(tool_input)
-
-    def _call_screenshot(self) -> dict[str, Any]:
-        with self.state.lock:
-            screenshot = self._capture_screenshot()
-        return {"output": json.dumps(screenshot), "is_error": False}
 
     def _call_touch_gesture(
         self,

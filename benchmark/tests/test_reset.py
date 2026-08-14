@@ -106,14 +106,14 @@ def test_environment_setup_endpoint_is_derived_from_environment_endpoint():
     assert environment_setup_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/setup"
     assert environment_setup_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/api/setup"
     assert environment_setup_endpoint("http://127.0.0.1:9090/api/release") == "http://127.0.0.1:9090/api/setup"
-    assert environment_setup_endpoint("http://127.0.0.1:9090/api/screen") == "http://127.0.0.1:9090/api/setup"
+    assert environment_setup_endpoint("http://127.0.0.1:9090/api/providers/screenshot") == "http://127.0.0.1:9090/api/setup"
 
 
 def test_environment_release_endpoint_is_derived_from_environment_endpoint():
     assert environment_release_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/release"
     assert environment_release_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/api/release"
     assert environment_release_endpoint("http://127.0.0.1:9090/api/release") == "http://127.0.0.1:9090/api/release"
-    assert environment_release_endpoint("http://127.0.0.1:9090/api/screen") == "http://127.0.0.1:9090/api/release"
+    assert environment_release_endpoint("http://127.0.0.1:9090/api/providers/screenshot") == "http://127.0.0.1:9090/api/release"
 
 
 def test_environment_health_endpoint_is_derived_from_environment_endpoint():

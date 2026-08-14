@@ -25,7 +25,7 @@ def _environment_api_endpoint(environment_url: str, endpoint: str) -> str:
     if path in {"", "/"}:
         path = f"/api/{endpoint}"
     else:
-        for suffix in ("/api/setup", "/api/release", "/api/screen"):
+        for suffix in ("/api/setup", "/api/release", "/api/providers/screenshot", "/api/concurrent"):
             if path == suffix or path.endswith(suffix):
                 path = f"{path[:-len(suffix)]}/api/{endpoint}"
                 break

@@ -1,7 +1,7 @@
 """HTTP server for the ADB Android environment bridge.
 
 Exposes the same environment-bridge surface as the MobileGym bridge server
-(health/concurrent/screen/setup/release plus /api/tools), backed by a single
+(health/concurrent/providers/setup/release plus /api/tools), backed by a single
 adb-controlled Android device.
 """
 
@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .adb import ADBAndroidDevice, ADBCommandError
-from .protocol import bridge_error, bridge_ok, encode_screenshot
+from .protocol import bridge_error, bridge_ok, encode_provider_frame
 from .state import (
     ADBBridgeState,
     NoBridgeEnvAvailableError,
@@ -22,7 +22,8 @@ from .state import (
 from .tools_api import ADBToolsAPIHandler
 
 
-DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC = 120
+# Matches the agent screenshot provider HTTP timeout (30s).
+DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC = 30
 MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024  # 10MB
 
 
@@ -86,12 +87,6 @@ def _handler_for(bridge: ADBBridgeServer):
             if path == "/api/concurrent":
                 self._send_json(200, bridge_ok(_concurrent_payload(bridge)))
                 return
-            if path == "/api/screen":
-                try:
-                    self._handle_api_screen()
-                except ADBCommandError as exc:
-                    self._send_error(500, "adb_error", str(exc))
-                return
             if path != "/health":
                 self._send_error(404, "not_found", "unknown endpoint")
                 return
@@ -110,6 +105,8 @@ def _handler_for(bridge: ADBBridgeServer):
             try:
                 if path == "api/setup":
                     self._handle_setup(payload)
+                elif path == "api/providers/screenshot":
+                    self._handle_provider_screenshot(payload)
                 elif path in {"api/release", "release"}:
                     self._handle_release()
                 else:
@@ -159,22 +156,27 @@ def _handler_for(bridge: ADBBridgeServer):
             released = bridge.state.release(task_id)
             self._send_json(200, bridge_ok({"released": released}))
 
-        def _handle_api_screen(self) -> None:
-            # Screen capture works with or without an active episode / task id
-            # so the runner can grab pre/post screenshots at any point.
+        def _handle_provider_screenshot(self, payload: dict[str, Any]) -> None:
             bridge.state.renew_task_if_owner(benchmark_task_id_from_headers(self.headers))
             with bridge.state.lock:
                 jpeg, width, height = bridge.state.device.screenshot_jpeg()
-                action_log = list(bridge.state.action_log)
-                active_episode_id = bridge.state.active_episode_id
-            screenshot = encode_screenshot(jpeg, "image/jpeg", width, height)
+                seq = int(getattr(bridge.state, "_screenshot_seq", 0)) + 1
+                bridge.state._screenshot_seq = seq
+                device = bridge.state.device
+            adb_device = None
+            serial = str(getattr(device, "serial", "") or "").strip()
+            if serial:
+                adb_device = {"serial": serial, "name": serial, "state": "device"}
             self._send_json(
                 200,
                 bridge_ok(
-                    _screen_snapshot_payload(
-                        active_episode_id=active_episode_id or None,
-                        screenshot=screenshot,
-                        action_log=action_log,
+                    encode_provider_frame(
+                        jpeg,
+                        width=width,
+                        height=height,
+                        backend="adb",
+                        seq=seq,
+                        adb_device=adb_device,
                     )
                 ),
             )
@@ -217,32 +219,6 @@ def _handler_for(bridge: ADBBridgeServer):
     return ADBBridgeRequestHandler
 
 
-def _screen_snapshot_payload(
-    *,
-    active_episode_id: str | None = None,
-    screenshot: dict[str, Any] | None = None,
-    action_log: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    actions = [_screen_action_payload(entry) for entry in (action_log or [])[-10:]]
-    return {
-        "status": "running" if active_episode_id else "waiting",
-        "active_episode_id": active_episode_id,
-        "screenshot": screenshot,
-        "action_count": len(action_log or []),
-        "actions": actions,
-    }
-
-
-def _screen_action_payload(entry: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "action_id": entry.get("action_id"),
-        "ts": entry.get("ts"),
-        "tool": entry.get("tool"),
-        "adb": entry.get("adb"),
-        "duration_ms": entry.get("duration_ms"),
-    }
-
-
 def _health_payload(bridge: ADBBridgeServer, device_info: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "ok",
@@ -254,7 +230,7 @@ def _health_payload(bridge: ADBBridgeServer, device_info: dict[str, Any]) -> dic
         "active_episode_id": bridge.state.active_episode_id,
         "active_task_id": bridge.state.active_task_id,
         "active_task_lease_state": bridge.state.active_task_lease_state(),
-        "interfaces": ["/api/tools", "/api/screen", "/api/setup", "/api/release", "/api/concurrent"],
+        "interfaces": ["/api/tools", "/api/providers/screenshot", "/api/setup", "/api/release", "/api/concurrent"],
     }
 
 

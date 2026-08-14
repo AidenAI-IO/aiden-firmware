@@ -76,10 +76,14 @@ type toolCallStartCallbackHandler interface {
 // shouldForwardToEnvironmentBridge determines whether a tool call should be forwarded to the
 // environment bridge. A tool is forwarded when its name matches any pattern in
 // environmentBridgeTools. Patterns use shell-style globbing (path.Match), so "*" matches
-// every tool, "keyboard_*" matches all keyboard tools, and an exact name like
-// "screenshot" matches only that tool. An empty environmentBridgeTools list forwards
-// nothing, so the caller is responsible for supplying the device-tool patterns.
+// every tool except screenshot, "keyboard_*" matches all keyboard tools, and an exact name
+// like "touch_gesture" matches only that tool. screenshot is never forwarded; the agent
+// captures it through the remote screen provider. An empty environmentBridgeTools list
+// forwards nothing, so the caller is responsible for supplying the device-tool patterns.
 func shouldForwardToEnvironmentBridge(toolName string, environmentBridgeTools []string) bool {
+	if toolName == "screenshot" {
+		return false
+	}
 	for _, pattern := range environmentBridgeTools {
 		pattern = strings.TrimSpace(pattern)
 		if pattern == "" {

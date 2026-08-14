@@ -8,12 +8,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .client import VPhoneSocketError
-from .protocol import bridge_error, bridge_ok, encode_screenshot
+from .protocol import bridge_error, bridge_ok, encode_provider_frame
 from .state import NoBridgeEnvAvailableError, VPhoneBridgeState, benchmark_task_id_from_headers
 from .tools_api import MAX_REQUEST_BODY_BYTES, VPhoneToolsAPIHandler
 
 
-DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC = 120
+# Matches the agent screenshot provider HTTP timeout (30s).
+DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC = 30
 
 
 class VPhoneBridgeServer:
@@ -73,12 +74,6 @@ def _handler_for(bridge: VPhoneBridgeServer):
             if path == "/api/concurrent":
                 self._send_json(200, bridge_ok(_concurrent_payload(bridge)))
                 return
-            if path == "/api/screen":
-                try:
-                    self._handle_screen()
-                except VPhoneSocketError as exc:
-                    self._send_vphone_error(exc)
-                return
             if path == "/health":
                 self._handle_health()
                 return
@@ -95,6 +90,8 @@ def _handler_for(bridge: VPhoneBridgeServer):
             try:
                 if path == "/api/setup":
                     self._handle_setup()
+                elif path == "/api/providers/screenshot":
+                    self._handle_provider_screenshot()
                 elif path in {"/api/release", "/release"}:
                     self._handle_release()
                 else:
@@ -138,22 +135,24 @@ def _handler_for(bridge: VPhoneBridgeServer):
             task_id = benchmark_task_id_from_headers(self.headers)
             self._send_json(200, bridge_ok({"released": bridge.state.release(task_id)}))
 
-        def _handle_screen(self) -> None:
+        def _handle_provider_screenshot(self) -> None:
             with bridge.state.lock:
                 payload, width, height, source_width, source_height = bridge.state.device.screenshot_jpeg()
-                screenshot = encode_screenshot(
-                    payload,
-                    "image/jpeg",
-                    width,
-                    height,
-                    source_width=source_width,
-                    source_height=source_height,
-                )
-                action_log = list(bridge.state.action_log)
-                episode_id = bridge.state.active_episode_id
+                seq = int(getattr(bridge.state, "_screenshot_seq", 0)) + 1
+                bridge.state._screenshot_seq = seq
             self._send_json(
                 200,
-                bridge_ok(_screen_payload(episode_id or None, screenshot, action_log)),
+                bridge_ok(
+                    encode_provider_frame(
+                        payload,
+                        width=width,
+                        height=height,
+                        backend="vphone",
+                        seq=seq,
+                        source_width=source_width,
+                        source_height=source_height,
+                    )
+                ),
             )
 
         def _read_json(self) -> dict[str, Any] | None:
@@ -224,7 +223,7 @@ def _health_payload(bridge: VPhoneBridgeServer, status: dict[str, Any]) -> dict[
         "legacy_host_control": bool(status.get("legacy_host_control")),
         "active_episode_id": bridge.state.active_episode_id,
         "active_task_id": bridge.state.active_task_id,
-        "interfaces": ["/api/tools", "/api/screen", "/api/setup", "/api/release", "/api/concurrent"],
+        "interfaces": ["/api/tools", "/api/providers/screenshot", "/api/setup", "/api/release", "/api/concurrent"],
     }
 
 
@@ -234,27 +233,4 @@ def _concurrent_payload(bridge: VPhoneBridgeServer) -> dict[str, Any]:
         "concurrent": 1,
         "env_count": 1,
         "active_task_id": bridge.state.active_task_id,
-    }
-
-
-def _screen_payload(
-    episode_id: str | None,
-    screenshot: dict[str, Any],
-    action_log: list[dict[str, Any]],
-) -> dict[str, Any]:
-    return {
-        "status": "running" if episode_id else "waiting",
-        "active_episode_id": episode_id,
-        "screenshot": screenshot,
-        "action_count": len(action_log),
-        "actions": [
-            {
-                "action_id": entry.get("action_id"),
-                "ts": entry.get("ts"),
-                "tool": entry.get("tool"),
-                "vphone": entry.get("vphone"),
-                "duration_ms": entry.get("duration_ms"),
-            }
-            for entry in action_log[-10:]
-        ],
     }

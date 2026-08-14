@@ -55,9 +55,9 @@ The main flow for a single task lives in `runner/runtask.py`:
 2. Clear the agent conversation history.
 3. If `environment_url` is set, call the environment's `/api/setup`.
 4. Run the suite/task's optional setup.
-5. If `environment_url` is set, fetch `pre.jpg` via `/api/screen`.
+5. If `environment_url` is set, fetch `pre.jpg` via `/api/providers/screenshot`.
 6. Call the agent's `/api/chat` with the actual prompt.
-7. If `environment_url` is set, fetch `post.jpg` via `/api/screen` again.
+7. If `environment_url` is set, fetch `post.jpg` via `/api/providers/screenshot` again.
 8. Extract the tool trace from the agent history.
 9. Run the hard assertions.
 10. If the judge is enabled, submit the rubric, trace, final response, and
@@ -101,7 +101,7 @@ Notes:
   actions and the runner initializes the environment and captures pre/post
   screenshots.
 - The runner does not obtain pre/post screenshots through agent tool calls; it
-  calls the environment bridge's `/api/screen` directly.
+  calls the environment bridge's `/api/providers/screenshot` directly.
 - `run --agent-url ...` on the CLI calls the specified agent directly and does not
   start an environment bridge automatically; if you need an environment bridge you
   must start the daemon yourself and pass the relevant daemon parameters.
@@ -259,18 +259,18 @@ Standard environment bridge interface:
 | --- | --- |
 | `GET /health` | Health check |
 | `GET /api/tools` | Tool catalog, used by the agent health check and the environment bridge |
-| `POST /api/tools/<tool>` | Execute a tool, e.g. screenshot/touch/keyboard |
+| `POST /api/tools/<tool>` | Execute a forwarded tool, e.g. touch/keyboard |
 | `POST /api/setup` | Reset/claim the env for a benchmark task |
 | `POST /api/release` | Release the env held by a benchmark task |
 | `GET /api/concurrent` | Return how many concurrent tasks this bridge supports |
-| `GET /api/screen` | Return a JSON screenshot; used by the runner and the WebUI task screen page |
+| `POST /api/providers/screenshot` | Return a JSON screenshot; used by the runner and the WebUI task screen page |
 
 Concurrent MobileGym is routed by `benchmark-task-id`:
 
 - The WebUI generates a `benchmark-task-id` of the form `<suite-key>:<task-id>` per
   task worker.
 - The runner sends this header when calling `/api/setup`, `/api/release`,
-  `/api/screen`.
+  `/api/providers/screenshot`.
 - The agent daemon's environment bridge tool requests carry the same benchmark
   task id.
 - The bridge routes requests to the same env based on this id.
@@ -433,9 +433,9 @@ The WebUI starts the MobileGym container and bridge server and records:
 
 - Bridge endpoint: used by the Docker daemon's environment bridge.
 - Public endpoint: used by the WebUI and the runner to call `/api/concurrent`,
-  `/api/setup`, `/api/screen`, `/api/release`.
+  `/api/setup`, `/api/providers/screenshot`, `/api/release`.
 - Task screen link: the screen link for each task worker is provided by the WebUI;
-  the WebUI backend pulls the screenshot via the bridge's `/api/screen`.
+  the WebUI backend pulls the screenshot via the bridge's `/api/providers/screenshot`.
 
 ### 2.5 Running a job
 
@@ -506,7 +506,7 @@ Check the task metrics in the report:
 - `judge_image_labels`
 
 In MobileGym mode the runner should produce `pre.jpg` and `post.jpg` via the
-bridge's `/api/screen`. If they are missing, it is usually because the environment
+bridge's `/api/providers/screenshot`. If they are missing, it is usually because the environment
 endpoint is unreachable, the `benchmark-task-id` routing is missing, or the task
 was released/failed before the screenshot.
 
@@ -550,7 +550,7 @@ Common parameters:
 | --- | --- |
 | `--suite PATH` | Required, path to the suite JSON |
 | `--agent-url URL` | Agent daemon address; default `http://localhost:8080` or `AIDEN_AGENT_URL` |
-| `--environment-url URL` | Optional, environment bridge address; used for `/api/setup`, `/api/screen`, `/api/release` |
+| `--environment-url URL` | Optional, environment bridge address; used for `/api/setup`, `/api/providers/screenshot`, `/api/release` |
 | `--auto-agent-setup` | Ignore `--agent-url`; auto-start isolated agent daemons concurrently per `/api/concurrent` |
 | `--daemon-image IMAGE` | Agent daemon image used by `--auto-agent-setup` |
 | `--base-config-dir DIR` | Agent config template directory used by `--auto-agent-setup` |
@@ -602,7 +602,7 @@ Notes:
 
 - `--agent-url` is the agent daemon.
 - `--environment-url` is the environment bridge endpoint that implements
-  `/api/setup`, `/api/screen`, `/api/release`.
+  `/api/setup`, `/api/providers/screenshot`, `/api/release`.
 - Without `--environment-url`, the runner can still run agent chat but will not
   save live pre/post screenshots; judge results that rely on visual screenshots
   will be weaker.
@@ -802,7 +802,7 @@ uv run python -m runner run \
 ```
 
 Note: if there are multiple envs behind the MobileGym bridge, `/api/setup`,
-`/api/screen`, `/api/tools/*`, and `/api/release` must all use the same
+`/api/providers/screenshot`, `/api/tools/*`, and `/api/release` must all use the same
 `benchmark-task-id`. When manually starting a long-lived agent daemon from the CLI,
 use a fixed route id such as `cli-task`; when you need to run multiple tasks
 concurrently, prefer the WebUI so each task worker gets its own daemon and its own
@@ -941,14 +941,18 @@ Fill in the API key in Run configuration, or turn off `Enable judge`.
 Check whether `--environment-url` was passed and whether that endpoint supports:
 
 ```bash
-curl http://127.0.0.1:8888/api/screen
+curl -X POST http://127.0.0.1:8888/api/providers/screenshot \
+  -H "Content-Type: application/json" \
+  -d '{"format": "jpeg", "quality": 80}'
 ```
 
 MobileGym concurrency requires a task id:
 
 ```bash
-curl -H 'benchmark-task-id: suite.json:task_id' \
-  http://127.0.0.1:8888/api/screen
+curl -X POST http://127.0.0.1:8888/api/providers/screenshot \
+  -H "Content-Type: application/json" \
+  -H 'benchmark-task-id: suite.json:task_id' \
+  -d '{"format": "jpeg", "quality": 80}'
 ```
 
 ### A MobileGym task stays pending or reports no env available

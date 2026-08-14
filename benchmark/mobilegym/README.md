@@ -39,7 +39,7 @@ go run src/agent/cmd/daemon/main.go \
   --config /path/to/agent.toml \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://localhost:8888 \
-  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap \
+  --environment-bridge-tools touch_gesture,keyboard_text,keyboard_tap \
   --benchmark-task-id cli-task &
 
 # 3. 运行 benchmark（使用标准 runner）
@@ -153,7 +153,7 @@ go run cmd/daemon/main.go \
   --config agent.toml \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://localhost:8888 \
-  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap \
+  --environment-bridge-tools touch_gesture,keyboard_text,keyboard_tap \
   --benchmark-task-id cli-task
 ```
 
@@ -179,14 +179,16 @@ curl -X POST http://localhost:8888/api/setup \
   -d '{}'
 
 # 获取 runner/judge 使用的截图
-curl -H "benchmark-task-id: cli-task" \
-  http://localhost:8888/api/screen
-
-# 测试 bridge tool 操作
-curl -X POST http://localhost:8888/api/tools/screenshot \
+curl -X POST http://localhost:8888/api/providers/screenshot \
   -H "Content-Type: application/json" \
   -H "benchmark-task-id: cli-task" \
-  -d '{"input": {}}'
+  -d '{"format": "jpeg", "quality": 80}'
+
+# 测试 bridge tool 操作
+curl -X POST http://localhost:8888/api/tools/touch_gesture \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: cli-task" \
+  -d '{"input": {"type": "tap", "point": {"x": 500, "y": 800}}}'
 
 # 运行单个测试
 cd benchmark

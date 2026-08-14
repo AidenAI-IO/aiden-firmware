@@ -1,9 +1,9 @@
 package agent
 
 // coordinateDebugHTML is the normalized-coordinate debug tool served at
-// /coordinate-debug. It loads the live device screen via /api/screenshot.jpg
-// (or a local upload) and maps clicks to the agent's 0-1000 normalized
-// scale used by the HID tools.
+// /coordinate-debug. It loads the live device screen via
+// POST /api/providers/screenshot (or a local upload) and maps clicks to the
+// agent's 0-1000 normalized scale used by the HID tools.
 const coordinateDebugHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -156,8 +156,8 @@ function defaultScreenshotMeta(width, height) {
 
 function formatOriginalScreenSize(meta) {
     if (!meta) return '-';
-    const width = meta.original_screen_width_pixels;
-    const height = meta.original_screen_height_pixels;
+    const width = meta.original_screen_width_pixels || meta.source_width;
+    const height = meta.original_screen_height_pixels || meta.source_height;
     if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return '-';
     return width + ' × ' + height + ' px';
 }
@@ -276,49 +276,63 @@ fileInput.addEventListener('change', (e) => {
     if (e.target.files.length > 0) handleFile(e.target.files[0]);
 });
 
+function screenshotMetaFromProvider(frame, capture) {
+    const width = Number(frame && frame.width) || 0;
+    const height = Number(frame && frame.height) || 0;
+    const sourceWidth = Number(frame && frame.source_width) || width;
+    const sourceHeight = Number(frame && frame.source_height) || height;
+    const cropX = Number(frame && frame.crop_x) || 0;
+    const cropY = Number(frame && frame.crop_y) || 0;
+    const cropW = Number(frame && frame.crop_width) || width;
+    const cropH = Number(frame && frame.crop_height) || height;
+    let sourceActive = null;
+    if (cropW > 0 && cropH > 0 && (cropX !== 0 || cropY !== 0 || cropW !== sourceWidth || cropH !== sourceHeight)) {
+        sourceActive = { x: cropX, y: cropY, width: cropW, height: cropH, valid: true };
+    }
+    return {
+        width,
+        height,
+        source_width: sourceWidth,
+        source_height: sourceHeight,
+        source_active_area: sourceActive,
+        original_screen_width_pixels: sourceWidth || null,
+        original_screen_height_pixels: sourceHeight || null,
+        capture_backend: (capture && capture.capture_backend) || null,
+        adb_device: (capture && capture.adb_device) || null
+    };
+}
+
 async function captureFromDevice() {
     if (captureInFlight) return;
     captureInFlight = true;
     loadDeviceBtn.disabled = true;
     deviceStatus.textContent = '抓取中...';
     try {
-        const query = new URLSearchParams({
-            t: String(Date.now()),
-            crop_black_bars: currentCropBlackBars() ? 'true' : 'false'
+        const res = await fetch('/api/providers/screenshot', {
+            method: 'POST',
+            cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                format: 'jpeg',
+                quality: 80,
+                crop_black: currentCropBlackBars(),
+                minimal_width: 0
+            })
         });
-        const res = await fetch('/api/screenshot.jpg?' + query.toString(), { cache: 'no-store' });
-        if (!res.ok) {
-            deviceStatus.textContent = '抓取失败: ' + res.status + ' ' + (await res.text());
+        const body = await res.json().catch(() => null);
+        if (!res.ok || !body || !body.ok) {
+            const message = (body && body.error && body.error.message) || res.statusText || String(res.status);
+            deviceStatus.textContent = '抓取失败: ' + message;
             return;
         }
-        const meta = {
-            width: parseInt(res.headers.get('X-Frame-Width') || '0', 10) || 0,
-            height: parseInt(res.headers.get('X-Frame-Height') || '0', 10) || 0,
-            source_width: parseInt(res.headers.get('X-Source-Width') || '0', 10) || 0,
-            source_height: parseInt(res.headers.get('X-Source-Height') || '0', 10) || 0,
-            capture_backend: res.headers.get('X-Capture-Backend') || null,
-            adb_device: res.headers.get('X-Adb-Device-Valid') === 'true' ? {
-                serial: res.headers.get('X-Adb-Device-Serial') || '',
-                name: res.headers.get('X-Adb-Device-Name') || '',
-                state: res.headers.get('X-Adb-Device-State') || ''
-            } : null,
-            original_screen_width_pixels: res.headers.get('X-Original-Screen-Valid') === 'true' ? (parseInt(res.headers.get('X-Original-Screen-Width') || '0', 10) || 0) : null,
-            original_screen_height_pixels: res.headers.get('X-Original-Screen-Valid') === 'true' ? (parseInt(res.headers.get('X-Original-Screen-Height') || '0', 10) || 0) : null,
-            source_active_area: res.headers.get('X-Source-Active-Valid') === 'true' ? {
-                x: parseInt(res.headers.get('X-Source-Active-X') || '0', 10) || 0,
-                y: parseInt(res.headers.get('X-Source-Active-Y') || '0', 10) || 0,
-                width: parseInt(res.headers.get('X-Source-Active-Width') || '0', 10) || 0,
-                height: parseInt(res.headers.get('X-Source-Active-Height') || '0', 10) || 0,
-                valid: true
-            } : null
-        };
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        try {
-            await loadImageFromUrl(url, '设备画面已加载', meta);
-        } finally {
-            URL.revokeObjectURL(url);
+        const data = body.data || {};
+        if (!data.image) {
+            deviceStatus.textContent = '抓取失败: 响应没有图像';
+            return;
         }
+        const meta = screenshotMetaFromProvider(data.meta || {}, data.capture_info || {});
+        const format = (data.meta && data.meta.pixel_format === 'png') ? 'png' : 'jpeg';
+        await loadImageFromUrl('data:image/' + format + ';base64,' + data.image, '设备画面已加载', meta);
     } catch (e) {
         deviceStatus.textContent = '请求失败: ' + e.message;
     } finally {

@@ -78,13 +78,20 @@ def main():
     try:
         # 3. Take screenshot
         print("3. Taking screenshot...")
-        result = call_tool(BASE_URL, "screenshot", {})
-        if result["is_error"]:
-            print(f"   ✗ Error: {result['output']}")
+        request_body = json.dumps({"format": "jpeg", "quality": 80}).encode()
+        req = urllib.request.Request(
+            f"{BASE_URL}/api/providers/screenshot",
+            data=request_body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+        if not result.get("ok"):
+            print(f"   ✗ Error: {result}")
         else:
-            output = json.loads(result["output"])
-            print(f"   ✓ Screenshot captured: {output['width']}x{output['height']}")
-            print(f"   Duration: {result['duration_ms']}ms")
+            meta = result["data"]["meta"]
+            print(f"   ✓ Screenshot captured: {meta['width']}x{meta['height']}")
         print()
 
         # 4. Perform tap gesture

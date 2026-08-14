@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/screenprovider"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -14,17 +15,6 @@ import (
 )
 
 const screenshotJPEGQuality = 80
-
-type adbDeviceInfo struct {
-	Serial string `json:"serial,omitempty"`
-	Name   string `json:"name,omitempty"`
-	State  string `json:"state,omitempty"`
-}
-
-type screenCaptureInfo struct {
-	Backend   string         `json:"capture_backend,omitempty"`
-	ADBDevice *adbDeviceInfo `json:"adb_device,omitempty"`
-}
 
 type screenshotResult struct {
 	Width          int                      `json:"width"`
@@ -42,9 +32,7 @@ type screenshotResult struct {
 	ADBDevice      *adbDeviceInfo           `json:"adb_device,omitempty"`
 }
 
-type screenshotFrameClient interface {
-	LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error)
-}
+type screenshotFrameClient = screenprovider.Provider
 
 func captureScreenshotJPEG(client screenshotFrameClient, screenState *screen.ScreenState, cropBlack bool) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	minimalWidth := 0
@@ -71,19 +59,6 @@ func screenshotMinimalWidth(screenState *screen.ScreenState) int {
 		return 0
 	}
 	return minimalWidth
-}
-
-func cloneADBDeviceInfo(info *adbDeviceInfo) *adbDeviceInfo {
-	if info == nil {
-		return nil
-	}
-	copy := *info
-	return &copy
-}
-
-func cloneScreenCaptureInfo(info screenCaptureInfo) screenCaptureInfo {
-	info.ADBDevice = cloneADBDeviceInfo(info.ADBDevice)
-	return info
 }
 
 func applyScreenCaptureInfo(result *screenshotResult, info screenCaptureInfo) {
@@ -152,9 +127,9 @@ func frameMetadataSourceActiveArea(meta *frameMetadata) (sourceWidth, sourceHeig
 	return sourceWidth, sourceHeight, active, true
 }
 
-func NewScreenshotTool(socketPath string, screen *screen.ScreenState) *ScreenshotTool {
+func NewScreenshotTool(provider screenprovider.Provider, screen *screen.ScreenState) *ScreenshotTool {
 	return &ScreenshotTool{
-		client: NewScreenCaptureClient(socketPath),
+		client: provider,
 		screen: screen,
 	}
 }

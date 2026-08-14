@@ -95,8 +95,6 @@ class MockEnvironmentServer:
     def invoke(self, tool_name: str, tool_input: dict[str, Any]) -> MockToolResponseSpec:
         with self._lock:
             self.calls.append({"tool": tool_name, "input": tool_input})
-            if tool_name == "screenshot":
-                return MockToolResponseSpec(output=self.screenshot_payload())
             for response in self.spec.tools.get(tool_name, []):
                 screen_matches = (
                     not response.screen_contains
@@ -191,20 +189,8 @@ def _handler_for(server: MockEnvironmentServer):
                     },
                 )
                 return
-            if path == "/api/screen":
-                self._json(
-                    200,
-                    {
-                        "ok": True,
-                        "data": {
-                            "status": "running",
-                            "screenshot": server.screenshot_payload(),
-                        },
-                    },
-                )
-                return
             if path == "/api/tools":
-                names = sorted(set(server.spec.tools) | {"screenshot"})
+                names = sorted(set(server.spec.tools))
                 self._json(
                     200,
                     {
@@ -245,6 +231,37 @@ def _handler_for(server: MockEnvironmentServer):
                 return
             if path == "/api/release":
                 self._json(200, {"ok": True, "data": {"released": True}})
+                return
+            if path == "/api/providers/screenshot":
+                payload = self._read_json()
+                if payload is None:
+                    return
+                shot = server.screenshot_payload()
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "data": {
+                            "meta": {
+                                "seq": 1,
+                                "width": shot["width"],
+                                "height": shot["height"],
+                                "source_width": shot["width"],
+                                "source_height": shot["height"],
+                                "crop_x": 0,
+                                "crop_y": 0,
+                                "crop_width": shot["width"],
+                                "crop_height": shot["height"],
+                                "pixel_format": shot.get("format") or "jpeg",
+                                "stride": 0,
+                                "bytes": 0,
+                                "stale": False,
+                            },
+                            "capture_info": {"capture_backend": "mock"},
+                            "image": shot["data"],
+                        },
+                    },
+                )
                 return
             if path.startswith("/api/tools/"):
                 tool_name = path.removeprefix("/api/tools/").strip()

@@ -12,16 +12,16 @@ import (
 
 func TestScreenToolResultObserverUpdatesStateFromBridgedScreenshot(t *testing.T) {
 	output := `{"width":390,"height":844,"source_width":1920,"source_height":1080,"active_area":{"x":711,"y":0,"width":498,"height":1080,"valid":true},"format":"jpeg"}`
-	remote := &stubTool{name: "screenshot", description: "Capture screenshot.", output: output, visual: true}
+	remote := &stubTool{name: "touch_gesture", description: "Touch.", output: output, visual: true}
 	bridge := newMockEnvironmentBridge(t, remote)
 	defer bridge.Close()
 
 	state := &screen.ScreenState{}
 	result := executeToolCall(context.Background(), ToolCallExecution{
-		Specs:                  NewToolSpecs([]langtools.Tool{&stubTool{name: "screenshot", description: "Capture screenshot.", visual: true}}),
-		Action:                 schema.AgentAction{Tool: "screenshot", ToolInput: `{}`},
+		Specs:                  NewToolSpecs([]langtools.Tool{&stubTool{name: "touch_gesture", description: "Touch.", visual: true}}),
+		Action:                 schema.AgentAction{Tool: "touch_gesture", ToolInput: `{}`},
 		EnvironmentBridge:      NewEnvironmentBridgeClient(bridge.URL),
-		EnvironmentBridgeTools: []string{"screenshot"},
+		EnvironmentBridgeTools: []string{"touch_gesture"},
 		ResultObserver:         newScreenToolResultObserver(state),
 	})
 

@@ -10,13 +10,13 @@ device bridge.
 | --- | --- |
 | `GET /api/tools` | List tools exposed by the environment. |
 | `POST /api/tools/{tool_name}` | Invoke an environment tool. |
-| `GET /api/screen` | Return the current screen snapshot for pre/post capture. |
+| `POST /api/providers/screenshot` | Return the current screen frame for pre/post capture and the agent screenshot tool. |
 | `POST /api/setup` | Initialize or reset a task route. |
 | `POST /api/release` | Release a task route. |
 | `GET /api/concurrent` | Return bridge concurrency capacity. |
 
 MobileGym routes concurrent tasks by the `benchmark-task-id` header. The same id
-must be sent to `/api/setup`, `/api/tools/*`, `/api/screen`, and `/api/release`
+must be sent to `/api/setup`, `/api/tools/*`, `/api/providers/screenshot`, and `/api/release`
 for a task worker.
 
 ## Tool Catalog
@@ -31,10 +31,10 @@ The response contains a `tools` array. Each entry includes `name`,
 ## Tool Invocation
 
 ```bash
-curl -X POST http://localhost:8888/api/tools/screenshot \
+curl -X POST http://localhost:8888/api/tools/touch_gesture \
   -H "Content-Type: application/json" \
   -H "benchmark-task-id: suite.json:task-1" \
-  -d '{"input": {}}'
+  -d '{"input": {"type": "tap", "point": {"x": 500, "y": 800}}}'
 ```
 
 Request bodies may use either structured `input` or string `raw_input`:
@@ -62,8 +62,10 @@ The response matches Go agent `ToolInvokeResponse`:
 ## Screen Capture
 
 ```bash
-curl -H "benchmark-task-id: suite.json:task-1" \
-  http://localhost:8888/api/screen
+curl -X POST http://localhost:8888/api/providers/screenshot \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: suite.json:task-1" \
+  -d '{"format": "jpeg", "quality": 80}'
 ```
 
 The benchmark runner uses this endpoint to save `pre.jpg` and `post.jpg`.

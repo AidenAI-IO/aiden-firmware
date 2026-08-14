@@ -25,6 +25,7 @@ from typing import Any, Callable, Mapping
 
 from runner.agent_client import AgentClient
 from runner.analysis import AnalysisResult, analyze_run, config_from_env
+from runner.capture import DEFAULT_SCREENSHOT_TIMEOUT_SEC
 from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
 from runner.reset import ResetError, call_environment_release
@@ -1863,7 +1864,7 @@ def environment_bridge_api_path(path: str, endpoint: str) -> str:
     path = path.rstrip("/")
     if path in {"", "/"}:
         return f"/api/{endpoint}"
-    for suffix in ("/api/setup", "/api/release", "/api/screen", "/api/concurrent"):
+    for suffix in ("/api/setup", "/api/release", "/api/providers/screenshot", "/api/concurrent"):
         if path == suffix or path.endswith(suffix):
             return f"{path[:-len(suffix)]}/api/{endpoint}"
     return f"{path}/api/{endpoint}"
@@ -1876,16 +1877,21 @@ def environment_bridge_screen_endpoint(endpoint: str) -> str:
     parsed = urllib.parse.urlparse(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"invalid environment bridge endpoint: {endpoint!r}")
-    path = environment_bridge_api_path(parsed.path, "screen")
+    path = environment_bridge_api_path(parsed.path, "providers/screenshot")
     return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
 
-def read_environment_bridge_screen(endpoint: str, benchmark_task_id: str, *, timeout: float = 5.0) -> dict[str, Any]:
-    headers: dict[str, str] = {}
+def read_environment_bridge_screen(endpoint: str, benchmark_task_id: str, *, timeout: float = DEFAULT_SCREENSHOT_TIMEOUT_SEC) -> dict[str, Any]:
+    headers = {"Content-Type": "application/json"}
     task_id = str(benchmark_task_id or "").strip()
     if task_id:
         headers["benchmark-task-id"] = task_id
-    req = urllib.request.Request(environment_bridge_screen_endpoint(endpoint), headers=headers, method="GET")
+    req = urllib.request.Request(
+        environment_bridge_screen_endpoint(endpoint),
+        data=b'{"format":"jpeg","quality":80}',
+        headers=headers,
+        method="POST",
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             body = response.read()
@@ -3052,19 +3058,16 @@ TASK_SCREEN_HTML = r"""<!doctype html>
   <main>
     <section class="screen">
       <img id="shot" alt="Current task screenshot" hidden>
-      <div id="placeholder" class="placeholder">Waiting for an active benchmark episode.</div>
+      <div id="placeholder" class="placeholder">Waiting for a screenshot.</div>
     </section>
     <aside>
       <h2>Task State</h2>
       <dl>
         <dt>Task</dt><dd id="taskState">unknown</dd>
-        <dt>Status</dt><dd id="stateStatus">unknown</dd>
-        <dt>Episode</dt><dd id="episode">none</dd>
-        <dt>Actions</dt><dd id="actionCount">0</dd>
+        <dt>Backend</dt><dd id="backend">unknown</dd>
+        <dt>Seq</dt><dd id="seq">none</dd>
         <dt>Size</dt><dd id="size">none</dd>
       </dl>
-      <h2>Recent Actions</h2>
-      <div id="actions"></div>
     </aside>
   </main>
   <script>
@@ -3072,13 +3075,11 @@ TASK_SCREEN_HTML = r"""<!doctype html>
     const taskIdEl = document.getElementById('taskId');
     const taskStateEl = document.getElementById('taskState');
     const updatedEl = document.getElementById('updated');
-    const stateStatusEl = document.getElementById('stateStatus');
-    const episodeEl = document.getElementById('episode');
-    const actionCountEl = document.getElementById('actionCount');
+    const backendEl = document.getElementById('backend');
+    const seqEl = document.getElementById('seq');
     const sizeEl = document.getElementById('size');
     const shotEl = document.getElementById('shot');
     const placeholderEl = document.getElementById('placeholder');
-    const actionsEl = document.getElementById('actions');
     const parts = window.location.pathname.split('/').filter(Boolean);
     const jobId = parts[2] || '';
     const taskRecordId = parts[4] || '';
@@ -3086,53 +3087,31 @@ TASK_SCREEN_HTML = r"""<!doctype html>
     taskIdEl.textContent = taskRecordId ? `task ${taskRecordId}` : '';
     taskStateEl.textContent = taskRecordId || 'unknown';
 
-    function renderActions(actions) {
-      actionsEl.replaceChildren();
-      if (!actions.length) {
-        const empty = document.createElement('div');
-        empty.className = 'action';
-        empty.textContent = 'No actions yet.';
-        actionsEl.appendChild(empty);
-        return;
-      }
-      for (const action of actions) {
-        const row = document.createElement('div');
-        row.className = 'action';
-        const title = document.createElement('strong');
-        title.textContent = `${action.action_id || ''} ${action.tool_name || ''}`.trim();
-        const detail = document.createElement('span');
-        detail.textContent = JSON.stringify(action.tool_input || {});
-        row.append(title, detail);
-        actionsEl.appendChild(row);
-      }
-    }
-
     async function refresh() {
       try {
         const res = await fetch(screenApi, {cache: 'no-store'});
         const body = await res.json();
         if (!res.ok || !body.ok) throw new Error(body.error?.message || res.statusText);
         const data = body.data || {};
-        statusEl.textContent = data.status || 'unknown';
+        const meta = data.meta || {};
+        const capture = data.capture_info || {};
+        statusEl.textContent = 'ok';
         statusEl.className = '';
-        stateStatusEl.textContent = data.status || 'unknown';
-        episodeEl.textContent = data.active_episode_id || 'none';
-        actionCountEl.textContent = String(data.action_count || 0);
+        backendEl.textContent = capture.capture_backend || 'unknown';
+        seqEl.textContent = meta.seq == null ? 'none' : String(meta.seq);
         updatedEl.textContent = new Date().toLocaleTimeString();
-        const shot = data.screenshot;
-        if (shot && shot.data) {
-          const format = shot.format === 'jpeg' ? 'jpeg' : 'png';
-          shotEl.src = `data:image/${format};base64,${shot.data}`;
+        if (data.image) {
+          const format = meta.pixel_format === 'png' ? 'png' : 'jpeg';
+          shotEl.src = `data:image/${format};base64,${data.image}`;
           shotEl.hidden = false;
           placeholderEl.hidden = true;
-          sizeEl.textContent = `${shot.width || '?'} x ${shot.height || '?'}`;
+          sizeEl.textContent = `${meta.width || '?'} x ${meta.height || '?'}`;
         } else {
           shotEl.hidden = true;
           placeholderEl.hidden = false;
-          placeholderEl.textContent = 'Waiting for an active benchmark episode.';
+          placeholderEl.textContent = 'Waiting for a screenshot.';
           sizeEl.textContent = 'none';
         }
-        renderActions(data.actions || []);
       } catch (err) {
         statusEl.textContent = String(err.message || err);
         statusEl.className = 'error';

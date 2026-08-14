@@ -9,7 +9,8 @@ it still only uses `--environment-bridge-mode` to forward tool calls.
 benchmark/runner (test orchestration)
   ↓ /api/chat
 Aiden Go Daemon (environment-bridge mode)
-  ↓ POST /api/tools/{tool}         ← tool calls (screenshot / touch_gesture / ...)
+  ↓ POST /api/tools/{tool}              ← forwarded tool calls
+  ↓ POST /api/providers/screenshot      ← local screenshot capture
 ADB Android Bridge (this module, local Python process)
   ↓ adb -s <serial> shell input ...
 Android emulator / physical device
@@ -88,7 +89,7 @@ go run ./cmd/daemon \
   -dir <your agent data directory> \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://127.0.0.1:8899 \
-  --environment-bridge-tools "screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,mouse_click,mouse_move,mouse_scroll,quick_action" \
+  --environment-bridge-tools "touch_gesture,keyboard_text,keyboard_tap,enter_text,mouse_click,mouse_move,mouse_scroll,quick_action" \
   --benchmark-task-id cli-task
 
 # 3. Run the benchmark (same as Option 1 step 3, with --benchmark-task-id cli-task)
@@ -182,7 +183,7 @@ against this):
 |---|---|
 | `GET /health` | Returns 200 when the device is online; 503 when adb is unreachable |
 | `GET /api/concurrent` | `{"ok":true,"data":{"concurrent":1,...}}`; always 1 for a single device |
-| `GET /api/screen` | Current screenshot (no setup required; used by the runner for pre/post capture) |
+| `POST /api/providers/screenshot` | Current screenshot (no setup required; used by the runner for pre/post capture) |
 | `POST /api/setup` | Reset to home + create an episode; single-device ownership keyed on the `benchmark-task-id` header |
 | `POST /api/release` | Release the task id's ownership |
 | `GET /api/tools` | Tool catalog |
@@ -199,7 +200,7 @@ single-env behavior):
 
 ## Tools and coordinates
 
-The tools match MobileGym: `screenshot` `touch_gesture` `keyboard_text`
+The tools match MobileGym: `touch_gesture` `keyboard_text`
 `keyboard_tap` `enter_text` `mouse_click`
 `mouse_move` `mouse_scroll` `quick_action`.
 
