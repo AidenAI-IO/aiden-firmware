@@ -110,7 +110,7 @@ def resolve_daemon_platform(
     *,
     constraint: str | TargetPlatform | None = None,
 ) -> TargetPlatform:
-    resolved = normalize_target_platform(platform, field="daemon target platform")
+    resolved = normalize_target_platform(platform, field="daemon device type")
     _validate_platform_constraint(resolved, constraint)
     return resolved
 

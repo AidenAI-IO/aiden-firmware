@@ -320,7 +320,6 @@ type Config struct {
 	ScreenStableMs             int                      `toml:"screen_stable_ms,omitempty"`
 	ScreenStableDiffThreshold  float64                  `toml:"screen_stable_diff_threshold,omitempty"`
 	DefaultPlatform            string                   `toml:"default_platform,omitempty"` // "ios", "android", "mac"
-	RuntimeTargetPlatform      string                   `toml:"-"`
 	SkillsDirs                 []string                 `toml:"skills_dirs"`
 	BundledSkillsDir           string                   `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel            SkillMergeModel          `toml:"-"`
@@ -662,32 +661,16 @@ func (c Config) HIDConfigForDevice() HIDConfig {
 	return hid
 }
 
-// OverrideTargetPlatform applies a process-local target platform override and
-// derives the daemon device settings from that canonical platform.
-func (c *Config) OverrideTargetPlatform(value string) error {
+// OverrideDeviceType applies a process-local device type override and derives
+// dependent device settings from the canonical value.
+func (c *Config) OverrideDeviceType(value string) error {
 	if c == nil {
-		return errors.New("cannot override target platform on nil config")
+		return errors.New("cannot override device type on nil config")
 	}
-	platform := strings.ToLower(strings.TrimSpace(value))
-	switch platform {
-	case "ios":
-		platform = "ios"
-	case "android":
-		platform = "android"
-	case "mac", "macos", "darwin":
-		platform = "mac"
-	case "windows", "win":
-		platform = "windows"
-	case "linux":
-		platform = "linux"
-	default:
-		return fmt.Errorf("invalid target platform override: %s (expected ios, android, mac, windows, or linux)", value)
+	deviceType, ok := normalizeDeviceType(value)
+	if !ok {
+		return fmt.Errorf("invalid device type override: %s (expected iOS, Android, macOS, windows, or linux)", value)
 	}
-	deviceType := deviceTypeFromPlatform(platform)
-	if deviceType == "" {
-		return fmt.Errorf("target platform has no device type mapping: %s", platform)
-	}
-	c.RuntimeTargetPlatform = platform
 	c.Device.DeviceType = deviceType
 	c.HID.PointerMode = DeviceConfig{DeviceType: deviceType}.PointerModeOrDefault()
 	return nil

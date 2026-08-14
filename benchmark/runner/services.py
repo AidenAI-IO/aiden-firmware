@@ -190,7 +190,7 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
             config_dir=config_dir,
             environment_bridge_endpoint=docker_environment_bridge_endpoint,
             benchmark_task_id=benchmark_task_id if docker_environment_bridge_endpoint else "",
-            target_platform=target_platform,
+            device_type=target_platform,
             environment_bridge_mode=bool(docker_environment_bridge_endpoint),
             log_path=log_path,
         )

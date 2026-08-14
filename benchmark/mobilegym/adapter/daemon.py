@@ -214,10 +214,10 @@ def launch_daemon(
     try:
         daemon_command = list(command)
         if not any(
-            arg == "--target-platform" or arg.startswith("--target-platform=")
+            arg == "--device-type" or arg.startswith("--device-type=")
             for arg in daemon_command
         ):
-            daemon_command.extend(["--target-platform", "android"])
+            daemon_command.extend(["--device-type", "android"])
         process = subprocess.Popen(  # noqa: S603
             daemon_command,
             env=dict(os.environ, **dict(env or {})),

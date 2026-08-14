@@ -685,25 +685,22 @@ max_tokens = 777
 	}
 }
 
-func TestOverrideTargetPlatformDerivesRuntimeDeviceSettings(t *testing.T) {
+func TestOverrideDeviceTypeDerivesRuntimeDeviceSettings(t *testing.T) {
 	tests := []struct {
 		input       string
-		platform    string
 		deviceType  string
 		pointerMode string
 	}{
-		{input: "android", platform: "android", deviceType: "Android", pointerMode: "touchscreen"},
-		{input: "windows", platform: "windows", deviceType: "windows", pointerMode: "absolute"},
-		{input: "linux", platform: "linux", deviceType: "linux", pointerMode: "absolute"},
+		{input: "android", deviceType: "Android", pointerMode: "touchscreen"},
+		{input: "mac", deviceType: "macOS", pointerMode: "absolute"},
+		{input: "windows", deviceType: "windows", pointerMode: "absolute"},
+		{input: "linux", deviceType: "linux", pointerMode: "absolute"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			var cfg Config
-			if err := cfg.OverrideTargetPlatform(tt.input); err != nil {
-				t.Fatalf("OverrideTargetPlatform() error = %v", err)
-			}
-			if cfg.RuntimeTargetPlatform != tt.platform {
-				t.Fatalf("target platform = %q, want %q", cfg.RuntimeTargetPlatform, tt.platform)
+			if err := cfg.OverrideDeviceType(tt.input); err != nil {
+				t.Fatalf("OverrideDeviceType() error = %v", err)
 			}
 			if cfg.Device.DeviceType != tt.deviceType {
 				t.Fatalf("device type = %q, want %q", cfg.Device.DeviceType, tt.deviceType)

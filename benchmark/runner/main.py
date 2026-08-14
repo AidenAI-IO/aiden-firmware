@@ -568,7 +568,7 @@ def _cmd_run_auto_agent_setup_inner(
                 config_dir=config_dir,
                 environment_bridge_endpoint=docker_environment_url,
                 benchmark_task_id=route_id,
-                target_platform=target_platform,
+                device_type=target_platform,
                 environment_bridge_mode=True,
                 log_path=runner_log,
             )
@@ -765,7 +765,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             return 2
         try:
             daemon_platform = resolve_daemon_platform(
-                client.target_platform(),
+                client.device_type(),
                 constraint=target_platform or args.target_platform,
             )
         except Exception as exc:

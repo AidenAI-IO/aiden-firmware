@@ -1728,7 +1728,7 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     assert "voice_progress_speech_enabled = false" in saved_content
     assert 'provider = "fake"' in saved_content
     assert 'device_type = "iOS"' in saved_content
-    assert captured["target_platform"] == "android"
+    assert captured["device_type"] == "android"
     assert job.status == "passed"
 
 
@@ -1749,7 +1749,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
         config_dir=config,
         environment_bridge_endpoint="http://host.docker.internal:18080",
         benchmark_task_id="suite.json:t1",
-        target_platform="android",
+        device_type="android",
     )
 
     assert cmd[:4] == ["docker", "compose", "-f", str(webui.AGENT_DAEMON_COMPOSE_FILE)]
@@ -1762,7 +1762,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     assert env["ENVIRONMENT_BRIDGE_ENDPOINT"] == "http://host.docker.internal:18080"
     assert env["AIDEN_BENCHMARK_TASK_ID"] == "suite.json:t1"
     assert env["AIDEN_ENVIRONMENT_BRIDGE_MODE"] == "1"
-    assert env["AIDEN_TARGET_PLATFORM"] == "android"
+    assert env["AIDEN_DEVICE_TYPE"] == "android"
     assert "host.docker.internal" in env["NO_PROXY"]
     compose_text = webui.AGENT_DAEMON_COMPOSE_FILE.read_text(encoding="utf-8")
     entrypoint_text = (webui.BENCHMARK_DOCKER_DIR / "agent-daemon-entrypoint.sh").read_text(
@@ -1778,11 +1778,11 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}" in compose_text
     assert f'AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "{expected_forward_tools}"' in compose_text
     assert "AIDEN_BENCHMARK_TASK_ID" in compose_text
-    assert "AIDEN_TARGET_PLATFORM" in compose_text
+    assert "AIDEN_DEVICE_TYPE" in compose_text
     assert "--environment-bridge-mode" in entrypoint_text
     assert '--environment-bridge-endpoint "$ENVIRONMENT_BRIDGE_ENDPOINT"' in entrypoint_text
     assert '--environment-bridge-tools "${AIDEN_ENVIRONMENT_BRIDGE_TOOLS:-$default_forward_tools}"' in entrypoint_text
-    assert '--target-platform "$AIDEN_TARGET_PLATFORM"' in entrypoint_text
+    assert '--device-type "$AIDEN_DEVICE_TYPE"' in entrypoint_text
 
 
 def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path: Path):

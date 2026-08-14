@@ -868,7 +868,7 @@ class BenchmarkWebApp:
                 config_dir=Path(job.config_dir),
                 environment_bridge_endpoint=job.docker_endpoint,
                 benchmark_task_id=job_benchmark_task_id(job.id),
-                target_platform=job.target_platform,
+                device_type=job.target_platform,
                 log_path=Path(job.runner_log),
                 stop_requested=lambda: self._job_stop_requested(job),
             )
@@ -1119,7 +1119,7 @@ class BenchmarkWebApp:
                     config_dir=Path(job.config_dir),
                     environment_bridge_endpoint=job.docker_endpoint,
                     benchmark_task_id=benchmark_task_id,
-                    target_platform=job.target_platform,
+                    device_type=job.target_platform,
                     log_path=Path(worker_job.runner_log),
                     stop_requested=lambda: (
                         self._job_stop_requested(job)
@@ -2170,7 +2170,7 @@ def daemon_compose_env(
     config_dir: Path | None = None,
     environment_bridge_endpoint: str = "",
     benchmark_task_id: str = "",
-    target_platform: str = "",
+    device_type: str = "",
     environment_bridge_mode: bool | None = None,
 ) -> dict[str, str]:
     env = dict(os.environ)
@@ -2196,8 +2196,8 @@ def daemon_compose_env(
         env["no_proxy"] = no_proxy
     if benchmark_task_id:
         env["AIDEN_BENCHMARK_TASK_ID"] = benchmark_task_id
-    if target_platform:
-        env["AIDEN_TARGET_PLATFORM"] = target_platform
+    if device_type:
+        env["AIDEN_DEVICE_TYPE"] = device_type
     return env
 
 
@@ -2210,7 +2210,7 @@ def start_daemon_compose(
     environment_bridge_endpoint: str,
     log_path: Path,
     benchmark_task_id: str = "",
-    target_platform: str = "",
+    device_type: str = "",
     environment_bridge_mode: bool | None = None,
     stop_requested: Callable[[], bool] | None = None,
 ) -> str:
@@ -2221,7 +2221,7 @@ def start_daemon_compose(
         config_dir=config_dir,
         environment_bridge_endpoint=environment_bridge_endpoint,
         benchmark_task_id=benchmark_task_id,
-        target_platform=target_platform,
+        device_type=device_type,
         environment_bridge_mode=environment_bridge_mode,
     )
     run_logged_command(

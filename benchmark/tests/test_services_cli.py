@@ -178,7 +178,7 @@ def test_start_agent_daemon_passes_environment_platform_as_runtime_override(
     assert services.cmd_start_agent_daemon(args) == 0
     config = (tmp_path / "agent-smoke" / "config" / "agent.toml").read_text(encoding="utf-8")
     assert 'device_type = "iOS"' in config
-    assert captured["target_platform"] == "android"
+    assert captured["device_type"] == "android"
 
 
 def test_start_agent_daemon_uses_explicit_platform_without_environment_bridge(
@@ -219,7 +219,7 @@ def test_start_agent_daemon_uses_explicit_platform_without_environment_bridge(
     assert captured["kwargs"]["environment_bridge_endpoint"] == ""
     assert captured["kwargs"]["benchmark_task_id"] == ""
     assert captured["kwargs"]["environment_bridge_mode"] is False
-    assert captured["kwargs"]["target_platform"] == "android"
+    assert captured["kwargs"]["device_type"] == "android"
     assert "--target-platform android" in payload["run_command"]
 
 
@@ -331,13 +331,13 @@ def test_daemon_compose_env_enables_benchmark_token_for_config_dir(tmp_path: Pat
     assert env["AIDEN_BENCHMARK_TOKEN_FILE"] == "/config/control_token"
 
 
-def test_daemon_compose_env_passes_runtime_target_platform():
+def test_daemon_compose_env_passes_runtime_device_type():
     env = webui.daemon_compose_env(
         image="aiden-agent-daemon:test",
-        target_platform="android",
+        device_type="android",
     )
 
-    assert env["AIDEN_TARGET_PLATFORM"] == "android"
+    assert env["AIDEN_DEVICE_TYPE"] == "android"
 
 
 def test_start_adb_android_env_prints_environment_urls(tmp_path: Path, monkeypatch, capsys):

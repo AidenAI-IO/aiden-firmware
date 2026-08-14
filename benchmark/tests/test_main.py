@@ -259,7 +259,7 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
         def health(self):
             return True
 
-        def target_platform(self):
+        def device_type(self):
             return "android"
 
         def close(self):
@@ -327,7 +327,7 @@ def test_run_state_file_records_incremental_totals(monkeypatch, tmp_path):
         def health(self):
             return True
 
-        def target_platform(self):
+        def device_type(self):
             return "android"
 
         def close(self):
@@ -432,7 +432,7 @@ def test_run_skips_tasks_outside_target_platform(monkeypatch, tmp_path):
         def health(self):
             return True
 
-        def target_platform(self):
+        def device_type(self):
             return "android"
 
         def close(self):
@@ -519,7 +519,7 @@ def test_run_all_platform_skipped_tasks_uses_daemon_platform(monkeypatch, tmp_pa
         def health(self):
             return True
 
-        def target_platform(self):
+        def device_type(self):
             return "android"
 
         def close(self):
@@ -579,7 +579,7 @@ def test_run_validates_cli_constraint_against_daemon_before_platform_skips(
         def health(self):
             return True
 
-        def target_platform(self):
+        def device_type(self):
             return "ios"
 
         def close(self):
@@ -617,7 +617,7 @@ def test_run_triggers_llm_analysis_when_enabled(monkeypatch, tmp_path):
         def health(self):
             return True
 
-        def target_platform(self):
+        def device_type(self):
             return "android"
 
         def close(self):
@@ -665,7 +665,7 @@ def test_run_llm_analysis_env_limits_fall_back_on_invalid_values(monkeypatch, tm
         def health(self):
             return True
 
-        def target_platform(self):
+        def device_type(self):
             return "android"
 
         def close(self):
@@ -704,7 +704,7 @@ def test_run_keeps_exit_code_when_analysis_fails(monkeypatch, tmp_path):
         def health(self):
             return True
 
-        def target_platform(self):
+        def device_type(self):
             return "android"
 
         def close(self):
@@ -844,7 +844,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert captured["kwargs"]["environment_bridge_mode"] is True
     assert captured["task_kwargs"]["active_skills"] == ["device-operator"]
     assert "device_type" not in captured["prepare_config_kwargs"]
-    assert captured["kwargs"]["target_platform"] == "android"
+    assert captured["kwargs"]["device_type"] == "android"
     assert stale_clears == ["http://127.0.0.1:19090"]
 
 
@@ -875,7 +875,7 @@ def test_run_rejects_external_daemon_platform_mismatch(monkeypatch, tmp_path, ca
         def health(self):
             return True
 
-        def target_platform(self):
+        def device_type(self):
             return "ios"
 
         def close(self):
@@ -1050,7 +1050,7 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
         "job"
     ].docker_endpoint
     assert "device_type" not in captured["prepare_config_kwargs"]
-    assert captured["daemon_kwargs"]["target_platform"] == "ios"
+    assert captured["daemon_kwargs"]["device_type"] == "ios"
     manifest = json.loads(
         (tmp_path / "runs" / "mock-run" / "manifest.json").read_text(
             encoding="utf-8"
@@ -1388,7 +1388,7 @@ def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_pa
         def health(self):
             return True
 
-        def target_platform(self):
+        def device_type(self):
             return "android"
 
         def close(self):

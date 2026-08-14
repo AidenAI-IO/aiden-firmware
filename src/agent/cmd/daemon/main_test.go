@@ -17,24 +17,27 @@ import (
 	"aiden-agent/internal/agent"
 )
 
-func TestDaemonTargetPlatformFlag(t *testing.T) {
+func TestDaemonDeviceTypeFlag(t *testing.T) {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
-	targetPlatform := registerTargetPlatformFlag(fs)
-	if err := fs.Parse([]string{"--target-platform", "android"}); err != nil {
+	deviceType := registerDeviceTypeFlag(fs)
+	if err := fs.Parse([]string{"--device-type", "android"}); err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if *targetPlatform != "android" {
-		t.Fatalf("target platform flag = %q, want android", *targetPlatform)
+	if *deviceType != "android" {
+		t.Fatalf("device type flag = %q, want android", *deviceType)
 	}
 }
 
-func TestApplyTargetPlatformOverride(t *testing.T) {
-	var cfg agent.Config
-	if err := applyTargetPlatformOverride(&cfg, "android"); err != nil {
-		t.Fatalf("applyTargetPlatformOverride() error = %v", err)
+func TestApplyDeviceTypeOverrideTakesPrecedenceOverConfig(t *testing.T) {
+	cfg := agent.Config{
+		Device: agent.DeviceConfig{DeviceType: "iOS"},
+		HID:    agent.HIDConfig{PointerMode: "absolute"},
 	}
-	if cfg.RuntimeTargetPlatform != "android" || cfg.Device.DeviceType != "Android" {
-		t.Fatalf("config = %+v, want Android runtime platform override", cfg)
+	if err := applyDeviceTypeOverride(&cfg, "android"); err != nil {
+		t.Fatalf("applyDeviceTypeOverride() error = %v", err)
+	}
+	if cfg.Device.DeviceType != "Android" || cfg.HID.PointerMode != "touchscreen" {
+		t.Fatalf("config = %+v, want Android command-line override", cfg)
 	}
 }
 

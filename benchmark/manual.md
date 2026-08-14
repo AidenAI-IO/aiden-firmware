@@ -776,11 +776,12 @@ generated `agent.toml` with `--agent-config`; if `--agent-config` is absent, use
 `agent.toml.template` or the default config. Platform resolution never rewrites
 that copy. When an environment bridge is provided, the command resolves its
 platform once and passes it to the daemon through process-local
-`--target-platform`; without a bridge, the caller must provide that option.
-The daemon derives its runtime device settings from the canonical platform and
-reports it as `status.target_platform`. After starting the daemon manually,
-pass the printed `agent_url` to `runner run --agent-url`; the runner validates
-that status value against the environment platform or CLI constraint.
+`--device-type`; without a bridge, the caller must provide `--target-platform`
+to the benchmark command. The daemon applies the process-local device type
+after loading `agent.toml`, so the command-line value has higher priority, and
+reports the effective value as `status.device_type`. After starting the daemon
+manually, pass the printed `agent_url` to `runner run --agent-url`; the runner
+derives and validates its platform against the environment or CLI constraint.
 
 Recommended CLI MobileGym debug flow:
 

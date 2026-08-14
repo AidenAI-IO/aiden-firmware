@@ -33,11 +33,11 @@ should expose one of the canonical lowercase `platform` values: `ios`,
 Benchmark orchestration uses this field for environment discovery, task
 filtering, and platform consistency checks. When benchmark starts an agent
 daemon, it passes the resolved platform through the process-local
-`--target-platform` option. The daemon stores that canonical value for status
-reporting and derives its runtime device settings from it without modifying
-`agent.toml`. A pre-started external daemon must receive the same option from
-its caller. For compatibility with older bridges, known `bridge_type` values
-may still be used as a fallback.
+`--device-type` option. The daemon applies it as a process-local override of
+`[device].device_type` without modifying `agent.toml`, and reports the effective
+value as `device_type`. A pre-started external daemon must receive the same
+option from its caller. For compatibility with older bridges, known
+`bridge_type` values may still be used as a fallback.
 
 ### `GET /api/tools`
 
@@ -153,7 +153,7 @@ Start the Go agent so selected tools are forwarded to an environment bridge:
 daemon \
   -dir /config \
   -addr 0.0.0.0:8080 \
-  --target-platform android \
+  --device-type android \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://bridge:9090 \
   --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_click,mouse_move,mouse_scroll,quick_action \

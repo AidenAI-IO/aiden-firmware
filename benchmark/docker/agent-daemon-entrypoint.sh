@@ -30,8 +30,8 @@ if [ -n "${AIDEN_BENCHMARK_TOKEN_FILE:-}" ]; then
     set -- "$@" --benchmark-token-file "$AIDEN_BENCHMARK_TOKEN_FILE"
 fi
 
-if [ -n "${AIDEN_TARGET_PLATFORM:-}" ]; then
-    set -- "$@" --target-platform "$AIDEN_TARGET_PLATFORM"
+if [ -n "${AIDEN_DEVICE_TYPE:-}" ]; then
+    set -- "$@" --device-type "$AIDEN_DEVICE_TYPE"
 fi
 
 if [ "${AIDEN_ENVIRONMENT_BRIDGE_MODE:-}" = "1" ] || [ "${AIDEN_ENVIRONMENT_BRIDGE_MODE:-}" = "true" ]; then

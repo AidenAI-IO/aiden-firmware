@@ -98,18 +98,18 @@ def test_get_history_returns_current_history():
     assert result == history
 
 
-def test_target_platform_reads_runtime_phone_bridge_status():
+def test_device_type_reads_runtime_phone_bridge_status():
     seen = {}
     client = AgentClient(base_url="http://test")
     with patch(
         "urllib.request.urlopen",
-        _captured(seen, body={"target_platform": "android", "device_type": "Android"}),
+        _captured(seen, body={"device_type": "Android"}),
     ):
-        result = client.target_platform()
+        result = client.device_type()
 
     assert seen["method"] == "GET"
     assert seen["url"].endswith("/api/phone-bridge/status")
-    assert result == "android"
+    assert result == "Android"
 
 
 def test_chat_includes_skills_when_provided():

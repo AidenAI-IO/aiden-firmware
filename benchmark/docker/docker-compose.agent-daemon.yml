@@ -14,7 +14,7 @@ services:
       AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,search_launch_app,mouse_click,mouse_move,mouse_scroll,quick_action,bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,bridge_notification"
       ENVIRONMENT_BRIDGE_ENDPOINT: ${ENVIRONMENT_BRIDGE_ENDPOINT:-}
       AIDEN_BENCHMARK_TASK_ID: ${AIDEN_BENCHMARK_TASK_ID:-}
-      AIDEN_TARGET_PLATFORM: ${AIDEN_TARGET_PLATFORM:-}
+      AIDEN_DEVICE_TYPE: ${AIDEN_DEVICE_TYPE:-}
       AIDEN_BENCHMARK_TOKEN_FILE: ${AIDEN_BENCHMARK_TOKEN_FILE:-}
       AIDEN_RUNTIME_CONFIG_DIR: /tmp/aiden-config
       # Benchmark runs never use an HTTP proxy; NO_PROXY is only a bypass list.

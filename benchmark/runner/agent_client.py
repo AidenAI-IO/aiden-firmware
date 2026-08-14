@@ -99,12 +99,12 @@ class AgentClient:
         except (AgentRequestError, AgentTimeoutError):
             return False
 
-    def target_platform(self) -> str:
+    def device_type(self) -> str:
         status, body_bytes = self._get("/api/phone-bridge/status", timeout=5)
         if status != 200:
             raise AgentRequestError(f"phone bridge status returned {status}")
         body = json.loads(body_bytes)
-        return str(body.get("target_platform") or "").strip().lower() if isinstance(body, dict) else ""
+        return str(body.get("device_type") or "").strip() if isinstance(body, dict) else ""
 
     def clear_history(self, timeout: int = 30) -> None:
         self._post("/api/clear", timeout=timeout)
