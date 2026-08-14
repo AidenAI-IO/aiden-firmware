@@ -22,6 +22,12 @@ func TestWakeReasonCodeIncludesLocalLiveActivityRefresh(t *testing.T) {
 	}
 }
 
+func TestWakeReasonCodeIncludesPlannedUSBReenumeration(t *testing.T) {
+	if got := wakeReasonCode("usb_reenumeration"); got != 5 {
+		t.Fatalf("wakeReasonCode(usb_reenumeration) = %d, want 5", got)
+	}
+}
+
 func TestWakeStopGracePeriodRejectsPreviousConnectionCleanup(t *testing.T) {
 	started := time.Unix(100, 0)
 	if !shouldIgnoreWakeStop(true, started, started.Add(time.Second)) {

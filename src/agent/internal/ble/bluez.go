@@ -874,6 +874,8 @@ func wakeReasonCode(reason string) byte {
 		return 3
 	case "live_activity":
 		return 4
+	case "usb_reenumeration":
+		return 5
 	default:
 		return 0
 	}
