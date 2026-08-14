@@ -697,7 +697,6 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
 
     job = app.start_job(
         {
-            "endpoint": "http://host.docker.internal:19090",
             "environment_type": "mobilegym",
             "environment_id": "env-1",
             "suites": ["suite.json"],
@@ -706,10 +705,67 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
     )
 
     assert job["environment_endpoint"] == "http://127.0.0.1:19090"
+    assert job["endpoint"] == "http://127.0.0.1:19090"
+    assert job["docker_endpoint"] == "http://host.docker.internal:19090"
     assert job["environment_type"] == "mobilegym"
     assert job["environment_web_url"] == "http://127.0.0.1:18173"
     assert job["parallel_tasks"] == 4
     assert queried == ["http://127.0.0.1:19090"]
+
+
+def test_start_job_rejects_mismatched_environment_endpoints(tmp_path: Path):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+
+    with pytest.raises(ValueError, match="does not match resolved environment endpoint"):
+        app.start_job(
+            {
+                "endpoint": "http://host.docker.internal:19090",
+                "environment_endpoint": "http://127.0.0.1:19091",
+                "environment_type": "mobilegym",
+                "environment_id": "missing-env",
+                "suites": ["suite.json"],
+                "no_judge": True,
+            }
+        )
+
+
+def test_start_job_rejects_missing_resolved_environment_endpoint(tmp_path: Path):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+
+    with pytest.raises(ValueError, match="resolved environment endpoint is required"):
+        app.start_job(
+            {
+                "endpoint": "http://host.docker.internal:19090",
+                "environment_type": "mobilegym",
+                "environment_id": "missing-env",
+                "suites": ["suite.json"],
+                "no_judge": True,
+            }
+        )
 
 
 def test_start_job_uses_device_endpoint_as_environment_url(tmp_path: Path, monkeypatch):
@@ -1012,8 +1068,7 @@ def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
 
     expected = webui.job_benchmark_task_id("job-test")
     assert captured["daemon_task_id"] == expected
-    platform_index = captured["cmd"].index("--target-platform")
-    assert captured["cmd"][platform_index + 1] == "ios"
+    assert "--target-platform" not in captured["cmd"]
     assert "--resolved-target-platform" not in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--benchmark-task-id") + 1] == expected
     # A stopped or crashed job must not leave the lease behind: the id is never
@@ -1123,6 +1178,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
         Path(job.config_dir) / "control_token"
     )
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
+    assert "--target-platform" not in captured["cmd"]
     assert releases == [("http://127.0.0.1:19090", 2, "suite.json:t1")]
     assert result["exit_code"] == 0
     assert result["manifest"]["totals"]["passed"] == 1

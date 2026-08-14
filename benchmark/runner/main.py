@@ -753,45 +753,42 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 2
     units = _build_task_units(args, suite, target_platform)
     has_runnable_units = any(not unit[4] for unit in units)
-    client = None
-    needs_daemon_platform = not args.environment_url
-    if has_runnable_units or needs_daemon_platform:
-        if args.environment_url:
-            clear_stale_adb_android_owner(args.environment_url)
-        client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
-        if not client.health():
-            print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
-            client.close()
-            return 2
-        try:
-            daemon_platform = resolve_daemon_platform(
-                client.device_type(),
-                constraint=target_platform or args.target_platform,
-            )
-        except Exception as exc:
-            print(f"failed to validate agent daemon target platform: {exc}", file=sys.stderr)
-            client.close()
-            return 2
-        if args.environment_url and daemon_platform.value != target_platform:
-            print(
-                f"agent platform {daemon_platform.value!r} does not match "
-                f"environment platform {target_platform!r}",
-                file=sys.stderr,
-            )
-            client.close()
-            return 2
-        if not args.environment_url:
-            target_platform = daemon_platform.value
-            units = _build_task_units(args, suite, target_platform)
-            has_runnable_units = any(not unit[4] for unit in units)
-        if (
-            has_runnable_units
-            and not args.skip_clock_wait
-            and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec)
-        ):
-            print("agent board clock did not sync before benchmark start", file=sys.stderr)
-            client.close()
-            return 2
+    if args.environment_url:
+        clear_stale_adb_android_owner(args.environment_url)
+    client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
+    if not client.health():
+        print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
+        client.close()
+        return 2
+    try:
+        daemon_platform = resolve_daemon_platform(
+            client.device_type(),
+            constraint=target_platform or args.target_platform,
+        )
+    except Exception as exc:
+        print(f"failed to validate agent daemon target platform: {exc}", file=sys.stderr)
+        client.close()
+        return 2
+    if args.environment_url and daemon_platform.value != target_platform:
+        print(
+            f"agent platform {daemon_platform.value!r} does not match "
+            f"environment platform {target_platform!r}",
+            file=sys.stderr,
+        )
+        client.close()
+        return 2
+    if not args.environment_url:
+        target_platform = daemon_platform.value
+        units = _build_task_units(args, suite, target_platform)
+        has_runnable_units = any(not unit[4] for unit in units)
+    if (
+        has_runnable_units
+        and not args.skip_clock_wait
+        and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec)
+    ):
+        print("agent board clock did not sync before benchmark start", file=sys.stderr)
+        client.close()
+        return 2
     judge_cfg = None if args.no_judge else JudgeConfig(model=args.judge_model, base_url=args.judge_base_url)
     active_skills = _selected_skills(args)
     judge_cache = run_dir / "_judge_cache"
@@ -829,8 +826,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     "totals": _result_totals(results, total_runs),
                 })
                 continue
-            if client is None:
-                raise RuntimeError("agent client is unavailable for runnable benchmark task")
             task_benchmark_id = _task_route_id(args, suite, task.id, attempt, n)
             try:
                 progress = f"{current_index}/{total_runs}"

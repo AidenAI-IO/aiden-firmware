@@ -549,6 +549,63 @@ def test_run_all_platform_skipped_tasks_uses_daemon_platform(monkeypatch, tmp_pa
     assert manifest["target_platform"] == "android"
 
 
+def test_run_all_environment_filtered_tasks_still_validates_daemon_platform(
+    monkeypatch, tmp_path, capsys
+):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "platform_suite",
+                "tasks": [
+                    {
+                        "id": "ios_task",
+                        "platforms": ["ios"],
+                        "category": "diagnostic",
+                        "prompt": "ios",
+                        "description_for_judge": "ios",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            pass
+
+        def health(self):
+            return True
+
+        def device_type(self):
+            return "ios"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "_read_environment_health", lambda url: {"platform": "android"})
+    monkeypatch.setattr(main, "clear_stale_adb_android_owner", lambda url: None)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--environment-url",
+            "http://127.0.0.1:19090",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 2
+    assert "expected android, reported ios" in capsys.readouterr().err
+
+
 def test_run_validates_cli_constraint_against_daemon_before_platform_skips(
     monkeypatch, tmp_path, capsys
 ):

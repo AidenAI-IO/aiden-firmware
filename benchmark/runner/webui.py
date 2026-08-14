@@ -464,12 +464,12 @@ class BenchmarkWebApp:
             )
 
         endpoint = str(payload.get("endpoint") or "").strip()
-        if environment_type != "mock":
-            if not endpoint:
-                raise ValueError("endpoint is required")
-            parsed = urllib.parse.urlparse(endpoint)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise ValueError("endpoint must be an http(s) URL")
+        normalized_requested_endpoint = ""
+        if environment_type != "mock" and endpoint:
+            try:
+                normalized_requested_endpoint = EnvironmentEndpoint(endpoint).base
+            except ValueError as exc:
+                raise ValueError("endpoint must be an http(s) base URL") from exc
 
         settings = self._load_webui_settings(include_secrets=True)
         judge_settings = settings.get("judge") if isinstance(settings.get("judge"), dict) else {}
@@ -489,13 +489,6 @@ class BenchmarkWebApp:
             or str(judge_settings.get("api_key") or "").strip()
         )
 
-        job_id = new_job_id()
-        job_dir = self.config.runs_dir / job_id
-        raw_runs_dir = job_dir / "raw"
-        job_dir.mkdir(parents=True, exist_ok=True)
-        raw_runs_dir.mkdir(parents=True, exist_ok=True)
-        port = reserve_free_port()
-        now = now_iso()
         environment_id = str(payload.get("environment_id") or environment_payload.get("id") or "")
         environment_name = str(payload.get("environment_name") or environment_payload.get("name") or "")
         environment_endpoint = str(payload.get("environment_endpoint") or "").strip()
@@ -541,10 +534,36 @@ class BenchmarkWebApp:
             # Single adb device: never run tasks in parallel.
             parallel_tasks = 1
 
+        if environment_type == "mock":
+            endpoint = ""
+            docker_endpoint = ""
+        else:
+            if not environment_endpoint:
+                raise ValueError("resolved environment endpoint is required")
+            try:
+                environment_endpoint = EnvironmentEndpoint(environment_endpoint).base
+            except ValueError as exc:
+                raise ValueError("resolved environment endpoint must be an http(s) base URL") from exc
+            docker_endpoint = endpoint_for_docker(environment_endpoint)
+            if normalized_requested_endpoint and normalized_requested_endpoint not in {
+                environment_endpoint,
+                docker_endpoint,
+            }:
+                raise ValueError("endpoint does not match resolved environment endpoint")
+            endpoint = environment_endpoint
+
+        job_id = new_job_id()
+        job_dir = self.config.runs_dir / job_id
+        raw_runs_dir = job_dir / "raw"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        raw_runs_dir.mkdir(parents=True, exist_ok=True)
+        port = reserve_free_port()
+        now = now_iso()
+
         job = Job(
             id=job_id,
             endpoint=endpoint,
-            docker_endpoint=endpoint_for_docker(endpoint) if endpoint else "",
+            docker_endpoint=docker_endpoint,
             suites=suite_keys,
             environment_endpoint=environment_endpoint,
             environment_id=environment_id,
@@ -1168,8 +1187,6 @@ class BenchmarkWebApp:
                 str(Path(job.config_dir) / "control_token"),
                 "--environment-url",
                 job.environment_endpoint,
-                "--target-platform",
-                job.target_platform,
             ]
             if job.no_judge:
                 cmd.append("--no-judge")
@@ -1373,7 +1390,6 @@ class BenchmarkWebApp:
         cmd.extend(["--benchmark-token-file", str(Path(job.config_dir) / "control_token")])
         if job.environment_endpoint:
             cmd.extend(["--environment-url", job.environment_endpoint])
-            cmd.extend(["--target-platform", job.target_platform])
             # Must match the id the shared daemon was started with, or the
             # bridge rejects the daemon's tool calls as another task's.
             cmd.extend(["--benchmark-task-id", job_benchmark_task_id(job.id)])
