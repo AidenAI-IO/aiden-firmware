@@ -292,10 +292,11 @@ model = "gpt-5.5"
 ```
 
 On load, a `provider` value that names a section under `[model_providers]` is replaced
-by that section's provider type, and its `api_key` and `base_url` fill in any
-field the model section leaves empty — values set directly on `[model]` always
-win. A `provider` that matches no section is treated as a
-provider type, so existing configs keep working unchanged.
+by that section's provider type. Its `api_key` fills an empty `[model].api_key`,
+while its `base_url` always controls the endpoint. A legacy `[model].base_url`
+is ignored; configure custom endpoints only through the selected
+`[model_providers.<name>].base_url`. A `provider` that matches no section is
+treated as a provider type, so existing configs keep working unchanged.
 
 `token_env` is not supported. Replace it with `api_key = "$VAR_NAME"`.
 
