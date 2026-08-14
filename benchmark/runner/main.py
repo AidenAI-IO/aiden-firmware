@@ -18,6 +18,7 @@ from runner.platform import (
     read_environment_health,
     resolve_daemon_platform,
     resolve_environment_platform,
+    summarize_target_platforms,
 )
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
@@ -498,6 +499,13 @@ def _cmd_run_auto_agent_setup_inner(
     setup_log = run_dir / "auto-agent-setup.log"
 
     units = _build_task_units(args, suite, target_platform)
+    manifest_target_platform = target_platform
+    if mock_server is not None:
+        manifest_target_platform = summarize_target_platforms(
+            unit.target_platform for unit in units
+        )
+        if not manifest_target_platform and suite.mock_environment is not None:
+            manifest_target_platform = suite.mock_environment.platform
     total_runs = len(units)
     has_runnable_units = any(not unit.skip_reason for unit in units)
     if has_runnable_units:
@@ -696,7 +704,7 @@ def _cmd_run_auto_agent_setup_inner(
         "active_skills": active_skills,
         "judge_config": {"provider": "openrouter", "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
         "judge_prompt_version": "v1",
-        "target_platform": target_platform or None,
+        "target_platform": manifest_target_platform or None,
         "auto_agent_setup": True,
         "concurrency": max_workers,
         "mock_environment": _mock_environment_manifest(suite),

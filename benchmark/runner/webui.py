@@ -31,6 +31,7 @@ from runner.judge import JudgeConfig
 from runner.platform import (
     read_environment_health,
     resolve_environment_platform,
+    summarize_target_platforms,
 )
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite, resolve_mock_suite_platforms
@@ -824,13 +825,7 @@ class BenchmarkWebApp:
                 )
                 self._set_job(
                     job,
-                    target_platform=(
-                        platforms[0].value
-                        if len(platforms) == 1
-                        else "mixed"
-                        if platforms
-                        else ""
-                    ),
+                    target_platform=summarize_target_platforms(platforms),
                 )
             else:
                 health = read_environment_health(job.environment_endpoint or job.endpoint)

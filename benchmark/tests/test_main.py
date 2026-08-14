@@ -1136,6 +1136,7 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
         key: value for key, value in phone_state.items() if key != "platform"
     }
     assert manifest["environment_url"].endswith("/_aiden_mock/REDACTED")
+    assert manifest["target_platform"] == "ios"
 
 
 def test_auto_agent_setup_filters_mock_tasks_by_target_platform(tmp_path, capsys):
@@ -1280,6 +1281,12 @@ def test_auto_agent_setup_resolves_mock_platform_per_task(monkeypatch, tmp_path)
 
     assert rc == 0
     assert daemon_platforms == {"ios": "ios", "android": "android"}
+    manifest = json.loads(
+        (tmp_path / "runs" / "mixed-run" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["target_platform"] == "mixed"
 
 
 def test_mock_suite_platforms_use_each_task_effective_override(tmp_path):
