@@ -6,7 +6,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from runner.platform import TargetPlatform, normalize_target_platform
+from runner.platform import (
+    TargetPlatform,
+    normalize_target_platform,
+    resolve_mock_platform,
+)
 
 VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory", "perception", "device_operation"}
 
@@ -87,6 +91,27 @@ class Suite:
     prompt_prefix: str = ""
     trace_observations: list[TraceObservationSpec] = dc.field(default_factory=list)
     mock_environment: MockEnvironmentSpec | None = None
+
+
+def effective_mock_environment(
+    suite: Suite,
+    task: TaskSpec,
+) -> MockEnvironmentSpec | None:
+    return task.mock_environment or suite.mock_environment
+
+
+def resolve_mock_task_platform(
+    suite: Suite,
+    task: TaskSpec,
+    *,
+    constraint: str | TargetPlatform | None = None,
+) -> TargetPlatform:
+    spec = effective_mock_environment(suite, task)
+    if spec is None:
+        raise ValueError(
+            f"mock environment task {task.id!r} has no mock environment"
+        )
+    return resolve_mock_platform(spec.platform, constraint=constraint)
 
 def load_suite(path: Path) -> Suite:
     raw_bytes = Path(path).read_bytes()

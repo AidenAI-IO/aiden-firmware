@@ -2254,7 +2254,19 @@ def test_run_mock_suite_uses_auto_agent_setup_and_updates_task_records(
     assert job.suite_results[0]["run_id"].startswith("job-mock-")
 
 
-def test_run_job_mock_mode_skips_shared_agent_daemon(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    ("platforms", "expected_platform"),
+    [
+        (["ios"], "ios"),
+        (["ios", "android"], "mixed"),
+    ],
+)
+def test_run_job_mock_mode_uses_runner_platform_summary(
+    tmp_path: Path,
+    monkeypatch,
+    platforms,
+    expected_platform,
+):
     app = webui.BenchmarkWebApp(
         webui.WebUIConfig(
             suites_dir=tmp_path,
@@ -2264,34 +2276,12 @@ def test_run_job_mock_mode_skips_shared_agent_daemon(tmp_path: Path, monkeypatch
     )
     job_dir = tmp_path / "runs" / "job-mock"
     job_dir.mkdir(parents=True)
-    suite_path = tmp_path / "mock.json"
-    suite_path.write_text(
-        json.dumps(
-            {
-                "name": "mock",
-                "mock_environment": {
-                    "platform": "ios",
-                    "phone_bridge": {},
-                    "tools": {},
-                },
-                "tasks": [
-                    {
-                        "id": "task",
-                        "category": "diagnostic",
-                        "prompt": "test",
-                        "description_for_judge": "test",
-                        "rubric": [{"id": "done", "check": "done"}],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+    suites = [f"{platform}.json" for platform in platforms]
     job = webui.Job(
         id="job-mock",
         endpoint="",
         docker_endpoint="",
-        suites=["mock.json"],
+        suites=suites,
         environment_type="mock",
         environment_name="Mock Aiden App environment",
         config_dir=str(job_dir / "config"),
@@ -2319,18 +2309,25 @@ def test_run_job_mock_mode_skips_shared_agent_daemon(tmp_path: Path, monkeypatch
 
     def fake_run_mock_suite(run_job, suite_key):
         calls.append(suite_key)
-        run_job.suite_results.append({"suite": suite_key, "exit_code": 0})
+        platform = Path(suite_key).stem
+        run_job.suite_results.append(
+            {
+                "suite": suite_key,
+                "exit_code": 0,
+                "manifest": {"target_platform": platform},
+            }
+        )
 
     monkeypatch.setattr(app, "_run_mock_suite", fake_run_mock_suite)
     monkeypatch.setattr(app, "_refresh_job_report", lambda run_job: None)
 
     app._run_job(job)
 
-    assert calls == ["mock.json"]
+    assert calls == suites
     assert job.status == "passed"
-    assert job.target_platform == "ios"
+    assert job.target_platform == expected_platform
     persisted = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
-    assert persisted["target_platform"] == "ios"
+    assert persisted["target_platform"] == expected_platform
 
 
 def test_webui_html_exposes_mock_environment_run_mode():

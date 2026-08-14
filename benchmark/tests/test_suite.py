@@ -970,6 +970,11 @@ def test_phone_bridge_data_policy_suite_covers_tools_and_routing_modes():
     assert len(tasks) == 12
     assert all(task.mock_environment is not None for task in suite.tasks)
     assert {
+        task.mock_environment.platform
+        for task in suite.tasks
+        if task.mock_environment is not None
+    } == {TargetPlatform.ANDROID, TargetPlatform.IOS}
+    assert {
         tool
         for task in suite.tasks
         for tool in task.hard_assertions.required_tools

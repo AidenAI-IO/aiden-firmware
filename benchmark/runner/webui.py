@@ -32,7 +32,6 @@ from runner.judge import JudgeConfig
 from runner.platform import (
     read_environment_health,
     resolve_environment_platform,
-    resolve_mock_platform,
 )
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
@@ -819,16 +818,7 @@ class BenchmarkWebApp:
             self._raise_if_job_stop_requested(job)
             self._set_job(job, status="preparing", started_at=now_iso(), message="preparing config")
             agent_config_text = self.get_agent_config()["content"]
-            if job.environment_type == "mock":
-                resolution = resolve_mock_suites_platform(
-                    self.config.suites_dir,
-                    job.suites,
-                )
-                self._set_job(
-                    job,
-                    target_platform=resolution.value,
-                )
-            else:
+            if job.environment_type != "mock":
                 health = read_environment_health(job.environment_endpoint or job.endpoint)
                 resolution = resolve_environment_platform(health)
                 self._set_job(
@@ -850,6 +840,10 @@ class BenchmarkWebApp:
                 for suite_key in job.suites:
                     self._raise_if_job_stop_requested(job)
                     self._run_mock_suite(job, suite_key)
+                self._set_job(
+                    job,
+                    target_platform=_mock_job_target_platform(job.suite_results),
+                )
                 self._raise_if_job_stop_requested(job)
                 self._refresh_job_report(job)
                 final_status = (
@@ -1631,22 +1625,17 @@ def suite_uses_mock_environment(path: Path) -> bool:
     return isinstance(data, dict) and suite_data_uses_mock_environment(data)
 
 
-def resolve_mock_suites_platform(suites_dir: Path, suite_keys: list[str]):
-    platforms = set()
-    for suite_key in suite_keys:
-        suite = load_suite(resolve_suite_path(suites_dir, suite_key))
-        if suite.mock_environment is not None and not suite.tasks:
-            platforms.add(suite.mock_environment.platform)
-        for task in suite.tasks:
-            spec = task.mock_environment or suite.mock_environment
-            if spec is None:
-                raise ValueError(
-                    f"mock environment suite {suite_key!r} task {task.id!r} has no mock environment"
-                )
-            platforms.add(spec.platform)
-    if len(platforms) != 1:
-        raise ValueError("mock environment suites must declare exactly one target platform")
-    return resolve_mock_platform(next(iter(platforms)))
+def _mock_job_target_platform(suite_results: list[dict[str, Any]]) -> str:
+    platforms = {
+        str((result.get("manifest") or {}).get("target_platform") or "").strip()
+        for result in suite_results
+    }
+    platforms.discard("")
+    if not platforms:
+        return ""
+    if len(platforms) == 1:
+        return next(iter(platforms))
+    return "mixed"
 
 
 def resolve_suite_path(suites_dir: Path, key: str) -> Path:
