@@ -25,6 +25,17 @@ if ! docker compose version >/dev/null 2>&1; then
     echo "Docker Compose is required to start the sandbox." >&2
     exit 1
 fi
+if ! compose_up_help="$(docker compose up --help 2>&1)"; then
+    echo "Could not inspect Docker Compose startup options." >&2
+    exit 1
+fi
+for required_option in --wait --wait-timeout; do
+    if ! grep -Eq "(^|[[:space:]])${required_option}([=[:space:]]|$)" \
+        <<<"$compose_up_help"; then
+        echo "Docker Compose v2.17.0 or newer is required (${required_option} is unavailable)." >&2
+        exit 1
+    fi
+done
 
 compose_args=(
     --detach

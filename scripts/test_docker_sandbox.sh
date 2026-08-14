@@ -117,9 +117,9 @@ curl -fsS --max-time 10 "http://127.0.0.1:$config_port/api/config" \
 
 printf 'Docker sandbox smoke test passed (agent pid %s -> %s).\n' "$before_pid" "$after_pid"
 
-# Exercise restart while /api/setup is still blocked. The service must kill the
-# old supervisor process group, start exactly one Agent, and release the route
-# when the container stops.
+# Exercise restart after the bridge session is ready. The service must preserve
+# the claimed session, start exactly one Agent, and release the route when the
+# container stops.
 compose down -v
 if [ -z "$bridge_port" ]; then
     bridge_port="$(python3 -c 'import socket; sock = socket.socket(); sock.bind(("", 0)); print(sock.getsockname()[1]); sock.close()')"
@@ -168,14 +168,7 @@ sandbox_bridge_endpoint="http://host.docker.internal:$bridge_port"
 sandbox_device_type="iOS"
 
 compose up -d
-attempt=1
-while [ "$attempt" -le 30 ]; do
-    if curl -fsS --max-time 5 "http://127.0.0.1:$config_port/" >/dev/null 2>&1; then
-        break
-    fi
-    sleep 0.2
-    attempt="$((attempt + 1))"
-done
+wait_for_agent
 
 attempt=1
 while [ "$attempt" -le 30 ]; do
@@ -186,6 +179,8 @@ while [ "$attempt" -le 30 ]; do
     attempt="$((attempt + 1))"
 done
 grep -q 'POST /api/setup docker-sandbox-smoke' "$bridge_log"
+setup_count="$(grep -c 'POST /api/setup docker-sandbox-smoke' "$bridge_log" || true)"
+test "$setup_count" -eq 1
 
 curl -fsS --max-time 15 -X POST \
     -H 'Content-Type: application/json' \
@@ -206,6 +201,8 @@ test "$count" -eq 1
 
 release_count="$(grep -c 'POST /api/release docker-sandbox-smoke {}' "$bridge_log" || true)"
 test "$release_count" -eq 0
+setup_count="$(grep -c 'POST /api/setup docker-sandbox-smoke' "$bridge_log" || true)"
+test "$setup_count" -eq 1
 compose down
 attempt=1
 while [ "$attempt" -le 20 ]; do
@@ -217,7 +214,7 @@ while [ "$attempt" -le 20 ]; do
 done
 setup_count="$(grep -c 'POST /api/setup docker-sandbox-smoke' "$bridge_log" || true)"
 release_count="$(grep -c 'POST /api/release docker-sandbox-smoke {}' "$bridge_log" || true)"
-test "$setup_count" -ge 2
+test "$setup_count" -eq 1
 test "$release_count" -eq 1
 
 printf 'Docker sandbox bridge restart and release test passed.\n'

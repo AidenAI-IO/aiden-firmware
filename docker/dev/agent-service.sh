@@ -8,6 +8,7 @@ run_dir="${AIDEN_AGENT_RUN_DIR:-/run/agent}"
 supervisor_pid_file="$run_dir/supervisor.pid"
 agent_pid_file="$run_dir/agent.pid"
 lock_file="$run_dir/service.lock"
+bridge_session_file="$run_dir/bridge-session"
 log_file="$agent_dir/log/agent.log"
 
 mkdir -p "$run_dir" "$agent_dir/log"
@@ -110,6 +111,94 @@ bridge_identifiers_valid() {
     valid_bridge_identifier "$task_id" && valid_bridge_identifier "$episode_id"
 }
 
+load_bridge_session() {
+    bridge_session_endpoint=""
+    bridge_session_task_id=""
+    bridge_session_episode_id=""
+    bridge_session_state="ready"
+    if [ ! -f "$bridge_session_file" ]; then
+        return 1
+    fi
+    {
+        IFS= read -r bridge_session_endpoint \
+            && IFS= read -r bridge_session_task_id \
+            && IFS= read -r bridge_session_episode_id \
+            && { IFS= read -r bridge_session_state || bridge_session_state="ready"; }
+    } < "$bridge_session_file" || return 1
+    case "$bridge_session_state" in
+        pending|ready) ;;
+        *) return 1 ;;
+    esac
+    [ -n "$bridge_session_endpoint" ] \
+        && valid_bridge_identifier "$bridge_session_task_id" \
+        && valid_bridge_identifier "$bridge_session_episode_id"
+}
+
+bridge_session_matches() {
+    endpoint="$1"
+    task_id="$2"
+    episode_id="$3"
+    load_bridge_session \
+        && [ "$bridge_session_endpoint" = "$endpoint" ] \
+        && [ "$bridge_session_task_id" = "$task_id" ] \
+        && [ "$bridge_session_episode_id" = "$episode_id" ]
+}
+
+save_bridge_session() {
+    endpoint="$1"
+    task_id="$2"
+    episode_id="$3"
+    state="${4:-ready}"
+    temporary_file="$bridge_session_file.$$"
+    {
+        printf '%s\n' "$endpoint"
+        printf '%s\n' "$task_id"
+        printf '%s\n' "$episode_id"
+        printf '%s\n' "$state"
+    } > "$temporary_file"
+    mv -f "$temporary_file" "$bridge_session_file"
+}
+
+bridge_session_remote_state() {
+    endpoint="$1"
+    task_id="$2"
+    response_file="$run_dir/bridge-health.$$.json"
+    health_status="$(curl -sS -o "$response_file" -w '%{http_code}' \
+        --connect-timeout 1 --max-time 2 "$endpoint/health" 2>/dev/null || true)"
+    if [ "${health_status#2}" = "$health_status" ]; then
+        rm -f "$response_file"
+        printf 'unknown\n'
+        return 0
+    fi
+
+    remote_state="$(python3 -c '
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as source:
+        payload = json.load(source)
+    data = payload.get("data", payload)
+    bridge_type = data.get("bridge_type")
+    if bridge_type == "mobilegym" and isinstance(data.get("active_routes"), dict):
+        print("active" if sys.argv[2] in data["active_routes"] else "missing")
+    elif bridge_type == "adb_android" and "active_task_id" in data:
+        active_task_id = str(data.get("active_task_id") or "")
+        if active_task_id == sys.argv[2]:
+            print("active")
+        elif active_task_id:
+            print("unknown")
+        else:
+            print("missing")
+    else:
+        print("unknown")
+except Exception:
+    print("unknown")
+' "$response_file" "$task_id" 2>/dev/null || printf 'unknown')"
+    rm -f "$response_file"
+    printf '%s\n' "$remote_state"
+}
+
 prepare_bridge_episode() {
     endpoint="${AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT:-${ENVIRONMENT_BRIDGE_ENDPOINT:-}}"
     endpoint="${endpoint%/}"
@@ -133,45 +222,49 @@ prepare_bridge_episode() {
 
     if [ "$health_status" = "000" ]; then
         service_log WARN bridge_unavailable "endpoint=$endpoint; starting agent without an active episode"
-        return 0
+        return 1
     fi
 
+    save_bridge_session "$endpoint" "$task_id" "$episode_id" pending
     response_file="$run_dir/bridge-setup.$$.json"
-    setup_status="$(curl -sS -o "$response_file" -w '%{http_code}' \
+    if setup_status="$(curl -sS -o "$response_file" -w '%{http_code}' \
         --connect-timeout 2 --max-time 30 \
         -X POST "$endpoint/api/setup" \
         -H 'Content-Type: application/json' \
         -H "benchmark-task-id: $task_id" \
-        --data "{\"episode_id\":\"$episode_id\"}" 2>/dev/null || true)"
+        --data "{\"episode_id\":\"$episode_id\"}" 2>/dev/null)"; then
+        setup_curl_status=0
+    else
+        setup_curl_status="$?"
+    fi
     response="$(head -c 512 "$response_file" 2>/dev/null || true)"
     rm -f "$response_file"
 
     case "$setup_status" in
         2??)
+            save_bridge_session "$endpoint" "$task_id" "$episode_id" ready
             service_log INFO bridge_setup_ready "endpoint=$endpoint task_id=$task_id episode_id=$episode_id"
+            return 0
             ;;
         404|405)
+            save_bridge_session "$endpoint" "$task_id" "$episode_id" ready
             service_log INFO bridge_setup_unsupported "endpoint=$endpoint status=$setup_status; continuing with generic bridge"
+            return 0
             ;;
         *)
-            service_log WARN bridge_setup_failed "endpoint=$endpoint status=${setup_status:-000} response=$response; starting agent anyway"
+            case "$setup_curl_status" in
+                3|5|6|7) rm -f "$bridge_session_file" ;;
+            esac
+            service_log WARN bridge_setup_failed \
+                "endpoint=$endpoint status=${setup_status:-000} curl_exit=$setup_curl_status response=$response; starting agent anyway"
+            return 1
             ;;
     esac
 }
 
-release_bridge_episode() {
-    load_system_env
-    if ! bridge_enabled; then
-        return 0
-    fi
-    if ! bridge_identifiers_valid; then
-        service_log WARN bridge_release_skipped "task or episode id contains unsupported characters"
-        return 0
-    fi
-
-    endpoint="${AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT:-${ENVIRONMENT_BRIDGE_ENDPOINT:-}}"
-    endpoint="${endpoint%/}"
-    task_id="${AIDEN_BENCHMARK_TASK_ID:-docker-sandbox}"
+release_bridge_identity() {
+    endpoint="$1"
+    task_id="$2"
     release_status="$(curl -sS -o /dev/null -w '%{http_code}' \
         --connect-timeout 2 --max-time 5 \
         -X POST "$endpoint/api/release" \
@@ -192,6 +285,47 @@ release_bridge_episode() {
     esac
 }
 
+release_bridge_episode() {
+    if ! load_bridge_session; then
+        return 0
+    fi
+    release_bridge_identity "$bridge_session_endpoint" "$bridge_session_task_id"
+    rm -f "$bridge_session_file"
+}
+
+ensure_bridge_episode() {
+    endpoint="$1"
+    task_id="$2"
+    episode_id="$3"
+
+    if bridge_session_matches "$endpoint" "$task_id" "$episode_id"; then
+        remote_state="$(bridge_session_remote_state "$endpoint" "$task_id")"
+        case "$remote_state" in
+            active)
+                if [ "$bridge_session_state" = "pending" ]; then
+                    save_bridge_session "$endpoint" "$task_id" "$episode_id" ready
+                    service_log INFO bridge_session_confirmed \
+                        "endpoint=$endpoint task_id=$task_id episode_id=$episode_id"
+                fi
+                return 0
+                ;;
+            missing)
+                service_log INFO bridge_session_missing \
+                    "endpoint=$endpoint task_id=$task_id; setting up a new route"
+                rm -f "$bridge_session_file"
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    fi
+    if load_bridge_session; then
+        release_bridge_identity "$bridge_session_endpoint" "$bridge_session_task_id"
+        rm -f "$bridge_session_file"
+    fi
+    prepare_bridge_episode || true
+}
+
 run_agent() {
     load_system_env
 
@@ -201,10 +335,12 @@ run_agent() {
     fi
     if bridge_enabled; then
         endpoint="${AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT:-${ENVIRONMENT_BRIDGE_ENDPOINT:-}}"
+        endpoint="${endpoint%/}"
         tools="${AIDEN_ENVIRONMENT_BRIDGE_TOOLS:-screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,search_launch_app,mouse_move,mouse_scroll,quick_action,bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,bridge_notification}"
         task_id="${AIDEN_BENCHMARK_TASK_ID:-docker-sandbox}"
+        episode_id="${AIDEN_BRIDGE_EPISODE_ID:-docker-sandbox}"
         if bridge_identifiers_valid; then
-            prepare_bridge_episode
+            ensure_bridge_episode "$endpoint" "$task_id" "$episode_id"
             if [ "${stopping:-0}" -ne 0 ]; then
                 return 0
             fi
@@ -214,8 +350,11 @@ run_agent() {
                 --environment-bridge-tools "$tools" \
                 --benchmark-task-id "$task_id"
         else
+            release_bridge_episode
             service_log ERROR bridge_disabled "task or episode id contains unsupported characters"
         fi
+    else
+        release_bridge_episode
     fi
 
     if [ "${stopping:-0}" -ne 0 ]; then

@@ -1,10 +1,14 @@
+import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -29,7 +33,15 @@ class DockerSandboxContractTest(unittest.TestCase):
             "ENVIRONMENT_BRIDGE_ENDPOINT: ${ENVIRONMENT_BRIDGE_ENDPOINT:-}",
             compose,
         )
-        self.assertIn("AIDEN_BENCHMARK_TASK_ID", compose)
+        self.assertIn(
+            "AIDEN_BENCHMARK_TASK_ID: ${AIDEN_BENCHMARK_TASK_ID:-docker-sandbox}",
+            compose,
+        )
+        self.assertIn(
+            "AIDEN_BRIDGE_EPISODE_ID: ${AIDEN_BRIDGE_EPISODE_ID:-docker-sandbox}",
+            compose,
+        )
+        self.assertIn("AIDEN_DEVICE_TYPE: ${AIDEN_DEVICE_TYPE:-}", compose)
         self.assertIn("host.docker.internal:host-gateway", compose)
 
     def test_sandbox_image_builds_real_agent_and_config_web_binaries(self):
@@ -40,6 +52,14 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("src/config_web.cpp", dockerfile)
         self.assertIn("src/config_web/web/ /oem/usr/share/aiden/config-web/", dockerfile)
         self.assertIn("COPY docker/dev/entrypoint.sh", dockerfile)
+        self.assertRegex(
+            dockerfile,
+            r"RUN chmod 0755 \\\n(?:        [^\n]+ \\\n)*"
+            r"        /usr/local/bin/aiden-docker-entrypoint\n",
+        )
+        self.assertIn(
+            'ENTRYPOINT ["/usr/local/bin/aiden-docker-entrypoint"]', dockerfile
+        )
 
     def test_runtime_includes_firmware_python_and_cli_tooling(self):
         dockerfile = read_repo_file("docker/dev/Dockerfile")
@@ -50,7 +70,7 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("wader/fq/releases/download/v0.17.0", dockerfile)
         self.assertIn("mikefarah/yq/releases/download/v4.53.3", dockerfile)
         self.assertIn("BurntSushi/ripgrep/releases/download/15.2.0", dockerfile)
-        self.assertIn("sha256sum -c -", dockerfile)
+        self.assertEqual(dockerfile.count("sha256sum -c -"), 3)
         for package in ("python3", "python3-pip"):
             self.assertIn(package, dockerfile)
         self.assertIn("/out/fq /usr/bin/fq", dockerfile)
@@ -97,11 +117,13 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("docker compose", start_script)
         self.assertIn("--wait", start_script)
         self.assertIn("--wait-timeout", start_script)
+        self.assertIn("docker compose up --help", start_script)
         self.assertIn("sandbox-start:", makefile)
         self.assertIn("./scripts/start_docker_sandbox.sh", makefile)
         self.assertIn("--build", script)
         self.assertIn("scripts/start_docker_sandbox.sh", script)
         self.assertNotIn("down -v", start_script)
+        self.assertNotIn("down -v", script)
         self.assertIn("sandbox-update:", makefile)
         self.assertIn("./scripts/update_docker_sandbox.sh", makefile)
 
@@ -114,6 +136,12 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("make sandbox-update", guide)
         self.assertIn(
             "AIDEN_BRIDGE_EPISODE_ID=my-sandbox-session", guide
+        )
+        self.assertIn(
+            "https://docs.astral.sh/uv/getting-started/installation/", guide
+        )
+        self.assertIn(
+            "https://developer.android.com/tools/releases/platform-tools", guide
         )
         self.assertNotIn("python -m runner webui", guide)
         self.assertNotIn("docker-sandbox.md", readme)
@@ -201,6 +229,335 @@ class DockerSandboxContractTest(unittest.TestCase):
             stderr = supervisor.stderr.read()
             supervisor.stderr.close()
             self.assertEqual(supervisor.returncode, 0, stderr)
+
+    def test_bridge_session_outlives_agent_and_supervisor_restarts(self):
+        service = REPO_ROOT / "docker/dev/agent-service.sh"
+
+        class BridgeServer:
+            def __init__(self, block_setup=False, bridge_type="mobilegym"):
+                self.requests = []
+                self.routes = {}
+                self.setup_gate = threading.Event()
+                if not block_setup:
+                    self.setup_gate.set()
+                requests = self.requests
+                routes = self.routes
+                setup_gate = self.setup_gate
+
+                class Handler(BaseHTTPRequestHandler):
+                    def log_message(self, *_args):
+                        return
+
+                    def reply(self, payload=b'{"ok":true}'):
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(payload)))
+                        self.end_headers()
+                        try:
+                            self.wfile.write(payload)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+
+                    def do_GET(self):
+                        data = {"bridge_type": bridge_type}
+                        if bridge_type == "mobilegym":
+                            data["active_routes"] = routes
+                        else:
+                            data["active_task_id"] = next(iter(routes), "")
+                        payload = json.dumps({"ok": True, "data": data}).encode()
+                        requests.append(
+                            ("GET", self.path, "", payload.decode("utf-8"))
+                        )
+                        self.reply(payload)
+
+                    def do_POST(self):
+                        size = int(self.headers.get("Content-Length", "0"))
+                        body = self.rfile.read(size).decode()
+                        task_id = self.headers.get("benchmark-task-id", "")
+                        requests.append(("POST", self.path, task_id, body))
+                        if self.path == "/api/setup":
+                            routes[task_id] = 0
+                            setup_gate.wait(timeout=10)
+                        elif self.path == "/api/release":
+                            routes.pop(task_id, None)
+                        self.reply()
+
+                self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+                self.thread = threading.Thread(
+                    target=self.server.serve_forever, daemon=True
+                )
+                self.thread.start()
+
+            @property
+            def endpoint(self):
+                return f"http://127.0.0.1:{self.server.server_port}"
+
+            def close(self):
+                self.setup_gate.set()
+                self.server.shutdown()
+                self.server.server_close()
+                self.thread.join(timeout=5)
+
+            def lose_routes(self):
+                self.routes.clear()
+
+            def allow_setup(self):
+                self.setup_gate.set()
+
+        def wait_until(predicate, message):
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                if predicate():
+                    return
+                time.sleep(0.05)
+            self.fail(message)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            agent = temporary_path / "fake-agent.sh"
+            agent.write_text(
+                "#!/bin/sh\n"
+                'printf "started\\n" >> "$AIDEN_FAKE_AGENT_STARTS"\n'
+                'if [ "${AIDEN_FAKE_AGENT_CRASH:-0}" = 1 ]; then exit 7; fi\n'
+                "trap 'exit 0' INT TERM\n"
+                "while :; do sleep 1; done\n",
+                encoding="utf-8",
+            )
+            agent.chmod(0o755)
+            fake_bin = temporary_path / "bin"
+            fake_bin.mkdir()
+            fake_flock = fake_bin / "flock"
+            fake_flock.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_flock.chmod(0o755)
+
+            run_directory = temporary_path / "run"
+            agent_directory = temporary_path / "agent"
+            starts_file = temporary_path / "agent-starts"
+            system_env = temporary_path / "system-env"
+            system_env.write_text("", encoding="utf-8")
+            base_environment = os.environ.copy()
+            base_environment.update(
+                {
+                    "PATH": f"{fake_bin}:{base_environment['PATH']}",
+                    "AIDEN_AGENT_BIN": str(agent),
+                    "AIDEN_AGENT_DIR": str(agent_directory),
+                    "AIDEN_AGENT_RUN_DIR": str(run_directory),
+                    "AIDEN_SYSTEM_ENV": str(system_env),
+                    "AIDEN_AGENT_LOG_CHECK_INTERVAL": "1",
+                    "AIDEN_AGENT_STOP_ATTEMPTS": "1",
+                    "AIDEN_BRIDGE_WAIT_ATTEMPTS": "1",
+                    "AIDEN_ENVIRONMENT_BRIDGE_MODE": "true",
+                    "AIDEN_ENVIRONMENT_BRIDGE_TOOLS": "screenshot",
+                    "AIDEN_FAKE_AGENT_STARTS": str(starts_file),
+                }
+            )
+            first_bridge = BridgeServer()
+            second_bridge = BridgeServer(
+                block_setup=True, bridge_type="adb_android"
+            )
+            supervisors = []
+
+            def environment(endpoint, task_id, episode_id, crash=False):
+                result = base_environment.copy()
+                result.update(
+                    {
+                        "AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT": endpoint,
+                        "AIDEN_BENCHMARK_TASK_ID": task_id,
+                        "AIDEN_BRIDGE_EPISODE_ID": episode_id,
+                        "AIDEN_FAKE_AGENT_CRASH": "1" if crash else "0",
+                    }
+                )
+                return result
+
+            def start_supervisor(current_environment):
+                supervisor = subprocess.Popen(
+                    ["sh", str(service), "run"],
+                    env=current_environment,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+                supervisors.append(supervisor)
+                return supervisor
+
+            def stop_supervisor(supervisor):
+                if supervisor.poll() is None:
+                    os.killpg(supervisor.pid, signal.SIGTERM)
+                    try:
+                        supervisor.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        supervisor.kill()
+                        supervisor.wait(timeout=5)
+                stderr = supervisor.stderr.read()
+                supervisor.stderr.close()
+                self.assertEqual(supervisor.returncode, 0, stderr)
+
+            def setup_requests(bridge):
+                return [request for request in bridge.requests if request[1] == "/api/setup"]
+
+            try:
+                first_environment = environment(
+                    first_bridge.endpoint, "task-one", "episode-one", crash=True
+                )
+                first_supervisor = start_supervisor(first_environment)
+                wait_until(
+                    lambda: starts_file.exists()
+                    and len(starts_file.read_text(encoding="utf-8").splitlines()) >= 2,
+                    "watchdog did not restart the fake Agent",
+                )
+                self.assertEqual(len(setup_requests(first_bridge)), 1)
+                stop_supervisor(first_supervisor)
+
+                first_environment["AIDEN_FAKE_AGENT_CRASH"] = "0"
+                second_supervisor = start_supervisor(first_environment)
+                wait_until(
+                    lambda: len(starts_file.read_text(encoding="utf-8").splitlines()) >= 3,
+                    "replacement supervisor did not start the fake Agent",
+                )
+                self.assertEqual(len(setup_requests(first_bridge)), 1)
+                stop_supervisor(second_supervisor)
+
+                first_bridge.lose_routes()
+                starts_before_route_recovery = len(
+                    starts_file.read_text(encoding="utf-8").splitlines()
+                )
+                route_recovery_supervisor = start_supervisor(first_environment)
+                wait_until(
+                    lambda: len(setup_requests(first_bridge)) == 2,
+                    "lost remote bridge route was not set up again",
+                )
+                wait_until(
+                    lambda: len(starts_file.read_text(encoding="utf-8").splitlines())
+                    > starts_before_route_recovery,
+                    "recovered bridge route did not reach the fake Agent",
+                )
+                stop_supervisor(route_recovery_supervisor)
+
+                episode_environment = environment(
+                    first_bridge.endpoint, "task-one", "episode-two"
+                )
+                starts_before_episode_switch = len(
+                    starts_file.read_text(encoding="utf-8").splitlines()
+                )
+                third_supervisor = start_supervisor(episode_environment)
+                wait_until(
+                    lambda: len(setup_requests(first_bridge)) == 3,
+                    "new bridge episode was not set up",
+                )
+                wait_until(
+                    lambda: len(starts_file.read_text(encoding="utf-8").splitlines())
+                    > starts_before_episode_switch,
+                    "new bridge episode did not reach the fake Agent",
+                )
+                wait_until(
+                    lambda: any(
+                        request[1:3] == ("/api/release", "task-one")
+                        for request in first_bridge.requests
+                    ),
+                    "old bridge episode was not released",
+                )
+                self.assertIn("episode-two", setup_requests(first_bridge)[-1][3])
+                stop_supervisor(third_supervisor)
+
+                task_environment = environment(
+                    first_bridge.endpoint, "task-two", "episode-two"
+                )
+                starts_before_task_switch = len(
+                    starts_file.read_text(encoding="utf-8").splitlines()
+                )
+                fourth_supervisor = start_supervisor(task_environment)
+                wait_until(
+                    lambda: len(setup_requests(first_bridge)) == 4,
+                    "new bridge task was not set up",
+                )
+                wait_until(
+                    lambda: len(starts_file.read_text(encoding="utf-8").splitlines())
+                    > starts_before_task_switch,
+                    "new bridge task did not reach the fake Agent",
+                )
+                self.assertEqual(setup_requests(first_bridge)[-1][2], "task-two")
+                stop_supervisor(fourth_supervisor)
+
+                second_environment = environment(
+                    second_bridge.endpoint, "task-two", "episode-two"
+                )
+                fifth_supervisor = start_supervisor(second_environment)
+                wait_until(
+                    lambda: len(setup_requests(second_bridge)) == 1,
+                    "blocked bridge setup request was not received",
+                )
+                wait_until(
+                    lambda: (run_directory / "bridge-session").exists(),
+                    "pending bridge identity was not persisted",
+                )
+                os.killpg(fifth_supervisor.pid, signal.SIGTERM)
+                try:
+                    fifth_supervisor.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    fifth_supervisor.kill()
+                    fifth_supervisor.wait(timeout=5)
+                fifth_supervisor.stderr.close()
+
+                starts_before_blocked_restart = len(
+                    starts_file.read_text(encoding="utf-8").splitlines()
+                )
+                sixth_supervisor = start_supervisor(second_environment)
+                wait_until(
+                    lambda: len(starts_file.read_text(encoding="utf-8").splitlines())
+                    > starts_before_blocked_restart,
+                    "restart after blocked setup did not reach the fake Agent",
+                )
+                self.assertEqual(len(setup_requests(second_bridge)), 1)
+                wait_until(
+                    lambda: any(
+                        request[1:3] == ("/api/release", "task-two")
+                        for request in first_bridge.requests
+                    ),
+                    "old bridge endpoint was not released",
+                )
+
+                subprocess.run(
+                    ["sh", str(service), "stop"],
+                    env=second_environment,
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                sixth_supervisor.wait(timeout=5)
+                sixth_supervisor.stderr.close()
+                self.assertTrue(
+                    any(
+                        request[1:3] == ("/api/release", "task-two")
+                        for request in second_bridge.requests
+                    )
+                )
+
+                second_bridge.allow_setup()
+                starts_before_fresh_start = len(
+                    starts_file.read_text(encoding="utf-8").splitlines()
+                )
+                seventh_supervisor = start_supervisor(second_environment)
+                wait_until(
+                    lambda: len(setup_requests(second_bridge)) == 2,
+                    "full stop did not clear the bridge session",
+                )
+                wait_until(
+                    lambda: len(starts_file.read_text(encoding="utf-8").splitlines())
+                    > starts_before_fresh_start,
+                    "fresh bridge session did not reach the fake Agent",
+                )
+                stop_supervisor(seventh_supervisor)
+            finally:
+                for supervisor in supervisors:
+                    if supervisor.poll() is None:
+                        supervisor.kill()
+                        supervisor.wait(timeout=5)
+                    if not supervisor.stderr.closed:
+                        supervisor.stderr.close()
+                first_bridge.close()
+                second_bridge.close()
 
 
 if __name__ == "__main__":

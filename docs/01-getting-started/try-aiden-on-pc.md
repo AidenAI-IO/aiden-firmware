@@ -21,7 +21,11 @@ use the [Benchmark workflow](../09-benchmark/README.md) instead.
 - Git;
 - a model provider and API key to configure after startup;
 - an optional environment bridge if the Agent should observe and control a
-  simulator, emulator, physical ADB device, or virtual machine.
+  simulator, emulator, physical ADB device, or virtual machine;
+- host-side [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for
+  MobileGym and ADB Android bridge workflows;
+- [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools),
+  which provide `adb`, for the ADB Android workflow.
 
 The sandbox does not require the large `pico-sdk` submodule.
 
@@ -120,6 +124,11 @@ AIDEN_BRIDGE_EPISODE_ID=my-sandbox-session \
 Keep the task id stable when a multi-instance bridge should identify requests as
 one logical sandbox session. Use a different id for each simultaneously running
 sandbox session.
+
+Agent watchdog restarts and Config Web saves preserve the claimed bridge
+session. Changing the bridge endpoint, task id, or episode id releases the old
+route before claiming the new one. Stopping the sandbox releases the current
+route; the next full start claims a fresh session.
 
 The default sandbox device type is `iOS`, which also lets Agent Web become ready
 without waiting for an unavailable Android frame service when no bridge is
