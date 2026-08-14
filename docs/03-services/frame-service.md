@@ -54,6 +54,8 @@ frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
               [--pixel-format FMT] [--subdev PATH] [--edid PATH]
               [--ring-size N] [--fps N] [--no-hdmi-sync]
               [--force-trigger|--no-force-trigger]
+              [--warmup-frames N]
+              [--allow-uniform-frames|--reject-uniform-frames]
               [--require-exact-resolution|--allow-resolution-mismatch]
 ```
 

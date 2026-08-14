@@ -148,6 +148,7 @@ TEST_CASE("FrameServiceServer captures fresh frames on demand without filling th
     std::atomic<int> captures(0);
     server.set_capture_handler(
         [&captures](uint32_t, FrameMetadata* meta, std::vector<uint8_t>* data) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
             const int capture = ++captures;
             *meta = metadata(1, 1, "uyvy", static_cast<uint64_t>(capture) * 10);
             *data = payload({static_cast<uint8_t>(capture), 2});
@@ -173,6 +174,7 @@ TEST_CASE("FrameServiceServer captures fresh frames on demand without filling th
     CHECK(health.latest_seq == second.metadata.seq);
     CHECK(health.ring_buffer_size == 0);
     CHECK(health.ring_buffer_used == 0);
+    CHECK(health.avg_capture_copy_latency_ms >= 2.0);
 
     FrameResult missing;
     CHECK(client.get_frame(second.metadata.seq, &missing) == FrameServiceStatus::FRAME_NOT_FOUND);

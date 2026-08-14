@@ -386,8 +386,10 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         if (capture_handler) {
             FrameMetadata metadata;
             std::vector<uint8_t> data;
+            const uint64_t capture_started_ns = monotonic_ns();
             status = capture_handler(timeout_ms, &metadata, &data);
             if (status == FrameServiceStatus::OK) {
+                record_capture_copy_latency(capture_started_ns);
                 std::shared_ptr<FrameBufferFrame> captured(new FrameBufferFrame());
                 captured->metadata = metadata;
                 captured->metadata.bytes = data.size();
