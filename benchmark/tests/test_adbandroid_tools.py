@@ -271,9 +271,13 @@ def test_enter_text_reports_unsupported_text_without_typing(bridge):
 # ---- mouse tools --------------------------------------------------------------
 
 
-def test_mouse_click_taps(bridge):
+def test_touch_gesture_tap_taps(bridge):
     _, device, base_url = bridge
-    status, body = _invoke(base_url, "mouse_click", {"x": 500, "y": 500})
+    status, body = _invoke(
+        base_url,
+        "touch_gesture",
+        {"type": "tap", "point": {"x": 500, "y": 500}},
+    )
     assert status == 200 and body["is_error"] is False
     assert ("tap", 540, 960) in device.calls
 
@@ -300,50 +304,46 @@ def test_mouse_scroll_swipes_vertically(bridge):
 # ---- quick_action --------------------------------------------------------------
 
 
-def test_quick_action_requires_platform(bridge):
-    _, _, base_url = bridge
+def test_quick_action_uses_android_platform_from_environment(bridge):
+    _, device, base_url = bridge
     status, body = _invoke(base_url, "quick_action", {"action": "home"})
-    assert body["is_error"] is True
-    assert "unsupported platform" in body["output"]
+    assert status == 200 and body["is_error"] is False
+    assert ("keyevent", "KEYCODE_HOME") in device.calls
 
 
 def test_quick_action_list_returns_catalog(bridge):
     _, _, base_url = bridge
-    status, body = _invoke(base_url, "quick_action", {"platform": "android", "list": True})
+    status, body = _invoke(base_url, "quick_action", {"list": True})
     assert status == 200 and body["is_error"] is False
     output = json.loads(body["output"])
     ids = {item["id"] for item in output["actions"]}
     assert {"back", "home", "app_switch", "open_settings", "notification_center", "send"} <= ids
 
 
-def test_quick_action_non_android_platform_is_reserved(bridge):
-    _, device, base_url = bridge
+def test_quick_action_rejects_legacy_platform_argument(bridge):
+    _, _, base_url = bridge
     status, body = _invoke(base_url, "quick_action", {"platform": "ios", "action": "home"})
-    assert status == 200 and body["is_error"] is False
-    output = json.loads(body["output"])
-    assert output["ok"] is False
-    assert output["platform"] == "ios"
-    assert output["status"] == "reserved"
-    assert device.calls == []
+    assert status == 200 and body["is_error"] is True
+    assert "unknown fields" in body["output"]
 
 
 def test_quick_action_open_settings(bridge):
     _, device, base_url = bridge
-    status, body = _invoke(base_url, "quick_action", {"platform": "android", "action": "open_settings"})
+    status, body = _invoke(base_url, "quick_action", {"action": "open_settings"})
     assert status == 200 and body["is_error"] is False
     assert ("start_settings",) in device.calls
 
     # Alias resolution: "settings" maps to open_settings.
     device.calls.clear()
-    _invoke(base_url, "quick_action", {"platform": "android", "action": "settings"})
+    _invoke(base_url, "quick_action", {"action": "settings"})
     assert ("start_settings",) in device.calls
 
 
 def test_quick_action_home_back_send(bridge):
     _, device, base_url = bridge
-    _invoke(base_url, "quick_action", {"platform": "android", "action": "home"})
-    _invoke(base_url, "quick_action", {"platform": "android", "action": "back"})
-    _invoke(base_url, "quick_action", {"platform": "android", "action": "send"})
+    _invoke(base_url, "quick_action", {"action": "home"})
+    _invoke(base_url, "quick_action", {"action": "back"})
+    _invoke(base_url, "quick_action", {"action": "send"})
     assert ("keyevent", "KEYCODE_HOME") in device.calls
     assert ("keyevent", "KEYCODE_BACK") in device.calls
     assert ("keyevent", 66) in device.calls
@@ -351,23 +351,23 @@ def test_quick_action_home_back_send(bridge):
 
 def test_quick_action_statusbar_actions(bridge):
     _, device, base_url = bridge
-    _invoke(base_url, "quick_action", {"platform": "android", "action": "notification_center"})
+    _invoke(base_url, "quick_action", {"action": "notification_center"})
     assert ("expand_notifications",) in device.calls
-    _invoke(base_url, "quick_action", {"platform": "android", "action": "control_center"})
+    _invoke(base_url, "quick_action", {"action": "control_center"})
     assert ("expand_settings",) in device.calls
-    _invoke(base_url, "quick_action", {"platform": "android", "action": "dismiss_panel"})
+    _invoke(base_url, "quick_action", {"action": "dismiss_panel"})
     assert ("collapse_statusbar",) in device.calls
 
 
 def test_quick_action_reserved_and_alternative(bridge):
     _, _, base_url = bridge
-    status, body = _invoke(base_url, "quick_action", {"platform": "android", "action": "copy"})
+    status, body = _invoke(base_url, "quick_action", {"action": "copy"})
     assert status == 200 and body["is_error"] is False
     output = json.loads(body["output"])
     assert output["status"] == "reserved"
 
     status, body = _invoke(
-        base_url, "quick_action", {"platform": "android", "action": "home", "alternative": True}
+        base_url, "quick_action", {"action": "home", "alternative": True}
     )
     output = json.loads(body["output"])
     assert output["status"] == "reserved"

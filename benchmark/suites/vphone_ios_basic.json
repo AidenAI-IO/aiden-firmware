@@ -2,7 +2,7 @@
   "name": "vphone_ios_basic",
   "version": "1.7",
   "description": "Basic and multi-step VPhone iOS Environment Bridge tests",
-  "prompt_prefix": "你正在控制一台 iOS 虚拟机。使用 screenshot 查看屏幕；触控坐标优先使用 normalized 0 至 1000，不能把缩放后截图像素当作设备像素。使用 touch_gesture 执行点击、滑动和返回主屏幕；点击必须传 type=tap 和 point={x,y}，不能只传 type。调用 quick_action 执行动作时必须同时传 platform=ios 和 action。打开设置使用 {platform:ios, action:open_settings}。iOS 没有 Android 返回键，使用 quick_action 的 action=back 或从屏幕左边缘向右滑动返回。查找其他 App 时优先使用主屏幕、App 资源库和可见图标，不依赖键盘输入。任务明确要求调用 screenshot 时，即使其他动作已附带返回截图，也必须在最终回答前显式调用一次 screenshot。",
+  "prompt_prefix": "你正在控制一台 iOS 虚拟机。使用 screenshot 查看屏幕；触控坐标优先使用 normalized 0 至 1000，不能把缩放后截图像素当作设备像素。使用 touch_gesture 执行点击、滑动和返回主屏幕；点击必须传 type=tap 和 point={x,y}，不能只传 type。打开设置使用 {action:open_settings}。iOS 没有 Android 返回键，使用 quick_action 的 action=back 或从屏幕左边缘向右滑动返回。查找其他 App 时优先使用主屏幕、App 资源库和可见图标，不依赖键盘输入。任务明确要求调用 screenshot 时，即使其他动作已附带返回截图，也必须在最终回答前显式调用一次 screenshot。",
   "global_reset": {
     "type": "agent_prompt",
     "prompt": "请返回 iOS 主屏幕并截图确认。",
@@ -107,7 +107,7 @@
     {
       "id": "settings_read_ethernet_ipv4",
       "category": "device_operation",
-      "prompt": "打开 iOS 设置时调用 quick_action，并严格传 {\"platform\":\"ios\",\"action\":\"open_settings\"}。根据截图定位一级入口“以太网”，点击时严格传 {\"type\":\"tap\",\"point\":{\"x\":目标中心横坐标,\"y\":目标中心纵坐标}}；再用同样格式点击“接口”区域中的“以太网”，进入详情页。不要修改任何网络设置。请停留在能够同时看到“IPv4 地址”区域中“IP 地址”“子网掩码”和“路由器”的页面；最后必须显式调用 screenshot，再在最终回答中逐项返回当前屏幕显示的这三个值。如果某个字段未显示，请明确回答“未显示”，不要推测。不要重复提交缺少 action 或 point 的工具调用。",
+      "prompt": "打开 iOS 设置时调用 quick_action，并严格传 {\"action\":\"open_settings\"}。根据截图定位一级入口“以太网”，点击时严格传 {\"type\":\"tap\",\"point\":{\"x\":目标中心横坐标,\"y\":目标中心纵坐标}}；再用同样格式点击“接口”区域中的“以太网”，进入详情页。不要修改任何网络设置。请停留在能够同时看到“IPv4 地址”区域中“IP 地址”“子网掩码”和“路由器”的页面；最后必须显式调用 screenshot，再在最终回答中逐项返回当前屏幕显示的这三个值。如果某个字段未显示，请明确回答“未显示”，不要推测。不要重复提交缺少 action 或 point 的工具调用。",
       "description_for_judge": "Agent 应按“设置 → 以太网 → 接口中的以太网”进入详情页，停留在能同屏看到 IPv4 地址、子网掩码和路由器的页面，调用 screenshot，并准确报告最终截图中显示的三个当前值。地址由 DHCP 提供，必须以本次任务截图为准，不应使用固定预期值。Agent 不应打开“配置 IP”或修改任何网络设置。",
       "rubric": [
         {"id": "opened_settings", "description": "成功打开设置应用"},

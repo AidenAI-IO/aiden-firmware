@@ -108,6 +108,7 @@ def test_health_reports_ok(bridge):
     assert status == 200
     assert body["ok"] is True
     assert body["data"]["bridge_type"] == "adb_android"
+    assert body["data"]["platform"] == "android"
     assert body["data"]["concurrent"] == 1
 
 
@@ -290,13 +291,16 @@ def test_tools_catalog_lists_expected_tools(bridge):
         "keyboard_text",
         "keyboard_tap",
         "enter_text",
-        "mouse_click",
         "mouse_move",
         "mouse_scroll",
         "quick_action",
     }
     quick_action = next(tool for tool in body["tools"] if tool["name"] == "quick_action")
-    assert quick_action["args_schema"]["properties"]["platform"]["enum"] == ["android"]
+    assert "platform" not in quick_action["args_schema"]["properties"]
+    assert quick_action["args_schema"]["anyOf"] == [
+        {"required": ["action"]},
+        {"required": ["list"], "properties": {"list": {"const": True}}},
+    ]
 
 
 def test_request_handler_applies_socket_timeout():

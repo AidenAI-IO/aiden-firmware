@@ -247,6 +247,7 @@ def _health_payload(bridge: ADBBridgeServer, device_info: dict[str, Any]) -> dic
     return {
         "status": "ok",
         "bridge_type": "adb_android",
+        "platform": "android",
         "serial": device_info.get("serial"),
         "device_state": device_info.get("state"),
         "env_count": 1,

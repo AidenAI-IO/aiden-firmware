@@ -6,9 +6,6 @@ from runner.reset import (
     call_environment_release,
     call_environment_setup,
     clear_stale_adb_android_owner,
-    environment_health_endpoint,
-    environment_release_endpoint,
-    environment_setup_endpoint,
     per_task_setup,
 )
 
@@ -100,25 +97,6 @@ def test_agent_prompt_setup_includes_prompt_prefix():
     )
 
     assert client.calls[0] == ("chat", "ADB benchmark rules\n\nprepare editor", 5)
-
-
-def test_environment_setup_endpoint_is_derived_from_environment_endpoint():
-    assert environment_setup_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/setup"
-    assert environment_setup_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/api/setup"
-    assert environment_setup_endpoint("http://127.0.0.1:9090/api/release") == "http://127.0.0.1:9090/api/setup"
-    assert environment_setup_endpoint("http://127.0.0.1:9090/api/screen") == "http://127.0.0.1:9090/api/setup"
-
-
-def test_environment_release_endpoint_is_derived_from_environment_endpoint():
-    assert environment_release_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/release"
-    assert environment_release_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/api/release"
-    assert environment_release_endpoint("http://127.0.0.1:9090/api/release") == "http://127.0.0.1:9090/api/release"
-    assert environment_release_endpoint("http://127.0.0.1:9090/api/screen") == "http://127.0.0.1:9090/api/release"
-
-
-def test_environment_health_endpoint_is_derived_from_environment_endpoint():
-    assert environment_health_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/health"
-    assert environment_health_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/health"
 
 
 def test_call_environment_setup_posts_to_api_setup(monkeypatch):
@@ -244,7 +222,7 @@ def test_clear_stale_adb_android_owner_releases_expired_owner(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    assert clear_stale_adb_android_owner("http://127.0.0.1:9090/api/setup") == "suite:old"
+    assert clear_stale_adb_android_owner("http://127.0.0.1:9090") == "suite:old"
     assert calls == [
         ("http://127.0.0.1:9090/health", "GET", None, 2.0),
         ("http://127.0.0.1:9090/api/release", "POST", "suite:old", 2),

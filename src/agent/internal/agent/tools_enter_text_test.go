@@ -239,9 +239,7 @@ func TestRunSegmentedTypesSpaceWithoutVisionVerification(t *testing.T) {
 	}}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
-		mouseClick:   mouse,
 		keyboardTap:  kbTap,
 		keyboardText: kbText,
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
@@ -255,9 +253,6 @@ func TestRunSegmentedTypesSpaceWithoutVisionVerification(t *testing.T) {
 	}
 	if len(kbText.calls) != 3 || len(kbTap.calls) != 2 || !strings.Contains(kbTap.calls[0], `"meta"`) || !strings.Contains(kbTap.calls[0], `"z"`) || !strings.Contains(kbTap.calls[1], "space") {
 		t.Fatalf("keyboard_text=%v keyboard_tap=%v", kbText.calls, kbTap.calls)
-	}
-	if len(mouse.calls) != 0 {
-		t.Fatalf("mouse_click calls=%v, want none", mouse.calls)
 	}
 }
 
@@ -392,7 +387,6 @@ func TestTextInputEngineRunSegmentedUsesKeyboardAndIMEInOrder(t *testing.T) {
 		plans: map[string][]string{"你好": {"ni", "hao"}},
 	}
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
-		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: keyboard,
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
@@ -425,7 +419,6 @@ func TestTextInputEngineRunSegmentedPlansIMESegmentsInternally(t *testing.T) {
 		plans: map[string][]string{"你好": {"ni hao"}},
 	}
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
-		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: keyboard,
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
@@ -474,8 +467,8 @@ func TestRunSegmentedVerifiesCurrentIMEPartAtCommittedFieldSuffix(t *testing.T) 
 	}
 }
 
-func TestTextInputEngineDoesNotVerifyDirectPartsOrUseMouse(t *testing.T) {
-	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
+func TestTextInputEngineDoesNotVerifyDirectPartsOrUsePointer(t *testing.T) {
+	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 	vision := &plannedTextInputVision{
 		stubTextInputVision: &stubTextInputVision{analyses: []textInputScreenAnalysis{
 			{ObservedMode: textInputModeComposition, CompositionPending: true},
@@ -485,7 +478,7 @@ func TestTextInputEngineDoesNotVerifyDirectPartsOrUseMouse(t *testing.T) {
 	}
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
 		pointerMode:  "absolute",
-		mouseClick:   mouse,
+		touchGesture: touch,
 		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
@@ -497,8 +490,8 @@ func TestTextInputEngineDoesNotVerifyDirectPartsOrUseMouse(t *testing.T) {
 	if err != nil || !result.Committed {
 		t.Fatalf("RunSegmented() = %+v, %v; want committed result", result, err)
 	}
-	if len(mouse.calls) != 0 {
-		t.Fatalf("mouse=%v, want no pointer input", mouse.calls)
+	if len(touch.calls) != 0 {
+		t.Fatalf("touch=%v, want no pointer input", touch.calls)
 	}
 }
 
@@ -625,7 +618,6 @@ func TestTextInputEngineRunSegmentedUsesProbeStateInsteadOfASCIIVerification(t *
 		plans: map[string][]string{"你": {"ni"}},
 	}
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
-		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  keyboardTap,
 		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
@@ -656,7 +648,6 @@ func TestTextInputEngineRunSegmentedDoesNotVerifyFinalASCIIPart(t *testing.T) {
 		plans: map[string][]string{"你": {"ni"}},
 	}
 	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
-		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  keyboardTap,
 		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
@@ -780,10 +771,10 @@ func TestEnterTextToolLocalPathRestoresIsolationOnSuccessAndFailure(t *testing.T
 			events := []string{}
 			controller := newTestIOSKeyboardIsolationController(&events)
 			keyboard := &recordingTextInputTool{name: "keyboard_text", out: tc.keyboardOut}
-			mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
+			touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 			engine := newTextInputEngineWithSleep(textInputHardwareDeps{
 				pointerMode:  "absolute",
-				mouseClick:   mouse,
+				touchGesture: touch,
 				keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 				keyboardText: keyboard,
 				screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
@@ -800,8 +791,8 @@ func TestEnterTextToolLocalPathRestoresIsolationOnSuccessAndFailure(t *testing.T
 			if want := []string{"isolate", "restore"}; !reflect.DeepEqual(events, want) {
 				t.Fatalf("isolation events = %v, want %v", events, want)
 			}
-			if len(mouse.calls) != 0 {
-				t.Fatalf("mouse_click calls = %v, want none", mouse.calls)
+			if len(touch.calls) != 0 {
+				t.Fatalf("touch_gesture calls = %v, want none", touch.calls)
 			}
 		})
 	}

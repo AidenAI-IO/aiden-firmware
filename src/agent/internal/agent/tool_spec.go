@@ -98,11 +98,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		ExampleInput:   `{"text":"hello你好","focus":{"x":450,"y":105}}`,
 		AgentPlatforms: []string{"ios", "android", "macos", "windows", "linux"},
 	},
-	"mouse_click": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"x":500,"y":500,"button":"left"}`,
-	},
 	"mouse_move": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,

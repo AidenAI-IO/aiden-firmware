@@ -659,7 +659,7 @@ func TestWheelGestureGuardAllowsDirectionalSwipeOutsidePickerColumns(t *testing.
 	}
 }
 
-func TestWheelGestureGuardBlocksMouseClickOnActiveColumn(t *testing.T) {
+func TestWheelGestureGuardBlocksTouchTapOnActiveColumn(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	guard := newWheelNudgeGuard(screenState)
@@ -667,15 +667,15 @@ func TestWheelGestureGuardBlocksMouseClickOnActiveColumn(t *testing.T) {
 	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(612, 275, 48, 5, 60, 0)))
 
 	click := ToolCall{
-		Spec:  ToolSpec{Name: "mouse_click"},
-		Input: `{"x":611,"y":488}`,
+		Spec:  ToolSpec{Name: "touch_gesture"},
+		Input: `{"type":"tap","point":{"x":611,"y":488}}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), click); allowed || result.Error == nil {
-		t.Fatalf("mouse click should not bypass active wheel ownership: allowed=%v result=%#v", allowed, result)
+		t.Fatalf("touch tap should not bypass active wheel ownership: allowed=%v result=%#v", allowed, result)
 	}
 }
 
-func TestWheelGestureGuardBlocksMouseClickOnExhaustedColumnWithoutRetry(t *testing.T) {
+func TestWheelGestureGuardBlocksTouchTapOnExhaustedColumnWithoutRetry(t *testing.T) {
 	var guard wheelNudgeGuard
 	limit := wheelNudgeLimitForGap(200)
 	for attempt := 0; attempt < limit; attempt++ {
@@ -684,12 +684,12 @@ func TestWheelGestureGuardBlocksMouseClickOnExhaustedColumnWithoutRetry(t *testi
 	}
 
 	click := ToolCall{
-		Spec:  ToolSpec{Name: "mouse_click"},
-		Input: `{"x":351,"y":460}`,
+		Spec:  ToolSpec{Name: "touch_gesture"},
+		Input: `{"type":"tap","point":{"x":351,"y":460}}`,
 	}
 	result, allowed := guard.BeforeToolCall(context.Background(), click)
 	if allowed {
-		t.Fatal("mouse click on an exhausted wheel column should be blocked")
+		t.Fatal("touch tap on an exhausted wheel column should be blocked")
 	}
 	if result.Error == nil || result.Error.Code != CodeWheelGestureLimit {
 		t.Fatalf("blocked result error = %#v, want %s", result.Error, CodeWheelGestureLimit)

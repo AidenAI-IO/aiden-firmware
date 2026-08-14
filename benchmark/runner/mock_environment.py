@@ -137,6 +137,7 @@ class MockEnvironmentServer:
             calls = list(self.calls)
             screen_text = self.screen_text
         return {
+            "platform": self.spec.platform,
             "phone_bridge": dict(self.spec.phone_bridge),
             "screen_text": screen_text,
             "calls": calls,
@@ -180,7 +181,16 @@ def _handler_for(server: MockEnvironmentServer):
                 self._json(404, {"ok": False, "error": {"code": "not_found"}})
                 return
             if path == "/health":
-                self._json(200, {"ok": True, "data": {"bridge_type": "mock"}})
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "data": {
+                            "bridge_type": "mock",
+                            "platform": server.spec.platform,
+                        },
+                    },
+                )
                 return
             if path == "/api/concurrent":
                 self._json(

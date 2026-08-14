@@ -46,7 +46,6 @@ func TestModelProviderBaseURLCapabilityIsCanonicalSource(t *testing.T) {
 		path  string
 		field string
 	}{
-		{path: "model.base_url", field: "model.provider"},
 		{path: "model_providers.base_url", field: "model_providers.type"},
 	} {
 		baseURL := idx[test.path]

@@ -11,7 +11,6 @@ metadata:
       quick_action,
       touch_gesture,
       wheel_nudge,
-      mouse_click,
       mouse_move,
       mouse_scroll,
       keyboard_tap,
@@ -53,16 +52,16 @@ For cross-app tasks that require extracting data from a source app and entering 
 
 Prefer the highest-level reliable tool for the job:
 
-- When the user's intent clearly matches a cataloged semantic action, you MUST use `quick_action`. This includes back, home, app switching or switching back, system/global search, copy, paste, cut, select all, semantic backward/forward deletion, undo/redo, find, send, and browser actions. Omit `platform`; pass `action`, and use documented fallback fields such as `alternative` and `alternative_index` only when selecting an alternative binding. Runtime selects the platform from global `[device].device_type`. Use `{"action":"list"}` to inspect the configured device catalog when availability is uncertain.
+- When the user's intent clearly matches a cataloged semantic action, you MUST use `quick_action`. This includes back, home, app switching or switching back, system/global search, copy, paste, cut, select all, semantic backward/forward deletion, undo/redo, find, send, and browser actions. Use documented fallback fields such as `alternative` and `alternative_index` only when selecting an alternative binding. Use `{"action":"list"}` to inspect the configured device catalog when availability is uncertain.
   - A `ctrl`/`meta` `keyboard_tap` chord is allowed only when the user explicitly asks to press those exact physical keys, the shortcut is app-specific or not cataloged, or a `quick_action` result in the current run explicitly reports the matching action as `reserved`/unavailable before executing a binding.
   - Do not infer that `quick_action` is unavailable from an unrelated tool failure, text-entry failure, stale screenshot, HID problem, or your own assumption.
   - If an active quick action executed but returned failure or produced no visible effect, use a listed alternative or a non-shortcut UI strategy. Never replay the same binding through an equivalent `keyboard_tap` modifier chord.
   - If `ok=true` but the screenshot shows no expected change, treat it as ineffective: try `alternative=true` once when alternatives are listed, otherwise switch tools. Never loop on the same binding.
-- Use `touch_gesture` for mobile taps, swipes, and drags, and as a listed or non-shortcut fallback for back/home gestures.
+- Use `touch_gesture` for taps, swipes, and drags on mobile or desktop targets, and as a listed or non-shortcut fallback for back/home gestures.
 - For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `enter_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
 - Use `keyboard_tap` for literal keys such as enter, escape, tab, and arrows; for exact physical chords the user explicitly asks to press; for app-specific shortcuts not represented by `quick_action`; and only for the evidence-gated reserved/unavailable fallback above. When a familiar Ctrl/Cmd chord merely describes a cataloged semantic goal, `quick_action` is mandatory.
-- Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch-style controls are not appropriate.
+- Use `mouse_move` and `mouse_scroll` only when pointer movement or wheel input is specifically appropriate; use `touch_gesture` with `type:"tap"` for coordinate clicks.
 
 If a semantic tool fails, read the message and choose a different approach. Do not retry the same binding unless the tool explicitly offers a distinct alternative.
 

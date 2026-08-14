@@ -334,7 +334,6 @@ void apply_kv(AgentToml& cfg,
     auto fill_model = [&](ModelToml& m) {
         if (key == "provider") assign_string(&m.provider, raw, &sub_err);
         else if (key == "model") assign_string(&m.model, raw, &sub_err);
-        else if (key == "base_url") assign_string(&m.base_url, raw, &sub_err);
         else if (key == "api_key") assign_string(&m.api_key, raw, &sub_err);
         else if (key == "reasoning_effort") assign_string(&m.reasoning_effort, raw, &sub_err);
         else if (key == "temperature") {
@@ -730,7 +729,6 @@ void emit_model(std::ostringstream& out, const char* section, const ModelToml& m
     out << "[" << section << "]\n";
     emit_string(out, "provider", m.provider);
     emit_string(out, "model", m.model);
-    if (!m.base_url.empty()) emit_string(out, "base_url", m.base_url);
     if (!m.api_key.empty()) emit_string(out, "api_key", m.api_key);
     // Always emit reasoning_effort, even if empty (empty = "auto" default)
     emit_string(out, "reasoning_effort", m.reasoning_effort);

@@ -34,6 +34,7 @@ type builtinToolSetOptions struct {
 	screenStable            ScreenStableDefaults
 	scriptsDir              string
 	screenState             *screen.ScreenState
+	shellTemporaryDirectory string
 }
 
 func WithWaitForWakeupController(controller *WaitForWakeupController) BuiltinToolSetOption {
@@ -51,6 +52,12 @@ func WithScreenStableDefaults(defaults ScreenStableDefaults) BuiltinToolSetOptio
 func WithRunScriptScriptsDir(dir string) BuiltinToolSetOption {
 	return func(options *builtinToolSetOptions) {
 		options.scriptsDir = dir
+	}
+}
+
+func WithShellTemporaryDirectory(dir string) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.shellTemporaryDirectory = dir
 	}
 }
 
@@ -81,7 +88,6 @@ var scriptCallableToolNames = map[string]struct{}{
 	"enter_text":             {},
 	"image_diff":             {},
 	"keyboard_tap":           {},
-	"mouse_click":            {},
 	"mouse_move":             {},
 	"mouse_scroll":           {},
 	toolOpenApp:              {},
@@ -135,10 +141,8 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen, requireFreshScreenshot: true}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture, iosKeyboardIsolation: iosKeyboardIsolation}
-	mouseClick := &MouseClickTool{pc: pointer, screen: screen, adb: adbInput}
 	textInputHW := &textInputHardwareDeps{
 		pointerMode:  hidCfg.PointerModeOrDefault(),
-		mouseClick:   mouseClick,
 		touchGesture: touchGesture,
 		keyboardTap:  keyboardTap,
 		keyboardText: keyboardText,
@@ -148,7 +152,6 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 
 	tools := map[string]langtools.Tool{
 		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_click":            newPostActionStableScreenshotTool(mouseClick, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
@@ -158,11 +161,14 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"wait_for_stable_screen": waitStable,
 		"image_diff":             &ImageDiffTool{},
 		"audio_volume":           NewAudioVolumeTool(audioCfg.SocketOrDefault()),
-		"shell":                  &ShellTool{proxy: proxyCfg},
-		"weather":                NewWeatherTool(proxyCfg),
-		"web_search":             NewWebSearchTool(searchCfg, proxyCfg),
-		"wikipedia":              NewWikipediaTool(proxyCfg),
-		"web_scraper":            NewWebScraperTool(proxyCfg),
+		"shell": &ShellTool{execution: shellExecutionConfig{
+			proxy:              proxyCfg,
+			temporaryDirectory: toolOptions.shellTemporaryDirectory,
+		}},
+		"weather":     NewWeatherTool(proxyCfg),
+		"web_search":  NewWebSearchTool(searchCfg, proxyCfg),
+		"wikipedia":   NewWikipediaTool(proxyCfg),
+		"web_scraper": NewWebScraperTool(proxyCfg),
 	}
 	if toolOptions.waitForWakeupController != nil {
 		tools[toolWaitForWakeup] = NewWaitForWakeupTool(toolOptions.waitForWakeupController)

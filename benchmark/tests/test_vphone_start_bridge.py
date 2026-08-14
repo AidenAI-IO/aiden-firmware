@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from vphone.scripts.start_bridge import _parse_args
+from vphone.scripts.start_bridge import _agent_daemon_command, _parse_args
 
 
 _RUNTIME_ENV_KEYS = [
@@ -84,3 +84,16 @@ def test_start_bridge_has_no_hardcoded_guest_ip(tmp_path: Path, monkeypatch):
     args = _parse_args(["--env-file", str(env_file)])
 
     assert args.guest_ssh_host == ""
+
+
+def test_start_bridge_agent_command_relies_on_environment_platform():
+    command = _agent_daemon_command("http://127.0.0.1:8899", "vphone-ios-cli")
+
+    assert command.endswith("--benchmark-task-id vphone-ios-cli")
+    assert "--device-type" not in command
+
+
+def test_vphone_start_wrapper_relies_on_environment_platform():
+    script = (Path(__file__).parents[1] / "vphone" / "start.sh").read_text(encoding="utf-8")
+
+    assert "--device-type" not in script

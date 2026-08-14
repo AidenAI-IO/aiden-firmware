@@ -29,7 +29,7 @@
         "must_complete_within_sec": 60,
         "response_required": true,
         "required_tools": ["shell"],
-        "forbidden_tools": ["current_time", "calculator", "screenshot", "touch_gesture", "mouse_click", "keyboard_text"]
+        "forbidden_tools": ["current_time", "calculator", "screenshot", "touch_gesture", "keyboard_text"]
       }
     },
     {
@@ -57,7 +57,7 @@
         "must_complete_within_sec": 75,
         "response_required": true,
         "required_tools": ["shell"],
-        "forbidden_tools": ["current_time", "calculator", "screenshot", "touch_gesture", "mouse_click", "keyboard_text"]
+        "forbidden_tools": ["current_time", "calculator", "screenshot", "touch_gesture", "keyboard_text"]
       }
     },
     {
@@ -87,7 +87,7 @@
         "must_complete_within_sec": 60,
         "response_required": true,
         "required_tools": ["shell"],
-        "forbidden_tools": ["current_time", "calculator", "screenshot", "touch_gesture", "mouse_click", "keyboard_text"]
+        "forbidden_tools": ["current_time", "calculator", "screenshot", "touch_gesture", "keyboard_text"]
       }
     }
   ]

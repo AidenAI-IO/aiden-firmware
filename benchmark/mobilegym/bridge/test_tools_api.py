@@ -85,7 +85,7 @@ def test_get_tools_catalog(bridge_server):
     assert "keyboard_text" in tools
     assert "keyboard_tap" in tools
     assert "enter_text" in tools
-    assert "mouse_click" in tools
+    assert "mouse_click" not in tools
     assert "mouse_move" in tools
     assert "mouse_scroll" in tools
     assert "quick_action" in tools
@@ -123,19 +123,19 @@ def test_get_tools_catalog(bridge_server):
     assert enter_text_props["focus"]["additionalProperties"] is False
     assert "coord_space" not in enter_text_props["focus"]["properties"]
 
-    mouse_click_props = tools["mouse_click"]["args_schema"]["properties"]
-    assert tools["mouse_click"]["args_schema"]["additionalProperties"] is False
     assert tools["mouse_move"]["args_schema"]["additionalProperties"] is False
     assert tools["mouse_scroll"]["args_schema"]["additionalProperties"] is False
-    assert mouse_click_props["button"]["enum"] == ["left", "right", "middle"]
-    assert "coord_space" not in mouse_click_props
     assert "coord_space" not in tools["mouse_move"]["args_schema"]["properties"]
     assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["minimum"] == -127
     assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["maximum"] == 127
 
     quick_action_props = tools["quick_action"]["args_schema"]["properties"]
     assert tools["quick_action"]["args_schema"]["additionalProperties"] is False
-    assert quick_action_props["platform"]["enum"] == ["ios", "android", "mac"]
+    assert "platform" not in quick_action_props
+    assert tools["quick_action"]["args_schema"]["anyOf"] == [
+        {"required": ["action"]},
+        {"required": ["list"], "properties": {"list": {"const": True}}},
+    ]
     assert "alternative" in quick_action_props
     assert "alternative_index" in quick_action_props
 
@@ -245,29 +245,6 @@ def test_invoke_touch_gesture_tap_accepts_list_point(bridge_server):
     assert action_to_dict(state.env.last_action) == {
         "action_type": "CLICK",
         "data": {"point": [498.0, 828.0]},
-    }
-
-
-def test_invoke_mouse_click_maps_to_tap(bridge_server):
-    server, base_url, state = bridge_server
-    state.active_episode_id = "test-episode-mouse"
-
-    request_body = json.dumps({"input": {"x": 321, "y": 654, "button": "left"}}).encode()
-    req = Request(
-        f"{base_url}/api/tools/mouse_click",
-        data=request_body,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-
-    with urlopen(req, timeout=5) as resp:
-        assert resp.status == 200
-        data = json.loads(resp.read().decode())
-
-    assert data["is_error"] is False
-    assert action_to_dict(state.env.last_action) == {
-        "action_type": "CLICK",
-        "data": {"point": [321.0, 654.0]},
     }
 
 
@@ -396,7 +373,7 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
     ]:
         req = Request(
             f"{base_url}/api/tools/quick_action",
-            data=json.dumps({"input": {"action": action, "platform": "android"}}).encode(),
+            data=json.dumps({"input": {"action": action}}).encode(),
             method="POST",
             headers={"Content-Type": "application/json"},
         )
@@ -413,7 +390,7 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
     for action in ["select_all", "delete_backward", "copy", "paste", "undo", "find", "cut", "browser_refresh", "browser_new_tab"]:
         req = Request(
             f"{base_url}/api/tools/quick_action",
-            data=json.dumps({"input": {"action": action, "platform": "android"}}).encode(),
+            data=json.dumps({"input": {"action": action}}).encode(),
             method="POST",
             headers={"Content-Type": "application/json"},
         )
@@ -428,6 +405,25 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
         assert output["status"] == "reserved"
         assert "unsupported quick_action" not in data["output"]
         assert state.env.step_count == no_action_count
+
+
+def test_invoke_quick_action_rejects_legacy_platform_argument(bridge_server):
+    _server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-legacy-platform"
+
+    req = Request(
+        f"{base_url}/api/tools/quick_action",
+        data=json.dumps({"input": {"action": "home", "platform": "ios"}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is True
+    assert "unknown fields" in data["output"]
 
 
 def test_invoke_keyboard_tap_keycode_app_switch_uses_swipe(bridge_server):
@@ -856,9 +852,9 @@ def test_multi_env_tools_route_by_benchmark_task_id_header():
             ("task.alpha", {"x": 111, "y": 222}),
             ("task.beta", {"x": 333, "y": 444}),
         ]:
-            request_body = json.dumps({"input": {"x": point["x"], "y": point["y"]}}).encode()
+            request_body = json.dumps({"input": {"type": "tap", "point": point}}).encode()
             req = Request(
-                f"{base_url}/api/tools/mouse_click",
+                f"{base_url}/api/tools/touch_gesture",
                 data=request_body,
                 method="POST",
                 headers={"Content-Type": "application/json", "benchmark-task-id": task_id},

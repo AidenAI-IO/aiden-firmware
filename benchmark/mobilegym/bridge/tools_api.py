@@ -203,20 +203,6 @@ class ToolsAPIHandler:
                 },
             },
             {
-                "name": "mouse_click",
-                "description": "Click/tap a coordinate in the MobileGym simulator. Coordinates use normalized 0-1000 space.",
-                "args_schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"},
-                        "button": {"type": "string", "enum": ["left", "right", "middle"]},
-                    },
-                    "required": ["x", "y"],
-                },
-            },
-            {
                 "name": "mouse_move",
                 "description": "Move the pointer. MobileGym has no hover state, so this is accepted as a no-op and returns a screenshot.",
                 "args_schema": {
@@ -241,18 +227,20 @@ class ToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute common platform navigation actions such as back or home.",
+                "description": "Execute common Android navigation actions such as back or home.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "action": {"type": "string"},
-                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
                         "list": {"type": "boolean"},
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
                     },
-                    "required": ["platform"],
+                    "anyOf": [
+                        {"required": ["action"]},
+                        {"required": ["list"], "properties": {"list": {"const": True}}},
+                    ],
                 },
             },
         ]
@@ -434,7 +422,7 @@ class ToolsAPIHandler:
 
     def _submit_tool_call(self, state: BridgeEpisodeState, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         """Submit tool call to MobileGym environment."""
-        unknown = _unknown_coordinate_tool_fields(tool_name, tool_input)
+        unknown = _unknown_tool_fields(tool_name, tool_input)
         if unknown:
             return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
         episode_id = state.active_episode_id
@@ -449,8 +437,6 @@ class ToolsAPIHandler:
             return self._call_keyboard_tap(state, tool_input, episode_id)
         elif tool_name == "enter_text":
             return self._call_enter_text(state, tool_input, episode_id)
-        elif tool_name == "mouse_click":
-            return self._call_mouse_click(state, tool_input, episode_id)
         elif tool_name == "mouse_move":
             return self._call_mouse_move(state, tool_input, episode_id)
         elif tool_name == "mouse_scroll":
@@ -549,18 +535,6 @@ class ToolsAPIHandler:
             tool_input=tool_input if log_tool_input is None else log_tool_input,
         )
 
-    def _call_mouse_click(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
-        """Execute mouse_click as a MobileGym tap."""
-        button = str(tool_input.get("button", "left") or "left").strip().lower()
-        if button not in ("", "left", "right", "middle"):
-            return {"output": f"error: unsupported mouse button: {button!r}", "is_error": True}
-        try:
-            point = _normalized_point_arg(tool_input)
-        except (TypeError, ValueError) as exc:
-            return {"output": f"error: {exc}", "is_error": True}
-        action = build_action("tap", point)
-        return self._execute_action(state, action, episode_id, tool_name="mouse_click", tool_input=tool_input)
-
     def _call_mouse_move(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Validate mouse_move input and return a screenshot.
 
@@ -593,10 +567,7 @@ class ToolsAPIHandler:
 
     def _call_quick_action(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute a small MobileGym-compatible quick_action subset."""
-        platform = str(tool_input.get("platform", "") or "").strip().lower()
-        if platform not in ("ios", "android", "mac"):
-            return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}", "is_error": True}
-
+        platform = "android"
         action = _quick_action_id(tool_input)
         if bool(tool_input.get("list")) or action == "list":
             output = {"ok": True, "platform": platform, "actions": _mobilegym_quick_action_catalog()}
@@ -959,15 +930,15 @@ def _normalized_point_arg(
     return point
 
 
-def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
     allowed = {
         "touch_gesture": {
             "type", "point", "start", "end", "x", "y", "start_x", "start_y",
             "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
             "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
         },
-        "mouse_click": {"x", "y", "button"},
         "mouse_move": {"x", "y"},
+        "quick_action": {"action", "list", "alternative", "alternative_index"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)
 

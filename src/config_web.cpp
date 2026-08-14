@@ -756,7 +756,6 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"model", "provider", CONFIG_FIELD_STRING},
         {"model", "model", CONFIG_FIELD_STRING},
         {"model", "api_key", CONFIG_FIELD_STRING},
-        {"model", "base_url", CONFIG_FIELD_STRING},
         {"model", "reasoning_effort", CONFIG_FIELD_STRING},
         {"model", "temperature", CONFIG_FIELD_NUMBER},
         {"model", "max_response_tokens", CONFIG_FIELD_NUMBER},
@@ -2691,7 +2690,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
     }
     cJSON_AddStringToObject(model, "model", config.model.model.c_str());
-    cJSON_AddStringToObject(model, "base_url", config.model.base_url.c_str());
     cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
     if (config.model.has_temperature) {
         cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
@@ -3002,12 +3000,12 @@ void set_json_string_vector(std::vector<std::string>* dst, cJSON* obj, const cha
     }
 }
 
-// model_base_url_allowed mirrors the agent runtime's whitelist
+// model_provider_base_url_allowed mirrors the agent runtime's whitelist
 // (clearNonAllowedModelBaseURL in src/agent/internal/agent/config.go). Providers
 // listed here accept a base_url override: openai and anthropic for custom
 // gateways, ollama for a local server address. Anything else pins its endpoint, so a stored base_url
 // would be dead config. Keep both lists in sync.
-bool model_base_url_allowed(const std::string& provider) {
+bool model_provider_base_url_allowed(const std::string& provider) {
     const std::string normalized = lowercase_copy(trim_copy(provider));
     return normalized == "openai" || normalized == "anthropic" || normalized == "ollama";
 }
@@ -3059,7 +3057,7 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     if (!json_is_object(obj) || !m) return;
     set_json_str(&m->provider, obj, "provider");
     set_json_str(&m->model, obj, "model");
-    set_json_str(&m->base_url, obj, "base_url");
+    m->base_url.clear();
     set_json_str(&m->api_key, obj, "api_key");
     set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
     // Temperature is nullable: presence of the key sets has_temperature, and
@@ -3078,10 +3076,7 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_int(&m->context_window, obj, "context_window");
     set_json_int(&m->model_max_output_tokens, obj, "model_max_output_tokens");
 
-    // Clear base_url for non-whitelisted providers to keep config file clean.
-    if (!m->base_url.empty() && !model_base_url_allowed(m->provider)) {
-        m->base_url.clear();
-    }
+    // base_url belongs to [model_providers.*], not the flat [model] section.
 }
 
 void move_model_api_key_to_provider(aiden::AgentToml* config, bool submitted_api_key) {
@@ -3142,7 +3137,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
             // references it (applyProviderRef), where the runtime then drops it
             // for types that pin their endpoint. Applying the same whitelist
             // here keeps agent.toml free of config that can never take effect.
-            if (json_is_string(base_url) && model_base_url_allowed(provider.type)) {
+            if (json_is_string(base_url) && model_provider_base_url_allowed(provider.type)) {
                 provider.base_url = base_url->valuestring;
             }
 

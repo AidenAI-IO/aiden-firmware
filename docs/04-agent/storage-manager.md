@@ -23,6 +23,7 @@ Related documentation:
 
 - [Paths, Artifacts & Config Cheat Sheet](../02-architecture/paths-and-artifacts.md)
 - [Agent Configuration Reference](configuration.md)
+- [Persistent Python Package Environment Design](python-packages.md)
 
 ## StorageManager: SD Card and Dual-Storage Routing
 
@@ -373,7 +374,7 @@ type StorageCleaner interface {
 }
 ~~~
 
-Cleaners run in ascending Priority order. Non-force checks call EstimateReclaimable first and skip a cleaner when its estimate is zero.
+Cleaners run in ascending Priority order. Non-force checks normally call EstimateReclaimable first and skip a cleaner when its estimate is zero. A cleaner may additionally implement EmergencyClean for behavior that is safe only when the effective level is Emergency.
 
 #### Default Stages
 
@@ -391,6 +392,19 @@ The runtime builds cleanup stages from the configured retention arrays.
 | Session archives | 30 days | Warning | Does not touch the active session or long-term memory |
 
 A retention value of 0 creates an emergency cleanup stage. The default session_archive_retention_days value is [30], so an all-session-archives emergency stage is not enabled unless 0 is explicitly added.
+
+#### Python Package Cleanup
+
+The persistent Python environment registers one `python_userbase` cleaner.
+
+| Cleaner | Normal and manual force behavior | Emergency behavior | Protection |
+| --- | --- | --- | --- |
+| `python_userbase` | Removes direct children of `/userdata/tmp` older than 24 hours; retains the whole Python user base | Clears `/userdata/agent/python`, recreates it empty, and preserves recent temp entries | Never follows symlink targets; never clears the user base below Emergency |
+
+Manual cleanup accepts `python_userbase` as a target. `force=true` below
+Emergency still preserves installed packages. See
+[Persistent Python Packages](python-packages.md) for environment and cleanup
+details.
 
 #### Stage Eligibility and Stop Conditions
 

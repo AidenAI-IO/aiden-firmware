@@ -144,30 +144,38 @@ def test_task_screen_payload_proxies_bridge_screen_with_task_header(tmp_path: Pa
     assert seen["headers"]["benchmark-task-id"] == "suite.json:t1"
 
 
-def test_environment_bridge_screen_endpoint_normalizes_api_suffixes():
-    assert webui.environment_bridge_screen_endpoint("http://127.0.0.1:19090/api/setup") == "http://127.0.0.1:19090/api/screen"
-    assert webui.environment_bridge_screen_endpoint("http://127.0.0.1:19090/api/release") == "http://127.0.0.1:19090/api/screen"
-    assert webui.environment_bridge_screen_endpoint("http://127.0.0.1:19090/api/concurrent") == "http://127.0.0.1:19090/api/screen"
-
-
 def test_task_screen_html_fetches_webui_screen_api():
     assert "/api/jobs/" in webui.TASK_SCREEN_HTML
     assert "/api/screen" not in webui.TASK_SCREEN_HTML
 
 
-def test_environment_bridge_concurrent_endpoint_points_at_bridge_api():
-    assert (
-        webui.environment_bridge_concurrent_endpoint("http://127.0.0.1:19090")
-        == "http://127.0.0.1:19090/api/concurrent"
-    )
-    assert (
-        webui.environment_bridge_concurrent_endpoint("http://127.0.0.1:19090/bridge/")
-        == "http://127.0.0.1:19090/bridge/api/concurrent"
-    )
-    assert (
-        webui.environment_bridge_concurrent_endpoint("http://127.0.0.1:19090/api/setup")
-        == "http://127.0.0.1:19090/api/concurrent"
-    )
+def test_read_environment_bridge_concurrency_uses_base_url(monkeypatch):
+    seen = {}
+
+    class FakeResponse:
+        def read(self):
+            return b'{"ok": true, "data": {"concurrent": 3}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(url, timeout=None):
+        seen["url"] = url
+        seen["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(webui.urllib.request, "urlopen", fake_urlopen)
+
+    assert webui.read_environment_bridge_concurrency(
+        "http://127.0.0.1:19090/bridge/", timeout=1.5
+    ) == 3
+    assert seen == {
+        "url": "http://127.0.0.1:19090/bridge/api/concurrent",
+        "timeout": 1.5,
+    }
 
 
 def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
@@ -214,6 +222,27 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     assert (dest / "agent.toml").read_text(encoding="utf-8") == agent_config
     assert (dest / "control_token").exists()
     assert (dest / "memory").is_dir()
+
+
+def test_prepare_run_config_does_not_copy_runtime_state(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "agent.toml").write_text('[model]\nprovider = "fake"\n', encoding="utf-8")
+    for name in ("memory", "log", "cache", "sessions", "skill-state"):
+        state_dir = base / name
+        state_dir.mkdir()
+        (state_dir / "stale-state").write_text("stale", encoding="utf-8")
+    (base / "memory" / "extraction.yaml").write_text("hot_window_events: 20\n", encoding="utf-8")
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest)
+
+    for name in ("memory", "log", "cache", "sessions", "skill-state"):
+        assert not (dest / name / "stale-state").exists()
+    assert (dest / "memory").is_dir()
+    assert (dest / "memory" / "extraction.yaml").read_text(encoding="utf-8") == "hot_window_events: 20\n"
+    assert (dest / "log").is_dir()
+    assert (dest / "skill-state").is_dir()
 
 
 def test_prepare_run_config_includes_bundled_skills(tmp_path: Path):
@@ -689,7 +718,6 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
 
     job = app.start_job(
         {
-            "endpoint": "http://host.docker.internal:19090",
             "environment_type": "mobilegym",
             "environment_id": "env-1",
             "suites": ["suite.json"],
@@ -698,10 +726,67 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
     )
 
     assert job["environment_endpoint"] == "http://127.0.0.1:19090"
+    assert job["endpoint"] == "http://127.0.0.1:19090"
+    assert job["docker_endpoint"] == "http://host.docker.internal:19090"
     assert job["environment_type"] == "mobilegym"
     assert job["environment_web_url"] == "http://127.0.0.1:18173"
     assert job["parallel_tasks"] == 4
     assert queried == ["http://127.0.0.1:19090"]
+
+
+def test_start_job_rejects_mismatched_environment_endpoints(tmp_path: Path):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+
+    with pytest.raises(ValueError, match="does not match resolved environment endpoint"):
+        app.start_job(
+            {
+                "endpoint": "http://host.docker.internal:19090",
+                "environment_endpoint": "http://127.0.0.1:19091",
+                "environment_type": "mobilegym",
+                "environment_id": "missing-env",
+                "suites": ["suite.json"],
+                "no_judge": True,
+            }
+        )
+
+
+def test_start_job_rejects_missing_resolved_environment_endpoint(tmp_path: Path):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+
+    with pytest.raises(ValueError, match="resolved environment endpoint is required"):
+        app.start_job(
+            {
+                "endpoint": "http://host.docker.internal:19090",
+                "environment_type": "mobilegym",
+                "environment_id": "missing-env",
+                "suites": ["suite.json"],
+                "no_judge": True,
+            }
+        )
 
 
 def test_start_job_uses_device_endpoint_as_environment_url(tmp_path: Path, monkeypatch):
@@ -982,6 +1067,11 @@ def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
         return FakeProc()
 
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        webui,
+        "read_environment_health",
+        lambda endpoint: {"platform": "ios"},
+    )
     monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
     monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
@@ -999,6 +1089,8 @@ def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
 
     expected = webui.job_benchmark_task_id("job-test")
     assert captured["daemon_task_id"] == expected
+    assert "--target-platform" not in captured["cmd"]
+    assert "--resolved-target-platform" not in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--benchmark-task-id") + 1] == expected
     # A stopped or crashed job must not leave the lease behind: the id is never
     # reused, so a leak would 429 every later job.
@@ -1052,6 +1144,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
         daemon_log=str(tmp_path / "runs" / "job-test" / "daemon.log"),
         no_judge=True,
         parallel_tasks=2,
+        target_platform="android",
     )
     captured = {}
     releases = []
@@ -1106,6 +1199,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
         Path(job.config_dir) / "control_token"
     )
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
+    assert "--target-platform" not in captured["cmd"]
     assert releases == [("http://127.0.0.1:19090", 2, "suite.json:t1")]
     assert result["exit_code"] == 0
     assert result["manifest"]["totals"]["passed"] == 1
@@ -1661,13 +1755,15 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     base = tmp_path / "base"
     base.mkdir()
     app = webui.BenchmarkWebApp(webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=base, build_daemon_image=False))
-    saved = 'instruction = "from web ui"\n[model]\nprovider = "fake"\n'
+    saved = 'instruction = "from web ui"\n[model]\nprovider = "fake"\n[device]\ndevice_type = "iOS"\n'
     app.save_agent_config({"content": saved})
     job = webui.Job(
         id="job-test",
         endpoint="http://127.0.0.1:19090",
         docker_endpoint="http://host.docker.internal:19090",
+        environment_endpoint="http://127.0.0.1:19090",
         suites=["mobilegym_basic.json"],
+        environment_type="device",
         agent_url="http://127.0.0.1:18080",
         container_name="aiden-benchmark-agent-job-test",
         config_dir=str(tmp_path / "runs" / "job-test" / "config"),
@@ -1679,6 +1775,18 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     app._jobs[job.id] = job
 
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        webui,
+        "read_environment_health",
+        lambda endpoint: {"platform": "android"},
+    )
+    captured = {}
+
+    def fake_start_daemon_compose(*args, **kwargs):
+        captured.update(kwargs)
+        return "container-id"
+
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
     monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_wait_for_daemon", lambda job: None)
 
@@ -1686,7 +1794,6 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
         job.suite_results.append({"suite": suite_key, "exit_code": 0})
 
     monkeypatch.setattr(app, "_run_suite", fake_run_suite)
-    monkeypatch.setattr(webui, "start_daemon_compose", lambda *args, **kwargs: "container-id")
     monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
 
     app._run_job(job)
@@ -1697,6 +1804,8 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     assert "voice_tool_call_speech = false" in saved_content
     assert "voice_progress_speech_enabled = false" in saved_content
     assert 'provider = "fake"' in saved_content
+    assert 'device_type = "iOS"' in saved_content
+    assert captured["device_type"] == "android"
     assert job.status == "passed"
 
 
@@ -1717,6 +1826,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
         config_dir=config,
         environment_bridge_endpoint="http://host.docker.internal:18080",
         benchmark_task_id="suite.json:t1",
+        device_type="android",
     )
 
     assert cmd[:4] == ["docker", "compose", "-f", str(webui.AGENT_DAEMON_COMPOSE_FILE)]
@@ -1729,6 +1839,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     assert env["ENVIRONMENT_BRIDGE_ENDPOINT"] == "http://host.docker.internal:18080"
     assert env["AIDEN_BENCHMARK_TASK_ID"] == "suite.json:t1"
     assert env["AIDEN_ENVIRONMENT_BRIDGE_MODE"] == "1"
+    assert env["AIDEN_DEVICE_TYPE"] == "android"
     assert "host.docker.internal" in env["NO_PROXY"]
     compose_text = webui.AGENT_DAEMON_COMPOSE_FILE.read_text(encoding="utf-8")
     entrypoint_text = (webui.BENCHMARK_DOCKER_DIR / "agent-daemon-entrypoint.sh").read_text(
@@ -1737,16 +1848,18 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     expected_forward_tools = (
         "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
         "enter_text,"
-        "search_launch_app,mouse_click,mouse_move,mouse_scroll,quick_action,"
+        "search_launch_app,mouse_move,mouse_scroll,quick_action,"
         "bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,"
         "bridge_notification"
     )
     assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}" in compose_text
     assert f'AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "{expected_forward_tools}"' in compose_text
     assert "AIDEN_BENCHMARK_TASK_ID" in compose_text
+    assert "AIDEN_DEVICE_TYPE" in compose_text
     assert "--environment-bridge-mode" in entrypoint_text
     assert '--environment-bridge-endpoint "$ENVIRONMENT_BRIDGE_ENDPOINT"' in entrypoint_text
     assert '--environment-bridge-tools "${AIDEN_ENVIRONMENT_BRIDGE_TOOLS:-$default_forward_tools}"' in entrypoint_text
+    assert '--device-type "$AIDEN_DEVICE_TYPE"' in entrypoint_text
 
 
 def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path: Path):
@@ -2140,12 +2253,36 @@ def test_run_mock_suite_uses_auto_agent_setup_and_updates_task_records(
 def test_run_job_mock_mode_skips_shared_agent_daemon(tmp_path: Path, monkeypatch):
     app = webui.BenchmarkWebApp(
         webui.WebUIConfig(
+            suites_dir=tmp_path,
             runs_dir=tmp_path / "runs",
             base_config_dir=tmp_path / "config",
         )
     )
     job_dir = tmp_path / "runs" / "job-mock"
     job_dir.mkdir(parents=True)
+    suite_path = tmp_path / "mock.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mock",
+                "mock_environment": {
+                    "platform": "ios",
+                    "phone_bridge": {},
+                    "tools": {},
+                },
+                "tasks": [
+                    {
+                        "id": "task",
+                        "category": "diagnostic",
+                        "prompt": "test",
+                        "description_for_judge": "test",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     job = webui.Job(
         id="job-mock",
         endpoint="",
@@ -2187,6 +2324,9 @@ def test_run_job_mock_mode_skips_shared_agent_daemon(tmp_path: Path, monkeypatch
 
     assert calls == ["mock.json"]
     assert job.status == "passed"
+    assert job.target_platform == "ios"
+    persisted = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+    assert persisted["target_platform"] == "ios"
 
 
 def test_webui_html_exposes_mock_environment_run_mode():

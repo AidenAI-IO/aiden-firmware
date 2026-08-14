@@ -336,6 +336,7 @@ def _health_payload(bridge: BridgeServer) -> dict[str, Any]:
     return {
         "status": "ok",
         "bridge_type": "mobilegym",
+        "platform": "android",
         "env_count": len(bridge.router.states),
         "concurrent": len(bridge.router.states),
         "active_episode_id": bridge.state.active_episode_id,

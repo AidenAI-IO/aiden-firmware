@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from runner import agent_config
-from runner.agent_config import default_agent_config_path, load_agent_model_config, resolve_agent_model_api_key
+from runner.agent_config import (
+    default_agent_config_path,
+    load_agent_model_config,
+    resolve_agent_model_api_key,
+)
 
 
 def test_load_agent_model_config_reads_model_section(tmp_path: Path):
