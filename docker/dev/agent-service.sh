@@ -38,6 +38,45 @@ service_log() {
     printf '%s\n' "$line"
 }
 
+rotate_log_if_needed() {
+    max_bytes="${AIDEN_AGENT_LOG_MAX_BYTES:-10485760}"
+    retain_bytes="${AIDEN_AGENT_LOG_RETAIN_BYTES:-5242880}"
+    case "$max_bytes" in
+        ''|0|*[!0-9]*) max_bytes=10485760 ;;
+    esac
+    case "$retain_bytes" in
+        ''|*[!0-9]*) retain_bytes=5242880 ;;
+    esac
+    if [ "$retain_bytes" -ge "$max_bytes" ]; then
+        retain_bytes="$((max_bytes / 2))"
+    fi
+
+    current_bytes="$(wc -c < "$log_file" 2>/dev/null || printf '0')"
+    if [ "$current_bytes" -le "$max_bytes" ]; then
+        return 0
+    fi
+
+    rotation_file="$run_dir/agent.log.rotate.$$"
+    tail -c "$retain_bytes" "$log_file" > "$rotation_file"
+    cat "$rotation_file" > "$log_file"
+    rm -f "$rotation_file"
+    service_log INFO log_rotated \
+        "previous_bytes=$current_bytes retained_bytes=$retain_bytes max_bytes=$max_bytes"
+}
+
+wait_for_agent_exit() {
+    pid="$1"
+    check_interval="${AIDEN_AGENT_LOG_CHECK_INTERVAL:-1}"
+    case "$check_interval" in
+        ''|0|*[!0-9]*) check_interval=1 ;;
+    esac
+    while is_running "$pid"; do
+        sleep "$check_interval"
+        rotate_log_if_needed
+    done
+    wait "$pid"
+}
+
 load_system_env() {
     if [ -f "$system_env" ]; then
         set -a
@@ -187,7 +226,10 @@ run_agent() {
     "$@" >> "$log_file" 2>&1 &
     agent_pid="$!"
     printf '%s\n' "$agent_pid" > "$agent_pid_file"
-    wait "$agent_pid"
+    wait_for_agent_exit "$agent_pid"
+    status="$?"
+    rotate_log_if_needed
+    return "$status"
 }
 
 supervise() {
@@ -229,9 +271,38 @@ start_locked() {
     rm -f "$supervisor_pid_file" "$agent_pid_file"
     # The supervisor must not inherit the service-operation lock. Otherwise
     # every later Config Web restart waits forever on the original process.
-    nohup setsid "$0" run </dev/null >/proc/1/fd/1 2>/proc/1/fd/2 9>&- &
+    if [ -w /proc/1/fd/1 ] && [ -w /proc/1/fd/2 ]; then
+        nohup setsid "$0" run </dev/null >/proc/1/fd/1 2>/proc/1/fd/2 9>&- &
+    else
+        nohup setsid "$0" run </dev/null >>"$log_file" 2>&1 9>&- &
+    fi
     supervisor_pid="$!"
-    printf '%s\n' "$supervisor_pid" > "$supervisor_pid_file"
+
+    attempt=1
+    while [ "$attempt" -le 10 ]; do
+        recorded_pid="$(read_pid "$supervisor_pid_file")"
+        if [ "$recorded_pid" = "$supervisor_pid" ] \
+            && is_running "$supervisor_pid"; then
+            break
+        fi
+        if ! is_running "$supervisor_pid"; then
+            break
+        fi
+        sleep 0.1
+        attempt="$((attempt + 1))"
+    done
+    recorded_pid="$(read_pid "$supervisor_pid_file")"
+    if [ "$recorded_pid" != "$supervisor_pid" ] \
+        || ! is_running "$supervisor_pid"; then
+        if is_running "$supervisor_pid"; then
+            kill -TERM "-$supervisor_pid" 2>/dev/null \
+                || kill -TERM "$supervisor_pid" 2>/dev/null \
+                || true
+        fi
+        rm -f "$supervisor_pid_file" "$agent_pid_file"
+        service_log ERROR supervisor_start_failed "pid=$supervisor_pid"
+        return 1
+    fi
     printf 'Started agent supervisor (pid %s)\n' "$supervisor_pid"
 }
 
@@ -242,8 +313,15 @@ stop_locked() {
         kill -TERM "-$supervisor_pid" 2>/dev/null || true
     fi
 
+    stop_attempts="${AIDEN_AGENT_STOP_ATTEMPTS:-150}"
+    case "$stop_attempts" in
+        ''|0|*[!0-9]*) stop_attempts=150 ;;
+    esac
+    if [ "$stop_attempts" -gt 150 ]; then
+        stop_attempts=150
+    fi
     attempt=1
-    while is_running "$supervisor_pid" && [ "$attempt" -le 50 ]; do
+    while is_running "$supervisor_pid" && [ "$attempt" -le "$stop_attempts" ]; do
         sleep 0.1
         attempt="$((attempt + 1))"
     done

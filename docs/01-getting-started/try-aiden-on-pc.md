@@ -113,6 +113,7 @@ both variables when starting Compose:
 AIDEN_DEVICE_TYPE=Android \
 AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT=http://host.docker.internal:19090 \
 AIDEN_BENCHMARK_TASK_ID=my-sandbox-session \
+AIDEN_BRIDGE_EPISODE_ID=my-sandbox-session \
   docker compose up --build
 ```
 

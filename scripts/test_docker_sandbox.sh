@@ -40,8 +40,8 @@ agent_pid() {
 wait_for_agent() {
     attempt=1
     while [ "$attempt" -le 45 ]; do
-        if curl -fsS "http://127.0.0.1:$config_port/" >/dev/null 2>&1 \
-            && curl -fsS "http://127.0.0.1:$agent_port/api/tools" >/dev/null 2>&1; then
+        if curl -fsS --max-time 5 "http://127.0.0.1:$config_port/" >/dev/null 2>&1 \
+            && curl -fsS --max-time 5 "http://127.0.0.1:$agent_port/api/tools" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
@@ -75,8 +75,8 @@ fq --version
 yq --version
 '
 
-config_page="$(curl -fsS "http://127.0.0.1:$config_port/")"
-agent_page="$(curl -fsS "http://127.0.0.1:$agent_port/")"
+config_page="$(curl -fsS --max-time 10 "http://127.0.0.1:$config_port/")"
+agent_page="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/")"
 case "$config_page" in
     *'<!DOCTYPE html>'*) ;;
     *) printf 'Config Web did not return HTML.\n' >&2; exit 1 ;;
@@ -89,7 +89,7 @@ esac
 before_pid="$(agent_pid)"
 test -n "$before_pid"
 
-curl -fsS -X POST \
+curl -fsS --max-time 15 -X POST \
     -H 'Content-Type: application/json' \
     --data '{"system_env":"AIDEN_DOCKER_SANDBOX_SMOKE=1\n"}' \
     "http://127.0.0.1:$config_port/api/system/env" \
@@ -100,7 +100,7 @@ after_pid=""
 while [ "$attempt" -le 45 ]; do
     after_pid="$(agent_pid)"
     if [ -n "$after_pid" ] && [ "$after_pid" != "$before_pid" ] \
-        && curl -fsS "http://127.0.0.1:$agent_port/api/tools" >/dev/null 2>&1; then
+        && curl -fsS --max-time 5 "http://127.0.0.1:$agent_port/api/tools" >/dev/null 2>&1; then
         break
     fi
     sleep 1
@@ -112,7 +112,7 @@ test "$after_pid" != "$before_pid"
 compose down
 compose up -d
 wait_for_agent
-curl -fsS "http://127.0.0.1:$config_port/api/config" \
+curl -fsS --max-time 10 "http://127.0.0.1:$config_port/api/config" \
     | grep -q 'AIDEN_DOCKER_SANDBOX_SMOKE=1'
 
 printf 'Docker sandbox smoke test passed (agent pid %s -> %s).\n' "$before_pid" "$after_pid"
@@ -170,7 +170,7 @@ sandbox_device_type="iOS"
 compose up -d
 attempt=1
 while [ "$attempt" -le 30 ]; do
-    if curl -fsS "http://127.0.0.1:$config_port/" >/dev/null 2>&1; then
+    if curl -fsS --max-time 5 "http://127.0.0.1:$config_port/" >/dev/null 2>&1; then
         break
     fi
     sleep 0.2
@@ -187,7 +187,7 @@ while [ "$attempt" -le 30 ]; do
 done
 grep -q 'POST /api/setup docker-sandbox-smoke' "$bridge_log"
 
-curl -fsS -X POST \
+curl -fsS --max-time 15 -X POST \
     -H 'Content-Type: application/json' \
     --data '{"system_env":"AIDEN_DOCKER_SANDBOX_RACE=1\n"}' \
     "http://127.0.0.1:$config_port/api/system/env" >/dev/null

@@ -1,4 +1,9 @@
+import os
 from pathlib import Path
+import re
+import subprocess
+import tempfile
+import time
 import unittest
 
 
@@ -20,6 +25,10 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("stop_grace_period: 20s", compose)
         self.assertIn("http://127.0.0.1:8080/api/tools", compose)
         self.assertIn("AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT", compose)
+        self.assertIn(
+            "ENVIRONMENT_BRIDGE_ENDPOINT: ${ENVIRONMENT_BRIDGE_ENDPOINT:-}",
+            compose,
+        )
         self.assertIn("AIDEN_BENCHMARK_TASK_ID", compose)
         self.assertIn("host.docker.internal:host-gateway", compose)
 
@@ -65,6 +74,12 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("AIDEN_BRIDGE_EPISODE_ID", service)
         self.assertIn("9>&-", service)
         self.assertIn('setsid "$0" run', service)
+        self.assertIn("/proc/1/fd/1", service)
+        self.assertIn('>>"$log_file" 2>&1', service)
+        self.assertIn("supervisor_start_failed", service)
+        self.assertIn("AIDEN_AGENT_LOG_MAX_BYTES", service)
+        self.assertIn("AIDEN_AGENT_LOG_RETAIN_BYTES", service)
+        self.assertIn("AIDEN_AGENT_STOP_ATTEMPTS", service)
         self.assertIn('kill -TERM "-$supervisor_pid"', service)
         self.assertIn("/api/release", service)
         self.assertIn("valid_bridge_identifier", service)
@@ -97,11 +112,95 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("docker compose up --build", guide)
         self.assertIn("make sandbox-start", guide)
         self.assertIn("make sandbox-update", guide)
+        self.assertIn(
+            "AIDEN_BRIDGE_EPISODE_ID=my-sandbox-session", guide
+        )
         self.assertNotIn("python -m runner webui", guide)
         self.assertNotIn("docker-sandbox.md", readme)
         self.assertFalse(
             (REPO_ROOT / "docs/01-getting-started/docker-sandbox.md").exists()
         )
+
+    def test_docker_smoke_requests_and_ci_step_have_finite_timeouts(self):
+        smoke_script = read_repo_file("scripts/test_docker_sandbox.sh")
+        workflow = read_repo_file(".github/workflows/ci.yml")
+
+        curl_commands = re.findall(
+            r"^[ \t]*curl -fsS.*$", smoke_script, re.MULTILINE
+        )
+        self.assertGreater(len(curl_commands), 0)
+        for command in curl_commands:
+            self.assertIn("--max-time", command)
+
+        docker_step = workflow.split(
+            "- name: Verify Docker sandbox contract", 1
+        )[1].split("- name:", 1)[0]
+        self.assertIn("timeout-minutes: 25", docker_step)
+
+    def test_agent_supervisor_truncates_the_persistent_log(self):
+        service = REPO_ROOT / "docker/dev/agent-service.sh"
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            agent = temporary_path / "fake-agent.sh"
+            agent.write_text(
+                "#!/usr/bin/env python3\n"
+                "import signal\n"
+                "import sys\n"
+                "import time\n"
+                "signal.signal(signal.SIGINT, lambda *_: sys.exit(0))\n"
+                "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
+                "sys.stdout.write('0123456789abcdef' * 512)\n"
+                "sys.stdout.flush()\n"
+                "time.sleep(30)\n",
+                encoding="utf-8",
+            )
+            agent.chmod(0o755)
+
+            agent_directory = temporary_path / "agent"
+            log_file = agent_directory / "log/agent.log"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "AIDEN_AGENT_BIN": str(agent),
+                    "AIDEN_AGENT_DIR": str(agent_directory),
+                    "AIDEN_AGENT_RUN_DIR": str(temporary_path / "run"),
+                    "AIDEN_SYSTEM_ENV": str(temporary_path / "system-env"),
+                    "AIDEN_AGENT_LOG_MAX_BYTES": "1024",
+                    "AIDEN_AGENT_LOG_RETAIN_BYTES": "256",
+                    "AIDEN_AGENT_LOG_CHECK_INTERVAL": "1",
+                }
+            )
+            supervisor = subprocess.Popen(
+                ["sh", str(service), "run"],
+                env=environment,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if log_file.exists() and "log_rotated" in log_file.read_text(
+                        encoding="utf-8"
+                    ):
+                        break
+                    time.sleep(0.1)
+                else:
+                    self.fail("agent supervisor did not rotate the log")
+
+                self.assertLess(log_file.stat().st_size, 1024)
+            finally:
+                supervisor.terminate()
+                try:
+                    supervisor.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    supervisor.kill()
+                    supervisor.wait(timeout=5)
+
+            stderr = supervisor.stderr.read()
+            supervisor.stderr.close()
+            self.assertEqual(supervisor.returncode, 0, stderr)
 
 
 if __name__ == "__main__":
