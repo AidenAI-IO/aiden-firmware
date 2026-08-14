@@ -2021,6 +2021,12 @@ TEST_CASE("config_web: POST /api/config rejects invalid voice notification integ
         const char* expected_error;
     };
     const InvalidCase cases[] = {
+        {"enabled_type", "{\"enabled\":\"yes\"}", "expected bool"},
+        {"response_tail_type", "{\"response_tail\":[]}", "expected object"},
+        {"response_tail_enabled_type", "{\"response_tail\":{\"enabled\":\"yes\"}}", "expected bool"},
+        {"expiration_type", "{\"expiration\":[]}", "expected object"},
+        {"code_ttl_seconds_type", "{\"expiration\":{\"code_ttl_seconds\":[]}}", "expected object"},
+        {"max_pending_negative", "{\"max_pending\":-1}", "non-negative integer"},
         {"max_pending", "{\"max_pending\":0.5}", "non-negative integer"},
         {"max_items", "{\"response_tail\":{\"max_items\":0.5}}", "non-negative integer"},
         {"max_text_chars", "{\"response_tail\":{\"max_text_chars\":0.5}}", "non-negative integer"},
@@ -3183,6 +3189,136 @@ TEST_CASE("config_web: GET /api/config/meta returns 503 when stub exits non-zero
     auto handle = start_server(env);
     HttpResponse resp = http_request(handle->port, "GET", "/api/config/meta");
     CHECK(resp.status == 503);
+}
+
+TEST_CASE("config_web: POST /api/config derives field types from config metadata") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/meta.json",
+               "{\"sections\":["
+               "{\"name\":\"model\",\"fields\":["
+               "{\"key\":\"provider\",\"widget\":\"select\"},"
+               "{\"key\":\"model\",\"widget\":\"text\"},"
+               "{\"key\":\"max_response_tokens\",\"widget\":\"boolean\"}]}"
+               "]}\n");
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_META_FILE", tmp + "/meta.json");
+    auto handle = start_server(env);
+    HttpResponse meta = http_request(handle->port, "GET", "/api/config/meta");
+    REQUIRE(meta.status == 200);
+
+    // Successful metadata is cached and shared by GET and save validation.
+    // Replacing the backing file must not create a second schema source.
+    write_file(tmp + "/meta.json", "not json anymore\n");
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\","
+        "\"max_response_tokens\":true}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+}
+
+TEST_CASE("config_web: POST /api/config maps metadata widgets to JSON types") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/meta.json",
+               "{\"sections\":["
+               "{\"name\":\"storage\",\"fields\":["
+               "{\"key\":\"monitor_enabled\",\"widget\":\"boolean\"},"
+               "{\"key\":\"min_card_free_mb\",\"widget\":\"number\"}]},"
+               "{\"name\":\"telemetry\",\"fields\":["
+               "{\"key\":\"tags\",\"widget\":\"list\"}]},"
+               "{\"name\":\"tts\",\"fields\":["
+               "{\"key\":\"speed\",\"widget\":\"select\","
+               "\"range\":{\"min\":0.5,\"max\":2,\"step\":0.1}}]},"
+               "{\"name\":\"tts_providers\",\"fields\":["
+               "{\"key\":\"type\",\"widget\":\"select\"},"
+               "{\"key\":\"api_key\",\"widget\":\"text\"}]},"
+               "{\"name\":\"agent\",\"fields\":["
+               "{\"key\":\"custom_instruction\",\"widget\":\"textarea\"}]}"
+               "]}\n");
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_META_FILE", tmp + "/meta.json");
+    auto handle = start_server(env);
+    struct InvalidCase {
+        const char* config;
+        const char* path;
+        const char* expected_type;
+    };
+    const InvalidCase cases[] = {
+        {"{\"storage\":{\"monitor_enabled\":\"yes\"}}", "storage.monitor_enabled", "bool"},
+        {"{\"storage\":{\"min_card_free_mb\":\"64\"}}", "storage.min_card_free_mb", "number"},
+        {"{\"telemetry\":{\"tags\":\"alpha\"}}", "telemetry.tags", "array"},
+        {"{\"tts\":{\"speed\":\"fast\"}}", "tts.speed", "number"},
+        {"{\"tts_providers\":{\"work\":{\"type\":7}}}", "tts_providers.work.type", "string"},
+        {"{\"tts_providers\":{\"work\":{\"api_key\":7}}}", "tts_providers.work.api_key", "string"},
+        {"{\"tts\":{\"api_key\":7}}", "tts.api_key", "string"},
+        {"{\"agent\":{\"custom_instruction\":7}}", "agent.custom_instruction", "string"},
+    };
+
+    for (const InvalidCase& test_case : cases) {
+        const std::string body = std::string("{\"config\":") + test_case.config +
+                                 ",\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK_MESSAGE(resp.status == 400, test_case.path << ": status=" << resp.status);
+        CHECK_MESSAGE(resp.body.find(test_case.path) != std::string::npos,
+                      test_case.path << ": body=" << resp.body);
+        CHECK_MESSAGE(resp.body.find(std::string("expected ") + test_case.expected_type) != std::string::npos,
+                      test_case.path << ": body=" << resp.body);
+    }
+}
+
+TEST_CASE("config_web: POST /api/config keeps compatibility field type guards") {
+    StubEnv env;
+    auto handle = start_server(env);
+    struct InvalidCase {
+        const char* config;
+        const char* path;
+        const char* expected_type;
+    };
+    const InvalidCase cases[] = {
+        {"{\"device\":{\"backend\":7}}", "device.backend", "string"},
+        {"{\"search\":{\"has_api_key\":\"yes\"}}", "search.has_api_key", "bool"},
+        {"{\"termination_policy\":{\"enabled\":\"yes\"}}", "termination_policy.enabled", "bool"},
+        {"{\"live_activity\":{\"timeout_sec\":\"30\"}}", "live_activity.timeout_sec", "number"},
+    };
+
+    for (const InvalidCase& test_case : cases) {
+        const std::string body = std::string("{\"config\":") + test_case.config +
+                                 ",\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK_MESSAGE(resp.status == 400, test_case.path << ": status=" << resp.status);
+        CHECK_MESSAGE(resp.body.find(test_case.path) != std::string::npos,
+                      test_case.path << ": body=" << resp.body);
+        CHECK_MESSAGE(resp.body.find(std::string("expected ") + test_case.expected_type) != std::string::npos,
+                      test_case.path << ": body=" << resp.body);
+    }
+}
+
+TEST_CASE("config_web: POST /api/config returns 503 for unusable config metadata") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/meta.json",
+               "{\"sections\":[{\"name\":\"agent\",\"fields\":["
+               "{\"key\":\"input_mode\",\"widget\":\"unknown\"}]}]}\n");
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_META_FILE", tmp + "/meta.json");
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(
+        handle->port, "POST", "/api/config",
+        "{\"config\":{\"agent\":{\"input_mode\":\"text\"}},\"apply_wifi\":false}");
+    CHECK(resp.status == 503);
+    CHECK(resp.body.find("unsupported widget") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config returns 200 when stub config-check approves") {

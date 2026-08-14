@@ -599,6 +599,189 @@ enum ConfigFieldKind {
     CONFIG_FIELD_OBJECT,
 };
 
+struct ConfigMetadataSchema {
+    std::string json;
+    std::map<std::string, std::map<std::string, ConfigFieldKind> > field_types;
+};
+
+bool config_field_kind_from_metadata(cJSON* field,
+                                     ConfigFieldKind* kind,
+                                     std::string* error) {
+    cJSON* widget_item = cJSON_GetObjectItem(field, "widget");
+    if (!json_is_string(widget_item) || !widget_item->valuestring) {
+        if (error) *error = "config metadata field is missing a string widget";
+        return false;
+    }
+
+    const std::string widget = widget_item->valuestring;
+    cJSON* range = cJSON_GetObjectItem(field, "range");
+    if (range && !json_is_object(range)) {
+        if (error) *error = "config metadata field range must be an object";
+        return false;
+    }
+    if (widget == "select" && range) {
+        *kind = CONFIG_FIELD_NUMBER;
+        return true;
+    }
+    if (widget == "text" || widget == "textarea" || widget == "select") {
+        *kind = CONFIG_FIELD_STRING;
+        return true;
+    }
+    if (widget == "number") {
+        *kind = CONFIG_FIELD_NUMBER;
+        return true;
+    }
+    if (widget == "boolean") {
+        *kind = CONFIG_FIELD_BOOL;
+        return true;
+    }
+    if (widget == "list") {
+        *kind = CONFIG_FIELD_ARRAY;
+        return true;
+    }
+
+    if (error) *error = "config metadata field has unsupported widget " + widget;
+    return false;
+}
+
+bool parse_config_metadata_schema(const std::string& json,
+                                  ConfigMetadataSchema* schema,
+                                  std::string* error) {
+    cJSON* root = cJSON_Parse(json.c_str());
+    if (!json_is_object(root)) {
+        if (root) cJSON_Delete(root);
+        if (error) *error = "config metadata returned an unexpected response";
+        return false;
+    }
+
+    cJSON* sections = cJSON_GetObjectItem(root, "sections");
+    if (!json_is_array(sections)) {
+        cJSON_Delete(root);
+        if (error) *error = "config metadata returned an unexpected response";
+        return false;
+    }
+
+    ConfigMetadataSchema parsed;
+    parsed.json = json;
+    for (cJSON* section = sections->child; section; section = section->next) {
+        cJSON* name_item = cJSON_GetObjectItem(section, "name");
+        cJSON* fields = cJSON_GetObjectItem(section, "fields");
+        if (!json_is_object(section) || !json_is_string(name_item) ||
+            !name_item->valuestring || !name_item->valuestring[0] ||
+            !json_is_array(fields)) {
+            cJSON_Delete(root);
+            if (error) *error = "config metadata returned an unexpected response";
+            return false;
+        }
+
+        const std::string section_name = name_item->valuestring;
+        if (parsed.field_types.count(section_name)) {
+            cJSON_Delete(root);
+            if (error) *error = "config metadata contains duplicate section " + section_name;
+            return false;
+        }
+
+        std::map<std::string, ConfigFieldKind>& section_fields = parsed.field_types[section_name];
+        for (cJSON* field = fields->child; field; field = field->next) {
+            cJSON* key_item = cJSON_GetObjectItem(field, "key");
+            if (!json_is_object(field) || !json_is_string(key_item) ||
+                !key_item->valuestring || !key_item->valuestring[0]) {
+                cJSON_Delete(root);
+                if (error) *error = "config metadata returned an unexpected response";
+                return false;
+            }
+
+            const std::string key = key_item->valuestring;
+            if (section_fields.count(key)) {
+                cJSON_Delete(root);
+                if (error) *error = "config metadata contains duplicate field " +
+                                    section_name + "." + key;
+                return false;
+            }
+
+            ConfigFieldKind kind;
+            std::string kind_error;
+            if (!config_field_kind_from_metadata(field, &kind, &kind_error)) {
+                cJSON_Delete(root);
+                if (error) *error = "config metadata field " + section_name + "." + key +
+                                    " is invalid: " + kind_error;
+                return false;
+            }
+            section_fields[key] = kind;
+        }
+    }
+    cJSON_Delete(root);
+    *schema = parsed;
+    return true;
+}
+
+bool load_agent_config_metadata(const ConfigMetadataSchema** schema,
+                                std::string* error) {
+    static ConfigMetadataSchema cached;
+    static bool loaded = false;
+    if (loaded) {
+        if (schema) *schema = &cached;
+        return true;
+    }
+
+    const char* agent_bin = agent_bin_path();
+    if (!file_exists(agent_bin)) {
+        AIDEN_LOG_ERROR("agent_config", "binary_not_found",
+                        "path=%s operation=config_metadata", agent_bin);
+        if (error) *error = "config metadata unavailable: agent binary not found";
+        return false;
+    }
+
+    const std::string cmd = std::string(agent_bin) + " config-meta --format=json";
+    CommandResult result = run_command_with_stdin(cmd, "", 2000);
+    if (result.timed_out) {
+        if (error) *error = "config metadata timed out";
+        return false;
+    }
+    if (result.exit_code != 0) {
+        AIDEN_LOG_ERROR("agent_config", "metadata_generation_failed",
+                        "exit_code=%d output=%s", result.exit_code, result.output.c_str());
+        if (error) *error = "config metadata generation failed";
+        return false;
+    }
+
+    ConfigMetadataSchema parsed;
+    std::string parse_error;
+    if (!parse_config_metadata_schema(result.output, &parsed, &parse_error)) {
+        AIDEN_LOG_ERROR("agent_config", "metadata_invalid_payload", "output=%s",
+                        result.output.c_str());
+        if (error) *error = parse_error.empty()
+            ? "config metadata returned an unexpected response"
+            : parse_error;
+        return false;
+    }
+
+    cached = parsed;
+    loaded = true;
+    if (schema) *schema = &cached;
+    return true;
+}
+
+bool validate_config_value_type(cJSON* item,
+                                const std::string& path,
+                                ConfigFieldKind kind,
+                                std::string* error) {
+    if (!item) return true;
+    switch (kind) {
+        case CONFIG_FIELD_STRING:
+            return json_is_string(item) || config_schema_error(error, path, "string", item);
+        case CONFIG_FIELD_NUMBER:
+            return json_is_number(item) || config_schema_error(error, path, "number", item);
+        case CONFIG_FIELD_BOOL:
+            return json_is_bool(item) || config_schema_error(error, path, "bool", item);
+        case CONFIG_FIELD_ARRAY:
+            return json_is_array(item) || config_schema_error(error, path, "array", item);
+        case CONFIG_FIELD_OBJECT:
+            return json_is_object(item) || config_schema_error(error, path, "object", item);
+    }
+    return config_schema_error(error, path, "known field kind", item);
+}
+
 bool validate_config_field_type(cJSON* obj,
                                 const char* section,
                                 const char* key,
@@ -608,36 +791,7 @@ bool validate_config_field_type(cJSON* obj,
     if (!item) {
         return true;
     }
-
-    const std::string path = config_field_path(section, key);
-    switch (kind) {
-        case CONFIG_FIELD_STRING:
-            if (!json_is_string(item)) {
-                return config_schema_error(error, path, "string", item);
-            }
-            return true;
-        case CONFIG_FIELD_NUMBER:
-            if (!json_is_number(item)) {
-                return config_schema_error(error, path, "number", item);
-            }
-            return true;
-        case CONFIG_FIELD_BOOL:
-            if (!json_is_bool(item)) {
-                return config_schema_error(error, path, "bool", item);
-            }
-            return true;
-        case CONFIG_FIELD_ARRAY:
-            if (!json_is_array(item)) {
-                return config_schema_error(error, path, "array", item);
-            }
-            return true;
-        case CONFIG_FIELD_OBJECT:
-            if (!json_is_object(item)) {
-                return config_schema_error(error, path, "object", item);
-            }
-            return true;
-    }
-    return config_schema_error(error, path, "known field kind", item);
+    return validate_config_value_type(item, config_field_path(section, key), kind, error);
 }
 
 bool validate_required_string(cJSON* obj,
@@ -684,12 +838,6 @@ bool validate_search_secret_presence(cJSON* root, std::string* error) {
     if (!json_is_object(search)) {
         return config_schema_error(error, "search", "object", search);
     }
-    if (!validate_config_field_type(search, "search", "provider", CONFIG_FIELD_STRING, error) ||
-        !validate_config_field_type(search, "search", "api_key", CONFIG_FIELD_STRING, error) ||
-        !validate_config_field_type(search, "search", "has_api_key", CONFIG_FIELD_BOOL, error)) {
-        return false;
-    }
-
     cJSON* provider_item = cJSON_GetObjectItem(search, "provider");
     const std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
     if (provider != "brave" && provider != "brave-free" && provider != "tavily") {
@@ -746,74 +894,110 @@ bool validate_ota_github_proxy_url(cJSON* root, std::string* error) {
     return true;
 }
 
-bool validate_known_config_field_types(cJSON* root, std::string* error) {
+bool is_provider_record_section(const std::string& section) {
+    return section == "model_providers" || section == "tts_providers" ||
+           section == "stt_providers";
+}
+
+bool validate_metadata_field_types(cJSON* root,
+                                   const ConfigMetadataSchema& metadata,
+                                   std::string* error) {
+    for (std::map<std::string, std::map<std::string, ConfigFieldKind> >::const_iterator
+             section_it = metadata.field_types.begin();
+         section_it != metadata.field_types.end(); ++section_it) {
+        cJSON* section = cJSON_GetObjectItem(root, section_it->first.c_str());
+        if (!section) continue;
+        if (!json_is_object(section)) {
+            return config_schema_error(error, section_it->first, "object", section);
+        }
+
+        if (is_provider_record_section(section_it->first)) {
+            for (cJSON* record = section->child; record; record = record->next) {
+                if (!json_is_object(record)) continue;
+                const std::string record_name = record->string ? record->string : "";
+                for (std::map<std::string, ConfigFieldKind>::const_iterator
+                         field_it = section_it->second.begin();
+                     field_it != section_it->second.end(); ++field_it) {
+                    if (!validate_config_value_type(
+                            cJSON_GetObjectItem(record, field_it->first.c_str()),
+                            section_it->first + "." + record_name + "." + field_it->first,
+                            field_it->second,
+                            error)) {
+                        return false;
+                    }
+                }
+
+                // Older clients used "provider" for the record type. Keep the
+                // alias, but derive its type from the canonical metadata field.
+                std::map<std::string, ConfigFieldKind>::const_iterator type_it =
+                    section_it->second.find("type");
+                if (type_it != section_it->second.end() &&
+                    !validate_config_value_type(
+                        cJSON_GetObjectItem(record, "provider"),
+                        section_it->first + "." + record_name + ".provider",
+                        type_it->second,
+                        error)) {
+                    return false;
+                }
+            }
+            continue;
+        }
+
+        for (std::map<std::string, ConfigFieldKind>::const_iterator
+                 field_it = section_it->second.begin();
+             field_it != section_it->second.end(); ++field_it) {
+            if (!validate_config_value_type(
+                    cJSON_GetObjectItem(section, field_it->first.c_str()),
+                    section_it->first + "." + field_it->first,
+                    field_it->second,
+                    error)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool validate_flat_provider_compatibility_fields(
+        cJSON* root,
+        const ConfigMetadataSchema& metadata,
+        const char* flat_section,
+        const char* record_section,
+        const char* const* fields,
+        std::string* error) {
+    cJSON* flat = cJSON_GetObjectItem(root, flat_section);
+    if (!json_is_object(flat)) return true;
+    std::map<std::string, std::map<std::string, ConfigFieldKind> >::const_iterator record_it =
+        metadata.field_types.find(record_section);
+    if (record_it == metadata.field_types.end()) return true;
+
+    for (int i = 0; fields[i]; ++i) {
+        std::map<std::string, ConfigFieldKind>::const_iterator field_it =
+            record_it->second.find(fields[i]);
+        if (field_it == record_it->second.end()) continue;
+        if (!validate_config_value_type(
+                cJSON_GetObjectItem(flat, fields[i]),
+                std::string(flat_section) + "." + fields[i],
+                field_it->second,
+                error)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool validate_compatibility_config_field_types(cJSON* root, std::string* error) {
     struct FieldSpec {
         const char* section;
         const char* key;
         ConfigFieldKind kind;
     };
+    // These fields remain part of the config-web compatibility contract but
+    // are intentionally absent from the UI metadata. Keep this list small;
+    // ordinary fields belong in ConfigMeta.
     const FieldSpec fields[] = {
-        {"model", "provider", CONFIG_FIELD_STRING},
-        {"model", "model", CONFIG_FIELD_STRING},
-        {"model", "api_key", CONFIG_FIELD_STRING},
-        {"model", "reasoning_effort", CONFIG_FIELD_STRING},
-        {"model", "temperature", CONFIG_FIELD_NUMBER},
-        {"model", "max_response_tokens", CONFIG_FIELD_NUMBER},
-        {"model", "context_window", CONFIG_FIELD_NUMBER},
-        {"model", "model_max_output_tokens", CONFIG_FIELD_NUMBER},
-        {"tts", "provider", CONFIG_FIELD_STRING},
-        {"tts", "api_key", CONFIG_FIELD_STRING},
-        {"tts", "model", CONFIG_FIELD_STRING},
-        {"tts", "voice_id", CONFIG_FIELD_STRING},
-        {"tts", "reference_id", CONFIG_FIELD_STRING},
-        {"tts", "emotion", CONFIG_FIELD_STRING},
-        {"tts", "speed", CONFIG_FIELD_NUMBER},
-        {"stt", "provider", CONFIG_FIELD_STRING},
-        {"stt", "language", CONFIG_FIELD_STRING},
-        {"stt", "api_key", CONFIG_FIELD_STRING},
-        {"stt", "model", CONFIG_FIELD_STRING},
-        {"stt", "base_url", CONFIG_FIELD_STRING},
-        {"stt", "app_id", CONFIG_FIELD_STRING},
-        {"stt", "secret_id", CONFIG_FIELD_STRING},
-        {"stt", "secret_key", CONFIG_FIELD_STRING},
-        {"stt", "region", CONFIG_FIELD_STRING},
-        {"stt", "engine_model_type", CONFIG_FIELD_STRING},
-        {"audio", "socket", CONFIG_FIELD_STRING},
-        {"audio", "sample_rate", CONFIG_FIELD_NUMBER},
-        {"audio", "channels", CONFIG_FIELD_NUMBER},
-        {"audio", "bit_width", CONFIG_FIELD_NUMBER},
-        {"audio", "playback_backend", CONFIG_FIELD_STRING},
-        {"audio_archive", "enabled", CONFIG_FIELD_BOOL},
-        {"audio_archive", "storage_path", CONFIG_FIELD_STRING},
-        {"audio_archive", "max_files", CONFIG_FIELD_NUMBER},
-        {"audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER},
-        {"voice_notifications", "enabled", CONFIG_FIELD_BOOL},
-        {"voice_notifications", "max_pending", CONFIG_FIELD_NUMBER},
-        {"voice_notifications", "response_tail", CONFIG_FIELD_OBJECT},
-        {"voice_notifications", "expiration", CONFIG_FIELD_OBJECT},
-        {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
-        {"ota", "github_proxy_url", CONFIG_FIELD_STRING},
         {"device", "backend", CONFIG_FIELD_STRING},
-        {"device", "device_type", CONFIG_FIELD_STRING},
-        {"hid", "keyboard_device", CONFIG_FIELD_STRING},
-        {"hid", "keyboard_layout", CONFIG_FIELD_STRING},
-        {"hid", "mouse_device", CONFIG_FIELD_STRING},
-        {"hid", "android_keyboard_device", CONFIG_FIELD_STRING},
-        {"hid", "frame_socket", CONFIG_FIELD_STRING},
-        {"hid", "input_backend", CONFIG_FIELD_STRING},
-        {"search", "provider", CONFIG_FIELD_STRING},
-        {"search", "api_key", CONFIG_FIELD_STRING},
         {"search", "has_api_key", CONFIG_FIELD_BOOL},
-        {"telemetry", "enabled", CONFIG_FIELD_BOOL},
-        {"telemetry", "provider", CONFIG_FIELD_STRING},
-        {"telemetry", "base_url", CONFIG_FIELD_STRING},
-        {"telemetry", "public_key", CONFIG_FIELD_STRING},
-        {"telemetry", "secret_key", CONFIG_FIELD_STRING},
-        {"telemetry", "upload_screenshots", CONFIG_FIELD_BOOL},
-        {"telemetry", "upload_timeout_sec", CONFIG_FIELD_NUMBER},
-        {"telemetry", "max_retry", CONFIG_FIELD_NUMBER},
-        {"telemetry", "tags", CONFIG_FIELD_ARRAY},
-        {"telemetry", "environment", CONFIG_FIELD_STRING},
         {"termination_policy", "enabled", CONFIG_FIELD_BOOL},
         {"termination_policy", "max_seconds", CONFIG_FIELD_NUMBER},
         {"termination_policy", "repeat_action_limit", CONFIG_FIELD_NUMBER},
@@ -823,12 +1007,9 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"termination_policy", "restrict_tools_stall_score", CONFIG_FIELD_NUMBER},
         {"termination_policy", "terminate_stall_score", CONFIG_FIELD_NUMBER},
         {"termination_policy", "parse_failure_limit", CONFIG_FIELD_NUMBER},
-        {"live_activity", "enabled", CONFIG_FIELD_BOOL},
         {"live_activity", "relay_url", CONFIG_FIELD_STRING},
         {"live_activity", "relay_api_key", CONFIG_FIELD_STRING},
         {"live_activity", "has_relay_api_key", CONFIG_FIELD_BOOL},
-        {"live_activity", "board_id", CONFIG_FIELD_STRING},
-        {"live_activity", "phone_id", CONFIG_FIELD_STRING},
         {"live_activity", "bundle_id", CONFIG_FIELD_STRING},
         {"live_activity", "topic", CONFIG_FIELD_STRING},
         {"live_activity", "environment", CONFIG_FIELD_STRING},
@@ -838,53 +1019,28 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"live_activity", "private_key_pem", CONFIG_FIELD_STRING},
         {"live_activity", "has_private_key_pem", CONFIG_FIELD_BOOL},
         {"live_activity", "timeout_sec", CONFIG_FIELD_NUMBER},
-        {"agent", "locale", CONFIG_FIELD_STRING},
-        {"agent", "custom_instruction", CONFIG_FIELD_STRING},
-        {"agent", "additional_prompt", CONFIG_FIELD_STRING},
-        {"agent", "input_mode", CONFIG_FIELD_STRING},
-        {"agent", "trigger_mode", CONFIG_FIELD_STRING},
-        {"agent", "vad_backend", CONFIG_FIELD_STRING},
-        {"agent", "vad_model_path", CONFIG_FIELD_STRING},
-        {"agent", "vad_helper_path", CONFIG_FIELD_STRING},
-        {"agent", "vad_speech_threshold", CONFIG_FIELD_NUMBER},
-        {"agent", "silence_ms", CONFIG_FIELD_NUMBER},
-        {"agent", "min_speech_ms", CONFIG_FIELD_NUMBER},
-        {"agent", "voice_followup_enabled", CONFIG_FIELD_BOOL},
-        {"agent", "voice_followup_timeout_ms", CONFIG_FIELD_NUMBER},
-        {"agent", "voice_first_turn_timeout_ms", CONFIG_FIELD_NUMBER},
-        {"agent", "voice_max_turns", CONFIG_FIELD_NUMBER},
-        {"agent", "voice_interrupt_on_wakeup", CONFIG_FIELD_BOOL},
-        {"agent", "voice_streaming_tts_enabled", CONFIG_FIELD_BOOL},
-        {"agent", "voice_tool_call_speech", CONFIG_FIELD_BOOL},
-        {"agent", "voice_progress_speech_enabled", CONFIG_FIELD_BOOL},
-        {"agent", "voice_max_response_tokens", CONFIG_FIELD_NUMBER},
-        {"agent", "load_all_tools", CONFIG_FIELD_BOOL},
-        {"agent", "max_iterations", CONFIG_FIELD_NUMBER},
-        {"agent", "screenshot_keep_n", CONFIG_FIELD_NUMBER},
-        {"agent", "screenshot_prune_interval", CONFIG_FIELD_NUMBER},
-        {"agent", "screen_stable_timeout_ms", CONFIG_FIELD_NUMBER},
-        {"agent", "screen_stable_ms", CONFIG_FIELD_NUMBER},
-        {"agent", "screen_stable_diff_threshold", CONFIG_FIELD_NUMBER},
-        {"agent", "default_platform", CONFIG_FIELD_STRING},
         {NULL, NULL, CONFIG_FIELD_STRING},
     };
 
     for (int i = 0; fields[i].section; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, fields[i].section);
-        if (!section) {
-            continue;
-        }
-        if (!validate_config_field_type(section,
-                                        fields[i].section,
-                                        fields[i].key,
-                                        fields[i].kind,
-                                        error)) {
+        if (!validate_config_field_type(section, fields[i].section, fields[i].key,
+                                        fields[i].kind, error)) {
             return false;
         }
     }
+    return true;
+}
 
+bool validate_voice_notification_config(cJSON* root, std::string* error) {
     cJSON* voice_notifications = cJSON_GetObjectItem(root, "voice_notifications");
     if (json_is_object(voice_notifications)) {
+        if (!validate_config_field_type(voice_notifications, "voice_notifications", "enabled", CONFIG_FIELD_BOOL, error) ||
+            !validate_config_field_type(voice_notifications, "voice_notifications", "max_pending", CONFIG_FIELD_NUMBER, error) ||
+            !validate_config_field_type(voice_notifications, "voice_notifications", "response_tail", CONFIG_FIELD_OBJECT, error) ||
+            !validate_config_field_type(voice_notifications, "voice_notifications", "expiration", CONFIG_FIELD_OBJECT, error)) {
+            return false;
+        }
         if (!validate_non_negative_json_integer(
                 cJSON_GetObjectItem(voice_notifications, "max_pending"),
                 "voice_notifications.max_pending",
@@ -951,6 +1107,29 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         }
     }
     return true;
+}
+
+bool validate_config_field_types_from_metadata(cJSON* root,
+                                               const ConfigMetadataSchema& metadata,
+                                               std::string* error) {
+    static const char* const model_compat[] = {"api_key", NULL};
+    static const char* const tts_compat[] = {
+        "api_key", "model", "voice_id", "reference_id", "emotion", NULL,
+    };
+    static const char* const stt_compat[] = {
+        "api_key", "model", "base_url", "app_id", "secret_id", "secret_key",
+        "region", "engine_model_type", NULL,
+    };
+
+    return validate_metadata_field_types(root, metadata, error) &&
+           validate_flat_provider_compatibility_fields(
+               root, metadata, "model", "model_providers", model_compat, error) &&
+           validate_flat_provider_compatibility_fields(
+               root, metadata, "tts", "tts_providers", tts_compat, error) &&
+           validate_flat_provider_compatibility_fields(
+               root, metadata, "stt", "stt_providers", stt_compat, error) &&
+           validate_compatibility_config_field_types(root, error) &&
+           validate_voice_notification_config(root, error);
 }
 
 cJSON* add_object(cJSON* parent, const char* key) {
@@ -1707,9 +1886,14 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
         return false;
     }
 
+    const ConfigMetadataSchema* metadata = NULL;
+    if (!load_agent_config_metadata(&metadata, error)) {
+        return false;
+    }
+
     const char* sections[] = {
         "model_providers", "tts_providers", "stt_providers", "model",
-        "tts", "stt", "audio", "audio_archive",
+        "tts", "stt", "audio", "audio_archive", "storage",
         "voice_notifications", "log", "ota", "device", "hid", "search", "telemetry",
         "termination_policy", "live_activity", "agent", NULL,
     };
@@ -1717,6 +1901,14 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
         if (section && !json_is_object(section)) {
             return config_schema_error(error, sections[i], "object", section);
+        }
+    }
+    for (std::map<std::string, std::map<std::string, ConfigFieldKind> >::const_iterator
+             section_it = metadata->field_types.begin();
+         section_it != metadata->field_types.end(); ++section_it) {
+        cJSON* section = cJSON_GetObjectItem(root, section_it->first.c_str());
+        if (section && !json_is_object(section)) {
+            return config_schema_error(error, section_it->first, "object", section);
         }
     }
 
@@ -1760,7 +1952,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
         return false;
     }
 
-    return validate_known_config_field_types(root, error);
+    return validate_config_field_types_from_metadata(root, *metadata, error);
 }
 
 bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
@@ -5403,36 +5595,14 @@ ApiResponse handle_get_config(const Options& options) {
 // closed (503) when the binary is missing or returns unparseable output rather
 // than letting the UI fall back to stale hard-coded metadata.
 ApiResponse handle_get_config_meta() {
-    const char* agent_bin = agent_bin_path();
-    if (!file_exists(agent_bin)) {
-        AIDEN_LOG_ERROR("agent_config", "binary_not_found",
-                        "path=%s operation=config_metadata", agent_bin);
-        return make_json_error(503, "config metadata unavailable: agent binary not found");
+    const ConfigMetadataSchema* metadata = NULL;
+    std::string error;
+    if (!load_agent_config_metadata(&metadata, &error)) {
+        return make_json_error(503, error.empty() ? "config metadata unavailable" : error);
     }
-
-    std::string cmd = std::string(agent_bin) + " config-meta --format=json";
-    CommandResult result = run_command_with_stdin(cmd, "", 2000);
-
-    if (result.timed_out) {
-        return make_json_error(503, "config metadata timed out");
-    }
-    if (result.exit_code != 0) {
-        AIDEN_LOG_ERROR("agent_config", "metadata_generation_failed",
-                        "exit_code=%d output=%s", result.exit_code, result.output.c_str());
-        return make_json_error(503, "config metadata generation failed");
-    }
-
-    // Validate the payload is well-formed JSON before forwarding it verbatim.
-    cJSON* parsed = cJSON_Parse(result.output.c_str());
-    if (!parsed) {
-        AIDEN_LOG_ERROR("agent_config", "metadata_invalid_json", "output=%s",
-                        result.output.c_str());
-        return make_json_error(503, "config metadata returned an unexpected response");
-    }
-    cJSON_Delete(parsed);
 
     ApiResponse response;
-    response.body = result.output;
+    response.body = metadata->json;
     return response;
 }
 
@@ -6136,6 +6306,13 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     bool submitted_model_api_key = false;
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
     if (config_json) {
+        std::string metadata_error;
+        if (!load_agent_config_metadata(NULL, &metadata_error)) {
+            cJSON_Delete(root);
+            return make_json_error(
+                503,
+                metadata_error.empty() ? "config metadata unavailable" : metadata_error);
+        }
         std::string schema_error;
         if (!validate_agent_config_patch_json(config_json, &schema_error)) {
             cJSON_Delete(root);
