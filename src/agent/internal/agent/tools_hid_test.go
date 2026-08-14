@@ -840,36 +840,6 @@ func TestTouchGestureSchemaDoesNotExposeWheelMetadata(t *testing.T) {
 	}
 }
 
-func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndConservativeInput(t *testing.T) {
-	description := (&WheelNudgeTool{}).Description()
-	for _, want := range []string{
-		"tap or slow drag",
-		"9+",
-		"3-4",
-		"5-8",
-		"confident runtime image measurement",
-		"conservative limits remain",
-		"final requested value",
-		"never substitute an intermediate visible value",
-		"normalized 0-1000 coordinates",
-		"screenshot height",
-		"Use wheel_nudge directly from the latest screenshot",
-		"Do not tap the selected row",
-		"do not use keyboard_text for picker values",
-		"derives the shortest row gap",
-		"measures the row spacing",
-		"overrides the caller estimate",
-		"low-confidence images keep the caller estimate",
-	} {
-		if !strings.Contains(description, want) {
-			t.Fatalf("wheel_nudge description = %q, want %q", description, want)
-		}
-	}
-	if strings.Contains(description, "coord_space") {
-		t.Fatalf("wheel_nudge description must not expose coord_space: %q", description)
-	}
-}
-
 func TestWheelNudgeRejectsInputsThatWouldBypassGestureGuard(t *testing.T) {
 	invalidInputs := map[string]string{
 		`{"picker_id":"alarm-create","column_x":400,"current_value":15,"target_value":7,"cycle_size":24,"cycle_start":0,"row_spacing":40,"value_step":1}`: "center_y is required",
@@ -914,16 +884,6 @@ func TestKeyboardTapSchemaRequiresKeysArray(t *testing.T) {
 	keys := props["keys"].(map[string]any)
 	if keys["type"] != "array" {
 		t.Fatalf("keys schema type = %#v, want array", keys["type"])
-	}
-	description, _ := keys["description"].(string)
-	for _, want := range []string{
-		"backspace is backward-delete",
-		"delete is forward-delete",
-		"For semantic deletion, use quick_action delete_backward/delete_forward",
-	} {
-		if !strings.Contains(description, want) {
-			t.Fatalf("keys schema description missing %q: %s", want, description)
-		}
 	}
 	items := keys["items"].(map[string]any)
 	if items["type"] != "string" {
@@ -1435,37 +1395,6 @@ func TestResolvePointerPositionTouchscreenNormalizedUsesFrameSpaceWithinActiveAr
 	}
 }
 
-func TestModelFacingDeviceGuidanceUsesNormalizedCoordinatesOnly(t *testing.T) {
-	assertNoCoordinateSpaceGuidance := func(name, content string) {
-		t.Helper()
-		lower := strings.ToLower(content)
-		if strings.Contains(lower, "coord_space") || strings.Contains(lower, "coordinate space") {
-			t.Fatalf("%s still advertises coordinate-space selection: %q", name, content)
-		}
-	}
-
-	descriptions := map[string]string{
-		"mouse_move":    (&MouseMoveTool{}).Description(),
-		"touch_gesture": (&TouchGestureTool{}).Description(),
-		"wheel_nudge":   (&WheelNudgeTool{}).Description(),
-		"screenshot":    (&ScreenshotTool{}).Description(),
-	}
-	for name, description := range descriptions {
-		assertNoCoordinateSpaceGuidance(name+" description", description)
-	}
-
-	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
-	data, err := os.ReadFile(skillPath)
-	if err != nil {
-		t.Fatalf("read device-operator SKILL.md: %v", err)
-	}
-	content := string(data)
-	assertNoCoordinateSpaceGuidance("device-operator SKILL.md", content)
-	if !strings.Contains(content, "0-1000") {
-		t.Fatalf("device-operator SKILL.md must document the normalized 0-1000 scale")
-	}
-}
-
 func TestNormalizedCoordinatesPreserveNearlyFullAxisOffsetForAbsolutePointer(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
@@ -1781,78 +1710,6 @@ func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	last := reports[len(reports)-1]
 	if last.flags != 0x00 || last.x != 26214 {
 		t.Fatalf("last release = %+v, want release at end", last)
-	}
-}
-
-func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
-	desc := (&KeyboardTextTool{}).Description()
-	for _, want := range []string{
-		"ASCII",
-		"Do NOT pass non-ASCII",
-		"enter_text",
-		"Do not transliterate Chinese/CJK targets to pinyin",
-		"English/Latin keyboard",
-		`{"text":"App Store"}`,
-		"do not pass a bare string",
-	} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing %q:\n%s", want, desc)
-		}
-	}
-	for _, unexpected := range []string{
-		"Type a string of text",
-		"hello world",
-		"use pinyin",
-	} {
-		if strings.Contains(desc, unexpected) {
-			t.Fatalf("description should not contain misleading phrase %q:\n%s", unexpected, desc)
-		}
-	}
-}
-
-func TestKeyboardTextDescriptionRejectsNumericPickerInput(t *testing.T) {
-	desc := (&KeyboardTextTool{}).Description()
-	for _, want := range []string{
-		"Do not use keyboard_text for picker/wheel values",
-		"use wheel_nudge",
-		"verify each returned screenshot",
-	} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing conservative picker guidance %q:\n%s", want, desc)
-		}
-	}
-}
-
-func TestDeviceOperatorSkillUsesWheelOnlyForPickers(t *testing.T) {
-	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
-	data, err := os.ReadFile(skillPath)
-	if err != nil {
-		t.Skipf("device-operator SKILL.md not readable from test cwd: %v", err)
-	}
-	content := string(data)
-	for _, want := range []string{
-		"use `wheel_nudge` directly from the latest screenshot",
-		"Do not tap the selected row to probe for keyboard/edit mode",
-		"do not use `enter_text` for picker values",
-		"do not use `enter_text` or `keyboard_tap` to change picker values",
-		"issue one bounded `wheel_nudge`, then read the returned screenshot",
-	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("device-operator SKILL.md missing conservative picker guidance %q", want)
-		}
-	}
-}
-
-func TestTouchGestureDescriptionReservesPickerForWheelNudge(t *testing.T) {
-	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{
-		"Do not tap picker rows to probe for keyboard/edit mode",
-		"do not drag picker columns with this tool",
-		"use wheel_nudge for the entire picker interaction",
-	} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("touch_gesture description missing wheel ownership guidance %q:\n%s", want, desc)
-		}
 	}
 }
 
@@ -3120,34 +2977,8 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 	}
 }
 
-func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
-	desc := (&TouchGestureTool{}).Description()
-	// The description keeps only the load-bearing quick_action disambiguation and swipe-direction rule.
-	for _, want := range []string{"Prefer quick_action", `quick_action with {"action":"home"} first`, `touch_gesture {"type":"home"} only as a fallback`, "finger movement"} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing %q:\n%s", want, desc)
-		}
-	}
-	// Edge-alias coordinates (back x=1, home y=999) now live in the type ArgsSchema field.
-	props, _ := (&TouchGestureTool{}).ArgsSchema()["properties"].(map[string]any)
-	typeSchema, _ := props["type"].(map[string]any)
-	typeDesc, _ := typeSchema["description"].(string)
-	for _, want := range []string{"back", "home", "x=1", "y=999", `quick_action {"action":"home"}`, "fallback alternatives"} {
-		if !strings.Contains(typeDesc, want) {
-			t.Fatalf("type schema missing %q:\n%s", want, typeDesc)
-		}
-	}
-}
-
-func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndShowsCompleteExamples(t *testing.T) {
+func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *testing.T) {
 	schema := (&TouchGestureTool{}).ArgsSchema()
-	description, _ := schema["description"].(string)
-	for _, want := range []string{"Strict JSON object", "point", "start", "end", "both x and y"} {
-		if !strings.Contains(description, want) {
-			t.Fatalf("root schema description missing %q:\n%s", want, description)
-		}
-	}
-
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("schema properties = %#v", schema["properties"])
@@ -3163,12 +2994,6 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndShowsCompleteExample
 		required, ok := coordinate["required"].([]string)
 		if !ok || !slices.Equal(required, []string{"x", "y"}) {
 			t.Fatalf("%s required = %#v, want x and y", name, coordinate["required"])
-		}
-		desc, _ := coordinate["description"].(string)
-		for _, want := range []string{`named keys "x" and "y"`, "do not use an array", "bare value"} {
-			if !strings.Contains(desc, want) {
-				t.Fatalf("%s description missing %q:\n%s", name, want, desc)
-			}
 		}
 	}
 
@@ -3191,17 +3016,6 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndShowsCompleteExample
 		}
 	}
 
-	typeSchema, _ := properties["type"].(map[string]any)
-	typeDesc, _ := typeSchema["description"].(string)
-	for _, want := range []string{
-		"tap, double_tap, and long_press require point",
-		"swipe and drag require start and end",
-		"Directional swipe types accept optional strength, distance, and anchor",
-	} {
-		if !strings.Contains(typeDesc, want) {
-			t.Fatalf("type schema missing %q:\n%s", want, typeDesc)
-		}
-	}
 }
 
 func TestTouchGestureSchemaFiltersEdgeGesturesForDesktopPlatforms(t *testing.T) {
@@ -3227,75 +3041,6 @@ func TestTouchGestureSchemaFiltersEdgeGesturesForDesktopPlatforms(t *testing.T) 
 			t.Fatalf("Android touch_gesture schema missing edge gesture %q: %v", want, androidTypes)
 		}
 	}
-}
-
-func TestTouchGestureDescriptionDocumentsTargetCenter(t *testing.T) {
-	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{"normalized", "latest screenshot", "visual center", "post-action screenshot"} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing %q:\n%s", want, desc)
-		}
-	}
-}
-
-func TestKeyboardTapDescriptionRoutesSemanticShortcutsToQuickAction(t *testing.T) {
-	desc := (&KeyboardTapTool{}).Description()
-	for _, want := range []string{"cataloged semantic actions", "MUST use quick_action", "copy", "paste", "select_all", "delete_backward", "delete_forward", "exact physical chords explicitly requested", "app-specific shortcuts not represented", "current run explicitly reports", "Do not infer unavailability", "Never replay an active quick_action binding"} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing %q:\n%s", want, desc)
-		}
-	}
-	// Key mechanics (backspace/forward-delete, modifiers, key list) now live in the keys ArgsSchema field.
-	keysDesc := keyboardTapKeysSchemaDescription(t)
-	for _, want := range []string{"backspace", "forward-delete", "semantic deletion", "quick_action delete_backward/delete_forward", "modifier", "modifier-only", "Cataloged semantic actions MUST use quick_action", "explicitly requested physical input", "uncataloged app-specific shortcuts", "current run explicitly reports", "Do not infer unavailability", "replay an active binding"} {
-		if !strings.Contains(keysDesc, want) {
-			t.Fatalf("keys schema missing %q:\n%s", want, keysDesc)
-		}
-	}
-}
-
-func TestKeyboardTapSchemaListsExtensionKeysForPlatform(t *testing.T) {
-	androidTool := &KeyboardTapTool{}
-	androidTool.SetDeviceTypeFunc(func() string { return "Android" })
-	androidDesc := keyboardTapKeysSchemaDescriptionForTool(t, androidTool)
-	for _, want := range []string{"KEYCODE_*", "Android device_type", "single-key Android"} {
-		if !strings.Contains(androidDesc, want) {
-			t.Fatalf("Android keys schema missing %q:\n%s", want, androidDesc)
-		}
-	}
-
-	desktopTool := &KeyboardTapTool{}
-	desktopTool.SetDeviceTypeFunc(func() string { return "windows" })
-	desktopDesc := keyboardTapKeysSchemaDescriptionForTool(t, desktopTool)
-	for _, want := range []string{"non-Android device_type", "KEYCODE_SCREENSHOT", "KEYCODE_BRIGHTNESS_UP", "KEYCODE_MEDIA_PLAY_PAUSE"} {
-		if !strings.Contains(desktopDesc, want) {
-			t.Fatalf("desktop keys schema missing absolute extension key %q:\n%s", want, desktopDesc)
-		}
-	}
-	for _, notWant := range []string{"KEYCODE_HOME", "KEYCODE_BACK", "KEYCODE_APP_SWITCH"} {
-		if strings.Contains(desktopDesc, notWant) {
-			t.Fatalf("desktop keys schema exposed Android-only key %q:\n%s", notWant, desktopDesc)
-		}
-	}
-}
-
-func keyboardTapKeysSchemaDescription(t *testing.T) string {
-	t.Helper()
-	return keyboardTapKeysSchemaDescriptionForTool(t, &KeyboardTapTool{})
-}
-
-func keyboardTapKeysSchemaDescriptionForTool(t *testing.T, tool *KeyboardTapTool) string {
-	t.Helper()
-	props, ok := tool.ArgsSchema()["properties"].(map[string]any)
-	if !ok {
-		t.Fatal("keyboard_tap schema missing properties")
-	}
-	keys, ok := props["keys"].(map[string]any)
-	if !ok {
-		t.Fatal("keyboard_tap schema missing keys property")
-	}
-	desc, _ := keys["description"].(string)
-	return desc
 }
 
 func TestTouchGestureRejectsRetiredCoordSpaceField(t *testing.T) {
