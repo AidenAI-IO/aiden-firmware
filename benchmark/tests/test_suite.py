@@ -2,7 +2,7 @@ import json
 import pytest
 from pathlib import Path
 from runner.platform import TargetPlatform
-from runner.suite import load_suite, SuiteValidationError
+from runner.suite import load_suite, resolve_mock_suite_platforms, SuiteValidationError
 
 FIXTURE = {
     "name": "test_suite",
@@ -969,6 +969,10 @@ def test_phone_bridge_data_policy_suite_covers_tools_and_routing_modes():
     assert suite.mock_environment is None
     assert len(tasks) == 12
     assert all(task.mock_environment is not None for task in suite.tasks)
+    assert resolve_mock_suite_platforms(suite) == (
+        TargetPlatform.ANDROID,
+        TargetPlatform.IOS,
+    )
     assert {
         tool
         for task in suite.tasks
