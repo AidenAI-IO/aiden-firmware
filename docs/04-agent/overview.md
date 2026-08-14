@@ -32,7 +32,7 @@ In the firmware, it is installed by default to:
 - Auto-discovery and runtime activation of skills from `SKILL.md`
 - Single-agent execution loop with streamlined tool calling and response handling
 - Conversation memory persistence, session memory compaction; see [Session Memory Compaction](session-memory.md)
-- Device / Task Episode memory design; see [Memory Plane Design](memory-plane.md)
+- Device and Task Episode memory; see [Memory Plane](memory-plane.md)
 - Web UI: chat history, browser recording, attachments, Tool Lab, Skill Export
 - iOS Live Activity / Dynamic Island task status; see [Live Activity / Dynamic Island](live-activity.md)
 - Device-side voice pipeline: VAD / STT / TTS
