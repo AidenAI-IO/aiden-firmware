@@ -160,24 +160,23 @@ parse_failure_limit = 13
 	}
 }
 
-func TestLoadRuntimeConfigClearsBaseURLOnlyForProvidersWithoutOverrides(t *testing.T) {
+func TestLoadRuntimeConfigIgnoresModelBaseURL(t *testing.T) {
 	tests := []struct {
-		name        string
-		provider    string
-		wantBaseURL string
+		name     string
+		provider string
 	}{
-		// Only openai (custom gateways) and ollama (local server) accept a
-		// base_url override; every other provider pins its own endpoint.
-		{"openai keeps base_url", "openai", "https://gateway.example.com/v1"},
-		{"OpenAI case insensitive keeps base_url", "OpenAI", "https://gateway.example.com/v1"},
-		{"ollama keeps base_url", "ollama", "https://gateway.example.com/v1"},
-		{"Ollama case insensitive keeps base_url", "Ollama", "https://gateway.example.com/v1"},
-		{"openrouter drops base_url", "openrouter", ""},
-		{"kimi drops base_url", "kimi", ""},
-		{"kimi-cn drops base_url", "kimi-cn", ""},
-		{"volcengine drops base_url", "volcengine", ""},
-		{"Volcengine case insensitive drops base_url", "Volcengine", ""},
-		{"fake drops base_url", "fake", ""},
+		{"openai", "openai"},
+		{"OpenAI case insensitive", "OpenAI"},
+		{"ollama", "ollama"},
+		{"Ollama case insensitive", "Ollama"},
+		{"anthropic", "anthropic"},
+		{"Anthropic case insensitive", "Anthropic"},
+		{"openrouter", "openrouter"},
+		{"kimi", "kimi"},
+		{"kimi-cn", "kimi-cn"},
+		{"volcengine", "volcengine"},
+		{"Volcengine case insensitive", "Volcengine"},
+		{"fake", "fake"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -196,8 +195,8 @@ base_url = "https://gateway.example.com/v1"
 			if err != nil {
 				t.Fatalf("LoadRuntimeConfig() error = %v", err)
 			}
-			if cfg.Model.BaseURL != tt.wantBaseURL {
-				t.Errorf("model.base_url = %q, want %q", cfg.Model.BaseURL, tt.wantBaseURL)
+			if cfg.Model.BaseURL != "" {
+				t.Errorf("model.base_url = %q, want empty", cfg.Model.BaseURL)
 			}
 		})
 	}

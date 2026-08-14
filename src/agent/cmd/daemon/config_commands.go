@@ -88,7 +88,6 @@ type modelDTO struct {
 	Provider             string   `json:"provider"`
 	APIKey               string   `json:"api_key"`
 	Model                string   `json:"model"`
-	BaseURL              string   `json:"base_url"`
 	ReasoningEffort      string   `json:"reasoning_effort"`
 	Temperature          *float64 `json:"temperature,omitempty"`
 	MaxResponseTokens    int      `json:"max_response_tokens"`
@@ -101,7 +100,6 @@ func (d modelDTO) providerTestRequest() agent.ModelProviderTestRequest {
 		Provider:        d.Provider,
 		APIKey:          d.APIKey,
 		Model:           d.Model,
-		BaseURL:         d.BaseURL,
 		Temperature:     d.Temperature,
 		ReasoningEffort: d.ReasoningEffort,
 	}
@@ -439,7 +437,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			Provider:             d.Model.Provider,
 			APIKey:               d.Model.APIKey,
 			Model:                d.Model.Model,
-			BaseURL:              d.Model.BaseURL,
 			Temperature:          d.Model.Temperature,
 			MaxResponseTokens:    d.Model.MaxResponseTokens,
 			ContextWindow:        d.Model.ContextWindow,
@@ -695,7 +692,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Provider:             cfg.Model.Provider,
 			APIKey:               cfg.Model.APIKey,
 			Model:                cfg.Model.Model,
-			BaseURL:              cfg.Model.BaseURL,
 			ReasoningEffort:      cfg.Model.ReasoningEffort,
 			Temperature:          cfg.Model.Temperature,
 			MaxResponseTokens:    cfg.Model.MaxResponseTokens,

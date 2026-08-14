@@ -70,7 +70,6 @@ api_key = "$OPENAI_API_KEY"
 [model]
 provider = "openai-main"
 model = "gpt-5.5"
-# base_url = "https://api.openai.com/v1"     # Optional: custom endpoint
 # temperature = 0.2
 # max_response_tokens = 1000
 # Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.

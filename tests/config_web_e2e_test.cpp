@@ -220,7 +220,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"stub-ollama\":{\"type\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
         "\"device\":{\"backend\":\"hdmi\",\"device_type\":\"iOS\"},"
         "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
-        "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+        "\"temperature\":0.2,\"max_response_tokens\":1000,"
         "\"context_window\":0,\"model_max_output_tokens\":0},"
         "\"tts_providers\":{\"minimax-cn\":{\"type\":\"minimax-cn\"}},"
         "\"stt_providers\":{\"openai-whisper\":{\"type\":\"openai-whisper\"}},"
@@ -1174,43 +1174,11 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config keeps model base_url for providers that allow it") {
-    // Regression test: update_model_from_json()'s base_url whitelist must match
-    // the Go runtime's (clearNonAllowedModelBaseURL), or a base_url entered in
-    // the UI passes validation and appears to save while being stripped before
-    // it ever reaches agent.toml. Only openai (custom gateways) and ollama
-    // (local server) accept an override; the rest pin their endpoint.
-    struct Case {
-        const char* provider;
-        const char* base_url;
+TEST_CASE("config_web: POST /api/config ignores model base_url for every provider") {
+    const char* providers[] = {
+        "openai", "anthropic", "ollama", "openrouter", "kimi", "kimi-cn",
+        "volcengine", "fake",
     };
-    const Case cases[] = {
-        {"openai", "https://gateway.example.com/v1"},
-        {"ollama", "http://127.0.0.1:11434"},
-    };
-
-    for (const Case& c : cases) {
-        StubEnv env;
-        auto handle = start_server(env);
-
-        const std::string body =
-            std::string("{\"config\":{\"model\":{\"provider\":\"") + c.provider +
-            "\",\"model\":\"x\",\"api_key\":\"k\",\"base_url\":\"" + c.base_url + "\"},"
-            "\"hid\":{\"pointer_mode\":\"absolute\"},"
-            "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
-        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
-        CHECK(resp.status == 200);
-
-        const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-        CHECK_MESSAGE(saved.find(std::string("base_url = \"") + c.base_url + "\"") != std::string::npos,
-                      std::string(c.provider));
-    }
-}
-
-TEST_CASE("config_web: POST /api/config drops model base_url for providers that pin their endpoint") {
-    // openrouter, kimi, kimi-cn and volcengine each use a built-in endpoint, so
-    // a base_url for them is dead config and must not reach agent.toml.
-    const char* providers[] = {"openrouter", "kimi", "kimi-cn", "volcengine", "fake"};
 
     for (const char* provider : providers) {
         StubEnv env;
@@ -1316,7 +1284,7 @@ TEST_CASE("config_web: GET /api/config reports only provider credential state") 
                "{\"model_providers\":{\"env-openai\":{\"type\":\"openai\","
                "\"api_key\":\"$OPENAI_API_KEY\"}},"
                "\"model\":{\"provider\":\"env-openai\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -1640,7 +1608,7 @@ TEST_CASE("config_web: POST /api/config migrates a legacy model api_key to a pro
     const std::string tmp = make_temp_dir();
     write_file(tmp + "/config.json",
                "{\"model\":{\"provider\":\"openai\",\"api_key\":\"sk-legacy-secret\","
-               "\"model\":\"gpt-4o\",\"base_url\":\"\",\"max_response_tokens\":1000,"
+               "\"model\":\"gpt-4o\",\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -1673,7 +1641,7 @@ TEST_CASE("config_web: switching model providers never reassigns the resolved ap
                "\"work-openai\":{\"type\":\"openai\",\"api_key\":\"sk-work-secret-aaaa\"},"
                "\"personal-openai\":{\"type\":\"openai\",\"api_key\":\"sk-personal-secret-bbbb\"}},"
                "\"model\":{\"provider\":\"work-openai\",\"api_key\":\"sk-work-secret-aaaa\","
-               "\"model\":\"gpt-4o\",\"base_url\":\"\",\"max_response_tokens\":1000,"
+               "\"model\":\"gpt-4o\",\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -2839,7 +2807,7 @@ TEST_CASE("config_web: stt live test leaves provider resolution to the running a
                "\"base_url\":\"https://stt.example.test/v1\"}},"
                "\"stt\":{\"provider\":\"env-whisper\",\"language\":\"en\"},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -2903,7 +2871,7 @@ TEST_CASE("config_web: stt live test rejects malformed provider fields before fl
                "\"api_key\":\"stored-key\",\"model\":\"whisper-1\"}},"
                "\"stt\":{\"provider\":\"env-whisper\",\"language\":\"en\"},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -3818,7 +3786,7 @@ TEST_CASE("config_web: POST /api/config keeps voice records when the payload omi
                "\"tts\":{\"provider\":\"fish\",\"speed\":1},"
                "\"stt\":{\"provider\":\"whisper\",\"language\":\"zh\"},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -3853,7 +3821,7 @@ TEST_CASE("config_web: POST /api/config preserves an omitted voice provider api_
                "\"api_key\":\"sk-fish-secret-1234\"}},"
                "\"tts\":{\"provider\":\"fish\",\"speed\":1},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -4111,7 +4079,7 @@ TEST_CASE("config_web: tts config test leaves provider references for agent") {
                "\"api_key\":\"sk-fish-secret-1234\",\"reference_id\":\"ref-abc\"}},"
                "\"tts\":{\"provider\":\"fish\",\"speed\":1},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -4143,7 +4111,7 @@ TEST_CASE("config_web: tts config test exposes process env to agent") {
                "\"has_api_key\":true,\"reference_id\":\"ref-abc\"}},"
                "\"tts\":{\"provider\":\"env-fish\",\"speed\":1},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -4181,7 +4149,7 @@ TEST_CASE("config_web: stt config test leaves provider references for agent") {
                "\"region\":\"ap-shanghai\"}},"
                "\"stt\":{\"provider\":\"tencent-main\",\"language\":\"zh\"},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -4214,7 +4182,7 @@ TEST_CASE("config_web: stt config test honors an empty provider api_key in syste
                "\"base_url\":\"" + base_url + "\"}},"
                "\"stt\":{\"provider\":\"env-whisper\",\"language\":\"en\"},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
@@ -4257,7 +4225,7 @@ TEST_CASE("config_web: GET /api/config returns voice providers from the resolved
                "\"tts\":{\"provider\":\"fish\",\"speed\":1.2},"
                "\"stt\":{\"provider\":\"tencent\",\"language\":\"zh\"},"
                "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+               "\"temperature\":0.2,\"max_response_tokens\":1000,"
                "\"context_window\":0,\"model_max_output_tokens\":0},"
                "\"hid\":{\"pointer_mode\":\"absolute\"},"
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");

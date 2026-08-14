@@ -102,9 +102,13 @@ func TestRunModelProviderTestSendsEffectiveSamplingValues(t *testing.T) {
 			}))
 			defer server.Close()
 
-			tt.request.APIKey = "test-key"
-			tt.request.BaseURL = server.URL + "/v1"
-			if _, err := RunModelProviderTest(context.Background(), Config{}, tt.request); err != nil {
+			cfg := Config{
+				ModelProviders: map[string]ModelProvider{
+					"test-openai": {Type: "openai", APIKey: "test-key", BaseURL: server.URL + "/v1"},
+				},
+			}
+			tt.request.Provider = "test-openai"
+			if _, err := RunModelProviderTest(context.Background(), cfg, tt.request); err != nil {
 				t.Fatalf("RunModelProviderTest() error = %v", err)
 			}
 			if captured.Temperature == nil || *captured.Temperature != tt.wantTemperature {
@@ -190,6 +194,39 @@ func TestApplyModelProviderTestRequestSamplingSemantics(t *testing.T) {
 				t.Fatalf("reasoning_effort = %q, want %q", cfg.Model.ReasoningEffort, tt.wantReasoningEffort)
 			}
 		})
+	}
+}
+
+func TestApplyModelProviderTestRequestBaseURLFollowsProvider(t *testing.T) {
+	cfg := Config{
+		ModelProviders: map[string]ModelProvider{
+			"work": {Type: "openai", BaseURL: "https://provider.example.com/v1"},
+		},
+		Model: ModelConfig{
+			Provider: "openai",
+			Model:    "gpt-4o",
+			BaseURL:  "https://stale.example.com/v1",
+		},
+	}
+
+	if err := applyModelProviderTestRequest(&cfg, ModelProviderTestRequest{
+		Provider: "work",
+		Model:    "gpt-4o",
+	}); err != nil {
+		t.Fatalf("applyModelProviderTestRequest() error = %v", err)
+	}
+	if cfg.Model.BaseURL != "https://provider.example.com/v1" {
+		t.Fatalf("base_url = %q, want provider value", cfg.Model.BaseURL)
+	}
+
+	if err := applyModelProviderTestRequest(&cfg, ModelProviderTestRequest{
+		Provider: "openai",
+		Model:    "gpt-4o",
+	}); err != nil {
+		t.Fatalf("applyModelProviderTestRequest() direct error = %v", err)
+	}
+	if cfg.Model.BaseURL != "" {
+		t.Fatalf("direct provider base_url = %q, want empty", cfg.Model.BaseURL)
 	}
 }
 
