@@ -103,7 +103,7 @@ Each CLI run creates `runs/<run_id>/`:
 ```
 
 `pre.jpg` and `post.jpg` are present when `--environment-url` is configured and
-the bridge returns screenshots through `/api/screen`. Judge uses those two
+the bridge returns screenshots through `POST /api/providers/screenshot`. Judge uses those two
 images plus trace/final response.
 
 ## Rejudge

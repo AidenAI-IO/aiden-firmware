@@ -5,67 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 )
-
-// handleScreenshotJPEG captures the latest frame from frame_service and returns
-// it as a raw image/jpeg response. Used by the coordinate debug page to load the
-// live device screen without going through the base64 JSON screenshot tool.
-func (s *Server) handleScreenshotJPEG(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	options := parseCoordinateDebugScreenshotOptions(r)
-	result, jpegData, err := s.captureCoordinateDebugScreenshot(options)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Coordinate debug screenshot capture failed: %v", err)
-		} else {
-			log.Printf("[ERROR] Coordinate debug screenshot capture failed: %v", err)
-		}
-		http.Error(w, "capture failed", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Frame-Width", fmt.Sprintf("%d", result.Width))
-	w.Header().Set("X-Frame-Height", fmt.Sprintf("%d", result.Height))
-	w.Header().Set("X-Source-Width", fmt.Sprintf("%d", result.SourceWidth))
-	w.Header().Set("X-Source-Height", fmt.Sprintf("%d", result.SourceHeight))
-	if result.CaptureBackend != "" {
-		w.Header().Set("X-Capture-Backend", result.CaptureBackend)
-	}
-	if result.ADBDevice != nil {
-		w.Header().Set("X-Adb-Device-Valid", "true")
-		w.Header().Set("X-Adb-Device-Serial", result.ADBDevice.Serial)
-		w.Header().Set("X-Adb-Device-Name", result.ADBDevice.Name)
-		w.Header().Set("X-Adb-Device-State", result.ADBDevice.State)
-	} else {
-		w.Header().Set("X-Adb-Device-Valid", "false")
-	}
-	if result.OriginalScreenWidthPixels != nil && result.OriginalScreenHeightPixels != nil {
-		w.Header().Set("X-Original-Screen-Width", fmt.Sprintf("%d", *result.OriginalScreenWidthPixels))
-		w.Header().Set("X-Original-Screen-Height", fmt.Sprintf("%d", *result.OriginalScreenHeightPixels))
-		w.Header().Set("X-Original-Screen-Valid", "true")
-	} else {
-		w.Header().Set("X-Original-Screen-Valid", "false")
-	}
-	if result.SourceActiveArea != nil {
-		w.Header().Set("X-Source-Active-X", fmt.Sprintf("%d", result.SourceActiveArea.X))
-		w.Header().Set("X-Source-Active-Y", fmt.Sprintf("%d", result.SourceActiveArea.Y))
-		w.Header().Set("X-Source-Active-Width", fmt.Sprintf("%d", result.SourceActiveArea.Width))
-		w.Header().Set("X-Source-Active-Height", fmt.Sprintf("%d", result.SourceActiveArea.Height))
-		w.Header().Set("X-Source-Active-Valid", "true")
-	} else {
-		w.Header().Set("X-Source-Active-Valid", "false")
-	}
-	w.WriteHeader(http.StatusOK)
-	w.Write(jpegData)
-}
 
 // handleCoordinateDebug serves the normalized-coordinate debug page.
 func (s *Server) handleCoordinateDebug(w http.ResponseWriter, r *http.Request) {

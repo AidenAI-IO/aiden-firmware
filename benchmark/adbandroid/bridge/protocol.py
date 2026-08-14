@@ -30,3 +30,41 @@ def encode_screenshot(payload: bytes, mime_type: str, width: int, height: int) -
         "size": len(payload),
         "data": base64.b64encode(payload).decode("ascii"),
     }
+
+
+def encode_provider_frame(
+    payload: bytes,
+    *,
+    width: int,
+    height: int,
+    pixel_format: str = "jpeg",
+    backend: str = "adb",
+    seq: int = 1,
+    source_width: int | None = None,
+    source_height: int | None = None,
+    adb_device: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source_width = int(source_width or width)
+    source_height = int(source_height or height)
+    capture_info: dict[str, Any] = {"capture_backend": backend}
+    if adb_device:
+        capture_info["adb_device"] = adb_device
+    return {
+        "meta": {
+            "seq": int(seq),
+            "width": int(width),
+            "height": int(height),
+            "source_width": source_width,
+            "source_height": source_height,
+            "crop_x": 0,
+            "crop_y": 0,
+            "crop_width": int(width),
+            "crop_height": int(height),
+            "pixel_format": pixel_format,
+            "stride": 0,
+            "bytes": len(payload),
+            "stale": False,
+        },
+        "capture_info": capture_info,
+        "image": base64.b64encode(payload).decode("ascii"),
+    }

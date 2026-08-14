@@ -56,7 +56,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--host", default=defaults.get("VPHONE_BRIDGE_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=defaults.get("VPHONE_BRIDGE_PORT", "8899"))
-    parser.add_argument("--request-timeout-sec", type=float, default=120)
+    parser.add_argument("--request-timeout-sec", type=float, default=30)
     parser.add_argument("--action-settle-sec", type=float, default=0.6)
     parser.add_argument("--screenshot-max-width", type=int, default=DEFAULT_SCREENSHOT_MAX_WIDTH)
     parser.add_argument("--jpeg-quality", type=int, default=DEFAULT_JPEG_QUALITY)

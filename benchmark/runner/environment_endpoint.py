@@ -46,7 +46,7 @@ class EnvironmentEndpoint:
 
     @property
     def screen(self) -> str:
-        return self.api("screen")
+        return f"{self.base}/api/providers/screenshot"
 
     @property
     def concurrent(self) -> str:

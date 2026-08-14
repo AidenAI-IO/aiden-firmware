@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import socket
 import threading
@@ -19,13 +20,20 @@ from .episode import (
     StaleEpisodeError,
     benchmark_task_id_from_headers,
 )
-from .protocol import bridge_error, bridge_ok, encode_screenshot
+from .protocol import (
+    bridge_error,
+    bridge_ok,
+    encode_image_as_format,
+    encode_provider_frame,
+    encode_screenshot,
+)
 from .tools_api import ToolsAPIHandler
 
 
 ACTION_ENDPOINTS = {"tap", "swipe", "drag", "type_text", "key", "back", "home", "wait"}
 
-# 180s upper bound on a single bridge request. This is deliberately generous:
+# 180s upper bound on a single *action/setup* bridge request. This is
+# deliberately generous:
 # - Chromium-backed MobileGym actions occasionally stall on heavy pages (image
 #   decodes, page-load chains, animations) for tens of seconds before settling.
 # - Episode reset has its own 45s ceiling (EPISODE_RESET_TIMEOUT_SEC); after a
@@ -33,8 +41,10 @@ ACTION_ENDPOINTS = {"tap", "swipe", "drag", "type_text", "key", "back", "home", 
 #   which can take another minute on a cold image.
 # - 180s lets a single slow action complete instead of cascading retries, while
 #   still bounding a stuck slot tightly enough that parallel callers can move on.
-# Bump this only after profiling; going higher will hide real slot-handling bugs.
+# Screenshot capture is a separate, shorter budget: clients and this handler
+# both fail a hung POST /api/providers/screenshot at 30s.
 DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC = 180
+SCREENSHOT_PROVIDER_TIMEOUT_SEC = 30
 
 
 class BridgeServer:
@@ -86,13 +96,13 @@ class BridgeServer:
         self._httpd = None
         self._thread = None
 
-    def submit(self, coro: Any) -> Any:
+    def submit(self, coro: Any, *, timeout: float | None = None) -> Any:
         future = asyncio.run_coroutine_threadsafe(coro, self.state.owner_loop)
-        return future.result(timeout=self.request_timeout_sec)
+        return future.result(timeout=self.request_timeout_sec if timeout is None else timeout)
 
-    def submit_to_state(self, state: BridgeEpisodeState, coro: Any) -> Any:
+    def submit_to_state(self, state: BridgeEpisodeState, coro: Any, *, timeout: float | None = None) -> Any:
         future = asyncio.run_coroutine_threadsafe(coro, state.owner_loop)
-        return future.result(timeout=self.request_timeout_sec)
+        return future.result(timeout=self.request_timeout_sec if timeout is None else timeout)
 
 
 def _handler_for(bridge: BridgeServer):
@@ -105,14 +115,6 @@ def _handler_for(bridge: BridgeServer):
                 return
             if path == "/api/concurrent":
                 self._send_json(200, bridge_ok(_concurrent_payload(bridge)))
-                return
-            if path == "/api/screen":
-                try:
-                    self._handle_api_screen()
-                except MissingBenchmarkTaskIDError as exc:
-                    self._send_error(400, "missing_benchmark_task_id", str(exc))
-                except NoBridgeEnvAvailableError as exc:
-                    self._send_error(429, "no_bridge_env_available", str(exc))
                 return
             if path != "/health":
                 self._send_error(404, "not_found", "unknown endpoint")
@@ -146,6 +148,8 @@ def _handler_for(bridge: BridgeServer):
                     self._handle_route()
                 elif path == "screenshot":
                     self._handle_screenshot(payload)
+                elif path == "api/providers/screenshot":
+                    self._handle_provider_screenshot(payload)
                 elif path in ACTION_ENDPOINTS:
                     self._handle_action(path, payload)
                 else:
@@ -212,24 +216,43 @@ def _handler_for(bridge: BridgeServer):
             result = bridge.submit_to_state(state, state.run_env(get_screenshot))
             self._send_json(200, result)
 
-        def _handle_api_screen(self) -> None:
+        def _handle_provider_screenshot(self, payload: dict[str, Any]) -> None:
             state = self._request_screen_state()
-            if state is None or not state.active_episode_id:
-                self._send_json(200, bridge_ok(_screen_snapshot_payload()))
-                return
+            if state is None:
+                raise NoBridgeEnvAvailableError("no MobileGym env is available")
 
-            async def get_snapshot(env: Any) -> dict[str, Any]:
-                episode_id = state.active_episode_id
-                if not episode_id:
-                    return _screen_snapshot_payload()
+            async def get_frame(env: Any) -> dict[str, Any]:
                 observation = await _maybe_await(env.get_observation())
-                return _screen_snapshot_payload(
-                    active_episode_id=episode_id,
-                    screenshot=_encode_observation_screenshot(observation),
-                    action_log=state.action_log,
+                screenshot = _encode_observation_screenshot(observation)
+                seq = int(getattr(state, "_screenshot_seq", 0)) + 1
+                state._screenshot_seq = seq
+                image = base64.b64decode(screenshot["data"])
+                requested_format = str(payload.get("format") or "jpeg")
+                quality = payload.get("quality")
+                try:
+                    quality_value = int(quality) if quality is not None else 80
+                except (TypeError, ValueError):
+                    quality_value = 80
+                image, pixel_format = encode_image_as_format(
+                    image,
+                    str(screenshot.get("format") or ""),
+                    requested_format,
+                    quality_value,
+                )
+                return encode_provider_frame(
+                    image,
+                    width=int(screenshot["width"]),
+                    height=int(screenshot["height"]),
+                    pixel_format=pixel_format,
+                    backend="mobilegym",
+                    seq=seq,
                 )
 
-            result = bridge.submit_to_state(state, state.run_env(get_snapshot))
+            result = bridge.submit_to_state(
+                state,
+                state.run_env(get_frame),
+                timeout=SCREENSHOT_PROVIDER_TIMEOUT_SEC,
+            )
             self._send_json(200, bridge_ok(result))
 
         def _handle_action(self, name: str, payload: dict[str, Any]) -> None:
@@ -316,22 +339,6 @@ def _handler_for(bridge: BridgeServer):
     return BridgeRequestHandler
 
 
-def _screen_snapshot_payload(
-    *,
-    active_episode_id: str | None = None,
-    screenshot: dict[str, Any] | None = None,
-    action_log: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    actions = [_screen_action_payload(entry) for entry in (action_log or [])[-10:]]
-    return {
-        "status": "running" if active_episode_id else "waiting",
-        "active_episode_id": active_episode_id,
-        "screenshot": screenshot,
-        "action_count": len(action_log or []),
-        "actions": actions,
-    }
-
-
 def _health_payload(bridge: BridgeServer) -> dict[str, Any]:
     return {
         "status": "ok",
@@ -341,7 +348,7 @@ def _health_payload(bridge: BridgeServer) -> dict[str, Any]:
         "concurrent": len(bridge.router.states),
         "active_episode_id": bridge.state.active_episode_id,
         "active_routes": bridge.router.task_map(),
-        "interfaces": ["/api/tools", "/api/screen", "/api/setup", "/api/release", "/api/concurrent"],
+        "interfaces": ["/api/tools", "/api/providers/screenshot", "/api/setup", "/api/release", "/api/concurrent"],
     }
 
 
@@ -351,18 +358,6 @@ def _concurrent_payload(bridge: BridgeServer) -> dict[str, Any]:
         "concurrent": len(bridge.router.states),
         "env_count": len(bridge.router.states),
         "active_routes": bridge.router.task_map(),
-    }
-
-
-def _screen_action_payload(entry: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "episode_id": entry.get("episode_id"),
-        "action_id": entry.get("action_id"),
-        "tool_name": entry.get("tool_name"),
-        "tool_input": entry.get("tool_input") or {},
-        "duration_ms": entry.get("duration_ms"),
-        "error": entry.get("error"),
-        "has_screenshot": bool(entry.get("screenshot")),
     }
 
 

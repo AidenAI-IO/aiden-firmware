@@ -61,7 +61,7 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--suite", required=True)
     p_run.add_argument("--agent-url", default=os.environ.get("AIDEN_AGENT_URL", "http://localhost:8080"))
     p_run.add_argument("--environment-url", default=os.environ.get("AIDEN_ENVIRONMENT_URL", ""),
-                       help="Optional environment bridge endpoint; when set, each task calls /api/setup, /api/screen, and /api/release")
+                       help="Optional environment bridge endpoint; when set, each task calls /api/setup, POST /api/providers/screenshot, and /api/release")
     p_run.add_argument("--auto-agent-setup", action="store_true",
                        help="Start isolated agent daemons automatically and ignore --agent-url; concurrency is read from environment bridge /api/concurrent")
     p_run.add_argument("--max-concurrency", type=int, default=0,
@@ -91,7 +91,7 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--run-id", default="",
                        help="Optional run directory name under --out")
     p_run.add_argument("--benchmark-task-id", default="",
-                       help="Task routing id to use for environment setup/screen/release")
+                       help="Task routing id to use for environment setup, providers/screenshot, and release")
     p_run.add_argument("--target-platform", default=os.environ.get("AIDEN_BENCHMARK_TARGET_PLATFORM", "auto"),
                        choices=["auto", "ios", "android", "mac", "windows", "linux"],
                        help="Filter suite tasks by platform; auto resolves platform from environment bridge health")

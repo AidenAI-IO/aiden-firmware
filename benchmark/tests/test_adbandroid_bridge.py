@@ -221,7 +221,7 @@ def test_release_semantics(bridge):
 
 def test_tool_call_requires_active_episode(bridge):
     _, _, base_url = bridge
-    status, body = _request(base_url, "/api/tools/screenshot", method="POST", payload={"input": "{}"})
+    status, body = _request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}})
     assert status == 409
     assert body["error"] == "no_active_episode"
 
@@ -231,53 +231,66 @@ def test_tool_call_with_empty_task_id_uses_single_state(bridge):
     # calls carry no benchmark-task-id header at all. Both must hit the state.
     _, device, base_url = bridge
     _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
-    status, body = _request(base_url, "/api/tools/screenshot", method="POST", payload={"input": "{}"})
+    status, body = _request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}})
     assert status == 200
     assert body["is_error"] is False
-    output = json.loads(body["output"])
-    assert output["width"] == 720
-    assert output["height"] == 1280
-    assert output["format"] == "jpeg"
-    assert base64.b64decode(output["data"]) == b"fake-jpeg-bytes"
+    assert ("keyevent", "KEYCODE_HOME") in device.calls
+
+
+def test_provider_screenshot_returns_frame_metadata(bridge):
+    _, device, base_url = bridge
+    status, body = _request(
+        base_url,
+        "/api/providers/screenshot",
+        method="POST",
+        payload={"format": "jpeg", "quality": 80},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    data = body["data"]
+    assert data["meta"]["width"] == 720
+    assert data["meta"]["height"] == 1280
+    assert data["meta"]["pixel_format"] == "jpeg"
+    assert data["capture_info"]["capture_backend"] == "adb"
+    assert base64.b64decode(data["image"]) == b"fake-jpeg-bytes"
+    assert ("screenshot_jpeg",) in device.calls
 
 
 def test_tool_call_with_mismatched_task_id_returns_429(bridge):
     _, _, base_url = bridge
     _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
     status, body = _request(
-        base_url, "/api/tools/screenshot", method="POST", payload={"input": "{}"}, task_id="suite:other"
+        base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}}, task_id="suite:other"
     )
     assert status == 429
     assert body["error"] == "no_bridge_env_available"
 
 
-def test_api_screen_works_without_setup(bridge):
+def test_provider_screenshot_works_without_setup(bridge):
     _, _, base_url = bridge
-    status, body = _request(base_url, "/api/screen")
+    status, body = _request(
+        base_url,
+        "/api/providers/screenshot",
+        method="POST",
+        payload={"format": "jpeg", "quality": 80},
+    )
     assert status == 200
-    screenshot = body["data"]["screenshot"]
-    assert screenshot["width"] == 720
-    assert screenshot["height"] == 1280
-    assert screenshot["format"] == "jpeg"
-    assert base64.b64decode(screenshot["data"]) == b"fake-jpeg-bytes"
-    assert body["data"]["status"] == "waiting"
+    assert body["ok"] is True
+    assert base64.b64decode(body["data"]["image"]) == b"fake-jpeg-bytes"
 
 
-def test_api_screen_reports_running_episode_and_actions(bridge):
+def test_provider_screenshot_rejects_conflicting_task_id(bridge):
     _, _, base_url = bridge
     _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
-    _request(
+    status, body = _request(
         base_url,
-        "/api/tools/touch_gesture",
+        "/api/providers/screenshot",
         method="POST",
-        payload={"input": json.dumps({"type": "home"})},
+        payload={"format": "jpeg", "quality": 80},
+        task_id="suite:other",
     )
-    status, body = _request(base_url, "/api/screen", task_id="suite:task-1")
-    assert status == 200
-    assert body["data"]["status"] == "running"
-    assert body["data"]["active_episode_id"] == "suite:task-1"
-    assert body["data"]["action_count"] == 1
-    assert body["data"]["actions"][0]["tool"] == "touch_gesture"
+    assert status == 429
+    assert body["error"]["code"] == "no_bridge_env_available"
 
 
 def test_tools_catalog_lists_expected_tools(bridge):
@@ -286,7 +299,6 @@ def test_tools_catalog_lists_expected_tools(bridge):
     assert status == 200
     names = {tool["name"] for tool in body["tools"]}
     assert names == {
-        "screenshot",
         "touch_gesture",
         "keyboard_text",
         "keyboard_tap",

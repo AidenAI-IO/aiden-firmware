@@ -1,4 +1,4 @@
-package agent
+package screenprovider
 
 import (
 	"bytes"
@@ -27,15 +27,15 @@ var (
 	autoADBSerial     string
 )
 
-// ADBScreenClient captures the connected Android device screen via adb
-// screencap when frame_service is unavailable.
-type ADBScreenClient struct {
+// ADB captures the connected Android device screen via adb screencap when
+// frame_service is unavailable.
+type ADB struct {
 	mu                     sync.Mutex
 	cachedAutoSerial       string
 	cachedAutoSerialExpiry time.Time
 	cachedDevices          []adbListedDevice
 	cachedDevicesExpiry    time.Time
-	lastCaptureInfo        screenCaptureInfo
+	lastCaptureInfo        CaptureInfo
 	seq                    atomic.Uint64
 }
 
@@ -47,44 +47,44 @@ type adbListedDevice struct {
 	Product    string
 }
 
-func NewADBScreenClient() *ADBScreenClient {
-	return &ADBScreenClient{}
+func NewADB() *ADB {
+	return &ADB{}
 }
 
-func (c *ADBScreenClient) LastCaptureInfo() screenCaptureInfo {
+func (c *ADB) LastCaptureInfo() CaptureInfo {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return cloneScreenCaptureInfo(c.lastCaptureInfo)
+	return CloneCaptureInfo(c.lastCaptureInfo)
 }
 
-func (c *ADBScreenClient) LatestFrame() (*frameMetadata, []byte, error) {
+func (c *ADB) LatestFrame() (*FrameMetadata, []byte, error) {
 	return c.capture("raw", 0)
 }
 
-func (c *ADBScreenClient) LatestFrameWithFormat(format string, quality int, _ bool, _ int) (*frameMetadata, []byte, error) {
+func (c *ADB) LatestFrameWithFormat(format string, quality int, _ bool, _ int) (*FrameMetadata, []byte, error) {
 	return c.capture(format, quality)
 }
 
-func (c *ADBScreenClient) capture(format string, quality int) (*frameMetadata, []byte, error) {
+func (c *ADB) capture(format string, quality int) (*FrameMetadata, []byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), adbScreenCaptureTimeout)
 	defer cancel()
 
-	adbPath, err := c.adbPath()
+	adbPath, err := c.ADBPath()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	serial, err := c.resolveSerial(ctx, adbPath)
+	serial, err := c.ResolveSerial(ctx, adbPath)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	pngData, err := c.capturePNG(ctx, adbPath, serial)
 	if err != nil {
-		c.invalidateAutoSerial(serial)
+		c.InvalidateAutoSerial(serial)
 		return nil, nil, err
 	}
-	c.recordLastCaptureInfo(screenCaptureInfo{
+	c.recordLastCaptureInfo(CaptureInfo{
 		Backend:   "adb",
 		ADBDevice: c.captureDeviceInfo(ctx, adbPath, serial),
 	})
@@ -97,7 +97,7 @@ func (c *ADBScreenClient) capture(format string, quality int) (*frameMetadata, [
 		return nil, nil, fmt.Errorf("invalid adb screenshot dimensions: %dx%d", cfg.Width, cfg.Height)
 	}
 
-	meta := &frameMetadata{
+	meta := &FrameMetadata{
 		Seq:          c.seq.Add(1),
 		Width:        uint32(cfg.Width),
 		Height:       uint32(cfg.Height),
@@ -129,7 +129,7 @@ func (c *ADBScreenClient) capture(format string, quality int) (*frameMetadata, [
 	}
 }
 
-func (c *ADBScreenClient) adbPath() (string, error) {
+func (c *ADB) ADBPath() (string, error) {
 	if configured := strings.TrimSpace(os.Getenv("AIDEN_ADB_PATH")); configured != "" {
 		return configured, nil
 	}
@@ -149,7 +149,7 @@ func configuredADBSerial() string {
 	return ""
 }
 
-func setAutoConfiguredADBSerial(serial string) error {
+func SetAutoConfiguredSerial(serial string) error {
 	serial = strings.TrimSpace(serial)
 	if serial == "" || strings.TrimSpace(os.Getenv("ANDROID_SERIAL")) != "" {
 		return nil
@@ -169,7 +169,7 @@ func setAutoConfiguredADBSerial(serial string) error {
 	return nil
 }
 
-func clearAutoConfiguredADBSerial(serial string) {
+func ClearAutoConfiguredSerial(serial string) {
 	serial = strings.TrimSpace(serial)
 	if serial == "" {
 		return
@@ -187,7 +187,7 @@ func clearAutoConfiguredADBSerial(serial string) {
 	autoADBSerial = ""
 }
 
-func (c *ADBScreenClient) resolveSerial(ctx context.Context, adbPath string) (string, error) {
+func (c *ADB) ResolveSerial(ctx context.Context, adbPath string) (string, error) {
 	if serial := configuredADBSerial(); serial != "" {
 		return serial, nil
 	}
@@ -198,7 +198,7 @@ func (c *ADBScreenClient) resolveSerial(ctx context.Context, adbPath string) (st
 	cachedExpiry := c.cachedAutoSerialExpiry
 	c.mu.Unlock()
 	if cachedSerial != "" && now.Before(cachedExpiry) {
-		if err := setAutoConfiguredADBSerial(cachedSerial); err != nil {
+		if err := SetAutoConfiguredSerial(cachedSerial); err != nil {
 			return "", err
 		}
 		return cachedSerial, nil
@@ -224,7 +224,7 @@ func (c *ADBScreenClient) resolveSerial(ctx context.Context, adbPath string) (st
 	}
 
 	serial := connected[0]
-	if err := setAutoConfiguredADBSerial(serial); err != nil {
+	if err := SetAutoConfiguredSerial(serial); err != nil {
 		return "", err
 	}
 	c.mu.Lock()
@@ -234,11 +234,11 @@ func (c *ADBScreenClient) resolveSerial(ctx context.Context, adbPath string) (st
 	return serial, nil
 }
 
-func (c *ADBScreenClient) invalidateAutoSerial(serial string) {
+func (c *ADB) InvalidateAutoSerial(serial string) {
 	if serial == "" {
 		return
 	}
-	clearAutoConfiguredADBSerial(serial)
+	ClearAutoConfiguredSerial(serial)
 	if configuredADBSerial() != "" {
 		return
 	}
@@ -250,7 +250,7 @@ func (c *ADBScreenClient) invalidateAutoSerial(serial string) {
 	c.mu.Unlock()
 }
 
-func (c *ADBScreenClient) listDevices(ctx context.Context, adbPath string) ([]adbListedDevice, error) {
+func (c *ADB) listDevices(ctx context.Context, adbPath string) ([]adbListedDevice, error) {
 	now := time.Now()
 	c.mu.Lock()
 	cachedDevices := append([]adbListedDevice(nil), c.cachedDevices...)
@@ -260,7 +260,7 @@ func (c *ADBScreenClient) listDevices(ctx context.Context, adbPath string) ([]ad
 		return cachedDevices, nil
 	}
 
-	stdout, _, err := runADBCommand(ctx, adbPath, "devices", "-l")
+	stdout, _, err := RunADB(ctx, adbPath, "devices", "-l")
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +306,7 @@ func parseADBDeviceList(stdout []byte) []adbListedDevice {
 	return devices
 }
 
-func (d adbListedDevice) info() *adbDeviceInfo {
+func (d adbListedDevice) info() *DeviceInfo {
 	name := strings.TrimSpace(d.Model)
 	if name == "" {
 		name = strings.TrimSpace(d.DeviceName)
@@ -321,14 +321,14 @@ func (d adbListedDevice) info() *adbDeviceInfo {
 	if state == "" {
 		state = "unknown"
 	}
-	return &adbDeviceInfo{
+	return &DeviceInfo{
 		Serial: strings.TrimSpace(d.Serial),
 		Name:   name,
 		State:  state,
 	}
 }
 
-func (c *ADBScreenClient) captureDeviceInfo(ctx context.Context, adbPath, serial string) *adbDeviceInfo {
+func (c *ADB) captureDeviceInfo(ctx context.Context, adbPath, serial string) *DeviceInfo {
 	serial = strings.TrimSpace(serial)
 	if serial == "" {
 		return nil
@@ -341,27 +341,27 @@ func (c *ADBScreenClient) captureDeviceInfo(ctx context.Context, adbPath, serial
 			}
 		}
 	}
-	return &adbDeviceInfo{
+	return &DeviceInfo{
 		Serial: serial,
 		Name:   serial,
 		State:  "device",
 	}
 }
 
-func (c *ADBScreenClient) recordLastCaptureInfo(info screenCaptureInfo) {
+func (c *ADB) recordLastCaptureInfo(info CaptureInfo) {
 	c.mu.Lock()
-	c.lastCaptureInfo = cloneScreenCaptureInfo(info)
+	c.lastCaptureInfo = CloneCaptureInfo(info)
 	c.mu.Unlock()
 }
 
-func (c *ADBScreenClient) capturePNG(ctx context.Context, adbPath, serial string) ([]byte, error) {
+func (c *ADB) capturePNG(ctx context.Context, adbPath, serial string) ([]byte, error) {
 	args := make([]string, 0, 5)
 	if serial != "" {
 		args = append(args, "-s", serial)
 	}
 	args = append(args, "exec-out", "screencap", "-p")
 
-	stdout, stderr, err := runADBCommand(ctx, adbPath, args...)
+	stdout, stderr, err := RunADB(ctx, adbPath, args...)
 	if err != nil {
 		if trimmed := strings.TrimSpace(string(stderr)); trimmed != "" {
 			return nil, fmt.Errorf("adb screencap failed: %s", trimmed)
@@ -374,7 +374,7 @@ func (c *ADBScreenClient) capturePNG(ctx context.Context, adbPath, serial string
 	return stdout, nil
 }
 
-func runADBCommand(ctx context.Context, adbPath string, args ...string) ([]byte, []byte, error) {
+func RunADB(ctx context.Context, adbPath string, args ...string) ([]byte, []byte, error) {
 	cmd := adbCommandContext(ctx, adbPath, args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

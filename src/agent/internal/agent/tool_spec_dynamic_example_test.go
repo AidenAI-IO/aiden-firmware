@@ -14,7 +14,7 @@ func TestWaitStableScreenToolExampleInputIsEmpty(t *testing.T) {
 		StableMs:      500,
 		DiffThreshold: 2.0,
 	}
-	tool := NewWaitStableScreenTool("/tmp/test.sock", defaults)
+	tool := NewWaitStableScreenTool(nil, defaults)
 
 	// Create tool spec
 	spec := NewToolSpec(tool)
@@ -31,7 +31,7 @@ func TestWaitStableScreenToolExampleInputWithDefaults(t *testing.T) {
 
 	// Create tool with zero defaults (uses code defaults)
 	defaults := ScreenStableDefaults{}
-	tool := NewWaitStableScreenTool("/tmp/test.sock", defaults)
+	tool := NewWaitStableScreenTool(nil, defaults)
 
 	// Create tool spec
 	spec := NewToolSpec(tool)
@@ -51,7 +51,7 @@ func TestWaitStableScreenToolDescriptionShowsConfiguredValues(t *testing.T) {
 		StableMs:      500,
 		DiffThreshold: 2.0,
 	}
-	tool := NewWaitStableScreenTool("/tmp/test.sock", defaults)
+	tool := NewWaitStableScreenTool(nil, defaults)
 
 	desc := tool.Description()
 

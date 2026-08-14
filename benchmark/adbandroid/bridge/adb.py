@@ -136,7 +136,7 @@ class ADBAndroidDevice:
         except ImportError as exc:  # pragma: no cover - Pillow is a hard dependency
             raise ADBCommandError("Pillow is required for screenshots") from exc
 
-        png = self._run(["exec-out", "screencap", "-p"], binary=True, timeout=max(self.timeout_sec, 15))
+        png = self._run(["exec-out", "screencap", "-p"], binary=True, timeout=max(self.timeout_sec, 30))
         if not png.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ADBCommandError("screencap did not return PNG data")
         image = Image.open(io.BytesIO(png)).convert("RGB")

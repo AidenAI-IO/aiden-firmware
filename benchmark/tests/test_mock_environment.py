@@ -40,7 +40,11 @@ def _task_mock_environment(suite_name: str, task_id: str):
 
 
 def test_mock_environment_wildcard_bind_advertises_loopback(tmp_path):
-    spec = MockEnvironmentSpec(platform="ios", phone_bridge={}, tools={})
+    spec = MockEnvironmentSpec(
+        platform="ios",
+        phone_bridge={},
+        tools={"bridge_contacts": [MockToolResponseSpec(output={"ok": True})]},
+    )
     server = MockEnvironmentServer(spec, tmp_path, host="0.0.0.0")
     base_url = server.start()
     try:
@@ -126,10 +130,14 @@ def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
         assert state["data"]["calls"][-1]["tool"] == "enter_text"
         assert "+1 202-555-0147" in state["data"]["screen_text"]
 
-        screen = _json_request(f"{base_url}/api/screen")
-        screenshot = screen["data"]["screenshot"]
-        assert screenshot["width"] == 1170
-        assert screenshot["data"]
+        screen = _json_request(f"{base_url}/api/providers/screenshot", "POST", {"format": "jpeg", "quality": 80})
+        meta = screen["data"]["meta"]
+        assert meta["width"] == 1170
+        assert meta["seq"] == 1
+        assert meta["bytes"] > 0
+        assert len(base64.b64decode(screen["data"]["image"])) == meta["bytes"]
+        screen2 = _json_request(f"{base_url}/api/providers/screenshot", "POST", {"format": "jpeg", "quality": 80})
+        assert screen2["data"]["meta"]["seq"] == 2
     finally:
         server.stop()
 
@@ -313,7 +321,6 @@ def test_mock_environment_activate_switches_task_fixture(tmp_path):
         ios_tools = _json_request(f"{base_url}/api/tools")
         assert [tool["name"] for tool in ios_tools["tools"]] == [
             "bridge_contacts",
-            "screenshot",
         ]
 
         server.activate(android)
@@ -321,7 +328,6 @@ def test_mock_environment_activate_switches_task_fixture(tmp_path):
         android_tools = _json_request(f"{base_url}/api/tools")
         assert [tool["name"] for tool in android_tools["tools"]] == [
             "bridge_calendar",
-            "screenshot",
         ]
         state = _json_request(f"{base_url}/api/state")
         assert state["data"]["platform"] == "android"
@@ -378,7 +384,7 @@ def test_mock_environment_rejects_invalid_content_length(tmp_path, content_lengt
     parsed = urllib.parse.urlparse(base_url)
     connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
     try:
-        connection.putrequest("POST", f"{parsed.path}/api/tools/screenshot")
+        connection.putrequest("POST", f"{parsed.path}/api/providers/screenshot")
         connection.putheader("Content-Length", str(content_length))
         connection.endheaders()
         response = connection.getresponse()
@@ -399,7 +405,7 @@ def test_mock_environment_times_out_incomplete_request_body(tmp_path, monkeypatc
     parsed = urllib.parse.urlparse(base_url)
     connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=1)
     try:
-        connection.putrequest("POST", f"{parsed.path}/api/tools/screenshot")
+        connection.putrequest("POST", f"{parsed.path}/api/providers/screenshot")
         connection.putheader("Content-Length", "10")
         connection.endheaders(b"{}")
         response = connection.getresponse()

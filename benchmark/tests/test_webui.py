@@ -121,7 +121,7 @@ def test_task_screen_payload_proxies_bridge_screen_with_task_header(tmp_path: Pa
         status = 200
 
         def read(self):
-            return b'{"ok": true, "data": {"status": "waiting", "screenshot": null}}'
+            return b'{"ok": true, "data": {"meta": {"width": 100, "height": 200, "pixel_format": "jpeg"}, "image": "AAAA"}}'
 
         def __enter__(self):
             return self
@@ -131,6 +131,7 @@ def test_task_screen_payload_proxies_bridge_screen_with_task_header(tmp_path: Pa
 
     def fake_urlopen(req, timeout=None):
         seen["url"] = req.full_url
+        seen["method"] = req.get_method()
         seen["headers"] = {key.lower(): value for key, value in req.header_items()}
         seen["timeout"] = timeout
         return FakeResponse()
@@ -140,8 +141,11 @@ def test_task_screen_payload_proxies_bridge_screen_with_task_header(tmp_path: Pa
     payload = app.task_screen_payload("job-1", "task-record")
 
     assert payload["ok"] is True
-    assert seen["url"] == "http://127.0.0.1:19090/api/screen"
+    assert seen["url"] == "http://127.0.0.1:19090/api/providers/screenshot"
+    assert seen["method"] == "POST"
     assert seen["headers"]["benchmark-task-id"] == "suite.json:t1"
+    assert seen["headers"]["content-type"] == "application/json"
+    assert seen["timeout"] == 30
 
 
 def test_task_screen_html_fetches_webui_screen_api():
@@ -1846,7 +1850,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
         encoding="utf-8"
     )
     expected_forward_tools = (
-        "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
+        "touch_gesture,keyboard_text,keyboard_tap,"
         "enter_text,"
         "search_launch_app,mouse_move,mouse_scroll,quick_action,"
         "bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,"
