@@ -23,6 +23,7 @@ GADGET_SWITCH_LOCK_DIR=/run/aiden_dynamic_keyboard.lock
 PLANNED_SWITCH_GRACE_FILE=/run/aiden_dynamic_keyboard.grace
 USB0_ADDR=192.168.42.1
 USB0_NETMASK=255.255.255.0
+USB_REENUMERATION_WAKE_URL=http://127.0.0.1:8080/api/bluetooth/wake/usb-reenumeration
 
 PROBE_INTERVAL=5       # probe ECM connectivity every N seconds
 PROBE_FAIL_THRESHOLD=2 # reset after N consecutive probe failures
@@ -38,6 +39,13 @@ log() {
     event="$2"
     shift 2
     aiden_log_to_file "$LOG_FILE" "$level" usb_ecm_watchdog watchdog "$event" "$*"
+}
+
+announce_usb_reenumeration() {
+    if ! curl --fail --silent --show-error --max-time 2 \
+        -X POST "$USB_REENUMERATION_WAKE_URL" >/dev/null 2>&1; then
+        log WARN wake_failed "could not announce planned USB composite reset over BLE"
+    fi
 }
 
 CAPTURED_ERROR=
@@ -190,6 +198,8 @@ reset_composite_locked() {
     log WARN reset_started "resetting USB composite gadget: $reason"
     log_snapshot "before reset ($reason)"
     write_refresh_state "$reason" "started" "$started_at" "reset started"
+
+    announce_usb_reenumeration
 
     if [ ! -f "$GADGET_UDC" ]; then
         log ERROR udc_control_missing "UDC control file missing: $GADGET_UDC"

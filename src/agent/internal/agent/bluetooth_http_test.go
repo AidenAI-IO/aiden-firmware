@@ -66,6 +66,38 @@ func TestBluetoothHTTPDisconnectsPhysicalLink(t *testing.T) {
 	}
 }
 
+func TestBluetoothUSBReenumerationWakeIsLoopbackOnly(t *testing.T) {
+	wakeReasons := []string{}
+	server := &Server{
+		bleWakeRequest: func(_ context.Context, reason string) error {
+			wakeReasons = append(wakeReasons, reason)
+			return nil
+		},
+	}
+
+	allowed := httptest.NewRequest(http.MethodPost, "/api/bluetooth/wake/usb-reenumeration", nil)
+	allowed.RemoteAddr = "127.0.0.1:12345"
+	allowedRecorder := httptest.NewRecorder()
+	server.handleBluetoothUSBReenumerationWake(allowedRecorder, allowed)
+	if allowedRecorder.Code != http.StatusOK {
+		t.Fatalf("loopback status = %d body=%s", allowedRecorder.Code, allowedRecorder.Body.String())
+	}
+	if len(wakeReasons) != 1 || wakeReasons[0] != "usb_reenumeration" {
+		t.Fatalf("wake reasons = %v, want [usb_reenumeration]", wakeReasons)
+	}
+
+	denied := httptest.NewRequest(http.MethodPost, "/api/bluetooth/wake/usb-reenumeration", nil)
+	denied.RemoteAddr = "192.168.42.2:12345"
+	deniedRecorder := httptest.NewRecorder()
+	server.handleBluetoothUSBReenumerationWake(deniedRecorder, denied)
+	if deniedRecorder.Code != http.StatusForbidden {
+		t.Fatalf("USB client status = %d body=%s", deniedRecorder.Code, deniedRecorder.Body.String())
+	}
+	if len(wakeReasons) != 1 {
+		t.Fatalf("denied request emitted wake reasons: %v", wakeReasons)
+	}
+}
+
 func TestBluetoothHTTPResetsStaleBond(t *testing.T) {
 	server := &Server{
 		blePairingForgetRequest: func(context.Context, string) (ble.ForgetResult, error) {

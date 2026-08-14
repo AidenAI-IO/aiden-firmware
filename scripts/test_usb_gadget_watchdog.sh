@@ -59,6 +59,12 @@ grep -Fq 'release_gadget_switch_lock' "$WATCHDOG" ||
 grep -Fq 'reset_composite "ECM stall"' "$WATCHDOG" ||
     fail "watchdog_main must reset the composite gadget on ECM stalls"
 
+grep -Fq 'announce_usb_reenumeration' "$WATCHDOG" ||
+    fail "watchdog must announce a planned composite reset before ECM disappears"
+
+grep -Fq '/api/bluetooth/wake/usb-reenumeration' "$WATCHDOG" ||
+    fail "watchdog must use the loopback-only BLE wake endpoint"
+
 grep -Fq 'UDC state changed:' "$WATCHDOG" ||
     fail "watchdog_main must track host UDC state transitions"
 
