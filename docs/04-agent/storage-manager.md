@@ -391,34 +391,16 @@ A retention value of 0 creates an emergency cleanup stage. The default session_a
 
 #### Python Package Cleanup
 
-The persistent Python package environment registers one `python_userbase`
-cleaner backed by the same `StorageCleaner` interface.
+The persistent Python environment registers one `python_userbase` cleaner.
 
 | Cleaner | Normal and manual force behavior | Emergency behavior | Protection |
 | --- | --- | --- | --- |
-| `python_userbase` | Removes direct children of `/userdata/tmp` older than 24 hours; retains the whole Python user base | Removes the entire `/userdata/agent/python` user base and still preserves recent temp entries | Never follows symlinks; never removes the user base below Emergency |
+| `python_userbase` | Removes direct children of `/userdata/tmp` older than 24 hours; retains the whole Python user base | Clears `/userdata/agent/python`, recreates it empty, and preserves recent temp entries | Never follows symlink targets; never clears the user base below Emergency |
 
-The user base contains rebuildable runtime packages and is intentionally the
-destructive cleanup target only at the highest alert level. Because installation
-uses the general shell tool, this cleaner does not enforce an installation gate;
-the Agent guidance avoids starting new pip work while `/userdata` is under
-storage pressure.
-
-Manual cleanup accepts:
-
-~~~json
-{
-  "force": false,
-  "targets": ["python_userbase"]
-}
-~~~
-
-Manual `force=true` does not remove the package environment while the effective
-level is below Emergency. At Emergency, automatic or manual remediation removes
-the entire user base. Recent temporary entries retain the 24-hour safety window.
-See
-[Persistent Python Package Environment](python-packages.md) for the
-directory layout, shell environment, OTA behavior, and cleanup safety rules.
+Manual cleanup accepts `python_userbase` as a target. `force=true` below
+Emergency still preserves installed packages. See
+[Persistent Python Packages](python-packages.md) for environment and cleanup
+details.
 
 #### Stage Eligibility and Stop Conditions
 

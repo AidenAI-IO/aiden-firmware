@@ -13,28 +13,14 @@ const (
 	managedPythonTmpMode  = os.FileMode(0o777) | os.ModeSticky
 )
 
-type managedPythonPaths struct {
-	Root string
-	Tmp  string
-}
-
-func prepareManagedPythonPaths(root, tmp string) (managedPythonPaths, error) {
-	paths := managedPythonPaths{
-		Root: filepath.Clean(root),
-		Tmp:  filepath.Clean(tmp),
+func prepareManagedPythonPaths(root, tmp string) error {
+	root = filepath.Clean(root)
+	tmp = filepath.Clean(tmp)
+	if err := ensureManagedPythonDirectory(root, managedPythonRootMode); err != nil {
+		return fmt.Errorf("create managed python directory %q: %w", root, err)
 	}
-	if err := ensureManagedPythonPaths(paths); err != nil {
-		return managedPythonPaths{}, err
-	}
-	return paths, nil
-}
-
-func ensureManagedPythonPaths(paths managedPythonPaths) error {
-	if err := ensureManagedPythonDirectory(paths.Root, managedPythonRootMode); err != nil {
-		return fmt.Errorf("create managed python directory %q: %w", paths.Root, err)
-	}
-	if err := ensureManagedPythonDirectory(paths.Tmp, managedPythonTmpMode); err != nil {
-		return fmt.Errorf("create managed python temporary directory %q: %w", paths.Tmp, err)
+	if err := ensureManagedPythonDirectory(tmp, managedPythonTmpMode); err != nil {
+		return fmt.Errorf("create managed python temporary directory %q: %w", tmp, err)
 	}
 	return nil
 }

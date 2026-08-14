@@ -47,8 +47,7 @@ jobs:
           git -C "$dir" sparse-checkout set --no-cone \
             /sysdrv/Makefile \
             /sysdrv/tools/board/buildroot/luckfox_pico_defconfig \
-            /sysdrv/tools/board/buildroot/luckfox_pico_w_defconfig \
-            /sysdrv/tools/board/buildroot/python-charset-normalizer-aiden/
+            /sysdrv/tools/board/buildroot/luckfox_pico_w_defconfig
           git -C "$dir" fetch -q --depth=1 --filter=blob:none origin "$sha"
           git -C "$dir" checkout -q FETCH_HEAD
           # Assert what was actually checked out, so a wrong or partial fetch

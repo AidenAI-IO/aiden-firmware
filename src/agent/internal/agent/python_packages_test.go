@@ -11,12 +11,8 @@ func TestPrepareManagedPythonPathsCreatesManagedDirectories(t *testing.T) {
 	root := filepath.Join(base, "agent", "python")
 	tmp := filepath.Join(base, "tmp")
 
-	paths, err := prepareManagedPythonPaths(root, tmp)
-	if err != nil {
+	if err := prepareManagedPythonPaths(root, tmp); err != nil {
 		t.Fatalf("prepareManagedPythonPaths() error = %v", err)
-	}
-	if paths.Root != root || paths.Tmp != tmp {
-		t.Fatalf("prepareManagedPythonPaths() = %+v, want root=%q tmp=%q", paths, root, tmp)
 	}
 
 	rootInfo, err := os.Stat(root)
@@ -47,7 +43,7 @@ func TestPrepareManagedPythonPathsRejectsSymlinkRoot(t *testing.T) {
 		t.Skipf("Symlink unavailable: %v", err)
 	}
 
-	if _, err := prepareManagedPythonPaths(root, filepath.Join(base, "tmp")); err == nil {
+	if err := prepareManagedPythonPaths(root, filepath.Join(base, "tmp")); err == nil {
 		t.Fatal("prepareManagedPythonPaths() succeeded with symlink root, want error")
 	}
 }
@@ -63,7 +59,7 @@ func TestPrepareManagedPythonPathsRejectsSymlinkTemporaryDirectory(t *testing.T)
 		t.Skipf("Symlink unavailable: %v", err)
 	}
 
-	if _, err := prepareManagedPythonPaths(filepath.Join(base, "python"), tmp); err == nil {
+	if err := prepareManagedPythonPaths(filepath.Join(base, "python"), tmp); err == nil {
 		t.Fatal("prepareManagedPythonPaths() succeeded with symlink tmp, want error")
 	}
 }

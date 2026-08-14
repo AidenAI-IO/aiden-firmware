@@ -45,37 +45,23 @@ After the build completes, the images are located in:
 pico-sdk/output/image/
 ```
 
-## Firmware pip Integration
+## Firmware pip
 
-The Python package environment enables the SDK-provided pip in both
-active Luckfox Buildroot defconfigs:
+The pinned `pico-sdk` enables pip in both active Luckfox Buildroot defconfigs:
 
 ```text
 BR2_PACKAGE_PYTHON_PIP=y
 ```
 
-The defconfigs live in the `pico-sdk` submodule:
-
-```text
-pico-sdk/sysdrv/tools/board/buildroot/luckfox_pico_defconfig
-pico-sdk/sysdrv/tools/board/buildroot/luckfox_pico_w_defconfig
-```
-
-The current SDK uses Buildroot 2023.02.6, Python 3.11, and pip 22.3.1. The
-repository build-policy test requires the option in both defconfigs. The SDK
-also overrides Buildroot's `charset-normalizer` 3.0.1 recipe with 2.1.1 because
-the bundled `aiohttp` 3.8.3 requires `charset-normalizer>=2.0,<3.0`; this keeps
-the firmware package set valid under `/usr/bin/python3 -m pip check`.
-
-After a full image build, verify the rootfs package on the board with:
+The root repository policy checks this contract. After building an image,
+verify the firmware package with:
 
 ```bash
 /usr/bin/python3 -m pip --version
 ```
 
-Runtime-installed packages do not go into the rootfs. See
-[Persistent Python Package Environment](../04-agent/python-packages.md)
-for the persistent `/userdata` layout and installation policy.
+Runtime-installed packages stay under `/userdata`; see
+[Persistent Python Packages](../04-agent/python-packages.md).
 
 ## Flashing the Firmware
 

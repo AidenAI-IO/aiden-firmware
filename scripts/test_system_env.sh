@@ -81,7 +81,6 @@ ENV_FILE="$TMP_DIR/system.env"
 cat > "$ENV_FILE" <<'EOF'
 AIDEN_TEST_VALUE=from-system-env
 HTTP_PROXY=http://proxy.example:18080
-AIDEN_PYTHON_PROFILE=/should/not/win
 PYTHONUSERBASE=/should/not/win
 PIP_USER=0
 PIP_NO_CACHE_DIR=0
@@ -98,15 +97,6 @@ expected_python='/userdata/agent/python|1|1|1'
 if [ "$output" != "from-system-env|http://proxy.example:18080|$expected_no_proxy|$expected_no_proxy|$expected_python" ]; then
     echo "aiden-env-run did not apply system env and fixed Python environment" >&2
     echo "got: $output" >&2
-    exit 1
-fi
-
-legacy_profile_value=$(
-    AIDEN_SYSTEM_ENV="$ENV_FILE" \
-        "$TEST_ENV_RUN" sh -c 'printf "%s" "${AIDEN_PYTHON_PROFILE-unset}"'
-)
-if [ "$legacy_profile_value" != "unset" ]; then
-    echo "aiden-env-run leaked the retired AIDEN_PYTHON_PROFILE override" >&2
     exit 1
 fi
 

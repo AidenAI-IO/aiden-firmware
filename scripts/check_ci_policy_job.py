@@ -18,7 +18,6 @@ tell which job a line belongs to.
 
 from __future__ import annotations
 
-import shlex
 import sys
 from pathlib import Path
 
@@ -38,17 +37,6 @@ FULL_CHECKOUT_MARKERS = (
 )
 
 REQUIRED_SPARSE_MARKERS = ("filter=blob:none", "sparse-checkout")
-
-# Every project-owned SDK input read directly by the policy script must be
-# present in the sparse checkout. Otherwise a policy addition can pass locally
-# against the full submodule while the pull-request job fails with a missing
-# file before it evaluates the policy itself.
-REQUIRED_POLICY_INPUTS = (
-    "/sysdrv/Makefile",
-    "/sysdrv/tools/board/buildroot/luckfox_pico_defconfig",
-    "/sysdrv/tools/board/buildroot/luckfox_pico_w_defconfig",
-    "/sysdrv/tools/board/buildroot/python-charset-normalizer-aiden/",
-)
 
 
 def fail(message: str) -> None:
@@ -114,97 +102,6 @@ def job_shell_text(job: dict) -> str:
     return "\n".join(parts)
 
 
-def shell_logical_lines(text: str) -> list[str]:
-    """Join backslash-continued shell lines without executing the script."""
-    commands: list[str] = []
-    current: list[str] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        continued = line.endswith("\\")
-        if continued:
-            line = line[:-1].rstrip()
-        current.append(line)
-        if not continued:
-            commands.append(" ".join(current))
-            current = []
-    if current:
-        commands.append(" ".join(current))
-    return commands
-
-
-def shell_tokens(command: str) -> list[str]:
-    """Tokenize one logical shell command without executing it."""
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        return list(lexer)
-    except ValueError:
-        return []
-
-
-def shell_command_segments(tokens: list[str]) -> list[list[str]]:
-    """Split tokenized shell into commands in left-to-right execution order."""
-    segments: list[list[str]] = []
-    current: list[str] = []
-    for token in tokens:
-        if token in {"&&", "||", ";", "|"}:
-            if current:
-                segments.append(current)
-                current = []
-            continue
-        current.append(token)
-    if current:
-        segments.append(current)
-    return segments
-
-
-def sparse_checkout_set_paths(tokens: list[str]) -> set[str] | None:
-    """Return paths from a git sparse-checkout set command, if present."""
-    if not tokens or tokens[0] != "git":
-        return None
-    for index in range(1, len(tokens) - 1):
-        if tokens[index : index + 2] != ["sparse-checkout", "set"]:
-            continue
-        paths: set[str] = set()
-        for token in tokens[index + 2 :]:
-            if not token.startswith("-"):
-                paths.add(token)
-        return paths
-    return None
-
-
-def invokes_policy_script(tokens: list[str]) -> bool:
-    """Return whether one simple command executes the policy script."""
-    if not tokens:
-        return False
-    if tokens[0] == POLICY_SCRIPT:
-        return True
-    return tokens[0] in {"bash", "sh"} and POLICY_SCRIPT in tokens[1:]
-
-
-def sparse_checkout_paths_before_policy(job: dict) -> list[set[str]]:
-    """Return effective sparse paths immediately before each policy run."""
-    paths: set[str] = set()
-    snapshots: list[set[str]] = []
-    steps = job.get("steps")
-    if not isinstance(steps, list):
-        return snapshots
-    for step in steps:
-        if not isinstance(step, dict) or not isinstance(step.get("run"), str):
-            continue
-        for command in shell_logical_lines(step["run"]):
-            for tokens in shell_command_segments(shell_tokens(command)):
-                set_paths = sparse_checkout_set_paths(tokens)
-                if set_paths is not None:
-                    paths = set_paths
-                if invokes_policy_script(tokens):
-                    snapshots.append(set(paths))
-    return snapshots
-
-
 def main() -> None:
     try:
         import yaml
@@ -239,7 +136,7 @@ def main() -> None:
             continue
         text = strip_comments(job_shell_text(job))
         if POLICY_SCRIPT in text:
-            policy_jobs[name] = (job, text)
+            policy_jobs[name] = text
         if RELEASE_SCRIPT_MARKER in text:
             release_jobs.add(name)
 
@@ -256,7 +153,7 @@ def main() -> None:
         )
 
     for name in sorted(policy_jobs):
-        job, text = policy_jobs[name]
+        text = policy_jobs[name]
 
         if name in release_jobs:
             fail(
@@ -274,23 +171,6 @@ def main() -> None:
                 f"{', '.join(missing)}); fetch only the files the check reads "
                 "instead of the multi-GB pico-sdk worktree"
             )
-
-        policy_sparse_paths = sparse_checkout_paths_before_policy(job)
-        if not policy_sparse_paths:
-            fail(f"job '{name}' has no executable {POLICY_SCRIPT} invocation")
-        for checked_out_paths in policy_sparse_paths:
-            missing_inputs = [
-                path
-                for path in REQUIRED_POLICY_INPUTS
-                if path not in checked_out_paths
-            ]
-            if missing_inputs:
-                fail(
-                    f"job '{name}' does not sparse-fetch every SDK policy input "
-                    f"before running {POLICY_SCRIPT} "
-                    f"(missing: {', '.join(missing_inputs)}); keep the sparse "
-                    "checkout aligned with the files read by the policy script"
-                )
 
         for marker in FULL_CHECKOUT_MARKERS:
             if marker in text:

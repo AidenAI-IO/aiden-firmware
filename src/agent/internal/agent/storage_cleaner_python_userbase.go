@@ -61,7 +61,7 @@ func (c *PythonUserBaseCleaner) ForceClean(ctx context.Context) (uint64, error) 
 }
 
 func (c *PythonUserBaseCleaner) EmergencyClean(ctx context.Context) (uint64, error) {
-	rootFreed, rootErr := c.removeUserBase(ctx)
+	rootFreed, rootErr := c.clearUserBase(ctx)
 	tmpFreed, tmpErr := c.cleanTemporary(ctx)
 	return rootFreed + tmpFreed, errors.Join(rootErr, tmpErr)
 }
@@ -91,9 +91,12 @@ func (c *PythonUserBaseCleaner) collectTemporaryCandidates(ctx context.Context) 
 	return collectPythonTemporaryCandidates(ctx, c.tmp, c.now().Add(-pythonTemporaryRetention))
 }
 
-func (c *PythonUserBaseCleaner) removeUserBase(ctx context.Context) (uint64, error) {
+func (c *PythonUserBaseCleaner) clearUserBase(ctx context.Context) (uint64, error) {
 	info, err := os.Lstat(c.root)
 	if os.IsNotExist(err) {
+		if err := ensureManagedPythonDirectory(c.root, managedPythonRootMode); err != nil {
+			return 0, fmt.Errorf("recreate managed python root %q: %w", c.root, err)
+		}
 		return 0, nil
 	}
 	if err != nil {
@@ -108,6 +111,9 @@ func (c *PythonUserBaseCleaner) removeUserBase(ctx context.Context) (uint64, err
 	}
 	if err := os.RemoveAll(c.root); err != nil {
 		return 0, fmt.Errorf("remove managed python root %q: %w", c.root, err)
+	}
+	if err := ensureManagedPythonDirectory(c.root, managedPythonRootMode); err != nil {
+		return size, fmt.Errorf("recreate managed python root %q: %w", c.root, err)
 	}
 	return size, nil
 }
@@ -126,9 +132,6 @@ func collectPythonTemporaryCandidates(ctx context.Context, tmpDir string, cutoff
 		info, err := os.Lstat(path)
 		if err != nil {
 			return nil, fmt.Errorf("inspect managed python temporary path %q: %w", path, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			continue
 		}
 		if !info.ModTime().Before(cutoff) {
 			continue

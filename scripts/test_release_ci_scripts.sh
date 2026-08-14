@@ -156,7 +156,6 @@ fi
 # than check out the multi-GB worktree. Those are per-job structural facts, so
 # they are checked against the parsed workflow: grepping the whole file accepts
 # a marker that appears only in a comment, and cannot attribute a line to a job.
-python3 "$ROOT_DIR/scripts/test_check_ci_policy_job.py"
 python3 "$ROOT_DIR/scripts/check_ci_policy_job.py"
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \

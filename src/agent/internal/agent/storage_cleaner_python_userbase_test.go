@@ -88,7 +88,7 @@ func TestPythonUserBaseCleanerForceCleanupPreservesPackages(t *testing.T) {
 	assertPythonCleanerMissing(t, staleTmp)
 }
 
-func TestPythonUserBaseCleanerEmergencyCleanupRemovesEntirePythonDirectory(t *testing.T) {
+func TestPythonUserBaseCleanerEmergencyCleanupClearsAndRecreatesPythonDirectory(t *testing.T) {
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	root := t.TempDir()
 	tmpDir := t.TempDir()
@@ -110,20 +110,31 @@ func TestPythonUserBaseCleanerEmergencyCleanupRemovesEntirePythonDirectory(t *te
 	if freed != 50 {
 		t.Fatalf("EmergencyClean() freed = %d, want 50", freed)
 	}
-	assertPythonCleanerMissing(t, root)
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		t.Fatalf("Stat(root) after EmergencyClean() error = %v", err)
+	}
+	if !rootInfo.IsDir() || rootInfo.Mode().Perm() != 0o755 {
+		t.Fatalf("root after EmergencyClean() mode = %v, want empty directory 0755", rootInfo.Mode())
+	}
 	assertPythonCleanerMissing(t, packageFile)
 	assertPythonCleanerExists(t, recentTmp)
 }
 
-func TestPythonUserBaseCleanerIgnoresSymlinks(t *testing.T) {
-	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+func TestPythonUserBaseCleanerRemovesStaleSymlinksWithoutFollowingThem(t *testing.T) {
+	now := time.Now().Add(26 * time.Hour)
 	root := t.TempDir()
 	tmpDir := t.TempDir()
 
-	staleFile := createPythonCleanerFile(t, tmpDir, "stale.whl", 11, now.Add(-25*time.Hour))
+	targetDir := t.TempDir()
+	targetFile := createPythonCleanerFile(t, targetDir, "package.whl", 11, now)
 	symlinkPath := filepath.Join(tmpDir, "symlink.whl")
-	if err := os.Symlink(staleFile, symlinkPath); err != nil {
+	if err := os.Symlink(targetFile, symlinkPath); err != nil {
 		t.Fatalf("Symlink() error = %v", err)
+	}
+	symlinkInfo, err := os.Lstat(symlinkPath)
+	if err != nil {
+		t.Fatalf("Lstat(symlink) error = %v", err)
 	}
 
 	cleaner := NewPythonUserBaseCleaner(root, tmpDir, 1)
@@ -133,12 +144,12 @@ func TestPythonUserBaseCleanerIgnoresSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Clean() error = %v", err)
 	}
-	if want := uint64(11); freed != want {
+	if want := uint64(symlinkInfo.Size()); freed != want {
 		t.Fatalf("Clean() freed = %d, want %d", freed, want)
 	}
 
-	assertPythonCleanerMissing(t, staleFile)
-	assertPythonCleanerExists(t, symlinkPath)
+	assertPythonCleanerMissing(t, symlinkPath)
+	assertPythonCleanerExists(t, targetFile)
 }
 
 func TestPythonUserBaseCleanerEmergencyCleanupRejectsSymlinkRoot(t *testing.T) {
