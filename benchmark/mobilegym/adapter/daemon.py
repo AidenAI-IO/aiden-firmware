@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-DEFAULT_INSTRUCTION = "You are controlling an Android-like MobileGym simulator. Use screenshot and touch tools."
+DEFAULT_INSTRUCTION = ""
 DEFAULT_INPUT_MODE = "text"
 DEFAULT_MAX_ITERATIONS = 20
 

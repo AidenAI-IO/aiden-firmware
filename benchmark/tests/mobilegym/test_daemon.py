@@ -3,6 +3,16 @@ import tomllib
 from mobilegym.adapter import daemon
 
 
+def test_render_agent_toml_uses_default_system_instruction(tmp_path):
+    rendered = daemon.render_agent_toml(
+        bridge_url="http://127.0.0.1:19090",
+        bridge_token_file=tmp_path / "bridge.token",
+        control_token_file=tmp_path / "control.token",
+    )
+
+    assert tomllib.loads(rendered)["instruction"] == ""
+
+
 def test_render_agent_toml_preserves_template_device_type(tmp_path):
     template = tmp_path / "agent.toml.template"
     template.write_text(

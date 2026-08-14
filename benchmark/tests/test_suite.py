@@ -534,21 +534,14 @@ def test_load_suite_duplicate_ids_raise(tmp_path: Path):
         load_suite(p)
 
 
-def test_phone_control_suite_constrains_agent_to_phone_ui():
+def test_phone_control_suite_only_describes_target_environment():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
     suite = load_suite(suite_path)
 
-    assert "手机" in suite.prompt_prefix
-    assert "iOS" in suite.prompt_prefix
-    assert "Android" in suite.prompt_prefix
-    assert "iPhone" not in suite.prompt_prefix
-    assert "macOS" in suite.prompt_prefix
-    assert "shell" in suite.prompt_prefix
-    assert "osascript" in suite.prompt_prefix
-    assert "skill_read" in suite.prompt_prefix
-    assert "device-operator" in suite.prompt_prefix
-    assert "quick_action" in suite.prompt_prefix
-    assert "只能通过截图" not in suite.prompt_prefix
+    assert suite.prompt_prefix == (
+        "你正在操作一台通过 HDMI 采集画面的手机，不是 macOS、Linux 或桌面系统；"
+        "测试环境可能是 iOS、Android 或其他移动系统。"
+    )
 
 
 def test_mobile_text_entry_suites_prompt_for_ime_switching():
@@ -556,7 +549,6 @@ def test_mobile_text_entry_suites_prompt_for_ime_switching():
     for suite_name in (
         "adb_android_basic.json",
         "app_workflow_v1.json",
-        "phone_control_v1.json",
         "quick_action_v1.json",
         "skill_discovery_v1.json",
     ):
@@ -941,7 +933,9 @@ def test_notes_entry_policy_suite_covers_three_screen_states():
     assert "search_launch_app" in open_task.hard_assertions.forbidden_tools
     assert "bridge_open_app" in open_task.hard_assertions.forbidden_tools
     assert "enter_text" in open_task.hard_assertions.required_tools
-    assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in open_task.prompt
+    assert "enter_text" not in open_task.prompt
+    assert "bridge_clipboard" not in open_task.prompt
+    assert "search_launch_app" not in open_task.prompt
 
     icon_task = tasks["ios_pip_notes_icon_visible"]
     assert "touch_gesture" in icon_task.hard_assertions.required_tools
@@ -950,13 +944,16 @@ def test_notes_entry_policy_suite_covers_three_screen_states():
         "type": "tap",
         "point": {"x": 180, "y": 310},
     }
-    assert "必须使用 point 对象" in icon_task.prompt
-    assert "不要使用 point 数组或顶层 x/y" in icon_task.prompt
-    assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in icon_task.prompt
+    assert "point" not in icon_task.prompt
+    assert "touch_gesture" not in icon_task.prompt
+    assert "enter_text" not in icon_task.prompt
+    assert "search_launch_app" not in icon_task.prompt
 
     missing_task = tasks["ios_pip_notes_icon_missing"]
     assert "search_launch_app" in missing_task.hard_assertions.required_tools
     assert "bridge_open_app" in missing_task.hard_assertions.forbidden_tools
+    assert "search_launch_app" not in missing_task.prompt
+    assert "enter_text" not in missing_task.prompt
     text_matcher = missing_task.hard_assertions.required_tool_calls[2].input_contains["text"]
     assert text_matcher == {"$contains": "+1 202-555-0147"}
 
@@ -967,6 +964,7 @@ def test_phone_bridge_data_policy_suite_covers_tools_and_routing_modes():
     tasks = {task.id: task for task in suite.tasks}
 
     assert suite.mock_environment is None
+    assert suite.prompt_prefix == ""
     assert len(tasks) == 12
     assert all(task.mock_environment is not None for task in suite.tasks)
     assert {
