@@ -49,6 +49,24 @@ After the build completes, the images are located in:
 pico-sdk/output/image/
 ```
 
+## Firmware pip
+
+The pinned `pico-sdk` enables pip in both active Luckfox Buildroot defconfigs:
+
+```text
+BR2_PACKAGE_PYTHON_PIP=y
+```
+
+The root repository policy checks this contract. After building an image,
+verify the firmware package with:
+
+```bash
+/usr/bin/python3 -m pip --version
+```
+
+Runtime-installed packages stay under `/userdata`; see
+[Persistent Python Packages](../04-agent/python-packages.md).
+
 ## Flashing the Firmware
 
 > You need to connect the Luckfox Pico Zero's onboard USB-C port to a computer. There are several flashing methods; for the complete instructions, refer to the [Luckfox Pico Zero official flashing guide](https://wiki.luckfox.com/zh/Luckfox-Pico-Zero/Flash-image/).

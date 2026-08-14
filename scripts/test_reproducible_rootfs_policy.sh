@@ -65,6 +65,11 @@ for defconfig in \
     exit 1
   fi
 
+  if ! grep -q '^BR2_PACKAGE_PYTHON_PIP=y$' "$defconfig"; then
+    echo "$(basename "$defconfig") must include pip so the Agent can install scoped Python dependencies under /userdata" >&2
+    exit 1
+  fi
+
   if grep -q '^BR2_PACKAGE_ANDROID_TOOLS_ADBD=y$' "$defconfig"; then
     echo "$(basename "$defconfig") must not enable adbd; Aiden expects the board to run the adb client instead" >&2
     exit 1
