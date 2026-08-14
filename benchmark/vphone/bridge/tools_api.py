@@ -122,15 +122,6 @@ class VPhoneToolsAPIHandler:
                 },
             },
             {
-                "name": "mouse_click",
-                "description": "Tap the iOS VM using normalized 0-1000 coordinates.",
-                "args_schema": {
-                    "type": "object", "additionalProperties": False,
-                    "properties": {**coordinate_properties, "button": {"type": "string"}},
-                    "required": ["x", "y"],
-                },
-            },
-            {
                 "name": "mouse_move",
                 "description": "Validate a point and return a screenshot; iOS has no hover state.",
                 "args_schema": {
@@ -306,7 +297,6 @@ class VPhoneToolsAPIHandler:
             "keyboard_text": self._call_keyboard_text,
             "keyboard_tap": self._call_keyboard_tap,
             "enter_text": self._call_enter_text,
-            "mouse_click": self._call_mouse_click,
             "mouse_move": self._call_mouse_move,
             "mouse_scroll": self._call_mouse_scroll,
             "quick_action": self._call_quick_action,
@@ -394,20 +384,6 @@ class VPhoneToolsAPIHandler:
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         return {"output": f"error: unsupported gesture type: {gesture_type}", "is_error": True}
-
-    def _call_mouse_click(self, tool_input: dict[str, Any]) -> dict[str, Any]:
-        button = str(tool_input.get("button", "left") or "left").strip().lower()
-        if button not in {"", "left", "right", "middle"}:
-            return {"output": f"error: unsupported mouse button: {button!r}", "is_error": True}
-        try:
-            point = _normalized_point_arg(tool_input)
-            width, height = self.state.device.screen_size()
-            x, y = _to_pixels(point, width, height)
-        except (TypeError, ValueError) as exc:
-            return {"output": f"error: {exc}", "is_error": True}
-        return self._execute_device(
-            lambda: self.state.device.tap(x, y), "mouse_click", tool_input, f"tap {x} {y}"
-        )
 
     def _call_mouse_move(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -751,7 +727,6 @@ def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) 
             "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
             "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
         },
-        "mouse_click": {"x", "y", "button"},
         "mouse_move": {"x", "y"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)

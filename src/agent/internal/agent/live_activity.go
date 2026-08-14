@@ -778,7 +778,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 		status.phase = LiveActivityPhaseWaitingUser
 		status.action = "request_user_input"
 		status.step = "Waiting for user input"
-	case "touch_gesture", "mouse_click", "quick_action":
+	case "touch_gesture", "quick_action":
 		status.action = "control_phone"
 	case "mouse_move":
 		status.action = "move_pointer"
@@ -1106,7 +1106,7 @@ func liveActivityToolCallStep(tool string) string {
 		return "Opening app"
 	case toolOpenURL:
 		return "Opening link"
-	case "touch_gesture", "mouse_click", "quick_action":
+	case "touch_gesture", "quick_action":
 		return "Controlling the phone"
 	case "mouse_move":
 		return "Moving pointer"
@@ -1155,7 +1155,7 @@ func liveActivityToolResultStep(tool string) string {
 		return "App opened"
 	case toolOpenURL:
 		return "Link opened"
-	case "touch_gesture", "mouse_click", "quick_action", "mouse_move", "mouse_scroll", "keyboard_tap", "keyboard_text", "enter_text":
+	case "touch_gesture", "quick_action", "mouse_move", "mouse_scroll", "keyboard_tap", "keyboard_text", "enter_text":
 		return "Action sent; checking result"
 	case "request_human_handoff":
 		return "Waiting for user input"

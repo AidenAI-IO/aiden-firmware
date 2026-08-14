@@ -155,11 +155,14 @@ def test_mock_environment_requires_visible_icon_click_before_text_entry():
         assert blocked["is_error"] is True
 
         clicked = _json_request(
-            f"{base_url}/api/tools/mouse_click",
+            f"{base_url}/api/tools/touch_gesture",
             "POST",
             {
                 "input": json.dumps(
-                    {"x": 180, "y": 310}
+                    {
+                        "type": "tap",
+                        "point": {"x": 180, "y": 310},
+                    }
                 )
             },
         )
