@@ -36,8 +36,23 @@ def test_run_cli_accepts_desktop_target_platform(monkeypatch, target_platform):
     assert captured["target_platform"] == target_platform
 
 
-@pytest.mark.parametrize("target_platform", ["windows", "linux"])
-def test_start_agent_daemon_cli_accepts_desktop_target_platform(monkeypatch, target_platform):
+@pytest.mark.parametrize("device_type", ["windows", "linux"])
+def test_start_agent_daemon_cli_accepts_desktop_device_type(monkeypatch, device_type):
+    import runner.services as services
+
+    captured = {}
+
+    def fake_cmd_start_agent_daemon(args):
+        captured["device_type"] = args.device_type
+        return 0
+
+    monkeypatch.setattr(services, "cmd_start_agent_daemon", fake_cmd_start_agent_daemon)
+
+    assert main.cli(["start-agent-daemon", "--device-type", device_type]) == 0
+    assert captured["device_type"] == device_type
+
+
+def test_start_agent_daemon_cli_keeps_target_platform_as_compatibility_alias(monkeypatch):
     import runner.services as services
 
     captured = {}
@@ -48,8 +63,8 @@ def test_start_agent_daemon_cli_accepts_desktop_target_platform(monkeypatch, tar
 
     monkeypatch.setattr(services, "cmd_start_agent_daemon", fake_cmd_start_agent_daemon)
 
-    assert main.cli(["start-agent-daemon", "--target-platform", target_platform]) == 0
-    assert captured["target_platform"] == target_platform
+    assert main.cli(["start-agent-daemon", "--target-platform", "android"]) == 0
+    assert captured["target_platform"] == "android"
 
 
 def test_wait_for_agent_clock_retries_until_board_clock_is_current(monkeypatch):

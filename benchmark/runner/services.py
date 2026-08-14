@@ -13,7 +13,9 @@ from typing import Any
 
 from runner.agent_client import AgentClient
 from runner.platform import (
+    normalize_target_platform,
     read_environment_health,
+    resolve_daemon_platform,
     resolve_environment_platform,
 )
 from runner.adb_android_environment import (
@@ -64,10 +66,15 @@ def add_service_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     p_agent.add_argument("--no-build-daemon-image", action="store_true")
     p_agent.add_argument("--environment-bridge-endpoint", default="", help="Environment bridge endpoint to forward device tools to")
     p_agent.add_argument(
+        "--device-type",
+        default="",
+        help="Optional daemon device.device_type override; defaults to agent.toml without an environment bridge",
+    )
+    p_agent.add_argument(
         "--target-platform",
         default="",
         choices=["", "ios", "android", "mac", "windows", "linux"],
-        help="Required without an environment bridge; otherwise constrains the bridge-reported platform",
+        help=argparse.SUPPRESS,
     )
     p_agent.add_argument("--benchmark-task-id", default=DEFAULT_CLI_BENCHMARK_TASK_ID)
     p_agent.add_argument("--ready-timeout-sec", type=int, default=DEFAULT_DAEMON_READY_TIMEOUT_SEC)
@@ -139,26 +146,29 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
     service_dir.mkdir(parents=True, exist_ok=True)
 
     environment_bridge_endpoint = str(args.environment_bridge_endpoint or "").strip().rstrip("/")
-    requested_platform = str(args.target_platform or "").strip().lower()
+    requested_device_type = str(getattr(args, "device_type", "") or "").strip()
+    requested_platform = str(getattr(args, "target_platform", "") or "").strip()
+    try:
+        device_type_constraint = _resolve_device_type_constraint(
+            requested_device_type,
+            requested_platform,
+        )
+    except ValueError as exc:
+        print(f"Error: invalid device type override: {exc}", file=sys.stderr)
+        return 2
     target_platform = ""
     if environment_bridge_endpoint:
         try:
             resolution = resolve_environment_platform(
                 read_environment_health(environment_bridge_endpoint),
-                constraint=requested_platform or None,
+                constraint=device_type_constraint or None,
             )
             target_platform = resolution.value
         except Exception as exc:
             print(f"Error: failed to resolve environment platform: {exc}", file=sys.stderr)
             return 2
-    elif requested_platform:
-        target_platform = requested_platform
-    else:
-        print(
-            "Error: --target-platform is required without --environment-bridge-endpoint",
-            file=sys.stderr,
-        )
-        return 2
+    elif device_type_constraint:
+        target_platform = device_type_constraint
     agent_config_text = None
     if args.agent_config:
         agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
@@ -190,7 +200,7 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
             config_dir=config_dir,
             environment_bridge_endpoint=docker_environment_bridge_endpoint,
             benchmark_task_id=benchmark_task_id if docker_environment_bridge_endpoint else "",
-            device_type=target_platform,
+            device_type=target_platform if environment_bridge_endpoint or device_type_constraint else "",
             environment_bridge_mode=bool(docker_environment_bridge_endpoint),
             log_path=log_path,
         )
@@ -199,6 +209,16 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
             agent_url = f"http://127.0.0.1:{host_port}"
             job.agent_url = agent_url
         _wait_for_agent(agent_url, args.ready_timeout_sec)
+        client = AgentClient(agent_url)
+        try:
+            effective_device_type = client.device_type()
+            effective_platform = resolve_daemon_platform(
+                effective_device_type,
+                constraint=target_platform or None,
+            )
+        finally:
+            client.close()
+        target_platform = effective_platform.value
     except Exception as exc:
         stop_daemon_compose(job)
         append_log(log_path, f"ERROR: {exc}")
@@ -215,6 +235,7 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
         "environment_bridge_endpoint": environment_bridge_endpoint,
         "docker_environment_bridge_endpoint": docker_environment_bridge_endpoint,
         "benchmark_task_id": benchmark_task_id if docker_environment_bridge_endpoint else "",
+        "device_type": effective_device_type,
         "target_platform": target_platform,
         "stop_command": " ".join(
             daemon_compose_command(
@@ -426,6 +447,34 @@ def _service_id(prefix: str, name: str) -> str:
     return f"{prefix}-{slug}"
 
 
+def _resolve_device_type_constraint(device_type: str, legacy_target_platform: str) -> str:
+    requested_device_type = str(device_type or "").strip()
+    requested_legacy_platform = str(legacy_target_platform or "").strip()
+    if not requested_device_type and not requested_legacy_platform:
+        return ""
+
+    resolved_device_type = (
+        normalize_target_platform(requested_device_type, field="device type")
+        if requested_device_type
+        else None
+    )
+    resolved_legacy_platform = (
+        normalize_target_platform(requested_legacy_platform)
+        if requested_legacy_platform
+        else None
+    )
+    if (
+        resolved_device_type is not None
+        and resolved_legacy_platform is not None
+        and resolved_device_type != resolved_legacy_platform
+    ):
+        raise ValueError(
+            "--device-type and deprecated --target-platform disagree: "
+            f"{resolved_device_type.value} != {resolved_legacy_platform.value}"
+        )
+    return (resolved_device_type or resolved_legacy_platform).value
+
+
 def _print_agent_payload(payload: dict[str, Any], *, json_output: bool) -> None:
     if json_output:
         print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
@@ -437,6 +486,7 @@ def _print_agent_payload(payload: dict[str, Any], *, json_output: bool) -> None:
         _print_kv("docker_environment_bridge_endpoint", payload["docker_environment_bridge_endpoint"])
         _print_kv("benchmark_task_id", payload["benchmark_task_id"])
     _print_kv("container_id", payload["container_id"])
+    _print_kv("device_type", payload["device_type"])
     _print_kv("compose_project", payload["compose_project"])
     _print_kv("config_dir", payload["config_dir"])
     _print_kv("log_path", payload["log_path"])

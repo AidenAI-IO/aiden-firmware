@@ -99,6 +99,7 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    _mock_agent_device_type(monkeypatch, "Android")
     monkeypatch.setattr(
         services,
         "read_environment_health",
@@ -121,6 +122,7 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp
         daemon_image="aiden-agent-daemon:test",
         no_build_daemon_image=True,
         environment_bridge_endpoint="http://127.0.0.1:19090",
+        device_type="",
         target_platform="",
         benchmark_task_id="suite.json:t1",
         ready_timeout_sec=9,
@@ -136,6 +138,8 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp
     assert payload["benchmark_task_id"] == "suite.json:t1"
     assert payload["container_id"] == "agent-container"
     assert payload["compose_project"] == "aiden-benchmark-agent-agent-smoke"
+    assert payload["device_type"] == "Android"
+    assert payload["target_platform"] == "android"
     assert "docker compose" in payload["stop_command"]
 
     assert captured["job"].agent_url == "http://127.0.0.1:18081"
@@ -159,6 +163,7 @@ def test_start_agent_daemon_passes_environment_platform_as_runtime_override(
     )
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    _mock_agent_device_type(monkeypatch, "Android")
     monkeypatch.setattr(
         services,
         "read_environment_health",
@@ -181,13 +186,14 @@ def test_start_agent_daemon_passes_environment_platform_as_runtime_override(
     assert captured["device_type"] == "android"
 
 
-def test_start_agent_daemon_uses_explicit_platform_without_environment_bridge(
+def test_start_agent_daemon_uses_explicit_device_type_without_environment_bridge(
     tmp_path: Path, monkeypatch, capsys
 ):
     captured = {}
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    _mock_agent_device_type(monkeypatch, "Android")
 
     def fake_start_daemon_compose(job, **kwargs):
         captured["kwargs"] = kwargs
@@ -205,7 +211,8 @@ def test_start_agent_daemon_uses_explicit_platform_without_environment_bridge(
         daemon_image="aiden-agent-daemon:test",
         no_build_daemon_image=True,
         environment_bridge_endpoint="",
-        target_platform="android",
+        device_type="android",
+        target_platform="",
         benchmark_task_id="suite.json:t1",
         ready_timeout_sec=9,
         json=True,
@@ -220,20 +227,43 @@ def test_start_agent_daemon_uses_explicit_platform_without_environment_bridge(
     assert captured["kwargs"]["benchmark_task_id"] == ""
     assert captured["kwargs"]["environment_bridge_mode"] is False
     assert captured["kwargs"]["device_type"] == "android"
+    assert payload["device_type"] == "Android"
     assert "--target-platform android" in payload["run_command"]
 
 
-def test_start_agent_daemon_requires_platform_without_environment_bridge(
-    tmp_path: Path, capsys
+def test_start_agent_daemon_preserves_configured_device_type_without_environment_bridge(
+    tmp_path: Path, monkeypatch, capsys
 ):
+    config = tmp_path / "agent.toml"
+    config.write_text(
+        '[model]\nprovider = "fake"\n[device]\ndevice_type = "iOS"\n',
+        encoding="utf-8",
+    )
+    captured = {}
+    monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    _mock_agent_device_type(monkeypatch, "iOS")
+    monkeypatch.setattr(
+        services,
+        "start_daemon_compose",
+        lambda job, **kwargs: captured.update(kwargs) or "agent-container",
+    )
+    monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
+
     args = _agent_daemon_args(
         tmp_path,
         environment_bridge_endpoint="",
+        agent_config=str(config),
+        device_type="",
         target_platform="",
     )
 
-    assert services.cmd_start_agent_daemon(args) == 2
-    assert "--target-platform is required" in capsys.readouterr().err
+    assert services.cmd_start_agent_daemon(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert captured["device_type"] == ""
+    assert payload["device_type"] == "iOS"
+    assert payload["target_platform"] == "ios"
+    assert "--target-platform ios" in payload["run_command"]
 
 
 def test_start_agent_daemon_validates_platform_constraint_against_environment(
@@ -244,10 +274,51 @@ def test_start_agent_daemon_validates_platform_constraint_against_environment(
         "read_environment_health",
         lambda endpoint: {"platform": "ios"},
     )
-    args = _agent_daemon_args(tmp_path, target_platform="android")
+    args = _agent_daemon_args(tmp_path, device_type="android")
 
     assert services.cmd_start_agent_daemon(args) == 2
     assert "expected android, reported ios" in capsys.readouterr().err
+
+
+def test_start_agent_daemon_rejects_conflicting_device_type_aliases(
+    tmp_path: Path, capsys
+):
+    args = _agent_daemon_args(
+        tmp_path,
+        device_type="android",
+        target_platform="ios",
+    )
+
+    assert services.cmd_start_agent_daemon(args) == 2
+    assert "--device-type and deprecated --target-platform disagree" in capsys.readouterr().err
+
+
+def test_start_agent_daemon_validates_effective_device_type_after_start(
+    tmp_path: Path, monkeypatch, capsys
+):
+    stopped = []
+    monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        services,
+        "read_environment_health",
+        lambda endpoint: {"platform": "ios"},
+    )
+    _mock_agent_device_type(monkeypatch, "Android")
+    monkeypatch.setattr(
+        services,
+        "start_daemon_compose",
+        lambda *args, **kwargs: "agent-container",
+    )
+    monkeypatch.setattr(
+        services,
+        "stop_daemon_compose",
+        lambda job: stopped.append(job.container_name),
+    )
+
+    assert services.cmd_start_agent_daemon(_agent_daemon_args(tmp_path)) == 1
+    assert stopped == ["aiden-benchmark-agent-agent-smoke"]
+    assert "expected ios, reported android" in capsys.readouterr().err
 
 
 def test_start_agent_daemon_uses_docker_assigned_port_when_auto(tmp_path: Path, monkeypatch, capsys):
@@ -255,6 +326,7 @@ def test_start_agent_daemon_uses_docker_assigned_port_when_auto(tmp_path: Path, 
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    _mock_agent_device_type(monkeypatch, "iOS")
     monkeypatch.setattr(services, "docker_published_port", lambda container_id, container_port: 18081)
 
     def fake_start_daemon_compose(job, **kwargs):
@@ -274,7 +346,8 @@ def test_start_agent_daemon_uses_docker_assigned_port_when_auto(tmp_path: Path, 
         daemon_image="aiden-agent-daemon:test",
         no_build_daemon_image=True,
         environment_bridge_endpoint="",
-        target_platform="ios",
+        device_type="ios",
+        target_platform="",
         benchmark_task_id="suite.json:t1",
         ready_timeout_sec=9,
         json=True,
@@ -451,6 +524,7 @@ def _agent_daemon_args(tmp_path: Path, **overrides):
         "daemon_image": "aiden-agent-daemon:test",
         "no_build_daemon_image": True,
         "environment_bridge_endpoint": "http://127.0.0.1:19090",
+        "device_type": "",
         "target_platform": "",
         "benchmark_task_id": "suite.json:t1",
         "ready_timeout_sec": 9,
@@ -458,3 +532,17 @@ def _agent_daemon_args(tmp_path: Path, **overrides):
     }
     values.update(overrides)
     return _ns(**values)
+
+
+def _mock_agent_device_type(monkeypatch, value: str) -> None:
+    class FakeAgentClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def device_type(self):
+            return value
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(services, "AgentClient", FakeAgentClient)
