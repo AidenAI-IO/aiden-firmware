@@ -11,7 +11,8 @@
       "description_for_judge": "With iOS backgrounded, PiP disabled, and Dynamic Island reachable, the Agent should call bridge_contacts directly and let the tool restore Aiden internally.",
       "prompt": "测试环境状态：iOS，Aiden 在后台，PiP Bridge 未开启，灵动岛返回入口可达。请查询通讯录里 Biden 的手机号并告诉我。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "ios", "phone_id": "ios-di-contacts", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": false, "fgs_bridge_enabled": false},
+        "platform": "ios",
+        "phone_bridge": {"connected": false, "phone_id": "ios-di-contacts", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": false, "fgs_bridge_enabled": false},
         "screen_text": "iPhone screen with a reachable Aiden Dynamic Island return entry.",
         "tools": {
           "bridge_contacts": {
@@ -38,7 +39,8 @@
       "description_for_judge": "Query calendar through bridge_calendar; the tool restores Aiden through Dynamic Island before sending the command.",
       "prompt": "测试环境状态：iOS，Aiden 在后台，PiP Bridge 未开启，灵动岛返回入口可达。请查询 2026-07-23 这一天的日历事件，时间范围严格使用 2026-07-23T00:00:00+08:00 到 2026-07-24T00:00:00+08:00。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "ios", "phone_id": "ios-di-calendar", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": false, "fgs_bridge_enabled": false},
+        "platform": "ios",
+        "phone_bridge": {"connected": false, "phone_id": "ios-di-calendar", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": false, "fgs_bridge_enabled": false},
         "screen_text": "iPhone screen with a reachable Aiden Dynamic Island return entry.",
         "tools": {
           "bridge_calendar": {
@@ -65,7 +67,8 @@
       "description_for_judge": "Read the clipboard through bridge_clipboard and internal Dynamic Island restore.",
       "prompt": "测试环境状态：iOS，Aiden 在后台，PiP Bridge 未开启，灵动岛返回入口可达。请读取当前手机剪贴板内容并告诉我。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "ios", "phone_id": "ios-di-clipboard", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": false, "fgs_bridge_enabled": false},
+        "platform": "ios",
+        "phone_bridge": {"connected": false, "phone_id": "ios-di-clipboard", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": false, "fgs_bridge_enabled": false},
         "screen_text": "iPhone screen with a reachable Aiden Dynamic Island return entry.",
         "tools": {
           "bridge_clipboard": {
@@ -92,7 +95,8 @@
       "description_for_judge": "Send a notification through bridge_notification and internal Dynamic Island restore.",
       "prompt": "测试环境状态：iOS，Aiden 在后台，PiP Bridge 未开启，灵动岛返回入口可达。请立即发送一条本地通知，标题为「Aiden Benchmark」，正文为「灵动岛恢复通知」，不播放声音。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "ios", "phone_id": "ios-di-notification", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": false, "fgs_bridge_enabled": false},
+        "platform": "ios",
+        "phone_bridge": {"connected": false, "phone_id": "ios-di-notification", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": false, "fgs_bridge_enabled": false},
         "screen_text": "iPhone screen with a reachable Aiden Dynamic Island return entry.",
         "tools": {
           "bridge_notification": {
@@ -119,7 +123,8 @@
       "description_for_judge": "With iOS PiP enabled, query contacts directly through the background queue and never call bridge_open_app.",
       "prompt": "测试环境状态：iOS，Aiden 在后台，PiP Bridge 已开启。请查询通讯录里 Alice 的手机号并告诉我。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "ios", "phone_id": "ios-pip-contacts", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": true, "fgs_bridge_enabled": false},
+        "platform": "ios",
+        "phone_bridge": {"connected": false, "phone_id": "ios-pip-contacts", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": true, "fgs_bridge_enabled": false},
         "screen_text": "iOS PiP Bridge background mode is active; Dynamic Island is hidden by PiP.",
         "tools": {
           "bridge_contacts": {
@@ -146,7 +151,8 @@
       "description_for_judge": "Create a calendar event directly through the iOS PiP background queue; bridge_open_app is unavailable.",
       "prompt": "测试环境状态：iOS，Aiden 在后台，PiP Bridge 已开启。请创建日历事件：标题「PiP 测试日程」，开始时间 2026-07-24T14:00:00+08:00，结束时间 2026-07-24T15:00:00+08:00，地点「3号会议室」。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "ios", "phone_id": "ios-pip-calendar", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": true, "fgs_bridge_enabled": false},
+        "platform": "ios",
+        "phone_bridge": {"connected": false, "phone_id": "ios-pip-calendar", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": true, "fgs_bridge_enabled": false},
         "screen_text": "iOS PiP Bridge background mode is active.",
         "tools": {
           "bridge_calendar": {
@@ -173,7 +179,8 @@
       "description_for_judge": "Write the requested standalone clipboard value through the iOS PiP background queue.",
       "prompt": "测试环境状态：iOS，Aiden 在后台，PiP Bridge 已开启。请把文本「PiP clipboard benchmark」写入手机系统剪贴板。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "ios", "phone_id": "ios-pip-clipboard", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": true, "fgs_bridge_enabled": false},
+        "platform": "ios",
+        "phone_bridge": {"connected": false, "phone_id": "ios-pip-clipboard", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": true, "fgs_bridge_enabled": false},
         "screen_text": "iOS PiP Bridge background mode is active.",
         "tools": {
           "bridge_clipboard": {
@@ -200,7 +207,8 @@
       "description_for_judge": "Send a notification directly through the iOS PiP background queue.",
       "prompt": "测试环境状态：iOS，Aiden 在后台，PiP Bridge 已开启。请立即发送本地通知，标题「PiP Benchmark」，正文「后台通知成功」，播放声音。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "ios", "phone_id": "ios-pip-notification", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": true, "fgs_bridge_enabled": false},
+        "platform": "ios",
+        "phone_bridge": {"connected": false, "phone_id": "ios-pip-notification", "app_state": "background", "return_entry": "dynamic_island", "return_entry_available": true, "pip_bridge_enabled": true, "fgs_bridge_enabled": false},
         "screen_text": "iOS PiP Bridge background mode is active.",
         "tools": {
           "bridge_notification": {
@@ -227,7 +235,8 @@
       "description_for_judge": "Query contacts directly through the Android FGS background queue; open_app is not allowed.",
       "prompt": "测试环境状态：Android，Aiden 在后台，FGS Bridge 已开启。请查询通讯录里 Bob 的手机号并告诉我。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "android", "phone_id": "android-fgs-contacts", "app_state": "background", "return_entry": "none", "return_entry_available": false, "pip_bridge_enabled": false, "fgs_bridge_enabled": true},
+        "platform": "android",
+        "phone_bridge": {"connected": false, "phone_id": "android-fgs-contacts", "app_state": "background", "return_entry": "none", "return_entry_available": false, "pip_bridge_enabled": false, "fgs_bridge_enabled": true},
         "screen_text": "Android FGS Bridge background mode is active.",
         "tools": {
           "bridge_contacts": {
@@ -254,7 +263,8 @@
       "description_for_judge": "Query calendar directly through the Android FGS background queue.",
       "prompt": "测试环境状态：Android，Aiden 在后台，FGS Bridge 已开启。请查询 2026-07-25 这一天的日历事件，时间范围严格使用 2026-07-25T00:00:00+08:00 到 2026-07-26T00:00:00+08:00。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "android", "phone_id": "android-fgs-calendar", "app_state": "background", "return_entry": "none", "return_entry_available": false, "pip_bridge_enabled": false, "fgs_bridge_enabled": true},
+        "platform": "android",
+        "phone_bridge": {"connected": false, "phone_id": "android-fgs-calendar", "app_state": "background", "return_entry": "none", "return_entry_available": false, "pip_bridge_enabled": false, "fgs_bridge_enabled": true},
         "screen_text": "Android FGS Bridge background mode is active.",
         "tools": {
           "bridge_calendar": {
@@ -281,7 +291,8 @@
       "description_for_judge": "Read the clipboard directly through the Android FGS background queue.",
       "prompt": "测试环境状态：Android，Aiden 在后台，FGS Bridge 已开启。请读取当前手机剪贴板内容并告诉我。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "android", "phone_id": "android-fgs-clipboard", "app_state": "background", "return_entry": "none", "return_entry_available": false, "pip_bridge_enabled": false, "fgs_bridge_enabled": true},
+        "platform": "android",
+        "phone_bridge": {"connected": false, "phone_id": "android-fgs-clipboard", "app_state": "background", "return_entry": "none", "return_entry_available": false, "pip_bridge_enabled": false, "fgs_bridge_enabled": true},
         "screen_text": "Android FGS Bridge background mode is active.",
         "tools": {
           "bridge_clipboard": {
@@ -308,7 +319,8 @@
       "description_for_judge": "Send a notification directly through the Android FGS background queue.",
       "prompt": "测试环境状态：Android，Aiden 在后台，FGS Bridge 已开启。请立即发送本地通知，标题「FGS Benchmark」，正文「Android 后台通知成功」，不播放声音。",
       "mock_environment": {
-        "phone_bridge": {"connected": false, "platform": "android", "phone_id": "android-fgs-notification", "app_state": "background", "return_entry": "none", "return_entry_available": false, "pip_bridge_enabled": false, "fgs_bridge_enabled": true},
+        "platform": "android",
+        "phone_bridge": {"connected": false, "phone_id": "android-fgs-notification", "app_state": "background", "return_entry": "none", "return_entry_available": false, "pip_bridge_enabled": false, "fgs_bridge_enabled": true},
         "screen_text": "Android FGS Bridge background mode is active.",
         "tools": {
           "bridge_notification": {

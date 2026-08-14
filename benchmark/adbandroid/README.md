@@ -207,7 +207,8 @@ All pointer and touch inputs use normalized 0-1000 coordinates. The bridge
 converts them to device pixels using `adb shell wm size` (Override wins over
 Physical). Values outside 0-1000 are rejected.
 
-`quick_action` (`platform=android`): `back` / `home` / `app_switch` / `send` /
+`quick_action` selects Android bindings automatically: `back` / `home` /
+`app_switch` / `send` /
 `open_settings` (`am start -a android.settings.SETTINGS`) / `notification_center`
 / `control_center` / `dismiss_panel` (the `cmd statusbar` family, falling back to
 a gesture on failure). Pass `{"list": true}` to see the full catalog.

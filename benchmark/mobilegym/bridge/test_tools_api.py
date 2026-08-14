@@ -131,7 +131,11 @@ def test_get_tools_catalog(bridge_server):
 
     quick_action_props = tools["quick_action"]["args_schema"]["properties"]
     assert tools["quick_action"]["args_schema"]["additionalProperties"] is False
-    assert quick_action_props["platform"]["enum"] == ["ios", "android", "mac"]
+    assert "platform" not in quick_action_props
+    assert tools["quick_action"]["args_schema"]["anyOf"] == [
+        {"required": ["action"]},
+        {"required": ["list"], "properties": {"list": {"const": True}}},
+    ]
     assert "alternative" in quick_action_props
     assert "alternative_index" in quick_action_props
 
@@ -369,7 +373,7 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
     ]:
         req = Request(
             f"{base_url}/api/tools/quick_action",
-            data=json.dumps({"input": {"action": action, "platform": "android"}}).encode(),
+            data=json.dumps({"input": {"action": action}}).encode(),
             method="POST",
             headers={"Content-Type": "application/json"},
         )
@@ -386,7 +390,7 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
     for action in ["select_all", "delete_backward", "copy", "paste", "undo", "find", "cut", "browser_refresh", "browser_new_tab"]:
         req = Request(
             f"{base_url}/api/tools/quick_action",
-            data=json.dumps({"input": {"action": action, "platform": "android"}}).encode(),
+            data=json.dumps({"input": {"action": action}}).encode(),
             method="POST",
             headers={"Content-Type": "application/json"},
         )
@@ -401,6 +405,25 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
         assert output["status"] == "reserved"
         assert "unsupported quick_action" not in data["output"]
         assert state.env.step_count == no_action_count
+
+
+def test_invoke_quick_action_rejects_legacy_platform_argument(bridge_server):
+    _server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-legacy-platform"
+
+    req = Request(
+        f"{base_url}/api/tools/quick_action",
+        data=json.dumps({"input": {"action": "home", "platform": "ios"}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is True
+    assert "unknown fields" in data["output"]
 
 
 def test_invoke_keyboard_tap_keycode_app_switch_uses_swipe(bridge_server):

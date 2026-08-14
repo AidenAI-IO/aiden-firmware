@@ -5,35 +5,13 @@ import json
 from pathlib import Path
 from typing import Any
 import urllib.error
-import urllib.parse
 import urllib.request
+
+from runner.environment_endpoint import EnvironmentEndpoint
 
 
 class CaptureError(RuntimeError):
     pass
-
-
-def _screen_path(path: str) -> str:
-    path = path.rstrip("/")
-    if path in {"", "/"}:
-        return "/api/screen"
-    for suffix in ("/api/setup", "/api/release", "/api/screen"):
-        if path == suffix or path.endswith(suffix):
-            return f"{path[:-len(suffix)]}/api/screen"
-    return f"{path}/api/screen"
-
-
-def environment_screen_snapshot_endpoint(environment_url: str) -> str:
-    raw = str(environment_url or "").strip()
-    if not raw:
-        raise CaptureError("environment_url is required for screen capture")
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise CaptureError(f"invalid environment_url: {environment_url!r}")
-    path = _screen_path(parsed.path)
-    return urllib.parse.urlunparse(
-        parsed._replace(path=path, params="", query="", fragment="")
-    )
 
 
 def take_environment_screenshot(
@@ -43,7 +21,10 @@ def take_environment_screenshot(
     timeout: int = 30,
 ) -> tuple[int, int]:
     """Read the environment bridge screen API and write screenshot bytes to out_path."""
-    endpoint = environment_screen_snapshot_endpoint(environment_url)
+    try:
+        endpoint = EnvironmentEndpoint(environment_url).screen
+    except ValueError as exc:
+        raise CaptureError(str(exc)) from exc
     headers: dict[str, str] = {}
     task_id = str(benchmark_task_id or "").strip()
     if task_id:

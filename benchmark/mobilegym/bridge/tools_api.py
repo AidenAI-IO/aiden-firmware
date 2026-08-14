@@ -227,18 +227,20 @@ class ToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute common platform navigation actions such as back or home.",
+                "description": "Execute common Android navigation actions such as back or home.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "action": {"type": "string"},
-                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
                         "list": {"type": "boolean"},
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
                     },
-                    "required": ["platform"],
+                    "anyOf": [
+                        {"required": ["action"]},
+                        {"required": ["list"], "properties": {"list": {"const": True}}},
+                    ],
                 },
             },
         ]
@@ -420,7 +422,7 @@ class ToolsAPIHandler:
 
     def _submit_tool_call(self, state: BridgeEpisodeState, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         """Submit tool call to MobileGym environment."""
-        unknown = _unknown_coordinate_tool_fields(tool_name, tool_input)
+        unknown = _unknown_tool_fields(tool_name, tool_input)
         if unknown:
             return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
         episode_id = state.active_episode_id
@@ -565,10 +567,7 @@ class ToolsAPIHandler:
 
     def _call_quick_action(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute a small MobileGym-compatible quick_action subset."""
-        platform = str(tool_input.get("platform", "") or "").strip().lower()
-        if platform not in ("ios", "android", "mac"):
-            return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}", "is_error": True}
-
+        platform = "android"
         action = _quick_action_id(tool_input)
         if bool(tool_input.get("list")) or action == "list":
             output = {"ok": True, "platform": platform, "actions": _mobilegym_quick_action_catalog()}
@@ -931,7 +930,7 @@ def _normalized_point_arg(
     return point
 
 
-def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
     allowed = {
         "touch_gesture": {
             "type", "point", "start", "end", "x", "y", "start_x", "start_y",
@@ -939,6 +938,7 @@ def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) 
             "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
         },
         "mouse_move": {"x", "y"},
+        "quick_action": {"action", "list", "alternative", "alternative_index"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)
 

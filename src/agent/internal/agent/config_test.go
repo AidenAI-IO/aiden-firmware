@@ -685,6 +685,33 @@ max_tokens = 777
 	}
 }
 
+func TestOverrideDeviceTypeDerivesRuntimeDeviceSettings(t *testing.T) {
+	tests := []struct {
+		input       string
+		deviceType  string
+		pointerMode string
+	}{
+		{input: "android", deviceType: "Android", pointerMode: "touchscreen"},
+		{input: "mac", deviceType: "macOS", pointerMode: "absolute"},
+		{input: "windows", deviceType: "windows", pointerMode: "absolute"},
+		{input: "linux", deviceType: "linux", pointerMode: "absolute"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			var cfg Config
+			if err := cfg.OverrideDeviceType(tt.input); err != nil {
+				t.Fatalf("OverrideDeviceType() error = %v", err)
+			}
+			if cfg.Device.DeviceType != tt.deviceType {
+				t.Fatalf("device type = %q, want %q", cfg.Device.DeviceType, tt.deviceType)
+			}
+			if cfg.HID.PointerMode != tt.pointerMode {
+				t.Fatalf("pointer mode = %q, want %q", cfg.HID.PointerMode, tt.pointerMode)
+			}
+		})
+	}
+}
+
 func TestLoadRuntimeConfigFromDirAppliesRuntimeDefaultsWithoutActivatingSpeech(t *testing.T) {
 	configDir := t.TempDir()
 	config := `

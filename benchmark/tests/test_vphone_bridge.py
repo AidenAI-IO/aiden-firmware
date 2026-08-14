@@ -103,6 +103,7 @@ def test_health_and_concurrency(bridge):
     status, body = request(base_url, "/health")
     assert status == 200
     assert body["data"]["bridge_type"] == "vphone_ios"
+    assert body["data"]["platform"] == "ios"
     assert body["data"]["screen_width"] == 1290
     status, body = request(base_url, "/api/concurrent")
     assert status == 200 and body["data"]["concurrent"] == 1
@@ -319,6 +320,11 @@ def test_catalog_omits_keyboard_when_host_does_not_support_it():
     assert "enter_text_via_bridge" not in names
     quick_action = next(tool for tool in body["tools"] if tool["name"] == "quick_action")
     assert quick_action["args_schema"]["additionalProperties"] is False
+    assert "platform" not in quick_action["args_schema"]["properties"]
+    assert quick_action["args_schema"]["anyOf"] == [
+        {"required": ["action"]},
+        {"required": ["list"], "properties": {"list": {"const": True}}},
+    ]
     assert "url" not in quick_action["args_schema"]["properties"]
 
 

@@ -248,12 +248,14 @@ class ADBToolsAPIHandler:
                     "additionalProperties": False,
                     "properties": {
                         "action": {"type": "string"},
-                        "platform": {"type": "string", "enum": ["android"]},
                         "list": {"type": "boolean"},
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
                     },
-                    "required": ["platform"],
+                    "anyOf": [
+                        {"required": ["action"]},
+                        {"required": ["list"], "properties": {"list": {"const": True}}},
+                    ],
                 },
             },
         ]
@@ -390,7 +392,7 @@ class ADBToolsAPIHandler:
 
     def _submit_tool_call(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         """Dispatch tool call to the ADB device."""
-        unknown = _unknown_coordinate_tool_fields(tool_name, tool_input)
+        unknown = _unknown_tool_fields(tool_name, tool_input)
         if unknown:
             return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
         if tool_name == "screenshot":
@@ -554,17 +556,8 @@ class ADBToolsAPIHandler:
         )
 
     def _call_quick_action(self, tool_input: dict[str, Any]) -> dict[str, Any]:
-        platform = str(tool_input.get("platform", "") or "").strip().lower()
-        if platform not in ("ios", "android", "mac"):
-            return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}", "is_error": True}
-
+        platform = "android"
         action = _quick_action_id(tool_input)
-        if platform != "android":
-            return _adb_reserved_quick_action(
-                action,
-                platform,
-                "adb android benchmark bridge only supports platform=android quick_action bindings",
-            )
         if bool(tool_input.get("list")) or action == "list":
             output = {"ok": True, "platform": platform, "actions": _adb_quick_action_catalog()}
             return {"output": json.dumps(output), "is_error": False}
@@ -1045,7 +1038,7 @@ def _normalized_point_arg(
     return point
 
 
-def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
     allowed = {
         "touch_gesture": {
             "type", "point", "start", "end", "x", "y", "start_x", "start_y",
@@ -1053,6 +1046,7 @@ def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) 
             "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
         },
         "mouse_move": {"x", "y"},
+        "quick_action": {"action", "list", "alternative", "alternative_index"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)
 

@@ -214,6 +214,7 @@ def _health_payload(bridge: VPhoneBridgeServer, status: dict[str, Any]) -> dict[
     return {
         "status": "ok",
         "bridge_type": "vphone_ios",
+        "platform": "ios",
         "env_count": 1,
         "concurrent": 1,
         "screen_width": status.get("screen_width"),

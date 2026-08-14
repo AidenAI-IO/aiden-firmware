@@ -754,6 +754,8 @@ The command prints:
 - `docker_environment_bridge_endpoint`: the environment endpoint from inside the
   container.
 - `benchmark_task_id`: the route id the daemon's environment bridge requests carry.
+- `device_type`: the effective daemon device type read after startup.
+- `target_platform`: the benchmark platform derived from the effective device type.
 - `stop_command`: the command to stop this daemon.
 
 Common parameters:
@@ -762,6 +764,7 @@ Common parameters:
 | --- | --- | --- |
 | `--port` | auto | Agent daemon API port |
 | `--environment-bridge-endpoint` | empty | Device or MobileGym bridge endpoint; empty disables the environment bridge |
+| `--device-type` | empty | Optional process-local `device.device_type` override; without a bridge, the daemon otherwise keeps the value from `agent.toml`; with a bridge, the value constrains its reported platform |
 | `--benchmark-task-id` | `cli-task` | Route id used by environment bridge requests |
 | `--agent-config` | empty | Specify agent.toml |
 | `--base-config-dir` | `benchmark/config` | Agent config template directory |
@@ -772,8 +775,17 @@ Common parameters:
 The agent config rules used by `start-agent-daemon` are the same as
 `run --auto-agent-setup`: copy `--base-config-dir` first, then override the
 generated `agent.toml` with `--agent-config`; if `--agent-config` is absent, use
-`agent.toml.template` or the default config. After starting the daemon manually,
-pass the printed `agent_url` to `runner run --agent-url`.
+`agent.toml.template` or the default config. Platform resolution never rewrites
+that copy. When an environment bridge is provided, the command resolves its
+platform once and passes it to the daemon through process-local
+`--device-type`. Without a bridge, an explicit `--device-type` is an optional
+override; if it is omitted, the daemon keeps `[device].device_type` from
+`agent.toml`. The daemon applies a process-local override after loading
+`agent.toml`, reports the effective value as `status.device_type`, and the
+command validates that value after startup. The deprecated `--target-platform`
+spelling remains accepted as a compatibility alias. After starting the daemon
+manually, pass the printed `agent_url` to `runner run --agent-url`; the runner
+derives and validates its platform against the environment or CLI constraint.
 
 Recommended CLI MobileGym debug flow:
 

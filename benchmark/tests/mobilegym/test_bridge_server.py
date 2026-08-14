@@ -269,6 +269,7 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         status, body = request_json(bridge.base_url, "GET", "/health")
         assert status == 200
         assert body["data"]["status"] == "ok"
+        assert body["data"]["platform"] == "android"
         assert body["data"]["concurrent"] == 1
         assert "/api/concurrent" in body["data"]["interfaces"]
 
@@ -530,7 +531,7 @@ def test_tools_api_pointer_and_quick_action_inputs_map_to_mobilegym_actions():
             bridge.base_url,
             "POST",
             "/api/tools/quick_action",
-            {"input": {"action": "back", "platform": "android"}},
+            {"input": {"action": "back"}},
         )
         assert status == 200
         assert body["is_error"] is False
@@ -541,7 +542,7 @@ def test_tools_api_pointer_and_quick_action_inputs_map_to_mobilegym_actions():
             bridge.base_url,
             "POST",
             "/api/tools/quick_action",
-            {"input": {"action": "list", "platform": "android"}},
+            {"input": {"action": "list"}},
         )
         assert status == 200
         assert body["is_error"] is False

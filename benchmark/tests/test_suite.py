@@ -1,6 +1,7 @@
 import json
 import pytest
 from pathlib import Path
+from runner.platform import TargetPlatform
 from runner.suite import load_suite, SuiteValidationError
 
 FIXTURE = {
@@ -179,7 +180,7 @@ def test_load_suite_parses_task_platforms(tmp_path: Path):
         "tasks": [
             {
                 **FIXTURE["tasks"][0],
-                "platforms": ["Android", "ios", "android"],
+                "platforms": ["Android", "ios", "Windows", "linux", "android"],
             }
         ],
     }
@@ -188,7 +189,7 @@ def test_load_suite_parses_task_platforms(tmp_path: Path):
 
     suite = load_suite(p)
 
-    assert suite.tasks[0].platforms == ["android", "ios"]
+    assert suite.tasks[0].platforms == ["android", "ios", "windows", "linux"]
 
 def test_load_suite_rejects_invalid_task_platform(tmp_path: Path):
     fixture = {
@@ -196,7 +197,7 @@ def test_load_suite_rejects_invalid_task_platform(tmp_path: Path):
         "tasks": [
             {
                 **FIXTURE["tasks"][0],
-                "platforms": ["windows"],
+                "platforms": ["chromeos"],
             }
         ],
     }
@@ -328,8 +329,8 @@ def test_load_suite_parses_task_level_mock_environment(tmp_path: Path):
             {
                 **FIXTURE["tasks"][0],
                 "mock_environment": {
+                    "platform": "ios",
                     "phone_bridge": {
-                        "platform": "ios",
                         "app_state": "background",
                         "pip_bridge_enabled": False,
                     },
@@ -349,15 +350,66 @@ def test_load_suite_parses_task_level_mock_environment(tmp_path: Path):
 
     assert suite.mock_environment is None
     assert suite.tasks[0].mock_environment is not None
-    assert suite.tasks[0].mock_environment.phone_bridge["platform"] == "ios"
+    assert suite.tasks[0].mock_environment.platform is TargetPlatform.IOS
+    assert "platform" not in suite.tasks[0].mock_environment.phone_bridge
     assert "bridge_contacts" in suite.tasks[0].mock_environment.tools
+
+
+def test_load_suite_normalizes_legacy_phone_bridge_platform(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "mock_environment": {
+            "phone_bridge": {"platform": "iOS", "connected": True},
+            "tools": {},
+        },
+    }
+    p = tmp_path / "legacy-mock.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.mock_environment is not None
+    assert suite.mock_environment.platform == "ios"
+    assert suite.mock_environment.phone_bridge == {"connected": True}
+
+
+def test_load_suite_rejects_conflicting_mock_platforms(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "mock_environment": {
+            "platform": "ios",
+            "phone_bridge": {"platform": "android"},
+            "tools": {},
+        },
+    }
+    p = tmp_path / "conflicting-mock.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="conflicts with"):
+        load_suite(p)
+
+
+def test_load_suite_rejects_invalid_top_level_mock_platform(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "mock_environment": {"platform": "chromeos", "tools": {}},
+    }
+    p = tmp_path / "invalid-mock.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(
+        SuiteValidationError,
+        match="platform must be ios, android, mac, windows, or linux",
+    ):
+        load_suite(p)
 
 
 def test_load_suite_allows_task_mock_to_override_suite_default(tmp_path: Path):
     fixture = {
         **FIXTURE,
         "mock_environment": {
-            "phone_bridge": {"platform": "ios"},
+            "platform": "ios",
+            "phone_bridge": {},
             "tools": {"bridge_contacts": {"output": {"ok": True}}},
         },
         "tasks": [
@@ -366,7 +418,8 @@ def test_load_suite_allows_task_mock_to_override_suite_default(tmp_path: Path):
                 **FIXTURE["tasks"][0],
                 "id": "android_override",
                 "mock_environment": {
-                    "phone_bridge": {"platform": "android"},
+                    "platform": "android",
+                    "phone_bridge": {},
                     "tools": {"bridge_calendar": {"output": {"ok": True}}},
                 },
             },
@@ -378,10 +431,10 @@ def test_load_suite_allows_task_mock_to_override_suite_default(tmp_path: Path):
     suite = load_suite(p)
 
     assert suite.mock_environment is not None
-    assert suite.mock_environment.phone_bridge["platform"] == "ios"
+    assert suite.mock_environment.platform == "ios"
     assert suite.tasks[0].mock_environment is None
     assert suite.tasks[1].mock_environment is not None
-    assert suite.tasks[1].mock_environment.phone_bridge["platform"] == "android"
+    assert suite.tasks[1].mock_environment.platform == "android"
 
 
 def test_load_suite_rejects_partial_task_level_mock_environment_without_default(
@@ -953,7 +1006,8 @@ def test_phone_bridge_data_policy_suite_covers_tools_and_routing_modes():
 
     for task in dynamic_island_tasks:
         state = task.mock_environment.phone_bridge
-        assert state["platform"] == "ios"
+        assert task.mock_environment.platform == "ios"
+        assert "platform" not in state
         assert state["pip_bridge_enabled"] is False
         assert state["return_entry"] == "dynamic_island"
         assert state["return_entry_available"] is True
@@ -961,12 +1015,14 @@ def test_phone_bridge_data_policy_suite_covers_tools_and_routing_modes():
 
     for task in pip_tasks:
         state = task.mock_environment.phone_bridge
-        assert state["platform"] == "ios"
+        assert task.mock_environment.platform == "ios"
+        assert "platform" not in state
         assert state["pip_bridge_enabled"] is True
         assert "bridge_open_app" in task.hard_assertions.forbidden_tools
 
     for task in fgs_tasks:
         state = task.mock_environment.phone_bridge
-        assert state["platform"] == "android"
+        assert task.mock_environment.platform == "android"
+        assert "platform" not in state
         assert state["fgs_bridge_enabled"] is True
         assert "bridge_open_app" in task.hard_assertions.forbidden_tools
