@@ -370,7 +370,7 @@ type StorageCleaner interface {
 }
 ~~~
 
-Cleaners run in ascending Priority order. Non-force checks call EstimateReclaimable first and skip a cleaner when its estimate is zero.
+Cleaners run in ascending Priority order. Non-force checks normally call EstimateReclaimable first and skip a cleaner when its estimate is zero. A cleaner may additionally implement EmergencyClean for behavior that is safe only when the effective level is Emergency.
 
 #### Default Stages
 
@@ -394,14 +394,15 @@ A retention value of 0 creates an emergency cleanup stage. The default session_a
 The persistent Python package environment registers one `python_userbase`
 cleaner backed by the same `StorageCleaner` interface.
 
-| Cleaner | Normal behavior | Force behavior | Protection |
+| Cleaner | Normal and manual force behavior | Emergency behavior | Protection |
 | --- | --- | --- | --- |
-| `python_userbase` | Removes temporary entries older than 24 hours and non-current Python-version directories older than 7 days | Keeps the 24-hour temporary-data rule, but removes non-current version directories without waiting 7 days | Never follows symlinks or removes the current Python version |
+| `python_userbase` | Removes direct children of `/userdata/tmp` older than 24 hours; retains the whole Python user base | Removes the entire `/userdata/agent/python` user base and still preserves recent temp entries | Never follows symlinks; never removes the user base below Emergency |
 
-The active Python environment is never an automatic cleanup target, including
-at Emergency. Because installation uses the general shell tool, this cleaner
-does not enforce an installation gate; the Agent guidance avoids starting new
-pip work while `/userdata` is under storage pressure.
+The user base contains rebuildable runtime packages and is intentionally the
+destructive cleanup target only at the highest alert level. Because installation
+uses the general shell tool, this cleaner does not enforce an installation gate;
+the Agent guidance avoids starting new pip work while `/userdata` is under
+storage pressure.
 
 Manual cleanup accepts:
 
@@ -412,9 +413,10 @@ Manual cleanup accepts:
 }
 ~~~
 
-With `force=false`, the 24-hour and 7-day retention periods apply. A force
-cleanup only bypasses the stale-version retention period; it does not delete
-recent temporary entries or the active environment. See
+Manual `force=true` does not remove the package environment while the effective
+level is below Emergency. At Emergency, automatic or manual remediation removes
+the entire user base. Recent temporary entries retain the 24-hour safety window.
+See
 [Persistent Python Package Environment](python-packages.md) for the
 directory layout, shell environment, OTA behavior, and cleanup safety rules.
 

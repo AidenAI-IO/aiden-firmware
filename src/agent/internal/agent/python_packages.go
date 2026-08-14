@@ -1,109 +1,48 @@
 package agent
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strings"
-	"time"
 )
 
 const (
-	managedPythonRoot                = "/userdata/agent/python"
-	managedPythonTmp                 = "/userdata/tmp"
-	managedPythonVersionQueryTimeout = 5 * time.Second
-	firmwarePythonInterpreter        = "/usr/bin/python3"
+	managedPythonRoot     = "/userdata/agent/python"
+	managedPythonTmp      = "/userdata/tmp"
+	managedPythonRootMode = os.FileMode(0o755)
+	managedPythonTmpMode  = os.FileMode(0o777) | os.ModeSticky
 )
 
-var managedPythonVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
-
-// managedPythonTmpPath can be overridden in tests to use a relative tmp directory.
-var managedPythonTmpPath = func(root string) string {
-	return managedPythonTmp
-}
-
 type managedPythonPaths struct {
-	Root     string
-	UserBase string
-	Tmp      string
+	Root string
+	Tmp  string
 }
 
-type managedPythonVersionQuery func(context.Context) (string, error)
-
-func queryRunningPythonVersion(ctx context.Context) (string, error) {
-	return queryPythonVersion(ctx, firmwarePythonInterpreter)
-}
-
-func queryPythonVersion(ctx context.Context, interpreter string) (string, error) {
-	if ctx == nil {
-		ctx = context.Background()
+func prepareManagedPythonPaths(root, tmp string) (managedPythonPaths, error) {
+	paths := managedPythonPaths{
+		Root: filepath.Clean(root),
+		Tmp:  filepath.Clean(tmp),
 	}
-	queryCtx, cancel := context.WithTimeout(ctx, managedPythonVersionQueryTimeout)
-	defer cancel()
-
-	output, err := exec.CommandContext(queryCtx, interpreter, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Output()
-	if err != nil {
-		if contextErr := queryCtx.Err(); contextErr != nil {
-			return "", contextErr
-		}
-		return "", err
-	}
-	return string(output), nil
-}
-
-func resolveManagedPythonPaths(ctx context.Context, root string, query managedPythonVersionQuery) (managedPythonPaths, error) {
-	if query == nil {
-		return managedPythonPaths{}, fmt.Errorf("python version query is required")
-	}
-	version, err := query(ctx)
-	if err != nil {
-		return managedPythonPaths{}, fmt.Errorf("query python version: %w", err)
-	}
-	version = strings.TrimSpace(version)
-	if !managedPythonVersionPattern.MatchString(version) {
-		return managedPythonPaths{}, fmt.Errorf("invalid python major.minor version %q", version)
-	}
-
-	root = filepath.Clean(root)
-	return managedPythonPaths{
-		Root:     root,
-		UserBase: filepath.Join(root, "py"+version),
-		Tmp:      managedPythonTmpPath(root),
-	}, nil
-}
-
-func prepareManagedPythonPaths(ctx context.Context, root string, query managedPythonVersionQuery) (managedPythonPaths, error) {
-	paths, err := resolveManagedPythonPaths(ctx, root, query)
-	if err != nil {
-		return managedPythonPaths{}, err
-	}
-	if err := ensureManagedPythonPaths(paths, time.Now()); err != nil {
+	if err := ensureManagedPythonPaths(paths); err != nil {
 		return managedPythonPaths{}, err
 	}
 	return paths, nil
 }
 
-func ensureManagedPythonPaths(paths managedPythonPaths, now time.Time) error {
-	// Only ensure Root and UserBase exist. Tmp is a system-level shared directory
-	// (/userdata/tmp) that should be created by system initialization, not by the agent.
-	for _, path := range []string{paths.Root, paths.UserBase} {
-		if err := ensureManagedPythonDirectory(path); err != nil {
-			return fmt.Errorf("create managed python directory %q: %w", path, err)
-		}
+func ensureManagedPythonPaths(paths managedPythonPaths) error {
+	if err := ensureManagedPythonDirectory(paths.Root, managedPythonRootMode); err != nil {
+		return fmt.Errorf("create managed python directory %q: %w", paths.Root, err)
 	}
-	if err := os.Chtimes(paths.UserBase, now, now); err != nil {
-		return fmt.Errorf("touch active python directory %q: %w", paths.UserBase, err)
+	if err := ensureManagedPythonDirectory(paths.Tmp, managedPythonTmpMode); err != nil {
+		return fmt.Errorf("create managed python temporary directory %q: %w", paths.Tmp, err)
 	}
 	return nil
 }
 
-func ensureManagedPythonDirectory(path string) error {
+func ensureManagedPythonDirectory(path string, mode os.FileMode) error {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		if err := os.MkdirAll(path, 0o755); err != nil {
+		if err := os.MkdirAll(path, mode.Perm()); err != nil {
 			return err
 		}
 		info, err = os.Lstat(path)
@@ -114,5 +53,5 @@ func ensureManagedPythonDirectory(path string) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("path is not a real directory")
 	}
-	return nil
+	return os.Chmod(path, mode)
 }

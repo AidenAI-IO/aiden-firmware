@@ -32,6 +32,15 @@ type recordingStorageCleaner struct {
 	calls    int
 }
 
+type recordingEmergencyStorageCleaner struct {
+	name                 string
+	priority             int
+	regularEstimateCalls int
+	regularCleanCalls    int
+	forceCleanCalls      int
+	emergencyCleanCalls  int
+}
+
 type delayedStorageCleaner struct {
 	name          string
 	priority      int
@@ -77,6 +86,25 @@ func (c *recordingStorageCleaner) EstimateReclaimable(context.Context) (uint64, 
 func (c *recordingStorageCleaner) Clean(context.Context) (uint64, error) {
 	c.calls++
 	return c.freed, nil
+}
+
+func (c *recordingEmergencyStorageCleaner) Name() string  { return c.name }
+func (c *recordingEmergencyStorageCleaner) Priority() int { return c.priority }
+func (c *recordingEmergencyStorageCleaner) EstimateReclaimable(context.Context) (uint64, error) {
+	c.regularEstimateCalls++
+	return storageMegabyte, nil
+}
+func (c *recordingEmergencyStorageCleaner) Clean(context.Context) (uint64, error) {
+	c.regularCleanCalls++
+	return storageMegabyte, nil
+}
+func (c *recordingEmergencyStorageCleaner) ForceClean(context.Context) (uint64, error) {
+	c.forceCleanCalls++
+	return storageMegabyte, nil
+}
+func (c *recordingEmergencyStorageCleaner) EmergencyClean(context.Context) (uint64, error) {
+	c.emergencyCleanCalls++
+	return storageMegabyte, nil
 }
 
 func storageSampleWithAvailableMB(availableMB uint64) StorageSample {
@@ -344,6 +372,47 @@ func TestStorageMonitorManualCleanupWithoutForceSkipsEmergencyStages(t *testing.
 	if status.Level != StorageLevelNormal || status.CurrentCleanupFreedBytes != 0 {
 		t.Fatalf("manual cleanup status = %+v", status)
 	}
+}
+
+func TestStorageMonitorUsesEmergencyCleanupOnlyAtHighestAlertLevel(t *testing.T) {
+	newMonitor := func(availableMB uint64, cleaner StorageCleaner) *StorageMonitor {
+		config := DefaultStorageConfig()
+		config.Cleanup.CleanupRetryIntervalSeconds = 0
+		return NewStorageMonitor(config, &sequenceStorageSampler{samples: []StorageSample{
+			storageSampleWithAvailableMB(availableMB),
+			storageSampleWithAvailableMB(60),
+		}}, nil, []StorageCleaner{withMinimumStorageLevel(cleaner, StorageLevelNormal)}, nil)
+	}
+
+	t.Run("automatic emergency cleanup", func(t *testing.T) {
+		cleaner := &recordingEmergencyStorageCleaner{name: "python_userbase", priority: 1}
+		monitor := newMonitor(4, cleaner)
+
+		if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
+			t.Fatalf("CheckAndRemediate() error = %v", err)
+		}
+		if cleaner.emergencyCleanCalls != 1 {
+			t.Fatalf("emergency clean calls = %d, want 1", cleaner.emergencyCleanCalls)
+		}
+		if cleaner.regularEstimateCalls != 0 || cleaner.regularCleanCalls != 0 || cleaner.forceCleanCalls != 0 {
+			t.Fatalf("non-emergency calls = estimate:%d clean:%d force:%d, want all 0", cleaner.regularEstimateCalls, cleaner.regularCleanCalls, cleaner.forceCleanCalls)
+		}
+	})
+
+	t.Run("manual force at normal level", func(t *testing.T) {
+		cleaner := &recordingEmergencyStorageCleaner{name: "python_userbase", priority: 1}
+		monitor := newMonitor(60, cleaner)
+
+		if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonManual, Force: true}); err != nil {
+			t.Fatalf("CheckAndRemediate() error = %v", err)
+		}
+		if cleaner.forceCleanCalls != 1 {
+			t.Fatalf("force clean calls = %d, want 1", cleaner.forceCleanCalls)
+		}
+		if cleaner.emergencyCleanCalls != 0 {
+			t.Fatalf("emergency clean calls at normal level = %d, want 0", cleaner.emergencyCleanCalls)
+		}
+	})
 }
 
 func TestStorageMonitorAllowWriteTracksDegradedCapabilities(t *testing.T) {

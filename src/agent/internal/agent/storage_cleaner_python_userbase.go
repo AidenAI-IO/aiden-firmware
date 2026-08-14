@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,14 +11,13 @@ import (
 
 const (
 	pythonTemporaryRetention = 24 * time.Hour
-	pythonVersionRetention   = 7 * 24 * time.Hour
 )
 
 type PythonUserBaseCleaner struct {
-	root         string
-	priority     int
-	versionQuery managedPythonVersionQuery
-	now          func() time.Time
+	root     string
+	tmp      string
+	priority int
+	now      func() time.Time
 }
 
 type pythonCleanupCandidate struct {
@@ -25,12 +25,12 @@ type pythonCleanupCandidate struct {
 	size uint64
 }
 
-func NewPythonUserBaseCleaner(root string, priority int, versionQuery managedPythonVersionQuery) *PythonUserBaseCleaner {
+func NewPythonUserBaseCleaner(root, tmp string, priority int) *PythonUserBaseCleaner {
 	return &PythonUserBaseCleaner{
-		root:         root,
-		priority:     priority,
-		versionQuery: versionQuery,
-		now:          time.Now,
+		root:     filepath.Clean(root),
+		tmp:      filepath.Clean(tmp),
+		priority: priority,
+		now:      time.Now,
 	}
 }
 
@@ -39,7 +39,7 @@ func (c *PythonUserBaseCleaner) Name() string { return "python_userbase" }
 func (c *PythonUserBaseCleaner) Priority() int { return c.priority }
 
 func (c *PythonUserBaseCleaner) EstimateReclaimable(ctx context.Context) (uint64, error) {
-	candidates, err := c.collectCandidates(ctx, false)
+	candidates, err := c.collectTemporaryCandidates(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -51,15 +51,23 @@ func (c *PythonUserBaseCleaner) EstimateReclaimable(ctx context.Context) (uint64
 }
 
 func (c *PythonUserBaseCleaner) Clean(ctx context.Context) (uint64, error) {
-	return c.clean(ctx, false)
+	return c.cleanTemporary(ctx)
 }
 
 func (c *PythonUserBaseCleaner) ForceClean(ctx context.Context) (uint64, error) {
-	return c.clean(ctx, true)
+	// Manual force cleanup keeps the same 24-hour safety window and never removes
+	// installed packages. The user base is destructive-cleaned only at Emergency.
+	return c.cleanTemporary(ctx)
 }
 
-func (c *PythonUserBaseCleaner) clean(ctx context.Context, force bool) (uint64, error) {
-	candidates, err := c.collectCandidates(ctx, force)
+func (c *PythonUserBaseCleaner) EmergencyClean(ctx context.Context) (uint64, error) {
+	rootFreed, rootErr := c.removeUserBase(ctx)
+	tmpFreed, tmpErr := c.cleanTemporary(ctx)
+	return rootFreed + tmpFreed, errors.Join(rootErr, tmpErr)
+}
+
+func (c *PythonUserBaseCleaner) cleanTemporary(ctx context.Context) (uint64, error) {
+	candidates, err := c.collectTemporaryCandidates(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -76,25 +84,32 @@ func (c *PythonUserBaseCleaner) clean(ctx context.Context, force bool) (uint64, 
 	return freed, nil
 }
 
-func (c *PythonUserBaseCleaner) collectCandidates(ctx context.Context, force bool) ([]pythonCleanupCandidate, error) {
-	paths, err := resolveManagedPythonPaths(ctx, c.root, c.versionQuery)
-	if err != nil {
-		return nil, err
+func (c *PythonUserBaseCleaner) collectTemporaryCandidates(ctx context.Context) ([]pythonCleanupCandidate, error) {
+	if err := ensureManagedPythonDirectory(c.tmp, managedPythonTmpMode); err != nil {
+		return nil, fmt.Errorf("create managed python temporary directory %q: %w", c.tmp, err)
 	}
-	now := c.now()
-	if err := ensureManagedPythonPaths(paths, now); err != nil {
-		return nil, err
-	}
+	return collectPythonTemporaryCandidates(ctx, c.tmp, c.now().Add(-pythonTemporaryRetention))
+}
 
-	candidates, err := collectPythonTemporaryCandidates(ctx, paths.Tmp, now.Add(-pythonTemporaryRetention))
-	if err != nil {
-		return nil, err
+func (c *PythonUserBaseCleaner) removeUserBase(ctx context.Context) (uint64, error) {
+	info, err := os.Lstat(c.root)
+	if os.IsNotExist(err) {
+		return 0, nil
 	}
-	versionCandidates, err := collectPythonVersionCandidates(ctx, paths, now.Add(-pythonVersionRetention), force)
 	if err != nil {
-		return nil, err
+		return 0, fmt.Errorf("inspect managed python root %q: %w", c.root, err)
 	}
-	return append(candidates, versionCandidates...), nil
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return 0, fmt.Errorf("managed python root %q is not a real directory", c.root)
+	}
+	size, err := managedPythonPathSize(ctx, c.root, info)
+	if err != nil {
+		return 0, err
+	}
+	if err := os.RemoveAll(c.root); err != nil {
+		return 0, fmt.Errorf("remove managed python root %q: %w", c.root, err)
+	}
+	return size, nil
 }
 
 func collectPythonTemporaryCandidates(ctx context.Context, tmpDir string, cutoff time.Time) ([]pythonCleanupCandidate, error) {
@@ -116,41 +131,6 @@ func collectPythonTemporaryCandidates(ctx context.Context, tmpDir string, cutoff
 			continue
 		}
 		if !info.ModTime().Before(cutoff) {
-			continue
-		}
-		size, err := managedPythonPathSize(ctx, path, info)
-		if err != nil {
-			return nil, err
-		}
-		candidates = append(candidates, pythonCleanupCandidate{path: path, size: size})
-	}
-	return candidates, nil
-}
-
-func collectPythonVersionCandidates(ctx context.Context, paths managedPythonPaths, cutoff time.Time, force bool) ([]pythonCleanupCandidate, error) {
-	entries, err := os.ReadDir(paths.Root)
-	if err != nil {
-		return nil, fmt.Errorf("read managed python root: %w", err)
-	}
-	activeName := filepath.Base(paths.UserBase)
-	var candidates []pythonCleanupCandidate
-	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		name := entry.Name()
-		if name == activeName || len(name) < 3 || name[:2] != "py" || !managedPythonVersionPattern.MatchString(name[2:]) {
-			continue
-		}
-		path := filepath.Join(paths.Root, name)
-		info, err := os.Lstat(path)
-		if err != nil {
-			return nil, fmt.Errorf("inspect managed python version path %q: %w", path, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			continue
-		}
-		if !force && !info.ModTime().Before(cutoff) {
 			continue
 		}
 		size, err := managedPythonPathSize(ctx, path, info)

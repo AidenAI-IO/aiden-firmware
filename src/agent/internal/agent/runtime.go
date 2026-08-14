@@ -392,9 +392,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		WithWaitForWakeupController(waitForWakeupController),
 		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
 	}
-	pythonContext, cancelPython := context.WithTimeout(context.Background(), 5*time.Second)
-	pythonPaths, pythonErr := prepareManagedPythonPaths(pythonContext, managedPythonRoot, queryRunningPythonVersion)
-	cancelPython()
+	pythonPaths, pythonErr := prepareManagedPythonPaths(managedPythonRoot, managedPythonTmp)
 	if pythonErr != nil {
 		if logger != nil {
 			logger.Warn("managed python environment unavailable: %v", pythonErr)
@@ -402,7 +400,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 			log.Printf("managed python environment unavailable: %v", pythonErr)
 		}
 	} else {
-		toolOptions = append(toolOptions, WithManagedPythonShellHints(pythonPaths))
+		toolOptions = append(toolOptions, WithShellTemporaryDirectory(pythonPaths.Tmp))
 	}
 	toolSet := NewBuiltinToolSetFromConfig(
 		cfg,

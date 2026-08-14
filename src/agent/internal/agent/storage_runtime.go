@@ -13,6 +13,11 @@ type leveledStorageCleaner struct {
 	minimumLevel StorageLevel
 }
 
+type leveledEmergencyStorageCleaner struct {
+	leveledStorageCleaner
+	emergencyStorageCleaner
+}
+
 func (c leveledStorageCleaner) MinimumLevel() StorageLevel { return c.minimumLevel }
 
 func (c leveledStorageCleaner) ForceClean(ctx context.Context) (uint64, error) {
@@ -23,14 +28,21 @@ func (c leveledStorageCleaner) ForceClean(ctx context.Context) (uint64, error) {
 }
 
 func withMinimumStorageLevel(cleaner StorageCleaner, level StorageLevel) StorageCleaner {
-	return leveledStorageCleaner{StorageCleaner: cleaner, minimumLevel: level}
+	leveled := leveledStorageCleaner{StorageCleaner: cleaner, minimumLevel: level}
+	if emergencyCleaner, ok := cleaner.(emergencyStorageCleaner); ok {
+		return leveledEmergencyStorageCleaner{
+			leveledStorageCleaner:   leveled,
+			emergencyStorageCleaner: emergencyCleaner,
+		}
+	}
+	return leveled
 }
 
 func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManager) *StorageMonitor {
 	storageConfig := cfg.Storage.MonitorConfig()
 	cleaners := make([]StorageCleaner, 0)
 	priority := 1
-	pythonCleaner := NewPythonUserBaseCleaner(managedPythonRoot, priority, queryRunningPythonVersion)
+	pythonCleaner := NewPythonUserBaseCleaner(managedPythonRoot, managedPythonTmp, priority)
 	priority++
 	cleaners = append(cleaners, withMinimumStorageLevel(pythonCleaner, StorageLevelNormal))
 	if cfg.ConfigDir != "" {

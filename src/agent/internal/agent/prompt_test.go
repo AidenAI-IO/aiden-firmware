@@ -314,25 +314,34 @@ func TestAgentEnvironmentGuidanceIncludesManagedPythonPackagePolicy(t *testing.T
 	guidance := agentEnvironmentGuidance()
 	for _, want := range []string{
 		"Prefer the Python standard library",
-		"AIDEN_PYTHON_USERBASE",
 		"name==version",
 		"--only-binary=:all:",
-		"PIP_NO_CACHE_DIR=1",
-		"PIP_DISABLE_PIP_VERSION_CHECK=1",
 		"/usr/bin/python3 -m pip install",
 		"/usr/bin/python3 -m pip check",
+		"Run Python code with /usr/bin/python3",
 		"timeout of at least 120 seconds",
 		"retry it once with a longer bounded timeout",
 		"do not claim installation succeeded unless pip check completes successfully",
 		"pip, setuptools, or wheel",
 		"/run/agent/storage_level",
 		"avoid unbounded retries",
-		"$AIDEN_PYTHON_USERBASE/bin",
-		"system provides AIDEN_PYTHON_USERBASE",
-		"--user",
+		"$PYTHONUSERBASE/bin",
 	} {
 		if !strings.Contains(guidance, want) {
 			t.Fatalf("agentEnvironmentGuidance() missing %q:\n%s", want, guidance)
+		}
+	}
+	for _, unexpected := range []string{
+		"AIDEN_PYTHON_USERBASE",
+		"PIP_USER=",
+		"PIP_NO_CACHE_DIR=",
+		"PIP_DISABLE_PIP_VERSION_CHECK=",
+		"PYTHONUSERBASE=",
+		"--user",
+		"--no-cache-dir",
+	} {
+		if strings.Contains(guidance, unexpected) {
+			t.Fatalf("agentEnvironmentGuidance() unexpectedly contains %q:\n%s", unexpected, guidance)
 		}
 	}
 }

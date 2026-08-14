@@ -38,5 +38,9 @@ if [ -n "${HTTP_PROXY:-}${http_proxy:-}${HTTPS_PROXY:-}${https_proxy:-}${ALL_PRO
     export NO_PROXY no_proxy
 fi
 
-unset AIDEN_ENV_DEFAULT_NO_PROXY AIDEN_ENV_FILE AIDEN_ENV_RESTORE_ALLEXPORT AIDEN_ENV_RESTORE_ERREXIT
+if [ -r /etc/profile.d/aiden-python.sh ]; then
+    . /etc/profile.d/aiden-python.sh
+fi
+
+unset AIDEN_ENV_DEFAULT_NO_PROXY AIDEN_ENV_FILE AIDEN_ENV_RESTORE_ALLEXPORT AIDEN_ENV_RESTORE_ERREXIT AIDEN_PYTHON_PROFILE
 exec "$@"
