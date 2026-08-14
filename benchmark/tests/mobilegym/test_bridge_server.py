@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import io
 import json
 import sys
 import threading
@@ -10,6 +11,7 @@ import urllib.request
 from enum import Enum
 
 import pytest
+from PIL import Image
 
 from mobilegym.bridge.episode import BridgeEpisodeState, BridgeTaskRouter
 from mobilegym.bridge.actions import action_to_dict
@@ -326,6 +328,37 @@ def test_api_screen_is_removed():
         status, body = request_json(bridge.base_url, "GET", "/api/screen")
         assert status == 404
         assert body["ok"] is False
+
+
+def test_provider_screenshot_converts_png_observation_to_jpeg():
+    png_buf = io.BytesIO()
+    Image.new("RGB", (2, 1), "red").save(png_buf, format="PNG")
+    png_bytes = png_buf.getvalue()
+
+    with OwnerLoop() as owner:
+        env = FakeEnv(owner.loop)
+        env.observation = types.SimpleNamespace(
+            screenshot=png_bytes, width=2, height=1, mime_type="image/png"
+        )
+        state = BridgeEpisodeState(env, owner_loop=owner.loop)
+        server = BridgeServer(state, host="127.0.0.1", port=0)
+        try:
+            server.start()
+            status, body = request_json(
+                server.base_url,
+                "POST",
+                "/api/providers/screenshot",
+                {"format": "jpeg", "quality": 80},
+            )
+        finally:
+            server.stop()
+
+    assert status == 200
+    meta = body["data"]["meta"]
+    image = base64.b64decode(body["data"]["image"])
+    assert meta["pixel_format"] == "jpeg"
+    assert image.startswith(b"\xff\xd8")
+    assert meta["bytes"] == len(image)
 
 
 def test_provider_screenshot_routes_by_task_id():

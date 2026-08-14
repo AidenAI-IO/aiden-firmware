@@ -20,7 +20,13 @@ from .episode import (
     StaleEpisodeError,
     benchmark_task_id_from_headers,
 )
-from .protocol import bridge_error, bridge_ok, encode_provider_frame, encode_screenshot
+from .protocol import (
+    bridge_error,
+    bridge_ok,
+    encode_image_as_format,
+    encode_provider_frame,
+    encode_screenshot,
+)
 from .tools_api import ToolsAPIHandler
 
 
@@ -221,11 +227,23 @@ def _handler_for(bridge: BridgeServer):
                 seq = int(getattr(state, "_screenshot_seq", 0)) + 1
                 state._screenshot_seq = seq
                 image = base64.b64decode(screenshot["data"])
+                requested_format = str(payload.get("format") or "jpeg")
+                quality = payload.get("quality")
+                try:
+                    quality_value = int(quality) if quality is not None else 80
+                except (TypeError, ValueError):
+                    quality_value = 80
+                image, pixel_format = encode_image_as_format(
+                    image,
+                    str(screenshot.get("format") or ""),
+                    requested_format,
+                    quality_value,
+                )
                 return encode_provider_frame(
                     image,
                     width=int(screenshot["width"]),
                     height=int(screenshot["height"]),
-                    pixel_format=str(screenshot.get("format") or "jpeg"),
+                    pixel_format=pixel_format,
                     backend="mobilegym",
                     seq=seq,
                 )

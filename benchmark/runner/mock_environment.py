@@ -41,6 +41,7 @@ class MockEnvironmentServer:
         self.screen_text = spec.screen_text or "Mock phone environment ready."
         self.calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
+        self._screenshot_seq = 0
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -122,11 +123,17 @@ class MockEnvironmentServer:
         width, height = image.size
         output = io.BytesIO()
         image.save(output, format="JPEG", quality=88)
+        jpeg = output.getvalue()
+        with self._lock:
+            self._screenshot_seq += 1
+            seq = self._screenshot_seq
         return {
-            "data": base64.b64encode(output.getvalue()).decode("ascii"),
+            "data": base64.b64encode(jpeg).decode("ascii"),
             "width": width,
             "height": height,
             "format": "jpeg",
+            "bytes": len(jpeg),
+            "seq": seq,
             "description": self.screen_text,
         }
 
@@ -243,7 +250,7 @@ def _handler_for(server: MockEnvironmentServer):
                         "ok": True,
                         "data": {
                             "meta": {
-                                "seq": 1,
+                                "seq": shot["seq"],
                                 "width": shot["width"],
                                 "height": shot["height"],
                                 "source_width": shot["width"],
@@ -254,7 +261,7 @@ def _handler_for(server: MockEnvironmentServer):
                                 "crop_height": shot["height"],
                                 "pixel_format": shot.get("format") or "jpeg",
                                 "stride": 0,
-                                "bytes": 0,
+                                "bytes": shot["bytes"],
                                 "stale": False,
                             },
                             "capture_info": {"capture_backend": "mock"},

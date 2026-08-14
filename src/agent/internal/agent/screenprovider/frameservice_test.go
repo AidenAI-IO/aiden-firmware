@@ -110,3 +110,20 @@ func TestFrameHealthResponseUnmarshalSupportsStringLastRecoveryTs(t *testing.T) 
 		t.Fatalf("unexpected last_recovery_ts: %d", resp.LastRecoveryTs)
 	}
 }
+
+func TestLatestFrameRequestJSONEscapesFormat(t *testing.T) {
+	encoded, err := latestFrameRequestJSON(`jpeg","evil":true`, 80, true, 16)
+	if err != nil {
+		t.Fatalf("latestFrameRequestJSON() error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(encoded), &payload); err != nil {
+		t.Fatalf("request is not valid JSON: %v body=%s", err, encoded)
+	}
+	if payload["format"] != `jpeg","evil":true` {
+		t.Fatalf("format = %#v, want the original string as one JSON value", payload["format"])
+	}
+	if payload["method"] != "latest_frame" || payload["quality"] != float64(80) || payload["minimal_width"] != float64(16) {
+		t.Fatalf("unexpected request payload: %#v", payload)
+	}
+}

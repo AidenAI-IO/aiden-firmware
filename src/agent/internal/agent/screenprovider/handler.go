@@ -39,9 +39,7 @@ func HandleHTTP(w http.ResponseWriter, r *http.Request, provider Provider) {
 			return
 		}
 	}
-	if req.Format == "" {
-		req.Format = "jpeg"
-	}
+	req.Format = normalizeProviderFormat(req.Format)
 	if req.Quality <= 0 {
 		req.Quality = DefaultJPEGQuality
 	}
@@ -82,4 +80,15 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func normalizeProviderFormat(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "png":
+		return "png"
+	case "raw":
+		return "raw"
+	default:
+		return "jpeg"
+	}
 }

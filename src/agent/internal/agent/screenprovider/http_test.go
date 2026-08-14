@@ -143,3 +143,23 @@ func TestHandleHTTPServesProviderFrame(t *testing.T) {
 		t.Fatalf("image = %q err=%v", string(decoded), err)
 	}
 }
+
+func TestHandleHTTPSanitizesUntrustedFormat(t *testing.T) {
+	provider := &stubProvider{
+		meta: FrameMetadata{Seq: 1, Width: 1, Height: 1, PixelFormat: "jpeg"},
+		data: []byte("jpeg"),
+	}
+	body, err := json.Marshal(map[string]any{"format": `jpeg","evil":true`, "quality": 80})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, Path, strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	HandleHTTP(rec, req, provider)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if provider.format != "jpeg" {
+		t.Fatalf("format = %q, want jpeg", provider.format)
+	}
+}

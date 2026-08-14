@@ -192,9 +192,9 @@ func (c *FrameService) LatestFrameWithFormat(format string, quality int, cropBla
 		minimalWidth = 0
 	}
 
-	request := fmt.Sprintf(`{"type":"request","method":"latest_frame","since_seq":"0","timeout_ms":0,"format":"%s","quality":%d,"crop_black":%t}`, format, quality, cropBlack)
-	if minimalWidth > 0 {
-		request = fmt.Sprintf(`{"type":"request","method":"latest_frame","since_seq":"0","timeout_ms":0,"format":"%s","quality":%d,"crop_black":%t,"minimal_width":%d}`, format, quality, cropBlack, minimalWidth)
+	request, err := latestFrameRequestJSON(format, quality, cropBlack, minimalWidth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal latest_frame request: %w", err)
 	}
 
 	headerJSON, payload, err := c.doRequest(request, nil, 5*time.Second)
@@ -258,6 +258,26 @@ func (c *FrameService) doRequest(requestJSON string, requestPayload []byte, time
 	}
 
 	return ReadUDSMessage(conn)
+}
+
+func latestFrameRequestJSON(format string, quality int, cropBlack bool, minimalWidth int) (string, error) {
+	payload := map[string]any{
+		"type":       "request",
+		"method":     "latest_frame",
+		"since_seq":  "0",
+		"timeout_ms": 0,
+		"format":     format,
+		"quality":    quality,
+		"crop_black": cropBlack,
+	}
+	if minimalWidth > 0 {
+		payload["minimal_width"] = minimalWidth
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 // Wire protocol: [header_len LE32][payload_len LE64][header bytes][payload bytes]

@@ -278,6 +278,20 @@ def test_provider_screenshot_works_without_setup(bridge):
     assert base64.b64decode(body["data"]["image"]) == b"fake-jpeg-bytes"
 
 
+def test_provider_screenshot_rejects_conflicting_task_id(bridge):
+    _, _, base_url = bridge
+    _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
+    status, body = _request(
+        base_url,
+        "/api/providers/screenshot",
+        method="POST",
+        payload={"format": "jpeg", "quality": 80},
+        task_id="suite:other",
+    )
+    assert status == 429
+    assert body["error"]["code"] == "no_bridge_env_available"
+
+
 def test_tools_catalog_lists_expected_tools(bridge):
     _, _, base_url = bridge
     status, body = _request(base_url, "/api/tools")

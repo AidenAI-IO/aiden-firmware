@@ -136,6 +136,8 @@ def _handler_for(bridge: VPhoneBridgeServer):
             self._send_json(200, bridge_ok({"released": bridge.state.release(task_id)}))
 
         def _handle_provider_screenshot(self) -> None:
+            task_id = benchmark_task_id_from_headers(self.headers)
+            bridge.state.check_task_access(task_id)
             with bridge.state.lock:
                 payload, width, height, source_width, source_height = bridge.state.device.screenshot_jpeg()
                 seq = int(getattr(bridge.state, "_screenshot_seq", 0)) + 1

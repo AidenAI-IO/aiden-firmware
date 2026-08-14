@@ -89,11 +89,14 @@ Typical scenario:
 The tools the default WebUI Docker daemon forwards include:
 
 ```text
-screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,
+touch_gesture,keyboard_text,keyboard_tap,enter_text,
 search_launch_app,mouse_click,mouse_move,mouse_scroll,
 quick_action,bridge_open_app,bridge_clipboard,bridge_calendar,
 bridge_contacts,bridge_notification
 ```
+
+`screenshot` is not forwarded. The agent captures it locally through
+`POST /api/providers/screenshot`.
 
 Notes:
 

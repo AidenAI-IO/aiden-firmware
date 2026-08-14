@@ -130,7 +130,11 @@ def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
         screen = _json_request(f"{base_url}/api/providers/screenshot", "POST", {"format": "jpeg", "quality": 80})
         meta = screen["data"]["meta"]
         assert meta["width"] == 1170
-        assert screen["data"]["image"]
+        assert meta["seq"] == 1
+        assert meta["bytes"] > 0
+        assert len(base64.b64decode(screen["data"]["image"])) == meta["bytes"]
+        screen2 = _json_request(f"{base_url}/api/providers/screenshot", "POST", {"format": "jpeg", "quality": 80})
+        assert screen2["data"]["meta"]["seq"] == 2
     finally:
         server.stop()
 

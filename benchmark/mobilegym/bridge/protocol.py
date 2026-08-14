@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 from typing import Any
 
 
@@ -69,6 +70,50 @@ def encode_provider_frame(
         "capture_info": {"capture_backend": backend},
         "image": base64.b64encode(payload).decode("ascii"),
     }
+
+
+def encode_image_as_format(
+    payload: bytes,
+    current_format: str,
+    requested_format: str,
+    quality: int,
+) -> tuple[bytes, str]:
+    """Convert capture bytes to the requested provider format when possible."""
+    current = _normalize_pixel_format(current_format) or _infer_pixel_format(payload)
+    requested = _normalize_pixel_format(requested_format) or "jpeg"
+    if requested != "jpeg" or current == "jpeg":
+        return payload, current or requested
+    if quality <= 0:
+        quality = 80
+    try:
+        from PIL import Image
+    except ImportError:
+        return payload, current or "png"
+
+    try:
+        image = Image.open(io.BytesIO(payload)).convert("RGB")
+        encoded = io.BytesIO()
+        image.save(encoded, format="JPEG", quality=min(100, quality))
+        return encoded.getvalue(), "jpeg"
+    except Exception:
+        return payload, current or "png"
+
+
+def _normalize_pixel_format(value: str) -> str:
+    fmt = str(value or "").strip().lower()
+    if fmt == "jpg":
+        return "jpeg"
+    if fmt in {"jpeg", "png", "raw"}:
+        return fmt
+    return ""
+
+
+def _infer_pixel_format(payload: bytes) -> str:
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if payload.startswith(b"\xff\xd8"):
+        return "jpeg"
+    return ""
 
 def _image_dimensions(payload: bytes) -> tuple[int, int] | None:
     if payload.startswith(b"\x89PNG\r\n\x1a\n") and len(payload) >= 24:

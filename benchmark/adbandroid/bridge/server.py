@@ -157,7 +157,9 @@ def _handler_for(bridge: ADBBridgeServer):
             self._send_json(200, bridge_ok({"released": released}))
 
         def _handle_provider_screenshot(self, payload: dict[str, Any]) -> None:
-            bridge.state.renew_task_if_owner(benchmark_task_id_from_headers(self.headers))
+            task_id = benchmark_task_id_from_headers(self.headers)
+            bridge.state.check_task_access(task_id)
+            bridge.state.renew_task_if_owner(task_id)
             with bridge.state.lock:
                 jpeg, width, height = bridge.state.device.screenshot_jpeg()
                 seq = int(getattr(bridge.state, "_screenshot_seq", 0)) + 1

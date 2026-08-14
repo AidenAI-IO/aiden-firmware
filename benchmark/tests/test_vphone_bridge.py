@@ -205,6 +205,20 @@ def test_provider_screenshot_returns_frame_metadata(bridge):
     assert ("screenshot_jpeg",) in device.calls
 
 
+def test_provider_screenshot_rejects_conflicting_task_id(bridge):
+    _, _, base_url = bridge
+    request(base_url, "/api/setup", method="POST", task_id="owner")
+    status, body = request(
+        base_url,
+        "/api/providers/screenshot",
+        method="POST",
+        payload={"format": "jpeg", "quality": 80},
+        task_id="other",
+    )
+    assert status == 429
+    assert body["error"]["code"] == "no_bridge_env_available"
+
+
 def test_tool_requires_setup_and_enforces_task_id(bridge):
     _, _, base_url = bridge
     status, body = request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}})
