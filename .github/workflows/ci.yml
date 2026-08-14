@@ -99,6 +99,11 @@ jobs:
         run: |
           python3 scripts/check_normalized_coords.py
           bash scripts/test_check_normalized_coords.sh
+      - name: Verify Docker sandbox contract
+        run: |
+          python3 -m unittest tests.benchmark.test_docker_sandbox
+          docker compose config --quiet
+          sh scripts/test_docker_sandbox.sh
       - name: Verify swap initialization
         run: sh scripts/test_swap_init.sh
       # dnsmasq-base gives the test a real parser for the config S55 generates

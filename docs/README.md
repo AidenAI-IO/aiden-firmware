@@ -10,6 +10,8 @@ Build, configure, operate, and extend Aiden hardware and its Agent runtime.
 
 ## Start Here
 
+- Start the [Docker Sandbox](01-getting-started/docker-sandbox.md) for Config Web,
+  Agent Web, and optional environment-bridge control without a development board.
 - [Try Aiden on PC](01-getting-started/try-aiden-on-pc.md) without assembling hardware.
 - Follow the [Newcomer Quickstart](01-getting-started/quickstart.md) for a physical device.
 - Review [Hardware & Wiring](01-getting-started/hardware.md) before powering a self-assembled device.

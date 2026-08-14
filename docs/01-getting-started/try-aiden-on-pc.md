@@ -1,5 +1,5 @@
 ---
-sidebar_position: 1
+sidebar_position: 2
 title: Try Aiden on PC
 description: Run the Aiden Agent against a simulated phone UI without assembling hardware.
 ---
@@ -9,6 +9,10 @@ description: Run the Aiden Agent against a simulated phone UI without assembling
 This guide is the shortest way to experience Aiden without a Luckfox board or a
 physical phone. It runs the real Aiden Agent on your computer and connects it to
 the MobileGym phone simulator through the Benchmark environment bridge.
+
+If you primarily want Config Web, Agent Web, and an interactive Agent, use the
+[Docker Sandbox](docker-sandbox.md). Continue here when you want the Benchmark
+WebUI, repeatable suites, run artifacts, or judging.
 
 The PC experience demonstrates how Aiden observes a screen, chooses tools, and
 operates a mobile-style UI. It does not test HDMI capture, USB HID, audio, or
