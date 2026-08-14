@@ -255,7 +255,7 @@ def test_mouse_scroll_labels_its_own_action_log_entry(bridge):
     assert entries[0]["vphone"].startswith("swipe_down")
 
 
-def test_concurrent_scroll_and_click_keep_their_own_log_labels():
+def test_concurrent_scroll_and_tap_keep_their_own_log_labels():
     """mouse_scroll used to relabel action_log[-1] after _execute_device released
     the state lock, so a concurrent call's entry could be renamed. Each entry's
     tool label must match its own recorded gesture."""
@@ -282,8 +282,8 @@ def test_concurrent_scroll_and_click_keep_their_own_log_labels():
                     payload={"input": {"delta": 3}}, task_id="owner",
                 )
             return request(
-                base_url, "/api/tools/mouse_click", method="POST",
-                payload={"input": {"x": 500, "y": 500}}, task_id="owner",
+                base_url, "/api/tools/touch_gesture", method="POST",
+                payload={"input": {"type": "tap", "point": {"x": 500, "y": 500}}}, task_id="owner",
             )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -300,7 +300,8 @@ def test_concurrent_scroll_and_click_keep_their_own_log_labels():
             assert entry["input"] == {"delta": 3}, entry
             assert entry["vphone"].startswith("swipe_"), entry
         else:
-            assert entry["tool"] == "mouse_click", entry
+            assert entry["tool"] == "touch_gesture", entry
+            assert entry["input"] == {"type": "tap", "point": {"x": 500, "y": 500}}, entry
             assert entry["vphone"].startswith("tap "), entry
 
 

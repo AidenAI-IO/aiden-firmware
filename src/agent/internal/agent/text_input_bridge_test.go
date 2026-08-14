@@ -96,13 +96,11 @@ func TestTextInputBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
 	pb.appStateAt = time.Now()
 	pb.pipBridgeEnabled = true
 	pb.pipBridgeSeen = true
-	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
 	tool := &textInputBridge{
 		hw: &textInputHardwareDeps{
-			mouseClick:   mouse,
 			touchGesture: touch,
 			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 			keyboardText: keyboardText,
@@ -151,11 +149,8 @@ func TestTextInputBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
 	if len(quick.calls) != 1 || !strings.Contains(quick.calls[0], `"action": "paste"`) {
 		t.Fatalf("quick_action calls=%v", quick.calls)
 	}
-	if len(mouse.calls) != 1 {
-		t.Fatalf("mouse_click calls=%v", mouse.calls)
-	}
-	if len(touch.calls) != 0 {
-		t.Fatalf("touch_gesture calls=%v, want no app switching in PiP background path", touch.calls)
+	if len(touch.calls) != 1 || !strings.Contains(touch.calls[0], `"type": "tap"`) {
+		t.Fatalf("touch_gesture calls=%v, want one focus tap and no app switching in PiP background path", touch.calls)
 	}
 	if len(keyboardText.calls) != 0 {
 		t.Fatalf("keyboard_text calls=%v, want no bridge app search in PiP background path", keyboardText.calls)
@@ -185,7 +180,6 @@ func TestTextInputBridgeUsesClipboardPathAndVerifiesField(t *testing.T) {
 		ObservedMode: textInputModeASCII,
 		FieldText:    "hello world",
 	}}}
-	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
 	pb := newTestPhoneBridge(t)
@@ -194,7 +188,6 @@ func TestTextInputBridgeUsesClipboardPathAndVerifiesField(t *testing.T) {
 		hw: &textInputHardwareDeps{
 			pointerMode:  "absolute",
 			deviceTypeFn: func() string { return "Android" },
-			mouseClick:   mouse,
 			touchGesture: touch,
 			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
@@ -218,11 +211,8 @@ func TestTextInputBridgeUsesClipboardPathAndVerifiesField(t *testing.T) {
 	if !strings.Contains(out, `"committed": true`) {
 		t.Fatalf("unexpected output: %s", out)
 	}
-	if len(mouse.calls) != 1 {
-		t.Fatalf("mouse_click calls=%v", mouse.calls)
-	}
-	if len(touch.calls) != 0 {
-		t.Fatalf("touch_gesture calls=%v, want no app switching on Android target-preserving clipboard path", touch.calls)
+	if len(touch.calls) != 1 || !strings.Contains(touch.calls[0], `"type": "tap"`) {
+		t.Fatalf("touch_gesture calls=%v, want one focus tap and no app switching on Android target-preserving clipboard path", touch.calls)
 	}
 	if len(quick.calls) != 1 || !strings.Contains(quick.calls[0], `"action": "paste"`) {
 		t.Fatalf("quick_action calls=%v", quick.calls)
@@ -243,7 +233,6 @@ func TestTextInputBridgeReturnsLastObservedFieldTextAfterFailedPasteAttempts(t *
 		hw: &textInputHardwareDeps{
 			pointerMode:  "absolute",
 			deviceTypeFn: func() string { return "Android" },
-			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 			touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
 			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
@@ -279,7 +268,6 @@ func TestTextInputBridgeFallsBackToKeyboardPasteWhenQuickActionFails(t *testing.
 	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":false,"status":"reserved","message":"paste unavailable"}`}
 	tool := &textInputBridge{
 		hw: &textInputHardwareDeps{
-			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 			touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
 			keyboardTap:  keyboardTap,
 			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
@@ -324,7 +312,6 @@ func TestTextInputBridgeFallsBackToLongPressPasteMenuWhenShortcutHasNoEffect(t *
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 	tool := &textInputBridge{
 		hw: &textInputHardwareDeps{
-			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 			touchGesture: touch,
 			keyboardTap:  keyboardTap,
 			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
@@ -356,8 +343,8 @@ func TestTextInputBridgeFallsBackToLongPressPasteMenuWhenShortcutHasNoEffect(t *
 	if len(keyboardTap.calls) != 0 {
 		t.Fatalf("keyboard_tap calls=%v, want no keyboard fallback after quick_action returned ok", keyboardTap.calls)
 	}
-	if len(touch.calls) != 2 || !strings.Contains(touch.calls[0], `"type": "long_press"`) || !strings.Contains(touch.calls[1], `"type": "tap"`) {
-		t.Fatalf("touch_gesture calls=%v, want long_press then paste-menu tap", touch.calls)
+	if len(touch.calls) != 4 || !strings.Contains(touch.calls[0], `"type": "tap"`) || !strings.Contains(touch.calls[1], `"type": "tap"`) || !strings.Contains(touch.calls[2], `"type": "long_press"`) || !strings.Contains(touch.calls[3], `"type": "tap"`) {
+		t.Fatalf("touch_gesture calls=%v, want two focus taps, long_press, then paste-menu tap", touch.calls)
 	}
 }
 
@@ -375,7 +362,6 @@ func TestTextInputBridgeObservesFieldBeforeFallbackAfterShortcutError(t *testing
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 	tool := &textInputBridge{
 		hw: &textInputHardwareDeps{
-			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 			touchGesture: touch,
 			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: `{"ok":false,"message":"keyboard report unavailable"}`},
 			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
@@ -398,8 +384,8 @@ func TestTextInputBridgeObservesFieldBeforeFallbackAfterShortcutError(t *testing
 	if !strings.Contains(out, `"committed": true`) {
 		t.Fatalf("unexpected output: %s", out)
 	}
-	if len(touch.calls) != 0 {
-		t.Fatalf("touch_gesture calls=%v, want no long-press fallback after observed success", touch.calls)
+	if len(touch.calls) != 1 || !strings.Contains(touch.calls[0], `"type": "tap"`) {
+		t.Fatalf("touch_gesture calls=%v, want only the initial focus tap after observed success", touch.calls)
 	}
 }
 
@@ -435,7 +421,6 @@ func TestTextInputBridgeRestoresViaSharedPhoneBridgeRestorerAndSwitchesBack(t *t
 	bridgePath := &textInputBridge{
 		hw: &textInputHardwareDeps{
 			pointerMode:  "absolute",
-			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 			touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
 			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
 			keyboardText: keyboardText,

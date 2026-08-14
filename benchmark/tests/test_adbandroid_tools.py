@@ -271,9 +271,13 @@ def test_enter_text_reports_unsupported_text_without_typing(bridge):
 # ---- mouse tools --------------------------------------------------------------
 
 
-def test_mouse_click_taps(bridge):
+def test_touch_gesture_tap_taps(bridge):
     _, device, base_url = bridge
-    status, body = _invoke(base_url, "mouse_click", {"x": 500, "y": 500})
+    status, body = _invoke(
+        base_url,
+        "touch_gesture",
+        {"type": "tap", "point": {"x": 500, "y": 500}},
+    )
     assert status == 200 and body["is_error"] is False
     assert ("tap", 540, 960) in device.calls
 

@@ -218,20 +218,6 @@ class ADBToolsAPIHandler:
                 },
             },
             {
-                "name": "mouse_click",
-                "description": "Click/tap a coordinate on the Android device. Coordinates use normalized 0-1000 space.",
-                "args_schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"},
-                        "button": {"type": "string", "enum": ["left", "right", "middle"]},
-                    },
-                    "required": ["x", "y"],
-                },
-            },
-            {
                 "name": "mouse_move",
                 "description": "Move the pointer. Android has no hover state, so this is accepted as a no-op and returns a screenshot.",
                 "args_schema": {
@@ -417,8 +403,6 @@ class ADBToolsAPIHandler:
             return self._call_keyboard_tap(tool_input)
         elif tool_name == "enter_text":
             return self._call_enter_text(tool_input)
-        elif tool_name == "mouse_click":
-            return self._call_mouse_click(tool_input)
         elif tool_name == "mouse_move":
             return self._call_mouse_move(tool_input)
         elif tool_name == "mouse_scroll":
@@ -544,24 +528,6 @@ class ADBToolsAPIHandler:
                 return {"output": f"error: unsupported gesture type: {gesture_type}", "is_error": True}
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
-
-    def _call_mouse_click(self, tool_input: dict[str, Any]) -> dict[str, Any]:
-        button = str(tool_input.get("button", "left") or "left").strip().lower()
-        if button not in ("", "left", "right", "middle"):
-            return {"output": f"error: unsupported mouse button: {button!r}", "is_error": True}
-        device = self.state.device
-        try:
-            width, height = device.screen_size()
-            point = _normalized_point_arg(tool_input)
-        except (TypeError, ValueError) as exc:
-            return {"output": f"error: {exc}", "is_error": True}
-        x, y = _to_pixels(point, width, height)
-        return self._execute_device(
-            lambda: device.tap(x, y),
-            tool_name="mouse_click",
-            tool_input=tool_input,
-            adb_summary=f"input tap {x} {y}",
-        )
 
     def _call_mouse_move(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         """Validate mouse_move input and return a screenshot (no adb action)."""
@@ -1086,7 +1052,6 @@ def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) 
             "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
             "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
         },
-        "mouse_click": {"x", "y", "button"},
         "mouse_move": {"x", "y"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)

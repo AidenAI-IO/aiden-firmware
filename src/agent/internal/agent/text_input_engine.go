@@ -15,7 +15,6 @@ import (
 type textInputHardwareDeps struct {
 	pointerMode  string
 	deviceTypeFn func() string
-	mouseClick   langtools.Tool
 	touchGesture langtools.Tool
 	keyboardTap  langtools.Tool
 	keyboardText langtools.Tool
@@ -581,8 +580,9 @@ func (e *textInputEngine) decideCandidateAction(ctx context.Context, platform st
 }
 
 func (e *textInputEngine) applyFocus(ctx context.Context, focus focusPointArgs) error {
-	_, err := callTextInputTool(ctx, e.hw.mouseClick, jsonString(map[string]any{
-		"x": focus.X, "y": focus.Y,
+	_, err := callTextInputTool(ctx, e.hw.touchGesture, jsonString(map[string]any{
+		"type":  "tap",
+		"point": map[string]any{"x": focus.X, "y": focus.Y},
 	}))
 	if err != nil {
 		return err

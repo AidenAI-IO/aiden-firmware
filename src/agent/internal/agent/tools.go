@@ -88,7 +88,6 @@ var scriptCallableToolNames = map[string]struct{}{
 	"enter_text":             {},
 	"image_diff":             {},
 	"keyboard_tap":           {},
-	"mouse_click":            {},
 	"mouse_move":             {},
 	"mouse_scroll":           {},
 	toolOpenApp:              {},
@@ -142,10 +141,8 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen, requireFreshScreenshot: true}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture, iosKeyboardIsolation: iosKeyboardIsolation}
-	mouseClick := &MouseClickTool{pc: pointer, screen: screen, adb: adbInput}
 	textInputHW := &textInputHardwareDeps{
 		pointerMode:  hidCfg.PointerModeOrDefault(),
-		mouseClick:   mouseClick,
 		touchGesture: touchGesture,
 		keyboardTap:  keyboardTap,
 		keyboardText: keyboardText,
@@ -155,7 +152,6 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 
 	tools := map[string]langtools.Tool{
 		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_click":            newPostActionStableScreenshotTool(mouseClick, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),

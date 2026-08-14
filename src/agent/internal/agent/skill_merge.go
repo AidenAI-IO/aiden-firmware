@@ -271,7 +271,6 @@ var knownToolNames = map[string]struct{}{
 	"image_diff":             {},
 	"keyboard_tap":           {},
 	"list_scripts":           {},
-	"mouse_click":            {},
 	"mouse_move":             {},
 	"mouse_scroll":           {},
 	toolOpenApp:              {},

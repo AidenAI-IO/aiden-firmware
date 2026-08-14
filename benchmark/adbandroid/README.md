@@ -88,7 +88,7 @@ go run ./cmd/daemon \
   -dir <your agent data directory> \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://127.0.0.1:8899 \
-  --environment-bridge-tools "screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,mouse_click,mouse_move,mouse_scroll,quick_action" \
+  --environment-bridge-tools "screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,mouse_move,mouse_scroll,quick_action" \
   --benchmark-task-id cli-task
 
 # 3. Run the benchmark (same as Option 1 step 3, with --benchmark-task-id cli-task)
@@ -200,7 +200,7 @@ single-env behavior):
 ## Tools and coordinates
 
 The tools match MobileGym: `screenshot` `touch_gesture` `keyboard_text`
-`keyboard_tap` `enter_text` `mouse_click`
+`keyboard_tap` `enter_text`
 `mouse_move` `mouse_scroll` `quick_action`.
 
 All pointer and touch inputs use normalized 0-1000 coordinates. The bridge
