@@ -57,7 +57,7 @@ const char* kDefaultConfig =
     "\"model_providers\":{\"stub-openai\":{\"type\":\"openai\",\"api_key\":\"sk-stub-secret-1234\"},"
     "\"stub-ollama\":{\"type\":\"ollama\",\"base_url\":\"http://127.0.0.1:11434\"}},"
     "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
-    "\"base_url\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+    "\"temperature\":0.2,\"max_response_tokens\":1000,"
     "\"context_window\":0,\"model_max_output_tokens\":0},"
     "\"tts_providers\":{\"minimax-cn\":{\"type\":\"minimax-cn\"}},"
     "\"stt_providers\":{\"openai-whisper\":{\"type\":\"openai-whisper\"}},"

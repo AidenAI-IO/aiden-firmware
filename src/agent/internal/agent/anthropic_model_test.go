@@ -823,7 +823,7 @@ func TestAnthropicModelLogsResponseOnEarlyStreamFailure(t *testing.T) {
 	}
 }
 
-func TestAnthropicProviderUsesEnvironmentFallbacks(t *testing.T) {
+func TestAnthropicProviderUsesAuthEnvironmentFallbackOnly(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "https://relay.example.test")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "environment-token")
 	t.Setenv("ANTHROPIC_API_KEY", "")
@@ -837,7 +837,7 @@ func TestAnthropicProviderUsesEnvironmentFallbacks(t *testing.T) {
 	if !ok {
 		t.Fatalf("built model type = %T", built)
 	}
-	if model.baseURL != "https://relay.example.test/v1" {
+	if model.baseURL != defaultAnthropicBaseURL {
 		t.Errorf("base URL = %q", model.baseURL)
 	}
 	if model.token != "environment-token" {
@@ -845,6 +845,27 @@ func TestAnthropicProviderUsesEnvironmentFallbacks(t *testing.T) {
 	}
 	if !model.useBearerAuth {
 		t.Error("ANTHROPIC_AUTH_TOKEN should use bearer authentication")
+	}
+}
+
+func TestAnthropicProviderUsesConfiguredBaseURL(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "https://ignored-env.example.test")
+	manager := NewModelManager(ModelConfig{
+		Provider: "anthropic",
+		Model:    "claude-test",
+		APIKey:   "test-token",
+		BaseURL:  "https://relay.example.test",
+	}, ProxyConfig{})
+	built, err := manager.build()
+	if err != nil {
+		t.Fatalf("build() error = %v", err)
+	}
+	model, ok := built.(*anthropicModel)
+	if !ok {
+		t.Fatalf("built model type = %T", built)
+	}
+	if model.baseURL != "https://relay.example.test/v1" {
+		t.Errorf("base URL = %q", model.baseURL)
 	}
 }
 

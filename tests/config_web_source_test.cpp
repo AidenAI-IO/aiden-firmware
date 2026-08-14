@@ -657,7 +657,6 @@ TEST_CASE("config web docs list the model fields") {
         "provider",
         "model",
         "api_key",
-        "base_url",
         "temperature",
         "max_response_tokens",
         "context_window",
@@ -2043,17 +2042,12 @@ TEST_CASE("config web html resolves named providers when filtering option scopes
     //
     //   - Option scoping (above) resolves the named reference to its type, or a
     //     named provider loses reasoning_effort's minimal/none.
-    //   - Field visibility matches the RAW value, which is what keeps
-    //     [model] base_url hidden for a named reference. That is correct: the
-    //     backend clears a model base_url for any named ref, and the
-    //     [model_providers.*] entry's own base_url is inherited instead
-    //     (applyProviderToModel), so offering the field would only ever produce
-    //     dead config. A legacy bare provider type still matches the rule and
-    //     still shows the field.
+    //   - Field visibility matches the RAW value so generic field conditions do
+    //     not silently change semantics when model.provider is a named record.
     //
     // Routing evalCondition through resolveProviderType would read as a natural
-    // unification of the two, and would silently start offering base_url for
-    // named providers.
+    // unification of the two, but would also make every provider comparison use
+    // the resolved type instead of the submitted value.
     const size_t eval_at = js.find("function evalCondition(cond){");
     REQUIRE(eval_at != std::string::npos);
     const size_t eval_end = js.find("function evalRule(rule){", eval_at);
@@ -2245,7 +2239,7 @@ TEST_CASE("config web html keeps provider credentials write only") {
 
 // OpenAI, Anthropic, and Ollama accept a base_url override; every other provider
 // pins its endpoint, so the field is dead config there. The backend already strips it
-// (model_base_url_allowed), and the dialog must not offer it in the first place.
+// (model_provider_base_url_allowed), and the dialog must not offer it in the first place.
 TEST_CASE("config web html shows the provider base url only where it applies") {
     const std::string js = read_config_web_config_scripts();
 

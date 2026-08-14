@@ -97,11 +97,15 @@ def test_validate_model_environment_requires_api_key_for_openrouter(launcher_mod
 def test_parse_board_agent_model_config(launcher_module):
     config = launcher_module.parse_agent_model_config(
         '''
-[model]
-provider = "openai"
-model = "qwen3.6-35b"
+[model_providers.seeklab]
+type = "openai"
 base_url = "https://proxy.seeklab.io/qwen/v1"
 api_key = "secret-key"
+
+[model]
+provider = "seeklab"
+model = "qwen3.6-35b"
+base_url = "https://stale.example.com/v1"
 
 [tts]
 provider = "minimax-cn"
@@ -133,9 +137,15 @@ def test_fetch_board_model_config_uses_shell_tool(launcher_module):
             body = json.loads(self.rfile.read(length).decode())
             assert self.path == "/api/tools/shell"
             assert "/userdata/agent/agent.toml" in body["input"]["command"]
-            payload = {
-                "output": 'provider = "openai"\nmodel = "qwen3.6-35b"\nbase_url = "https://proxy.seeklab.io/qwen/v1"\napi_key = "secret-key"\n'
-            }
+            if "model_providers.seeklab" in body["input"]["command"]:
+                output = (
+                    'type = "openai"\n'
+                    'base_url = "https://proxy.seeklab.io/qwen/v1"\n'
+                    'api_key = "secret-key"\n'
+                )
+            else:
+                output = 'provider = "seeklab"\nmodel = "qwen3.6-35b"\n'
+            payload = {"output": output}
             raw = json.dumps(payload).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -149,6 +159,7 @@ def test_fetch_board_model_config_uses_shell_tool(launcher_module):
     try:
         config = launcher_module.fetch_board_model_config(f"http://127.0.0.1:{server.server_port}")
         assert config["MODEL_PROVIDER"] == "openai"
+        assert config["MODEL_BASE_URL"] == "https://proxy.seeklab.io/qwen/v1"
         assert config["MODEL_API_KEY"] == "secret-key"
     finally:
         server.shutdown()
