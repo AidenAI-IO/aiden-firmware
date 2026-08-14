@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from runner.agent_client import AgentClient
@@ -17,15 +18,30 @@ from runner.platform import (
     read_environment_health,
     resolve_daemon_platform,
     resolve_environment_platform,
-    resolve_mock_platform,
 )
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
 from runner.reset import ResetError, call_environment_release, clear_stale_adb_android_owner
 from runner.runtask import run_one_task, skipped_task_result
-from runner.suite import Suite, TaskSpec, load_suite
+from runner.suite import (
+    Suite,
+    TaskSpec,
+    effective_mock_environment,
+    load_suite,
+    resolve_mock_task_platform,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@dataclass(frozen=True)
+class TaskRunUnit:
+    index: int
+    task: TaskSpec
+    attempt: int
+    repeats: int
+    skip_reason: str
+    target_platform: str
 
 
 def wait_for_agent_clock(
@@ -348,22 +364,6 @@ def _resolve_target_platform_enum(
         return None
 
 
-def _mock_environment_platform(suite: Suite) -> str:
-    platforms: set[str] = (
-        {resolve_mock_platform(suite.mock_environment.platform).value}
-        if suite.mock_environment is not None and not suite.tasks
-        else set()
-    )
-    for task in suite.tasks:
-        spec = _task_mock_environment(suite, task)
-        if spec is None:
-            continue
-        platforms.add(resolve_mock_platform(spec.platform).value)
-    if len(platforms) != 1:
-        raise ValueError("mock environment suite must declare exactly one target platform")
-    return next(iter(platforms))
-
-
 def _read_environment_health(environment_url: str) -> dict:
     return read_environment_health(environment_url)
 
@@ -383,13 +383,35 @@ def _build_task_units(
     args: argparse.Namespace,
     suite: Suite,
     target_platform: str,
-) -> list[tuple[int, TaskSpec, int, int, str]]:
-    units: list[tuple[int, TaskSpec, int, int, str]] = []
+) -> list[TaskRunUnit]:
+    units: list[TaskRunUnit] = []
+    uses_mock_environment = _suite_has_mock_environment(suite)
     for task in suite.tasks:
         repeats = _task_repeats(args, task)
-        skip_reason = _task_platform_skip_reason(task, target_platform)
+        task_target_platform = target_platform
+        skip_reason = ""
+        if uses_mock_environment:
+            try:
+                task_target_platform = resolve_mock_task_platform(
+                    suite,
+                    task,
+                    constraint=target_platform or None,
+                ).value
+            except ValueError as exc:
+                skip_reason = str(exc)
+        if not skip_reason:
+            skip_reason = _task_platform_skip_reason(task, task_target_platform)
         for attempt in range(1, repeats + 1):
-            units.append((len(units) + 1, task, attempt, repeats, skip_reason))
+            units.append(
+                TaskRunUnit(
+                    index=len(units) + 1,
+                    task=task,
+                    attempt=attempt,
+                    repeats=repeats,
+                    skip_reason=skip_reason,
+                    target_platform=task_target_platform,
+                )
+            )
     return units
 
 
@@ -477,7 +499,7 @@ def _cmd_run_auto_agent_setup_inner(
 
     units = _build_task_units(args, suite, target_platform)
     total_runs = len(units)
-    has_runnable_units = any(not unit[4] for unit in units)
+    has_runnable_units = any(not unit.skip_reason for unit in units)
     if has_runnable_units:
         clear_stale_adb_android_owner(args.environment_url)
         ensure_daemon_image(args.daemon_image, not args.no_build_daemon_image, setup_log)
@@ -512,7 +534,14 @@ def _cmd_run_auto_agent_setup_inner(
     if args.agent_config:
         agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
 
-    def run_unit(index: int, task: TaskSpec, attempt: int, repeats: int, skip_reason: str):
+    def run_unit(
+        index: int,
+        task: TaskSpec,
+        attempt: int,
+        repeats: int,
+        skip_reason: str,
+        task_target_platform: str,
+    ):
         progress = f"{index}/{total_runs}"
         art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if repeats > 1 else "")
         if skip_reason:
@@ -549,7 +578,7 @@ def _cmd_run_auto_agent_setup_inner(
         client = None
         try:
             print(f"[{progress}] STARTING   {task.id} attempt={attempt}", flush=True)
-            task_mock_environment = _task_mock_environment(suite, task)
+            task_mock_environment = effective_mock_environment(suite, task)
             if mock_server is not None:
                 if task_mock_environment is None:
                     return skipped_task_result(
@@ -568,7 +597,7 @@ def _cmd_run_auto_agent_setup_inner(
                 config_dir=config_dir,
                 environment_bridge_endpoint=docker_environment_url,
                 benchmark_task_id=route_id,
-                device_type=target_platform,
+                device_type=task_target_platform,
                 environment_bridge_mode=True,
                 log_path=runner_log,
             )
@@ -629,8 +658,16 @@ def _cmd_run_auto_agent_setup_inner(
     )
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"bench-cli-{run_id}") as executor:
         future_to_unit = {
-            executor.submit(run_unit, index, task, attempt, repeats, skip_reason): (index, task, attempt)
-            for index, task, attempt, repeats, skip_reason in units
+            executor.submit(
+                run_unit,
+                unit.index,
+                unit.task,
+                unit.attempt,
+                unit.repeats,
+                unit.skip_reason,
+                unit.target_platform,
+            ): (unit.index, unit.task, unit.attempt)
+            for unit in units
         }
         for future in concurrent.futures.as_completed(future_to_unit):
             index, task, attempt = future_to_unit[future]
@@ -728,17 +765,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         return 2
     if args.auto_agent_setup and _suite_has_mock_environment(suite):
-        try:
-            declared_mock_platform = _mock_environment_platform(suite)
-            requested_platform = str(args.target_platform or "").strip().lower()
-            resolved_mock_platform = resolve_mock_platform(
-                declared_mock_platform,
-                constraint=requested_platform or None,
-            )
-            target_platform = resolved_mock_platform.value
-        except ValueError as exc:
-            print(f"Error: failed to resolve target platform: {exc}", file=sys.stderr)
-            return 2
+        requested_platform = str(args.target_platform or "").strip().lower()
+        target_platform = "" if requested_platform == "auto" else requested_platform
     if args.auto_agent_setup:
         return _cmd_run_auto_agent_setup(
             args,
@@ -752,7 +780,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
         return 2
     units = _build_task_units(args, suite, target_platform)
-    has_runnable_units = any(not unit[4] for unit in units)
+    has_runnable_units = any(not unit.skip_reason for unit in units)
     if args.environment_url:
         clear_stale_adb_android_owner(args.environment_url)
     client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
@@ -780,7 +808,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if not args.environment_url:
         target_platform = daemon_platform.value
         units = _build_task_units(args, suite, target_platform)
-        has_runnable_units = any(not unit[4] for unit in units)
+        has_runnable_units = any(not unit.skip_reason for unit in units)
     if (
         has_runnable_units
         and not args.skip_clock_wait
@@ -809,7 +837,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
     }
     _write_state(args.state_file, base_state)
     try:
-        for current_index, task, attempt, n, skip_reason in units:
+        for unit in units:
+            current_index = unit.index
+            task = unit.task
+            attempt = unit.attempt
+            n = unit.repeats
+            skip_reason = unit.skip_reason
             if skip_reason:
                 art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
                 r = skipped_task_result(suite, task, attempt, art_dir, run_id, skip_reason)
@@ -1007,10 +1040,6 @@ def _serialize_mock_environment(spec) -> dict[str, object] | None:
         "screen": spec.screen,
         "screen_text": spec.screen_text,
     }
-
-
-def _task_mock_environment(suite: Suite, task: TaskSpec):
-    return task.mock_environment or suite.mock_environment
 
 
 def _suite_has_mock_environment(suite: Suite) -> bool:
