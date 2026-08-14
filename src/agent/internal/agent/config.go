@@ -676,8 +676,12 @@ func (c *Config) OverrideTargetPlatform(value string) error {
 		platform = "android"
 	case "mac", "macos", "darwin":
 		platform = "mac"
+	case "windows", "win":
+		platform = "windows"
+	case "linux":
+		platform = "linux"
 	default:
-		return fmt.Errorf("invalid target platform override: %s (expected ios, android, or mac)", value)
+		return fmt.Errorf("invalid target platform override: %s (expected ios, android, mac, windows, or linux)", value)
 	}
 	deviceType := deviceTypeFromPlatform(platform)
 	if deviceType == "" {

@@ -16,7 +16,8 @@ Implementations in this repository:
 ### `GET /health`
 
 Returns bridge readiness and the controlled platform. Fixed-platform bridges
-should expose canonical lowercase `platform` values such as `ios` or `android`:
+should expose one of the canonical lowercase `platform` values: `ios`,
+`android`, `mac`, `windows`, or `linux`:
 
 ```json
 {

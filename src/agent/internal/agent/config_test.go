@@ -686,18 +686,32 @@ max_tokens = 777
 }
 
 func TestOverrideTargetPlatformDerivesRuntimeDeviceSettings(t *testing.T) {
-	var cfg Config
-	if err := cfg.OverrideTargetPlatform("android"); err != nil {
-		t.Fatalf("OverrideTargetPlatform() error = %v", err)
+	tests := []struct {
+		input       string
+		platform    string
+		deviceType  string
+		pointerMode string
+	}{
+		{input: "android", platform: "android", deviceType: "Android", pointerMode: "touchscreen"},
+		{input: "windows", platform: "windows", deviceType: "windows", pointerMode: "absolute"},
+		{input: "linux", platform: "linux", deviceType: "linux", pointerMode: "absolute"},
 	}
-	if cfg.RuntimeTargetPlatform != "android" {
-		t.Fatalf("target platform = %q, want android", cfg.RuntimeTargetPlatform)
-	}
-	if cfg.Device.DeviceType != "Android" {
-		t.Fatalf("device type = %q, want Android", cfg.Device.DeviceType)
-	}
-	if cfg.HID.PointerMode != "touchscreen" {
-		t.Fatalf("pointer mode = %q, want touchscreen", cfg.HID.PointerMode)
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			var cfg Config
+			if err := cfg.OverrideTargetPlatform(tt.input); err != nil {
+				t.Fatalf("OverrideTargetPlatform() error = %v", err)
+			}
+			if cfg.RuntimeTargetPlatform != tt.platform {
+				t.Fatalf("target platform = %q, want %q", cfg.RuntimeTargetPlatform, tt.platform)
+			}
+			if cfg.Device.DeviceType != tt.deviceType {
+				t.Fatalf("device type = %q, want %q", cfg.Device.DeviceType, tt.deviceType)
+			}
+			if cfg.HID.PointerMode != tt.pointerMode {
+				t.Fatalf("pointer mode = %q, want %q", cfg.HID.PointerMode, tt.pointerMode)
+			}
+		})
 	}
 }
 

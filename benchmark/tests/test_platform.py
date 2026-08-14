@@ -57,10 +57,15 @@ def test_read_environment_health_treats_input_as_base_url(monkeypatch):
     assert seen["url"] == "https://example.com/bridge/api/health"
 
 
+def test_platform_from_environment_health_supports_windows_and_linux():
+    assert platform_from_environment_health({"platform": "Windows"}) == "windows"
+    assert platform_from_environment_health({"platform": "LINUX"}) == "linux"
+
+
 def test_platform_from_environment_health_rejects_invalid_canonical_platform():
     with pytest.raises(ValueError, match="unsupported environment platform"):
         platform_from_environment_health(
-            {"platform": "windows", "bridge_type": "mobilegym"}
+            {"platform": "chromeos", "bridge_type": "mobilegym"}
         )
 
 
@@ -100,6 +105,8 @@ def test_resolve_mock_platform_validates_constraint():
 
 def test_resolve_daemon_platform_validates_constraint():
     assert resolve_daemon_platform("macOS", constraint="mac") is TargetPlatform.MAC
+    assert resolve_daemon_platform("Windows", constraint="windows") is TargetPlatform.WINDOWS
+    assert resolve_daemon_platform("LINUX", constraint="linux") is TargetPlatform.LINUX
 
     with pytest.raises(ValueError, match="expected ios.*reported android"):
         resolve_daemon_platform("android", constraint="ios")

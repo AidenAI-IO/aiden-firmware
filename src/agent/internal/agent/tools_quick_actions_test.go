@@ -55,6 +55,31 @@ func TestQuickActionsResolveAliasAndPlatform(t *testing.T) {
 	if err != nil || platform != "ios" {
 		t.Fatalf("expected ios platform, got %q err=%v", platform, err)
 	}
+	for _, want := range []string{"windows", "linux"} {
+		platform, err := normalizeQuickActionPlatform(want)
+		if err != nil || platform != want {
+			t.Fatalf("expected %s platform, got %q err=%v", want, platform, err)
+		}
+	}
+}
+
+func TestQuickActionListSupportsPlatformWithoutBindings(t *testing.T) {
+	tool := &QuickActionTool{deviceTypeFn: func() string { return "windows" }}
+	out, err := tool.Call(context.Background(), `{"action":"list"}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	var payload struct {
+		OK       bool             `json:"ok"`
+		Platform string           `json:"platform"`
+		Actions  []map[string]any `json:"actions"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !payload.OK || payload.Platform != "windows" || len(payload.Actions) != 0 {
+		t.Fatalf("unexpected Windows list response: %s", out)
+	}
 }
 
 func TestQuickActionExposesStructuredSchema(t *testing.T) {

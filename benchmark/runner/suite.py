@@ -282,7 +282,9 @@ def _platform_list(raw: Any, task_id: str) -> list[str]:
     if raw is None:
         return []
     if not isinstance(raw, list):
-        raise SuiteValidationError(f"task {task_id}: platforms must be a list of ios/android/mac")
+        raise SuiteValidationError(
+            f"task {task_id}: platforms must be a list of ios, android, mac, windows, or linux"
+        )
     out: list[str] = []
     for item in raw:
         try:
@@ -340,7 +342,7 @@ def _parse_mock_environment(
     legacy_platform = phone_bridge.get("platform")
     if top_level_platform is None and legacy_platform is None:
         raise SuiteValidationError(
-            f"{path} must declare a phone platform (ios, android, or mac)"
+            f"{path} must declare a target platform (ios, android, mac, windows, or linux)"
         )
     try:
         platform = normalize_target_platform(
@@ -349,7 +351,7 @@ def _parse_mock_environment(
         )
     except ValueError as exc:
         raise SuiteValidationError(
-            f"{path}.platform must be ios, android, or mac"
+            f"{path}.platform must be ios, android, mac, windows, or linux"
         ) from exc
     if top_level_platform is not None and legacy_platform is not None:
         try:
@@ -359,7 +361,7 @@ def _parse_mock_environment(
             )
         except ValueError as exc:
             raise SuiteValidationError(
-                f"{path}.phone_bridge.platform must be ios, android, or mac"
+                f"{path}.phone_bridge.platform must be ios, android, mac, windows, or linux"
             ) from exc
         if normalized_legacy_platform is not platform:
             raise SuiteValidationError(

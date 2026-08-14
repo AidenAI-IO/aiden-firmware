@@ -93,7 +93,7 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--benchmark-task-id", default="",
                        help="Task routing id to use for environment setup/screen/release")
     p_run.add_argument("--target-platform", default=os.environ.get("AIDEN_BENCHMARK_TARGET_PLATFORM", "auto"),
-                       choices=["auto", "ios", "android", "mac"],
+                       choices=["auto", "ios", "android", "mac", "windows", "linux"],
                        help="Filter suite tasks by platform; auto resolves platform from environment bridge health")
     p_run.add_argument("--skip-clock-wait", action="store_true")
     p_run.add_argument("--clock-timeout-sec", type=int, default=180)
@@ -360,7 +360,7 @@ def _mock_environment_platform(suite: Suite) -> str:
             continue
         platforms.add(resolve_mock_platform(spec.platform).value)
     if len(platforms) != 1:
-        raise ValueError("mock environment suite must declare exactly one phone platform")
+        raise ValueError("mock environment suite must declare exactly one target platform")
     return next(iter(platforms))
 
 

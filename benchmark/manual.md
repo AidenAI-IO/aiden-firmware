@@ -762,7 +762,7 @@ Common parameters:
 | --- | --- | --- |
 | `--port` | auto | Agent daemon API port |
 | `--environment-bridge-endpoint` | empty | Device or MobileGym bridge endpoint; empty disables the environment bridge |
-| `--target-platform` | empty | Required without a bridge; with a bridge, constrains its reported platform |
+| `--target-platform` | empty | Required without a bridge; accepts `ios`, `android`, `mac`, `windows`, or `linux`; with a bridge, constrains its reported platform |
 | `--benchmark-task-id` | `cli-task` | Route id used by environment bridge requests |
 | `--agent-config` | empty | Specify agent.toml |
 | `--base-config-dir` | `benchmark/config` | Agent config template directory |

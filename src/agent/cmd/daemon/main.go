@@ -224,7 +224,7 @@ func main() {
 }
 
 func registerTargetPlatformFlag(fs *flag.FlagSet) *string {
-	return fs.String("target-platform", "", "Override the target platform for this daemon process")
+	return fs.String("target-platform", "", "Override the target platform for this daemon process (ios, android, mac, windows, or linux)")
 }
 
 func applyTargetPlatformOverride(cfg *agent.Config, value string) error {

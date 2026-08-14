@@ -12,6 +12,8 @@ class TargetPlatform(str, Enum):
     IOS = "ios"
     ANDROID = "android"
     MAC = "mac"
+    WINDOWS = "windows"
+    LINUX = "linux"
 
 
 VALID_TARGET_PLATFORMS = {platform.value for platform in TargetPlatform}
@@ -27,6 +29,8 @@ def normalize_target_platform(
     normalized = str(platform or "").strip().lower()
     if normalized in {"macos", "darwin"}:
         normalized = TargetPlatform.MAC.value
+    elif normalized in {"win", "win32"}:
+        normalized = TargetPlatform.WINDOWS.value
     try:
         return TargetPlatform(normalized)
     except ValueError as exc:

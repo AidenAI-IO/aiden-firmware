@@ -66,7 +66,7 @@ def add_service_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     p_agent.add_argument(
         "--target-platform",
         default="",
-        choices=["", "ios", "android", "mac"],
+        choices=["", "ios", "android", "mac", "windows", "linux"],
         help="Required without an environment bridge; otherwise constrains the bridge-reported platform",
     )
     p_agent.add_argument("--benchmark-task-id", default=DEFAULT_CLI_BENCHMARK_TASK_ID)

@@ -22,6 +22,36 @@ class FakeClockClient:
         return ToolInvokeResult(output=f"{year}\n", is_error=False, duration_ms=1)
 
 
+@pytest.mark.parametrize("target_platform", ["windows", "linux"])
+def test_run_cli_accepts_desktop_target_platform(monkeypatch, target_platform):
+    captured = {}
+
+    def fake_cmd_run(args):
+        captured["target_platform"] = args.target_platform
+        return 0
+
+    monkeypatch.setattr(main, "_cmd_run", fake_cmd_run)
+
+    assert main.cli(["run", "--suite", "suite.json", "--target-platform", target_platform]) == 0
+    assert captured["target_platform"] == target_platform
+
+
+@pytest.mark.parametrize("target_platform", ["windows", "linux"])
+def test_start_agent_daemon_cli_accepts_desktop_target_platform(monkeypatch, target_platform):
+    import runner.services as services
+
+    captured = {}
+
+    def fake_cmd_start_agent_daemon(args):
+        captured["target_platform"] = args.target_platform
+        return 0
+
+    monkeypatch.setattr(services, "cmd_start_agent_daemon", fake_cmd_start_agent_daemon)
+
+    assert main.cli(["start-agent-daemon", "--target-platform", target_platform]) == 0
+    assert captured["target_platform"] == target_platform
+
+
 def test_wait_for_agent_clock_retries_until_board_clock_is_current(monkeypatch):
     sleeps = []
     monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
@@ -75,12 +105,23 @@ def test_resolve_target_platform_rejects_unknown_environment_platform(monkeypatc
         main._resolve_target_platform(args, required=True)
 
 
-def test_resolve_target_platform_rejects_invalid_canonical_platform_without_legacy_fallback(monkeypatch):
+def test_resolve_target_platform_accepts_windows_environment_health(monkeypatch):
     args = type("Args", (), {"target_platform": "auto", "environment_url": "http://127.0.0.1:8899"})()
     monkeypatch.setattr(
         main,
         "_read_environment_health",
         lambda environment_url: {"platform": "windows", "bridge_type": "mobilegym"},
+    )
+
+    assert main._resolve_target_platform(args) == "windows"
+
+
+def test_resolve_target_platform_rejects_invalid_canonical_platform_without_legacy_fallback(monkeypatch):
+    args = type("Args", (), {"target_platform": "auto", "environment_url": "http://127.0.0.1:8899"})()
+    monkeypatch.setattr(
+        main,
+        "_read_environment_health",
+        lambda environment_url: {"platform": "chromeos", "bridge_type": "mobilegym"},
     )
 
     with pytest.raises(ValueError, match="unsupported environment platform"):
@@ -1153,7 +1194,7 @@ def test_mock_environment_platform_rejects_effective_spec_without_platform(tmp_p
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="declare a phone platform"):
+    with pytest.raises(ValueError, match="declare a target platform"):
         main._mock_environment_platform(main.load_suite(suite_path))
 
 

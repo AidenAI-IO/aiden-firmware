@@ -30,7 +30,7 @@ const (
 	quickActionStatusReserved = "reserved"
 )
 
-var supportedQuickActionPlatforms = []string{"ios", "android", "mac"}
+var supportedQuickActionPlatforms = []string{"ios", "android", "mac", "windows", "linux"}
 
 type quickActionBinding struct {
 	Status       string               `json:"status"`
@@ -156,10 +156,14 @@ func normalizeQuickActionPlatform(platform string) (string, error) {
 		return "android", nil
 	case "mac", "macos", "osx":
 		return "mac", nil
+	case "windows", "win", "win32":
+		return "windows", nil
+	case "linux":
+		return "linux", nil
 	case "":
-		return "", fmt.Errorf("platform is required (ios, android, mac)")
+		return "", fmt.Errorf("platform is required (ios, android, mac, windows, linux)")
 	default:
-		return "", fmt.Errorf("unsupported platform %q (expected ios, android, mac)", platform)
+		return "", fmt.Errorf("unsupported platform %q (expected ios, android, mac, windows, linux)", platform)
 	}
 }
 

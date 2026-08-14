@@ -180,7 +180,7 @@ def test_load_suite_parses_task_platforms(tmp_path: Path):
         "tasks": [
             {
                 **FIXTURE["tasks"][0],
-                "platforms": ["Android", "ios", "android"],
+                "platforms": ["Android", "ios", "Windows", "linux", "android"],
             }
         ],
     }
@@ -189,7 +189,7 @@ def test_load_suite_parses_task_platforms(tmp_path: Path):
 
     suite = load_suite(p)
 
-    assert suite.tasks[0].platforms == ["android", "ios"]
+    assert suite.tasks[0].platforms == ["android", "ios", "windows", "linux"]
 
 def test_load_suite_rejects_invalid_task_platform(tmp_path: Path):
     fixture = {
@@ -197,7 +197,7 @@ def test_load_suite_rejects_invalid_task_platform(tmp_path: Path):
         "tasks": [
             {
                 **FIXTURE["tasks"][0],
-                "platforms": ["windows"],
+                "platforms": ["chromeos"],
             }
         ],
     }
@@ -392,12 +392,15 @@ def test_load_suite_rejects_conflicting_mock_platforms(tmp_path: Path):
 def test_load_suite_rejects_invalid_top_level_mock_platform(tmp_path: Path):
     fixture = {
         **FIXTURE,
-        "mock_environment": {"platform": "windows", "tools": {}},
+        "mock_environment": {"platform": "chromeos", "tools": {}},
     }
     p = tmp_path / "invalid-mock.json"
     p.write_text(json.dumps(fixture), encoding="utf-8")
 
-    with pytest.raises(SuiteValidationError, match="platform must be ios, android, or mac"):
+    with pytest.raises(
+        SuiteValidationError,
+        match="platform must be ios, android, mac, windows, or linux",
+    ):
         load_suite(p)
 
 
