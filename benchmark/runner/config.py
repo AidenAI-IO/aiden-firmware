@@ -192,7 +192,6 @@ def default_agent_toml() -> str:
     """Generate default agent.toml content."""
     return "\n".join(
         [
-            'instruction = ""',
             'input_mode = "text"',
             'trigger_mode = "manual"',
             "max_iterations = -1",

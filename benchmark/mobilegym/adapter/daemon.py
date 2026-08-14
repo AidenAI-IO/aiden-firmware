@@ -10,7 +10,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-DEFAULT_INSTRUCTION = ""
 DEFAULT_INPUT_MODE = "text"
 DEFAULT_MAX_ITERATIONS = 20
 
@@ -92,7 +91,6 @@ def create_attempt_config(
     bridge_token: str | None = None,
     control_token: str | None = None,
     template_path: str | Path | None = None,
-    instruction: str = DEFAULT_INSTRUCTION,
     input_mode: str = DEFAULT_INPUT_MODE,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     model_provider: str | None = None,
@@ -125,7 +123,6 @@ def create_attempt_config(
         bridge_token_file=bridge_token_file,
         control_token_file=control_token_file,
         template_path=template_path,
-        instruction=instruction,
         input_mode=input_mode,
         max_iterations=max_iterations,
         model_provider=_model_value(model_provider, "AIDEN_MODEL_PROVIDER", "MODEL_PROVIDER", default="fake"),
@@ -155,7 +152,6 @@ def render_agent_toml(
     bridge_token_file: str | Path,
     control_token_file: str | Path,
     template_path: str | Path | None = None,
-    instruction: str = DEFAULT_INSTRUCTION,
     input_mode: str = DEFAULT_INPUT_MODE,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     model_provider: str = "fake",
@@ -178,7 +174,6 @@ def render_agent_toml(
             rendered = rendered.replace("{{" + name + "}}", value)
     else:
         lines = [
-            f"instruction = {_toml_string(instruction)}",
             f"input_mode = {_toml_string(input_mode)}",
             f"max_iterations = {int(max_iterations)}",
             "",

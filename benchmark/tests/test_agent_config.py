@@ -9,16 +9,16 @@ from runner.agent_config import (
 )
 
 
-def test_mobilegym_agent_template_uses_default_system_instruction():
+def test_mobilegym_agent_template_omits_legacy_instruction():
     template = (
         Path(__file__).resolve().parents[1]
         / "mobilegym"
         / "config"
         / "agent.toml.template"
     )
-    instruction = tomllib.loads(template.read_text(encoding="utf-8"))["instruction"]
+    config = tomllib.loads(template.read_text(encoding="utf-8"))
 
-    assert instruction == ""
+    assert "instruction" not in config
 
 
 def test_load_agent_model_config_reads_model_section(tmp_path: Path):

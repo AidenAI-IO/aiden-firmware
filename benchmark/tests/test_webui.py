@@ -218,7 +218,7 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     base = tmp_path / "base"
     base.mkdir()
     (base / "agent.toml.template").write_text('[model]\nprovider = "template"\n', encoding="utf-8")
-    agent_config = 'instruction = "custom"\n[model]\nprovider = "saved"\n'
+    agent_config = 'custom_instruction = "custom"\n[model]\nprovider = "saved"\n'
 
     dest = tmp_path / "dest"
     webui.prepare_run_config(base, dest, agent_config_text=agent_config)
@@ -278,7 +278,7 @@ def test_default_agent_toml_uses_benchmark_defaults():
     rendered = webui.default_agent_toml()
     config = tomllib.loads(rendered)
 
-    assert 'instruction = ""' in rendered
+    assert "instruction" not in config
     assert 'trigger_mode = "manual"' in rendered
     assert "max_iterations = -1" in rendered
     assert "screenshot_keep_n = 3" in rendered
@@ -308,7 +308,7 @@ def test_agent_config_manager_migrates_saved_config_missing_voice_defaults(tmp_p
     base.mkdir()
     config_path = tmp_path / "runs" / "agent.toml"
     config_path.parent.mkdir()
-    config_path.write_text('instruction = "saved"\n[model]\nprovider = "fake"\n', encoding="utf-8")
+    config_path.write_text('custom_instruction = "saved"\n[model]\nprovider = "fake"\n', encoding="utf-8")
     manager = runner_config.AgentConfigManager(base_config_dir=base, config_path=config_path)
 
     content, source = manager.get_config()
@@ -327,7 +327,7 @@ def test_agent_config_manager_ignores_table_keys_when_migrating_voice_defaults(t
     config_path = tmp_path / "runs" / "agent.toml"
     config_path.parent.mkdir()
     config_path.write_text(
-        'instruction = "saved"\n[model]\nvoice_streaming_tts_enabled = true\nprovider = "fake"\n',
+        'custom_instruction = "saved"\n[model]\nvoice_streaming_tts_enabled = true\nprovider = "fake"\n',
         encoding="utf-8",
     )
     manager = runner_config.AgentConfigManager(base_config_dir=base, config_path=config_path)
@@ -377,11 +377,11 @@ def test_webui_agent_config_persists_under_runs_dir(tmp_path: Path, monkeypatch)
     assert initial["source"] == "generated"
     assert 'provider = "openai"' in initial["content"]
 
-    saved = 'instruction = "saved"\n[model]\nprovider = "fake"\n'
+    saved = 'custom_instruction = "saved"\n[model]\nprovider = "fake"\n'
     updated = app.save_agent_config({"content": saved})
     assert updated["source"] == "saved"
     saved_content = (tmp_path / "runs" / "agent.toml").read_text(encoding="utf-8")
-    assert 'instruction = "saved"' in saved_content
+    assert 'custom_instruction = "saved"' in saved_content
     assert "voice_streaming_tts_enabled = false" in saved_content
     assert "voice_tool_call_speech = false" in saved_content
     assert "voice_progress_speech_enabled = false" in saved_content
@@ -1759,7 +1759,7 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     base = tmp_path / "base"
     base.mkdir()
     app = webui.BenchmarkWebApp(webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=base, build_daemon_image=False))
-    saved = 'instruction = "from web ui"\n[model]\nprovider = "fake"\n[device]\ndevice_type = "iOS"\n'
+    saved = 'custom_instruction = "from web ui"\n[model]\nprovider = "fake"\n[device]\ndevice_type = "iOS"\n'
     app.save_agent_config({"content": saved})
     job = webui.Job(
         id="job-test",
@@ -1803,7 +1803,7 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     app._run_job(job)
 
     saved_content = (Path(job.config_dir) / "agent.toml").read_text(encoding="utf-8")
-    assert 'instruction = "from web ui"' in saved_content
+    assert 'custom_instruction = "from web ui"' in saved_content
     assert "voice_streaming_tts_enabled = false" in saved_content
     assert "voice_tool_call_speech = false" in saved_content
     assert "voice_progress_speech_enabled = false" in saved_content
