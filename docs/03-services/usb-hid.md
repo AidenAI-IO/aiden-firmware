@@ -111,7 +111,6 @@ Built-in Agent tools:
 
 - `keyboard_tap`
 - `keyboard_text`
-- `mouse_click`
 - `mouse_move`
 - `mouse_scroll`
 - `touch_gesture`

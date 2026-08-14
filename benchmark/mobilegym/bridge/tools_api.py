@@ -203,20 +203,6 @@ class ToolsAPIHandler:
                 },
             },
             {
-                "name": "mouse_click",
-                "description": "Click/tap a coordinate in the MobileGym simulator. Coordinates use normalized 0-1000 space.",
-                "args_schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"},
-                        "button": {"type": "string", "enum": ["left", "right", "middle"]},
-                    },
-                    "required": ["x", "y"],
-                },
-            },
-            {
                 "name": "mouse_move",
                 "description": "Move the pointer. MobileGym has no hover state, so this is accepted as a no-op and returns a screenshot.",
                 "args_schema": {
@@ -451,8 +437,6 @@ class ToolsAPIHandler:
             return self._call_keyboard_tap(state, tool_input, episode_id)
         elif tool_name == "enter_text":
             return self._call_enter_text(state, tool_input, episode_id)
-        elif tool_name == "mouse_click":
-            return self._call_mouse_click(state, tool_input, episode_id)
         elif tool_name == "mouse_move":
             return self._call_mouse_move(state, tool_input, episode_id)
         elif tool_name == "mouse_scroll":
@@ -550,18 +534,6 @@ class ToolsAPIHandler:
             tool_name=log_tool_name,
             tool_input=tool_input if log_tool_input is None else log_tool_input,
         )
-
-    def _call_mouse_click(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
-        """Execute mouse_click as a MobileGym tap."""
-        button = str(tool_input.get("button", "left") or "left").strip().lower()
-        if button not in ("", "left", "right", "middle"):
-            return {"output": f"error: unsupported mouse button: {button!r}", "is_error": True}
-        try:
-            point = _normalized_point_arg(tool_input)
-        except (TypeError, ValueError) as exc:
-            return {"output": f"error: {exc}", "is_error": True}
-        action = build_action("tap", point)
-        return self._execute_action(state, action, episode_id, tool_name="mouse_click", tool_input=tool_input)
 
     def _call_mouse_move(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Validate mouse_move input and return a screenshot.
@@ -965,7 +937,6 @@ def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str
             "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
             "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
         },
-        "mouse_click": {"x", "y", "button"},
         "mouse_move": {"x", "y"},
         "quick_action": {"action", "list", "alternative", "alternative_index"},
     }.get(tool_name)

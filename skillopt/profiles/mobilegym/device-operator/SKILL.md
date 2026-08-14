@@ -5,7 +5,7 @@ This rollout is running in a MobileGym simulator, not on a physical device. Use 
 Prefer portable visual-control behavior:
 
 - Start with `screenshot` and operate from the visible UI.
-- Use `touch_gesture`, `mouse_click`, `mouse_move`, `mouse_scroll`, `keyboard_tap`, and `enter_text` when they are available.
+- Use `touch_gesture`, `mouse_move`, `mouse_scroll`, `keyboard_tap`, and `enter_text` when they are available.
 - Use `enter_text` for text fields, including ASCII and IME input.
 - If a tool returns unsupported, unknown app, bridge not connected, or another deterministic error, do not repeat the same tool call. Switch to a visible UI path.
 - Do not use shell, frame service recovery, or physical-device diagnostics to solve MobileGym tasks.

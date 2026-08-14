@@ -291,7 +291,6 @@ def test_tools_catalog_lists_expected_tools(bridge):
         "keyboard_text",
         "keyboard_tap",
         "enter_text",
-        "mouse_click",
         "mouse_move",
         "mouse_scroll",
         "quick_action",

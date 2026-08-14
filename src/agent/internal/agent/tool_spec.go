@@ -98,11 +98,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		ExampleInput:   `{"text":"hello你好","focus":{"x":450,"y":105}}`,
 		AgentPlatforms: []string{"ios", "android", "macos", "windows", "linux"},
 	},
-	"mouse_click": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"x":500,"y":500,"button":"left"}`,
-	},
 	"mouse_move": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
@@ -532,6 +527,14 @@ func (spec ToolSpec) ValidateInput(input string) error {
 		return nil
 	}
 	if !json.Valid([]byte(trimmed)) {
+		if spec.Name == "touch_gesture" {
+			return fmt.Errorf(`touch_gesture arguments are invalid JSON, so no touch action was executed.
+Retry touch_gesture now with strict JSON.
+point/start/end must be JSON objects containing both named keys "x" and "y".
+Invalid: {"type":"tap","point":{"x":500,500}}
+Correct: {"type":"tap","point":{"x":500,"y":500}}
+Do not continue with another action until the corrected call succeeds.`)
+		}
 		return fmt.Errorf("%s input must be valid JSON after compatibility conversion", spec.Name)
 	}
 	return nil

@@ -88,7 +88,6 @@ func TestHIDToolsExposeStructuredSchemas(t *testing.T) {
 	for name, tool := range map[string]structuredInputTool{
 		"keyboard_tap":  &KeyboardTapTool{},
 		"keyboard_text": &KeyboardTextTool{},
-		"mouse_click":   &MouseClickTool{},
 		"mouse_move":    &MouseMoveTool{},
 		"mouse_scroll":  &MouseScrollTool{},
 		"touch_gesture": &TouchGestureTool{},
@@ -982,33 +981,13 @@ func stringSliceMatrixEqual(a, b [][]string) bool {
 	return true
 }
 
-func TestADBMouseClickUsesInputTapWithNormalizedCoordinates(t *testing.T) {
+func TestADBTouchGestureTapAutoRejectsOutOfRangeCoordinates(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
 	runner := &recordingADBRunner{}
-	tool := &MouseClickTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
+	tool := &TouchGestureTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
 
-	out, err := tool.Call(context.Background(), `{"x":500,"y":250}`)
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-	if out != "ok" {
-		t.Fatalf("Call output = %q, want ok", out)
-	}
-
-	want := []string{"-s", "serial123", "shell", "input", "tap", "540", "600"}
-	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
-		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
-	}
-}
-
-func TestADBMouseClickRejectsOutOfRangeCoordinates(t *testing.T) {
-	screenState := &screen.ScreenState{}
-	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
-	runner := &recordingADBRunner{}
-	tool := &MouseClickTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
-
-	out, err := tool.Call(context.Background(), `{"x":1500,"y":500}`)
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":1500,"y":500}}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -1436,7 +1415,6 @@ func TestModelFacingDeviceGuidanceUsesNormalizedCoordinatesOnly(t *testing.T) {
 	}
 
 	descriptions := map[string]string{
-		"mouse_click":   (&MouseClickTool{}).Description(),
 		"mouse_move":    (&MouseMoveTool{}).Description(),
 		"touch_gesture": (&TouchGestureTool{}).Description(),
 		"wheel_nudge":   (&WheelNudgeTool{}).Description(),
@@ -1668,27 +1646,6 @@ func TestMouseMoveRejectsCoordinatesOutsideNormalizedRange(t *testing.T) {
 	reports := readMouseReports(t, dev, path)
 	if len(reports) != 0 {
 		t.Fatalf("len(reports) = %d, want 0", len(reports))
-	}
-}
-
-func TestMouseClickAcceptsStringCoordinates(t *testing.T) {
-	dev, path := newTestHIDDevice(t)
-	tool := &MouseClickTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
-
-	out, err := tool.Call(context.Background(), `{"x":"500","y":"250"}`)
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-	if out != "ok" {
-		t.Fatalf("Call output = %q, want ok", out)
-	}
-
-	reports := readMouseReports(t, dev, path)
-	if len(reports) != 2+touchReleaseReportCount {
-		t.Fatalf("len(reports) = %d, want %d (pre-move, press, repeated release)", len(reports), 2+touchReleaseReportCount)
-	}
-	if reports[0].x != 16384 || reports[0].y != 8192 {
-		t.Fatalf("pre-move point = (%d,%d), want (16384,8192)", reports[0].x, reports[0].y)
 	}
 }
 
@@ -2134,7 +2091,7 @@ func TestPostActionScreenshotToolOmitsLastDiffWhenStableWaitOmitsIt(t *testing.T
 }
 
 func TestPostActionScreenshotToolSkipsScreenshotOnActionErrorOutput(t *testing.T) {
-	action := &stubTool{name: "mouse_click", output: "error: invalid input"}
+	action := &stubTool{name: "touch_gesture", output: "error: invalid input"}
 	screenshot := &stubTool{
 		name:   "screenshot",
 		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
@@ -2969,28 +2926,6 @@ func TestTapPointerSettlesCursorBeforePress(t *testing.T) {
 	}
 }
 
-func TestMouseClickToolHoldsBetweenPressAndRelease(t *testing.T) {
-	dev, w := newTimedHIDDevice()
-	tool := &MouseClickTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
-
-	out, err := tool.Call(context.Background(), `{"x":500,"y":500}`)
-	if err != nil {
-		t.Fatalf("Call error: %v", err)
-	}
-	if out != "ok" {
-		t.Fatalf("output = %q, want ok", out)
-	}
-
-	times := w.writeTimes()
-	if len(times) != 2+touchReleaseReportCount {
-		t.Fatalf("len(times) = %d, want %d (pre-move, press, repeated release)", len(times), 2+touchReleaseReportCount)
-	}
-	gap := times[2].Sub(times[1])
-	if gap < 50*time.Millisecond {
-		t.Fatalf("gap between press and release = %v, want >= 50ms", gap)
-	}
-}
-
 func TestTouchGestureTapAcceptsHoldMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
@@ -3174,6 +3109,71 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	}
 }
 
+func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndShowsCompleteExamples(t *testing.T) {
+	schema := (&TouchGestureTool{}).ArgsSchema()
+	description, _ := schema["description"].(string)
+	for _, want := range []string{"Strict JSON object", "point", "start", "end", "both x and y"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("root schema description missing %q:\n%s", want, description)
+		}
+	}
+
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %#v", schema["properties"])
+	}
+	for _, name := range []string{"point", "start", "end"} {
+		coordinate, ok := properties[name].(map[string]any)
+		if !ok {
+			t.Fatalf("%s schema = %#v", name, properties[name])
+		}
+		if coordinate["type"] != "object" || coordinate["additionalProperties"] != false {
+			t.Fatalf("%s schema is not a strict object: %#v", name, coordinate)
+		}
+		required, ok := coordinate["required"].([]string)
+		if !ok || !slices.Equal(required, []string{"x", "y"}) {
+			t.Fatalf("%s required = %#v, want x and y", name, coordinate["required"])
+		}
+		desc, _ := coordinate["description"].(string)
+		for _, want := range []string{`named keys "x" and "y"`, "do not use an array", "bare value"} {
+			if !strings.Contains(desc, want) {
+				t.Fatalf("%s description missing %q:\n%s", name, want, desc)
+			}
+		}
+	}
+
+	examples, ok := schema["examples"].([]map[string]any)
+	if !ok || len(examples) != 3 {
+		t.Fatalf("schema examples = %#v, want three complete examples", schema["examples"])
+	}
+	encoded, err := json.Marshal(examples)
+	if err != nil || !json.Valid(encoded) {
+		t.Fatalf("schema examples are not valid JSON: encoded=%s err=%v", encoded, err)
+	}
+	for _, want := range []string{
+		`{"point":{"x":500,"y":500},"type":"tap"}`,
+		`"start":{"x":500,"y":800}`,
+		`"end":{"x":500,"y":200}`,
+		`{"strength":"medium","type":"swipe_up"}`,
+	} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("schema examples missing %q: %s", want, encoded)
+		}
+	}
+
+	typeSchema, _ := properties["type"].(map[string]any)
+	typeDesc, _ := typeSchema["description"].(string)
+	for _, want := range []string{
+		"tap, double_tap, and long_press require point",
+		"swipe and drag require start and end",
+		"Directional swipe types accept optional strength, distance, and anchor",
+	} {
+		if !strings.Contains(typeDesc, want) {
+			t.Fatalf("type schema missing %q:\n%s", want, typeDesc)
+		}
+	}
+}
+
 func TestTouchGestureSchemaFiltersEdgeGesturesForDesktopPlatforms(t *testing.T) {
 	desktopTool := &TouchGestureTool{}
 	desktopTool.SetDeviceTypeFunc(func() string { return "windows" })
@@ -3199,8 +3199,8 @@ func TestTouchGestureSchemaFiltersEdgeGesturesForDesktopPlatforms(t *testing.T) 
 	}
 }
 
-func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
-	desc := (&MouseClickTool{}).Description()
+func TestTouchGestureDescriptionDocumentsTargetCenter(t *testing.T) {
+	desc := (&TouchGestureTool{}).Description()
 	for _, want := range []string{"normalized", "latest screenshot", "visual center", "post-action screenshot"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
@@ -3323,23 +3323,15 @@ func TestTouchGestureRejectsRetiredCoordSpaceFieldInPoints(t *testing.T) {
 	}
 }
 
-func TestMouseToolsRejectRetiredCoordSpaceField(t *testing.T) {
+func TestMouseMoveRejectsRetiredCoordSpaceField(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tools := []struct {
-		name string
-		call func(context.Context, string) (string, error)
-	}{
-		{name: "mouse_click", call: (&MouseClickTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}).Call},
-		{name: "mouse_move", call: (&MouseMoveTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}).Call},
+	tool := &MouseMoveTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	out, err := tool.Call(context.Background(), `{"x":500,"y":500,"coord_space":"normalized"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
 	}
-	for _, tool := range tools {
-		out, err := tool.call(context.Background(), `{"x":500,"y":500,"coord_space":"normalized"}`)
-		if err != nil {
-			t.Fatalf("%s Call error: %v", tool.name, err)
-		}
-		if !strings.Contains(out, `unknown field "coord_space"`) {
-			t.Fatalf("%s output = %q, want unknown coord_space field error", tool.name, out)
-		}
+	if !strings.Contains(out, `unknown field "coord_space"`) {
+		t.Fatalf("output = %q, want unknown coord_space field error", out)
 	}
 	if reports := readMouseReports(t, dev, path); len(reports) != 0 {
 		t.Fatalf("len(reports) = %d, want no HID writes for rejected input", len(reports))

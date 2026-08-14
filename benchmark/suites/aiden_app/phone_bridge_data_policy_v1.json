@@ -29,7 +29,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_contacts"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture"],
         "required_tool_calls": [{"tool": "bridge_contacts", "input_contains": {"action": "query", "query": "Biden"}}]
       }
     },
@@ -57,7 +57,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_calendar"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture"],
         "required_tool_calls": [{"tool": "bridge_calendar", "input_contains": {"action": "query", "from": "2026-07-23T00:00:00+08:00", "to": "2026-07-24T00:00:00+08:00"}}]
       }
     },
@@ -85,7 +85,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_clipboard"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture"],
         "required_tool_calls": [{"tool": "bridge_clipboard", "input_contains": {"action": "read"}}]
       }
     },
@@ -113,7 +113,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_notification"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture"],
         "required_tool_calls": [{"tool": "bridge_notification", "input_contains": {"title": "Aiden Benchmark", "body": "灵动岛恢复通知", "sound": false}}]
       }
     },
@@ -141,7 +141,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_contacts"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture"],
         "required_tool_calls": [{"tool": "bridge_contacts", "input_contains": {"action": "query", "query": "Alice"}}]
       }
     },
@@ -169,7 +169,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_calendar"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture"],
         "required_tool_calls": [{"tool": "bridge_calendar", "input_contains": {"action": "create", "title": "PiP 测试日程", "start_at": "2026-07-24T14:00:00+08:00", "end_at": "2026-07-24T15:00:00+08:00", "location": "3号会议室"}}]
       }
     },
@@ -197,7 +197,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_clipboard"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture", "enter_text"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture", "enter_text"],
         "required_tool_calls": [{"tool": "bridge_clipboard", "input_contains": {"action": "write", "text": "PiP clipboard benchmark"}}]
       }
     },
@@ -225,7 +225,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_notification"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture"],
         "required_tool_calls": [{"tool": "bridge_notification", "input_contains": {"title": "PiP Benchmark", "body": "后台通知成功", "sound": true}}]
       }
     },
@@ -253,7 +253,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_contacts"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture"],
         "required_tool_calls": [{"tool": "bridge_contacts", "input_contains": {"action": "query", "query": "Bob"}}]
       }
     },
@@ -281,7 +281,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_calendar"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture"],
         "required_tool_calls": [{"tool": "bridge_calendar", "input_contains": {"action": "query", "from": "2026-07-25T00:00:00+08:00", "to": "2026-07-26T00:00:00+08:00"}}]
       }
     },
@@ -309,7 +309,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_clipboard"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture"],
         "required_tool_calls": [{"tool": "bridge_clipboard", "input_contains": {"action": "read"}}]
       }
     },
@@ -337,7 +337,7 @@
       "hard_assertions": {
         "min_tool_calls": 1, "max_tool_calls": 4, "must_complete_within_sec": 120,
         "required_tools": ["bridge_notification"],
-        "forbidden_tools": ["bridge_open_app", "search_launch_app", "mouse_click", "touch_gesture"],
+        "forbidden_tools": ["bridge_open_app", "search_launch_app", "touch_gesture"],
         "required_tool_calls": [{"tool": "bridge_notification", "input_contains": {"title": "FGS Benchmark", "body": "Android 后台通知成功", "sound": false}}]
       }
     }

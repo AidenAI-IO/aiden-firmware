@@ -1019,74 +1019,6 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 	return "ok", nil
 }
 
-// MouseClickTool moves the mouse to coordinates and clicks.
-type MouseClickTool struct {
-	pc     *pointerController
-	screen *screen.ScreenState
-	adb    *ADBInputController
-}
-
-func (t *MouseClickTool) Name() string { return "mouse_click" }
-
-func (t *MouseClickTool) Description() string {
-	return `Move the mouse to a position and click. Use normalized coordinates (0-1000) from the latest screenshot, aiming at the visual center of the target, where (0,0) is top-left, (1000,1000) is bottom-right, and (500,500) is center. Click once and inspect the post-action screenshot before repeating.`
-}
-
-func (t *MouseClickTool) ArgsSchema() map[string]any {
-	return objectArgsSchema(map[string]any{
-		"x":      coordinateSchema("Normalized 0-1000 X coordinate.", 500),
-		"y":      coordinateSchema("Normalized 0-1000 Y coordinate.", 300),
-		"button": stringEnumArgSchema("Mouse button; defaults to left.", "left", "right", "middle"),
-	}, "x", "y")
-}
-
-func (t *MouseClickTool) Call(ctx context.Context, input string) (string, error) {
-	var pc *pointerController
-	if t != nil {
-		pc = t.pc
-	}
-	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
-		return t.call(callCtx, input)
-	})
-}
-
-func (t *MouseClickTool) call(ctx context.Context, input string) (string, error) {
-	var args struct {
-		X      pointerCoordinate `json:"x"`
-		Y      pointerCoordinate `json:"y"`
-		Button string            `json:"button"`
-	}
-	if err := decodeStrictJSONObject(input, &args); err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"button\": \"left\"}. Coordinates always use the normalized 0-1000 scale", err), nil
-	}
-
-	if t.adb != nil {
-		if button := strings.ToLower(strings.TrimSpace(args.Button)); button != "" && button != "left" {
-			return toolErrorResultf(ctx, CodeInvalidArguments, "adb mouse_click supports only left button taps, got %q", args.Button), nil
-		}
-		point, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64())
-		if err != nil {
-			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
-		}
-		if err := t.adb.Tap(ctx, point); err != nil {
-			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
-		}
-		return "ok", nil
-	}
-
-	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64())
-	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
-	}
-	btn := mouseButtonByte(args.Button)
-
-	if err := tapPointer(t.pc, absX, absY, btn); err != nil {
-		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
-	}
-
-	return "ok", nil
-}
-
 // MouseMoveTool moves the mouse to coordinates without clicking.
 type MouseMoveTool struct {
 	pc     *pointerController
@@ -1177,20 +1109,20 @@ func (t *TouchGestureTool) Description() string {
 		description += `Prefer quick_action for semantic platform actions. For go-home/home-screen requests such as 回到桌面, call quick_action with {"action":"home"} first; use touch_gesture {"type":"home"} only as a fallback. `
 	}
 	return description +
-		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Swipe direction names describe finger movement, not content scroll. ` +
+		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
-	typeDescription := "Gesture type."
+	typeDescription := "Gesture type. tap, double_tap, and long_press require point. swipe and drag require start and end. Directional swipe types accept optional strength, distance, and anchor."
 	if touchGestureIncludesEdgeNavigation(t.platform()) {
 		typeDescription += ` Edge aliases use real edges: back starts at x=1, home starts at y=999. For semantic home/back requests, prefer quick_action first, especially quick_action {"action":"home"} for go-home/home-screen requests; use back/home here only as fallback alternatives.`
 	}
-	return objectArgsSchema(map[string]any{
+	schema := objectArgsSchema(map[string]any{
 		"type":           stringEnumArgSchema(typeDescription, touchGestureTypesForPlatform(t.platform())...),
-		"point":          pointSchema("Point for tap, double_tap, or long_press."),
-		"start":          pointSchema("Start point for swipe or drag."),
-		"end":            pointSchema("End point for swipe or drag."),
+		"point":          pointSchema(`Required for tap, double_tap, and long_press. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"start":          pointSchema(`Required start point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"end":            pointSchema(`Required end point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
 		"button":         stringEnumArgSchema("Mouse button for drag.", "left", "right", "middle"),
 		"duration_ms":    nonNegativeIntegerSchema("Gesture duration in milliseconds."),
 		"hold_before_ms": nonNegativeIntegerSchema("Optional dwell after pressing before a swipe begins."),
@@ -1202,6 +1134,13 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		"anchor":         coordinateSchema("Directional swipe fixed-axis coordinate in 0-1000 normalized units.", 500),
 		"strength":       stringEnumArgSchema("Directional swipe preset distance.", "large", "medium", "small", "tiny"),
 	}, "type")
+	schema["description"] = `Strict JSON object for one gesture. Coordinate fields point, start, and end always use named objects containing both x and y.`
+	schema["examples"] = []map[string]any{
+		{"type": "tap", "point": map[string]any{"x": 500, "y": 500}},
+		{"type": "swipe", "start": map[string]any{"x": 500, "y": 800}, "end": map[string]any{"x": 500, "y": 200}},
+		{"type": "swipe_up", "strength": "medium"},
+	}
+	return schema
 }
 
 func touchGestureTypesForPlatform(platform string) []string {

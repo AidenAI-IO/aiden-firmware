@@ -67,8 +67,8 @@ aiden-episode (trace)
 │   │   └── tool_result/audio_volume
 │   ├── tool/screenshot
 │   │   └── tool_result/screenshot
-│   └── tool/mouse_click
-│       └── tool_result/mouse_click
+│   └── tool/touch_gesture
+│       └── tool_result/touch_gesture
 └── generation (LLM calls)
 ```
 

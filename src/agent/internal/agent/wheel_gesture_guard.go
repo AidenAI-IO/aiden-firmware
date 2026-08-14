@@ -76,9 +76,6 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 	if toolName == "touch_gesture" {
 		return g.beforeTouchGesture(call)
 	}
-	if toolName == "mouse_click" {
-		return g.beforeMouseClick(call)
-	}
 	if toolName != "wheel_nudge" {
 		if isWheelNavigationToolCall(call) {
 			g.pendingNavigation = wheelToolCallKey(call)
@@ -548,40 +545,6 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 				"retry_same_column": true,
 			}), false
 		}
-	}
-	if navigationCandidate {
-		g.pendingNavigation = wheelToolCallKey(call)
-	}
-	return ToolResult{}, true
-}
-
-func (g *wheelNudgeGuard) beforeMouseClick(call ToolCall) (ToolResult, bool) {
-	if len(g.columns) == 0 {
-		return ToolResult{}, true
-	}
-	var args struct {
-		X pointerCoordinate `json:"x"`
-		Y pointerCoordinate `json:"y"`
-	}
-	if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
-		return ToolResult{}, true
-	}
-	navigationCandidate := false
-	for _, column := range g.columns {
-		x := clampFloat(args.X.Float64(), 0, 1000)
-		y := clampFloat(args.Y.Float64(), 0, 1000)
-		if wheelPointInActionBar(y) {
-			navigationCandidate = true
-		}
-		if !wheelPointInsideColumnSafetyZone(column, x, y) {
-			continue
-		}
-		if column.used >= column.limit {
-			message := fmt.Sprintf("wheel gesture safety stop: refusing mouse_click near exhausted wheel column x=%.0f (%d/%d nudges used)", column.centerX, column.used, column.limit)
-			return g.blockedResult(message, column.centerX, column.used, column.limit), false
-		}
-		message := fmt.Sprintf("active wheel column is owned by wheel_nudge: refusing mouse_click near x=%.0f", column.centerX)
-		return invalidWheelResult(message, map[string]any{"column_x": column.centerX, "retry_same_column": true}), false
 	}
 	if navigationCandidate {
 		g.pendingNavigation = wheelToolCallKey(call)

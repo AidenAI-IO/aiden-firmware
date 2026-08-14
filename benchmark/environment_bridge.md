@@ -156,7 +156,7 @@ daemon \
   --device-type android \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://bridge:9090 \
-  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_click,mouse_move,mouse_scroll,quick_action \
+  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_move,mouse_scroll,quick_action \
   --benchmark-task-id suite.json:task-1
 ```
 

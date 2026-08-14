@@ -3,7 +3,7 @@ name: deeplink
 description: Phone app and webpage launch payload guidance; transport routing and platform-specific targets stay inside the tools.
 metadata:
   preferred_model: primary
-  allowed_tools: [open_app, open_url, screenshot, touch_gesture, mouse_click, keyboard_tap, enter_text]
+  allowed_tools: [open_app, open_url, screenshot, touch_gesture, keyboard_tap, enter_text]
 ---
 
 `open_app` accepts semantic app names. `open_url` accepts HTTP, HTTPS, SMS,

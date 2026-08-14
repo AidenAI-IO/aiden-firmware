@@ -224,6 +224,27 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     assert (dest / "memory").is_dir()
 
 
+def test_prepare_run_config_does_not_copy_runtime_state(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "agent.toml").write_text('[model]\nprovider = "fake"\n', encoding="utf-8")
+    for name in ("memory", "log", "cache", "sessions", "skill-state"):
+        state_dir = base / name
+        state_dir.mkdir()
+        (state_dir / "stale-state").write_text("stale", encoding="utf-8")
+    (base / "memory" / "extraction.yaml").write_text("hot_window_events: 20\n", encoding="utf-8")
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest)
+
+    for name in ("memory", "log", "cache", "sessions", "skill-state"):
+        assert not (dest / name / "stale-state").exists()
+    assert (dest / "memory").is_dir()
+    assert (dest / "memory" / "extraction.yaml").read_text(encoding="utf-8") == "hot_window_events: 20\n"
+    assert (dest / "log").is_dir()
+    assert (dest / "skill-state").is_dir()
+
+
 def test_prepare_run_config_includes_bundled_skills(tmp_path: Path):
     base = tmp_path / "base"
     base.mkdir()
@@ -1827,7 +1848,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     expected_forward_tools = (
         "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
         "enter_text,"
-        "search_launch_app,mouse_click,mouse_move,mouse_scroll,quick_action,"
+        "search_launch_app,mouse_move,mouse_scroll,quick_action,"
         "bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,"
         "bridge_notification"
     )

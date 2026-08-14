@@ -85,6 +85,8 @@ TERMINAL_TASK_STATUSES = {
 }
 STOP_REQUESTED_JOB_STATUSES = {"stopping", "stopped", "canceled"}
 JOB_REPORT_RUN_ID = "_job-report"
+RUNTIME_CONFIG_DIR_NAMES = {"cache", "log", "memory", "sessions", "skill-state"}
+MEMORY_CONFIG_FILE_NAMES = {"extraction.yaml"}
 
 
 class JobStopped(RuntimeError):
@@ -1715,6 +1717,16 @@ def prepare_run_config(
     dest_dir.mkdir(parents=True, exist_ok=True)
     if base_config_dir.exists():
         for item in base_config_dir.iterdir():
+            if item.name == "memory":
+                memory_dir = dest_dir / item.name
+                for name in MEMORY_CONFIG_FILE_NAMES:
+                    source = item / name
+                    if source.is_file():
+                        memory_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source, memory_dir / name)
+                continue
+            if item.name in RUNTIME_CONFIG_DIR_NAMES:
+                continue
             target = dest_dir / item.name
             if item.is_dir():
                 shutil.copytree(item, target)
