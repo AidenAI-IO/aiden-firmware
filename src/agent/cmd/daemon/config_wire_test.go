@@ -246,7 +246,6 @@ func TestConfigCheck_InvalidJSON(t *testing.T) {
 func TestConfigCheckPath_ValidatesFullTOMLWithoutRejectingUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	content := `locale = "en-US"
-todo_reminder_tool_calls = 7
 skills_dirs = ["/userdata/skills"]
 future_plugin_flag = true
 

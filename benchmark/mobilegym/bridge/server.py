@@ -11,6 +11,8 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from setup_token_registry import SetupTokenRegistry, setup_token_from_payload
+
 from .actions import action_to_dict, build_action
 from .episode import (
     BridgeEpisodeState,
@@ -66,6 +68,7 @@ class BridgeServer:
         self._thread: threading.Thread | None = None
         self.base_url = ""
         self.tools_api = ToolsAPIHandler(self.router, request_timeout_sec)
+        self.setup_tokens = SetupTokenRegistry()
 
     def start(self) -> str:
         if self._httpd is not None:
@@ -181,16 +184,26 @@ def _handler_for(bridge: BridgeServer):
             self._send_json(200, bridge_ok(result))
 
         def _handle_setup(self, payload: dict[str, Any]) -> None:
-            state = self._request_state()
             episode_id = str(payload.get("episode_id") or "").strip()
             if not episode_id:
                 episode_id = f"reset-{uuid.uuid4().hex}"
-            result = bridge.submit_to_state(state, state.reset_episode(episode_id))
+            task_id = benchmark_task_id_from_headers(self.headers)
+            setup_token = setup_token_from_payload(payload)
+
+            def setup() -> dict[str, Any]:
+                state = bridge.router.state_for_task_id(task_id)
+                return bridge.submit_to_state(state, state.reset_episode(episode_id))
+
+            if setup_token:
+                result = bridge.setup_tokens.run((task_id, setup_token), setup)
+            else:
+                result = setup()
             self._send_json(200, bridge_ok(result))
 
         def _handle_release(self) -> None:
             task_id = benchmark_task_id_from_headers(self.headers)
             released = bridge.router.release_task_id(task_id)
+            bridge.setup_tokens.clear_completed_for_task(task_id)
             self._send_json(200, bridge_ok({"released": released}))
 
         def _handle_state(self, payload: dict[str, Any]) -> None:

@@ -10,7 +10,8 @@ Build, configure, operate, and extend Aiden hardware and its Agent runtime.
 
 ## Start Here
 
-- [Try Aiden on PC](01-getting-started/try-aiden-on-pc.md) without assembling hardware.
+- [Try Aiden on PC](01-getting-started/try-aiden-on-pc.md) with Config Web,
+  Agent Web, and optional environment-bridge control without a development board.
 - Follow the [Newcomer Quickstart](01-getting-started/quickstart.md) for a physical device.
 - Review [Hardware & Wiring](01-getting-started/hardware.md) before powering a self-assembled device.
 - Set up the [Build Environment](01-getting-started/build.md), then [deploy to the device](01-getting-started/deployment.md).

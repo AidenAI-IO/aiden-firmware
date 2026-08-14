@@ -986,7 +986,6 @@ TEST_CASE("config_web: PUT /api/config/locale updates only the device locale") {
         "# Keep comments and fields owned by the Go agent.\n"
         "\"locale\" = \"zh-CN\"  # setup language\n"
         "custom_instruction = \"Keep this instruction.\"\n"
-        "todo_reminder_tool_calls = 7\n"
         "skills_dirs = [\"/userdata/skills\"]\n"
         "future_plugin_flag = true\n"
         "\n"
@@ -1023,7 +1022,7 @@ TEST_CASE("config_web: PUT /api/config/locale inserts a missing locale before se
     auto handle = start_server(env);
     const std::string original =
         "# Existing top-level config stays in place.\n"
-        "todo_reminder_tool_calls = 4\n"
+        "future_agent_option = 4\n"
         "custom_instruction = \"\"\"\n"
         "locale = \"this is instruction text\"\n"
         "[not-a-real-section]\n"
@@ -1039,7 +1038,7 @@ TEST_CASE("config_web: PUT /api/config/locale inserts a missing locale before se
 
     CHECK(read_file(handle->tmp_dir + "/agent.toml") ==
           "# Existing top-level config stays in place.\n"
-          "todo_reminder_tool_calls = 4\n"
+          "future_agent_option = 4\n"
           "custom_instruction = \"\"\"\n"
           "locale = \"this is instruction text\"\n"
           "[not-a-real-section]\n"
