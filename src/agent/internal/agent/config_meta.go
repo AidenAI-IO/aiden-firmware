@@ -512,7 +512,6 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "voice_max_response_tokens", Widget: WidgetNumber, Default: defaults.VoiceMaxResponseTokens,
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "load_all_tools", Widget: WidgetBoolean, Default: defaults.LoadAllTools},
-					{Key: "todo_reminder_tool_calls", Widget: WidgetNumber, Default: defaults.TodoReminderToolCallsOrDefault()},
 					{Key: "max_iterations", Widget: WidgetNumber, Default: defaults.MaxIterations},
 					{Key: "screenshot_keep_n", Widget: WidgetNumber, Default: defaults.ScreenshotKeepN},
 					{Key: "screenshot_prune_interval", Widget: WidgetNumber, Default: defaults.ScreenshotPruneInterval},

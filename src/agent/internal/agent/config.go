@@ -310,7 +310,6 @@ type Config struct {
 	VoiceProgressSpeechEnabled *bool                    `toml:"voice_progress_speech_enabled,omitempty"`
 	VoiceMaxResponseTokens     int                      `toml:"voice_max_response_tokens,omitempty"`
 	LoadAllTools               bool                     `toml:"load_all_tools,omitempty"`
-	TodoReminderToolCalls      int                      `toml:"todo_reminder_tool_calls,omitempty"`
 	MaxIterations              int                      `toml:"max_iterations,omitempty"`
 	TerminationPolicy          TerminationPolicyConfig  `toml:"termination_policy,omitempty"`
 	ForceSimpleLoop            bool                     `toml:"-"`
@@ -1382,9 +1381,6 @@ func (c Config) Validate() error {
 			return fmt.Errorf("voice_notifications.expiration.code_ttl_seconds.%s must be >= 0, got %d", code, seconds)
 		}
 	}
-	if c.TodoReminderToolCalls < 0 {
-		return fmt.Errorf("todo_reminder_tool_calls must be >= 0, got %d", c.TodoReminderToolCalls)
-	}
 	if c.Log.LLMHTTPRetentionDays < 0 {
 		return fmt.Errorf("log.llm_http_retention_days must be >= 0, got %d", c.Log.LLMHTTPRetentionDays)
 	}
@@ -1841,13 +1837,6 @@ func (c Config) VoiceMaxResponseTokensOrDefault() int {
 		return c.VoiceMaxResponseTokens
 	}
 	return defaultVoiceMaxResponseTokens
-}
-
-func (c Config) TodoReminderToolCallsOrDefault() int {
-	if c.TodoReminderToolCalls > 0 {
-		return c.TodoReminderToolCalls
-	}
-	return defaultTodoReminderToolCalls
 }
 
 func (c Config) ScreenshotPruningOrDefault() executor.ScreenshotPruningConfig {
