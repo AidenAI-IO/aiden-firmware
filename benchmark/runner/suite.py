@@ -113,25 +113,6 @@ def resolve_mock_task_platform(
         )
     return resolve_mock_platform(spec.platform, constraint=constraint)
 
-
-def resolve_mock_suite_platforms(
-    suite: Suite,
-    *,
-    constraint: str | TargetPlatform | None = None,
-) -> tuple[TargetPlatform, ...]:
-    if suite.tasks:
-        platforms = {
-            resolve_mock_task_platform(suite, task, constraint=constraint)
-            for task in suite.tasks
-        }
-    elif suite.mock_environment is not None:
-        platforms = {
-            resolve_mock_platform(suite.mock_environment.platform, constraint=constraint)
-        }
-    else:
-        platforms = set()
-    return tuple(sorted(platforms, key=lambda platform: platform.value))
-
 def load_suite(path: Path) -> Suite:
     raw_bytes = Path(path).read_bytes()
     sha = hashlib.sha256(raw_bytes).hexdigest()

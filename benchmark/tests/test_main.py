@@ -1289,7 +1289,7 @@ def test_auto_agent_setup_resolves_mock_platform_per_task(monkeypatch, tmp_path)
     assert manifest["target_platform"] == "mixed"
 
 
-def test_mock_suite_platforms_use_each_task_effective_override(tmp_path):
+def test_mock_task_platform_uses_task_override(tmp_path):
     suite_path = tmp_path / "mock-suite.json"
     suite_path.write_text(
         json.dumps(
@@ -1318,31 +1318,12 @@ def test_mock_suite_platforms_use_each_task_effective_override(tmp_path):
         encoding="utf-8",
     )
 
-    assert suite_module.resolve_mock_suite_platforms(main.load_suite(suite_path)) == (
-        suite_module.TargetPlatform.IOS,
-    )
+    suite = main.load_suite(suite_path)
 
-
-def test_mock_suite_platforms_support_empty_suite_default(tmp_path):
-    suite_path = tmp_path / "mock-suite.json"
-    suite_path.write_text(
-        json.dumps(
-            {
-                "name": "mock_suite",
-                "mock_environment": {
-                    "platform": "ios",
-                    "phone_bridge": {},
-                    "tools": {},
-                },
-                "tasks": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    assert suite_module.resolve_mock_suite_platforms(main.load_suite(suite_path)) == (
-        suite_module.TargetPlatform.IOS,
-    )
+    assert {
+        suite_module.resolve_mock_task_platform(suite, task)
+        for task in suite.tasks
+    } == {suite_module.TargetPlatform.IOS}
 
 
 def test_mock_suite_loading_rejects_effective_spec_without_platform(tmp_path):

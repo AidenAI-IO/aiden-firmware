@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from collections.abc import Iterable
 from enum import Enum
 from typing import Any
 
@@ -18,21 +17,6 @@ class TargetPlatform(str, Enum):
 
 
 VALID_TARGET_PLATFORMS = {platform.value for platform in TargetPlatform}
-
-
-def summarize_target_platforms(platforms: Iterable[Any]) -> str:
-    values = sorted(
-        {
-            normalize_target_platform(platform).value
-            for platform in platforms
-            if str(platform or "").strip()
-        }
-    )
-    if not values:
-        return ""
-    if len(values) == 1:
-        return values[0]
-    return "mixed"
 
 
 def normalize_target_platform(

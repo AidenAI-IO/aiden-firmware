@@ -31,10 +31,9 @@ from runner.judge import JudgeConfig
 from runner.platform import (
     read_environment_health,
     resolve_environment_platform,
-    summarize_target_platforms,
 )
 from runner.reset import ResetError, call_environment_release
-from runner.suite import load_suite, resolve_mock_suite_platforms
+from runner.suite import load_suite
 
 try:
     from benchmark.runner.environment import EnvironmentManager, MobileGymEnvironment
@@ -818,16 +817,7 @@ class BenchmarkWebApp:
             self._raise_if_job_stop_requested(job)
             self._set_job(job, status="preparing", started_at=now_iso(), message="preparing config")
             agent_config_text = self.get_agent_config()["content"]
-            if job.environment_type == "mock":
-                platforms = resolve_mock_suites_platforms(
-                    self.config.suites_dir,
-                    job.suites,
-                )
-                self._set_job(
-                    job,
-                    target_platform=summarize_target_platforms(platforms),
-                )
-            else:
+            if job.environment_type != "mock":
                 health = read_environment_health(job.environment_endpoint or job.endpoint)
                 resolution = resolve_environment_platform(health)
                 self._set_job(
@@ -849,6 +839,10 @@ class BenchmarkWebApp:
                 for suite_key in job.suites:
                     self._raise_if_job_stop_requested(job)
                     self._run_mock_suite(job, suite_key)
+                self._set_job(
+                    job,
+                    target_platform=_mock_job_target_platform(job.suite_results),
+                )
                 self._raise_if_job_stop_requested(job)
                 self._refresh_job_report(job)
                 final_status = (
@@ -1630,12 +1624,17 @@ def suite_uses_mock_environment(path: Path) -> bool:
     return isinstance(data, dict) and suite_data_uses_mock_environment(data)
 
 
-def resolve_mock_suites_platforms(suites_dir: Path, suite_keys: list[str]):
-    platforms = set()
-    for suite_key in suite_keys:
-        suite = load_suite(resolve_suite_path(suites_dir, suite_key))
-        platforms.update(resolve_mock_suite_platforms(suite))
-    return tuple(sorted(platforms, key=lambda platform: platform.value))
+def _mock_job_target_platform(suite_results: list[dict[str, Any]]) -> str:
+    platforms = {
+        str((result.get("manifest") or {}).get("target_platform") or "").strip()
+        for result in suite_results
+    }
+    platforms.discard("")
+    if not platforms:
+        return ""
+    if len(platforms) == 1:
+        return next(iter(platforms))
+    return "mixed"
 
 
 def resolve_suite_path(suites_dir: Path, key: str) -> Path:

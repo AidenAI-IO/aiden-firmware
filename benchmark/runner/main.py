@@ -18,7 +18,6 @@ from runner.platform import (
     read_environment_health,
     resolve_daemon_platform,
     resolve_environment_platform,
-    summarize_target_platforms,
 )
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
@@ -416,6 +415,15 @@ def _build_task_units(
     return units
 
 
+def _run_target_platform(units: list[TaskRunUnit], fallback: str = "") -> str:
+    platforms = {unit.target_platform for unit in units if unit.target_platform}
+    if not platforms:
+        return fallback
+    if len(platforms) == 1:
+        return next(iter(platforms))
+    return "mixed"
+
+
 def _cmd_run_auto_agent_setup(
     args: argparse.Namespace,
     suite: Suite,
@@ -499,13 +507,14 @@ def _cmd_run_auto_agent_setup_inner(
     setup_log = run_dir / "auto-agent-setup.log"
 
     units = _build_task_units(args, suite, target_platform)
-    manifest_target_platform = target_platform
-    if mock_server is not None:
-        manifest_target_platform = summarize_target_platforms(
-            unit.target_platform for unit in units
-        )
-        if not manifest_target_platform and suite.mock_environment is not None:
-            manifest_target_platform = suite.mock_environment.platform
+    mock_platform_fallback = target_platform
+    if not mock_platform_fallback and suite.mock_environment is not None:
+        mock_platform_fallback = suite.mock_environment.platform.value
+    manifest_target_platform = (
+        _run_target_platform(units, mock_platform_fallback)
+        if mock_server is not None
+        else target_platform
+    )
     total_runs = len(units)
     has_runnable_units = any(not unit.skip_reason for unit in units)
     if has_runnable_units:
@@ -542,20 +551,26 @@ def _cmd_run_auto_agent_setup_inner(
     if args.agent_config:
         agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
 
-    def run_unit(
-        index: int,
-        task: TaskSpec,
-        attempt: int,
-        repeats: int,
-        skip_reason: str,
-        task_target_platform: str,
-    ):
-        progress = f"{index}/{total_runs}"
-        art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if repeats > 1 else "")
-        if skip_reason:
-            print(f"[{progress}] SKIPPED    {task.id} attempt={attempt} ({skip_reason})", flush=True)
-            return skipped_task_result(suite, task, attempt, art_dir, run_id, skip_reason)
-        token = worker_token(str(suite.source_path), f"{task.id}-{attempt}")
+    def run_unit(unit: TaskRunUnit):
+        progress = f"{unit.index}/{total_runs}"
+        art_dir = run_dir / "tasks" / unit.task.id / (
+            f"attempt_{unit.attempt}" if unit.repeats > 1 else ""
+        )
+        if unit.skip_reason:
+            print(
+                f"[{progress}] SKIPPED    {unit.task.id} attempt={unit.attempt} "
+                f"({unit.skip_reason})",
+                flush=True,
+            )
+            return skipped_task_result(
+                suite,
+                unit.task,
+                unit.attempt,
+                art_dir,
+                run_id,
+                unit.skip_reason,
+            )
+        token = worker_token(str(suite.source_path), f"{unit.task.id}-{unit.attempt}")
         worker_dir = workers_dir / token
         config_dir = worker_dir / "config"
         runner_log = worker_dir / "runner.log"
@@ -569,7 +584,13 @@ def _cmd_run_auto_agent_setup_inner(
         benchmark_token = _read_optional_token(config_dir / "control_token")
         host_port = 0
         agent_url = f"http://127.0.0.1:{host_port}"
-        route_id = _task_route_id(args, suite, task.id, attempt, repeats)
+        route_id = _task_route_id(
+            args,
+            suite,
+            unit.task.id,
+            unit.attempt,
+            unit.repeats,
+        )
         job = Job(
             id=f"{run_id}-{token}",
             endpoint=args.environment_url.rstrip("/"),
@@ -585,14 +606,17 @@ def _cmd_run_auto_agent_setup_inner(
         log_proc = None
         client = None
         try:
-            print(f"[{progress}] STARTING   {task.id} attempt={attempt}", flush=True)
-            task_mock_environment = effective_mock_environment(suite, task)
+            print(
+                f"[{progress}] STARTING   {unit.task.id} attempt={unit.attempt}",
+                flush=True,
+            )
+            task_mock_environment = effective_mock_environment(suite, unit.task)
             if mock_server is not None:
                 if task_mock_environment is None:
                     return skipped_task_result(
                         suite,
-                        task,
-                        attempt,
+                        unit.task,
+                        unit.attempt,
                         art_dir,
                         run_id,
                         "task has no mock_environment and the suite has no default",
@@ -605,7 +629,7 @@ def _cmd_run_auto_agent_setup_inner(
                 config_dir=config_dir,
                 environment_bridge_endpoint=docker_environment_url,
                 benchmark_task_id=route_id,
-                device_type=task_target_platform,
+                device_type=unit.target_platform,
                 environment_bridge_mode=True,
                 log_path=runner_log,
             )
@@ -617,22 +641,35 @@ def _cmd_run_auto_agent_setup_inner(
             if not wait_for_agent_ready(client, timeout_sec=args.agent_ready_timeout_sec):
                 return skipped_task_result(
                     suite,
-                    task,
-                    attempt,
+                    unit.task,
+                    unit.attempt,
                     art_dir,
                     run_id,
                     f"agent not ready within {args.agent_ready_timeout_sec}s",
                 )
             if task_mock_environment is not None:
                 client.set_phone_bridge_state(task_mock_environment.phone_bridge)
-            if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
-                return skipped_task_result(suite, task, attempt, art_dir, run_id, "agent board clock did not sync before benchmark start")
-            print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
+            if not args.skip_clock_wait and not wait_for_agent_clock(
+                client,
+                timeout_sec=args.clock_timeout_sec,
+            ):
+                return skipped_task_result(
+                    suite,
+                    unit.task,
+                    unit.attempt,
+                    art_dir,
+                    run_id,
+                    "agent board clock did not sync before benchmark start",
+                )
+            print(
+                f"[{progress}] RUNNING    {unit.task.id} attempt={unit.attempt}",
+                flush=True,
+            )
             return run_one_task(
                 client,
                 suite,
-                task,
-                attempt,
+                unit.task,
+                unit.attempt,
                 art_dir,
                 judge_cfg,
                 judge_cache,
@@ -643,7 +680,14 @@ def _cmd_run_auto_agent_setup_inner(
             )
         except Exception as exc:
             append_log(runner_log, f"ERROR: {exc}")
-            return skipped_task_result(suite, task, attempt, art_dir, run_id, str(exc))
+            return skipped_task_result(
+                suite,
+                unit.task,
+                unit.attempt,
+                art_dir,
+                run_id,
+                str(exc),
+            )
         finally:
             if args.environment_url:
                 try:
@@ -666,29 +710,27 @@ def _cmd_run_auto_agent_setup_inner(
     )
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"bench-cli-{run_id}") as executor:
         future_to_unit = {
-            executor.submit(
-                run_unit,
-                unit.index,
-                unit.task,
-                unit.attempt,
-                unit.repeats,
-                unit.skip_reason,
-                unit.target_platform,
-            ): (unit.index, unit.task, unit.attempt)
+            executor.submit(run_unit, unit): unit
             for unit in units
         }
         for future in concurrent.futures.as_completed(future_to_unit):
-            index, task, attempt = future_to_unit[future]
+            unit = future_to_unit[future]
             result = future.result()
-            _log_task_result(task.id, attempt, result, verbose=args.verbose, progress=f"{index}/{total_runs}")
+            _log_task_result(
+                unit.task.id,
+                unit.attempt,
+                result,
+                verbose=args.verbose,
+                progress=f"{unit.index}/{total_runs}",
+            )
             results.append(result)
             completed += 1
             _write_state(args.state_file, {
                 **base_state,
                 "completed": completed,
-                "current": index,
-                "current_task": task.id,
-                "current_attempt": attempt,
+                "current": unit.index,
+                "current_task": unit.task.id,
+                "current_attempt": unit.attempt,
                 "last_result": result.status,
                 "totals": _result_totals(results, total_runs),
             })
