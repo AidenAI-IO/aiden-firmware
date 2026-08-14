@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -134,6 +136,67 @@ func toolResponseContents(t *testing.T, messages []llms.MessageContent) []string
 		t.Fatalf("no tool responses found in messages: %#v", messages)
 	}
 	return contents
+}
+
+func TestAgentLoopTouchGestureInvalidJSONSelfCorrectsBeforeAction(t *testing.T) {
+	tool := &stubTool{name: "touch_gesture", description: "Perform a gesture.", output: "ok"}
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("call_1", "touch_gesture", `{"type":"tap","point":{"x":500,500}}`),
+		toolCallResponse("call_2", "touch_gesture", `{"type":"tap","point":{"x":500,"y":500}}`),
+		contentResponse("Done"),
+	}}
+	manager, err := freshNewContextManager("system", "tap the center", nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+	loop := NewAgentLoop(
+		model,
+		RoleProfile{Tools: []langtools.Tool{tool}},
+		nil,
+		4,
+		nil,
+		nil,
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
+		manager,
+	)
+
+	answer, err := loop.Run(context.Background(), "tap the center")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if answer != "Done" {
+		t.Fatalf("Run() answer = %q, want Done", answer)
+	}
+	if len(tool.inputs) != 1 {
+		t.Fatalf("touch_gesture inputs = %#v, want only the corrected call", tool.inputs)
+	}
+	var gotInput map[string]any
+	if err := json.Unmarshal([]byte(tool.inputs[0]), &gotInput); err != nil {
+		t.Fatalf("corrected touch_gesture input is not JSON: %v", err)
+	}
+	var wantInput map[string]any
+	if err := json.Unmarshal([]byte(`{"type":"tap","point":{"x":500,"y":500}}`), &wantInput); err != nil {
+		t.Fatalf("decode wanted input: %v", err)
+	}
+	if !reflect.DeepEqual(gotInput, wantInput) {
+		t.Fatalf("touch_gesture input = %#v, want %#v", gotInput, wantInput)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("model calls = %d, want at least 2", len(model.messages))
+	}
+	responses := toolResponseContents(t, model.messages[1])
+	if len(responses) != 1 {
+		t.Fatalf("retry context tool responses = %#v, want one", responses)
+	}
+	for _, want := range []string{
+		"no touch action was executed",
+		"Retry touch_gesture now with strict JSON",
+		`Correct: {"type":"tap","point":{"x":500,"y":500}}`,
+	} {
+		if !strings.Contains(responses[0], want) {
+			t.Fatalf("retry context missing %q:\n%s", want, responses[0])
+		}
+	}
 }
 
 func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {
