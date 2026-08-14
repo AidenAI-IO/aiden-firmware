@@ -47,8 +47,17 @@ snapshot, so skipped intermediate Wake notifications do not lose final state.
 - `running`: shows task title, current step, phase, progress, and stop state.
 - `needs_app`: asks the user to return to Aiden when an operation needs the
   foreground companion app.
-- `completed` / `failed` / `canceled`: the local updater returns the existing
-  Live Activity to the `ready` standby state so it remains a recovery entry.
+- `waiting_user` with `current_action=request_user_input`: keeps the handoff
+  instruction visible after `request_human_handoff` so the user can take over
+  on the phone.
+- `completed` / `failed` / `canceled`: keeps the terminal text visible in the
+  existing Live Activity instead of immediately replacing it with standby.
+
+The app requests a one-time system alert only for high-value transitions:
+initial USB ECM connection, human handoff, foreground Aiden recovery,
+completion, and failure. Ordinary tool calls, progress changes, and repeated
+snapshots update silently. Alerts are deduplicated by request and transition;
+an explicit new USB connection session receives a new connection event ID.
 
 Tasks started in the App, Agent Web UI, or another local Agent entry point use
 the same snapshot and local update path.
@@ -207,8 +216,12 @@ board snapshot.
    exists.
 4. Start a task from Agent Web UI and confirm the card changes to `running`
    without reopening the app.
-5. Confirm terminal state returns the card to `ready`.
-6. Inspect App and Agent logs for `live_activity` Wake delivery and local board
+5. Trigger `request_human_handoff` and confirm the card alerts once, displays
+   the suggested action, and remains in the handoff state after the Agent turn
+   stops.
+6. Confirm completed and failed text remains visible and alerts once; ordinary
+   progress and tool updates must not alert.
+7. Inspect App and Agent logs for `live_activity` Wake delivery and local board
    sync.
-7. Capture network traffic or use a denylisted Internet connection and verify
+8. Capture network traffic or use a denylisted Internet connection and verify
    there are no relay registration, relay state publish, or APNs requests.

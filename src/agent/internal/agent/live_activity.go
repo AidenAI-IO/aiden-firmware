@@ -286,27 +286,44 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		}
 	case runEventToolCall:
 		toolStatus := liveActivityToolCallStatus(event)
-		state.Status = LiveActivityStatusRunning
+		state.Status = firstNonEmptyString([]string{toolStatus.status, LiveActivityStatusRunning})
 		state.Phase = toolStatus.phase
 		state.CurrentAction = toolStatus.action
 		state.CurrentTarget = truncateLiveActivityText(toolStatus.target, 80)
 		state.RequiresApp = toolStatus.requiresApp
-		state.ShowsProgress = true
+		state.ShowsProgress = toolStatus.status != LiveActivityStatusNeedsApp
 		state.LastError = ""
 		state.LastToolName = strings.TrimSpace(event.ToolName)
 		if app := toolStatus.app; app != "" {
 			state.CurrentApp = truncateLiveActivityText(app, 40)
 		}
-		state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
+		stepCandidates := []string{
 			event.Content,
 			toolStatus.step,
 			formatToolStep("Using", event.ToolName),
-		}), 120)
+		}
+		if toolStatus.status == LiveActivityStatusNeedsApp {
+			stepCandidates[0], stepCandidates[1] = stepCandidates[1], stepCandidates[0]
+		}
+		state.CurrentStep = truncateLiveActivityText(firstNonEmptyString(stepCandidates), 120)
 		state.Progress = bumpLiveActivityProgress(state.Progress)
 	case "tool_result":
 		hasError := liveActivityEventHasError(event)
 		state.LastToolName = strings.TrimSpace(event.ToolName)
-		if hasError {
+		if !hasError && strings.EqualFold(strings.TrimSpace(event.ToolName), toolHumanHandoffStep) {
+			state.Status = LiveActivityStatusNeedsApp
+			state.Phase = LiveActivityPhaseWaitingUser
+			state.CurrentAction = "request_user_input"
+			state.CurrentTarget = ""
+			state.RequiresApp = false
+			state.ShowsProgress = false
+			state.LastError = ""
+			state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
+				liveActivityHumanHandoffStep(event.Content),
+				liveActivityHumanHandoffStep(event.ToolInput),
+				"Please take over on the phone",
+			}), 120)
+		} else if hasError {
 			errText := liveActivityEventErrorText(event)
 			state.LastError = truncateLiveActivityText(errText, 160)
 			if liveActivityResultNeedsApp(event, errText) {
@@ -352,10 +369,46 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 }
 
 func (m *LiveActivityManager) CompleteTask(requestID, output string) *LiveActivityState {
+	if state := m.pauseForHumanHandoff(requestID, output); state != nil {
+		return state
+	}
 	return m.finishTask(requestID, LiveActivityStatusCompleted, firstNonEmptyString([]string{
 		truncateLiveActivityText(output, 120),
 		"Completed",
 	}), "")
+}
+
+func (m *LiveActivityManager) pauseForHumanHandoff(requestID, output string) *LiveActivityState {
+	if m == nil || strings.TrimSpace(requestID) == "" {
+		return nil
+	}
+	requestID = strings.TrimSpace(requestID)
+	m.mu.Lock()
+	state, ok := m.states[requestID]
+	if !ok || (state.Phase != LiveActivityPhaseWaitingUser && !strings.EqualFold(state.LastToolName, toolHumanHandoffStep)) {
+		m.mu.Unlock()
+		return nil
+	}
+	state.Status = LiveActivityStatusNeedsApp
+	state.Phase = LiveActivityPhaseWaitingUser
+	state.CurrentAction = "request_user_input"
+	state.CurrentTarget = ""
+	state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
+		output,
+		state.CurrentStep,
+		"Please take over on the phone",
+	}), 120)
+	state.Progress = 0
+	state.ShowsProgress = false
+	state.CanStop = false
+	state.RequiresApp = false
+	state.UpdatedAt = time.Now()
+	state.EndedAt = nil
+	m.states[requestID] = state
+	m.activeRequestID = requestID
+	m.mu.Unlock()
+	m.publish(requestID, false)
+	return &state
 }
 
 func (m *LiveActivityManager) FailTask(requestID, message string) *LiveActivityState {
@@ -678,6 +731,7 @@ func formatToolStep(prefix, tool string) string {
 }
 
 type liveActivityToolStatus struct {
+	status      string
 	phase       string
 	action      string
 	step        string
@@ -767,9 +821,13 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 			status.step = "Sending notification"
 		}
 	case "request_human_handoff":
+		status.status = LiveActivityStatusNeedsApp
 		status.phase = LiveActivityPhaseWaitingUser
 		status.action = "request_user_input"
-		status.step = "Waiting for user input"
+		status.step = firstNonEmptyString([]string{
+			liveActivityHumanHandoffStep(event.ToolInput),
+			"Please take over on the phone",
+		})
 	case "touch_gesture", "mouse_click", "quick_action":
 		status.action = "control_phone"
 	case "mouse_move":
@@ -898,6 +956,18 @@ func liveActivityActionStep(input string, labels map[string]string, fallback str
 		return label
 	}
 	return fallback
+}
+
+func liveActivityHumanHandoffStep(input string) string {
+	payload, ok := liveActivityJSONObject(input)
+	if !ok {
+		return ""
+	}
+	return firstNonEmptyString([]string{
+		liveActivityString(payload, "suggested_action"),
+		liveActivityString(payload, "details"),
+		liveActivityString(payload, "message"),
+	})
 }
 
 func liveActivityTargetFromToolCall(event RunEvent) string {

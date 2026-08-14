@@ -147,6 +147,43 @@ func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
 	}
 }
 
+func TestLiveActivityManagerKeepsHumanHandoffVisible(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager.StartTask("req-handoff", "Complete login")
+
+	state := manager.UpdateFromRunEvent("req-handoff", RunEvent{
+		Type:      runEventToolCall,
+		ToolName:  toolHumanHandoffStep,
+		ToolInput: `{"reason":"verification_code","details":"A verification code is required","suggested_action":"请在手机上输入验证码"}`,
+		Content:   "Waiting for the user to complete verification",
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.Status != LiveActivityStatusNeedsApp || state.Phase != LiveActivityPhaseWaitingUser {
+		t.Fatalf("handoff call state = %#v, want needs_app waiting_user", state)
+	}
+	if state.CurrentStep != "请在手机上输入验证码" || state.CurrentAction != "request_user_input" || state.ShowsProgress {
+		t.Fatalf("handoff call display = %#v, want takeover instructions without progress", state)
+	}
+
+	state = manager.UpdateFromRunEvent("req-handoff", RunEvent{
+		Type:      "tool_result",
+		ToolName:  toolHumanHandoffStep,
+		Content:   `{"status":"HUMAN_HANDOFF_REQUESTED","reason":"verification_code","details":"A verification code is required","suggested_action":"请在手机上输入验证码"}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.Status != LiveActivityStatusNeedsApp || state.Phase != LiveActivityPhaseWaitingUser || state.CurrentStep != "请在手机上输入验证码" {
+		t.Fatalf("handoff result state = %#v, want persistent takeover instructions", state)
+	}
+
+	state = manager.CompleteTask("req-handoff", "请在手机上输入验证码")
+	if state == nil || state.Status != LiveActivityStatusNeedsApp || state.Phase != LiveActivityPhaseWaitingUser {
+		t.Fatalf("handoff completion state = %#v, want paused needs_app", state)
+	}
+	if state.CanStop || state.ShowsProgress || state.EndedAt != nil {
+		t.Fatalf("handoff completion lifecycle = %#v, want paused non-terminal state", state)
+	}
+}
+
 func TestLiveActivityManagerSnapshotActive(t *testing.T) {
 	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
 	manager.StartTask("req-1", "First task")
