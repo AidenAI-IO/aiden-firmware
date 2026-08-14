@@ -67,6 +67,18 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("sandbox-update:", makefile)
         self.assertIn("./scripts/update_docker_sandbox.sh", makefile)
 
+    def test_try_aiden_on_pc_is_the_hardware_free_sandbox_entrypoint(self):
+        guide = read_repo_file("docs/01-getting-started/try-aiden-on-pc.md")
+        readme = read_repo_file("README.md")
+
+        self.assertIn("docker compose up --build", guide)
+        self.assertIn("make sandbox-update", guide)
+        self.assertNotIn("python -m runner webui", guide)
+        self.assertNotIn("docker-sandbox.md", readme)
+        self.assertFalse(
+            (REPO_ROOT / "docs/01-getting-started/docker-sandbox.md").exists()
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

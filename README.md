@@ -105,7 +105,7 @@ At runtime, the Agent is intentionally decoupled from C++ service internals: Fra
 ## Quick Start
 
 For the fastest hardware-free experience, start Config Web and Agent Web with
-the [Docker Sandbox](docs/01-getting-started/docker-sandbox.md):
+the [Try Aiden on PC](docs/01-getting-started/try-aiden-on-pc.md) guide:
 
 ```bash
 docker compose up --build
@@ -114,7 +114,7 @@ docker compose up --build
 Open `http://localhost:8000` for Config Web and `http://localhost:8080` for
 Agent Web. The sandbox can also connect to MobileGym, an ADB target, or another
 compatible environment bridge. For benchmark suites and reports, see
-[Try Aiden on PC](docs/01-getting-started/try-aiden-on-pc.md).
+[Benchmark](docs/09-benchmark/README.md).
 
 First-time hardware users should start with [Newcomer Quickstart](docs/01-getting-started/quickstart.md). It walks through wiring, flashing, Wi-Fi setup, Agent configuration, voice verification, and troubleshooting.
 
@@ -154,7 +154,6 @@ For a locally built image, the usual output path is:
 The full documentation is organized under [docs/](docs/README.md):
 
 - [Documentation Hub](docs/README.md)
-- [Docker Sandbox](docs/01-getting-started/docker-sandbox.md)
 - [Try Aiden on PC](docs/01-getting-started/try-aiden-on-pc.md)
 - [Newcomer Quickstart](docs/01-getting-started/quickstart.md)
 - [Hardware & Wiring](docs/01-getting-started/hardware.md)

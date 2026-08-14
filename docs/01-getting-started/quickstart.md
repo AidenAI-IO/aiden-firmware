@@ -1,12 +1,12 @@
 ---
-sidebar_position: 3
+sidebar_position: 2
 ---
 
 # Newcomer Quickstart
 
 This page is the main path for anyone touching Aiden hardware for the first time. It follows the order **wire up → flash → connect Wi-Fi → configure → run → develop → upgrade → troubleshoot**, stringing the whole onboarding flow into one page. Each step covers only the key action; details are linked to the corresponding topic docs.
 
-> No development board yet? Start with the [Docker Sandbox](docker-sandbox.md)
+> No development board yet? Start with [Try Aiden on PC](try-aiden-on-pc.md)
 > to open Config Web and Agent Web locally, then optionally connect the Agent to
 > MobileGym, an ADB target, or another compatible environment bridge.
 
