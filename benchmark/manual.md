@@ -629,9 +629,10 @@ Agent configuration notes:
   starts a daemon automatically for each concurrent task worker. Here you can use
   `--agent-config path/to/agent.toml` to specify the agent config the benchmark
   uses.
-- `--base-config-dir` defaults to `benchmark/config`; the runner copies this
-  directory into the worker config directory first, preserving the skills, control
-  token template, and other files in it.
+- `--base-config-dir` defaults to `benchmark/config`; the runner copies static
+  configuration assets into the worker config directory. Runtime state such as
+  memory, logs, caches, sessions, and skill state is always created fresh. The
+  static `memory/extraction.yaml` policy is preserved when present.
 - If `--agent-config` is specified, its content is written as the worker's
   `agent.toml`; if not, the runner prefers rendering `agent.toml` from
   `--base-config-dir/agent.toml.template`, then falls back to the default config.

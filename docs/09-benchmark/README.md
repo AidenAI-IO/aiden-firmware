@@ -16,15 +16,28 @@ For the full manual, see [`benchmark/manual.md`](../../benchmark/manual.md).
 
 ## Quick Start
 
-### Existing Agent
+### Dedicated Agent
+
+Start a benchmark daemon first. `start-agent-daemon` creates a dedicated config
+directory under `runs/cli-services`, copies only static configuration from
+`config`, and starts the daemon with fresh memory and other runtime state. Reusing
+a normal agent daemon would reuse its persistent state.
 
 ```bash
 cd benchmark
 uv sync
+
+uv run python -m runner start-agent-daemon \
+  --name memory-quickstart \
+  --port 18081 \
+  --base-config-dir config
+
 uv run python -m runner run \
   --suite suites/memory_v1.json \
-  --agent-url http://192.168.1.100:8080
+  --agent-url http://127.0.0.1:18081
 ```
+
+Use the `stop_command` printed by `start-agent-daemon` when the run is complete.
 
 ### WebUI
 
