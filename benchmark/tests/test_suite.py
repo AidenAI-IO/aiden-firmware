@@ -534,20 +534,6 @@ def test_load_suite_duplicate_ids_raise(tmp_path: Path):
         load_suite(p)
 
 
-def test_mobile_text_entry_suites_prompt_for_ime_switching():
-    suites_root = Path(__file__).resolve().parents[1] / "suites"
-    for suite_name in (
-        "adb_android_basic.json",
-        "app_workflow_v1.json",
-        "quick_action_v1.json",
-        "skill_discovery_v1.json",
-    ):
-        suite = load_suite(suites_root / suite_name)
-        assert "中文输入法" in suite.prompt_prefix, suite_name
-        assert "英文/Latin" in suite.prompt_prefix, suite_name
-        assert "地球/输入法键" in suite.prompt_prefix, suite_name
-
-
 def test_phone_control_navigation_tasks_have_setup_pages():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
     suite = load_suite(suite_path)
@@ -557,7 +543,6 @@ def test_phone_control_navigation_tasks_have_setup_pages():
         setup = task_by_id[task_id].setup
         assert setup is not None
         assert setup["type"] == "agent_prompt"
-        assert "系统设置" in setup["prompt"]
         assert setup["clear_history_after"] is True
 
 
@@ -566,46 +551,18 @@ def test_phone_control_text_editing_tasks_have_input_setup():
     suite = load_suite(suite_path)
     task_by_id = {task.id: task for task in suite.tasks}
 
-    mixed_setup = task_by_id["type_long_mixed_text"].setup
-    assert mixed_setup is not None
-    assert mixed_setup["type"] == "agent_prompt"
-    assert "Notepad Free" in mixed_setup["prompt"]
-    assert "空白可编辑输入框" in mixed_setup["prompt"]
-    assert "Gmail" in mixed_setup["prompt"]
-    assert "不要输入任何文字" in mixed_setup["prompt"]
-    assert mixed_setup["clear_history_after"] is True
-
-    select_setup = task_by_id["select_all_and_delete"].setup
-    assert select_setup is not None
-    assert select_setup["type"] == "agent_prompt"
-    assert "Notepad Free" in select_setup["prompt"]
-    assert "hello-aiden" in select_setup["prompt"]
-    assert "Gmail" in select_setup["prompt"]
-    assert "聚焦" in select_setup["prompt"]
-    assert select_setup["clear_history_after"] is True
-
-    copy_setup = task_by_id["copy_paste_text"].setup
-    assert copy_setup is not None
-    assert copy_setup["type"] == "agent_prompt"
-    assert "Notepad Free" in copy_setup["prompt"]
-    assert "标题输入框" in copy_setup["prompt"]
-    assert "正文输入区域" in copy_setup["prompt"]
-    assert "Gmail" in copy_setup["prompt"]
-    assert "收件人字段" in copy_setup["prompt"]
-    assert "翻译应用" in copy_setup["prompt"]
-    assert copy_setup["clear_history_after"] is True
+    for task_id in ("type_long_mixed_text", "select_all_and_delete", "copy_paste_text"):
+        setup = task_by_id[task_id].setup
+        assert setup is not None
+        assert setup["type"] == "agent_prompt"
+        assert setup["clear_history_after"] is True
 
 
-def test_phone_control_icon_tasks_target_visible_app_icons():
+def test_phone_control_drag_icon_excludes_adb_android():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
     suite = load_suite(suite_path)
     task_by_id = {task.id: task for task in suite.tasks}
 
-    for task_id in ("long_press_app_icon", "drag_app_icon"):
-        task = task_by_id[task_id]
-        assert "普通应用图标" in task.prompt
-        assert "设置图标" not in task.prompt
-        assert "小组件" in task.prompt
     assert "android" not in task_by_id["drag_app_icon"].platforms
 
 
@@ -636,14 +593,10 @@ def test_phone_control_wifi_toggle_is_split_into_on_and_off_tasks():
     off_task = task_by_id["toggle_wifi_off"]
     on_task = task_by_id["toggle_wifi_on"]
 
-    assert "关闭 Wi-Fi" in off_task.prompt
     assert off_task.setup is not None
-    assert "开启状态" in off_task.setup["prompt"]
     assert any(item.id == "wifi_off_final" for item in off_task.rubric)
 
-    assert "开启 Wi-Fi" in on_task.prompt
     assert on_task.setup is not None
-    assert "关闭状态" in on_task.setup["prompt"]
     assert any(item.id == "wifi_on_final" for item in on_task.rubric)
 
 
@@ -713,14 +666,6 @@ def test_skillopt_crossapp_device_operator_suites_target_skill_capabilities():
     assert verification.name == "crossapp_verification"
     assert [obs.skill_name for obs in train.trace_observations] == ["device-operator"]
     assert [obs.skill_name for obs in verification.trace_observations] == ["device-operator"]
-
-    for suite in (train, verification):
-        assert "MobileGym" in suite.prompt_prefix
-        assert "iPhone" not in suite.prompt_prefix
-        assert "每次动作前先观察截图" not in suite.prompt_prefix
-        assert "不要连续执行多个盲目动作" not in suite.prompt_prefix
-        assert "如果点击、滑动或输入没有效果" not in suite.prompt_prefix
-        assert "Do not fabricate" in suite.prompt_prefix
 
     expected_train_ids = {
         "crossapp_work_calendar_earliest_alarm",

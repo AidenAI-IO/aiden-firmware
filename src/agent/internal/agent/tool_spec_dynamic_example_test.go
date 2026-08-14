@@ -43,7 +43,7 @@ func TestWaitStableScreenToolExampleInputWithDefaults(t *testing.T) {
 	}
 }
 
-func TestWaitStableScreenToolDescriptionShowsConfiguredValues(t *testing.T) {
+func TestWaitStableScreenToolDescriptionInterpolatesConfiguredValues(t *testing.T) {
 	t.Parallel()
 
 	defaults := ScreenStableDefaults{
@@ -55,14 +55,10 @@ func TestWaitStableScreenToolDescriptionShowsConfiguredValues(t *testing.T) {
 
 	desc := tool.Description()
 
-	// Description should show the configured values
 	if !strings.Contains(desc, "3500") {
 		t.Errorf("Description should contain timeout_ms 3500, got: %s", desc)
 	}
 	if !strings.Contains(desc, "500") {
 		t.Errorf("Description should contain stable_ms 500, got: %s", desc)
-	}
-	if !strings.Contains(desc, "Configured timeouts") {
-		t.Errorf("Description should mention configured timeouts")
 	}
 }

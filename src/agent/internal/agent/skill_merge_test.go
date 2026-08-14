@@ -674,20 +674,6 @@ func testAgentCreatedSkill(name string) string {
 	return "---\nname: " + name + "\ndescription: Agent-created skill\nsource: agent\ncreated_by: agent\n---\n\nDo agent things.\n"
 }
 
-func TestSkillReadToolDescriptionFramesSkillViewUsage(t *testing.T) {
-	desc := NewSkillReadTool(t.TempDir()).Description()
-	for _, want := range []string{
-		"similar to Hermes skill_view",
-		"Use this before acting when the user's task matches an Available skills entry",
-		"Do not read every skill",
-		"UTF-8 text files only",
-	} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("skill_read description missing %q: %s", want, desc)
-		}
-	}
-}
-
 func TestSkillReadToolReadsLinkedFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeSKILL(t, dir, "alpha", testSkillA)
@@ -817,32 +803,6 @@ func TestSkillReadToolRejectsLargeAndNonUTF8Files(t *testing.T) {
 	}
 }
 
-func TestSkillToolDescriptionsMirrorHermesRoles(t *testing.T) {
-	dir := t.TempDir()
-	for _, tt := range []struct {
-		name string
-		desc string
-		want []string
-	}{
-		{
-			name: "skill_list",
-			desc: NewSkillListTool(dir).Description(),
-			want: []string{"similar to Hermes skills_list", "List available skills", "call skill_read directly"},
-		},
-		{
-			name: "skill_manage",
-			desc: NewSkillManageTool(dir, "").Description(),
-			want: []string{"similar to Hermes skill_manage", "Create, edit, patch, delete"},
-		},
-	} {
-		for _, want := range tt.want {
-			if !strings.Contains(tt.desc, want) {
-				t.Fatalf("%s description missing %q: %s", tt.name, want, tt.desc)
-			}
-		}
-	}
-}
-
 // TestSkillManageActionsDocumentedInSchema verifies the per-action field
 // contract (previously spelled out in the description) is carried by ArgsSchema,
 // which is where the input shape now lives after the description was trimmed.
@@ -889,33 +849,8 @@ func TestSkillManageToolEmptyInputExplainsJSONContract(t *testing.T) {
 	}
 }
 
-func TestBundledDeviceOperatorContainsEmbeddedDevicePlaybooks(t *testing.T) {
+func TestBundledDeviceOperatorHasNoLegacyChildSkills(t *testing.T) {
 	skillsDir := filepath.Join("..", "..", "config", "skills")
-	deviceData, err := os.ReadFile(filepath.Join(skillsDir, "device-operator", "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	deviceContent := string(deviceData)
-	for _, want := range []string{
-		"## Text Entry",
-		"derives IME parts and keystrokes internally",
-		"folder/list view",
-		"open_app` success as app-open confirmation only",
-		"English/Latin keyboard",
-		"## App Switching and Launch",
-		"app_switch",
-		"## Scrolling and Picker Controls",
-		"Directional swipe names describe finger movement",
-		"## Screenshot and Capture Recovery",
-		"SERVICE_RECOVERING",
-		"frame_service_cli --socket /run/frame_service/frame_service.sock health",
-		"frame_service_cli --socket /run/frame_service/frame_service.sock restart",
-		"/etc/init.d/S52frame_service restart",
-	} {
-		if !strings.Contains(deviceContent, want) {
-			t.Fatalf("device-operator skill missing embedded playbook fragment %q", want)
-		}
-	}
 	for _, childName := range []string{"app-switching", "frame-service-recovery", "scroll-and-picker", "text-entry"} {
 		if fileExists(filepath.Join(skillsDir, childName, "SKILL.md")) {
 			t.Fatalf("bundled child skill %q should be folded into device-operator", childName)

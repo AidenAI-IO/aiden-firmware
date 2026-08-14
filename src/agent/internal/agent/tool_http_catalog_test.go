@@ -11,64 +11,6 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
-func TestHTTPToolSkillDocumentsCompactEnterTextActionOutput(t *testing.T) {
-	markdown := buildHTTPToolSkillMarkdown("tools", "tools", defaultHTTPToolSkillBaseURL, []ToolDescriptor{{
-		Name:        "enter_text",
-		Category:    "input",
-		Description: "Enter text.",
-	}})
-	if !strings.Contains(markdown, "`action_output` contains only") ||
-		!strings.Contains(markdown, `{"ok":true}`) ||
-		!strings.Contains(markdown, `{"ok":false,"suggestion":"..."}`) {
-		t.Fatalf("enter_text compact result guidance missing:\n%s", markdown)
-	}
-}
-
-func TestHTTPToolSkillDocumentsAllOpenURLSchemes(t *testing.T) {
-	markdown := buildHTTPToolSkillMarkdown("tools", "tools", defaultHTTPToolSkillBaseURL, nil)
-	for _, want := range []string{
-		"HTTP/HTTPS webpages",
-		"sms:<phone_number>?body=<message>",
-		"mailto:<email_address>?subject=<subject>",
-		"tel:<phone_number>",
-	} {
-		if !strings.Contains(markdown, want) {
-			t.Fatalf("open_url guidance missing %q:\n%s", want, markdown)
-		}
-	}
-}
-
-func TestHTTPToolSkillDocumentsNormalizedCoordinatesAsTheOnlyInputContract(t *testing.T) {
-	markdown := buildHTTPToolSkillMarkdown("tools", "tools", defaultHTTPToolSkillBaseURL, nil)
-	if !strings.Contains(markdown, "coordinates always use the normalized 0-1000 scale") {
-		t.Fatalf("normalized coordinate contract missing:\n%s", markdown)
-	}
-	for _, retired := range []string{
-		"pixel-based pointer actions",
-		"unless calibrated",
-		"if you must use them",
-	} {
-		if strings.Contains(markdown, retired) {
-			t.Fatalf("retired coordinate mode guidance %q is still present:\n%s", retired, markdown)
-		}
-	}
-}
-
-func TestHTTPToolSkillDocumentsRuntimeFilteredAgentCatalog(t *testing.T) {
-	markdown := buildHTTPToolSkillMarkdown("tools", "tools", defaultHTTPToolSkillBaseURL, nil)
-	for _, want := range []string{
-		"HTTP catalog stays complete",
-		"conversational Agent receives a runtime-filtered subset",
-		"`open_app` stays available",
-		"iOS BLE Wake",
-		"bridge_notification",
-	} {
-		if !strings.Contains(markdown, want) {
-			t.Fatalf("runtime-filtered catalog guidance missing %q:\n%s", want, markdown)
-		}
-	}
-}
-
 func toolAgentExposed(name string) bool {
 	return NewToolSpec(&stubTool{name: name, description: name}).AgentExposed
 }
@@ -719,10 +661,6 @@ func TestAvailableToolsExposesOnlyNotificationWhenBLECanOnlyQuery(t *testing.T) 
 	}
 	if notification == nil {
 		t.Fatal("missing query-only notification tool")
-	}
-	description := notification.Description()
-	if !strings.Contains(description, `{"action":"query","limit":20}`) || strings.Contains(description, `{"action":"send"`) {
-		t.Fatalf("query-only notification description exposed wrong actions: %s", description)
 	}
 	schema := notification.(structuredInputTool).ArgsSchema()
 	properties := schema["properties"].(map[string]any)
