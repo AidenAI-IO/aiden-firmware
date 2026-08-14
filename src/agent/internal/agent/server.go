@@ -23,6 +23,7 @@ import (
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 
+	"aiden-agent/internal/agent/screenprovider"
 	"aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/tts"
 	_ "aiden-agent/internal/agent/tts/adapters/alicloud"
@@ -67,7 +68,7 @@ type Server struct {
 	audioClient             *AudioServiceClient
 	ttsPlaybackBackend      tts.AudioServiceBackend
 	screenCaptureMu         sync.Mutex
-	screenCaptureClient     *ScreenCaptureClient
+	screenCaptureClient     screenprovider.Provider
 	recordMu                sync.Mutex
 	webRecording            *webAudioRecording
 	sttConfigTestSession    *sttConfigTestLiveSession
@@ -389,7 +390,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		userFilesSkillsDir:      filepath.Join(userFilesBaseDir, "skills"),
 		userFilesSkillStateDir:  filepath.Join(userFilesBaseDir, "skill-state"),
 		history:                 make([]Message, 0),
-		screenCaptureClient:     NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
+		screenCaptureClient:     screenProviderFromRuntime(runtime),
 		bridge:                  runtime.PhoneBridge(),
 		bleSocketPath:           configuredBLEServiceSocketPath(),
 		bleStatusRequest:        ble.RequestStatus,
@@ -493,7 +494,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
-	mux.HandleFunc("/api/screen", s.handleScreen)
+	mux.HandleFunc("/api/providers/screenshot", s.handleProviderScreenshot)
 	mux.HandleFunc("/api/concurrent", s.handleConcurrent)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
@@ -523,10 +524,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/storage/monitor/status", s.handleStorageMonitorStatus)
 	mux.HandleFunc("/api/storage/cleanup", s.handleStorageCleanup)
 
-	// Coordinate debug tool and its screenshot feed. Exposes live screen data,
-	// so it is intentionally available on all listen addresses (including the
-	// 0.0.0.0:8080 web UI) per deployment requirement.
-	mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
+	// Coordinate debug tool. Live frames come from POST /api/providers/screenshot.
 	mux.HandleFunc("/api/coordinate-debug/tap", s.handleCoordinateDebugTap)
 	mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
 	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
@@ -2498,42 +2496,8 @@ func (s *Server) authorizeBenchmarkRequest(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(supplied), []byte(expected)) == 1
 }
 
-func (s *Server) handleScreen(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	spec, ok := s.lookupOwnedToolSpec("screenshot")
-	if !ok {
-		http.Error(w, "screenshot tool not available", http.StatusNotFound)
-		return
-	}
-	execution := executeToolCall(r.Context(), ToolCallExecution{
-		Specs:  NewToolSpecs([]langtools.Tool{spec.Tool}),
-		Action: schema.AgentAction{Tool: spec.Name, ToolInput: "{}"},
-	})
-	if execution.Error != nil {
-		http.Error(w, execution.Error.Error(), http.StatusInternalServerError)
-		return
-	}
-	if execution.Result.IsError() {
-		http.Error(w, execution.Result.Output, http.StatusInternalServerError)
-		return
-	}
-	var screenshot any
-	if err := json.Unmarshal([]byte(execution.Result.Output), &screenshot); err != nil {
-		http.Error(w, "invalid screenshot payload: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"ok": true,
-		"data": map[string]any{
-			"status":     "running",
-			"screenshot": screenshot,
-		},
-	})
+func (s *Server) handleProviderScreenshot(w http.ResponseWriter, r *http.Request) {
+	screenprovider.HandleHTTP(w, r, s.coordinateDebugCaptureClient())
 }
 
 func (s *Server) handleConcurrent(w http.ResponseWriter, r *http.Request) {
@@ -3104,7 +3068,7 @@ const httpToolExecutionTimeout = 5 * time.Minute
 func httpToolExecutionSurvivesClientDisconnect(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
 	case "keyboard_tap", "quick_action", toolOpenApp, toolSearchLaunchApp, "enter_text",
-		"mouse_click", "mouse_move",
+		"mouse_move",
 		"mouse_scroll", "run_script", "touch_gesture", "wheel_nudge":
 		return true
 	default:

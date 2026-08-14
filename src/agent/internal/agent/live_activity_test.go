@@ -402,6 +402,7 @@ func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
 		runtime: &Runtime{
 			config: Config{
 				LiveActivity: LiveActivityConfig{BoardID: "board-1"},
+				Device:       DeviceConfig{DeviceType: "Android"},
 			},
 		},
 	}
@@ -413,14 +414,23 @@ func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status code = %d, want 200", rec.Code)
 	}
-	var status PhoneBridgeStatus
-	if err := json.NewDecoder(rec.Body).Decode(&status); err != nil {
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if status.BoardID != "board-1" {
-		t.Fatalf("board_id = %q, want board-1", status.BoardID)
+	if payload["board_id"] != "board-1" {
+		t.Fatalf("board_id = %q, want board-1", payload["board_id"])
 	}
-	if status.Connected {
+	if payload["device_type"] != "Android" {
+		t.Fatalf("device_type = %q, want Android", payload["device_type"])
+	}
+	if payload["pointer_mode"] != "touchscreen" {
+		t.Fatalf("pointer_mode = %q, want touchscreen", payload["pointer_mode"])
+	}
+	if _, ok := payload["target_platform"]; ok {
+		t.Fatalf("target_platform must not be exposed: %#v", payload)
+	}
+	if connected, _ := payload["connected"].(bool); connected {
 		t.Fatalf("connected = true, want false")
 	}
 }

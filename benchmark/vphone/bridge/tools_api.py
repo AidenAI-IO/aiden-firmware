@@ -45,7 +45,7 @@ class VPhoneToolsAPIHandler:
     def __init__(
         self,
         state: VPhoneBridgeState,
-        request_timeout_sec: float = 120,
+        request_timeout_sec: float = 30,
         action_settle_sec: float = DEFAULT_ACTION_SETTLE_SEC,
     ):
         self.state = state
@@ -79,11 +79,6 @@ class VPhoneToolsAPIHandler:
             "required": ["x", "y"],
         }
         tools: list[dict[str, Any]] = [
-            {
-                "name": "screenshot",
-                "description": "Capture the current iOS VM screen as a scaled JPEG. Coordinates should use normalized 0-1000 space.",
-                "args_schema": {"type": "object", "properties": {}, "additionalProperties": False},
-            },
             {
                 "name": "touch_gesture",
                 "description": "Perform an iOS touch gesture using normalized 0-1000 coordinates.",
@@ -122,15 +117,6 @@ class VPhoneToolsAPIHandler:
                 },
             },
             {
-                "name": "mouse_click",
-                "description": "Tap the iOS VM using normalized 0-1000 coordinates.",
-                "args_schema": {
-                    "type": "object", "additionalProperties": False,
-                    "properties": {**coordinate_properties, "button": {"type": "string"}},
-                    "required": ["x", "y"],
-                },
-            },
-            {
                 "name": "mouse_move",
                 "description": "Validate a point and return a screenshot; iOS has no hover state.",
                 "args_schema": {
@@ -155,12 +141,14 @@ class VPhoneToolsAPIHandler:
                     "type": "object", "additionalProperties": False,
                     "properties": {
                         "action": {"type": "string"},
-                        "platform": {"type": "string", "enum": ["ios"]},
                         "list": {"type": "boolean"},
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
                     },
-                    "required": ["platform"],
+                    "anyOf": [
+                        {"required": ["action"]},
+                        {"required": ["list"], "properties": {"list": {"const": True}}},
+                    ],
                 },
             },
         ]
@@ -297,16 +285,14 @@ class VPhoneToolsAPIHandler:
         return payload
 
     def _submit_tool_call(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
-        unknown = _unknown_coordinate_tool_fields(tool_name, tool_input)
+        unknown = _unknown_tool_fields(tool_name, tool_input)
         if unknown:
             return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
         dispatch: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-            "screenshot": lambda _: self._call_screenshot(),
             "touch_gesture": self._call_touch_gesture,
             "keyboard_text": self._call_keyboard_text,
             "keyboard_tap": self._call_keyboard_tap,
             "enter_text": self._call_enter_text,
-            "mouse_click": self._call_mouse_click,
             "mouse_move": self._call_mouse_move,
             "mouse_scroll": self._call_mouse_scroll,
             "quick_action": self._call_quick_action,
@@ -315,11 +301,6 @@ class VPhoneToolsAPIHandler:
         if fn is None:
             return {"output": f"unknown tool: {tool_name}", "is_error": True, "error": "unknown_tool"}
         return fn(tool_input)
-
-    def _call_screenshot(self) -> dict[str, Any]:
-        with self.state.lock:
-            screenshot = self._capture_screenshot()
-        return {"output": json.dumps(screenshot), "is_error": False}
 
     def _call_touch_gesture(
         self,
@@ -394,20 +375,6 @@ class VPhoneToolsAPIHandler:
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         return {"output": f"error: unsupported gesture type: {gesture_type}", "is_error": True}
-
-    def _call_mouse_click(self, tool_input: dict[str, Any]) -> dict[str, Any]:
-        button = str(tool_input.get("button", "left") or "left").strip().lower()
-        if button not in {"", "left", "right", "middle"}:
-            return {"output": f"error: unsupported mouse button: {button!r}", "is_error": True}
-        try:
-            point = _normalized_point_arg(tool_input)
-            width, height = self.state.device.screen_size()
-            x, y = _to_pixels(point, width, height)
-        except (TypeError, ValueError) as exc:
-            return {"output": f"error: {exc}", "is_error": True}
-        return self._execute_device(
-            lambda: self.state.device.tap(x, y), "mouse_click", tool_input, f"tap {x} {y}"
-        )
 
     def _call_mouse_move(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -552,9 +519,6 @@ class VPhoneToolsAPIHandler:
         return {"output": json.dumps({"ok": True}), "is_error": False}
 
     def _call_quick_action(self, tool_input: dict[str, Any]) -> dict[str, Any]:
-        platform = str(tool_input.get("platform", "") or "").strip().lower()
-        if platform != "ios":
-            return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}; expected 'ios'", "is_error": True}
         action = _quick_action_id(tool_input)
         if bool(tool_input.get("list")) or action == "list":
             keyboard_available = "keyboard" in self.state.device.capabilities()
@@ -744,15 +708,15 @@ def _normalized_point_arg(
     return point
 
 
-def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
     allowed = {
         "touch_gesture": {
             "type", "point", "start", "end", "x", "y", "start_x", "start_y",
             "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
             "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
         },
-        "mouse_click": {"x", "y", "button"},
         "mouse_move": {"x", "y"},
+        "quick_action": {"action", "list", "alternative", "alternative_index"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)
 

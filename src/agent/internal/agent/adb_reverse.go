@@ -17,11 +17,11 @@ func EnsureADBReverse(ctx context.Context, devicePort, hostPort string) error {
 	}
 
 	client := NewADBScreenClient()
-	adbPath, err := client.adbPath()
+	adbPath, err := client.ADBPath()
 	if err != nil {
 		return err
 	}
-	serial, err := client.resolveSerial(ctx, adbPath)
+	serial, err := client.ResolveSerial(ctx, adbPath)
 	if err != nil {
 		return err
 	}

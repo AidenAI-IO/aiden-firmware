@@ -159,7 +159,7 @@ When judge is enabled, SkillOpt delegates task scoring to benchmark judge. For
 bridge-backed runs, judge input is benchmark evidence:
 
 - task prompt and rubric
-- pre/post screenshots from environment bridge `/api/screen`
+- pre/post screenshots from environment bridge `POST /api/providers/screenshot`
 - structured tool trace from agent history
 - final response
 

@@ -11,9 +11,9 @@
       "description_for_judge": "Notes is already open. Query Biden and enter the returned number without reopening or searching for Notes.",
       "prompt": "测试环境状态：当前已经位于 Apple 备忘录的空白编辑页，正文输入区域中心约为 normalized x=500、y=360。Aiden 在后台，iOS PiP Bridge 已开启。查询通讯录中 Biden 的手机号，直接调用 enter_text 把查询到的手机号写进当前备忘录；不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app。",
       "mock_environment": {
+        "platform": "ios",
         "phone_bridge": {
           "connected": false,
-          "platform": "ios",
           "phone_id": "benchmark-ios-pip-notes-open",
           "app_state": "background",
           "return_entry": "dynamic_island",
@@ -64,12 +64,12 @@
     {
       "id": "ios_pip_notes_icon_visible",
       "category": "multi_step",
-      "description_for_judge": "The Notes icon is directly visible. Query Biden, click the icon, and enter the returned number without searching.",
-      "prompt": "测试环境状态：当前是 iPhone 主界面，Apple 备忘录图标清晰可见，中心为 normalized x=180、y=310。Aiden 在后台，iOS PiP Bridge 已开启。查询 Biden 的手机号，直接调用 mouse_click 点击该坐标进入备忘录，再调用 enter_text 写入号码；不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app。",
+      "description_for_judge": "The Notes icon is directly visible. Query Biden, tap the icon using object-form point coordinates, and enter the returned number without searching.",
+      "prompt": "测试环境状态：当前是 iPhone 主界面，Apple 备忘录图标清晰可见，中心为 normalized x=180、y=310。Aiden 在后台，iOS PiP Bridge 已开启。查询 Biden 的手机号，严格调用 {\"type\":\"tap\",\"point\":{\"x\":180,\"y\":310}} 进入备忘录；必须使用 point 对象，不要使用 point 数组或顶层 x/y。随后调用 enter_text 写入号码；不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app。",
       "mock_environment": {
+        "platform": "ios",
         "phone_bridge": {
           "connected": false,
-          "platform": "ios",
           "phone_id": "benchmark-ios-pip-notes-icon",
           "app_state": "background",
           "return_entry": "dynamic_island",
@@ -86,8 +86,8 @@
               "contacts": [{"id": "biden", "name": "Biden", "phone_numbers": ["+1 202-555-0147"]}]
             }
           },
-          "mouse_click": {
-            "input_contains": {"x": 180, "y": 310},
+          "touch_gesture": {
+            "input_contains": {"type": "tap", "point": {"x": 180, "y": 310}},
             "screen_contains": "Apple Notes icon",
             "output": {"ok": true, "clicked": true},
             "screen_text": "Apple Notes is open on a blank note editor around normalized x=500, y=360."
@@ -105,18 +105,18 @@
       },
       "rubric": [
         {"id": "queried_contact", "check": "Calls bridge_contacts with action=query and query=Biden."},
-        {"id": "clicked_visible_icon", "check": "Clicks normalized x=180, y=310 and does not search for Notes."},
+        {"id": "clicked_visible_icon", "check": "Calls touch_gesture with type=tap and object-form point={x:180,y:310}, and does not search for Notes."},
         {"id": "entered_number", "check": "Calls enter_text with the returned number."}
       ],
       "hard_assertions": {
         "min_tool_calls": 3,
         "max_tool_calls": 10,
         "must_complete_within_sec": 180,
-        "required_tools": ["bridge_contacts", "mouse_click", "enter_text"],
+        "required_tools": ["bridge_contacts", "touch_gesture", "enter_text"],
         "forbidden_tools": ["search_launch_app", "bridge_open_app", "bridge_clipboard"],
         "required_tool_calls": [
           {"tool": "bridge_contacts", "input_contains": {"action": "query", "query": "Biden"}},
-          {"tool": "mouse_click", "input_contains": {"x": 180, "y": 310}},
+          {"tool": "touch_gesture", "input_contains": {"type": "tap", "point": {"x": 180, "y": 310}}},
           {"tool": "enter_text", "input_contains": {"text": {"$contains": "+1 202-555-0147"}}}
         ]
       }
@@ -127,9 +127,9 @@
       "description_for_judge": "Neither Notes nor its icon is visible. Query Biden, use search_launch_app, and enter the returned number.",
       "prompt": "测试环境状态：当前是 iPhone 主界面，画面中没有打开的备忘录，也看不到备忘录图标。Aiden 在后台，iOS PiP Bridge 已开启。查询 Biden 的手机号，调用 search_launch_app 进入备忘录，再直接调用 enter_text 写入包含完整原始号码的内容；不要调用 bridge_clipboard 或 bridge_open_app。",
       "mock_environment": {
+        "platform": "ios",
         "phone_bridge": {
           "connected": false,
-          "platform": "ios",
           "phone_id": "benchmark-ios-pip-notes-missing",
           "app_state": "background",
           "return_entry": "dynamic_island",

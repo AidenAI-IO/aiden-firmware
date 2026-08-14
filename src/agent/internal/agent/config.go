@@ -661,6 +661,21 @@ func (c Config) HIDConfigForDevice() HIDConfig {
 	return hid
 }
 
+// OverrideDeviceType applies a process-local device type override and derives
+// dependent device settings from the canonical value.
+func (c *Config) OverrideDeviceType(value string) error {
+	if c == nil {
+		return errors.New("cannot override device type on nil config")
+	}
+	deviceType, ok := normalizeDeviceType(value)
+	if !ok {
+		return fmt.Errorf("invalid device type override: %s (expected iOS, Android, macOS, windows, or linux)", value)
+	}
+	c.Device.DeviceType = deviceType
+	c.HID.PointerMode = DeviceConfig{DeviceType: deviceType}.PointerModeOrDefault()
+	return nil
+}
+
 func (h HIDConfig) KeyboardDeviceOrDefault() string {
 	if h.KeyboardDevice != "" {
 		return h.KeyboardDevice
@@ -723,7 +738,7 @@ func (h HIDConfig) InputBackendADB() bool {
 type ModelConfig struct {
 	Provider string `toml:"provider"`
 	Model    string `toml:"model"`
-	BaseURL  string `toml:"base_url,omitempty"`
+	BaseURL  string `toml:"-"`
 	APIKey   string `toml:"api_key,omitempty"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
@@ -868,11 +883,8 @@ func LoadRuntimeConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 
-	// base_url is honored for providers whose model builders accept an
-	// OpenAI-compatible endpoint override. Drop stray overrides elsewhere to
-	// keep runtime behavior consistent with the config web UI. Applies to a
-	// base_url inherited from a [model_providers] section as well as one set
-	// directly on the model.
+	// base_url belongs to [model_providers.*]. Drop provider-record values for
+	// provider types whose model builders pin their own endpoint.
 	clearNonAllowedModelBaseURL(&cfg.Model)
 
 	applyRuntimeModelTemperatureDefaults(&cfg)
@@ -890,7 +902,8 @@ func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
 	if cfg == nil {
 		return
 	}
-	if !metadata.IsDefined("device", "device_type") || strings.TrimSpace(cfg.Device.DeviceType) == "" {
+	deviceTypeConfigured := metadata.IsDefined("device", "device_type") && strings.TrimSpace(cfg.Device.DeviceType) != ""
+	if !deviceTypeConfigured {
 		cfg.Device.DeviceType = inferredDeviceTypeFromLegacyConfig(cfg.HID, cfg.DefaultPlatform)
 	} else if deviceType, ok := normalizeDeviceType(cfg.Device.DeviceType); ok {
 		cfg.Device.DeviceType = deviceType
@@ -997,13 +1010,12 @@ func applyProviderToModel(provider ModelProvider, originalRef string, m *ModelCo
 	// Replace the reference with the actual provider type
 	m.Provider = providerType
 
-	// Apply provider's configuration if not overridden in model config
+	// api_key may be overridden on [model]. base_url belongs to the selected
+	// provider record so switching providers also switches the endpoint.
 	if m.APIKey == "" && provider.APIKey != "" {
 		m.APIKey = provider.APIKey
 	}
-	if m.BaseURL == "" && provider.BaseURL != "" {
-		m.BaseURL = provider.BaseURL
-	}
+	m.BaseURL = provider.BaseURL
 
 	return nil
 }

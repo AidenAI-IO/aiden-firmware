@@ -34,6 +34,26 @@ AIDEN_BLE_SERVICE_SOCKET="$(
 )"
 export AIDEN_BLE_SERVICE_SOCKET
 
+# aiden-env-run loads the same fixed Python environment used by login shells.
+# Keep directory creation out of profile.d so opening a shell never mutates the
+# filesystem. The Go runtime validates these paths again before using them.
+prepare_managed_python_directories() {
+    python_userbase=/userdata/agent/python
+    python_tmp=/userdata/tmp
+
+    for path in "$python_userbase" "$python_tmp"; do
+        if [ -L "$path" ] || { [ -e "$path" ] && [ ! -d "$path" ]; }; then
+            return 1
+        fi
+    done
+
+    mkdir -p "$python_userbase" "$python_tmp" || return 1
+    [ ! -L "$python_userbase" ] && [ -d "$python_userbase" ] || return 1
+    [ ! -L "$python_tmp" ] && [ -d "$python_tmp" ] || return 1
+    chmod 0755 "$python_userbase" || return 1
+    chmod 1777 "$python_tmp" || return 1
+}
+
 supervisor_log() {
     level="$1"
     event="$2"
@@ -151,6 +171,10 @@ start() {
 
     mkdir -p "$(dirname "$PID_FILE")" "$(dirname "$LOG_PATH")" "$CONFIG_DIR"
     chmod 0755 "$(dirname "$PID_FILE")" "$(dirname "$LOG_PATH")"
+    if ! prepare_managed_python_directories; then
+        supervisor_log WARN python_environment_unavailable \
+            "could not prepare /userdata/agent/python and /userdata/tmp"
+    fi
 
     (
         trap '' HUP

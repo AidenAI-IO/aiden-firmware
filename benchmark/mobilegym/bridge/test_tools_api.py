@@ -80,21 +80,16 @@ def test_get_tools_catalog(bridge_server):
 
     assert "tools" in data
     tools = {tool["name"]: tool for tool in data["tools"]}
-    assert "screenshot" in tools
+    assert "screenshot" not in tools
     assert "touch_gesture" in tools
     assert "keyboard_text" in tools
     assert "keyboard_tap" in tools
     assert "enter_text" in tools
-    assert "mouse_click" in tools
+    assert "mouse_click" not in tools
     assert "mouse_move" in tools
     assert "mouse_scroll" in tools
     assert "quick_action" in tools
 
-    # Verify tool structure
-    screenshot_tool = tools["screenshot"]
-    assert "description" in screenshot_tool
-    assert "args_schema" in screenshot_tool
-    assert screenshot_tool["args_schema"]["additionalProperties"] is False
     assert tools["touch_gesture"]["args_schema"]["additionalProperties"] is False
     touch_props = tools["touch_gesture"]["args_schema"]["properties"]
     assert touch_props["point"]["additionalProperties"] is False
@@ -123,33 +118,30 @@ def test_get_tools_catalog(bridge_server):
     assert enter_text_props["focus"]["additionalProperties"] is False
     assert "coord_space" not in enter_text_props["focus"]["properties"]
 
-    mouse_click_props = tools["mouse_click"]["args_schema"]["properties"]
-    assert tools["mouse_click"]["args_schema"]["additionalProperties"] is False
     assert tools["mouse_move"]["args_schema"]["additionalProperties"] is False
     assert tools["mouse_scroll"]["args_schema"]["additionalProperties"] is False
-    assert mouse_click_props["button"]["enum"] == ["left", "right", "middle"]
-    assert "coord_space" not in mouse_click_props
     assert "coord_space" not in tools["mouse_move"]["args_schema"]["properties"]
     assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["minimum"] == -127
     assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["maximum"] == 127
 
     quick_action_props = tools["quick_action"]["args_schema"]["properties"]
     assert tools["quick_action"]["args_schema"]["additionalProperties"] is False
-    assert quick_action_props["platform"]["enum"] == ["ios", "android", "mac"]
+    assert "platform" not in quick_action_props
+    assert tools["quick_action"]["args_schema"]["anyOf"] == [
+        {"required": ["action"]},
+        {"required": ["list"], "properties": {"list": {"const": True}}},
+    ]
     assert "alternative" in quick_action_props
     assert "alternative_index" in quick_action_props
 
 
-def test_invoke_screenshot_tool(bridge_server):
-    """Test POST /api/tools/screenshot."""
+def test_invoke_provider_screenshot(bridge_server):
+    """Test POST /api/providers/screenshot."""
     server, base_url, state = bridge_server
 
-    # Start episode first
-    state.active_episode_id = "test-episode-001"
-
-    request_body = json.dumps({"input": "{}"}).encode()
+    request_body = json.dumps({"format": "jpeg", "quality": 80}).encode()
     req = Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/providers/screenshot",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -159,18 +151,11 @@ def test_invoke_screenshot_tool(bridge_server):
         assert resp.status == 200
         data = json.loads(resp.read().decode())
 
-    assert "output" in data
-    assert "is_error" in data
-    assert data["is_error"] is False
-    assert "duration_ms" in data
-
-    # Parse screenshot output
-    output = json.loads(data["output"])
-    assert "data" in output
-    assert "width" in output
-    assert "height" in output
-    assert output["width"] == 1080
-    assert output["height"] == 2400
+    assert data["ok"] is True
+    output = data["data"]
+    assert "image" in output
+    assert output["meta"]["width"] == 1080
+    assert output["meta"]["height"] == 2400
 
 
 def test_invoke_touch_gesture_tap(bridge_server):
@@ -245,29 +230,6 @@ def test_invoke_touch_gesture_tap_accepts_list_point(bridge_server):
     assert action_to_dict(state.env.last_action) == {
         "action_type": "CLICK",
         "data": {"point": [498.0, 828.0]},
-    }
-
-
-def test_invoke_mouse_click_maps_to_tap(bridge_server):
-    server, base_url, state = bridge_server
-    state.active_episode_id = "test-episode-mouse"
-
-    request_body = json.dumps({"input": {"x": 321, "y": 654, "button": "left"}}).encode()
-    req = Request(
-        f"{base_url}/api/tools/mouse_click",
-        data=request_body,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-
-    with urlopen(req, timeout=5) as resp:
-        assert resp.status == 200
-        data = json.loads(resp.read().decode())
-
-    assert data["is_error"] is False
-    assert action_to_dict(state.env.last_action) == {
-        "action_type": "CLICK",
-        "data": {"point": [321.0, 654.0]},
     }
 
 
@@ -396,7 +358,7 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
     ]:
         req = Request(
             f"{base_url}/api/tools/quick_action",
-            data=json.dumps({"input": {"action": action, "platform": "android"}}).encode(),
+            data=json.dumps({"input": {"action": action}}).encode(),
             method="POST",
             headers={"Content-Type": "application/json"},
         )
@@ -413,7 +375,7 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
     for action in ["select_all", "delete_backward", "copy", "paste", "undo", "find", "cut", "browser_refresh", "browser_new_tab"]:
         req = Request(
             f"{base_url}/api/tools/quick_action",
-            data=json.dumps({"input": {"action": action, "platform": "android"}}).encode(),
+            data=json.dumps({"input": {"action": action}}).encode(),
             method="POST",
             headers={"Content-Type": "application/json"},
         )
@@ -428,6 +390,25 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
         assert output["status"] == "reserved"
         assert "unsupported quick_action" not in data["output"]
         assert state.env.step_count == no_action_count
+
+
+def test_invoke_quick_action_rejects_legacy_platform_argument(bridge_server):
+    _server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-legacy-platform"
+
+    req = Request(
+        f"{base_url}/api/tools/quick_action",
+        data=json.dumps({"input": {"action": "home", "platform": "ios"}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is True
+    assert "unknown fields" in data["output"]
 
 
 def test_invoke_keyboard_tap_keycode_app_switch_uses_swipe(bridge_server):
@@ -562,7 +543,7 @@ def test_invoke_rejects_non_object_json_body(bridge_server):
     state.active_episode_id = "test-episode-bad-body"
 
     req = Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/tools/touch_gesture",
         data=json.dumps([]).encode(),
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -582,9 +563,9 @@ def test_invoke_without_episode_returns_error(bridge_server):
 
     server, base_url, state = bridge_server
 
-    request_body = json.dumps({"input": "{}"}).encode()
+    request_body = json.dumps({"input": {"type": "home"}}).encode()
     req = Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/tools/touch_gesture",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -612,9 +593,9 @@ def test_invoke_stale_episode_returns_conflict(bridge_server, monkeypatch):
         raise StaleEpisodeError("stale episode_id")
 
     monkeypatch.setattr(state, "require_active", fail_require_active)
-    request_body = json.dumps({"input": "{}"}).encode()
+    request_body = json.dumps({"input": {"type": "home"}}).encode()
     req = Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/tools/touch_gesture",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -651,9 +632,9 @@ def test_invoke_without_token_still_works(bridge_server):
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-004"
 
-    request_body = json.dumps({"input": "{}"}).encode()
+    request_body = json.dumps({"input": {"type": "home"}}).encode()
     req = Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/tools/touch_gesture",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -670,7 +651,7 @@ def test_invoke_unknown_tool_returns_error(bridge_server):
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-005"
 
-    request_body = json.dumps({"input": "{}"}).encode()
+    request_body = json.dumps({"input": {"type": "home"}}).encode()
     req = Request(
         f"{base_url}/api/tools/unknown_tool",
         data=request_body,
@@ -750,9 +731,9 @@ def test_multi_env_tools_require_benchmark_task_id_header():
     server = BridgeServer(BridgeTaskRouter(states), host="127.0.0.1", port=0)
     base_url = server.start()
     try:
-        request_body = json.dumps({"input": "{}"}).encode()
+        request_body = json.dumps({"input": {"type": "home"}}).encode()
         req = Request(
-            f"{base_url}/api/tools/screenshot",
+            f"{base_url}/api/tools/touch_gesture",
             data=request_body,
             method="POST",
             headers={"Content-Type": "application/json"},
@@ -856,9 +837,9 @@ def test_multi_env_tools_route_by_benchmark_task_id_header():
             ("task.alpha", {"x": 111, "y": 222}),
             ("task.beta", {"x": 333, "y": 444}),
         ]:
-            request_body = json.dumps({"input": {"x": point["x"], "y": point["y"]}}).encode()
+            request_body = json.dumps({"input": {"type": "tap", "point": point}}).encode()
             req = Request(
-                f"{base_url}/api/tools/mouse_click",
+                f"{base_url}/api/tools/touch_gesture",
                 data=request_body,
                 method="POST",
                 headers={"Content-Type": "application/json", "benchmark-task-id": task_id},
@@ -898,9 +879,9 @@ def test_multi_env_tools_return_capacity_error_until_task_released():
     base_url = server.start()
     try:
         for task_id in ("task.alpha", "task.beta"):
-            request_body = json.dumps({"input": "{}"}).encode()
+            request_body = json.dumps({"input": {"type": "home"}}).encode()
             req = Request(
-                f"{base_url}/api/tools/screenshot",
+                f"{base_url}/api/tools/touch_gesture",
                 data=request_body,
                 method="POST",
                 headers={"Content-Type": "application/json", "benchmark-task-id": task_id},
@@ -924,9 +905,9 @@ def test_multi_env_tools_return_capacity_error_until_task_released():
         with urlopen(release_req, timeout=5) as resp:
             assert resp.status == 200
 
-        request_body = json.dumps({"input": "{}"}).encode()
+        request_body = json.dumps({"input": {"type": "home"}}).encode()
         req = Request(
-            f"{base_url}/api/tools/screenshot",
+            f"{base_url}/api/tools/touch_gesture",
             data=request_body,
             method="POST",
             headers={"Content-Type": "application/json", "benchmark-task-id": "task.beta"},

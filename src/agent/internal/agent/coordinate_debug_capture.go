@@ -2,14 +2,13 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/screenprovider"
 	"bytes"
 	"encoding/base64"
 	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
-	"net/http"
-	"strings"
 )
 
 type coordinateDebugScreenshotOptions struct {
@@ -23,22 +22,6 @@ type coordinateDebugScreenshotResult struct {
 	SourceActiveArea           *screen.ScreenActiveArea `json:"source_active_area,omitempty"`
 	OriginalScreenWidthPixels  *int                     `json:"original_screen_width_pixels,omitempty"`
 	OriginalScreenHeightPixels *int                     `json:"original_screen_height_pixels,omitempty"`
-}
-
-func parseCoordinateDebugScreenshotOptions(r *http.Request) coordinateDebugScreenshotOptions {
-	options := coordinateDebugScreenshotOptions{CropBlackBars: true}
-	if r == nil {
-		return options
-	}
-	raw := strings.TrimSpace(r.URL.Query().Get("crop_black_bars"))
-	if raw == "" {
-		return options
-	}
-	switch strings.ToLower(raw) {
-	case "0", "false", "no", "off":
-		options.CropBlackBars = false
-	}
-	return options
 }
 
 func (s *Server) coordinateDebugScreen() *screen.ScreenState {
@@ -139,14 +122,14 @@ func coordinateDebugSourceActiveArea(active screen.ScreenActiveArea, sourceWidth
 	return &activeCopy
 }
 
-func (s *Server) coordinateDebugCaptureClient() *ScreenCaptureClient {
+func (s *Server) coordinateDebugCaptureClient() screenprovider.Provider {
 	if s == nil {
 		return nil
 	}
 	s.screenCaptureMu.Lock()
 	defer s.screenCaptureMu.Unlock()
-	if s.screenCaptureClient == nil && s.runtime != nil {
-		s.screenCaptureClient = NewScreenCaptureClient(s.runtime.config.HID.FrameSocketOrDefault())
+	if s.screenCaptureClient == nil {
+		s.screenCaptureClient = screenProviderFromRuntime(s.runtime)
 	}
 	return s.screenCaptureClient
 }

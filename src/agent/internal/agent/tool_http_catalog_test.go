@@ -323,7 +323,6 @@ func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
 		"keyboard_tap",
 		"keyboard_text",
 		"enter_text",
-		"mouse_click",
 		"mouse_move",
 		"mouse_scroll",
 		"quick_action",
@@ -376,6 +375,16 @@ func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
 		if _, ok := fullNames[want]; !ok {
 			t.Errorf("full catalog missing tool %s", want)
 		}
+	}
+}
+
+func TestBuiltinToolCatalogOmitsMouseClick(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	if _, ok := toolNameSet(runtime.availableTools())["mouse_click"]; ok {
+		t.Fatal("conversational tool catalog unexpectedly exposes mouse_click")
+	}
+	if _, ok := runtime.ToolDescriptorByName("mouse_click"); ok {
+		t.Fatal("HTTP tool catalog unexpectedly exposes mouse_click")
 	}
 }
 

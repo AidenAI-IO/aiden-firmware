@@ -96,7 +96,6 @@ func TestCompositionExpandsCandidatesBeforeSelectingHiddenTarget(t *testing.T) {
 	}}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	engine := newFastTextInputEngine(textInputHardwareDeps{
-		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  kbTap,
 		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},

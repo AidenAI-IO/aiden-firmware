@@ -305,11 +305,11 @@ func (c *ADBInputController) runWithTimeout(ctx context.Context, timeout time.Du
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	adbPath, err := client.adbPath()
+	adbPath, err := client.ADBPath()
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", errADBInputUnsupported, err)
 	}
-	serial, err := client.resolveSerial(cmdCtx, adbPath)
+	serial, err := client.ResolveSerial(cmdCtx, adbPath)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", errADBInputUnsupported, err)
 	}
@@ -322,7 +322,7 @@ func (c *ADBInputController) runWithTimeout(ctx context.Context, timeout time.Du
 
 	stdout, stderr, err := runADB(cmdCtx, adbPath, adbArgs...)
 	if err != nil {
-		client.invalidateAutoSerial(serial)
+		client.InvalidateAutoSerial(serial)
 		if trimmed := strings.TrimSpace(string(stderr)); trimmed != "" {
 			return strings.TrimSpace(string(stdout)), fmt.Errorf("adb input failed: %s", trimmed)
 		}

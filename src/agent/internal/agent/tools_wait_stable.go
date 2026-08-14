@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/screenprovider"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -58,15 +59,10 @@ func (d ScreenStableDefaults) InputJSON() string {
 }
 
 type WaitStableScreenTool struct {
-	client       waitStableFrameClient
+	client       screenprovider.Provider
 	defaults     ScreenStableDefaults
 	screen       *screen.ScreenState
 	deviceTypeFn func() string
-}
-
-type waitStableFrameClient interface {
-	LatestFrame() (*frameMetadata, []byte, screenCaptureInfo, error)
-	LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error)
 }
 
 func (t *WaitStableScreenTool) SetDeviceTypeFunc(fn func() string) {
@@ -101,13 +97,13 @@ type waitStableScreenObservationResult struct {
 	LastDiff      *float64 `json:"last_diff,omitempty"`
 }
 
-func NewWaitStableScreenTool(socketPath string, defaults ScreenStableDefaults, screens ...*screen.ScreenState) *WaitStableScreenTool {
+func NewWaitStableScreenTool(provider screenprovider.Provider, defaults ScreenStableDefaults, screens ...*screen.ScreenState) *WaitStableScreenTool {
 	var screen *screen.ScreenState
 	if len(screens) > 0 {
 		screen = screens[0]
 	}
 	return &WaitStableScreenTool{
-		client:   NewScreenCaptureClient(socketPath),
+		client:   provider,
 		defaults: defaults,
 		screen:   screen,
 	}
@@ -254,6 +250,17 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 	return result, nil
 }
 
+func (t *WaitStableScreenTool) captureWaitFrame() (*frameMetadata, []byte, screenCaptureInfo, error) {
+	if t == nil || t.client == nil {
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("screen capture client not configured")
+	}
+	minimalWidth := 0
+	if t.cropBlack() {
+		minimalWidth = screenshotMinimalWidth(t.screen)
+	}
+	return t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, t.cropBlack(), minimalWidth)
+}
+
 func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStableScreenResult, error) {
 	var args struct {
 		TimeoutMs     int     `json:"timeout_ms"`
@@ -287,7 +294,7 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 	start := time.Now()
 	deadline := start.Add(timeout)
 
-	prevMeta, prevFrame, prevCaptureInfo, err := t.client.LatestFrame()
+	prevMeta, prevFrame, prevCaptureInfo, err := t.captureWaitFrame()
 	if err != nil {
 		return waitStableScreenResult{}, err
 	}
@@ -343,7 +350,7 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 			}
 		}
 
-		meta, frame, captureInfo, err := t.client.LatestFrame()
+		meta, frame, captureInfo, err := t.captureWaitFrame()
 		if err != nil {
 			return waitStableScreenResult{}, err
 		}

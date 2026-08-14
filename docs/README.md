@@ -21,6 +21,7 @@ Build, configure, operate, and extend Aiden hardware and its Agent runtime.
 - [Architecture](02-architecture/overview.md): system boundaries, boot services, source layout, and runtime paths.
 - [Device Services](03-services/agent.md): Agent, configuration, terminal, frame capture, audio, BLE, and USB HID services.
 - [Agent](04-agent/overview.md): runtime configuration, tools, skills, memory, voice, and phone integration.
+- [Persistent Python Packages](04-agent/python-packages.md): shared pip environment, storage layout, and cleanup policy.
 - [SDK & Tools](05-sdk-and-tools/cpp-sdk.md): C++ SDK, examples, and image utilities.
 - [Protocols](06-protocols/uds-protocol.md): Unix domain socket and service protocol contracts.
 - [OTA](08-ota/README.md): signed releases, A/B updates, rollback, verification, and custom distribution.

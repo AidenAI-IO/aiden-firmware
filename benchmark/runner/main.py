@@ -6,14 +6,19 @@ import os
 import re
 import sys
 import time
-import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from runner.agent_client import AgentClient
 from runner.analysis import AnalysisConfig, _int_env, analyze_run
 from runner.html_report import generate_report_html, upload_report
 from runner.judge import DEFAULT_JUDGE_BASE_URL, JudgeConfig
+from runner.platform import (
+    TargetPlatform,
+    read_environment_health,
+    resolve_daemon_platform,
+    resolve_environment_platform,
+    resolve_mock_platform,
+)
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
 from runner.reset import ResetError, call_environment_release, clear_stale_adb_android_owner
@@ -21,7 +26,6 @@ from runner.runtask import run_one_task, skipped_task_result
 from runner.suite import Suite, TaskSpec, load_suite
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-VALID_TARGET_PLATFORMS = {"ios", "android", "mac"}
 
 
 def wait_for_agent_clock(
@@ -57,7 +61,7 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--suite", required=True)
     p_run.add_argument("--agent-url", default=os.environ.get("AIDEN_AGENT_URL", "http://localhost:8080"))
     p_run.add_argument("--environment-url", default=os.environ.get("AIDEN_ENVIRONMENT_URL", ""),
-                       help="Optional environment bridge endpoint; when set, each task calls /api/setup, /api/screen, and /api/release")
+                       help="Optional environment bridge endpoint; when set, each task calls /api/setup, POST /api/providers/screenshot, and /api/release")
     p_run.add_argument("--auto-agent-setup", action="store_true",
                        help="Start isolated agent daemons automatically and ignore --agent-url; concurrency is read from environment bridge /api/concurrent")
     p_run.add_argument("--max-concurrency", type=int, default=0,
@@ -87,10 +91,10 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--run-id", default="",
                        help="Optional run directory name under --out")
     p_run.add_argument("--benchmark-task-id", default="",
-                       help="Task routing id to use for environment setup/screen/release")
+                       help="Task routing id to use for environment setup, providers/screenshot, and release")
     p_run.add_argument("--target-platform", default=os.environ.get("AIDEN_BENCHMARK_TARGET_PLATFORM", "auto"),
-                       choices=["auto", "ios", "android", "mac"],
-                       help="Filter suite tasks by platform; auto infers adb_android environments as android")
+                       choices=["auto", "ios", "android", "mac", "windows", "linux"],
+                       help="Filter suite tasks by platform; auto resolves platform from environment bridge health")
     p_run.add_argument("--skip-clock-wait", action="store_true")
     p_run.add_argument("--clock-timeout-sec", type=int, default=180)
     p_run.add_argument("--agent-ready-timeout-sec", type=int, default=120)
@@ -312,36 +316,56 @@ def _task_route_id(args: argparse.Namespace, suite: Suite, task_id: str, attempt
     return route_id
 
 
-def _resolve_target_platform(args: argparse.Namespace) -> str:
-    raw = str(getattr(args, "target_platform", "") or "").strip().lower()
-    if raw and raw != "auto":
-        return raw
+def _resolve_target_platform(args: argparse.Namespace, *, required: bool = False) -> str:
+    platform = _resolve_target_platform_enum(args, required=required)
+    return platform.value if platform is not None else ""
+
+
+def _resolve_target_platform_enum(
+    args: argparse.Namespace,
+    *,
+    required: bool = False,
+) -> TargetPlatform | None:
+    requested = str(getattr(args, "target_platform", "") or "").strip().lower()
+    explicit = requested if requested and requested != "auto" else ""
     environment_url = str(getattr(args, "environment_url", "") or "").strip()
     if not environment_url:
-        return ""
+        return None
     try:
         health = _read_environment_health(environment_url)
     except Exception:
-        return ""
-    bridge_type = str(health.get("bridge_type") or "").strip().lower()
-    if bridge_type == "adb_android":
-        return "android"
-    platform = str(health.get("platform") or health.get("device_platform") or "").strip().lower()
-    if platform in VALID_TARGET_PLATFORMS:
-        return platform
-    return ""
+        if required:
+            raise
+        return None
+    try:
+        return resolve_environment_platform(
+            health,
+            constraint=explicit or None,
+        )
+    except ValueError:
+        if "platform" in health or required or explicit:
+            raise
+        return None
+
+
+def _mock_environment_platform(suite: Suite) -> str:
+    platforms: set[str] = (
+        {resolve_mock_platform(suite.mock_environment.platform).value}
+        if suite.mock_environment is not None and not suite.tasks
+        else set()
+    )
+    for task in suite.tasks:
+        spec = _task_mock_environment(suite, task)
+        if spec is None:
+            continue
+        platforms.add(resolve_mock_platform(spec.platform).value)
+    if len(platforms) != 1:
+        raise ValueError("mock environment suite must declare exactly one target platform")
+    return next(iter(platforms))
 
 
 def _read_environment_health(environment_url: str) -> dict:
-    parsed = urllib.parse.urlsplit(str(environment_url).strip())
-    if not parsed.scheme or not parsed.netloc:
-        return {}
-    url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "/health", "", ""))
-    with urllib.request.urlopen(url, timeout=0.5) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
-        return payload["data"]
-    return payload if isinstance(payload, dict) else {}
+    return read_environment_health(environment_url)
 
 
 def _task_repeats(args: argparse.Namespace, task: TaskSpec) -> int:
@@ -500,7 +524,11 @@ def _cmd_run_auto_agent_setup_inner(
         runner_log = worker_dir / "runner.log"
         daemon_log = worker_dir / "daemon.log"
         worker_dir.mkdir(parents=True, exist_ok=True)
-        prepare_run_config(Path(args.base_config_dir), config_dir, agent_config_text=agent_config_text)
+        prepare_run_config(
+            Path(args.base_config_dir),
+            config_dir,
+            agent_config_text=agent_config_text,
+        )
         benchmark_token = _read_optional_token(config_dir / "control_token")
         host_port = 0
         agent_url = f"http://127.0.0.1:{host_port}"
@@ -540,6 +568,7 @@ def _cmd_run_auto_agent_setup_inner(
                 config_dir=config_dir,
                 environment_bridge_endpoint=docker_environment_url,
                 benchmark_task_id=route_id,
+                device_type=target_platform,
                 environment_bridge_mode=True,
                 log_path=runner_log,
             )
@@ -677,7 +706,20 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"Error: invalid --run-id: {run_id!r}", file=sys.stderr)
         return 2
     run_dir = Path(args.out) / run_id
-    target_platform = _resolve_target_platform(args)
+    if args.auto_agent_setup and args.max_concurrency < 0:
+        print("Error: max-concurrency must be non-negative", file=sys.stderr)
+        return 2
+    try:
+        resolved_platform = _resolve_target_platform_enum(
+            args,
+            required=bool(args.environment_url),
+        )
+        target_platform = (
+            resolved_platform.value if resolved_platform is not None else ""
+        )
+    except Exception as exc:
+        print(f"Error: failed to resolve target platform: {exc}", file=sys.stderr)
+        return 2
     if _suite_has_mock_environment(suite) and not args.auto_agent_setup:
         print(
             "Error: suites or tasks with mock_environment require --auto-agent-setup so tool calls "
@@ -685,26 +727,68 @@ def _cmd_run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.auto_agent_setup and _suite_has_mock_environment(suite):
+        try:
+            declared_mock_platform = _mock_environment_platform(suite)
+            requested_platform = str(args.target_platform or "").strip().lower()
+            resolved_mock_platform = resolve_mock_platform(
+                declared_mock_platform,
+                constraint=requested_platform or None,
+            )
+            target_platform = resolved_mock_platform.value
+        except ValueError as exc:
+            print(f"Error: failed to resolve target platform: {exc}", file=sys.stderr)
+            return 2
     if args.auto_agent_setup:
-        return _cmd_run_auto_agent_setup(args, suite, selected_task_ids, target_platform, run_id, run_dir)
+        return _cmd_run_auto_agent_setup(
+            args,
+            suite,
+            selected_task_ids,
+            target_platform,
+            run_id,
+            run_dir,
+        )
     if args.repeats is not None and args.repeats <= 0:
         print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
         return 2
     units = _build_task_units(args, suite, target_platform)
     has_runnable_units = any(not unit[4] for unit in units)
-    client = None
-    if has_runnable_units:
-        if args.environment_url:
-            clear_stale_adb_android_owner(args.environment_url)
-        client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
-        if not client.health():
-            print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
-            client.close()
-            return 2
-        if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
-            print("agent board clock did not sync before benchmark start", file=sys.stderr)
-            client.close()
-            return 2
+    if args.environment_url:
+        clear_stale_adb_android_owner(args.environment_url)
+    client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
+    if not client.health():
+        print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
+        client.close()
+        return 2
+    try:
+        daemon_platform = resolve_daemon_platform(
+            client.device_type(),
+            constraint=target_platform or args.target_platform,
+        )
+    except Exception as exc:
+        print(f"failed to validate agent daemon target platform: {exc}", file=sys.stderr)
+        client.close()
+        return 2
+    if args.environment_url and daemon_platform.value != target_platform:
+        print(
+            f"agent platform {daemon_platform.value!r} does not match "
+            f"environment platform {target_platform!r}",
+            file=sys.stderr,
+        )
+        client.close()
+        return 2
+    if not args.environment_url:
+        target_platform = daemon_platform.value
+        units = _build_task_units(args, suite, target_platform)
+        has_runnable_units = any(not unit[4] for unit in units)
+    if (
+        has_runnable_units
+        and not args.skip_clock_wait
+        and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec)
+    ):
+        print("agent board clock did not sync before benchmark start", file=sys.stderr)
+        client.close()
+        return 2
     judge_cfg = None if args.no_judge else JudgeConfig(model=args.judge_model, base_url=args.judge_base_url)
     active_skills = _selected_skills(args)
     judge_cache = run_dir / "_judge_cache"
@@ -742,8 +826,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     "totals": _result_totals(results, total_runs),
                 })
                 continue
-            if client is None:
-                raise RuntimeError("agent client is unavailable for runnable benchmark task")
             task_benchmark_id = _task_route_id(args, suite, task.id, attempt, n)
             try:
                 progress = f"{current_index}/{total_runs}"
@@ -919,6 +1001,7 @@ def _serialize_mock_environment(spec) -> dict[str, object] | None:
     if spec is None:
         return None
     return {
+        "platform": spec.platform,
         "phone_bridge": dict(spec.phone_bridge),
         "tools": sorted(spec.tools),
         "screen": spec.screen,

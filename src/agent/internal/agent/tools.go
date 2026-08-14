@@ -3,6 +3,7 @@ package agent
 import (
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/screenprovider"
 	"path/filepath"
 	"sort"
 	"time"
@@ -14,6 +15,7 @@ import (
 type ToolSet struct {
 	tools                map[string]langtools.Tool
 	screen               *screen.ScreenState
+	screenProvider       screenprovider.Provider
 	phoneBridge          *PhoneBridge
 	phoneBridgeRestorer  *PhoneBridgeRestorer
 	textInputHW          *textInputHardwareDeps
@@ -34,6 +36,8 @@ type builtinToolSetOptions struct {
 	screenStable            ScreenStableDefaults
 	scriptsDir              string
 	screenState             *screen.ScreenState
+	screenProvider          screenprovider.Provider
+	shellTemporaryDirectory string
 }
 
 func WithWaitForWakeupController(controller *WaitForWakeupController) BuiltinToolSetOption {
@@ -54,6 +58,12 @@ func WithRunScriptScriptsDir(dir string) BuiltinToolSetOption {
 	}
 }
 
+func WithShellTemporaryDirectory(dir string) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.shellTemporaryDirectory = dir
+	}
+}
+
 // WithScreenState makes the tools publish visual observations to a shared
 // ScreenState. When omitted, a private state is created for backwards
 // compatibility with callers that only need the tool set itself.
@@ -63,17 +73,46 @@ func WithScreenState(state *screen.ScreenState) BuiltinToolSetOption {
 	}
 }
 
+func WithScreenProvider(provider screenprovider.Provider) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.screenProvider = provider
+	}
+}
+
 func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	return newHardwareToolSet(hidCfg, audioCfg, searchCfg, proxyCfg, options...)
 }
 
 func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
-	defaultOptions := make([]BuiltinToolSetOption, 0, len(options)+1)
+	defaultOptions := make([]BuiltinToolSetOption, 0, len(options)+2)
 	if cfg.ConfigDir != "" {
 		defaultOptions = append(defaultOptions, WithRunScriptScriptsDir(filepath.Join(cfg.ConfigDir, "scripts")))
 	}
+	if provider := screenProviderFromConfig(cfg); provider != nil {
+		defaultOptions = append(defaultOptions, WithScreenProvider(provider))
+	}
 	options = append(defaultOptions, options...)
 	return newHardwareToolSet(cfg.HIDConfigForDevice(), cfg.Audio, cfg.Search, proxyCfg, options...)
+}
+
+func screenProviderFromConfig(cfg Config) screenprovider.Provider {
+	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
+		return screenprovider.NewHTTP(cfg.EnvironmentBridge.Endpoint, cfg.EnvironmentBridge.BenchmarkTaskID)
+	}
+	return nil
+}
+
+func screenProviderFromRuntime(runtime *Runtime) screenprovider.Provider {
+	if runtime != nil && runtime.tools != nil {
+		if provider := runtime.tools.ScreenProvider(); provider != nil {
+			return provider
+		}
+	}
+	socketPath := ""
+	if runtime != nil {
+		socketPath = runtime.config.HID.FrameSocketOrDefault()
+	}
+	return NewScreenCaptureClient(socketPath)
 }
 
 var scriptCallableToolNames = map[string]struct{}{
@@ -81,7 +120,6 @@ var scriptCallableToolNames = map[string]struct{}{
 	"enter_text":             {},
 	"image_diff":             {},
 	"keyboard_tap":           {},
-	"mouse_click":            {},
 	"mouse_move":             {},
 	"mouse_scroll":           {},
 	toolOpenApp:              {},
@@ -127,18 +165,20 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		hidCfg.AndroidKeyboardDeviceOrDefault(),
 		hidCfg.FrameSocketOrDefault(),
 	)
-	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
+	provider := toolOptions.screenProvider
+	if provider == nil {
+		provider = NewScreenCaptureClient(hidCfg.FrameSocketOrDefault())
+	}
+	screenshot := NewScreenshotTool(provider, screen)
 	screenStable := toolOptions.screenStable.Resolved()
-	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
+	waitStable := NewWaitStableScreenTool(provider, screenStable, screen)
 	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault(), adb: adbInput, keyboardLayout: hidCfg.KeyboardLayoutOrDefault(), iosKeyboardIsolation: iosKeyboardIsolation}
 	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput, keyboardLayout: hidCfg.KeyboardLayoutOrDefault(), iosKeyboardIsolation: iosKeyboardIsolation}
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen, requireFreshScreenshot: true}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture, iosKeyboardIsolation: iosKeyboardIsolation}
-	mouseClick := &MouseClickTool{pc: pointer, screen: screen, adb: adbInput}
 	textInputHW := &textInputHardwareDeps{
 		pointerMode:  hidCfg.PointerModeOrDefault(),
-		mouseClick:   mouseClick,
 		touchGesture: touchGesture,
 		keyboardTap:  keyboardTap,
 		keyboardText: keyboardText,
@@ -148,7 +188,6 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 
 	tools := map[string]langtools.Tool{
 		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_click":            newPostActionStableScreenshotTool(mouseClick, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
@@ -158,11 +197,14 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"wait_for_stable_screen": waitStable,
 		"image_diff":             &ImageDiffTool{},
 		"audio_volume":           NewAudioVolumeTool(audioCfg.SocketOrDefault()),
-		"shell":                  &ShellTool{proxy: proxyCfg},
-		"weather":                NewWeatherTool(proxyCfg),
-		"web_search":             NewWebSearchTool(searchCfg, proxyCfg),
-		"wikipedia":              NewWikipediaTool(proxyCfg),
-		"web_scraper":            NewWebScraperTool(proxyCfg),
+		"shell": &ShellTool{execution: shellExecutionConfig{
+			proxy:              proxyCfg,
+			temporaryDirectory: toolOptions.shellTemporaryDirectory,
+		}},
+		"weather":     NewWeatherTool(proxyCfg),
+		"web_search":  NewWebSearchTool(searchCfg, proxyCfg),
+		"wikipedia":   NewWikipediaTool(proxyCfg),
+		"web_scraper": NewWebScraperTool(proxyCfg),
 	}
 	if toolOptions.waitForWakeupController != nil {
 		tools[toolWaitForWakeup] = NewWaitForWakeupTool(toolOptions.waitForWakeupController)
@@ -185,6 +227,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	toolSet := &ToolSet{
 		tools:                tools,
 		screen:               screen,
+		screenProvider:       provider,
 		phoneBridgeRestorer:  NewPhoneBridgeRestorer(nil, pointer),
 		textInputHW:          textInputHW,
 		iosKeyboardIsolation: iosKeyboardIsolation,
@@ -242,6 +285,13 @@ func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
 	}
 	t, ok := s.tools[name]
 	return t, ok
+}
+
+func (s *ToolSet) ScreenProvider() screenprovider.Provider {
+	if s == nil {
+		return nil
+	}
+	return s.screenProvider
 }
 
 func (s *ToolSet) All() []langtools.Tool {

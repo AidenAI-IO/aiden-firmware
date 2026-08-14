@@ -27,6 +27,14 @@ from vphone.bridge.server import VPhoneBridgeServer
 DEFAULT_ENV_FILE = Path(__file__).resolve().parents[1] / "vphone.env"
 
 
+def _agent_daemon_command(environment_url: str, benchmark_task_id: str) -> str:
+    return (
+        "uv run python -m runner start-agent-daemon "
+        f"--environment-bridge-endpoint {environment_url} "
+        f"--benchmark-task-id {benchmark_task_id}"
+    )
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument(
@@ -48,7 +56,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--host", default=defaults.get("VPHONE_BRIDGE_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=defaults.get("VPHONE_BRIDGE_PORT", "8899"))
-    parser.add_argument("--request-timeout-sec", type=float, default=120)
+    parser.add_argument("--request-timeout-sec", type=float, default=30)
     parser.add_argument("--action-settle-sec", type=float, default=0.6)
     parser.add_argument("--screenshot-max-width", type=int, default=DEFAULT_SCREENSHOT_MAX_WIDTH)
     parser.add_argument("--jpeg-quality", type=int, default=DEFAULT_JPEG_QUALITY)
@@ -134,11 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: cannot start bridge on {args.host}:{args.port}: {exc}", file=sys.stderr)
         device.close()
         return 1
-    daemon_command = (
-        "uv run python -m runner start-agent-daemon "
-        f"--environment-bridge-endpoint {environment_url} "
-        f"--benchmark-task-id {args.benchmark_task_id}"
-    )
+    daemon_command = _agent_daemon_command(environment_url, args.benchmark_task_id)
     payload = {
         "type": "vphone-ios-env",
         "env_file": str(Path(args.env_file).expanduser().resolve()),

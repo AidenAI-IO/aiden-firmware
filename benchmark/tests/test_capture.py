@@ -2,7 +2,7 @@ import base64
 import json
 from unittest.mock import patch
 
-from runner.capture import environment_screen_snapshot_endpoint, take_environment_screenshot
+from runner.capture import DEFAULT_SCREENSHOT_TIMEOUT_SEC, take_environment_screenshot
 
 
 class FakeResponse:
@@ -20,31 +20,8 @@ class FakeResponse:
         return False
 
 
-def test_environment_screen_snapshot_endpoint_uses_screen_api():
-    assert (
-        environment_screen_snapshot_endpoint("http://127.0.0.1:19090")
-        == "http://127.0.0.1:19090/api/screen"
-    )
-    assert (
-        environment_screen_snapshot_endpoint("http://127.0.0.1:19090/bridge/")
-        == "http://127.0.0.1:19090/bridge/api/screen"
-    )
-    assert (
-        environment_screen_snapshot_endpoint("http://127.0.0.1:19090/bridge")
-        == "http://127.0.0.1:19090/bridge/api/screen"
-    )
-    assert (
-        environment_screen_snapshot_endpoint("http://127.0.0.1:19090/api/setup")
-        == "http://127.0.0.1:19090/api/screen"
-    )
-    assert (
-        environment_screen_snapshot_endpoint("http://127.0.0.1:19090/api/release")
-        == "http://127.0.0.1:19090/api/screen"
-    )
-    assert (
-        environment_screen_snapshot_endpoint("http://127.0.0.1:19090/api/screen")
-        == "http://127.0.0.1:19090/api/screen"
-    )
+def test_default_screenshot_timeout_matches_provider_client():
+    assert DEFAULT_SCREENSHOT_TIMEOUT_SEC == 30
 
 
 def test_take_environment_screenshot_writes_screen_snapshot(tmp_path):
@@ -53,14 +30,13 @@ def test_take_environment_screenshot_writes_screen_snapshot(tmp_path):
     body = {
         "ok": True,
         "data": {
-            "status": "running",
-            "screenshot": {
+            "meta": {
                 "width": 100,
                 "height": 200,
-                "format": "jpeg",
-                "size": len(image),
-                "data": base64.b64encode(image).decode("ascii"),
+                "pixel_format": "jpeg",
             },
+            "capture_info": {"capture_backend": "adb"},
+            "image": base64.b64encode(image).decode("ascii"),
         },
     }
 
@@ -80,9 +56,10 @@ def test_take_environment_screenshot_writes_screen_snapshot(tmp_path):
             timeout=7,
         )
 
-    assert seen["method"] == "GET"
-    assert seen["url"] == "http://127.0.0.1:19090/api/screen"
+    assert seen["method"] == "POST"
+    assert seen["url"] == "http://127.0.0.1:19090/api/providers/screenshot"
     assert seen["headers"]["benchmark-task-id"] == "suite.json:t1"
+    assert seen["headers"]["content-type"] == "application/json"
     assert seen["timeout"] == 7
     assert out.read_bytes() == image
     assert (width, height) == (100, 200)

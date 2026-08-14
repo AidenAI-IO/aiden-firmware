@@ -168,9 +168,6 @@ func ConfigMeta() ConfigMetadata {
 						Enum:    enumOptions(modelProviderTypes()...),
 						Default: defaults.Model.Provider},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model, Layout: "wide"},
-					{Key: "base_url", Widget: WidgetText,
-						Layout:      "wide",
-						VisibleWhen: all(in("model.provider", modelProviderTypesAllowingCustomBaseURL()...))},
 					// The effective default is model-dependent (resolved at load
 					// time); show the global fallback here as the UI placeholder.
 					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},

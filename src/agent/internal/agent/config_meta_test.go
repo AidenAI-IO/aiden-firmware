@@ -190,7 +190,6 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"agent.additional_prompt":       {layout: "wide"},
 		"model.provider":                {layout: "wide"},
 		"model.model":                   {layout: "wide"},
-		"model.base_url":                {layout: "wide"},
 		"model.reasoning_effort":        {help: "Empty = auto. For no-tool requests, Anthropic maps low/medium/high to adaptive thinking; tool requests use Claude's default reasoning because thinking signatures are not persisted. Minimal is OpenRouter and Volcengine Ark only; none is not supported by Anthropic or Ark."},
 		"model.context_window":          {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
 		"model.model_max_output_tokens": {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
@@ -733,8 +732,8 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	// config field silently loses its UI -- without pinning down which of the
 	// two editors owns it.
 	altSection := map[string]string{"tts": "tts_providers", "stt": "stt_providers"}
-	// model.api_key remains in ModelConfig for legacy TOML compatibility, but
-	// config web edits it only through the selected provider record.
+	// model.api_key remains in ModelConfig, but config web edits it through the
+	// selected provider record.
 	altFieldSection := map[string]map[string]string{
 		"model": {"api_key": "model_providers"},
 	}

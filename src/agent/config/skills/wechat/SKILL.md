@@ -3,7 +3,7 @@ name: wechat
 description: Use for WeChat tasks on Mac or iPhone, with platform-specific search and send rules.
 metadata:
   preferred_model: primary
-  allowed_tools: [open_app, screenshot, touch_gesture, mouse_click, keyboard_tap, enter_text]
+  allowed_tools: [open_app, screenshot, touch_gesture, keyboard_tap, enter_text]
 ---
 
 Use this skill together with `device-operator` for visible WeChat UI work.

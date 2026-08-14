@@ -115,6 +115,13 @@ type forceStorageCleaner interface {
 	ForceClean(ctx context.Context) (freed uint64, err error)
 }
 
+// emergencyStorageCleaner performs cleanup that is only safe at the highest
+// automatic storage alert level. Manual force requests do not activate it while
+// storage is below Emergency.
+type emergencyStorageCleaner interface {
+	EmergencyClean(ctx context.Context) (freed uint64, err error)
+}
+
 type storageCleanerLevel interface {
 	MinimumLevel() StorageLevel
 }
@@ -320,7 +327,9 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 			if m.logger != nil {
 				m.logger.Info("storage_cleanup: running cleaner %s (priority %d)", cleaner.Name(), cleaner.Priority())
 			}
-			if request.Force {
+			if emergencyCleaner, ok := cleaner.(emergencyStorageCleaner); ok && currentLevel == StorageLevelEmergency {
+				freed, cleanErr = emergencyCleaner.EmergencyClean(ctx)
+			} else if request.Force {
 				if forceCleaner, ok := cleaner.(forceStorageCleaner); ok {
 					freed, cleanErr = forceCleaner.ForceClean(ctx)
 				} else {

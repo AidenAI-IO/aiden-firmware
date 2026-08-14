@@ -114,15 +114,6 @@ class ADBToolsAPIHandler:
         }
         tools = [
             {
-                "name": "screenshot",
-                "description": "Capture a screenshot from the Android device via adb. No input required (pass empty JSON {} or \"\"). Returns a JSON object with width, height, and base64-encoded JPEG image data.",
-                "args_schema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": False,
-                },
-            },
-            {
                 "name": "touch_gesture",
                 "description": "Perform touch gestures on the Android device (tap, swipe, drag, long_press, etc.).",
                 "args_schema": {
@@ -218,20 +209,6 @@ class ADBToolsAPIHandler:
                 },
             },
             {
-                "name": "mouse_click",
-                "description": "Click/tap a coordinate on the Android device. Coordinates use normalized 0-1000 space.",
-                "args_schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"},
-                        "button": {"type": "string", "enum": ["left", "right", "middle"]},
-                    },
-                    "required": ["x", "y"],
-                },
-            },
-            {
                 "name": "mouse_move",
                 "description": "Move the pointer. Android has no hover state, so this is accepted as a no-op and returns a screenshot.",
                 "args_schema": {
@@ -262,12 +239,14 @@ class ADBToolsAPIHandler:
                     "additionalProperties": False,
                     "properties": {
                         "action": {"type": "string"},
-                        "platform": {"type": "string", "enum": ["android"]},
                         "list": {"type": "boolean"},
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
                     },
-                    "required": ["platform"],
+                    "anyOf": [
+                        {"required": ["action"]},
+                        {"required": ["list"], "properties": {"list": {"const": True}}},
+                    ],
                 },
             },
         ]
@@ -404,12 +383,10 @@ class ADBToolsAPIHandler:
 
     def _submit_tool_call(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         """Dispatch tool call to the ADB device."""
-        unknown = _unknown_coordinate_tool_fields(tool_name, tool_input)
+        unknown = _unknown_tool_fields(tool_name, tool_input)
         if unknown:
             return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
-        if tool_name == "screenshot":
-            return self._call_screenshot()
-        elif tool_name == "touch_gesture":
+        if tool_name == "touch_gesture":
             return self._call_touch_gesture(tool_input)
         elif tool_name == "keyboard_text":
             return self._call_keyboard_text(tool_input)
@@ -417,8 +394,6 @@ class ADBToolsAPIHandler:
             return self._call_keyboard_tap(tool_input)
         elif tool_name == "enter_text":
             return self._call_enter_text(tool_input)
-        elif tool_name == "mouse_click":
-            return self._call_mouse_click(tool_input)
         elif tool_name == "mouse_move":
             return self._call_mouse_move(tool_input)
         elif tool_name == "mouse_scroll":
@@ -427,14 +402,6 @@ class ADBToolsAPIHandler:
             return self._call_quick_action(tool_input)
         else:
             return {"output": f"unknown tool: {tool_name}", "is_error": True, "error": "unknown_tool"}
-
-    # ---- tool implementations ---------------------------------------------
-
-    def _call_screenshot(self) -> dict[str, Any]:
-        with self.state.lock:
-            jpeg, width, height = self.state.device.screenshot_jpeg()
-        screenshot = encode_screenshot(jpeg, "image/jpeg", width, height)
-        return {"output": json.dumps(screenshot), "is_error": False}
 
     def _call_touch_gesture(
         self,
@@ -545,24 +512,6 @@ class ADBToolsAPIHandler:
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
 
-    def _call_mouse_click(self, tool_input: dict[str, Any]) -> dict[str, Any]:
-        button = str(tool_input.get("button", "left") or "left").strip().lower()
-        if button not in ("", "left", "right", "middle"):
-            return {"output": f"error: unsupported mouse button: {button!r}", "is_error": True}
-        device = self.state.device
-        try:
-            width, height = device.screen_size()
-            point = _normalized_point_arg(tool_input)
-        except (TypeError, ValueError) as exc:
-            return {"output": f"error: {exc}", "is_error": True}
-        x, y = _to_pixels(point, width, height)
-        return self._execute_device(
-            lambda: device.tap(x, y),
-            tool_name="mouse_click",
-            tool_input=tool_input,
-            adb_summary=f"input tap {x} {y}",
-        )
-
     def _call_mouse_move(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         """Validate mouse_move input and return a screenshot (no adb action)."""
         try:
@@ -588,17 +537,8 @@ class ADBToolsAPIHandler:
         )
 
     def _call_quick_action(self, tool_input: dict[str, Any]) -> dict[str, Any]:
-        platform = str(tool_input.get("platform", "") or "").strip().lower()
-        if platform not in ("ios", "android", "mac"):
-            return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}", "is_error": True}
-
+        platform = "android"
         action = _quick_action_id(tool_input)
-        if platform != "android":
-            return _adb_reserved_quick_action(
-                action,
-                platform,
-                "adb android benchmark bridge only supports platform=android quick_action bindings",
-            )
         if bool(tool_input.get("list")) or action == "list":
             output = {"ok": True, "platform": platform, "actions": _adb_quick_action_catalog()}
             return {"output": json.dumps(output), "is_error": False}
@@ -1079,15 +1019,15 @@ def _normalized_point_arg(
     return point
 
 
-def _unknown_coordinate_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
     allowed = {
         "touch_gesture": {
             "type", "point", "start", "end", "x", "y", "start_x", "start_y",
             "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
             "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
         },
-        "mouse_click": {"x", "y", "button"},
         "mouse_move": {"x", "y"},
+        "quick_action": {"action", "list", "alternative", "alternative_index"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)
 
