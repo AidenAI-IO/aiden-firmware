@@ -2,7 +2,7 @@
   "name": "adb_android_basic",
   "version": "1.0",
   "description": "Basic and multi-step ADB Android bridge tests for a Genymotion emulator",
-  "prompt_prefix": "你正在控制一台 Android 模拟器。使用 screenshot 查看屏幕。可以使用 touch_gesture 返回 Home、点击和滑动。可以在英文/Latin 键盘状态下使用 keyboard_text 输入简单英文文本；如果当前是中文输入法（例如空格键显示“拼音”），输入英文前必须先通过地球/输入法键切换到英文/Latin 键盘，不能让英文停留在中文 IME 候选/预编辑状态。如需打开系统设置，优先使用 quick_action，参数为 platform=android, action=open_settings；也可以通过点击设置图标打开。",
+  "prompt_prefix": "你正在控制一台 Android 模拟器。使用 screenshot 查看屏幕。可以使用 touch_gesture 返回 Home、点击和滑动。可以在英文/Latin 键盘状态下使用 keyboard_text 输入简单英文文本；如果当前是中文输入法（例如空格键显示“拼音”），输入英文前必须先通过地球/输入法键切换到英文/Latin 键盘，不能让英文停留在中文 IME 候选/预编辑状态。如需打开系统设置，优先使用 quick_action，参数为 action=open_settings；也可以通过点击设置图标打开。",
   "global_reset": {
     "type": "agent_prompt",
     "prompt": "请返回 Android 主屏幕，并截图确认。",

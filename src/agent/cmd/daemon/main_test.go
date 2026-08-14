@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"flag"
 	"log"
 	"os"
 	"strings"
@@ -15,6 +16,30 @@ import (
 
 	"aiden-agent/internal/agent"
 )
+
+func TestDaemonDeviceTypeFlag(t *testing.T) {
+	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	deviceType := registerDeviceTypeFlag(fs)
+	if err := fs.Parse([]string{"--device-type", "android"}); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if *deviceType != "android" {
+		t.Fatalf("device type flag = %q, want android", *deviceType)
+	}
+}
+
+func TestApplyDeviceTypeOverrideTakesPrecedenceOverConfig(t *testing.T) {
+	cfg := agent.Config{
+		Device: agent.DeviceConfig{DeviceType: "iOS"},
+		HID:    agent.HIDConfig{PointerMode: "absolute"},
+	}
+	if err := applyDeviceTypeOverride(&cfg, "android"); err != nil {
+		t.Fatalf("applyDeviceTypeOverride() error = %v", err)
+	}
+	if cfg.Device.DeviceType != "Android" || cfg.HID.PointerMode != "touchscreen" {
+		t.Fatalf("config = %+v, want Android command-line override", cfg)
+	}
+}
 
 type fakeAudioDialog struct {
 	chunks               []*agent.AudioChunkResult

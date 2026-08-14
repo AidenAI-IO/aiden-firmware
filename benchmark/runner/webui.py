@@ -26,8 +26,14 @@ from typing import Any, Callable, Mapping
 from runner.agent_client import AgentClient
 from runner.analysis import AnalysisResult, analyze_run, config_from_env
 from runner.capture import DEFAULT_SCREENSHOT_TIMEOUT_SEC
+from runner.environment_endpoint import EnvironmentEndpoint
 from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
+from runner.platform import (
+    read_environment_health,
+    resolve_environment_platform,
+    resolve_mock_platform,
+)
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
 
@@ -80,6 +86,8 @@ TERMINAL_TASK_STATUSES = {
 }
 STOP_REQUESTED_JOB_STATUSES = {"stopping", "stopped", "canceled"}
 JOB_REPORT_RUN_ID = "_job-report"
+RUNTIME_CONFIG_DIR_NAMES = {"cache", "log", "memory", "sessions", "skill-state"}
+MEMORY_CONFIG_FILE_NAMES = {"extraction.yaml"}
 
 
 class JobStopped(RuntimeError):
@@ -159,6 +167,7 @@ class Job:
     judge_api_key_set: bool = False
     repeats: int | None = None
     parallel_tasks: int = 1
+    target_platform: str = ""
 
 
 class BenchmarkWebApp:
@@ -458,12 +467,12 @@ class BenchmarkWebApp:
             )
 
         endpoint = str(payload.get("endpoint") or "").strip()
-        if environment_type != "mock":
-            if not endpoint:
-                raise ValueError("endpoint is required")
-            parsed = urllib.parse.urlparse(endpoint)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise ValueError("endpoint must be an http(s) URL")
+        normalized_requested_endpoint = ""
+        if environment_type != "mock" and endpoint:
+            try:
+                normalized_requested_endpoint = EnvironmentEndpoint(endpoint).base
+            except ValueError as exc:
+                raise ValueError("endpoint must be an http(s) base URL") from exc
 
         settings = self._load_webui_settings(include_secrets=True)
         judge_settings = settings.get("judge") if isinstance(settings.get("judge"), dict) else {}
@@ -483,13 +492,6 @@ class BenchmarkWebApp:
             or str(judge_settings.get("api_key") or "").strip()
         )
 
-        job_id = new_job_id()
-        job_dir = self.config.runs_dir / job_id
-        raw_runs_dir = job_dir / "raw"
-        job_dir.mkdir(parents=True, exist_ok=True)
-        raw_runs_dir.mkdir(parents=True, exist_ok=True)
-        port = reserve_free_port()
-        now = now_iso()
         environment_id = str(payload.get("environment_id") or environment_payload.get("id") or "")
         environment_name = str(payload.get("environment_name") or environment_payload.get("name") or "")
         environment_endpoint = str(payload.get("environment_endpoint") or "").strip()
@@ -535,10 +537,36 @@ class BenchmarkWebApp:
             # Single adb device: never run tasks in parallel.
             parallel_tasks = 1
 
+        if environment_type == "mock":
+            endpoint = ""
+            docker_endpoint = ""
+        else:
+            if not environment_endpoint:
+                raise ValueError("resolved environment endpoint is required")
+            try:
+                environment_endpoint = EnvironmentEndpoint(environment_endpoint).base
+            except ValueError as exc:
+                raise ValueError("resolved environment endpoint must be an http(s) base URL") from exc
+            docker_endpoint = endpoint_for_docker(environment_endpoint)
+            if normalized_requested_endpoint and normalized_requested_endpoint not in {
+                environment_endpoint,
+                docker_endpoint,
+            }:
+                raise ValueError("endpoint does not match resolved environment endpoint")
+            endpoint = environment_endpoint
+
+        job_id = new_job_id()
+        job_dir = self.config.runs_dir / job_id
+        raw_runs_dir = job_dir / "raw"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        raw_runs_dir.mkdir(parents=True, exist_ok=True)
+        port = reserve_free_port()
+        now = now_iso()
+
         job = Job(
             id=job_id,
             endpoint=endpoint,
-            docker_endpoint=endpoint_for_docker(endpoint) if endpoint else "",
+            docker_endpoint=docker_endpoint,
             suites=suite_keys,
             environment_endpoint=environment_endpoint,
             environment_id=environment_id,
@@ -791,7 +819,27 @@ class BenchmarkWebApp:
             self._raise_if_job_stop_requested(job)
             self._set_job(job, status="preparing", started_at=now_iso(), message="preparing config")
             agent_config_text = self.get_agent_config()["content"]
-            prepare_run_config(self.config.base_config_dir, Path(job.config_dir), agent_config_text=agent_config_text)
+            if job.environment_type == "mock":
+                resolution = resolve_mock_suites_platform(
+                    self.config.suites_dir,
+                    job.suites,
+                )
+                self._set_job(
+                    job,
+                    target_platform=resolution.value,
+                )
+            else:
+                health = read_environment_health(job.environment_endpoint or job.endpoint)
+                resolution = resolve_environment_platform(health)
+                self._set_job(
+                    job,
+                    target_platform=resolution.value,
+                )
+            prepare_run_config(
+                self.config.base_config_dir,
+                Path(job.config_dir),
+                agent_config_text=agent_config_text,
+            )
             self._raise_if_job_stop_requested(job)
             if job.environment_type == "mock":
                 self._set_job(
@@ -842,6 +890,7 @@ class BenchmarkWebApp:
                 config_dir=Path(job.config_dir),
                 environment_bridge_endpoint=job.docker_endpoint,
                 benchmark_task_id=job_benchmark_task_id(job.id),
+                device_type=job.target_platform,
                 log_path=Path(job.runner_log),
                 stop_requested=lambda: self._job_stop_requested(job),
             )
@@ -1092,6 +1141,7 @@ class BenchmarkWebApp:
                     config_dir=Path(job.config_dir),
                     environment_bridge_endpoint=job.docker_endpoint,
                     benchmark_task_id=benchmark_task_id,
+                    device_type=job.target_platform,
                     log_path=Path(worker_job.runner_log),
                     stop_requested=lambda: (
                         self._job_stop_requested(job)
@@ -1581,6 +1631,24 @@ def suite_uses_mock_environment(path: Path) -> bool:
     return isinstance(data, dict) and suite_data_uses_mock_environment(data)
 
 
+def resolve_mock_suites_platform(suites_dir: Path, suite_keys: list[str]):
+    platforms = set()
+    for suite_key in suite_keys:
+        suite = load_suite(resolve_suite_path(suites_dir, suite_key))
+        if suite.mock_environment is not None and not suite.tasks:
+            platforms.add(suite.mock_environment.platform)
+        for task in suite.tasks:
+            spec = task.mock_environment or suite.mock_environment
+            if spec is None:
+                raise ValueError(
+                    f"mock environment suite {suite_key!r} task {task.id!r} has no mock environment"
+                )
+            platforms.add(spec.platform)
+    if len(platforms) != 1:
+        raise ValueError("mock environment suites must declare exactly one target platform")
+    return resolve_mock_platform(next(iter(platforms)))
+
+
 def resolve_suite_path(suites_dir: Path, key: str) -> Path:
     pure = Path(key)
     if pure.is_absolute() or ".." in pure.parts or not key.endswith(".json"):
@@ -1640,12 +1708,26 @@ def runner_procs_for_stop(value: Any) -> list[subprocess.Popen]:
     return [value]
 
 
-def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text: str | None = None) -> None:
+def prepare_run_config(
+    base_config_dir: Path,
+    dest_dir: Path,
+    agent_config_text: str | None = None,
+) -> None:
     if dest_dir.exists():
         shutil.rmtree(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     if base_config_dir.exists():
         for item in base_config_dir.iterdir():
+            if item.name == "memory":
+                memory_dir = dest_dir / item.name
+                for name in MEMORY_CONFIG_FILE_NAMES:
+                    source = item / name
+                    if source.is_file():
+                        memory_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source, memory_dir / name)
+                continue
+            if item.name in RUNTIME_CONFIG_DIR_NAMES:
+                continue
             target = dest_dir / item.name
             if item.is_dir():
                 shutil.copytree(item, target)
@@ -1672,8 +1754,6 @@ def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text:
             config.write_text(render_agent_template(template.read_text(encoding="utf-8")), encoding="utf-8")
         if not config.exists():
             config.write_text(default_agent_toml(), encoding="utf-8")
-
-
 def ensure_webui_agent_config(base_config_dir: Path, agent_config_path: Path) -> tuple[str, str]:
     if agent_config_path.exists():
         return agent_config_path.read_text(encoding="utf-8"), "saved"
@@ -1860,34 +1940,13 @@ def webui_task_screen_url(job_id: str, task_record_id: str) -> str:
     )
 
 
-def environment_bridge_api_path(path: str, endpoint: str) -> str:
-    path = path.rstrip("/")
-    if path in {"", "/"}:
-        return f"/api/{endpoint}"
-    for suffix in ("/api/setup", "/api/release", "/api/providers/screenshot", "/api/concurrent"):
-        if path == suffix or path.endswith(suffix):
-            return f"{path[:-len(suffix)]}/api/{endpoint}"
-    return f"{path}/api/{endpoint}"
-
-
-def environment_bridge_screen_endpoint(endpoint: str) -> str:
-    raw = str(endpoint or "").strip()
-    if not raw:
-        raise ValueError("environment bridge endpoint is required")
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(f"invalid environment bridge endpoint: {endpoint!r}")
-    path = environment_bridge_api_path(parsed.path, "providers/screenshot")
-    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
-
-
 def read_environment_bridge_screen(endpoint: str, benchmark_task_id: str, *, timeout: float = DEFAULT_SCREENSHOT_TIMEOUT_SEC) -> dict[str, Any]:
     headers = {"Content-Type": "application/json"}
     task_id = str(benchmark_task_id or "").strip()
     if task_id:
         headers["benchmark-task-id"] = task_id
     req = urllib.request.Request(
-        environment_bridge_screen_endpoint(endpoint),
+        EnvironmentEndpoint(endpoint).screen,
         data=b'{"format":"jpeg","quality":80}',
         headers=headers,
         method="POST",
@@ -1909,20 +1968,9 @@ def read_environment_bridge_screen(endpoint: str, benchmark_task_id: str, *, tim
     return payload
 
 
-def environment_bridge_concurrent_endpoint(endpoint: str) -> str:
-    raw = str(endpoint or "").strip()
-    if not raw:
-        raise ValueError("environment bridge endpoint is required")
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(f"invalid environment bridge endpoint: {endpoint!r}")
-    path = environment_bridge_api_path(parsed.path, "concurrent")
-    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
-
-
 def read_environment_bridge_concurrency(endpoint: str, *, timeout: float = 2.0) -> int | None:
     try:
-        url = environment_bridge_concurrent_endpoint(endpoint)
+        url = EnvironmentEndpoint(endpoint).concurrent
         with urllib.request.urlopen(url, timeout=timeout) as response:
             body = response.read()
         payload = json.loads(body.decode("utf-8")) if body else {}
@@ -2156,6 +2204,7 @@ def daemon_compose_env(
     config_dir: Path | None = None,
     environment_bridge_endpoint: str = "",
     benchmark_task_id: str = "",
+    device_type: str = "",
     environment_bridge_mode: bool | None = None,
 ) -> dict[str, str]:
     env = dict(os.environ)
@@ -2181,6 +2230,8 @@ def daemon_compose_env(
         env["no_proxy"] = no_proxy
     if benchmark_task_id:
         env["AIDEN_BENCHMARK_TASK_ID"] = benchmark_task_id
+    if device_type:
+        env["AIDEN_DEVICE_TYPE"] = device_type
     return env
 
 
@@ -2193,6 +2244,7 @@ def start_daemon_compose(
     environment_bridge_endpoint: str,
     log_path: Path,
     benchmark_task_id: str = "",
+    device_type: str = "",
     environment_bridge_mode: bool | None = None,
     stop_requested: Callable[[], bool] | None = None,
 ) -> str:
@@ -2203,6 +2255,7 @@ def start_daemon_compose(
         config_dir=config_dir,
         environment_bridge_endpoint=environment_bridge_endpoint,
         benchmark_task_id=benchmark_task_id,
+        device_type=device_type,
         environment_bridge_mode=environment_bridge_mode,
     )
     run_logged_command(

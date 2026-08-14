@@ -1,10 +1,10 @@
 from __future__ import annotations
 import json
 import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Any
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
+from runner.environment_endpoint import EnvironmentEndpoint
 
 
 class ResetError(RuntimeError):
@@ -14,42 +14,11 @@ class ResetError(RuntimeError):
 STALE_ADB_OWNER_LEASE_STATES = {"expired", "abandoned"}
 
 
-def _environment_api_endpoint(environment_url: str, endpoint: str) -> str:
-    raw = str(environment_url or "").strip()
-    if not raw:
-        raise ResetError("environment_url is required")
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ResetError(f"invalid environment_url: {environment_url!r}")
-    path = parsed.path.rstrip("/")
-    if path in {"", "/"}:
-        path = f"/api/{endpoint}"
-    else:
-        for suffix in ("/api/setup", "/api/release", "/api/providers/screenshot", "/api/concurrent"):
-            if path == suffix or path.endswith(suffix):
-                path = f"{path[:-len(suffix)]}/api/{endpoint}"
-                break
-        else:
-            path = f"{path}/api/{endpoint}"
-    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
-
-
-def environment_setup_endpoint(environment_url: str) -> str:
-    return _environment_api_endpoint(environment_url, "setup")
-
-
-def environment_release_endpoint(environment_url: str) -> str:
-    return _environment_api_endpoint(environment_url, "release")
-
-
-def environment_health_endpoint(environment_url: str) -> str:
-    raw = str(environment_url or "").strip()
-    if not raw:
-        raise ResetError("environment_url is required")
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ResetError(f"invalid environment_url: {environment_url!r}")
-    return urllib.parse.urlunparse(parsed._replace(path="/health", params="", query="", fragment=""))
+def _environment_endpoint(environment_url: str) -> EnvironmentEndpoint:
+    try:
+        return EnvironmentEndpoint(environment_url)
+    except ValueError as exc:
+        raise ResetError(str(exc)) from exc
 
 
 def _environment_headers(task_id: str | None = None) -> dict[str, str]:
@@ -91,7 +60,7 @@ def _post_environment(endpoint: str, *, timeout: int, headers: dict[str, str], a
 
 def call_environment_setup(environment_url: str, timeout: int = 30, task_id: str | None = None) -> dict[str, Any]:
     return _post_environment(
-        environment_setup_endpoint(environment_url),
+        _environment_endpoint(environment_url).setup,
         timeout=timeout,
         headers=_environment_headers(task_id),
         action="setup",
@@ -100,7 +69,7 @@ def call_environment_setup(environment_url: str, timeout: int = 30, task_id: str
 
 def call_environment_release(environment_url: str, timeout: int = 30, task_id: str | None = None) -> dict[str, Any]:
     return _post_environment(
-        environment_release_endpoint(environment_url),
+        _environment_endpoint(environment_url).release,
         timeout=timeout,
         headers=_environment_headers(task_id),
         action="release",
@@ -109,7 +78,7 @@ def call_environment_release(environment_url: str, timeout: int = 30, task_id: s
 
 def clear_stale_adb_android_owner(environment_url: str, timeout: float = 2.0) -> str:
     """Release a leftover ADB Android bridge owner before a fresh benchmark run."""
-    req = urllib.request.Request(environment_health_endpoint(environment_url), method="GET")
+    req = urllib.request.Request(_environment_endpoint(environment_url).health, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read()

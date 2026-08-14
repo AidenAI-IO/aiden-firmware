@@ -220,7 +220,7 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
-	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: textInputStubTool{name: "keyboard_tap", out: "ok"}}
+	hw := &textInputHardwareDeps{quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: textInputStubTool{name: "keyboard_tap", out: "ok"}}
 	hw.pointerMode = "touchscreen"
 	hw.deviceTypeFn = func() string { return "Android" }
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
@@ -308,7 +308,6 @@ func TestSearchLaunchAppUsesRuntimeAndroidPlatformBeforeIOSFallback(t *testing.T
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	hw := &textInputHardwareDeps{
-		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		quickAction:  quick,
 		touchGesture: touch,
 		keyboardText: keyboardText,
@@ -374,7 +373,6 @@ func TestSearchLaunchAppUsesRealQuickActionDeviceType(t *testing.T) {
 		keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 		quick := &QuickActionTool{keyboard: keyboardTap, iosKeyboardIsolation: controller}
 		hw := &textInputHardwareDeps{
-			mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 			quickAction:  quick,
 			touchGesture: touch,
 			keyboardText: keyboardText,
@@ -429,7 +427,6 @@ func TestSearchLaunchAppUsesRealQuickActionDeviceType(t *testing.T) {
 		keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 		quick := &QuickActionTool{}
 		hw := &textInputHardwareDeps{
-			mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 			quickAction:  quick,
 			touchGesture: touch,
 			keyboardText: keyboardText,
@@ -492,7 +489,6 @@ func TestSearchLaunchAppBatchesIOSModifierIsolationAcrossSubtools(t *testing.T) 
 	}
 	vision := &stubTextInputVision{}
 	hw := &textInputHardwareDeps{
-		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		touchGesture: iosIsolationPointerTestTool{controller: controller, events: &events},
 		keyboardTap:  keyboardTap,
 		keyboardText: keyboardText,
@@ -543,7 +539,7 @@ func TestAppSearchOpenFlowFallsBackToShorterTerm(t *testing.T) {
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: kbTap}
+	hw := &textInputHardwareDeps{quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: kbTap}
 	hw.pointerMode = "touchscreen"
 	hw.deviceTypeFn = func() string { return "Android" }
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
@@ -588,7 +584,7 @@ func TestAppSearchOpenFlowRechecksSameTermBeforeFallback(t *testing.T) {
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: kbTap}
+	hw := &textInputHardwareDeps{quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: kbTap}
 	hw.pointerMode = "touchscreen"
 	hw.deviceTypeFn = func() string { return "Android" }
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}

@@ -661,6 +661,21 @@ func (c Config) HIDConfigForDevice() HIDConfig {
 	return hid
 }
 
+// OverrideDeviceType applies a process-local device type override and derives
+// dependent device settings from the canonical value.
+func (c *Config) OverrideDeviceType(value string) error {
+	if c == nil {
+		return errors.New("cannot override device type on nil config")
+	}
+	deviceType, ok := normalizeDeviceType(value)
+	if !ok {
+		return fmt.Errorf("invalid device type override: %s (expected iOS, Android, macOS, windows, or linux)", value)
+	}
+	c.Device.DeviceType = deviceType
+	c.HID.PointerMode = DeviceConfig{DeviceType: deviceType}.PointerModeOrDefault()
+	return nil
+}
+
 func (h HIDConfig) KeyboardDeviceOrDefault() string {
 	if h.KeyboardDevice != "" {
 		return h.KeyboardDevice
@@ -890,7 +905,8 @@ func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
 	if cfg == nil {
 		return
 	}
-	if !metadata.IsDefined("device", "device_type") || strings.TrimSpace(cfg.Device.DeviceType) == "" {
+	deviceTypeConfigured := metadata.IsDefined("device", "device_type") && strings.TrimSpace(cfg.Device.DeviceType) != ""
+	if !deviceTypeConfigured {
 		cfg.Device.DeviceType = inferredDeviceTypeFromLegacyConfig(cfg.HID, cfg.DefaultPlatform)
 	} else if deviceType, ok := normalizeDeviceType(cfg.Device.DeviceType); ok {
 		cfg.Device.DeviceType = deviceType

@@ -5,46 +5,17 @@ import json
 from pathlib import Path
 from typing import Any
 import urllib.error
-import urllib.parse
 import urllib.request
+
+from runner.environment_endpoint import EnvironmentEndpoint
 
 
 class CaptureError(RuntimeError):
     pass
 
 
-PROVIDER_SCREENSHOT_PATH = "/api/providers/screenshot"
 DEFAULT_JPEG_QUALITY = 80
 DEFAULT_SCREENSHOT_TIMEOUT_SEC = 30
-_API_SUFFIXES = (
-    "/api/setup",
-    "/api/release",
-    "/api/providers/screenshot",
-    "/api/concurrent",
-)
-
-
-def _provider_screenshot_path(path: str) -> str:
-    path = path.rstrip("/")
-    if path in {"", "/"}:
-        return PROVIDER_SCREENSHOT_PATH
-    for suffix in _API_SUFFIXES:
-        if path == suffix or path.endswith(suffix):
-            return f"{path[:-len(suffix)]}{PROVIDER_SCREENSHOT_PATH}"
-    return f"{path}{PROVIDER_SCREENSHOT_PATH}"
-
-
-def environment_screen_snapshot_endpoint(environment_url: str) -> str:
-    raw = str(environment_url or "").strip()
-    if not raw:
-        raise CaptureError("environment_url is required for screen capture")
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise CaptureError(f"invalid environment_url: {environment_url!r}")
-    path = _provider_screenshot_path(parsed.path)
-    return urllib.parse.urlunparse(
-        parsed._replace(path=path, params="", query="", fragment="")
-    )
 
 
 def take_environment_screenshot(
@@ -54,7 +25,10 @@ def take_environment_screenshot(
     timeout: int = DEFAULT_SCREENSHOT_TIMEOUT_SEC,
 ) -> tuple[int, int]:
     """Read the environment bridge screenshot provider and write bytes to out_path."""
-    endpoint = environment_screen_snapshot_endpoint(environment_url)
+    try:
+        endpoint = EnvironmentEndpoint(environment_url).screen
+    except ValueError as exc:
+        raise CaptureError(str(exc)) from exc
     headers = {"Content-Type": "application/json"}
     task_id = str(benchmark_task_id or "").strip()
     if task_id:
