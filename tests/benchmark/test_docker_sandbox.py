@@ -32,6 +32,25 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("src/config_web/web/ /oem/usr/share/aiden/config-web/", dockerfile)
         self.assertIn("COPY docker/dev/entrypoint.sh", dockerfile)
 
+    def test_runtime_includes_firmware_python_and_cli_tooling(self):
+        dockerfile = read_repo_file("docker/dev/Dockerfile")
+
+        self.assertIn("debian:bookworm-slim AS runtime-base", dockerfile)
+        self.assertIn("FROM runtime-base AS runtime-tools-builder", dockerfile)
+        self.assertIn("FROM runtime-base AS runtime", dockerfile)
+        self.assertIn("wader/fq/releases/download/v0.17.0", dockerfile)
+        self.assertIn("mikefarah/yq/releases/download/v4.53.3", dockerfile)
+        self.assertIn("BurntSushi/ripgrep/releases/download/15.2.0", dockerfile)
+        self.assertIn("sha256sum -c -", dockerfile)
+        for package in ("python3", "python3-pip"):
+            self.assertIn(package, dockerfile)
+        self.assertIn("/out/fq /usr/bin/fq", dockerfile)
+        self.assertIn("/out/rg /usr/bin/rg", dockerfile)
+        self.assertIn("/out/yq /usr/bin/yq", dockerfile)
+        self.assertIn("PYTHONUSERBASE=/userdata/agent/python", dockerfile)
+        self.assertIn("PIP_USER=1", dockerfile)
+        self.assertIn("PIP_BREAK_SYSTEM_PACKAGES=1", dockerfile)
+
     def test_runtime_bootstrap_defaults_to_text_and_supports_bridge_setup_and_restart(self):
         entrypoint = read_repo_file("docker/dev/entrypoint.sh")
         service = read_repo_file("docker/dev/agent-service.sh")

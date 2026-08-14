@@ -67,6 +67,14 @@ if [ "$agent_port" = 0 ]; then
 fi
 wait_for_agent
 
+compose exec -T aiden sh -ec '
+python3 --version
+python3 -m pip --version
+rg --version
+fq --version
+yq --version
+'
+
 config_page="$(curl -fsS "http://127.0.0.1:$config_port/")"
 agent_page="$(curl -fsS "http://127.0.0.1:$agent_port/")"
 case "$config_page" in
