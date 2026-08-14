@@ -3191,6 +3191,22 @@ TEST_CASE("config_web: GET /api/config/meta returns 503 when stub exits non-zero
     CHECK(resp.status == 503);
 }
 
+TEST_CASE("config_web: GET /api/config/meta supports quoted agent binary paths") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string agent_bin = tmp + "/agent stub's cli";
+    REQUIRE(::symlink(AIDEN_AGENT_STUB_BIN, agent_bin.c_str()) == 0);
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_BIN", agent_bin);
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config/meta");
+    CHECK(resp.status == 200);
+}
+
 TEST_CASE("config_web: POST /api/config derives field types from config metadata") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(

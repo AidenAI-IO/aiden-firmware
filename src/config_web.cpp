@@ -222,6 +222,7 @@ const size_t kMaxAgentConfigSize = 1024 * 1024;
 
 std::string read_file_contents(const char* path, size_t max_size);
 bool read_file_contents_checked(const char* path, size_t max_size, std::string* contents, std::string* error);
+std::string shell_quote(const std::string& text);
 std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
 bool parse_decimal(const std::string& text, int min_value, int max_value, int* value);
@@ -732,7 +733,7 @@ bool load_agent_config_metadata(const ConfigMetadataSchema** schema,
         return false;
     }
 
-    const std::string cmd = std::string(agent_bin) + " config-meta --format=json";
+    const std::string cmd = shell_quote(agent_bin) + " config-meta --format=json";
     CommandResult result = run_command_with_stdin(cmd, "", 2000);
     if (result.timed_out) {
         if (error) *error = "config metadata timed out";
