@@ -10,21 +10,11 @@ from skillopt import webui
 from skillopt.webui import INDEX_HTML, SkillOptJob, SkillOptWebApp, SkillOptWebUIConfig, build_skillopt_command
 
 
-def test_mobilegym_template_instruction_adds_minimal_simulator_context():
+def test_mobilegym_template_omits_legacy_instruction():
     repo_root = Path(__file__).resolve().parents[2]
     template = repo_root / "benchmark" / "mobilegym" / "config" / "agent.toml.template"
     data = tomllib.loads(template.read_text(encoding="utf-8"))
-    instruction = data["instruction"]
-
-    assert "device-control" in instruction
-    assert "MobileGym simulator" in instruction
-    assert "screenshot" in instruction
-    assert "touch_gesture" in instruction
-    assert "unsupported" in instruction
-    assert "same tool with the same arguments" in instruction
-    assert "Do not call open_app" not in instruction
-    assert "Phone Bridge" not in instruction
-    assert "frame_service" not in instruction
+    assert "instruction" not in data
 
 
 def test_build_skillopt_command_uses_bridge_backend_options(tmp_path: Path):
@@ -651,17 +641,17 @@ def test_start_job_writes_benchmark_agent_config(tmp_path: Path, monkeypatch):
     assert 'api_key = "sk-test"' in content
 
 
-def test_start_mobilegym_job_applies_mobilegym_default_instruction(tmp_path: Path, monkeypatch):
+def test_start_mobilegym_job_does_not_inject_legacy_instruction(tmp_path: Path, monkeypatch):
     base_config_dir = tmp_path / "benchmark" / "config"
     base_config_dir.mkdir(parents=True)
     base_config_dir.joinpath("agent.toml").write_text(
-        'instruction = ""\n[model]\nprovider = "openrouter"\napi_key = "sk-test"\n',
+        '[model]\nprovider = "openrouter"\napi_key = "sk-test"\n',
         encoding="utf-8",
     )
     mobilegym_config_dir = tmp_path / "benchmark" / "mobilegym" / "config"
     mobilegym_config_dir.mkdir(parents=True)
     mobilegym_config_dir.joinpath("agent.toml").write_text(
-        'instruction = "You are controlling a MobileGym simulator."\n[model]\nprovider = "fake"\napi_key = ""\n',
+        '[model]\nprovider = "fake"\napi_key = ""\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(webui, "REPO_ROOT", tmp_path)
@@ -677,7 +667,7 @@ def test_start_mobilegym_job_applies_mobilegym_default_instruction(tmp_path: Pat
     command = job["command"]
     agent_config = Path(command[command.index("--agent-config") + 1])
     content = agent_config.read_text(encoding="utf-8")
-    assert 'instruction = "You are controlling a MobileGym simulator."' in content
+    assert "instruction" not in tomllib.loads(content)
     assert 'api_key = "sk-test"' in content
 
 

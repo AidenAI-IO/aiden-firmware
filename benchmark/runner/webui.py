@@ -1877,7 +1877,6 @@ def render_agent_template(text: str) -> str:
 def default_agent_toml() -> str:
     return "\n".join(
         [
-            'instruction = ""',
             'input_mode = "text"',
             'trigger_mode = "manual"',
             "max_iterations = -1",

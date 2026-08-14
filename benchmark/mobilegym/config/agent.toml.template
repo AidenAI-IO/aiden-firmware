@@ -1,10 +1,3 @@
-instruction = """
-Follow the normal device-control behavior for operating a visible UI through screenshots and one verified action at a time.
-
-This run targets a MobileGym simulator. Benchmark setup/reset prepares the starting screen, and the bridge exposes simulator tools such as screenshot, touch_gesture, keyboard_text, keyboard_tap, mouse_move, mouse_scroll, and quick_action.
-
-If a tool result says unsupported, unavailable, unknown, or not connected, do not retry the same tool with the same arguments. Replan from the latest screenshot using available simulator tools, or stop with a concise explanation when no simulator path remains.
-"""
 input_mode = "text"
 max_iterations = 20
 voice_streaming_tts_enabled = false

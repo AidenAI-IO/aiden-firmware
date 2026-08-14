@@ -1,4 +1,3 @@
-instruction = ""
 input_mode = "text"
 trigger_mode = "manual"
 max_iterations = -1
