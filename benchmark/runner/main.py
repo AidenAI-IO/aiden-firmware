@@ -13,7 +13,7 @@ from runner.analysis import AnalysisConfig, _int_env, analyze_run
 from runner.html_report import generate_report_html, upload_report
 from runner.judge import DEFAULT_JUDGE_BASE_URL, JudgeConfig
 from runner.platform import (
-    PlatformResolution,
+    TargetPlatform,
     read_environment_health,
     resolve_daemon_platform,
     resolve_environment_platform,
@@ -317,15 +317,15 @@ def _task_route_id(args: argparse.Namespace, suite: Suite, task_id: str, attempt
 
 
 def _resolve_target_platform(args: argparse.Namespace, *, required: bool = False) -> str:
-    resolution = _resolve_target_platform_resolution(args, required=required)
-    return resolution.platform.value if resolution is not None else ""
+    platform = _resolve_target_platform_enum(args, required=required)
+    return platform.value if platform is not None else ""
 
 
-def _resolve_target_platform_resolution(
+def _resolve_target_platform_enum(
     args: argparse.Namespace,
     *,
     required: bool = False,
-) -> PlatformResolution | None:
+) -> TargetPlatform | None:
     requested = str(getattr(args, "target_platform", "") or "").strip().lower()
     explicit = requested if requested and requested != "auto" else ""
     environment_url = str(getattr(args, "environment_url", "") or "").strip()
@@ -350,7 +350,7 @@ def _resolve_target_platform_resolution(
 
 def _mock_environment_platform(suite: Suite) -> str:
     platforms: set[str] = (
-        {resolve_mock_platform(suite.mock_environment.platform).platform.value}
+        {resolve_mock_platform(suite.mock_environment.platform).value}
         if suite.mock_environment is not None and not suite.tasks
         else set()
     )
@@ -358,7 +358,7 @@ def _mock_environment_platform(suite: Suite) -> str:
         spec = _task_mock_environment(suite, task)
         if spec is None:
             continue
-        platforms.add(resolve_mock_platform(spec.platform).platform.value)
+        platforms.add(resolve_mock_platform(spec.platform).value)
     if len(platforms) != 1:
         raise ValueError("mock environment suite must declare exactly one phone platform")
     return next(iter(platforms))
@@ -398,7 +398,6 @@ def _cmd_run_auto_agent_setup(
     suite: Suite,
     selected_task_ids: list[str],
     target_platform: str,
-    platform_source: str,
     run_id: str,
     run_dir: Path,
 ) -> int:
@@ -431,7 +430,7 @@ def _cmd_run_auto_agent_setup(
         print(f"mock environment started: {mock_server.redacted_url}", flush=True)
     try:
         return _cmd_run_auto_agent_setup_inner(
-            args, suite, selected_task_ids, target_platform, platform_source, run_id, run_dir, mock_server=mock_server
+            args, suite, selected_task_ids, target_platform, run_id, run_dir, mock_server=mock_server
         )
     finally:
         if mock_server is not None:
@@ -443,7 +442,6 @@ def _cmd_run_auto_agent_setup_inner(
     suite: Suite,
     selected_task_ids: list[str],
     target_platform: str,
-    platform_source: str,
     run_id: str,
     run_dir: Path,
     mock_server=None,
@@ -662,7 +660,6 @@ def _cmd_run_auto_agent_setup_inner(
         "judge_config": {"provider": "openrouter", "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "target_platform": target_platform or None,
-        "platform_source": platform_source or None,
         "auto_agent_setup": True,
         "concurrency": max_workers,
         "mock_environment": _mock_environment_manifest(suite),
@@ -713,15 +710,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print("Error: max-concurrency must be non-negative", file=sys.stderr)
         return 2
     try:
-        platform_resolution = _resolve_target_platform_resolution(
+        resolved_platform = _resolve_target_platform_enum(
             args,
             required=bool(args.environment_url),
         )
         target_platform = (
-            platform_resolution.platform.value if platform_resolution is not None else ""
-        )
-        platform_source = (
-            platform_resolution.source.value if platform_resolution is not None else ""
+            resolved_platform.value if resolved_platform is not None else ""
         )
     except Exception as exc:
         print(f"Error: failed to resolve target platform: {exc}", file=sys.stderr)
@@ -735,14 +729,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 2
     if args.auto_agent_setup and _suite_has_mock_environment(suite):
         try:
-            mock_platform = _mock_environment_platform(suite)
+            declared_mock_platform = _mock_environment_platform(suite)
             requested_platform = str(args.target_platform or "").strip().lower()
-            mock_resolution = resolve_mock_platform(
-                mock_platform,
+            resolved_mock_platform = resolve_mock_platform(
+                declared_mock_platform,
                 constraint=requested_platform or None,
             )
-            target_platform = mock_resolution.platform.value
-            platform_source = mock_resolution.source.value
+            target_platform = resolved_mock_platform.value
         except ValueError as exc:
             print(f"Error: failed to resolve target platform: {exc}", file=sys.stderr)
             return 2
@@ -752,7 +745,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
             suite,
             selected_task_ids,
             target_platform,
-            platform_source,
             run_id,
             run_dir,
         )
@@ -772,7 +764,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             client.close()
             return 2
         try:
-            daemon_resolution = resolve_daemon_platform(
+            daemon_platform = resolve_daemon_platform(
                 client.target_platform(),
                 constraint=target_platform or args.target_platform,
             )
@@ -780,17 +772,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
             print(f"failed to validate agent daemon target platform: {exc}", file=sys.stderr)
             client.close()
             return 2
-        if args.environment_url and daemon_resolution.platform.value != target_platform:
+        if args.environment_url and daemon_platform.value != target_platform:
             print(
-                f"agent platform {daemon_resolution.platform.value!r} does not match "
+                f"agent platform {daemon_platform.value!r} does not match "
                 f"environment platform {target_platform!r}",
                 file=sys.stderr,
             )
             client.close()
             return 2
         if not args.environment_url:
-            target_platform = daemon_resolution.platform.value
-            platform_source = daemon_resolution.source.value
+            target_platform = daemon_platform.value
             units = _build_task_units(args, suite, target_platform)
             has_runnable_units = any(not unit[4] for unit in units)
         if (
@@ -935,7 +926,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "judge_config": {"provider": "openrouter", "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "target_platform": target_platform or None,
-        "platform_source": platform_source or None,
         "mock_environment": _mock_environment_manifest(suite),
         "started_at": started, "finished_at": now_iso(),
         "totals": totals,

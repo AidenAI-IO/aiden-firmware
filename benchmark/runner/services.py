@@ -13,7 +13,6 @@ from typing import Any
 
 from runner.agent_client import AgentClient
 from runner.platform import (
-    PlatformSource,
     read_environment_health,
     resolve_environment_platform,
 )
@@ -142,21 +141,18 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
     environment_bridge_endpoint = str(args.environment_bridge_endpoint or "").strip().rstrip("/")
     requested_platform = str(args.target_platform or "").strip().lower()
     target_platform = ""
-    platform_source = ""
     if environment_bridge_endpoint:
         try:
             resolution = resolve_environment_platform(
                 read_environment_health(environment_bridge_endpoint),
                 constraint=requested_platform or None,
             )
-            target_platform = resolution.platform.value
-            platform_source = resolution.source.value
+            target_platform = resolution.value
         except Exception as exc:
             print(f"Error: failed to resolve environment platform: {exc}", file=sys.stderr)
             return 2
     elif requested_platform:
         target_platform = requested_platform
-        platform_source = PlatformSource.CLI_CONSTRAINT.value
     else:
         print(
             "Error: --target-platform is required without --environment-bridge-endpoint",
@@ -220,7 +216,6 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
         "docker_environment_bridge_endpoint": docker_environment_bridge_endpoint,
         "benchmark_task_id": benchmark_task_id if docker_environment_bridge_endpoint else "",
         "target_platform": target_platform,
-        "platform_source": platform_source,
         "stop_command": " ".join(
             daemon_compose_command(
                 "down",

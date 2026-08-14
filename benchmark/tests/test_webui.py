@@ -1069,7 +1069,6 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
         no_judge=True,
         parallel_tasks=2,
         target_platform="android",
-        platform_source="environment_health",
     )
     captured = {}
     releases = []
@@ -2249,10 +2248,8 @@ def test_run_job_mock_mode_skips_shared_agent_daemon(tmp_path: Path, monkeypatch
     assert calls == ["mock.json"]
     assert job.status == "passed"
     assert job.target_platform == "ios"
-    assert job.platform_source == "mock_environment"
     persisted = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
     assert persisted["target_platform"] == "ios"
-    assert persisted["platform_source"] == "mock_environment"
 
 
 def test_webui_html_exposes_mock_environment_run_mode():

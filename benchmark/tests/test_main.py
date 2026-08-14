@@ -450,7 +450,7 @@ def test_run_skips_tasks_outside_target_platform(monkeypatch, tmp_path):
     }
 
 
-def test_run_all_platform_skipped_tasks_uses_daemon_as_platform_source(monkeypatch, tmp_path):
+def test_run_all_platform_skipped_tasks_uses_daemon_platform(monkeypatch, tmp_path):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(
         json.dumps(
@@ -505,7 +505,7 @@ def test_run_all_platform_skipped_tasks_uses_daemon_as_platform_source(monkeypat
     assert rc == 0
     manifest = json.loads((tmp_path / "runs" / "all-skipped-run" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["totals"]["skipped"] == 1
-    assert manifest["platform_source"] == "daemon_status"
+    assert manifest["target_platform"] == "android"
 
 
 def test_run_validates_cli_constraint_against_daemon_before_platform_skips(

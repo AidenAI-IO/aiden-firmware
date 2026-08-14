@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -13,20 +12,6 @@ class TargetPlatform(str, Enum):
     IOS = "ios"
     ANDROID = "android"
     MAC = "mac"
-
-
-class PlatformSource(str, Enum):
-    CLI_CONSTRAINT = "cli_constraint"
-    ENVIRONMENT_HEALTH = "environment_health"
-    LEGACY_ENVIRONMENT_HEALTH = "legacy_environment_health"
-    MOCK_ENVIRONMENT = "mock_environment"
-    DAEMON_STATUS = "daemon_status"
-
-
-@dataclass(frozen=True)
-class PlatformResolution:
-    platform: TargetPlatform
-    source: PlatformSource
 
 
 VALID_TARGET_PLATFORMS = {platform.value for platform in TargetPlatform}
@@ -91,53 +76,45 @@ def resolve_environment_platform(
     health: dict[str, Any],
     *,
     constraint: str | TargetPlatform | None = None,
-) -> PlatformResolution:
+) -> TargetPlatform:
     if "platform" in health:
         platform = normalize_target_platform(
             health.get("platform"), field="environment platform"
         )
-        source = PlatformSource.ENVIRONMENT_HEALTH
     else:
         platform = _legacy_platform_from_environment_health(health)
         if platform is None:
             raise ValueError(
                 "environment bridge health does not report a supported platform"
             )
-        source = PlatformSource.LEGACY_ENVIRONMENT_HEALTH
     _validate_platform_constraint(platform, constraint)
-    return PlatformResolution(platform=platform, source=source)
+    return platform
 
 
 def resolve_mock_platform(
     platform: Any,
     *,
     constraint: str | TargetPlatform | None = None,
-) -> PlatformResolution:
+) -> TargetPlatform:
     resolved = normalize_target_platform(platform, field="mock environment platform")
     _validate_platform_constraint(resolved, constraint)
-    return PlatformResolution(
-        platform=resolved,
-        source=PlatformSource.MOCK_ENVIRONMENT,
-    )
+    return resolved
 
 
 def resolve_daemon_platform(
     platform: Any,
     *,
     constraint: str | TargetPlatform | None = None,
-) -> PlatformResolution:
+) -> TargetPlatform:
     resolved = normalize_target_platform(platform, field="daemon target platform")
     _validate_platform_constraint(resolved, constraint)
-    return PlatformResolution(
-        platform=resolved,
-        source=PlatformSource.DAEMON_STATUS,
-    )
+    return resolved
 
 
 def platform_from_environment_health(health: dict[str, Any]) -> str:
     """Return the canonical health platform for legacy string-based callers."""
     try:
-        return resolve_environment_platform(health).platform.value
+        return resolve_environment_platform(health).value
     except ValueError:
         if "platform" in health:
             raise

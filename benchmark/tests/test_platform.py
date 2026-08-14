@@ -3,8 +3,6 @@ import json
 import pytest
 
 from runner.platform import (
-    PlatformResolution,
-    PlatformSource,
     TargetPlatform,
     platform_from_environment_health,
     read_environment_health,
@@ -72,21 +70,11 @@ def test_platform_from_environment_health_uses_legacy_fields_when_platform_is_ab
 
 
 def test_resolve_environment_platform_returns_canonical_resolution():
-    assert resolve_environment_platform({"platform": "Darwin"}) == PlatformResolution(
-        platform=TargetPlatform.MAC,
-        source=PlatformSource.ENVIRONMENT_HEALTH,
-    )
+    assert resolve_environment_platform({"platform": "Darwin"}) is TargetPlatform.MAC
 
 
-def test_cli_constraint_platform_source_is_canonical():
-    assert PlatformSource.CLI_CONSTRAINT.value == "cli_constraint"
-
-
-def test_resolve_environment_platform_marks_legacy_health_source():
-    assert resolve_environment_platform({"bridge_type": "vphone_ios"}) == PlatformResolution(
-        platform=TargetPlatform.IOS,
-        source=PlatformSource.LEGACY_ENVIRONMENT_HEALTH,
-    )
+def test_resolve_environment_platform_supports_legacy_health():
+    assert resolve_environment_platform({"bridge_type": "vphone_ios"}) is TargetPlatform.IOS
 
 
 def test_resolve_environment_platform_rejects_missing_platform():
@@ -97,27 +85,21 @@ def test_resolve_environment_platform_rejects_missing_platform():
 def test_resolve_environment_platform_treats_cli_platform_as_constraint():
     assert resolve_environment_platform(
         {"platform": "ANDROID"}, constraint="android"
-    ).platform is TargetPlatform.ANDROID
+    ) is TargetPlatform.ANDROID
 
     with pytest.raises(ValueError, match="expected ios.*reported android"):
         resolve_environment_platform({"platform": "android"}, constraint="ios")
 
 
-def test_resolve_mock_platform_has_its_own_source_and_constraint_validation():
-    assert resolve_mock_platform("iOS", constraint="auto") == PlatformResolution(
-        platform=TargetPlatform.IOS,
-        source=PlatformSource.MOCK_ENVIRONMENT,
-    )
+def test_resolve_mock_platform_validates_constraint():
+    assert resolve_mock_platform("iOS", constraint="auto") is TargetPlatform.IOS
 
     with pytest.raises(ValueError, match="expected android.*reported ios"):
         resolve_mock_platform("ios", constraint="android")
 
 
-def test_resolve_daemon_platform_has_its_own_source_and_constraint_validation():
-    assert resolve_daemon_platform("macOS", constraint="mac") == PlatformResolution(
-        platform=TargetPlatform.MAC,
-        source=PlatformSource.DAEMON_STATUS,
-    )
+def test_resolve_daemon_platform_validates_constraint():
+    assert resolve_daemon_platform("macOS", constraint="mac") is TargetPlatform.MAC
 
     with pytest.raises(ValueError, match="expected ios.*reported android"):
         resolve_daemon_platform("android", constraint="ios")

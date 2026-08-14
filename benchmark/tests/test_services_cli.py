@@ -220,7 +220,6 @@ def test_start_agent_daemon_uses_explicit_platform_without_environment_bridge(
     assert captured["kwargs"]["benchmark_task_id"] == ""
     assert captured["kwargs"]["environment_bridge_mode"] is False
     assert captured["kwargs"]["target_platform"] == "android"
-    assert payload["platform_source"] == "cli_constraint"
     assert "--target-platform android" in payload["run_command"]
 
 

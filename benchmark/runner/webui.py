@@ -165,7 +165,6 @@ class Job:
     repeats: int | None = None
     parallel_tasks: int = 1
     target_platform: str = ""
-    platform_source: str = ""
 
 
 class BenchmarkWebApp:
@@ -805,16 +804,14 @@ class BenchmarkWebApp:
                 )
                 self._set_job(
                     job,
-                    target_platform=resolution.platform.value,
-                    platform_source=resolution.source.value,
+                    target_platform=resolution.value,
                 )
             else:
                 health = read_environment_health(job.environment_endpoint or job.endpoint)
                 resolution = resolve_environment_platform(health)
                 self._set_job(
                     job,
-                    target_platform=resolution.platform.value,
-                    platform_source=resolution.source.value,
+                    target_platform=resolution.value,
                 )
             prepare_run_config(
                 self.config.base_config_dir,
