@@ -1,3 +1,5 @@
+import re
+import tomllib
 from pathlib import Path
 
 from runner import agent_config
@@ -6,6 +8,28 @@ from runner.agent_config import (
     load_agent_model_config,
     resolve_agent_model_api_key,
 )
+
+
+def test_mobilegym_agent_template_lists_current_ui_tools():
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "mobilegym"
+        / "config"
+        / "agent.toml.template"
+    )
+    instruction = tomllib.loads(template.read_text(encoding="utf-8"))["instruction"]
+    match = re.search(r"tools such as (.+?)\.", instruction)
+
+    assert match is not None
+    assert [name.strip() for name in match.group(1).split(",")] == [
+        "screenshot",
+        "touch_gesture",
+        "keyboard_text",
+        "keyboard_tap",
+        "mouse_move",
+        "mouse_scroll",
+        "and quick_action",
+    ]
 
 
 def test_load_agent_model_config_reads_model_section(tmp_path: Path):

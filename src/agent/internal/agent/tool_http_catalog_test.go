@@ -378,16 +378,6 @@ func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
 	}
 }
 
-func TestBuiltinToolCatalogOmitsMouseClick(t *testing.T) {
-	runtime := newRuntimeWithTextEntryTools()
-	if _, ok := toolNameSet(runtime.availableTools())["mouse_click"]; ok {
-		t.Fatal("conversational tool catalog unexpectedly exposes mouse_click")
-	}
-	if _, ok := runtime.ToolDescriptorByName("mouse_click"); ok {
-		t.Fatal("HTTP tool catalog unexpectedly exposes mouse_click")
-	}
-}
-
 func TestAgentToolsForPlatformFiltersPlatformSpecificTools(t *testing.T) {
 	specs := toolSpecsForNames([]string{
 		"screenshot",

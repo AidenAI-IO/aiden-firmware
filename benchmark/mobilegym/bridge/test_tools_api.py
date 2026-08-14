@@ -81,15 +81,15 @@ def test_get_tools_catalog(bridge_server):
 
     assert "tools" in data
     tools = {tool["name"]: tool for tool in data["tools"]}
-    assert "screenshot" not in tools
-    assert "touch_gesture" in tools
-    assert "keyboard_text" in tools
-    assert "keyboard_tap" in tools
-    assert "enter_text" in tools
-    assert "mouse_click" not in tools
-    assert "mouse_move" in tools
-    assert "mouse_scroll" in tools
-    assert "quick_action" in tools
+    assert set(tools) == {
+        "touch_gesture",
+        "keyboard_text",
+        "keyboard_tap",
+        "enter_text",
+        "mouse_move",
+        "mouse_scroll",
+        "quick_action",
+    }
 
     assert tools["touch_gesture"]["args_schema"]["additionalProperties"] is False
     touch_props = tools["touch_gesture"]["args_schema"]["properties"]
