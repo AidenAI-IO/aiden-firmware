@@ -943,7 +943,6 @@ func TestBundledDeviceOperatorAllowedToolsCoverEmbeddedPlaybooks(t *testing.T) {
 		"image_diff",
 		"quick_action",
 		"touch_gesture",
-		"mouse_click",
 		"mouse_move",
 		"mouse_scroll",
 		"keyboard_tap",

@@ -6,8 +6,8 @@ HISTORY = [
     {"type": "tool_call", "tool_name": "screenshot", "tool_input": "{}"},
     {"type": "tool_result", "tool_name": "screenshot",
      "content": '{"width":1080,"height":1920,"format":"jpeg","size":4,"data":"AAAA"}'},
-    {"type": "tool_call", "tool_name": "mouse_click", "tool_input": '{"x":540,"y":1200}'},
-    {"type": "tool_result", "tool_name": "mouse_click",
+    {"type": "tool_call", "tool_name": "touch_gesture", "tool_input": '{"type":"tap","point":{"x":540,"y":1200}}'},
+    {"type": "tool_result", "tool_name": "touch_gesture",
      "content": '{"width":1080,"height":1920,"format":"jpeg","size":4,"data":"BBBB","action_output":"ok"}'},
     {"type": "assistant", "content": "已打开。"},
 ]
@@ -16,8 +16,8 @@ def test_extract_trace_collects_tool_calls_in_order():
     trace = extract_trace(HISTORY)
     assert trace.total_tool_calls == 2
     assert trace.tool_calls[0].tool == "screenshot"
-    assert trace.tool_calls[1].tool == "mouse_click"
-    assert trace.tool_calls[1].input == {"x": 540, "y": 1200}
+    assert trace.tool_calls[1].tool == "touch_gesture"
+    assert trace.tool_calls[1].input == {"type": "tap", "point": {"x": 540, "y": 1200}}
     assert trace.final_response == "已打开。"
 
 def test_extract_trace_marks_has_screenshot_when_data_present():
@@ -28,8 +28,8 @@ def test_extract_trace_marks_has_screenshot_when_data_present():
 
 def test_extract_trace_detects_case_insensitive_screenshot_observation_text():
     history = [
-        {"type": "tool_call", "tool_name": "mouse_click", "tool_input": "{}"},
-        {"type": "tool_result", "tool_name": "mouse_click", "content": "Returned a Screenshot Observation after settling."},
+        {"type": "tool_call", "tool_name": "touch_gesture", "tool_input": "{}"},
+        {"type": "tool_result", "tool_name": "touch_gesture", "content": "Returned a Screenshot Observation after settling."},
     ]
 
     trace = extract_trace(history)
@@ -40,7 +40,7 @@ def test_extract_step_screenshots_returns_base64_payloads():
     shots = extract_step_screenshots(HISTORY)
     assert len(shots) == 2
     assert shots[0] == ("screenshot", "AAAA")
-    assert shots[1] == ("mouse_click", "BBBB")
+    assert shots[1] == ("touch_gesture", "BBBB")
 
 def test_extract_trace_handles_malformed_input_gracefully():
     history = [

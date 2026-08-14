@@ -450,8 +450,8 @@ def test_tools_api_actions_are_visible_in_screen_action_log():
         status, body = request_json(
             bridge.base_url,
             "POST",
-            "/api/tools/mouse_click",
-            {"input": {"x": 321, "y": 654, "button": "left"}},
+            "/api/tools/touch_gesture",
+            {"input": {"type": "tap", "point": {"x": 321, "y": 654}}},
         )
         assert status == 200
         assert body["is_error"] is False
@@ -463,8 +463,11 @@ def test_tools_api_actions_are_visible_in_screen_action_log():
             {
                 "episode_id": "reset-ep1",
                 "action_id": "reset-ep1:0001",
-                "tool_name": "mouse_click",
-                "tool_input": {"x": 321, "y": 654, "button": "left"},
+                "tool_name": "touch_gesture",
+                "tool_input": {
+                    "type": "tap",
+                    "point": {"x": 321, "y": 654},
+                },
                 "duration_ms": body["data"]["actions"][0]["duration_ms"],
                 "error": None,
                 "has_screenshot": True,
@@ -472,7 +475,7 @@ def test_tools_api_actions_are_visible_in_screen_action_log():
         ]
 
 
-def test_tools_api_mouse_and_quick_action_inputs_map_to_mobilegym_actions():
+def test_tools_api_pointer_and_quick_action_inputs_map_to_mobilegym_actions():
     with RunningBridge() as bridge:
         status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
         assert status == 200
@@ -481,8 +484,8 @@ def test_tools_api_mouse_and_quick_action_inputs_map_to_mobilegym_actions():
         status, body = request_json(
             bridge.base_url,
             "POST",
-            "/api/tools/mouse_click",
-            {"input": {"x": 321, "y": 654, "button": "right"}},
+            "/api/tools/touch_gesture",
+            {"input": {"type": "tap", "point": {"x": 321, "y": 654}}},
         )
         assert status == 200
         assert body["is_error"] is False
