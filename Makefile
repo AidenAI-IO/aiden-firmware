@@ -30,7 +30,7 @@ sandbox-start:
 	./scripts/start_docker_sandbox.sh
 
 sandbox-update:
-	./scripts/update_docker_sandbox.sh
+	./scripts/start_docker_sandbox.sh --build
 
 sandbox-logs:
 	docker compose logs -f aiden

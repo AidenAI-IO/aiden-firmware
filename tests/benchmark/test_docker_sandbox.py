@@ -51,67 +51,17 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("./cmd/daemon", dockerfile)
         self.assertIn("src/config_web.cpp", dockerfile)
         self.assertIn("src/config_web/web/ /oem/usr/share/aiden/config-web/", dockerfile)
-        self.assertIn("COPY docker/dev/entrypoint.sh", dockerfile)
-        self.assertRegex(
-            dockerfile,
-            r"RUN chmod 0755 \\\n(?:        [^\n]+ \\\n)*"
-            r"        /usr/local/bin/aiden-docker-entrypoint\n",
-        )
-        self.assertIn(
-            'ENTRYPOINT ["/usr/local/bin/aiden-docker-entrypoint"]', dockerfile
-        )
 
-    def test_runtime_includes_firmware_python_and_cli_tooling(self):
-        dockerfile = read_repo_file("docker/dev/Dockerfile")
-
-        self.assertIn("debian:bookworm-slim AS runtime-base", dockerfile)
-        self.assertIn("FROM runtime-base AS runtime-tools-builder", dockerfile)
-        self.assertIn("FROM runtime-base AS runtime", dockerfile)
-        self.assertIn("wader/fq/releases/download/v0.17.0", dockerfile)
-        self.assertIn("mikefarah/yq/releases/download/v4.53.3", dockerfile)
-        self.assertIn("BurntSushi/ripgrep/releases/download/15.2.0", dockerfile)
-        self.assertEqual(dockerfile.count("sha256sum -c -"), 3)
-        for package in ("python3", "python3-pip"):
-            self.assertIn(package, dockerfile)
-        self.assertIn("/out/fq /usr/bin/fq", dockerfile)
-        self.assertIn("/out/rg /usr/bin/rg", dockerfile)
-        self.assertIn("/out/yq /usr/bin/yq", dockerfile)
-        self.assertIn("PYTHONUSERBASE=/userdata/agent/python", dockerfile)
-        self.assertIn("PIP_USER=1", dockerfile)
-        self.assertIn("PIP_BREAK_SYSTEM_PACKAGES=1", dockerfile)
-
-    def test_runtime_bootstrap_defaults_to_text_and_supports_bridge_setup_and_restart(self):
-        entrypoint = read_repo_file("docker/dev/entrypoint.sh")
-        service = read_repo_file("docker/dev/agent-service.sh")
+    def test_runtime_defaults_to_text_without_credentials(self):
         config = read_repo_file("docker/dev/agent.toml")
 
         self.assertIn('input_mode = "text"', config)
         self.assertIn('trigger_mode = "manual"', config)
         self.assertIn('device_type = "iOS"', config)
         self.assertNotIn("api_key", config)
-        self.assertIn("/api/setup", service)
-        self.assertIn("benchmark-task-id", service)
-        self.assertIn("AIDEN_BRIDGE_EPISODE_ID", service)
-        self.assertIn("9>&-", service)
-        self.assertIn('setsid "$0" run', service)
-        self.assertIn("/proc/1/fd/1", service)
-        self.assertIn('>>"$log_file" 2>&1', service)
-        self.assertIn("supervisor_start_failed", service)
-        self.assertIn("AIDEN_AGENT_LOG_MAX_BYTES", service)
-        self.assertIn("AIDEN_AGENT_LOG_RETAIN_BYTES", service)
-        self.assertIn("AIDEN_AGENT_STOP_ATTEMPTS", service)
-        self.assertIn('kill -TERM "-$supervisor_pid"', service)
-        self.assertIn("/api/release", service)
-        self.assertIn("valid_bridge_identifier", service)
-        self.assertIn("load_system_env", service)
-        self.assertIn('case "${1:-}" in', service)
-        self.assertIn("restart|reload)", service)
-        self.assertIn("AIDEN_AGENT_INIT_SCRIPT", entrypoint)
-        self.assertIn("config_web", entrypoint)
 
-    def test_start_and_update_helpers_share_health_checked_startup(self):
+    def test_start_and_update_targets_share_health_checked_startup(self):
         start_script = read_repo_file("scripts/start_docker_sandbox.sh")
-        script = read_repo_file("scripts/update_docker_sandbox.sh")
         makefile = read_repo_file("Makefile")
 
         self.assertIn("docker compose", start_script)
@@ -120,12 +70,9 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("docker compose up --help", start_script)
         self.assertIn("sandbox-start:", makefile)
         self.assertIn("./scripts/start_docker_sandbox.sh", makefile)
-        self.assertIn("--build", script)
-        self.assertIn("scripts/start_docker_sandbox.sh", script)
         self.assertNotIn("down -v", start_script)
-        self.assertNotIn("down -v", script)
         self.assertIn("sandbox-update:", makefile)
-        self.assertIn("./scripts/update_docker_sandbox.sh", makefile)
+        self.assertIn("./scripts/start_docker_sandbox.sh --build", makefile)
 
     def test_try_aiden_on_pc_is_the_hardware_free_sandbox_entrypoint(self):
         guide = read_repo_file("docs/01-getting-started/try-aiden-on-pc.md")

@@ -88,8 +88,8 @@ load_system_env() {
 }
 
 bridge_enabled() {
-    endpoint="${AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT:-${ENVIRONMENT_BRIDGE_ENDPOINT:-}}"
-    mode="${AIDEN_ENVIRONMENT_BRIDGE_MODE:-auto}"
+    endpoint="$1"
+    mode="$2"
     case "$mode" in
         1|true|TRUE|yes|YES|on|ON) [ -n "$endpoint" ] ;;
         0|false|FALSE|no|NO|off|OFF) return 1 ;;
@@ -106,8 +106,8 @@ valid_bridge_identifier() {
 }
 
 bridge_identifiers_valid() {
-    task_id="${AIDEN_BENCHMARK_TASK_ID:-docker-sandbox}"
-    episode_id="${AIDEN_BRIDGE_EPISODE_ID:-docker-sandbox}"
+    task_id="$1"
+    episode_id="$2"
     valid_bridge_identifier "$task_id" && valid_bridge_identifier "$episode_id"
 }
 
@@ -213,11 +213,10 @@ except Exception:
 }
 
 prepare_bridge_episode() {
-    setup_token="${1:-}"
-    endpoint="${AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT:-${ENVIRONMENT_BRIDGE_ENDPOINT:-}}"
-    endpoint="${endpoint%/}"
-    task_id="${AIDEN_BENCHMARK_TASK_ID:-docker-sandbox}"
-    episode_id="${AIDEN_BRIDGE_EPISODE_ID:-docker-sandbox}"
+    endpoint="$1"
+    task_id="$2"
+    episode_id="$3"
+    setup_token="${4:-}"
 
     attempt=1
     health_status="000"
@@ -315,26 +314,32 @@ release_bridge_episode() {
 }
 
 ensure_bridge_episode() {
-    endpoint="$1"
-    task_id="$2"
-    episode_id="$3"
+    ensure_endpoint="$1"
+    ensure_task_id="$2"
+    ensure_episode_id="$3"
 
-    if bridge_session_matches "$endpoint" "$task_id" "$episode_id"; then
-        remote_state="$(bridge_session_remote_state "$endpoint" "$task_id")"
+    if bridge_session_matches \
+        "$ensure_endpoint" "$ensure_task_id" "$ensure_episode_id"; then
+        remote_state="$(bridge_session_remote_state \
+            "$ensure_endpoint" "$ensure_task_id")"
         case "$bridge_session_state:$remote_state" in
             ready:active)
                 return 0
                 ;;
             pending:active|pending:missing)
                 service_log INFO bridge_setup_resuming \
-                    "endpoint=$endpoint task_id=$task_id episode_id=$episode_id"
-                prepare_bridge_episode "$bridge_session_setup_token" || true
+                    "endpoint=$ensure_endpoint task_id=$ensure_task_id episode_id=$ensure_episode_id"
+                prepare_bridge_episode \
+                    "$ensure_endpoint" "$ensure_task_id" "$ensure_episode_id" \
+                    "$bridge_session_setup_token" || true
                 return 0
                 ;;
             ready:missing)
                 service_log INFO bridge_session_missing \
-                    "endpoint=$endpoint task_id=$task_id; setting up a new route"
-                prepare_bridge_episode || true
+                    "endpoint=$ensure_endpoint task_id=$ensure_task_id; setting up a new route"
+                prepare_bridge_episode \
+                    "$ensure_endpoint" "$ensure_task_id" "$ensure_episode_id" \
+                    || true
                 return 0
                 ;;
             *)
@@ -346,7 +351,8 @@ ensure_bridge_episode() {
         release_bridge_identity "$bridge_session_endpoint" "$bridge_session_task_id"
         rm -f "$bridge_session_file"
     fi
-    prepare_bridge_episode || true
+    prepare_bridge_episode \
+        "$ensure_endpoint" "$ensure_task_id" "$ensure_episode_id" || true
 }
 
 run_agent() {
@@ -356,22 +362,24 @@ run_agent() {
     if [ -n "${AIDEN_DEVICE_TYPE:-}" ]; then
         set -- "$@" --device-type "$AIDEN_DEVICE_TYPE"
     fi
-    if bridge_enabled; then
-        endpoint="${AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT:-${ENVIRONMENT_BRIDGE_ENDPOINT:-}}"
-        endpoint="${endpoint%/}"
-        tools="${AIDEN_ENVIRONMENT_BRIDGE_TOOLS:-screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,search_launch_app,mouse_move,mouse_scroll,quick_action,bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,bridge_notification}"
-        task_id="${AIDEN_BENCHMARK_TASK_ID:-docker-sandbox}"
-        episode_id="${AIDEN_BRIDGE_EPISODE_ID:-docker-sandbox}"
-        if bridge_identifiers_valid; then
-            ensure_bridge_episode "$endpoint" "$task_id" "$episode_id"
+    bridge_endpoint="${AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT:-${ENVIRONMENT_BRIDGE_ENDPOINT:-}}"
+    bridge_endpoint="${bridge_endpoint%/}"
+    bridge_mode="${AIDEN_ENVIRONMENT_BRIDGE_MODE:-auto}"
+    bridge_tools="${AIDEN_ENVIRONMENT_BRIDGE_TOOLS:-screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,search_launch_app,mouse_move,mouse_scroll,quick_action,bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,bridge_notification}"
+    bridge_task_id="${AIDEN_BENCHMARK_TASK_ID:-docker-sandbox}"
+    bridge_episode_id="${AIDEN_BRIDGE_EPISODE_ID:-docker-sandbox}"
+    if bridge_enabled "$bridge_endpoint" "$bridge_mode"; then
+        if bridge_identifiers_valid "$bridge_task_id" "$bridge_episode_id"; then
+            ensure_bridge_episode \
+                "$bridge_endpoint" "$bridge_task_id" "$bridge_episode_id"
             if [ "${stopping:-0}" -ne 0 ]; then
                 return 0
             fi
             set -- "$@" \
                 --environment-bridge-mode \
-                --environment-bridge-endpoint "$endpoint" \
-                --environment-bridge-tools "$tools" \
-                --benchmark-task-id "$task_id"
+                --environment-bridge-endpoint "$bridge_endpoint" \
+                --environment-bridge-tools "$bridge_tools" \
+                --benchmark-task-id "$bridge_task_id"
         else
             release_bridge_episode
             service_log ERROR bridge_disabled "task or episode id contains unsupported characters"
