@@ -39,7 +39,7 @@ const simpleActions = {
   'close-wifi-modal': closeWifiModal,
   'connect-selected-wifi': connectSelectedWifi,
   'toggle-wifi-list': toggleWifiListExpanded,
-  'add-model-provider': () => ModelProvidersManager.addProvider(),
+  'add-model-provider': () => ModelProvidersManager.addRecord(),
   'add-tts-provider': () => TtsProvidersManager.addRecord(),
   'add-stt-provider': () => SttProvidersManager.addRecord()
 };
