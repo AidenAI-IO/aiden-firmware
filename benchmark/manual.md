@@ -638,9 +638,7 @@ Agent configuration notes:
   static `memory/extraction.yaml` policy is preserved when present.
 - If `--agent-config` is specified, its content is written as the worker's
   `agent.toml`; if not, the runner prefers rendering `agent.toml` from
-  `--base-config-dir/agent.toml.template`. If neither source exists, setup fails
-  with an explicit error instead of silently generating a benchmark-specific
-  default config.
+  `--base-config-dir/agent.toml.template`.
 
 Example:
 
@@ -778,10 +776,8 @@ Common parameters:
 | `--json` | false | Print machine-readable JSON |
 
 The agent config rules used by `start-agent-daemon` are the same as
-`run --auto-agent-setup`: copy `--base-config-dir` first, then override the
-generated `agent.toml` with `--agent-config`; if `--agent-config` is absent, use
-`agent.toml.template`, and fail if neither config source exists. Platform
-resolution never rewrites that copy. When an environment bridge is provided,
+`run --auto-agent-setup`. Platform resolution never rewrites the generated
+config. When an environment bridge is provided,
 the command resolves its platform once and passes it to the daemon through
 process-local `--device-type`. Without a bridge, an explicit `--device-type` is
 an optional override; if it is omitted, the daemon keeps

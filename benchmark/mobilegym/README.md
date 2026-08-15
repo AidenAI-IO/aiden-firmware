@@ -92,10 +92,6 @@ benchmark/mobilegym/
 └── vendor/mobilegym/               # 上游 MobileGym (submodule)
 ```
 
-Agent configuration is shared with every benchmark environment through
-`benchmark/config/agent.toml.template`; MobileGym does not maintain a separate
-agent configuration.
-
 **移除的组件**（不再需要）：
 - ❌ `adapter/register.py` - agent 注册
 - ❌ `adapter/aiden_go_agent.py` - MobileGym Agent 适配器
