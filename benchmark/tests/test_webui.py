@@ -188,17 +188,19 @@ def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
         '\n'.join(
             [
                 '[model]',
-                'provider = "{{MODEL_PROVIDER}}"',
-                'model = "{{MODEL_NAME}}"',
-                'api_key = "{{MODEL_API_KEY}}"',
+                'provider = "{{AIDEN_BENCHMARK_AGENT_PROVIDER}}"',
+                'model = "{{AIDEN_BENCHMARK_AGENT_MODEL}}"',
+                'base_url = "{{AIDEN_BENCHMARK_AGENT_BASE_URL}}"',
+                'api_key = "{{AIDEN_BENCHMARK_AGENT_API_KEY}}"',
                 'control = "{{CONTROL_TOKEN_FILE}}"',
             ]
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("MODEL_PROVIDER", "openai")
-    monkeypatch.setenv("MODEL_NAME", "gpt-test")
-    monkeypatch.setenv("MODEL_API_KEY", "sk-test")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_PROVIDER", "openai")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_MODEL", "gpt-test")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_BASE_URL", "https://agent.example/v1")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_API_KEY", "sk-test")
 
     dest = tmp_path / "dest"
     webui.prepare_run_config(base, dest)
@@ -206,6 +208,7 @@ def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
     rendered = (dest / "agent.toml").read_text(encoding="utf-8")
     assert 'provider = "openai"' in rendered
     assert 'model = "gpt-test"' in rendered
+    assert 'base_url = "https://agent.example/v1"' in rendered
     assert 'api_key = "sk-test"' in rendered
     assert 'control = "/config/control_token"' in rendered
     assert "voice_streaming_tts_enabled = false" in rendered
@@ -214,6 +217,52 @@ def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
     assert (dest / "control_token").exists()
     assert (dest / "memory").is_dir()
     assert (dest / "skill-state").is_dir()
+
+
+def test_prepare_run_config_ignores_legacy_agent_model_environment(tmp_path: Path, monkeypatch):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "agent.toml.template").write_text(
+        '\n'.join(
+            [
+                '[model]',
+                'provider = "{{AIDEN_BENCHMARK_AGENT_PROVIDER}}"',
+                'model = "{{AIDEN_BENCHMARK_AGENT_MODEL}}"',
+                'base_url = "{{AIDEN_BENCHMARK_AGENT_BASE_URL}}"',
+                'api_key = "{{AIDEN_BENCHMARK_AGENT_API_KEY}}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    for name, value in {
+        "MODEL_PROVIDER": "legacy-provider",
+        "MODEL_NAME": "legacy-model",
+        "MODEL_BASE_URL": "https://legacy.example/v1",
+        "MODEL_API_KEY": "legacy-key",
+        "AIDEN_MODEL": "legacy-aiden-model",
+        "AIDEN_MODEL_PROVIDER": "legacy-aiden-provider",
+        "AIDEN_MODEL_BASE_URL": "https://legacy-aiden.example/v1",
+        "AIDEN_MODEL_API_KEY": "legacy-aiden-key",
+        "OPENAI_MODEL": "legacy-openai-model",
+        "OPENROUTER_API_KEY": "legacy-openrouter-key",
+    }.items():
+        monkeypatch.setenv(name, value)
+    for name in (
+        "AIDEN_BENCHMARK_AGENT_PROVIDER",
+        "AIDEN_BENCHMARK_AGENT_MODEL",
+        "AIDEN_BENCHMARK_AGENT_BASE_URL",
+        "AIDEN_BENCHMARK_AGENT_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest)
+
+    rendered = (dest / "agent.toml").read_text(encoding="utf-8")
+    assert 'provider = "fake"' in rendered
+    assert 'model = ""' in rendered
+    assert 'base_url = ""' in rendered
+    assert 'api_key = ""' in rendered
 
 
 def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
@@ -233,6 +282,54 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     assert "voice_progress_speech_enabled = false" in rendered
     assert (dest / "control_token").exists()
     assert (dest / "memory").is_dir()
+
+
+def test_prepare_run_config_materializes_agent_credential_environment_references(
+    tmp_path: Path, monkeypatch
+):
+    base = tmp_path / "base"
+    base.mkdir()
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-agent-secret")
+    agent_config = """
+[model_providers.benchmark]
+type = "anthropic"
+api_key = "$ANTHROPIC_AUTH_TOKEN"
+
+[model]
+provider = "benchmark"
+model = "claude-opus-5"
+""".strip()
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest, agent_config_text=agent_config)
+
+    rendered = (dest / "agent.toml").read_text(encoding="utf-8")
+    assert 'api_key = "sk-agent-secret"' in rendered
+    assert "$ANTHROPIC_AUTH_TOKEN" not in rendered
+
+
+def test_prepare_run_config_rejects_missing_agent_credential_environment_reference(
+    tmp_path: Path, monkeypatch
+):
+    base = tmp_path / "base"
+    base.mkdir()
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    agent_config = """
+[model_providers.benchmark]
+type = "anthropic"
+api_key = "$ANTHROPIC_AUTH_TOKEN"
+
+[model]
+provider = "benchmark"
+model = "claude-opus-5"
+""".strip()
+
+    with pytest.raises(ValueError, match="ANTHROPIC_AUTH_TOKEN"):
+        webui.prepare_run_config(
+            base,
+            tmp_path / "dest",
+            agent_config_text=agent_config,
+        )
 
 
 def test_prepare_run_config_does_not_copy_runtime_state(tmp_path: Path):
@@ -416,11 +513,11 @@ def test_webui_agent_config_persists_under_runs_dir(tmp_path: Path, monkeypatch)
     base = tmp_path / "base"
     base.mkdir()
     (base / "agent.toml.template").write_text(
-        '[model]\nprovider = "{{MODEL_PROVIDER}}"\nmodel = "{{MODEL_NAME}}"\n',
+        '[model]\nprovider = "{{AIDEN_BENCHMARK_AGENT_PROVIDER}}"\nmodel = "{{AIDEN_BENCHMARK_AGENT_MODEL}}"\n',
         encoding="utf-8",
     )
-    monkeypatch.setenv("MODEL_PROVIDER", "openai")
-    monkeypatch.setenv("MODEL_NAME", "gpt-test")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_PROVIDER", "openai")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_MODEL", "gpt-test")
     app = webui.BenchmarkWebApp(webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=base))
 
     initial = app.get_agent_config()
@@ -598,6 +695,52 @@ def test_start_job_records_judge_settings_without_exposing_api_key(tmp_path: Pat
     assert job["judge_api_key_set"] is True
     assert "judge_api_key" not in job
     assert app._job_judge_api_keys[job["id"]] == "sk-judge-secret"
+
+
+def test_start_job_rejects_recovered_mobilegym_environment(tmp_path: Path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    recovered = webui.MobileGymEnvironment(
+        id="mg-old",
+        name="MobileGym recovered",
+        endpoint="http://host.docker.internal:19090",
+        public_endpoint="http://127.0.0.1:19090",
+        web_url="http://127.0.0.1:18173",
+        status="stale",
+        container_name="aiden-mobilegym-env-mg-old",
+    )
+    app.env_manager._environments[recovered.id] = recovered
+    monkeypatch.setattr(webui, "read_environment_bridge_concurrency", lambda endpoint: 3)
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(webui.threading, "Thread", FakeThread)
+
+    with pytest.raises(ValueError, match="fresh MobileGym environment"):
+        app.start_job(
+            {
+                "environment_type": "mobilegym",
+                "environment_id": recovered.id,
+                "suites": ["suite.json"],
+                "no_judge": True,
+            }
+        )
 
 
 def test_start_job_persists_job_record_without_api_key(tmp_path: Path, monkeypatch):
@@ -1019,7 +1162,8 @@ def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatc
     assert "--judge-base-url" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--judge-base-url") + 1] == "https://judge.example.com/v1"
     assert "--no-judge" not in captured["cmd"]
-    assert captured["env"]["OPENROUTER_API_KEY"] == "sk-judge-secret"
+    assert captured["env"]["AIDEN_BENCHMARK_JUDGE_API_KEY"] == "sk-judge-secret"
+    assert "OPENROUTER_API_KEY" not in captured["env"]
 
 
 def test_run_suite_passes_mobilegym_environment_url(tmp_path: Path, monkeypatch):
@@ -1059,6 +1203,7 @@ def test_run_suite_passes_mobilegym_environment_url(tmp_path: Path, monkeypatch)
 
     def fake_popen(cmd, **kwargs):
         captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
         return FakeProc()
 
     monkeypatch.setattr(webui.subprocess, "Popen", fake_popen)
@@ -1067,6 +1212,7 @@ def test_run_suite_passes_mobilegym_environment_url(tmp_path: Path, monkeypatch)
 
     assert "--environment-url" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
+    assert captured["env"][webui.MOBILEGYM_PREFLIGHT_COMPLETE_ENV] == "1"
 
 
 def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
@@ -1232,6 +1378,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
         captured["owner_job_id"] = owner_job_id
         captured["extra_owner_ids"] = extra_owner_ids
         captured["cmd"] = cmd
+        captured["env"] = env
         run_id = cmd[cmd.index("--run-id") + 1]
         run_path = raw_runs_dir / run_id
         run_path.mkdir(parents=True)
@@ -1260,6 +1407,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
         Path(job.config_dir) / "control_token"
     )
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
+    assert captured["env"][webui.MOBILEGYM_PREFLIGHT_COMPLETE_ENV] == "1"
     assert "--target-platform" not in captured["cmd"]
     assert releases == [("http://127.0.0.1:19090", 2, "suite.json:t1")]
     assert result["exit_code"] == 0
@@ -1271,6 +1419,82 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
     assert task_record.agent_url == "http://127.0.0.1:18081"
     assert task_record.report_url == f"/reports/{job.id}/{result['run_id']}/report.html"
     assert task_record.screen_url == webui.webui_task_screen_url(job.id, task_record.id)
+
+
+@pytest.mark.parametrize("parallel_tasks", [1, 2])
+def test_mobilegym_webui_job_preflights_before_starting_workers(
+    tmp_path: Path, monkeypatch, parallel_tasks: int
+):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=tmp_path / "suites",
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "base-config",
+            build_daemon_image=False,
+        )
+    )
+    job_dir = tmp_path / "runs" / "job-test"
+    (job_dir / "raw").mkdir(parents=True)
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        environment_endpoint="http://127.0.0.1:19090",
+        suites=["suite.json"],
+        environment_type="mobilegym",
+        agent_url="http://127.0.0.1:18080",
+        config_dir=str(job_dir / "config"),
+        raw_runs_dir=str(job_dir / "raw"),
+        state_file=str(job_dir / "state.json"),
+        runner_log=str(job_dir / "runner.log"),
+        daemon_log=str(job_dir / "daemon.log"),
+        no_judge=True,
+        parallel_tasks=parallel_tasks,
+    )
+    events = []
+
+    monkeypatch.setattr(app, "get_agent_config", lambda: {"content": ""})
+    monkeypatch.setattr(webui, "prepare_run_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        webui,
+        "read_environment_health",
+        lambda endpoint: {
+            "bridge_type": "mobilegym",
+            "platform": "android",
+            "env_count": parallel_tasks,
+        },
+    )
+    monkeypatch.setattr(
+        webui,
+        "preflight_mobilegym_environment",
+        lambda endpoint, health=None: events.append(("preflight", endpoint, health)),
+    )
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_refresh_job_report", lambda *args, **kwargs: None)
+    if parallel_tasks > 1:
+        monkeypatch.setattr(
+            app,
+            "_run_mobilegym_suite_parallel",
+            lambda current_job, suite_key: events.append(("parallel", suite_key)),
+        )
+    else:
+        monkeypatch.setattr(webui, "start_daemon_compose", lambda *args, **kwargs: "container-id")
+        monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+        monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+        monkeypatch.setattr(app, "_wait_for_daemon", lambda *args, **kwargs: None)
+        monkeypatch.setattr(app, "_release_job_environment", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            app,
+            "_run_suite",
+            lambda current_job, suite_key: events.append(("single", suite_key)),
+        )
+
+    app._run_job(job)
+
+    assert events[0][0] == "preflight"
+    assert events[0][1] == "http://127.0.0.1:19090"
+    assert events[0][2]["env_count"] == parallel_tasks
+    assert events[1] == ("parallel" if parallel_tasks > 1 else "single", "suite.json")
 
 
 def test_read_task_log_returns_task_worker_logs(tmp_path: Path):

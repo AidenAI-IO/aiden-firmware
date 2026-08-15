@@ -62,7 +62,7 @@ uv run python -m runner start-agent-daemon \
   --environment-bridge-endpoint http://127.0.0.1:8899
 
 # 3. Run the benchmark (take --agent-url / token from step 2's output).
-#    This command enables the judge — export OPENROUTER_API_KEY first;
+#    This command enables the judge — export AIDEN_BENCHMARK_JUDGE_API_KEY first;
 #    see the "Judging" section. Append --no-judge to only exercise the pipeline.
 uv run python -m runner run \
   --suite suites/adb_android_basic.json \
@@ -111,7 +111,7 @@ a still-running bridge via its pidfile + a `/health` probe.
 
 The judge scores each task's rubric item by item using the pre/post screenshots
 and the trace (e.g. "did Settings actually open?", "was the alarm count
-correct?"), over an OpenRouter-compatible endpoint. The judge model is
+correct?"), over an OpenAI-compatible endpoint. The judge model is
 completely independent of the agent-under-test model (the agent model is set in
 `agent.toml`).
 
@@ -119,12 +119,12 @@ completely independent of the agent-under-test model (the agent model is set in
   the hard assertions (an action ran, no timeout). Good for first verifying that
   the pipeline works end to end.
 - **Judge enabled** (the default for `run`, i.e. without `--no-judge`): you must
-  provide `OPENROUTER_API_KEY`, otherwise it fails with
-  `missing env var OPENROUTER_API_KEY`.
+  provide `AIDEN_BENCHMARK_JUDGE_API_KEY`, otherwise it fails with
+  `missing env var AIDEN_BENCHMARK_JUDGE_API_KEY`.
 
 ```bash
 cd benchmark
-export OPENROUTER_API_KEY=sk-or-...
+export AIDEN_BENCHMARK_JUDGE_API_KEY=...
 
 uv run python -m runner run \
   --suite suites/adb_android_basic.json \
@@ -135,8 +135,9 @@ uv run python -m runner run \
   -v
 ```
 
-`--judge-model` can be omitted (default `anthropic/claude-sonnet-4-6`); pass an
-OpenRouter model name to use a different judge model.
+`--judge-model` can be omitted (default `anthropic/claude-sonnet-4-6`); pass the
+model name accepted by the configured OpenAI-compatible endpoint to use a
+different judge model.
 
 > The correctness of the multi-step tasks (count alarms in Clock / check WiFi /
 > open the app drawer) can only be verified by the judge; under `--no-judge`
@@ -149,7 +150,7 @@ saved in the run directory, so you can re-score **without re-running the
 device**:
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...
+export AIDEN_BENCHMARK_JUDGE_API_KEY=...
 uv run python -m runner rejudge \
   --run-dir runs/<that run's directory> \
   --judge-model anthropic/claude-sonnet-4-6

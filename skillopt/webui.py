@@ -22,7 +22,7 @@ from typing import Any, Mapping
 from runner.agent_config import resolve_agent_model_api_key
 from runner.environment import EnvironmentManager
 from runner.config import AgentConfigManager
-from runner.judge import JudgeConfig
+from runner.judge import DEFAULT_JUDGE_API_KEY_ENV, JudgeConfig
 from skillopt.benchmark_backend import load_benchmark_task_results
 from skillopt.phase_artifacts import latest_phase_record, load_phase_records, progress_from_phase_record
 from skillopt.score import task_result_to_rollout
@@ -517,6 +517,7 @@ class SkillOptWebApp:
             judge_api_key = agent_config_api_key_for_job(job, env=env)
         if judge_api_key:
             env["OPENROUTER_API_KEY"] = judge_api_key
+            env[DEFAULT_JUDGE_API_KEY_ENV] = judge_api_key
         env["PYTHONUNBUFFERED"] = "1"
         with Path(job.log_path).open("wb") as log:
             log.write(("$ " + " ".join(job.command) + "\n").encode("utf-8"))
@@ -1657,7 +1658,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="judge-inline">
             <label class="check-label"><input id="judgeEnabled" type="checkbox" checked> Enable judge</label>
             <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="agent.toml [model].model"></div>
-            <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="OPENROUTER_API_KEY"></div>
+            <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="AIDEN_BENCHMARK_JUDGE_API_KEY"></div>
           </div>
           <div class="run-actions">
             <button id="runBtn" class="primary">Run selected target</button>
@@ -2028,7 +2029,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('judgeModel').value = String(judge.model || DEFAULT_JUDGE_MODEL);
       const keyInput = document.getElementById('judgeApiKey');
       keyInput.value = '';
-      keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'OPENROUTER_API_KEY';
+      keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'AIDEN_BENCHMARK_JUDGE_API_KEY';
       const so = settings.skillopt || {};
       if(so.budget) document.getElementById('budget').value = String(so.budget);
       if(so.edit_budget) document.getElementById('editBudget').value = String(so.edit_budget);

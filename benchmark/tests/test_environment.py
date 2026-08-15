@@ -48,3 +48,31 @@ def test_format_container_age_accepts_docker_inspect_rfc3339nano():
 
 def test_format_container_age_returns_unknown_for_future_timestamp():
     assert environment._format_container_age("2999-01-01T00:00:00Z") == "age unknown"
+
+
+def test_recovered_mobilegym_container_is_not_reusable_for_new_runs(monkeypatch, tmp_path: Path):
+    manager = _manager_without_discovery(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        environment,
+        "_docker_published_port_safe",
+        lambda container_name, container_port: 19090 if container_port == 9090 else 18173,
+    )
+    monkeypatch.setattr(environment, "_check_endpoint_health", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        environment,
+        "_docker_inspect_created",
+        lambda container_name: "2026-08-14T00:00:00Z",
+    )
+
+    recovered = manager._build_recovered_env(
+        {
+            "name": "aiden-mobilegym-env-mg-old",
+            "id": "container-id",
+            "created_at": "2026-08-14 08:00:00 +0800 CST",
+            "image": "aiden-mobilegym-simulator:test",
+        }
+    )
+
+    assert recovered is not None
+    assert recovered.status == "stale"
+    assert "start a fresh environment" in recovered.message

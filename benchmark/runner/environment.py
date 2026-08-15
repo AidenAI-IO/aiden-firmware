@@ -219,9 +219,12 @@ class EnvironmentManager:
         age_label = _format_container_age(created_iso) if created_iso else "age unknown"
 
         if is_healthy:
-            status = "running"
+            status = "stale"
             name = f"MobileGym (recovered, {age_label})"
-            message = "recovered from existing docker container"
+            message = (
+                "recovered from a previous WebUI session; remove it and start "
+                "a fresh environment before running benchmarks"
+            )
         else:
             status = "unhealthy"
             name = f"MobileGym (recovered, {age_label}, unhealthy)"

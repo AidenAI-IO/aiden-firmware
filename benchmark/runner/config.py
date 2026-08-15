@@ -6,15 +6,29 @@ used by both benchmark/runner/webui.py and skillopt/webui.py.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
+from typing import Mapping
 
 
 VOICE_SIDE_EFFECT_DEFAULTS = (
     "voice_streaming_tts_enabled",
     "voice_tool_call_speech",
     "voice_progress_speech_enabled",
+)
+
+BENCHMARK_AGENT_PROVIDER_ENV = "AIDEN_BENCHMARK_AGENT_PROVIDER"
+BENCHMARK_AGENT_MODEL_ENV = "AIDEN_BENCHMARK_AGENT_MODEL"
+BENCHMARK_AGENT_BASE_URL_ENV = "AIDEN_BENCHMARK_AGENT_BASE_URL"
+BENCHMARK_AGENT_API_KEY_ENV = "AIDEN_BENCHMARK_AGENT_API_KEY"
+
+AGENT_CREDENTIAL_KEYS = ("api_key", "relay_api_key")
+_AGENT_CREDENTIAL_ENV_REFERENCE = re.compile(
+    rf"(?m)^(?P<prefix>\s*(?:{'|'.join(AGENT_CREDENTIAL_KEYS)})\s*=\s*)"
+    r"(?P<quote>['\"])(?P<reference>\$[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?P=quote)(?P<suffix>\s*(?:#.*)?)$"
 )
 
 
@@ -178,29 +192,39 @@ def render_agent_template(text: str) -> str:
         Rendered text with variables substituted
     """
     replacements = {
-        "MODEL_PROVIDER": (
-            os.getenv("MODEL_PROVIDER")
-            or os.getenv("AIDEN_MODEL_PROVIDER")
-            or "fake"
-        ),
-        "MODEL_NAME": (
-            os.getenv("MODEL_NAME")
-            or os.getenv("AIDEN_MODEL")
-            or os.getenv("OPENAI_MODEL")
-            or ""
-        ),
-        "MODEL_BASE_URL": (
-            os.getenv("MODEL_BASE_URL") or os.getenv("AIDEN_MODEL_BASE_URL") or ""
-        ),
-        "MODEL_API_KEY": (
-            os.getenv("MODEL_API_KEY")
-            or os.getenv("OPENROUTER_API_KEY")
-            or os.getenv("AIDEN_MODEL_API_KEY")
-            or ""
-        ),
+        BENCHMARK_AGENT_PROVIDER_ENV: os.getenv(BENCHMARK_AGENT_PROVIDER_ENV) or "fake",
+        BENCHMARK_AGENT_MODEL_ENV: os.getenv(BENCHMARK_AGENT_MODEL_ENV) or "",
+        BENCHMARK_AGENT_BASE_URL_ENV: os.getenv(BENCHMARK_AGENT_BASE_URL_ENV) or "",
+        BENCHMARK_AGENT_API_KEY_ENV: os.getenv(BENCHMARK_AGENT_API_KEY_ENV) or "",
         "CONTROL_TOKEN_FILE": "/config/control_token",
     }
     rendered = text
     for key, value in replacements.items():
-        rendered = rendered.replace("{{" + key + "}}", value.replace('"', '\\"'))
+        escaped = json.dumps(value, ensure_ascii=False)[1:-1]
+        rendered = rendered.replace("{{" + key + "}}", escaped)
     return rendered
+
+
+def materialize_agent_config_credentials(
+    content: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Replace credential environment references before mounting config in Docker."""
+    source_env = os.environ if env is None else env
+
+    def replace(match: re.Match[str]) -> str:
+        env_name = match.group("reference")[1:]
+        value = source_env.get(env_name)
+        if value is None or not value.strip():
+            raise ValueError(
+                "agent.toml credential references missing environment variable "
+                f"{env_name}"
+            )
+        return (
+            match.group("prefix")
+            + json.dumps(value, ensure_ascii=False)
+            + match.group("suffix")
+        )
+
+    return _AGENT_CREDENTIAL_ENV_REFERENCE.sub(replace, content)

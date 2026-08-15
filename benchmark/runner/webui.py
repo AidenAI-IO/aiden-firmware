@@ -28,10 +28,14 @@ from runner.analysis import AnalysisResult, analyze_run, config_from_env
 from runner.capture import DEFAULT_SCREENSHOT_TIMEOUT_SEC
 from runner.environment_endpoint import EnvironmentEndpoint
 from runner.html_report import generate_report_html
-from runner.judge import JudgeConfig
+from runner.judge import DEFAULT_JUDGE_API_KEY_ENV, JudgeConfig
 from runner.platform import (
     read_environment_health,
     resolve_environment_platform,
+)
+from runner.preflight import (
+    MOBILEGYM_PREFLIGHT_COMPLETE_ENV,
+    preflight_mobilegym_environment,
 )
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
@@ -46,6 +50,7 @@ try:
     from benchmark.runner.config import (
         AgentConfigManager,
         apply_agent_toml_runtime_defaults,
+        materialize_agent_config_credentials,
         missing_agent_config_error,
         render_agent_template,
         validate_agent_toml,
@@ -60,6 +65,7 @@ except ImportError:
     from runner.config import (
         AgentConfigManager,
         apply_agent_toml_runtime_defaults,
+        materialize_agent_config_credentials,
         missing_agent_config_error,
         render_agent_template,
         validate_agent_toml,
@@ -519,6 +525,11 @@ class BenchmarkWebApp:
         if environment_type == "mobilegym":
             mobilegym_env = self.env_manager.get(environment_id)
             if mobilegym_env is not None:
+                if mobilegym_env.status != "running":
+                    raise ValueError(
+                        "selected MobileGym environment is not fresh; remove it "
+                        "and start a fresh MobileGym environment"
+                    )
                 environment_endpoint = mobilegym_env.public_endpoint.rstrip("/")
                 environment_web_url = mobilegym_env.web_url
                 parallel_tasks = mobilegym_env.parallel_envs
@@ -833,6 +844,10 @@ class BenchmarkWebApp:
             if job.environment_type != "mock":
                 health = read_environment_health(job.environment_endpoint or job.endpoint)
                 resolution = resolve_environment_platform(health)
+                preflight_mobilegym_environment(
+                    job.environment_endpoint or job.endpoint,
+                    health=health,
+                )
                 self._set_job(
                     job,
                     target_platform=resolution.value,
@@ -1205,11 +1220,12 @@ class BenchmarkWebApp:
             if job.repeats:
                 cmd.extend(["--repeats", str(job.repeats)])
             env = os.environ.copy()
+            env[MOBILEGYM_PREFLIGHT_COMPLETE_ENV] = "1"
             if not job.no_judge:
                 with self._lock:
                     judge_api_key = self._job_judge_api_keys.get(job.id, "")
                 if judge_api_key:
-                    env["OPENROUTER_API_KEY"] = judge_api_key
+                    env[DEFAULT_JUDGE_API_KEY_ENV] = judge_api_key
             exit_code = self._run_runner_process(
                 worker_job,
                 cmd,
@@ -1411,11 +1427,12 @@ class BenchmarkWebApp:
             cmd.extend(["--repeats", str(job.repeats)])
         append_log(Path(job.runner_log), "\n$ " + " ".join(cmd))
         env = os.environ.copy()
+        env[MOBILEGYM_PREFLIGHT_COMPLETE_ENV] = "1"
         if not job.no_judge:
             with self._lock:
                 judge_api_key = self._job_judge_api_keys.get(job.id, "")
             if judge_api_key:
-                env["OPENROUTER_API_KEY"] = judge_api_key
+                env[DEFAULT_JUDGE_API_KEY_ENV] = judge_api_key
         self._raise_if_job_stop_requested(job)
         popen_kwargs: dict[str, Any] = {}
         if os.name == "posix":
@@ -1508,7 +1525,7 @@ class BenchmarkWebApp:
             with self._lock:
                 judge_api_key = self._job_judge_api_keys.get(job.id, "")
             if judge_api_key:
-                env["OPENROUTER_API_KEY"] = judge_api_key
+                env[DEFAULT_JUDGE_API_KEY_ENV] = judge_api_key
         exit_code = self._run_runner_process(job, cmd, env)
 
         result = {
@@ -1766,6 +1783,7 @@ def prepare_run_config(
             raise missing_agent_config_error(base_config_dir)
 
     content = apply_agent_toml_runtime_defaults(config.read_text(encoding="utf-8"))
+    content = materialize_agent_config_credentials(content)
     validate_agent_toml(content)
     config.write_text(content, encoding="utf-8")
 
@@ -2398,7 +2416,7 @@ def write_job_report(job: Job, *, analysis_api_key: str = "") -> str:
         "selected_task_ids": [str(row.get("task_id") or "") for row in rows],
         "agent_url": job.agent_url,
         "environment_url": job.environment_endpoint or None,
-        "judge_config": None if job.no_judge else {"provider": "openrouter", "model": job.judge_model or DEFAULT_JUDGE_MODEL, "base_url": job.judge_base_url or DEFAULT_JUDGE_BASE_URL},
+        "judge_config": None if job.no_judge else {"provider": "openai-compatible", "model": job.judge_model or DEFAULT_JUDGE_MODEL, "base_url": job.judge_base_url or DEFAULT_JUDGE_BASE_URL},
         "started_at": job.started_at,
         "finished_at": job.finished_at or now_iso(),
         "totals": totals_from_report_rows(rows),
@@ -3844,7 +3862,7 @@ INDEX_HTML = r"""<!doctype html>
             <label class="check-label"><input id="judgeEnabled" type="checkbox" checked> Enable judge</label>
             <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="anthropic/claude-sonnet-4-6"></div>
             <div class="field"><label for="judgeBaseUrl">Base URL</label><input id="judgeBaseUrl" autocomplete="off" placeholder="https://openrouter.ai/api/v1"></div>
-            <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="OPENROUTER_API_KEY"></div>
+            <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="AIDEN_BENCHMARK_JUDGE_API_KEY"></div>
           </div>
           <div class="run-actions">
             <button id="runBtn" class="primary">Run selected suites</button>
@@ -4062,7 +4080,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('judgeBaseUrl').value = String(judge.base_url || DEFAULT_JUDGE_BASE_URL);
       const keyInput = document.getElementById('judgeApiKey');
       keyInput.value = '';
-      keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'OPENROUTER_API_KEY';
+      keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'AIDEN_BENCHMARK_JUDGE_API_KEY';
       syncJudgePanel();
       renderEnvs();
       syncRunState();

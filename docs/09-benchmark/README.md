@@ -155,7 +155,7 @@ benchmark/
 │   ├── main.py          # CLI entry point
 │   ├── suite.py         # Suite loading
 │   ├── runtask.py       # Task execution
-│   ├── judge.py         # OpenRouter-compatible LLM judge
+│   ├── judge.py         # OpenAI-compatible LLM judge
 │   └── html_report.py   # HTML report generation
 ├── suites/              # Benchmark suites
 ├── environment_bridge.md
@@ -198,6 +198,11 @@ Suites with suite-level or task-level `mock_environment` require
 `--auto-agent-setup` and must not also pass `--environment-url`; the runner starts
 the scripted bridge itself and activates the matching fixture before each task.
 
+Auto-started Docker workers receive a host-resolved, read-only `agent.toml`.
+Credential references such as `api_key = "$AIDEN_BENCHMARK_AGENT_API_KEY"` must resolve on the
+host before the daemon starts. MobileGym endpoints also pass a functional
+`setup` / `release` preflight before workers are created.
+
 ### `rejudge`
 
 ```bash
@@ -216,7 +221,14 @@ Compare task status flips, latency, and pass-rate changes between two runs.
 
 ## Environment Variables
 
-- `OPENROUTER_API_KEY` - Required when judge is enabled.
+- `AIDEN_BENCHMARK_AGENT_PROVIDER` - Agent provider type for the default config template.
+- `AIDEN_BENCHMARK_AGENT_MODEL` - Agent model for the default config template and run manifest.
+- `AIDEN_BENCHMARK_AGENT_BASE_URL` - Agent model endpoint for the default config template.
+- `AIDEN_BENCHMARK_AGENT_API_KEY` - Agent credential embedded in the generated read-only config.
+- `AIDEN_BENCHMARK_JUDGE_MODEL` - Default judge model.
+- `AIDEN_BENCHMARK_JUDGE_BASE_URL` - Default OpenAI-compatible judge endpoint.
+- `AIDEN_BENCHMARK_JUDGE_API_KEY` - Required when judge is enabled.
+- `AIDEN_BENCHMARK_ANALYSIS_API_KEY` - Optional post-run analysis credential; defaults to the Judge key.
 - `AIDEN_AGENT_URL` - Default `--agent-url`.
 - `AIDEN_ENVIRONMENT_URL` - Default `--environment-url`.
 - `AIDEN_DAEMON_IMAGE` - Default daemon worker image for auto agent setup.
