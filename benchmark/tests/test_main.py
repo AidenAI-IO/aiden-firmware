@@ -1135,6 +1135,7 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
     assert mock_spec["phone_bridge"] == {
         key: value for key, value in phone_state.items() if key != "platform"
     }
+    assert mock_spec["single_frame"] is False
     assert manifest["environment_url"].endswith("/_aiden_mock/REDACTED")
     assert manifest["target_platform"] == "ios"
 

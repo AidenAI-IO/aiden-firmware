@@ -164,7 +164,7 @@ class AgentClient:
         self,
         message: str,
         timeout_sec: int | None = None,
-        attachments: list[dict[str, str]] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
         skills: list[str] | None = None,
     ) -> ChatResponse:
         payload: dict[str, Any] = {"message": message}

@@ -60,6 +60,7 @@ class MockEnvironmentSpec:
     platform: TargetPlatform
     phone_bridge: dict[str, Any]
     tools: dict[str, list[MockToolResponseSpec]]
+    single_frame: bool = False
     screen: str | None = None
     screen_text: str = ""
     default_tool_response: MockToolResponseSpec | None = None
@@ -360,6 +361,9 @@ def _parse_mock_environment(
         return None
     if not isinstance(raw, dict):
         raise SuiteValidationError(f"{path} must be an object")
+    single_frame = raw.get("single_frame", False)
+    if not isinstance(single_frame, bool):
+        raise SuiteValidationError(f"{path}.single_frame must be boolean")
     phone_bridge = raw.get("phone_bridge") or {}
     if not isinstance(phone_bridge, dict):
         raise SuiteValidationError(f"{path}.phone_bridge must be an object")
@@ -444,6 +448,7 @@ def _parse_mock_environment(
         platform=platform,
         phone_bridge=phone_bridge,
         tools=tools,
+        single_frame=single_frame,
         screen=screen.strip() if isinstance(screen, str) else None,
         screen_text=screen_text,
         default_tool_response=default_response,

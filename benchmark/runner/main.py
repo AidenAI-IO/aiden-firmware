@@ -1085,6 +1085,7 @@ def _serialize_mock_environment(spec) -> dict[str, object] | None:
         return None
     return {
         "platform": spec.platform,
+        "single_frame": spec.single_frame,
         "phone_bridge": dict(spec.phone_bridge),
         "tools": sorted(spec.tools),
         "screen": spec.screen,
