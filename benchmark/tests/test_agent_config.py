@@ -20,6 +20,18 @@ def test_benchmark_agent_template_omits_legacy_instruction():
     assert "instruction" not in config
 
 
+def test_benchmark_agent_template_uses_benchmark_agent_environment_placeholders():
+    template = Path(__file__).resolve().parents[1] / "config" / "agent.toml.template"
+    config = tomllib.loads(template.read_text(encoding="utf-8"))
+
+    assert config["model_providers"]["benchmark"] == {
+        "type": "{{AIDEN_BENCHMARK_AGENT_PROVIDER}}",
+        "base_url": "{{AIDEN_BENCHMARK_AGENT_BASE_URL}}",
+        "api_key": "{{AIDEN_BENCHMARK_AGENT_API_KEY}}",
+    }
+    assert config["model"]["model"] == "{{AIDEN_BENCHMARK_AGENT_MODEL}}"
+
+
 def test_load_agent_model_config_reads_model_section(tmp_path: Path):
     config = tmp_path / "agent.toml"
     config.write_text(

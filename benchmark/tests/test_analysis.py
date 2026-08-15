@@ -24,6 +24,8 @@ def test_config_from_env_enables_analysis_and_reads_limits(monkeypatch):
 def test_resolve_analysis_api_key_uses_expected_precedence(monkeypatch):
     monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY_ENV", "CUSTOM_ANALYSIS_KEY")
     monkeypatch.setenv("CUSTOM_ANALYSIS_KEY", "custom-secret")
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY", "analysis-secret")
+    monkeypatch.setenv("AIDEN_BENCHMARK_JUDGE_API_KEY", "judge-secret")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
     monkeypatch.setenv("MODEL_API_KEY", "model-secret")
     monkeypatch.setenv("AIDEN_MODEL_API_KEY", "aiden-secret")
@@ -35,19 +37,29 @@ def test_resolve_analysis_api_key_uses_expected_precedence(monkeypatch):
     monkeypatch.delenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY_ENV")
     monkeypatch.delenv("CUSTOM_ANALYSIS_KEY")
     cfg = analysis.AnalysisConfig(enabled=True)
-    assert analysis.resolve_analysis_api_key(cfg) == ("OPENROUTER_API_KEY", "openrouter-secret")
+    assert analysis.resolve_analysis_api_key(cfg) == (
+        "AIDEN_BENCHMARK_ANALYSIS_API_KEY",
+        "analysis-secret",
+    )
 
-    monkeypatch.delenv("OPENROUTER_API_KEY")
-    assert analysis.resolve_analysis_api_key(cfg) == ("MODEL_API_KEY", "model-secret")
+    monkeypatch.delenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY")
+    assert analysis.resolve_analysis_api_key(cfg) == (
+        "AIDEN_BENCHMARK_JUDGE_API_KEY",
+        "judge-secret",
+    )
 
-    monkeypatch.delenv("MODEL_API_KEY")
-    assert analysis.resolve_analysis_api_key(cfg) == ("AIDEN_MODEL_API_KEY", "aiden-secret")
+    monkeypatch.delenv("AIDEN_BENCHMARK_JUDGE_API_KEY")
+    try:
+        analysis.resolve_analysis_api_key(cfg)
+    except analysis.AnalysisError as exc:
+        assert "AIDEN_BENCHMARK_ANALYSIS_API_KEY" in str(exc)
+    else:
+        raise AssertionError("expected legacy provider credentials to be ignored")
 
 
 def test_resolve_analysis_api_key_accepts_explicit_override(monkeypatch):
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("MODEL_API_KEY", raising=False)
-    monkeypatch.delenv("AIDEN_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY", raising=False)
+    monkeypatch.delenv("AIDEN_BENCHMARK_JUDGE_API_KEY", raising=False)
 
     cfg = analysis.AnalysisConfig(enabled=True, api_key_value="ui-secret")
 
@@ -363,7 +375,7 @@ def test_analyze_run_normalizes_bridge_inactive_analysis_payload(monkeypatch, tm
             }
         )
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY", "test-key")
     monkeypatch.setattr(analysis, "chat_analysis_model", fake_chat)
 
     result = analysis.analyze_run(run_dir, repo, analysis.AnalysisConfig(enabled=True))
@@ -484,7 +496,7 @@ def test_analyze_run_writes_json_and_markdown_with_mocked_llm(monkeypatch, tmp_p
             }
         )
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY", "test-key")
     monkeypatch.setattr(analysis, "chat_analysis_model", fake_chat)
 
     result = analysis.analyze_run(run_dir, repo, analysis.AnalysisConfig(enabled=True))
@@ -500,9 +512,8 @@ def test_analyze_run_writes_error_artifact_without_raising(monkeypatch, tmp_path
     run_dir = repo / "benchmark" / "runs" / "run-1"
     run_dir.mkdir(parents=True)
     (run_dir / "manifest.json").write_text(json.dumps({"run_id": "run-1"}), encoding="utf-8")
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("MODEL_API_KEY", raising=False)
-    monkeypatch.delenv("AIDEN_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY", raising=False)
+    monkeypatch.delenv("AIDEN_BENCHMARK_JUDGE_API_KEY", raising=False)
 
     result = analysis.analyze_run(run_dir, repo, analysis.AnalysisConfig(enabled=True))
 

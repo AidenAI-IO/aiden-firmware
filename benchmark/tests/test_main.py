@@ -95,6 +95,54 @@ def test_resolve_target_platform_infers_mobilegym_android(monkeypatch):
     assert main._resolve_target_platform(args) == "android"
 
 
+def test_preflight_mobilegym_environment_exercises_setup_and_release(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        main,
+        "_read_environment_health",
+        lambda environment_url: {"bridge_type": "mobilegym", "platform": "android"},
+    )
+    monkeypatch.setattr(
+        main,
+        "call_environment_setup",
+        lambda environment_url, timeout, task_id: calls.append(
+            ("setup", environment_url, timeout, task_id)
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "call_environment_release",
+        lambda environment_url, timeout, task_id: calls.append(
+            ("release", environment_url, timeout, task_id)
+        ),
+    )
+
+    main._preflight_mobilegym_environment("http://127.0.0.1:19090", timeout=7)
+
+    assert [call[0] for call in calls] == ["setup", "release"]
+    assert calls[0][1:3] == ("http://127.0.0.1:19090", 7)
+    assert calls[1][1:3] == ("http://127.0.0.1:19090", 7)
+    assert calls[0][3] == calls[1][3]
+    assert calls[0][3].startswith("benchmark-preflight:")
+
+
+def test_preflight_mobilegym_environment_rejects_setup_failure(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "_read_environment_health",
+        lambda environment_url: {"bridge_type": "mobilegym", "platform": "android"},
+    )
+
+    def fail_setup(environment_url, timeout, task_id):
+        raise main.ResetError("setup timed out")
+
+    monkeypatch.setattr(main, "call_environment_setup", fail_setup)
+    monkeypatch.setattr(main, "call_environment_release", lambda *args, **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="start a fresh MobileGym environment"):
+        main._preflight_mobilegym_environment("http://127.0.0.1:19090", timeout=7)
+
+
 def test_resolve_target_platform_reads_vphone_ios_health(monkeypatch):
     args = type("Args", (), {"target_platform": "auto", "environment_url": "http://127.0.0.1:8899"})()
     monkeypatch.setattr(
@@ -304,6 +352,21 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["agent_model"] == "qwen3.6-35b"
     assert manifest["judge_config"] is None
+
+
+def test_run_cli_defaults_use_benchmark_agent_and_judge_model_environment(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_MODEL", "agent-model")
+    monkeypatch.setenv("AIDEN_BENCHMARK_JUDGE_MODEL", "judge-model")
+    monkeypatch.setenv("AIDEN_MODEL", "legacy-aiden-model")
+    monkeypatch.setenv("MODEL_NAME", "legacy-model")
+    monkeypatch.setenv("OPENAI_MODEL", "legacy-openai-model")
+    monkeypatch.setattr(main, "_cmd_run", lambda args: captured.update(vars(args)) or 0)
+
+    assert main.cli(["run", "--suite", "unused.json"]) == 0
+
+    assert captured["agent_model"] == "agent-model"
+    assert captured["judge_model"] == "judge-model"
 
 
 def test_run_state_file_records_incremental_totals(monkeypatch, tmp_path):
@@ -850,6 +913,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
     monkeypatch.setattr(main, "_read_environment_health", lambda url: {"bridge_type": "mobilegym"})
     monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(main, "call_environment_setup", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "call_environment_release", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "clear_stale_adb_android_owner", lambda url: stale_clears.append(url))
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)

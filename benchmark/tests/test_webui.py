@@ -188,17 +188,19 @@ def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
         '\n'.join(
             [
                 '[model]',
-                'provider = "{{MODEL_PROVIDER}}"',
-                'model = "{{MODEL_NAME}}"',
-                'api_key = "{{MODEL_API_KEY}}"',
+                'provider = "{{AIDEN_BENCHMARK_AGENT_PROVIDER}}"',
+                'model = "{{AIDEN_BENCHMARK_AGENT_MODEL}}"',
+                'base_url = "{{AIDEN_BENCHMARK_AGENT_BASE_URL}}"',
+                'api_key = "{{AIDEN_BENCHMARK_AGENT_API_KEY}}"',
                 'control = "{{CONTROL_TOKEN_FILE}}"',
             ]
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("MODEL_PROVIDER", "openai")
-    monkeypatch.setenv("MODEL_NAME", "gpt-test")
-    monkeypatch.setenv("MODEL_API_KEY", "sk-test")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_PROVIDER", "openai")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_MODEL", "gpt-test")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_BASE_URL", "https://agent.example/v1")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_API_KEY", "sk-test")
 
     dest = tmp_path / "dest"
     webui.prepare_run_config(base, dest)
@@ -206,6 +208,7 @@ def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
     rendered = (dest / "agent.toml").read_text(encoding="utf-8")
     assert 'provider = "openai"' in rendered
     assert 'model = "gpt-test"' in rendered
+    assert 'base_url = "https://agent.example/v1"' in rendered
     assert 'api_key = "sk-test"' in rendered
     assert 'control = "/config/control_token"' in rendered
     assert "voice_streaming_tts_enabled = false" in rendered
@@ -214,6 +217,52 @@ def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
     assert (dest / "control_token").exists()
     assert (dest / "memory").is_dir()
     assert (dest / "skill-state").is_dir()
+
+
+def test_prepare_run_config_ignores_legacy_agent_model_environment(tmp_path: Path, monkeypatch):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "agent.toml.template").write_text(
+        '\n'.join(
+            [
+                '[model]',
+                'provider = "{{AIDEN_BENCHMARK_AGENT_PROVIDER}}"',
+                'model = "{{AIDEN_BENCHMARK_AGENT_MODEL}}"',
+                'base_url = "{{AIDEN_BENCHMARK_AGENT_BASE_URL}}"',
+                'api_key = "{{AIDEN_BENCHMARK_AGENT_API_KEY}}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    for name, value in {
+        "MODEL_PROVIDER": "legacy-provider",
+        "MODEL_NAME": "legacy-model",
+        "MODEL_BASE_URL": "https://legacy.example/v1",
+        "MODEL_API_KEY": "legacy-key",
+        "AIDEN_MODEL": "legacy-aiden-model",
+        "AIDEN_MODEL_PROVIDER": "legacy-aiden-provider",
+        "AIDEN_MODEL_BASE_URL": "https://legacy-aiden.example/v1",
+        "AIDEN_MODEL_API_KEY": "legacy-aiden-key",
+        "OPENAI_MODEL": "legacy-openai-model",
+        "OPENROUTER_API_KEY": "legacy-openrouter-key",
+    }.items():
+        monkeypatch.setenv(name, value)
+    for name in (
+        "AIDEN_BENCHMARK_AGENT_PROVIDER",
+        "AIDEN_BENCHMARK_AGENT_MODEL",
+        "AIDEN_BENCHMARK_AGENT_BASE_URL",
+        "AIDEN_BENCHMARK_AGENT_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest)
+
+    rendered = (dest / "agent.toml").read_text(encoding="utf-8")
+    assert 'provider = "fake"' in rendered
+    assert 'model = ""' in rendered
+    assert 'base_url = ""' in rendered
+    assert 'api_key = ""' in rendered
 
 
 def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
@@ -233,6 +282,54 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     assert "voice_progress_speech_enabled = false" in rendered
     assert (dest / "control_token").exists()
     assert (dest / "memory").is_dir()
+
+
+def test_prepare_run_config_materializes_agent_credential_environment_references(
+    tmp_path: Path, monkeypatch
+):
+    base = tmp_path / "base"
+    base.mkdir()
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-agent-secret")
+    agent_config = """
+[model_providers.benchmark]
+type = "anthropic"
+api_key = "$ANTHROPIC_AUTH_TOKEN"
+
+[model]
+provider = "benchmark"
+model = "claude-opus-5"
+""".strip()
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest, agent_config_text=agent_config)
+
+    rendered = (dest / "agent.toml").read_text(encoding="utf-8")
+    assert 'api_key = "sk-agent-secret"' in rendered
+    assert "$ANTHROPIC_AUTH_TOKEN" not in rendered
+
+
+def test_prepare_run_config_rejects_missing_agent_credential_environment_reference(
+    tmp_path: Path, monkeypatch
+):
+    base = tmp_path / "base"
+    base.mkdir()
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    agent_config = """
+[model_providers.benchmark]
+type = "anthropic"
+api_key = "$ANTHROPIC_AUTH_TOKEN"
+
+[model]
+provider = "benchmark"
+model = "claude-opus-5"
+""".strip()
+
+    with pytest.raises(ValueError, match="ANTHROPIC_AUTH_TOKEN"):
+        webui.prepare_run_config(
+            base,
+            tmp_path / "dest",
+            agent_config_text=agent_config,
+        )
 
 
 def test_prepare_run_config_does_not_copy_runtime_state(tmp_path: Path):
@@ -416,11 +513,11 @@ def test_webui_agent_config_persists_under_runs_dir(tmp_path: Path, monkeypatch)
     base = tmp_path / "base"
     base.mkdir()
     (base / "agent.toml.template").write_text(
-        '[model]\nprovider = "{{MODEL_PROVIDER}}"\nmodel = "{{MODEL_NAME}}"\n',
+        '[model]\nprovider = "{{AIDEN_BENCHMARK_AGENT_PROVIDER}}"\nmodel = "{{AIDEN_BENCHMARK_AGENT_MODEL}}"\n',
         encoding="utf-8",
     )
-    monkeypatch.setenv("MODEL_PROVIDER", "openai")
-    monkeypatch.setenv("MODEL_NAME", "gpt-test")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_PROVIDER", "openai")
+    monkeypatch.setenv("AIDEN_BENCHMARK_AGENT_MODEL", "gpt-test")
     app = webui.BenchmarkWebApp(webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=base))
 
     initial = app.get_agent_config()
@@ -598,6 +695,52 @@ def test_start_job_records_judge_settings_without_exposing_api_key(tmp_path: Pat
     assert job["judge_api_key_set"] is True
     assert "judge_api_key" not in job
     assert app._job_judge_api_keys[job["id"]] == "sk-judge-secret"
+
+
+def test_start_job_rejects_recovered_mobilegym_environment(tmp_path: Path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    recovered = webui.MobileGymEnvironment(
+        id="mg-old",
+        name="MobileGym recovered",
+        endpoint="http://host.docker.internal:19090",
+        public_endpoint="http://127.0.0.1:19090",
+        web_url="http://127.0.0.1:18173",
+        status="stale",
+        container_name="aiden-mobilegym-env-mg-old",
+    )
+    app.env_manager._environments[recovered.id] = recovered
+    monkeypatch.setattr(webui, "read_environment_bridge_concurrency", lambda endpoint: 3)
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(webui.threading, "Thread", FakeThread)
+
+    with pytest.raises(ValueError, match="fresh MobileGym environment"):
+        app.start_job(
+            {
+                "environment_type": "mobilegym",
+                "environment_id": recovered.id,
+                "suites": ["suite.json"],
+                "no_judge": True,
+            }
+        )
 
 
 def test_start_job_persists_job_record_without_api_key(tmp_path: Path, monkeypatch):
@@ -1019,7 +1162,8 @@ def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatc
     assert "--judge-base-url" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--judge-base-url") + 1] == "https://judge.example.com/v1"
     assert "--no-judge" not in captured["cmd"]
-    assert captured["env"]["OPENROUTER_API_KEY"] == "sk-judge-secret"
+    assert captured["env"]["AIDEN_BENCHMARK_JUDGE_API_KEY"] == "sk-judge-secret"
+    assert "OPENROUTER_API_KEY" not in captured["env"]
 
 
 def test_run_suite_passes_mobilegym_environment_url(tmp_path: Path, monkeypatch):

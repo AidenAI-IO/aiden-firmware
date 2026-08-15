@@ -6,11 +6,13 @@ import os
 import re
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from runner.agent_client import AgentClient
 from runner.analysis import AnalysisConfig, _int_env, analyze_run
+from runner.config import BENCHMARK_AGENT_MODEL_ENV
 from runner.html_report import generate_report_html, upload_report
 from runner.judge import DEFAULT_JUDGE_BASE_URL, JudgeConfig
 from runner.platform import (
@@ -21,7 +23,12 @@ from runner.platform import (
 )
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
-from runner.reset import ResetError, call_environment_release, clear_stale_adb_android_owner
+from runner.reset import (
+    ResetError,
+    call_environment_release,
+    call_environment_setup,
+    clear_stale_adb_android_owner,
+)
 from runner.runtask import run_one_task, skipped_task_result
 from runner.suite import (
     Suite,
@@ -87,13 +94,16 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--base-config-dir", default=str(REPO_ROOT / "benchmark" / "config"))
     p_run.add_argument("--agent-config", default="")
     p_run.add_argument("--benchmark-token-file", default="")
-    p_run.add_argument("--judge-model", default="claude-sonnet-4-6")
+    p_run.add_argument(
+        "--judge-model",
+        default=os.environ.get("AIDEN_BENCHMARK_JUDGE_MODEL", "claude-sonnet-4-6"),
+    )
     p_run.add_argument(
         "--judge-base-url",
         default=os.environ.get("AIDEN_BENCHMARK_JUDGE_BASE_URL", DEFAULT_JUDGE_BASE_URL),
         help="OpenAI-compatible base URL for judge requests",
     )
-    p_run.add_argument("--agent-model", default=os.environ.get("AIDEN_MODEL") or os.environ.get("MODEL_NAME") or os.environ.get("OPENAI_MODEL") or "")
+    p_run.add_argument("--agent-model", default=os.environ.get(BENCHMARK_AGENT_MODEL_ENV, ""))
     p_run.add_argument("--no-judge", action="store_true")
     p_run.add_argument("--repeats", type=int, default=None)
     p_run.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"))
@@ -146,7 +156,10 @@ def cli(argv: list[str] | None = None) -> int:
                        help="Show detailed rubric results for each task")
     p_rejudge = sub.add_parser("rejudge")
     p_rejudge.add_argument("--run-dir", required=True)
-    p_rejudge.add_argument("--judge-model", default="claude-sonnet-4-6")
+    p_rejudge.add_argument(
+        "--judge-model",
+        default=os.environ.get("AIDEN_BENCHMARK_JUDGE_MODEL", "claude-sonnet-4-6"),
+    )
     p_rejudge.add_argument(
         "--judge-base-url",
         default=os.environ.get("AIDEN_BENCHMARK_JUDGE_BASE_URL", DEFAULT_JUDGE_BASE_URL),
@@ -366,6 +379,52 @@ def _resolve_target_platform_enum(
 
 def _read_environment_health(environment_url: str) -> dict:
     return read_environment_health(environment_url)
+
+
+def _preflight_mobilegym_environment(
+    environment_url: str,
+    *,
+    timeout: int = 30,
+) -> None:
+    environment_url = str(environment_url or "").strip()
+    if not environment_url:
+        return
+    health = _read_environment_health(environment_url)
+    if str(health.get("bridge_type") or "").strip().lower() != "mobilegym":
+        return
+
+    task_id = f"benchmark-preflight:{uuid.uuid4().hex}"
+    try:
+        call_environment_setup(
+            environment_url,
+            timeout=timeout,
+            task_id=task_id,
+        )
+    except ResetError as exc:
+        try:
+            call_environment_release(
+                environment_url,
+                timeout=timeout,
+                task_id=task_id,
+            )
+        except ResetError:
+            pass
+        raise RuntimeError(
+            "MobileGym environment failed setup preflight; remove it and start "
+            "a fresh MobileGym environment"
+        ) from exc
+
+    try:
+        call_environment_release(
+            environment_url,
+            timeout=timeout,
+            task_id=task_id,
+        )
+    except ResetError as exc:
+        raise RuntimeError(
+            "MobileGym environment failed release preflight; remove it and start "
+            "a fresh MobileGym environment"
+        ) from exc
 
 
 def _task_repeats(args: argparse.Namespace, task: TaskSpec) -> int:
@@ -744,7 +803,7 @@ def _cmd_run_auto_agent_setup_inner(
         "environment_url": display_environment_url or None,
         "agent_model": args.agent_model,
         "active_skills": active_skills,
-        "judge_config": {"provider": "openrouter", "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
+        "judge_config": {"provider": judge_cfg.provider, "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "target_platform": manifest_target_platform or None,
         "auto_agent_setup": True,
@@ -818,6 +877,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         requested_platform = str(args.target_platform or "").strip().lower()
         target_platform = "" if requested_platform == "auto" else requested_platform
     if args.auto_agent_setup:
+        try:
+            _preflight_mobilegym_environment(args.environment_url)
+        except Exception as exc:
+            print(f"Error: environment preflight failed: {exc}", file=sys.stderr)
+            return 2
         return _cmd_run_auto_agent_setup(
             args,
             suite,
@@ -1001,7 +1065,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "environment_url": args.environment_url or None,
         "agent_model": args.agent_model,
         "active_skills": active_skills,
-        "judge_config": {"provider": "openrouter", "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
+        "judge_config": {"provider": judge_cfg.provider, "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "target_platform": target_platform or None,
         "mock_environment": _mock_environment_manifest(suite),

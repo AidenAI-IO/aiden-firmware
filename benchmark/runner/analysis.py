@@ -110,13 +110,16 @@ def resolve_analysis_api_key(cfg: AnalysisConfig) -> tuple[str, str]:
         env_name = os.environ.get("AIDEN_BENCHMARK_ANALYSIS_API_KEY_ENV")
         if env_name:
             names.append(env_name)
-    names.extend(["OPENROUTER_API_KEY", "MODEL_API_KEY", "AIDEN_MODEL_API_KEY"])
+    names.extend(
+        ["AIDEN_BENCHMARK_ANALYSIS_API_KEY", "AIDEN_BENCHMARK_JUDGE_API_KEY"]
+    )
     for name in names:
         value = os.environ.get(name, "").strip()
         if value:
             return name, value
     raise AnalysisError(
-        "missing analysis API key: set OPENROUTER_API_KEY, MODEL_API_KEY, or AIDEN_MODEL_API_KEY"
+        "missing analysis API key: set AIDEN_BENCHMARK_ANALYSIS_API_KEY or "
+        "AIDEN_BENCHMARK_JUDGE_API_KEY"
     )
 
 
@@ -132,7 +135,13 @@ def redact_text(text: str, cfg: AnalysisConfig) -> str:
     redacted = SK_KEY_RE.sub("[REDACTED_SK_KEY]", redacted)
     redacted = JWTISH_RE.sub("[REDACTED_JWT]", redacted)
     names = [cfg.api_key_env] if cfg.api_key_env else []
-    names.extend(["OPENROUTER_API_KEY", "MODEL_API_KEY", "AIDEN_MODEL_API_KEY", "AIDEN_CONTROL_TOKEN"])
+    names.extend(
+        [
+            "AIDEN_BENCHMARK_ANALYSIS_API_KEY",
+            "AIDEN_BENCHMARK_JUDGE_API_KEY",
+            "AIDEN_CONTROL_TOKEN",
+        ]
+    )
     if cfg.api_key_value:
         redacted = redacted.replace(cfg.api_key_value, "[REDACTED_VALUE]")
     for name in names:
