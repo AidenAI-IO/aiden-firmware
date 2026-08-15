@@ -235,6 +235,41 @@ def test_load_suite_parses_expected_recalled_memory_ids(tmp_path: Path):
 
     assert suite.tasks[0].expected_recalled_memory_ids == ["mem_expected"]
 
+
+def test_load_suite_parses_task_app_ids(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "app_ids": ["settings"],
+            }
+        ],
+    }
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(path)
+
+    assert suite.tasks[0].app_ids == ["settings"]
+
+
+def test_load_suite_rejects_invalid_task_app_ids(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "app_ids": "settings",
+            }
+        ],
+    }
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="app_ids"):
+        load_suite(path)
+
 def test_load_suite_parses_task_platforms(tmp_path: Path):
     fixture = {
         **FIXTURE,

@@ -45,16 +45,20 @@ def install_resilient_mobilegym_reset(mobilegym_env_cls: type[Any]) -> None:
         return
     original_reset = mobilegym_env_cls.reset
 
-    async def resilient_reset(self: Any, app_ids: list[str] | None = None) -> None:
+    async def resilient_reset(
+        self: Any,
+        app_ids: list[str] | None = None,
+        **reset_kwargs: Any,
+    ) -> None:
         try:
-            await original_reset(self, app_ids=app_ids)
+            await original_reset(self, app_ids=app_ids, **reset_kwargs)
             return
         except Exception as exc:
             if not _is_recoverable_page_crash(exc):
                 raise
             logger.warning("MobileGym reset recovered by recreating page after: %s", exc)
             await _restart_mobilegym_env(self)
-            await original_reset(self, app_ids=app_ids)
+            await original_reset(self, app_ids=app_ids, **reset_kwargs)
 
     mobilegym_env_cls._aiden_original_reset = original_reset
     mobilegym_env_cls.reset = resilient_reset
@@ -70,12 +74,19 @@ def _is_recoverable_page_crash(exc: Exception) -> bool:
             "target crashed",
             "target closed",
             "browser closed",
-            "page.goto",
+            "has been closed",
         )
     )
 
 
 async def _restart_mobilegym_env(env: Any) -> None:
+    restart = getattr(env, "restart", None)
+    if restart is not None:
+        result = restart()
+        if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+            await result
+        return
+
     close = getattr(env, "close", None)
     if close is not None:
         result = close()
@@ -164,7 +175,7 @@ async def create_mobilegym_env(env_url: str, headless: bool, device: str = "sim"
         )
         install_resilient_mobilegym_reset(MobileGymEnv)
         await env.start()
-        await env.reset()
+        await env.reset(app_ids=[])
         return env, config
     else:
         config = EnvConfig(
@@ -224,7 +235,7 @@ async def create_mobilegym_env_pool(
     envs = list(pool.envs)
     for env in envs:
         try:
-            await env.reset()
+            await env.reset(app_ids=[])
         except TypeError:
             await env.reset()
     config = {
