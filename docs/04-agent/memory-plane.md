@@ -19,7 +19,7 @@ Automatic Episode learning writes only Device Memory. It does not create user pr
 
 ## Runtime Flow
 
-Device memory is not injected into every prompt. Before execution, runtime performs a lightweight relevance check and may require the Agent to call `recall_device_memory` with matching IDs.
+Device memory is not injected into every prompt. Before execution, runtime performs a lightweight relevance check. When that router returns matching active Device Memory IDs, `AgentLoop` forces `recall_device_memory` as the initial tool call with those IDs before normal model-directed execution continues.
 
 ```text
 Run starts
@@ -28,7 +28,7 @@ Run starts
 route relevant active Device Memory IDs
   |
   v
-Agent recalls memory through recall_device_memory when relevant
+AgentLoop forces recall_device_memory when routed IDs exist
   |
   v
 Agent executes tools and records an Episode

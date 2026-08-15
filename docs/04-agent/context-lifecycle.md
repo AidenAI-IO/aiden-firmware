@@ -69,7 +69,7 @@ The per-call user message is built from the current loop state, including the or
 
 The active session summary and synthesized long-term profile can enter the Agent system prompt. Device Memory content is not injected into every run.
 
-Before execution, runtime performs a lightweight relevance check. When Device Memory is relevant, the Agent calls `recall_device_memory`, optionally constrained to matching IDs.
+Before execution, runtime performs a lightweight relevance check. When the router returns matching active Device Memory IDs, `AgentLoop` forces `recall_device_memory` as the initial tool call with those IDs. Normal model-directed execution resumes after the recall result.
 
 Normal Device Memory recall returns only active and applicable records. It is capped at five results and approximately 4,800 output characters. Disputed and legacy conflicted records remain available only to background consolidation.
 

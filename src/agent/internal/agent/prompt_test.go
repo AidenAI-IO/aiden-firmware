@@ -376,7 +376,7 @@ func TestDefaultAgentBehaviorRequiresRelevantDeviceMemoryRecall(t *testing.T) {
 	for _, want := range []string{
 		"call recall_device_memory first",
 		"specific device, app, page, or UI workflow",
-		"saved procedure, failure-prevention lesson, profile, calibration, or conflict",
+		"saved procedure, navigation, failure-prevention lesson, profile, calibration, or fact",
 		"even when the user only asks for advice",
 		"does not operate or inspect the current screen",
 		"Do not call it for unrelated text-only questions",
@@ -387,6 +387,9 @@ func TestDefaultAgentBehaviorRequiresRelevantDeviceMemoryRecall(t *testing.T) {
 	}
 	if strings.Contains(behavior, "For text-only arithmetic, comparison, summarization, translation, or simple Q&A tasks, answer directly") {
 		t.Fatalf("defaultAgentBehavior retains conflicting unconditional text-only guidance:\n%s", behavior)
+	}
+	if strings.Contains(behavior, "calibration, or conflict") {
+		t.Fatalf("defaultAgentBehavior requires normal recall for quarantined conflict records:\n%s", behavior)
 	}
 }
 

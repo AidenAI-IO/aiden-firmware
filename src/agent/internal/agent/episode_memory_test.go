@@ -290,6 +290,76 @@ func TestEpisodeMemoryProcessorResumesPersistedProposalWithoutCallingModelAgain(
 	}
 }
 
+func TestEpisodeMemoryProcessorDoesNotCarryErrorIntoNextPersistedProposal(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{`{}`}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	failedEpisode := TaskEpisode{
+		ID: "ep_extract_error", Status: "active", StartedAt: "2026-08-14T04:10:00Z", EndedAt: "2026-08-14T04:10:05Z",
+		UserGoal: "打开设置", DeviceScope: map[string]string{"device_id": "device_a"}, Outcome: TaskEpisodeOutcome{Success: false},
+		Events: []TaskEpisodeEvent{
+			{EventID: "ep_extract_error_call", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{"app":"Settings"}`},
+			{EventID: "ep_extract_error_result", Type: "tool_result", ToolName: "launch_app", Content: "request failed"},
+		},
+	}
+	resumedEpisode := TaskEpisode{
+		ID: "ep_resume_after_error", Status: "active", StartedAt: "2026-08-14T04:11:00Z", EndedAt: "2026-08-14T04:11:05Z",
+		UserGoal: "查看当前屏幕尺寸", DeviceScope: map[string]string{"device_id": "device_a"}, Outcome: TaskEpisodeOutcome{Success: true},
+		Events: []TaskEpisodeEvent{
+			{EventID: "ep_resume_after_error_call", Type: runEventToolCall, ToolName: "screenshot", ToolInput: `{}`},
+			{EventID: "ep_resume_after_error_result", Type: "tool_result", ToolName: "screenshot", Observation: `{"width":1080,"height":1920}`},
+		},
+	}
+	for _, episode := range []TaskEpisode{failedEpisode, resumedEpisode} {
+		if _, err := plane.episodes.AddEpisode(ctx, episode); err != nil {
+			t.Fatalf("AddEpisode(%s) error = %v", episode.ID, err)
+		}
+	}
+	proposal := episodeMemoryProposal{
+		EpisodeAssessment: episodeMemoryAssessment{GoalResult: "achieved", Reason: "The screenshot reports the dimensions.", EvidenceRefs: []string{"ep_resume_after_error_result"}},
+		Candidates: []episodeMemoryCandidate{{
+			LessonKey: "screen_dimensions_after_error", Type: "fact", Action: "create",
+			Situation: "When operating device A", Guidance: "Use a 1080x1920 screen model", ExpectedEffect: "Coordinates use the observed dimensions",
+			Scope: map[string]string{"device_id": "device_a", "screen": "1080x1920"}, Tags: []string{"screen", "dimensions"}, EvidenceRefs: []string{"ep_resume_after_error_result"},
+		}},
+	}
+	if err := processor.state.SetEpisode(resumedEpisode.ID, episodeMemoryEpisodeStatus{
+		Status: episodeMemoryStatusProposed, ExtractorVersion: episodeMemoryExtractorVersion, Proposal: &proposal,
+	}); err != nil {
+		t.Fatalf("SetEpisode(proposed) error = %v", err)
+	}
+
+	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+		t.Fatalf("ProcessBatch() error = %v", err)
+	}
+	if got := model.callCount(); got != 1 {
+		t.Fatalf("model calls = %d, want only the failing extraction call", got)
+	}
+	items, err := plane.device.readAll()
+	if err != nil {
+		t.Fatalf("readAll() error = %v", err)
+	}
+	if len(items) != 1 || items[0].LessonKey != "screen_dimensions_after_error" {
+		t.Fatalf("memories = %#v, want persisted proposal applied after prior error", items)
+	}
+	state, err := processor.state.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if status := state.Episodes[episodeMemoryStateKey(failedEpisode.ID, episodeMemoryExtractorVersion)]; status.Status != episodeMemoryStatusIgnored {
+		t.Fatalf("failed extraction status = %#v, want ignored", status)
+	}
+	if status := state.Episodes[episodeMemoryStateKey(resumedEpisode.ID, episodeMemoryExtractorVersion)]; status.Status != episodeMemoryStatusDone {
+		t.Fatalf("persisted proposal status = %#v, want done", status)
+	}
+}
+
 func TestEpisodeMemoryProcessorUsesGoalResultToRejectFalseSuccessProcedure(t *testing.T) {
 	ctx := context.Background()
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)

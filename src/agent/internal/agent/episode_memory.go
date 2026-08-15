@@ -168,9 +168,9 @@ func (p *episodeMemoryProcessor) processBatchLocked(ctx context.Context, limit i
 	if limit <= 0 {
 		limit = episodeMemoryBatchLimit
 	}
-	state, episodes, err := p.loadWork(ctx)
-	if err != nil {
-		return episodeMemoryBatchResult{}, err
+	state, episodes, loadErr := p.loadWork(ctx)
+	if loadErr != nil {
+		return episodeMemoryBatchResult{}, loadErr
 	}
 	processed := 0
 	result := episodeMemoryBatchResult{}
@@ -225,6 +225,7 @@ func (p *episodeMemoryProcessor) processBatchLocked(ctx context.Context, limit i
 
 		var proposal episodeMemoryProposal
 		extractionFailed := false
+		var err error
 		if status.Proposal != nil {
 			proposal = cloneEpisodeMemoryProposal(*status.Proposal)
 		} else {
