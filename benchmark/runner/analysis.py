@@ -59,7 +59,7 @@ class AnalysisError(RuntimeError):
 
 
 SECRET_NAME_RE = re.compile(
-    r"(?i)(?P<prefix>[\"']?\b(api[_-]?key|token|password|secret|bearer|authorization|OPENROUTER_API_KEY|MODEL_API_KEY|AIDEN_MODEL_API_KEY|AIDEN_CONTROL_TOKEN)\b[\"']?\s*[:=]\s*)(?P<quote>[\"']?)(?P<value>[^\"'\s,}]+)(?P=quote)?"
+    r"(?i)(?P<prefix>[\"']?\b(api[_-]?key|token|password|secret|bearer|authorization|OPENROUTER_API_KEY|MODEL_API_KEY|AIDEN_MODEL_API_KEY|AIDEN_BENCHMARK_ANALYSIS_API_KEY|AIDEN_BENCHMARK_JUDGE_API_KEY|AIDEN_CONTROL_TOKEN)\b[\"']?\s*[:=]\s*)(?P<quote>[\"']?)(?P<value>[^\"'\s,}]+)(?P=quote)?"
 )
 BASIC_AUTH_RE = re.compile(r"(?i)authorization\s*:\s*basic\s+[A-Za-z0-9._~+/=-]{8,}")
 BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{12,}")

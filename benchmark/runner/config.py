@@ -200,7 +200,8 @@ def render_agent_template(text: str) -> str:
     }
     rendered = text
     for key, value in replacements.items():
-        rendered = rendered.replace("{{" + key + "}}", value.replace('"', '\\"'))
+        escaped = json.dumps(value, ensure_ascii=False)[1:-1]
+        rendered = rendered.replace("{{" + key + "}}", escaped)
     return rendered
 
 

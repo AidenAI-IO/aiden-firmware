@@ -1,6 +1,7 @@
 import tomllib
 from pathlib import Path
 
+from runner import config as runner_config
 from runner import agent_config
 from runner.agent_config import (
     default_agent_config_path,
@@ -30,6 +31,17 @@ def test_benchmark_agent_template_uses_benchmark_agent_environment_placeholders(
         "api_key": "{{AIDEN_BENCHMARK_AGENT_API_KEY}}",
     }
     assert config["model"]["model"] == "{{AIDEN_BENCHMARK_AGENT_MODEL}}"
+
+
+def test_render_agent_template_escapes_complete_toml_string_content(monkeypatch):
+    api_key = 'secret\\path\nnext\t"quoted"'
+    monkeypatch.setenv(runner_config.BENCHMARK_AGENT_API_KEY_ENV, api_key)
+
+    rendered = runner_config.render_agent_template(
+        'api_key = "{{AIDEN_BENCHMARK_AGENT_API_KEY}}"\n'
+    )
+
+    assert tomllib.loads(rendered)["api_key"] == api_key
 
 
 def test_load_agent_model_config_reads_model_section(tmp_path: Path):

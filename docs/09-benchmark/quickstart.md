@@ -33,7 +33,17 @@ This page is a compact quickstart. The complete guide is
    export AIDEN_BENCHMARK_JUDGE_API_KEY=...
    ```
 
-4. Either an existing agent daemon, or an environment bridge plus
+4. Optional post-run Analysis settings default to the Judge model, endpoint, and
+   API key. Set role-specific overrides only when Analysis uses a different
+   runtime:
+
+   ```bash
+   export AIDEN_BENCHMARK_ANALYSIS_MODEL=your-analysis-model
+   export AIDEN_BENCHMARK_ANALYSIS_BASE_URL=https://your-analysis-endpoint.example/v1
+   export AIDEN_BENCHMARK_ANALYSIS_API_KEY=...
+   ```
+
+5. Either an existing agent daemon, or an environment bridge plus
    `--auto-agent-setup`.
 
 ## Run Against An Existing Agent

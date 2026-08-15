@@ -134,6 +134,20 @@ def test_redact_removes_known_and_custom_secrets(monkeypatch):
     assert "[REDACTED" in redacted
 
 
+def test_redact_removes_benchmark_api_key_assignments_from_captured_logs(monkeypatch):
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY", "current-analysis-secret")
+    monkeypatch.delenv("AIDEN_BENCHMARK_JUDGE_API_KEY", raising=False)
+    text = (
+        "AIDEN_BENCHMARK_ANALYSIS_API_KEY=captured-analysis-secret "
+        "AIDEN_BENCHMARK_JUDGE_API_KEY=captured-judge-secret"
+    )
+
+    redacted = analysis.redact_text(text, analysis.AnalysisConfig(enabled=True))
+
+    assert "captured-analysis-secret" not in redacted
+    assert "captured-judge-secret" not in redacted
+
+
 def test_render_markdown_includes_clusters_and_recommendations():
     payload = {
         "summary": "Two failures share a timeout pattern.",
