@@ -19,10 +19,11 @@ MobileGym 从**测试框架模式**重构为**纯模拟器模式**。
 ### ✅ 保留的组件
 
 - `benchmark/mobilegym/bridge/` - HTTP 桥接层（完整保留）
-- `benchmark/mobilegym/adapter/daemon.py` - Daemon 管理（保留）
 - `benchmark/mobilegym/adapter/artifacts.py` - 工件导出（保留）
-- `benchmark/mobilegym/config/` - Agent 配置和 skills（保留）
 - `benchmark/mobilegym/docker/` - Docker 编排（重写）
+
+Daemon lifecycle and agent configuration are now owned by the shared benchmark
+runner. All environments use `benchmark/config/agent.toml.template`.
 
 ### 🔄 重写的组件
 

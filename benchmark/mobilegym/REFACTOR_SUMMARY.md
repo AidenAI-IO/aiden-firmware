@@ -111,13 +111,12 @@ benchmark/mobilegym/
 │   ├── episode.py
 │   ├── protocol.py
 │   └── actions.py
-├── adapter/
-│   ├── daemon.py                   # Daemon 管理（保留）
-│   └── artifacts.py                # 工件导出（保留）
-└── config/                         # Agent 配置（保留）
-    ├── agent.toml.template
-    └── skills/device-operator/
+└── adapter/
+    └── artifacts.py                # 工件导出（保留）
 ```
+
+Daemon lifecycle and agent configuration were subsequently centralized in
+`benchmark/runner` and `benchmark/config/agent.toml.template`.
 
 ## 🔄 架构变化
 

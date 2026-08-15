@@ -84,9 +84,6 @@ benchmark/mobilegym/
 │   ├── episode.py                  # Episode 状态管理
 │   ├── protocol.py                 # 协议定义
 │   └── actions.py                  # Action 转换
-├── config/                         # Aiden 配置
-│   ├── agent.toml.template         # 配置模板
-│   └── skills/device-operator/     # MobileGym skill
 ├── docker/                         # WebUI/CLI 使用的 MobileGym base image
 │   ├── Dockerfile                  # mobilegym-base target
 │   └── README.md                   # 当前 Docker 入口说明
@@ -95,6 +92,10 @@ benchmark/mobilegym/
 │   └── configure_daemon.py         # 配置 daemon bridge
 └── vendor/mobilegym/               # 上游 MobileGym (submodule)
 ```
+
+Agent configuration is shared with every benchmark environment through
+`benchmark/config/agent.toml.template`; MobileGym does not maintain a separate
+agent configuration.
 
 **移除的组件**（不再需要）：
 - ❌ `adapter/register.py` - agent 注册

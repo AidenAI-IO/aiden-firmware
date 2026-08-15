@@ -12,7 +12,7 @@
 
 MobileGym **仅作为模拟器**，提供设备环境：
 - 保留 `bridge/` - HTTP 桥接层，转换 Aiden 工具调用为 MobileGym 环境操作
-- 保留 `adapter/daemon.py` - Aiden daemon 管理
+- Let the shared `benchmark/runner` own Aiden daemon lifecycle and agent configuration
 - **移除对 MobileGym 测试框架的依赖**：
   - 不使用 `SerialRunner`
   - 不使用 `factory.load_tasks()`
@@ -70,7 +70,7 @@ MobileGym **仅作为模拟器**，提供设备环境：
 ### 2. 简化依赖
 - 移除 `adapter/register.py`（不再注册 agent）
 - 移除 `adapter/aiden_go_agent.py`（不再实现 MobileGym Agent 接口）
-- 保留 `adapter/daemon.py`（daemon 生命周期管理）
+- Reuse benchmark runner daemon lifecycle management
 
 ### 3. 集成到现有 benchmark runner
 - 使用 `--environment-url` 连接 MobileGym environment bridge
@@ -86,8 +86,7 @@ MobileGym **仅作为模拟器**，提供设备环境：
 ## 保留的组件
 
 - ✅ `benchmark/mobilegym/bridge/` - 完整保留
-- ✅ `benchmark/mobilegym/adapter/daemon.py` - 保留
-- ✅ `benchmark/mobilegym/config/` - 保留（agent.toml, skills）
+- ✅ `benchmark/config/agent.toml.template` - Shared agent configuration for every environment
 - ✅ `benchmark/mobilegym/docker/` - 调整，不再使用 MobileGym runner
 
 ## 移除/重构的组件

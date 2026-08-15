@@ -78,7 +78,7 @@ class AgentConfigManager:
         return self.get_config()
 
     def _generate_initial_config(self) -> str:
-        """Generate initial config from template or default."""
+        """Load the initial config from an explicit file or template."""
         config = self.base_config_dir / "agent.toml"
         if config.exists():
             return config.read_text(encoding="utf-8")
@@ -87,7 +87,15 @@ class AgentConfigManager:
         if template.exists():
             return render_agent_template(template.read_text(encoding="utf-8"))
 
-        return default_agent_toml()
+        raise missing_agent_config_error(self.base_config_dir)
+
+
+def missing_agent_config_error(base_config_dir: Path) -> FileNotFoundError:
+    return FileNotFoundError(
+        "agent.toml is required: provide an explicit agent config or add "
+        f"{base_config_dir / 'agent.toml'} or "
+        f"{base_config_dir / 'agent.toml.template'}"
+    )
 
 
 def write_text_atomic(path: Path, content: str) -> None:
@@ -186,34 +194,3 @@ def render_agent_template(text: str) -> str:
     for key, value in replacements.items():
         rendered = rendered.replace("{{" + key + "}}", value.replace('"', '\\"'))
     return rendered
-
-
-def default_agent_toml() -> str:
-    """Generate default agent.toml content."""
-    return "\n".join(
-        [
-            'input_mode = "text"',
-            'trigger_mode = "manual"',
-            "max_iterations = -1",
-            "voice_streaming_tts_enabled = false",
-            "voice_tool_call_speech = false",
-            "voice_progress_speech_enabled = false",
-            "screenshot_keep_n = 3",
-            "screenshot_prune_interval = 25",
-            "screen_stable_timeout_ms = 3500",
-            "screen_stable_ms = 500",
-            "screen_stable_diff_threshold = 2",
-            "",
-            "[model_providers.benchmark]",
-            'type = "openrouter"',
-            'base_url = ""',
-            'api_key = ""',
-            "",
-            "[model]",
-            'provider = "benchmark"',
-            'model = "qwen3.6-35b"',
-            "temperature = 0.2",
-            "max_response_tokens = 1000",
-            "",
-        ]
-    )

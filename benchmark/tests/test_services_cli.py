@@ -96,6 +96,7 @@ def test_start_mobilegym_env_uses_docker_assigned_ports_when_auto(tmp_path: Path
 
 def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp_path: Path, monkeypatch, capsys):
     captured = {}
+    _write_minimal_agent_config(tmp_path / "base")
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
@@ -190,6 +191,7 @@ def test_start_agent_daemon_uses_explicit_device_type_without_environment_bridge
     tmp_path: Path, monkeypatch, capsys
 ):
     captured = {}
+    _write_minimal_agent_config(tmp_path / "base")
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
@@ -323,6 +325,7 @@ def test_start_agent_daemon_validates_effective_device_type_after_start(
 
 def test_start_agent_daemon_uses_docker_assigned_port_when_auto(tmp_path: Path, monkeypatch, capsys):
     captured = {}
+    _write_minimal_agent_config(tmp_path / "base")
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
@@ -365,6 +368,27 @@ def test_agent_daemon_compose_passes_benchmark_token_file_env_var():
     compose = (webui.BENCHMARK_DOCKER_DIR / "docker-compose.agent-daemon.yml").read_text(encoding="utf-8")
 
     assert "AIDEN_BENCHMARK_TOKEN_FILE: ${AIDEN_BENCHMARK_TOKEN_FILE:-}" in compose
+
+
+def test_start_agent_daemon_reports_missing_agent_config(tmp_path: Path, capsys):
+    args = _ns(
+        port=18081,
+        name="missing-config",
+        runs_dir=str(tmp_path),
+        base_config_dir=str(tmp_path / "missing"),
+        agent_config="",
+        daemon_image="aiden-agent-daemon:test",
+        no_build_daemon_image=True,
+        environment_bridge_endpoint="",
+        device_type="",
+        target_platform="",
+        benchmark_task_id="suite.json:t1",
+        ready_timeout_sec=9,
+        json=True,
+    )
+
+    assert services.cmd_start_agent_daemon(args) == 2
+    assert "agent.toml is required" in capsys.readouterr().err
 
 
 def test_daemon_compose_env_strips_host_proxy(monkeypatch):
@@ -531,7 +555,18 @@ def _agent_daemon_args(tmp_path: Path, **overrides):
         "json": True,
     }
     values.update(overrides)
+    _write_minimal_agent_config(Path(values["base_config_dir"]))
     return _ns(**values)
+
+
+def _write_minimal_agent_config(base_config_dir: Path) -> None:
+    base_config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = base_config_dir / "agent.toml"
+    if not config_path.exists():
+        config_path.write_text(
+            '[model]\nprovider = "fake"\n',
+            encoding="utf-8",
+        )
 
 
 def _mock_agent_device_type(monkeypatch, value: str) -> None:
