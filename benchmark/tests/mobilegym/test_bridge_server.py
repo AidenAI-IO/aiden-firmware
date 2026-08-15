@@ -349,6 +349,20 @@ def test_setup_rejects_invalid_app_ids():
         assert bridge.env.reset_calls == 0
 
 
+def test_setup_treats_null_app_ids_as_empty():
+    with RunningBridge() as bridge:
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/setup",
+            {"app_ids": None},
+        )
+
+        assert status == 200
+        assert body["data"]["reset"] is True
+        assert bridge.env.reset_app_ids == [[]]
+
+
 def test_setup_timeout_preserves_mobilegym_phase_diagnostic():
     with RunningBridge() as bridge:
         async def timeout_reset(app_ids=None):

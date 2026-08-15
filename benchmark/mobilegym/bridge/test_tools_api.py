@@ -780,6 +780,59 @@ def test_reset_episode_reuses_env_when_reset_succeeds():
     asyncio.run(run())
 
 
+def test_run_reset_bounds_synchronous_reset(monkeypatch):
+    import asyncio
+    import time
+
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESET_TIMEOUT_SEC", 0.01)
+
+    def reset(app_ids=None):
+        time.sleep(0.1)
+
+    async def run():
+        state = BridgeEpisodeState(object(), asyncio.get_running_loop())
+        started = time.monotonic()
+        with pytest.raises(asyncio.TimeoutError):
+            await state._run_reset(reset, app_ids=[])
+        return time.monotonic() - started
+
+    assert asyncio.run(run()) < 0.05
+
+
+def test_reset_episode_catches_builtin_timeout_error(monkeypatch):
+    import asyncio
+
+    from . import episode as episode_mod
+
+    class DistinctAsyncioTimeoutError(Exception):
+        pass
+
+    monkeypatch.setattr(episode_mod.asyncio, "TimeoutError", DistinctAsyncioTimeoutError)
+
+    class TimeoutEnv:
+        def __init__(self):
+            self.restart_calls = 0
+
+        async def reset(self, app_ids=None):
+            raise TimeoutError("phase=waitForData timeout")
+
+        async def restart(self):
+            self.restart_calls += 1
+
+    async def run():
+        env = TimeoutEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError, match="environment reset timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+
+        assert env.restart_calls == 2
+
+    asyncio.run(run())
+
+
 def test_reset_episode_retries_after_reset_timeout(monkeypatch):
     import asyncio
     from . import episode as episode_mod
@@ -866,7 +919,7 @@ def test_reset_episode_bounds_environment_restart(monkeypatch):
     import asyncio
     from . import episode as episode_mod
 
-    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01, raising=False)
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
 
     class HangingRestartEnv:
         async def reset(self, app_ids=None):
@@ -891,7 +944,7 @@ def test_reset_episode_keeps_timed_out_restart_isolated_until_it_finishes(monkey
     import asyncio
     from . import episode as episode_mod
 
-    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01, raising=False)
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
 
     class SlowRestartEnv:
         def __init__(self):

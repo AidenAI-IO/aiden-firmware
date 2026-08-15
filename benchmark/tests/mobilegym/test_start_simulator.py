@@ -2,6 +2,7 @@ import asyncio
 import sys
 import types
 
+import pytest
 from mobilegym.scripts import start_simulator
 
 
@@ -100,6 +101,54 @@ def test_create_mobilegym_env_pool_uses_envpool(monkeypatch):
     assert captured["pool_kwargs"]["isolation"] == "contexts"
     assert captured["pool_kwargs"]["num_browsers"] == 1
     assert config["parallel_envs"] == 2
+
+
+def test_reset_mobilegym_env_supports_legacy_reset_signature():
+    class LegacyEnv:
+        def __init__(self):
+            self.reset_calls = 0
+
+        async def reset(self):
+            self.reset_calls += 1
+
+    env = LegacyEnv()
+
+    asyncio.run(start_simulator._reset_mobilegym_env(env, app_ids=[]))
+
+    assert env.reset_calls == 1
+
+
+def test_reset_mobilegym_env_does_not_retry_internal_type_error():
+    class BrokenEnv:
+        def __init__(self):
+            self.reset_calls = 0
+
+        async def reset(self, app_ids=None):
+            self.reset_calls += 1
+            raise TypeError("reset implementation failed")
+
+    env = BrokenEnv()
+
+    with pytest.raises(TypeError, match="reset implementation failed"):
+        asyncio.run(start_simulator._reset_mobilegym_env(env, app_ids=[]))
+
+    assert env.reset_calls == 1
+
+
+def test_resilient_mobilegym_reset_supports_legacy_reset_signature():
+    class LegacyMobileGymEnv:
+        def __init__(self):
+            self.reset_calls = 0
+
+        async def reset(self):
+            self.reset_calls += 1
+
+    start_simulator.install_resilient_mobilegym_reset(LegacyMobileGymEnv)
+
+    env = LegacyMobileGymEnv()
+    asyncio.run(env.reset(app_ids=[]))
+
+    assert env.reset_calls == 1
 
 
 def test_resilient_mobilegym_reset_restarts_after_crashed_page():

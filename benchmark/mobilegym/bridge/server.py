@@ -50,7 +50,9 @@ SCREENSHOT_PROVIDER_TIMEOUT_SEC = 30
 
 
 def _setup_app_ids(payload: dict[str, Any]) -> list[str]:
-    value = payload.get("app_ids", [])
+    value = payload.get("app_ids")
+    if value is None:
+        return []
     if not isinstance(value, list) or not all(
         isinstance(item, str) and item.strip() for item in value
     ):

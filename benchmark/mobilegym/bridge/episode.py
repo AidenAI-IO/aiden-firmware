@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 from collections.abc import Awaitable, Callable
 from typing import Any
-
 
 BENCHMARK_TASK_ID_HEADER = "benchmark-task-id"
 EPISODE_RESET_TIMEOUT_SEC = 45
@@ -162,7 +162,7 @@ class BridgeEpisodeState:
                     await self._run_reset(reset, app_ids=app_ids)
                     reset_ran = True
                     break
-                except asyncio.TimeoutError as exc:
+                except (asyncio.TimeoutError, TimeoutError) as exc:
                     restarted = await self._restart_env_after_timeout(exc)
                     if attempt == 0 and restarted:
                         continue
@@ -180,9 +180,17 @@ class BridgeEpisodeState:
         *,
         app_ids: list[str] | None,
     ) -> None:
-        result = reset() if app_ids is None else reset(app_ids=app_ids)
-        if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
-            await asyncio.wait_for(result, timeout=EPISODE_RESET_TIMEOUT_SEC)
+        async def invoke() -> None:
+            if inspect.iscoroutinefunction(reset):
+                result = reset() if app_ids is None else reset(app_ids=app_ids)
+            elif app_ids is None:
+                result = await asyncio.to_thread(reset)
+            else:
+                result = await asyncio.to_thread(reset, app_ids=app_ids)
+            if inspect.isawaitable(result):
+                await result
+
+        await asyncio.wait_for(invoke(), timeout=EPISODE_RESET_TIMEOUT_SEC)
 
     async def _restart_env_after_timeout(self, reset_error: BaseException) -> bool:
         if self._restart_task is None:
