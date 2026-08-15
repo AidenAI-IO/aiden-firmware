@@ -336,7 +336,14 @@ def run_one_task(
     except Exception as e:
         history = client_history_or_empty(client)
         base.metrics["agent_error"] = str(e)[:300]
-    if chat_completed:
+    if chat_completed and task.expected_recalled_memory_ids:
+        inline_recall_outcome = evaluate_expected_recalled_memory_ids(
+            history,
+            task.expected_recalled_memory_ids,
+        )
+    else:
+        inline_recall_outcome = None
+    if inline_recall_outcome is not None and inline_recall_outcome.passed is None:
         episode_id = _unique_episode_id(history)
         if episode_id is not None:
             try:

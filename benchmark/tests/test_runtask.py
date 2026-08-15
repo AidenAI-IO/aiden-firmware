@@ -376,7 +376,7 @@ def test_ambiguous_episode_empty_memory_refs_is_real_failure(tmp_path: Path):
     assert result.metrics["expected_recalled_memory_match"] is False
 
 
-def test_ambiguous_episode_missing_one_expected_memory_is_real_failure(tmp_path: Path):
+def test_episode_missing_one_expected_memory_reports_attributable_recall(tmp_path: Path):
     from runner.runtask import evaluate_task_history
 
     suite, task = _memory_suite_and_task(tmp_path)
@@ -395,7 +395,7 @@ def test_ambiguous_episode_missing_one_expected_memory_is_real_failure(tmp_path:
     )
 
     assert result.status == "failed"
-    assert result.metrics["recalled_memory_ids"] == []
+    assert result.metrics["recalled_memory_ids"] == ["memory-a"]
     assert result.metrics["memory_recall_evidence_source"] == "episode"
     assert result.metrics["expected_recalled_memory_match"] is False
 
@@ -522,7 +522,7 @@ def test_run_one_task_fetches_unique_episode_and_saves_it(tmp_path: Path):
     assert result.metrics["memory_recall_evidence_source"] == "episode"
 
 
-def test_run_one_task_episode_fetch_failure_uses_complete_inline_result(tmp_path: Path):
+def test_run_one_task_complete_inline_result_does_not_fetch_episode(tmp_path: Path):
     suite, task = _memory_suite_and_task(tmp_path)
     client = EpisodeClient(
         inline_content=json.dumps(
@@ -544,7 +544,34 @@ def test_run_one_task_episode_fetch_failure_uses_complete_inline_result(tmp_path
 
     assert result.status == "passed"
     assert result.metrics["memory_recall_evidence_source"] == "inline"
-    assert "episode unavailable" in result.metrics["episode_error"]
+    assert client.episode_requests == []
+    assert "episode_error" not in result.metrics
+    assert not (tmp_path / "artifacts" / "episode.json").exists()
+
+
+def test_run_one_task_without_memory_id_assertion_does_not_fetch_episode(
+    tmp_path: Path,
+):
+    suite, task = _memory_suite_and_task(tmp_path)
+    task.expected_recalled_memory_ids = []
+    client = EpisodeClient(
+        inline_content="[Large tool result omitted from public history (8406 chars)]",
+        episode={"id": "ep/one", "retrieved_memory_refs": []},
+    )
+
+    result = run_one_task(
+        client,
+        suite,
+        task,
+        1,
+        tmp_path / "artifacts",
+        None,
+        None,
+        "run-1",
+    )
+
+    assert result.status == "passed"
+    assert client.episode_requests == []
     assert not (tmp_path / "artifacts" / "episode.json").exists()
 
 

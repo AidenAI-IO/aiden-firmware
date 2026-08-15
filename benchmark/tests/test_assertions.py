@@ -294,7 +294,7 @@ def test_expected_recalled_memory_ids_episode_missing_expected_id_is_failure():
     assert result.evidence_source == "episode"
 
 
-def test_expected_recalled_memory_ids_episode_missing_refs_is_authoritative_empty():
+def test_expected_recalled_memory_ids_prefers_complete_inline_result_over_episode():
     history = [
         {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
         {
@@ -310,9 +310,9 @@ def test_expected_recalled_memory_ids_episode_missing_refs_is_authoritative_empt
         episode={"id": "ep-1"},
     )
 
-    assert result.passed is False
-    assert result.recalled_memory_ids == []
-    assert result.evidence_source == "episode"
+    assert result.passed is True
+    assert result.recalled_memory_ids == ["personamem_music_expression"]
+    assert result.evidence_source == "inline"
 
 
 def test_expected_recalled_memory_ids_deduplicates_multiple_recalls_and_uses_all_of():
@@ -419,6 +419,93 @@ def test_expected_recalled_memory_ids_does_not_attribute_device_recall_to_compre
             "type": "tool_result",
             "tool_name": "recall_device_memory",
             "content": '{"results":[{"id":"personamem_music_expression"}]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={"retrieved_memory_refs": ["personamem_music_expression"]},
+    )
+
+    assert result.passed is None
+    assert result.recalled_memory_ids == []
+    assert result.evidence_source == "unavailable"
+
+
+def test_expected_recalled_memory_ids_attributes_episode_when_device_recall_is_empty():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": '{"results":[]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={"retrieved_memory_refs": ["personamem_music_expression"]},
+    )
+
+    assert result.passed is True
+    assert result.recalled_memory_ids == ["personamem_music_expression"]
+    assert result.evidence_source == "episode"
+
+
+def test_expected_recalled_memory_ids_attributes_episode_when_device_ids_are_unrelated():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": '{"results":[{"id":"device-only"}]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={
+            "retrieved_memory_refs": [
+                "personamem_music_expression",
+                "device-only",
+            ]
+        },
+    )
+
+    assert result.passed is True
+    assert result.recalled_memory_ids == ["personamem_music_expression"]
+    assert result.evidence_source == "episode"
+
+
+def test_expected_recalled_memory_ids_keeps_episode_ambiguous_after_device_error():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": "device memory unavailable",
+            "is_error": True,
         },
     ]
 

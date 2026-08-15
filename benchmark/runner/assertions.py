@@ -249,7 +249,10 @@ def evaluate_expected_recalled_memory_ids(
     episode: dict[str, Any] | None = None,
 ) -> ExpectedRecallResult:
     expected_ids = _unique_non_empty_strings(expected_memory_ids)
-    recall_called, result_contents, call_count = _recall_memory_result_contents(history)
+    recall_called, recalled_ids, inline_complete = _recall_tool_evidence(
+        history,
+        "recall_memory",
+    )
     if not recall_called:
         return ExpectedRecallResult(
             passed=False,
@@ -259,47 +262,16 @@ def evaluate_expected_recalled_memory_ids(
             recall_memory_called=False,
         )
 
-    other_aggregate_recall_tools = MEMORY_REF_AGGREGATING_RECALL_TOOLS - {
-        "recall_memory"
-    }
-    episode_is_unambiguous = not _history_uses_any_tool(
-        history,
-        other_aggregate_recall_tools,
-    )
-    if episode is not None:
-        episode_recalled_ids = _unique_non_empty_strings(
-            episode.get("retrieved_memory_refs")
-            if isinstance(episode.get("retrieved_memory_refs"), list)
-            else []
+    if inline_complete:
+        return ExpectedRecallResult(
+            passed=all(memory_id in recalled_ids for memory_id in expected_ids),
+            expected_memory_ids=expected_ids,
+            recalled_memory_ids=recalled_ids,
+            evidence_source="inline",
+            recall_memory_called=True,
         )
-        episode_has_all_expected = all(
-            memory_id in episode_recalled_ids for memory_id in expected_ids
-        )
-        if episode_is_unambiguous or not episode_has_all_expected:
-            return ExpectedRecallResult(
-                passed=episode_has_all_expected,
-                expected_memory_ids=expected_ids,
-                recalled_memory_ids=(
-                    episode_recalled_ids if episode_is_unambiguous else []
-                ),
-                evidence_source="episode",
-                recall_memory_called=True,
-            )
 
-    recalled_ids: list[str] = []
-    inline_complete = bool(result_contents)
-    if call_count and len(result_contents) < call_count:
-        inline_complete = False
-    for content in result_contents:
-        payload = _parse_inline_recall_result(content)
-        if payload is None:
-            inline_complete = False
-            continue
-        for memory_id in payload:
-            if memory_id not in recalled_ids:
-                recalled_ids.append(memory_id)
-
-    if not inline_complete:
+    if episode is None:
         return ExpectedRecallResult(
             passed=None,
             expected_memory_ids=expected_ids,
@@ -307,60 +279,107 @@ def evaluate_expected_recalled_memory_ids(
             evidence_source="unavailable",
             recall_memory_called=True,
         )
+
+    episode_recalled_ids = _unique_non_empty_strings(
+        episode.get("retrieved_memory_refs")
+        if isinstance(episode.get("retrieved_memory_refs"), list)
+        else []
+    )
+    episode_has_all_expected = all(
+        memory_id in episode_recalled_ids for memory_id in expected_ids
+    )
+
+    other_recalled_ids: list[str] = []
+    other_evidence_complete = True
+    for tool_name in MEMORY_REF_AGGREGATING_RECALL_TOOLS - {"recall_memory"}:
+        other_called, tool_recalled_ids, tool_evidence_complete = (
+            _recall_tool_evidence(history, tool_name)
+        )
+        if not other_called:
+            continue
+        other_evidence_complete = other_evidence_complete and tool_evidence_complete
+        for memory_id in tool_recalled_ids:
+            if memory_id not in other_recalled_ids:
+                other_recalled_ids.append(memory_id)
+
+    attributable_recalled_ids = [
+        memory_id
+        for memory_id in episode_recalled_ids
+        if memory_id not in other_recalled_ids
+    ]
+    if not episode_has_all_expected:
+        return ExpectedRecallResult(
+            passed=False,
+            expected_memory_ids=expected_ids,
+            recalled_memory_ids=(
+                attributable_recalled_ids if other_evidence_complete else []
+            ),
+            evidence_source="episode",
+            recall_memory_called=True,
+        )
+
+    expected_ids_are_attributable = all(
+        memory_id not in other_recalled_ids for memory_id in expected_ids
+    )
+    if other_evidence_complete and expected_ids_are_attributable:
+        return ExpectedRecallResult(
+            passed=True,
+            expected_memory_ids=expected_ids,
+            recalled_memory_ids=attributable_recalled_ids,
+            evidence_source="episode",
+            recall_memory_called=True,
+        )
+
     return ExpectedRecallResult(
-        passed=all(memory_id in recalled_ids for memory_id in expected_ids),
+        passed=None,
         expected_memory_ids=expected_ids,
-        recalled_memory_ids=recalled_ids,
-        evidence_source="inline",
+        recalled_memory_ids=[],
+        evidence_source="unavailable",
         recall_memory_called=True,
     )
 
 
-def _history_uses_any_tool(
+def _recall_tool_evidence(
     history: list[dict[str, Any]],
-    tool_names: set[str] | frozenset[str],
-) -> bool:
+    tool_name: str,
+) -> tuple[bool, list[str], bool]:
+    called = False
+    call_count = 0
+    result_messages: list[dict[str, Any]] = []
     pending_tool_name = ""
     for message in history:
         message_type = message.get("type")
         if message_type == "tool_call":
             pending_tool_name = str(message.get("tool_name") or "")
-            if pending_tool_name in tool_names:
-                return True
+            if pending_tool_name == tool_name:
+                called = True
+                call_count += 1
             continue
         if message_type != "tool_result":
             continue
-        tool_name = str(message.get("tool_name") or pending_tool_name)
+        result_tool_name = str(message.get("tool_name") or pending_tool_name)
         pending_tool_name = ""
-        if tool_name in tool_names:
-            return True
-    return False
+        if result_tool_name != tool_name:
+            continue
+        called = True
+        result_messages.append(message)
 
-
-def _recall_memory_result_contents(
-    history: list[dict[str, Any]],
-) -> tuple[bool, list[Any], int]:
-    recall_called = False
-    recall_call_count = 0
-    result_contents: list[Any] = []
-    pending_tool_name = ""
-    for message in history:
-        message_type = message.get("type")
-        if message_type == "tool_call":
-            pending_tool_name = str(message.get("tool_name") or "")
-            if pending_tool_name == "recall_memory":
-                recall_called = True
-                recall_call_count += 1
+    evidence_complete = bool(result_messages)
+    if call_count and len(result_messages) < call_count:
+        evidence_complete = False
+    recalled_ids: list[str] = []
+    for message in result_messages:
+        if message.get("is_error") or message.get("tool_error") is not None:
+            evidence_complete = False
             continue
-        if message_type != "tool_result":
+        payload = _parse_inline_recall_result(message.get("content"))
+        if payload is None:
+            evidence_complete = False
             continue
-        tool_name = str(message.get("tool_name") or pending_tool_name)
-        pending_tool_name = ""
-        if tool_name != "recall_memory":
-            continue
-        recall_called = True
-        result_contents.append(message.get("content"))
-    return recall_called, result_contents, recall_call_count
+        for memory_id in payload:
+            if memory_id not in recalled_ids:
+                recalled_ids.append(memory_id)
+    return called, recalled_ids, evidence_complete
 
 
 def _parse_inline_recall_result(content: Any) -> list[str] | None:
