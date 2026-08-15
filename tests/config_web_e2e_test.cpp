@@ -1474,10 +1474,9 @@ TEST_CASE("config_web: POST /api/config renames a provider with its model refere
 
 TEST_CASE("config_web: POST /api/config drops named provider base_url for types that pin their endpoint") {
     // A [model_providers.*] base_url is inherited by any model referencing it
-    // (applyProviderRef), and the runtime then clears it for non-whitelisted
-    // types. Storing one is dead config, so the same whitelist the model path
-    // uses has to apply to named providers too -- the UI hides the field for
-    // these types and must not be the only thing enforcing it.
+    // (applyProviderRef), and the runtime then clears it for types that pin
+    // their endpoint. Storing one is dead config, so the metadata-backed
+    // capability rule also has to apply while saving named providers.
     const char* types[] = {"openrouter", "kimi", "kimi-cn", "volcengine", "fake"};
 
     for (const char* type : types) {
@@ -1524,6 +1523,72 @@ TEST_CASE("config_web: POST /api/config keeps named provider base_url for types 
         CHECK_MESSAGE(saved.find(std::string("base_url = \"") + c.base_url + "\"") != std::string::npos,
                       c.type);
     }
+}
+
+TEST_CASE("config_web: POST /api/config derives named provider base_url support from metadata") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string metadata_path = tmp + "/config-meta.json";
+    write_file(metadata_path,
+        "{\"sections\":[{\"name\":\"model_providers\",\"fields\":["
+        "{\"key\":\"type\",\"widget\":\"select\"},"
+        "{\"key\":\"api_key\",\"widget\":\"text\"},"
+        "{\"key\":\"base_url\",\"widget\":\"text\",\"visibleWhen\":{\"all\":["
+        "{\"field\":\"model_providers.type\",\"op\":\"in\","
+        "\"values\":[\"custom-gateway\"]}]}}]}]}\n");
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_META_FILE", metadata_path);
+    auto handle = start_server(env);
+
+    const std::string custom_base_url = "https://custom.example.com/v1";
+    const std::string pinned_base_url = "https://pinned.example.com/v1";
+    const std::string body =
+        "{\"config\":{\"model_providers\":{"
+        "\"custom\":{\"type\":\"custom-gateway\",\"api_key\":\"k\",\"base_url\":\"" +
+        custom_base_url + "\"},"
+        "\"pinned\":{\"type\":\"pinned-provider\",\"api_key\":\"k\",\"base_url\":\"" +
+        pinned_base_url + "\"}}},\"apply_wifi\":false}";
+    const HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find(std::string("base_url = \"") + custom_base_url + "\"") != std::string::npos);
+    CHECK(saved.find(pinned_base_url) == std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config rejects ambiguous provider base_url metadata") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string metadata_path = tmp + "/config-meta.json";
+    write_file(metadata_path,
+        "{\"sections\":[{\"name\":\"model_providers\",\"fields\":["
+        "{\"key\":\"type\",\"widget\":\"select\"},"
+        "{\"key\":\"base_url\",\"widget\":\"text\",\"visibleWhen\":{"
+        "\"all\":[{\"field\":\"model_providers.type\",\"op\":\"in\","
+        "\"values\":[\"custom-gateway\"]}],"
+        "\"any\":[{\"field\":\"model_providers.type\",\"op\":\"in\","
+        "\"values\":[\"other-gateway\"]}]}}]}]}\n");
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_META_FILE", metadata_path);
+    auto handle = start_server(env);
+
+    const std::string base_url = "https://custom.example.com/v1";
+    const std::string body =
+        "{\"config\":{\"model_providers\":{\"custom\":{"
+        "\"type\":\"custom-gateway\",\"base_url\":\"" + base_url +
+        "\"}}},\"apply_wifi\":false}";
+    REQUIRE(http_request(handle->port, "POST", "/api/config", body).status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find(base_url) == std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/config returns providers from the resolved config") {

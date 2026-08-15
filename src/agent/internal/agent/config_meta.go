@@ -166,7 +166,7 @@ func ConfigMeta() ConfigMetadata {
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
 						Layout:  "wide",
-						Enum:    enumOptions(modelProviderTypes()...),
+						Enum:    enumOptions(modelProviderTypesForConfigUI()...),
 						Default: defaults.Model.Provider},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model, Layout: "wide"},
 					// The effective default is model-dependent (resolved at load
@@ -208,10 +208,10 @@ func ConfigMeta() ConfigMetadata {
 				Name: "model_providers",
 				Fields: []FieldMeta{
 					{Key: "type", Widget: WidgetSelect,
-						Enum: enumOptions(modelProviderTypes()...)},
+						Enum: enumOptions(modelProviderTypesForConfigUI()...)},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(in("model_providers.type", modelProviderTypesAllowingCustomBaseURL()...))},
+						VisibleWhen: all(in("model_providers.type", modelProviderTypesAllowingCustomBaseURLForConfigUI()...))},
 				},
 			},
 			// [tts] keeps only the provider reference and the settings that are
