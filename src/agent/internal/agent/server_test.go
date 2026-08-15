@@ -2540,6 +2540,16 @@ func TestWebUISteerModeControlsArePresent(t *testing.T) {
 	}
 }
 
+func TestWebUIIsEmbeddedFromStaticResource(t *testing.T) {
+	want, err := os.ReadFile("web_ui.html")
+	if err != nil {
+		t.Fatalf("read web UI static resource: %v", err)
+	}
+	if webUI != string(want) {
+		t.Fatal("embedded web UI differs from web_ui.html")
+	}
+}
+
 func TestWebUIImagePasteControlsArePresent(t *testing.T) {
 	for _, want := range []string{
 		"const maxDraftImageAttachments = 4;",
