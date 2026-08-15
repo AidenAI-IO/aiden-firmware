@@ -46,7 +46,7 @@ class AgentConfigManager:
                 validate_agent_toml(content)
                 write_text_atomic(self.config_path, content)
             return content, "saved"
-        content = apply_agent_toml_runtime_defaults(self._generate_initial_config())
+        content = self._generate_validated_initial_config()
         write_text_atomic(self.config_path, content)
         return content, "generated"
 
@@ -73,14 +73,24 @@ class AgentConfigManager:
         Returns:
             Tuple of (content, source)
         """
-        if self.config_path.exists():
-            self.config_path.unlink()
-        return self.get_config()
+        content = self._generate_validated_initial_config(exclude_config_path=True)
+        write_text_atomic(self.config_path, content)
+        return content, "generated"
 
-    def _generate_initial_config(self) -> str:
+    def _generate_validated_initial_config(
+        self, *, exclude_config_path: bool = False
+    ) -> str:
+        content = apply_agent_toml_runtime_defaults(
+            self._generate_initial_config(exclude_config_path=exclude_config_path)
+        )
+        validate_agent_toml(content)
+        return content
+
+    def _generate_initial_config(self, *, exclude_config_path: bool = False) -> str:
         """Load the initial config from an explicit file or template."""
         config = self.base_config_dir / "agent.toml"
-        if config.exists():
+        config_is_target = config.resolve() == self.config_path.resolve()
+        if config.exists() and not (exclude_config_path and config_is_target):
             return config.read_text(encoding="utf-8")
 
         template = self.base_config_dir / "agent.toml.template"

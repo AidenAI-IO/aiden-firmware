@@ -286,7 +286,7 @@ def test_prepare_run_config_requires_agent_config_source(tmp_path: Path):
     base.mkdir()
     dest = tmp_path / "dest"
 
-    with pytest.raises(FileNotFoundError, match="agent.toml"):
+    with pytest.raises(FileNotFoundError, match=r"agent\.toml"):
         webui.prepare_run_config(base, dest)
 
     assert not dest.exists()
@@ -300,8 +300,58 @@ def test_agent_config_manager_requires_agent_config_source(tmp_path: Path):
         config_path=tmp_path / "runs" / "agent.toml",
     )
 
-    with pytest.raises(FileNotFoundError, match="agent.toml"):
+    with pytest.raises(FileNotFoundError, match=r"agent\.toml"):
         manager.get_config()
+
+
+@pytest.mark.parametrize("source_name", ["agent.toml", "agent.toml.template"])
+def test_agent_config_manager_rejects_invalid_generated_config(
+    tmp_path: Path, source_name: str
+):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / source_name).write_text("invalid = [", encoding="utf-8")
+    config_path = tmp_path / "runs" / "agent.toml"
+    manager = runner_config.AgentConfigManager(
+        base_config_dir=base,
+        config_path=config_path,
+    )
+
+    with pytest.raises(ValueError, match=r"invalid agent\.toml"):
+        manager.get_config()
+
+    assert not config_path.exists()
+
+
+def test_agent_config_manager_reset_preserves_saved_config_without_source(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    config_path = base / "agent.toml"
+    saved_content = '[model]\nprovider = "saved"\n'
+    config_path.write_text(saved_content, encoding="utf-8")
+    manager = runner_config.AgentConfigManager(base_config_dir=base)
+
+    with pytest.raises(FileNotFoundError, match=r"agent\.toml"):
+        manager.reset_config()
+
+    assert config_path.read_text(encoding="utf-8") == saved_content
+
+
+def test_agent_config_manager_reset_default_path_uses_template(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    config_path = base / "agent.toml"
+    config_path.write_text('[model]\nprovider = "saved"\n', encoding="utf-8")
+    (base / "agent.toml.template").write_text(
+        '[model]\nprovider = "template"\n', encoding="utf-8"
+    )
+    manager = runner_config.AgentConfigManager(base_config_dir=base)
+
+    content, source = manager.reset_config()
+
+    assert source == "generated"
+    assert 'provider = "template"' in content
+    assert config_path.read_text(encoding="utf-8") == content
 
 
 def test_agent_config_manager_migrates_saved_config_missing_voice_defaults(tmp_path: Path):
