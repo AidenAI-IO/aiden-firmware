@@ -2,7 +2,7 @@
   "name": "perception_v1",
   "suite_category": "Perception & Control",
   "global_reset": {},
-  "prompt_prefix": "This is an offline single-frame static perception task. Call screenshot once to observe the fixture. Use the returned width and height to convert pixel positions to normalized 0-1000 coordinates, then issue one touch_gesture. There is no post-action state, so after a successful touch do not retry or verify.",
+  "prompt_prefix": "This is an offline single-frame static perception task.",
   "tasks": [
     {
       "id": "find_settings_iphone",

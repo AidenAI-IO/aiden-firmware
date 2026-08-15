@@ -66,7 +66,7 @@ def test_perception_v1_uses_fixture_backed_mock_environment_for_every_task():
         assert responses[0].is_error is False
 
 
-def test_perception_v1_declares_single_frame_screenshot_contract():
+def test_perception_v1_describes_single_frame_environment_without_coaching():
     suite_path = (
         Path(__file__).resolve().parents[1]
         / "suites"
@@ -75,7 +75,18 @@ def test_perception_v1_declares_single_frame_screenshot_contract():
     )
     suite = load_suite(suite_path)
 
-    assert suite.prompt_prefix.strip()
+    prompt_prefix = suite.prompt_prefix.strip().lower()
+    assert prompt_prefix == "this is an offline single-frame static perception task."
+    for leaked_instruction in (
+        "screenshot",
+        "touch_gesture",
+        "width",
+        "height",
+        "0-1000",
+        "retry",
+        "verify",
+    ):
+        assert leaked_instruction not in prompt_prefix
 
 
 def test_perception_v1_settings_prompt_requires_clicking_visible_icon():
