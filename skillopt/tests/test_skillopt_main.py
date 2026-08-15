@@ -992,7 +992,7 @@ def test_cli_uses_benchmark_runner_backend_for_mobilegym(monkeypatch, tmp_path: 
     assert isinstance(backend, FakeBenchmarkRunnerBackend)
     assert backend.kwargs["environment_url"] == "http://127.0.0.1:50196"
     assert backend.kwargs["backend"] == "mobilegym"
-    assert backend.kwargs["base_config_dir"] == tmp_path / "benchmark" / "mobilegym" / "config"
+    assert backend.kwargs["base_config_dir"] == tmp_path / "benchmark" / "config"
 
 
 def test_cli_passes_agent_config_to_optimizer(monkeypatch, tmp_path: Path):
