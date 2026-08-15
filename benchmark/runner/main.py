@@ -6,7 +6,6 @@ import os
 import re
 import sys
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,12 +20,19 @@ from runner.platform import (
     resolve_daemon_platform,
     resolve_environment_platform,
 )
+from runner.preflight import (
+    MOBILEGYM_PREFLIGHT_COMPLETE_ENV,
+    preflight_mobilegym_environment,
+)
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
-from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
+from runner.recovery import (
+    DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
+    recover_agent_after_timeout,
+    wait_for_agent_ready,
+)
 from runner.reset import (
     ResetError,
     call_environment_release,
-    call_environment_setup,
     clear_stale_adb_android_owner,
 )
 from runner.runtask import run_one_task, skipped_task_result
@@ -354,18 +360,20 @@ def _resolve_target_platform_enum(
     args: argparse.Namespace,
     *,
     required: bool = False,
+    health: dict | None = None,
 ) -> TargetPlatform | None:
     requested = str(getattr(args, "target_platform", "") or "").strip().lower()
     explicit = requested if requested and requested != "auto" else ""
     environment_url = str(getattr(args, "environment_url", "") or "").strip()
     if not environment_url:
         return None
-    try:
-        health = _read_environment_health(environment_url)
-    except Exception:
-        if required:
-            raise
-        return None
+    if health is None:
+        try:
+            health = _read_environment_health(environment_url)
+        except Exception:
+            if required:
+                raise
+            return None
     try:
         return resolve_environment_platform(
             health,
@@ -384,47 +392,14 @@ def _read_environment_health(environment_url: str) -> dict:
 def _preflight_mobilegym_environment(
     environment_url: str,
     *,
-    timeout: int = 30,
+    timeout: int = DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
+    health: dict | None = None,
 ) -> None:
-    environment_url = str(environment_url or "").strip()
-    if not environment_url:
-        return
-    health = _read_environment_health(environment_url)
-    if str(health.get("bridge_type") or "").strip().lower() != "mobilegym":
-        return
-
-    task_id = f"benchmark-preflight:{uuid.uuid4().hex}"
-    try:
-        call_environment_setup(
-            environment_url,
-            timeout=timeout,
-            task_id=task_id,
-        )
-    except ResetError as exc:
-        try:
-            call_environment_release(
-                environment_url,
-                timeout=timeout,
-                task_id=task_id,
-            )
-        except ResetError:
-            pass
-        raise RuntimeError(
-            "MobileGym environment failed setup preflight; remove it and start "
-            "a fresh MobileGym environment"
-        ) from exc
-
-    try:
-        call_environment_release(
-            environment_url,
-            timeout=timeout,
-            task_id=task_id,
-        )
-    except ResetError as exc:
-        raise RuntimeError(
-            "MobileGym environment failed release preflight; remove it and start "
-            "a fresh MobileGym environment"
-        ) from exc
+    preflight_mobilegym_environment(
+        environment_url,
+        timeout=timeout,
+        health=health,
+    )
 
 
 def _task_repeats(args: argparse.Namespace, task: TaskSpec) -> int:
@@ -855,10 +830,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.auto_agent_setup and args.max_concurrency < 0:
         print("Error: max-concurrency must be non-negative", file=sys.stderr)
         return 2
+    environment_health = None
     try:
+        if args.environment_url:
+            environment_health = _read_environment_health(args.environment_url)
         resolved_platform = _resolve_target_platform_enum(
             args,
             required=bool(args.environment_url),
+            health=environment_health,
         )
         target_platform = (
             resolved_platform.value if resolved_platform is not None else ""
@@ -876,12 +855,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.auto_agent_setup and _suite_has_mock_environment(suite):
         requested_platform = str(args.target_platform or "").strip().lower()
         target_platform = "" if requested_platform == "auto" else requested_platform
-    if args.auto_agent_setup:
+    if (
+        args.environment_url
+        and os.environ.get(MOBILEGYM_PREFLIGHT_COMPLETE_ENV) != "1"
+    ):
         try:
-            _preflight_mobilegym_environment(args.environment_url)
+            _preflight_mobilegym_environment(
+                args.environment_url,
+                health=environment_health,
+            )
         except Exception as exc:
             print(f"Error: environment preflight failed: {exc}", file=sys.stderr)
             return 2
+    if args.auto_agent_setup:
         return _cmd_run_auto_agent_setup(
             args,
             suite,

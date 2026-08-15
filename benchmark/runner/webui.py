@@ -33,6 +33,10 @@ from runner.platform import (
     read_environment_health,
     resolve_environment_platform,
 )
+from runner.preflight import (
+    MOBILEGYM_PREFLIGHT_COMPLETE_ENV,
+    preflight_mobilegym_environment,
+)
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
 
@@ -840,6 +844,10 @@ class BenchmarkWebApp:
             if job.environment_type != "mock":
                 health = read_environment_health(job.environment_endpoint or job.endpoint)
                 resolution = resolve_environment_platform(health)
+                preflight_mobilegym_environment(
+                    job.environment_endpoint or job.endpoint,
+                    health=health,
+                )
                 self._set_job(
                     job,
                     target_platform=resolution.value,
@@ -1212,6 +1220,7 @@ class BenchmarkWebApp:
             if job.repeats:
                 cmd.extend(["--repeats", str(job.repeats)])
             env = os.environ.copy()
+            env[MOBILEGYM_PREFLIGHT_COMPLETE_ENV] = "1"
             if not job.no_judge:
                 with self._lock:
                     judge_api_key = self._job_judge_api_keys.get(job.id, "")
@@ -1418,6 +1427,7 @@ class BenchmarkWebApp:
             cmd.extend(["--repeats", str(job.repeats)])
         append_log(Path(job.runner_log), "\n$ " + " ".join(cmd))
         env = os.environ.copy()
+        env[MOBILEGYM_PREFLIGHT_COMPLETE_ENV] = "1"
         if not job.no_judge:
             with self._lock:
                 judge_api_key = self._job_judge_api_keys.get(job.id, "")

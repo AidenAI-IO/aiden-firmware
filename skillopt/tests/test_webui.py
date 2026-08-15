@@ -269,6 +269,7 @@ def test_run_job_uses_agent_config_api_key_as_openrouter_fallback(tmp_path: Path
 
         def __init__(self, *args, **kwargs):
             observed["openrouter_api_key"] = kwargs["env"].get("OPENROUTER_API_KEY")
+            observed["judge_api_key"] = kwargs["env"].get("AIDEN_BENCHMARK_JUDGE_API_KEY")
 
         def poll(self):
             return 0
@@ -282,6 +283,7 @@ def test_run_job_uses_agent_config_api_key_as_openrouter_fallback(tmp_path: Path
     app._run_job(job)
 
     assert observed["openrouter_api_key"] == "sk-agent-fallback"
+    assert observed["judge_api_key"] == "sk-agent-fallback"
 
 
 def test_run_job_prefers_explicit_judge_api_key_over_agent_config(tmp_path: Path, monkeypatch):
@@ -307,6 +309,7 @@ def test_run_job_prefers_explicit_judge_api_key_over_agent_config(tmp_path: Path
 
         def __init__(self, *args, **kwargs):
             observed["openrouter_api_key"] = kwargs["env"].get("OPENROUTER_API_KEY")
+            observed["judge_api_key"] = kwargs["env"].get("AIDEN_BENCHMARK_JUDGE_API_KEY")
 
         def poll(self):
             return 0
@@ -319,6 +322,7 @@ def test_run_job_prefers_explicit_judge_api_key_over_agent_config(tmp_path: Path
     app._run_job(job)
 
     assert observed["openrouter_api_key"] == "sk-explicit-judge"
+    assert observed["judge_api_key"] == "sk-explicit-judge"
 
 
 def test_running_job_payload_reports_benchmark_artifact_progress(tmp_path: Path):
@@ -848,6 +852,7 @@ def test_index_html_reuses_benchmark_webui_shell():
     assert 'id="judgeEnabled"' in INDEX_HTML
     assert 'id="judgeModel"' in INDEX_HTML
     assert 'id="judgeApiKey"' in INDEX_HTML
+    assert 'placeholder="AIDEN_BENCHMARK_JUDGE_API_KEY"' in INDEX_HTML
     assert 'id="optimizerModel"' in INDEX_HTML
     assert 'id="runEnvDialog"' in INDEX_HTML
     assert 'id="skill"' not in INDEX_HTML

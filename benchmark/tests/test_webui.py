@@ -1203,6 +1203,7 @@ def test_run_suite_passes_mobilegym_environment_url(tmp_path: Path, monkeypatch)
 
     def fake_popen(cmd, **kwargs):
         captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
         return FakeProc()
 
     monkeypatch.setattr(webui.subprocess, "Popen", fake_popen)
@@ -1211,6 +1212,7 @@ def test_run_suite_passes_mobilegym_environment_url(tmp_path: Path, monkeypatch)
 
     assert "--environment-url" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
+    assert captured["env"][webui.MOBILEGYM_PREFLIGHT_COMPLETE_ENV] == "1"
 
 
 def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
@@ -1376,6 +1378,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
         captured["owner_job_id"] = owner_job_id
         captured["extra_owner_ids"] = extra_owner_ids
         captured["cmd"] = cmd
+        captured["env"] = env
         run_id = cmd[cmd.index("--run-id") + 1]
         run_path = raw_runs_dir / run_id
         run_path.mkdir(parents=True)
@@ -1404,6 +1407,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
         Path(job.config_dir) / "control_token"
     )
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
+    assert captured["env"][webui.MOBILEGYM_PREFLIGHT_COMPLETE_ENV] == "1"
     assert "--target-platform" not in captured["cmd"]
     assert releases == [("http://127.0.0.1:19090", 2, "suite.json:t1")]
     assert result["exit_code"] == 0
@@ -1415,6 +1419,82 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
     assert task_record.agent_url == "http://127.0.0.1:18081"
     assert task_record.report_url == f"/reports/{job.id}/{result['run_id']}/report.html"
     assert task_record.screen_url == webui.webui_task_screen_url(job.id, task_record.id)
+
+
+@pytest.mark.parametrize("parallel_tasks", [1, 2])
+def test_mobilegym_webui_job_preflights_before_starting_workers(
+    tmp_path: Path, monkeypatch, parallel_tasks: int
+):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=tmp_path / "suites",
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "base-config",
+            build_daemon_image=False,
+        )
+    )
+    job_dir = tmp_path / "runs" / "job-test"
+    (job_dir / "raw").mkdir(parents=True)
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        environment_endpoint="http://127.0.0.1:19090",
+        suites=["suite.json"],
+        environment_type="mobilegym",
+        agent_url="http://127.0.0.1:18080",
+        config_dir=str(job_dir / "config"),
+        raw_runs_dir=str(job_dir / "raw"),
+        state_file=str(job_dir / "state.json"),
+        runner_log=str(job_dir / "runner.log"),
+        daemon_log=str(job_dir / "daemon.log"),
+        no_judge=True,
+        parallel_tasks=parallel_tasks,
+    )
+    events = []
+
+    monkeypatch.setattr(app, "get_agent_config", lambda: {"content": ""})
+    monkeypatch.setattr(webui, "prepare_run_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        webui,
+        "read_environment_health",
+        lambda endpoint: {
+            "bridge_type": "mobilegym",
+            "platform": "android",
+            "env_count": parallel_tasks,
+        },
+    )
+    monkeypatch.setattr(
+        webui,
+        "preflight_mobilegym_environment",
+        lambda endpoint, health=None: events.append(("preflight", endpoint, health)),
+    )
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_refresh_job_report", lambda *args, **kwargs: None)
+    if parallel_tasks > 1:
+        monkeypatch.setattr(
+            app,
+            "_run_mobilegym_suite_parallel",
+            lambda current_job, suite_key: events.append(("parallel", suite_key)),
+        )
+    else:
+        monkeypatch.setattr(webui, "start_daemon_compose", lambda *args, **kwargs: "container-id")
+        monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+        monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+        monkeypatch.setattr(app, "_wait_for_daemon", lambda *args, **kwargs: None)
+        monkeypatch.setattr(app, "_release_job_environment", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            app,
+            "_run_suite",
+            lambda current_job, suite_key: events.append(("single", suite_key)),
+        )
+
+    app._run_job(job)
+
+    assert events[0][0] == "preflight"
+    assert events[0][1] == "http://127.0.0.1:19090"
+    assert events[0][2]["env_count"] == parallel_tasks
+    assert events[1] == ("parallel" if parallel_tasks > 1 else "single", "suite.json")
 
 
 def test_read_task_log_returns_task_worker_logs(tmp_path: Path):

@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 import urllib.parse
 
@@ -8,6 +9,7 @@ from runner.agent_client import ToolInvokeResult
 from runner.analysis import AnalysisResult
 from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 import runner.main as main
+import runner.preflight as preflight_module
 import runner.suite as suite_module
 import runner.webui as webui
 
@@ -98,19 +100,19 @@ def test_resolve_target_platform_infers_mobilegym_android(monkeypatch):
 def test_preflight_mobilegym_environment_exercises_setup_and_release(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        main,
-        "_read_environment_health",
+        preflight_module,
+        "read_environment_health",
         lambda environment_url: {"bridge_type": "mobilegym", "platform": "android"},
     )
     monkeypatch.setattr(
-        main,
+        preflight_module,
         "call_environment_setup",
         lambda environment_url, timeout, task_id: calls.append(
             ("setup", environment_url, timeout, task_id)
         ),
     )
     monkeypatch.setattr(
-        main,
+        preflight_module,
         "call_environment_release",
         lambda environment_url, timeout, task_id: calls.append(
             ("release", environment_url, timeout, task_id)
@@ -126,21 +128,125 @@ def test_preflight_mobilegym_environment_exercises_setup_and_release(monkeypatch
     assert calls[0][3].startswith("benchmark-preflight:")
 
 
+def test_preflight_mobilegym_environment_checks_every_pool_slot(monkeypatch):
+    calls = []
+    setup_barrier = threading.Barrier(3, timeout=1)
+    monkeypatch.setattr(
+        preflight_module,
+        "read_environment_health",
+        lambda environment_url: {
+            "bridge_type": "mobilegym",
+            "platform": "android",
+            "env_count": 3,
+        },
+    )
+
+    def setup(environment_url, timeout, task_id):
+        calls.append(("setup", environment_url, timeout, task_id))
+        setup_barrier.wait()
+
+    monkeypatch.setattr(preflight_module, "call_environment_setup", setup)
+    monkeypatch.setattr(
+        preflight_module,
+        "call_environment_release",
+        lambda environment_url, timeout, task_id: calls.append(
+            ("release", environment_url, timeout, task_id)
+        ),
+    )
+
+    main._preflight_mobilegym_environment("http://127.0.0.1:19090")
+
+    setup_calls = [call for call in calls if call[0] == "setup"]
+    release_calls = [call for call in calls if call[0] == "release"]
+    assert len(setup_calls) == 3
+    assert len({call[3] for call in setup_calls}) == 3
+    assert {call[3] for call in release_calls} == {call[3] for call in setup_calls}
+    assert all(call[2] == 180 for call in calls)
+    assert max(calls.index(call) for call in setup_calls) < min(
+        calls.index(call) for call in release_calls
+    )
+
+
 def test_preflight_mobilegym_environment_rejects_setup_failure(monkeypatch):
     monkeypatch.setattr(
-        main,
-        "_read_environment_health",
+        preflight_module,
+        "read_environment_health",
         lambda environment_url: {"bridge_type": "mobilegym", "platform": "android"},
     )
 
     def fail_setup(environment_url, timeout, task_id):
         raise main.ResetError("setup timed out")
 
-    monkeypatch.setattr(main, "call_environment_setup", fail_setup)
-    monkeypatch.setattr(main, "call_environment_release", lambda *args, **kwargs: None)
+    monkeypatch.setattr(preflight_module, "call_environment_setup", fail_setup)
+    monkeypatch.setattr(preflight_module, "call_environment_release", lambda *args, **kwargs: None)
 
     with pytest.raises(RuntimeError, match="start a fresh MobileGym environment"):
         main._preflight_mobilegym_environment("http://127.0.0.1:19090", timeout=7)
+
+
+def test_run_with_environment_url_runs_preflight_without_auto_agent_setup(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.delenv(main.MOBILEGYM_PREFLIGHT_COMPLETE_ENV, raising=False)
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "suite",
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "category": "diagnostic",
+                        "prompt": "test",
+                        "description_for_judge": "test",
+                        "rubric": [{"id": "ok", "check": "ok"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            pass
+
+        def health(self):
+            return False
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        main,
+        "_read_environment_health",
+        lambda environment_url: {"bridge_type": "mobilegym", "platform": "android"},
+    )
+    monkeypatch.setattr(
+        main,
+        "_preflight_mobilegym_environment",
+        lambda environment_url, health=None: calls.append(environment_url),
+    )
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+
+    argv = [
+        "run",
+        "--suite",
+        str(suite_path),
+        "--environment-url",
+        "http://127.0.0.1:19090",
+        "--no-judge",
+    ]
+    rc = main.cli(argv)
+
+    assert rc == 2
+    assert calls == ["http://127.0.0.1:19090"]
+    assert "not reachable" in capsys.readouterr().err
+
+    monkeypatch.setenv(main.MOBILEGYM_PREFLIGHT_COMPLETE_ENV, "1")
+    assert main.cli(argv) == 2
+    assert calls == ["http://127.0.0.1:19090"]
 
 
 def test_resolve_target_platform_reads_vphone_ios_health(monkeypatch):
@@ -913,7 +1019,8 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
     monkeypatch.setattr(main, "_read_environment_health", lambda url: {"bridge_type": "mobilegym"})
     monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
-    monkeypatch.setattr(main, "call_environment_setup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(preflight_module, "call_environment_setup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(preflight_module, "call_environment_release", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "call_environment_release", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "clear_stale_adb_android_owner", lambda url: stale_clears.append(url))
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
