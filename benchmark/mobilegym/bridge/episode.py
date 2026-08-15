@@ -130,6 +130,7 @@ class BridgeEpisodeState:
         self.action_log: list[dict[str, Any]] = []
         self._action_counter = 0
         self._env_lock = asyncio.Lock()
+        self._pending_sync_reset: asyncio.Task[Any] | None = None
         self._restart_task: asyncio.Task[bool] | None = None
 
     async def start_episode(self, episode_id: str) -> dict[str, str]:
@@ -180,21 +181,31 @@ class BridgeEpisodeState:
         *,
         app_ids: list[str] | None,
     ) -> None:
-        async def invoke() -> None:
-            if inspect.iscoroutinefunction(reset):
-                result = reset() if app_ids is None else reset(app_ids=app_ids)
-            elif app_ids is None:
-                result = await asyncio.to_thread(reset)
-            else:
-                result = await asyncio.to_thread(reset, app_ids=app_ids)
+        async def invoke_async() -> None:
+            result = reset() if app_ids is None else reset(app_ids=app_ids)
             if inspect.isawaitable(result):
                 await result
 
+        async def invoke_sync() -> None:
+            if app_ids is None:
+                reset_task = asyncio.create_task(asyncio.to_thread(reset))
+            else:
+                reset_task = asyncio.create_task(asyncio.to_thread(reset, app_ids=app_ids))
+            self._pending_sync_reset = reset_task
+            try:
+                result = await asyncio.shield(reset_task)
+            finally:
+                if reset_task.done() and self._pending_sync_reset is reset_task:
+                    self._pending_sync_reset = None
+            if inspect.isawaitable(result):
+                await result
+
+        invoke = invoke_async if inspect.iscoroutinefunction(reset) else invoke_sync
         await asyncio.wait_for(invoke(), timeout=EPISODE_RESET_TIMEOUT_SEC)
 
     async def _restart_env_after_timeout(self, reset_error: BaseException) -> bool:
         if self._restart_task is None:
-            self._restart_task = asyncio.create_task(self._restart_env_if_supported())
+            self._restart_task = asyncio.create_task(self._restart_env_when_idle())
         restart_task = self._restart_task
         try:
             result = await asyncio.wait_for(
@@ -227,8 +238,23 @@ class BridgeEpisodeState:
         self._restart_task = None
         return result
 
+    async def _restart_env_when_idle(self) -> bool:
+        await self._await_pending_sync_reset()
+        return await self._restart_env_if_supported()
+
+    async def _await_pending_sync_reset(self) -> None:
+        reset_task = self._pending_sync_reset
+        if reset_task is None:
+            return
+        try:
+            await asyncio.gather(asyncio.shield(reset_task), return_exceptions=True)
+        finally:
+            if reset_task.done() and self._pending_sync_reset is reset_task:
+                self._pending_sync_reset = None
+
     async def _await_pending_restart(self) -> None:
         if self._restart_task is None:
+            await self._await_pending_sync_reset()
             return
         await self._restart_env_after_timeout(
             TimeoutError("previous environment restart is still in progress")
@@ -237,11 +263,7 @@ class BridgeEpisodeState:
     async def _restart_env_if_supported(self) -> bool:
         restart = getattr(self.env, "restart", None)
         if restart is not None:
-            restart_result = restart()
-            if asyncio.iscoroutine(restart_result) or isinstance(restart_result, Awaitable):
-                started_env = await restart_result
-            else:
-                started_env = restart_result
+            started_env = await self._invoke_env_callable(restart)
             if started_env is not None:
                 self.env = started_env
             return True
@@ -250,17 +272,20 @@ class BridgeEpisodeState:
         start = getattr(self.env, "start", None)
         if close is None or start is None:
             return False
-        close_result = close()
-        if asyncio.iscoroutine(close_result) or isinstance(close_result, Awaitable):
-            await close_result
-        start_result = start()
-        if asyncio.iscoroutine(start_result) or isinstance(start_result, Awaitable):
-            started_env = await start_result
-        else:
-            started_env = start_result
+        await self._invoke_env_callable(close)
+        started_env = await self._invoke_env_callable(start)
         if started_env is not None:
             self.env = started_env
         return True
+
+    async def _invoke_env_callable(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        if inspect.iscoroutinefunction(fn):
+            result = fn(*args, **kwargs)
+        else:
+            result = await asyncio.to_thread(fn, *args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     async def end_episode(self, episode_id: str) -> dict[str, Any]:
         episode_id = self.require_active(episode_id)

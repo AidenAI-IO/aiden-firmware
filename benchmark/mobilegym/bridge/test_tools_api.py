@@ -801,6 +801,117 @@ def test_run_reset_bounds_synchronous_reset(monkeypatch):
     assert asyncio.run(run()) < 0.05
 
 
+def test_reset_episode_isolates_timed_out_synchronous_reset(monkeypatch):
+    import asyncio
+
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESET_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
+
+    class BlockingResetEnv:
+        def __init__(self):
+            self.allow_reset = Event()
+            self.restart_calls = 0
+            self.read_calls = 0
+
+        def reset(self, app_ids=None):
+            self.allow_reset.wait(timeout=1)
+
+        async def restart(self):
+            self.restart_calls += 1
+
+        async def read(self):
+            self.read_calls += 1
+            return "ready"
+
+    async def run():
+        env = BlockingResetEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError):
+            await state.reset_episode("episode-1", app_ids=[])
+
+        restart_calls_before_release = env.restart_calls
+        read_task = asyncio.create_task(state.run_env(lambda current: current.read()))
+        await asyncio.sleep(0)
+        read_finished_before_release = read_task.done()
+
+        env.allow_reset.set()
+        result = await read_task
+        return (
+            restart_calls_before_release,
+            read_finished_before_release,
+            env.restart_calls,
+            result,
+        )
+
+    assert asyncio.run(run()) == (0, False, 1, "ready")
+
+
+def test_cancelled_synchronous_reset_stays_isolated():
+    import asyncio
+
+    class BlockingResetEnv:
+        def __init__(self):
+            self.allow_reset = Event()
+            self.reset_started = Event()
+            self.read_calls = 0
+
+        def reset(self, app_ids=None):
+            self.reset_started.set()
+            self.allow_reset.wait(timeout=1)
+
+        async def read(self):
+            self.read_calls += 1
+            return "ready"
+
+    async def run():
+        env = BlockingResetEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+        reset_task = asyncio.create_task(state._run_reset(env.reset, app_ids=[]))
+
+        await asyncio.to_thread(env.reset_started.wait, 1)
+        reset_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reset_task
+
+        read_task = asyncio.create_task(state.run_env(lambda current: current.read()))
+        await asyncio.sleep(0)
+        read_finished_before_release = read_task.done()
+
+        env.allow_reset.set()
+        result = await read_task
+        return read_finished_before_release, env.read_calls, result
+
+    assert asyncio.run(run()) == (False, 1, "ready")
+
+
+def test_reset_episode_bounds_synchronous_restart(monkeypatch):
+    import asyncio
+    import time
+
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
+
+    class BlockingRestartEnv:
+        async def reset(self, app_ids=None):
+            raise TimeoutError("phase=__OS__ timeout")
+
+        def restart(self):
+            time.sleep(0.1)
+
+    async def run():
+        state = BridgeEpisodeState(BlockingRestartEnv(), asyncio.get_running_loop())
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="restart timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+        return time.monotonic() - started
+
+    assert asyncio.run(run()) < 0.05
+
+
 def test_reset_episode_catches_builtin_timeout_error(monkeypatch):
     import asyncio
 
