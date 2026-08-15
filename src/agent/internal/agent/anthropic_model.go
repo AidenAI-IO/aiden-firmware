@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -26,6 +27,7 @@ const (
 	defaultAnthropicStreamMaxRetries = 5
 	defaultAnthropicStreamRetryDelay = 2 * time.Second
 	defaultAnthropicProtocolRetries  = 1
+	anthropicDaemonRawSSELimit       = 128 * 1024
 )
 
 type anthropicModel struct {
@@ -295,7 +297,7 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 		}
 
 		if request.Stream {
-			result, streamErr := m.decodeStreamingResponse(ctx, response.Body, request.Model, response.StatusCode, callStarted, &callOpts, request.Thinking != nil)
+			result, streamErr := m.decodeStreamingResponse(ctx, response.Body, response.Header, request.Model, response.StatusCode, callStarted, &callOpts, request.Thinking != nil)
 			response.Body.Close()
 			if streamErr == nil {
 				return result, nil
@@ -737,6 +739,7 @@ type anthropicStreamError struct {
 	err             error
 	outputDelivered bool
 	retryable       bool
+	protocol        bool
 }
 
 func (e *anthropicStreamError) Error() string {
@@ -758,7 +761,101 @@ func newAnthropicStreamProtocolError(outputDelivered bool, format string, args .
 		err:             fmt.Errorf("Anthropic stream protocol error: "+format, args...),
 		outputDelivered: outputDelivered,
 		retryable:       true,
+		protocol:        true,
 	}
+}
+
+type anthropicStreamBlockDiagnostic struct {
+	Index int    `json:"index"`
+	Type  string `json:"type"`
+}
+
+type anthropicStreamFailureDiagnostic struct {
+	StreamError       string                           `json:"stream_error"`
+	RawSSE            string                           `json:"raw_sse"`
+	RawSSETotalBytes  int                              `json:"raw_sse_total_bytes"`
+	RawSSETruncated   bool                             `json:"raw_sse_truncated"`
+	RawSSEBase64      string                           `json:"raw_sse_base64,omitempty"`
+	ResponseID        string                           `json:"response_id"`
+	UpstreamRequestID string                           `json:"upstream_request_id"`
+	ResponseHeaders   map[string]string                `json:"response_headers"`
+	EventTypeCounts   map[string]int                   `json:"event_type_counts"`
+	ContentBlocks     []anthropicStreamBlockDiagnostic `json:"content_blocks"`
+}
+
+func (d *anthropicStreamFailureDiagnostic) setRawSSE(rawSSE []byte, rawSSELimit int) {
+	rawSample := rawSSE
+	truncated := false
+	if rawSSELimit >= 0 && len(rawSample) > rawSSELimit {
+		rawSample = rawSample[:rawSSELimit]
+		truncated = true
+	}
+	rawSSEValidUTF8 := utf8.Valid(rawSSE)
+	if rawSSEValidUTF8 {
+		for len(rawSample) > 0 && !utf8.Valid(rawSample) {
+			rawSample = rawSample[:len(rawSample)-1]
+		}
+	}
+
+	d.RawSSE = string(rawSample)
+	d.RawSSETotalBytes = len(rawSSE)
+	d.RawSSETruncated = truncated
+	d.RawSSEBase64 = ""
+	if !rawSSEValidUTF8 {
+		d.RawSSEBase64 = base64.StdEncoding.EncodeToString(rawSample)
+	}
+}
+
+func normalizeAnthropicResponseHeaders(headers http.Header) map[string]string {
+	normalized := make(map[string]string, len(headers))
+	for key, values := range headers {
+		normalized[strings.ToLower(strings.TrimSpace(key))] = strings.Join(values, ", ")
+	}
+	return normalized
+}
+
+func anthropicUpstreamRequestID(headers map[string]string) string {
+	for _, key := range []string{
+		"request-id",
+		"x-request-id",
+		"anthropic-request-id",
+		"x-amzn-requestid",
+		"x-amz-request-id",
+		"x-goog-request-id",
+		"x-trace-id",
+		"trace-id",
+	} {
+		if value := strings.TrimSpace(headers[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func anthropicStreamBlockDiagnostics(blocks map[int]*anthropicStreamBlock) []anthropicStreamBlockDiagnostic {
+	indexes := make([]int, 0, len(blocks))
+	for index := range blocks {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+
+	diagnostics := make([]anthropicStreamBlockDiagnostic, 0, len(indexes))
+	for _, index := range indexes {
+		diagnostics = append(diagnostics, anthropicStreamBlockDiagnostic{
+			Index: index,
+			Type:  blocks[index].Type,
+		})
+	}
+	return diagnostics
+}
+
+func isAnthropicStreamProtocolFailure(err error) bool {
+	var streamErr *anthropicStreamError
+	if errors.As(err, &streamErr) && streamErr.protocol {
+		return true
+	}
+	var responseProtocolErr *anthropicResponseProtocolError
+	return errors.As(err, &responseProtocolErr)
 }
 
 func firstOpenAnthropicStreamBlock(blocks map[int]*anthropicStreamBlock) (int, bool) {
@@ -774,14 +871,16 @@ func firstOpenAnthropicStreamBlock(blocks map[int]*anthropicStreamBlock) (int, b
 	return openIndex, found
 }
 
-func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Reader, model string, statusCode int, callStarted time.Time, opts *llms.CallOptions, thinkingEnabled bool) (result *llms.ContentResponse, resultErr error) {
-	scanner := bufio.NewScanner(body)
+func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Reader, responseHeaders http.Header, model string, statusCode int, callStarted time.Time, opts *llms.CallOptions, thinkingEnabled bool) (result *llms.ContentResponse, resultErr error) {
+	var raw bytes.Buffer
+	scanner := bufio.NewScanner(io.TeeReader(body, &raw))
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	blocks := map[int]*anthropicStreamBlock{}
+	eventTypeCounts := map[string]int{}
+	normalizedResponseHeaders := normalizeAnthropicResponseHeaders(responseHeaders)
 	usage := anthropicUsage{}
 	responseID := ""
 	stopReason := ""
-	var raw strings.Builder
 	firstContent := false
 	var firstContentAt int64
 	outputDelivered := false
@@ -797,16 +896,26 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 		if errors.As(resultErr, &statusErr) && statusErr.HTTPStatusCode() != 0 {
 			logStatusCode = statusErr.HTTPStatusCode()
 		}
-		failureBody, _ := json.Marshal(map[string]any{
-			"stream_error": resultErr.Error(),
-			"raw_sse":      raw.String(),
-		})
+		failureDiagnostic := anthropicStreamFailureDiagnostic{
+			StreamError:       resultErr.Error(),
+			ResponseID:        responseID,
+			UpstreamRequestID: anthropicUpstreamRequestID(normalizedResponseHeaders),
+			ResponseHeaders:   normalizedResponseHeaders,
+			EventTypeCounts:   eventTypeCounts,
+			ContentBlocks:     anthropicStreamBlockDiagnostics(blocks),
+		}
+		failureDiagnostic.setRawSSE(raw.Bytes(), -1)
+		failureBody, _ := json.Marshal(failureDiagnostic)
 		_ = m.logRawHTTP(ctx, model, "response", logStatusCode, string(failureBody))
+		if isAnthropicStreamProtocolFailure(resultErr) {
+			daemonDiagnostic := failureDiagnostic
+			daemonDiagnostic.setRawSSE(raw.Bytes(), anthropicDaemonRawSSELimit)
+			daemonBody, _ := json.Marshal(daemonDiagnostic)
+			log.Printf("[ERROR] [anthropic] stream protocol failure %s", daemonBody)
+		}
 	}()
 	for scanner.Scan() {
 		line := scanner.Text()
-		raw.WriteString(line)
-		raw.WriteByte('\n')
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "data:") {
 			continue
@@ -827,6 +936,7 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			return nil, newAnthropicStreamProtocolError(outputDelivered, "decode event: %v", err)
 		}
+		eventTypeCounts[event.Type]++
 		if messageStopped {
 			return nil, newAnthropicStreamProtocolError(outputDelivered, "event %q received after message_stop", event.Type)
 		}
@@ -903,6 +1013,10 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			case "signature_delta":
 				chunk, _ := event.Delta["signature"].(string)
 				block.Signature.WriteString(chunk)
+			case "citations_delta":
+				// Citations annotate an existing text block and do not change its text content.
+			default:
+				return nil, newAnthropicStreamProtocolError(outputDelivered, "unknown content_block_delta type %q for block %d", deltaType, event.Index)
 			}
 		case "content_block_stop":
 			if !messageStarted {
@@ -949,6 +1063,8 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			encoded, _ := json.Marshal(map[string]any{"error": event.Error})
 			providerErr := newProviderHTTPError(anthropicErrorHTTPStatus(event.Error), encoded)
 			return nil, &anthropicStreamError{err: providerErr, outputDelivered: outputDelivered}
+		default:
+			return nil, newAnthropicStreamProtocolError(outputDelivered, "unknown event type %q", event.Type)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -993,7 +1109,7 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 	encodedResponse, encodeErr := json.Marshal(response)
 	normalized, recovery, protocolErr := normalizeAnthropicResponse(response, thinkingEnabled)
 	if protocolErr != nil {
-		return nil, &anthropicStreamError{err: protocolErr, outputDelivered: outputDelivered, retryable: true}
+		return nil, &anthropicStreamError{err: protocolErr, outputDelivered: outputDelivered, retryable: true, protocol: true}
 	}
 	response = normalized
 	if recovery != "" {
