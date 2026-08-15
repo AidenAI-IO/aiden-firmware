@@ -1,4 +1,19 @@
 // Shared DOM references and mutable UI state.
+function createRecorderState() {
+    return {
+        isRecording: false,
+        isStopping: false,
+        mode: '',
+        stream: null,
+        context: null,
+        source: null,
+        processor: null,
+        sink: null,
+        chunks: [],
+        sampleRate: targetAudioSampleRate
+    };
+}
+
 const conversationEl = document.getElementById('conversation');
 const messagesDiv = document.getElementById('messages');
 const inputEl = document.getElementById('input');

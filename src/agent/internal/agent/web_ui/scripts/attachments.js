@@ -382,21 +382,6 @@ async function teardownRecorder(options) {
     }
 }
 
-function createRecorderState() {
-    return {
-        isRecording: false,
-        isStopping: false,
-        mode: '',
-        stream: null,
-        context: null,
-        source: null,
-        processor: null,
-        sink: null,
-        chunks: [],
-        sampleRate: targetAudioSampleRate
-    };
-}
-
 function updateRecordButton() {
     const active = recorderState.isRecording;
     recordBtn.classList.toggle('recording', active);
