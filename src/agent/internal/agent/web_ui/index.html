@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aiden Agent</title>
+    <link rel="stylesheet" href="/web-ui/styles.css">
+    <style>
+</head>
+<body>
+    <div class="app-shell">
+        <main class="main-panel">
+            <header class="topbar">
+                <h1>Aiden Agent</h1>
+                <div class="topbar-actions">
+                    <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 Coordinate Debug</a>
+                    <a href="/user_files" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📁 User files</a>
+                    <a href="/api/context-dump" target="_blank" rel="noopener" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📋 Context dump</a>
+                    <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
+                    <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
+                </div>
+            </header>
+
+            <section class="conversation" id="conversation">
+                <div class="conversation-inner">
+                    <div class="empty-state" id="emptyState">
+                        <h3>Aiden Agent</h3>
+                        <p>Ask a question or run a task.</p>
+                    </div>
+                    <div class="message-list" id="messages"></div>
+                </div>
+            </section>
+
+            <div class="loading" id="loading">
+                <span class="spinner" aria-hidden="true"></span>
+                <span>Working on it...</span>
+                <button type="button" class="stop-run-btn" id="stopRunBtn" onpointerdown="markStopRunPointer(event)" onclick="cancelCurrentRun(event)" disabled>Stop</button>
+            </div>
+
+            <div class="pending-steer hidden" id="pendingSteer">
+                <div class="pending-steer-copy">
+                    <div class="message-role">Pending steer</div>
+                    <div class="pending-steer-text" id="pendingSteerText"></div>
+                </div>
+                <button type="button" class="stop-run-btn" id="cancelSteerBtn" onclick="cancelPendingSteer()">Cancel</button>
+            </div>
+
+            <form class="composer" onsubmit="event.preventDefault(); sendMessage();">
+                <div class="composer-shell">
+                    <input type="file" id="imageInput" class="hidden-input" accept="image/*" multiple />
+                    <div class="draft-attachments" id="draftAttachments"></div>
+                    <textarea
+                        id="input"
+                        class="composer-input"
+                        rows="1"
+                        placeholder="Message Aiden Agent..."
+                    ></textarea>
+                    <div class="composer-footer">
+                        <div class="composer-toolbar">
+                            <button type="button" class="composer-btn" id="imageBtn" onclick="openImagePicker()">Add image</button>
+                            <button type="button" class="composer-btn" id="recordBtn" onclick="toggleRecording()">Record audio</button>
+                            <div class="composer-hint" id="composerHint" aria-live="polite">Enter to send, Shift+Enter for newline</div>
+                        </div>
+                        <div class="composer-actions">
+                            <button type="submit" class="send-btn" id="sendBtn">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </main>
+
+        <aside class="inspector">
+            <div class="sidebar-card tool-lab">
+                <div class="sidebar-kicker">Tool Lab</div>
+                <strong>Manual tool test</strong>
+                <label class="tool-lab-label" for="toolSelect">Tool</label>
+                <select id="toolSelect" class="tool-lab-select">
+                    <option value="">Loading tools...</option>
+                </select>
+                <div class="sidebar-note" id="toolDescription"></div>
+                <textarea
+                    id="toolInput"
+                    class="tool-lab-input"
+                    rows="7"
+                    spellcheck="false"
+                    placeholder='{"command":"pwd"}'
+                ></textarea>
+                <div class="tool-lab-row">
+                    <button type="button" class="composer-btn tool-secondary-btn" id="toolExampleBtn" onclick="loadSelectedToolExample()">Use example</button>
+                    <button type="button" class="send-btn tool-run-btn" id="toolInvokeBtn" onclick="invokeSelectedTool()">Run tool</button>
+                </div>
+                <div class="tool-lab-status" id="toolStatus"></div>
+                <div class="tool-lab-result hidden" id="toolResultPanel">
+                    <div class="tool-lab-result-meta" id="toolResultMeta"></div>
+                    <div class="tool-lab-preview hidden" id="toolResultPreviewWrap">
+                        <img id="toolResultPreview" alt="Tool output preview" />
+                    </div>
+                    <pre class="tool-block" id="toolResultOutput"></pre>
+                </div>
+            </div>
+
+            <div class="sidebar-card skill-export">
+                <div class="sidebar-kicker">Skill Export</div>
+                <strong>HTTP skill bundle</strong>
+                <label class="tool-lab-label" for="skillSelect">Skill bundle</label>
+                <select id="skillSelect" class="tool-lab-select">
+                    <option value="">Loading skills...</option>
+                </select>
+                <textarea
+                    id="skillMarkdown"
+                    class="tool-lab-input"
+                    rows="12"
+                    readonly
+                    spellcheck="false"
+                    placeholder="Generated skill markdown will appear here."
+                ></textarea>
+                <div class="tool-lab-row">
+                    <button type="button" class="composer-btn tool-secondary-btn" id="copySkillBtn" onclick="copySelectedSkill()">Copy skill</button>
+                </div>
+                <div class="tool-lab-status" id="skillStatus"></div>
+            </div>
+
+            <div class="sidebar-card storage-panel">
+                <div class="sidebar-kicker">Storage</div>
+                <strong>eMMC + microSD</strong>
+                <div class="sidebar-note" id="storageSummary">Loading storage status...</div>
+                <div class="sidebar-note" id="storageWarning" hidden></div>
+                <div class="tool-lab-row">
+                    <button type="button" class="composer-btn tool-secondary-btn" id="storageEjectBtn" onclick="ejectStorage()">Safe eject</button>
+                </div>
+                <div class="sidebar-note">Formatting is available in the setup portal (192.168.42.1).</div>
+                <div class="tool-lab-status" id="storageStatusMsg"></div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- These classic scripts share page state. Keep state first and bootstrap last. -->
+    <script defer src="/web-ui/scripts/state.js"></script>
+    <script defer src="/web-ui/scripts/storage.js"></script>
+    <script defer src="/web-ui/scripts/events.js"></script>
+    <script defer src="/web-ui/scripts/tools.js"></script>
+    <script defer src="/web-ui/scripts/chat.js"></script>
+    <script defer src="/web-ui/scripts/messages.js"></script>
+    <script defer src="/web-ui/scripts/attachments.js"></script>
+    <script defer src="/web-ui/scripts/tool_messages.js"></script>
+    <script defer src="/web-ui/scripts/bootstrap.js"></script>
+</body>
+</html>

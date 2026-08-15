@@ -532,6 +532,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 
 	// Static web UI
+	mux.Handle("/web-ui/", http.StripPrefix("/web-ui/", http.FileServer(http.FS(webUIFiles))))
 	mux.HandleFunc("/", s.handleIndex)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.closing.Load() {

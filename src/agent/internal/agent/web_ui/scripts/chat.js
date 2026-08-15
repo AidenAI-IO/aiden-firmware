@@ -1,0 +1,557 @@
+// Chat submission, steering, streaming, and history reconciliation.
+async function sendMessage() {
+    if (sendBtn.disabled) return;
+    if (currentChatRequestId) {
+        await submitSteerMessage();
+        return;
+    }
+    if (recorderState.isRecording || recorderState.isStopping) {
+        await stopRecording();
+    }
+
+    const message = inputEl.value.trim();
+    const attachments = cloneAttachmentsForTransport(draftAttachments);
+    if (!message && attachments.length === 0) return;
+
+    const pendingAttachments = cloneAttachmentsForMessage(draftAttachments);
+
+    inputEl.value = '';
+    autoResizeInput();
+    clearDraftAttachments();
+    currentChatRequestId = createRequestId();
+    externalActiveRequestId = '';
+    currentChatAbortController = new AbortController();
+    currentChatCancelRequested = false;
+    currentChatStartedAt = Date.now();
+    resetStopRunArm();
+    setComposerState(true); // Call after setting currentChatRequestId so button shows "Steer"
+
+    addMessage({
+        type: 'user',
+        request_id: currentChatRequestId,
+        content: message,
+        attachments: pendingAttachments,
+        timestamp: new Date().toISOString()
+    });
+
+    try {
+        const res = await fetch('/api/chat', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/x-ndjson',
+                'X-Aiden-Stream': 'ndjson'
+            },
+            signal: currentChatAbortController.signal,
+            body: JSON.stringify({
+                message: message,
+                attachments: attachments,
+                request_id: currentChatRequestId
+            })
+        });
+
+        if (!res.ok) {
+            const errorText = await res.text();
+            throw new Error(errorText || 'Request failed');
+        }
+
+        await consumeChatStream(res);
+    } catch (err) {
+        if (currentChatCancelRequested || err.name === 'AbortError') {
+            addMessage({
+                type: 'assistant',
+                content: 'Interrupted.',
+                timestamp: new Date().toISOString()
+            });
+            return;
+        }
+        console.error('Failed to send message:', err);
+        try {
+            await loadHistory();
+        } catch (_) {}
+
+        addMessage({
+            type: 'assistant',
+            content: 'Error: ' + err.message,
+            timestamp: new Date().toISOString()
+        });
+    } finally {
+        currentChatRequestId = '';
+        currentChatAbortController = null;
+        currentChatCancelRequested = false;
+        currentChatStartedAt = 0;
+        resetStopRunArm();
+        pendingSteer = null;
+        renderPendingSteer();
+        setComposerState(false);
+        scrollToBottom();
+    }
+}
+
+async function submitSteerMessage() {
+    if (!currentChatRequestId || pendingSteerSubmitting) return;
+
+    const message = inputEl.value.trim();
+    if (!message) return;
+    if (draftAttachments.length > 0) {
+        alert('Attachments can be sent after the current run finishes.');
+        return;
+    }
+
+    const requestId = currentChatRequestId;
+    const localSteer = {
+        id: 'local-' + createRequestId(),
+        request_id: requestId,
+        content: message,
+        timestamp: new Date().toISOString()
+    };
+    pendingSteer = localSteer;
+    pendingSteerSubmitting = true;
+    inputEl.value = '';
+    autoResizeInput();
+    renderPendingSteer();
+    setComposerState(true);
+
+    try {
+        const res = await fetch('/api/chat/steer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                request_id: requestId,
+                message: message
+            })
+        });
+        if (!res.ok) {
+            throw new Error(await res.text() || 'Failed to queue steer.');
+        }
+        const data = await res.json();
+        if (data.steer) {
+            pendingSteer = data.steer;
+            renderPendingSteer();
+        }
+    } catch (err) {
+        console.error('Failed to queue steer:', err);
+        if (currentChatRequestId === requestId) {
+            inputEl.value = message;
+            autoResizeInput();
+        }
+        pendingSteer = null;
+        renderPendingSteer();
+        addMessage({
+            type: 'assistant',
+            content: 'Error: ' + err.message,
+            timestamp: new Date().toISOString()
+        });
+    } finally {
+        pendingSteerSubmitting = false;
+        setComposerState(!!currentChatRequestId);
+    }
+}
+
+function createRequestId() {
+    if (window.crypto && window.crypto.randomUUID) {
+        return window.crypto.randomUUID();
+    }
+    return 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+}
+
+function activeChatRequestId() {
+    return currentChatRequestId || externalActiveRequestId || '';
+}
+
+function markStopRunPointer(event) {
+    stopRunPointer = {
+        at: Date.now(),
+        pointerType: event && event.pointerType ? event.pointerType : '',
+        button: event && typeof event.button === 'number' ? event.button : -1,
+        isPrimary: !event || event.isPrimary !== false
+    };
+}
+
+function resetStopRunArm() {
+    stopRunArmedUntil = 0;
+    if (stopRunArmTimer) {
+        clearTimeout(stopRunArmTimer);
+        stopRunArmTimer = null;
+    }
+    if (stopRunBtn) {
+        stopRunBtn.textContent = 'Stop';
+    }
+}
+
+function armStopRun() {
+    stopRunArmedUntil = Date.now() + 3000;
+    stopRunBtn.textContent = 'Click again to stop';
+    if (stopRunArmTimer) {
+        clearTimeout(stopRunArmTimer);
+    }
+    stopRunArmTimer = setTimeout(function() {
+        if (Date.now() >= stopRunArmedUntil) {
+            resetStopRunArm();
+        }
+    }, 3100);
+}
+
+async function refreshCurrentLiveActivity() {
+    if (currentChatRequestId) return;
+    try {
+        const res = await fetch('/api/live-activity/current');
+        if (!res.ok) return;
+        const data = await res.json();
+        const state = data.live_activity;
+        const isActive = data.status === 'ok' && state && (state.status === 'running' || state.status === 'needs_app');
+        externalActiveRequestId = isActive ? state.request_id : '';
+        setComposerState(!!activeChatRequestId());
+    } catch (err) {
+        console.warn('Failed to refresh current live activity:', err);
+    }
+}
+
+async function cancelCurrentRun(event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const requestId = activeChatRequestId();
+    if (!requestId) return;
+    const now = Date.now();
+    const sincePointerMs = stopRunPointer ? now - stopRunPointer.at : -1;
+    const eventDetail = event && typeof event.detail === 'number' ? event.detail : 0;
+    const isPrimaryPointer =
+        stopRunPointer &&
+        stopRunPointer.isPrimary &&
+        (stopRunPointer.button === 0 || stopRunPointer.button === -1);
+    const isPointerClick =
+        event &&
+        event.isTrusted === true &&
+        event.type === 'click' &&
+        eventDetail > 0 &&
+        isPrimaryPointer &&
+        sincePointerMs >= 0 &&
+        sincePointerMs < 1500;
+    if (!isPointerClick) {
+        console.warn('Ignored chat cancel without explicit pointer click');
+        return;
+    }
+    if (now >= stopRunArmedUntil) {
+        armStopRun();
+        return;
+    }
+    resetStopRunArm();
+    currentChatCancelRequested = true;
+    stopRunBtn.disabled = true;
+    stopRunBtn.textContent = 'Stopping...';
+    pendingSteer = null;
+    renderPendingSteer();
+
+    if (currentChatAbortController) {
+        currentChatAbortController.abort();
+    }
+
+    fetch('/api/chat/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            request_id: requestId
+        }),
+        keepalive: true
+    }).catch(function(err) {
+        console.error('Failed to cancel chat request:', err);
+    }).finally(function() {
+        if (externalActiveRequestId === requestId) externalActiveRequestId = '';
+        setComposerState(!!activeChatRequestId());
+    });
+}
+
+async function cancelPendingSteer() {
+    if (!currentChatRequestId || !pendingSteer) return;
+    const requestId = currentChatRequestId;
+    const previous = pendingSteer;
+    pendingSteer = null;
+    renderPendingSteer();
+
+    try {
+        const res = await fetch('/api/chat/steer/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ request_id: requestId })
+        });
+        if (!res.ok) {
+            throw new Error(await res.text() || 'Failed to cancel steer.');
+        }
+    } catch (err) {
+        console.error('Failed to cancel steer:', err);
+        if (currentChatRequestId === requestId) {
+            pendingSteer = previous;
+            renderPendingSteer();
+        }
+    }
+}
+
+async function consumeChatStream(res) {
+    let sawDone = false;
+    if (!res.body) {
+        sawDone = consumeChatStreamText(await res.text());
+        if (!sawDone) {
+            throw new Error('Chat stream ended before done event.');
+        }
+        return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const result = consumeChatStreamLines(buffer);
+        buffer = result.buffer;
+        sawDone = sawDone || result.sawDone;
+    }
+
+    buffer += decoder.decode();
+    const result = consumeChatStreamLines(buffer, true);
+    sawDone = sawDone || result.sawDone;
+    if (!sawDone) {
+        throw new Error('Chat stream ended before done event.');
+    }
+}
+
+function consumeChatStreamText(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    try {
+        const payload = JSON.parse(trimmed);
+        if (payload.history || payload.response) {
+            renderHistory(payload.history || []);
+            return true;
+        }
+        if (payload.type) {
+            return handleChatStreamEvent(payload);
+        }
+    } catch (_) {
+        // Not a single JSON response; parse it below as NDJSON.
+    }
+    return consumeChatStreamLines(text, true).sawDone;
+}
+
+function consumeChatStreamLines(buffer, flush) {
+    const lines = buffer.split('\n');
+    if (!flush) {
+        buffer = lines.pop() || '';
+    } else {
+        buffer = '';
+    }
+
+    let sawDone = false;
+    lines.forEach(function(line) {
+        line = line.trim();
+        if (!line) return;
+        let event;
+        try {
+            event = JSON.parse(line);
+        } catch (err) {
+            throw new Error('Invalid chat stream event: ' + err.message);
+        }
+        sawDone = handleChatStreamEvent(event) || sawDone;
+    });
+
+    return { buffer, sawDone };
+}
+
+function handleChatStreamEvent(event) {
+    if (event.type === 'assistant_delta') {
+        appendAssistantDelta(event);
+        return false;
+    }
+    if (event.type === 'assistant_delta_reset') {
+        resetAssistantDelta(event);
+        return false;
+    }
+    if (event.type === 'message' && event.message) {
+        if (event.message.type === 'steer') {
+            pendingSteer = null;
+            renderPendingSteer();
+        }
+        if (event.message.type === 'assistant') {
+            finalizeAssistantMessage(event.message);
+        } else {
+            addMessage(event.message);
+        }
+        return false;
+    }
+    if (event.type === 'done') {
+        return true;
+    }
+    if (event.type === 'error') {
+        throw new Error(event.error || 'Agent error');
+    }
+    return false;
+}
+
+function appendAssistantDelta(event) {
+    const key = assistantStreamKey(event);
+    if (!key) return;
+    let msg = streamingAssistantDrafts[key];
+    if (!msg) {
+        msg = {
+            type: 'assistant',
+            request_id: event.request_id || '',
+            episode_id: event.episode_id || '',
+            content: '',
+            timestamp: new Date().toISOString()
+        };
+        streamingAssistantDrafts[key] = msg;
+    }
+    msg.content += event.delta || '';
+    addMessage(msg);
+}
+
+function resetAssistantDelta(event) {
+    const key = assistantStreamKey(event);
+    if (!key) return;
+    const msg = streamingAssistantDrafts[key] || {
+        type: 'assistant',
+        request_id: event.request_id || '',
+        episode_id: event.episode_id || ''
+    };
+    delete streamingAssistantDrafts[key];
+    const messageKey = messageIdentity(msg);
+    removeRenderedMessage(messageKey);
+}
+
+function removeRenderedMessage(messageKey) {
+    const existing = renderedMessageNodes.get(messageKey);
+    renderedMessageKeys.delete(messageKey);
+    renderedMessageNodes.delete(messageKey);
+    if (existing) {
+        existing.remove();
+        updateEmptyState();
+        scrollToBottom();
+    }
+}
+
+function finalizeAssistantMessage(msg) {
+    const key = assistantStreamKey(msg);
+    if (key) {
+        delete streamingAssistantDrafts[key];
+    }
+    const messageKey = messageIdentity(msg);
+    if (renderedMessageKeys.has(messageKey)) {
+        // A streamed draft may have been inserted before tool events.
+        // Re-append the finalized assistant message so the live chat
+        // order matches the persisted history and episode trace.
+        removeRenderedMessage(messageKey);
+    }
+    addMessage(msg);
+}
+
+function assistantStreamKey(value) {
+    value = value || {};
+    return value.request_id || value.episode_id || currentChatRequestId || '';
+}
+
+async function clearHistory() {
+    if (!confirm('Start a new chat and clear the current conversation?')) return;
+
+    try {
+        await fetch('/api/clear', { method: 'POST' });
+        clearDraftAttachments();
+        renderHistory([]);
+    } catch (err) {
+        console.error('Failed to clear history:', err);
+    }
+}
+
+async function resetAllMemory() {
+    if (!confirm('This will permanently delete ALL memory including long-term memories and user profile. Continue?')) return;
+
+    try {
+        const res = await fetch('/api/clear-all', { method: 'POST' });
+        if (!res.ok) {
+            throw new Error(await res.text() || 'Failed to reset all memory.');
+        }
+        clearDraftAttachments();
+        renderHistory([]);
+    } catch (err) {
+        console.error('Failed to reset all memory:', err);
+    }
+}
+
+function renderHistory(history) {
+    messagesDiv.innerHTML = '';
+    renderedMessageKeys = new Set();
+    renderedMessageNodes = new Map();
+    streamingAssistantDrafts = {};
+
+    const fragment = document.createDocumentFragment();
+    history.forEach(function(msg) {
+        if (isControlMessage(msg)) return;
+        const key = messageIdentity(msg);
+        if (renderedMessageKeys.has(key)) return;
+        renderedMessageKeys.add(key);
+        const node = createMessageNode(msg);
+        renderedMessageNodes.set(key, node);
+        fragment.appendChild(node);
+    });
+
+    messagesDiv.appendChild(fragment);
+    updateEmptyState();
+    scrollToBottom();
+}
+
+function addMessage(msg) {
+    if (isControlMessage(msg)) return;
+    const key = messageIdentity(msg);
+    if (renderedMessageKeys.has(key)) {
+        if (normalizeType((msg || {}).type) === 'assistant') {
+            updateMessageNode(key, msg);
+        }
+        return;
+    }
+    renderedMessageKeys.add(key);
+    const node = createMessageNode(msg);
+    renderedMessageNodes.set(key, node);
+    messagesDiv.appendChild(node);
+    updateEmptyState();
+    scrollToBottom();
+}
+
+function updateMessageNode(key, msg) {
+    const existing = renderedMessageNodes.get(key);
+    if (!existing) return;
+    const replacement = createMessageNode(msg);
+    renderedMessageNodes.set(key, replacement);
+    existing.replaceWith(replacement);
+    updateEmptyState();
+    scrollToBottom();
+}
+
+function isControlMessage(msg) {
+    return normalizeType((msg || {}).type) === 'todo_closed';
+}
+
+function messageIdentity(msg) {
+    msg = msg || {};
+    const type = normalizeType(msg.type);
+    const content = msg.content || '';
+    const requestId = msg.request_id || '';
+    if (requestId && type === 'assistant') {
+        return ['request', requestId, type].join('\u001f');
+    }
+    if (requestId && type === 'user') {
+        return ['request', requestId, type, content].join('\u001f');
+    }
+
+    const episodeId = msg.episode_id || '';
+    if (episodeId && type === 'assistant') {
+        return ['episode', episodeId, type].join('\u001f');
+    }
+    if (episodeId) {
+        return ['episode', episodeId, type, msg.role || '', msg.tool_name || '', msg.tool_input || '', content, msg.timestamp || ''].join('\u001f');
+    }
+
+    return ['local', type, content, msg.timestamp || ''].join('\u001f');
+}
