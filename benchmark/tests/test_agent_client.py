@@ -98,6 +98,26 @@ def test_get_history_returns_current_history():
     assert result == history
 
 
+def test_get_episode_uses_episode_id_in_path_and_unwraps_episode():
+    seen = {}
+    episode_id = "ep_1786723200000000000_0123abcd"
+    episode = {
+        "id": episode_id,
+        "retrieved_memory_refs": ["personamem_music_expression"],
+    }
+    client = AgentClient(base_url="http://test")
+
+    with patch(
+        "urllib.request.urlopen",
+        _captured(seen, body={"episode": episode}),
+    ):
+        result = client.get_episode(episode_id)
+
+    assert seen["method"] == "GET"
+    assert seen["url"].endswith(f"/api/episodes/{episode_id}")
+    assert result == episode
+
+
 def test_device_type_reads_runtime_phone_bridge_status():
     seen = {}
     client = AgentClient(base_url="http://test")

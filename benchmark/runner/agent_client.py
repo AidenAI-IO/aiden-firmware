@@ -4,6 +4,7 @@ import json
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -147,6 +148,17 @@ class AgentClient:
             raise AgentRequestError(f"history returned {status}")
         body = json.loads(body_bytes)
         return body if isinstance(body, list) else []
+
+    def get_episode(self, episode_id: str) -> dict[str, Any]:
+        encoded_id = urllib.parse.quote(str(episode_id), safe="")
+        status, body_bytes = self._get(f"/api/episodes/{encoded_id}", timeout=5)
+        if status != 200:
+            raise AgentRequestError(f"episode returned {status}")
+        body = json.loads(body_bytes)
+        episode = body.get("episode") if isinstance(body, dict) else None
+        if not isinstance(episode, dict):
+            raise AgentRequestError("episode response did not contain an episode object")
+        return episode
 
     def chat(
         self,
