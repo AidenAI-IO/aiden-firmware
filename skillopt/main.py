@@ -99,9 +99,7 @@ PHASE_TIMELINE_COPY = (
 )
 
 
-def _default_base_config_dir_for_backend(backend: str) -> Path:
-    if backend == "mobilegym":
-        return REPO_ROOT / "benchmark" / "mobilegym" / "config"
+def _default_base_config_dir() -> Path:
     return REPO_ROOT / "benchmark" / "config"
 
 
@@ -304,7 +302,7 @@ def cli(argv: list[str] | None = None) -> int:
         print("Error: mobilegym_parallel must be positive", file=sys.stderr)
         return 2
     if not str(args.base_config_dir or "").strip():
-        args.base_config_dir = str(_default_base_config_dir_for_backend(args.backend))
+        args.base_config_dir = str(_default_base_config_dir())
     if args.run_id:
         if err := _validate_run_id(args.run_id):
             print(f"Error: {err}", file=sys.stderr)

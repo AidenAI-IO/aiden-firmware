@@ -43,7 +43,13 @@ try:
         ADBAndroidEnvironmentManager,
         DEFAULT_ADB_SERIAL,
     )
-    from benchmark.runner.config import AgentConfigManager
+    from benchmark.runner.config import (
+        AgentConfigManager,
+        apply_agent_toml_runtime_defaults,
+        missing_agent_config_error,
+        render_agent_template,
+        validate_agent_toml,
+    )
 except ImportError:
     from runner.environment import EnvironmentManager, MobileGymEnvironment
     from runner.adb_android_environment import (
@@ -51,7 +57,13 @@ except ImportError:
         ADBAndroidEnvironmentManager,
         DEFAULT_ADB_SERIAL,
     )
-    from runner.config import AgentConfigManager
+    from runner.config import (
+        AgentConfigManager,
+        apply_agent_toml_runtime_defaults,
+        missing_agent_config_error,
+        render_agent_template,
+        validate_agent_toml,
+    )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1702,6 +1714,15 @@ def prepare_run_config(
     dest_dir: Path,
     agent_config_text: str | None = None,
 ) -> None:
+    if agent_config_text is None and not any(
+        path.is_file()
+        for path in (
+            base_config_dir / "agent.toml",
+            base_config_dir / "agent.toml.template",
+        )
+    ):
+        raise missing_agent_config_error(base_config_dir)
+
     if dest_dir.exists():
         shutil.rmtree(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1742,36 +1763,11 @@ def prepare_run_config(
         if template.exists() and not config.exists():
             config.write_text(render_agent_template(template.read_text(encoding="utf-8")), encoding="utf-8")
         if not config.exists():
-            config.write_text(default_agent_toml(), encoding="utf-8")
-def ensure_webui_agent_config(base_config_dir: Path, agent_config_path: Path) -> tuple[str, str]:
-    if agent_config_path.exists():
-        return agent_config_path.read_text(encoding="utf-8"), "saved"
-    content = initial_agent_config(base_config_dir)
-    write_text_atomic(agent_config_path, content)
-    return content, "generated"
+            raise missing_agent_config_error(base_config_dir)
 
-
-def initial_agent_config(base_config_dir: Path) -> str:
-    config = base_config_dir / "agent.toml"
-    if config.exists():
-        return config.read_text(encoding="utf-8")
-    template = base_config_dir / "agent.toml.template"
-    if template.exists():
-        return render_agent_template(template.read_text(encoding="utf-8"))
-    return default_agent_toml()
-
-
-def validate_agent_toml(content: str) -> None:
-    if not content.strip():
-        raise ValueError("agent.toml cannot be empty")
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        return
-    try:
-        tomllib.loads(content)
-    except tomllib.TOMLDecodeError as exc:
-        raise ValueError(f"invalid agent.toml: {exc}") from exc
+    content = apply_agent_toml_runtime_defaults(config.read_text(encoding="utf-8"))
+    validate_agent_toml(content)
+    config.write_text(content, encoding="utf-8")
 
 
 def default_webui_settings(include_secrets: bool = False) -> dict[str, Any]:
@@ -1858,50 +1854,6 @@ def write_text_atomic(path: Path, content: str) -> None:
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-
-
-def render_agent_template(text: str) -> str:
-    replacements = {
-        "MODEL_PROVIDER": os.getenv("MODEL_PROVIDER") or os.getenv("AIDEN_MODEL_PROVIDER") or "fake",
-        "MODEL_NAME": os.getenv("MODEL_NAME") or os.getenv("AIDEN_MODEL") or os.getenv("OPENAI_MODEL") or "",
-        "MODEL_BASE_URL": os.getenv("MODEL_BASE_URL") or os.getenv("AIDEN_MODEL_BASE_URL") or "",
-        "MODEL_API_KEY": os.getenv("MODEL_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("AIDEN_MODEL_API_KEY") or "",
-        "CONTROL_TOKEN_FILE": "/config/control_token",
-    }
-    rendered = text
-    for key, value in replacements.items():
-        rendered = rendered.replace("{{" + key + "}}", value.replace('"', '\\"'))
-    return rendered
-
-
-def default_agent_toml() -> str:
-    return "\n".join(
-        [
-            'input_mode = "text"',
-            'trigger_mode = "manual"',
-            "max_iterations = -1",
-            "voice_streaming_tts_enabled = false",
-            "voice_tool_call_speech = false",
-            "voice_progress_speech_enabled = false",
-            "screenshot_keep_n = 3",
-            "screenshot_prune_interval = 25",
-            "screen_stable_timeout_ms = 3500",
-            "screen_stable_ms = 500",
-            "screen_stable_diff_threshold = 2",
-            "",
-            "[model_providers.benchmark]",
-            'type = "openrouter"',
-            'base_url = ""',
-            'api_key = ""',
-            "",
-            "[model]",
-            'provider = "benchmark"',
-            'model = "qwen3.6-35b"',
-            "temperature = 0.2",
-            "max_response_tokens = 1000",
-            "",
-        ]
-    )
 
 
 def endpoint_for_docker(endpoint: str) -> str:

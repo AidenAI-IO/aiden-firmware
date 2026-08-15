@@ -10,13 +10,6 @@ from skillopt import webui
 from skillopt.webui import INDEX_HTML, SkillOptJob, SkillOptWebApp, SkillOptWebUIConfig, build_skillopt_command
 
 
-def test_mobilegym_template_omits_legacy_instruction():
-    repo_root = Path(__file__).resolve().parents[2]
-    template = repo_root / "benchmark" / "mobilegym" / "config" / "agent.toml.template"
-    data = tomllib.loads(template.read_text(encoding="utf-8"))
-    assert "instruction" not in data
-
-
 def test_build_skillopt_command_uses_bridge_backend_options(tmp_path: Path):
     cmd = build_skillopt_command(
         {

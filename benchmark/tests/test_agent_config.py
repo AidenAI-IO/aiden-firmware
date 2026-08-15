@@ -9,10 +9,9 @@ from runner.agent_config import (
 )
 
 
-def test_mobilegym_agent_template_omits_legacy_instruction():
+def test_benchmark_agent_template_omits_legacy_instruction():
     template = (
         Path(__file__).resolve().parents[1]
-        / "mobilegym"
         / "config"
         / "agent.toml.template"
     )

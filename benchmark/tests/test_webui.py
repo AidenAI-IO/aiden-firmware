@@ -1,5 +1,4 @@
 import json
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -209,6 +208,9 @@ def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
     assert 'model = "gpt-test"' in rendered
     assert 'api_key = "sk-test"' in rendered
     assert 'control = "/config/control_token"' in rendered
+    assert "voice_streaming_tts_enabled = false" in rendered
+    assert "voice_tool_call_speech = false" in rendered
+    assert "voice_progress_speech_enabled = false" in rendered
     assert (dest / "control_token").exists()
     assert (dest / "memory").is_dir()
     assert (dest / "skill-state").is_dir()
@@ -223,7 +225,12 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     dest = tmp_path / "dest"
     webui.prepare_run_config(base, dest, agent_config_text=agent_config)
 
-    assert (dest / "agent.toml").read_text(encoding="utf-8") == agent_config
+    rendered = (dest / "agent.toml").read_text(encoding="utf-8")
+    assert 'custom_instruction = "custom"' in rendered
+    assert 'provider = "saved"' in rendered
+    assert "voice_streaming_tts_enabled = false" in rendered
+    assert "voice_tool_call_speech = false" in rendered
+    assert "voice_progress_speech_enabled = false" in rendered
     assert (dest / "control_token").exists()
     assert (dest / "memory").is_dir()
 
@@ -274,33 +281,77 @@ def test_prepare_run_config_merges_missing_bundled_skills_with_custom_skills(tmp
     assert (dest / "skills" / "device-operator" / "SKILL.md").exists()
 
 
-def test_default_agent_toml_uses_benchmark_defaults():
-    rendered = webui.default_agent_toml()
-    config = tomllib.loads(rendered)
+def test_prepare_run_config_requires_agent_config_source(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    dest = tmp_path / "dest"
 
-    assert "instruction" not in config
-    assert 'trigger_mode = "manual"' in rendered
-    assert "max_iterations = -1" in rendered
-    assert "screenshot_keep_n = 3" in rendered
-    assert config["model_providers"]["benchmark"]["type"] == "openrouter"
-    assert config["model"]["provider"] == "benchmark"
-    assert config["model"]["model"] == "qwen3.6-35b"
-    assert "temperature = 0.2" in rendered
-    assert "max_response_tokens = 1000" in rendered
-    assert "voice_streaming_tts_enabled = false" in rendered
-    assert "voice_tool_call_speech = false" in rendered
-    assert "voice_progress_speech_enabled = false" in rendered
+    with pytest.raises(FileNotFoundError, match=r"agent\.toml"):
+        webui.prepare_run_config(base, dest)
+
+    assert not dest.exists()
 
 
-def test_runner_default_agent_toml_disables_voice_side_effects():
-    rendered = runner_config.default_agent_toml()
-    config = tomllib.loads(rendered)
+def test_agent_config_manager_requires_agent_config_source(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    manager = runner_config.AgentConfigManager(
+        base_config_dir=base,
+        config_path=tmp_path / "runs" / "agent.toml",
+    )
 
-    assert "voice_streaming_tts_enabled = false" in rendered
-    assert "voice_tool_call_speech = false" in rendered
-    assert "voice_progress_speech_enabled = false" in rendered
-    assert config["model_providers"]["benchmark"]["type"] == "openrouter"
-    assert config["model"]["provider"] == "benchmark"
+    with pytest.raises(FileNotFoundError, match=r"agent\.toml"):
+        manager.get_config()
+
+
+@pytest.mark.parametrize("source_name", ["agent.toml", "agent.toml.template"])
+def test_agent_config_manager_rejects_invalid_generated_config(
+    tmp_path: Path, source_name: str
+):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / source_name).write_text("invalid = [", encoding="utf-8")
+    config_path = tmp_path / "runs" / "agent.toml"
+    manager = runner_config.AgentConfigManager(
+        base_config_dir=base,
+        config_path=config_path,
+    )
+
+    with pytest.raises(ValueError, match=r"invalid agent\.toml"):
+        manager.get_config()
+
+    assert not config_path.exists()
+
+
+def test_agent_config_manager_reset_preserves_saved_config_without_source(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    config_path = base / "agent.toml"
+    saved_content = '[model]\nprovider = "saved"\n'
+    config_path.write_text(saved_content, encoding="utf-8")
+    manager = runner_config.AgentConfigManager(base_config_dir=base)
+
+    with pytest.raises(FileNotFoundError, match=r"agent\.toml"):
+        manager.reset_config()
+
+    assert config_path.read_text(encoding="utf-8") == saved_content
+
+
+def test_agent_config_manager_reset_default_path_uses_template(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    config_path = base / "agent.toml"
+    config_path.write_text('[model]\nprovider = "saved"\n', encoding="utf-8")
+    (base / "agent.toml.template").write_text(
+        '[model]\nprovider = "template"\n', encoding="utf-8"
+    )
+    manager = runner_config.AgentConfigManager(base_config_dir=base)
+
+    content, source = manager.reset_config()
+
+    assert source == "generated"
+    assert 'provider = "template"' in content
+    assert config_path.read_text(encoding="utf-8") == content
 
 
 def test_agent_config_manager_migrates_saved_config_missing_voice_defaults(tmp_path: Path):
@@ -1038,6 +1089,12 @@ def test_shared_daemon_job_uses_one_benchmark_task_id_for_daemon_and_runner(
             base_config_dir=tmp_path / "config",
             build_daemon_image=False,
         )
+    )
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "agent.toml").write_text(
+        '[model]\nprovider = "fake"\n',
+        encoding="utf-8",
     )
     raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
     raw_runs_dir.mkdir(parents=True)

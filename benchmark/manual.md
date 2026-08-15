@@ -638,7 +638,7 @@ Agent configuration notes:
   static `memory/extraction.yaml` policy is preserved when present.
 - If `--agent-config` is specified, its content is written as the worker's
   `agent.toml`; if not, the runner prefers rendering `agent.toml` from
-  `--base-config-dir/agent.toml.template`, then falls back to the default config.
+  `--base-config-dir/agent.toml.template`.
 
 Example:
 
@@ -776,18 +776,17 @@ Common parameters:
 | `--json` | false | Print machine-readable JSON |
 
 The agent config rules used by `start-agent-daemon` are the same as
-`run --auto-agent-setup`: copy `--base-config-dir` first, then override the
-generated `agent.toml` with `--agent-config`; if `--agent-config` is absent, use
-`agent.toml.template` or the default config. Platform resolution never rewrites
-that copy. When an environment bridge is provided, the command resolves its
-platform once and passes it to the daemon through process-local
-`--device-type`. Without a bridge, an explicit `--device-type` is an optional
-override; if it is omitted, the daemon keeps `[device].device_type` from
-`agent.toml`. The daemon applies a process-local override after loading
-`agent.toml`, reports the effective value as `status.device_type`, and the
-command validates that value after startup. The deprecated `--target-platform`
-spelling remains accepted as a compatibility alias. After starting the daemon
-manually, pass the printed `agent_url` to `runner run --agent-url`; the runner
+`run --auto-agent-setup`. Platform resolution never rewrites the generated
+config. When an environment bridge is provided,
+the command resolves its platform once and passes it to the daemon through
+process-local `--device-type`. Without a bridge, an explicit `--device-type` is
+an optional override; if it is omitted, the daemon keeps
+`[device].device_type` from `agent.toml`. The daemon applies a process-local
+override after loading `agent.toml`, reports the effective value as
+`status.device_type`, and the command validates that value after startup. The
+deprecated `--target-platform` spelling remains accepted as a compatibility
+alias. After starting the daemon manually, pass the printed `agent_url` to
+`runner run --agent-url`; the runner
 derives and validates its platform against the environment or CLI constraint.
 
 Recommended CLI MobileGym debug flow:

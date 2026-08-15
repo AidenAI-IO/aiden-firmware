@@ -169,14 +169,18 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
             return 2
     elif device_type_constraint:
         target_platform = device_type_constraint
-    agent_config_text = None
-    if args.agent_config:
-        agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
-    prepare_run_config(
-        Path(args.base_config_dir),
-        config_dir,
-        agent_config_text=agent_config_text,
-    )
+    try:
+        agent_config_text = None
+        if args.agent_config:
+            agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
+        prepare_run_config(
+            Path(args.base_config_dir),
+            config_dir,
+            agent_config_text=agent_config_text,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"Error: failed to prepare agent config: {exc}", file=sys.stderr)
+        return 2
     docker_environment_bridge_endpoint = endpoint_for_docker(environment_bridge_endpoint) if environment_bridge_endpoint else ""
     benchmark_task_id = str(args.benchmark_task_id or "").strip()
     agent_url = f"http://127.0.0.1:{host_port}"
