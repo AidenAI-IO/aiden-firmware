@@ -28,6 +28,7 @@ const (
 	defaultAnthropicStreamRetryDelay = 2 * time.Second
 	defaultAnthropicProtocolRetries  = 1
 	anthropicDaemonRawSSELimit       = 128 * 1024
+	anthropicRawHTTPRawSSELimit      = 4 * 1024 * 1024
 )
 
 type anthropicModel struct {
@@ -783,6 +784,15 @@ type anthropicStreamFailureDiagnostic struct {
 	ContentBlocks     []anthropicStreamBlockDiagnostic `json:"content_blocks"`
 }
 
+type anthropicSSECapture struct {
+	daemon       bytes.Buffer
+	totalBytes   int
+	rawFile      *os.File
+	rawBytes     int
+	rawWriteErr  error
+	rawFileClose bool
+}
+
 var anthropicDiagnosticResponseHeaders = map[string]struct{}{
 	"anthropic-ratelimit-input-tokens-limit":      {},
 	"anthropic-ratelimit-input-tokens-remaining":  {},
@@ -807,6 +817,83 @@ var anthropicDiagnosticResponseHeaders = map[string]struct{}{
 	"x-trace-id":                                  {},
 }
 
+func newAnthropicSSECapture(rawLoggingEnabled bool) *anthropicSSECapture {
+	capture := &anthropicSSECapture{}
+	if !rawLoggingEnabled {
+		return capture
+	}
+	rawFile, err := os.CreateTemp("", "aiden-anthropic-sse-*")
+	if err != nil {
+		capture.rawWriteErr = err
+		return capture
+	}
+	capture.rawFile = rawFile
+	return capture
+}
+
+func (c *anthropicSSECapture) Write(p []byte) (int, error) {
+	if c == nil {
+		return len(p), nil
+	}
+	c.totalBytes += len(p)
+	if remaining := anthropicDaemonRawSSELimit - c.daemon.Len(); remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		_, _ = c.daemon.Write(p[:remaining])
+	}
+	if c.rawFile == nil || c.rawWriteErr != nil || c.rawBytes >= anthropicRawHTTPRawSSELimit {
+		return len(p), nil
+	}
+	rawChunk := p
+	if remaining := anthropicRawHTTPRawSSELimit - c.rawBytes; len(rawChunk) > remaining {
+		rawChunk = rawChunk[:remaining]
+	}
+	written, err := c.rawFile.Write(rawChunk)
+	c.rawBytes += written
+	if err == nil && written != len(rawChunk) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		c.rawWriteErr = err
+	}
+	return len(p), nil
+}
+
+func (c *anthropicSSECapture) daemonBytes() []byte {
+	if c == nil {
+		return nil
+	}
+	return c.daemon.Bytes()
+}
+
+func (c *anthropicSSECapture) rawHTTPBytes() ([]byte, error) {
+	if c == nil || c.rawFile == nil {
+		if c != nil && c.rawWriteErr != nil {
+			return nil, c.rawWriteErr
+		}
+		return nil, nil
+	}
+	if c.rawWriteErr != nil {
+		return nil, c.rawWriteErr
+	}
+	raw := make([]byte, c.rawBytes)
+	if _, err := c.rawFile.ReadAt(raw, 0); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+func (c *anthropicSSECapture) Close() {
+	if c == nil || c.rawFile == nil || c.rawFileClose {
+		return
+	}
+	c.rawFileClose = true
+	rawPath := c.rawFile.Name()
+	_ = c.rawFile.Close()
+	_ = os.Remove(rawPath)
+}
+
 func (d *anthropicStreamFailureDiagnostic) setRawSSE(rawSSE []byte, rawSSELimit int) {
 	rawSample := rawSSE
 	truncated := false
@@ -828,6 +915,12 @@ func (d *anthropicStreamFailureDiagnostic) setRawSSE(rawSSE []byte, rawSSELimit 
 	if !rawSSEValidUTF8 {
 		d.RawSSEBase64 = base64.StdEncoding.EncodeToString(rawSample)
 	}
+}
+
+func (d *anthropicStreamFailureDiagnostic) setCapturedRawSSE(rawSSE []byte, totalBytes int) {
+	d.setRawSSE(rawSSE, -1)
+	d.RawSSETotalBytes = totalBytes
+	d.RawSSETruncated = len(rawSSE) < totalBytes
 }
 
 func normalizeAnthropicResponseHeaders(headers http.Header) map[string]string {
@@ -900,8 +993,10 @@ func firstOpenAnthropicStreamBlock(blocks map[int]*anthropicStreamBlock) (int, b
 }
 
 func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Reader, responseHeaders http.Header, model string, statusCode int, callStarted time.Time, opts *llms.CallOptions, thinkingEnabled bool) (result *llms.ContentResponse, resultErr error) {
-	var raw bytes.Buffer
-	scanner := bufio.NewScanner(io.TeeReader(body, &raw))
+	rawLoggingEnabled := m.rawLogger != nil && rawHTTPLogEnabled(ctx)
+	rawCapture := newAnthropicSSECapture(rawLoggingEnabled)
+	defer rawCapture.Close()
+	scanner := bufio.NewScanner(io.TeeReader(body, rawCapture))
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	blocks := map[int]*anthropicStreamBlock{}
 	eventTypeCounts := map[string]int{}
@@ -932,12 +1027,18 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			EventTypeCounts:   eventTypeCounts,
 			ContentBlocks:     anthropicStreamBlockDiagnostics(blocks),
 		}
-		failureDiagnostic.setRawSSE(raw.Bytes(), -1)
+		failureRawSSE := rawCapture.daemonBytes()
+		if rawLoggingEnabled {
+			if captured, err := rawCapture.rawHTTPBytes(); err == nil && captured != nil {
+				failureRawSSE = captured
+			}
+		}
+		failureDiagnostic.setCapturedRawSSE(failureRawSSE, rawCapture.totalBytes)
 		failureBody, _ := json.Marshal(failureDiagnostic)
 		_ = m.logRawHTTP(ctx, model, "response", logStatusCode, string(failureBody))
 		if isAnthropicStreamProtocolFailure(resultErr) {
 			daemonDiagnostic := failureDiagnostic
-			daemonDiagnostic.setRawSSE(raw.Bytes(), anthropicDaemonRawSSELimit)
+			daemonDiagnostic.setCapturedRawSSE(rawCapture.daemonBytes(), rawCapture.totalBytes)
 			daemonBody, _ := json.Marshal(daemonDiagnostic)
 			log.Printf("[ERROR] [anthropic] stream protocol failure %s", daemonBody)
 		}
@@ -1159,7 +1260,13 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 	if encodeErr == nil {
 		_ = m.logRawHTTP(ctx, model, "response", statusCode, string(encodedResponse))
 	} else {
-		_ = m.logRawHTTP(ctx, model, "response", statusCode, raw.String())
+		rawSSE := rawCapture.daemonBytes()
+		if rawLoggingEnabled {
+			if captured, err := rawCapture.rawHTTPBytes(); err == nil && captured != nil {
+				rawSSE = captured
+			}
+		}
+		_ = m.logRawHTTP(ctx, model, "response", statusCode, string(rawSSE))
 	}
 	generationInfo := map[string]any{}
 	if firstContent {

@@ -1057,6 +1057,56 @@ func TestAnthropicModelBoundsRawSSEInDaemonProtocolFailureLog(t *testing.T) {
 	}
 }
 
+func TestAnthropicSSECaptureBoundsMemoryWithoutRawLogging(t *testing.T) {
+	capture := newAnthropicSSECapture(false)
+	t.Cleanup(capture.Close)
+
+	payload := bytes.Repeat([]byte("x"), anthropicDaemonRawSSELimit*3)
+	if n, err := capture.Write(payload); err != nil || n != len(payload) {
+		t.Fatalf("capture.Write() = (%d, %v), want (%d, nil)", n, err, len(payload))
+	}
+	if got := len(capture.daemonBytes()); got != anthropicDaemonRawSSELimit {
+		t.Fatalf("daemon capture bytes = %d, want %d", got, anthropicDaemonRawSSELimit)
+	}
+	if got := capture.totalBytes; got != len(payload) {
+		t.Fatalf("total bytes = %d, want %d", got, len(payload))
+	}
+	if capture.rawFile != nil {
+		t.Fatal("raw capture file created while raw HTTP logging is disabled")
+	}
+}
+
+func TestAnthropicSSECaptureUsesBoundedFileForRawLogging(t *testing.T) {
+	capture := newAnthropicSSECapture(true)
+	if capture.rawFile == nil {
+		t.Fatal("raw capture file was not created")
+	}
+	rawPath := capture.rawFile.Name()
+	t.Cleanup(capture.Close)
+
+	payload := bytes.Repeat([]byte("x"), anthropicRawHTTPRawSSELimit+1024)
+	if n, err := capture.Write(payload); err != nil || n != len(payload) {
+		t.Fatalf("capture.Write() = (%d, %v), want (%d, nil)", n, err, len(payload))
+	}
+	if got := len(capture.daemonBytes()); got != anthropicDaemonRawSSELimit {
+		t.Fatalf("daemon capture bytes = %d, want %d", got, anthropicDaemonRawSSELimit)
+	}
+	raw, err := capture.rawHTTPBytes()
+	if err != nil {
+		t.Fatalf("rawHTTPBytes() error = %v", err)
+	}
+	if got := len(raw); got != anthropicRawHTTPRawSSELimit {
+		t.Fatalf("raw HTTP capture bytes = %d, want %d", got, anthropicRawHTTPRawSSELimit)
+	}
+	if got := capture.totalBytes; got != len(payload) {
+		t.Fatalf("total bytes = %d, want %d", got, len(payload))
+	}
+	capture.Close()
+	if _, err := os.Stat(rawPath); !os.IsNotExist(err) {
+		t.Fatalf("raw capture file still exists after Close(): %v", err)
+	}
+}
+
 func TestAnthropicModelPreservesRawSSEBytesInProtocolFailureDiagnostic(t *testing.T) {
 	rawSSE := append([]byte(
 		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_invalid_utf8\",\"usage\":{}}}\r\n\r\n"+
