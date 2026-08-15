@@ -459,6 +459,9 @@ func attachmentAwarePrompt(text string, attachments []InputAttachment, descripti
 		if attachment.MIMEType != "" {
 			label += " (" + attachment.MIMEType + ")"
 		}
+		if attachment.Width > 0 && attachment.Height > 0 {
+			label += fmt.Sprintf(" width=%d height=%d", attachment.Width, attachment.Height)
+		}
 		descriptions = append(descriptions, label)
 	}
 	if len(descriptions) == 0 {

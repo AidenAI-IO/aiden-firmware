@@ -1,11 +1,20 @@
 import json
 from pathlib import Path
 
+from PIL import Image
+
 from runner.agent_client import AgentTimeoutError, ChatResponse
 from runner.judge import JudgeConfig, JudgeOutput
 from runner.models import RubricVerdict
 from runner.runtask import run_one_task
-from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec, TraceObservationSpec
+from runner.suite import (
+    HardAssertions,
+    MockEnvironmentSpec,
+    RubricItem,
+    Suite,
+    TaskSpec,
+    TraceObservationSpec,
+)
 import runner.runtask as runtask_mod
 
 
@@ -13,6 +22,7 @@ class FakeClient:
     def __init__(self, response="ok"):
         self.response = response
         self.messages = []
+        self.attachments = []
         self.skill_requests = []
 
     def health(self):
@@ -29,11 +39,231 @@ class FakeClient:
 
     def chat(self, message, timeout_sec=None, attachments=None, skills=None):
         self.messages.append(message)
+        self.attachments.append(attachments)
         self.skill_requests.append(list(skills or []))
         return ChatResponse(
             response=self.response,
             history=[{"type": "assistant", "content": self.response}],
         )
+
+
+def test_run_one_task_includes_static_screenshot_dimensions(tmp_path: Path):
+    screenshot_dir = tmp_path / "screenshots"
+    screenshot_dir.mkdir()
+    screenshot_path = screenshot_dir / "screen.jpg"
+    Image.new("RGB", (37, 91), "white").save(screenshot_path, format="JPEG")
+
+    suite = Suite(
+        name="perception",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="tap_target",
+        category="perception",
+        description_for_judge="Tap the target.",
+        prompt="tap the target",
+        rubric=[],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+        input_screenshot="screenshots/screen.jpg",
+    )
+    client = FakeClient("done")
+
+    result = run_one_task(
+        client, suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
+    )
+
+    assert result.status == "passed"
+    assert client.attachments[0] is not None
+    attachment = client.attachments[0][0]
+    assert attachment["width"] == 37
+    assert attachment["height"] == 91
+
+
+def test_run_one_task_uses_mock_screenshot_without_static_attachment(
+    tmp_path: Path,
+    monkeypatch,
+):
+    screenshot_dir = tmp_path / "screenshots"
+    screenshot_dir.mkdir()
+    fixture_path = screenshot_dir / "fixture.jpg"
+    Image.new("RGB", (37, 91), "white").save(fixture_path, format="JPEG")
+    suite = Suite(
+        name="perception",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="tap_target",
+        category="perception",
+        description_for_judge="Tap the target.",
+        prompt="tap the target",
+        rubric=[],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+        input_screenshot="screenshots/fixture.jpg",
+        mock_environment=MockEnvironmentSpec(
+            platform="ios",
+            phone_bridge={},
+            tools={},
+            screen="screenshots/fixture.jpg",
+            single_frame=True,
+        ),
+    )
+    capture_calls = []
+
+    def capture_fixture(environment_url, out_path, benchmark_task_id=None):
+        capture_calls.append((environment_url, benchmark_task_id))
+        out_path.write_bytes(fixture_path.read_bytes())
+        return 37, 91
+
+    monkeypatch.setattr(runtask_mod, "take_environment_screenshot", capture_fixture)
+    client = FakeClient("done")
+    artifact_dir = tmp_path / "artifacts"
+
+    result = run_one_task(
+        client,
+        suite,
+        task,
+        1,
+        artifact_dir,
+        None,
+        None,
+        "run-1",
+        environment_url="http://mock-environment.test",
+    )
+
+    assert result.status == "passed"
+    assert client.attachments == [None]
+    assert capture_calls == [("http://mock-environment.test", None)]
+    with Image.open(artifact_dir / "pre.jpg") as image:
+        assert image.size == (37, 91)
+    assert not (artifact_dir / "post.jpg").exists()
+
+
+def test_run_one_task_falls_back_to_fixture_for_mock_pre_artifact(
+    tmp_path: Path,
+    monkeypatch,
+):
+    screenshot_dir = tmp_path / "screenshots"
+    screenshot_dir.mkdir()
+    fixture_path = screenshot_dir / "fixture.jpg"
+    Image.new("RGB", (37, 91), "white").save(fixture_path, format="JPEG")
+    suite = Suite(
+        name="perception",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="tap_target",
+        category="perception",
+        description_for_judge="Tap the target.",
+        prompt="tap the target",
+        rubric=[],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+        input_screenshot="screenshots/fixture.jpg",
+        mock_environment=MockEnvironmentSpec(
+            platform="ios",
+            phone_bridge={},
+            tools={},
+            screen="screenshots/fixture.jpg",
+            single_frame=True,
+        ),
+    )
+
+    def fail_capture(*args, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(runtask_mod, "take_environment_screenshot", fail_capture)
+    client = FakeClient("done")
+    artifact_dir = tmp_path / "artifacts"
+
+    result = run_one_task(
+        client,
+        suite,
+        task,
+        1,
+        artifact_dir,
+        None,
+        None,
+        "run-1",
+        environment_url="http://mock-environment.test",
+    )
+
+    assert result.status == "passed"
+    assert client.attachments == [None]
+    assert result.metrics["pre_screenshot_error"] == "provider unavailable"
+    assert (artifact_dir / "pre.jpg").read_bytes() == fixture_path.read_bytes()
+    assert not (artifact_dir / "post.jpg").exists()
+
+
+def test_run_one_task_keeps_dynamic_mock_screenshot_attachment_and_post_artifact(
+    tmp_path: Path,
+    monkeypatch,
+):
+    screenshot_dir = tmp_path / "screenshots"
+    screenshot_dir.mkdir()
+    fixture_path = screenshot_dir / "fixture.jpg"
+    Image.new("RGB", (37, 91), "white").save(fixture_path, format="JPEG")
+    suite = Suite(
+        name="dynamic-mock",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="tap_target",
+        category="perception",
+        description_for_judge="Tap the target.",
+        prompt="tap the target",
+        rubric=[],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+        input_screenshot="screenshots/fixture.jpg",
+        mock_environment=MockEnvironmentSpec(
+            platform="ios",
+            phone_bridge={},
+            tools={},
+            screen="screenshots/fixture.jpg",
+        ),
+    )
+    capture_calls = []
+
+    def capture_post(environment_url, out_path, benchmark_task_id=None):
+        capture_calls.append((environment_url, out_path.name, benchmark_task_id))
+        Image.new("RGB", (37, 91), "black").save(out_path, format="JPEG")
+        return 37, 91
+
+    monkeypatch.setattr(runtask_mod, "take_environment_screenshot", capture_post)
+    client = FakeClient("done")
+    artifact_dir = tmp_path / "artifacts"
+
+    result = run_one_task(
+        client,
+        suite,
+        task,
+        1,
+        artifact_dir,
+        None,
+        None,
+        "run-1",
+        environment_url="http://mock-environment.test",
+    )
+
+    assert result.status == "passed"
+    attachment = client.attachments[0][0]
+    assert attachment["width"] == 37
+    assert attachment["height"] == 91
+    assert capture_calls == [
+        ("http://mock-environment.test", "post.jpg", None),
+    ]
+    assert (artifact_dir / "pre.jpg").read_bytes() == fixture_path.read_bytes()
+    assert (artifact_dir / "post.jpg").exists()
 
 
 def test_run_one_task_passes_without_judge_when_hard_assertions_pass(tmp_path: Path):

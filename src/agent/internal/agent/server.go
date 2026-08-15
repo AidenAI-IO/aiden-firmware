@@ -126,6 +126,8 @@ type MessageAttachment struct {
 	Kind       string `json:"kind"`
 	Name       string `json:"name,omitempty"`
 	MIMEType   string `json:"mime_type,omitempty"`
+	Width      int    `json:"width,omitempty"`
+	Height     int    `json:"height,omitempty"`
 	Path       string `json:"path,omitempty"`
 	Data       string `json:"data,omitempty"`
 	Size       int    `json:"size,omitempty"`
@@ -3387,6 +3389,8 @@ func decodeMessageAttachments(payloads []MessageAttachment) ([]InputAttachment, 
 			Kind:     kind,
 			Name:     payload.Name,
 			MIMEType: payload.MIMEType,
+			Width:    payload.Width,
+			Height:   payload.Height,
 			Data:     raw,
 		})
 
@@ -3394,6 +3398,8 @@ func decodeMessageAttachments(payloads []MessageAttachment) ([]InputAttachment, 
 			Kind:       kind,
 			Name:       payload.Name,
 			MIMEType:   payload.MIMEType,
+			Width:      payload.Width,
+			Height:     payload.Height,
 			Data:       payload.Data,
 			Size:       len(raw),
 			Transcript: strings.TrimSpace(payload.Transcript),

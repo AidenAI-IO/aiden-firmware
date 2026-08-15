@@ -907,6 +907,32 @@ func TestTouchGestureSchemaRequiresNamedPointCoordinates(t *testing.T) {
 	}
 }
 
+func TestTouchGestureSchemaMakesNormalizedCoordinateContractExplicit(t *testing.T) {
+	tool := &TouchGestureTool{}
+	description := strings.ToLower(tool.Description())
+	for _, want := range []string{"normalized 0-1000", "screenshot pixels", "image_width", "image_height"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("touch_gesture description missing %q: %s", want, description)
+		}
+	}
+
+	schema := tool.ArgsSchema()
+	props := schema["properties"].(map[string]any)
+	for _, pointName := range []string{"point", "start", "end"} {
+		point := props[pointName].(map[string]any)
+		pointProps := point["properties"].(map[string]any)
+		for _, axis := range []string{"x", "y"} {
+			axisSchema := pointProps[axis].(map[string]any)
+			axisDescription := strings.ToLower(axisSchema["description"].(string))
+			for _, want := range []string{"normalized 0-1000", "screenshot pixel"} {
+				if !strings.Contains(axisDescription, want) {
+					t.Fatalf("%s.%s description missing %q: %s", pointName, axis, want, axisDescription)
+				}
+			}
+		}
+	}
+}
+
 type recordingADBRunner struct {
 	commands [][]string
 	timeouts []time.Duration

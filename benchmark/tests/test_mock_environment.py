@@ -142,6 +142,45 @@ def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
         server.stop()
 
 
+def test_perception_mock_environment_exposes_fixture_and_accepts_tap():
+    suite_path = (
+        Path(__file__).resolve().parents[1]
+        / "suites"
+        / "perception"
+        / "perception_v1.json"
+    )
+    suite = load_suite(suite_path)
+    task = next(task for task in suite.tasks if task.id == "task_4657")
+    assert task.mock_environment is not None
+    server = MockEnvironmentServer(task.mock_environment, suite_path.parent)
+    base_url = server.start()
+    try:
+        before = _json_request(
+            f"{base_url}/api/providers/screenshot",
+            "POST",
+            {"format": "jpeg", "quality": 80},
+        )
+        before_meta = before["data"]["meta"]
+        assert (before_meta["width"], before_meta["height"]) == (447, 972)
+        before_image = base64.b64decode(before["data"]["image"])
+
+        tap = _json_request(
+            f"{base_url}/api/tools/touch_gesture",
+            "POST",
+            {
+                "input": json.dumps(
+                    {"type": "tap", "point": {"x": 940, "y": 95}}
+                )
+            },
+        )
+        assert tap["is_error"] is False
+        assert json.loads(tap["output"]) == {"ok": True}
+
+        assert before_image
+    finally:
+        server.stop()
+
+
 def test_mock_environment_requires_visible_icon_click_before_text_entry():
     suite_path, spec = _task_mock_environment(
         "notes_entry_policy_v1.json",

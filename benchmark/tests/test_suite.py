@@ -41,6 +41,56 @@ def test_perception_v1_settings_rubric_uses_0_1000_normalized_coordinates():
     assert "y in [441, 560]" in check
     assert "[0.75, 0.98]" not in check
 
+
+def test_perception_v1_uses_fixture_backed_mock_environment_for_every_task():
+    suite_path = (
+        Path(__file__).resolve().parents[1]
+        / "suites"
+        / "perception"
+        / "perception_v1.json"
+    )
+    suite = load_suite(suite_path)
+
+    assert suite.mock_environment is None
+    assert suite.tasks
+    for task in suite.tasks:
+        assert task.input_screenshot
+        assert task.mock_environment is not None
+        assert task.mock_environment.platform is TargetPlatform.IOS
+        assert task.mock_environment.single_frame is True
+        assert task.mock_environment.screen == task.input_screenshot
+        assert task.mock_environment.phone_bridge == {}
+        responses = task.mock_environment.tools["touch_gesture"]
+        assert len(responses) == 1
+        assert responses[0].output == {"ok": True}
+        assert responses[0].is_error is False
+
+
+def test_perception_v1_declares_single_frame_screenshot_contract():
+    suite_path = (
+        Path(__file__).resolve().parents[1]
+        / "suites"
+        / "perception"
+        / "perception_v1.json"
+    )
+    suite = load_suite(suite_path)
+
+    assert suite.prompt_prefix.strip()
+
+
+def test_perception_v1_settings_prompt_requires_clicking_visible_icon():
+    suite_path = (
+        Path(__file__).resolve().parents[1]
+        / "suites"
+        / "perception"
+        / "perception_v1.json"
+    )
+    suite = load_suite(suite_path)
+
+    task = next(task for task in suite.tasks if task.id == "find_settings_iphone")
+    assert task.prompt == "请点击屏幕上的设置图标。"
+
+
 def test_mobilegym_basic_suite_loads_device_operation_tasks():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "mobilegym_basic.json"
     suite = load_suite(suite_path)
@@ -351,8 +401,47 @@ def test_load_suite_parses_task_level_mock_environment(tmp_path: Path):
     assert suite.mock_environment is None
     assert suite.tasks[0].mock_environment is not None
     assert suite.tasks[0].mock_environment.platform is TargetPlatform.IOS
+    assert suite.tasks[0].mock_environment.single_frame is False
     assert "platform" not in suite.tasks[0].mock_environment.phone_bridge
     assert "bridge_contacts" in suite.tasks[0].mock_environment.tools
+
+
+def test_load_suite_parses_single_frame_mock_environment(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "mock_environment": {
+            "platform": "ios",
+            "single_frame": True,
+            "tools": {},
+        },
+    }
+    p = tmp_path / "single-frame-mock.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.mock_environment is not None
+    assert suite.mock_environment.single_frame is True
+
+
+@pytest.mark.parametrize("single_frame", [None, 0, 1, "true", [], {}])
+def test_load_suite_rejects_non_boolean_single_frame(
+    tmp_path: Path,
+    single_frame,
+):
+    fixture = {
+        **FIXTURE,
+        "mock_environment": {
+            "platform": "ios",
+            "single_frame": single_frame,
+            "tools": {},
+        },
+    }
+    p = tmp_path / "invalid-single-frame-mock.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="single_frame must be boolean"):
+        load_suite(p)
 
 
 def test_load_suite_normalizes_legacy_phone_bridge_platform(tmp_path: Path):

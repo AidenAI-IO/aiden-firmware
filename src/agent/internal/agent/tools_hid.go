@@ -1109,7 +1109,7 @@ func (t *TouchGestureTool) Description() string {
 		description += `Prefer quick_action for semantic platform actions. For go-home/home-screen requests such as 回到桌面, call quick_action with {"action":"home"} first; use touch_gesture {"type":"home"} only as a fallback. `
 	}
 	return description +
-		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
+		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Point, start, and end never accept screenshot pixels: convert a target measured at (pixel_x,pixel_y) in the latest image with x=pixel_x/max(image_width-1,1)*1000 and y=pixel_y/max(image_height-1,1)*1000 before calling. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
 }
 
@@ -1162,10 +1162,10 @@ func touchGestureIncludesEdgeNavigation(platform string) bool {
 
 func pointSchema(description string) map[string]any {
 	schema := objectArgsSchema(map[string]any{
-		"x": coordinateSchema("X coordinate.", 500),
-		"y": coordinateSchema("Y coordinate.", 300),
+		"x": coordinateSchema("Normalized 0-1000 X coordinate, not a screenshot pixel X value.", 500),
+		"y": coordinateSchema("Normalized 0-1000 Y coordinate, not a screenshot pixel Y value.", 300),
 	}, "x", "y")
-	schema["description"] = description
+	schema["description"] = description + ` Coordinates always use normalized 0-1000 values, never screenshot pixels.`
 	schema["examples"] = []map[string]any{{"x": 500, "y": 300}}
 	return schema
 }

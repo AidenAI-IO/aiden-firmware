@@ -3147,6 +3147,27 @@ func TestDecodeMessageAttachmentsCountsImageMIMEWithFileKind(t *testing.T) {
 	}
 }
 
+func TestDecodeMessageAttachmentsPreservesImageDimensions(t *testing.T) {
+	payloads := []MessageAttachment{{
+		Kind:     AttachmentKindImage,
+		MIMEType: "image/jpeg",
+		Width:    447,
+		Height:   972,
+		Data:     base64.StdEncoding.EncodeToString([]byte("jpeg")),
+	}}
+
+	decoded, history, err := decodeMessageAttachments(payloads)
+	if err != nil {
+		t.Fatalf("decodeMessageAttachments() error = %v", err)
+	}
+	if decoded[0].Width != 447 || decoded[0].Height != 972 {
+		t.Fatalf("decoded dimensions = %dx%d", decoded[0].Width, decoded[0].Height)
+	}
+	if history[0].Width != 447 || history[0].Height != 972 {
+		t.Fatalf("history dimensions = %dx%d", history[0].Width, history[0].Height)
+	}
+}
+
 func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 	stopCh := make(chan struct{})
 	var stopOnce sync.Once

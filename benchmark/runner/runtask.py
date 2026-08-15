@@ -6,6 +6,9 @@ import shutil
 import time
 from pathlib import Path
 from typing import Any
+
+from PIL import Image
+
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
 from runner.assertions import (
     evaluate_expected_answer,
@@ -18,7 +21,7 @@ from runner.judge import judge_task, JudgeConfig
 from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 from runner.recovery import prepare_task_isolation, recover_agent_after_timeout
 from runner.reset import ResetError
-from runner.suite import Suite, TaskSpec
+from runner.suite import Suite, TaskSpec, effective_mock_environment
 from runner.trace import extract_trace
 from runner.report import now_iso
 
@@ -286,18 +289,53 @@ def run_one_task(
         base.finished_at = now_iso()
         return base
     pre_path = artifact_dir / "pre.jpg"
-    # Resolve input_screenshot: use static image as pre and send as attachment
     attachments = None
-    if task.input_screenshot:
-        screenshot_path = suite.source_path.parent / task.input_screenshot
-        if not screenshot_path.exists():
-            base.status = "skipped"
-            base.metrics = {"error": f"input_screenshot not found: {screenshot_path}"}
-            base.finished_at = now_iso()
-            return base
-        shutil.copy(screenshot_path, pre_path)
-        img_b64 = base64.b64encode(screenshot_path.read_bytes()).decode("ascii")
-        attachments = [{"kind": "image", "mime_type": "image/jpeg", "data": img_b64}]
+    input_screenshot_path = (
+        suite.source_path.parent / task.input_screenshot
+        if task.input_screenshot
+        else None
+    )
+    if input_screenshot_path is not None and not input_screenshot_path.exists():
+        base.status = "skipped"
+        base.metrics = {
+            "error": f"input_screenshot not found: {input_screenshot_path}"
+        }
+        base.finished_at = now_iso()
+        return base
+    mock_environment = effective_mock_environment(suite, task)
+    uses_single_frame_mock = bool(
+        mock_environment is not None and mock_environment.single_frame
+    )
+    if uses_single_frame_mock:
+        if environment_url:
+            try:
+                take_environment_screenshot(
+                    environment_url,
+                    pre_path,
+                    benchmark_task_id=benchmark_task_id,
+                )
+            except Exception as e:
+                base.metrics["pre_screenshot_error"] = str(e)[:300]
+        else:
+            base.metrics["pre_screenshot_error"] = (
+                "environment_url is required for mock screenshot capture"
+            )
+        if not pre_path.exists() and input_screenshot_path is not None:
+            shutil.copy(input_screenshot_path, pre_path)
+    elif input_screenshot_path is not None:
+        shutil.copy(input_screenshot_path, pre_path)
+        img_b64 = base64.b64encode(input_screenshot_path.read_bytes()).decode("ascii")
+        with Image.open(input_screenshot_path) as image:
+            width, height = image.size
+        attachments = [
+            {
+                "kind": "image",
+                "mime_type": "image/jpeg",
+                "width": width,
+                "height": height,
+                "data": img_b64,
+            }
+        ]
     else:
         if environment_url:
             try:
@@ -359,7 +397,9 @@ def run_one_task(
     # The agent history no longer embeds base64 image data, so the post-screenshot
     # must be grabbed live rather than extracted from history.
     post_path = artifact_dir / "post.jpg"
-    if environment_url:
+    if uses_single_frame_mock:
+        post_path = None
+    elif environment_url:
         try:
             take_environment_screenshot(
                 environment_url,
