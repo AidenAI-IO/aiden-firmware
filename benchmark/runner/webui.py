@@ -41,7 +41,11 @@ from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
 
 try:
-    from benchmark.runner.environment import EnvironmentManager, MobileGymEnvironment
+    from benchmark.runner.environment import (
+        EnvironmentManager,
+        MobileGymEnvironment,
+        ensure_mobilegym_image,
+    )
     from benchmark.runner.adb_android_environment import (
         ADBAndroidEnvironment,
         ADBAndroidEnvironmentManager,
@@ -56,7 +60,11 @@ try:
         validate_agent_toml,
     )
 except ImportError:
-    from runner.environment import EnvironmentManager, MobileGymEnvironment
+    from runner.environment import (
+        EnvironmentManager,
+        MobileGymEnvironment,
+        ensure_mobilegym_image,
+    )
     from runner.adb_android_environment import (
         ADBAndroidEnvironment,
         ADBAndroidEnvironmentManager,
@@ -2093,10 +2101,6 @@ def ensure_daemon_image(
         env=env,
         stop_requested=stop_requested,
     )
-
-
-def ensure_mobilegym_image(image: str, build_missing: bool, log_path: Path) -> None:
-    ensure_docker_image(image, build_missing, log_path, "mobilegym-base")
 
 
 def ensure_docker_image(

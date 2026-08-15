@@ -45,12 +45,22 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone MobileGym (用 cp -a 保留 dotfiles)
-ARG MOBILEGYM_REPO=https://github.com/Purewhiter/mobilegym.git
-ARG MOBILEGYM_BRANCH=main
-RUN git clone --depth 1 --branch ${MOBILEGYM_BRANCH} ${MOBILEGYM_REPO} /tmp/mobilegym && \
+# Clone the exact MobileGym commit pinned by the firmware submodule.
+ARG MOBILEGYM_REPO=https://github.com/AidenAI-IO/mobilegym.git
+ARG MOBILEGYM_COMMIT
+RUN test -n "${MOBILEGYM_COMMIT}" && \
+    git init /tmp/mobilegym && \
+    git -C /tmp/mobilegym remote add origin "${MOBILEGYM_REPO}" && \
+    git -C /tmp/mobilegym \
+        -c http.version=HTTP/1.1 \
+        -c http.lowSpeedLimit=1024 \
+        -c http.lowSpeedTime=60 \
+        fetch --depth 1 --progress origin "${MOBILEGYM_COMMIT}" && \
+    git -C /tmp/mobilegym checkout --detach FETCH_HEAD && \
+    test "$(git -C /tmp/mobilegym rev-parse HEAD)" = "${MOBILEGYM_COMMIT}" && \
     cp -a /tmp/mobilegym/. /mobilegym/ && \
     rm -rf /tmp/mobilegym
+LABEL io.aiden.mobilegym.commit="${MOBILEGYM_COMMIT}"
 
 # Install Python dependencies
 RUN cd /mobilegym && \
