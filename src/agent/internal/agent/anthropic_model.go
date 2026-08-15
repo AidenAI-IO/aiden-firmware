@@ -783,6 +783,30 @@ type anthropicStreamFailureDiagnostic struct {
 	ContentBlocks     []anthropicStreamBlockDiagnostic `json:"content_blocks"`
 }
 
+var anthropicDiagnosticResponseHeaders = map[string]struct{}{
+	"anthropic-ratelimit-input-tokens-limit":      {},
+	"anthropic-ratelimit-input-tokens-remaining":  {},
+	"anthropic-ratelimit-input-tokens-reset":      {},
+	"anthropic-ratelimit-output-tokens-limit":     {},
+	"anthropic-ratelimit-output-tokens-remaining": {},
+	"anthropic-ratelimit-output-tokens-reset":     {},
+	"anthropic-ratelimit-requests-limit":          {},
+	"anthropic-ratelimit-requests-remaining":      {},
+	"anthropic-ratelimit-requests-reset":          {},
+	"anthropic-ratelimit-tokens-limit":            {},
+	"anthropic-ratelimit-tokens-remaining":        {},
+	"anthropic-ratelimit-tokens-reset":            {},
+	"anthropic-request-id":                        {},
+	"request-id":                                  {},
+	"retry-after":                                 {},
+	"trace-id":                                    {},
+	"x-amz-request-id":                            {},
+	"x-amzn-requestid":                            {},
+	"x-goog-request-id":                           {},
+	"x-request-id":                                {},
+	"x-trace-id":                                  {},
+}
+
 func (d *anthropicStreamFailureDiagnostic) setRawSSE(rawSSE []byte, rawSSELimit int) {
 	rawSample := rawSSE
 	truncated := false
@@ -807,9 +831,13 @@ func (d *anthropicStreamFailureDiagnostic) setRawSSE(rawSSE []byte, rawSSELimit 
 }
 
 func normalizeAnthropicResponseHeaders(headers http.Header) map[string]string {
-	normalized := make(map[string]string, len(headers))
+	normalized := make(map[string]string)
 	for key, values := range headers {
-		normalized[strings.ToLower(strings.TrimSpace(key))] = strings.Join(values, ", ")
+		normalizedKey := strings.ToLower(strings.TrimSpace(key))
+		if _, allowed := anthropicDiagnosticResponseHeaders[normalizedKey]; !allowed {
+			continue
+		}
+		normalized[normalizedKey] = strings.Join(values, ", ")
 	}
 	return normalized
 }

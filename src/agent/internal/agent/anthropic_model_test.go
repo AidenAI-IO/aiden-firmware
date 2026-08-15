@@ -901,6 +901,9 @@ func TestAnthropicModelLogsToolUseProtocolFailureDiagnostics(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Request-Id", "req_upstream_test")
+		w.Header().Set("Anthropic-Ratelimit-Requests-Remaining", "42")
+		w.Header().Set("Authorization", "Bearer response-secret")
+		w.Header().Set("Set-Cookie", "session=response-secret")
 		_, _ = w.Write([]byte(strings.Join([]string{
 			`data: {"type":"message_start","message":{"id":"msg_missing_tool","usage":{"input_tokens":3}}}`,
 			``,
@@ -938,6 +941,15 @@ func TestAnthropicModelLogsToolUseProtocolFailureDiagnostics(t *testing.T) {
 	headers, ok := diagnostic["response_headers"].(map[string]any)
 	if !ok || headers["request-id"] != "req_upstream_test" {
 		t.Errorf("response_headers = %#v, want preserved request-id", diagnostic["response_headers"])
+	}
+	if headers["anthropic-ratelimit-requests-remaining"] != "42" {
+		t.Errorf("response_headers = %#v, want preserved rate-limit header", headers)
+	}
+	if _, ok := headers["authorization"]; ok {
+		t.Errorf("response_headers = %#v, want authorization excluded", headers)
+	}
+	if _, ok := headers["set-cookie"]; ok {
+		t.Errorf("response_headers = %#v, want set-cookie excluded", headers)
 	}
 	eventCounts, ok := diagnostic["event_type_counts"].(map[string]any)
 	if !ok || eventCounts["message_start"] != float64(1) || eventCounts["content_block_start"] != float64(1) ||
