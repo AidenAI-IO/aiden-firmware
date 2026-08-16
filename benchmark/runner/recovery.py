@@ -87,7 +87,13 @@ def prepare_task_isolation(
             if attempt >= setup_attempts:
                 break
             per_attempt_timeout = max(15, ready_timeout_sec // setup_attempts)
-            wait_for_agent_ready(client, timeout_sec=per_attempt_timeout)
+            if not recover_agent_after_timeout(
+                client, timeout_sec=per_attempt_timeout
+            ):
+                raise ResetError(
+                    "agent did not recover after per-task setup failure"
+                ) from e
+            environment_setup_done = not environment_setup_required
             time.sleep(1)
 
     if last_error is None:
