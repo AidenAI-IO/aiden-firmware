@@ -2,6 +2,7 @@ import asyncio
 import sys
 import types
 
+import pytest
 from mobilegym.scripts import start_simulator
 
 
@@ -95,11 +96,59 @@ def test_create_mobilegym_env_pool_uses_envpool(monkeypatch):
     assert len(envs) == 2
     assert all(env.reset_called for env in envs)
     assert captured["entered"] is True
-    assert captured["reset_app_ids"] == [None, None]
+    assert captured["reset_app_ids"] == [[], []]
     assert captured["pool_kwargs"]["n"] == 2
     assert captured["pool_kwargs"]["isolation"] == "contexts"
     assert captured["pool_kwargs"]["num_browsers"] == 1
     assert config["parallel_envs"] == 2
+
+
+def test_reset_mobilegym_env_supports_legacy_reset_signature():
+    class LegacyEnv:
+        def __init__(self):
+            self.reset_calls = 0
+
+        async def reset(self):
+            self.reset_calls += 1
+
+    env = LegacyEnv()
+
+    asyncio.run(start_simulator._reset_mobilegym_env(env, app_ids=[]))
+
+    assert env.reset_calls == 1
+
+
+def test_reset_mobilegym_env_does_not_retry_internal_type_error():
+    class BrokenEnv:
+        def __init__(self):
+            self.reset_calls = 0
+
+        async def reset(self, app_ids=None):
+            self.reset_calls += 1
+            raise TypeError("reset implementation failed")
+
+    env = BrokenEnv()
+
+    with pytest.raises(TypeError, match="reset implementation failed"):
+        asyncio.run(start_simulator._reset_mobilegym_env(env, app_ids=[]))
+
+    assert env.reset_calls == 1
+
+
+def test_resilient_mobilegym_reset_supports_legacy_reset_signature():
+    class LegacyMobileGymEnv:
+        def __init__(self):
+            self.reset_calls = 0
+
+        async def reset(self):
+            self.reset_calls += 1
+
+    start_simulator.install_resilient_mobilegym_reset(LegacyMobileGymEnv)
+
+    env = LegacyMobileGymEnv()
+    asyncio.run(env.reset(app_ids=[]))
+
+    assert env.reset_calls == 1
 
 
 def test_resilient_mobilegym_reset_restarts_after_crashed_page():
@@ -109,8 +158,8 @@ def test_resilient_mobilegym_reset_restarts_after_crashed_page():
             self.close_calls = 0
             self.start_calls = 0
 
-        async def reset(self, app_ids=None):
-            self.original_reset_calls.append(app_ids)
+        async def reset(self, app_ids=None, timeout_ms=40000):
+            self.original_reset_calls.append((app_ids, timeout_ms))
             if len(self.original_reset_calls) == 1:
                 raise RuntimeError("Page.goto: Page crashed")
 
@@ -124,11 +173,68 @@ def test_resilient_mobilegym_reset_restarts_after_crashed_page():
     start_simulator.install_resilient_mobilegym_reset(FakeMobileGymEnv)
 
     env = FakeMobileGymEnv()
-    asyncio.run(env.reset(app_ids=[]))
+    asyncio.run(env.reset(app_ids=[], timeout_ms=1234))
 
-    assert env.original_reset_calls == [[], []]
+    assert env.original_reset_calls == [([], 1234), ([], 1234)]
     assert env.close_calls == 1
     assert env.start_calls == 1
+
+
+def test_resilient_mobilegym_reset_does_not_restart_after_navigation_timeout():
+    class FakeMobileGymEnv:
+        def __init__(self):
+            self.close_calls = 0
+            self.start_calls = 0
+
+        async def reset(self, app_ids=None, timeout_ms=40000):
+            raise TimeoutError("Page.goto: Timeout 40000ms exceeded")
+
+        async def close(self):
+            self.close_calls += 1
+
+        async def start(self):
+            self.start_calls += 1
+            return self
+
+    start_simulator.install_resilient_mobilegym_reset(FakeMobileGymEnv)
+
+    env = FakeMobileGymEnv()
+    try:
+        asyncio.run(env.reset(app_ids=[], timeout_ms=1234))
+    except TimeoutError as exc:
+        assert "Page.goto: Timeout" in str(exc)
+    else:
+        raise AssertionError("navigation timeout should propagate")
+
+    assert env.close_calls == 0
+    assert env.start_calls == 0
+
+
+def test_resilient_mobilegym_reset_restarts_after_target_closed_error():
+    class FakeMobileGymEnv:
+        def __init__(self):
+            self.reset_calls = 0
+            self.restart_calls = 0
+
+        async def reset(self, app_ids=None, timeout_ms=40000):
+            self.reset_calls += 1
+            if self.reset_calls == 1:
+                raise RuntimeError(
+                    "TargetClosedError: Page.goto: "
+                    "Target page, context or browser has been closed"
+                )
+
+        async def restart(self):
+            self.restart_calls += 1
+            return self
+
+    start_simulator.install_resilient_mobilegym_reset(FakeMobileGymEnv)
+
+    env = FakeMobileGymEnv()
+    asyncio.run(env.reset(app_ids=[], timeout_ms=1234))
+
+    assert env.reset_calls == 2
+    assert env.restart_calls == 1
 
 
 def test_bridge_request_timeout_default_covers_mobilegym_reset_retries():

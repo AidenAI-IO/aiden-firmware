@@ -751,35 +751,195 @@ def test_multi_env_tools_require_benchmark_task_id_header():
         loop.close()
 
 
-def test_reset_episode_restarts_env_before_reset_when_supported():
+def test_reset_episode_reuses_env_when_reset_succeeds():
     import asyncio
 
     class RestartableEnv:
         def __init__(self):
             self.calls = []
-            self.restarted = False
 
         async def close(self):
             self.calls.append("close")
 
         async def start(self):
             self.calls.append("start")
-            self.restarted = True
             return self
 
-        async def reset(self):
-            self.calls.append("reset")
-            if not self.restarted:
-                raise RuntimeError("second reset would hang without page restart")
+        async def reset(self, app_ids=None):
+            self.calls.append(("reset", app_ids))
 
     async def run():
         env = RestartableEnv()
         state = BridgeEpisodeState(env, asyncio.get_running_loop())
 
-        result = await state.reset_episode("episode-1")
+        result = await state.reset_episode("episode-1", app_ids=[])
 
         assert result == {"episode_id": "episode-1", "reset": True}
-        assert env.calls == ["close", "start", "reset"]
+        assert env.calls == [("reset", [])]
+
+    asyncio.run(run())
+
+
+def test_run_reset_bounds_synchronous_reset(monkeypatch):
+    import asyncio
+    import time
+
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESET_TIMEOUT_SEC", 0.01)
+
+    def reset(app_ids=None):
+        time.sleep(0.1)
+
+    async def run():
+        state = BridgeEpisodeState(object(), asyncio.get_running_loop())
+        started = time.monotonic()
+        with pytest.raises(asyncio.TimeoutError):
+            await state._run_reset(reset, app_ids=[])
+        return time.monotonic() - started
+
+    assert asyncio.run(run()) < 0.05
+
+
+def test_reset_episode_isolates_timed_out_synchronous_reset(monkeypatch):
+    import asyncio
+
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESET_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
+
+    class BlockingResetEnv:
+        def __init__(self):
+            self.allow_reset = Event()
+            self.restart_calls = 0
+            self.read_calls = 0
+
+        def reset(self, app_ids=None):
+            self.allow_reset.wait(timeout=1)
+
+        async def restart(self):
+            self.restart_calls += 1
+
+        async def read(self):
+            self.read_calls += 1
+            return "ready"
+
+    async def run():
+        env = BlockingResetEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError):
+            await state.reset_episode("episode-1", app_ids=[])
+
+        restart_calls_before_release = env.restart_calls
+        read_task = asyncio.create_task(state.run_env(lambda current: current.read()))
+        await asyncio.sleep(0)
+        read_finished_before_release = read_task.done()
+
+        env.allow_reset.set()
+        result = await read_task
+        return (
+            restart_calls_before_release,
+            read_finished_before_release,
+            env.restart_calls,
+            result,
+        )
+
+    assert asyncio.run(run()) == (0, False, 1, "ready")
+
+
+def test_cancelled_synchronous_reset_stays_isolated():
+    import asyncio
+
+    class BlockingResetEnv:
+        def __init__(self):
+            self.allow_reset = Event()
+            self.reset_started = Event()
+            self.read_calls = 0
+
+        def reset(self, app_ids=None):
+            self.reset_started.set()
+            self.allow_reset.wait(timeout=1)
+
+        async def read(self):
+            self.read_calls += 1
+            return "ready"
+
+    async def run():
+        env = BlockingResetEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+        reset_task = asyncio.create_task(state._run_reset(env.reset, app_ids=[]))
+
+        await asyncio.to_thread(env.reset_started.wait, 1)
+        reset_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reset_task
+
+        read_task = asyncio.create_task(state.run_env(lambda current: current.read()))
+        await asyncio.sleep(0)
+        read_finished_before_release = read_task.done()
+
+        env.allow_reset.set()
+        result = await read_task
+        return read_finished_before_release, env.read_calls, result
+
+    assert asyncio.run(run()) == (False, 1, "ready")
+
+
+def test_reset_episode_bounds_synchronous_restart(monkeypatch):
+    import asyncio
+    import time
+
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
+
+    class BlockingRestartEnv:
+        async def reset(self, app_ids=None):
+            raise TimeoutError("phase=__OS__ timeout")
+
+        def restart(self):
+            time.sleep(0.1)
+
+    async def run():
+        state = BridgeEpisodeState(BlockingRestartEnv(), asyncio.get_running_loop())
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="restart timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+        return time.monotonic() - started
+
+    assert asyncio.run(run()) < 0.05
+
+
+def test_reset_episode_catches_builtin_timeout_error(monkeypatch):
+    import asyncio
+
+    from . import episode as episode_mod
+
+    class DistinctAsyncioTimeoutError(Exception):
+        pass
+
+    monkeypatch.setattr(episode_mod.asyncio, "TimeoutError", DistinctAsyncioTimeoutError)
+
+    class TimeoutEnv:
+        def __init__(self):
+            self.restart_calls = 0
+
+        async def reset(self, app_ids=None):
+            raise TimeoutError("phase=waitForData timeout")
+
+        async def restart(self):
+            self.restart_calls += 1
+
+    async def run():
+        env = TimeoutEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError, match="environment reset timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+
+        assert env.restart_calls == 2
 
     asyncio.run(run())
 
@@ -802,8 +962,8 @@ def test_reset_episode_retries_after_reset_timeout(monkeypatch):
             self.calls.append("start")
             return self
 
-        async def reset(self):
-            self.calls.append("reset")
+        async def reset(self, app_ids=None):
+            self.calls.append(("reset", app_ids))
             self.reset_calls += 1
             if self.reset_calls == 1:
                 await asyncio.sleep(10)
@@ -812,10 +972,138 @@ def test_reset_episode_retries_after_reset_timeout(monkeypatch):
         env = TimeoutThenSuccessEnv()
         state = BridgeEpisodeState(env, asyncio.get_running_loop())
 
-        result = await state.reset_episode("episode-1")
+        result = await state.reset_episode("episode-1", app_ids=["settings"])
 
         assert result == {"episode_id": "episode-1", "reset": True}
-        assert env.calls == ["close", "start", "reset", "close", "start", "reset"]
+        assert env.calls == [
+            ("reset", ["settings"]),
+            "close",
+            "start",
+            ("reset", ["settings"]),
+        ]
+
+    asyncio.run(run())
+
+
+def test_reset_episode_recreates_env_after_final_timeout(monkeypatch):
+    import asyncio
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESET_TIMEOUT_SEC", 0.01)
+
+    class AlwaysTimeoutEnv:
+        def __init__(self):
+            self.calls = []
+
+        async def close(self):
+            self.calls.append("close")
+
+        async def start(self):
+            self.calls.append("start")
+            return self
+
+        async def reset(self, app_ids=None):
+            self.calls.append(("reset", app_ids))
+            await asyncio.sleep(10)
+
+    async def run():
+        env = AlwaysTimeoutEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError, match="reset timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+
+        assert env.calls == [
+            ("reset", []),
+            "close",
+            "start",
+            ("reset", []),
+            "close",
+            "start",
+        ]
+        assert state.active_episode_id is None
+
+    asyncio.run(run())
+
+
+def test_reset_episode_bounds_environment_restart(monkeypatch):
+    import asyncio
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
+
+    class HangingRestartEnv:
+        async def reset(self, app_ids=None):
+            raise TimeoutError("phase=__OS__ timeout")
+
+        async def close(self):
+            await asyncio.sleep(10)
+
+        async def start(self):
+            return self
+
+    async def run():
+        state = BridgeEpisodeState(HangingRestartEnv(), asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError, match="restart timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+
+    asyncio.run(run())
+
+
+def test_reset_episode_keeps_timed_out_restart_isolated_until_it_finishes(monkeypatch):
+    import asyncio
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
+
+    class SlowRestartEnv:
+        def __init__(self):
+            self.allow_start = asyncio.Event()
+            self.started = False
+            self.closed = False
+            self.reset_calls = 0
+            self.read_calls = 0
+
+        async def reset(self, app_ids=None):
+            self.reset_calls += 1
+            if self.closed:
+                raise RuntimeError("Call start() first")
+            if not self.started:
+                raise TimeoutError("phase=__OS__ timeout")
+
+        async def close(self):
+            self.closed = True
+
+        async def start(self):
+            await self.allow_start.wait()
+            self.started = True
+            self.closed = False
+            return self
+
+        async def read(self):
+            self.read_calls += 1
+            if self.closed:
+                raise RuntimeError("read raced with restart")
+            return "ready"
+
+    async def run():
+        env = SlowRestartEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError, match="restart timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+
+        read_task = asyncio.create_task(state.run_env(lambda current: current.read()))
+        await asyncio.sleep(0)
+        assert env.read_calls == 0
+
+        env.allow_start.set()
+        assert await read_task == "ready"
+        result = await state.reset_episode("episode-2", app_ids=[])
+
+        assert result == {"episode_id": "episode-2", "reset": True}
+        assert env.reset_calls == 2
 
     asyncio.run(run())
 
@@ -829,7 +1117,7 @@ def test_setup_token_deduplicates_concurrent_and_completed_requests():
             self.reset_entered = Event()
             self.allow_reset = Event()
 
-        def reset(self):
+        def reset(self, app_ids=None):
             self.reset_calls += 1
             self.reset_entered.set()
             self.allow_reset.wait(timeout=5)

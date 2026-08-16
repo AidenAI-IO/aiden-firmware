@@ -136,8 +136,17 @@ Initializes or resets the environment route for a benchmark task.
 Optional request body:
 
 ```json
-{"episode_id": "task-episode", "setup_token": "optional-idempotency-token"}
+{
+  "episode_id": "task-episode",
+  "setup_token": "optional-idempotency-token",
+  "app_ids": ["settings"]
+}
 ```
+
+`app_ids` is optional environment metadata. MobileGym uses it to preload only
+the data loaders required by the task. An omitted or empty list skips eager app
+data loading; apps still load their own data when opened. This avoids loading
+every registered app during each task reset.
 
 For bridges that do not need setup, return success with `setup: false`.
 

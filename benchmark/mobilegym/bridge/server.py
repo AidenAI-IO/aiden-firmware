@@ -49,6 +49,17 @@ DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC = 180
 SCREENSHOT_PROVIDER_TIMEOUT_SEC = 30
 
 
+def _setup_app_ids(payload: dict[str, Any]) -> list[str]:
+    value = payload.get("app_ids")
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise ValueError("app_ids must be a list of non-empty strings")
+    return list(dict.fromkeys(item.strip() for item in value))
+
+
 class BridgeServer:
     def __init__(
         self,
@@ -165,8 +176,8 @@ def _handler_for(bridge: BridgeServer):
                 self._send_error(429, "no_bridge_env_available", str(exc))
             except ValueError as exc:
                 self._send_error(400, "bad_request", str(exc))
-            except TimeoutError:
-                self._send_error(504, "timeout", "bridge request timed out")
+            except TimeoutError as exc:
+                self._send_error(504, "timeout", str(exc) or "bridge request timed out")
             except Exception as exc:
                 self._send_error(500, "bridge_error", str(exc))
 
@@ -189,13 +200,20 @@ def _handler_for(bridge: BridgeServer):
                 episode_id = f"reset-{uuid.uuid4().hex}"
             task_id = benchmark_task_id_from_headers(self.headers)
             setup_token = setup_token_from_payload(payload)
+            app_ids = _setup_app_ids(payload)
 
             def setup() -> dict[str, Any]:
                 state = bridge.router.state_for_task_id(task_id)
-                return bridge.submit_to_state(state, state.reset_episode(episode_id))
+                return bridge.submit_to_state(
+                    state,
+                    state.reset_episode(episode_id, app_ids=app_ids),
+                )
 
             if setup_token:
-                result = bridge.setup_tokens.run((task_id, setup_token), setup)
+                result = bridge.setup_tokens.run(
+                    (task_id, setup_token, tuple(app_ids)),
+                    setup,
+                )
             else:
                 result = setup()
             self._send_json(200, bridge_ok(result))

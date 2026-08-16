@@ -81,6 +81,7 @@ class TaskSpec:
     answer_format: str | None = None
     platforms: list[str] = dc.field(default_factory=list)
     expected_recalled_memory_ids: list[str] = dc.field(default_factory=list)
+    app_ids: list[str] = dc.field(default_factory=list)
 
 @dc.dataclass
 class Suite:
@@ -211,6 +212,12 @@ def load_suite(path: Path) -> Suite:
             isinstance(item, str) and item.strip() for item in expected_recalled_memory_ids
         ):
             raise SuiteValidationError(f"task {tid}: expected_recalled_memory_ids must be a list of non-empty strings")
+        raw_app_ids = raw.get("app_ids", [])
+        if not isinstance(raw_app_ids, list) or not all(
+            isinstance(item, str) and item.strip() for item in raw_app_ids
+        ):
+            raise SuiteValidationError(f"task {tid}: app_ids must be a list of non-empty strings")
+        app_ids = list(dict.fromkeys(item.strip() for item in raw_app_ids))
         platforms = _platform_list(raw.get("platforms", []), tid)
         task_mock_environment = _parse_mock_environment(
             raw.get("mock_environment"),
@@ -229,6 +236,7 @@ def load_suite(path: Path) -> Suite:
             answer_format=answer_format,
             platforms=platforms,
             expected_recalled_memory_ids=expected_recalled_memory_ids,
+            app_ids=app_ids,
         ))
     prompt_prefix = data.get("prompt_prefix", "")
     if not isinstance(prompt_prefix, str):

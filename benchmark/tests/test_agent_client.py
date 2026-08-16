@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from runner.agent_client import AgentClient, AgentTimeoutError
+from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
 
 
 class FakeResponse:
@@ -142,6 +142,39 @@ def test_chat_includes_skills_when_provided():
     assert body["skills"] == ["device-operator"]
 
 
+def test_chat_non_200_error_preserves_request_id():
+    seen = {}
+    client = AgentClient(base_url="http://test")
+
+    with patch("urllib.request.urlopen", _captured(seen, status=503)), \
+         pytest.raises(AgentRequestError) as exc_info:
+        client.chat("prepare device")
+
+    request_id = json.loads(seen["body"])["request_id"]
+    assert request_id.startswith("benchmark-")
+    assert exc_info.value.request_id == request_id
+
+
+@pytest.mark.parametrize(
+    ("method_name", "transport_name", "expected_message"),
+    [
+        ("cancel_chat", "_post", "chat/cancel returned invalid JSON"),
+        ("chat_result_status", "_get", "chat/result returned invalid JSON"),
+    ],
+)
+def test_chat_recovery_rejects_invalid_json(
+    method_name, transport_name, expected_message
+):
+    client = AgentClient(base_url="http://test")
+
+    with patch.object(client, transport_name, return_value=(200, b"not-json")), \
+         pytest.raises(AgentRequestError) as exc_info:
+        getattr(client, method_name)("req-1")
+
+    assert expected_message in str(exc_info.value)
+    assert exc_info.value.request_id == "req-1"
+
+
 def test_recover_after_timeout_waits_until_clear_succeeds(monkeypatch):
     sleeps = []
     monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
@@ -162,6 +195,40 @@ def test_recover_after_timeout_waits_until_clear_succeeds(monkeypatch):
     assert AgentClient.recover_after_timeout(client, timeout_sec=10, poll_sec=1) is True
     assert client.attempts == 2
     assert sleeps == [1]
+
+
+def test_recover_after_timeout_cancels_timed_out_chat_before_clear(monkeypatch):
+    seen = []
+    responses = [
+        FakeResponse(200, {"request_id": "req-1"}),
+        socket.timeout("read timed out"),
+        FakeResponse(200, {"request_id": "req-1", "status": "canceled"}),
+        FakeResponse(200, {"status": "running"}),
+        FakeResponse(200, {"status": "error", "error": "request canceled"}),
+        FakeResponse(200, {"status": "ok"}),
+    ]
+
+    def fake_urlopen(req, timeout=None):
+        seen.append((req.full_url, req.get_method(), timeout))
+        response = responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    client = AgentClient(base_url="http://test")
+    with patch("urllib.request.urlopen", fake_urlopen):
+        with pytest.raises(AgentTimeoutError) as exc_info:
+            client.chat("prepare device", timeout_sec=1)
+
+        assert exc_info.value.request_id == "req-1"
+        assert client.recover_after_timeout(timeout_sec=10, poll_sec=1) is True
+
+    assert [entry[1] for entry in seen] == ["POST", "GET", "POST", "GET", "GET", "POST"]
+    assert seen[2][0].endswith("/api/chat/cancel")
+    assert seen[3][0].endswith("/api/chat/result?request_id=req-1")
+    assert seen[4][0].endswith("/api/chat/result?request_id=req-1")
+    assert seen[5][0].endswith("/api/clear")
 
 
 def test_chat_timeout_raises():

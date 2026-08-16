@@ -6,8 +6,11 @@ used by both benchmark/runner/webui.py and skillopt/webui.py.
 
 from __future__ import annotations
 
+import configparser
 import dataclasses as dc
+import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -15,16 +18,25 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 
 DEFAULT_MOBILEGYM_IMAGE = "aiden-mobilegym-simulator:py311"
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
 DEFAULT_MOBILEGYM_PARALLEL_ENVS = 5
+MOBILEGYM_SUBMODULE_PATH = "benchmark/mobilegym/vendor/mobilegym"
+MOBILEGYM_SUBMODULE_SECTION = f'submodule "{MOBILEGYM_SUBMODULE_PATH}"'
+MOBILEGYM_COMMIT_LABEL = "io.aiden.mobilegym.commit"
 LOG_TAIL_BYTES = 96 * 1024
 # WebUI polls list_all every 5s; cache the docker-sync result briefly so multiple
 # concurrent requests within a single poll window don't each fork docker.
 DOCKER_SYNC_CACHE_TTL_SEC = 2.0
+
+
+@dc.dataclass(frozen=True)
+class MobileGymSource:
+    repo: str
+    commit: str
 
 
 @dc.dataclass
@@ -292,6 +304,7 @@ class EnvironmentManager:
                 self.mobilegym_image,
                 self.build_mobilegym_image,
                 Path(env.log_path),
+                repo_root=self.repo_root,
             )
             self._set_environment(env, status="starting", message="starting container")
 
@@ -685,9 +698,55 @@ def docker_no_proxy(endpoint: str) -> str:
     return ",".join(base)
 
 
-def ensure_mobilegym_image(image: str, build_missing: bool, log_path: Path) -> None:
-    """Ensure MobileGym Docker image exists."""
-    ensure_docker_image(image, build_missing, log_path, "mobilegym-base")
+def resolve_mobilegym_source(repo_root: Path) -> MobileGymSource:
+    """Resolve the MobileGym repository and pinned commit from the firmware tree."""
+    gitmodules = configparser.ConfigParser()
+    gitmodules_path = repo_root / ".gitmodules"
+    if not gitmodules.read(gitmodules_path, encoding="utf-8"):
+        raise RuntimeError(f"Unable to read submodule configuration: {gitmodules_path}")
+    try:
+        mobilegym_repo = gitmodules[MOBILEGYM_SUBMODULE_SECTION]["url"].strip()
+    except KeyError as exc:
+        raise RuntimeError(
+            f"MobileGym submodule URL not found in {gitmodules_path}"
+        ) from exc
+
+    try:
+        mobilegym_commit = subprocess.check_output(
+            ["git", "rev-parse", f"HEAD:{MOBILEGYM_SUBMODULE_PATH}"],
+            cwd=repo_root,
+            text=True,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("Unable to resolve the MobileGym submodule commit from HEAD") from exc
+    if not re.fullmatch(r"[0-9a-f]{40}", mobilegym_commit):
+        raise RuntimeError(f"Invalid MobileGym submodule commit in HEAD: {mobilegym_commit!r}")
+
+    return MobileGymSource(repo=mobilegym_repo, commit=mobilegym_commit)
+
+
+def ensure_mobilegym_image(
+    image: str,
+    build_missing: bool,
+    log_path: Path,
+    *,
+    repo_root: Path | None = None,
+) -> None:
+    """Ensure the MobileGym image matches the commit pinned by the firmware tree."""
+    repo_root = repo_root or Path(__file__).resolve().parents[2]
+    source = resolve_mobilegym_source(repo_root)
+    ensure_docker_image(
+        image,
+        build_missing,
+        log_path,
+        "mobilegym-base",
+        repo_root=repo_root,
+        build_args={
+            "MOBILEGYM_REPO": source.repo,
+            "MOBILEGYM_COMMIT": source.commit,
+        },
+        required_labels={MOBILEGYM_COMMIT_LABEL: source.commit},
+    )
 
 
 def ensure_docker_image(
@@ -697,20 +756,47 @@ def ensure_docker_image(
     target: str,
     *,
     stop_requested: Callable[[], bool] | None = None,
+    repo_root: Path | None = None,
+    build_args: Mapping[str, str] | None = None,
+    required_labels: Mapping[str, str] | None = None,
 ) -> None:
     """Ensure Docker image exists, optionally building it."""
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = repo_root or Path(__file__).resolve().parents[2]
 
     inspect = subprocess.run(
-        ["docker", "image", "inspect", image],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", image],
+        capture_output=True,
+        text=True,
         check=False,
     )
-    if inspect.returncode == 0:
-        return
+    image_exists = inspect.returncode == 0
+    labels: dict[str, str] = {}
+    if image_exists:
+        try:
+            parsed_labels = json.loads(inspect.stdout) if inspect.stdout.strip() else None
+        except json.JSONDecodeError:
+            parsed_labels = None
+        if isinstance(parsed_labels, dict):
+            labels = {str(key): str(value) for key, value in parsed_labels.items()}
+
+        mismatched_labels = {
+            key: (labels.get(key), expected)
+            for key, expected in (required_labels or {}).items()
+            if labels.get(key) != expected
+        }
+        if not mismatched_labels:
+            return
+    else:
+        mismatched_labels = {}
+
     if not build_missing:
-        raise RuntimeError(f"Docker image not found: {image}")
+        if not image_exists:
+            raise RuntimeError(f"Docker image not found: {image}")
+        details = ", ".join(
+            f"{key} is {actual or 'unset'}, expected {expected}"
+            for key, (actual, expected) in mismatched_labels.items()
+        )
+        raise RuntimeError(f"Docker image {image} is stale: {details}")
 
     cmd = [
         "docker",
@@ -719,10 +805,10 @@ def ensure_docker_image(
         str(repo_root / "benchmark" / "mobilegym" / "docker" / "Dockerfile"),
         "--target",
         target,
-        "-t",
-        image,
-        str(repo_root),
     ]
+    for key, value in (build_args or {}).items():
+        cmd.extend(["--build-arg", f"{key}={value}"])
+    cmd.extend(["-t", image, str(repo_root)])
     append_log(log_path, "$ " + " ".join(cmd))
 
     popen_kwargs: dict[str, Any] = {}

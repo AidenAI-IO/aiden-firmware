@@ -104,6 +104,7 @@ class FakeEnv:
         self.state = {"os": {}, "apps": {}}
         self.route = {"app": "launcher", "path": "/"}
         self.reset_calls = 0
+        self.reset_app_ids = []
         self.calls = []
         self.loop_matches = []
         self.threads = []
@@ -141,9 +142,10 @@ class FakeEnv:
         self._record("get_route")
         return self.route
 
-    async def reset(self):
+    async def reset(self, app_ids=None):
         self._record("reset")
         self.reset_calls += 1
+        self.reset_app_ids.append(app_ids)
         return FakeObservation()
 
 
@@ -294,6 +296,17 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
         assert bridge.state.active_episode_id == "reset-ep1"
         assert bridge.env.reset_calls == 1
+        assert bridge.env.reset_app_ids == [[]]
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/setup",
+            {"episode_id": "reset-ep2", "app_ids": ["settings"]},
+        )
+        assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep2", "reset": True}
+        assert bridge.env.reset_app_ids == [[], ["settings"]]
 
         status, body = request_json(
             bridge.base_url,
@@ -315,11 +328,58 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         assert status == 200
         assert body["data"] == bridge.env.route
 
-        status, _ = request_json(bridge.base_url, "POST", "/episode/end", {"episode_id": "reset-ep1"})
+        status, _ = request_json(bridge.base_url, "POST", "/episode/end", {"episode_id": "reset-ep2"})
         assert status == 200
 
         assert bridge.env.loop_matches and all(bridge.env.loop_matches)
         assert bridge.env.threads and set(bridge.env.threads) == {"mobilegym-owner-loop"}
+
+
+def test_setup_rejects_invalid_app_ids():
+    with RunningBridge() as bridge:
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/setup",
+            {"app_ids": "settings"},
+        )
+
+        assert status == 400
+        assert body["error"]["code"] == "bad_request"
+        assert bridge.env.reset_calls == 0
+
+
+def test_setup_treats_null_app_ids_as_empty():
+    with RunningBridge() as bridge:
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/setup",
+            {"app_ids": None},
+        )
+
+        assert status == 200
+        assert body["data"]["reset"] is True
+        assert bridge.env.reset_app_ids == [[]]
+
+
+def test_setup_timeout_preserves_mobilegym_phase_diagnostic():
+    with RunningBridge() as bridge:
+        async def timeout_reset(app_ids=None):
+            raise TimeoutError("phase=waitForData timeout after 40000ms")
+
+        bridge.env.reset = timeout_reset
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/setup",
+            {"app_ids": []},
+        )
+
+        assert status == 504
+        assert body["error"]["code"] == "timeout"
+        assert "phase=waitForData" in body["error"]["message"]
 
 
 def test_api_screen_is_removed():
