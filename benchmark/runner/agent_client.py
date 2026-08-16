@@ -22,6 +22,20 @@ class AgentRequestError(RuntimeError):
         self.request_id = request_id
 
 
+def _parse_json_response(
+    body_bytes: bytes,
+    endpoint: str,
+    *,
+    request_id: str | None = None,
+) -> Any:
+    try:
+        return json.loads(body_bytes)
+    except json.JSONDecodeError as exc:
+        raise AgentRequestError(
+            f"{endpoint} returned invalid JSON: {exc}", request_id=request_id
+        ) from exc
+
+
 @dc.dataclass
 class ChatResponse:
     response: str
@@ -142,10 +156,7 @@ class AgentClient:
         )
         if status != 200:
             raise AgentRequestError(f"phone_bridge_state returned {status}")
-        try:
-            body = json.loads(body_bytes)
-        except json.JSONDecodeError as exc:
-            raise AgentRequestError(f"phone_bridge_state returned invalid JSON: {exc}") from exc
+        body = _parse_json_response(body_bytes, "phone_bridge_state")
         return body if isinstance(body, dict) else {}
 
     def get_history(self) -> list[dict[str, Any]]:
@@ -188,7 +199,7 @@ class AgentClient:
             self._pending_chat_request_ids.add(request_id)
             raise
         if status != 200:
-            raise AgentRequestError(f"chat returned {status}")
+            raise AgentRequestError(f"chat returned {status}", request_id=request_id)
         body = json.loads(body_bytes)
 
         # Async mode: agent returns request_id, long poll for completion.
@@ -247,7 +258,9 @@ class AgentClient:
             raise AgentRequestError(
                 f"chat/cancel returned {status}", request_id=request_id
             )
-        body = json.loads(body_bytes)
+        body = _parse_json_response(
+            body_bytes, "chat/cancel", request_id=request_id
+        )
         return str(body.get("status") or "") if isinstance(body, dict) else ""
 
     def chat_result_status(self, request_id: str, timeout: int = 5) -> str:
@@ -259,7 +272,9 @@ class AgentClient:
             raise AgentRequestError(
                 f"chat/result returned {status}", request_id=request_id
             )
-        body = json.loads(body_bytes)
+        body = _parse_json_response(
+            body_bytes, "chat/result", request_id=request_id
+        )
         return str(body.get("status") or "") if isinstance(body, dict) else ""
 
     def invoke_tool(
