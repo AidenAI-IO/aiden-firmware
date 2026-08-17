@@ -1,10 +1,15 @@
 package mnk
 
+import "context"
+
 // Provider defines a minimal set of mouse/keyboard primitives for device input.
 // This interface isolates tools from device-specific implementations (HID, ADB, etc).
 //
 // Coordinate system: Normalized 0-1000 scale where (0,0) is top-left, (1000,1000) is bottom-right.
 // The provider implementation handles conversion to device-specific absolute coordinates.
+//
+// Context: Callers must pass the request/tool context so platform gates (e.g. iOS
+// keyboard isolation batch) can observe sticky isolate/restore across a run.
 type Provider interface {
 	// Click performs a press-hold-release at the specified position.
 	// For touchscreen mode: simulates finger tap (button parameter ignored).
@@ -15,11 +20,11 @@ type Provider interface {
 	//   button: "left" | "right" | "middle" (ignored in touchscreen mode)
 	//   holdMs: Duration to hold before release. Use higher values (500+) for long-press.
 	//           Default timing is handled by implementation (typically 60ms for tap).
-	Click(x, y float64, button string, holdMs int) error
+	Click(ctx context.Context, x, y float64, button string, holdMs int) error
 
 	// DoubleClick performs two clicks in rapid succession.
 	// The pause between clicks is handled by implementation (typically 100ms).
-	DoubleClick(x, y float64, button string) error
+	DoubleClick(ctx context.Context, x, y float64, button string) error
 
 	// Drag performs a gesture along a path of points.
 	// The path is interpolated smoothly with implementation-defined timing and steps.
@@ -33,7 +38,7 @@ type Provider interface {
 	//   - Appropriate dwell before movement (for edge gesture recognition)
 	//   - Step count for motion smoothness
 	//   - Platform-specific timing requirements
-	Drag(path [][2]float64, button string) error
+	Drag(ctx context.Context, path [][2]float64, button string) error
 
 	// Keypress sends one or more keys simultaneously.
 	// Supports modifier+key combinations as a single chord.
@@ -54,12 +59,12 @@ type Provider interface {
 	//   - Android extensions: "volume_up", "volume_down", "android_back", "android_home", "power", etc.
 	//
 	// Implementation handles proper HID report construction with modifier byte + key array.
-	Keypress(keys []string) error
+	Keypress(ctx context.Context, keys []string) error
 
 	// Move positions the pointer without pressing any button.
 	// In touchscreen mode, this is typically unsupported (no hover).
 	// In absolute mouse mode, moves the cursor to the specified position.
-	Move(x, y float64) error
+	Move(ctx context.Context, x, y float64) error
 
 	// Scroll sends wheel/scroll input.
 	//
@@ -69,7 +74,7 @@ type Provider interface {
 	//
 	// In touchscreen mode, implementation may convert to swipe gestures.
 	// In absolute mouse mode, sends wheel events.
-	Scroll(scrollX, scrollY int) error
+	Scroll(ctx context.Context, scrollX, scrollY int) error
 }
 
 // Point represents a normalized coordinate point.
@@ -113,10 +118,10 @@ const (
 	KeyPageDown = "pagedown"
 
 	// Android extensions
-	KeyVolumeUp      = "volume_up"
-	KeyVolumeDown    = "volume_down"
-	KeyAndroidBack   = "android_back"
-	KeyAndroidHome   = "android_home"
-	KeyPower         = "power"
+	KeyVolumeUp       = "volume_up"
+	KeyVolumeDown     = "volume_down"
+	KeyAndroidBack    = "android_back"
+	KeyAndroidHome    = "android_home"
+	KeyPower          = "power"
 	KeyMediaPlayPause = "media_play_pause"
 )

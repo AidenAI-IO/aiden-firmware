@@ -341,7 +341,7 @@ func TestKeyboardTapIsolatesOnlyModifierChords(t *testing.T) {
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)
 	controller.keyboardDev = dev
-	tool := &KeyboardTapTool{dev: dev, pointerMode: "absolute", iosKeyboardIsolation: controller}
+	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, gate: newIOSKeyboardIsolationProfileGate(controller)})
 
 	if out, err := tool.Call(context.Background(), `{"keys":["a"],"hold_ms":1}`); err != nil || out != "ok" {
 		t.Fatalf("plain Call() = %q, %v", out, err)
@@ -417,12 +417,7 @@ func TestKeyboardTapExtraKeysRemainOnNormalProfile(t *testing.T) {
 	controller := newTestIOSKeyboardIsolationController(&events)
 	controller.keyboardDev = keyboardDev
 	controller.extraKeysDev = extraKeysDev
-	tool := &KeyboardTapTool{
-		dev:                  keyboardDev,
-		androidDev:           extraKeysDev,
-		pointerMode:          "absolute",
-		iosKeyboardIsolation: controller,
-	}
+	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: keyboardDev, android: extraKeysDev, gate: newIOSKeyboardIsolationProfileGate(controller)})
 
 	out, err := tool.Call(context.Background(), `{"keys":["volume_up"],"hold_ms":1}`)
 	if err != nil || out != "ok" {

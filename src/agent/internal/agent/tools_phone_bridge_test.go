@@ -368,7 +368,7 @@ func TestSearchLaunchAppUsesRealQuickActionDeviceType(t *testing.T) {
 		events := []string{}
 		controller := newTestIOSKeyboardIsolationController(&events)
 		controller.keyboardDev = keyboardDev
-		keyboardTap := &KeyboardTapTool{dev: keyboardDev, iosKeyboardIsolation: controller}
+		keyboardTap := testKeyboardTapTool(t, testMNKOpts{keyboard: keyboardDev, gate: newIOSKeyboardIsolationProfileGate(controller)})
 		touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 		keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 		quick := &QuickActionTool{keyboard: keyboardTap, iosKeyboardIsolation: controller}
@@ -481,7 +481,7 @@ func TestSearchLaunchAppBatchesIOSModifierIsolationAcrossSubtools(t *testing.T) 
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)
 	controller.keyboardDev = keyboardDev
-	keyboardTap := &KeyboardTapTool{dev: keyboardDev, iosKeyboardIsolation: controller}
+	keyboardTap := testKeyboardTapTool(t, testMNKOpts{keyboard: keyboardDev, gate: newIOSKeyboardIsolationProfileGate(controller)})
 	keyboardText := &KeyboardTextTool{dev: keyboardDev, iosKeyboardIsolation: controller}
 	quickAction := &QuickActionTool{
 		keyboard:             keyboardTap,

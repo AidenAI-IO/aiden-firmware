@@ -79,7 +79,7 @@ func TestRunScriptBatchesIOSModifierIsolationAcrossSteps(t *testing.T) {
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)
 	controller.keyboardDev = dev
-	keyboard := &KeyboardTapTool{dev: dev, iosKeyboardIsolation: controller}
+	keyboard := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, gate: newIOSKeyboardIsolationProfileGate(controller)})
 	tool := NewRunScriptTool(scriptsDir, func(name string) (langtools.Tool, bool) {
 		if name == "keyboard_tap" {
 			return keyboard, true

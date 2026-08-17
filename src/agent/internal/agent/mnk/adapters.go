@@ -61,7 +61,7 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
-		return t.handleTap(args.Point, button, 0)
+		return t.handleTap(ctx, args.Point, button, 0)
 
 	case "long_press":
 		if args.Point == nil {
@@ -76,7 +76,7 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
-		return t.handleTap(args.Point, button, holdMs)
+		return t.handleTap(ctx, args.Point, button, holdMs)
 
 	case "double_tap":
 		if args.Point == nil {
@@ -85,7 +85,7 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
-		return t.handleDoubleTap(args.Point, button)
+		return t.handleDoubleTap(ctx, args.Point, button)
 
 	case "swipe", "drag":
 		if args.Start == nil || args.End == nil {
@@ -94,25 +94,25 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
-		return t.handleSwipe(args.Start, args.End, button)
+		return t.handleSwipe(ctx, args.Start, args.End, button)
 
 	case "swipe_left", "swipe_right", "swipe_up", "swipe_down":
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
-		return t.handleDirectionalSwipe(gestureType, args.Distance, args.Anchor, args.Strength, button)
+		return t.handleDirectionalSwipe(ctx, gestureType, args.Distance, args.Anchor, args.Strength, button)
 
 	case "back", "edge_back", "left_edge_back":
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
-		return t.handleEdgeBack(button)
+		return t.handleEdgeBack(ctx, button)
 
 	case "home", "home_swipe", "bottom_edge_home":
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
-		return t.handleEdgeHome(button)
+		return t.handleEdgeHome(ctx, button)
 
 	default:
 		return "", InvalidArgumentsf("unsupported gesture type: %q", args.Type)
@@ -126,32 +126,32 @@ func (t *TouchGestureToolAdapter) requireProvider() error {
 	return nil
 }
 
-func (t *TouchGestureToolAdapter) handleTap(point *pointerPoint, button string, holdMs int) (string, error) {
-	if err := t.provider.Click(point.X.Float64(), point.Y.Float64(), button, holdMs); err != nil {
+func (t *TouchGestureToolAdapter) handleTap(ctx context.Context, point *pointerPoint, button string, holdMs int) (string, error) {
+	if err := t.provider.Click(ctx, point.X.Float64(), point.Y.Float64(), button, holdMs); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 	return "ok", nil
 }
 
-func (t *TouchGestureToolAdapter) handleDoubleTap(point *pointerPoint, button string) (string, error) {
-	if err := t.provider.DoubleClick(point.X.Float64(), point.Y.Float64(), button); err != nil {
+func (t *TouchGestureToolAdapter) handleDoubleTap(ctx context.Context, point *pointerPoint, button string) (string, error) {
+	if err := t.provider.DoubleClick(ctx, point.X.Float64(), point.Y.Float64(), button); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 	return "ok", nil
 }
 
-func (t *TouchGestureToolAdapter) handleSwipe(start, end *pointerPoint, button string) (string, error) {
+func (t *TouchGestureToolAdapter) handleSwipe(ctx context.Context, start, end *pointerPoint, button string) (string, error) {
 	path := [][2]float64{
 		{start.X.Float64(), start.Y.Float64()},
 		{end.X.Float64(), end.Y.Float64()},
 	}
-	if err := t.provider.Drag(path, button); err != nil {
+	if err := t.provider.Drag(ctx, path, button); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 	return "ok", nil
 }
 
-func (t *TouchGestureToolAdapter) handleDirectionalSwipe(gestureType string, distance, anchor *float64, strength, button string) (string, error) {
+func (t *TouchGestureToolAdapter) handleDirectionalSwipe(ctx context.Context, gestureType string, distance, anchor *float64, strength, button string) (string, error) {
 	travel := 700.0 // 默认距离
 	if distance != nil && *distance > 0 {
 		travel = *distance
@@ -203,29 +203,29 @@ func (t *TouchGestureToolAdapter) handleDirectionalSwipe(gestureType string, dis
 		}
 	}
 
-	if err := t.provider.Drag(path, button); err != nil {
+	if err := t.provider.Drag(ctx, path, button); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 	return "ok", nil
 }
 
-func (t *TouchGestureToolAdapter) handleEdgeBack(button string) (string, error) {
+func (t *TouchGestureToolAdapter) handleEdgeBack(ctx context.Context, button string) (string, error) {
 	path := [][2]float64{
 		{1, 500},
 		{750, 500},
 	}
-	if err := t.provider.Drag(path, button); err != nil {
+	if err := t.provider.Drag(ctx, path, button); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 	return "ok", nil
 }
 
-func (t *TouchGestureToolAdapter) handleEdgeHome(button string) (string, error) {
+func (t *TouchGestureToolAdapter) handleEdgeHome(ctx context.Context, button string) (string, error) {
 	path := [][2]float64{
 		{500, 999},
 		{500, 180},
 	}
-	if err := t.provider.Drag(path, button); err != nil {
+	if err := t.provider.Drag(ctx, path, button); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 	return "ok", nil
@@ -264,7 +264,7 @@ func (t *KeyboardTapToolAdapter) Call(ctx context.Context, input string) (string
 
 	// hold_ms is accepted for API compatibility; provider currently applies its own defaults.
 	_ = args.HoldMs
-	if err := t.provider.Keypress(args.Keys); err != nil {
+	if err := t.provider.Keypress(ctx, args.Keys); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 
@@ -298,7 +298,7 @@ func (t *MouseMoveToolAdapter) Call(ctx context.Context, input string) (string, 
 		return "", ModuleUnavailable("mouse_move is not configured")
 	}
 
-	if err := t.provider.Move(args.X.Float64(), args.Y.Float64()); err != nil {
+	if err := t.provider.Move(ctx, args.X.Float64(), args.Y.Float64()); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 
@@ -337,7 +337,7 @@ func (t *MouseScrollToolAdapter) Call(ctx context.Context, input string) (string
 		return "", ModuleUnavailable("mouse_scroll is not configured")
 	}
 
-	if err := t.provider.Scroll(0, args.Delta); err != nil {
+	if err := t.provider.Scroll(ctx, 0, args.Delta); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 

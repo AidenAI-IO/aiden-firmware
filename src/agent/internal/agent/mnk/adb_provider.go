@@ -76,8 +76,7 @@ func NewADBProvider(screen *screen.ScreenState, client *ADBScreenClient, runADB 
 
 // Click performs a tap at the specified position.
 // holdMs is used to determine if this is a tap (default) or long press (500+).
-func (p *ADBProvider) Click(x, y float64, button string, holdMs int) error {
-	ctx := context.Background()
+func (p *ADBProvider) Click(ctx context.Context, x, y float64, button string, holdMs int) error {
 
 	// Validate button (ADB only supports left/touch semantics)
 	if button != "" && button != ButtonLeft && button != "left" {
@@ -107,9 +106,9 @@ func (p *ADBProvider) Click(x, y float64, button string, holdMs int) error {
 }
 
 // DoubleClick performs two taps in rapid succession.
-func (p *ADBProvider) DoubleClick(x, y float64, button string) error {
+func (p *ADBProvider) DoubleClick(ctx context.Context, x, y float64, button string) error {
 	// First tap
-	if err := p.Click(x, y, button, 0); err != nil {
+	if err := p.Click(ctx, x, y, button, 0); err != nil {
 		return err
 	}
 
@@ -117,17 +116,15 @@ func (p *ADBProvider) DoubleClick(x, y float64, button string) error {
 	time.Sleep(100 * time.Millisecond)
 
 	// Second tap
-	return p.Click(x, y, button, 0)
+	return p.Click(ctx, x, y, button, 0)
 }
 
 // Drag performs a swipe gesture along a path.
 // ADB only supports 2-point swipes, so multi-point paths are broken into segments.
-func (p *ADBProvider) Drag(path [][2]float64, button string) error {
+func (p *ADBProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
 	if len(path) < 2 {
 		return fmt.Errorf("drag path must contain at least 2 points, got %d", len(path))
 	}
-
-	ctx := context.Background()
 
 	// Validate button
 	if button != "" && button != ButtonLeft && button != "left" {
@@ -190,12 +187,10 @@ func (p *ADBProvider) Drag(path [][2]float64, button string) error {
 
 // Keypress sends key events through adb.
 // Supports single keys and combinations (up to 6 simultaneous keys).
-func (p *ADBProvider) Keypress(keys []string) error {
+func (p *ADBProvider) Keypress(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("keypress requires at least one key")
 	}
-
-	ctx := context.Background()
 
 	// Resolve keys to Android keycodes
 	keycodes, err := p.resolveKeycodes(keys)
@@ -223,12 +218,13 @@ func (p *ADBProvider) Keypress(keys []string) error {
 }
 
 // Move is not supported on ADB (no hover capability).
-func (p *ADBProvider) Move(x, y float64) error {
+func (p *ADBProvider) Move(ctx context.Context, x, y float64) error {
+	_ = ctx
 	return fmt.Errorf("move is unsupported on adb (no hover/pointer move primitive)")
 }
 
 // Scroll converts scroll to swipe gestures (ADB has no wheel/scroll primitive).
-func (p *ADBProvider) Scroll(scrollX, scrollY int) error {
+func (p *ADBProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 	// Convert scroll to directional swipe
 	centerX := 500.0
 	centerY := 500.0
@@ -249,13 +245,13 @@ func (p *ADBProvider) Scroll(scrollX, scrollY int) error {
 		// Vertical scroll
 		if scrollY < 0 {
 			// Scroll down -> swipe up
-			return p.Drag([][2]float64{
+			return p.Drag(ctx, [][2]float64{
 				{centerX, centerY + distance/2},
 				{centerX, centerY - distance/2},
 			}, ButtonLeft)
 		} else {
 			// Scroll up -> swipe down
-			return p.Drag([][2]float64{
+			return p.Drag(ctx, [][2]float64{
 				{centerX, centerY - distance/2},
 				{centerX, centerY + distance/2},
 			}, ButtonLeft)
@@ -264,13 +260,13 @@ func (p *ADBProvider) Scroll(scrollX, scrollY int) error {
 		// Horizontal scroll
 		if scrollX < 0 {
 			// Scroll left -> swipe right
-			return p.Drag([][2]float64{
+			return p.Drag(ctx, [][2]float64{
 				{centerX + distance/2, centerY},
 				{centerX - distance/2, centerY},
 			}, ButtonLeft)
 		} else {
 			// Scroll right -> swipe left
-			return p.Drag([][2]float64{
+			return p.Drag(ctx, [][2]float64{
 				{centerX - distance/2, centerY},
 				{centerX + distance/2, centerY},
 			}, ButtonLeft)

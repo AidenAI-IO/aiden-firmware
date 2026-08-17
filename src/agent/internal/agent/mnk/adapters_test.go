@@ -267,7 +267,7 @@ func TestCoordinateValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := mock.Click(tt.x, tt.y, "left", 0)
+			err := mock.Click(context.Background(), tt.x, tt.y, "left", 0)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Click(%.1f, %.1f) error = %v, wantErr %v", tt.x, tt.y, err, tt.wantErr)
 			}
@@ -313,7 +313,7 @@ func TestPathValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := mock.Drag(tt.path, "left")
+			err := mock.Drag(context.Background(), tt.path, "left")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Drag() error = %v, wantErr %v", err, tt.wantErr)
 			}

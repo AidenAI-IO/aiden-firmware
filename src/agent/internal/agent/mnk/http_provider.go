@@ -41,7 +41,8 @@ func NewHTTPProvider(config HTTPProviderConfig) *HTTPProvider {
 }
 
 // Click performs a click operation via HTTP
-func (p *HTTPProvider) Click(x, y float64, button string, holdMs int) error {
+func (p *HTTPProvider) Click(ctx context.Context, x, y float64, button string, holdMs int) error {
+	_ = ctx
 	req := MNKRequest{
 		Operation: "click",
 		Click: &ClickParams{
@@ -55,7 +56,8 @@ func (p *HTTPProvider) Click(x, y float64, button string, holdMs int) error {
 }
 
 // DoubleClick performs a double-click operation via HTTP
-func (p *HTTPProvider) DoubleClick(x, y float64, button string) error {
+func (p *HTTPProvider) DoubleClick(ctx context.Context, x, y float64, button string) error {
+	_ = ctx
 	req := MNKRequest{
 		Operation: "double_click",
 		DoubleClick: &DoubleClickParams{
@@ -68,7 +70,8 @@ func (p *HTTPProvider) DoubleClick(x, y float64, button string) error {
 }
 
 // Drag performs a drag operation via HTTP
-func (p *HTTPProvider) Drag(path [][2]float64, button string) error {
+func (p *HTTPProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
+	_ = ctx
 	req := MNKRequest{
 		Operation: "drag",
 		Drag: &DragParams{
@@ -80,7 +83,8 @@ func (p *HTTPProvider) Drag(path [][2]float64, button string) error {
 }
 
 // Keypress performs a keypress operation via HTTP
-func (p *HTTPProvider) Keypress(keys []string) error {
+func (p *HTTPProvider) Keypress(ctx context.Context, keys []string) error {
+	_ = ctx
 	req := MNKRequest{
 		Operation: "keypress",
 		Keypress: &KeypressParams{
@@ -91,7 +95,8 @@ func (p *HTTPProvider) Keypress(keys []string) error {
 }
 
 // Move performs a move operation via HTTP
-func (p *HTTPProvider) Move(x, y float64) error {
+func (p *HTTPProvider) Move(ctx context.Context, x, y float64) error {
+	_ = ctx
 	req := MNKRequest{
 		Operation: "move",
 		Move: &MoveParams{
@@ -103,7 +108,8 @@ func (p *HTTPProvider) Move(x, y float64) error {
 }
 
 // Scroll performs a scroll operation via HTTP
-func (p *HTTPProvider) Scroll(scrollX, scrollY int) error {
+func (p *HTTPProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
+	_ = ctx
 	req := MNKRequest{
 		Operation: "scroll",
 		Scroll: &ScrollParams{

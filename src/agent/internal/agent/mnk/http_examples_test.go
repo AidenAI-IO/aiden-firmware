@@ -23,9 +23,9 @@ func ExampleHTTPProvider() {
 	}
 
 	// 使用 HTTP Provider（与本地 Provider 完全相同）
-	provider.Click(500, 500, "left", 0)
-	provider.Drag([][2]float64{{100, 500}, {900, 500}}, "left")
-	provider.Keypress([]string{"ctrl", "a"})
+	provider.Click(context.Background(), 500, 500, "left", 0)
+	provider.Drag(context.Background(), [][2]float64{{100, 500}, {900, 500}}, "left")
+	provider.Keypress(context.Background(), []string{"ctrl", "a"})
 }
 
 // ExampleHTTPHandler 展示如何创建 HTTP 服务器
@@ -149,12 +149,12 @@ func Example_remoteClient() {
 
 	// 执行远程操作
 	log.Println("Clicking...")
-	if err := provider.Click(500, 500, "left", 0); err != nil {
+	if err := provider.Click(context.Background(), 500, 500, "left", 0); err != nil {
 		log.Printf("Click failed: %v", err)
 	}
 
 	log.Println("Swiping...")
-	if err := provider.Drag([][2]float64{
+	if err := provider.Drag(context.Background(), [][2]float64{
 		{100, 500},
 		{900, 500},
 	}, "left"); err != nil {
@@ -162,7 +162,7 @@ func Example_remoteClient() {
 	}
 
 	log.Println("Typing...")
-	if err := provider.Keypress([]string{"ctrl", "a"}); err != nil {
+	if err := provider.Keypress(context.Background(), []string{"ctrl", "a"}); err != nil {
 		log.Printf("Keypress failed: %v", err)
 	}
 
@@ -197,12 +197,12 @@ func Example_distributedTest() {
 			}
 
 			// 执行测试操作
-			if err := provider.Click(500, 500, "left", 0); err != nil {
+			if err := provider.Click(context.Background(), 500, 500, "left", 0); err != nil {
 				log.Printf("%s: Click failed: %v", name, err)
 				return
 			}
 
-			if err := provider.Drag([][2]float64{
+			if err := provider.Drag(context.Background(), [][2]float64{
 				{100, 500},
 				{900, 500},
 			}, "left"); err != nil {

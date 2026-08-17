@@ -43,9 +43,9 @@ func iosKeyboardIsolationControllerFromContext(ctx context.Context) *iosKeyboard
 // Control actions do not trigger profile switching.
 type iosKeyboardIsolationController struct {
 	controlPath        string
-	keyboardDev        *HIDDevice
-	pointerDev         *HIDDevice
-	extraKeysDev       *HIDDevice
+	keyboardDev        hidDeviceCloser
+	pointerDev         hidDeviceCloser
+	extraKeysDev       hidDeviceCloser
 	run                iosKeyboardIsolationCommand
 	gateOnce           sync.Once
 	gate               chan struct{}
@@ -54,7 +54,12 @@ type iosKeyboardIsolationController struct {
 	lastRestoreFailure time.Time
 }
 
-func newIOSKeyboardIsolationController(cfg HIDConfig, keyboardDev, pointerDev, extraKeysDev *HIDDevice) *iosKeyboardIsolationController {
+// hidDeviceCloser is closed across USB profile switches so writers reopen FDs.
+type hidDeviceCloser interface {
+	Close()
+}
+
+func newIOSKeyboardIsolationController(cfg HIDConfig, keyboardDev, pointerDev, extraKeysDev hidDeviceCloser) *iosKeyboardIsolationController {
 	if cfg.InputBackendADB() || cfg.PointerModeOrDefault() != "absolute" {
 		return nil
 	}
@@ -298,26 +303,36 @@ func (c *iosKeyboardIsolationController) withKeyboard(ctx context.Context, isola
 }
 
 func (c *iosKeyboardIsolationController) withPointerCall(ctx context.Context, action func(context.Context) (string, error)) (string, error) {
+	var output string
+	err := c.withPointerAction(ctx, func(callCtx context.Context) error {
+		var callErr error
+		output, callErr = action(callCtx)
+		return callErr
+	})
+	return output, err
+}
+
+func (c *iosKeyboardIsolationController) withPointerAction(ctx context.Context, action func(context.Context) error) error {
 	if c == nil {
 		return action(ctx)
 	}
 	if batch := c.batchFromContext(ctx); batch != nil {
 		if err := batch.restore(); err != nil {
-			return "", err
+			return err
 		}
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
-				return "", err
+				return err
 			}
 		}
 		return action(ctx)
 	}
 	if err := c.acquire(ctx); err != nil {
-		return "", err
+		return err
 	}
 	defer c.release()
 	if err := c.ensureNormalProfileLocked(); err != nil {
-		return "", err
+		return err
 	}
 	return action(ctx)
 }

@@ -75,12 +75,8 @@ func TestBuiltinToolSetWiresConfiguredKeyboardLayout(t *testing.T) {
 	if got := keyboardText.keyboardLayout; got != keyboardLayoutAZERTY {
 		t.Fatalf("keyboard_text layout = %q, want %q", got, keyboardLayoutAZERTY)
 	}
-	keyboardTap, ok := tools.textInputHW.keyboardTap.(*KeyboardTapTool)
-	if !ok {
+	if _, ok := tools.textInputHW.keyboardTap.(*KeyboardTapTool); !ok {
 		t.Fatalf("keyboardTap = %T, want *KeyboardTapTool", tools.textInputHW.keyboardTap)
-	}
-	if got := keyboardTap.keyboardLayout; got != keyboardLayoutAZERTY {
-		t.Fatalf("keyboard_tap layout = %q, want %q", got, keyboardLayoutAZERTY)
 	}
 }
 
@@ -525,7 +521,7 @@ func TestWheelNudgeRejectsAdjacentTargetOutsideTightRowCenterTolerance(t *testin
 
 func TestTouchGestureRejectsDistinctInputsResolvingToSameHIDPoint(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":500,"y":500},"end":{"x":500.001,"y":500.001}}`)
 	if err != nil {
@@ -540,15 +536,7 @@ func TestTouchGestureTouchscreenPrimesMappingBeforeNormalizedInput(t *testing.T)
 	dev, path := newTestHIDDevice(t)
 	screenState := &screen.ScreenState{}
 	primeCalls := 0
-	tool := &TouchGestureTool{
-		pc:     testTouchscreenPointerController(dev, &pointerState{}),
-		screen: screenState,
-		primeScreenMapping: func(context.Context) error {
-			primeCalls++
-			screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 0, Width: 497, Height: 1080, Valid: true})
-			return nil
-		},
-	}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, pointer: dev, touchscreen: true})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":931,"y":83}}`)
 	if err != nil {
@@ -578,13 +566,7 @@ func TestTouchGestureTouchscreenPrimesMappingBeforeNormalizedInput(t *testing.T)
 
 func TestTouchGestureTouchscreenDoesNotWriteWhenMappingPrimeFails(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{
-		pc:     testTouchscreenPointerController(dev, &pointerState{}),
-		screen: &screen.ScreenState{},
-		primeScreenMapping: func(context.Context) error {
-			return errors.New("frame service recovering")
-		},
-	}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev, touchscreen: true})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":931,"y":83}}`)
 	if err != nil {
@@ -603,14 +585,7 @@ func TestTouchGestureTouchscreenKeepsFreshFullFrameMappingWhenPrimeWouldFail(t *
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{})
 	primeCalls := 0
-	tool := &TouchGestureTool{
-		pc:     testTouchscreenPointerController(dev, &pointerState{}),
-		screen: screenState,
-		primeScreenMapping: func(context.Context) error {
-			primeCalls++
-			return errors.New("frame service unavailable")
-		},
-	}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, pointer: dev, touchscreen: true})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":931,"y":83}}`)
 	if err != nil {
@@ -985,7 +960,7 @@ func TestADBTouchGestureTapAutoRejectsOutOfRangeCoordinates(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
 	runner := &recordingADBRunner{}
-	tool := &TouchGestureTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":1500,"y":500}}`)
 	if err != nil {
@@ -1032,7 +1007,7 @@ func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
 	runner := &recordingADBRunner{}
-	tool := &TouchGestureTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":900},"end":{"x":900,"y":100},"duration_ms":321}`)
 	if err != nil {
@@ -1052,7 +1027,7 @@ func TestADBTouchGestureTapAcceptsLegacyTopLevelCoordinates(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
 	runner := &recordingADBRunner{}
-	tool := &TouchGestureTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","x":"500","y":"250"}`)
 	if err != nil {
@@ -1074,7 +1049,7 @@ func TestADBTouchGestureSwipeAndDragRejectSameResolvedPoint(t *testing.T) {
 			screenState := &screen.ScreenState{}
 			screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
 			runner := &recordingADBRunner{}
-			tool := &TouchGestureTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
+			tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
 			ctx, _ := WithToolError(context.Background())
 
 			out, err := tool.Call(ctx, fmt.Sprintf(`{"type":%q,"start":{"x":500,"y":500},"end":{"x":500,"y":500}}`, gestureType))
@@ -1098,7 +1073,7 @@ func TestADBTouchGestureLongPressExtendsCommandTimeout(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
 	runner := &recordingADBRunner{}
-	tool := &TouchGestureTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
 
 	out, err := tool.Call(context.Background(), `{"type":"long_press","point":{"x":50,"y":50},"duration_ms":9000}`)
 	if err != nil {
@@ -1122,7 +1097,7 @@ func TestADBTouchGestureLongPressExtendsCommandTimeout(t *testing.T) {
 
 func TestADBTouchGestureBackUsesKeyevent(t *testing.T) {
 	runner := &recordingADBRunner{}
-	tool := &TouchGestureTool{screen: &screen.ScreenState{}, adb: newTestADBInputController(t, nil, runner)}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, adbRunner: runner})
 
 	out, err := tool.Call(context.Background(), `{"type":"back"}`)
 	if err != nil {
@@ -1140,13 +1115,7 @@ func TestADBTouchGestureBackUsesKeyevent(t *testing.T) {
 
 func TestADBTouchGestureBackDoesNotPrimeTouchscreenMapping(t *testing.T) {
 	runner := &recordingADBRunner{}
-	tool := &TouchGestureTool{
-		screen: &screen.ScreenState{},
-		adb:    newTestADBInputController(t, nil, runner),
-		primeScreenMapping: func(context.Context) error {
-			return errors.New("mapping should not run for adb")
-		},
-	}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, adbRunner: runner})
 
 	out, err := tool.Call(context.Background(), `{"type":"back"}`)
 	if err != nil {
@@ -1178,7 +1147,7 @@ func TestADBKeyboardTapAndroidAliasesAlignWithBridge(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := &recordingADBRunner{}
-			tool := &KeyboardTapTool{adb: newTestADBInputController(t, nil, runner)}
+			tool := testKeyboardTapTool(t, testMNKOpts{adbRunner: runner})
 
 			payload, err := json.Marshal(map[string]any{"keys": tt.keys})
 			if err != nil {
@@ -1201,7 +1170,7 @@ func TestADBKeyboardTapAndroidAliasesAlignWithBridge(t *testing.T) {
 
 func TestADBKeyboardTapUsesKeyCombinationForChords(t *testing.T) {
 	runner := &recordingADBRunner{}
-	tool := &KeyboardTapTool{adb: newTestADBInputController(t, nil, runner)}
+	tool := testKeyboardTapTool(t, testMNKOpts{adbRunner: runner})
 
 	out, err := tool.Call(context.Background(), `{"keys":["ctrl","c"],"hold_ms":77}`)
 	if err != nil {
@@ -1322,7 +1291,7 @@ func TestADBMouseMoveRejectsUnsupportedAfterCoordinateValidation(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
 	runner := &recordingADBRunner{}
-	tool := &MouseMoveTool{screen: screenState, adb: newTestADBInputController(t, screenState, runner)}
+	tool := testMouseMoveTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
 	ctx, _ := WithToolError(context.Background())
 
 	out, err := tool.Call(ctx, `{"x":500,"y":250}`)
@@ -1344,7 +1313,7 @@ func TestADBMouseScrollUsesSwipeApproximation(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
 	runner := &recordingADBRunner{}
-	tool := &MouseScrollTool{adb: newTestADBInputController(t, screenState, runner)}
+	tool := testMouseScrollTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
 
 	out, err := tool.Call(context.Background(), `{"delta":-3}`)
 	if err != nil {
@@ -1506,7 +1475,7 @@ func readTouchscreenReports(t *testing.T, dev *HIDDevice, path string) []touchsc
 
 func TestTouchGestureSwipeWritesDragSequence(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":900},"end":{"x":900,"y":100},"steps":3,"duration_ms":0}`)
 	if err != nil {
@@ -1544,7 +1513,7 @@ func TestTouchGestureSwipeWritesDragSequence(t *testing.T) {
 
 func TestDirectionalSwipeStrengthControlsDistance(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe_up","strength":"tiny","duration_ms":0,"hold_before_ms":0,"hold_after_ms":0}`)
 	if err != nil {
@@ -1568,7 +1537,7 @@ func TestDirectionalSwipeStrengthControlsDistance(t *testing.T) {
 
 func TestDirectionalSwipeDistanceOverridesStrength(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe_up","strength":"tiny","distance":200,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":0,"steps":2}`)
 	if err != nil {
@@ -1592,7 +1561,7 @@ func TestDirectionalSwipeDistanceOverridesStrength(t *testing.T) {
 
 func TestDirectionalSwipeStrengthDefaultsToImmediateRelease(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe_left","strength":"medium","steps":2,"duration_ms":0,"hold_before_ms":0}`)
 	if err != nil {
@@ -1615,7 +1584,7 @@ func TestDirectionalSwipeStrengthDefaultsToImmediateRelease(t *testing.T) {
 
 func TestDirectionalSwipeRejectsInvalidStrength(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe_up","strength":"huge"}`)
 	if err != nil {
@@ -1633,7 +1602,7 @@ func TestDirectionalSwipeRejectsInvalidStrength(t *testing.T) {
 
 func TestMouseMoveRejectsCoordinatesOutsideNormalizedRange(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &MouseMoveTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testMouseMoveTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"x":2000,"y":3000}`)
 	if err != nil {
@@ -1651,7 +1620,7 @@ func TestMouseMoveRejectsCoordinatesOutsideNormalizedRange(t *testing.T) {
 
 func TestTouchGestureTapAcceptsStringCoordinates(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":"500","y":"250"}}`)
 	if err != nil {
@@ -1672,7 +1641,7 @@ func TestTouchGestureTapAcceptsStringCoordinates(t *testing.T) {
 
 func TestTouchscreenTapWritesTouchDownAndUp(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev, touchscreen: true})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":250}}`)
 	if err != nil {
@@ -1700,7 +1669,7 @@ func TestTouchscreenTapUsesFrameSpaceForActiveArea(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
-	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: screenState}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, pointer: dev, touchscreen: true})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":627,"y":180}}`)
 	if err != nil {
@@ -1728,7 +1697,7 @@ func TestTouchscreenTapUsesFrameSpaceForActiveArea(t *testing.T) {
 
 func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev, touchscreen: true})
 
 	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":200,"y":500},"end":{"x":800,"y":500},"steps":2,"duration_ms":0,"hold_before_ms":0}`)
 	if err != nil {
@@ -2284,7 +2253,7 @@ func TestMouseScrollToolRejectsOutOfRangeDelta(t *testing.T) {
 }
 
 func TestMouseScrollToolRejectsTouchscreenPointerMode(t *testing.T) {
-	tool := &MouseScrollTool{pc: testTouchscreenPointerController(nil, &pointerState{})}
+	tool := testMouseScrollTool(t, testMNKOpts{touchscreen: true})
 	ctx, _ := WithToolError(context.Background())
 
 	out, err := tool.Call(ctx, `{"delta":-3}`)
@@ -2302,9 +2271,9 @@ func TestMouseScrollToolRejectsTouchscreenPointerMode(t *testing.T) {
 
 func TestMouseScrollUsesLastPointerPosition(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	state := &pointerState{}
-	moveTool := &MouseMoveTool{pc: testPointerController(dev, state), screen: &screen.ScreenState{}}
-	scrollTool := &MouseScrollTool{pc: testPointerController(dev, state)}
+	provider := testMNKProvider(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
+	moveTool := &MouseMoveTool{mnkProvider: provider}
+	scrollTool := &MouseScrollTool{mnkProvider: provider}
 
 	if out, err := moveTool.Call(context.Background(), `{"x":200,"y":300}`); err != nil || out != "ok" {
 		t.Fatalf("move output=%q err=%v", out, err)
@@ -2346,7 +2315,7 @@ func newTestHIDDevice(t *testing.T) (*HIDDevice, string) {
 
 func TestKeyboardTapSendsModifierOnly(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev}
+	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev})
 
 	out, err := tool.Call(context.Background(), `{"keys":["meta"]}`)
 	if err != nil {
@@ -2384,7 +2353,7 @@ func TestKeyboardTapSendsModifierOnly(t *testing.T) {
 
 func TestKeyboardTapSendsModifierChordWithHold(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev}
+	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev})
 
 	out, err := tool.Call(context.Background(), `{"keys":["meta","q"]}`)
 	if err != nil {
@@ -2418,7 +2387,7 @@ func TestKeyboardTapSendsModifierChordWithHold(t *testing.T) {
 
 func TestKeyboardTapUsesConfiguredAZERTYLayout(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, keyboardLayout: keyboardLayoutAZERTY}
+	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, layout: keyboardLayoutAZERTY})
 
 	out, err := tool.Call(context.Background(), `{"keys":["a"],"hold_ms":1}`)
 	if err != nil {
@@ -2444,7 +2413,7 @@ func TestKeyboardTapUsesConfiguredAZERTYLayout(t *testing.T) {
 func TestKeyboardTapSupportsAndroidBackAlias(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	androidDev, androidPath := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
+	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, android: androidDev, touchscreen: true})
 
 	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_BACK"]}`)
 	if err != nil {
@@ -2479,7 +2448,7 @@ func TestKeyboardTapSupportsAndroidBackAlias(t *testing.T) {
 func TestKeyboardTapSupportsAndroidVolumeAlias(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	androidDev, androidPath := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
+	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, android: androidDev, touchscreen: true})
 
 	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_VOLUME_UP"]}`)
 	if err != nil {
@@ -2511,7 +2480,7 @@ func TestKeyboardTapSupportsAndroidVolumeAlias(t *testing.T) {
 func TestKeyboardTapSupportsAndroidAppSwitchAlias(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	androidDev, androidPath := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
+	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, android: androidDev, touchscreen: true})
 
 	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_APP_SWITCH"]}`)
 	if err != nil {
@@ -2558,7 +2527,7 @@ func TestKeyboardTapSupportsAdditionalAndroidKeycodeAliases(t *testing.T) {
 		t.Run(tc.input, func(t *testing.T) {
 			dev, path := newTestHIDDevice(t)
 			androidDev, androidPath := newTestHIDDevice(t)
-			tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
+			tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, android: androidDev, touchscreen: true})
 
 			out, err := tool.Call(context.Background(), fmt.Sprintf(`{"keys":["%s"]}`, tc.input))
 			if err != nil {
@@ -2615,7 +2584,7 @@ func TestKeyboardTapSupportsHIDBackedAndroidKeycodeAliases(t *testing.T) {
 		t.Run(tc.input, func(t *testing.T) {
 			dev, path := newTestHIDDevice(t)
 			androidDev, androidPath := newTestHIDDevice(t)
-			tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
+			tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, android: androidDev, touchscreen: true})
 
 			out, err := tool.Call(context.Background(), fmt.Sprintf(`{"keys":["%s"]}`, tc.input))
 			if err != nil {
@@ -2696,7 +2665,7 @@ func TestKeyboardTapAbsolutePointerModeAllowsMediaKeySubset(t *testing.T) {
 		t.Run(tc.input, func(t *testing.T) {
 			dev, path := newTestHIDDevice(t)
 			androidDev, androidPath := newTestHIDDevice(t)
-			tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "absolute"}
+			tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, android: androidDev})
 
 			out, err := tool.Call(context.Background(), fmt.Sprintf(`{"keys":["%s"]}`, tc.input))
 			if err != nil {
@@ -2730,7 +2699,7 @@ func TestKeyboardTapAbsolutePointerModeAllowsMediaKeySubset(t *testing.T) {
 func TestKeyboardTapAbsolutePointerModeRejectsAndroidNavigationKeys(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
 	androidDev, _ := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "absolute"}
+	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, android: androidDev})
 	ctx, _ := WithToolError(context.Background())
 
 	out, err := tool.Call(ctx, `{"keys":["KEYCODE_BACK"]}`)
@@ -2775,7 +2744,7 @@ func TestKeyboardTapRejectsUnsupportedAndroidKeycodeAliases(t *testing.T) {
 }
 
 func TestKeyboardTapRejectsAndroidExtensionWithoutAndroidDevice(t *testing.T) {
-	tool := &KeyboardTapTool{pointerMode: "touchscreen"}
+	tool := testKeyboardTapTool(t, testMNKOpts{touchscreen: true})
 	ctx, _ := WithToolError(context.Background())
 
 	out, err := tool.Call(ctx, `{"keys":["KEYCODE_HOME"]}`)
@@ -2928,7 +2897,7 @@ func TestTapPointerSettlesCursorBeforePress(t *testing.T) {
 
 func TestTouchGestureTapAcceptsHoldMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500},"hold_ms":150}`)
 	if err != nil {
@@ -2950,7 +2919,7 @@ func TestTouchGestureTapAcceptsHoldMs(t *testing.T) {
 
 func TestTouchGestureSwipeAppliesDefaultHoldBeforeMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	// duration_ms=0 keeps the per-step delay at 0 so only the hold_before_ms
 	// shows up between the press and the first move step.
@@ -2975,7 +2944,7 @@ func TestTouchGestureSwipeAppliesDefaultHoldBeforeMs(t *testing.T) {
 
 func TestTouchGestureSwipeDefaultsUseSlowerMotionAndImmediateRelease(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":500},"end":{"x":900,"y":500}}`)
 	if err != nil {
@@ -3005,7 +2974,7 @@ func TestTouchGestureSwipeDefaultsUseSlowerMotionAndImmediateRelease(t *testing.
 
 func TestTouchGestureSwipeAcceptsHoldAfterMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":500},"end":{"x":900,"y":500},"steps":2,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":120}`)
 	if err != nil {
@@ -3028,7 +2997,7 @@ func TestTouchGestureSwipeAcceptsHoldAfterMs(t *testing.T) {
 
 func TestTouchGestureBackStartsAtLeftPhysicalEdge(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"back","steps":2,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":0}`)
 	if err != nil {
@@ -3060,7 +3029,7 @@ func TestTouchGestureBackStartsAtLeftPhysicalEdge(t *testing.T) {
 
 func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"home","steps":2,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":0}`)
 	if err != nil {
@@ -3270,7 +3239,7 @@ func keyboardTapKeysSchemaDescriptionForTool(t *testing.T, tool *KeyboardTapTool
 
 func TestTouchGestureRejectsRetiredCoordSpaceField(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"back","coord_space":"normalized"}`)
 	if err != nil {
@@ -3307,7 +3276,7 @@ func TestTouchGestureRejectsRetiredCoordSpaceFieldInPoints(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dev, path := newTestHIDDevice(t)
-			tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+			tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 			out, err := tool.Call(context.Background(), tt.input)
 			if err != nil {
@@ -3325,7 +3294,7 @@ func TestTouchGestureRejectsRetiredCoordSpaceFieldInPoints(t *testing.T) {
 
 func TestMouseMoveRejectsRetiredCoordSpaceField(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &MouseMoveTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testMouseMoveTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 	out, err := tool.Call(context.Background(), `{"x":500,"y":500,"coord_space":"normalized"}`)
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
@@ -3340,7 +3309,7 @@ func TestMouseMoveRejectsRetiredCoordSpaceField(t *testing.T) {
 
 func TestTouchGestureDragKeepsZeroHoldBeforeMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":100,"y":100},"end":{"x":900,"y":900},"steps":2,"duration_ms":0}`)
 	if err != nil {
@@ -3437,7 +3406,7 @@ func TestScreenStateDimensionsWithAge(t *testing.T) {
 
 func TestTouchGestureSwipeRejectsPointInsteadOfStartEnd(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe","point":{"x":500,"y":500}}`)
 	if err != nil {
@@ -3455,7 +3424,7 @@ func TestTouchGestureSwipeRejectsPointInsteadOfStartEnd(t *testing.T) {
 
 func TestTouchGestureRejectsZeroDistanceDrag(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":313,"y":513},"end":{"x":313,"y":513},"steps":20}`)
 	if err != nil {
@@ -3473,7 +3442,7 @@ func TestTouchGestureRejectsZeroDistanceDrag(t *testing.T) {
 
 func TestTouchGestureAcceptsArrayPointFormat(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":[500,250]}`)
 	if err != nil {

@@ -1,6 +1,7 @@
 package mnk
 
 import (
+	"context"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -29,7 +30,7 @@ func TestHTTPProvider(t *testing.T) {
 	t.Run("click", func(t *testing.T) {
 		mockProvider.Reset()
 
-		err := httpProvider.Click(500, 500, "left", 0)
+		err := httpProvider.Click(context.Background(), 500, 500, "left", 0)
 		if err != nil {
 			t.Fatalf("Click failed: %v", err)
 		}
@@ -50,7 +51,7 @@ func TestHTTPProvider(t *testing.T) {
 	t.Run("long_press", func(t *testing.T) {
 		mockProvider.Reset()
 
-		err := httpProvider.Click(500, 500, "left", 500)
+		err := httpProvider.Click(context.Background(), 500, 500, "left", 500)
 		if err != nil {
 			t.Fatalf("Long press failed: %v", err)
 		}
@@ -67,7 +68,7 @@ func TestHTTPProvider(t *testing.T) {
 	t.Run("double_click", func(t *testing.T) {
 		mockProvider.Reset()
 
-		err := httpProvider.DoubleClick(300, 400, "left")
+		err := httpProvider.DoubleClick(context.Background(), 300, 400, "left")
 		if err != nil {
 			t.Fatalf("DoubleClick failed: %v", err)
 		}
@@ -86,7 +87,7 @@ func TestHTTPProvider(t *testing.T) {
 		mockProvider.Reset()
 
 		path := [][2]float64{{100, 500}, {900, 500}}
-		err := httpProvider.Drag(path, "left")
+		err := httpProvider.Drag(context.Background(), path, "left")
 		if err != nil {
 			t.Fatalf("Drag failed: %v", err)
 		}
@@ -116,7 +117,7 @@ func TestHTTPProvider(t *testing.T) {
 			{700, 300},
 			{900, 500},
 		}
-		err := httpProvider.Drag(path, "left")
+		err := httpProvider.Drag(context.Background(), path, "left")
 		if err != nil {
 			t.Fatalf("Multi-point drag failed: %v", err)
 		}
@@ -134,7 +135,7 @@ func TestHTTPProvider(t *testing.T) {
 	t.Run("keypress", func(t *testing.T) {
 		mockProvider.Reset()
 
-		err := httpProvider.Keypress([]string{"ctrl", "a"})
+		err := httpProvider.Keypress(context.Background(), []string{"ctrl", "a"})
 		if err != nil {
 			t.Fatalf("Keypress failed: %v", err)
 		}
@@ -152,7 +153,7 @@ func TestHTTPProvider(t *testing.T) {
 	t.Run("move", func(t *testing.T) {
 		mockProvider.Reset()
 
-		err := httpProvider.Move(250, 750)
+		err := httpProvider.Move(context.Background(), 250, 750)
 		if err != nil {
 			t.Fatalf("Move failed: %v", err)
 		}
@@ -170,7 +171,7 @@ func TestHTTPProvider(t *testing.T) {
 	t.Run("scroll", func(t *testing.T) {
 		mockProvider.Reset()
 
-		err := httpProvider.Scroll(0, -3)
+		err := httpProvider.Scroll(context.Background(), 0, -3)
 		if err != nil {
 			t.Fatalf("Scroll failed: %v", err)
 		}
@@ -201,7 +202,7 @@ func TestHTTPHandlerErrors(t *testing.T) {
 		mockProvider.Reset()
 
 		// Empty path should fail
-		err := httpProvider.Drag([][2]float64{}, "left")
+		err := httpProvider.Drag(context.Background(), [][2]float64{}, "left")
 		if err == nil {
 			t.Error("expected error for empty path, got nil")
 		}
@@ -211,7 +212,7 @@ func TestHTTPHandlerErrors(t *testing.T) {
 		mockProvider.Reset()
 
 		// Single point path should fail
-		err := httpProvider.Drag([][2]float64{{500, 500}}, "left")
+		err := httpProvider.Drag(context.Background(), [][2]float64{{500, 500}}, "left")
 		if err == nil {
 			t.Error("expected error for single point path, got nil")
 		}
@@ -221,7 +222,7 @@ func TestHTTPHandlerErrors(t *testing.T) {
 		mockProvider.Reset()
 
 		// Empty keys should fail
-		err := httpProvider.Keypress([]string{})
+		err := httpProvider.Keypress(context.Background(), []string{})
 		if err == nil {
 			t.Error("expected error for empty keys, got nil")
 		}
@@ -305,7 +306,7 @@ func TestHTTPProviderTimeout(t *testing.T) {
 		Timeout: 100 * time.Millisecond,
 	})
 
-	err := httpProvider.Click(500, 500, "left", 0)
+	err := httpProvider.Click(context.Background(), 500, 500, "left", 0)
 	if err == nil {
 		t.Error("expected timeout error, got nil")
 	}
@@ -325,7 +326,7 @@ func TestRegisterHandler(t *testing.T) {
 		BaseURL: server.URL,
 	})
 
-	err := httpProvider.Click(500, 500, "left", 0)
+	err := httpProvider.Click(context.Background(), 500, 500, "left", 0)
 	if err != nil {
 		t.Fatalf("Click through registered handler failed: %v", err)
 	}
@@ -356,7 +357,7 @@ func TestTaskIDHeader(t *testing.T) {
 		TaskID:  "test-task-123",
 	})
 
-	err := httpProvider.Click(500, 500, "left", 0)
+	err := httpProvider.Click(context.Background(), 500, 500, "left", 0)
 	if err != nil {
 		t.Fatalf("Click failed: %v", err)
 	}

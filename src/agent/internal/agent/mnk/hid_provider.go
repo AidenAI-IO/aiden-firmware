@@ -2,6 +2,7 @@ package mnk
 
 import (
 	"aiden-agent/internal/agent/screen"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -13,7 +14,7 @@ import (
 // This bridges the MNK interface to the existing HID implementation in tools_hid.go.
 type HIDProvider struct {
 	// pointerDev is the HID device for pointer (mouse/touchscreen)
-	pointerDev *HIDDevice
+	pointerDev Device
 
 	// pointerState tracks current pointer position
 	pointerState *pointerState
@@ -22,10 +23,10 @@ type HIDProvider struct {
 	touchscreen bool
 
 	// keyboardDev is the HID device for standard boot keyboard
-	keyboardDev *HIDDevice
+	keyboardDev Device
 
 	// androidKeyboardDev is the Android extension keyboard device (Consumer Control)
-	androidKeyboardDev *HIDDevice
+	androidKeyboardDev Device
 
 	// screenState provides coordinate resolution with active_area awareness
 	screenState *screen.ScreenState
@@ -33,65 +34,76 @@ type HIDProvider struct {
 	// keyboardLayout for text input (qwerty/azerty/qwertz)
 	keyboardLayout string
 
+	// gate optionally wraps keyboard/pointer writes for iOS absolute isolation.
+	gate ProfileGate
+
 	// Timing constants (internal, not exposed to callers)
-	tapHoldMs            int // Default tap hold duration (60ms for iOS)
-	swipeHoldBeforeMs    int // Dwell before swipe begins (80ms for iOS edge gestures)
-	swipeHoldAfterMs     int // Dwell at swipe end (0ms to avoid stuck state)
-	swipeDurationMs      int // Total swipe duration (700ms)
-	swipeSteps           int // Interpolation steps (24)
-	cursorSettleMs       int // Cursor settle delay for absolute mode (80ms)
-	releaseRepeatCount   int // Touch release repetition (3)
-	releaseRepeatDelayMs int // Delay between release repeats (15ms)
-	keyboardTapHoldMs    int // Default keyboard tap hold (50ms)
+	tapHoldMs             int // Default tap hold duration (60ms for iOS)
+	swipeHoldBeforeMs     int // Dwell before swipe begins (80ms for iOS edge gestures)
+	swipeHoldAfterMs      int // Dwell at swipe end (0ms to avoid stuck state)
+	swipeDurationMs       int // Total swipe duration (700ms)
+	swipeSteps            int // Interpolation steps (24)
+	cursorSettleMs        int // Cursor settle delay for absolute mode (80ms)
+	releaseRepeatCount    int // Touch release repetition (3)
+	releaseRepeatDelayMs  int // Delay between release repeats (15ms)
+	keyboardTapHoldMs     int // Default keyboard tap hold (50ms)
 	keyboardModifierHoldMs int // Keyboard modifier hold (120ms)
 }
 
 // Default timing values based on iOS/Android HID requirements
 const (
-	defaultTapHoldMs            = 60   // iOS drops faster events
-	defaultSwipeHoldBeforeMs    = 80   // iOS edge gesture recognition
-	defaultSwipeHoldAfterMs     = 0    // Avoid stuck dragged state
-	defaultSwipeDurationMs      = 700  // Low-inertia motion
-	defaultSwipeSteps           = 24   // Smooth interpolation
-	defaultCursorSettleMs       = 80   // iOS cursor animation
-	defaultReleaseRepeatCount   = 3    // USB polling workaround
-	defaultReleaseRepeatDelayMs = 15   // Delay between releases
-	defaultDoubleClickPauseMs   = 100  // Pause between double-click taps
-	defaultKeyboardTapHoldMs    = 50   // Standard key hold
+	defaultTapHoldMs             = 60  // iOS drops faster events
+	defaultSwipeHoldBeforeMs     = 80  // iOS edge gesture recognition
+	defaultSwipeHoldAfterMs      = 0   // Avoid stuck dragged state
+	defaultSwipeDurationMs       = 700 // Low-inertia motion
+	defaultSwipeSteps            = 24  // Smooth interpolation
+	defaultCursorSettleMs        = 80  // iOS cursor animation
+	defaultReleaseRepeatCount    = 3   // USB polling workaround
+	defaultReleaseRepeatDelayMs  = 15  // Delay between releases
+	defaultDoubleClickPauseMs    = 100 // Pause between double-click taps
+	defaultKeyboardTapHoldMs     = 50  // Standard key hold
 	defaultKeyboardModifierHoldMs = 120 // Modifier chord hold
-	absMouseMaxPos              = 32767 // HID absolute coordinate max
-	screenDimensionsStaleAfter  = 30 * time.Second // Max age for cached screen dimensions
+	absMouseMaxPos               = 32767            // HID absolute coordinate max
+	screenDimensionsStaleAfter   = 30 * time.Second // Max age for cached screen dimensions
 )
 
 // NewHIDProvider creates a new HID-based MNK provider.
-func NewHIDProvider(pointerDev, keyboardDev, androidKeyboardDev *HIDDevice, screenState *screen.ScreenState, touchscreen bool, keyboardLayout string) *HIDProvider {
+// Devices should be shared with any ProfileGate that closes FDs across USB profile switches.
+func NewHIDProvider(pointerDev, keyboardDev, androidKeyboardDev Device, screenState *screen.ScreenState, touchscreen bool, keyboardLayout string, gate ProfileGate) *HIDProvider {
 	if keyboardLayout == "" {
 		keyboardLayout = "qwerty"
 	}
 
 	return &HIDProvider{
-		pointerDev:           pointerDev,
-		pointerState:         &pointerState{},
-		touchscreen:          touchscreen,
-		keyboardDev:          keyboardDev,
-		androidKeyboardDev:   androidKeyboardDev,
-		screenState:          screenState,
-		keyboardLayout:       keyboardLayout,
-		tapHoldMs:            defaultTapHoldMs,
-		swipeHoldBeforeMs:    defaultSwipeHoldBeforeMs,
-		swipeHoldAfterMs:     defaultSwipeHoldAfterMs,
-		swipeDurationMs:      defaultSwipeDurationMs,
-		swipeSteps:           defaultSwipeSteps,
-		cursorSettleMs:       defaultCursorSettleMs,
-		releaseRepeatCount:   defaultReleaseRepeatCount,
-		releaseRepeatDelayMs: defaultReleaseRepeatDelayMs,
-		keyboardTapHoldMs:    defaultKeyboardTapHoldMs,
+		pointerDev:            pointerDev,
+		pointerState:          &pointerState{},
+		touchscreen:           touchscreen,
+		keyboardDev:           keyboardDev,
+		androidKeyboardDev:    androidKeyboardDev,
+		screenState:           screenState,
+		keyboardLayout:        keyboardLayout,
+		gate:                  gate,
+		tapHoldMs:             defaultTapHoldMs,
+		swipeHoldBeforeMs:     defaultSwipeHoldBeforeMs,
+		swipeHoldAfterMs:      defaultSwipeHoldAfterMs,
+		swipeDurationMs:       defaultSwipeDurationMs,
+		swipeSteps:            defaultSwipeSteps,
+		cursorSettleMs:        defaultCursorSettleMs,
+		releaseRepeatCount:    defaultReleaseRepeatCount,
+		releaseRepeatDelayMs:  defaultReleaseRepeatDelayMs,
+		keyboardTapHoldMs:     defaultKeyboardTapHoldMs,
 		keyboardModifierHoldMs: defaultKeyboardModifierHoldMs,
 	}
 }
 
 // Click performs a press-hold-release at the specified position.
-func (p *HIDProvider) Click(x, y float64, button string, holdMs int) error {
+func (p *HIDProvider) Click(ctx context.Context, x, y float64, button string, holdMs int) error {
+	return runPointerGate(p.gate, ctx, func() error {
+		return p.clickLocked(x, y, button, holdMs)
+	})
+}
+
+func (p *HIDProvider) clickLocked(x, y float64, button string, holdMs int) error {
 	if err := p.validateCoordinate(x, y); err != nil {
 		return err
 	}
@@ -128,21 +140,24 @@ func (p *HIDProvider) Click(x, y float64, button string, holdMs int) error {
 }
 
 // DoubleClick performs two clicks in rapid succession.
-func (p *HIDProvider) DoubleClick(x, y float64, button string) error {
-	// First click
-	if err := p.Click(x, y, button, 0); err != nil {
-		return err
-	}
-
-	// Pause between clicks
-	time.Sleep(time.Duration(defaultDoubleClickPauseMs) * time.Millisecond)
-
-	// Second click
-	return p.Click(x, y, button, 0)
+func (p *HIDProvider) DoubleClick(ctx context.Context, x, y float64, button string) error {
+	return runPointerGate(p.gate, ctx, func() error {
+		if err := p.clickLocked(x, y, button, 0); err != nil {
+			return err
+		}
+		time.Sleep(time.Duration(defaultDoubleClickPauseMs) * time.Millisecond)
+		return p.clickLocked(x, y, button, 0)
+	})
 }
 
 // Drag performs a gesture along a path of points.
-func (p *HIDProvider) Drag(path [][2]float64, button string) error {
+func (p *HIDProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
+	return runPointerGate(p.gate, ctx, func() error {
+		return p.dragLocked(path, button)
+	})
+}
+
+func (p *HIDProvider) dragLocked(path [][2]float64, button string) error {
 	if len(path) < 2 {
 		return fmt.Errorf("drag path must contain at least 2 points, got %d", len(path))
 	}
@@ -253,7 +268,7 @@ func (p *HIDProvider) dragAlongPath(absPath [][2]int, buttonByte uint8) error {
 }
 
 // Keypress sends one or more keys simultaneously.
-func (p *HIDProvider) Keypress(keys []string) error {
+func (p *HIDProvider) Keypress(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("keypress requires at least one key")
 	}
@@ -266,54 +281,62 @@ func (p *HIDProvider) Keypress(keys []string) error {
 
 	// Check if this is an Android extension key
 	if resolved.androidExtensionKey != "" {
-		return p.tapAndroidExtension(resolved.androidExtensionKey, resolved.androidUsage)
+		return runExtraKeysGate(p.gate, ctx, func() error {
+			return p.tapAndroidExtension(resolved.androidExtensionKey, resolved.androidUsage)
+		})
 	}
 
-	// Standard boot keyboard chord
-	return p.tapKeyboardChord(resolved.modifier, resolved.keys)
+	isolate := resolved.modifier != 0
+	return runKeyboardGate(p.gate, ctx, isolate, func() error {
+		return p.tapKeyboardChord(resolved.modifier, resolved.keys)
+	})
 }
 
 // Move positions the pointer without pressing any button.
-func (p *HIDProvider) Move(x, y float64) error {
-	if err := p.validateCoordinate(x, y); err != nil {
-		return err
-	}
+func (p *HIDProvider) Move(ctx context.Context, x, y float64) error {
+	return runPointerGate(p.gate, ctx, func() error {
+		if err := p.validateCoordinate(x, y); err != nil {
+			return err
+		}
 
-	if p.touchscreen {
-		return InvalidArguments("move is unsupported in touchscreen mode (no hover capability)")
-	}
+		if p.touchscreen {
+			return InvalidArguments("move is unsupported in touchscreen mode (no hover capability)")
+		}
 
-	absX, absY, err := p.normalizedToAbsolute(x, y)
-	if err != nil {
-		return err
-	}
+		absX, absY, err := p.normalizedToAbsolute(x, y)
+		if err != nil {
+			return err
+		}
 
-	return p.movePointer(absX, absY, 0)
+		return p.movePointer(absX, absY, 0)
+	})
 }
 
 // Scroll sends wheel/scroll input.
-func (p *HIDProvider) Scroll(scrollX, scrollY int) error {
+func (p *HIDProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 	if p.touchscreen {
-		// In touchscreen mode, convert to swipe gesture
-		return p.scrollAsSwipe(scrollX, scrollY)
+		// In touchscreen mode, convert to swipe gesture (pointer gate via Drag)
+		return p.scrollAsSwipe(ctx, scrollX, scrollY)
 	}
 
-	// Absolute mouse mode: send wheel events
-	// Current HID implementation only supports vertical scrolling
-	if scrollY != 0 {
-		if err := p.scrollPointer(scrollY); err != nil {
-			return err
+	return runPointerGate(p.gate, ctx, func() error {
+		// Absolute mouse mode: send wheel events
+		// Current HID implementation only supports vertical scrolling
+		if scrollY != 0 {
+			if err := p.scrollPointer(scrollY); err != nil {
+				return err
+			}
 		}
-	}
 
-	// Note: scrollX is not implemented in current HID absolute mouse mode
-	// This would require horizontal wheel support in the HID descriptor
+		// Note: scrollX is not implemented in current HID absolute mouse mode
+		// This would require horizontal wheel support in the HID descriptor
 
-	return nil
+		return nil
+	})
 }
 
 // scrollAsSwipe converts scroll to a swipe gesture for touchscreen mode.
-func (p *HIDProvider) scrollAsSwipe(scrollX, scrollY int) error {
+func (p *HIDProvider) scrollAsSwipe(ctx context.Context, scrollX, scrollY int) error {
 	// Convert scroll delta to swipe gesture
 	// Negative scrollY = content moves down (finger swipes up)
 	// Positive scrollY = content moves up (finger swipes down)
@@ -326,32 +349,30 @@ func (p *HIDProvider) scrollAsSwipe(scrollX, scrollY int) error {
 		// Vertical scroll is dominant
 		if scrollY < 0 {
 			// Swipe up
-			return p.Drag([][2]float64{
+			return p.Drag(ctx, [][2]float64{
 				{centerX, centerY + distance/2},
 				{centerX, centerY - distance/2},
-			}, ButtonLeft)
-		} else {
-			// Swipe down
-			return p.Drag([][2]float64{
-				{centerX, centerY - distance/2},
-				{centerX, centerY + distance/2},
 			}, ButtonLeft)
 		}
+		// Swipe down
+		return p.Drag(ctx, [][2]float64{
+			{centerX, centerY - distance/2},
+			{centerX, centerY + distance/2},
+		}, ButtonLeft)
 	} else if scrollX != 0 {
 		// Horizontal scroll is dominant
 		if scrollX < 0 {
 			// Swipe left
-			return p.Drag([][2]float64{
+			return p.Drag(ctx, [][2]float64{
 				{centerX + distance/2, centerY},
 				{centerX - distance/2, centerY},
-			}, ButtonLeft)
-		} else {
-			// Swipe right
-			return p.Drag([][2]float64{
-				{centerX - distance/2, centerY},
-				{centerX + distance/2, centerY},
 			}, ButtonLeft)
 		}
+		// Swipe right
+		return p.Drag(ctx, [][2]float64{
+			{centerX - distance/2, centerY},
+			{centerX + distance/2, centerY},
+		}, ButtonLeft)
 	}
 
 	return nil
@@ -534,6 +555,13 @@ func (p *HIDProvider) getCurrentPosition() (int, int) {
 // HID report writing
 // ============================================================================
 
+func writeDevice(dev Device, report []byte) error {
+	if dev == nil {
+		return fmt.Errorf("hid device is not configured")
+	}
+	return dev.Write(report)
+}
+
 // writeAbsMouseReport writes a 6-byte absolute mouse report:
 // [buttons, x_lo, x_hi, y_lo, y_hi, wheel]
 func (p *HIDProvider) writeAbsMouseReport(x, y int, buttons uint8, wheel int8) error {
@@ -547,7 +575,7 @@ func (p *HIDProvider) writeAbsMouseReport(x, y int, buttons uint8, wheel int8) e
 	report[5] = byte(wheel)
 
 	// Update state after successful write
-	if err := p.pointerDev.Write(report); err != nil {
+	if err := writeDevice(p.pointerDev, report); err != nil {
 		return err
 	}
 
@@ -573,7 +601,7 @@ func (p *HIDProvider) writeTouchscreenReport(x, y int, touching bool) error {
 	binary.LittleEndian.PutUint16(report[4:6], absY)
 
 	// Update state after successful write
-	if err := p.pointerDev.Write(report); err != nil {
+	if err := writeDevice(p.pointerDev, report); err != nil {
 		return err
 	}
 
@@ -668,7 +696,7 @@ func (p *HIDProvider) tapAndroidExtension(key string, usage uint16) error {
 	report := []byte{byte(usage), byte(usage >> 8)}
 
 	// Press
-	if err := p.androidKeyboardDev.Write(report); err != nil {
+	if err := writeDevice(p.androidKeyboardDev, report); err != nil {
 		return err
 	}
 
@@ -677,7 +705,7 @@ func (p *HIDProvider) tapAndroidExtension(key string, usage uint16) error {
 	time.Sleep(time.Duration(holdMs) * time.Millisecond)
 
 	// Release
-	return p.androidKeyboardDev.Write([]byte{0x00, 0x00})
+	return writeDevice(p.androidKeyboardDev, []byte{0x00, 0x00})
 }
 
 func (p *HIDProvider) tapKeyboardChord(modifier uint8, keys []uint8) error {
@@ -689,7 +717,7 @@ func (p *HIDProvider) tapKeyboardChord(modifier uint8, keys []uint8) error {
 	}
 
 	// Press
-	if err := p.keyboardDev.Write(report); err != nil {
+	if err := writeDevice(p.keyboardDev, report); err != nil {
 		return err
 	}
 
@@ -701,5 +729,5 @@ func (p *HIDProvider) tapKeyboardChord(modifier uint8, keys []uint8) error {
 	time.Sleep(time.Duration(holdMs) * time.Millisecond)
 
 	// Release (all zeros)
-	return p.keyboardDev.Write(make([]byte, 8))
+	return writeDevice(p.keyboardDev, make([]byte, 8))
 }

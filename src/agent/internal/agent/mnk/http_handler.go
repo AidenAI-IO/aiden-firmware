@@ -1,6 +1,7 @@
 package mnk
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,19 +53,20 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Execute operation
 	var execErr error
+	reqCtx := r.Context()
 	switch req.Operation {
 	case "click":
-		execErr = h.handleClick(req.Click)
+		execErr = h.handleClick(reqCtx, req.Click)
 	case "double_click":
-		execErr = h.handleDoubleClick(req.DoubleClick)
+		execErr = h.handleDoubleClick(reqCtx, req.DoubleClick)
 	case "drag":
-		execErr = h.handleDrag(req.Drag)
+		execErr = h.handleDrag(reqCtx, req.Drag)
 	case "keypress":
-		execErr = h.handleKeypress(req.Keypress)
+		execErr = h.handleKeypress(reqCtx, req.Keypress)
 	case "move":
-		execErr = h.handleMove(req.Move)
+		execErr = h.handleMove(reqCtx, req.Move)
 	case "scroll":
-		execErr = h.handleScroll(req.Scroll)
+		execErr = h.handleScroll(reqCtx, req.Scroll)
 	default:
 		h.writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown operation: %q", req.Operation))
 		return
@@ -80,52 +82,52 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.writeSuccess(w)
 }
 
-func (h *HTTPHandler) handleClick(params *ClickParams) error {
+func (h *HTTPHandler) handleClick(ctx context.Context, params *ClickParams) error {
 	if params == nil {
 		return fmt.Errorf("click params required")
 	}
-	return h.provider.Click(params.X, params.Y, params.Button, params.HoldMs)
+	return h.provider.Click(ctx, params.X, params.Y, params.Button, params.HoldMs)
 }
 
-func (h *HTTPHandler) handleDoubleClick(params *DoubleClickParams) error {
+func (h *HTTPHandler) handleDoubleClick(ctx context.Context, params *DoubleClickParams) error {
 	if params == nil {
 		return fmt.Errorf("double_click params required")
 	}
-	return h.provider.DoubleClick(params.X, params.Y, params.Button)
+	return h.provider.DoubleClick(ctx, params.X, params.Y, params.Button)
 }
 
-func (h *HTTPHandler) handleDrag(params *DragParams) error {
+func (h *HTTPHandler) handleDrag(ctx context.Context, params *DragParams) error {
 	if params == nil {
 		return fmt.Errorf("drag params required")
 	}
 	if len(params.Path) < 2 {
 		return fmt.Errorf("drag path must contain at least 2 points")
 	}
-	return h.provider.Drag(params.Path, params.Button)
+	return h.provider.Drag(ctx, params.Path, params.Button)
 }
 
-func (h *HTTPHandler) handleKeypress(params *KeypressParams) error {
+func (h *HTTPHandler) handleKeypress(ctx context.Context, params *KeypressParams) error {
 	if params == nil {
 		return fmt.Errorf("keypress params required")
 	}
 	if len(params.Keys) == 0 {
 		return fmt.Errorf("keys array must not be empty")
 	}
-	return h.provider.Keypress(params.Keys)
+	return h.provider.Keypress(ctx, params.Keys)
 }
 
-func (h *HTTPHandler) handleMove(params *MoveParams) error {
+func (h *HTTPHandler) handleMove(ctx context.Context, params *MoveParams) error {
 	if params == nil {
 		return fmt.Errorf("move params required")
 	}
-	return h.provider.Move(params.X, params.Y)
+	return h.provider.Move(ctx, params.X, params.Y)
 }
 
-func (h *HTTPHandler) handleScroll(params *ScrollParams) error {
+func (h *HTTPHandler) handleScroll(ctx context.Context, params *ScrollParams) error {
 	if params == nil {
 		return fmt.Errorf("scroll params required")
 	}
-	return h.provider.Scroll(params.ScrollX, params.ScrollY)
+	return h.provider.Scroll(ctx, params.ScrollX, params.ScrollY)
 }
 
 func (h *HTTPHandler) writeSuccess(w http.ResponseWriter) {

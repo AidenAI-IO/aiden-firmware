@@ -159,22 +159,21 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		adbInput = NewADBInputController(screen)
 	}
 
-	// Create MNK Provider
+	// Create MNK Provider — HID path reuses the same device FDs as isolation.
 	mnkFactory := mnk.NewProviderFactory(screen)
 	var mnkProvider mnk.Provider
 	var mnkErr error
 
 	if hidCfg.InputBackendADB() {
-		// Use ADB Provider
 		mnkProvider, mnkErr = mnkFactory.CreateADBProvider()
 	} else {
-		// Use HID Provider
-		mnkProvider, mnkErr = mnkFactory.CreateHIDProvider(
-			hidCfg.MouseDeviceOrDefault(),
-			hidCfg.KeyboardDeviceOrDefault(),
-			hidCfg.AndroidKeyboardDeviceOrDefault(),
+		mnkProvider, mnkErr = mnkFactory.CreateHIDProviderWithDevices(
+			asMNKDevice(pointer.dev),
+			asMNKDevice(kbDev),
+			asMNKDevice(androidKbDev),
 			hidCfg.PointerModeOrDefault() == "touchscreen",
 			hidCfg.KeyboardLayoutOrDefault(),
+			newIOSKeyboardIsolationProfileGate(iosKeyboardIsolation),
 		)
 	}
 

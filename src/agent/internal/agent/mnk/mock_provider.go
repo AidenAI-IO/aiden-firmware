@@ -1,5 +1,7 @@
 package mnk
 
+import "context"
+
 // MockProvider is a recording Provider for tests and adapter contract checks.
 type MockProvider struct {
 	clicks       []MockClick
@@ -42,32 +44,38 @@ func NewMockProvider() *MockProvider {
 	return &MockProvider{}
 }
 
-func (m *MockProvider) Click(x, y float64, button string, holdMs int) error {
+func (m *MockProvider) Click(ctx context.Context, x, y float64, button string, holdMs int) error {
+	_ = ctx
 	m.clicks = append(m.clicks, MockClick{X: x, Y: y, Button: button, HoldMs: holdMs})
 	return nil
 }
 
-func (m *MockProvider) DoubleClick(x, y float64, button string) error {
+func (m *MockProvider) DoubleClick(ctx context.Context, x, y float64, button string) error {
+	_ = ctx
 	m.doubleClicks = append(m.doubleClicks, MockDoubleClick{X: x, Y: y, Button: button})
 	return nil
 }
 
-func (m *MockProvider) Drag(path [][2]float64, button string) error {
+func (m *MockProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
+	_ = ctx
 	m.drags = append(m.drags, MockDrag{Path: path, Button: button})
 	return nil
 }
 
-func (m *MockProvider) Keypress(keys []string) error {
+func (m *MockProvider) Keypress(ctx context.Context, keys []string) error {
+	_ = ctx
 	m.keypresses = append(m.keypresses, MockKeypress{Keys: keys})
 	return nil
 }
 
-func (m *MockProvider) Move(x, y float64) error {
+func (m *MockProvider) Move(ctx context.Context, x, y float64) error {
+	_ = ctx
 	m.moves = append(m.moves, MockMove{X: x, Y: y})
 	return nil
 }
 
-func (m *MockProvider) Scroll(scrollX, scrollY int) error {
+func (m *MockProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
+	_ = ctx
 	m.scrolls = append(m.scrolls, MockScroll{ScrollX: scrollX, ScrollY: scrollY})
 	return nil
 }

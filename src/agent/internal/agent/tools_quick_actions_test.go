@@ -321,10 +321,7 @@ func TestQuickActionExecutesDelegatedTouchGesture(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		deviceTypeFn: func() string { return "iOS" },
-		touch: &TouchGestureTool{
-			pc:     testPointerController(dev, &pointerState{}),
-			screen: &screen.ScreenState{},
-		},
+		touch: testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev}),
 	}
 	out, err := tool.Call(context.Background(), `{"action":"back"}`)
 	if err != nil {
@@ -344,7 +341,7 @@ func TestQuickActionExecutesDelegatedKeyboardTap(t *testing.T) {
 
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
-		keyboard:     &KeyboardTapTool{dev: dev},
+		keyboard:     testKeyboardTapTool(t, testMNKOpts{keyboard: dev}),
 		deviceTypeFn: func() string { return "macOS" },
 	}
 	out, err := tool.Call(context.Background(), `{"action":"copy"}`)
@@ -369,7 +366,7 @@ func TestQuickActionSpotlightSearchClearsSearchField(t *testing.T) {
 
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
-		keyboard:     &KeyboardTapTool{dev: dev},
+		keyboard:     testKeyboardTapTool(t, testMNKOpts{keyboard: dev}),
 		deviceTypeFn: func() string { return "iOS" },
 	}
 	out, err := tool.Call(context.Background(), `{"action":"spotlight_search"}`)
@@ -405,7 +402,7 @@ func TestQuickActionSpotlightSearchBatchesIOSModifierIsolation(t *testing.T) {
 	controller := newTestIOSKeyboardIsolationController(&events)
 	controller.keyboardDev = dev
 	tool := &QuickActionTool{
-		keyboard:             &KeyboardTapTool{dev: dev, iosKeyboardIsolation: controller},
+		keyboard:             testKeyboardTapTool(t, testMNKOpts{keyboard: dev, gate: newIOSKeyboardIsolationProfileGate(controller)}),
 		deviceTypeFn:         func() string { return "iOS" },
 		iosKeyboardIsolation: controller,
 	}
@@ -434,7 +431,7 @@ func TestQuickActionRestoresIOSPointerWhenCanceledMidSequence(t *testing.T) {
 	controller := newTestIOSKeyboardIsolationController(&events)
 	controller.keyboardDev = dev
 	tool := &QuickActionTool{
-		keyboard:             &KeyboardTapTool{dev: dev, iosKeyboardIsolation: controller},
+		keyboard:             testKeyboardTapTool(t, testMNKOpts{keyboard: dev, gate: newIOSKeyboardIsolationProfileGate(controller)}),
 		deviceTypeFn:         func() string { return "iOS" },
 		iosKeyboardIsolation: controller,
 	}
@@ -488,7 +485,7 @@ func TestQuickActionDeleteBackwardUsesBackspace(t *testing.T) {
 
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
-		keyboard:     &KeyboardTapTool{dev: dev},
+		keyboard:     testKeyboardTapTool(t, testMNKOpts{keyboard: dev}),
 		deviceTypeFn: func() string { return "macOS" },
 	}
 	out, err := tool.Call(context.Background(), `{"action":"delete_backward"}`)
@@ -516,12 +513,9 @@ func TestQuickActionAlternativeBinding(t *testing.T) {
 
 	dev, _ := newTestHIDDevice(t)
 	tool := &QuickActionTool{
-		keyboard:     &KeyboardTapTool{dev: dev},
+		keyboard:     testKeyboardTapTool(t, testMNKOpts{keyboard: dev}),
 		deviceTypeFn: func() string { return "Android" },
-		touch: &TouchGestureTool{
-			pc:     testPointerController(dev, &pointerState{}),
-			screen: &screen.ScreenState{},
-		},
+		touch: testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev}),
 	}
 	out, err := tool.Call(context.Background(), `{"action":"back","alternative":true}`)
 	if err != nil {
