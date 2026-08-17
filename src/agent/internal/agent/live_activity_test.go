@@ -1,9 +1,9 @@
 package agent
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
-	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,10 +40,6 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 		t.Fatalf("unexpected completion state: %#v", state)
 	}
 
-	content := state.ContentState()
-	if content.RequestID != "req-1" || content.Status != LiveActivityStatusCompleted {
-		t.Fatalf("unexpected content state: %#v", content)
-	}
 }
 
 func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
@@ -140,9 +136,42 @@ func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
 	if state.CurrentStep != "Open Aiden to continue" || state.ShowsProgress {
 		t.Fatalf("bridge unavailable display = %#v, want open Aiden without progress", state)
 	}
-	content := state.ContentState()
-	if content.Status != LiveActivityStatusNeedsApp || content.Phase != LiveActivityPhaseWaitingApp || !content.RequiresApp {
-		t.Fatalf("content state = %#v, want needs_app fields", content)
+}
+
+func TestLiveActivityManagerKeepsHumanHandoffVisible(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager.StartTask("req-handoff", "Complete login")
+
+	state := manager.UpdateFromRunEvent("req-handoff", RunEvent{
+		Type:      runEventToolCall,
+		ToolName:  toolHumanHandoffStep,
+		ToolInput: `{"reason":"verification_code","details":"A verification code is required","suggested_action":"请在手机上输入验证码"}`,
+		Content:   "Waiting for the user to complete verification",
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.Status != LiveActivityStatusNeedsApp || state.Phase != LiveActivityPhaseWaitingUser {
+		t.Fatalf("handoff call state = %#v, want needs_app waiting_user", state)
+	}
+	if state.CurrentStep != "请在手机上输入验证码" || state.CurrentAction != "request_user_input" || state.ShowsProgress {
+		t.Fatalf("handoff call display = %#v, want takeover instructions without progress", state)
+	}
+
+	state = manager.UpdateFromRunEvent("req-handoff", RunEvent{
+		Type:      "tool_result",
+		ToolName:  toolHumanHandoffStep,
+		Content:   `{"status":"HUMAN_HANDOFF_REQUESTED","reason":"verification_code","details":"A verification code is required","suggested_action":"请在手机上输入验证码"}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.Status != LiveActivityStatusNeedsApp || state.Phase != LiveActivityPhaseWaitingUser || state.CurrentStep != "请在手机上输入验证码" {
+		t.Fatalf("handoff result state = %#v, want persistent takeover instructions", state)
+	}
+
+	state = manager.CompleteTask("req-handoff", "请在手机上输入验证码")
+	if state == nil || state.Status != LiveActivityStatusNeedsApp || state.Phase != LiveActivityPhaseWaitingUser {
+		t.Fatalf("handoff completion state = %#v, want paused needs_app", state)
+	}
+	if state.CanStop || state.ShowsProgress || state.EndedAt != nil {
+		t.Fatalf("handoff completion lifecycle = %#v, want paused non-terminal state", state)
 	}
 }
 
@@ -183,175 +212,86 @@ func TestLiveActivityManagerSnapshotActiveForPhone(t *testing.T) {
 	}
 }
 
-func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
-	requests := make(chan map[string]interface{}, 1)
-	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/boards/board-1/live-activity/state" {
-			t.Errorf("relay path = %s, want board state path", r.URL.Path)
-		}
-		if got := r.Header.Get("Authorization"); got != "Bearer relay-secret" {
-			t.Errorf("relay auth = %q, want bearer token", got)
-		}
-		var payload map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Errorf("decode relay payload: %v", err)
-		}
-		requests <- payload
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
-	}))
-	defer relay.Close()
+func TestLiveActivityManagerSnapshotActiveForPhoneIncludesUnscopedLocalTask(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager.StartTask("req-local", "Hardware initiated task")
 
-	manager := NewLiveActivityManager(LiveActivityConfig{
-		RelayURL:    relay.URL,
-		RelayAPIKey: "relay-secret",
-		BoardID:     "board-1",
-	}, newTestLogger())
-	manager.relay.httpClient = relay.Client()
-	manager.StartTask("req-1", "Open Settings", "phone-1")
-
-	select {
-	case payload := <-requests:
-		if payload["phone_id"] != "phone-1" || payload["request_id"] != "req-1" || payload["status"] != LiveActivityStatusRunning {
-			t.Fatalf("relay payload = %#v, want phone/request/status", payload)
-		}
-		if payload["task_title"] != "Open Settings" || payload["can_stop"] != true {
-			t.Fatalf("relay payload = %#v, want title and stoppable state", payload)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for relay publish")
+	active := manager.SnapshotActiveForPhone("phone-a")
+	if active == nil || active.RequestID != "req-local" || active.PhoneID != "" {
+		t.Fatalf("active unscoped state = %#v, want req-local", active)
 	}
 }
 
-func TestLiveActivityRelayRequiresNonDefaultBoardID(t *testing.T) {
-	for _, boardID := range []string{"", "default", " DEFAULT "} {
-		_, err := NewLiveActivityRelayClient(LiveActivityConfig{
-			RelayURL: "https://relay.example.com",
-			BoardID:  boardID,
-		})
-		if !errors.Is(err, errLiveActivityRelayBoardIDRequired) {
-			t.Fatalf("NewLiveActivityRelayClient(board_id=%q) error = %v, want board id required", boardID, err)
-		}
-	}
-}
-
-func TestLiveActivityRelayRequiresDeviceCredential(t *testing.T) {
-	_, err := NewLiveActivityRelayClient(LiveActivityConfig{
-		RelayURL: "https://relay.example.com",
-		BoardID:  "board-1",
-	})
-	if !errors.Is(err, errLiveActivityRelayCredentialRequired) {
-		t.Fatalf("NewLiveActivityRelayClient() error = %v, want device credential required", err)
-	}
-}
-
-func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T) {
-	requests := make(chan map[string]interface{}, 3)
-	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Errorf("decode relay payload: %v", err)
-		}
-		requests <- payload
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
-	}))
-	defer relay.Close()
-
-	manager := NewLiveActivityManager(LiveActivityConfig{
-		RelayURL:    relay.URL,
-		RelayAPIKey: "board-1-secret",
-		BoardID:     "board-1",
-	}, newTestLogger())
-	manager.relay.httpClient = relay.Client()
-	manager.StartTask("req-1", "Open Settings", "phone-1")
-	manager.CompleteTask("req-1", "Done")
-
-	var terminalPayload map[string]interface{}
-	for i := 0; i < 2; i++ {
+func TestLiveActivityManagerCoalescesLocalBLEWake(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	reasons := make(chan string, 4)
+	manager.SetLocalUpdateNotifier(func(ctx context.Context, reason string) error {
+		reasons <- reason
 		select {
-		case payload := <-requests:
-			if payload["request_id"] == "req-1" && payload["status"] == LiveActivityStatusReady {
-				terminalPayload = payload
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for relay publish")
+		case started <- struct{}{}:
+		default:
 		}
-	}
-	select {
-	case extra := <-requests:
-		t.Fatalf("unexpected extra relay payload: %#v", extra)
-	case <-time.After(150 * time.Millisecond):
-	}
-	if terminalPayload == nil {
-		t.Fatal("missing standby relay payload after completion")
-	}
-	if terminalPayload["event"] == "end" {
-		t.Fatalf("terminal relay payload event = %q, want no end event", terminalPayload["event"])
-	}
-	if terminalPayload["task_title"] != "Aiden" || terminalPayload["current_step"] != "Ready" {
-		t.Fatalf("terminal relay payload = %#v, want standby title/step", terminalPayload)
-	}
-	if terminalPayload["can_stop"] != false || terminalPayload["shows_progress"] != false {
-		t.Fatalf("terminal relay payload = %#v, want non-stoppable standby", terminalPayload)
-	}
-	if terminalPayload["phone_id"] != "phone-1" {
-		t.Fatalf("terminal relay payload phone_id = %v, want phone-1", terminalPayload["phone_id"])
-	}
-}
-
-func TestLiveActivityManagerSkipsRelayWithoutPhoneID(t *testing.T) {
-	requests := make(chan map[string]interface{}, 1)
-	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Errorf("decode relay payload: %v", err)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-		requests <- payload
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
-	}))
-	defer relay.Close()
+	})
 
-	manager := NewLiveActivityManager(LiveActivityConfig{
-		RelayURL:    relay.URL,
-		RelayAPIKey: "board-1-secret",
-		BoardID:     "board-1",
-	}, newTestLogger())
-	manager.relay.httpClient = relay.Client()
 	manager.StartTask("req-1", "Open Settings")
-
 	select {
-	case payload := <-requests:
-		t.Fatalf("unexpected relay payload without phone_id: %#v", payload)
-	case <-time.After(150 * time.Millisecond):
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("local BLE notifier did not start")
+	}
+	for i := 0; i < 10; i++ {
+		manager.UpdateFromRunEvent("req-1", RunEvent{
+			Type:      runEventToolCall,
+			ToolName:  "screenshot",
+			Timestamp: time.Now(),
+		})
+	}
+	manager.CompleteTask("req-1", "Done")
+	close(release)
+
+	deadline := time.After(2 * time.Second)
+	for len(reasons) < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("local BLE wake count = %d, want coalesced trailing update", len(reasons))
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if first, second := <-reasons, <-reasons; first != "live_activity" || second != "live_activity" {
+		t.Fatalf("local BLE reasons = %q, %q", first, second)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if extra := len(reasons); extra != 0 {
+		t.Fatalf("local BLE notifier emitted %d uncoalesced extra wake(s)", extra)
 	}
 }
 
-func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
+func TestServerLiveActivityRegistrationRouteRemoved(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+	req := httptest.NewRequest(http.MethodPost, "/api/live-activity/registrations", nil)
+	rec := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("registration status = %d body=%s, want 404", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerLiveActivityStatus(t *testing.T) {
 	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
-	body := bytes.NewBufferString(`{"request_id":"req-1","activity_id":"act-1","push_token":"token-1","platform":"ios"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/live-activity/registrations", body)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.handleLiveActivityRegistrations(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("register status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	var registerResp LiveActivityRegistrationResponse
-	if err := json.NewDecoder(rec.Body).Decode(&registerResp); err != nil {
-		t.Fatalf("decode register response: %v", err)
-	}
-	if !registerResp.OK || registerResp.APNs != "not_configured" || registerResp.State == nil {
-		t.Fatalf("unexpected register response: %#v", registerResp)
-	}
-
-	statusReq := httptest.NewRequest(http.MethodGet, "/api/live-activity/status?request_id=%20req-1%20", nil)
+	statusReq := liveActivityLoopbackRequest("/api/live-activity/status?request_id=%20req-1%20")
 	statusRec := httptest.NewRecorder()
 	server.handleLiveActivityStatus(statusRec, statusReq)
 	if statusRec.Code != http.StatusOK {
@@ -367,20 +307,13 @@ func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
 	if statusResp.Status != "ok" || statusResp.LiveActivity.RequestID != "req-1" {
 		t.Fatalf("unexpected status response: %#v", statusResp)
 	}
-
-	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/live-activity/registrations", nil)
-	deleteRec := httptest.NewRecorder()
-	server.handleLiveActivityRegistrations(deleteRec, deleteReq)
-	if deleteRec.Code != http.StatusBadRequest {
-		t.Fatalf("delete status code = %d body=%s, want 400", deleteRec.Code, deleteRec.Body.String())
-	}
 }
 
 func TestServerLiveActivityCurrent(t *testing.T) {
 	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
+	req := liveActivityLoopbackRequest("/api/live-activity/current")
 	rec := httptest.NewRecorder()
 	server.handleLiveActivityCurrent(rec, req)
 	if rec.Code != http.StatusOK {
@@ -398,12 +331,11 @@ func TestServerLiveActivityCurrent(t *testing.T) {
 	}
 }
 
-func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
+func TestServerBridgeStatusWithoutBridge(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		runtime: &Runtime{
 			config: Config{
-				LiveActivity: LiveActivityConfig{BoardID: "board-1"},
-				Device:       DeviceConfig{DeviceType: "Android"},
+				Device: DeviceConfig{DeviceType: "Android"},
 			},
 		},
 	}
@@ -419,8 +351,8 @@ func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["board_id"] != "board-1" {
-		t.Fatalf("board_id = %q, want board-1", payload["board_id"])
+	if _, ok := payload["board_id"]; ok {
+		t.Fatalf("board_id must not be exposed: %#v", payload)
 	}
 	if payload["device_type"] != "Android" {
 		t.Fatalf("device_type = %q, want Android", payload["device_type"])
@@ -441,7 +373,7 @@ func TestServerLiveActivityCurrentFiltersPhoneID(t *testing.T) {
 	server.liveActivity.StartTask("req-phone-a", "Do a task", "phone-a")
 	server.liveActivity.StartTask("req-phone-b", "Do another task", "phone-b")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/current?phone_id=phone-a", nil)
+	req := liveActivityLoopbackRequest("/api/live-activity/current?phone_id=phone-a")
 	rec := httptest.NewRecorder()
 	server.handleLiveActivityCurrent(rec, req)
 	if rec.Code != http.StatusOK {
@@ -458,7 +390,7 @@ func TestServerLiveActivityCurrentFiltersPhoneID(t *testing.T) {
 		t.Fatalf("unexpected filtered current response: %#v", resp)
 	}
 
-	missingReq := httptest.NewRequest(http.MethodGet, "/api/live-activity/current?phone_id=phone-missing", nil)
+	missingReq := liveActivityLoopbackRequest("/api/live-activity/current?phone_id=phone-missing")
 	missingRec := httptest.NewRecorder()
 	server.handleLiveActivityCurrent(missingRec, missingReq)
 	if missingRec.Code != http.StatusOK {
@@ -491,7 +423,7 @@ func TestServerLiveActivityPhoneIDPreference(t *testing.T) {
 func TestServerLiveActivityCurrentEmpty(t *testing.T) {
 	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
+	req := liveActivityLoopbackRequest("/api/live-activity/current")
 	rec := httptest.NewRecorder()
 	server.handleLiveActivityCurrent(rec, req)
 	if rec.Code != http.StatusOK {
@@ -510,7 +442,7 @@ func TestServerLiveActivityCurrentEmpty(t *testing.T) {
 
 func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
 	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
-	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/status", nil)
+	req := liveActivityLoopbackRequest("/api/live-activity/status")
 	rec := httptest.NewRecorder()
 
 	server.handleLiveActivityStatus(rec, req)
@@ -518,6 +450,43 @@ func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status code = %d body=%s, want 400", rec.Code, rec.Body.String())
 	}
+}
+
+func TestServerLiveActivityEndpointsRequireUSB(t *testing.T) {
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server.liveActivity.StartTask("req-1", "Do a task")
+
+	usbRequest := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
+	usbRequest.RemoteAddr = "192.168.42.2:12345"
+	usbRequest = usbRequest.WithContext(context.WithValue(
+		usbRequest.Context(),
+		http.LocalAddrContextKey,
+		&net.TCPAddr{IP: net.ParseIP("192.168.42.1"), Port: 8080},
+	))
+	usbRecorder := httptest.NewRecorder()
+	server.handleLiveActivityCurrent(usbRecorder, usbRequest)
+	if usbRecorder.Code != http.StatusOK {
+		t.Fatalf("USB current status = %d body=%s, want 200", usbRecorder.Code, usbRecorder.Body.String())
+	}
+
+	for _, target := range []string{
+		"/api/live-activity/current",
+		"/api/live-activity/status?request_id=req-1",
+	} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.RemoteAddr = "192.168.50.2:12345"
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("non-USB %s status = %d body=%s, want 403", target, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func liveActivityLoopbackRequest(target string) *http.Request {
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	return request
 }
 
 func TestChatResultIncludesLiveActivityState(t *testing.T) {

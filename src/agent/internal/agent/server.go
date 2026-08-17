@@ -79,6 +79,7 @@ type Server struct {
 	blePairingForgetRequest func(context.Context, string) (ble.ForgetResult, error)
 	bleDisconnectRequest    func(context.Context, string) (ble.RuntimeStatus, error)
 	bleNotifyRequest        func(context.Context, string, string, []ble.NotificationEvent) (ble.NotificationPublishResult, error)
+	bleWakeRequest          func(context.Context, string) error
 	androidADB              androidADBController
 	liveActivity            *LiveActivityManager
 	pendingResults          map[string]*chatPendingResult
@@ -400,6 +401,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		blePairingForgetRequest: ble.RequestPairingForget,
 		bleDisconnectRequest:    ble.RequestDisconnect,
 		bleNotifyRequest:        ble.RequestPublishNotifications,
+		bleWakeRequest:          defaultBLEWake,
 		androidADB:              NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
 		liveActivity:            NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:          make(map[string]*chatPendingResult),
@@ -412,6 +414,9 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	}
 	if s.bridge != nil {
 		s.bridge.SetConfiguredPlatform(runtime.devicePlatformFromState())
+	}
+	if s.liveActivity != nil {
+		s.liveActivity.SetLocalUpdateNotifier(defaultBLEWake)
 	}
 	if s.userFilesMemoryDir != "" {
 		s.historyStore = NewChatHistoryStore(filepath.Join(s.userFilesMemoryDir, "chat_history"))
@@ -476,7 +481,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/chat/steer", s.handleChatSteer)
 	mux.HandleFunc("/api/chat/steer/cancel", s.handleChatSteerCancel)
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
-	mux.HandleFunc("/api/live-activity/registrations", s.handleLiveActivityRegistrations)
 	mux.HandleFunc("/api/live-activity/status", s.handleLiveActivityStatus)
 	mux.HandleFunc("/api/live-activity/current", s.handleLiveActivityCurrent)
 	mux.HandleFunc("/api/events", s.handleEvents)
@@ -517,6 +521,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/bluetooth/pairing/start", s.handleBluetoothPairingStart)
 	mux.HandleFunc("/api/bluetooth/pairing/reset", s.handleBluetoothPairingReset)
 	mux.HandleFunc("/api/bluetooth/disconnect", s.handleBluetoothDisconnect)
+	mux.HandleFunc("/api/bluetooth/wake/usb-reenumeration", s.handleBluetoothUSBReenumerationWake)
 	mux.HandleFunc("/api/phone-notifications/events", s.handlePhoneNotificationEvents)
 	mux.HandleFunc("/api/android-adb/status", s.handleAndroidADBStatus)
 	mux.HandleFunc("/api/android-adb/pair", s.handleAndroidADBPair)
@@ -3453,55 +3458,19 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 		status = s.bridge.getStatus()
 	}
 	if s.runtime != nil {
-		status.BoardID = s.runtime.config.LiveActivity.BoardIDOrDefault()
 		status.DeviceType = s.runtime.deviceTypeFromState()
 		status.PointerMode = s.runtime.devicePointerModeFromState()
 	}
 	json.NewEncoder(w).Encode(status)
 }
 
-func (s *Server) handleLiveActivityRegistrations(w http.ResponseWriter, r *http.Request) {
-	if s.liveActivity == nil {
-		http.Error(w, `{"error":"live activity disabled"}`, http.StatusServiceUnavailable)
-		return
-	}
-	switch r.Method {
-	case http.MethodPost:
-		var req LiveActivityRegistrationRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
-			return
-		}
-		state, apnsStatus, err := s.liveActivity.Register(req)
-		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(LiveActivityRegistrationResponse{
-			OK:      true,
-			State:   state,
-			APNs:    apnsStatus,
-			Relay:   s.liveActivity.RelayStatus(),
-			Message: "registered",
-		})
-	case http.MethodDelete:
-		requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
-		if requestID == "" {
-			http.Error(w, `{"error":"missing request_id"}`, http.StatusBadRequest)
-			return
-		}
-		ok := s.liveActivity.Unregister(requestID)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]bool{"ok": ok})
-	default:
-		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
-	}
-}
-
 func (s *Server) handleLiveActivityStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !bluetoothControlRequestAllowed(r) {
+		http.Error(w, "Live Activity state is available only over USB", http.StatusForbidden)
 		return
 	}
 	requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
@@ -3524,6 +3493,10 @@ func (s *Server) handleLiveActivityStatus(w http.ResponseWriter, r *http.Request
 func (s *Server) handleLiveActivityCurrent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !bluetoothControlRequestAllowed(r) {
+		http.Error(w, "Live Activity state is available only over USB", http.StatusForbidden)
 		return
 	}
 	if s.liveActivity == nil {

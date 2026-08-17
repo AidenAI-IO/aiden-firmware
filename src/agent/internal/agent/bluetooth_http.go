@@ -40,6 +40,11 @@ type phoneNotificationResponse struct {
 	Error      string `json:"error,omitempty"`
 }
 
+type bluetoothWakeResponse struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
 func (s *Server) handleBluetoothStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -118,6 +123,36 @@ func (s *Server) handleBluetoothDisconnect(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeBluetoothJSON(w, http.StatusOK, bluetoothStatusResponse{OK: true, Bluetooth: status})
+}
+
+func (s *Server) handleBluetoothUSBReenumerationWake(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeBluetoothWakeJSON(w, http.StatusMethodNotAllowed, bluetoothWakeResponse{
+			Error: "method not allowed",
+		})
+		return
+	}
+	remoteIP, ok := addressIP(r.RemoteAddr)
+	if !ok || !remoteIP.IsLoopback() {
+		writeBluetoothWakeJSON(w, http.StatusForbidden, bluetoothWakeResponse{
+			Error: "USB re-enumeration wake is available only on board loopback",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	wake := s.bleWakeRequest
+	if wake == nil {
+		wake = defaultBLEWake
+	}
+	if err := wake(ctx, "usb_reenumeration"); err != nil {
+		writeBluetoothWakeJSON(w, http.StatusServiceUnavailable, bluetoothWakeResponse{
+			Error: err.Error(),
+		})
+		return
+	}
+	writeBluetoothWakeJSON(w, http.StatusOK, bluetoothWakeResponse{OK: true})
 }
 
 func (s *Server) handlePhoneNotificationEvents(w http.ResponseWriter, r *http.Request) {
@@ -297,6 +332,12 @@ func writeBluetoothError(w http.ResponseWriter, statusCode int, message string) 
 }
 
 func writeBluetoothJSON(w http.ResponseWriter, statusCode int, payload bluetoothStatusResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeBluetoothWakeJSON(w http.ResponseWriter, statusCode int, payload bluetoothWakeResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	_ = json.NewEncoder(w).Encode(payload)

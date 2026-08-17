@@ -1417,19 +1417,17 @@ TEST_CASE("config web exposes live activity settings section") {
 
     CHECK(source.find("\"live_activity\"") != std::string::npos);
     CHECK(source.find("cJSON* live_activity = add_object(root, \"live_activity\")") != std::string::npos);
-    CHECK(source.find("config.live_activity.relay_url") != std::string::npos);
-    CHECK(source.find("has_relay_api_key") != std::string::npos);
-    CHECK(source.find("has_private_key_pem") != std::string::npos);
     CHECK(source.find("preserve_redacted_agent_secrets") != std::string::npos);
-    CHECK(source.find("stored.live_activity.relay_api_key") != std::string::npos);
-    CHECK(source.find("stored.live_activity.private_key_pem") != std::string::npos);
+    CHECK(source.find("config.live_activity.relay_url") == std::string::npos);
+    CHECK(source.find("has_relay_api_key") == std::string::npos);
+    CHECK(source.find("has_private_key_pem") == std::string::npos);
 
     CHECK(html.find("section-live_activity") != std::string::npos);
     CHECK(html.find("<h3>[live_activity]</h3>") != std::string::npos);
     CHECK(html.find("live_activity_relay_url") == std::string::npos);
     CHECK(html.find("live_activity_relay_api_key") == std::string::npos);
-    CHECK(html.find("{Key: \"board_id\"") != std::string::npos);
-    CHECK(html.find("{Key: \"phone_id\"") != std::string::npos);
+    CHECK(html.find("{Key: \"board_id\"") == std::string::npos);
+    CHECK(html.find("{Key: \"phone_id\"") == std::string::npos);
     CHECK(html.find("live_activity_private_key_path") == std::string::npos);
     CHECK(html.find("live_activity_private_key_pem") == std::string::npos);
     CHECK(html.find("live_activity_timeout_sec") == std::string::npos);
@@ -1440,7 +1438,7 @@ TEST_CASE("config web exposes live activity settings section") {
     CHECK(toml_header.find("struct LiveActivityToml") != std::string::npos);
     CHECK(toml_header.find("LiveActivityToml live_activity") != std::string::npos);
     CHECK(toml_source.find("section == \"live_activity\"") != std::string::npos);
-    CHECK(toml_source.find("\"relay_api_key\"") != std::string::npos);
+    CHECK(toml_source.find("\"relay_api_key\"") == std::string::npos);
     CHECK(toml_source.find("[live_activity]") != std::string::npos);
 }
 
