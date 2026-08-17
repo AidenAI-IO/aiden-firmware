@@ -9,15 +9,13 @@ import (
 
 // TouchGestureToolAdapter 使用 MNK Provider 的 touch_gesture 工具适配器
 type TouchGestureToolAdapter struct {
-	provider     Provider
-	deviceTypeFn func() string
+	provider Provider
 }
 
 // NewTouchGestureToolAdapter 创建适配器
-func NewTouchGestureToolAdapter(provider Provider, deviceTypeFn func() string) *TouchGestureToolAdapter {
+func NewTouchGestureToolAdapter(provider Provider) *TouchGestureToolAdapter {
 	return &TouchGestureToolAdapter{
-		provider:     provider,
-		deviceTypeFn: deviceTypeFn,
+		provider: provider,
 	}
 }
 
@@ -26,17 +24,15 @@ func NewTouchGestureToolAdapter(provider Provider, deviceTypeFn func() string) *
 // Provider 执行失败返回 ExecutionFailed。调用方应映射为 structured ToolError 并返回 (msg, nil)。
 func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
-		Type       string        `json:"type"`
-		Point      *pointerPoint `json:"point"`
-		Start      *pointerPoint `json:"start"`
-		End        *pointerPoint `json:"end"`
-		Button     string        `json:"button"`
-		DurationMs *int          `json:"duration_ms"`
-		HoldMs     *int          `json:"hold_ms"`
-		PauseMs    *int          `json:"pause_ms"`
-		Distance   *float64      `json:"distance"`
-		Anchor     *float64      `json:"anchor"`
-		Strength   string        `json:"strength"`
+		Type     string        `json:"type"`
+		Point    *pointerPoint `json:"point"`
+		Start    *pointerPoint `json:"start"`
+		End      *pointerPoint `json:"end"`
+		Button   string        `json:"button"`
+		HoldMs   *int          `json:"hold_ms"`
+		Distance *float64      `json:"distance"`
+		Anchor   *float64      `json:"anchor"`
+		Strength string        `json:"strength"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
@@ -61,7 +57,11 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
-		return t.handleTap(ctx, args.Point, button, 0)
+		holdMs := 0
+		if args.HoldMs != nil && *args.HoldMs > 0 {
+			holdMs = *args.HoldMs
+		}
+		return t.handleTap(ctx, args.Point, button, holdMs)
 
 	case "long_press":
 		if args.Point == nil {
@@ -70,8 +70,6 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		holdMs := 500
 		if args.HoldMs != nil && *args.HoldMs > 0 {
 			holdMs = *args.HoldMs
-		} else if args.DurationMs != nil && *args.DurationMs > 0 {
-			holdMs = *args.DurationMs
 		}
 		if err := t.requireProvider(); err != nil {
 			return "", err
@@ -91,6 +89,9 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		if args.Start == nil || args.End == nil {
 			return "", InvalidArgumentsf("start and end are required for %s", gestureType)
 		}
+		if samePointerPoint(args.Start, args.End) {
+			return "", InvalidArgumentsf("%s requires distinct start and end points", gestureType)
+		}
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
@@ -106,17 +107,35 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
+		if navigation, ok := t.provider.(systemNavigationProvider); ok {
+			return t.handleSystemNavigation(ctx, navigation.Back)
+		}
 		return t.handleEdgeBack(ctx, button)
 
 	case "home", "home_swipe", "bottom_edge_home":
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
+		if navigation, ok := t.provider.(systemNavigationProvider); ok {
+			return t.handleSystemNavigation(ctx, navigation.Home)
+		}
 		return t.handleEdgeHome(ctx, button)
 
 	default:
 		return "", InvalidArgumentsf("unsupported gesture type: %q", args.Type)
 	}
+}
+
+type systemNavigationProvider interface {
+	Back(context.Context) error
+	Home(context.Context) error
+}
+
+func (t *TouchGestureToolAdapter) handleSystemNavigation(ctx context.Context, navigate func(context.Context) error) (string, error) {
+	if err := navigate(ctx); err != nil {
+		return "", WrapExecutionFailed(err)
+	}
+	return "ok", nil
 }
 
 func (t *TouchGestureToolAdapter) requireProvider() error {
@@ -153,9 +172,6 @@ func (t *TouchGestureToolAdapter) handleSwipe(ctx context.Context, start, end *p
 
 func (t *TouchGestureToolAdapter) handleDirectionalSwipe(ctx context.Context, gestureType string, distance, anchor *float64, strength, button string) (string, error) {
 	travel := 700.0 // 默认距离
-	if distance != nil && *distance > 0 {
-		travel = *distance
-	}
 
 	switch strings.ToLower(strength) {
 	case "large":
@@ -170,6 +186,9 @@ func (t *TouchGestureToolAdapter) handleDirectionalSwipe(ctx context.Context, ge
 		// keep travel from distance/default
 	default:
 		return "", InvalidArgumentsf("unsupported strength: %q", strength)
+	}
+	if distance != nil && *distance > 0 {
+		travel = *distance
 	}
 
 	center := 500.0
@@ -257,13 +276,10 @@ func (t *KeyboardTapToolAdapter) Call(ctx context.Context, input string) (string
 		return "", InvalidArguments("keys array is required")
 	}
 
-	// Validate/expand keys before the nil-provider check so unsupported KEYCODE
-	// aliases and mixed chords still return InvalidArguments without a backend.
-	if _, err := ResolveKeypressKeys(args.Keys, ""); err != nil {
-		return "", err
-	}
-
 	if t == nil || t.provider == nil {
+		if _, err := ResolveKeypressKeys(args.Keys, ""); err != nil {
+			return "", err
+		}
 		return "", ModuleUnavailable("keyboard_tap is not configured")
 	}
 
@@ -383,4 +399,8 @@ func parseFloat(s string) (float64, error) {
 	var value float64
 	_, err := fmt.Sscanf(s, "%f", &value)
 	return value, err
+}
+
+func samePointerPoint(first, second *pointerPoint) bool {
+	return first != nil && second != nil && first.X == second.X && first.Y == second.Y
 }

@@ -41,12 +41,12 @@ type adbInputScreenSize struct {
 }
 
 const (
-	adbDefaultCommandTimeout    = 8 * time.Second
-	adbDefaultGestureTimeoutPad = 3 * time.Second
-	adbDefaultScreenSizeTTL     = 30 * time.Second
-	adbDefaultTextRestoreWait   = 80 // milliseconds
-	adbMaxActionDurationMs      = 10000
-	adbKeyboardIME              = "com.android.adbkeyboard/.AdbIME"
+	adbDefaultCommandTimeout      = 8 * time.Second
+	adbDefaultGestureTimeoutPad   = 3 * time.Second
+	adbDefaultScreenSizeTTL       = 30 * time.Second
+	adbDefaultTextRestoreWait     = 80 // milliseconds
+	adbMaxActionDurationMs        = 10000
+	adbKeyboardIME                = "com.android.adbkeyboard/.AdbIME"
 	adbScreenDimensionsStaleAfter = 30 * time.Second
 )
 
@@ -120,9 +120,23 @@ func (p *ADBProvider) DoubleClick(ctx context.Context, x, y float64, button stri
 	return p.Click(ctx, x, y, button, 0)
 }
 
+// Back invokes Android's system back action without requiring screen geometry.
+func (p *ADBProvider) Back(ctx context.Context) error {
+	return p.Keypress(ctx, []string{"keycode_back"})
+}
+
+// Home invokes Android's system home action without requiring screen geometry.
+func (p *ADBProvider) Home(ctx context.Context) error {
+	return p.Keypress(ctx, []string{"keycode_home"})
+}
+
 // Drag performs a swipe gesture along a path.
 // ADB only supports 2-point swipes, so multi-point paths are broken into segments.
 func (p *ADBProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
+	return p.dragWithDuration(ctx, path, button, 700)
+}
+
+func (p *ADBProvider) dragWithDuration(ctx context.Context, path [][2]float64, button string, totalDurationMs int) error {
 	if len(path) < 2 {
 		return fmt.Errorf("drag path must contain at least 2 points, got %d", len(path))
 	}
@@ -151,11 +165,8 @@ func (p *ADBProvider) Drag(ctx context.Context, path [][2]float64, button string
 	}
 
 	if totalLength == 0 {
-		return nil // All points are the same
+		return InvalidArguments("drag requires distinct start and end points")
 	}
-
-	// Default total duration for entire path
-	totalDurationMs := 700
 
 	// Execute each segment as a separate adb swipe
 	for i := 1; i < len(pixelPath); i++ {
@@ -221,7 +232,9 @@ func (p *ADBProvider) Keypress(ctx context.Context, keys []string) error {
 // Move is not supported on ADB (no hover capability).
 func (p *ADBProvider) Move(ctx context.Context, x, y float64) error {
 	_ = ctx
-	return fmt.Errorf("move is unsupported on adb (no hover/pointer move primitive)")
+	_ = x
+	_ = y
+	return ModuleUnavailable("adb mouse_move is unsupported because adb input has no hover/pointer move primitive; use touch_gesture for taps, swipes, or drags")
 }
 
 // Scroll converts scroll to swipe gestures (ADB has no wheel/scroll primitive).
@@ -246,31 +259,31 @@ func (p *ADBProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 		// Vertical scroll
 		if scrollY < 0 {
 			// Scroll down -> swipe up
-			return p.Drag(ctx, [][2]float64{
+			return p.dragWithDuration(ctx, [][2]float64{
 				{centerX, centerY + distance/2},
 				{centerX, centerY - distance/2},
-			}, ButtonLeft)
+			}, ButtonLeft, 650)
 		} else {
 			// Scroll up -> swipe down
-			return p.Drag(ctx, [][2]float64{
+			return p.dragWithDuration(ctx, [][2]float64{
 				{centerX, centerY - distance/2},
 				{centerX, centerY + distance/2},
-			}, ButtonLeft)
+			}, ButtonLeft, 650)
 		}
 	} else if scrollX != 0 {
 		// Horizontal scroll
 		if scrollX < 0 {
 			// Scroll left -> swipe right
-			return p.Drag(ctx, [][2]float64{
+			return p.dragWithDuration(ctx, [][2]float64{
 				{centerX + distance/2, centerY},
 				{centerX - distance/2, centerY},
-			}, ButtonLeft)
+			}, ButtonLeft, 650)
 		} else {
 			// Scroll right -> swipe left
-			return p.Drag(ctx, [][2]float64{
+			return p.dragWithDuration(ctx, [][2]float64{
 				{centerX - distance/2, centerY},
 				{centerX + distance/2, centerY},
-			}, ButtonLeft)
+			}, ButtonLeft, 650)
 		}
 	}
 
@@ -563,10 +576,10 @@ func (p *ADBProvider) clampDuration(value, fallback, minimum int) int {
 
 // Placeholder types that would come from tools_adb_input.go
 type ADBScreenClient struct {
-	mu               sync.Mutex
-	adbPath          string
-	autoSerial       string
-	autoSerialValid  bool
+	mu              sync.Mutex
+	adbPath         string
+	autoSerial      string
+	autoSerialValid bool
 }
 
 func NewADBScreenClient() *ADBScreenClient {

@@ -8,7 +8,7 @@ import (
 // TestTouchGestureToolAdapter 测试 touch_gesture 工具适配器
 func TestTouchGestureToolAdapter(t *testing.T) {
 	mock := NewMockProvider()
-	adapter := NewTouchGestureToolAdapter(mock, func() string { return "android" })
+	adapter := NewTouchGestureToolAdapter(mock)
 
 	tests := []struct {
 		name     string
@@ -34,7 +34,7 @@ func TestTouchGestureToolAdapter(t *testing.T) {
 		},
 		{
 			name:  "long_press",
-			input: `{"type":"long_press","point":{"x":500,"y":500},"duration_ms":500}`,
+			input: `{"type":"long_press","point":{"x":500,"y":500},"hold_ms":500}`,
 			validate: func(t *testing.T) {
 				if len(mock.clicks) != 1 {
 					t.Fatalf("expected 1 click, got %d", len(mock.clicks))
@@ -123,6 +123,35 @@ func TestTouchGestureToolAdapter(t *testing.T) {
 			}
 			if tt.validate != nil {
 				tt.validate(t)
+			}
+		})
+	}
+}
+
+func TestTouchGestureToolAdapterIgnoresUnknownFields(t *testing.T) {
+	mock := NewMockProvider()
+	adapter := NewTouchGestureToolAdapter(mock)
+
+	result, err := adapter.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500,"coord_space":"pixel"},"duration_ms":1}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if result != "ok" || len(mock.clicks) != 1 {
+		t.Fatalf("Call() = %q, clicks=%d; want ok and one click", result, len(mock.clicks))
+	}
+}
+
+func TestTouchGestureToolAdapterRejectsZeroDistancePaths(t *testing.T) {
+	for _, gestureType := range []string{"swipe", "drag"} {
+		t.Run(gestureType, func(t *testing.T) {
+			mock := NewMockProvider()
+			adapter := NewTouchGestureToolAdapter(mock)
+			_, err := adapter.Call(context.Background(), `{"type":"`+gestureType+`","start":{"x":500,"y":500},"end":{"x":500,"y":500}}`)
+			if got := AsError(err); got == nil || got.Kind != ErrInvalidArguments {
+				t.Fatalf("Call() error = %v, want invalid arguments", err)
+			}
+			if len(mock.drags) != 0 {
+				t.Fatalf("drags = %d, want none", len(mock.drags))
 			}
 		})
 	}
@@ -358,10 +387,10 @@ func TestKeyboardMapping(t *testing.T) {
 // TestModifierMapping 测试修饰键映射
 func TestModifierMapping(t *testing.T) {
 	tests := []struct {
-		name     string
-		key      string
-		wantBit  uint8
-		found    bool
+		name    string
+		key     string
+		wantBit uint8
+		found   bool
 	}{
 		{"ctrl", "ctrl", 0x01, true},
 		{"shift", "shift", 0x02, true},
@@ -389,10 +418,10 @@ func TestModifierMapping(t *testing.T) {
 // TestADBKeycodeMapping 测试 ADB keycode 映射
 func TestADBKeycodeMapping(t *testing.T) {
 	tests := []struct {
-		name      string
-		key       string
-		wantCode  string
-		found     bool
+		name     string
+		key      string
+		wantCode string
+		found    bool
 	}{
 		{"letter_a", "a", "KEYCODE_A", true},
 		{"android_back", "android_back", "KEYCODE_BACK", true},

@@ -527,7 +527,7 @@ func TestTouchGestureRejectsDistinctInputsResolvingToSameHIDPoint(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.Contains(out, "same HID point") {
+	if !strings.Contains(out, "drag requires distinct start and end points") {
 		t.Fatalf("Call output = %q, want resolved zero-distance rejection", out)
 	}
 }
@@ -1033,7 +1033,7 @@ func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
 	runner := &recordingADBRunner{}
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
 
-	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":900},"end":{"x":900,"y":100},"duration_ms":321}`)
+	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":900},"end":{"x":900,"y":100}}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -1041,27 +1041,7 @@ func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
 		t.Fatalf("Call output = %q, want ok", out)
 	}
 
-	want := []string{"-s", "serial123", "shell", "input", "swipe", "100", "900", "900", "100", "321"}
-	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
-		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
-	}
-}
-
-func TestADBTouchGestureTapAcceptsLegacyTopLevelCoordinates(t *testing.T) {
-	screenState := &screen.ScreenState{}
-	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
-	runner := &recordingADBRunner{}
-	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
-
-	out, err := tool.Call(context.Background(), `{"type":"tap","x":"500","y":"250"}`)
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-	if out != "ok" {
-		t.Fatalf("Call output = %q, want ok", out)
-	}
-
-	want := []string{"-s", "serial123", "shell", "input", "tap", "540", "600"}
+	want := []string{"-s", "serial123", "shell", "input", "swipe", "100", "900", "900", "100", "700"}
 	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
 		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
 	}
@@ -1080,7 +1060,7 @@ func TestADBTouchGestureSwipeAndDragRejectSameResolvedPoint(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Call returned error: %v", err)
 			}
-			if !strings.Contains(out, gestureType+" start and end resolve to the same point") {
+			if !strings.Contains(out, gestureType+" requires distinct start and end points") {
 				t.Fatalf("Call output = %q, want same-point error", out)
 			}
 			if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
@@ -1099,7 +1079,7 @@ func TestADBTouchGestureLongPressExtendsCommandTimeout(t *testing.T) {
 	runner := &recordingADBRunner{}
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
 
-	out, err := tool.Call(context.Background(), `{"type":"long_press","point":{"x":50,"y":50},"duration_ms":9000}`)
+	out, err := tool.Call(context.Background(), `{"type":"long_press","point":{"x":50,"y":50},"hold_ms":9000}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -1501,7 +1481,7 @@ func TestTouchGestureSwipeWritesDragSequence(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":900},"end":{"x":900,"y":100},"steps":3,"duration_ms":0}`)
+	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":900},"end":{"x":900,"y":100}}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -1510,8 +1490,8 @@ func TestTouchGestureSwipeWritesDragSequence(t *testing.T) {
 	}
 
 	reports := readMouseReports(t, dev, path)
-	if len(reports) != 2+3+touchReleaseReportCount {
-		t.Fatalf("len(reports) = %d, want %d (pre-move, press, 3 moves, repeated release)", len(reports), 2+3+touchReleaseReportCount)
+	if len(reports) != 2+defaultSwipeSteps+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want provider default sequence", len(reports))
 	}
 	if reports[0].buttons != 0x00 {
 		t.Fatalf("pre-move buttons = %d, want 0", reports[0].buttons)
@@ -1525,10 +1505,11 @@ func TestTouchGestureSwipeWritesDragSequence(t *testing.T) {
 	if reports[1].x != 3277 || reports[1].y != 29490 {
 		t.Fatalf("press point = (%d,%d), want (3277,29490)", reports[1].x, reports[1].y)
 	}
-	if reports[4].x != 29490 || reports[4].y != 3277 || reports[4].buttons != 0x01 {
-		t.Fatalf("final move = (%d,%d,%d), want (29490,3277,1)", reports[4].x, reports[4].y, reports[4].buttons)
+	finalMove := 1 + defaultSwipeSteps
+	if reports[finalMove].x != 29490 || reports[finalMove].y != 3277 || reports[finalMove].buttons != 0x01 {
+		t.Fatalf("final move = (%d,%d,%d), want (29490,3277,1)", reports[finalMove].x, reports[finalMove].y, reports[finalMove].buttons)
 	}
-	for i := 5; i < len(reports); i++ {
+	for i := finalMove + 1; i < len(reports); i++ {
 		if reports[i].x != 29490 || reports[i].y != 3277 || reports[i].buttons != 0x00 {
 			t.Fatalf("release report %d = (%d,%d,%d), want (29490,3277,0)", i-4, reports[i].x, reports[i].y, reports[i].buttons)
 		}
@@ -1539,7 +1520,7 @@ func TestDirectionalSwipeStrengthControlsDistance(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"swipe_up","strength":"tiny","duration_ms":0,"hold_before_ms":0,"hold_after_ms":0}`)
+	out, err := tool.Call(context.Background(), `{"type":"swipe_up","strength":"tiny"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -1548,14 +1529,14 @@ func TestDirectionalSwipeStrengthControlsDistance(t *testing.T) {
 	}
 
 	reports := readMouseReports(t, dev, path)
-	if len(reports) != 2+10+touchReleaseReportCount {
-		t.Fatalf("len(reports) = %d, want %d", len(reports), 2+10+touchReleaseReportCount)
+	if len(reports) != 2+defaultSwipeSteps+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want provider default sequence", len(reports))
 	}
 	if reports[0].y != 17039 {
 		t.Fatalf("tiny swipe_up start y = %d, want 17039", reports[0].y)
 	}
-	if reports[11].y != 15728 {
-		t.Fatalf("tiny swipe_up end y = %d, want 15728", reports[11].y)
+	if reports[1+defaultSwipeSteps].y != 15728 {
+		t.Fatalf("tiny swipe_up end y = %d, want 15728", reports[1+defaultSwipeSteps].y)
 	}
 }
 
@@ -1563,7 +1544,7 @@ func TestDirectionalSwipeDistanceOverridesStrength(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"swipe_up","strength":"tiny","distance":200,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":0,"steps":2}`)
+	out, err := tool.Call(context.Background(), `{"type":"swipe_up","strength":"tiny","distance":200}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -1572,14 +1553,14 @@ func TestDirectionalSwipeDistanceOverridesStrength(t *testing.T) {
 	}
 
 	reports := readMouseReports(t, dev, path)
-	if len(reports) != 2+2+touchReleaseReportCount {
-		t.Fatalf("len(reports) = %d, want %d", len(reports), 2+2+touchReleaseReportCount)
+	if len(reports) != 2+defaultSwipeSteps+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want provider default sequence", len(reports))
 	}
 	if reports[0].y != 19660 {
 		t.Fatalf("override start y = %d, want 19660", reports[0].y)
 	}
-	if reports[3].y != 13107 {
-		t.Fatalf("override end y = %d, want 13107", reports[3].y)
+	if reports[1+defaultSwipeSteps].y != 13107 {
+		t.Fatalf("override end y = %d, want 13107", reports[1+defaultSwipeSteps].y)
 	}
 }
 
@@ -1587,7 +1568,7 @@ func TestDirectionalSwipeStrengthDefaultsToImmediateRelease(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"swipe_left","strength":"medium","steps":2,"duration_ms":0,"hold_before_ms":0}`)
+	out, err := tool.Call(context.Background(), `{"type":"swipe_left","strength":"medium"}`)
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
 	}
@@ -1596,8 +1577,8 @@ func TestDirectionalSwipeStrengthDefaultsToImmediateRelease(t *testing.T) {
 	}
 
 	times := w.writeTimes()
-	if len(times) != 2+2+touchReleaseReportCount {
-		t.Fatalf("len(times) = %d, want %d", len(times), 2+2+touchReleaseReportCount)
+	if len(times) != 2+defaultSwipeSteps+touchReleaseReportCount {
+		t.Fatalf("len(times) = %d, want provider default sequence", len(times))
 	}
 	firstRelease := len(times) - touchReleaseReportCount
 	releaseDelay := times[firstRelease].Sub(times[firstRelease-1])
@@ -1723,7 +1704,7 @@ func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev, touchscreen: true})
 
-	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":200,"y":500},"end":{"x":800,"y":500},"steps":2,"duration_ms":0,"hold_before_ms":0}`)
+	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":200,"y":500},"end":{"x":800,"y":500}}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -1732,14 +1713,14 @@ func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	}
 
 	reports := readTouchscreenReports(t, dev, path)
-	if len(reports) != 2+2+touchReleaseReportCount-1 {
-		t.Fatalf("len(reports) = %d, want down + 2 moves + repeated releases", len(reports))
+	if len(reports) != 1+defaultSwipeSteps+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want provider default sequence", len(reports))
 	}
 	if reports[0].flags != 0x03 || reports[0].x != 6553 {
 		t.Fatalf("down report = %+v, want start touch", reports[0])
 	}
-	if reports[2].flags != 0x03 || reports[2].x != 26214 {
-		t.Fatalf("final move = %+v, want end while touching", reports[2])
+	if reports[defaultSwipeSteps].flags != 0x03 || reports[defaultSwipeSteps].x != 26214 {
+		t.Fatalf("final move = %+v, want end while touching", reports[defaultSwipeSteps])
 	}
 	last := reports[len(reports)-1]
 	if last.flags != 0x00 || last.x != 26214 {
@@ -2652,15 +2633,34 @@ func TestKeyboardTapKeepsLegacyHIDUsageAliases(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.input, func(t *testing.T) {
-			resolved, err := resolveKeyboardTapKeys([]string{tc.input})
+			dev, path := newTestHIDDevice(t)
+			androidDev, androidPath := newTestHIDDevice(t)
+			tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, android: androidDev, touchscreen: true})
+
+			out, err := tool.Call(context.Background(), fmt.Sprintf(`{"keys":[%q]}`, tc.input))
 			if err != nil {
-				t.Fatalf("resolveKeyboardTapKeys failed: %v", err)
+				t.Fatalf("Call failed: %v", err)
 			}
-			if resolved.AndroidExtensionKey != tc.mapKey {
-				t.Fatalf("AndroidExtensionKey = %q, want %q", resolved.AndroidExtensionKey, tc.mapKey)
+			if out != "ok" {
+				t.Fatalf("output = %q, want ok", out)
 			}
-			if resolved.AndroidUsage != androidExtensionUsageMap[tc.mapKey] {
-				t.Fatalf("AndroidUsage = 0x%04x, want 0x%04x", resolved.AndroidUsage, androidExtensionUsageMap[tc.mapKey])
+
+			dev.Close()
+			androidDev.Close()
+			if data, err := os.ReadFile(path); err != nil {
+				t.Fatalf("ReadFile keyboard path: %v", err)
+			} else if len(data) != 0 {
+				t.Fatalf("standard keyboard path bytes = %v, want none", data)
+			}
+			data, err := os.ReadFile(androidPath)
+			if err != nil {
+				t.Fatalf("ReadFile android path: %v", err)
+			}
+			if len(data) != 4 {
+				t.Fatalf("report bytes = %d, want 4", len(data))
+			}
+			if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap[tc.mapKey] {
+				t.Fatalf("usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap[tc.mapKey])
 			}
 		})
 	}
@@ -2842,8 +2842,8 @@ func (f *fakeHIDWriteCloser) Close() error {
 	return nil
 }
 
-// timestampedHIDWriter records the time of each successful write so timing
-// behaviour (e.g. tap hold, swipe hold_before_ms) can be asserted in tests.
+// timestampedHIDWriter records successful write times so provider-owned tap
+// and swipe timing can be asserted in tests.
 type timestampedHIDWriter struct {
 	mu     sync.Mutex
 	closed bool
@@ -2923,7 +2923,7 @@ func TestTouchGestureTapAcceptsHoldMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500}50}`)
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500},"hold_ms":150}`)
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
 	}
@@ -2945,9 +2945,7 @@ func TestTouchGestureSwipeAppliesDefaultHoldBeforeMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	// duration_ms=0 keeps the per-step delay at 0 so only the hold_before_ms
-	// shows up between the press and the first move step.
-	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":10,"y":500},"end":{"x":500,"y":500},"steps":2,"duration_ms":0}`)
+	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":10,"y":500},"end":{"x":500,"y":500}}`)
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
 	}
@@ -2955,7 +2953,7 @@ func TestTouchGestureSwipeAppliesDefaultHoldBeforeMs(t *testing.T) {
 		t.Fatalf("output = %q, want ok", out)
 	}
 
-	// Writes: pre-move, press, move1, move2, repeated release.
+	// The provider owns swipe timing, including the pre-move dwell.
 	times := w.writeTimes()
 	if len(times) < 4 {
 		t.Fatalf("len(times) = %d, want >= 4", len(times))
@@ -2996,34 +2994,11 @@ func TestTouchGestureSwipeDefaultsUseSlowerMotionAndImmediateRelease(t *testing.
 	}
 }
 
-func TestTouchGestureSwipeAcceptsHoldAfterMs(t *testing.T) {
-	dev, w := newTimedHIDDevice()
-	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
-
-	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":500},"end":{"x":900,"y":500},"steps":2,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":120}`)
-	if err != nil {
-		t.Fatalf("Call error: %v", err)
-	}
-	if out != "ok" {
-		t.Fatalf("output = %q, want ok", out)
-	}
-
-	times := w.writeTimes()
-	if len(times) != 2+2+touchReleaseReportCount {
-		t.Fatalf("len(times) = %d, want %d (pre-move, press, 2 moves, repeated release)", len(times), 2+2+touchReleaseReportCount)
-	}
-	firstRelease := len(times) - touchReleaseReportCount
-	releaseDelay := times[firstRelease].Sub(times[firstRelease-1])
-	if releaseDelay < 100*time.Millisecond {
-		t.Fatalf("swipe explicit hold_after_ms gap = %v, want >= 100ms", releaseDelay)
-	}
-}
-
 func TestTouchGestureBackStartsAtLeftPhysicalEdge(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"back","steps":2,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":0}`)
+	out, err := tool.Call(context.Background(), `{"type":"back"}`)
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
 	}
@@ -3032,8 +3007,8 @@ func TestTouchGestureBackStartsAtLeftPhysicalEdge(t *testing.T) {
 	}
 
 	reports := readMouseReports(t, dev, path)
-	if len(reports) != 2+2+touchReleaseReportCount {
-		t.Fatalf("len(reports) = %d, want %d (pre-move, press, 2 moves, repeated release)", len(reports), 2+2+touchReleaseReportCount)
+	if len(reports) != 2+defaultSwipeSteps+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want provider default sequence", len(reports))
 	}
 	if reports[0].x > 100 {
 		t.Fatalf("back start x = %d, want near left physical edge", reports[0].x)
@@ -3041,10 +3016,11 @@ func TestTouchGestureBackStartsAtLeftPhysicalEdge(t *testing.T) {
 	if reports[0].y != uint16(absMouseMaxPos/2+1) {
 		t.Fatalf("back start y = %d, want center", reports[0].y)
 	}
-	if reports[3].x < uint16(absMouseMaxPos*70/100) {
-		t.Fatalf("back end x = %d, want a long swipe across the screen", reports[3].x)
+	finalMove := 1 + defaultSwipeSteps
+	if reports[finalMove].x < uint16(absMouseMaxPos*70/100) {
+		t.Fatalf("back end x = %d, want a long swipe across the screen", reports[finalMove].x)
 	}
-	for i := 4; i < len(reports); i++ {
+	for i := finalMove + 1; i < len(reports); i++ {
 		if reports[i].buttons != 0 {
 			t.Fatalf("back release report %d buttons = %d, want 0", i-3, reports[i].buttons)
 		}
@@ -3055,7 +3031,7 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"home","steps":2,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":0}`)
+	out, err := tool.Call(context.Background(), `{"type":"home"}`)
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
 	}
@@ -3064,8 +3040,8 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 	}
 
 	reports := readMouseReports(t, dev, path)
-	if len(reports) != 2+2+touchReleaseReportCount {
-		t.Fatalf("len(reports) = %d, want %d (pre-move, press, 2 moves, repeated release)", len(reports), 2+2+touchReleaseReportCount)
+	if len(reports) != 2+defaultSwipeSteps+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want provider default sequence", len(reports))
 	}
 	if reports[0].y < uint16(absMouseMaxPos*995/1000) {
 		t.Fatalf("home start y = %d, want near bottom physical edge", reports[0].y)
@@ -3073,10 +3049,11 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 	if reports[0].x != uint16(absMouseMaxPos/2+1) {
 		t.Fatalf("home start x = %d, want center", reports[0].x)
 	}
-	if reports[3].y > uint16(absMouseMaxPos/4) {
-		t.Fatalf("home end y = %d, want a long upward swipe", reports[3].y)
+	finalMove := 1 + defaultSwipeSteps
+	if reports[finalMove].y > uint16(absMouseMaxPos/4) {
+		t.Fatalf("home end y = %d, want a long upward swipe", reports[finalMove].y)
 	}
-	for i := 4; i < len(reports); i++ {
+	for i := finalMove + 1; i < len(reports); i++ {
 		if reports[i].buttons != 0 {
 			t.Fatalf("home release report %d buttons = %d, want 0", i-3, reports[i].buttons)
 		}
@@ -3105,7 +3082,7 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndShowsCompleteExamples(t *testing.T) {
 	schema := (&TouchGestureTool{}).ArgsSchema()
 	description, _ := schema["description"].(string)
-	for _, want := range []string{"Strict JSON object", "point", "start", "end", "both x and y"} {
+	for _, want := range []string{"Unknown fields are ignored", "point", "start", "end", "both x and y"} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("root schema description missing %q:\n%s", want, description)
 		}
@@ -3114,6 +3091,14 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndShowsCompleteExample
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("schema properties = %#v", schema["properties"])
+	}
+	for _, removed := range []string{"duration_ms", "hold_before_ms", "hold_after_ms", "pause_ms", "steps"} {
+		if _, ok := properties[removed]; ok {
+			t.Fatalf("touch_gesture schema still exposes removed field %q", removed)
+		}
+	}
+	if _, ok := properties["hold_ms"]; !ok {
+		t.Fatal("touch_gesture schema must retain hold_ms for tap and long_press")
 	}
 	for _, name := range []string{"point", "start", "end"} {
 		coordinate, ok := properties[name].(map[string]any)
@@ -3261,7 +3246,7 @@ func keyboardTapKeysSchemaDescriptionForTool(t *testing.T, tool *KeyboardTapTool
 	return desc
 }
 
-func TestTouchGestureRejectsRetiredCoordSpaceField(t *testing.T) {
+func TestTouchGestureIgnoresRetiredCoordSpaceField(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
@@ -3269,17 +3254,17 @@ func TestTouchGestureRejectsRetiredCoordSpaceField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
 	}
-	if !strings.Contains(out, `unknown field "coord_space"`) {
-		t.Fatalf("output = %q, want unknown coord_space field error", out)
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
 	}
 
 	reports := readMouseReports(t, dev, path)
-	if len(reports) != 0 {
-		t.Fatalf("len(reports) = %d, want no HID writes", len(reports))
+	if len(reports) == 0 {
+		t.Fatal("expected gesture reports")
 	}
 }
 
-func TestTouchGestureRejectsRetiredCoordSpaceFieldInPoints(t *testing.T) {
+func TestTouchGestureIgnoresRetiredCoordSpaceFieldInPoints(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
@@ -3306,36 +3291,36 @@ func TestTouchGestureRejectsRetiredCoordSpaceFieldInPoints(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Call error: %v", err)
 			}
-			if !strings.Contains(out, `unknown field "coord_space"`) {
-				t.Fatalf("output = %q, want unknown coord_space field error", out)
+			if out != "ok" {
+				t.Fatalf("output = %q, want ok", out)
 			}
-			if reports := readMouseReports(t, dev, path); len(reports) != 0 {
-				t.Fatalf("len(reports) = %d, want no HID writes", len(reports))
+			if reports := readMouseReports(t, dev, path); len(reports) == 0 {
+				t.Fatal("expected gesture reports")
 			}
 		})
 	}
 }
 
-func TestMouseMoveRejectsRetiredCoordSpaceField(t *testing.T) {
+func TestMouseMoveIgnoresRetiredCoordSpaceField(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testMouseMoveTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 	out, err := tool.Call(context.Background(), `{"x":500,"y":500,"coord_space":"normalized"}`)
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
 	}
-	if !strings.Contains(out, `unknown field "coord_space"`) {
-		t.Fatalf("output = %q, want unknown coord_space field error", out)
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
 	}
-	if reports := readMouseReports(t, dev, path); len(reports) != 0 {
-		t.Fatalf("len(reports) = %d, want no HID writes for rejected input", len(reports))
+	if reports := readMouseReports(t, dev, path); len(reports) != 1 {
+		t.Fatalf("len(reports) = %d, want one move", len(reports))
 	}
 }
 
-func TestTouchGestureDragKeepsZeroHoldBeforeMs(t *testing.T) {
+func TestTouchGestureDragUsesProviderDefaultTiming(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":100,"y":100},"end":{"x":900,"y":900},"steps":2,"duration_ms":0}`)
+	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":100,"y":100},"end":{"x":900,"y":900}}`)
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
 	}
@@ -3343,21 +3328,13 @@ func TestTouchGestureDragKeepsZeroHoldBeforeMs(t *testing.T) {
 		t.Fatalf("output = %q, want ok", out)
 	}
 
-	// Writes: pre-move, press, move1, move2, repeated release. Drag must not inherit
-	// the swipe hold defaults, so the press-to-first-move and final-move-to-
-	// first-release gaps are both ~0.
 	times := w.writeTimes()
-	if len(times) < 4 {
-		t.Fatalf("len(times) = %d, want >= 4", len(times))
+	if len(times) != 2+defaultSwipeSteps+touchReleaseReportCount {
+		t.Fatalf("len(times) = %d, want provider default sequence", len(times))
 	}
 	gap := times[2].Sub(times[1])
-	if gap > 20*time.Millisecond {
-		t.Fatalf("drag press-to-first-move gap = %v, want < 20ms (drag must not inherit swipe hold)", gap)
-	}
-	firstRelease := len(times) - touchReleaseReportCount
-	releaseGap := times[firstRelease].Sub(times[firstRelease-1])
-	if releaseGap > 20*time.Millisecond {
-		t.Fatalf("drag final-move-to-release gap = %v, want < 20ms (drag must not inherit swipe release hold)", releaseGap)
+	if gap < 30*time.Millisecond {
+		t.Fatalf("drag press-to-first-move gap = %v, want provider dwell", gap)
 	}
 }
 
@@ -3436,7 +3413,7 @@ func TestTouchGestureSwipeRejectsPointInsteadOfStartEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.Contains(out, "swipe requires start and end, not point") {
+	if !strings.Contains(out, "start and end are required for swipe") {
 		t.Fatalf("output = %q, want swipe start/end error", out)
 	}
 
@@ -3450,7 +3427,7 @@ func TestTouchGestureRejectsZeroDistanceDrag(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":313,"y":513},"end":{"x":313,"y":513},"steps":20}`)
+	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":313,"y":513},"end":{"x":313,"y":513}}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -3461,26 +3438,5 @@ func TestTouchGestureRejectsZeroDistanceDrag(t *testing.T) {
 	reports := readMouseReports(t, dev, path)
 	if len(reports) != 0 {
 		t.Fatalf("len(reports) = %d, want no HID writes", len(reports))
-	}
-}
-
-func TestTouchGestureAcceptsArrayPointFormat(t *testing.T) {
-	dev, path := newTestHIDDevice(t)
-	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
-
-	out, err := tool.Call(context.Background(), `{"type":"tap","point":[500,250]}`)
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-	if out != "ok" {
-		t.Fatalf("Call output = %q, want ok", out)
-	}
-
-	reports := readMouseReports(t, dev, path)
-	if len(reports) != 2+touchReleaseReportCount {
-		t.Fatalf("len(reports) = %d, want %d", len(reports), 2+touchReleaseReportCount)
-	}
-	if reports[0].x != 16384 || reports[0].y != 8192 {
-		t.Fatalf("point = (%d,%d), want (16384,8192)", reports[0].x, reports[0].y)
 	}
 }

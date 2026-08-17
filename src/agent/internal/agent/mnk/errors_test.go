@@ -10,10 +10,10 @@ func TestAdapterValidationErrorsAreInvalidArguments(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		call  func() error
-		want  string
-		kind  ErrorKind
+		name string
+		call func() error
+		want string
+		kind ErrorKind
 	}{
 		{
 			name: "keyboard empty keys",
@@ -35,7 +35,7 @@ func TestAdapterValidationErrorsAreInvalidArguments(t *testing.T) {
 		{
 			name: "touch missing type",
 			call: func() error {
-				_, err := NewTouchGestureToolAdapter(NewMockProvider(), nil).Call(context.Background(), `{}`)
+				_, err := NewTouchGestureToolAdapter(NewMockProvider()).Call(context.Background(), `{}`)
 				return err
 			},
 			want: "type is required",
@@ -62,7 +62,7 @@ func TestAdapterValidationErrorsAreInvalidArguments(t *testing.T) {
 		{
 			name: "touch nil provider with valid args",
 			call: func() error {
-				_, err := NewTouchGestureToolAdapter(nil, nil).Call(context.Background(), `{"type":"tap","point":{"x":1,"y":1}}`)
+				_, err := NewTouchGestureToolAdapter(nil).Call(context.Background(), `{"type":"tap","point":{"x":1,"y":1}}`)
 				return err
 			},
 			want: "touch_gesture is not configured",

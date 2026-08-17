@@ -19,11 +19,11 @@ func ExampleHIDProvider() {
 
 	// 创建 HID Provider
 	provider, err := factory.CreateHIDProvider(
-		"/dev/hidg0",  // 指针设备
-		"/dev/hidg1",  // 键盘设备
-		"/dev/hidg2",  // Android 扩展键盘设备
-		true,          // touchscreen 模式
-		"qwerty",      // 键盘布局
+		"/dev/hidg0", // 指针设备
+		"/dev/hidg1", // 键盘设备
+		"/dev/hidg2", // Android 扩展键盘设备
+		true,         // touchscreen 模式
+		"qwerty",     // 键盘布局
 	)
 	if err != nil {
 		log.Fatalf("创建 HID Provider 失败: %v", err)
@@ -144,9 +144,7 @@ func Example_toolIntegration() {
 	)
 
 	// 创建工具适配器
-	touchGestureTool := mnk.NewTouchGestureToolAdapter(provider, func() string {
-		return "android"
-	})
+	touchGestureTool := mnk.NewTouchGestureToolAdapter(provider)
 
 	keyboardTapTool := mnk.NewKeyboardTapToolAdapter(provider)
 	mouseMoveTool := mnk.NewMouseMoveToolAdapter(provider)
@@ -227,10 +225,10 @@ func Example_advancedGestures() {
 
 	// 2. Z 型手势
 	provider.Drag(context.Background(), [][2]float64{
-		{100, 200},  // 左上
-		{900, 200},  // 右上
-		{100, 800},  // 左下
-		{900, 800},  // 右下
+		{100, 200}, // 左上
+		{900, 200}, // 右上
+		{100, 800}, // 左下
+		{900, 800}, // 右下
 	}, "left")
 
 	// 3. 圆形手势（8 点近似）
@@ -249,12 +247,12 @@ func Example_advancedGestures() {
 
 	// 4. 星形手势（5 个点）
 	provider.Drag(context.Background(), [][2]float64{
-		{500, 200},  // 顶点
-		{300, 700},  // 左下
-		{800, 350},  // 右中
-		{200, 350},  // 左中
-		{700, 700},  // 右下
-		{500, 200},  // 回到顶点
+		{500, 200}, // 顶点
+		{300, 700}, // 左下
+		{800, 350}, // 右中
+		{200, 350}, // 左中
+		{700, 700}, // 右下
+		{500, 200}, // 回到顶点
 	}, "left")
 }
 

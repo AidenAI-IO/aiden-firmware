@@ -38,33 +38,33 @@ type HIDProvider struct {
 	gate ProfileGate
 
 	// Timing constants (internal, not exposed to callers)
-	tapHoldMs             int // Default tap hold duration (60ms for iOS)
-	swipeHoldBeforeMs     int // Dwell before swipe begins (80ms for iOS edge gestures)
-	swipeHoldAfterMs      int // Dwell at swipe end (0ms to avoid stuck state)
-	swipeDurationMs       int // Total swipe duration (700ms)
-	swipeSteps            int // Interpolation steps (24)
-	cursorSettleMs        int // Cursor settle delay for absolute mode (80ms)
-	releaseRepeatCount    int // Touch release repetition (3)
-	releaseRepeatDelayMs  int // Delay between release repeats (15ms)
-	keyboardTapHoldMs     int // Default keyboard tap hold (50ms)
+	tapHoldMs              int // Default tap hold duration (60ms for iOS)
+	swipeHoldBeforeMs      int // Dwell before swipe begins (80ms for iOS edge gestures)
+	swipeHoldAfterMs       int // Dwell at swipe end (0ms to avoid stuck state)
+	swipeDurationMs        int // Total swipe duration (700ms)
+	swipeSteps             int // Interpolation steps (24)
+	cursorSettleMs         int // Cursor settle delay for absolute mode (80ms)
+	releaseRepeatCount     int // Touch release repetition (3)
+	releaseRepeatDelayMs   int // Delay between release repeats (15ms)
+	keyboardTapHoldMs      int // Default keyboard tap hold (50ms)
 	keyboardModifierHoldMs int // Keyboard modifier hold (120ms)
 }
 
 // Default timing values based on iOS/Android HID requirements
 const (
-	defaultTapHoldMs             = 60  // iOS drops faster events
-	defaultSwipeHoldBeforeMs     = 80  // iOS edge gesture recognition
-	defaultSwipeHoldAfterMs      = 0   // Avoid stuck dragged state
-	defaultSwipeDurationMs       = 700 // Low-inertia motion
-	defaultSwipeSteps            = 24  // Smooth interpolation
-	defaultCursorSettleMs        = 80  // iOS cursor animation
-	defaultReleaseRepeatCount    = 3   // USB polling workaround
-	defaultReleaseRepeatDelayMs  = 15  // Delay between releases
-	defaultDoubleClickPauseMs    = 100 // Pause between double-click taps
-	defaultKeyboardTapHoldMs     = 50  // Standard key hold
-	defaultKeyboardModifierHoldMs = 120 // Modifier chord hold
-	absMouseMaxPos               = 32767            // HID absolute coordinate max
-	screenDimensionsStaleAfter   = 30 * time.Second // Max age for cached screen dimensions
+	defaultTapHoldMs              = 60               // iOS drops faster events
+	defaultSwipeHoldBeforeMs      = 80               // iOS edge gesture recognition
+	defaultSwipeHoldAfterMs       = 0                // Avoid stuck dragged state
+	defaultSwipeDurationMs        = 700              // Low-inertia motion
+	defaultSwipeSteps             = 24               // Smooth interpolation
+	defaultCursorSettleMs         = 80               // iOS cursor animation
+	defaultReleaseRepeatCount     = 3                // USB polling workaround
+	defaultReleaseRepeatDelayMs   = 15               // Delay between releases
+	defaultDoubleClickPauseMs     = 100              // Pause between double-click taps
+	defaultKeyboardTapHoldMs      = 50               // Standard key hold
+	defaultKeyboardModifierHoldMs = 120              // Modifier chord hold
+	absMouseMaxPos                = 32767            // HID absolute coordinate max
+	screenDimensionsStaleAfter    = 30 * time.Second // Max age for cached screen dimensions
 )
 
 // NewHIDProvider creates a new HID-based MNK provider.
@@ -75,23 +75,23 @@ func NewHIDProvider(pointerDev, keyboardDev, androidKeyboardDev Device, screenSt
 	}
 
 	return &HIDProvider{
-		pointerDev:            pointerDev,
-		pointerState:          &pointerState{},
-		touchscreen:           touchscreen,
-		keyboardDev:           keyboardDev,
-		androidKeyboardDev:    androidKeyboardDev,
-		screenState:           screenState,
-		keyboardLayout:        keyboardLayout,
-		gate:                  gate,
-		tapHoldMs:             defaultTapHoldMs,
-		swipeHoldBeforeMs:     defaultSwipeHoldBeforeMs,
-		swipeHoldAfterMs:      defaultSwipeHoldAfterMs,
-		swipeDurationMs:       defaultSwipeDurationMs,
-		swipeSteps:            defaultSwipeSteps,
-		cursorSettleMs:        defaultCursorSettleMs,
-		releaseRepeatCount:    defaultReleaseRepeatCount,
-		releaseRepeatDelayMs:  defaultReleaseRepeatDelayMs,
-		keyboardTapHoldMs:     defaultKeyboardTapHoldMs,
+		pointerDev:             pointerDev,
+		pointerState:           &pointerState{},
+		touchscreen:            touchscreen,
+		keyboardDev:            keyboardDev,
+		androidKeyboardDev:     androidKeyboardDev,
+		screenState:            screenState,
+		keyboardLayout:         keyboardLayout,
+		gate:                   gate,
+		tapHoldMs:              defaultTapHoldMs,
+		swipeHoldBeforeMs:      defaultSwipeHoldBeforeMs,
+		swipeHoldAfterMs:       defaultSwipeHoldAfterMs,
+		swipeDurationMs:        defaultSwipeDurationMs,
+		swipeSteps:             defaultSwipeSteps,
+		cursorSettleMs:         defaultCursorSettleMs,
+		releaseRepeatCount:     defaultReleaseRepeatCount,
+		releaseRepeatDelayMs:   defaultReleaseRepeatDelayMs,
+		keyboardTapHoldMs:      defaultKeyboardTapHoldMs,
 		keyboardModifierHoldMs: defaultKeyboardModifierHoldMs,
 	}
 }
@@ -178,6 +178,9 @@ func (p *HIDProvider) dragLocked(path [][2]float64, button string) error {
 		}
 		absPath[i] = [2]int{absX, absY}
 	}
+	if pathLength(absPath) == 0 {
+		return InvalidArguments("drag requires distinct start and end points")
+	}
 
 	buttonByte := p.mouseButtonByte(button)
 
@@ -216,16 +219,7 @@ func (p *HIDProvider) dragLocked(path [][2]float64, button string) error {
 // dragAlongPath interpolates and moves through a multi-point path.
 func (p *HIDProvider) dragAlongPath(absPath [][2]int, buttonByte uint8) error {
 	// Calculate total path length for timing distribution
-	totalLength := 0.0
-	for i := 1; i < len(absPath); i++ {
-		dx := float64(absPath[i][0] - absPath[i-1][0])
-		dy := float64(absPath[i][1] - absPath[i-1][1])
-		totalLength += math.Sqrt(dx*dx + dy*dy)
-	}
-
-	if totalLength == 0 {
-		return nil // All points are the same
-	}
+	totalLength := pathLength(absPath)
 
 	// Distribute steps proportionally across segments
 	for i := 1; i < len(absPath); i++ {
@@ -265,6 +259,16 @@ func (p *HIDProvider) dragAlongPath(absPath [][2]int, buttonByte uint8) error {
 	}
 
 	return nil
+}
+
+func pathLength(path [][2]int) float64 {
+	total := 0.0
+	for i := 1; i < len(path); i++ {
+		dx := float64(path[i][0] - path[i-1][0])
+		dy := float64(path[i][1] - path[i-1][1])
+		total += math.Sqrt(dx*dx + dy*dy)
+	}
+	return total
 }
 
 // Keypress sends one or more keys simultaneously.
@@ -315,8 +319,7 @@ func (p *HIDProvider) Move(ctx context.Context, x, y float64) error {
 // Scroll sends wheel/scroll input.
 func (p *HIDProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 	if p.touchscreen {
-		// In touchscreen mode, convert to swipe gesture (pointer gate via Drag)
-		return p.scrollAsSwipe(ctx, scrollX, scrollY)
+		return InvalidArguments("mouse_scroll is unsupported when pointer_mode is touchscreen; use touch_gesture")
 	}
 
 	return runPointerGate(p.gate, ctx, func() error {
@@ -335,49 +338,6 @@ func (p *HIDProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 	})
 }
 
-// scrollAsSwipe converts scroll to a swipe gesture for touchscreen mode.
-func (p *HIDProvider) scrollAsSwipe(ctx context.Context, scrollX, scrollY int) error {
-	// Convert scroll delta to swipe gesture
-	// Negative scrollY = content moves down (finger swipes up)
-	// Positive scrollY = content moves up (finger swipes down)
-
-	centerX := 500.0
-	centerY := 500.0
-	distance := 200.0 // Small swipe distance
-
-	if math.Abs(float64(scrollY)) > math.Abs(float64(scrollX)) {
-		// Vertical scroll is dominant
-		if scrollY < 0 {
-			// Swipe up
-			return p.Drag(ctx, [][2]float64{
-				{centerX, centerY + distance/2},
-				{centerX, centerY - distance/2},
-			}, ButtonLeft)
-		}
-		// Swipe down
-		return p.Drag(ctx, [][2]float64{
-			{centerX, centerY - distance/2},
-			{centerX, centerY + distance/2},
-		}, ButtonLeft)
-	} else if scrollX != 0 {
-		// Horizontal scroll is dominant
-		if scrollX < 0 {
-			// Swipe left
-			return p.Drag(ctx, [][2]float64{
-				{centerX + distance/2, centerY},
-				{centerX - distance/2, centerY},
-			}, ButtonLeft)
-		}
-		// Swipe right
-		return p.Drag(ctx, [][2]float64{
-			{centerX - distance/2, centerY},
-			{centerX + distance/2, centerY},
-		}, ButtonLeft)
-	}
-
-	return nil
-}
-
 // ============================================================================
 // Low-level HID primitives (delegating to existing tools_hid.go implementations)
 // ============================================================================
@@ -391,7 +351,7 @@ func (p *HIDProvider) validateCoordinate(x, y float64) error {
 		return InvalidArguments("coordinates must be finite")
 	}
 	if x < 0 || x > 1000 || y < 0 || y > 1000 {
-		return InvalidArgumentsf("coordinates must be in range 0-1000, got x=%.2f y=%.2f", x, y)
+		return InvalidArgumentsf("coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f", x, y)
 	}
 	return nil
 }

@@ -40,7 +40,7 @@ const (
 	// defaultSwipeHoldAfterMs defaults to zero so a swipe releases as soon as
 	// it reaches the destination. Holding at the end makes phone UIs look like
 	// the touch never released and can leave the screen stuck in a dragged
-	// state. Callers that need a drag-like dwell can still pass hold_after_ms.
+	// state.
 	defaultSwipeHoldAfterMs = 0
 
 	defaultSwipeDurationMs = 700
@@ -386,12 +386,6 @@ var androidKeyboardTapAliases = map[string]androidKeyboardTapAlias{
 		Keycode:     325,
 		Replacement: "fullscreen",
 	},
-}
-
-type keyboardTapResolvedInput struct {
-	Keys                []string
-	AndroidExtensionKey string
-	AndroidUsage        uint16
 }
 
 // HIDDevice manages a single HID device file with lazy open and auto-reopen.
@@ -756,48 +750,6 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 	output, err := adapter.Call(ctx, input)
 	return mapMNKAdapterResult(ctx, output, err)
 }
-func resolveKeyboardTapKeys(rawKeys []string) (keyboardTapResolvedInput, error) {
-	resolved := keyboardTapResolvedInput{Keys: make([]string, 0, len(rawKeys))}
-	androidKeys := make([]string, 0, 1)
-	for _, key := range rawKeys {
-		normalized := strings.ToLower(strings.TrimSpace(key))
-		if normalized == "" {
-			continue
-		}
-		if alias, ok := androidKeyboardTapAliases[normalized]; ok {
-			if alias.UnsupportedReason != "" {
-				return keyboardTapResolvedInput{}, fmt.Errorf("android-only key %q (keycode %d) is not supported by keyboard_tap: %s", normalized, alias.Keycode, alias.UnsupportedReason)
-			}
-			normalized = alias.Replacement
-		}
-		if usage, ok := androidExtensionUsageMap[normalized]; ok {
-			androidKeys = append(androidKeys, normalized)
-			resolved.AndroidUsage = usage
-			continue
-		}
-		resolved.Keys = append(resolved.Keys, normalized)
-	}
-	if len(androidKeys) > 1 {
-		return keyboardTapResolvedInput{}, fmt.Errorf("keyboard_tap supports one Android extension key at a time, got %v", androidKeys)
-	}
-	if len(androidKeys) == 1 {
-		if len(resolved.Keys) > 0 {
-			return keyboardTapResolvedInput{}, fmt.Errorf("Android extension key %q cannot be combined with standard keyboard keys or modifiers", androidKeys[0])
-		}
-		resolved.AndroidExtensionKey = androidKeys[0]
-		return resolved, nil
-	}
-	if len(resolved.Keys) == 0 {
-		return keyboardTapResolvedInput{}, fmt.Errorf("at least one key or modifier is required")
-	}
-	if len(resolved.Keys) > 6 {
-		return keyboardTapResolvedInput{}, fmt.Errorf("keyboard_tap supports at most 6 simultaneous keys after alias expansion")
-	}
-	return resolved, nil
-}
-
-var errAndroidExtensionUnavailable = errors.New("android extension keyboard device is not configured")
-var errAndroidExtensionKeyUnavailableInPointerMode = errors.New("android extension key is unavailable in the configured pointer mode")
 
 // KeyboardTextTool types a string character by character via HID.
 type KeyboardTextTool struct {
@@ -956,22 +908,17 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		typeDescription += ` Edge aliases use real edges: back starts at x=1, home starts at y=999. For semantic home/back requests, prefer quick_action first, especially quick_action {"action":"home"} for go-home/home-screen requests; use back/home here only as fallback alternatives.`
 	}
 	schema := objectArgsSchema(map[string]any{
-		"type":           stringEnumArgSchema(typeDescription, touchGestureTypesForPlatform(t.platform())...),
-		"point":          pointSchema(`Required for tap, double_tap, and long_press. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"start":          pointSchema(`Required start point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"end":            pointSchema(`Required end point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"button":         stringEnumArgSchema("Mouse button for drag.", "left", "right", "middle"),
-		"duration_ms":    nonNegativeIntegerSchema("Gesture duration in milliseconds."),
-		"hold_before_ms": nonNegativeIntegerSchema("Optional dwell after pressing before a swipe begins."),
-		"hold_after_ms":  nonNegativeIntegerSchema("Optional dwell at the destination before release."),
-		"hold_ms":        nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
-		"pause_ms":       nonNegativeIntegerSchema("Pause between taps for double_tap."),
-		"steps":          minIntegerArgSchema("Number of movement steps for swipe or drag.", 1),
-		"distance":       coordinateSchema("Directional swipe travel in 0-1000 normalized units (700 ≈ 70% of screen).", 700),
-		"anchor":         coordinateSchema("Directional swipe fixed-axis coordinate in 0-1000 normalized units.", 500),
-		"strength":       stringEnumArgSchema("Directional swipe preset distance.", "large", "medium", "small", "tiny"),
+		"type":     stringEnumArgSchema(typeDescription, touchGestureTypesForPlatform(t.platform())...),
+		"point":    pointSchema(`Required for tap, double_tap, and long_press. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"start":    pointSchema(`Required start point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"end":      pointSchema(`Required end point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"button":   stringEnumArgSchema("Mouse button for drag.", "left", "right", "middle"),
+		"hold_ms":  nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
+		"distance": coordinateSchema("Directional swipe travel in 0-1000 normalized units (700 ≈ 70% of screen).", 700),
+		"anchor":   coordinateSchema("Directional swipe fixed-axis coordinate in 0-1000 normalized units.", 500),
+		"strength": stringEnumArgSchema("Directional swipe preset distance.", "large", "medium", "small", "tiny"),
 	}, "type")
-	schema["description"] = `Strict JSON object for one gesture. Coordinate fields point, start, and end always use named objects containing both x and y.`
+	schema["description"] = `JSON object for one gesture. Unknown fields are ignored. Coordinate fields point, start, and end use named objects containing both x and y.`
 	schema["examples"] = []map[string]any{
 		{"type": "tap", "point": map[string]any{"x": 500, "y": 500}},
 		{"type": "swipe", "start": map[string]any{"x": 500, "y": 800}, "end": map[string]any{"x": 500, "y": 200}},
@@ -1011,7 +958,7 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 	if err := t.ensureTouchscreenMapping(ctx); err != nil {
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "touchscreen mapping unavailable: %v", err), nil
 	}
-	adapter := mnk.NewTouchGestureToolAdapter(t.mnkProvider, t.deviceTypeFn)
+	adapter := mnk.NewTouchGestureToolAdapter(t.mnkProvider)
 	output, err := adapter.Call(ctx, input)
 	return mapMNKAdapterResult(ctx, output, err)
 }
@@ -1033,10 +980,6 @@ func (t *TouchGestureTool) ensureTouchscreenMapping(ctx context.Context) error {
 		touchscreenRCALogf("touch_gesture prime mapping succeeded mapping_after={%s}", t.screen.Format())
 	}
 	return nil
-}
-
-func samePointerPoint(first, second *pointerPoint) bool {
-	return first != nil && second != nil && first.X == second.X && first.Y == second.Y
 }
 
 func sameResolvedPointerPoint(first, second resolvedPointerPoint) bool {
