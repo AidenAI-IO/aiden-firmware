@@ -113,15 +113,16 @@ value:
 ```text
 byte 0      protocol version (1)
 byte 1      reason (0 unknown, 1 Phone Bridge queue, 2 manual, 3 system,
-            4 Live Activity state refresh)
+            4 Live Activity state refresh, 5 planned USB re-enumeration)
 bytes 2-3   reserved
 bytes 4-11  uint64 wake sequence
 ```
 
 The iOS app treats this only as a native wake hook. Reason 1 opens the narrow
 background Phone Bridge command window; reason 4 reads
-`/api/live-activity/current` and updates ActivityKit locally. No command or task
-payload is decoded from BLE.
+`/api/live-activity/current` and updates ActivityKit locally; reason 5 starts a
+grace period so a planned USB gadget re-enumeration is not treated as a cable
+disconnect. No command or task payload is decoded from BLE.
 
 ## Phone Notification Event Shape
 

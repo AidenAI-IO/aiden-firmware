@@ -65,9 +65,7 @@ the same snapshot and local update path.
 ## Privacy and Availability Boundaries
 
 - No ActivityKit push token or push-to-start token is requested or registered.
-- The Agent does not initialize its legacy relay or direct APNs publishers,
-  even if an old config file still contains those fields.
-- `POST /api/live-activity/registrations` returns HTTP `410 Gone`.
+- The Agent contains no relay, registration, or direct APNs publisher path.
 - BLE carries no task content. The content-bearing request stays on the USB ECM
   subnet and is restricted to the phone connected to the board.
 - Live Activity does not grant continuous iOS background execution. BLE Wake
@@ -170,15 +168,6 @@ When no matching active or retained task exists:
 `live_activity` field so foreground chat polling can update ActivityKit through
 the same local native module.
 
-### Remote Registration Is Disabled
-
-```http
-POST /api/live-activity/registrations
-```
-
-returns `410 Gone`. The app does not call this endpoint and does not expose
-relay URL, relay credential, bundle topic, or ActivityKit token configuration.
-
 ## Configuration
 
 The only required Agent setting is that Live Activity snapshots remain enabled:
@@ -188,9 +177,8 @@ The only required Agent setting is that Live Activity snapshots remain enabled:
 enabled = true
 ```
 
-Older images may still contain relay/APNs keys in `agent.toml`. They are parsed
-for backward-compatible config loading but ignored at runtime. Remove them from
-deployed configuration; the Agent logs a warning when it sees them.
+`enabled` is the complete Live Activity configuration surface. The Agent has no
+backend URL, APNs credential, registration-token, or board-ID setting.
 
 The iOS app may optionally set `LIVE_ACTIVITY_PHONE_ID`. When empty, the native
 layer persists `identifierForVendor` as the stable phone ID used to filter the
@@ -223,5 +211,5 @@ board snapshot.
    progress and tool updates must not alert.
 7. Inspect App and Agent logs for `live_activity` Wake delivery and local board
    sync.
-8. Capture network traffic or use a denylisted Internet connection and verify
-   there are no relay registration, relay state publish, or APNs requests.
+8. Query `/api/live-activity/current` from outside loopback and the USB ECM
+   subnet and verify the request is rejected with HTTP `403`.

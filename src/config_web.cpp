@@ -824,20 +824,6 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"termination_policy", "terminate_stall_score", CONFIG_FIELD_NUMBER},
         {"termination_policy", "parse_failure_limit", CONFIG_FIELD_NUMBER},
         {"live_activity", "enabled", CONFIG_FIELD_BOOL},
-        {"live_activity", "relay_url", CONFIG_FIELD_STRING},
-        {"live_activity", "relay_api_key", CONFIG_FIELD_STRING},
-        {"live_activity", "has_relay_api_key", CONFIG_FIELD_BOOL},
-        {"live_activity", "board_id", CONFIG_FIELD_STRING},
-        {"live_activity", "phone_id", CONFIG_FIELD_STRING},
-        {"live_activity", "bundle_id", CONFIG_FIELD_STRING},
-        {"live_activity", "topic", CONFIG_FIELD_STRING},
-        {"live_activity", "environment", CONFIG_FIELD_STRING},
-        {"live_activity", "team_id", CONFIG_FIELD_STRING},
-        {"live_activity", "key_id", CONFIG_FIELD_STRING},
-        {"live_activity", "private_key_path", CONFIG_FIELD_STRING},
-        {"live_activity", "private_key_pem", CONFIG_FIELD_STRING},
-        {"live_activity", "has_private_key_pem", CONFIG_FIELD_BOOL},
-        {"live_activity", "timeout_sec", CONFIG_FIELD_NUMBER},
         {"agent", "locale", CONFIG_FIELD_STRING},
         {"agent", "custom_instruction", CONFIG_FIELD_STRING},
         {"agent", "additional_prompt", CONFIG_FIELD_STRING},
@@ -1867,10 +1853,6 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
         return;
     }
     bool need_search_api_key = config->search.api_key.empty() && config->search.has_api_key;
-    bool need_live_activity_relay_api_key =
-        config->live_activity.relay_api_key.empty() && config->live_activity.has_relay_api_key;
-    bool need_live_activity_private_key_pem =
-        config->live_activity.private_key_pem.empty() && config->live_activity.has_private_key_pem;
     bool need_provider_secrets = false;
     for (const auto& item : config->model_providers) {
         need_provider_secrets = need_provider_secrets || item.second.api_key.empty();
@@ -1882,8 +1864,7 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
         need_provider_secrets = need_provider_secrets || item.second.api_key.empty() ||
             item.second.secret_id.empty() || item.second.secret_key.empty();
     }
-    if (!need_search_api_key && !need_live_activity_relay_api_key &&
-        !need_live_activity_private_key_pem && !need_provider_secrets) {
+    if (!need_search_api_key && !need_provider_secrets) {
         return;
     }
 
@@ -1895,14 +1876,6 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
     if (need_search_api_key && !stored.search.api_key.empty()) {
         config->search.api_key = stored.search.api_key;
         config->search.has_api_key = true;
-    }
-    if (need_live_activity_relay_api_key && !stored.live_activity.relay_api_key.empty()) {
-        config->live_activity.relay_api_key = stored.live_activity.relay_api_key;
-        config->live_activity.has_relay_api_key = true;
-    }
-    if (need_live_activity_private_key_pem && !stored.live_activity.private_key_pem.empty()) {
-        config->live_activity.private_key_pem = stored.live_activity.private_key_pem;
-        config->live_activity.has_private_key_pem = true;
     }
     for (auto& item : config->model_providers) {
         std::map<std::string, aiden::ModelProviderToml>::const_iterator previous =
@@ -2796,30 +2769,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
     cJSON* live_activity = add_object(root, "live_activity");
     cJSON_AddBoolToObject(live_activity, "enabled", config.live_activity.enabled ? 1 : 0);
-    cJSON_AddStringToObject(live_activity, "relay_url", config.live_activity.relay_url.c_str());
-    if (include_secrets) {
-        cJSON_AddStringToObject(live_activity, "relay_api_key", config.live_activity.relay_api_key.c_str());
-    } else {
-        cJSON_AddBoolToObject(live_activity, "has_relay_api_key",
-                              (config.live_activity.has_relay_api_key ||
-                               !config.live_activity.relay_api_key.empty()) ? 1 : 0);
-    }
-    cJSON_AddStringToObject(live_activity, "board_id", config.live_activity.board_id.c_str());
-    cJSON_AddStringToObject(live_activity, "phone_id", config.live_activity.phone_id.c_str());
-    cJSON_AddStringToObject(live_activity, "bundle_id", config.live_activity.bundle_id.c_str());
-    cJSON_AddStringToObject(live_activity, "topic", config.live_activity.topic.c_str());
-    cJSON_AddStringToObject(live_activity, "environment", config.live_activity.environment.c_str());
-    cJSON_AddStringToObject(live_activity, "team_id", config.live_activity.team_id.c_str());
-    cJSON_AddStringToObject(live_activity, "key_id", config.live_activity.key_id.c_str());
-    cJSON_AddStringToObject(live_activity, "private_key_path", config.live_activity.private_key_path.c_str());
-    if (include_secrets) {
-        cJSON_AddStringToObject(live_activity, "private_key_pem", config.live_activity.private_key_pem.c_str());
-    } else {
-        cJSON_AddBoolToObject(live_activity, "has_private_key_pem",
-                              (config.live_activity.has_private_key_pem ||
-                               !config.live_activity.private_key_pem.empty()) ? 1 : 0);
-    }
-    cJSON_AddNumberToObject(live_activity, "timeout_sec", config.live_activity.timeout_sec);
 
     cJSON* agent = add_object(root, "agent");
     cJSON_AddStringToObject(agent, "locale", config.locale.c_str());
@@ -3357,34 +3306,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* live_activity = cJSON_GetObjectItem(root, "live_activity");
     if (json_is_object(live_activity)) {
         set_json_bool(&config->live_activity.enabled, live_activity, "enabled");
-        set_json_str(&config->live_activity.relay_url, live_activity, "relay_url");
-        set_json_bool(&config->live_activity.has_relay_api_key, live_activity, "has_relay_api_key");
-        cJSON* relay_key_item = cJSON_GetObjectItem(live_activity, "relay_api_key");
-        if (json_is_string(relay_key_item)) {
-            std::string relay_api_key = trim_copy(relay_key_item->valuestring);
-            if (!relay_api_key.empty()) {
-                config->live_activity.relay_api_key = relay_api_key;
-                config->live_activity.has_relay_api_key = true;
-            }
-        }
-        set_json_str(&config->live_activity.board_id, live_activity, "board_id");
-        set_json_str(&config->live_activity.phone_id, live_activity, "phone_id");
-        set_json_str(&config->live_activity.bundle_id, live_activity, "bundle_id");
-        set_json_str(&config->live_activity.topic, live_activity, "topic");
-        set_json_str(&config->live_activity.environment, live_activity, "environment");
-        set_json_str(&config->live_activity.team_id, live_activity, "team_id");
-        set_json_str(&config->live_activity.key_id, live_activity, "key_id");
-        set_json_str(&config->live_activity.private_key_path, live_activity, "private_key_path");
-        set_json_bool(&config->live_activity.has_private_key_pem, live_activity, "has_private_key_pem");
-        cJSON* private_key_item = cJSON_GetObjectItem(live_activity, "private_key_pem");
-        if (json_is_string(private_key_item)) {
-            std::string private_key_pem = private_key_item->valuestring;
-            if (!trim_copy(private_key_pem).empty()) {
-                config->live_activity.private_key_pem = private_key_pem;
-                config->live_activity.has_private_key_pem = true;
-            }
-        }
-        set_json_int(&config->live_activity.timeout_sec, live_activity, "timeout_sec");
     }
 
     cJSON* agent = cJSON_GetObjectItem(root, "agent");

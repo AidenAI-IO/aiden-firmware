@@ -236,8 +236,7 @@ api_key = ""
 
 # Live Activity / Dynamic Island.
 # State updates stay local: BLE carries only a wake hint and the iOS app reads
-# the current snapshot over USB ECM before updating ActivityKit. Relay/APNs
-# credentials are not used.
+# the current snapshot over USB ECM before updating ActivityKit.
 [live_activity]
 enabled = true
 

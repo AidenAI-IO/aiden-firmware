@@ -171,11 +171,6 @@ WebSocket's core value:
    using foreground Phone Bridge, Dynamic Island restore, PiP/FGS polling, BLE
    Wake, and BLE notification-query capabilities.
 
-`GET /api/phone-bridge/status` reports `board_id` from
-`runtime.config.LiveActivity.BoardIDOrDefault()`. Phone-app state messages and
-the benchmark-only `ApplyBenchmarkStatus` path do not set or modify this field;
-the runtime Live Activity configuration remains its owner.
-
 `bridge_connected` only means the WebSocket is currently active. It is not equivalent to USB cable connectivity. After the iOS app enters background, WebSocket may disconnect while USB ECM remains reachable; Dynamic Island updates use a local BLE Wake followed by a USB ECM read of `/api/live-activity/current`, not the phone bridge WebSocket or a remote relay.
 
 When `app_state=background|inactive`, `return_entry=dynamic_island`,

@@ -479,7 +479,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/chat/steer", s.handleChatSteer)
 	mux.HandleFunc("/api/chat/steer/cancel", s.handleChatSteerCancel)
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
-	mux.HandleFunc("/api/live-activity/registrations", s.handleLiveActivityRegistrations)
 	mux.HandleFunc("/api/live-activity/status", s.handleLiveActivityStatus)
 	mux.HandleFunc("/api/live-activity/current", s.handleLiveActivityCurrent)
 	mux.HandleFunc("/api/events", s.handleEvents)
@@ -3452,38 +3451,19 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 		status = s.bridge.getStatus()
 	}
 	if s.runtime != nil {
-		status.BoardID = s.runtime.config.LiveActivity.BoardIDOrDefault()
 		status.DeviceType = s.runtime.deviceTypeFromState()
 		status.PointerMode = s.runtime.devicePointerModeFromState()
 	}
 	json.NewEncoder(w).Encode(status)
 }
 
-func (s *Server) handleLiveActivityRegistrations(w http.ResponseWriter, r *http.Request) {
-	if s.liveActivity == nil {
-		http.Error(w, `{"error":"live activity disabled"}`, http.StatusServiceUnavailable)
-		return
-	}
-	switch r.Method {
-	case http.MethodPost:
-		http.Error(w, `{"error":"remote Live Activity registration is disabled; updates use local BLE and USB ECM"}`, http.StatusGone)
-	case http.MethodDelete:
-		requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
-		if requestID == "" {
-			http.Error(w, `{"error":"missing request_id"}`, http.StatusBadRequest)
-			return
-		}
-		ok := s.liveActivity.Unregister(requestID)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]bool{"ok": ok})
-	default:
-		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
-	}
-}
-
 func (s *Server) handleLiveActivityStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !bluetoothControlRequestAllowed(r) {
+		http.Error(w, "Live Activity state is available only over USB", http.StatusForbidden)
 		return
 	}
 	requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
@@ -3506,6 +3486,10 @@ func (s *Server) handleLiveActivityStatus(w http.ResponseWriter, r *http.Request
 func (s *Server) handleLiveActivityCurrent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !bluetoothControlRequestAllowed(r) {
+		http.Error(w, "Live Activity state is available only over USB", http.StatusForbidden)
 		return
 	}
 	if s.liveActivity == nil {

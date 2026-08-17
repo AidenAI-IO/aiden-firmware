@@ -45,8 +45,7 @@ is created on demand, so a directory holding only `agent.toml` is a valid start.
 ├── memory/                  # conversation memory persistence directory
 │   └── extraction.yaml      # optional memory extraction overrides
 ├── cache/                   # provider model metadata cache
-├── log/                     # runtime log directory
-└── board_id                 # generated on first run when live activity is on
+└── log/                     # runtime log directory
 ```
 
 ## Config Web: the device config page
@@ -709,12 +708,6 @@ USB ECM. See [Live Activity / Dynamic Island](./live-activity.md).
 | Field     | Default | Description |
 | --------- | ------- | ----------- |
 | `enabled` | `true`  | Maintain local task-status snapshots and send coalesced `live_activity` BLE Wake notifications |
-
-Legacy relay/APNs fields (`relay_url`, `relay_api_key`, `bundle_id`, `topic`,
-`environment`, `team_id`, `key_id`, `private_key_path`, `private_key_pem`, and
-`timeout_sec`) may still parse when loading an older config, but the Agent
-ignores them and does not initialize any remote publisher. Remove those fields
-from deployed configuration.
 
 ## Episode telemetry (Langfuse)
 

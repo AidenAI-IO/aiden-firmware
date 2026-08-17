@@ -452,11 +452,6 @@ func ConfigMeta() ConfigMetadata {
 				Name: "live_activity",
 				Fields: []FieldMeta{
 					{Key: "enabled", Widget: WidgetBoolean, Default: true},
-					{Key: "board_id", Widget: WidgetText,
-						VisibleWhen: all(truthy("live_activity.enabled"))},
-					// phone_id is still part of the config_web TOML contract even
-					// though the Go runtime no longer consumes it directly.
-					{Key: "phone_id", Widget: WidgetText},
 				},
 			},
 			{

@@ -1,10 +1,9 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,10 +40,6 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 		t.Fatalf("unexpected completion state: %#v", state)
 	}
 
-	content := state.ContentState()
-	if content.RequestID != "req-1" || content.Status != LiveActivityStatusCompleted {
-		t.Fatalf("unexpected content state: %#v", content)
-	}
 }
 
 func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
@@ -141,10 +136,6 @@ func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
 	if state.CurrentStep != "Open Aiden to continue" || state.ShowsProgress {
 		t.Fatalf("bridge unavailable display = %#v, want open Aiden without progress", state)
 	}
-	content := state.ContentState()
-	if content.Status != LiveActivityStatusNeedsApp || content.Phase != LiveActivityPhaseWaitingApp || !content.RequiresApp {
-		t.Fatalf("content state = %#v, want needs_app fields", content)
-	}
 }
 
 func TestLiveActivityManagerKeepsHumanHandoffVisible(t *testing.T) {
@@ -231,34 +222,6 @@ func TestLiveActivityManagerSnapshotActiveForPhoneIncludesUnscopedLocalTask(t *t
 	}
 }
 
-func TestLiveActivityManagerIgnoresRemotePublishConfig(t *testing.T) {
-	requests := make(chan struct{}, 1)
-	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests <- struct{}{}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer relay.Close()
-
-	manager := NewLiveActivityManager(LiveActivityConfig{
-		RelayURL:    relay.URL,
-		RelayAPIKey: "relay-secret",
-		BoardID:     "board-1",
-	}, newTestLogger())
-	manager.StartTask("req-1", "Open Settings", "phone-1")
-
-	select {
-	case <-requests:
-		t.Fatal("Live Activity state must not be published to the configured relay")
-	case <-time.After(150 * time.Millisecond):
-	}
-	if manager.relay != nil || manager.apns != nil {
-		t.Fatalf("remote publishers initialized: relay=%v apns=%v", manager.relay != nil, manager.apns != nil)
-	}
-	if manager.RelayStatus() != "disabled_local_only" || manager.APNsStatus() != "disabled_local_only" {
-		t.Fatalf("remote statuses = relay:%s apns:%s", manager.RelayStatus(), manager.APNsStatus())
-	}
-}
-
 func TestLiveActivityManagerCoalescesLocalBLEWake(t *testing.T) {
 	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
 	started := make(chan struct{}, 1)
@@ -312,45 +275,23 @@ func TestLiveActivityManagerCoalescesLocalBLEWake(t *testing.T) {
 	}
 }
 
-func TestLiveActivityRelayRequiresNonDefaultBoardID(t *testing.T) {
-	for _, boardID := range []string{"", "default", " DEFAULT "} {
-		_, err := NewLiveActivityRelayClient(LiveActivityConfig{
-			RelayURL: "https://relay.example.com",
-			BoardID:  boardID,
-		})
-		if !errors.Is(err, errLiveActivityRelayBoardIDRequired) {
-			t.Fatalf("NewLiveActivityRelayClient(board_id=%q) error = %v, want board id required", boardID, err)
-		}
+func TestServerLiveActivityRegistrationRouteRemoved(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+	req := httptest.NewRequest(http.MethodPost, "/api/live-activity/registrations", nil)
+	rec := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("registration status = %d body=%s, want 404", rec.Code, rec.Body.String())
 	}
 }
 
-func TestLiveActivityRelayRequiresDeviceCredential(t *testing.T) {
-	_, err := NewLiveActivityRelayClient(LiveActivityConfig{
-		RelayURL: "https://relay.example.com",
-		BoardID:  "board-1",
-	})
-	if !errors.Is(err, errLiveActivityRelayCredentialRequired) {
-		t.Fatalf("NewLiveActivityRelayClient() error = %v, want device credential required", err)
-	}
-}
-
-func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
+func TestServerLiveActivityStatus(t *testing.T) {
 	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
-	body := bytes.NewBufferString(`{"request_id":"req-1","activity_id":"act-1","push_token":"token-1","platform":"ios"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/live-activity/registrations", body)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.handleLiveActivityRegistrations(rec, req)
-	if rec.Code != http.StatusGone {
-		t.Fatalf("register status = %d body=%s, want 410", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "local BLE") {
-		t.Fatalf("register response = %s, want local-only guidance", rec.Body.String())
-	}
-
-	statusReq := httptest.NewRequest(http.MethodGet, "/api/live-activity/status?request_id=%20req-1%20", nil)
+	statusReq := liveActivityLoopbackRequest("/api/live-activity/status?request_id=%20req-1%20")
 	statusRec := httptest.NewRecorder()
 	server.handleLiveActivityStatus(statusRec, statusReq)
 	if statusRec.Code != http.StatusOK {
@@ -366,20 +307,13 @@ func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
 	if statusResp.Status != "ok" || statusResp.LiveActivity.RequestID != "req-1" {
 		t.Fatalf("unexpected status response: %#v", statusResp)
 	}
-
-	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/live-activity/registrations", nil)
-	deleteRec := httptest.NewRecorder()
-	server.handleLiveActivityRegistrations(deleteRec, deleteReq)
-	if deleteRec.Code != http.StatusBadRequest {
-		t.Fatalf("delete status code = %d body=%s, want 400", deleteRec.Code, deleteRec.Body.String())
-	}
 }
 
 func TestServerLiveActivityCurrent(t *testing.T) {
 	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
+	req := liveActivityLoopbackRequest("/api/live-activity/current")
 	rec := httptest.NewRecorder()
 	server.handleLiveActivityCurrent(rec, req)
 	if rec.Code != http.StatusOK {
@@ -397,12 +331,11 @@ func TestServerLiveActivityCurrent(t *testing.T) {
 	}
 }
 
-func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
+func TestServerBridgeStatusWithoutBridge(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		runtime: &Runtime{
 			config: Config{
-				LiveActivity: LiveActivityConfig{BoardID: "board-1"},
-				Device:       DeviceConfig{DeviceType: "Android"},
+				Device: DeviceConfig{DeviceType: "Android"},
 			},
 		},
 	}
@@ -418,8 +351,8 @@ func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["board_id"] != "board-1" {
-		t.Fatalf("board_id = %q, want board-1", payload["board_id"])
+	if _, ok := payload["board_id"]; ok {
+		t.Fatalf("board_id must not be exposed: %#v", payload)
 	}
 	if payload["device_type"] != "Android" {
 		t.Fatalf("device_type = %q, want Android", payload["device_type"])
@@ -440,7 +373,7 @@ func TestServerLiveActivityCurrentFiltersPhoneID(t *testing.T) {
 	server.liveActivity.StartTask("req-phone-a", "Do a task", "phone-a")
 	server.liveActivity.StartTask("req-phone-b", "Do another task", "phone-b")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/current?phone_id=phone-a", nil)
+	req := liveActivityLoopbackRequest("/api/live-activity/current?phone_id=phone-a")
 	rec := httptest.NewRecorder()
 	server.handleLiveActivityCurrent(rec, req)
 	if rec.Code != http.StatusOK {
@@ -457,7 +390,7 @@ func TestServerLiveActivityCurrentFiltersPhoneID(t *testing.T) {
 		t.Fatalf("unexpected filtered current response: %#v", resp)
 	}
 
-	missingReq := httptest.NewRequest(http.MethodGet, "/api/live-activity/current?phone_id=phone-missing", nil)
+	missingReq := liveActivityLoopbackRequest("/api/live-activity/current?phone_id=phone-missing")
 	missingRec := httptest.NewRecorder()
 	server.handleLiveActivityCurrent(missingRec, missingReq)
 	if missingRec.Code != http.StatusOK {
@@ -490,7 +423,7 @@ func TestServerLiveActivityPhoneIDPreference(t *testing.T) {
 func TestServerLiveActivityCurrentEmpty(t *testing.T) {
 	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
+	req := liveActivityLoopbackRequest("/api/live-activity/current")
 	rec := httptest.NewRecorder()
 	server.handleLiveActivityCurrent(rec, req)
 	if rec.Code != http.StatusOK {
@@ -509,7 +442,7 @@ func TestServerLiveActivityCurrentEmpty(t *testing.T) {
 
 func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
 	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
-	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/status", nil)
+	req := liveActivityLoopbackRequest("/api/live-activity/status")
 	rec := httptest.NewRecorder()
 
 	server.handleLiveActivityStatus(rec, req)
@@ -517,6 +450,43 @@ func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status code = %d body=%s, want 400", rec.Code, rec.Body.String())
 	}
+}
+
+func TestServerLiveActivityEndpointsRequireUSB(t *testing.T) {
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server.liveActivity.StartTask("req-1", "Do a task")
+
+	usbRequest := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
+	usbRequest.RemoteAddr = "192.168.42.2:12345"
+	usbRequest = usbRequest.WithContext(context.WithValue(
+		usbRequest.Context(),
+		http.LocalAddrContextKey,
+		&net.TCPAddr{IP: net.ParseIP("192.168.42.1"), Port: 8080},
+	))
+	usbRecorder := httptest.NewRecorder()
+	server.handleLiveActivityCurrent(usbRecorder, usbRequest)
+	if usbRecorder.Code != http.StatusOK {
+		t.Fatalf("USB current status = %d body=%s, want 200", usbRecorder.Code, usbRecorder.Body.String())
+	}
+
+	for _, target := range []string{
+		"/api/live-activity/current",
+		"/api/live-activity/status?request_id=req-1",
+	} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.RemoteAddr = "192.168.50.2:12345"
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("non-USB %s status = %d body=%s, want 403", target, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func liveActivityLoopbackRequest(target string) *http.Request {
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	return request
 }
 
 func TestChatResultIncludesLiveActivityState(t *testing.T) {

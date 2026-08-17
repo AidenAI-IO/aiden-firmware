@@ -9,6 +9,15 @@ fail() {
     exit 1
 }
 
+extract_function() {
+    function_name="$1"
+    awk -v signature="${function_name}() {" '
+        $0 == signature { active = 1; next }
+        active && $0 == "}" { exit }
+        active { print }
+    ' "$WATCHDOG"
+}
+
 sh -n "$WATCHDOG" || fail "S60usb_ecm_watchdog has invalid shell syntax"
 
 grep -Fq 'STATE_FILE=' "$WATCHDOG" ||
@@ -59,11 +68,23 @@ grep -Fq 'release_gadget_switch_lock' "$WATCHDOG" ||
 grep -Fq 'reset_composite "ECM stall"' "$WATCHDOG" ||
     fail "watchdog_main must reset the composite gadget on ECM stalls"
 
-grep -Fq 'announce_usb_reenumeration' "$WATCHDOG" ||
-    fail "watchdog must announce a planned composite reset before ECM disappears"
+reset_composite_body=$(extract_function reset_composite_locked)
+announcement_line=$(printf '%s\n' "$reset_composite_body" | awk '
+    /^[[:space:]]*announce_usb_reenumeration[[:space:]]*$/ { print NR; exit }
+')
+unbind_line=$(printf '%s\n' "$reset_composite_body" | awk '
+    index($0, "printf \"\\n\" > \"$1\"") { print NR; exit }
+')
+[ -n "$announcement_line" ] ||
+    fail "reset_composite_locked must announce a planned reset"
+[ -n "$unbind_line" ] ||
+    fail "reset_composite_locked must unbind the UDC"
+[ "$announcement_line" -lt "$unbind_line" ] ||
+    fail "reset_composite_locked must announce the reset before unbinding the UDC"
 
-grep -Fq '/api/bluetooth/wake/usb-reenumeration' "$WATCHDOG" ||
-    fail "watchdog must use the loopback-only BLE wake endpoint"
+announce_body=$(extract_function announce_usb_reenumeration)
+printf '%s\n' "$announce_body" | grep -Fq -- '-X POST "$USB_REENUMERATION_WAKE_URL"' ||
+    fail "announce_usb_reenumeration must POST to USB_REENUMERATION_WAKE_URL"
 
 grep -Fq 'UDC state changed:' "$WATCHDOG" ||
     fail "watchdog_main must track host UDC state transitions"
