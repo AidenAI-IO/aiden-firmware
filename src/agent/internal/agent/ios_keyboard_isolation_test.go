@@ -53,6 +53,28 @@ func TestIOSKeyboardIsolationWrapsModifierShortcut(t *testing.T) {
 	}
 }
 
+func TestIOSKeyboardIsolationAnnouncesEachPlannedUSBReenumeration(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	controller.notifyReenumeration = func(context.Context) error {
+		events = append(events, "usb-reenumeration")
+		return nil
+	}
+
+	err := controller.withKeyboard(context.Background(), true, func() error {
+		events = append(events, "shortcut")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withKeyboard() error = %v", err)
+	}
+	if want := []string{
+		"usb-reenumeration", "isolate", "shortcut", "usb-reenumeration", "restore",
+	}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
 func TestIOSKeyboardIsolationBatchCoalescesModifierActions(t *testing.T) {
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)

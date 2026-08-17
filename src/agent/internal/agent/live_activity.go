@@ -1,22 +1,8 @@
 package agent
 
 import (
-	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
-	"errors"
-	"fmt"
-	"io"
-	"math/big"
-	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -42,14 +28,8 @@ const (
 	LiveActivityPhaseAnswering   = "answering"
 
 	liveActivityFinalStateRetention = 5 * time.Minute
-	liveActivityAPNsQueueSize       = 16
-	liveActivityRelayQueueSize      = 32
-)
-
-var (
-	errLiveActivityRelayBoardIDRequired    = errors.New("live activity relay board_id is required")
-	errLiveActivityRelayCredentialRequired = errors.New("live activity relay device credential is required")
-	errLiveActivityRelayPhoneIDRequired    = errors.New("live activity relay phone_id is required")
+	liveActivityLocalNotifyInterval = 750 * time.Millisecond
+	liveActivityLocalNotifyTimeout  = time.Second
 )
 
 type LiveActivityState struct {
@@ -73,64 +53,15 @@ type LiveActivityState struct {
 	EndedAt       *time.Time `json:"ended_at,omitempty"`
 }
 
-type LiveActivityContentState struct {
-	RequestID     string  `json:"request_id"`
-	Status        string  `json:"status"`
-	Phase         string  `json:"phase,omitempty"`
-	TaskTitle     string  `json:"task_title"`
-	CurrentStep   string  `json:"current_step"`
-	CurrentAction string  `json:"current_action,omitempty"`
-	CurrentTarget string  `json:"current_target,omitempty"`
-	CurrentApp    string  `json:"current_app,omitempty"`
-	LastToolName  string  `json:"last_tool_name,omitempty"`
-	LastError     string  `json:"last_error,omitempty"`
-	Progress      float64 `json:"progress,omitempty"`
-	ShowsProgress bool    `json:"shows_progress"`
-	CanStop       bool    `json:"can_stop"`
-	RequiresApp   bool    `json:"requires_app,omitempty"`
-	UpdatedAt     string  `json:"updated_at"`
-}
-
-type LiveActivityRegistrationRequest struct {
-	RequestID  string `json:"request_id"`
-	ActivityID string `json:"activity_id,omitempty"`
-	PushToken  string `json:"push_token"`
-	Platform   string `json:"platform,omitempty"`
-}
-
-type LiveActivityRegistrationResponse struct {
-	OK      bool               `json:"ok"`
-	State   *LiveActivityState `json:"state,omitempty"`
-	APNs    string             `json:"apns"`
-	Relay   string             `json:"relay,omitempty"`
-	Message string             `json:"message,omitempty"`
-}
-
-type liveActivityRegistration struct {
-	RequestID    string
-	ActivityID   string
-	PushToken    string
-	Platform     string
-	RegisteredAt time.Time
-}
-
-type liveActivityPushRequest struct {
-	requestID string
-	pushToken string
-	state     LiveActivityState
-	final     bool
-}
-
 type LiveActivityManager struct {
-	mu              sync.Mutex
-	states          map[string]LiveActivityState
-	registrations   map[string]liveActivityRegistration
-	activeRequestID string
-	apns            *APNsClient
-	apnsQueue       chan liveActivityPushRequest
-	relay           *LiveActivityRelayClient
-	relayQueue      chan liveActivityPushRequest
-	logger          *Logger
+	mu                 sync.Mutex
+	states             map[string]LiveActivityState
+	activeRequestID    string
+	logger             *Logger
+	localNotifyMu      sync.RWMutex
+	localNotifier      func(context.Context, string) error
+	localNotifyQueue   chan struct{}
+	localNotifyStarted bool
 }
 
 func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivityManager {
@@ -138,55 +69,76 @@ func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivit
 		return nil
 	}
 	manager := &LiveActivityManager{
-		states:        make(map[string]LiveActivityState),
-		registrations: make(map[string]liveActivityRegistration),
-		logger:        logger,
-	}
-	if cfg.APNsConfigured() {
-		client, err := NewAPNsClient(cfg)
-		if err != nil {
-			if logger != nil {
-				logger.Error("live activity: APNs disabled: %v", err)
-			}
-		} else {
-			manager.apns = client
-			manager.apnsQueue = make(chan liveActivityPushRequest, liveActivityAPNsQueueSize)
-			go manager.runAPNsPublisher(client, manager.apnsQueue)
-			if logger != nil {
-				logger.Info("live activity: APNs enabled environment=%s topic=%s", cfg.EnvironmentOrDefault(), cfg.APNsTopic())
-			}
-		}
-	}
-	if cfg.RelayConfigured() {
-		client, err := NewLiveActivityRelayClient(cfg)
-		if err != nil {
-			if logger != nil {
-				logger.Error("live activity: relay disabled: %v", err)
-			}
-		} else {
-			manager.relay = client
-			manager.relayQueue = make(chan liveActivityPushRequest, liveActivityRelayQueueSize)
-			go manager.runRelayPublisher(client, manager.relayQueue)
-			if logger != nil {
-				logger.Info("live activity: relay enabled url=%s board_id=%s", client.endpoint, client.boardID)
-			}
-		}
+		states: make(map[string]LiveActivityState),
+		logger: logger,
 	}
 	return manager
 }
 
-func (m *LiveActivityManager) APNsStatus() string {
-	if m == nil || m.apns == nil {
-		return "not_configured"
+func (m *LiveActivityManager) SetLocalUpdateNotifier(notifier func(context.Context, string) error) {
+	if m == nil {
+		return
 	}
-	return "configured"
+	m.localNotifyMu.Lock()
+	m.localNotifier = notifier
+	queue := m.localNotifyQueue
+	start := false
+	if notifier != nil && queue == nil {
+		queue = make(chan struct{}, 1)
+		m.localNotifyQueue = queue
+	}
+	if notifier != nil && !m.localNotifyStarted {
+		m.localNotifyStarted = true
+		start = true
+	}
+	m.localNotifyMu.Unlock()
+	if start && queue != nil {
+		go m.runLocalUpdateNotifier(queue)
+	}
 }
 
-func (m *LiveActivityManager) RelayStatus() string {
-	if m == nil || m.relay == nil {
-		return "not_configured"
+func (m *LiveActivityManager) enqueueLocalUpdate() {
+	if m == nil {
+		return
 	}
-	return "configured"
+	m.localNotifyMu.RLock()
+	queue := m.localNotifyQueue
+	m.localNotifyMu.RUnlock()
+	if queue == nil {
+		return
+	}
+	select {
+	case queue <- struct{}{}:
+	default:
+	}
+}
+
+func (m *LiveActivityManager) runLocalUpdateNotifier(queue <-chan struct{}) {
+	var lastAttempt time.Time
+	for range queue {
+		if wait := liveActivityLocalNotifyInterval - time.Since(lastAttempt); !lastAttempt.IsZero() && wait > 0 {
+			timer := time.NewTimer(wait)
+			<-timer.C
+		}
+		m.localNotifyMu.RLock()
+		notifier := m.localNotifier
+		m.localNotifyMu.RUnlock()
+		if notifier == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), liveActivityLocalNotifyTimeout)
+		err := notifier(ctx, "live_activity")
+		cancel()
+		lastAttempt = time.Now()
+		if m.logger == nil {
+			continue
+		}
+		if err != nil {
+			m.logger.Debug("live activity: local BLE update wake unavailable: %v", err)
+		} else {
+			m.logger.Debug("live activity: local BLE update wake delivered")
+		}
+	}
 }
 
 func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...string) *LiveActivityState {
@@ -247,27 +199,44 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		}
 	case runEventToolCall:
 		toolStatus := liveActivityToolCallStatus(event)
-		state.Status = LiveActivityStatusRunning
+		state.Status = firstNonEmptyString([]string{toolStatus.status, LiveActivityStatusRunning})
 		state.Phase = toolStatus.phase
 		state.CurrentAction = toolStatus.action
 		state.CurrentTarget = truncateLiveActivityText(toolStatus.target, 80)
 		state.RequiresApp = toolStatus.requiresApp
-		state.ShowsProgress = true
+		state.ShowsProgress = toolStatus.status != LiveActivityStatusNeedsApp
 		state.LastError = ""
 		state.LastToolName = strings.TrimSpace(event.ToolName)
 		if app := toolStatus.app; app != "" {
 			state.CurrentApp = truncateLiveActivityText(app, 40)
 		}
-		state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
+		stepCandidates := []string{
 			event.Content,
 			toolStatus.step,
 			formatToolStep("Using", event.ToolName),
-		}), 120)
+		}
+		if toolStatus.status == LiveActivityStatusNeedsApp {
+			stepCandidates[0], stepCandidates[1] = stepCandidates[1], stepCandidates[0]
+		}
+		state.CurrentStep = truncateLiveActivityText(firstNonEmptyString(stepCandidates), 120)
 		state.Progress = bumpLiveActivityProgress(state.Progress)
 	case "tool_result":
 		hasError := liveActivityEventHasError(event)
 		state.LastToolName = strings.TrimSpace(event.ToolName)
-		if hasError {
+		if !hasError && strings.EqualFold(strings.TrimSpace(event.ToolName), toolHumanHandoffStep) {
+			state.Status = LiveActivityStatusNeedsApp
+			state.Phase = LiveActivityPhaseWaitingUser
+			state.CurrentAction = "request_user_input"
+			state.CurrentTarget = ""
+			state.RequiresApp = false
+			state.ShowsProgress = false
+			state.LastError = ""
+			state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
+				liveActivityHumanHandoffStep(event.Content),
+				liveActivityHumanHandoffStep(event.ToolInput),
+				"Please take over on the phone",
+			}), 120)
+		} else if hasError {
 			errText := liveActivityEventErrorText(event)
 			state.LastError = truncateLiveActivityText(errText, 160)
 			if liveActivityResultNeedsApp(event, errText) {
@@ -313,10 +282,46 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 }
 
 func (m *LiveActivityManager) CompleteTask(requestID, output string) *LiveActivityState {
+	if state := m.pauseForHumanHandoff(requestID, output); state != nil {
+		return state
+	}
 	return m.finishTask(requestID, LiveActivityStatusCompleted, firstNonEmptyString([]string{
 		truncateLiveActivityText(output, 120),
 		"Completed",
 	}), "")
+}
+
+func (m *LiveActivityManager) pauseForHumanHandoff(requestID, output string) *LiveActivityState {
+	if m == nil || strings.TrimSpace(requestID) == "" {
+		return nil
+	}
+	requestID = strings.TrimSpace(requestID)
+	m.mu.Lock()
+	state, ok := m.states[requestID]
+	if !ok || (state.Phase != LiveActivityPhaseWaitingUser && !strings.EqualFold(state.LastToolName, toolHumanHandoffStep)) {
+		m.mu.Unlock()
+		return nil
+	}
+	state.Status = LiveActivityStatusNeedsApp
+	state.Phase = LiveActivityPhaseWaitingUser
+	state.CurrentAction = "request_user_input"
+	state.CurrentTarget = ""
+	state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
+		output,
+		state.CurrentStep,
+		"Please take over on the phone",
+	}), 120)
+	state.Progress = 0
+	state.ShowsProgress = false
+	state.CanStop = false
+	state.RequiresApp = false
+	state.UpdatedAt = time.Now()
+	state.EndedAt = nil
+	m.states[requestID] = state
+	m.activeRequestID = requestID
+	m.mu.Unlock()
+	m.publish(requestID, false)
+	return &state
 }
 
 func (m *LiveActivityManager) FailTask(requestID, message string) *LiveActivityState {
@@ -356,50 +361,6 @@ func (m *LiveActivityManager) finishTask(requestID, status, step, errText string
 	m.publish(requestID, true)
 	m.scheduleCleanup(requestID, now, liveActivityFinalStateRetention)
 	return &state
-}
-
-func (m *LiveActivityManager) Register(req LiveActivityRegistrationRequest) (*LiveActivityState, string, error) {
-	if m == nil {
-		return nil, "disabled", errors.New("live activity is disabled")
-	}
-	req.RequestID = strings.TrimSpace(req.RequestID)
-	req.PushToken = strings.TrimSpace(req.PushToken)
-	if req.RequestID == "" {
-		return nil, "invalid", errors.New("request_id is required")
-	}
-	if req.PushToken == "" {
-		return nil, "invalid", errors.New("push_token is required")
-	}
-	m.mu.Lock()
-	m.registrations[req.RequestID] = liveActivityRegistration{
-		RequestID:    req.RequestID,
-		ActivityID:   strings.TrimSpace(req.ActivityID),
-		PushToken:    req.PushToken,
-		Platform:     strings.TrimSpace(req.Platform),
-		RegisteredAt: time.Now(),
-	}
-	state, ok := m.states[req.RequestID]
-	m.mu.Unlock()
-	if ok {
-		m.publish(req.RequestID, isFinalLiveActivityStatus(state.Status))
-		return &state, m.APNsStatus(), nil
-	}
-	return nil, m.APNsStatus(), nil
-}
-
-func (m *LiveActivityManager) Unregister(requestID string) bool {
-	if m == nil {
-		return false
-	}
-	requestID = strings.TrimSpace(requestID)
-	if requestID == "" {
-		return false
-	}
-	m.mu.Lock()
-	_, ok := m.registrations[requestID]
-	delete(m.registrations, requestID)
-	m.mu.Unlock()
-	return ok
 }
 
 func (m *LiveActivityManager) Snapshot(requestID string) *LiveActivityState {
@@ -472,128 +433,10 @@ func (m *LiveActivityManager) publish(requestID string, final bool) {
 	if m == nil {
 		return
 	}
-	m.logger.Info("Publishing live activity: %s, %t", requestID, final)
-	m.mu.Lock()
-	state, stateOK := m.states[requestID]
-	registration, regOK := m.registrations[requestID]
-	apnsQueue := m.apnsQueue
-	relayQueue := m.relayQueue
-	hasAPNs := m.apns != nil
-	hasRelay := m.relay != nil
-	m.mu.Unlock()
-	if !stateOK {
-		m.logger.Error("Live activity state not found: %s", requestID)
-		return
-	}
-	if hasAPNs && regOK {
-		m.logger.Info("Enqueuing APNs push: %s", requestID)
-		m.enqueueAPNsPush(liveActivityPushRequest{
-			requestID: requestID,
-			pushToken: registration.PushToken,
-			state:     state,
-			final:     final,
-		}, apnsQueue)
-	}
-	if hasRelay {
-		m.logger.Info("Enqueuing relay push: %s", requestID)
-		m.enqueueRelayPush(liveActivityPushRequest{
-			requestID: requestID,
-			state:     state,
-			final:     final,
-		}, relayQueue)
-	}
-}
-
-func (m *LiveActivityManager) enqueueAPNsPush(req liveActivityPushRequest, queue chan liveActivityPushRequest) {
-	if queue == nil {
-		return
-	}
-	select {
-	case queue <- req:
-		return
-	default:
-	}
-	if req.final {
-		select {
-		case <-queue:
-		default:
-		}
-		select {
-		case queue <- req:
-			return
-		default:
-		}
-	}
 	if m.logger != nil {
-		m.logger.Warn("live activity: dropping APNs push request_id=%s final=%t: queue full", req.requestID, req.final)
+		m.logger.Info("Publishing live activity locally: %s, %t", requestID, final)
 	}
-}
-
-func (m *LiveActivityManager) runAPNsPublisher(apns *APNsClient, queue <-chan liveActivityPushRequest) {
-	for req := range queue {
-		ctx, cancel := context.WithTimeout(context.Background(), apns.timeout)
-		state, final := liveActivityRemotePushState(req.state, req.final)
-		err := apns.Push(ctx, req.pushToken, state, final)
-		cancel()
-		if m.logger == nil {
-			continue
-		}
-		if err != nil {
-			m.logger.Error("live activity: APNs push failed request_id=%s status=%s sent_status=%s final=%t sent_final=%t: %v", req.requestID, req.state.Status, state.Status, req.final, final, err)
-			continue
-		}
-		if req.final || isFinalLiveActivityStatus(req.state.Status) || state.Status == LiveActivityStatusReady {
-			m.logger.Info("live activity: APNs push ok request_id=%s status=%s sent_status=%s final=%t sent_final=%t", req.requestID, req.state.Status, state.Status, req.final, final)
-		}
-	}
-}
-
-func (m *LiveActivityManager) enqueueRelayPush(req liveActivityPushRequest, queue chan liveActivityPushRequest) {
-	if queue == nil {
-		return
-	}
-	select {
-	case queue <- req:
-		return
-	default:
-	}
-	if req.final {
-		select {
-		case <-queue:
-		default:
-		}
-		select {
-		case queue <- req:
-			return
-		default:
-		}
-	}
-	if m.logger != nil {
-		m.logger.Warn("live activity: dropping relay push request_id=%s final=%t: queue full", req.requestID, req.final)
-	}
-}
-
-func (m *LiveActivityManager) runRelayPublisher(relay *LiveActivityRelayClient, queue <-chan liveActivityPushRequest) {
-	for req := range queue {
-		ctx, cancel := context.WithTimeout(context.Background(), relay.timeout)
-		state, final := liveActivityRemotePushState(req.state, req.final)
-		err := relay.Push(ctx, state, final)
-		cancel()
-		if m.logger == nil {
-			continue
-		}
-		if err != nil {
-			if errors.Is(err, errLiveActivityRelayPhoneIDRequired) {
-				m.logger.Warn("live activity: relay push skipped request_id=%s status=%s sent_status=%s final=%t sent_final=%t: phone_id missing", req.requestID, req.state.Status, state.Status, req.final, final)
-				continue
-			}
-			m.logger.Error("live activity: relay push failed request_id=%s status=%s sent_status=%s final=%t sent_final=%t endpoint=%s: %v", req.requestID, req.state.Status, state.Status, req.final, final, relay.endpoint, err)
-			continue
-		}
-		if req.final || isFinalLiveActivityStatus(req.state.Status) || state.Status == LiveActivityStatusReady {
-			m.logger.Info("live activity: relay push ok request_id=%s status=%s sent_status=%s final=%t sent_final=%t endpoint=%s", req.requestID, req.state.Status, state.Status, req.final, final, relay.endpoint)
-		}
-	}
+	m.enqueueLocalUpdate()
 }
 
 func (m *LiveActivityManager) scheduleCleanup(requestID string, endedAt time.Time, after time.Duration) {
@@ -608,54 +451,10 @@ func (m *LiveActivityManager) scheduleCleanup(requestID string, endedAt time.Tim
 			return
 		}
 		delete(m.states, requestID)
-		delete(m.registrations, requestID)
 		if m.activeRequestID == requestID {
 			m.activeRequestID = ""
 		}
 	})
-}
-
-func (s LiveActivityState) ContentState() LiveActivityContentState {
-	return LiveActivityContentState{
-		RequestID:     s.RequestID,
-		Status:        s.Status,
-		Phase:         s.Phase,
-		TaskTitle:     s.TaskTitle,
-		CurrentStep:   s.CurrentStep,
-		CurrentAction: s.CurrentAction,
-		CurrentTarget: s.CurrentTarget,
-		CurrentApp:    s.CurrentApp,
-		LastToolName:  s.LastToolName,
-		LastError:     s.LastError,
-		Progress:      s.Progress,
-		ShowsProgress: s.ShowsProgress,
-		CanStop:       s.CanStop,
-		RequiresApp:   s.RequiresApp,
-		UpdatedAt:     s.UpdatedAt.Format(time.RFC3339),
-	}
-}
-
-func liveActivityRemotePushState(state LiveActivityState, final bool) (LiveActivityState, bool) {
-	if !final || !isFinalLiveActivityStatus(state.Status) {
-		return state, final
-	}
-	return liveActivityStandbyStateForRemotePush(state), false
-}
-
-func liveActivityStandbyStateForRemotePush(state LiveActivityState) LiveActivityState {
-	return LiveActivityState{
-		RequestID:     state.RequestID,
-		PhoneID:       state.PhoneID,
-		Status:        LiveActivityStatusReady,
-		TaskTitle:     "Aiden",
-		CurrentStep:   "Ready",
-		CurrentAction: "standby",
-		Progress:      0,
-		ShowsProgress: false,
-		CanStop:       false,
-		StartedAt:     state.StartedAt,
-		UpdatedAt:     state.UpdatedAt,
-	}
 }
 
 func liveActivityStateMatchesPhoneID(state LiveActivityState, phoneID string) bool {
@@ -663,7 +462,8 @@ func liveActivityStateMatchesPhoneID(state LiveActivityState, phoneID string) bo
 	if phoneID == "" {
 		return true
 	}
-	return strings.TrimSpace(state.PhoneID) == phoneID
+	statePhoneID := strings.TrimSpace(state.PhoneID)
+	return statePhoneID == "" || statePhoneID == phoneID
 }
 
 func bumpLiveActivityProgress(current float64) float64 {
@@ -686,6 +486,7 @@ func formatToolStep(prefix, tool string) string {
 }
 
 type liveActivityToolStatus struct {
+	status      string
 	phase       string
 	action      string
 	step        string
@@ -775,9 +576,13 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 			status.step = "Sending notification"
 		}
 	case "request_human_handoff":
+		status.status = LiveActivityStatusNeedsApp
 		status.phase = LiveActivityPhaseWaitingUser
 		status.action = "request_user_input"
-		status.step = "Waiting for user input"
+		status.step = firstNonEmptyString([]string{
+			liveActivityHumanHandoffStep(event.ToolInput),
+			"Please take over on the phone",
+		})
 	case "touch_gesture", "quick_action":
 		status.action = "control_phone"
 	case "mouse_move":
@@ -906,6 +711,18 @@ func liveActivityActionStep(input string, labels map[string]string, fallback str
 		return label
 	}
 	return fallback
+}
+
+func liveActivityHumanHandoffStep(input string) string {
+	payload, ok := liveActivityJSONObject(input)
+	if !ok {
+		return ""
+	}
+	return firstNonEmptyString([]string{
+		liveActivityString(payload, "suggested_action"),
+		liveActivityString(payload, "details"),
+		liveActivityString(payload, "message"),
+	})
 }
 
 func liveActivityTargetFromToolCall(event RunEvent) string {
@@ -1224,243 +1041,4 @@ func isCancelableLiveActivityStatus(status string) bool {
 	default:
 		return false
 	}
-}
-
-type APNsClient struct {
-	httpClient *http.Client
-	endpoint   string
-	topic      string
-	teamID     string
-	keyID      string
-	privateKey *ecdsa.PrivateKey
-	timeout    time.Duration
-
-	mu          sync.Mutex
-	cachedJWT   string
-	cachedJWTAt time.Time
-}
-
-type LiveActivityRelayClient struct {
-	httpClient *http.Client
-	endpoint   string
-	apiKey     string
-	boardID    string
-	timeout    time.Duration
-}
-
-func NewLiveActivityRelayClient(cfg LiveActivityConfig) (*LiveActivityRelayClient, error) {
-	endpoint, err := normalizeLiveActivityRelayURL(cfg.RelayURL)
-	if err != nil {
-		return nil, err
-	}
-	boardID := cfg.BoardIDOrDefault()
-	if boardID == "" {
-		return nil, errLiveActivityRelayBoardIDRequired
-	}
-	apiKey := strings.TrimSpace(cfg.RelayAPIKey)
-	if apiKey == "" {
-		return nil, errLiveActivityRelayCredentialRequired
-	}
-	return &LiveActivityRelayClient{
-		httpClient: &http.Client{Timeout: cfg.TimeoutOrDefault()},
-		endpoint:   endpoint,
-		apiKey:     apiKey,
-		boardID:    boardID,
-		timeout:    cfg.TimeoutOrDefault(),
-	}, nil
-}
-
-func (c *LiveActivityRelayClient) Push(ctx context.Context, state LiveActivityState, final bool) error {
-	if c == nil {
-		return nil
-	}
-	endpoint := c.endpoint + "/v1/boards/" + url.PathEscape(c.boardID) + "/live-activity/state"
-	body := map[string]interface{}{
-		"request_id":     state.RequestID,
-		"status":         state.Status,
-		"phase":          state.Phase,
-		"task_title":     state.TaskTitle,
-		"current_step":   state.CurrentStep,
-		"current_action": state.CurrentAction,
-		"current_target": state.CurrentTarget,
-		"current_app":    state.CurrentApp,
-		"last_tool_name": state.LastToolName,
-		"last_error":     state.LastError,
-		"progress":       state.Progress,
-		"shows_progress": state.ShowsProgress,
-		"can_stop":       state.CanStop,
-		"requires_app":   state.RequiresApp,
-		"updated_at":     state.UpdatedAt.UTC().Format(time.RFC3339),
-	}
-	phoneID := strings.TrimSpace(state.PhoneID)
-	if phoneID == "" {
-		return errLiveActivityRelayPhoneIDRequired
-	}
-	body["phone_id"] = phoneID
-	if final {
-		body["event"] = "end"
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("encode relay payload: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("content-type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("authorization", "Bearer "+c.apiKey)
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return fmt.Errorf("relay status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-}
-
-func NewAPNsClient(cfg LiveActivityConfig) (*APNsClient, error) {
-	key, err := loadAPNsPrivateKey(cfg)
-	if err != nil {
-		return nil, err
-	}
-	topic := cfg.APNsTopic()
-	if topic == "" {
-		return nil, errors.New("missing APNs topic")
-	}
-	endpoint := "https://api.sandbox.push.apple.com"
-	if cfg.EnvironmentOrDefault() == "production" {
-		endpoint = "https://api.push.apple.com"
-	}
-	return &APNsClient{
-		httpClient: &http.Client{Timeout: cfg.TimeoutOrDefault()},
-		endpoint:   endpoint,
-		topic:      topic,
-		teamID:     strings.TrimSpace(cfg.TeamID),
-		keyID:      strings.TrimSpace(cfg.KeyID),
-		privateKey: key,
-		timeout:    cfg.TimeoutOrDefault(),
-	}, nil
-}
-
-func (c *APNsClient) Push(ctx context.Context, pushToken string, state LiveActivityState, final bool) error {
-	if c == nil {
-		return nil
-	}
-	pushToken = strings.TrimSpace(pushToken)
-	if pushToken == "" {
-		return errors.New("missing live activity push token")
-	}
-	event := "update"
-	if final {
-		event = "end"
-	}
-	apsPayload := map[string]interface{}{
-		"timestamp":     time.Now().Unix(),
-		"event":         event,
-		"content-state": state.ContentState(),
-	}
-	if final {
-		apsPayload["dismissal-date"] = time.Now().Add(30 * time.Second).Unix()
-	}
-	payload := map[string]interface{}{"aps": apsPayload}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("encode APNs payload: %w", err)
-	}
-	jwt, err := c.providerJWT()
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/3/device/"+pushToken, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("authorization", "bearer "+jwt)
-	req.Header.Set("apns-push-type", "liveactivity")
-	req.Header.Set("apns-topic", c.topic)
-	req.Header.Set("content-type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return fmt.Errorf("APNs status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-}
-
-func (c *APNsClient) providerJWT() (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.cachedJWT != "" && time.Since(c.cachedJWTAt) < 50*time.Minute {
-		return c.cachedJWT, nil
-	}
-	header := map[string]string{"alg": "ES256", "kid": c.keyID}
-	claims := map[string]interface{}{"iss": c.teamID, "iat": time.Now().Unix()}
-	headerJSON, err := json.Marshal(header)
-	if err != nil {
-		return "", err
-	}
-	claimsJSON, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
-	encodedClaims := base64.RawURLEncoding.EncodeToString(claimsJSON)
-	signingInput := encodedHeader + "." + encodedClaims
-	sum := sha256.Sum256([]byte(signingInput))
-	r, s, err := ecdsa.Sign(rand.Reader, c.privateKey, sum[:])
-	if err != nil {
-		return "", err
-	}
-	signature := append(fixedWidthBigInt(r, 32), fixedWidthBigInt(s, 32)...)
-	c.cachedJWT = signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
-	c.cachedJWTAt = time.Now()
-	return c.cachedJWT, nil
-}
-
-func loadAPNsPrivateKey(cfg LiveActivityConfig) (*ecdsa.PrivateKey, error) {
-	raw := strings.TrimSpace(cfg.PrivateKeyPEM)
-	if raw == "" {
-		data, err := os.ReadFile(strings.TrimSpace(cfg.PrivateKeyPath))
-		if err != nil {
-			return nil, fmt.Errorf("read APNs private key: %w", err)
-		}
-		raw = string(data)
-	}
-	block, _ := pem.Decode([]byte(raw))
-	if block == nil {
-		return nil, errors.New("APNs private key is not PEM")
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		if ecKey, ecErr := x509.ParseECPrivateKey(block.Bytes); ecErr == nil {
-			return ecKey, nil
-		}
-		return nil, fmt.Errorf("parse APNs private key: %w", err)
-	}
-	key, ok := parsed.(*ecdsa.PrivateKey)
-	if !ok {
-		return nil, errors.New("APNs private key must be an ECDSA key")
-	}
-	return key, nil
-}
-
-func fixedWidthBigInt(v *big.Int, width int) []byte {
-	raw := v.Bytes()
-	if len(raw) >= width {
-		return raw[len(raw)-width:]
-	}
-	out := make([]byte, width)
-	copy(out[width-len(raw):], raw)
-	return out
 }

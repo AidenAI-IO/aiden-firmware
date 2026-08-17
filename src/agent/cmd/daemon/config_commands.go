@@ -358,20 +358,7 @@ type telemetryDTO struct {
 }
 
 type liveActivityDTO struct {
-	Enabled          *bool  `json:"enabled"`
-	RelayURL         string `json:"relay_url"`
-	RelayAPIKey      string `json:"relay_api_key,omitempty"`
-	HasRelayAPIKey   bool   `json:"has_relay_api_key"`
-	BoardID          string `json:"board_id"`
-	BundleID         string `json:"bundle_id"`
-	Topic            string `json:"topic"`
-	Environment      string `json:"environment"`
-	TeamID           string `json:"team_id"`
-	KeyID            string `json:"key_id"`
-	PrivateKeyPath   string `json:"private_key_path"`
-	PrivateKeyPEM    string `json:"private_key_pem,omitempty"`
-	HasPrivateKeyPEM bool   `json:"has_private_key_pem"`
-	TimeoutSec       int    `json:"timeout_sec"`
+	Enabled *bool `json:"enabled"`
 }
 
 type agentDTO struct {
@@ -420,15 +407,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 	} else if d.Search.HasAPIKey {
 		searchKey = hasAPIKeyPlaceholder
 	}
-	liveActivityRelayAPIKey := d.LiveActivity.RelayAPIKey
-	if strings.TrimSpace(liveActivityRelayAPIKey) == "" && d.LiveActivity.HasRelayAPIKey {
-		liveActivityRelayAPIKey = hasAPIKeyPlaceholder
-	}
-	liveActivityPrivateKeyPEM := d.LiveActivity.PrivateKeyPEM
-	if strings.TrimSpace(liveActivityPrivateKeyPEM) == "" && d.LiveActivity.HasPrivateKeyPEM {
-		liveActivityPrivateKeyPEM = hasAPIKeyPlaceholder
-	}
-
 	return agent.Config{
 		ModelProviders: d.modelProvidersToAgentConfig(),
 		TTSProviders:   d.ttsProvidersToAgentConfig(),
@@ -525,18 +503,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			Environment:       d.Telemetry.Environment,
 		},
 		LiveActivity: agent.LiveActivityConfig{
-			Enabled:        d.LiveActivity.Enabled,
-			RelayURL:       d.LiveActivity.RelayURL,
-			RelayAPIKey:    liveActivityRelayAPIKey,
-			BoardID:        d.LiveActivity.BoardID,
-			BundleID:       d.LiveActivity.BundleID,
-			Topic:          d.LiveActivity.Topic,
-			Environment:    d.LiveActivity.Environment,
-			TeamID:         d.LiveActivity.TeamID,
-			KeyID:          d.LiveActivity.KeyID,
-			PrivateKeyPath: d.LiveActivity.PrivateKeyPath,
-			PrivateKeyPEM:  liveActivityPrivateKeyPEM,
-			TimeoutSec:     d.LiveActivity.TimeoutSec,
+			Enabled: d.LiveActivity.Enabled,
 		},
 		TerminationPolicy:          d.TerminationPolicy,
 		Locale:                     d.Agent.Locale,
@@ -777,18 +744,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Environment:       cfg.Telemetry.EnvironmentOrDefault(),
 		},
 		LiveActivity: liveActivityDTO{
-			Enabled:          boolPtr(cfg.LiveActivity.EnabledOrDefault()),
-			RelayURL:         cfg.LiveActivity.RelayURL,
-			HasRelayAPIKey:   strings.TrimSpace(cfg.LiveActivity.RelayAPIKey) != "",
-			BoardID:          cfg.LiveActivity.BoardIDOrDefault(),
-			BundleID:         cfg.LiveActivity.BundleID,
-			Topic:            cfg.LiveActivity.Topic,
-			Environment:      cfg.LiveActivity.EnvironmentOrDefault(),
-			TeamID:           cfg.LiveActivity.TeamID,
-			KeyID:            cfg.LiveActivity.KeyID,
-			PrivateKeyPath:   cfg.LiveActivity.PrivateKeyPath,
-			HasPrivateKeyPEM: strings.TrimSpace(cfg.LiveActivity.PrivateKeyPEM) != "",
-			TimeoutSec:       int(cfg.LiveActivity.TimeoutOrDefault().Seconds()),
+			Enabled: boolPtr(cfg.LiveActivity.EnabledOrDefault()),
 		},
 		TerminationPolicy: cfg.TerminationPolicyOrDefault(),
 		Agent: agentDTO{
@@ -1266,14 +1222,6 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "telemetry.max_retry"
 	} else if strings.Contains(errMsg, "log.llm_http_retention_days") {
 		field = "log.llm_http_retention_days"
-	} else if strings.Contains(errMsg, "live_activity.relay_url") {
-		field = "live_activity.relay_url"
-	} else if strings.Contains(errMsg, "live_activity.environment") {
-		field = "live_activity.environment"
-	} else if strings.Contains(errMsg, "live_activity.timeout_sec") {
-		field = "live_activity.timeout_sec"
-	} else if strings.Contains(errMsg, "live_activity.bundle_id") || strings.Contains(errMsg, "live_activity.topic") {
-		field = "live_activity.bundle_id"
 	}
 
 	errors = append(errors, ValidationError{
