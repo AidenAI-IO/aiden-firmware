@@ -3638,37 +3638,6 @@ func TestRuntimeSimpleLoopDoesNotInjectLegacyTodoReminderAfterSeveralToolCalls(t
 	}
 }
 
-func TestRuntimeSimpleLoopIgnoresLegacyTodoReminderThreshold(t *testing.T) {
-	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			toolCallResponse("call_1", "web_search", `{"__arg1":"one"}`),
-			toolCallResponse("call_2", "web_search", `{"__arg1":"two"}`),
-			contentResponse("done"),
-		},
-	}
-	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true, TodoReminderToolCalls: 2}),
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
-		NewSkillIndex(),
-	)
-
-	if _, err := runtime.Run(context.Background(), RunRequest{Input: "complex single-agent task"}); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if len(model.messages) < 3 {
-		t.Fatalf("expected third model call after two tools, got %d", len(model.messages))
-	}
-	for i, messages := range model.messages {
-		prompt := messageText(messages)
-		if strings.Contains(prompt, "Todo reminder") || strings.Contains(prompt, "call set_todo") {
-			t.Fatalf("model call %d leaked legacy todo reminder runtime state:\n%s", i, prompt)
-		}
-	}
-}
-
 func TestRuntimeCallbackRemovesPendingActionWithNormalizedToolInput(t *testing.T) {
 	handler := &runtimeCallbackHandler{}
 	handler.pushPendingAction(schema.AgentAction{

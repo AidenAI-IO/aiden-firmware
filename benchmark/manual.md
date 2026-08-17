@@ -42,7 +42,7 @@ full trace and screenshots without re-operating the device.
 | Runner | `benchmark/runner/main.py` | CLI entry point; runs suites and generates reports |
 | WebUI | `benchmark/runner/webui.py` | Web console; manages suites, jobs, environments, logs, reports |
 | Agent client | `benchmark/runner/agent_client.py` | Calls the Go agent's `/api/chat`, `/api/tools/*`, `/api/history` |
-| Judge | `benchmark/runner/judge.py` | Calls an OpenRouter-compatible endpoint; scores using pre/post screenshots and the trace |
+| Judge | `benchmark/runner/judge.py` | Calls an OpenAI-compatible endpoint; scores using pre/post screenshots and the trace |
 | MobileGym bridge | `benchmark/mobilegym/bridge/` | Wraps a MobileGym env as an environment bridge API |
 | ADB Android bridge | `benchmark/adbandroid/` | Wraps an Android emulator/physical device as an environment bridge API via adb (see its README) |
 | Docker daemon worker | `benchmark/docker/Dockerfile.agent-daemon` | The isolated agent daemon the WebUI starts when running a job |
@@ -327,6 +327,7 @@ Common fields:
 | `prompt_prefix` | Prefix for every task prompt; constrains device type, tool usage, etc. |
 | `global_reset` | Suite-level reset configuration |
 | `setup` | Task-level pre-steps; currently supports `{"type": "agent_prompt", ...}` |
+| `app_ids` | Optional MobileGym app IDs to preload during environment setup; omitted tasks skip eager app data loading |
 | `rubric` | The judge model's scoring items |
 | `hard_assertions` | Deterministic checks, e.g. tool-call counts, timeout, required/forbidden tools |
 | `hard_assertions.required_tool_calls` | Requires a tool call whose input contains a specified nested subset |
@@ -388,8 +389,8 @@ Main areas on the WebUI home screen:
 
 ### 2.3 Configuring the judge
 
-The WebUI enables the judge by default. The judge is currently called over an
-OpenRouter-compatible endpoint, using the `OPENROUTER_API_KEY` API key.
+The WebUI enables the judge by default. The judge calls an OpenAI-compatible
+endpoint and uses the `AIDEN_BENCHMARK_JUDGE_API_KEY` credential.
 
 Usage:
 
@@ -439,6 +440,10 @@ The WebUI starts the MobileGym container and bridge server and records:
   `/api/setup`, `/api/providers/screenshot`, `/api/release`.
 - Task screen link: the screen link for each task worker is provided by the WebUI;
   the WebUI backend pulls the screenshot via the bridge's `/api/providers/screenshot`.
+
+MobileGym containers recovered after a WebUI restart are marked `stale`. They
+remain visible so they can be stopped or deleted, but cannot be selected for a
+new benchmark. Start a fresh MobileGym environment for every new WebUI session.
 
 ### 2.5 Running a job
 
@@ -638,7 +643,14 @@ Agent configuration notes:
   static `memory/extraction.yaml` policy is preserved when present.
 - If `--agent-config` is specified, its content is written as the worker's
   `agent.toml`; if not, the runner prefers rendering `agent.toml` from
-  `--base-config-dir/agent.toml.template`, then falls back to the default config.
+  `--base-config-dir/agent.toml.template`. The built-in template reads only the
+  `AIDEN_BENCHMARK_AGENT_*` variables listed below.
+- Credential references such as `api_key = "$ANTHROPIC_AUTH_TOKEN"` are resolved
+  on the host while preparing the worker config. The resolved config is mounted
+  read-only into Docker. A missing credential fails before the daemon starts.
+- Before `--auto-agent-setup` uses a MobileGym endpoint, the runner performs a
+  short `setup` / `release` preflight. A bridge that is healthy but cannot reset
+  is rejected with instructions to start a fresh environment.
 
 Example:
 
@@ -776,18 +788,17 @@ Common parameters:
 | `--json` | false | Print machine-readable JSON |
 
 The agent config rules used by `start-agent-daemon` are the same as
-`run --auto-agent-setup`: copy `--base-config-dir` first, then override the
-generated `agent.toml` with `--agent-config`; if `--agent-config` is absent, use
-`agent.toml.template` or the default config. Platform resolution never rewrites
-that copy. When an environment bridge is provided, the command resolves its
-platform once and passes it to the daemon through process-local
-`--device-type`. Without a bridge, an explicit `--device-type` is an optional
-override; if it is omitted, the daemon keeps `[device].device_type` from
-`agent.toml`. The daemon applies a process-local override after loading
-`agent.toml`, reports the effective value as `status.device_type`, and the
-command validates that value after startup. The deprecated `--target-platform`
-spelling remains accepted as a compatibility alias. After starting the daemon
-manually, pass the printed `agent_url` to `runner run --agent-url`; the runner
+`run --auto-agent-setup`. Platform resolution never rewrites the generated
+config. When an environment bridge is provided,
+the command resolves its platform once and passes it to the daemon through
+process-local `--device-type`. Without a bridge, an explicit `--device-type` is
+an optional override; if it is omitted, the daemon keeps
+`[device].device_type` from `agent.toml`. The daemon applies a process-local
+override after loading `agent.toml`, reports the effective value as
+`status.device_type`, and the command validates that value after startup. The
+deprecated `--target-platform` spelling remains accepted as a compatibility
+alias. After starting the daemon manually, pass the printed `agent_url` to
+`runner run --agent-url`; the runner
 derives and validates its platform against the environment or CLI constraint.
 
 Recommended CLI MobileGym debug flow:
@@ -867,8 +878,14 @@ Common environment variables:
 | --- | --- |
 | `AIDEN_AGENT_URL` | Default for CLI `--agent-url` |
 | `AIDEN_ENVIRONMENT_URL` | Default for CLI `--environment-url` |
-| `OPENROUTER_API_KEY` | Judge API key |
-| `AIDEN_MODEL` / `MODEL_NAME` / `OPENAI_MODEL` | Agent model recorded in the manifest |
+| `AIDEN_BENCHMARK_AGENT_PROVIDER` | Agent provider type rendered into the default `agent.toml` |
+| `AIDEN_BENCHMARK_AGENT_MODEL` | Agent model rendered into `agent.toml` and recorded in the manifest |
+| `AIDEN_BENCHMARK_AGENT_BASE_URL` | Agent model endpoint rendered into the default `agent.toml` |
+| `AIDEN_BENCHMARK_AGENT_API_KEY` | Agent credential rendered into the default read-only `agent.toml` |
+| `AIDEN_BENCHMARK_JUDGE_MODEL` | Default judge model for `run` and `rejudge` |
+| `AIDEN_BENCHMARK_JUDGE_BASE_URL` | Default OpenAI-compatible judge endpoint |
+| `AIDEN_BENCHMARK_JUDGE_API_KEY` | Judge API key |
+| `AIDEN_BENCHMARK_ANALYSIS_API_KEY` | Optional post-run analysis credential; defaults to the Judge key |
 | `BENCHMARK_STATE_FILE` | Default for CLI `--state-file` |
 | `MOBILEGYM_PARALLEL_ENVS` | Default parallel env count for `start_simulator.py` |
 | `AIDEN_BRIDGE_BIND_HOST` | MobileGym bridge bind host |
@@ -940,12 +957,12 @@ curl http://127.0.0.1:8080/api/tools
 
 If it is a WebUI job, look at the job's daemon log.
 
-### The judge reports missing env var OPENROUTER_API_KEY
+### The judge reports missing env var AIDEN_BENCHMARK_JUDGE_API_KEY
 
 CLI:
 
 ```bash
-export OPENROUTER_API_KEY=...
+export AIDEN_BENCHMARK_JUDGE_API_KEY=...
 ```
 
 WebUI:

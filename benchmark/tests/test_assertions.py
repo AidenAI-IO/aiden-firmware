@@ -214,6 +214,8 @@ def test_expected_recalled_memory_ids_pass_when_tool_result_contains_id():
 
     assert result.passed is True
     assert result.recalled_memory_ids == ["personamem_solo_travel"]
+    assert result.evidence_source == "inline"
+    assert result.recall_memory_called is True
 
 def test_expected_recalled_memory_ids_fail_when_expected_id_absent():
     history = [
@@ -228,6 +230,7 @@ def test_expected_recalled_memory_ids_fail_when_expected_id_absent():
 
     assert result.passed is False
     assert result.recalled_memory_ids == ["personamem_campfire_storytelling"]
+    assert result.evidence_source == "inline"
 
 def test_expected_recalled_memory_ids_ignores_non_object_json_payload():
     history = [
@@ -240,5 +243,332 @@ def test_expected_recalled_memory_ids_ignores_non_object_json_payload():
 
     result = assertions.evaluate_expected_recalled_memory_ids(history, ["personamem_solo_travel"])
 
+    assert result.passed is None
+    assert result.recalled_memory_ids == []
+    assert result.evidence_source == "unavailable"
+
+
+def test_expected_recalled_memory_ids_prefers_episode_over_compressed_history():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+    ]
+    episode = {
+        "id": "ep-1",
+        "retrieved_memory_refs": ["personamem_music_expression"],
+    }
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode=episode,
+    )
+
+    assert result.passed is True
+    assert result.recalled_memory_ids == ["personamem_music_expression"]
+    assert result.evidence_source == "episode"
+
+
+def test_expected_recalled_memory_ids_episode_missing_expected_id_is_failure():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (5000 chars)]",
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={"retrieved_memory_refs": ["personamem_music_software"]},
+    )
+
+    assert result.passed is False
+    assert result.recalled_memory_ids == ["personamem_music_software"]
+    assert result.evidence_source == "episode"
+
+
+def test_expected_recalled_memory_ids_prefers_complete_inline_result_over_episode():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": '{"results":[{"id":"personamem_music_expression"}]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={"id": "ep-1"},
+    )
+
+    assert result.passed is True
+    assert result.recalled_memory_ids == ["personamem_music_expression"]
+    assert result.evidence_source == "inline"
+
+
+def test_expected_recalled_memory_ids_deduplicates_multiple_recalls_and_uses_all_of():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": '{"results":[{"id":"memory-a"},{"id":"memory-a"}]}',
+        },
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": '{"results":[{"id":"memory-b"},{"id":"memory-a"}]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["memory-a", "memory-b"],
+    )
+
+    assert result.passed is True
+    assert result.recalled_memory_ids == ["memory-a", "memory-b"]
+    assert result.evidence_source == "inline"
+
+
+def test_expected_recalled_memory_ids_does_not_use_final_answer_claim():
+    history = [
+        {"type": "assistant", "content": "I recalled personamem_music_expression."},
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={"retrieved_memory_refs": ["personamem_music_expression"]},
+    )
+
     assert result.passed is False
     assert result.recalled_memory_ids == []
+    assert result.evidence_source == "unavailable"
+    assert result.recall_memory_called is False
+
+
+def test_expected_recalled_memory_ids_compressed_history_without_episode_is_unavailable():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+    )
+
+    assert result.passed is None
+    assert result.recalled_memory_ids == []
+    assert result.evidence_source == "unavailable"
+    assert result.recall_memory_called is True
+
+
+def test_expected_recalled_memory_ids_does_not_attribute_device_recall_to_empty_memory_recall():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": '{"results":[]}',
+        },
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": '{"results":[{"id":"personamem_music_expression"}]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={"retrieved_memory_refs": ["personamem_music_expression"]},
+    )
+
+    assert result.passed is False
+    assert result.recalled_memory_ids == []
+    assert result.evidence_source == "inline"
+
+
+def test_expected_recalled_memory_ids_does_not_attribute_device_recall_to_compressed_memory_recall():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": '{"results":[{"id":"personamem_music_expression"}]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={"retrieved_memory_refs": ["personamem_music_expression"]},
+    )
+
+    assert result.passed is None
+    assert result.recalled_memory_ids == []
+    assert result.evidence_source == "unavailable"
+
+
+def test_expected_recalled_memory_ids_attributes_episode_when_device_recall_is_empty():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": '{"results":[]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={"retrieved_memory_refs": ["personamem_music_expression"]},
+    )
+
+    assert result.passed is True
+    assert result.recalled_memory_ids == ["personamem_music_expression"]
+    assert result.evidence_source == "episode"
+
+
+def test_expected_recalled_memory_ids_attributes_episode_when_device_ids_are_unrelated():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": '{"results":[{"id":"device-only"}]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={
+            "retrieved_memory_refs": [
+                "personamem_music_expression",
+                "device-only",
+            ]
+        },
+    )
+
+    assert result.passed is True
+    assert result.recalled_memory_ids == ["personamem_music_expression"]
+    assert result.evidence_source == "episode"
+
+
+def test_expected_recalled_memory_ids_keeps_episode_ambiguous_after_device_error():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": "device memory unavailable",
+            "is_error": True,
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={"retrieved_memory_refs": ["personamem_music_expression"]},
+    )
+
+    assert result.passed is None
+    assert result.recalled_memory_ids == []
+    assert result.evidence_source == "unavailable"
+
+
+def test_expected_recalled_memory_ids_uses_empty_aggregate_as_negative_episode_evidence():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": '{"results":[]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["personamem_music_expression"],
+        episode={"retrieved_memory_refs": []},
+    )
+
+    assert result.passed is False
+    assert result.recalled_memory_ids == []
+    assert result.evidence_source == "episode"
+
+
+def test_expected_recalled_memory_ids_uses_partial_aggregate_as_negative_episode_evidence():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": '{"results":[{"id":"memory-a"}]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["memory-a", "memory-b"],
+        episode={"retrieved_memory_refs": ["memory-a"]},
+    )
+
+    assert result.passed is False
+    assert result.recalled_memory_ids == []
+    assert result.evidence_source == "episode"

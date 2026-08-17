@@ -99,11 +99,48 @@ def test_prepare_task_isolation_retries_clear(monkeypatch):
     assert client.clears == 2
 
 
+def test_prepare_task_isolation_retries_clear_before_environment_setup(monkeypatch):
+    setup_calls = []
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "runner.recovery.call_environment_setup",
+        lambda *args, **kwargs: setup_calls.append((args, kwargs)),
+    )
+    client = SetupClient(fail_clears=1)
+    suite = Suite(
+        name="phone",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=__import__("pathlib").Path("suite.json"),
+    )
+    task = TaskSpec(
+        id="open_settings",
+        category="single_step",
+        description_for_judge="Open settings.",
+        prompt="open settings",
+        rubric=[RubricItem(id="ok", check="ok")],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=3),
+    )
+
+    prepare_task_isolation(
+        client,
+        suite,
+        task,
+        environment_url="http://127.0.0.1:9090",
+        ready_timeout_sec=10,
+        setup_attempts=3,
+    )
+
+    assert client.clears == 2
+    assert len(setup_calls) == 1
+
+
 def test_prepare_task_isolation_runs_agent_prompt_after_environment_setup(monkeypatch):
     setup_calls = []
 
-    def fake_environment_setup(environment_url, task_id=None, timeout=30):
-        setup_calls.append((environment_url, task_id, timeout))
+    def fake_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None):
+        setup_calls.append((environment_url, task_id, timeout, app_ids))
 
     monkeypatch.setattr(
         "runner.recovery.call_environment_setup",
@@ -126,6 +163,7 @@ def test_prepare_task_isolation_runs_agent_prompt_after_environment_setup(monkey
         rubric=[RubricItem(id="ok", check="ok")],
         hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=3),
         setup={"type": "agent_prompt", "prompt": "open a settings sub-page", "timeout_sec": 45},
+        app_ids=["settings"],
     )
 
     prepare_task_isolation(
@@ -138,16 +176,89 @@ def test_prepare_task_isolation_runs_agent_prompt_after_environment_setup(monkey
         setup_attempts=1,
     )
 
-    assert setup_calls == [("http://127.0.0.1:9090", "suite.json:open_settings", 180)]
+    assert setup_calls == [
+        ("http://127.0.0.1:9090", "suite.json:open_settings", 180, ["settings"])
+    ]
     assert client.chats == [("ADB benchmark rules\n\nopen a settings sub-page", 45)]
     assert client.clears == 2
+
+
+def test_prepare_task_isolation_rebuilds_environment_after_agent_prompt_timeout(monkeypatch):
+    events = []
+
+    def fake_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None):
+        events.append(("environment_setup", task_id))
+
+    class TimeoutThenSuccessClient(SetupClient):
+        def __init__(self):
+            super().__init__()
+            self.chat_attempts = 0
+
+        def recover_after_timeout(self, timeout_sec=90, poll_sec=3.0):
+            events.append(("recover", timeout_sec))
+            return True
+
+        def clear_history(self, timeout=30):
+            super().clear_history(timeout=timeout)
+            events.append(("clear_history", self.clears))
+
+        def chat(self, message, timeout_sec=None):
+            self.chat_attempts += 1
+            events.append(("chat", self.chat_attempts))
+            if self.chat_attempts == 1:
+                error = AgentTimeoutError("setup timed out")
+                error.request_id = "setup-req-1"
+                raise error
+            self.chats.append((message, timeout_sec))
+
+    monkeypatch.setattr("runner.recovery.call_environment_setup", fake_environment_setup)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    client = TimeoutThenSuccessClient()
+    suite = Suite(
+        name="phone",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=__import__("pathlib").Path("suite.json"),
+    )
+    task = TaskSpec(
+        id="open_settings",
+        category="single_step",
+        description_for_judge="Open settings.",
+        prompt="open settings",
+        rubric=[RubricItem(id="ok", check="ok")],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=3),
+        setup={"type": "agent_prompt", "prompt": "open a settings sub-page"},
+    )
+
+    prepare_task_isolation(
+        client,
+        suite,
+        task,
+        environment_url="http://127.0.0.1:9090",
+        benchmark_task_id="suite.json:open_settings",
+        ready_timeout_sec=10,
+        setup_attempts=2,
+    )
+
+    assert events == [
+        ("recover", 10),
+        ("clear_history", 1),
+        ("environment_setup", "suite.json:open_settings"),
+        ("chat", 1),
+        ("recover", 15),
+        ("clear_history", 2),
+        ("environment_setup", "suite.json:open_settings"),
+        ("chat", 2),
+        ("clear_history", 3),
+    ]
 
 
 def test_prepare_task_isolation_runs_seed_memory_with_environment_setup(monkeypatch):
     setup_calls = []
 
-    def fake_environment_setup(environment_url, task_id=None, timeout=30):
-        setup_calls.append((environment_url, task_id, timeout))
+    def fake_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None):
+        setup_calls.append((environment_url, task_id, timeout, app_ids))
 
     monkeypatch.setattr(
         "runner.recovery.call_environment_setup",
@@ -191,7 +302,9 @@ def test_prepare_task_isolation_runs_seed_memory_with_environment_setup(monkeypa
         setup_attempts=1,
     )
 
-    assert setup_calls == [("http://127.0.0.1:9090", "personamem.json:recall_fact", 180)]
+    assert setup_calls == [
+        ("http://127.0.0.1:9090", "personamem.json:recall_fact", 180, [])
+    ]
     assert client.seeded_memories == [
         ({"id": "mem-1", "content": "The user likes flashcards.", "tags": ["study"]}, 7)
     ]
@@ -218,6 +331,46 @@ def test_prepare_task_isolation_raises_after_exhausting_retries(monkeypatch):
 
     with pytest.raises(AgentTimeoutError, match="clear timed out"):
         prepare_task_isolation(client, suite, task, ready_timeout_sec=10, setup_attempts=2)
+
+
+def test_prepare_task_isolation_does_not_repeat_failed_environment_setup(monkeypatch):
+    setup_calls = 0
+
+    def fail_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None):
+        nonlocal setup_calls
+        setup_calls += 1
+        raise ResetError("environment reset failed")
+
+    monkeypatch.setattr("runner.recovery.call_environment_setup", fail_environment_setup)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    client = SetupClient()
+    suite = Suite(
+        name="phone",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=__import__("pathlib").Path("suite.json"),
+    )
+    task = TaskSpec(
+        id="open_settings",
+        category="single_step",
+        description_for_judge="Open settings.",
+        prompt="open settings",
+        rubric=[RubricItem(id="ok", check="ok")],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=3),
+    )
+
+    with pytest.raises(ResetError, match="environment reset failed"):
+        prepare_task_isolation(
+            client,
+            suite,
+            task,
+            environment_url="http://127.0.0.1:9090",
+            ready_timeout_sec=10,
+            setup_attempts=3,
+        )
+
+    assert setup_calls == 1
 
 
 def test_prepare_task_isolation_raises_when_agent_never_ready(monkeypatch):

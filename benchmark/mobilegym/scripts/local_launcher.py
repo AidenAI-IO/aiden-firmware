@@ -531,11 +531,7 @@ def summary_suite(summary: dict[str, Any]) -> str:
 
 def current_model_label(env: dict[str, str] | None = None) -> str:
     env = env or os.environ
-    for name in ("AIDEN_MODEL", "MODEL_NAME", "MODEL", "OPENAI_MODEL"):
-        value = env.get(name)
-        if value:
-            return value
-    return "aiden-go"
+    return env.get("AIDEN_BENCHMARK_AGENT_MODEL") or "aiden-go"
 
 
 def model_config_from_payload(payload: dict[str, Any]) -> dict[str, str]:
@@ -641,13 +637,13 @@ def agent_model_environment(
     api_key = model_values.get("api_key") or provider_values.get("api_key")
     env: dict[str, str] = {}
     if provider:
-        env["MODEL_PROVIDER"] = provider
+        env["AIDEN_BENCHMARK_AGENT_PROVIDER"] = provider
     if model := model_values.get("model"):
-        env["MODEL_NAME"] = model
+        env["AIDEN_BENCHMARK_AGENT_MODEL"] = model
     if base_url := provider_values.get("base_url"):
-        env["MODEL_BASE_URL"] = base_url
+        env["AIDEN_BENCHMARK_AGENT_BASE_URL"] = base_url
     if api_key:
-        env["MODEL_API_KEY"] = api_key
+        env["AIDEN_BENCHMARK_AGENT_API_KEY"] = api_key
     return env
 
 
@@ -656,12 +652,14 @@ def parse_agent_benchmark_config(text: str) -> dict[str, str]:
 
 
 def parse_agent_benchmark_assignments(text: str) -> dict[str, str]:
-    values = parse_toml_assignments(text, {"api_key", "judge_model"})
+    values = parse_toml_assignments(text, {"api_key", "judge_model", "base_url"})
     env: dict[str, str] = {}
     if values.get("api_key"):
-        env["OPENROUTER_API_KEY"] = values["api_key"]
+        env["AIDEN_BENCHMARK_JUDGE_API_KEY"] = values["api_key"]
     if values.get("judge_model"):
         env["AIDEN_BENCHMARK_JUDGE_MODEL"] = values["judge_model"]
+    if values.get("base_url"):
+        env["AIDEN_BENCHMARK_JUDGE_BASE_URL"] = values["base_url"]
     return env
 
 
@@ -703,12 +701,10 @@ def toml_section(text: str, section: str) -> str:
 
 def validate_model_environment(env: dict[str, str] | None = None) -> None:
     env = env or os.environ
-    provider = env.get("MODEL_PROVIDER") or env.get("AIDEN_MODEL_PROVIDER") or "openrouter"
-    if provider == "openrouter" and not (
-        env.get("MODEL_API_KEY") or env.get("OPENROUTER_API_KEY") or env.get("AIDEN_MODEL_API_KEY")
-    ):
+    provider = env.get("AIDEN_BENCHMARK_AGENT_PROVIDER") or "openrouter"
+    if provider == "openrouter" and not env.get("AIDEN_BENCHMARK_AGENT_API_KEY"):
         raise LauncherError(
-            "MobileGym model config missing: set MODEL_API_KEY or OPENROUTER_API_KEY "
+            "MobileGym model config missing: set AIDEN_BENCHMARK_AGENT_API_KEY "
             "before starting the Mac MobileGym launcher"
         )
 

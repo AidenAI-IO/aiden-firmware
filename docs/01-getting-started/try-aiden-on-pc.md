@@ -1,141 +1,292 @@
 ---
 sidebar_position: 1
 title: Try Aiden on PC
-description: Run the Aiden Agent against a simulated phone UI without assembling hardware.
+description: Run and develop the Aiden Agent locally without a development board.
 ---
 
 # Try Aiden on PC
 
-This guide is the shortest way to experience Aiden without a Luckfox board or a
-physical phone. It runs the real Aiden Agent on your computer and connects it to
-the MobileGym phone simulator through the Benchmark environment bridge.
+The Docker sandbox is the fastest way to run the Aiden Agent without a Luckfox
+board. It starts the same configuration and Agent web experiences used during
+device development, while keeping configuration and Agent state in a Docker
+named volume.
 
-The PC experience demonstrates how Aiden observes a screen, chooses tools, and
-operates a mobile-style UI. It does not test HDMI capture, USB HID, audio, or
-other physical-hardware behavior.
+Use this workflow for interactive development, configuration checks, and Agent
+testing. For repeatable task suites, parallel environments, scoring, and reports,
+use the [Benchmark workflow](../09-benchmark/README.md) instead.
 
-## What You Need
+## Prerequisites
 
-- A Docker-capable macOS or Linux computer. Start Docker Desktop or Docker Engine
-  before continuing.
-- Git and [uv](https://docs.astral.sh/uv/getting-started/installation/).
-- An API key for the model that will run the Aiden Agent.
-- An OpenRouter-compatible API key only if you also enable Benchmark judging.
+- Docker Desktop, or Docker Engine with the Compose plugin;
+- Git;
+- a model provider and API key to configure after startup;
+- an optional environment bridge if the Agent should observe and control a
+  simulator, emulator, physical ADB device, or virtual machine;
+- host-side [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for
+  MobileGym and ADB Android bridge workflows;
+- [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools),
+  which provide `adb`, for the ADB Android workflow.
 
-The documented path currently targets macOS and Linux. Windows users should use
-a Docker-capable WSL2 environment, but that path is not yet part of the regular
-project validation matrix.
+The sandbox does not require the large `pico-sdk` submodule.
 
-## 1. Clone and Install
+## Get the Source
+
+The basic sandbox does not require a recursive clone:
 
 ```bash
-git clone --recursive https://github.com/AidenAI-IO/aiden-firmware.git
-cd aiden-firmware/benchmark
+git clone https://github.com/AidenAI-IO/aiden-firmware.git
+cd aiden-firmware
+```
+
+## Start the Sandbox
+
+From the repository root:
+
+```bash
+make sandbox-start
+```
+
+The command starts the sandbox in the background and waits for both web services
+to become healthy. The first run builds the image if it does not exist; later
+runs reuse the existing image. When the services are ready, open:
+
+| Page | URL | Purpose |
+| --- | --- | --- |
+| Config Web | [http://localhost:8000](http://localhost:8000) | Configure model, STT, TTS, Agent, and other supported settings |
+| Agent Web | [http://localhost:8080](http://localhost:8080) | Chat with and inspect the running Agent |
+
+Config Web writes changes into the sandbox's persistent named volume. Restarting
+or rebuilding the containers therefore does not discard the saved configuration
+or other persisted Agent state. Keep API keys out of tracked repository files;
+enter them through Config Web instead. Saving a supported Agent setting requests
+an Agent restart automatically, so the new configuration takes effect without
+restarting the whole Compose stack.
+
+To build and run the sandbox in the foreground instead:
+
+```bash
+docker compose up --build
+```
+
+Follow service output with:
+
+```bash
+docker compose logs -f
+```
+
+After changing Aiden source code, rebuild the image, replace the running
+container, and wait for both web services to become healthy with:
+
+```bash
+make sandbox-update
+```
+
+The update preserves the `aiden-data` volume. Use `make sandbox-logs` to follow
+the Agent logs and `make sandbox-stop` to stop the sandbox.
+
+## Connect an Environment Bridge
+
+Without an environment bridge, Config Web and Agent Web work, but the Agent has
+no external screen to observe or control. A bridge exposes screenshots and input
+tools through the repository's
+[Environment Bridge Protocol](../../benchmark/environment_bridge.md).
+
+Start the bridge on the host, then pass its host-reachable endpoint when starting
+the sandbox:
+
+```bash
+AIDEN_DEVICE_TYPE=Android \
+AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT=http://host.docker.internal:19090 \
+  docker compose up --build
+```
+
+Use `host.docker.internal`, not `localhost` or `127.0.0.1`: from inside the Agent
+container, the latter addresses refer to the container itself. The root Compose
+stack maps `host.docker.internal` to the host gateway where required.
+
+The endpoint is applied when the Agent container is created. If the sandbox is
+already running, stop it and run the command again with the environment variable.
+
+The sandbox uses `AIDEN_BENCHMARK_TASK_ID=docker-sandbox` by default and calls
+the bridge's `/api/setup` endpoint during startup. It then sends the same task id
+with forwarded tool requests so a multi-environment bridge keeps this interactive
+session on one underlying environment. To choose a different stable route, set
+both variables when starting Compose:
+
+```bash
+AIDEN_DEVICE_TYPE=Android \
+AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT=http://host.docker.internal:19090 \
+AIDEN_BENCHMARK_TASK_ID=my-sandbox-session \
+AIDEN_BRIDGE_EPISODE_ID=my-sandbox-session \
+  docker compose up --build
+```
+
+Keep the task id stable when a multi-instance bridge should identify requests as
+one logical sandbox session. Use a different id for each simultaneously running
+sandbox session.
+
+Agent watchdog restarts and Config Web saves preserve the claimed bridge
+session. Changing the bridge endpoint, task id, or episode id releases the old
+route before claiming the new one. Stopping the sandbox releases the current
+route; the next full start claims a fresh session.
+
+The default sandbox device type is `iOS`, which also lets Agent Web become ready
+without waiting for an unavailable Android frame service when no bridge is
+configured. Set `AIDEN_DEVICE_TYPE` to match the bridge platform whenever the
+target differs. Accepted values are `iOS`, `Android`, `macOS`, `windows`, and
+`linux`. If no runtime override was passed, a device type change in Config Web
+takes effect after `docker compose restart`. If `AIDEN_DEVICE_TYPE` was passed,
+that environment value remains authoritative: stop the stack and run
+`docker compose up` again with the updated value, or without the override.
+
+### MobileGym
+
+Start a one-environment MobileGym bridge from a separate terminal:
+
+```bash
+git submodule update --init benchmark/mobilegym/vendor/mobilegym
+cd benchmark
 uv sync
+uv run python -m runner start-mobilegym-env --envs 1 --bridge-port 19090
 ```
 
-If you already cloned the repository, update it before continuing:
+Verify the bridge from the host:
 
 ```bash
-git pull
-git submodule update --init --recursive
+curl http://127.0.0.1:19090/health
 ```
 
-## 2. Start the Benchmark WebUI
-
-From the `benchmark/` directory:
+Then start the root Compose stack with:
 
 ```bash
-uv run python -m runner webui
+AIDEN_DEVICE_TYPE=Android \
+AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT=http://host.docker.internal:19090 \
+  docker compose up --build
 ```
 
-Open:
+Use Agent Web at `http://localhost:8080` to give the Agent a task and watch it
+operate the MobileGym UI. The sandbox claims one MobileGym route through
+`/api/setup` using the configured `AIDEN_BENCHMARK_TASK_ID`; the bridge process
+prints its own stop command when it starts.
 
-```text
-http://127.0.0.1:8765
+### Android Through ADB
+
+First confirm that the emulator, Android virtual machine, or physical device is
+visible to ADB:
+
+```bash
+adb devices
 ```
 
-The first MobileGym run may take longer because the WebUI builds the simulator
-and isolated Agent daemon images locally.
+Start the ADB Android bridge, replacing the serial with the value shown by
+`adb devices`:
 
-## 3. Configure the Agent Model
-
-Open **Agent config** in the WebUI and configure the model provider used by the
-isolated Agent workers. The default template contains:
-
-```toml
-[model_providers.benchmark]
-type = "openrouter"
-base_url = ""
-api_key = "YOUR_MODEL_API_KEY"
-
-[model]
-provider = "benchmark"
-model = "qwen3.6-35b"
+```bash
+cd benchmark
+uv sync
+uv run python -m runner start-adb-android-env \
+  --adb-serial emulator-5554 \
+  --bridge-port 8899
 ```
 
-Replace the key and, if necessary, the provider URL or model name. Save the
-configuration before starting a job. Do not commit the generated local
-`agent.toml` or API keys.
+Then start the sandbox from the repository root:
 
-The **Enable judge** option is separate from the Agent model. For a first
-experience, disable judging; this avoids requiring a second API key and still
-keeps the Agent trace and simulator screenshots.
+```bash
+AIDEN_DEVICE_TYPE=Android \
+AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT=http://host.docker.internal:8899 \
+  docker compose up --build
+```
 
-## 4. Start the Phone Simulator
+See [ADB Android Environment Bridge](../../benchmark/adbandroid/README.md) for
+supported tools, serial selection, and device-specific limitations.
 
-1. Select a small MobileGym suite, such as `mobilegym_basic.json`.
-2. Click **Run selected suites**.
-3. Open the **MobileGym** tab in the environment dialog.
-4. Enter a name and set **Envs** to `1` for the first run.
-5. Click **Start MobileGym** and wait for the environment status to become
-   running.
-6. Select the running environment and confirm the run.
+### Other Virtual Machines or Targets
 
-The WebUI starts an isolated Aiden Agent worker and connects its screenshot,
-touch, keyboard, and text-entry tools to the simulator.
+The sandbox can connect to any host-side service that implements the
+[Environment Bridge Protocol](../../benchmark/environment_bridge.md). Start the
+bridge for the virtual machine or UI target, expose its HTTP port on the host,
+and set:
 
-## 5. Watch Aiden Operate
+```bash
+AIDEN_DEVICE_TYPE=<device-type> \
+AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT=http://host.docker.internal:<bridge-port> \
+  docker compose up --build
+```
 
-Use **Task workers** to open the live simulator screen and worker log. A complete
-run should show:
+The environment bridge is the control boundary: the sandbox does not gain direct
+access to an arbitrary virtual machine merely because the VM is running. For the
+project's virtual iPhone workflow, use `AIDEN_DEVICE_TYPE=iOS` and see the
+[vphone CLI setup guide](../09-benchmark/vphone-cli-setup-guide-en.md).
 
-- the simulated phone UI changing as the Agent acts;
-- tool calls such as screenshots, gestures, and text entry;
-- a completed job in the Jobs table;
-- pre/post screenshots and the full tool trace in the generated report.
+## Stop or Reset the Sandbox
 
-This is the main PC capability experience. Benchmark scores and repeated suites
-are developer features and are not required for the first run.
+For a foreground run, press `Ctrl-C`. Then remove the stopped containers and
+network while preserving the named volume:
+
+```bash
+docker compose down
+```
+
+To delete the saved configuration and all other Agent state in the Compose named
+volume, remove volumes as well:
+
+```bash
+docker compose down -v
+```
+
+The `-v` reset is destructive. The next `docker compose up --build` starts with
+fresh sandbox data.
+
+## Hardware Capability Boundaries
+
+The sandbox runs software services; it does not emulate the Aiden development
+board or its peripherals. In particular, it does not simulate:
+
+- board Wi-Fi scanning, access-point setup, USB networking, or Wi-Fi connection
+  management;
+- OTA, bootloader, partition, firmware flashing, or rollback behavior;
+- HDMI-to-CSI screen capture, `/dev/video0`, or the frame capture hardware path;
+- Linux USB gadget devices and real USB HID output through `/dev/hidg*`;
+- onboard microphone, speaker, codec, hardware VAD, or the board audio service;
+- board BLE and other board-specific peripheral services.
+
+Hardware-related controls may still appear in shared configuration pages, but
+they are not evidence that the corresponding hardware path works in Docker. An
+environment bridge substitutes a screen-and-input target for Agent testing; it
+does not emulate Wi-Fi, OTA, USB HID, audio, or other board behavior.
+
+Use a physical board and the [Newcomer Quickstart](quickstart.md) when validating
+those capabilities.
 
 ## Troubleshooting
 
-### Docker is unavailable
+### A web page does not open
 
-Confirm Docker is running:
+Check service status and logs:
 
 ```bash
-docker info
+docker compose ps
+docker compose logs -f
 ```
 
-### The Agent worker cannot call the model
+Also confirm that ports `8000` and `8080` are not already in use.
 
-Reopen **Agent config** and verify the provider, model name, API key, and optional
-base URL. The judge API key does not configure the Agent worker.
+### The Agent cannot reach the environment bridge
 
-### The judge reports a missing API key
+1. Confirm the bridge's `/health` endpoint works from the host.
+2. Confirm the sandbox was started with `AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT`.
+3. Confirm the endpoint uses `host.docker.internal`, not `localhost`.
+4. Check both the bridge output and `docker compose logs -f` for the failed
+   request.
 
-Disable **Enable judge**, or configure the OpenRouter-compatible judge key in the
-WebUI.
+### The Agent Web opens but model requests fail
 
-### MobileGym stays in the starting state
-
-Check the WebUI log and Docker status. The first image build can take several
-minutes depending on the network and machine.
+Open Config Web and verify the provider, model name, API key, and optional base
+URL. The sandbox does not provide model credentials automatically.
 
 ## Next Steps
 
-- [Benchmark Overview](../09-benchmark/README.md)
-- [Benchmark Detailed Guide](../09-benchmark/quickstart.md)
-- [Build Aiden Hardware](quickstart.md)
-- [Hardware and Wiring](hardware.md)
+- [Benchmark Overview](../09-benchmark/README.md) for repeatable suites, parallel
+  environments, scoring, and reports;
+- [Agent Configuration](../04-agent/configuration.md) for configuration fields;
+- [Hardware & Wiring](hardware.md) when moving to a physical board.

@@ -28,31 +28,56 @@ from runner.analysis import AnalysisResult, analyze_run, config_from_env
 from runner.capture import DEFAULT_SCREENSHOT_TIMEOUT_SEC
 from runner.environment_endpoint import EnvironmentEndpoint
 from runner.html_report import generate_report_html
-from runner.judge import JudgeConfig
+from runner.judge import DEFAULT_JUDGE_API_KEY_ENV, JudgeConfig
 from runner.platform import (
     read_environment_health,
     resolve_environment_platform,
-    resolve_mock_platform,
+)
+from runner.preflight import (
+    MOBILEGYM_PREFLIGHT_COMPLETE_ENV,
+    preflight_mobilegym_environment,
 )
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
 
 try:
-    from benchmark.runner.environment import EnvironmentManager, MobileGymEnvironment
+    from benchmark.runner.environment import (
+        EnvironmentManager,
+        MobileGymEnvironment,
+        ensure_mobilegym_image,
+    )
     from benchmark.runner.adb_android_environment import (
         ADBAndroidEnvironment,
         ADBAndroidEnvironmentManager,
         DEFAULT_ADB_SERIAL,
     )
-    from benchmark.runner.config import AgentConfigManager
+    from benchmark.runner.config import (
+        AgentConfigManager,
+        apply_agent_toml_runtime_defaults,
+        materialize_agent_config_credentials,
+        missing_agent_config_error,
+        render_agent_template,
+        validate_agent_toml,
+    )
 except ImportError:
-    from runner.environment import EnvironmentManager, MobileGymEnvironment
+    from runner.environment import (
+        EnvironmentManager,
+        MobileGymEnvironment,
+        ensure_mobilegym_image,
+    )
     from runner.adb_android_environment import (
         ADBAndroidEnvironment,
         ADBAndroidEnvironmentManager,
         DEFAULT_ADB_SERIAL,
     )
-    from runner.config import AgentConfigManager
+    from runner.config import (
+        AgentConfigManager,
+        apply_agent_toml_runtime_defaults,
+        materialize_agent_config_credentials,
+        missing_agent_config_error,
+        render_agent_template,
+        validate_agent_toml,
+    )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -508,6 +533,11 @@ class BenchmarkWebApp:
         if environment_type == "mobilegym":
             mobilegym_env = self.env_manager.get(environment_id)
             if mobilegym_env is not None:
+                if mobilegym_env.status != "running":
+                    raise ValueError(
+                        "selected MobileGym environment is not fresh; remove it "
+                        "and start a fresh MobileGym environment"
+                    )
                 environment_endpoint = mobilegym_env.public_endpoint.rstrip("/")
                 environment_web_url = mobilegym_env.web_url
                 parallel_tasks = mobilegym_env.parallel_envs
@@ -819,18 +849,13 @@ class BenchmarkWebApp:
             self._raise_if_job_stop_requested(job)
             self._set_job(job, status="preparing", started_at=now_iso(), message="preparing config")
             agent_config_text = self.get_agent_config()["content"]
-            if job.environment_type == "mock":
-                resolution = resolve_mock_suites_platform(
-                    self.config.suites_dir,
-                    job.suites,
-                )
-                self._set_job(
-                    job,
-                    target_platform=resolution.value,
-                )
-            else:
+            if job.environment_type != "mock":
                 health = read_environment_health(job.environment_endpoint or job.endpoint)
                 resolution = resolve_environment_platform(health)
+                preflight_mobilegym_environment(
+                    job.environment_endpoint or job.endpoint,
+                    health=health,
+                )
                 self._set_job(
                     job,
                     target_platform=resolution.value,
@@ -850,6 +875,10 @@ class BenchmarkWebApp:
                 for suite_key in job.suites:
                     self._raise_if_job_stop_requested(job)
                     self._run_mock_suite(job, suite_key)
+                self._set_job(
+                    job,
+                    target_platform=_mock_job_target_platform(job.suite_results),
+                )
                 self._raise_if_job_stop_requested(job)
                 self._refresh_job_report(job)
                 final_status = (
@@ -1199,11 +1228,12 @@ class BenchmarkWebApp:
             if job.repeats:
                 cmd.extend(["--repeats", str(job.repeats)])
             env = os.environ.copy()
+            env[MOBILEGYM_PREFLIGHT_COMPLETE_ENV] = "1"
             if not job.no_judge:
                 with self._lock:
                     judge_api_key = self._job_judge_api_keys.get(job.id, "")
                 if judge_api_key:
-                    env["OPENROUTER_API_KEY"] = judge_api_key
+                    env[DEFAULT_JUDGE_API_KEY_ENV] = judge_api_key
             exit_code = self._run_runner_process(
                 worker_job,
                 cmd,
@@ -1405,11 +1435,12 @@ class BenchmarkWebApp:
             cmd.extend(["--repeats", str(job.repeats)])
         append_log(Path(job.runner_log), "\n$ " + " ".join(cmd))
         env = os.environ.copy()
+        env[MOBILEGYM_PREFLIGHT_COMPLETE_ENV] = "1"
         if not job.no_judge:
             with self._lock:
                 judge_api_key = self._job_judge_api_keys.get(job.id, "")
             if judge_api_key:
-                env["OPENROUTER_API_KEY"] = judge_api_key
+                env[DEFAULT_JUDGE_API_KEY_ENV] = judge_api_key
         self._raise_if_job_stop_requested(job)
         popen_kwargs: dict[str, Any] = {}
         if os.name == "posix":
@@ -1502,7 +1533,7 @@ class BenchmarkWebApp:
             with self._lock:
                 judge_api_key = self._job_judge_api_keys.get(job.id, "")
             if judge_api_key:
-                env["OPENROUTER_API_KEY"] = judge_api_key
+                env[DEFAULT_JUDGE_API_KEY_ENV] = judge_api_key
         exit_code = self._run_runner_process(job, cmd, env)
 
         result = {
@@ -1631,22 +1662,17 @@ def suite_uses_mock_environment(path: Path) -> bool:
     return isinstance(data, dict) and suite_data_uses_mock_environment(data)
 
 
-def resolve_mock_suites_platform(suites_dir: Path, suite_keys: list[str]):
-    platforms = set()
-    for suite_key in suite_keys:
-        suite = load_suite(resolve_suite_path(suites_dir, suite_key))
-        if suite.mock_environment is not None and not suite.tasks:
-            platforms.add(suite.mock_environment.platform)
-        for task in suite.tasks:
-            spec = task.mock_environment or suite.mock_environment
-            if spec is None:
-                raise ValueError(
-                    f"mock environment suite {suite_key!r} task {task.id!r} has no mock environment"
-                )
-            platforms.add(spec.platform)
-    if len(platforms) != 1:
-        raise ValueError("mock environment suites must declare exactly one target platform")
-    return resolve_mock_platform(next(iter(platforms)))
+def _mock_job_target_platform(suite_results: list[dict[str, Any]]) -> str:
+    platforms = {
+        str((result.get("manifest") or {}).get("target_platform") or "").strip()
+        for result in suite_results
+    }
+    platforms.discard("")
+    if not platforms:
+        return ""
+    if len(platforms) == 1:
+        return next(iter(platforms))
+    return "mixed"
 
 
 def resolve_suite_path(suites_dir: Path, key: str) -> Path:
@@ -1713,6 +1739,15 @@ def prepare_run_config(
     dest_dir: Path,
     agent_config_text: str | None = None,
 ) -> None:
+    if agent_config_text is None and not any(
+        path.is_file()
+        for path in (
+            base_config_dir / "agent.toml",
+            base_config_dir / "agent.toml.template",
+        )
+    ):
+        raise missing_agent_config_error(base_config_dir)
+
     if dest_dir.exists():
         shutil.rmtree(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1753,36 +1788,12 @@ def prepare_run_config(
         if template.exists() and not config.exists():
             config.write_text(render_agent_template(template.read_text(encoding="utf-8")), encoding="utf-8")
         if not config.exists():
-            config.write_text(default_agent_toml(), encoding="utf-8")
-def ensure_webui_agent_config(base_config_dir: Path, agent_config_path: Path) -> tuple[str, str]:
-    if agent_config_path.exists():
-        return agent_config_path.read_text(encoding="utf-8"), "saved"
-    content = initial_agent_config(base_config_dir)
-    write_text_atomic(agent_config_path, content)
-    return content, "generated"
+            raise missing_agent_config_error(base_config_dir)
 
-
-def initial_agent_config(base_config_dir: Path) -> str:
-    config = base_config_dir / "agent.toml"
-    if config.exists():
-        return config.read_text(encoding="utf-8")
-    template = base_config_dir / "agent.toml.template"
-    if template.exists():
-        return render_agent_template(template.read_text(encoding="utf-8"))
-    return default_agent_toml()
-
-
-def validate_agent_toml(content: str) -> None:
-    if not content.strip():
-        raise ValueError("agent.toml cannot be empty")
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        return
-    try:
-        tomllib.loads(content)
-    except tomllib.TOMLDecodeError as exc:
-        raise ValueError(f"invalid agent.toml: {exc}") from exc
+    content = apply_agent_toml_runtime_defaults(config.read_text(encoding="utf-8"))
+    content = materialize_agent_config_credentials(content)
+    validate_agent_toml(content)
+    config.write_text(content, encoding="utf-8")
 
 
 def default_webui_settings(include_secrets: bool = False) -> dict[str, Any]:
@@ -1869,51 +1880,6 @@ def write_text_atomic(path: Path, content: str) -> None:
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-
-
-def render_agent_template(text: str) -> str:
-    replacements = {
-        "MODEL_PROVIDER": os.getenv("MODEL_PROVIDER") or os.getenv("AIDEN_MODEL_PROVIDER") or "fake",
-        "MODEL_NAME": os.getenv("MODEL_NAME") or os.getenv("AIDEN_MODEL") or os.getenv("OPENAI_MODEL") or "",
-        "MODEL_BASE_URL": os.getenv("MODEL_BASE_URL") or os.getenv("AIDEN_MODEL_BASE_URL") or "",
-        "MODEL_API_KEY": os.getenv("MODEL_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("AIDEN_MODEL_API_KEY") or "",
-        "CONTROL_TOKEN_FILE": "/config/control_token",
-    }
-    rendered = text
-    for key, value in replacements.items():
-        rendered = rendered.replace("{{" + key + "}}", value.replace('"', '\\"'))
-    return rendered
-
-
-def default_agent_toml() -> str:
-    return "\n".join(
-        [
-            'instruction = ""',
-            'input_mode = "text"',
-            'trigger_mode = "manual"',
-            "max_iterations = -1",
-            "voice_streaming_tts_enabled = false",
-            "voice_tool_call_speech = false",
-            "voice_progress_speech_enabled = false",
-            "screenshot_keep_n = 3",
-            "screenshot_prune_interval = 25",
-            "screen_stable_timeout_ms = 3500",
-            "screen_stable_ms = 500",
-            "screen_stable_diff_threshold = 2",
-            "",
-            "[model_providers.benchmark]",
-            'type = "openrouter"',
-            'base_url = ""',
-            'api_key = ""',
-            "",
-            "[model]",
-            'provider = "benchmark"',
-            'model = "qwen3.6-35b"',
-            "temperature = 0.2",
-            "max_response_tokens = 1000",
-            "",
-        ]
-    )
 
 
 def endpoint_for_docker(endpoint: str) -> str:
@@ -2135,10 +2101,6 @@ def ensure_daemon_image(
         env=env,
         stop_requested=stop_requested,
     )
-
-
-def ensure_mobilegym_image(image: str, build_missing: bool, log_path: Path) -> None:
-    ensure_docker_image(image, build_missing, log_path, "mobilegym-base")
 
 
 def ensure_docker_image(
@@ -2458,7 +2420,7 @@ def write_job_report(job: Job, *, analysis_api_key: str = "") -> str:
         "selected_task_ids": [str(row.get("task_id") or "") for row in rows],
         "agent_url": job.agent_url,
         "environment_url": job.environment_endpoint or None,
-        "judge_config": None if job.no_judge else {"provider": "openrouter", "model": job.judge_model or DEFAULT_JUDGE_MODEL, "base_url": job.judge_base_url or DEFAULT_JUDGE_BASE_URL},
+        "judge_config": None if job.no_judge else {"provider": "openai-compatible", "model": job.judge_model or DEFAULT_JUDGE_MODEL, "base_url": job.judge_base_url or DEFAULT_JUDGE_BASE_URL},
         "started_at": job.started_at,
         "finished_at": job.finished_at or now_iso(),
         "totals": totals_from_report_rows(rows),
@@ -3904,7 +3866,7 @@ INDEX_HTML = r"""<!doctype html>
             <label class="check-label"><input id="judgeEnabled" type="checkbox" checked> Enable judge</label>
             <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="anthropic/claude-sonnet-4-6"></div>
             <div class="field"><label for="judgeBaseUrl">Base URL</label><input id="judgeBaseUrl" autocomplete="off" placeholder="https://openrouter.ai/api/v1"></div>
-            <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="OPENROUTER_API_KEY"></div>
+            <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="AIDEN_BENCHMARK_JUDGE_API_KEY"></div>
           </div>
           <div class="run-actions">
             <button id="runBtn" class="primary">Run selected suites</button>
@@ -4122,7 +4084,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('judgeBaseUrl').value = String(judge.base_url || DEFAULT_JUDGE_BASE_URL);
       const keyInput = document.getElementById('judgeApiKey');
       keyInput.value = '';
-      keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'OPENROUTER_API_KEY';
+      keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'AIDEN_BENCHMARK_JUDGE_API_KEY';
       syncJudgePanel();
       renderEnvs();
       syncRunState();

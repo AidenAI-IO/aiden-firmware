@@ -6,15 +6,29 @@ used by both benchmark/runner/webui.py and skillopt/webui.py.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
+from typing import Mapping
 
 
 VOICE_SIDE_EFFECT_DEFAULTS = (
     "voice_streaming_tts_enabled",
     "voice_tool_call_speech",
     "voice_progress_speech_enabled",
+)
+
+BENCHMARK_AGENT_PROVIDER_ENV = "AIDEN_BENCHMARK_AGENT_PROVIDER"
+BENCHMARK_AGENT_MODEL_ENV = "AIDEN_BENCHMARK_AGENT_MODEL"
+BENCHMARK_AGENT_BASE_URL_ENV = "AIDEN_BENCHMARK_AGENT_BASE_URL"
+BENCHMARK_AGENT_API_KEY_ENV = "AIDEN_BENCHMARK_AGENT_API_KEY"
+
+AGENT_CREDENTIAL_KEYS = ("api_key", "relay_api_key")
+_AGENT_CREDENTIAL_ENV_REFERENCE = re.compile(
+    rf"(?m)^(?P<prefix>\s*(?:{'|'.join(AGENT_CREDENTIAL_KEYS)})\s*=\s*)"
+    r"(?P<quote>['\"])(?P<reference>\$[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?P=quote)(?P<suffix>\s*(?:#.*)?)$"
 )
 
 
@@ -46,7 +60,7 @@ class AgentConfigManager:
                 validate_agent_toml(content)
                 write_text_atomic(self.config_path, content)
             return content, "saved"
-        content = apply_agent_toml_runtime_defaults(self._generate_initial_config())
+        content = self._generate_validated_initial_config()
         write_text_atomic(self.config_path, content)
         return content, "generated"
 
@@ -73,21 +87,39 @@ class AgentConfigManager:
         Returns:
             Tuple of (content, source)
         """
-        if self.config_path.exists():
-            self.config_path.unlink()
-        return self.get_config()
+        content = self._generate_validated_initial_config(exclude_config_path=True)
+        write_text_atomic(self.config_path, content)
+        return content, "generated"
 
-    def _generate_initial_config(self) -> str:
-        """Generate initial config from template or default."""
+    def _generate_validated_initial_config(
+        self, *, exclude_config_path: bool = False
+    ) -> str:
+        content = apply_agent_toml_runtime_defaults(
+            self._generate_initial_config(exclude_config_path=exclude_config_path)
+        )
+        validate_agent_toml(content)
+        return content
+
+    def _generate_initial_config(self, *, exclude_config_path: bool = False) -> str:
+        """Load the initial config from an explicit file or template."""
         config = self.base_config_dir / "agent.toml"
-        if config.exists():
+        config_is_target = config.resolve() == self.config_path.resolve()
+        if config.exists() and not (exclude_config_path and config_is_target):
             return config.read_text(encoding="utf-8")
 
         template = self.base_config_dir / "agent.toml.template"
         if template.exists():
             return render_agent_template(template.read_text(encoding="utf-8"))
 
-        return default_agent_toml()
+        raise missing_agent_config_error(self.base_config_dir)
+
+
+def missing_agent_config_error(base_config_dir: Path) -> FileNotFoundError:
+    return FileNotFoundError(
+        "agent.toml is required: provide an explicit agent config or add "
+        f"{base_config_dir / 'agent.toml'} or "
+        f"{base_config_dir / 'agent.toml.template'}"
+    )
 
 
 def write_text_atomic(path: Path, content: str) -> None:
@@ -160,61 +192,39 @@ def render_agent_template(text: str) -> str:
         Rendered text with variables substituted
     """
     replacements = {
-        "MODEL_PROVIDER": (
-            os.getenv("MODEL_PROVIDER")
-            or os.getenv("AIDEN_MODEL_PROVIDER")
-            or "fake"
-        ),
-        "MODEL_NAME": (
-            os.getenv("MODEL_NAME")
-            or os.getenv("AIDEN_MODEL")
-            or os.getenv("OPENAI_MODEL")
-            or ""
-        ),
-        "MODEL_BASE_URL": (
-            os.getenv("MODEL_BASE_URL") or os.getenv("AIDEN_MODEL_BASE_URL") or ""
-        ),
-        "MODEL_API_KEY": (
-            os.getenv("MODEL_API_KEY")
-            or os.getenv("OPENROUTER_API_KEY")
-            or os.getenv("AIDEN_MODEL_API_KEY")
-            or ""
-        ),
+        BENCHMARK_AGENT_PROVIDER_ENV: os.getenv(BENCHMARK_AGENT_PROVIDER_ENV) or "fake",
+        BENCHMARK_AGENT_MODEL_ENV: os.getenv(BENCHMARK_AGENT_MODEL_ENV) or "",
+        BENCHMARK_AGENT_BASE_URL_ENV: os.getenv(BENCHMARK_AGENT_BASE_URL_ENV) or "",
+        BENCHMARK_AGENT_API_KEY_ENV: os.getenv(BENCHMARK_AGENT_API_KEY_ENV) or "",
         "CONTROL_TOKEN_FILE": "/config/control_token",
     }
     rendered = text
     for key, value in replacements.items():
-        rendered = rendered.replace("{{" + key + "}}", value.replace('"', '\\"'))
+        escaped = json.dumps(value, ensure_ascii=False)[1:-1]
+        rendered = rendered.replace("{{" + key + "}}", escaped)
     return rendered
 
 
-def default_agent_toml() -> str:
-    """Generate default agent.toml content."""
-    return "\n".join(
-        [
-            'instruction = ""',
-            'input_mode = "text"',
-            'trigger_mode = "manual"',
-            "max_iterations = -1",
-            "voice_streaming_tts_enabled = false",
-            "voice_tool_call_speech = false",
-            "voice_progress_speech_enabled = false",
-            "screenshot_keep_n = 3",
-            "screenshot_prune_interval = 25",
-            "screen_stable_timeout_ms = 3500",
-            "screen_stable_ms = 500",
-            "screen_stable_diff_threshold = 2",
-            "",
-            "[model_providers.benchmark]",
-            'type = "openrouter"',
-            'base_url = ""',
-            'api_key = ""',
-            "",
-            "[model]",
-            'provider = "benchmark"',
-            'model = "qwen3.6-35b"',
-            "temperature = 0.2",
-            "max_response_tokens = 1000",
-            "",
-        ]
-    )
+def materialize_agent_config_credentials(
+    content: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Replace credential environment references before mounting config in Docker."""
+    source_env = os.environ if env is None else env
+
+    def replace(match: re.Match[str]) -> str:
+        env_name = match.group("reference")[1:]
+        value = source_env.get(env_name)
+        if value is None or not value.strip():
+            raise ValueError(
+                "agent.toml credential references missing environment variable "
+                f"{env_name}"
+            )
+        return (
+            match.group("prefix")
+            + json.dumps(value, ensure_ascii=False)
+            + match.group("suffix")
+        )
+
+    return _AGENT_CREDENTIAL_ENV_REFERENCE.sub(replace, content)

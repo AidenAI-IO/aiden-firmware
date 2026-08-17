@@ -124,12 +124,16 @@ def test_call_environment_setup_posts_to_api_setup(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    result = call_environment_setup("http://127.0.0.1:9090", timeout=12)
+    result = call_environment_setup(
+        "http://127.0.0.1:9090",
+        timeout=12,
+        app_ids=["settings"],
+    )
 
     assert seen == {
         "url": "http://127.0.0.1:9090/api/setup",
         "method": "POST",
-        "body": b"{}",
+        "body": b'{"app_ids": ["settings"]}',
         "task_id": None,
         "timeout": 12,
     }

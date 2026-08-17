@@ -17,7 +17,7 @@
 # `run` auto-discovers the running agent daemon's port and control token, so you
 # never paste --agent-url / --benchmark-token-file. Start a daemon first with
 # `./start.sh agent`. Judging is OFF by default; pass --judge-model <model> to
-# score, and --judge-key <key> to supply the judge OpenRouter key inline (no
+# score, and --judge-key <key> to supply the judge API key inline (no
 # export needed).
 #
 # The env file is picked up in this order:
@@ -258,18 +258,18 @@ case "$SUBCMD" in
       exit 1
     fi
     # Pull our own --judge-key <key> out of the args (runner does not know it) and
-    # feed it to the judge as OPENROUTER_API_KEY, so you can pass the key inline
+    # feed it to the judge, so you can pass the key inline
     # instead of exporting it. Everything else is forwarded to `runner run`.
     passthru=()
     while [ $# -gt 0 ]; do
       case "$1" in
         --judge-key)
           [ $# -ge 2 ] || { echo "error: --judge-key needs a value" >&2; exit 1; }
-          export OPENROUTER_API_KEY="$2"
+          export AIDEN_BENCHMARK_JUDGE_API_KEY="$2"
           shift 2
           ;;
         --judge-key=*)
-          export OPENROUTER_API_KEY="${1#--judge-key=}"
+          export AIDEN_BENCHMARK_JUDGE_API_KEY="${1#--judge-key=}"
           shift
           ;;
         *)
@@ -284,16 +284,16 @@ case "$SUBCMD" in
       *" --suite "*|*" --suite="*) : ;;
       *) suite_args=(--suite suites/vphone_ios_basic.json) ;;
     esac
-    # Judging is OFF by default: it needs an OpenRouter key, and forgetting it
+    # Judging is OFF by default: it needs an API key, and forgetting it
     # turns every task into JUDGE_ERROR. Opt in with --judge-model / --judge; then
-    # require the key (from --judge-key or OPENROUTER_API_KEY) up front instead of
+    # require the key up front instead of
     # failing after every task has run.
     judge_args=()
     case " ${passthru[*]:-} " in
       *" --judge-model "*|*" --judge-model="*|*" --judge "*|*" --judge="*)
-        if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+        if [ -z "${AIDEN_BENCHMARK_JUDGE_API_KEY:-}" ]; then
           echo "error: judging requested but no judge key provided." >&2
-          echo "hint: add --judge-key <judge OpenRouter key>," >&2
+          echo "hint: add --judge-key <judge API key>," >&2
           echo "      or drop --judge-model to run without scoring." >&2
           exit 1
         fi

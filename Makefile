@@ -1,4 +1,4 @@
-.PHONY: all configure build clean test test-clean
+.PHONY: all configure build clean test test-clean sandbox-start sandbox-update sandbox-logs sandbox-stop
 
 BUILD_DIR := build
 TEST_BUILD_DIR := build-host
@@ -25,3 +25,15 @@ test-clean:
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+sandbox-start:
+	./scripts/start_docker_sandbox.sh
+
+sandbox-update:
+	./scripts/start_docker_sandbox.sh --build
+
+sandbox-logs:
+	docker compose logs -f aiden
+
+sandbox-stop:
+	docker compose down

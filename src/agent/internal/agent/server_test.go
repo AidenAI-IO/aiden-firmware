@@ -12,6 +12,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2527,31 +2528,106 @@ func TestServerHandleChatSteerRejectsNonRunningRequest(t *testing.T) {
 }
 
 func TestWebUISteerModeControlsArePresent(t *testing.T) {
+	chatScript := readWebUIResource(t, "scripts/chat.js")
+	index := readWebUIResource(t, "index.html")
 	for _, want := range []string{
 		"/api/chat/steer",
 		"/api/chat/steer/cancel",
 		"async function submitSteerMessage()",
-		"sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';",
-		"id=\"pendingSteer\"",
 	} {
-		if !strings.Contains(webUI, want) {
+		if !strings.Contains(chatScript, want) {
 			t.Fatalf("web UI missing %q", want)
+		}
+	}
+	if !strings.Contains(index, "id=\"pendingSteer\"") {
+		t.Fatal("web UI missing pending steer controls")
+	}
+	if !strings.Contains(readWebUIResource(t, "scripts/messages.js"), "sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';") {
+		t.Fatal("web UI missing steer composer state")
+	}
+}
+
+func TestWebUIIsEmbeddedFromStaticResource(t *testing.T) {
+	want, err := os.ReadFile("web_ui/index.html")
+	if err != nil {
+		t.Fatalf("read web UI static resource: %v", err)
+	}
+	if webUI != string(want) {
+		t.Fatal("embedded web UI differs from web_ui/index.html")
+	}
+
+	for _, asset := range []string{
+		"/web-ui/styles.css",
+		"/web-ui/scripts/state.js",
+		"/web-ui/scripts/storage.js",
+		"/web-ui/scripts/events.js",
+		"/web-ui/scripts/tools.js",
+		"/web-ui/scripts/chat.js",
+		"/web-ui/scripts/messages.js",
+		"/web-ui/scripts/attachments.js",
+		"/web-ui/scripts/tool_messages.js",
+		"/web-ui/scripts/bootstrap.js",
+	} {
+		if !strings.Contains(webUI, asset) {
+			t.Errorf("web UI index missing asset %q", asset)
+		}
+	}
+}
+
+func TestServerServesEmbeddedWebUIAssets(t *testing.T) {
+	server := &Server{logger: newTestLogger(), bridge: NewPhoneBridge(newTestLogger())}
+	handler := server.Handler()
+	for _, test := range []struct {
+		path        string
+		contentType string
+		content     string
+	}{
+		{path: "/web-ui/styles.css", contentType: "text/css", content: ":root {"},
+		{path: "/web-ui/scripts/bootstrap.js", contentType: "text/javascript", content: "loadHistory();"},
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s: unexpected status: %d body=%s", test.path, recorder.Code, recorder.Body.String())
+		}
+		if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, test.contentType) {
+			t.Fatalf("GET %s: unexpected content type: %q", test.path, got)
+		}
+		if !strings.Contains(recorder.Body.String(), test.content) {
+			t.Fatalf("GET %s: embedded content is missing", test.path)
 		}
 	}
 }
 
 func TestWebUIImagePasteControlsArePresent(t *testing.T) {
+	attachmentsScript := readWebUIResource(t, "scripts/attachments.js")
+	stateScript := readWebUIResource(t, "scripts/state.js")
+	bootstrapScript := readWebUIResource(t, "scripts/bootstrap.js")
 	for _, want := range []string{
-		"const maxDraftImageAttachments = 4;",
-		"inputEl.addEventListener('paste', handleComposerPaste);",
 		"async function handleComposerPaste(event)",
 		"await addImageFiles(files, 'pasted');",
 		"Only 4 images can be attached.",
 	} {
-		if !strings.Contains(webUI, want) {
+		if !strings.Contains(attachmentsScript, want) {
 			t.Fatalf("web UI missing %q", want)
 		}
 	}
+	if !strings.Contains(stateScript, "const maxDraftImageAttachments = 4;") {
+		t.Fatal("web UI missing image attachment limit")
+	}
+	if !strings.Contains(bootstrapScript, "inputEl.addEventListener('paste', handleComposerPaste);") {
+		t.Fatal("web UI missing image paste listener")
+	}
+}
+
+func readWebUIResource(t *testing.T, name string) string {
+	t.Helper()
+	data, err := fs.ReadFile(webUIFiles, name)
+	if err != nil {
+		t.Fatalf("read embedded web UI resource %q: %v", name, err)
+	}
+	return string(data)
 }
 
 func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
@@ -3068,6 +3144,27 @@ func TestDecodeMessageAttachmentsCountsImageMIMEWithFileKind(t *testing.T) {
 	_, _, err = decodeMessageAttachments(payloads)
 	if err == nil || !strings.Contains(err.Error(), "at most 4 image attachments") {
 		t.Fatalf("decodeMessageAttachments(%d file-kind images) error = %v, want image limit", len(payloads), err)
+	}
+}
+
+func TestDecodeMessageAttachmentsPreservesImageDimensions(t *testing.T) {
+	payloads := []MessageAttachment{{
+		Kind:     AttachmentKindImage,
+		MIMEType: "image/jpeg",
+		Width:    447,
+		Height:   972,
+		Data:     base64.StdEncoding.EncodeToString([]byte("jpeg")),
+	}}
+
+	decoded, history, err := decodeMessageAttachments(payloads)
+	if err != nil {
+		t.Fatalf("decodeMessageAttachments() error = %v", err)
+	}
+	if decoded[0].Width != 447 || decoded[0].Height != 972 {
+		t.Fatalf("decoded dimensions = %dx%d", decoded[0].Width, decoded[0].Height)
+	}
+	if history[0].Width != 447 || history[0].Height != 972 {
+		t.Fatalf("history dimensions = %dx%d", history[0].Width, history[0].Height)
 	}
 }
 
@@ -4067,17 +4164,18 @@ func TestRequestBaseURLPrefersForwardedHeaders(t *testing.T) {
 }
 
 func TestWebUIRedactsScreenshotBase64Payloads(t *testing.T) {
+	toolMessagesScript := readWebUIResource(t, "scripts/tool_messages.js")
 	required := []string{
 		"redactToolPayloadForDisplay(JSON.parse(value))",
 		"clone.data = '[base64 screenshot omitted: ' + byteLabel + ']'",
 		"function isScreenshotPayload(value)",
 	}
 	for _, snippet := range required {
-		if !strings.Contains(webUI, snippet) {
+		if !strings.Contains(toolMessagesScript, snippet) {
 			t.Fatalf("webUI missing screenshot redaction snippet %q", snippet)
 		}
 	}
-	if strings.Contains(webUI, "toolName !== 'screenshot'") {
+	if strings.Contains(toolMessagesScript, "toolName !== 'screenshot'") {
 		t.Fatalf("webUI still limits screenshot parsing to only the screenshot tool")
 	}
 }

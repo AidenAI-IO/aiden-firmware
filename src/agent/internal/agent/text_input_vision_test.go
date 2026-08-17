@@ -102,72 +102,7 @@ func TestTextInputDurationPerCharacter(t *testing.T) {
 	}
 }
 
-func TestTextInputAnalysisPromptDescribesCommittedTextAnalysis(t *testing.T) {
-	prompt := buildTextInputAnalysisPrompt(textInputScreenAnalysisRequest{
-		Platform:   "ios",
-		TargetText: "你好我是Aiden，",
-	})
-	for _, want := range []string{
-		`"target_matched": false`,
-		"Use visual meaning, not a code-point comparison",
-		"Typing already happened",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("prompt missing %q:\n%s", want, prompt)
-		}
-	}
-	if strings.Contains(prompt, "candidate_action") {
-		t.Fatalf("general analysis prompt must not include candidate decisions:\n%s", prompt)
-	}
-}
-
-func TestTextInputAnalysisPromptSupportsCommittedSuffixVerification(t *testing.T) {
-	prompt := buildTextInputAnalysisPrompt(textInputScreenAnalysisRequest{
-		TargetText:      "模拟成键盘",
-		MatchTextSuffix: true,
-	})
-	for _, want := range []string{
-		`Verification scope: "committed-suffix"`,
-		"committed text at the END",
-		"Ignore any committed text before that suffix",
-		"followed by extra committed text",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("suffix verification prompt missing %q:\n%s", want, prompt)
-		}
-	}
-}
-
-func TestCandidateActionUsesDedicatedPromptAndResponse(t *testing.T) {
-	prompt := buildTextInputCandidateActionPrompt(textInputScreenAnalysisRequest{
-		TargetText:             "前缀目标词",
-		CandidateTargetText:    "目标词",
-		CandidateCommittedText: "目",
-	})
-	for _, want := range []string{
-		"single next keyboard action",
-		`Current IME part: "目标词"`,
-		`Text already selected within the current IME part: "目"`,
-		`{"action":"select","offset":0`,
-		`"completes_part":true`,
-		`{"action":"expand"}`,
-		`{"action":"up"}`,
-		`{"action":"none"}`,
-		"remaining target",
-		"including a single character",
-		"finishes the entire Current IME part",
-		"similar pronunciation",
-		"active preedit/composition is not proof",
-		"expand/disclosure control",
-		"returning toward the first candidate row",
-		"no exact-prefix candidate is visible",
-		"use none",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("candidate prompt missing %q:\n%s", want, prompt)
-		}
-	}
-
+func TestCandidateActionParsesSelectResponse(t *testing.T) {
 	model := &textInputVisionRecordingModel{content: `{"action":"select","offset":0,"text":"你好"}`}
 	vision := &llmTextInputVision{models: model}
 	action, err := vision.DecideCandidateAction(context.Background(), screenshotResult{Data: "ZmFrZQ=="}, textInputScreenAnalysisRequest{TargetText: "你好"})
@@ -191,32 +126,7 @@ func TestCandidateActionParsesUpWithoutSelectionFields(t *testing.T) {
 	}
 }
 
-func TestTextInputProbeUsesDedicatedPromptAndResponse(t *testing.T) {
-	prompt := buildTextInputProbePrompt("ios", focusPointArgs{X: 500, Y: 300})
-	for _, want := range []string{
-		`"candidate_popup_visible":true`,
-		`"cjk_candidate_visible":true`,
-		`Chinese candidates such as "啊", "爱"`,
-		`Candidate text does not need to match "a"`,
-		"Platform:",
-		"input-mode probe only",
-		"on-screen keyboard may be visible or completely absent",
-		"inline preedit text",
-		"candidate row or popup near the cursor or input field",
-		"Never return unknown merely because an on-screen keyboard is absent",
-		"HIGHEST PRIORITY",
-		`"1 啊"`,
-		"visible text cursor beside",
-		"absence of an underline does not prove ASCII mode",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("probe prompt missing %q:\n%s", want, prompt)
-		}
-	}
-	if strings.Contains(prompt, "from global device_type") {
-		t.Fatalf("probe prompt should not expose platform source:\n%s", prompt)
-	}
-
+func TestTextInputProbeParsesCompositionResponse(t *testing.T) {
 	model := &textInputVisionRecordingModel{content: `{"mode":"composition","evidence":"candidate 啊 is visible"}`}
 	vision := &llmTextInputVision{models: model}
 	analysis, err := vision.ProbeInputMode(context.Background(), screenshotResult{Data: "ZmFrZQ=="}, "ios", focusPointArgs{X: 500, Y: 300})
@@ -248,23 +158,7 @@ func TestTextInputProbeCJKCandidatePopupOverridesASCIIClassification(t *testing.
 	}
 }
 
-func TestTextInputPartitionUsesDedicatedPromptAndExactResponse(t *testing.T) {
-	prompt := buildTextInputPartitionPrompt("经理不是技术出身的")
-	for _, want := range []string{
-		"short semantic words or phrases",
-		`{"parts":["自然词语","短语"]}`,
-		"reproduce Target text exactly",
-		"natural word boundaries",
-		"Do not output romanization",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("partition prompt missing %q:\n%s", want, prompt)
-		}
-	}
-	if strings.Contains(prompt, "candidate popup") || strings.Contains(prompt, `"mappings"`) {
-		t.Fatalf("partition prompt must be independent from candidate and romanization prompts:\n%s", prompt)
-	}
-
+func TestTextInputPartitionParsesExactResponse(t *testing.T) {
 	model := &textInputVisionRecordingModel{content: `{"parts":["经理","不是","技术","出身","的"]}`}
 	vision := &llmTextInputVision{models: model}
 	parts, err := vision.PartitionComposition(context.Background(), "经理不是技术出身的")

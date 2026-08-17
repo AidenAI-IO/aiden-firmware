@@ -206,7 +206,6 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
 | `input_mode`                | `text` / `stt`              | Input mode                                                                                                                                                                                                |
-| `todo_reminder_tool_calls`  | `3`                         | In single-agent/default mode, after how many consecutive tool calls to remind the model to update the todo; set to `0` to use the default                                                                 |
 
 ### Voice & VAD
 
