@@ -21,8 +21,9 @@ type EnterTextTool struct {
 // enterTextArgs is the public tool payload. textInputArgs adds only the
 // internal state needed while processing an IME part.
 type enterTextArgs struct {
-	Text  string          `json:"text"`
-	Focus *focusPointArgs `json:"focus"`
+	Coordinate string          `json:"coordinate"`
+	Text       string          `json:"text"`
+	Focus      *focusPointArgs `json:"focus"`
 }
 
 type enterTextToolResult struct {
@@ -82,8 +83,9 @@ func (t *EnterTextTool) Description() string {
 
 func (t *EnterTextTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"text":  stringArgSchema("Exact text that must appear in the field when done."),
-		"focus": focusPointArgSchema("Coordinates inside a clearly visible editable field or composer."),
+		"coordinate": normalizedCoordinateParameterSchema(),
+		"text":       stringArgSchema("Exact text that must appear in the field when done."),
+		"focus":      focusPointArgSchema("Coordinates inside a clearly visible editable field or composer."),
 	}, "text", "focus")
 }
 
@@ -119,6 +121,9 @@ func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disabl
 		var publicArgs enterTextArgs
 		if err := decodeStrictJSONObject(input, &publicArgs); err != nil {
 			return enterTextToolFailure(batchCtx, CodeInvalidArguments, "Call enter_text again with valid JSON containing text and focus."), nil
+		}
+		if err := validateCoordinateParameter(publicArgs.Coordinate); err != nil {
+			return enterTextToolFailure(batchCtx, CodeInvalidArguments, err.Error()), nil
 		}
 		if publicArgs.Focus == nil {
 			return enterTextToolFailure(batchCtx, CodeInvalidArguments, "Call enter_text again with valid JSON containing text and focus."), nil

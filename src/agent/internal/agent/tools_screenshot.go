@@ -141,7 +141,7 @@ func (t *ScreenshotTool) ReturnsVisualObservation() bool { return true }
 func (t *ScreenshotTool) Description() string {
 	return `Capture a screenshot from the connected display. No input required (pass empty JSON {} or ""). ` +
 		`Returns a JSON object with width, height, and base64-encoded JPEG image data. ` +
-		`Use normalized 0-1000 coordinates for coordinate input tools. Convert visual measurements from this image before acting: x_normalized=x/max(width-1,1)*1000 and y_normalized=y/max(height-1,1)*1000; do not pass screenshot pixels directly.`
+		`Pointer and touch input tools use normalized 0-1000 coordinates. When the image is attached to the model, call normalize_point with the visual pixel_x and pixel_y without rescaling plus the supplied source_width and source_height, then copy its returned coordinate and point fields unchanged into touch_gesture.`
 }
 
 func (t *ScreenshotTool) ArgsSchema() map[string]any {

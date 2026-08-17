@@ -1034,8 +1034,9 @@ func (t *MouseMoveTool) Description() string {
 
 func (t *MouseMoveTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"x": coordinateSchema("Normalized 0-1000 X coordinate.", 500),
-		"y": coordinateSchema("Normalized 0-1000 Y coordinate.", 300),
+		"coordinate": normalizedCoordinateParameterSchema(),
+		"x":          coordinateSchema("Normalized 0-1000 X coordinate.", 500),
+		"y":          coordinateSchema("Normalized 0-1000 Y coordinate.", 300),
 	}, "x", "y")
 }
 
@@ -1051,13 +1052,16 @@ func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) 
 
 func (t *MouseMoveTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
-		X pointerCoordinate `json:"x"`
-		Y pointerCoordinate `json:"y"`
+		Coordinate string            `json:"coordinate"`
+		X          pointerCoordinate `json:"x"`
+		Y          pointerCoordinate `json:"y"`
 	}
 	if err := decodeStrictJSONObject(input, &args); err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300}. Coordinates always use the normalized 0-1000 scale", err), nil
 	}
-
+	if err := validateCoordinateParameter(args.Coordinate); err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+	}
 	if t.adb != nil {
 		if _, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64()); err != nil {
 			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
@@ -1109,7 +1113,8 @@ func (t *TouchGestureTool) Description() string {
 		description += `Prefer quick_action for semantic platform actions. For go-home/home-screen requests such as 回到桌面, call quick_action with {"action":"home"} first; use touch_gesture {"type":"home"} only as a fallback. `
 	}
 	return description +
-		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Point, start, and end never accept screenshot pixels: convert a target measured at (pixel_x,pixel_y) in the latest image with x=pixel_x/max(image_width-1,1)*1000 and y=pixel_y/max(image_height-1,1)*1000 before calling. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
+		`Base coordinates on the latest screenshot and aim at the visual center of the target using the fixed normalized 0-1000 plane: (0,0) is top-left, (1000,1000) is bottom-right, and (500,500) is center. Never pass screenshot pixel coordinates directly. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
+		`Before every screenshot-based tap, including a second tap after navigation, call normalize_point with the model-visible pixel_x and pixel_y plus source_width and source_height from the attached image metadata. Do not rescale the visual pixel estimate to source-image pixels. Copy the returned coordinate and point fields unchanged; do not reconstruct or hand-write the point. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
 }
 
@@ -1119,6 +1124,7 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		typeDescription += ` Edge aliases use real edges: back starts at x=1, home starts at y=999. For semantic home/back requests, prefer quick_action first, especially quick_action {"action":"home"} for go-home/home-screen requests; use back/home here only as fallback alternatives.`
 	}
 	schema := objectArgsSchema(map[string]any{
+		"coordinate":     normalizedCoordinateParameterSchema(),
 		"type":           stringEnumArgSchema(typeDescription, touchGestureTypesForPlatform(t.platform())...),
 		"point":          pointSchema(`Required for tap, double_tap, and long_press. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
 		"start":          pointSchema(`Required start point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
@@ -1136,7 +1142,7 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 	}, "type")
 	schema["description"] = `Strict JSON object for one gesture. Coordinate fields point, start, and end always use named objects containing both x and y.`
 	schema["examples"] = []map[string]any{
-		{"type": "tap", "point": map[string]any{"x": 500, "y": 500}},
+		{"coordinate": "normalized", "type": "tap", "point": map[string]any{"x": 500, "y": 500}},
 		{"type": "swipe", "start": map[string]any{"x": 500, "y": 800}, "end": map[string]any{"x": 500, "y": 200}},
 		{"type": "swipe_up", "strength": "medium"},
 	}
@@ -1182,6 +1188,7 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 
 func (t *TouchGestureTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
+		Coordinate   string             `json:"coordinate"`
 		Type         string             `json:"type"`
 		Point        *pointerPoint      `json:"point"`
 		Start        *pointerPoint      `json:"start"`
@@ -1201,6 +1208,9 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 	}
 	if err := decodeStrictJSONObject(input, &args); err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Common mistakes: missing quotes around string values, incorrect comma placement, point/start/end must be objects with named keys like {\"x\":500,\"y\":300} not bare values. Example: {\"type\":\"tap\",\"point\":{\"x\":500,\"y\":500}}", err), nil
+	}
+	if err := validateCoordinateParameter(args.Coordinate); err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
 	if args.Point == nil && args.X != nil && args.Y != nil {
 		args.Point = &pointerPoint{X: *args.X, Y: *args.Y}
@@ -2146,7 +2156,7 @@ func resolvePointerPositionForSurface(screen *screen.ScreenState, touchscreen bo
 		return 0, 0, fmt.Errorf("coordinates must be finite")
 	}
 	if x < 0 || x > 1000 || y < 0 || y > 1000 {
-		return 0, 0, fmt.Errorf("coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f", x, y)
+		return 0, 0, fmt.Errorf("coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f. Do not repeat the rejected values; call the tool again with x and y between 0 and 1000 using coordinate:\"normalized\"", x, y)
 	}
 	return normalizedToAbsolutePointForSurface(screen, touchscreen, x, y)
 }

@@ -559,12 +559,19 @@ func TestScreenshotAttachmentIDIsExposedAndReadable(t *testing.T) {
 
 	attachmentID := filepath.Base(stored.FilePath)
 	messages := messages.ConvertMessageList(manager.CloneMessageList())
-	if len(messages) != 1 || len(messages[0].Parts) != 3 {
-		t.Fatalf("messages = %#v, want text + attachment ID + binary", messages)
+	if len(messages) != 1 || len(messages[0].Parts) != 4 {
+		t.Fatalf("messages = %#v, want text + attachment ID + coordinate guidance + binary", messages)
 	}
 	label, ok := messages[0].Parts[1].(llms.TextContent)
 	if !ok || label.Text != "[screenshot_attachment_id="+attachmentID+"]" {
 		t.Fatalf("attachment label = %#v", messages[0].Parts[1])
+	}
+	guidance, ok := messages[0].Parts[2].(llms.TextContent)
+	if !ok || !strings.Contains(guidance.Text, "fixed normalized coordinate plane") {
+		t.Fatalf("coordinate guidance = %#v", messages[0].Parts[2])
+	}
+	if _, ok := messages[0].Parts[3].(llms.BinaryContent); !ok {
+		t.Fatalf("screenshot binary = %#v", messages[0].Parts[3])
 	}
 	data, err := manager.ReadScreenshotAttachment(attachmentID)
 	if err != nil {

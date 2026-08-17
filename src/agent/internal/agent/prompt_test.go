@@ -60,6 +60,15 @@ func TestRolePromptIncludesConfiguredResponseLocaleInSystemPrompt(t *testing.T) 
 	}
 }
 
+func TestRolePromptIncludesNormalizedCoordinateContract(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, want := range []string{"Coordinate protocol for screenshot-based taps", "source width and height shown in Attached content", "Do not rescale pixel_x or pixel_y into source-image pixels", "copy its returned coordinate and point fields unchanged"} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing coordinate contract %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
 func TestStateHookDoesNotInjectResponseLocale(t *testing.T) {
 	runtime := NewRuntimeWithDeps(Config{Locale: "en-US"}, nil, nil, nil, NewSkillIndex())
 	manager := newPromptTestContextManager(t)
@@ -123,6 +132,24 @@ func TestStateHookAttachesFreshScreenshotToUserTurn(t *testing.T) {
 	}
 	if !foundImage {
 		t.Fatalf("converted state message has no screenshot binary: %#v", standard[0].Parts)
+	}
+	if text := messageText(standard[:1]); !strings.Contains(text, "fixed normalized coordinate plane") {
+		t.Fatalf("converted state screenshot missing adjacent coordinate guidance: %q", text)
+	}
+	imagePartIndex := -1
+	guidancePartIndex := -1
+	for i, part := range standard[0].Parts {
+		switch typed := part.(type) {
+		case llms.BinaryContent:
+			imagePartIndex = i
+		case llms.TextContent:
+			if strings.Contains(typed.Text, "fixed normalized coordinate plane") {
+				guidancePartIndex = i
+			}
+		}
+	}
+	if guidancePartIndex < 0 || imagePartIndex < 0 || guidancePartIndex >= imagePartIndex {
+		t.Fatalf("coordinate guidance must immediately precede the state screenshot: %#v", standard[0].Parts)
 	}
 	if len(screenshot.inputs) != 1 || screenshot.inputs[0] != "{}" {
 		t.Fatalf("screenshot inputs = %#v, want one empty-object call", screenshot.inputs)

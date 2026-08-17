@@ -156,7 +156,24 @@ func TestUserMessageAttachmentPromptIncludesImageDimensions(t *testing.T) {
 		Height:   972,
 		Data:     []byte("jpeg"),
 	}})
-	if !strings.Contains(msg.Content, "width=447 height=972") {
+	if !strings.Contains(msg.Content, "source_width=447 source_height=972") {
 		t.Fatalf("content missing image dimensions: %q", msg.Content)
+	}
+}
+
+func TestUserMessageAttachmentPromptUsesModelVisibleDimensionsForLargeImage(t *testing.T) {
+	manager, err := InitializeContextManager("system", t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("InitializeContextManager() error = %v", err)
+	}
+	msg := userMessageFromInput(manager, "inspect", []InputAttachment{{
+		Kind:     AttachmentKindImage,
+		MIMEType: "image/jpeg",
+		Width:    1179,
+		Height:   2556,
+		Data:     []byte("jpeg"),
+	}})
+	if !strings.Contains(msg.Content, "source_width=1179 source_height=2556") {
+		t.Fatalf("content missing source image dimensions: %q", msg.Content)
 	}
 }

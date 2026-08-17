@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/messages"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -238,7 +239,7 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 		imageAvailability = "The image is replaced with a placeholder in the next message."
 	}
 	toolContent := fmt.Sprintf(
-		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. %s",
+		"%s returned a screenshot observation: format=%s source_width=%d source_height=%d size=%d bytes. %s",
 		step.Action.Tool,
 		result.Format,
 		result.Width,
@@ -249,7 +250,7 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	if strings.TrimSpace(result.ActionOutput) != "" {
 		actionOutput := compactToolObservation(result.ActionOutput)
 		toolContent = fmt.Sprintf(
-			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. %s",
+			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s source_width=%d source_height=%d size=%d bytes. %s",
 			step.Action.Tool,
 			actionOutput,
 			result.Format,
@@ -262,21 +263,22 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	if summary := screenshotObservationStatusSummary(result); summary != "" {
 		toolContent += " " + summary
 	}
-	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)
+	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool with source_width=%d and source_height=%d. Use it when answering the original request.", step.Action.Tool, result.Width, result.Height)
 	if !includeVisual {
 		return toolContent, []llms.MessageContent{{
 			Role: llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{
 				llms.TextPart(caption),
+				llms.TextPart(messages.ScreenshotCoordinateGuidance),
 				llms.TextPart("[Image omitted]"),
 			},
 		}}
 	}
-
 	return toolContent, []llms.MessageContent{{
 		Role: llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{
 			llms.TextPart(caption),
+			llms.TextPart(messages.ScreenshotCoordinateGuidance),
 			buildImagePart(visual.MIMEType, visual.ImageBytes),
 		},
 	}}
@@ -284,6 +286,9 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 
 func screenshotObservationStatusSummary(result postActionScreenshotResult) string {
 	var notes []string
+	if result.VerificationRequired {
+		notes = append(notes, "verification_required=true: call the public screenshot tool now before continuing.")
+	}
 	if result.ScreenChanged != nil {
 		if *result.ScreenChanged {
 			notes = append(notes, "Visible screen change was observed during the stable-screen wait.")
@@ -460,7 +465,7 @@ func attachmentAwarePrompt(text string, attachments []InputAttachment, descripti
 			label += " (" + attachment.MIMEType + ")"
 		}
 		if attachment.Width > 0 && attachment.Height > 0 {
-			label += fmt.Sprintf(" width=%d height=%d", attachment.Width, attachment.Height)
+			label += fmt.Sprintf(" source_width=%d source_height=%d", attachment.Width, attachment.Height)
 		}
 		descriptions = append(descriptions, label)
 	}

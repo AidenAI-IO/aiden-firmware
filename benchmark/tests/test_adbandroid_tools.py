@@ -61,6 +61,29 @@ def test_normalized_point_rejects_out_of_range_coordinates():
         _normalized_point_arg({"point": {"x": 1500, "y": 500}})
 
 
+def test_coordinate_parameter_is_optional_normalized_only(bridge):
+    _, _, base_url = bridge
+    with urllib.request.urlopen(f"{base_url}/api/tools", timeout=5) as response:
+        tools = {item["name"]: item for item in json.loads(response.read())["tools"]}
+    for tool_name in ("touch_gesture", "mouse_move", "enter_text"):
+        coordinate = tools[tool_name]["args_schema"]["properties"]["coordinate"]
+        assert coordinate["type"] == "string"
+        assert coordinate["enum"] == ["normalized"]
+        assert "0-1000" in coordinate["description"]
+    touch = tools["touch_gesture"]
+    point = touch["args_schema"]["properties"]["point"]["properties"]
+    assert point["x"]["minimum"] == 0 and point["x"]["maximum"] == 1000
+    assert point["y"]["minimum"] == 0 and point["y"]["maximum"] == 1000
+
+    status, body = _invoke(
+        base_url,
+        "touch_gesture",
+        {"type": "tap", "coordinate": "pixels", "point": {"x": 500, "y": 500}},
+    )
+    assert status == 200 and body["is_error"] is True
+    assert 'coordinate must be "normalized"' in body["output"]
+
+
 # ---- touch_gesture ----------------------------------------------------------
 
 

@@ -93,6 +93,7 @@ func TestBuiltinToolSetRegistersExpectedTools(t *testing.T) {
 		"list_scripts",
 		"mouse_move",
 		"mouse_scroll",
+		"normalize_point",
 		"quick_action",
 		"read_script",
 		"request_human_handoff",
@@ -910,14 +911,24 @@ func TestTouchGestureSchemaRequiresNamedPointCoordinates(t *testing.T) {
 func TestTouchGestureSchemaMakesNormalizedCoordinateContractExplicit(t *testing.T) {
 	tool := &TouchGestureTool{}
 	description := strings.ToLower(tool.Description())
-	for _, want := range []string{"normalized 0-1000", "screenshot pixels", "image_width", "image_height"} {
+	for _, want := range []string{"normalized 0-1000", "screenshot pixel", "fixed normalized 0-1000 plane", "source_width", "source_height"} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("touch_gesture description missing %q: %s", want, description)
 		}
 	}
+	if !strings.Contains(description, "do not rescale") {
+		t.Fatalf("touch_gesture description must preserve model-visible pixel estimates: %s", description)
+	}
+	if strings.Contains(description, "pixel_x/max") || strings.Contains(description, "image_width-1") {
+		t.Fatalf("touch_gesture description must not instruct pixel-to-normalized conversion: %s", description)
+	}
 
 	schema := tool.ArgsSchema()
 	props := schema["properties"].(map[string]any)
+	coordinateParameter := props["coordinate"].(map[string]any)
+	if !slices.Equal(coordinateParameter["enum"].([]string), []string{"normalized"}) {
+		t.Fatalf("coordinate enum = %#v, want normalized only", coordinateParameter["enum"])
+	}
 	for _, pointName := range []string{"point", "start", "end"} {
 		point := props[pointName].(map[string]any)
 		pointProps := point["properties"].(map[string]any)
@@ -930,6 +941,21 @@ func TestTouchGestureSchemaMakesNormalizedCoordinateContractExplicit(t *testing.
 				}
 			}
 		}
+	}
+}
+
+func TestTouchGestureRejectsNonNormalizedCoordinateParameter(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screen.ScreenState{}}
+	out, err := tool.Call(context.Background(), `{"type":"tap","coordinate":"pixels","point":{"x":500,"y":500}}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if !strings.Contains(out, `coordinate must be "normalized"`) {
+		t.Fatalf("output = %q, want normalized coordinate error", out)
+	}
+	if reports := readMouseReports(t, dev, path); len(reports) != 0 {
+		t.Fatalf("len(reports) = %d, want no HID writes", len(reports))
 	}
 }
 
@@ -1009,6 +1035,9 @@ func TestADBTouchGestureTapAutoRejectsOutOfRangeCoordinates(t *testing.T) {
 	}
 	if !strings.Contains(out, "normalized 0-1000 scale") {
 		t.Fatalf("Call output = %q, want normalized coordinate error", out)
+	}
+	if !strings.Contains(out, "Do not repeat the rejected values") {
+		t.Fatalf("Call output = %q, want explicit retry guidance", out)
 	}
 	if len(runner.commands) != 0 {
 		t.Fatalf("adb commands = %#v, want no command for out-of-range normalized coordinates", runner.commands)
@@ -3032,7 +3061,7 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 		t.Fatalf("schema examples are not valid JSON: encoded=%s err=%v", encoded, err)
 	}
 	for _, want := range []string{
-		`{"point":{"x":500,"y":500},"type":"tap"}`,
+		`{"coordinate":"normalized","point":{"x":500,"y":500},"type":"tap"}`,
 		`"start":{"x":500,"y":800}`,
 		`"end":{"x":500,"y":200}`,
 		`{"strength":"medium","type":"swipe_up"}`,
@@ -3041,7 +3070,6 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 			t.Fatalf("schema examples missing %q: %s", want, encoded)
 		}
 	}
-
 }
 
 func TestTouchGestureSchemaFiltersEdgeGesturesForDesktopPlatforms(t *testing.T) {

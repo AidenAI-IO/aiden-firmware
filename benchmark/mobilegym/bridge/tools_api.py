@@ -87,13 +87,19 @@ class ToolsAPIHandler:
 
     def _handle_catalog(self, handler: BaseHTTPRequestHandler) -> None:
         """GET /api/tools - return tool catalog."""
+        coordinate_parameter = {
+            "type": "string",
+            "enum": ["normalized"],
+            "description": "Optional marker for coordinate values. Whenever this tool includes any pointer value, set coordinate to \"normalized\"; no other value is valid. All x/y values remain on the normalized 0-1000 scale.",
+        }
+        coordinate_properties = {
+            "x": {"type": "number", "minimum": 0, "maximum": 1000, "description": "Normalized 0-1000 X coordinate."},
+            "y": {"type": "number", "minimum": 0, "maximum": 1000, "description": "Normalized 0-1000 Y coordinate."},
+        }
         enter_text_focus_schema = {
             "type": "object",
             "additionalProperties": False,
-            "properties": {
-                "x": {"type": "number"},
-                "y": {"type": "number"},
-            },
+            "properties": coordinate_properties,
             "required": ["x", "y"],
             "description": "Input field coordinates in normalized 0-1000 units.",
         }
@@ -105,6 +111,7 @@ class ToolsAPIHandler:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
+                        "coordinate": coordinate_parameter,
                         "type": {
                             "type": "string",
                             "enum": ["tap", "double_tap", "long_press", "swipe", "drag", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"],
@@ -113,21 +120,21 @@ class ToolsAPIHandler:
                         "point": {
                             "type": "object",
                             "additionalProperties": False,
-                            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "properties": coordinate_properties,
                             "required": ["x", "y"],
                             "description": "Point for tap/double_tap/long_press (normalized 0-1000)",
                         },
                         "start": {
                             "type": "object",
                             "additionalProperties": False,
-                            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "properties": coordinate_properties,
                             "required": ["x", "y"],
                             "description": "Start point for swipe/drag",
                         },
                         "end": {
                             "type": "object",
                             "additionalProperties": False,
-                            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "properties": coordinate_properties,
                             "required": ["x", "y"],
                             "description": "End point for swipe/drag",
                         },
@@ -147,6 +154,9 @@ class ToolsAPIHandler:
                         },
                     },
                     "required": ["type"],
+                    "examples": [
+                        {"coordinate": "normalized", "type": "tap", "point": {"x": 500, "y": 500}},
+                    ],
                 },
             },
             {
@@ -189,6 +199,7 @@ class ToolsAPIHandler:
                     "properties": {
                         "text": {"type": "string", "description": "Exact text that must appear in the field."},
                         "focus": enter_text_focus_schema,
+                        "coordinate": coordinate_parameter,
                     },
                     "required": ["text", "focus"],
                 },
@@ -200,8 +211,8 @@ class ToolsAPIHandler:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"},
+                        "coordinate": coordinate_parameter,
+                        **coordinate_properties,
                     },
                     "required": ["x", "y"],
                 },
@@ -416,6 +427,11 @@ class ToolsAPIHandler:
         unknown = _unknown_tool_fields(tool_name, tool_input)
         if unknown:
             return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
+        if tool_name in {"touch_gesture", "mouse_move", "enter_text"}:
+            try:
+                _validate_coordinate_parameter(tool_input)
+            except ValueError as exc:
+                return {"output": f"error: {exc}", "is_error": True}
         episode_id = state.active_episode_id
 
         if tool_name == "touch_gesture":
@@ -910,14 +926,22 @@ def _normalized_point_arg(
 def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
     allowed = {
         "touch_gesture": {
-            "type", "point", "start", "end", "x", "y", "start_x", "start_y",
+            "type", "coordinate", "point", "start", "end", "x", "y", "start_x", "start_y",
             "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
             "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
         },
-        "mouse_move": {"x", "y"},
+        "mouse_move": {"coordinate", "x", "y"},
         "quick_action": {"action", "list", "alternative", "alternative_index"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)
+
+
+def _validate_coordinate_parameter(tool_input: dict[str, Any]) -> None:
+    value = tool_input.get("coordinate")
+    if value is None:
+        return
+    if value != "normalized":
+        raise ValueError('coordinate must be "normalized"')
 
 
 def _finite_float(value: Any, name: str) -> float:

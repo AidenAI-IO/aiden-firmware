@@ -71,7 +71,8 @@ Before using coordinates:
 
 - Inspect the screenshot and identify the intended target visually.
 - Use normalized 0-1000 coordinates: `(0,0)` is top-left, `(1000,1000)` is bottom-right, `(500,500)` is center.
-- Never pass screenshot pixels directly to a coordinate tool. Convert point measurements from the latest returned image first: `x_normalized = pixel_x / max(screenshot_width - 1, 1) * 1000` and `y_normalized = pixel_y / max(screenshot_height - 1, 1) * 1000`.
+- Never pass screenshot pixels directly to a pointer or touch tool. The fixed pointer plane is `(0,0)` at top-left, `(1000,1000)` at bottom-right, and `(500,500)` at center.
+- After locating a tap target visually, call `normalize_point` with the model-visible `pixel_x` and `pixel_y` without rescaling plus `source_width` and `source_height` from the attached image metadata, then copy the returned `coordinate` and `point` fields unchanged into `touch_gesture`.
 - Choose the visual center of the target. For small controls, estimate the control bounds and aim for the midpoint, biased slightly inward.
 - Avoid edges unless performing an edge gesture. For phone edge gestures, do not use conservative insets like 50-100: left-edge `back` starts at normalized `x=1`, and bottom-edge `home` starts at normalized `y=999`.
 - Do not guess a coordinate if the target is not visible or the screen is stale.

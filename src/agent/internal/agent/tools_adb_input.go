@@ -172,7 +172,7 @@ func (c *ADBInputController) ResolvePosition(ctx context.Context, x, y float64) 
 		return resolvedPointerPoint{}, fmt.Errorf("%w: coordinates must be finite", errADBInputInvalidArgument)
 	}
 	if x < 0 || x > 1000 || y < 0 || y > 1000 {
-		return resolvedPointerPoint{}, fmt.Errorf("%w: coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f", errADBInputInvalidArgument, x, y)
+		return resolvedPointerPoint{}, fmt.Errorf("%w: coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f. Do not repeat the rejected values; call the tool again with x and y between 0 and 1000 using coordinate:\"normalized\"", errADBInputInvalidArgument, x, y)
 	}
 	size, err := c.screenSize(ctx)
 	if err != nil {

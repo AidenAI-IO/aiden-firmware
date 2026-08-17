@@ -7,8 +7,18 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 )
+
+func TestScreenshotDescriptionUsesDisplayedCoordinateFrame(t *testing.T) {
+	description := strings.ToLower((&ScreenshotTool{}).Description())
+	for _, want := range []string{"source_width", "source_height", "without rescaling"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("screenshot description missing %q: %s", want, description)
+		}
+	}
+}
 
 type fakeScreenshotFrameClient struct {
 	meta         frameMetadata

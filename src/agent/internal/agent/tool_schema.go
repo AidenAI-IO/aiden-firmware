@@ -1,5 +1,7 @@
 package agent
 
+import "fmt"
+
 // Schema Examples Guidelines
 //
 // All schema helper functions in this file support optional examples via variadic parameters.
@@ -140,6 +142,17 @@ func stringEnumArgSchema(description string, values ...string) map[string]any {
 	schema := stringArgSchema(description)
 	schema["enum"] = values
 	return schema
+}
+
+func normalizedCoordinateParameterSchema() map[string]any {
+	return stringEnumArgSchema("Optional marker for coordinate values. Whenever this tool includes any pointer value, set coordinate to \"normalized\"; no other value is valid. All x/y values remain on the normalized 0-1000 scale.", "normalized")
+}
+
+func validateCoordinateParameter(value string) error {
+	if value == "" || value == "normalized" {
+		return nil
+	}
+	return fmt.Errorf(`coordinate must be "normalized"`)
 }
 
 func stringArrayArgSchema(description string, examples ...[]string) map[string]any {

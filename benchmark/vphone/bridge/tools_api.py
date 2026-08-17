@@ -68,9 +68,14 @@ class VPhoneToolsAPIHandler:
         self._send_json(handler, 404, {"error": "not_found", "output": "unknown endpoint", "is_error": True})
 
     def catalog(self) -> list[dict[str, Any]]:
+        coordinate_parameter = {
+            "type": "string",
+            "enum": ["normalized"],
+            "description": "Optional marker for coordinate values. Whenever this tool includes any pointer value, set coordinate to \"normalized\"; no other value is valid. All x/y values remain on the normalized 0-1000 scale.",
+        }
         coordinate_properties = {
-            "x": {"type": "number"},
-            "y": {"type": "number"},
+            "x": {"type": "number", "minimum": 0, "maximum": 1000, "description": "Normalized 0-1000 X coordinate."},
+            "y": {"type": "number", "minimum": 0, "maximum": 1000, "description": "Normalized 0-1000 Y coordinate."},
         }
         focus_schema = {
             "type": "object",
@@ -86,6 +91,7 @@ class VPhoneToolsAPIHandler:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
+                        "coordinate": coordinate_parameter,
                         "type": {
                             "type": "string",
                             "enum": [
@@ -121,7 +127,7 @@ class VPhoneToolsAPIHandler:
                 "description": "Validate a point and return a screenshot; iOS has no hover state.",
                 "args_schema": {
                     "type": "object", "additionalProperties": False,
-                    "properties": coordinate_properties,
+                    "properties": {"coordinate": coordinate_parameter, **coordinate_properties},
                     "required": ["x", "y"],
                 },
             },
@@ -184,6 +190,7 @@ class VPhoneToolsAPIHandler:
                             "properties": {
                                 "text": {"type": "string", "maxLength": 1024},
                                 "focus": focus_schema,
+                                "coordinate": coordinate_parameter,
                             },
                             "required": ["text", "focus"],
                         },
@@ -288,6 +295,11 @@ class VPhoneToolsAPIHandler:
         unknown = _unknown_tool_fields(tool_name, tool_input)
         if unknown:
             return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
+        if tool_name in {"touch_gesture", "mouse_move", "enter_text"}:
+            try:
+                _validate_coordinate_parameter(tool_input)
+            except ValueError as exc:
+                return {"output": f"error: {exc}", "is_error": True}
         dispatch: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "touch_gesture": self._call_touch_gesture,
             "keyboard_text": self._call_keyboard_text,
@@ -472,7 +484,7 @@ class VPhoneToolsAPIHandler:
     def _call_enter_text(self, tool_input: dict[str, Any]) -> dict[str, Any]:
         if "keyboard" not in self.state.device.capabilities():
             return _unsupported_keyboard_result()
-        unknown = sorted(set(tool_input) - {"text", "focus"})
+        unknown = sorted(set(tool_input) - {"coordinate", "text", "focus"})
         if unknown:
             output = {"ok": False, "suggestion": f"Remove unsupported enter_text arguments: {unknown!r}."}
             return {"output": json.dumps(output), "is_error": False}
@@ -711,14 +723,22 @@ def _normalized_point_arg(
 def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
     allowed = {
         "touch_gesture": {
-            "type", "point", "start", "end", "x", "y", "start_x", "start_y",
+            "type", "coordinate", "point", "start", "end", "x", "y", "start_x", "start_y",
             "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
             "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
         },
-        "mouse_move": {"x", "y"},
+        "mouse_move": {"coordinate", "x", "y"},
         "quick_action": {"action", "list", "alternative", "alternative_index"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)
+
+
+def _validate_coordinate_parameter(tool_input: dict[str, Any]) -> None:
+    value = tool_input.get("coordinate")
+    if value is None:
+        return
+    if value != "normalized":
+        raise ValueError('coordinate must be "normalized"')
 
 
 def _to_pixels(point: dict[str, float], width: int, height: int) -> tuple[int, int]:

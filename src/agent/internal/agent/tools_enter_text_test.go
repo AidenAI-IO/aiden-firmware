@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -511,6 +512,10 @@ func TestEnterTextToolSchemaKeepsIMESegmentsInternal(t *testing.T) {
 	}
 	if _, found := props["send_after_commit"]; found {
 		t.Fatal("enter_text must not expose send_after_commit")
+	}
+	coordinate, ok := props["coordinate"].(map[string]any)
+	if !ok || !slices.Equal(coordinate["enum"].([]string), []string{"normalized"}) {
+		t.Fatalf("coordinate schema = %#v, want optional normalized enum", props["coordinate"])
 	}
 }
 

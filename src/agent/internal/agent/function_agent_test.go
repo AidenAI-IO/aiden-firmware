@@ -994,4 +994,34 @@ func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing
 	if len(followups) != 1 {
 		t.Fatalf("expected one followup screenshot message, got %#v", followups)
 	}
+	if text := messageText(followups); !strings.Contains(text, "fixed normalized coordinate plane") {
+		t.Fatalf("screenshot followup missing adjacent coordinate guidance: %q", text)
+	}
+	if len(followups[0].Parts) < 3 {
+		t.Fatalf("unexpected screenshot followup parts: %#v", followups[0].Parts)
+	}
+	guidance, ok := followups[0].Parts[len(followups[0].Parts)-2].(llms.TextContent)
+	if !ok || !strings.Contains(guidance.Text, "fixed normalized coordinate plane") {
+		t.Fatalf("coordinate guidance must immediately precede the screenshot: %#v", followups[0].Parts)
+	}
+	if _, ok := followups[0].Parts[len(followups[0].Parts)-1].(llms.ImageURLContent); !ok {
+		t.Fatalf("screenshot must immediately follow coordinate guidance: %#v", followups[0].Parts)
+	}
+}
+
+func TestFunctionAgentPostActionScreenshotRequestsExplicitVerification(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "touch_gesture", visual: true}},
+	}
+	observation := `{"action_output":"ok","verification_required":true,"width":800,"height":600,"format":"jpeg","size":4,"data":"` +
+		base64.StdEncoding.EncodeToString([]byte("img1")) + `"}`
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "touch_gesture"},
+		Observation: observation,
+	}
+
+	toolContent, _ := agent.observationMessagesForStep(step, true)
+	if !strings.Contains(toolContent, "verification_required=true") || !strings.Contains(toolContent, "public screenshot tool") {
+		t.Fatalf("toolContent missing explicit verification request: %q", toolContent)
+	}
 }

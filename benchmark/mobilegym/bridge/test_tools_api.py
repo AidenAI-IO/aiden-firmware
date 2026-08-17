@@ -93,8 +93,16 @@ def test_get_tools_catalog(bridge_server):
 
     assert tools["touch_gesture"]["args_schema"]["additionalProperties"] is False
     touch_props = tools["touch_gesture"]["args_schema"]["properties"]
+    assert touch_props["coordinate"] == {
+        "type": "string",
+        "enum": ["normalized"],
+        "description": "Optional marker for coordinate values. Whenever this tool includes any pointer value, set coordinate to \"normalized\"; no other value is valid. All x/y values remain on the normalized 0-1000 scale.",
+    }
     assert touch_props["point"]["additionalProperties"] is False
     assert touch_props["point"]["required"] == ["x", "y"]
+    for axis in ("x", "y"):
+        assert touch_props["point"]["properties"][axis]["minimum"] == 0
+        assert touch_props["point"]["properties"][axis]["maximum"] == 1000
     assert "coord_space" not in touch_props
     assert touch_props["button"]["enum"] == ["left", "right", "middle"]
     assert touch_props["strength"]["enum"] == ["large", "medium", "small", "tiny"]
@@ -134,6 +142,36 @@ def test_get_tools_catalog(bridge_server):
     ]
     assert "alternative" in quick_action_props
     assert "alternative_index" in quick_action_props
+
+
+def test_coordinate_parameter_is_optional_and_rejects_non_normalized_values(bridge_server):
+    server, base_url, state = bridge_server
+
+    catalog_request = Request(f"{base_url}/api/tools", method="GET")
+    with urlopen(catalog_request, timeout=5) as response:
+        tools = {tool["name"]: tool for tool in json.loads(response.read().decode())["tools"]}
+    for tool_name in ("touch_gesture", "mouse_move", "enter_text"):
+        coordinate = tools[tool_name]["args_schema"]["properties"]["coordinate"]
+        assert coordinate["enum"] == ["normalized"]
+
+    setup_request = Request(
+        f"{base_url}/api/setup",
+        data=json.dumps({"benchmark_task_id": "coordinate-parameter-test"}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(setup_request, timeout=5):
+        pass
+    action_request = Request(
+        f"{base_url}/api/tools/touch_gesture",
+        data=json.dumps({"input": json.dumps({"type": "tap", "coordinate": "pixels", "point": {"x": 500, "y": 500}})}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(action_request, timeout=5) as response:
+        result = json.loads(response.read().decode())
+    assert result["is_error"] is True
+    assert 'coordinate must be "normalized"' in result["output"]
 
 
 def test_invoke_provider_screenshot(bridge_server):

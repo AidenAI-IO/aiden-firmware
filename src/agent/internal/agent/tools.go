@@ -38,6 +38,15 @@ type builtinToolSetOptions struct {
 	screenState             *screen.ScreenState
 	screenProvider          screenprovider.Provider
 	shellTemporaryDirectory string
+	modelProvider           string
+	modelName               string
+}
+
+func withModelCoordinateProfile(provider, model string) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.modelProvider = provider
+		options.modelName = model
+	}
 }
 
 func WithWaitForWakeupController(controller *WaitForWakeupController) BuiltinToolSetOption {
@@ -84,7 +93,8 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 }
 
 func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
-	defaultOptions := make([]BuiltinToolSetOption, 0, len(options)+2)
+	defaultOptions := make([]BuiltinToolSetOption, 0, len(options)+3)
+	defaultOptions = append(defaultOptions, withModelCoordinateProfile(cfg.Model.Provider, cfg.Model.Model))
 	if cfg.ConfigDir != "" {
 		defaultOptions = append(defaultOptions, WithRunScriptScriptsDir(filepath.Join(cfg.ConfigDir, "scripts")))
 	}
@@ -177,6 +187,10 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen, requireFreshScreenshot: true}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture, iosKeyboardIsolation: iosKeyboardIsolation}
+	touchGesturePostAction := newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable)
+	if touchTool, ok := touchGesturePostAction.(*postActionScreenshotTool); ok {
+		touchTool.verificationRequired = true
+	}
 	textInputHW := &textInputHardwareDeps{
 		pointerMode:  hidCfg.PointerModeOrDefault(),
 		touchGesture: touchGesture,
@@ -190,7 +204,8 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"touch_gesture":          touchGesturePostAction,
+		"normalize_point":        NewNormalizePointTool(toolOptions.modelProvider, toolOptions.modelName),
 		"wheel_nudge":            newPostActionStableScreenshotTool(wheelNudge, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"screenshot":             screenshot,

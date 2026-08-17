@@ -10,6 +10,8 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+const ScreenshotCoordinateGuidance = "This screenshot uses the fixed normalized coordinate plane for pointer and touch tools: (0,0) is the top-left corner, (1000,1000) is the bottom-right corner, and (500,500) is the center. Use visual proportions of the full image: a target one quarter from the left and three quarters from the top is (250,750), a target at the center is (500,500), a small control near the top-right is around (950,100), and a small control near the bottom-right is around (950,875). For small controls, tap the visible center of the control itself, not the larger nearby panel; choose a point inside its visible bounds rather than on an edge or border. For close or dismiss requests, locate the visible X/close control itself even when it is tiny; do not tap the center of the surrounding banner. In a bottom action sheet with stacked rows, tap the center of the requested row's label, not the center of the whole sheet; centered options should stay near x=500 and inside the row between its visible separators. In a multi-column grid, the first image is the top-left cell; its selection control is at that cell's top-right corner, not at the screen's top-right corner and not at the image center. In media grids, the selection control is the larger hollow circle inset inside the thumbnail; small stars, favorite markers, and other badges on the cell border are not selection controls. Tap the circle's center. Normalize x and y independently: never mix a normalized axis with a raw screenshot-pixel axis. If the task is explicitly a single-frame static perception task, use the first image, perform one target gesture, and stop; do not probe or retry because the static fixture may remain unchanged. Send x/y on this normalized plane, never raw screenshot pixels or displayed-image pixels."
+
 func ConvertMessageList(messageList []Message) []llms.MessageContent {
 	standardMessageList := make([]llms.MessageContent, len(messageList))
 	for i, message := range messageList {
@@ -67,6 +69,7 @@ func ConvertMessageList(messageList []Message) []llms.MessageContent {
 				if attachmentID != "." && attachmentID != "" {
 					newMessage.Parts = append(newMessage.Parts, llms.TextPart(fmt.Sprintf("[screenshot_attachment_id=%s]", attachmentID)))
 				}
+				newMessage.Parts = append(newMessage.Parts, llms.TextPart(ScreenshotCoordinateGuidance))
 			}
 			newMessage.Parts = append(newMessage.Parts, llms.BinaryPart(attachment.MIMEType, data))
 		}

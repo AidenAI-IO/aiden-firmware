@@ -17,20 +17,22 @@ const postActionCompletedDetail = "action_completed"
 
 type postActionScreenshotResult struct {
 	screenshotResult
-	ActionOutput  string   `json:"action_output,omitempty"`
-	ScreenStable  *bool    `json:"screen_stable,omitempty"`
-	StableWaitMs  *int64   `json:"stable_wait_ms,omitempty"`
-	ScreenChanged *bool    `json:"screen_changed,omitempty"`
-	LastDiff      *float64 `json:"last_diff,omitempty"`
+	ActionOutput         string   `json:"action_output,omitempty"`
+	VerificationRequired bool     `json:"verification_required,omitempty"`
+	ScreenStable         *bool    `json:"screen_stable,omitempty"`
+	StableWaitMs         *int64   `json:"stable_wait_ms,omitempty"`
+	ScreenChanged        *bool    `json:"screen_changed,omitempty"`
+	LastDiff             *float64 `json:"last_diff,omitempty"`
 }
 
 type postActionScreenshotTool struct {
-	inner      langtools.Tool
-	waitStable langtools.Tool
-	screenshot langtools.Tool
-	delay      time.Duration
-	waitInput  string
-	defaults   ScreenStableDefaults
+	inner                langtools.Tool
+	waitStable           langtools.Tool
+	screenshot           langtools.Tool
+	delay                time.Duration
+	waitInput            string
+	defaults             ScreenStableDefaults
+	verificationRequired bool
 }
 
 type stableScreenWaiter interface {
@@ -57,13 +59,18 @@ func (t *postActionScreenshotTool) Name() string {
 }
 
 func (t *postActionScreenshotTool) Description() string {
+	verification := ""
+	if t.verificationRequired {
+		verification = " The result includes verification_required=true; call the public screenshot tool next before continuing."
+	}
 	if t.waitStable != nil {
-		return t.inner.Description() + " On successful execution, waits for the screen to become stable (or until the configured timeout) and returns a post-action screenshot observation. screen_changed=false means no visible screen change was observed during the wait window; when the action was expected to change the UI, do not assume success and inspect the screenshot before answering or repeating. screen_stable=false means the screen was still changing (for example during video playback) but the screenshot was still captured."
+		return t.inner.Description() + " On successful execution, waits for the screen to become stable (or until the configured timeout) and returns a post-action screenshot observation. screen_changed=false means no visible screen change was observed during the wait window; when the action was expected to change the UI, do not assume success and inspect the screenshot before answering or repeating. screen_stable=false means the screen was still changing (for example during video playback) but the screenshot was still captured." + verification
 	}
 	return fmt.Sprintf(
-		"%s On successful execution, waits %s and returns a post-action screenshot observation.",
+		"%s On successful execution, waits %s and returns a post-action screenshot observation.%s",
 		t.inner.Description(),
 		t.delay,
+		verification,
 	)
 }
 
@@ -160,8 +167,9 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 	touchscreenRCALogf("post_action screenshot completed inner=%q display=%dx%d capture_backend=%q size=%d", t.inner.Name(), result.Width, result.Height, result.CaptureBackend, result.Size)
 
 	payload := postActionScreenshotResult{
-		screenshotResult: result,
-		ActionOutput:     actionOutput,
+		screenshotResult:     result,
+		ActionOutput:         actionOutput,
+		VerificationRequired: t.verificationRequired,
 	}
 	if t.waitStable != nil {
 		stable := waitResult.Stable
