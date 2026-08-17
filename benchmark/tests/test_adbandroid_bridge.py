@@ -1,6 +1,7 @@
 import base64
 import html
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -144,7 +145,7 @@ def test_setup_with_empty_task_id_creates_episode(bridge):
 
 
 def test_setup_with_task_id_takes_ownership_and_is_idempotent(bridge):
-    server, _, base_url = bridge
+    server, device, base_url = bridge
     status, body = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
     assert status == 200
     assert body["data"]["episode_id"] == "suite:task-1"
@@ -156,6 +157,114 @@ def test_setup_with_task_id_takes_ownership_and_is_idempotent(bridge):
 
     status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
     assert status == 200
+    assert device.calls.count(("reset_home",)) == 2
+
+
+def test_setup_token_deduplicates_concurrent_and_completed_requests():
+    class BlockingResetDevice(FakeADBAndroidDevice):
+        def __init__(self):
+            super().__init__()
+            self.reset_entered = threading.Event()
+            self.allow_reset = threading.Event()
+
+        def reset_home(self):
+            self.calls.append(("reset_home",))
+            self.reset_entered.set()
+            self.allow_reset.wait(timeout=5)
+
+    device = BlockingResetDevice()
+    server = ADBBridgeServer(device, host="127.0.0.1", port=0, action_settle_sec=0)
+    base_url = server.start()
+    responses = []
+
+    def setup():
+        responses.append(
+            _request(
+                base_url,
+                "/api/setup",
+                method="POST",
+                task_id="suite:task-token",
+                payload={"setup_token": "setup-token-1"},
+            )
+        )
+
+    first = threading.Thread(target=setup)
+    second = threading.Thread(target=setup)
+    try:
+        first.start()
+        assert device.reset_entered.wait(timeout=2)
+        second.start()
+        time.sleep(0.1)
+        assert device.calls.count(("reset_home",)) == 1
+        device.allow_reset.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert [status for status, _ in responses] == [200, 200]
+        assert device.calls.count(("reset_home",)) == 1
+
+        status, _ = _request(
+            base_url,
+            "/api/setup",
+            method="POST",
+            task_id="suite:task-token",
+            payload={"setup_token": "setup-token-1"},
+        )
+        assert status == 200
+        assert device.calls.count(("reset_home",)) == 1
+
+        status, _ = _request(
+            base_url,
+            "/api/setup",
+            method="POST",
+            task_id="suite:task-token",
+            payload={"setup_token": "setup-token-2"},
+        )
+        assert status == 200
+        assert device.calls.count(("reset_home",)) == 2
+
+        status, _ = _request(
+            base_url,
+            "/api/release",
+            method="POST",
+            task_id="suite:task-token",
+        )
+        assert status == 200
+        status, _ = _request(
+            base_url,
+            "/api/setup",
+            method="POST",
+            task_id="suite:task-token",
+            payload={"setup_token": "setup-token-2"},
+        )
+        assert status == 200
+        assert device.calls.count(("reset_home",)) == 3
+    finally:
+        device.allow_reset.set()
+        server.stop()
+
+
+def test_setup_token_cache_is_scoped_to_bridge_process():
+    device = FakeADBAndroidDevice()
+    payload = {"setup_token": "setup-token-restart"}
+
+    for _ in range(2):
+        server = ADBBridgeServer(device, host="127.0.0.1", port=0, action_settle_sec=0)
+        base_url = server.start()
+        try:
+            status, _ = _request(
+                base_url,
+                "/api/setup",
+                method="POST",
+                task_id="suite:task-restart",
+                payload=payload,
+            )
+            assert status == 200
+        finally:
+            server.stop()
+
+    assert device.calls.count(("reset_home",)) == 2
 
 
 def test_health_reports_expired_task_lease_not_active(bridge):

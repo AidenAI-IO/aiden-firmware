@@ -4,16 +4,36 @@ import json
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from typing import Any
 
 
 class AgentTimeoutError(TimeoutError):
-    pass
+    def __init__(self, message: str = "", *, request_id: str | None = None):
+        super().__init__(message)
+        self.request_id = request_id
 
 
 class AgentRequestError(RuntimeError):
-    pass
+    def __init__(self, message: str = "", *, request_id: str | None = None):
+        super().__init__(message)
+        self.request_id = request_id
+
+
+def _parse_json_response(
+    body_bytes: bytes,
+    endpoint: str,
+    *,
+    request_id: str | None = None,
+) -> Any:
+    try:
+        return json.loads(body_bytes)
+    except json.JSONDecodeError as exc:
+        raise AgentRequestError(
+            f"{endpoint} returned invalid JSON: {exc}", request_id=request_id
+        ) from exc
 
 
 @dc.dataclass
@@ -39,6 +59,7 @@ class AgentClient:
         self.base_url = base_url.rstrip("/")
         self._default_timeout = default_timeout_sec
         self._benchmark_token = str(benchmark_token or "").strip()
+        self._pending_chat_request_ids: set[str] = set()
 
     def _post(
         self,
@@ -135,10 +156,7 @@ class AgentClient:
         )
         if status != 200:
             raise AgentRequestError(f"phone_bridge_state returned {status}")
-        try:
-            body = json.loads(body_bytes)
-        except json.JSONDecodeError as exc:
-            raise AgentRequestError(f"phone_bridge_state returned invalid JSON: {exc}") from exc
+        body = _parse_json_response(body_bytes, "phone_bridge_state")
         return body if isinstance(body, dict) else {}
 
     def get_history(self) -> list[dict[str, Any]]:
@@ -148,29 +166,46 @@ class AgentClient:
         body = json.loads(body_bytes)
         return body if isinstance(body, list) else []
 
+    def get_episode(self, episode_id: str) -> dict[str, Any]:
+        encoded_id = urllib.parse.quote(str(episode_id), safe="")
+        status, body_bytes = self._get(f"/api/episodes/{encoded_id}", timeout=5)
+        if status != 200:
+            raise AgentRequestError(f"episode returned {status}")
+        body = json.loads(body_bytes)
+        episode = body.get("episode") if isinstance(body, dict) else None
+        if not isinstance(episode, dict):
+            raise AgentRequestError("episode response did not contain an episode object")
+        return episode
+
     def chat(
         self,
         message: str,
         timeout_sec: int | None = None,
-        attachments: list[dict[str, str]] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
         skills: list[str] | None = None,
     ) -> ChatResponse:
-        payload: dict[str, Any] = {"message": message}
+        request_id = f"benchmark-{uuid.uuid4().hex}"
+        payload: dict[str, Any] = {"message": message, "request_id": request_id}
         if attachments:
             payload["attachments"] = attachments
         if skills:
             payload["skills"] = skills
-        status, body_bytes = self._post(
-            "/api/chat", payload, timeout=timeout_sec or self._default_timeout
-        )
+        try:
+            status, body_bytes = self._post(
+                "/api/chat", payload, timeout=timeout_sec or self._default_timeout
+            )
+        except (AgentTimeoutError, AgentRequestError) as exc:
+            exc.request_id = request_id
+            self._pending_chat_request_ids.add(request_id)
+            raise
         if status != 200:
-            raise AgentRequestError(f"chat returned {status}")
+            raise AgentRequestError(f"chat returned {status}", request_id=request_id)
         body = json.loads(body_bytes)
 
         # Async mode: agent returns request_id, long poll for completion.
-        request_id = body.get("request_id")
-        if request_id:
-            return self._wait_for_chat_result(request_id, timeout_sec)
+        response_request_id = str(body.get("request_id") or "").strip()
+        if response_request_id:
+            return self._wait_for_chat_result(response_request_id, timeout_sec)
 
         return ChatResponse(
             response=body.get("response", ""),
@@ -182,12 +217,20 @@ class AgentClient:
     ) -> ChatResponse:
         """Long poll /api/chat/result?wait=true until the task completes."""
         timeout = timeout_sec or self._default_timeout
-        status, body_bytes = self._get(
-            f"/api/chat/result?request_id={request_id}&wait=true",
-            timeout=timeout,
-        )
+        encoded_id = urllib.parse.quote(request_id, safe="")
+        try:
+            status, body_bytes = self._get(
+                f"/api/chat/result?request_id={encoded_id}&wait=true",
+                timeout=timeout,
+            )
+        except (AgentTimeoutError, AgentRequestError) as exc:
+            exc.request_id = request_id
+            self._pending_chat_request_ids.add(request_id)
+            raise
         if status != 200:
-            raise AgentRequestError(f"chat/result returned {status}")
+            raise AgentRequestError(
+                f"chat/result returned {status}", request_id=request_id
+            )
         body = json.loads(body_bytes)
 
         result_status = body.get("status")
@@ -204,6 +247,35 @@ class AgentClient:
             response=body.get("response", ""),
             history=body.get("history", []),
         )
+
+    def cancel_chat(self, request_id: str, timeout: int = 15) -> str:
+        status, body_bytes = self._post(
+            "/api/chat/cancel",
+            {"request_id": request_id},
+            timeout=timeout,
+        )
+        if status != 200:
+            raise AgentRequestError(
+                f"chat/cancel returned {status}", request_id=request_id
+            )
+        body = _parse_json_response(
+            body_bytes, "chat/cancel", request_id=request_id
+        )
+        return str(body.get("status") or "") if isinstance(body, dict) else ""
+
+    def chat_result_status(self, request_id: str, timeout: int = 5) -> str:
+        encoded_id = urllib.parse.quote(request_id, safe="")
+        status, body_bytes = self._get(
+            f"/api/chat/result?request_id={encoded_id}", timeout=timeout
+        )
+        if status != 200:
+            raise AgentRequestError(
+                f"chat/result returned {status}", request_id=request_id
+            )
+        body = _parse_json_response(
+            body_bytes, "chat/result", request_id=request_id
+        )
+        return str(body.get("status") or "") if isinstance(body, dict) else ""
 
     def invoke_tool(
         self,
@@ -232,14 +304,45 @@ class AgentClient:
         timeout_sec: int = 90,
         poll_sec: float = 3.0,
     ) -> bool:
-        """Wait until the agent accepts clear/history again after a timed-out chat."""
+        """Cancel timed-out chats, wait for terminal state, then clear history."""
         deadline = time.monotonic() + max(0, timeout_sec)
-        while True:
-            if not self.health():
+        pending_request_ids = list(
+            getattr(self, "_pending_chat_request_ids", set())
+        )
+        for request_id in pending_request_ids:
+            cancel_sent = False
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                if not cancel_sent:
+                    try:
+                        self.cancel_chat(
+                            request_id,
+                            timeout=min(15, max(1, int(remaining))),
+                        )
+                        cancel_sent = True
+                    except (AgentTimeoutError, AgentRequestError):
+                        time.sleep(min(poll_sec, max(0, deadline - time.monotonic())))
+                        continue
+                try:
+                    result_status = self.chat_result_status(
+                        request_id,
+                        timeout=min(5, max(1, int(remaining))),
+                    )
+                except (AgentTimeoutError, AgentRequestError):
+                    if time.monotonic() >= deadline:
+                        return False
+                    time.sleep(min(poll_sec, max(0, deadline - time.monotonic())))
+                    continue
+                if result_status in {"complete", "error", "canceled", "not_found"}:
+                    self._pending_chat_request_ids.discard(request_id)
+                    break
                 if time.monotonic() >= deadline:
                     return False
                 time.sleep(min(poll_sec, max(0, deadline - time.monotonic())))
-                continue
+
+        while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False

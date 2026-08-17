@@ -14,7 +14,12 @@ class Element {
     this.disabled = false;
     this.innerHTML = '';
     this.value = '';
-    this.classList = {add() {}, remove() {}, contains() { return false; }};
+    const classes = new Set();
+    this.classList = {
+      add(...names) { names.forEach((name) => classes.add(name)); },
+      remove(...names) { names.forEach((name) => classes.delete(name)); },
+      contains(name) { return classes.has(name); },
+    };
   }
 
   appendChild(child) {
@@ -92,15 +97,49 @@ let requestImpl = async () => ({config: {}});
 let fetchImpl = async () => { throw new Error('fetch is not configured'); };
 let latestDetails = null;
 let modelSectionEditing = false;
-const selectFieldOptions = {model: {provider: []}};
+const modelProviderMeta = [
+  {
+    key: 'type',
+    widget: 'select',
+    enum: ['anthropic', 'openai', 'openrouter', 'ollama'].map((value) => ({value, label: value})),
+  },
+  {key: 'api_key', widget: 'text', secret: true},
+  {
+    key: 'base_url',
+    widget: 'text',
+    visibleWhen: {
+      all: [{field: 'model_providers.type', op: 'in', values: ['anthropic', 'openai', 'ollama']}],
+    },
+  },
+];
+const recordSectionFields = {
+  model_providers: modelProviderMeta.map((field) => [field.key, 'text', !!field.secret]),
+  tts_providers: [],
+  stt_providers: [],
+};
+const selectFieldOptions = {
+  model: {provider: []},
+  model_providers: {
+    type: modelProviderMeta[0].enum.map((option) => ({...option, providers: []})),
+  },
+};
+
+function applyProviderFieldVisibility() {
+  const type = elements.get('model_providers_type')?.value || '';
+  const baseURL = elements.get('model_providers_base_url');
+  const field = baseURL?.parentField;
+  if (!field) return;
+  const condition = modelProviderMeta[2].visibleWhen.all[0];
+  field.classList[condition.values.includes(type) ? 'remove' : 'add']('hidden');
+}
 const stateModule = await loadModule(path.join(moduleRoot, 'state.js'));
 await stateModule.evaluate();
 const {appState, registerRuntime} = stateModule.namespace;
 registerRuntime({
-  applyFieldVisibility() {},
+  applyFieldVisibility: applyProviderFieldVisibility,
   ensureSelectOption() {},
   getActiveLocale: () => 'en-US',
-  getRecordSectionFields: () => ({tts_providers: [], stt_providers: []}),
+  getRecordSectionFields: () => recordSectionFields,
   getSelectFieldOptions: () => selectFieldOptions,
   hydrateSelectField() {},
   isSectionEditing: (section) => section === 'model' && modelSectionEditing,
@@ -121,7 +160,9 @@ const {
   syncProviderCredentialHelp,
   rememberModelProvider,
   syncModelProvidersFromConfig,
+  editSelectedProvider,
   TtsProvidersManager,
+  SttProvidersManager,
 } = providersModule.namespace;
 
 assert.equal(
@@ -144,21 +185,47 @@ assert.equal(
 
 const providerTypeInput = new Element();
 providerTypeInput.value = 'anthropic';
-elements.set('providerType', providerTypeInput);
+elements.set('model_providers_type', providerTypeInput);
 const providerAPIKeyInput = new Element();
-elements.set('providerApiKey', providerAPIKeyInput);
+elements.set('model_providers_api_key', providerAPIKeyInput);
 const providerAPIKeyHelpElement = new Element();
-elements.set('providerApiKeyHelp', providerAPIKeyHelpElement);
 const providerAPIKeyField = new Element();
 providerAPIKeyField.helpElement = providerAPIKeyHelpElement;
 providerAPIKeyInput.parentField = providerAPIKeyField;
-syncProviderCredentialHelp(false);
+const providerBaseURLInput = new Element();
+providerBaseURLInput.value = 'https://gateway.example.com/v1';
+const providerBaseURLField = new Element();
+providerBaseURLInput.parentField = providerBaseURLField;
+elements.set('model_providers_base_url', providerBaseURLInput);
+const providerNameInput = new Element();
+elements.set('model_providers_record_name', providerNameInput);
+
+syncProviderCredentialHelp('model_providers', false);
 assert.equal(providerAPIKeyInput.placeholder, 'provider.anthropic_api_key_placeholder');
 assert.equal(providerAPIKeyHelpElement.textContent, 'provider.anthropic_api_key_help');
+ModelProvidersManager.dialogCredentialConfigured = false;
+ModelProvidersManager.spec.credentialHint(ModelProvidersManager);
+assert.equal(
+  providerAPIKeyInput.placeholder,
+  'provider.anthropic_api_key_placeholder',
+  'the model-provider credential hook preserves the Anthropic-specific hint',
+);
+applyProviderFieldVisibility();
+assert.equal(providerBaseURLField.classList.contains('hidden'), false);
+providerTypeInput.value = 'openrouter';
+applyProviderFieldVisibility();
+assert.equal(providerBaseURLField.classList.contains('hidden'), true);
 providerTypeInput.value = 'openai';
-syncProviderCredentialHelp(false);
+syncProviderCredentialHelp('model_providers', false);
 assert.equal(providerAPIKeyInput.placeholder, 'provider.api_key_placeholder');
 assert.equal(providerAPIKeyHelpElement.textContent, 'provider.api_key_help');
+applyProviderFieldVisibility();
+assert.equal(providerBaseURLField.classList.contains('hidden'), false);
+assert.equal(
+  ModelProvidersManager.spec.nameBase({type: 'openai', base_url: providerBaseURLInput.value}),
+  'example',
+  'OpenAI custom endpoints still provide an automatic record name',
+);
 
 const modelInput = new Element();
 modelInput.value = 'existing-model';
@@ -183,11 +250,11 @@ const modelsByProvider = {
     {id: 'gpt-4o', recommended: false},
   ],
   openrouter: [
-	{id: 'anthropic/claude-opus-4-8', recommended: true},
+    {id: 'anthropic/claude-opus-4-8', recommended: true},
     {id: 'google/gemini-3.5-pro', recommended: false},
   ],
 };
-fetchImpl = async (url) => {
+const fetchModels = async (url) => {
   const provider = new URL(String(url), 'http://config.test').searchParams.get('provider');
   return {
     ok: true,
@@ -195,6 +262,7 @@ fetchImpl = async (url) => {
     json: async () => ({models: modelsByProvider[provider] || []}),
   };
 };
+fetchImpl = fetchModels;
 
 appState.config = {
   model: {provider: 'openai-main', model: 'gpt-4o'},
@@ -216,7 +284,7 @@ rememberModelProvider();
 await ModelSelector.onProviderChange('router');
 assert.equal(
   modelInput.value,
-	'anthropic/claude-opus-4-8',
+  'anthropic/claude-opus-4-8',
   'provider with no remembered choice uses its recommended default',
 );
 
@@ -235,22 +303,51 @@ rememberModelProvider();
 await ModelSelector.onProviderChange('router');
 assert.equal(modelInput.value, 'google/gemini-3.5-pro', 'switching back restores the new provider model');
 
-ModelProvidersManager.loadModelProviders({'rename-old': {type: 'openai'}});
+ModelProvidersManager.load({'rename-old': {type: 'openai'}});
 providerSelectForModels.value = 'rename-old';
 rememberModelProvider();
 modelInput.value = 'gpt-4o';
 rememberModelProvider();
-ModelProvidersManager.modelProviders = {'rename-new': {type: 'openai'}};
 appState.config = {
   model: {provider: 'rename-old', model: 'gpt-4o'},
-  model_providers: {'rename-new': {type: 'openai'}},
+  model_providers: {'rename-old': {type: 'openai'}},
 };
-const renamePatch = ModelProvidersManager.modelRefPatch('rename-old', 'rename-new');
-assert.equal(renamePatch.model.provider, 'rename-new');
+providerTypeInput.value = 'openai';
+providerBaseURLInput.value = '';
+providerAPIKeyInput.value = '';
+providerNameInput.value = 'rename-new';
+requestImpl = async () => ({config: {
+  model: {provider: 'rename-new', model: 'gpt-4o'},
+  model_providers: {'rename-new': {type: 'openai'}},
+}});
+assert.equal(await ModelProvidersManager.saveDialog('rename-old'), true);
 assert.equal(providerSelectForModels.value, 'rename-new');
 modelInput.value = 'stale-renamed-refresh';
 await ModelSelector.onProviderChange('rename-new');
 assert.equal(modelInput.value, 'gpt-4o', 'provider rename refresh preserves remembered model');
+
+ModelProvidersManager.load({'rename-fail-old': {type: 'openai'}});
+providerSelectForModels.value = 'rename-fail-old';
+rememberModelProvider();
+modelInput.value = 'gpt-4o';
+rememberModelProvider();
+appState.config = {
+  model: {provider: 'rename-fail-old', model: 'gpt-4o'},
+  model_providers: {'rename-fail-old': {type: 'openai'}},
+};
+providerNameInput.value = 'rename-fail-new';
+requestImpl = async () => { throw new Error('rename failed'); };
+assert.equal(await ModelProvidersManager.saveDialog('rename-fail-old'), false);
+assert.equal(providerSelectForModels.value, 'rename-fail-old');
+assert.deepEqual(JSON.parse(JSON.stringify(ModelProvidersManager.records)), {
+  'rename-fail-old': {type: 'openai'},
+});
+ModelProvidersManager.records['rename-fail-new'] = {type: 'openai'};
+modelInput.value = 'stale-failed-rename-target';
+await ModelSelector.onProviderChange('rename-fail-new');
+assert.equal(modelInput.value, 'gpt-5.5', 'failed rename does not migrate model memory');
+await ModelSelector.onProviderChange('rename-fail-old');
+assert.equal(modelInput.value, 'gpt-4o', 'failed rename keeps model memory on the old provider');
 
 fetchImpl = async () => ({
   ok: false,
@@ -267,14 +364,11 @@ assert.equal(ModelProvidersManager.sanitizeName('constructor'), '');
 assert.equal(TtsProvidersManager.sanitizeName('prototype'), '');
 assert.equal(ModelProvidersManager.sanitizeName('work-openai'), 'work-openai');
 
-const source = await fs.readFile(path.join(moduleRoot, 'providers.js'), 'utf8');
-assert.match(source, /renamedFrom\?this\.modelRefPatch\(renamedFrom,name\):null/);
-
-ModelProvidersManager.loadModelProviders({initial: {type: 'openai'}});
-ModelProvidersManager.modelProviders = {next: {type: 'openai'}};
+ModelProvidersManager.load({initial: {type: 'openai'}});
+ModelProvidersManager.records = {next: {type: 'openai'}};
 requestImpl = async () => { throw new Error('save failed'); };
-await ModelProvidersManager.saveModelProviders();
-assert.deepEqual(JSON.parse(JSON.stringify(ModelProvidersManager.modelProviders)), {
+assert.equal(await ModelProvidersManager.save(), false);
+assert.deepEqual(JSON.parse(JSON.stringify(ModelProvidersManager.records)), {
   initial: {type: 'openai'},
 });
 
@@ -294,12 +388,12 @@ requestImpl = async (_url, options) => {
   }
 };
 
-ModelProvidersManager.loadModelProviders({model: {type: 'openai'}});
-ModelProvidersManager.modelProviders = {model: {type: 'openai', base_url: 'https://example.com'}};
+ModelProvidersManager.load({model: {type: 'openai'}});
+ModelProvidersManager.records = {model: {type: 'openai', base_url: 'https://example.com'}};
 TtsProvidersManager.load({voice: {type: 'fish-audio'}});
 TtsProvidersManager.records = {voice: {type: 'fish-audio', reference_id: 'ref-1'}};
 latestDetails = 'stale error';
-const modelSave = ModelProvidersManager.saveModelProviders();
+const modelSave = ModelProvidersManager.save();
 const voiceSave = TtsProvidersManager.save();
 await flushPromises();
 assert.equal(requestBodies.length, 1);
@@ -323,21 +417,50 @@ assert.equal(latestDetails, '');
 const providerSelect = new Element();
 providerSelect.value = 'active';
 elements.set('model_provider', providerSelect);
+fetchImpl = fetchModels;
 appState.config = {
-  model: {provider: 'active', model: 'gpt-test'},
+  model: {provider: 'active', model: 'gpt-4o'},
   model_providers: {
     active: {type: 'openai'},
     backup: {type: 'openrouter'},
   },
 };
-ModelProvidersManager.loadModelProviders(appState.config.model_providers);
+ModelProvidersManager.load(appState.config.model_providers);
+modelInput.value = 'gpt-4o';
+rememberModelProvider();
+providerSelect.value = 'backup';
+rememberModelProvider();
+await ModelSelector.onProviderChange('backup');
+modelSectionEditing = true;
+ModelSelector.selectModel('google/gemini-3.5-pro');
+modelSectionEditing = false;
+providerSelect.value = 'active';
+rememberModelProvider();
+await ModelSelector.onProviderChange('active');
 let deleteBody = null;
 requestImpl = async (_url, options) => {
   deleteBody = JSON.parse(options.body);
   return {config: Object.assign({}, appState.config, deleteBody.config)};
 };
-await ModelProvidersManager.deleteProvider('active');
+assert.equal(await ModelProvidersManager.deleteRecord('active'), true);
 assert.equal(deleteBody.config.model.provider, 'backup');
 assert.deepEqual(Object.keys(deleteBody.config.model_providers), ['backup']);
+await ModelSelector.onProviderChange('backup');
+assert.equal(
+  modelInput.value,
+  'google/gemini-3.5-pro',
+  'deleting the active provider must not overwrite the backup provider model memory',
+);
+
+const sttSelect = new Element();
+sttSelect.value = 'stt-active';
+elements.set('stt_provider', sttSelect);
+SttProvidersManager.load({'stt-active': {type: 'stub-stt'}});
+let unexpectedSttEdits = 0;
+const originalSttEditRecord = SttProvidersManager.editRecord;
+SttProvidersManager.editRecord = () => { unexpectedSttEdits++; };
+editSelectedProvider('unknown-provider-kind');
+SttProvidersManager.editRecord = originalSttEditRecord;
+assert.equal(unexpectedSttEdits, 0, 'unknown provider kinds must be a safe no-op');
 
 console.log('config web provider tests passed');

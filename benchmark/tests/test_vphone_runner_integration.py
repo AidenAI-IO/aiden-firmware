@@ -70,11 +70,11 @@ def test_live_validation_flow_matches_runner_contract(tmp_path):
     assert result["checks"] == [
         "health",
         "concurrent=1",
-        "screen-jpeg",
+        "screenshot-provider",
         "setup-home",
         "ownership-429",
         "tool-catalog",
-        "screenshot-tool",
+        "touch-gesture",
         "release",
     ]
     with Image.open(screenshot) as image:

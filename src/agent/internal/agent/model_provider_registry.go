@@ -23,6 +23,7 @@ type ModelProviderBuilder func(ModelBuildContext, ModelConfig) (llms.Model, erro
 type modelProviderDefinition struct {
 	providerType        string
 	allowsCustomBaseURL bool
+	hiddenFromConfigUI  bool
 	build               ModelProviderBuilder
 }
 
@@ -67,7 +68,8 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		build:               buildOllamaModel,
 	},
 	{
-		providerType: "fake",
+		providerType:       "fake",
+		hiddenFromConfigUI: true,
 		build: func(_ ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
 			return fakellm.NewFakeLLM(cfg.Responses), nil
 		},
@@ -145,10 +147,20 @@ func modelProviderTypes() []string {
 	return types
 }
 
-func modelProviderTypesAllowingCustomBaseURL() []string {
+func modelProviderTypesForConfigUI() []string {
 	types := make([]string, 0, len(modelProviderDefinitions))
 	for _, definition := range modelProviderDefinitions {
-		if definition.allowsCustomBaseURL {
+		if !definition.hiddenFromConfigUI {
+			types = append(types, definition.providerType)
+		}
+	}
+	return types
+}
+
+func modelProviderTypesAllowingCustomBaseURLForConfigUI() []string {
+	types := make([]string, 0, len(modelProviderDefinitions))
+	for _, definition := range modelProviderDefinitions {
+		if !definition.hiddenFromConfigUI && definition.allowsCustomBaseURL {
 			types = append(types, definition.providerType)
 		}
 	}

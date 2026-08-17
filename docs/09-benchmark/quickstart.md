@@ -16,13 +16,34 @@ This page is a compact quickstart. The complete guide is
    uv sync
    ```
 
-2. Judge API key if judge is enabled:
+2. Configure the Agent model when using the built-in config template:
 
    ```bash
-   export OPENROUTER_API_KEY=...
+   export AIDEN_BENCHMARK_AGENT_PROVIDER=openai
+   export AIDEN_BENCHMARK_AGENT_MODEL=your-agent-model
+   export AIDEN_BENCHMARK_AGENT_BASE_URL=https://your-agent-endpoint.example/v1
+   export AIDEN_BENCHMARK_AGENT_API_KEY=...
    ```
 
-3. Either an existing agent daemon, or an environment bridge plus
+3. Configure the Judge when it is enabled:
+
+   ```bash
+   export AIDEN_BENCHMARK_JUDGE_MODEL=your-judge-model
+   export AIDEN_BENCHMARK_JUDGE_BASE_URL=https://your-judge-endpoint.example/v1
+   export AIDEN_BENCHMARK_JUDGE_API_KEY=...
+   ```
+
+4. Optional post-run Analysis settings default to the Judge model, endpoint, and
+   API key. Set role-specific overrides only when Analysis uses a different
+   runtime:
+
+   ```bash
+   export AIDEN_BENCHMARK_ANALYSIS_MODEL=your-analysis-model
+   export AIDEN_BENCHMARK_ANALYSIS_BASE_URL=https://your-analysis-endpoint.example/v1
+   export AIDEN_BENCHMARK_ANALYSIS_API_KEY=...
+   ```
+
+5. Either an existing agent daemon, or an environment bridge plus
    `--auto-agent-setup`.
 
 ## Run Against An Existing Agent

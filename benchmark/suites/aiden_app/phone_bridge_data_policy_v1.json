@@ -2,7 +2,6 @@
   "name": "aiden_app_phone_bridge_data_policy_v1",
   "suite_category": "Aiden App / Phone Bridge Policy",
   "description": "Policy matrix for Phone Bridge data tools across iOS Dynamic Island restore, iOS PiP background queue, and Android FGS background queue.",
-  "prompt_prefix": "这是 Aiden Phone Bridge 数据工具策略 benchmark。每个任务会直接声明平台、Aiden 前后台状态以及 PiP/FGS 状态。联系人、日历、剪贴板和通知必须使用对应的 bridge_* 数据工具，不要通过手工 UI 代替。iOS 后台且未开启 PiP 时，如果 runtime status 表明灵动岛入口可达，直接调用数据工具，由工具内部恢复 Aiden 后执行；不要先调用 bridge_open_app 或手工点击灵动岛。开启 iOS PiP 或 Android FGS 时，后台安全数据工具直接调用，但 bridge_open_app 不属于后台安全工具。",
   "global_reset": {},
   "tasks": [
     {

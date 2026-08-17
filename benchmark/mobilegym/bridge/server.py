@@ -11,6 +11,8 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from setup_token_registry import SetupTokenRegistry, setup_token_from_payload
+
 from .actions import action_to_dict, build_action
 from .episode import (
     BridgeEpisodeState,
@@ -47,6 +49,17 @@ DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC = 180
 SCREENSHOT_PROVIDER_TIMEOUT_SEC = 30
 
 
+def _setup_app_ids(payload: dict[str, Any]) -> list[str]:
+    value = payload.get("app_ids")
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise ValueError("app_ids must be a list of non-empty strings")
+    return list(dict.fromkeys(item.strip() for item in value))
+
+
 class BridgeServer:
     def __init__(
         self,
@@ -66,6 +79,7 @@ class BridgeServer:
         self._thread: threading.Thread | None = None
         self.base_url = ""
         self.tools_api = ToolsAPIHandler(self.router, request_timeout_sec)
+        self.setup_tokens = SetupTokenRegistry()
 
     def start(self) -> str:
         if self._httpd is not None:
@@ -162,8 +176,8 @@ def _handler_for(bridge: BridgeServer):
                 self._send_error(429, "no_bridge_env_available", str(exc))
             except ValueError as exc:
                 self._send_error(400, "bad_request", str(exc))
-            except TimeoutError:
-                self._send_error(504, "timeout", "bridge request timed out")
+            except TimeoutError as exc:
+                self._send_error(504, "timeout", str(exc) or "bridge request timed out")
             except Exception as exc:
                 self._send_error(500, "bridge_error", str(exc))
 
@@ -181,16 +195,33 @@ def _handler_for(bridge: BridgeServer):
             self._send_json(200, bridge_ok(result))
 
         def _handle_setup(self, payload: dict[str, Any]) -> None:
-            state = self._request_state()
             episode_id = str(payload.get("episode_id") or "").strip()
             if not episode_id:
                 episode_id = f"reset-{uuid.uuid4().hex}"
-            result = bridge.submit_to_state(state, state.reset_episode(episode_id))
+            task_id = benchmark_task_id_from_headers(self.headers)
+            setup_token = setup_token_from_payload(payload)
+            app_ids = _setup_app_ids(payload)
+
+            def setup() -> dict[str, Any]:
+                state = bridge.router.state_for_task_id(task_id)
+                return bridge.submit_to_state(
+                    state,
+                    state.reset_episode(episode_id, app_ids=app_ids),
+                )
+
+            if setup_token:
+                result = bridge.setup_tokens.run(
+                    (task_id, setup_token, tuple(app_ids)),
+                    setup,
+                )
+            else:
+                result = setup()
             self._send_json(200, bridge_ok(result))
 
         def _handle_release(self) -> None:
             task_id = benchmark_task_id_from_headers(self.headers)
             released = bridge.router.release_task_id(task_id)
+            bridge.setup_tokens.clear_completed_for_task(task_id)
             self._send_json(200, bridge_ok({"released": released}))
 
         def _handle_state(self, payload: dict[str, Any]) -> None:

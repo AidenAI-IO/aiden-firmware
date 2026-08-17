@@ -11,9 +11,10 @@ git clone --recursive git@github.com:AidenAI-IO/aiden-firmware.git
 cd aiden-firmware
 ```
 
-The project includes the `pico-sdk` submodule. It's recommended to use `--recursive` on the first clone. If you've already cloned but the submodule is missing:
+The project includes Git submodules such as `pico-sdk` and MobileGym. It's recommended to use `--recursive` on the first clone. For an existing checkout, synchronize submodule URLs before initializing or updating them:
 
 ```bash
+git submodule sync --recursive
 git submodule update --init --recursive
 ```
 

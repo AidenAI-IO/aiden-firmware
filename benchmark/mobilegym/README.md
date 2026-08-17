@@ -78,15 +78,11 @@ uv run python -m runner run \
 ```text
 benchmark/mobilegym/
 ├── README.md                       # 本文件
-├── REFACTOR_PLAN.md                # 重构说明
 ├── bridge/                         # Bridge server（HTTP ↔ MobileGym env）⭐
 │   ├── server.py                   # HTTP 端点
 │   ├── episode.py                  # Episode 状态管理
 │   ├── protocol.py                 # 协议定义
 │   └── actions.py                  # Action 转换
-├── config/                         # Aiden 配置
-│   ├── agent.toml.template         # 配置模板
-│   └── skills/device-operator/     # MobileGym skill
 ├── docker/                         # WebUI/CLI 使用的 MobileGym base image
 │   ├── Dockerfile                  # mobilegym-base target
 │   └── README.md                   # 当前 Docker 入口说明
@@ -203,8 +199,6 @@ uv run python -m runner run \
 ## 📚 相关文档
 
 - **统一 Tool API**: [bridge/TOOLS_API.md](bridge/TOOLS_API.md) ⭐ **新增**
-- **重构说明**: [REFACTOR_PLAN.md](REFACTOR_PLAN.md)
-- **迁移指南**: [MIGRATION.md](MIGRATION.md)
 - **Docker 使用**: [docker/README.md](docker/README.md)
 - **Bridge 协议**: 见 `bridge/` 目录下的 Python 实现
 

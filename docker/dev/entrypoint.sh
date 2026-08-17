@@ -1,0 +1,60 @@
+#!/bin/sh
+set -eu
+
+agent_dir="${AIDEN_AGENT_DIR:-/userdata/agent}"
+system_env="${AIDEN_SYSTEM_ENV:-/userdata/system/env}"
+agent_service="${AIDEN_AGENT_INIT_SCRIPT:-/usr/local/bin/aiden-agent-service}"
+config_web_pid=""
+
+mkdir -p \
+    "$agent_dir/log" \
+    "$agent_dir/memory" \
+    "$agent_dir/skill-state" \
+    "$agent_dir/cache" \
+    /userdata/audio \
+    /userdata/ota \
+    /userdata/system \
+    /userdata/tmp \
+    /run/agent
+chmod 1777 /userdata/tmp
+
+if [ ! -f "$agent_dir/agent.toml" ]; then
+    cp /opt/aiden/defaults/agent.toml "$agent_dir/agent.toml"
+fi
+if [ ! -f "$system_env" ]; then
+    : > "$system_env"
+fi
+if [ ! -f /userdata/wpa_supplicant.conf ]; then
+    : > /userdata/wpa_supplicant.conf
+fi
+
+shutdown() {
+    trap - INT TERM EXIT
+    if [ -n "$config_web_pid" ]; then
+        kill "$config_web_pid" 2>/dev/null || true
+        wait "$config_web_pid" 2>/dev/null || true
+    fi
+    "$agent_service" stop || true
+}
+
+trap shutdown INT TERM EXIT
+
+"$agent_service" start
+
+config_web \
+    --bind=0.0.0.0 \
+    --port=80 \
+    --config="$agent_dir/agent.toml" \
+    --wifi-config=/userdata/wpa_supplicant.conf \
+    --ota-state=/userdata/ota/state.json \
+    --cmdline=/proc/cmdline \
+    --system-env="$system_env" \
+    --storage-state=/run/agent/storage_state &
+config_web_pid="$!"
+
+set +e
+wait "$config_web_pid"
+status="$?"
+set -e
+config_web_pid=""
+exit "$status"
