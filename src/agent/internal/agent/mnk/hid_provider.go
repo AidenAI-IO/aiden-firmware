@@ -632,7 +632,9 @@ type resolvedKeys struct {
 	androidUsage        uint16
 }
 
-func (p *HIDProvider) resolveKeys(keys []string) (*resolvedKeys, error) {
+// ResolveKeypressKeys validates and expands keyboard_tap / Keypress key names
+// (including Android KEYCODE_* aliases) without requiring a configured device.
+func ResolveKeypressKeys(keys []string) (*resolvedKeys, error) {
 	resolved := &resolvedKeys{keys: make([]uint8, 0, 6)}
 	androidKeys := make([]string, 0, 1)
 
@@ -642,20 +644,24 @@ func (p *HIDProvider) resolveKeys(keys []string) (*resolvedKeys, error) {
 			continue
 		}
 
-		// Check if it's an Android extension key
+		if alias, ok := androidKeyboardTapAliases[normalized]; ok {
+			if alias.UnsupportedReason != "" {
+				return nil, InvalidArgumentsf("android-only key %q (keycode %d) is not supported by keyboard_tap: %s", normalized, alias.Keycode, alias.UnsupportedReason)
+			}
+			normalized = alias.Replacement
+		}
+
 		if usage, ok := androidExtensionUsageMap[normalized]; ok {
 			androidKeys = append(androidKeys, normalized)
 			resolved.androidUsage = usage
 			continue
 		}
 
-		// Check if it's a modifier
 		if mod, ok := hidModifierMap[normalized]; ok {
 			resolved.modifier |= mod
 			continue
 		}
 
-		// Standard boot keyboard key
 		if usage, ok := hidKeyboardMap[normalized]; ok {
 			resolved.keys = append(resolved.keys, usage)
 			continue
@@ -664,7 +670,6 @@ func (p *HIDProvider) resolveKeys(keys []string) (*resolvedKeys, error) {
 		return nil, InvalidArgumentsf("unknown key: %q", normalized)
 	}
 
-	// Validate Android extension keys
 	if len(androidKeys) > 1 {
 		return nil, InvalidArgumentsf("keypress supports one Android extension key at a time, got %v", androidKeys)
 	}
@@ -676,7 +681,6 @@ func (p *HIDProvider) resolveKeys(keys []string) (*resolvedKeys, error) {
 		return resolved, nil
 	}
 
-	// Validate key count
 	if len(resolved.keys) == 0 && resolved.modifier == 0 {
 		return nil, InvalidArguments("at least one key or modifier is required")
 	}
@@ -687,24 +691,41 @@ func (p *HIDProvider) resolveKeys(keys []string) (*resolvedKeys, error) {
 	return resolved, nil
 }
 
+func (p *HIDProvider) resolveKeys(keys []string) (*resolvedKeys, error) {
+	return ResolveKeypressKeys(keys)
+}
+
+func (p *HIDProvider) androidExtensionPressReport(key string, usage uint16) ([]byte, error) {
+	// Touchscreen gadgets accept standard Consumer Control usage LE reports.
+	if p != nil && p.touchscreen {
+		return []byte{byte(usage), byte(usage >> 8)}, nil
+	}
+	// Absolute pointer-mode hid.usb2 uses a packed bitfield report and only
+	// exposes a media/volume/brightness/screenshot subset.
+	report, ok := absolutePointerModeExtensionReports[key]
+	if !ok {
+		return nil, InvalidArgumentsf("android extension key is unavailable in the configured pointer mode: %q requires hid.pointer_mode=\"touchscreen\"; hid.pointer_mode=\"absolute\" only exposes these hid.usb2 keys: %s", key, absolutePointerModeExtensionKeyList)
+	}
+	return []byte{byte(report), byte(report >> 8)}, nil
+}
+
 func (p *HIDProvider) tapAndroidExtension(key string, usage uint16) error {
 	if p.androidKeyboardDev == nil {
-		return ModuleUnavailablef("Android extension keyboard device not configured; ensure hid.android_keyboard_device exists to use %s", key)
+		return ModuleUnavailablef("android extension keyboard device is not configured; ensure hid.android_keyboard_device exists to use %s", key)
 	}
 
-	// 2-byte Consumer Control report
-	report := []byte{byte(usage), byte(usage >> 8)}
+	report, err := p.androidExtensionPressReport(key, usage)
+	if err != nil {
+		return err
+	}
 
-	// Press
 	if err := writeDevice(p.androidKeyboardDev, report); err != nil {
 		return err
 	}
 
-	// Hold
 	holdMs := p.keyboardTapHoldMs
 	time.Sleep(time.Duration(holdMs) * time.Millisecond)
 
-	// Release
 	return writeDevice(p.androidKeyboardDev, []byte{0x00, 0x00})
 }
 

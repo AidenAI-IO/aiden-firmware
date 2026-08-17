@@ -258,6 +258,12 @@ func (t *KeyboardTapToolAdapter) Call(ctx context.Context, input string) (string
 		return "", InvalidArguments("keys array is required")
 	}
 
+	// Validate/expand keys before the nil-provider check so unsupported KEYCODE
+	// aliases and mixed chords still return InvalidArguments without a backend.
+	if _, err := ResolveKeypressKeys(args.Keys); err != nil {
+		return "", err
+	}
+
 	if t == nil || t.provider == nil {
 		return "", ModuleUnavailable("keyboard_tap is not configured")
 	}
