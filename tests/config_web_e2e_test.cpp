@@ -3368,7 +3368,7 @@ TEST_CASE("config_web: POST /api/config keeps compatibility field type guards") 
         {"{\"device\":{\"backend\":7}}", "device.backend", "string"},
         {"{\"search\":{\"has_api_key\":\"yes\"}}", "search.has_api_key", "bool"},
         {"{\"termination_policy\":{\"enabled\":\"yes\"}}", "termination_policy.enabled", "bool"},
-        {"{\"live_activity\":{\"timeout_sec\":\"30\"}}", "live_activity.timeout_sec", "number"},
+        {"{\"live_activity\":{\"enabled\":\"yes\"}}", "live_activity.enabled", "bool"},
     };
 
     for (const InvalidCase& test_case : cases) {

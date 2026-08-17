@@ -45,8 +45,7 @@ is created on demand, so a directory holding only `agent.toml` is a valid start.
 ├── memory/                  # conversation memory persistence directory
 │   └── extraction.yaml      # optional memory extraction overrides
 ├── cache/                   # provider model metadata cache
-├── log/                     # runtime log directory
-└── board_id                 # generated on first run when live activity is on
+└── log/                     # runtime log directory
 ```
 
 ## Config Web: the device config page
@@ -701,28 +700,13 @@ speed = 1.0
 
 ## `[live_activity]`
 
-For the iOS companion app's Live Activity / Dynamic Island task status. The agent-side status snapshot is enabled by default. See the full flow in [Live Activity / Dynamic Island](./live-activity.md).
+For the iOS companion app's Live Activity / Dynamic Island task status.
+Snapshots are enabled by default and delivered locally through BLE Wake plus
+USB ECM. See [Live Activity / Dynamic Island](./live-activity.md).
 
-**Relay-based updates** (legacy, used when APNs credentials are not configured):
-
-| Field           | Default                                 | Description                                                                                       |
-| --------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `relay_url`     | -                                       | Aiden Live Activity relay URL; remote updates are disabled until the URL and credential are provisioned |
-| `relay_api_key` | -                                       | Device-scoped relay credential; the relay must bind it to the effective `board_id` and reject cross-board use |
-| `board_id`      | generated in `/userdata/agent/board_id` | Effective board ID in relay. The persisted generated value is the default; an explicit configuration value overrides it. Empty or `default` is not valid |
-
-**APNs-based updates** (for remote updates when the app is backgrounded, on lock screen, or not open):
-
-| Field              | Default                              | Description                                                                                                                        |
-| ------------------ | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `bundle_id`        | -                                    | iOS app bundle id; required only when configuring background APNs and `topic` is not explicitly set                                |
-| `topic`            | `<bundle_id>.push-type.liveactivity` | APNs topic; usually does not need to be set manually                                                                               |
-| `environment`      | `sandbox`                            | `sandbox` or `production`                                                                                                          |
-| `team_id`          | -                                    | Apple Developer Team ID; used only by background APNs                                                                              |
-| `key_id`           | -                                    | APNs Auth Key ID; used only by background APNs                                                                                     |
-| `private_key_path` | -                                    | APNs `.p8` private key path; used only by background APNs                                                                          |
-| `private_key_pem`  | -                                    | Inline APNs `.p8` PEM directly; for development/debugging only, do not place in open-source config or on user boards in production |
-| `timeout_sec`      | `10`                                 | Background APNs request timeout                                                                                                    |
+| Field     | Default | Description |
+| --------- | ------- | ----------- |
+| `enabled` | `true`  | Maintain local task-status snapshots and send coalesced `live_activity` BLE Wake notifications |
 
 ## Episode telemetry (Langfuse)
 
