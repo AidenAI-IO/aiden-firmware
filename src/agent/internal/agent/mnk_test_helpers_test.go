@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"aiden-agent/internal/agent/mnk"
@@ -8,14 +9,15 @@ import (
 )
 
 type testMNKOpts struct {
-	pointer     *HIDDevice
-	keyboard    *HIDDevice
-	android     *HIDDevice
-	screenState *screen.ScreenState
-	touchscreen bool
-	layout      string
-	gate        mnk.ProfileGate
-	adbRunner   *recordingADBRunner
+	pointer            *HIDDevice
+	keyboard           *HIDDevice
+	android            *HIDDevice
+	screenState        *screen.ScreenState
+	touchscreen        bool
+	layout             string
+	gate               mnk.ProfileGate
+	adbRunner          *recordingADBRunner
+	primeScreenMapping func(context.Context) error
 }
 
 func testMNKProvider(t testing.TB, opts testMNKOpts) mnk.Provider {
@@ -49,7 +51,12 @@ func testTouchGestureTool(t testing.TB, opts testMNKOpts) *TouchGestureTool {
 	if opts.pointer == nil && opts.keyboard != nil {
 		opts.pointer = opts.keyboard
 	}
-	return &TouchGestureTool{mnkProvider: testMNKProvider(t, opts)}
+	return &TouchGestureTool{
+		mnkProvider:        testMNKProvider(t, opts),
+		screen:             opts.screenState,
+		touchscreen:        opts.touchscreen,
+		primeScreenMapping: opts.primeScreenMapping,
+	}
 }
 
 func testMouseMoveTool(t testing.TB, opts testMNKOpts) *MouseMoveTool {

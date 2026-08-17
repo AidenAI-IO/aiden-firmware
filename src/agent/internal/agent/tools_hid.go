@@ -917,6 +917,8 @@ func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) 
 // TouchGestureTool executes touch-like pointer gestures for mobile UI control.
 type TouchGestureTool struct {
 	mnkProvider        mnk.Provider
+	screen             *screen.ScreenState
+	touchscreen        bool
 	primeScreenMapping func(context.Context) error
 	deviceTypeFn       func() string
 }
@@ -1006,9 +1008,31 @@ func pointSchema(description string) map[string]any {
 }
 
 func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, error) {
+	if err := t.ensureTouchscreenMapping(ctx); err != nil {
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "touchscreen mapping unavailable: %v", err), nil
+	}
 	adapter := mnk.NewTouchGestureToolAdapter(t.mnkProvider, t.deviceTypeFn)
 	output, err := adapter.Call(ctx, input)
 	return mapMNKAdapterResult(ctx, output, err)
+}
+
+func (t *TouchGestureTool) ensureTouchscreenMapping(ctx context.Context) error {
+	if t == nil || !t.touchscreen || t.screen == nil || t.primeScreenMapping == nil {
+		return nil
+	}
+	if t.screen.FreshActiveArea(screenDimensionsStaleAfter) {
+		return nil
+	}
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("touch_gesture prime mapping before input mapping_before={%s}", t.screen.Format())
+	}
+	if err := t.primeScreenMapping(ctx); err != nil {
+		return err
+	}
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("touch_gesture prime mapping succeeded mapping_after={%s}", t.screen.Format())
+	}
+	return nil
 }
 
 func samePointerPoint(first, second *pointerPoint) bool {

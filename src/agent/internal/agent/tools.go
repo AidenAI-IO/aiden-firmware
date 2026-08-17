@@ -200,7 +200,11 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	waitStable := NewWaitStableScreenTool(provider, screenStable, screen)
 	keyboardTap := &KeyboardTapTool{mnkProvider: mnkProvider}
 	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput, keyboardLayout: hidCfg.KeyboardLayoutOrDefault(), iosKeyboardIsolation: iosKeyboardIsolation}
-	touchGesture := &TouchGestureTool{mnkProvider: mnkProvider}
+	touchGesture := &TouchGestureTool{
+		mnkProvider: mnkProvider,
+		screen:      screen,
+		touchscreen: hidCfg.PointerTouchscreen(),
+	}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen, requireFreshScreenshot: true}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture, iosKeyboardIsolation: iosKeyboardIsolation}
 	textInputHW := &textInputHardwareDeps{

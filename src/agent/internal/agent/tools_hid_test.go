@@ -536,7 +536,16 @@ func TestTouchGestureTouchscreenPrimesMappingBeforeNormalizedInput(t *testing.T)
 	dev, path := newTestHIDDevice(t)
 	screenState := &screen.ScreenState{}
 	primeCalls := 0
-	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, pointer: dev, touchscreen: true})
+	tool := testTouchGestureTool(t, testMNKOpts{
+		screenState: screenState,
+		pointer:     dev,
+		touchscreen: true,
+		primeScreenMapping: func(context.Context) error {
+			primeCalls++
+			screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 0, Width: 497, Height: 1080, Valid: true})
+			return nil
+		},
+	})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":931,"y":83}}`)
 	if err != nil {
@@ -566,7 +575,14 @@ func TestTouchGestureTouchscreenPrimesMappingBeforeNormalizedInput(t *testing.T)
 
 func TestTouchGestureTouchscreenDoesNotWriteWhenMappingPrimeFails(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
-	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev, touchscreen: true})
+	tool := testTouchGestureTool(t, testMNKOpts{
+		screenState: &screen.ScreenState{},
+		pointer:     dev,
+		touchscreen: true,
+		primeScreenMapping: func(context.Context) error {
+			return errors.New("frame service recovering")
+		},
+	})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":931,"y":83}}`)
 	if err != nil {
@@ -585,7 +601,15 @@ func TestTouchGestureTouchscreenKeepsFreshFullFrameMappingWhenPrimeWouldFail(t *
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{})
 	primeCalls := 0
-	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, pointer: dev, touchscreen: true})
+	tool := testTouchGestureTool(t, testMNKOpts{
+		screenState: screenState,
+		pointer:     dev,
+		touchscreen: true,
+		primeScreenMapping: func(context.Context) error {
+			primeCalls++
+			return errors.New("frame service unavailable")
+		},
+	})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":931,"y":83}}`)
 	if err != nil {
