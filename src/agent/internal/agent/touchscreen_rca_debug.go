@@ -118,7 +118,8 @@ func formatTouchscreenRCAQuickActionMapping(tool *QuickActionTool) string {
 	if tool.touch == nil {
 		return "quick_action.touch=nil"
 	}
-	return formatTouchscreenRCAMappingSummary(tool.touch.screen)
+	// Note: screen field removed after MNK Provider integration
+	return "quick_action.touch (MNK Provider)"
 }
 
 func formatTouchscreenRCAQuickActionMappingSummary(tool *QuickActionTool) string {
@@ -131,7 +132,8 @@ func formatTouchscreenRCAQuickActionMappingSummary(tool *QuickActionTool) string
 	if tool.touch == nil {
 		return "quick_action.touch=nil"
 	}
-	return formatTouchscreenRCAMappingSummary(tool.touch.screen)
+	// Note: screen field removed after MNK Provider integration
+	return "quick_action.touch (MNK Provider)"
 }
 
 func touchscreenRCALogResolvedPoint(label string, screen *screen.ScreenState, pc *pointerController, raw *pointerPoint, resolved resolvedPointerPoint) {

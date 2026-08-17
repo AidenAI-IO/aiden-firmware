@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/mnk"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/screenprovider"
@@ -16,6 +17,7 @@ type ToolSet struct {
 	tools                map[string]langtools.Tool
 	screen               *screen.ScreenState
 	screenProvider       screenprovider.Provider
+	mnkProvider          mnk.Provider // MNK Provider for input control
 	phoneBridge          *PhoneBridge
 	phoneBridgeRestorer  *PhoneBridgeRestorer
 	textInputHW          *textInputHardwareDeps
@@ -156,6 +158,31 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	if hidCfg.InputBackendADB() {
 		adbInput = NewADBInputController(screen)
 	}
+
+	// Create MNK Provider
+	mnkFactory := mnk.NewProviderFactory(screen)
+	var mnkProvider mnk.Provider
+	var mnkErr error
+
+	if hidCfg.InputBackendADB() {
+		// Use ADB Provider
+		mnkProvider, mnkErr = mnkFactory.CreateADBProvider()
+	} else {
+		// Use HID Provider
+		mnkProvider, mnkErr = mnkFactory.CreateHIDProvider(
+			hidCfg.MouseDeviceOrDefault(),
+			hidCfg.KeyboardDeviceOrDefault(),
+			hidCfg.AndroidKeyboardDeviceOrDefault(),
+			hidCfg.PointerModeOrDefault() == "touchscreen",
+			hidCfg.KeyboardLayoutOrDefault(),
+		)
+	}
+
+	if mnkErr != nil {
+		touchscreenRCALogf("WARNING: failed to create MNK provider: %v (falling back to legacy implementation)", mnkErr)
+		mnkProvider = nil
+	}
+
 	touchscreenRCALogf(
 		"newHardwareToolSet pointer_mode=%q pointer_device=%q keyboard_device=%q keyboard_layout=%q android_keyboard_device=%q frame_socket=%q",
 		hidCfg.PointerModeOrDefault(),
@@ -172,9 +199,9 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	screenshot := NewScreenshotTool(provider, screen)
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(provider, screenStable, screen)
-	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault(), adb: adbInput, keyboardLayout: hidCfg.KeyboardLayoutOrDefault(), iosKeyboardIsolation: iosKeyboardIsolation}
+	keyboardTap := &KeyboardTapTool{mnkProvider: mnkProvider}
 	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput, keyboardLayout: hidCfg.KeyboardLayoutOrDefault(), iosKeyboardIsolation: iosKeyboardIsolation}
-	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
+	touchGesture := &TouchGestureTool{mnkProvider: mnkProvider}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen, requireFreshScreenshot: true}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture, iosKeyboardIsolation: iosKeyboardIsolation}
 	textInputHW := &textInputHardwareDeps{
@@ -188,8 +215,8 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 
 	tools := map[string]langtools.Tool{
 		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{mnkProvider: mnkProvider}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{mnkProvider: mnkProvider}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"wheel_nudge":            newPostActionStableScreenshotTool(wheelNudge, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
@@ -228,6 +255,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		tools:                tools,
 		screen:               screen,
 		screenProvider:       provider,
+		mnkProvider:          mnkProvider,
 		phoneBridgeRestorer:  NewPhoneBridgeRestorer(nil, pointer),
 		textInputHW:          textInputHW,
 		iosKeyboardIsolation: iosKeyboardIsolation,
@@ -292,6 +320,21 @@ func (s *ToolSet) ScreenProvider() screenprovider.Provider {
 		return nil
 	}
 	return s.screenProvider
+}
+
+// MNKProvider returns the mouse/keyboard provider used by HID tools, if configured.
+func (s *ToolSet) MNKProvider() mnk.Provider {
+	if s == nil {
+		return nil
+	}
+	return s.mnkProvider
+}
+
+func mnkProviderFromRuntime(runtime *Runtime) mnk.Provider {
+	if runtime != nil && runtime.tools != nil {
+		return runtime.tools.MNKProvider()
+	}
+	return nil
 }
 
 func (s *ToolSet) All() []langtools.Tool {

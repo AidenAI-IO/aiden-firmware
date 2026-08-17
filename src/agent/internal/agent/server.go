@@ -23,6 +23,7 @@ import (
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 
+	"aiden-agent/internal/agent/mnk"
 	"aiden-agent/internal/agent/screenprovider"
 	"aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/tts"
@@ -492,6 +493,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
 	mux.HandleFunc("/api/providers/screenshot", s.handleProviderScreenshot)
+	mux.HandleFunc("/api/providers/mnk", s.handleProviderMNK)
 	mux.HandleFunc("/api/concurrent", s.handleConcurrent)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
@@ -2495,6 +2497,17 @@ func (s *Server) authorizeBenchmarkRequest(r *http.Request) bool {
 
 func (s *Server) handleProviderScreenshot(w http.ResponseWriter, r *http.Request) {
 	screenprovider.HandleHTTP(w, r, s.coordinateDebugCaptureClient())
+}
+
+func (s *Server) handleProviderMNK(w http.ResponseWriter, r *http.Request) {
+	provider := mnkProviderFromRuntime(s.runtime)
+	if provider == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(mnk.MNKErrorResponse{Error: "mnk provider not configured"})
+		return
+	}
+	mnk.NewHTTPHandler(provider).ServeHTTP(w, r)
 }
 
 func (s *Server) handleConcurrent(w http.ResponseWriter, r *http.Request) {
