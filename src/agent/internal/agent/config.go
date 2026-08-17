@@ -517,10 +517,11 @@ type HIDConfig struct {
 	KeyboardLayout        string `toml:"keyboard_layout,omitempty"`
 	MouseDevice           string `toml:"mouse_device,omitempty"`
 	AndroidKeyboardDevice string `toml:"android_keyboard_device,omitempty"`
+	TouchscreenDevice     string `toml:"touchscreen_device,omitempty"`
 	FrameSocket           string `toml:"frame_socket,omitempty"`
-	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch
-	// plus limited hid.usb2 media keys) or "touchscreen" (Android HID digitizer
-	// plus full hid.usb2 Android extension keys).
+	// PointerMode selects the default gesture surface and hid.usb2 key profile.
+	// Android uses the touchscreen surface while still exposing MouseDevice as
+	// a separate absolute mouse with a visible cursor.
 	PointerMode string `toml:"pointer_mode,omitempty"`
 	// InputBackend selects the low-level input path for keyboard/touch tools:
 	// "hid" writes USB HID reports, "adb" sends Android adb shell input commands.
@@ -680,6 +681,13 @@ func (h HIDConfig) AndroidKeyboardDeviceOrDefault() string {
 		return h.AndroidKeyboardDevice
 	}
 	return defaultAndroidKeyboardDevice
+}
+
+func (h HIDConfig) TouchscreenDeviceOrDefault() string {
+	if h.TouchscreenDevice != "" {
+		return h.TouchscreenDevice
+	}
+	return defaultTouchscreenDevice
 }
 
 func (h HIDConfig) FrameSocketOrDefault() string {

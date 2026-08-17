@@ -33,6 +33,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
                  ┌──────────────────────────┐
                  │ USB HID Gadget           │
                  │ hidg0 / hidg1 / hidg2     │
+                 │ Android: hidg3 touchscreen│
                  └───────────▲──────────────┘
                              │
                          Agent tools
@@ -67,7 +68,7 @@ RK628D or TC358743 → /dev/video0 → frame_service ring buffer → Go screensh
 ### Device Control
 
 ```text
-LLM tool call → Go HID tool → /dev/hidg0, /dev/hidg1, or /dev/hidg2 → target device
+LLM tool call → Go HID tool → /dev/hidg0, /dev/hidg1, /dev/hidg2, or Android /dev/hidg3 → target device
 ```
 
 ### Voice Interaction

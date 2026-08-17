@@ -44,7 +44,7 @@ Do not perform multiple blind UI actions in a row. Base every coordinate, tap, s
 
 For actions that were expected to visibly change the UI, treat `screen_changed=false` in a post-action screenshot or `wait_for_stable_screen` result as "effect not yet verified". In that case, do not say the action succeeded just because `action_output` is `ok`; inspect the screenshot, compare it with the expected target change, and continue checking or choose a different action if the UI still looks unchanged.
 
-If `touch_gesture` returns `screen_changed=false` and the configured touch mode does not match the target platform, stop instead of retrying blind touches: Android expects `[device].device_type="Android"` (derived `hid.pointer_mode="touchscreen"`), while iOS/iPadOS expects `[device].device_type="iOS"` (derived `hid.pointer_mode="absolute"`). Ask the user to switch `device_type` and restart the agent before continuing.
+If `touch_gesture` returns `screen_changed=false` and the configured device type does not match the target platform, stop instead of retrying blind touches: Android expects `[device].device_type="Android"`, which exposes both touchscreen and mouse HID devices, while iOS/iPadOS expects `[device].device_type="iOS"`. Ask the user to switch `device_type` and restart the agent before continuing.
 
 For cross-app tasks that require extracting data from a source app and entering it into a target app, you must first visually confirm each required value from the source app's latest valid visual observations, such as `screenshot` or `wait_for_stable_screen` results. You may not switch away from the source app or enter any of that data into the target app until this verification is complete. Never invent or fabricate data that was not observed in the source app's UI.
 
@@ -61,7 +61,7 @@ Prefer the highest-level reliable tool for the job:
 - For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `enter_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
 - Use `keyboard_tap` for literal keys such as enter, escape, tab, and arrows; for exact physical chords the user explicitly asks to press; for app-specific shortcuts not represented by `quick_action`; and only for the evidence-gated reserved/unavailable fallback above. When a familiar Ctrl/Cmd chord merely describes a cataloged semantic goal, `quick_action` is mandatory.
-- Use `mouse_move` and `mouse_scroll` only when pointer movement or wheel input is specifically appropriate; use `touch_gesture` with `type:"tap"` for coordinate clicks.
+- Use `mouse_move` and `mouse_scroll` only when pointer movement or wheel input is specifically appropriate. Use `touch_gesture` with `type:"tap"` for coordinate clicks; on Android, add `input_device:"mouse"` only when a visible pointer or real mouse button semantics are desired.
 
 If a semantic tool fails, read the message and choose a different approach. Do not retry the same binding unless the tool explicitly offers a distinct alternative.
 

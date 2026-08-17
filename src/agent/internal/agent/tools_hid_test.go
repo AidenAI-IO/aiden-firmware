@@ -1681,6 +1681,41 @@ func TestTouchscreenTapWritesTouchDownAndUp(t *testing.T) {
 	}
 }
 
+func TestTouchGestureMouseInputDeviceWritesOnlyMouseReports(t *testing.T) {
+	touchDev, touchPath := newTestHIDDevice(t)
+	mouseDev, mousePath := newTestHIDDevice(t)
+	tool := &TouchGestureTool{
+		pc:      testTouchscreenPointerController(touchDev, &pointerState{}),
+		mousePC: testPointerController(mouseDev, &pointerState{}),
+		screen:  &screen.ScreenState{},
+	}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":250},"input_device":"mouse"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	reports := readMouseReports(t, mouseDev, mousePath)
+	if len(reports) != 2+touchReleaseReportCount {
+		t.Fatalf("len(mouse reports) = %d, want %d", len(reports), 2+touchReleaseReportCount)
+	}
+	if reports[0].buttons != 0 || reports[1].buttons != 1 || reports[0].x != 16384 || reports[0].y != 8192 {
+		t.Fatalf("mouse reports begin %+v, %+v; want move then left press at (16384,8192)", reports[0], reports[1])
+	}
+
+	touchDev.Close()
+	touchData, err := os.ReadFile(touchPath)
+	if err != nil {
+		t.Fatalf("ReadFile touchscreen: %v", err)
+	}
+	if len(touchData) != 0 {
+		t.Fatalf("touchscreen received %d bytes during mouse input", len(touchData))
+	}
+}
+
 func TestTouchscreenTapUsesFrameSpaceForActiveArea(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	screenState := &screen.ScreenState{}
@@ -3020,6 +3055,12 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 		required, ok := coordinate["required"].([]string)
 		if !ok || !slices.Equal(required, []string{"x", "y"}) {
 			t.Fatalf("%s required = %#v, want x and y", name, coordinate["required"])
+		}
+	}
+	inputDevices := stringEnumPropertyValues(t, schema, "input_device")
+	for _, want := range []string{"touchscreen", "mouse"} {
+		if _, ok := inputDevices[want]; !ok {
+			t.Fatalf("input_device schema missing %q: %v", want, inputDevices)
 		}
 	}
 

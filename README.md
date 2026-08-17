@@ -89,7 +89,7 @@ Target display
     -> screenshot tool
     -> Go Agent
     -> HID tools
-    -> /dev/hidg0, /dev/hidg1, and /dev/hidg2
+    -> /dev/hidg0, /dev/hidg1, /dev/hidg2, and Android /dev/hidg3
     -> target device input
 
 Board audio

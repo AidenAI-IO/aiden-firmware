@@ -27,7 +27,8 @@ struct Options {
     std::string gadget_root = "/sys/kernel/config/usb_gadget";
     std::string gadget_name = "aiden_hid";
     std::string keyboard_dev = "/dev/hidg0";
-    std::string touch_dev = "/dev/hidg1";
+    std::string mouse_dev = "/dev/hidg1";
+    std::string touch_dev = "/dev/hidg3";
     std::string state_dir = "/tmp";
     std::string manufacturer = "Aiden";
     std::string product_name = "Aiden HID Gadget";
@@ -542,14 +543,19 @@ void setup_touch_function(const std::string& gadget, const Options& options) {
     ensure_dir(function_path);
     write_text_file(function_path + "/protocol", "0");
     write_text_file(function_path + "/subclass", "0");
+    write_text_file(function_path + "/report_length", "6");
+    write_binary_file(function_path + "/report_desc", kTouchDescriptor, sizeof(kTouchDescriptor));
+    ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb1");
+
     if (options.pointer_touchscreen) {
+        function_path = gadget + "/functions/hid.usb3";
+        ensure_dir(function_path);
+        write_text_file(function_path + "/protocol", "0");
+        write_text_file(function_path + "/subclass", "0");
         write_text_file(function_path + "/report_length", "6");
         write_binary_file(function_path + "/report_desc", kTouchscreenDescriptor, sizeof(kTouchscreenDescriptor));
-    } else {
-        write_text_file(function_path + "/report_length", "6");
-        write_binary_file(function_path + "/report_desc", kTouchDescriptor, sizeof(kTouchDescriptor));
+        ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb3");
     }
-    ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb1");
 }
 
 void setup_android_extension_function(const std::string& gadget, bool pointer_touchscreen) {
@@ -580,9 +586,11 @@ void cleanup_gadget(const Options& options) {
     remove_if_exists(gadget + "/configs/c.1/hid.usb0");
     remove_if_exists(gadget + "/configs/c.1/hid.usb1");
     remove_if_exists(gadget + "/configs/c.1/hid.usb2");
+    remove_if_exists(gadget + "/configs/c.1/hid.usb3");
     rmdir_if_exists(gadget + "/functions/hid.usb0");
     rmdir_if_exists(gadget + "/functions/hid.usb1");
     rmdir_if_exists(gadget + "/functions/hid.usb2");
+    rmdir_if_exists(gadget + "/functions/hid.usb3");
     rmdir_if_exists(gadget + "/configs/c.1/strings/0x409");
     rmdir_if_exists(gadget + "/configs/c.1");
     rmdir_if_exists(gadget + "/strings/0x409");
@@ -667,6 +675,7 @@ void print_usage() {
         << "  --gadget-root <PATH>\n"
         << "  --gadget-name <NAME>\n"
         << "  --keyboard-dev <PATH>\n"
+        << "  --mouse-dev <PATH>\n"
         << "  --touch-dev <PATH>\n"
         << "  --state-dir <PATH>\n"
         << "  --manufacturer <TEXT>\n"
@@ -701,6 +710,8 @@ Options parse_global_options(std::vector<std::string>& args) {
             options.gadget_name = args.at(++i);
         } else if (arg == "--keyboard-dev") {
             options.keyboard_dev = args.at(++i);
+        } else if (arg == "--mouse-dev") {
+            options.mouse_dev = args.at(++i);
         } else if (arg == "--touch-dev") {
             options.touch_dev = args.at(++i);
         } else if (arg == "--state-dir") {
@@ -777,6 +788,8 @@ std::vector<std::string> build_server_command_prefix(const Options& options,
     command.push_back(options.gadget_name);
     command.push_back("--keyboard-dev");
     command.push_back(options.keyboard_dev);
+    command.push_back("--mouse-dev");
+    command.push_back(options.mouse_dev);
     command.push_back("--touch-dev");
     command.push_back(options.touch_dev);
     command.push_back("--state-dir");
@@ -967,7 +980,7 @@ void send_mouse_report(const Options& options, uint8_t buttons, int x, int y, in
     report[3] = static_cast<uint8_t>(y & 0xff);
     report[4] = static_cast<uint8_t>((y >> 8) & 0xff);
     report[5] = static_cast<uint8_t>(static_cast<int8_t>(std::max(-127, std::min(127, wheel))));
-    write_report(options.touch_dev, report);
+    write_report(options.mouse_dev, report);
     save_pointer_xy(options, x, y);
 }
 

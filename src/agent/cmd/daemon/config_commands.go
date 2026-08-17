@@ -333,6 +333,7 @@ type hidDTO struct {
 	KeyboardLayout        string `json:"keyboard_layout"`
 	MouseDevice           string `json:"mouse_device"`
 	AndroidKeyboardDevice string `json:"android_keyboard_device"`
+	TouchscreenDevice     string `json:"touchscreen_device"`
 	FrameSocket           string `json:"frame_socket"`
 	PointerMode           string `json:"pointer_mode"`
 	InputBackend          string `json:"input_backend"`
@@ -478,6 +479,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			KeyboardLayout:        d.HID.KeyboardLayout,
 			MouseDevice:           d.HID.MouseDevice,
 			AndroidKeyboardDevice: d.HID.AndroidKeyboardDevice,
+			TouchscreenDevice:     d.HID.TouchscreenDevice,
 			FrameSocket:           d.HID.FrameSocket,
 			PointerMode:           d.HID.PointerMode,
 			InputBackend:          d.HID.InputBackend,
@@ -723,6 +725,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			KeyboardLayout:        cfg.HID.KeyboardLayoutOrDefault(),
 			MouseDevice:           cfg.HID.MouseDeviceOrDefault(),
 			AndroidKeyboardDevice: cfg.HID.AndroidKeyboardDeviceOrDefault(),
+			TouchscreenDevice:     cfg.HID.TouchscreenDeviceOrDefault(),
 			FrameSocket:           cfg.HID.FrameSocketOrDefault(),
 			PointerMode:           cfg.PointerModeOrDefault(),
 			InputBackend:          cfg.HID.InputBackendOrDefault(),

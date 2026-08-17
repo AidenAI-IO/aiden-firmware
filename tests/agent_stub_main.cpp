@@ -82,6 +82,7 @@ const char* kDefaultConfig =
     "\"ota\":{\"github_proxy_url\":\"\"},"
     "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"keyboard_layout\":\"qwerty\",\"mouse_device\":\"/dev/hidg1\","
     "\"android_keyboard_device\":\"/dev/hidg2\","
+    "\"touchscreen_device\":\"/dev/hidg3\","
     "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
     "\"search\":{\"provider\":\"duckduckgo\",\"has_api_key\":false},"
     "\"telemetry\":{\"enabled\":false,\"provider\":\"langfuse\",\"base_url\":\"\","

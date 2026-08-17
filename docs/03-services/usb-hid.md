@@ -96,8 +96,15 @@ keyboard_device = "/dev/hidg0"
 keyboard_layout = "qwerty"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
+touchscreen_device = "/dev/hidg3"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
+
+`mouse_device` is always an absolute mouse. On Android, the firmware also binds
+`hid.usb3` as `touchscreen_device`, so the host sees both a real mouse with a
+visible pointer and a touchscreen at the same time. `touch_gesture` keeps using
+the touchscreen by default; pass `"input_device":"mouse"` to send the gesture
+as mouse movement/button reports instead.
 
 The firmware also binds `hid.usb2` as `/dev/hidg2`. This second keyboard-like
 interface advertises Consumer Control usages. When `[device].device_type =
@@ -114,6 +121,12 @@ Built-in Agent tools:
 - `mouse_move`
 - `mouse_scroll`
 - `touch_gesture`
+
+Android mouse click example:
+
+```json
+{"type":"tap","point":{"x":500,"y":500},"input_device":"mouse"}
+```
 
 It is recommended to use normalized coordinates (`0..1000`, with center at `500,500`) to avoid click position shifts due to display resolution changes.
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.

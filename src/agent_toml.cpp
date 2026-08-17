@@ -417,6 +417,7 @@ void apply_kv(AgentToml& cfg,
         else if (key == "keyboard_layout") assign_string(&cfg.hid.keyboard_layout, raw, &sub_err);
         else if (key == "mouse_device") assign_string(&cfg.hid.mouse_device, raw, &sub_err);
         else if (key == "android_keyboard_device") assign_string(&cfg.hid.android_keyboard_device, raw, &sub_err);
+        else if (key == "touchscreen_device") assign_string(&cfg.hid.touchscreen_device, raw, &sub_err);
         else if (key == "frame_socket") assign_string(&cfg.hid.frame_socket, raw, &sub_err);
         else if (key == "pointer_mode") assign_string(&cfg.hid.pointer_mode, raw, &sub_err);
         else if (key == "input_backend") assign_string(&cfg.hid.input_backend, raw, &sub_err);
@@ -1085,6 +1086,7 @@ bool save_agent_toml(const char* path, const AgentToml& input, std::string* erro
     emit_string(out, "keyboard_layout", cfg.hid.keyboard_layout);
     emit_string(out, "mouse_device", cfg.hid.mouse_device);
     emit_string(out, "android_keyboard_device", cfg.hid.android_keyboard_device);
+    emit_string(out, "touchscreen_device", cfg.hid.touchscreen_device);
     emit_string(out, "frame_socket", cfg.hid.frame_socket);
     if (!cfg.hid.input_backend.empty()) emit_string(out, "input_backend", cfg.hid.input_backend);
     out << "\n";

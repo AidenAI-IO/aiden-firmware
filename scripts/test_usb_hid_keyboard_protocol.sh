@@ -63,8 +63,8 @@ awk \
     }
 
     END {
-        if (link_count != 4) {
-            print "expected four function links before UDC bind, found " link_count > "/dev/stderr"
+        if (link_count != 5) {
+            print "expected five function link statements before UDC bind, found " link_count > "/dev/stderr"
             invalid=1
         }
         if (bind_count != 1) {
@@ -81,5 +81,14 @@ grep -Fq 'write_text_file(function_path + "/protocol", "1");' "$EXAMPLE_SRC" ||
 
 grep -Fq 'write_text_file(function_path + "/subclass", "1");' "$EXAMPLE_SRC" ||
     fail "example_usb_hid setup must keep keyboard HID boot subclass=1"
+
+grep -Fq 'functions/hid.usb3/report_desc' "$INIT_SCRIPT" ||
+    fail "S49usbhid must expose a separate Android touchscreen HID function"
+
+grep -Fq 'functions/hid.usb1/report_desc' "$INIT_SCRIPT" ||
+    fail "S49usbhid must retain the absolute mouse HID function"
+
+grep -Fq 'gadget + "/functions/hid.usb3"' "$EXAMPLE_SRC" ||
+    fail "example_usb_hid setup must support the separate touchscreen HID function"
 
 echo "usb HID keyboard protocol checks passed"

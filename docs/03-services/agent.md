@@ -56,6 +56,7 @@ model = "gpt-5.5"
 # keyboard_device = "/dev/hidg0"
 # mouse_device = "/dev/hidg1"
 # android_keyboard_device = "/dev/hidg2"
+# touchscreen_device = "/dev/hidg3"
 # frame_socket = "/run/frame_service/frame_service.sock"
 
 [stt_providers.openai-main]

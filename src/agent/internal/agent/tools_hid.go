@@ -434,7 +434,7 @@ func (s *pointerState) Current() (x, y int, ok bool) {
 	return s.x, s.y, true
 }
 
-// pointerController sends hid.usb1 reports in absolute mouse or touchscreen mode.
+// pointerController sends reports to one absolute mouse or touchscreen HID node.
 type pointerController struct {
 	dev                  *HIDDevice
 	state                *pointerState
@@ -443,10 +443,17 @@ type pointerController struct {
 }
 
 func newPointerController(hid HIDConfig) *pointerController {
+	if hid.PointerTouchscreen() {
+		return newPointerControllerForDevice(hid.TouchscreenDeviceOrDefault(), true)
+	}
+	return newPointerControllerForDevice(hid.MouseDeviceOrDefault(), false)
+}
+
+func newPointerControllerForDevice(path string, touchscreen bool) *pointerController {
 	return &pointerController{
-		dev:         NewHIDDevice(hid.MouseDeviceOrDefault()),
+		dev:         NewHIDDevice(path),
 		state:       &pointerState{},
-		touchscreen: hid.PointerTouchscreen(),
+		touchscreen: touchscreen,
 	}
 }
 
@@ -1080,6 +1087,7 @@ func (t *MouseMoveTool) call(ctx context.Context, input string) (string, error) 
 // TouchGestureTool executes touch-like pointer gestures for mobile UI control.
 type TouchGestureTool struct {
 	pc                 *pointerController
+	mousePC            *pointerController
 	screen             *screen.ScreenState
 	adb                *ADBInputController
 	primeScreenMapping func(context.Context) error
@@ -1110,6 +1118,7 @@ func (t *TouchGestureTool) Description() string {
 	}
 	return description +
 		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Point, start, and end never accept screenshot pixels: convert a target measured at (pixel_x,pixel_y) in the latest image with x=pixel_x/max(image_width-1,1)*1000 and y=pixel_y/max(image_height-1,1)*1000 before calling. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
+		`On Android, input_device defaults to touchscreen; set input_device to mouse for real mouse button events with a visible pointer. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
 }
 
@@ -1120,6 +1129,7 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 	}
 	schema := objectArgsSchema(map[string]any{
 		"type":           stringEnumArgSchema(typeDescription, touchGestureTypesForPlatform(t.platform())...),
+		"input_device":   stringEnumArgSchema("Android HID input device. Defaults to touchscreen; mouse sends real mouse events and shows the system pointer.", "touchscreen", "mouse"),
 		"point":          pointSchema(`Required for tap, double_tap, and long_press. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
 		"start":          pointSchema(`Required start point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
 		"end":            pointSchema(`Required end point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
@@ -1141,6 +1151,33 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		{"type": "swipe_up", "strength": "medium"},
 	}
 	return schema
+}
+
+func (t *TouchGestureTool) pointerForInputDevice(inputDevice string) (*pointerController, error) {
+	mode := strings.ToLower(strings.TrimSpace(inputDevice))
+	switch mode {
+	case "":
+		if t != nil && t.pc != nil {
+			return t.pc, nil
+		}
+	case "mouse":
+		if t != nil && t.mousePC != nil {
+			return t.mousePC, nil
+		}
+		if t != nil && t.pc != nil && !t.pc.touchscreen {
+			return t.pc, nil
+		}
+	case "touchscreen":
+		if t != nil && t.pc != nil && t.pc.touchscreen {
+			return t.pc, nil
+		}
+	default:
+		return nil, fmt.Errorf("input_device must be touchscreen or mouse, got %q", inputDevice)
+	}
+	if mode == "" {
+		return nil, fmt.Errorf("pointer input is not configured")
+	}
+	return nil, fmt.Errorf("input_device %q is not configured", mode)
 }
 
 func touchGestureTypesForPlatform(platform string) []string {
@@ -1189,6 +1226,7 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		X            *pointerCoordinate `json:"x"`
 		Y            *pointerCoordinate `json:"y"`
 		Button       string             `json:"button"`
+		InputDevice  string             `json:"input_device"`
 		DurationMs   *int               `json:"duration_ms"`
 		HoldBeforeMs *int               `json:"hold_before_ms"`
 		HoldAfterMs  *int               `json:"hold_after_ms"`
@@ -1210,10 +1248,19 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 	if gestureType == "" {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "type is required"), nil
 	}
+	inputDevice := strings.ToLower(strings.TrimSpace(args.InputDevice))
+	switch inputDevice {
+	case "", "touchscreen", "mouse":
+	default:
+		return toolErrorResultf(ctx, CodeInvalidArguments, "input_device must be touchscreen or mouse, got %q", args.InputDevice), nil
+	}
 
 	button := mouseButtonByte(args.Button)
 
 	if t.adb != nil {
+		if inputDevice == "mouse" {
+			return toolErrorResultString(ctx, CodeModuleUnavailable, "adb touch_gesture does not support real mouse pointer events; use the HID input backend"), nil
+		}
 		if rawButton := strings.ToLower(strings.TrimSpace(args.Button)); rawButton != "" && rawButton != "left" {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "adb touch_gesture supports only left-button touch semantics, got %q", args.Button), nil
 		}
@@ -1294,61 +1341,67 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		return "ok", nil
 	}
 
-	if err := t.ensureTouchscreenMapping(ctx); err != nil {
+	pc, err := t.pointerForInputDevice(inputDevice)
+	if err != nil {
+		return toolErrorResultf(ctx, CodeModuleUnavailable, "%v", err), nil
+	}
+	if err := t.ensureTouchscreenMapping(ctx, pc); err != nil {
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "touchscreen mapping unavailable: %v", err), nil
 	}
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf(
-			"touch_gesture start type=%q mapping_before={%s}",
+			"touch_gesture start type=%q input_device=%q pointer_mode=%s mapping_before={%s}",
 			gestureType,
+			inputDevice,
+			touchscreenRCAPointerMode(pc),
 			formatTouchscreenRCAMappingSummary(t.screen),
 		)
 	}
 
 	switch gestureType {
 	case "tap":
-		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point)
+		point, err := resolveRequiredPoint(t.screen, pc.touchscreen, args.Point)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture tap", t.screen, t.pc, args.Point, point)
-		if err := tapPointerWithHold(t.pc, point.x, point.y, button, intOrDefault(args.HoldMs, defaultTapHoldMs)); err != nil {
+		touchscreenRCALogResolvedPoint("touch_gesture tap", t.screen, pc, args.Point, point)
+		if err := tapPointerWithHold(pc, point.x, point.y, button, intOrDefault(args.HoldMs, defaultTapHoldMs)); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "double_tap":
-		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point)
+		point, err := resolveRequiredPoint(t.screen, pc.touchscreen, args.Point)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture double_tap", t.screen, t.pc, args.Point, point)
+		touchscreenRCALogResolvedPoint("touch_gesture double_tap", t.screen, pc, args.Point, point)
 		holdMs := intOrDefault(args.HoldMs, defaultTapHoldMs)
-		if err := tapPointerWithHold(t.pc, point.x, point.y, button, holdMs); err != nil {
+		if err := tapPointerWithHold(pc, point.x, point.y, button, holdMs); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 		sleepMs(intOrDefault(args.PauseMs, 100))
-		if err := tapPointerWithHold(t.pc, point.x, point.y, button, holdMs); err != nil {
+		if err := tapPointerWithHold(pc, point.x, point.y, button, holdMs); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "long_press":
-		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point)
+		point, err := resolveRequiredPoint(t.screen, pc.touchscreen, args.Point)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture long_press", t.screen, t.pc, args.Point, point)
-		if err := settlePointer(t.pc, point.x, point.y); err != nil {
+		touchscreenRCALogResolvedPoint("touch_gesture long_press", t.screen, pc, args.Point, point)
+		if err := settlePointer(pc, point.x, point.y); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
-		if err := pressPointer(t.pc, point.x, point.y, button); err != nil {
+		if err := pressPointer(pc, point.x, point.y, button); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 		released := false
 		defer func() {
 			if !released {
-				_ = releasePointerRepeated(t.pc, point.x, point.y, touchReleaseReportCount, touchReleaseReportDelayMs)
+				_ = releasePointerRepeated(pc, point.x, point.y, touchReleaseReportCount, touchReleaseReportDelayMs)
 			}
 		}()
 		sleepMs(intOrDefault(args.DurationMs, 500))
-		if err := releasePointerRepeated(t.pc, point.x, point.y, touchReleaseReportCount, touchReleaseReportDelayMs); err != nil {
+		if err := releasePointerRepeated(pc, point.x, point.y, touchReleaseReportCount, touchReleaseReportDelayMs); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 		released = true
@@ -1357,7 +1410,7 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		start, end, err := directionalSwipeEndpoints(t.screen, t.pc.touchscreen, gestureType, args.Distance, args.Anchor, preset)
+		start, end, err := directionalSwipeEndpoints(t.screen, pc.touchscreen, gestureType, args.Distance, args.Anchor, preset)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
@@ -1369,7 +1422,7 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 				start.y,
 				end.x,
 				end.y,
-				touchscreenRCAPointerMode(t.pc),
+				touchscreenRCAPointerMode(pc),
 				t.screen.Format(),
 			)
 		}
@@ -1377,7 +1430,7 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 			return toolErrorResultString(ctx, CodeInvalidArguments, "directional swipe resolved to the same HID point"), nil
 		}
 		if err := runSwipeLikeGesture(
-			t.pc,
+			pc,
 			start,
 			end,
 			button,
@@ -1392,21 +1445,21 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		if samePointerPoint(args.Start, args.End) {
 			return toolErrorResultString(ctx, CodeInvalidArguments, "drag requires distinct start and end points; a zero-distance drag behaves like a press and may activate the control instead of moving it"), nil
 		}
-		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start)
+		start, err := resolveRequiredPoint(t.screen, pc.touchscreen, args.Start)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture drag start", t.screen, t.pc, args.Start, start)
-		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End)
+		touchscreenRCALogResolvedPoint("touch_gesture drag start", t.screen, pc, args.Start, start)
+		end, err := resolveRequiredPoint(t.screen, pc.touchscreen, args.End)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture drag end", t.screen, t.pc, args.End, end)
+		touchscreenRCALogResolvedPoint("touch_gesture drag end", t.screen, pc, args.End, end)
 		if sameResolvedPointerPoint(start, end) {
 			return toolErrorResultString(ctx, CodeInvalidArguments, "drag start and end resolve to the same HID point"), nil
 		}
 		if err := runPositionedDragGesture(
-			t.pc,
+			pc,
 			start,
 			end,
 			button,
@@ -1424,21 +1477,21 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 		if samePointerPoint(args.Start, args.End) {
 			return toolErrorResultString(ctx, CodeInvalidArguments, "swipe requires distinct start and end points"), nil
 		}
-		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start)
+		start, err := resolveRequiredPoint(t.screen, pc.touchscreen, args.Start)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture swipe start", t.screen, t.pc, args.Start, start)
-		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End)
+		touchscreenRCALogResolvedPoint("touch_gesture swipe start", t.screen, pc, args.Start, start)
+		end, err := resolveRequiredPoint(t.screen, pc.touchscreen, args.End)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture swipe end", t.screen, t.pc, args.End, end)
+		touchscreenRCALogResolvedPoint("touch_gesture swipe end", t.screen, pc, args.End, end)
 		if sameResolvedPointerPoint(start, end) {
 			return toolErrorResultString(ctx, CodeInvalidArguments, "swipe start and end resolve to the same HID point"), nil
 		}
 		if err := runSwipeLikeGesture(
-			t.pc,
+			pc,
 			start,
 			end,
 			button,
@@ -1450,18 +1503,18 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "back", "edge_back", "left_edge_back":
-		start, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.Start, phoneBackStartX, phoneBackY)
+		start, err := resolvePointOrDefaultNormalized(t.screen, pc.touchscreen, args.Start, phoneBackStartX, phoneBackY)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture back start", t.screen, t.pc, args.Start, start)
-		end, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.End, phoneBackEndX, phoneBackY)
+		touchscreenRCALogResolvedPoint("touch_gesture back start", t.screen, pc, args.Start, start)
+		end, err := resolvePointOrDefaultNormalized(t.screen, pc.touchscreen, args.End, phoneBackEndX, phoneBackY)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture back end", t.screen, t.pc, args.End, end)
+		touchscreenRCALogResolvedPoint("touch_gesture back end", t.screen, pc, args.End, end)
 		if err := runPositionedDragGesture(
-			t.pc,
+			pc,
 			start,
 			end,
 			button,
@@ -1473,18 +1526,18 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "home", "home_swipe", "bottom_edge_home":
-		start, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.Start, phoneHomeX, phoneHomeStartY)
+		start, err := resolvePointOrDefaultNormalized(t.screen, pc.touchscreen, args.Start, phoneHomeX, phoneHomeStartY)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture home start", t.screen, t.pc, args.Start, start)
-		end, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.End, phoneHomeX, phoneHomeEndY)
+		touchscreenRCALogResolvedPoint("touch_gesture home start", t.screen, pc, args.Start, start)
+		end, err := resolvePointOrDefaultNormalized(t.screen, pc.touchscreen, args.End, phoneHomeX, phoneHomeEndY)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogResolvedPoint("touch_gesture home end", t.screen, t.pc, args.End, end)
+		touchscreenRCALogResolvedPoint("touch_gesture home end", t.screen, pc, args.End, end)
 		if err := runPositionedDragGesture(
-			t.pc,
+			pc,
 			start,
 			end,
 			button,
@@ -1505,8 +1558,8 @@ func (t *TouchGestureTool) call(ctx context.Context, input string) (string, erro
 	return "ok", nil
 }
 
-func (t *TouchGestureTool) ensureTouchscreenMapping(ctx context.Context) error {
-	if t == nil || t.pc == nil || !t.pc.touchscreen || t.screen == nil || t.primeScreenMapping == nil {
+func (t *TouchGestureTool) ensureTouchscreenMapping(ctx context.Context, pc *pointerController) error {
+	if t == nil || pc == nil || !pc.touchscreen || t.screen == nil || t.primeScreenMapping == nil {
 		return nil
 	}
 	if t.screen.FreshActiveArea(screenDimensionsStaleAfter) {

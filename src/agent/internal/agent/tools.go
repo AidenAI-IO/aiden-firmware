@@ -149,17 +149,23 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	if screen == nil {
 		screen = newToolScreenState()
 	}
-	pointer := newPointerController(hidCfg)
-	iosKeyboardIsolation := newIOSKeyboardIsolationController(hidCfg, kbDev, pointer.dev, androidKbDev)
+	mousePointer := newPointerControllerForDevice(hidCfg.MouseDeviceOrDefault(), false)
+	pointer := mousePointer
+	if hidCfg.PointerTouchscreen() {
+		pointer = newPointerControllerForDevice(hidCfg.TouchscreenDeviceOrDefault(), true)
+	}
+	iosKeyboardIsolation := newIOSKeyboardIsolationController(hidCfg, kbDev, mousePointer.dev, androidKbDev)
+	mousePointer.iosKeyboardIsolation = iosKeyboardIsolation
 	pointer.iosKeyboardIsolation = iosKeyboardIsolation
 	var adbInput *ADBInputController
 	if hidCfg.InputBackendADB() {
 		adbInput = NewADBInputController(screen)
 	}
 	touchscreenRCALogf(
-		"newHardwareToolSet pointer_mode=%q pointer_device=%q keyboard_device=%q keyboard_layout=%q android_keyboard_device=%q frame_socket=%q",
+		"newHardwareToolSet pointer_mode=%q mouse_device=%q touchscreen_device=%q keyboard_device=%q keyboard_layout=%q android_keyboard_device=%q frame_socket=%q",
 		hidCfg.PointerModeOrDefault(),
 		hidCfg.MouseDeviceOrDefault(),
+		hidCfg.TouchscreenDeviceOrDefault(),
 		hidCfg.KeyboardDeviceOrDefault(),
 		hidCfg.KeyboardLayoutOrDefault(),
 		hidCfg.AndroidKeyboardDeviceOrDefault(),
@@ -174,7 +180,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	waitStable := NewWaitStableScreenTool(provider, screenStable, screen)
 	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault(), adb: adbInput, keyboardLayout: hidCfg.KeyboardLayoutOrDefault(), iosKeyboardIsolation: iosKeyboardIsolation}
 	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput, keyboardLayout: hidCfg.KeyboardLayoutOrDefault(), iosKeyboardIsolation: iosKeyboardIsolation}
-	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
+	touchGesture := &TouchGestureTool{pc: pointer, mousePC: mousePointer, screen: screen, adb: adbInput}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen, requireFreshScreenshot: true}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture, iosKeyboardIsolation: iosKeyboardIsolation}
 	textInputHW := &textInputHardwareDeps{
@@ -188,8 +194,8 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 
 	tools := map[string]langtools.Tool{
 		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: mousePointer, screen: screen, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: mousePointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"wheel_nudge":            newPostActionStableScreenshotTool(wheelNudge, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),

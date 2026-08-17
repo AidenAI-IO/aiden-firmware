@@ -39,7 +39,8 @@ Target Device (iPhone / PC)
           └─ USB-A out ──→ Luckfox Pico Zero (CSI input + USB)
                                    │
                                    ├─ Video capture: /dev/video0 (from RK628D CSI)
-                                   ├─ HID keyboard/pointer/control: /dev/hidg0, /dev/hidg1, /dev/hidg2
+                                   ├─ HID keyboard/mouse/control: /dev/hidg0, /dev/hidg1, /dev/hidg2
+                                   ├─ Android touchscreen: /dev/hidg3
                                    ├─ Audio codec / ALSA
                                    └─ Network: Wi-Fi or USB gadget network
 ```
@@ -124,8 +125,9 @@ It is also recommended to enable **Show Onscreen Keyboard** on the AssistiveTouc
 | Video capture | `/dev/video0` | RK628D or TC358743 bridge output to the V4L2 capture device |
 | HDMI subdev | Auto-detected `rk628-csi` or `tc358743` node | EDID / DV timings / HDMI sync; the exact `/dev/v4l-subdevX` index can vary |
 | Keyboard HID | `/dev/hidg0` | Default keyboard device for Go Agent and example tools |
-| Mouse/touch HID | `/dev/hidg1` | Go Agent uses the same HID device for mouse/touch input |
+| Absolute mouse HID | `/dev/hidg1` | Real mouse events, including the visible Android system pointer |
 | Auxiliary control HID | `/dev/hidg2` | Android extension keys in touchscreen mode; Consumer Control media, volume, brightness, and screenshot keys in absolute mode |
+| Android touchscreen HID | `/dev/hidg3` | Touchscreen events used by default for Android taps, swipes, and drags |
 | Frame socket | `/run/frame_service/frame_service.sock` | Default path for system service deployment |
 | Audio socket | `/run/audio_service/audio_service.sock` | Default path for system service deployment |
 
