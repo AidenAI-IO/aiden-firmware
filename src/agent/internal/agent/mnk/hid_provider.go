@@ -634,7 +634,8 @@ type resolvedKeys struct {
 
 // ResolveKeypressKeys validates and expands keyboard_tap / Keypress key names
 // (including Android KEYCODE_* aliases) without requiring a configured device.
-func ResolveKeypressKeys(keys []string) (*resolvedKeys, error) {
+// layout selects physical HID usages for letter/symbol taps (qwerty/azerty/qwertz).
+func ResolveKeypressKeys(keys []string, layout string) (*resolvedKeys, error) {
 	resolved := &resolvedKeys{keys: make([]uint8, 0, 6)}
 	androidKeys := make([]string, 0, 1)
 
@@ -662,8 +663,9 @@ func ResolveKeypressKeys(keys []string) (*resolvedKeys, error) {
 			continue
 		}
 
-		if usage, ok := hidKeyboardMap[normalized]; ok {
-			resolved.keys = append(resolved.keys, usage)
+		if stroke, ok := keyboardLayoutTapKeyStroke(layout, normalized); ok {
+			resolved.modifier |= stroke.modifier
+			resolved.keys = append(resolved.keys, stroke.usage)
 			continue
 		}
 
@@ -692,7 +694,11 @@ func ResolveKeypressKeys(keys []string) (*resolvedKeys, error) {
 }
 
 func (p *HIDProvider) resolveKeys(keys []string) (*resolvedKeys, error) {
-	return ResolveKeypressKeys(keys)
+	layout := ""
+	if p != nil {
+		layout = p.keyboardLayout
+	}
+	return ResolveKeypressKeys(keys, layout)
 }
 
 func (p *HIDProvider) androidExtensionPressReport(key string, usage uint16) ([]byte, error) {

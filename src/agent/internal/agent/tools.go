@@ -178,7 +178,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	}
 
 	if mnkErr != nil {
-		touchscreenRCALogf("WARNING: failed to create MNK provider: %v (falling back to legacy implementation)", mnkErr)
+		touchscreenRCALogf("WARNING: failed to create MNK provider: %v; keyboard/pointer tools will report module unavailable", mnkErr)
 		mnkProvider = nil
 	}
 

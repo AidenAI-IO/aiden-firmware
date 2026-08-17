@@ -259,7 +259,7 @@ func (t *KeyboardTapToolAdapter) Call(ctx context.Context, input string) (string
 
 	// Validate/expand keys before the nil-provider check so unsupported KEYCODE
 	// aliases and mixed chords still return InvalidArguments without a backend.
-	if _, err := ResolveKeypressKeys(args.Keys); err != nil {
+	if _, err := ResolveKeypressKeys(args.Keys, ""); err != nil {
 		return "", err
 	}
 

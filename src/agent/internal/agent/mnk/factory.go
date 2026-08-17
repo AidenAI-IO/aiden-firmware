@@ -16,8 +16,9 @@ func NewProviderFactory(screenState *screen.ScreenState) *ProviderFactory {
 	}
 }
 
-// CreateHIDProvider 创建 HID Provider（用于 USB HID 控制）。
-// 会新建 HID 设备；生产路径应优先用 CreateHIDProviderWithDevices 共享设备与 isolation。
+// CreateHIDProvider builds an HID Provider that opens new device paths.
+// Production should prefer CreateHIDProviderWithDevices to share FDs with isolation.
+// The error return is reserved for future validation; current construction always succeeds.
 func (f *ProviderFactory) CreateHIDProvider(
 	pointerDevice string,
 	keyboardDevice string,
@@ -35,6 +36,7 @@ func (f *ProviderFactory) CreateHIDProvider(
 }
 
 // CreateHIDProviderWithDevices builds an HID provider from already-owned devices and an optional ProfileGate.
+// The error return is reserved for future validation; current construction always succeeds.
 func (f *ProviderFactory) CreateHIDProviderWithDevices(
 	pointerDev, keyboardDev, androidKeyboardDev Device,
 	touchscreen bool,
@@ -52,7 +54,8 @@ func (f *ProviderFactory) CreateHIDProviderWithDevices(
 	), nil
 }
 
-// CreateADBProvider 创建 ADB Provider（用于 adb shell input 控制）
+// CreateADBProvider builds an ADB Provider.
+// The error return is reserved for future validation; current construction always succeeds.
 func (f *ProviderFactory) CreateADBProvider() (Provider, error) {
 	provider := NewADBProvider(f.screenState, nil, nil)
 	return provider, nil
