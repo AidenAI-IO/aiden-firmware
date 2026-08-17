@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import io
 import json
 import sys
 import threading
@@ -10,10 +11,15 @@ import urllib.request
 from enum import Enum
 
 import pytest
+from PIL import Image
 
 from mobilegym.bridge.episode import BridgeEpisodeState, BridgeTaskRouter
 from mobilegym.bridge.actions import action_to_dict
-from mobilegym.bridge.server import BridgeServer, DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC
+from mobilegym.bridge.server import (
+    BridgeServer,
+    DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC,
+    SCREENSHOT_PROVIDER_TIMEOUT_SEC,
+)
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nmobilegym-png"
@@ -98,6 +104,7 @@ class FakeEnv:
         self.state = {"os": {}, "apps": {}}
         self.route = {"app": "launcher", "path": "/"}
         self.reset_calls = 0
+        self.reset_app_ids = []
         self.calls = []
         self.loop_matches = []
         self.threads = []
@@ -135,9 +142,10 @@ class FakeEnv:
         self._record("get_route")
         return self.route
 
-    async def reset(self):
+    async def reset(self, app_ids=None):
         self._record("reset")
         self.reset_calls += 1
+        self.reset_app_ids.append(app_ids)
         return FakeObservation()
 
 
@@ -217,6 +225,7 @@ def test_bridge_base_url_uses_public_host_override():
 
 def test_bridge_server_default_request_timeout_covers_slow_mobilegym_actions():
     assert DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC >= 180
+    assert SCREENSHOT_PROVIDER_TIMEOUT_SEC == 30
     with OwnerLoop() as owner:
         env = FakeEnv(owner.loop)
         state = BridgeEpisodeState(env, owner_loop=owner.loop)
@@ -287,10 +296,29 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
         assert bridge.state.active_episode_id == "reset-ep1"
         assert bridge.env.reset_calls == 1
+        assert bridge.env.reset_app_ids == [[]]
 
-        status, body = request_json(bridge.base_url, "POST", "/api/tools/screenshot", {"input": {}})
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/setup",
+            {"episode_id": "reset-ep2", "app_ids": ["settings"]},
+        )
         assert status == 200
-        assert body["is_error"] is False
+        assert body["data"] == {"episode_id": "reset-ep2", "reset": True}
+        assert bridge.env.reset_app_ids == [[], ["settings"]]
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/providers/screenshot",
+            {"format": "jpeg", "quality": 80},
+        )
+        assert status == 200
+        assert body["ok"] is True
+        assert body["data"]["meta"]["pixel_format"] in {"jpeg", "png"}
+        assert body["data"]["capture_info"]["capture_backend"] == "mobilegym"
+        assert body["data"]["image"]
 
         status, body = request_json(bridge.base_url, "POST", "/state", {})
         assert status == 200
@@ -300,57 +328,109 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         assert status == 200
         assert body["data"] == bridge.env.route
 
-        status, _ = request_json(bridge.base_url, "POST", "/episode/end", {"episode_id": "reset-ep1"})
+        status, _ = request_json(bridge.base_url, "POST", "/episode/end", {"episode_id": "reset-ep2"})
         assert status == 200
 
         assert bridge.env.loop_matches and all(bridge.env.loop_matches)
         assert bridge.env.threads and set(bridge.env.threads) == {"mobilegym-owner-loop"}
 
 
-def test_api_screen_snapshots_active_execution_state():
+def test_setup_rejects_invalid_app_ids():
+    with RunningBridge() as bridge:
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/setup",
+            {"app_ids": "settings"},
+        )
+
+        assert status == 400
+        assert body["error"]["code"] == "bad_request"
+        assert bridge.env.reset_calls == 0
+
+
+def test_setup_treats_null_app_ids_as_empty():
+    with RunningBridge() as bridge:
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/setup",
+            {"app_ids": None},
+        )
+
+        assert status == 200
+        assert body["data"]["reset"] is True
+        assert bridge.env.reset_app_ids == [[]]
+
+
+def test_setup_timeout_preserves_mobilegym_phase_diagnostic():
+    with RunningBridge() as bridge:
+        async def timeout_reset(app_ids=None):
+            raise TimeoutError("phase=waitForData timeout after 40000ms")
+
+        bridge.env.reset = timeout_reset
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/setup",
+            {"app_ids": []},
+        )
+
+        assert status == 504
+        assert body["error"]["code"] == "timeout"
+        assert "phase=waitForData" in body["error"]["message"]
+
+
+def test_api_screen_is_removed():
     with RunningBridge() as bridge:
         status, _ = request_text(bridge.base_url, "GET", "/screen")
         assert status == 404
-
         status, body = request_json(bridge.base_url, "GET", "/api/screen")
-        assert status == 200
-        assert body["data"]["status"] == "waiting"
-        assert body["data"]["active_episode_id"] is None
-        assert body["data"]["screenshot"] is None
+        assert status == 404
+        assert body["ok"] is False
 
-        assert start_episode(bridge)[0] == 200
-        status, _ = request_json(
-            bridge.base_url,
-            "POST",
-            "/tap",
-            {"episode_id": "ep1", "x": 100, "y": 200},
+
+def test_provider_screenshot_converts_png_observation_to_jpeg():
+    png_buf = io.BytesIO()
+    Image.new("RGB", (2, 1), "red").save(png_buf, format="PNG")
+    png_bytes = png_buf.getvalue()
+
+    with OwnerLoop() as owner:
+        env = FakeEnv(owner.loop)
+        env.observation = types.SimpleNamespace(
+            screenshot=png_bytes, width=2, height=1, mime_type="image/png"
         )
-        assert status == 200
+        state = BridgeEpisodeState(env, owner_loop=owner.loop)
+        server = BridgeServer(state, host="127.0.0.1", port=0)
+        try:
+            server.start()
+            status, body = request_json(
+                server.base_url,
+                "POST",
+                "/api/providers/screenshot",
+                {"format": "jpeg", "quality": 80},
+            )
+        finally:
+            server.stop()
 
-        status, body = request_json(bridge.base_url, "GET", "/api/screen")
-        assert status == 200
-        data = body["data"]
-        assert data["status"] == "running"
-        assert data["active_episode_id"] == "ep1"
-        assert data["screenshot"] == expected_screenshot()
-        assert data["action_count"] == 1
-        assert data["actions"] == [
-            {
-                "episode_id": "ep1",
-                "action_id": "ep1:0001",
-                "tool_name": "tap",
-                "tool_input": {"x": 100, "y": 200},
-                "duration_ms": data["actions"][0]["duration_ms"],
-                "error": None,
-                "has_screenshot": True,
-            }
-        ]
-        assert "screenshot" not in data["actions"][0]
+    assert status == 200
+    meta = body["data"]["meta"]
+    image = base64.b64decode(body["data"]["image"])
+    assert meta["pixel_format"] == "jpeg"
+    assert image.startswith(b"\xff\xd8")
+    assert meta["bytes"] == len(image)
 
 
-def test_api_screen_routes_by_query_task_id():
+def test_provider_screenshot_routes_by_task_id():
     with OwnerLoop() as owner:
         envs = [FakeEnv(owner.loop), FakeEnv(owner.loop)]
+        envs[0].observation = types.SimpleNamespace(
+            screenshot=b"alpha-frame", width=111, height=222, mime_type="image/jpeg"
+        )
+        envs[1].observation = types.SimpleNamespace(
+            screenshot=b"beta-frame", width=333, height=444, mime_type="image/jpeg"
+        )
         states = [BridgeEpisodeState(env, owner_loop=owner.loop) for env in envs]
         states[0].active_episode_id = "ep-alpha"
         states[1].active_episode_id = "ep-beta"
@@ -363,25 +443,31 @@ def test_api_screen_routes_by_query_task_id():
             assert body["data"]["env_count"] == 2
             assert body["data"]["active_routes"] == {}
 
-            status, body = request_json(server.base_url, "GET", "/api/screen?benchmark-task-id=task.alpha")
-            assert status == 200
-            assert body["data"]["status"] == "waiting"
-            assert server.router.task_map() == {}
-
             server.router.state_for_task_id("task.alpha")
             server.router.state_for_task_id("task.beta")
             status, body = request_json(server.base_url, "GET", "/api/concurrent")
             assert status == 200
-            assert body["data"]["concurrent"] == 2
             assert body["data"]["active_routes"] == {"task.alpha": 0, "task.beta": 1}
 
-            status, body = request_json(server.base_url, "GET", "/api/screen?benchmark-task-id=task.alpha")
+            status, body = request_json(
+                server.base_url,
+                "POST",
+                "/api/providers/screenshot?benchmark-task-id=task.alpha",
+                {"format": "jpeg"},
+            )
             assert status == 200
-            assert body["data"]["active_episode_id"] == "ep-alpha"
+            assert body["data"]["meta"]["width"] == 111
+            assert base64.b64decode(body["data"]["image"]) == b"alpha-frame"
 
-            status, body = request_json(server.base_url, "GET", "/api/screen?benchmark-task-id=task.beta")
+            status, body = request_json(
+                server.base_url,
+                "POST",
+                "/api/providers/screenshot?benchmark-task-id=task.beta",
+                {"format": "jpeg"},
+            )
             assert status == 200
-            assert body["data"]["active_episode_id"] == "ep-beta"
+            assert body["data"]["meta"]["width"] == 333
+            assert base64.b64decode(body["data"]["image"]) == b"beta-frame"
         finally:
             server.stop()
 
@@ -442,7 +528,7 @@ def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordi
         assert "unsupported strength" in body["output"]
 
 
-def test_tools_api_actions_are_visible_in_screen_action_log():
+def test_tools_api_actions_are_logged_on_episode_end():
     with RunningBridge() as bridge:
         status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
         assert status == 200
@@ -457,23 +543,15 @@ def test_tools_api_actions_are_visible_in_screen_action_log():
         assert status == 200
         assert body["is_error"] is False
 
-        status, body = request_json(bridge.base_url, "GET", "/api/screen")
+        status, body = request_json(bridge.base_url, "POST", "/episode/end", {"episode_id": "reset-ep1"})
         assert status == 200
-        assert body["data"]["action_count"] == 1
-        assert body["data"]["actions"] == [
-            {
-                "episode_id": "reset-ep1",
-                "action_id": "reset-ep1:0001",
-                "tool_name": "touch_gesture",
-                "tool_input": {
-                    "type": "tap",
-                    "point": {"x": 321, "y": 654},
-                },
-                "duration_ms": body["data"]["actions"][0]["duration_ms"],
-                "error": None,
-                "has_screenshot": True,
-            }
-        ]
+        action_log = body["data"]["action_log"]
+        assert len(action_log) == 1
+        assert action_log[0]["tool_name"] == "touch_gesture"
+        assert action_log[0]["tool_input"] == {
+            "type": "tap",
+            "point": {"x": 321, "y": 654},
+        }
 
 
 def test_tools_api_pointer_and_quick_action_inputs_map_to_mobilegym_actions():

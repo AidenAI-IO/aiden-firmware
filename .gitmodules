@@ -4,4 +4,4 @@
 
 [submodule "benchmark/mobilegym/vendor/mobilegym"]
 	path = benchmark/mobilegym/vendor/mobilegym
-	url = https://github.com/Purewhiter/mobilegym.git
+	url = https://github.com/AidenAI-IO/mobilegym.git

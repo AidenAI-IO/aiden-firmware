@@ -1,4 +1,4 @@
-package agent
+package screenprovider
 
 import (
 	"encoding/binary"
@@ -10,35 +10,19 @@ import (
 	"time"
 )
 
-// FrameServiceClient communicates with the frame_service via Unix domain socket.
-type FrameServiceClient struct {
+// FrameService communicates with the frame_service via Unix domain socket.
+type FrameService struct {
 	socketPath string
 }
 
-func NewFrameServiceClient(socketPath string) *FrameServiceClient {
+func NewFrameService(socketPath string) *FrameService {
 	if socketPath == "" {
-		socketPath = defaultFrameServiceSocket
+		socketPath = DefaultFrameSocket
 	}
-	return &FrameServiceClient{socketPath: socketPath}
+	return &FrameService{socketPath: socketPath}
 }
 
-type frameMetadata struct {
-	Seq          uint64 `json:"seq"`
-	Width        uint32 `json:"width"`
-	Height       uint32 `json:"height"`
-	SourceWidth  uint32 `json:"source_width,omitempty"`
-	SourceHeight uint32 `json:"source_height,omitempty"`
-	CropX        uint32 `json:"crop_x,omitempty"`
-	CropY        uint32 `json:"crop_y,omitempty"`
-	CropWidth    uint32 `json:"crop_width,omitempty"`
-	CropHeight   uint32 `json:"crop_height,omitempty"`
-	PixelFormat  string `json:"pixel_format"`
-	Stride       uint32 `json:"stride"`
-	Bytes        uint64 `json:"bytes"`
-	Stale        bool   `json:"stale"`
-}
-
-func (m *frameMetadata) UnmarshalJSON(data []byte) error {
+func (m *FrameMetadata) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		Seq          json.RawMessage `json:"seq"`
 		Width        json.RawMessage `json:"width"`
@@ -125,21 +109,7 @@ func (m *frameMetadata) UnmarshalJSON(data []byte) error {
 
 type frameResponse struct {
 	Status string        `json:"status"`
-	Frame  frameMetadata `json:"frame"`
-}
-
-type FrameHealthResult struct {
-	State                   string  `json:"state"`
-	CaptureMode             string  `json:"capture_mode"`
-	LatestSeq               uint64  `json:"latest_seq"`
-	FrameAgeMs              uint64  `json:"frame_age_ms"`
-	RingBufferSize          uint32  `json:"ring_buffer_size"`
-	RingBufferUsed          uint32  `json:"ring_buffer_used"`
-	ConsecutiveFailures     uint32  `json:"consecutive_failures"`
-	LastError               string  `json:"last_error"`
-	LastRecoveryTs          uint64  `json:"last_recovery_ts"`
-	AvgFrameServeLatencyMs  float64 `json:"avg_frame_serve_latency_ms"`
-	AvgCaptureCopyLatencyMs float64 `json:"avg_capture_copy_latency_ms"`
+	Frame  FrameMetadata `json:"frame"`
 }
 
 type frameHealthResponse struct {
@@ -205,7 +175,7 @@ func (r *frameHealthResponse) UnmarshalJSON(data []byte) error {
 }
 
 // LatestFrame fetches the most recent frame from the service.
-func (c *FrameServiceClient) LatestFrame() (*frameMetadata, []byte, error) {
+func (c *FrameService) LatestFrame() (*FrameMetadata, []byte, error) {
 	return c.LatestFrameWithFormat("raw", 0, false, 0)
 }
 
@@ -214,20 +184,20 @@ func (c *FrameServiceClient) LatestFrame() (*frameMetadata, []byte, error) {
 // quality: JPEG quality (1-100), ignored for raw format
 // cropBlack: whether to crop uniformly dark columns at the left and right edges
 // minimalWidth: optional lower bound for width after horizontal cropping
-func (c *FrameServiceClient) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error) {
+func (c *FrameService) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*FrameMetadata, []byte, error) {
 	if format == "" {
 		format = "raw"
 	}
 	if quality <= 0 {
-		quality = 80
+		quality = DefaultJPEGQuality
 	}
 	if minimalWidth < 0 {
 		minimalWidth = 0
 	}
 
-	request := fmt.Sprintf(`{"type":"request","method":"latest_frame","since_seq":"0","timeout_ms":0,"format":"%s","quality":%d,"crop_black":%t}`, format, quality, cropBlack)
-	if minimalWidth > 0 {
-		request = fmt.Sprintf(`{"type":"request","method":"latest_frame","since_seq":"0","timeout_ms":0,"format":"%s","quality":%d,"crop_black":%t,"minimal_width":%d}`, format, quality, cropBlack, minimalWidth)
+	request, err := latestFrameRequestJSON(format, quality, cropBlack, minimalWidth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal latest_frame request: %w", err)
 	}
 
 	headerJSON, payload, err := c.doRequest(request, nil, 5*time.Second)
@@ -250,7 +220,7 @@ func (c *FrameServiceClient) LatestFrameWithFormat(format string, quality int, c
 }
 
 // Health queries the frame service health snapshot.
-func (c *FrameServiceClient) Health() (*FrameHealthResult, error) {
+func (c *FrameService) Health() (*HealthResult, error) {
 	headerJSON, _, err := c.doRequest(`{"type":"request","method":"health"}`, nil, 5*time.Second)
 	if err != nil {
 		return nil, err
@@ -264,7 +234,7 @@ func (c *FrameServiceClient) Health() (*FrameHealthResult, error) {
 		return nil, fmt.Errorf("frame service health failed: %s", resp.Status)
 	}
 
-	return &FrameHealthResult{
+	return &HealthResult{
 		State:                   resp.State,
 		CaptureMode:             resp.CaptureMode,
 		LatestSeq:               resp.LatestSeq,
@@ -279,7 +249,7 @@ func (c *FrameServiceClient) Health() (*FrameHealthResult, error) {
 	}, nil
 }
 
-func (c *FrameServiceClient) doRequest(requestJSON string, requestPayload []byte, timeout time.Duration) ([]byte, []byte, error) {
+func (c *FrameService) doRequest(requestJSON string, requestPayload []byte, timeout time.Duration) ([]byte, []byte, error) {
 	conn, err := net.DialTimeout("unix", c.socketPath, timeout)
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect %s: %w", c.socketPath, err)
@@ -287,15 +257,35 @@ func (c *FrameServiceClient) doRequest(requestJSON string, requestPayload []byte
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(timeout))
 
-	if err := writeUDSMessage(conn, []byte(requestJSON), requestPayload); err != nil {
+	if err := WriteUDSMessage(conn, []byte(requestJSON), requestPayload); err != nil {
 		return nil, nil, err
 	}
 
-	return readUDSMessage(conn)
+	return ReadUDSMessage(conn)
+}
+
+func latestFrameRequestJSON(format string, quality int, cropBlack bool, minimalWidth int) (string, error) {
+	payload := map[string]any{
+		"type":       "request",
+		"method":     "latest_frame",
+		"since_seq":  "0",
+		"timeout_ms": 0,
+		"format":     format,
+		"quality":    quality,
+		"crop_black": cropBlack,
+	}
+	if minimalWidth > 0 {
+		payload["minimal_width"] = minimalWidth
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 // Wire protocol: [header_len LE32][payload_len LE64][header bytes][payload bytes]
-func writeUDSMessage(w io.Writer, header, payload []byte) error {
+func WriteUDSMessage(w io.Writer, header, payload []byte) error {
 	prefix := make([]byte, 12)
 	binary.LittleEndian.PutUint32(prefix[0:4], uint32(len(header)))
 	binary.LittleEndian.PutUint64(prefix[4:12], uint64(len(payload)))
@@ -316,7 +306,7 @@ func writeUDSMessage(w io.Writer, header, payload []byte) error {
 	return nil
 }
 
-func readUDSMessage(r io.Reader) (header []byte, payload []byte, err error) {
+func ReadUDSMessage(r io.Reader) (header []byte, payload []byte, err error) {
 	prefix := make([]byte, 12)
 	if _, err := io.ReadFull(r, prefix); err != nil {
 		return nil, nil, fmt.Errorf("read prefix: %w", err)

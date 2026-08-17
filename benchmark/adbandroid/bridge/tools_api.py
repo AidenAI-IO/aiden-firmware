@@ -114,15 +114,6 @@ class ADBToolsAPIHandler:
         }
         tools = [
             {
-                "name": "screenshot",
-                "description": "Capture a screenshot from the Android device via adb. No input required (pass empty JSON {} or \"\"). Returns a JSON object with width, height, and base64-encoded JPEG image data.",
-                "args_schema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": False,
-                },
-            },
-            {
                 "name": "touch_gesture",
                 "description": "Perform touch gestures on the Android device (tap, swipe, drag, long_press, etc.).",
                 "args_schema": {
@@ -395,9 +386,7 @@ class ADBToolsAPIHandler:
         unknown = _unknown_tool_fields(tool_name, tool_input)
         if unknown:
             return {"output": f"error: unknown fields: {unknown!r}", "is_error": True}
-        if tool_name == "screenshot":
-            return self._call_screenshot()
-        elif tool_name == "touch_gesture":
+        if tool_name == "touch_gesture":
             return self._call_touch_gesture(tool_input)
         elif tool_name == "keyboard_text":
             return self._call_keyboard_text(tool_input)
@@ -413,14 +402,6 @@ class ADBToolsAPIHandler:
             return self._call_quick_action(tool_input)
         else:
             return {"output": f"unknown tool: {tool_name}", "is_error": True, "error": "unknown_tool"}
-
-    # ---- tool implementations ---------------------------------------------
-
-    def _call_screenshot(self) -> dict[str, Any]:
-        with self.state.lock:
-            jpeg, width, height = self.state.device.screenshot_jpeg()
-        screenshot = encode_screenshot(jpeg, "image/jpeg", width, height)
-        return {"output": json.dumps(screenshot), "is_error": False}
 
     def _call_touch_gesture(
         self,

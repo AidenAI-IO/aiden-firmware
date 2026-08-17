@@ -36,9 +36,9 @@ For each task, `runner/runtask.py` performs:
 1. Prepare task isolation and clear agent conversation history.
 2. If `environment_url` is set, call bridge `/api/setup` with `benchmark-task-id`.
 3. Run optional suite/task setup.
-4. Capture `pre.jpg` directly from bridge `/api/screen`.
+4. Capture `pre.jpg` directly from bridge `POST /api/providers/screenshot`.
 5. Send the task prompt to agent `/api/chat`.
-6. Capture `post.jpg` directly from bridge `/api/screen`.
+6. Capture `post.jpg` directly from bridge `POST /api/providers/screenshot`.
 7. Extract structured tool trace from agent history.
 8. Evaluate hard assertions.
 9. If judge is enabled, submit rubric, trace, final response, and pre/post screenshots.
@@ -55,7 +55,7 @@ The same id must be used for:
 
 - `/api/setup`
 - `/api/tools/<tool>`
-- `/api/screen`
+- `/api/providers/screenshot`
 - `/api/release`
 
 WebUI and `run --auto-agent-setup` create one isolated agent daemon per active
@@ -82,7 +82,7 @@ the HTML report.
 
 ### LLM Judge
 
-The judge uses OpenRouter-compatible chat completions. Its input is:
+The judge uses OpenAI-compatible chat completions. Its input is:
 
 - Task description.
 - Rubric.
@@ -92,6 +92,11 @@ The judge uses OpenRouter-compatible chat completions. Its input is:
 
 The output is one yes/no verdict plus reason per rubric item. Results are
 cached by screenshots, trace, rubric, final response, and model.
+
+Agent, Judge, and Analysis runtime configuration use separate role-specific
+namespaces: `AIDEN_BENCHMARK_AGENT_*`, `AIDEN_BENCHMARK_JUDGE_*`, and
+`AIDEN_BENCHMARK_ANALYSIS_*`. Provider-specific environment variable names are
+not part of the benchmark runtime contract.
 
 ## Artifacts
 

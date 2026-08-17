@@ -15,22 +15,8 @@ func TestHumanHandoffTool_Name(t *testing.T) {
 	}
 }
 
-func TestHumanHandoffTool_Description(t *testing.T) {
+func TestHumanHandoffTool_ArgsSchema(t *testing.T) {
 	tool := NewHumanHandoffTool()
-	desc := tool.Description()
-	if desc == "" {
-		t.Error("Description() returned empty string")
-	}
-	if !strings.Contains(desc, "human intervention") {
-		t.Error("Description() doesn't mention human intervention")
-	}
-	if !strings.Contains(desc, "returns immediately") {
-		t.Error("Description() doesn't mention non-blocking behavior")
-	}
-	if !strings.Contains(desc, "handoff marker") {
-		t.Error("Description() doesn't mention the handoff marker return contract")
-	}
-	// The reason enum and required fields are declared in ArgsSchema rather than restated as a JSON example.
 	schema := tool.ArgsSchema()
 	props, _ := schema["properties"].(map[string]any)
 	if _, ok := props["reason"].(map[string]any); !ok {

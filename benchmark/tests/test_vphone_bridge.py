@@ -172,23 +172,61 @@ def test_failed_setup_does_not_leak_ownership(bridge):
     assert server.state.active_task_id == ""
 
 
-def test_screen_contains_scaled_and_source_dimensions(bridge):
+def test_provider_screenshot_contains_scaled_and_source_dimensions(bridge):
     _, _, base_url = bridge
-    status, body = request(base_url, "/api/screen")
+    status, body = request(
+        base_url,
+        "/api/providers/screenshot",
+        method="POST",
+        payload={"format": "jpeg", "quality": 80},
+    )
     assert status == 200
-    screenshot = body["data"]["screenshot"]
-    assert (screenshot["width"], screenshot["height"]) == (720, 1561)
-    assert (screenshot["source_width"], screenshot["source_height"]) == (1290, 2796)
-    assert base64.b64decode(screenshot["data"]) == b"vphone-jpeg"
+    meta = body["data"]["meta"]
+    assert (meta["width"], meta["height"]) == (720, 1561)
+    assert (meta["source_width"], meta["source_height"]) == (1290, 2796)
+    assert base64.b64decode(body["data"]["image"]) == b"vphone-jpeg"
+
+
+def test_provider_screenshot_returns_frame_metadata(bridge):
+    _, device, base_url = bridge
+    status, body = request(
+        base_url,
+        "/api/providers/screenshot",
+        method="POST",
+        payload={"format": "jpeg", "quality": 80},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    data = body["data"]
+    assert (data["meta"]["width"], data["meta"]["height"]) == (720, 1561)
+    assert (data["meta"]["source_width"], data["meta"]["source_height"]) == (1290, 2796)
+    assert data["meta"]["pixel_format"] == "jpeg"
+    assert data["capture_info"]["capture_backend"] == "vphone"
+    assert base64.b64decode(data["image"]) == b"vphone-jpeg"
+    assert ("screenshot_jpeg",) in device.calls
+
+
+def test_provider_screenshot_rejects_conflicting_task_id(bridge):
+    _, _, base_url = bridge
+    request(base_url, "/api/setup", method="POST", task_id="owner")
+    status, body = request(
+        base_url,
+        "/api/providers/screenshot",
+        method="POST",
+        payload={"format": "jpeg", "quality": 80},
+        task_id="other",
+    )
+    assert status == 429
+    assert body["error"]["code"] == "no_bridge_env_available"
 
 
 def test_tool_requires_setup_and_enforces_task_id(bridge):
     _, _, base_url = bridge
-    status, body = request(base_url, "/api/tools/screenshot", method="POST", payload={"input": {}})
+    status, body = request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}})
     assert status == 409 and body["error"] == "no_active_episode"
     request(base_url, "/api/setup", method="POST", task_id="owner")
     status, body = request(
-        base_url, "/api/tools/screenshot", method="POST", payload={"input": {}}, task_id="other"
+        base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}}, task_id="other"
     )
     assert status == 429 and body["error"] == "no_bridge_env_available"
 
@@ -202,11 +240,11 @@ def test_anonymous_request_cannot_reset_or_use_owned_vm(bridge):
     assert status == 429 and body["error"]["code"] == "no_bridge_env_available"
     assert server.state.active_episode_id == "owner"
     # Tool calls without a task id are rejected against an owned VM.
-    status, body = request(base_url, "/api/tools/screenshot", method="POST", payload={"input": {}})
+    status, body = request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}})
     assert status == 429 and body["error"] == "no_bridge_env_available"
     # The owner is unaffected.
     status, body = request(
-        base_url, "/api/tools/screenshot", method="POST", payload={"input": {}}, task_id="owner"
+        base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}}, task_id="owner"
     )
     assert status == 200 and body["is_error"] is False
 
@@ -357,9 +395,9 @@ def test_parallel_tool_requests_are_serialized_by_device_lock():
                 executor.submit(
                     request,
                     base_url,
-                    "/api/tools/screenshot",
+                    "/api/providers/screenshot",
                     method="POST",
-                    payload={"input": {}},
+                    payload={"format": "jpeg", "quality": 80},
                     task_id="owner",
                 )
                 for _ in range(2)
@@ -367,5 +405,5 @@ def test_parallel_tool_requests_are_serialized_by_device_lock():
             responses = [future.result(timeout=2) for future in futures]
     finally:
         server.stop()
-    assert all(status == 200 and body["is_error"] is False for status, body in responses)
+    assert all(status == 200 and body.get("ok") is True for status, body in responses)
     assert device.max_active == 1

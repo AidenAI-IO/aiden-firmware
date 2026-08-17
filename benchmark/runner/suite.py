@@ -6,7 +6,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from runner.platform import TargetPlatform, normalize_target_platform
+from runner.platform import (
+    TargetPlatform,
+    normalize_target_platform,
+    resolve_mock_platform,
+)
 
 VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory", "perception", "device_operation"}
 
@@ -56,6 +60,7 @@ class MockEnvironmentSpec:
     platform: TargetPlatform
     phone_bridge: dict[str, Any]
     tools: dict[str, list[MockToolResponseSpec]]
+    single_frame: bool = False
     screen: str | None = None
     screen_text: str = ""
     default_tool_response: MockToolResponseSpec | None = None
@@ -76,6 +81,7 @@ class TaskSpec:
     answer_format: str | None = None
     platforms: list[str] = dc.field(default_factory=list)
     expected_recalled_memory_ids: list[str] = dc.field(default_factory=list)
+    app_ids: list[str] = dc.field(default_factory=list)
 
 @dc.dataclass
 class Suite:
@@ -87,6 +93,27 @@ class Suite:
     prompt_prefix: str = ""
     trace_observations: list[TraceObservationSpec] = dc.field(default_factory=list)
     mock_environment: MockEnvironmentSpec | None = None
+
+
+def effective_mock_environment(
+    suite: Suite,
+    task: TaskSpec,
+) -> MockEnvironmentSpec | None:
+    return task.mock_environment or suite.mock_environment
+
+
+def resolve_mock_task_platform(
+    suite: Suite,
+    task: TaskSpec,
+    *,
+    constraint: str | TargetPlatform | None = None,
+) -> TargetPlatform:
+    spec = effective_mock_environment(suite, task)
+    if spec is None:
+        raise ValueError(
+            f"mock environment task {task.id!r} has no mock environment"
+        )
+    return resolve_mock_platform(spec.platform, constraint=constraint)
 
 def load_suite(path: Path) -> Suite:
     raw_bytes = Path(path).read_bytes()
@@ -185,6 +212,12 @@ def load_suite(path: Path) -> Suite:
             isinstance(item, str) and item.strip() for item in expected_recalled_memory_ids
         ):
             raise SuiteValidationError(f"task {tid}: expected_recalled_memory_ids must be a list of non-empty strings")
+        raw_app_ids = raw.get("app_ids", [])
+        if not isinstance(raw_app_ids, list) or not all(
+            isinstance(item, str) and item.strip() for item in raw_app_ids
+        ):
+            raise SuiteValidationError(f"task {tid}: app_ids must be a list of non-empty strings")
+        app_ids = list(dict.fromkeys(item.strip() for item in raw_app_ids))
         platforms = _platform_list(raw.get("platforms", []), tid)
         task_mock_environment = _parse_mock_environment(
             raw.get("mock_environment"),
@@ -203,6 +236,7 @@ def load_suite(path: Path) -> Suite:
             answer_format=answer_format,
             platforms=platforms,
             expected_recalled_memory_ids=expected_recalled_memory_ids,
+            app_ids=app_ids,
         ))
     prompt_prefix = data.get("prompt_prefix", "")
     if not isinstance(prompt_prefix, str):
@@ -335,6 +369,9 @@ def _parse_mock_environment(
         return None
     if not isinstance(raw, dict):
         raise SuiteValidationError(f"{path} must be an object")
+    single_frame = raw.get("single_frame", False)
+    if not isinstance(single_frame, bool):
+        raise SuiteValidationError(f"{path}.single_frame must be boolean")
     phone_bridge = raw.get("phone_bridge") or {}
     if not isinstance(phone_bridge, dict):
         raise SuiteValidationError(f"{path}.phone_bridge must be an object")
@@ -419,6 +456,7 @@ def _parse_mock_environment(
         platform=platform,
         phone_bridge=phone_bridge,
         tools=tools,
+        single_frame=single_frame,
         screen=screen.strip() if isinstance(screen, str) else None,
         screen_text=screen_text,
         default_tool_response=default_response,

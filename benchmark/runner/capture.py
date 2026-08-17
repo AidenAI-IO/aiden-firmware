@@ -14,32 +14,39 @@ class CaptureError(RuntimeError):
     pass
 
 
+DEFAULT_JPEG_QUALITY = 80
+DEFAULT_SCREENSHOT_TIMEOUT_SEC = 30
+
+
 def take_environment_screenshot(
     environment_url: str,
     out_path: Path,
     benchmark_task_id: str | None = None,
-    timeout: int = 30,
+    timeout: int = DEFAULT_SCREENSHOT_TIMEOUT_SEC,
 ) -> tuple[int, int]:
-    """Read the environment bridge screen API and write screenshot bytes to out_path."""
+    """Read the environment bridge screenshot provider and write bytes to out_path."""
     try:
         endpoint = EnvironmentEndpoint(environment_url).screen
     except ValueError as exc:
         raise CaptureError(str(exc)) from exc
-    headers: dict[str, str] = {}
+    headers = {"Content-Type": "application/json"}
     task_id = str(benchmark_task_id or "").strip()
     if task_id:
         headers["benchmark-task-id"] = task_id
-    req = urllib.request.Request(endpoint, headers=headers, method="GET")
+    body = json.dumps(
+        {"format": "jpeg", "quality": DEFAULT_JPEG_QUALITY}
+    ).encode("utf-8")
+    req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read()
+            raw = resp.read()
     except urllib.error.HTTPError as e:
         try:
-            body = e.read()
+            raw = e.read()
         except Exception:
-            body = b""
+            raw = b""
         raise CaptureError(
-            f"screen request failed HTTP {e.code}: {body[:200]!r}"
+            f"screen request failed HTTP {e.code}: {raw[:200]!r}"
         ) from e
     except urllib.error.URLError as e:
         raise CaptureError(f"screen request failed: {e}") from e
@@ -47,38 +54,30 @@ def take_environment_screenshot(
         raise CaptureError(f"screen request timed out: {e}") from e
 
     try:
-        payload = json.loads(body.decode("utf-8")) if body else {}
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         raise CaptureError(
-            f"screen request returned invalid JSON: {body[:200]!r}"
+            f"screen request returned invalid JSON: {raw[:200]!r}"
         ) from e
-    screenshot = _extract_screenshot_payload(payload)
+    screenshot = _extract_provider_frame(payload)
     return _write_screenshot_payload(screenshot, out_path, context="screen")
 
 
-def _extract_screenshot_payload(payload: Any) -> dict[str, Any]:
+def _extract_provider_frame(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise CaptureError(f"screen returned unexpected payload: {payload!r}")
     if payload.get("ok") is False:
         raise CaptureError(f"screen failed: {payload.get('error') or payload}")
     data = payload.get("data")
-    if isinstance(data, dict) and "screenshot" in data:
-        screenshot = data.get("screenshot")
-        if not screenshot:
-            status = data.get("status") or "no active screen"
-            raise CaptureError(f"screen returned no screenshot: {status}")
-        if not isinstance(screenshot, dict):
-            raise CaptureError(
-                f"screen returned invalid screenshot: {screenshot!r}"
-            )
-        return screenshot
-    if "screenshot" in payload:
-        screenshot = payload.get("screenshot")
-        if isinstance(screenshot, dict):
-            return screenshot
-    if "data" in payload and "width" in payload and "height" in payload:
-        return payload
-    raise CaptureError(f"screen returned no screenshot field: {payload!r}")
+    if not isinstance(data, dict) or not data.get("image"):
+        raise CaptureError(f"screen returned no image field: {payload!r}")
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    return {
+        "data": data["image"],
+        "width": meta.get("width", 0),
+        "height": meta.get("height", 0),
+        "format": meta.get("pixel_format") or "jpeg",
+    }
 
 
 def _write_screenshot_payload(

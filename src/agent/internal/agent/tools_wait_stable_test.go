@@ -44,21 +44,6 @@ func TestScreenStableDefaultsInputJSON(t *testing.T) {
 	}
 }
 
-func TestWaitStableScreenDescriptionDocumentsUsePolicy(t *testing.T) {
-	desc := (&WaitStableScreenTool{}).Description()
-	for _, want := range []string{
-		"Use only while operating a visible target UI",
-		"known UI transition",
-		"do not call for text-only reasoning",
-		"screen_changed=false means",
-		"stable=false means",
-	} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing %q:\n%s", want, desc)
-		}
-	}
-}
-
 func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 	rawFrame := []byte{128, 128, 128, 128, 128, 128}
 	jpegData, err := encodeJPEG([]byte{
@@ -363,26 +348,22 @@ type fakeWaitStableFrameClient struct {
 	jpegMeta  frameMetadata
 }
 
-func (c *fakeWaitStableFrameClient) LatestFrame() (*frameMetadata, []byte, screenCaptureInfo, error) {
-	if len(c.rawFrames) == 0 {
-		return nil, nil, screenCaptureInfo{}, fmt.Errorf("no raw frames")
-	}
-	index := c.rawCalls
-	if index >= len(c.rawFrames) {
-		index = len(c.rawFrames) - 1
-	}
-	c.rawCalls++
-	frame := c.rawFrames[index]
-	meta := frame.meta
-	return &meta, append([]byte(nil), frame.data...), screenCaptureInfo{}, nil
-}
-
 func (c *fakeWaitStableFrameClient) LatestFrameWithFormat(format string, quality int, _ bool, _ int) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if format != "jpeg" {
 		return nil, nil, screenCaptureInfo{}, fmt.Errorf("unexpected format %q", format)
 	}
 	if quality != screenshotJPEGQuality {
 		return nil, nil, screenCaptureInfo{}, fmt.Errorf("quality = %d, want %d", quality, screenshotJPEGQuality)
+	}
+	if len(c.rawFrames) > 0 && (len(c.jpegData) == 0 || c.rawCalls < len(c.rawFrames)) {
+		index := c.rawCalls
+		if index >= len(c.rawFrames) {
+			index = len(c.rawFrames) - 1
+		}
+		c.rawCalls++
+		frame := c.rawFrames[index]
+		meta := frame.meta
+		return &meta, append([]byte(nil), frame.data...), screenCaptureInfo{}, nil
 	}
 	c.jpegCalls++
 	meta := c.jpegMeta

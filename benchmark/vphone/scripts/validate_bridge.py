@@ -46,6 +46,7 @@ def _request(
     method: str = "GET",
     task_id: str = "",
     payload: dict[str, Any] | None = None,
+    timeout: float = 30,
 ) -> tuple[int, dict[str, Any]]:
     headers = {"Accept": "application/json"}
     data = None
@@ -61,7 +62,7 @@ def _request(
         method=method,
     )
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, json.loads(response.read())
     except urllib.error.HTTPError as exc:
         return exc.code, json.loads(exc.read())
@@ -93,18 +94,25 @@ def validate_bridge(
             raise BridgeValidationError(f"concurrency contract failed: HTTP {status}: {concurrent}")
         checks.append("concurrent=1")
 
-        status, screen = _request(endpoint, "/api/screen", task_id=task_id)
-        screenshot = (screen.get("data") or {}).get("screenshot") or {}
-        image = base64.b64decode(screenshot.get("data") or "", validate=True)
-        if status != 200:
-            raise BridgeValidationError(f"screen is not a JPEG: HTTP {status}")
-        _validate_jpeg(image, screenshot.get("width"), screenshot.get("height"))
-        if not screenshot.get("source_width") or not screenshot.get("source_height"):
-            raise BridgeValidationError(f"screen omitted native dimensions: {screenshot}")
+        status, screen = _request(
+            endpoint,
+            "/api/providers/screenshot",
+            method="POST",
+            task_id=task_id,
+            payload={"format": "jpeg", "quality": 80},
+        )
+        data = screen.get("data") or {}
+        meta = data.get("meta") or {}
+        image = base64.b64decode(data.get("image") or "", validate=True)
+        if status != 200 or screen.get("ok") is not True:
+            raise BridgeValidationError(f"screenshot provider failed: HTTP {status}: {screen}")
+        _validate_jpeg(image, meta.get("width"), meta.get("height"))
+        if not meta.get("source_width") or not meta.get("source_height"):
+            raise BridgeValidationError(f"screenshot provider omitted native dimensions: {meta}")
         if screenshot_path is not None:
             screenshot_path.parent.mkdir(parents=True, exist_ok=True)
             screenshot_path.write_bytes(image)
-        checks.append("screen-jpeg")
+        checks.append("screenshot-provider")
 
         status, setup = _request(endpoint, "/api/setup", method="POST", task_id=task_id)
         if status != 200 or (setup.get("data") or {}).get("episode_id") != task_id:
@@ -124,24 +132,21 @@ def validate_bridge(
 
         status, catalog = _request(endpoint, "/api/tools")
         names = {item.get("name") for item in catalog.get("tools") or []}
-        required = {"screenshot", "touch_gesture", "quick_action"}
+        required = {"touch_gesture", "quick_action"}
         if status != 200 or not required.issubset(names):
             raise BridgeValidationError(f"tool catalog is incomplete: HTTP {status}: {sorted(names)}")
         checks.append("tool-catalog")
 
         status, tool = _request(
             endpoint,
-            "/api/tools/screenshot",
+            "/api/tools/touch_gesture",
             method="POST",
             task_id=task_id,
-            payload={"input": "{}"},
+            payload={"input": {"type": "home"}},
         )
         if status != 200 or tool.get("is_error") is not False:
-            raise BridgeValidationError(f"screenshot tool failed: HTTP {status}: {tool}")
-        tool_screen = json.loads(tool.get("output") or "{}")
-        tool_image = base64.b64decode(tool_screen.get("data") or "", validate=True)
-        _validate_jpeg(tool_image, tool_screen.get("width"), tool_screen.get("height"))
-        checks.append("screenshot-tool")
+            raise BridgeValidationError(f"touch_gesture failed: HTTP {status}: {tool}")
+        checks.append("touch-gesture")
     finally:
         if acquired:
             status, release = _request(

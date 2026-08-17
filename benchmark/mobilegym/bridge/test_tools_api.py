@@ -1,7 +1,8 @@
 """Tests for unified /api/tools endpoint."""
 
 import json
-from threading import Thread
+import time
+from threading import Event, Thread
 from urllib.request import Request, urlopen
 
 import pytest
@@ -80,21 +81,16 @@ def test_get_tools_catalog(bridge_server):
 
     assert "tools" in data
     tools = {tool["name"]: tool for tool in data["tools"]}
-    assert "screenshot" in tools
-    assert "touch_gesture" in tools
-    assert "keyboard_text" in tools
-    assert "keyboard_tap" in tools
-    assert "enter_text" in tools
-    assert "mouse_click" not in tools
-    assert "mouse_move" in tools
-    assert "mouse_scroll" in tools
-    assert "quick_action" in tools
+    assert set(tools) == {
+        "touch_gesture",
+        "keyboard_text",
+        "keyboard_tap",
+        "enter_text",
+        "mouse_move",
+        "mouse_scroll",
+        "quick_action",
+    }
 
-    # Verify tool structure
-    screenshot_tool = tools["screenshot"]
-    assert "description" in screenshot_tool
-    assert "args_schema" in screenshot_tool
-    assert screenshot_tool["args_schema"]["additionalProperties"] is False
     assert tools["touch_gesture"]["args_schema"]["additionalProperties"] is False
     touch_props = tools["touch_gesture"]["args_schema"]["properties"]
     assert touch_props["point"]["additionalProperties"] is False
@@ -140,16 +136,13 @@ def test_get_tools_catalog(bridge_server):
     assert "alternative_index" in quick_action_props
 
 
-def test_invoke_screenshot_tool(bridge_server):
-    """Test POST /api/tools/screenshot."""
+def test_invoke_provider_screenshot(bridge_server):
+    """Test POST /api/providers/screenshot."""
     server, base_url, state = bridge_server
 
-    # Start episode first
-    state.active_episode_id = "test-episode-001"
-
-    request_body = json.dumps({"input": "{}"}).encode()
+    request_body = json.dumps({"format": "jpeg", "quality": 80}).encode()
     req = Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/providers/screenshot",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -159,18 +152,11 @@ def test_invoke_screenshot_tool(bridge_server):
         assert resp.status == 200
         data = json.loads(resp.read().decode())
 
-    assert "output" in data
-    assert "is_error" in data
-    assert data["is_error"] is False
-    assert "duration_ms" in data
-
-    # Parse screenshot output
-    output = json.loads(data["output"])
-    assert "data" in output
-    assert "width" in output
-    assert "height" in output
-    assert output["width"] == 1080
-    assert output["height"] == 2400
+    assert data["ok"] is True
+    output = data["data"]
+    assert "image" in output
+    assert output["meta"]["width"] == 1080
+    assert output["meta"]["height"] == 2400
 
 
 def test_invoke_touch_gesture_tap(bridge_server):
@@ -558,7 +544,7 @@ def test_invoke_rejects_non_object_json_body(bridge_server):
     state.active_episode_id = "test-episode-bad-body"
 
     req = Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/tools/touch_gesture",
         data=json.dumps([]).encode(),
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -578,9 +564,9 @@ def test_invoke_without_episode_returns_error(bridge_server):
 
     server, base_url, state = bridge_server
 
-    request_body = json.dumps({"input": "{}"}).encode()
+    request_body = json.dumps({"input": {"type": "home"}}).encode()
     req = Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/tools/touch_gesture",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -608,9 +594,9 @@ def test_invoke_stale_episode_returns_conflict(bridge_server, monkeypatch):
         raise StaleEpisodeError("stale episode_id")
 
     monkeypatch.setattr(state, "require_active", fail_require_active)
-    request_body = json.dumps({"input": "{}"}).encode()
+    request_body = json.dumps({"input": {"type": "home"}}).encode()
     req = Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/tools/touch_gesture",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -647,9 +633,9 @@ def test_invoke_without_token_still_works(bridge_server):
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-004"
 
-    request_body = json.dumps({"input": "{}"}).encode()
+    request_body = json.dumps({"input": {"type": "home"}}).encode()
     req = Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/tools/touch_gesture",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -666,7 +652,7 @@ def test_invoke_unknown_tool_returns_error(bridge_server):
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-005"
 
-    request_body = json.dumps({"input": "{}"}).encode()
+    request_body = json.dumps({"input": {"type": "home"}}).encode()
     req = Request(
         f"{base_url}/api/tools/unknown_tool",
         data=request_body,
@@ -746,9 +732,9 @@ def test_multi_env_tools_require_benchmark_task_id_header():
     server = BridgeServer(BridgeTaskRouter(states), host="127.0.0.1", port=0)
     base_url = server.start()
     try:
-        request_body = json.dumps({"input": "{}"}).encode()
+        request_body = json.dumps({"input": {"type": "home"}}).encode()
         req = Request(
-            f"{base_url}/api/tools/screenshot",
+            f"{base_url}/api/tools/touch_gesture",
             data=request_body,
             method="POST",
             headers={"Content-Type": "application/json"},
@@ -765,35 +751,195 @@ def test_multi_env_tools_require_benchmark_task_id_header():
         loop.close()
 
 
-def test_reset_episode_restarts_env_before_reset_when_supported():
+def test_reset_episode_reuses_env_when_reset_succeeds():
     import asyncio
 
     class RestartableEnv:
         def __init__(self):
             self.calls = []
-            self.restarted = False
 
         async def close(self):
             self.calls.append("close")
 
         async def start(self):
             self.calls.append("start")
-            self.restarted = True
             return self
 
-        async def reset(self):
-            self.calls.append("reset")
-            if not self.restarted:
-                raise RuntimeError("second reset would hang without page restart")
+        async def reset(self, app_ids=None):
+            self.calls.append(("reset", app_ids))
 
     async def run():
         env = RestartableEnv()
         state = BridgeEpisodeState(env, asyncio.get_running_loop())
 
-        result = await state.reset_episode("episode-1")
+        result = await state.reset_episode("episode-1", app_ids=[])
 
         assert result == {"episode_id": "episode-1", "reset": True}
-        assert env.calls == ["close", "start", "reset"]
+        assert env.calls == [("reset", [])]
+
+    asyncio.run(run())
+
+
+def test_run_reset_bounds_synchronous_reset(monkeypatch):
+    import asyncio
+    import time
+
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESET_TIMEOUT_SEC", 0.01)
+
+    def reset(app_ids=None):
+        time.sleep(0.1)
+
+    async def run():
+        state = BridgeEpisodeState(object(), asyncio.get_running_loop())
+        started = time.monotonic()
+        with pytest.raises(asyncio.TimeoutError):
+            await state._run_reset(reset, app_ids=[])
+        return time.monotonic() - started
+
+    assert asyncio.run(run()) < 0.05
+
+
+def test_reset_episode_isolates_timed_out_synchronous_reset(monkeypatch):
+    import asyncio
+
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESET_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
+
+    class BlockingResetEnv:
+        def __init__(self):
+            self.allow_reset = Event()
+            self.restart_calls = 0
+            self.read_calls = 0
+
+        def reset(self, app_ids=None):
+            self.allow_reset.wait(timeout=1)
+
+        async def restart(self):
+            self.restart_calls += 1
+
+        async def read(self):
+            self.read_calls += 1
+            return "ready"
+
+    async def run():
+        env = BlockingResetEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError):
+            await state.reset_episode("episode-1", app_ids=[])
+
+        restart_calls_before_release = env.restart_calls
+        read_task = asyncio.create_task(state.run_env(lambda current: current.read()))
+        await asyncio.sleep(0)
+        read_finished_before_release = read_task.done()
+
+        env.allow_reset.set()
+        result = await read_task
+        return (
+            restart_calls_before_release,
+            read_finished_before_release,
+            env.restart_calls,
+            result,
+        )
+
+    assert asyncio.run(run()) == (0, False, 1, "ready")
+
+
+def test_cancelled_synchronous_reset_stays_isolated():
+    import asyncio
+
+    class BlockingResetEnv:
+        def __init__(self):
+            self.allow_reset = Event()
+            self.reset_started = Event()
+            self.read_calls = 0
+
+        def reset(self, app_ids=None):
+            self.reset_started.set()
+            self.allow_reset.wait(timeout=1)
+
+        async def read(self):
+            self.read_calls += 1
+            return "ready"
+
+    async def run():
+        env = BlockingResetEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+        reset_task = asyncio.create_task(state._run_reset(env.reset, app_ids=[]))
+
+        await asyncio.to_thread(env.reset_started.wait, 1)
+        reset_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reset_task
+
+        read_task = asyncio.create_task(state.run_env(lambda current: current.read()))
+        await asyncio.sleep(0)
+        read_finished_before_release = read_task.done()
+
+        env.allow_reset.set()
+        result = await read_task
+        return read_finished_before_release, env.read_calls, result
+
+    assert asyncio.run(run()) == (False, 1, "ready")
+
+
+def test_reset_episode_bounds_synchronous_restart(monkeypatch):
+    import asyncio
+    import time
+
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
+
+    class BlockingRestartEnv:
+        async def reset(self, app_ids=None):
+            raise TimeoutError("phase=__OS__ timeout")
+
+        def restart(self):
+            time.sleep(0.1)
+
+    async def run():
+        state = BridgeEpisodeState(BlockingRestartEnv(), asyncio.get_running_loop())
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="restart timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+        return time.monotonic() - started
+
+    assert asyncio.run(run()) < 0.05
+
+
+def test_reset_episode_catches_builtin_timeout_error(monkeypatch):
+    import asyncio
+
+    from . import episode as episode_mod
+
+    class DistinctAsyncioTimeoutError(Exception):
+        pass
+
+    monkeypatch.setattr(episode_mod.asyncio, "TimeoutError", DistinctAsyncioTimeoutError)
+
+    class TimeoutEnv:
+        def __init__(self):
+            self.restart_calls = 0
+
+        async def reset(self, app_ids=None):
+            raise TimeoutError("phase=waitForData timeout")
+
+        async def restart(self):
+            self.restart_calls += 1
+
+    async def run():
+        env = TimeoutEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError, match="environment reset timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+
+        assert env.restart_calls == 2
 
     asyncio.run(run())
 
@@ -816,8 +962,8 @@ def test_reset_episode_retries_after_reset_timeout(monkeypatch):
             self.calls.append("start")
             return self
 
-        async def reset(self):
-            self.calls.append("reset")
+        async def reset(self, app_ids=None):
+            self.calls.append(("reset", app_ids))
             self.reset_calls += 1
             if self.reset_calls == 1:
                 await asyncio.sleep(10)
@@ -826,12 +972,223 @@ def test_reset_episode_retries_after_reset_timeout(monkeypatch):
         env = TimeoutThenSuccessEnv()
         state = BridgeEpisodeState(env, asyncio.get_running_loop())
 
-        result = await state.reset_episode("episode-1")
+        result = await state.reset_episode("episode-1", app_ids=["settings"])
 
         assert result == {"episode_id": "episode-1", "reset": True}
-        assert env.calls == ["close", "start", "reset", "close", "start", "reset"]
+        assert env.calls == [
+            ("reset", ["settings"]),
+            "close",
+            "start",
+            ("reset", ["settings"]),
+        ]
 
     asyncio.run(run())
+
+
+def test_reset_episode_recreates_env_after_final_timeout(monkeypatch):
+    import asyncio
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESET_TIMEOUT_SEC", 0.01)
+
+    class AlwaysTimeoutEnv:
+        def __init__(self):
+            self.calls = []
+
+        async def close(self):
+            self.calls.append("close")
+
+        async def start(self):
+            self.calls.append("start")
+            return self
+
+        async def reset(self, app_ids=None):
+            self.calls.append(("reset", app_ids))
+            await asyncio.sleep(10)
+
+    async def run():
+        env = AlwaysTimeoutEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError, match="reset timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+
+        assert env.calls == [
+            ("reset", []),
+            "close",
+            "start",
+            ("reset", []),
+            "close",
+            "start",
+        ]
+        assert state.active_episode_id is None
+
+    asyncio.run(run())
+
+
+def test_reset_episode_bounds_environment_restart(monkeypatch):
+    import asyncio
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
+
+    class HangingRestartEnv:
+        async def reset(self, app_ids=None):
+            raise TimeoutError("phase=__OS__ timeout")
+
+        async def close(self):
+            await asyncio.sleep(10)
+
+        async def start(self):
+            return self
+
+    async def run():
+        state = BridgeEpisodeState(HangingRestartEnv(), asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError, match="restart timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+
+    asyncio.run(run())
+
+
+def test_reset_episode_keeps_timed_out_restart_isolated_until_it_finishes(monkeypatch):
+    import asyncio
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESTART_TIMEOUT_SEC", 0.01)
+
+    class SlowRestartEnv:
+        def __init__(self):
+            self.allow_start = asyncio.Event()
+            self.started = False
+            self.closed = False
+            self.reset_calls = 0
+            self.read_calls = 0
+
+        async def reset(self, app_ids=None):
+            self.reset_calls += 1
+            if self.closed:
+                raise RuntimeError("Call start() first")
+            if not self.started:
+                raise TimeoutError("phase=__OS__ timeout")
+
+        async def close(self):
+            self.closed = True
+
+        async def start(self):
+            await self.allow_start.wait()
+            self.started = True
+            self.closed = False
+            return self
+
+        async def read(self):
+            self.read_calls += 1
+            if self.closed:
+                raise RuntimeError("read raced with restart")
+            return "ready"
+
+    async def run():
+        env = SlowRestartEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        with pytest.raises(TimeoutError, match="restart timed out"):
+            await state.reset_episode("episode-1", app_ids=[])
+
+        read_task = asyncio.create_task(state.run_env(lambda current: current.read()))
+        await asyncio.sleep(0)
+        assert env.read_calls == 0
+
+        env.allow_start.set()
+        assert await read_task == "ready"
+        result = await state.reset_episode("episode-2", app_ids=[])
+
+        assert result == {"episode_id": "episode-2", "reset": True}
+        assert env.reset_calls == 2
+
+    asyncio.run(run())
+
+
+def test_setup_token_deduplicates_concurrent_and_completed_requests():
+    import asyncio
+
+    class BlockingResetEnv:
+        def __init__(self):
+            self.reset_calls = 0
+            self.reset_entered = Event()
+            self.allow_reset = Event()
+
+        def reset(self, app_ids=None):
+            self.reset_calls += 1
+            self.reset_entered.set()
+            self.allow_reset.wait(timeout=5)
+
+    loop = asyncio.new_event_loop()
+    loop_thread = Thread(target=loop.run_forever, daemon=True)
+    loop_thread.start()
+    env = BlockingResetEnv()
+    state = BridgeEpisodeState(env, loop)
+    server = BridgeServer(state, host="127.0.0.1", port=0)
+    base_url = server.start()
+    responses = []
+
+    def setup(payload):
+        request = Request(
+            f"{base_url}/api/setup",
+            data=json.dumps(payload).encode(),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "benchmark-task-id": "task.setup-token",
+            },
+        )
+        with urlopen(request, timeout=5) as response:
+            responses.append((response.status, json.loads(response.read().decode())))
+
+    first = Thread(target=setup, args=({"episode_id": "episode-1", "setup_token": "token-1"},))
+    second = Thread(target=setup, args=({"episode_id": "episode-1", "setup_token": "token-1"},))
+    try:
+        first.start()
+        assert env.reset_entered.wait(timeout=2)
+        second.start()
+        time.sleep(0.1)
+        assert env.reset_calls == 1
+        env.allow_reset.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert [status for status, _ in responses] == [200, 200]
+        assert env.reset_calls == 1
+
+        setup({"episode_id": "episode-1", "setup_token": "token-1"})
+        assert env.reset_calls == 1
+
+        setup({"episode_id": "episode-1", "setup_token": "token-2"})
+        assert env.reset_calls == 2
+
+        release = Request(
+            f"{base_url}/api/release",
+            data=b"{}",
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "benchmark-task-id": "task.setup-token",
+            },
+        )
+        with urlopen(release, timeout=5) as response:
+            assert response.status == 200
+        setup({"episode_id": "episode-1", "setup_token": "token-2"})
+        assert env.reset_calls == 3
+
+        setup({"episode_id": "episode-1"})
+        setup({"episode_id": "episode-1"})
+        assert env.reset_calls == 5
+    finally:
+        env.allow_reset.set()
+        server.stop()
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2)
+        loop.close()
 
 
 def test_multi_env_tools_route_by_benchmark_task_id_header():
@@ -894,9 +1251,9 @@ def test_multi_env_tools_return_capacity_error_until_task_released():
     base_url = server.start()
     try:
         for task_id in ("task.alpha", "task.beta"):
-            request_body = json.dumps({"input": "{}"}).encode()
+            request_body = json.dumps({"input": {"type": "home"}}).encode()
             req = Request(
-                f"{base_url}/api/tools/screenshot",
+                f"{base_url}/api/tools/touch_gesture",
                 data=request_body,
                 method="POST",
                 headers={"Content-Type": "application/json", "benchmark-task-id": task_id},
@@ -920,9 +1277,9 @@ def test_multi_env_tools_return_capacity_error_until_task_released():
         with urlopen(release_req, timeout=5) as resp:
             assert resp.status == 200
 
-        request_body = json.dumps({"input": "{}"}).encode()
+        request_body = json.dumps({"input": {"type": "home"}}).encode()
         req = Request(
-            f"{base_url}/api/tools/screenshot",
+            f"{base_url}/api/tools/touch_gesture",
             data=request_body,
             method="POST",
             headers={"Content-Type": "application/json", "benchmark-task-id": "task.beta"},

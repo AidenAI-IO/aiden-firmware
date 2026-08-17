@@ -3,6 +3,7 @@ package agent
 import (
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/screenprovider"
 	"path/filepath"
 	"sort"
 	"time"
@@ -14,6 +15,7 @@ import (
 type ToolSet struct {
 	tools                map[string]langtools.Tool
 	screen               *screen.ScreenState
+	screenProvider       screenprovider.Provider
 	phoneBridge          *PhoneBridge
 	phoneBridgeRestorer  *PhoneBridgeRestorer
 	textInputHW          *textInputHardwareDeps
@@ -34,6 +36,7 @@ type builtinToolSetOptions struct {
 	screenStable            ScreenStableDefaults
 	scriptsDir              string
 	screenState             *screen.ScreenState
+	screenProvider          screenprovider.Provider
 	shellTemporaryDirectory string
 }
 
@@ -70,17 +73,46 @@ func WithScreenState(state *screen.ScreenState) BuiltinToolSetOption {
 	}
 }
 
+func WithScreenProvider(provider screenprovider.Provider) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.screenProvider = provider
+	}
+}
+
 func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	return newHardwareToolSet(hidCfg, audioCfg, searchCfg, proxyCfg, options...)
 }
 
 func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
-	defaultOptions := make([]BuiltinToolSetOption, 0, len(options)+1)
+	defaultOptions := make([]BuiltinToolSetOption, 0, len(options)+2)
 	if cfg.ConfigDir != "" {
 		defaultOptions = append(defaultOptions, WithRunScriptScriptsDir(filepath.Join(cfg.ConfigDir, "scripts")))
 	}
+	if provider := screenProviderFromConfig(cfg); provider != nil {
+		defaultOptions = append(defaultOptions, WithScreenProvider(provider))
+	}
 	options = append(defaultOptions, options...)
 	return newHardwareToolSet(cfg.HIDConfigForDevice(), cfg.Audio, cfg.Search, proxyCfg, options...)
+}
+
+func screenProviderFromConfig(cfg Config) screenprovider.Provider {
+	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
+		return screenprovider.NewHTTP(cfg.EnvironmentBridge.Endpoint, cfg.EnvironmentBridge.BenchmarkTaskID)
+	}
+	return nil
+}
+
+func screenProviderFromRuntime(runtime *Runtime) screenprovider.Provider {
+	if runtime != nil && runtime.tools != nil {
+		if provider := runtime.tools.ScreenProvider(); provider != nil {
+			return provider
+		}
+	}
+	socketPath := ""
+	if runtime != nil {
+		socketPath = runtime.config.HID.FrameSocketOrDefault()
+	}
+	return NewScreenCaptureClient(socketPath)
 }
 
 var scriptCallableToolNames = map[string]struct{}{
@@ -133,9 +165,13 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		hidCfg.AndroidKeyboardDeviceOrDefault(),
 		hidCfg.FrameSocketOrDefault(),
 	)
-	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
+	provider := toolOptions.screenProvider
+	if provider == nil {
+		provider = NewScreenCaptureClient(hidCfg.FrameSocketOrDefault())
+	}
+	screenshot := NewScreenshotTool(provider, screen)
 	screenStable := toolOptions.screenStable.Resolved()
-	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
+	waitStable := NewWaitStableScreenTool(provider, screenStable, screen)
 	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault(), adb: adbInput, keyboardLayout: hidCfg.KeyboardLayoutOrDefault(), iosKeyboardIsolation: iosKeyboardIsolation}
 	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput, keyboardLayout: hidCfg.KeyboardLayoutOrDefault(), iosKeyboardIsolation: iosKeyboardIsolation}
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
@@ -191,6 +227,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	toolSet := &ToolSet{
 		tools:                tools,
 		screen:               screen,
+		screenProvider:       provider,
 		phoneBridgeRestorer:  NewPhoneBridgeRestorer(nil, pointer),
 		textInputHW:          textInputHW,
 		iosKeyboardIsolation: iosKeyboardIsolation,
@@ -248,6 +285,13 @@ func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
 	}
 	t, ok := s.tools[name]
 	return t, ok
+}
+
+func (s *ToolSet) ScreenProvider() screenprovider.Provider {
+	if s == nil {
+		return nil
+	}
+	return s.screenProvider
 }
 
 func (s *ToolSet) All() []langtools.Tool {

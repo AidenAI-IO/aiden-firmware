@@ -21,8 +21,8 @@ from typing import Any, Mapping
 
 from runner.agent_config import resolve_agent_model_api_key
 from runner.environment import EnvironmentManager
-from runner.config import AgentConfigManager, render_agent_template
-from runner.judge import JudgeConfig
+from runner.config import AgentConfigManager
+from runner.judge import DEFAULT_JUDGE_API_KEY_ENV, JudgeConfig
 from skillopt.benchmark_backend import load_benchmark_task_results
 from skillopt.phase_artifacts import latest_phase_record, load_phase_records, progress_from_phase_record
 from skillopt.score import task_result_to_rollout
@@ -228,7 +228,6 @@ class SkillOptWebApp:
                 raise ValueError("Benchmark agent.toml is unavailable. Open the Benchmark WebUI and save an agent config first.")
             if not agent_config_info.get("api_key_nonempty"):
                 raise ValueError("Benchmark agent.toml does not contain a model api_key. Open the Benchmark WebUI and save an agent config with an API key first.")
-            agent_config = apply_backend_default_instruction(agent_config, str(payload.get("backend") or "mobilegym"))
             agent_config_path = run_dir / "agent.toml"
             agent_config_path.write_text(agent_config, encoding="utf-8")
             payload["agent_config"] = str(agent_config_path)
@@ -518,6 +517,7 @@ class SkillOptWebApp:
             judge_api_key = agent_config_api_key_for_job(job, env=env)
         if judge_api_key:
             env["OPENROUTER_API_KEY"] = judge_api_key
+            env[DEFAULT_JUDGE_API_KEY_ENV] = judge_api_key
         env["PYTHONUNBUFFERED"] = "1"
         with Path(job.log_path).open("wb") as log:
             log.write(("$ " + " ".join(job.command) + "\n").encode("utf-8"))
@@ -751,22 +751,6 @@ def mobilegym_environment_url(env: dict[str, Any]) -> str:
     return str(env.get("public_endpoint") or env.get("endpoint") or "").strip()
 
 
-def default_base_config_dir_for_backend(backend: str) -> Path:
-    if str(backend or "").strip() == "mobilegym":
-        return REPO_ROOT / "benchmark" / "mobilegym" / "config"
-    return REPO_ROOT / "benchmark" / "config"
-
-
-def initial_agent_config(base_config_dir: Path) -> str:
-    config = base_config_dir / "agent.toml"
-    if config.exists():
-        return config.read_text(encoding="utf-8")
-    template = base_config_dir / "agent.toml.template"
-    if template.exists():
-        return render_agent_template(template.read_text(encoding="utf-8"))
-    return ""
-
-
 def _extract_suites_from_command(command: list[str]) -> dict[str, Any]:
     """Extract suite names from SkillOpt command for UI display."""
     suites = []
@@ -778,29 +762,6 @@ def _extract_suites_from_command(command: list[str]) -> dict[str, Any]:
             if suite_name not in suites:
                 suites.append(suite_name)
     return {"suites": suites}
-
-
-def apply_backend_default_instruction(content: str, backend: str) -> str:
-    if str(backend or "").strip() != "mobilegym":
-        return content
-    default_content = initial_agent_config(default_base_config_dir_for_backend("mobilegym"))
-    default_instruction = extract_agent_instruction(default_content).strip()
-    if not default_instruction or extract_agent_instruction(content).strip():
-        return content
-    line = f"instruction = {json.dumps(default_instruction, ensure_ascii=False)}"
-    if re.search(r"(?m)^\s*instruction\s*=.*$", content):
-        return re.sub(r"(?m)^\s*instruction\s*=.*$", lambda _: line, content, count=1)
-    return line + "\n" + content
-
-
-def extract_agent_instruction(content: str) -> str:
-    try:
-        data = tomllib.loads(content)
-    except tomllib.TOMLDecodeError:
-        match = re.search(r"(?m)^\s*instruction\s*=\s*(['\"])(.*?)\1", content)
-        return match.group(2) if match else ""
-    value = data.get("instruction")
-    return str(value or "") if isinstance(value, str) else ""
 
 
 def agent_config_has_api_key(content: str) -> bool:
@@ -1697,7 +1658,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="judge-inline">
             <label class="check-label"><input id="judgeEnabled" type="checkbox" checked> Enable judge</label>
             <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="agent.toml [model].model"></div>
-            <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="OPENROUTER_API_KEY"></div>
+            <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="AIDEN_BENCHMARK_JUDGE_API_KEY"></div>
           </div>
           <div class="run-actions">
             <button id="runBtn" class="primary">Run selected target</button>
@@ -2068,7 +2029,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('judgeModel').value = String(judge.model || DEFAULT_JUDGE_MODEL);
       const keyInput = document.getElementById('judgeApiKey');
       keyInput.value = '';
-      keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'OPENROUTER_API_KEY';
+      keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'AIDEN_BENCHMARK_JUDGE_API_KEY';
       const so = settings.skillopt || {};
       if(so.budget) document.getElementById('budget').value = String(so.budget);
       if(so.edit_budget) document.getElementById('editBudget').value = String(so.edit_budget);

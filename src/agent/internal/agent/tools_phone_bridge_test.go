@@ -30,15 +30,6 @@ func (t iosIsolationPointerTestTool) Call(ctx context.Context, _ string) (string
 	})
 }
 
-func TestSearchLaunchAppDescriptionRequiresFollowUpNavigation(t *testing.T) {
-	desc := (&appSearchOpenTool{}).Description()
-	for _, want := range []string{"fallback used internally by open_app", "target app is visibly opened", "Observe the opened screen", "create/open/navigation step"} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("search_launch_app description missing %q: %s", want, desc)
-		}
-	}
-}
-
 func TestSearchLaunchAppSchemaInfersPlatformFromDeviceState(t *testing.T) {
 	schema := (&appSearchOpenTool{}).ArgsSchema()
 	props, ok := schema["properties"].(map[string]any)
@@ -53,35 +44,6 @@ func TestSearchLaunchAppSchemaInfersPlatformFromDeviceState(t *testing.T) {
 	}
 }
 
-func TestAppSearchResultPromptPrefersTopmostMatchingResult(t *testing.T) {
-	prompt := buildAppSearchResultPrompt("WeChat")
-	for _, want := range []string{
-		`query "WeChat"`,
-		"direct app-launch result",
-		`localized "Best Search Result" heading`,
-		"localized Settings section",
-		"Settings gear badge",
-		`localized "Search in App" action`,
-		"discard every result that is not a direct app launch",
-		"scan from top to bottom and choose the topmost one",
-		"actual app icon or its directly associated app-launch tile",
-		"Do not use the center of the screen",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("app search result prompt missing %q:\n%s", want, prompt)
-		}
-	}
-}
-
-func TestOpenAppDescriptionOwnsRouting(t *testing.T) {
-	description := NewOpenAppTool(nil, nil, nil).Description()
-	for _, want := range []string{"automatically uses Phone Bridge", "otherwise it searches"} {
-		if !strings.Contains(description, want) {
-			t.Fatalf("open_app description missing %q: %s", want, description)
-		}
-	}
-}
-
 func TestOpenAppSchemaInfersPlatformFromDeviceState(t *testing.T) {
 	schema := NewOpenAppTool(nil, nil, nil).ArgsSchema()
 	props, ok := schema["properties"].(map[string]any)
@@ -93,54 +55,6 @@ func TestOpenAppSchemaInfersPlatformFromDeviceState(t *testing.T) {
 	}
 	if _, found := props["platform"]; found {
 		t.Fatalf("open_app schema must infer fallback platform from runtime device state: %#v", props)
-	}
-}
-
-func TestPhoneBridgeToolDescriptionsOmitSharedStateRouting(t *testing.T) {
-	tools := []langtools.Tool{
-		NewOpenURLTool(nil, nil),
-		NewClipboardTool(nil, nil),
-		NewCalendarTool(nil, nil),
-		NewContactsTool(nil, nil),
-		NewNotificationTool(nil, nil),
-	}
-	for _, tool := range tools {
-		description := tool.Description()
-		for _, unwanted := range []string{"app_pip_enabled", "app_fgs_enabled", "MUST NOT call"} {
-			if strings.Contains(description, unwanted) {
-				t.Errorf("%s description duplicates system prompt guidance %q: %s", tool.Name(), unwanted, description)
-			}
-		}
-	}
-}
-
-func TestNotificationDescriptionDocumentsSendAndQueryFormats(t *testing.T) {
-	description := NewNotificationTool(nil, nil).Description()
-	for _, want := range []string{
-		`{"action":"send","title":"Reminder","body":"Time to take medicine","sound":true}`,
-		`{"action":"query","limit":20}`,
-		"previous last_id as since",
-		"previous generation",
-	} {
-		if !strings.Contains(description, want) {
-			t.Fatalf("notification description missing %q: %s", want, description)
-		}
-	}
-}
-
-func TestOpenURLDescriptionDocumentsSupportedFormats(t *testing.T) {
-	description := NewOpenURLTool(nil, nil).Description()
-	for _, want := range []string{
-		"https://example.com",
-		"http://example.com",
-		"sms:<phone_number>?body=<message>",
-		"mailto:<email_address>?subject=<subject>",
-		"tel:<phone_number>",
-		"Percent-encode",
-	} {
-		if !strings.Contains(description, want) {
-			t.Fatalf("open_url description missing %q: %s", want, description)
-		}
 	}
 }
 

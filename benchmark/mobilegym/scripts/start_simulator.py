@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import logging
 import os
 import signal
 import sys
-from pathlib import Path
 from collections.abc import Awaitable
+from pathlib import Path
 from typing import Any
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -34,6 +35,35 @@ class SimulatorError(RuntimeError):
     pass
 
 
+def _supports_app_ids(reset: Any) -> bool:
+    try:
+        parameters = inspect.signature(reset).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (
+            parameter.name == "app_ids"
+            and parameter.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        )
+        for parameter in parameters
+    )
+
+
+async def _await_reset_result(result: Any) -> None:
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _reset_mobilegym_env(env: Any, *, app_ids: list[str]) -> None:
+    reset = env.reset
+    if _supports_app_ids(reset):
+        await _await_reset_result(reset(app_ids=app_ids))
+    else:
+        await _await_reset_result(reset())
+
+
 def install_resilient_mobilegym_reset(mobilegym_env_cls: type[Any]) -> None:
     """Patch MobileGymEnv.reset to recover from a crashed Playwright page.
 
@@ -44,17 +74,32 @@ def install_resilient_mobilegym_reset(mobilegym_env_cls: type[Any]) -> None:
     if getattr(mobilegym_env_cls, "_aiden_resilient_reset_installed", False):
         return
     original_reset = mobilegym_env_cls.reset
+    original_supports_app_ids = _supports_app_ids(original_reset)
 
-    async def resilient_reset(self: Any, app_ids: list[str] | None = None) -> None:
+    async def call_original_reset(
+        self: Any,
+        app_ids: list[str] | None,
+        reset_kwargs: dict[str, Any],
+    ) -> None:
+        kwargs = dict(reset_kwargs)
+        if original_supports_app_ids:
+            kwargs["app_ids"] = app_ids
+        await _await_reset_result(original_reset(self, **kwargs))
+
+    async def resilient_reset(
+        self: Any,
+        app_ids: list[str] | None = None,
+        **reset_kwargs: Any,
+    ) -> None:
         try:
-            await original_reset(self, app_ids=app_ids)
+            await call_original_reset(self, app_ids, reset_kwargs)
             return
         except Exception as exc:
             if not _is_recoverable_page_crash(exc):
                 raise
             logger.warning("MobileGym reset recovered by recreating page after: %s", exc)
             await _restart_mobilegym_env(self)
-            await original_reset(self, app_ids=app_ids)
+            await call_original_reset(self, app_ids, reset_kwargs)
 
     mobilegym_env_cls._aiden_original_reset = original_reset
     mobilegym_env_cls.reset = resilient_reset
@@ -70,12 +115,19 @@ def _is_recoverable_page_crash(exc: Exception) -> bool:
             "target crashed",
             "target closed",
             "browser closed",
-            "page.goto",
+            "has been closed",
         )
     )
 
 
 async def _restart_mobilegym_env(env: Any) -> None:
+    restart = getattr(env, "restart", None)
+    if restart is not None:
+        result = restart()
+        if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+            await result
+        return
+
     close = getattr(env, "close", None)
     if close is not None:
         result = close()
@@ -164,7 +216,7 @@ async def create_mobilegym_env(env_url: str, headless: bool, device: str = "sim"
         )
         install_resilient_mobilegym_reset(MobileGymEnv)
         await env.start()
-        await env.reset()
+        await _reset_mobilegym_env(env, app_ids=[])
         return env, config
     else:
         config = EnvConfig(
@@ -223,10 +275,7 @@ async def create_mobilegym_env_pool(
     await pool.__aenter__()
     envs = list(pool.envs)
     for env in envs:
-        try:
-            await env.reset()
-        except TypeError:
-            await env.reset()
+        await _reset_mobilegym_env(env, app_ids=[])
     config = {
         "env_url": env_url,
         "headless": headless,

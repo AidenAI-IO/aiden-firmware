@@ -37,3 +37,37 @@ def encode_screenshot(
         result["source_width"] = int(source_width)
         result["source_height"] = int(source_height)
     return result
+
+
+def encode_provider_frame(
+    payload: bytes,
+    *,
+    width: int,
+    height: int,
+    pixel_format: str = "jpeg",
+    backend: str = "vphone",
+    seq: int = 1,
+    source_width: int | None = None,
+    source_height: int | None = None,
+) -> dict[str, Any]:
+    source_width = int(source_width or width)
+    source_height = int(source_height or height)
+    return {
+        "meta": {
+            "seq": int(seq),
+            "width": int(width),
+            "height": int(height),
+            "source_width": source_width,
+            "source_height": source_height,
+            "crop_x": 0,
+            "crop_y": 0,
+            "crop_width": int(width),
+            "crop_height": int(height),
+            "pixel_format": pixel_format,
+            "stride": 0,
+            "bytes": len(payload),
+            "stale": False,
+        },
+        "capture_info": {"capture_backend": backend},
+        "image": base64.b64encode(payload).decode("ascii"),
+    }

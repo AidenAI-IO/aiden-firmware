@@ -39,7 +39,7 @@ go run src/agent/cmd/daemon/main.go \
   --config /path/to/agent.toml \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://localhost:8888 \
-  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap \
+  --environment-bridge-tools touch_gesture,keyboard_text,keyboard_tap \
   --benchmark-task-id cli-task &
 
 # 3. 运行 benchmark（使用标准 runner）
@@ -78,15 +78,11 @@ uv run python -m runner run \
 ```text
 benchmark/mobilegym/
 ├── README.md                       # 本文件
-├── REFACTOR_PLAN.md                # 重构说明
 ├── bridge/                         # Bridge server（HTTP ↔ MobileGym env）⭐
 │   ├── server.py                   # HTTP 端点
 │   ├── episode.py                  # Episode 状态管理
 │   ├── protocol.py                 # 协议定义
 │   └── actions.py                  # Action 转换
-├── config/                         # Aiden 配置
-│   ├── agent.toml.template         # 配置模板
-│   └── skills/device-operator/     # MobileGym skill
 ├── docker/                         # WebUI/CLI 使用的 MobileGym base image
 │   ├── Dockerfile                  # mobilegym-base target
 │   └── README.md                   # 当前 Docker 入口说明
@@ -153,7 +149,7 @@ go run cmd/daemon/main.go \
   --config agent.toml \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://localhost:8888 \
-  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap \
+  --environment-bridge-tools touch_gesture,keyboard_text,keyboard_tap \
   --benchmark-task-id cli-task
 ```
 
@@ -179,14 +175,16 @@ curl -X POST http://localhost:8888/api/setup \
   -d '{}'
 
 # 获取 runner/judge 使用的截图
-curl -H "benchmark-task-id: cli-task" \
-  http://localhost:8888/api/screen
-
-# 测试 bridge tool 操作
-curl -X POST http://localhost:8888/api/tools/screenshot \
+curl -X POST http://localhost:8888/api/providers/screenshot \
   -H "Content-Type: application/json" \
   -H "benchmark-task-id: cli-task" \
-  -d '{"input": {}}'
+  -d '{"format": "jpeg", "quality": 80}'
+
+# 测试 bridge tool 操作
+curl -X POST http://localhost:8888/api/tools/touch_gesture \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: cli-task" \
+  -d '{"input": {"type": "tap", "point": {"x": 500, "y": 800}}}'
 
 # 运行单个测试
 cd benchmark
@@ -201,8 +199,6 @@ uv run python -m runner run \
 ## 📚 相关文档
 
 - **统一 Tool API**: [bridge/TOOLS_API.md](bridge/TOOLS_API.md) ⭐ **新增**
-- **重构说明**: [REFACTOR_PLAN.md](REFACTOR_PLAN.md)
-- **迁移指南**: [MIGRATION.md](MIGRATION.md)
 - **Docker 使用**: [docker/README.md](docker/README.md)
 - **Bridge 协议**: 见 `bridge/` 目录下的 Python 实现
 

@@ -4,8 +4,9 @@ import "aiden-agent/internal/agent/tts"
 
 // This file is the single source of truth for config field metadata consumed
 // by the config web UI (via the `agent config-meta` CLI subcommand). It
-// describes how each field is rendered and defaulted, and the conditions under
-// which it is shown. Validation rules still live in Config.Validate(); the
+// describes how each field is rendered, typed and defaulted, and the conditions
+// under which it is shown. Config web derives JSON field type checks from the
+// widget metadata; semantic validation still lives in Config.Validate(). The
 // enums here are kept consistent with the constants used there.
 
 // Widget identifies how the config web UI should render a field.
@@ -165,7 +166,7 @@ func ConfigMeta() ConfigMetadata {
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
 						Layout:  "wide",
-						Enum:    enumOptions(modelProviderTypes()...),
+						Enum:    enumOptions(modelProviderTypesForConfigUI()...),
 						Default: defaults.Model.Provider},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model, Layout: "wide"},
 					// The effective default is model-dependent (resolved at load
@@ -207,10 +208,10 @@ func ConfigMeta() ConfigMetadata {
 				Name: "model_providers",
 				Fields: []FieldMeta{
 					{Key: "type", Widget: WidgetSelect,
-						Enum: enumOptions(modelProviderTypes()...)},
+						Enum: enumOptions(modelProviderTypesForConfigUI()...)},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(in("model_providers.type", modelProviderTypesAllowingCustomBaseURL()...))},
+						VisibleWhen: all(in("model_providers.type", modelProviderTypesAllowingCustomBaseURLForConfigUI()...))},
 				},
 			},
 			// [tts] keeps only the provider reference and the settings that are
@@ -512,7 +513,6 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "voice_max_response_tokens", Widget: WidgetNumber, Default: defaults.VoiceMaxResponseTokens,
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "load_all_tools", Widget: WidgetBoolean, Default: defaults.LoadAllTools},
-					{Key: "todo_reminder_tool_calls", Widget: WidgetNumber, Default: defaults.TodoReminderToolCallsOrDefault()},
 					{Key: "max_iterations", Widget: WidgetNumber, Default: defaults.MaxIterations},
 					{Key: "screenshot_keep_n", Widget: WidgetNumber, Default: defaults.ScreenshotKeepN},
 					{Key: "screenshot_prune_interval", Widget: WidgetNumber, Default: defaults.ScreenshotPruneInterval},

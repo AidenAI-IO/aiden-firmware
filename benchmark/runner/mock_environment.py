@@ -41,6 +41,7 @@ class MockEnvironmentServer:
         self.screen_text = spec.screen_text or "Mock phone environment ready."
         self.calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
+        self._screenshot_seq = 0
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -95,8 +96,6 @@ class MockEnvironmentServer:
     def invoke(self, tool_name: str, tool_input: dict[str, Any]) -> MockToolResponseSpec:
         with self._lock:
             self.calls.append({"tool": tool_name, "input": tool_input})
-            if tool_name == "screenshot":
-                return MockToolResponseSpec(output=self.screenshot_payload())
             for response in self.spec.tools.get(tool_name, []):
                 screen_matches = (
                     not response.screen_contains
@@ -124,11 +123,17 @@ class MockEnvironmentServer:
         width, height = image.size
         output = io.BytesIO()
         image.save(output, format="JPEG", quality=88)
+        jpeg = output.getvalue()
+        with self._lock:
+            self._screenshot_seq += 1
+            seq = self._screenshot_seq
         return {
-            "data": base64.b64encode(output.getvalue()).decode("ascii"),
+            "data": base64.b64encode(jpeg).decode("ascii"),
             "width": width,
             "height": height,
             "format": "jpeg",
+            "bytes": len(jpeg),
+            "seq": seq,
             "description": self.screen_text,
         }
 
@@ -201,20 +206,8 @@ def _handler_for(server: MockEnvironmentServer):
                     },
                 )
                 return
-            if path == "/api/screen":
-                self._json(
-                    200,
-                    {
-                        "ok": True,
-                        "data": {
-                            "status": "running",
-                            "screenshot": server.screenshot_payload(),
-                        },
-                    },
-                )
-                return
             if path == "/api/tools":
-                names = sorted(set(server.spec.tools) | {"screenshot"})
+                names = sorted(set(server.spec.tools))
                 self._json(
                     200,
                     {
@@ -255,6 +248,37 @@ def _handler_for(server: MockEnvironmentServer):
                 return
             if path == "/api/release":
                 self._json(200, {"ok": True, "data": {"released": True}})
+                return
+            if path == "/api/providers/screenshot":
+                payload = self._read_json()
+                if payload is None:
+                    return
+                shot = server.screenshot_payload()
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "data": {
+                            "meta": {
+                                "seq": shot["seq"],
+                                "width": shot["width"],
+                                "height": shot["height"],
+                                "source_width": shot["width"],
+                                "source_height": shot["height"],
+                                "crop_x": 0,
+                                "crop_y": 0,
+                                "crop_width": shot["width"],
+                                "crop_height": shot["height"],
+                                "pixel_format": shot.get("format") or "jpeg",
+                                "stride": 0,
+                                "bytes": shot["bytes"],
+                                "stale": False,
+                            },
+                            "capture_info": {"capture_backend": "mock"},
+                            "image": shot["data"],
+                        },
+                    },
+                )
                 return
             if path.startswith("/api/tools/"):
                 tool_name = path.removeprefix("/api/tools/").strip()

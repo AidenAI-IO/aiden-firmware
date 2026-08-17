@@ -41,6 +41,67 @@ def test_perception_v1_settings_rubric_uses_0_1000_normalized_coordinates():
     assert "y in [441, 560]" in check
     assert "[0.75, 0.98]" not in check
 
+
+def test_perception_v1_uses_fixture_backed_mock_environment_for_every_task():
+    suite_path = (
+        Path(__file__).resolve().parents[1]
+        / "suites"
+        / "perception"
+        / "perception_v1.json"
+    )
+    suite = load_suite(suite_path)
+
+    assert suite.mock_environment is None
+    assert suite.tasks
+    for task in suite.tasks:
+        assert task.input_screenshot
+        assert task.mock_environment is not None
+        assert task.mock_environment.platform is TargetPlatform.IOS
+        assert task.mock_environment.single_frame is True
+        assert task.mock_environment.screen == task.input_screenshot
+        assert task.mock_environment.phone_bridge == {}
+        responses = task.mock_environment.tools["touch_gesture"]
+        assert len(responses) == 1
+        assert responses[0].output == {"ok": True}
+        assert responses[0].is_error is False
+
+
+def test_perception_v1_describes_single_frame_environment_without_coaching():
+    suite_path = (
+        Path(__file__).resolve().parents[1]
+        / "suites"
+        / "perception"
+        / "perception_v1.json"
+    )
+    suite = load_suite(suite_path)
+
+    prompt_prefix = suite.prompt_prefix.strip().lower()
+    assert prompt_prefix == "this is an offline single-frame static perception task."
+    for leaked_instruction in (
+        "screenshot",
+        "touch_gesture",
+        "width",
+        "height",
+        "0-1000",
+        "retry",
+        "verify",
+    ):
+        assert leaked_instruction not in prompt_prefix
+
+
+def test_perception_v1_settings_prompt_requires_clicking_visible_icon():
+    suite_path = (
+        Path(__file__).resolve().parents[1]
+        / "suites"
+        / "perception"
+        / "perception_v1.json"
+    )
+    suite = load_suite(suite_path)
+
+    task = next(task for task in suite.tasks if task.id == "find_settings_iphone")
+    assert task.prompt == "请点击屏幕上的设置图标。"
+
+
 def test_mobilegym_basic_suite_loads_device_operation_tasks():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "mobilegym_basic.json"
     suite = load_suite(suite_path)
@@ -173,6 +234,41 @@ def test_load_suite_parses_expected_recalled_memory_ids(tmp_path: Path):
     suite = load_suite(p)
 
     assert suite.tasks[0].expected_recalled_memory_ids == ["mem_expected"]
+
+
+def test_load_suite_parses_task_app_ids(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "app_ids": ["settings"],
+            }
+        ],
+    }
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(path)
+
+    assert suite.tasks[0].app_ids == ["settings"]
+
+
+def test_load_suite_rejects_invalid_task_app_ids(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "app_ids": "settings",
+            }
+        ],
+    }
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="app_ids"):
+        load_suite(path)
 
 def test_load_suite_parses_task_platforms(tmp_path: Path):
     fixture = {
@@ -351,8 +447,47 @@ def test_load_suite_parses_task_level_mock_environment(tmp_path: Path):
     assert suite.mock_environment is None
     assert suite.tasks[0].mock_environment is not None
     assert suite.tasks[0].mock_environment.platform is TargetPlatform.IOS
+    assert suite.tasks[0].mock_environment.single_frame is False
     assert "platform" not in suite.tasks[0].mock_environment.phone_bridge
     assert "bridge_contacts" in suite.tasks[0].mock_environment.tools
+
+
+def test_load_suite_parses_single_frame_mock_environment(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "mock_environment": {
+            "platform": "ios",
+            "single_frame": True,
+            "tools": {},
+        },
+    }
+    p = tmp_path / "single-frame-mock.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.mock_environment is not None
+    assert suite.mock_environment.single_frame is True
+
+
+@pytest.mark.parametrize("single_frame", [None, 0, 1, "true", [], {}])
+def test_load_suite_rejects_non_boolean_single_frame(
+    tmp_path: Path,
+    single_frame,
+):
+    fixture = {
+        **FIXTURE,
+        "mock_environment": {
+            "platform": "ios",
+            "single_frame": single_frame,
+            "tools": {},
+        },
+    }
+    p = tmp_path / "invalid-single-frame-mock.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="single_frame must be boolean"):
+        load_suite(p)
 
 
 def test_load_suite_normalizes_legacy_phone_bridge_platform(tmp_path: Path):
@@ -534,38 +669,6 @@ def test_load_suite_duplicate_ids_raise(tmp_path: Path):
         load_suite(p)
 
 
-def test_phone_control_suite_constrains_agent_to_phone_ui():
-    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
-    suite = load_suite(suite_path)
-
-    assert "手机" in suite.prompt_prefix
-    assert "iOS" in suite.prompt_prefix
-    assert "Android" in suite.prompt_prefix
-    assert "iPhone" not in suite.prompt_prefix
-    assert "macOS" in suite.prompt_prefix
-    assert "shell" in suite.prompt_prefix
-    assert "osascript" in suite.prompt_prefix
-    assert "skill_read" in suite.prompt_prefix
-    assert "device-operator" in suite.prompt_prefix
-    assert "quick_action" in suite.prompt_prefix
-    assert "只能通过截图" not in suite.prompt_prefix
-
-
-def test_mobile_text_entry_suites_prompt_for_ime_switching():
-    suites_root = Path(__file__).resolve().parents[1] / "suites"
-    for suite_name in (
-        "adb_android_basic.json",
-        "app_workflow_v1.json",
-        "phone_control_v1.json",
-        "quick_action_v1.json",
-        "skill_discovery_v1.json",
-    ):
-        suite = load_suite(suites_root / suite_name)
-        assert "中文输入法" in suite.prompt_prefix, suite_name
-        assert "英文/Latin" in suite.prompt_prefix, suite_name
-        assert "地球/输入法键" in suite.prompt_prefix, suite_name
-
-
 def test_phone_control_navigation_tasks_have_setup_pages():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
     suite = load_suite(suite_path)
@@ -575,7 +678,6 @@ def test_phone_control_navigation_tasks_have_setup_pages():
         setup = task_by_id[task_id].setup
         assert setup is not None
         assert setup["type"] == "agent_prompt"
-        assert "系统设置" in setup["prompt"]
         assert setup["clear_history_after"] is True
 
 
@@ -584,46 +686,18 @@ def test_phone_control_text_editing_tasks_have_input_setup():
     suite = load_suite(suite_path)
     task_by_id = {task.id: task for task in suite.tasks}
 
-    mixed_setup = task_by_id["type_long_mixed_text"].setup
-    assert mixed_setup is not None
-    assert mixed_setup["type"] == "agent_prompt"
-    assert "Notepad Free" in mixed_setup["prompt"]
-    assert "空白可编辑输入框" in mixed_setup["prompt"]
-    assert "Gmail" in mixed_setup["prompt"]
-    assert "不要输入任何文字" in mixed_setup["prompt"]
-    assert mixed_setup["clear_history_after"] is True
-
-    select_setup = task_by_id["select_all_and_delete"].setup
-    assert select_setup is not None
-    assert select_setup["type"] == "agent_prompt"
-    assert "Notepad Free" in select_setup["prompt"]
-    assert "hello-aiden" in select_setup["prompt"]
-    assert "Gmail" in select_setup["prompt"]
-    assert "聚焦" in select_setup["prompt"]
-    assert select_setup["clear_history_after"] is True
-
-    copy_setup = task_by_id["copy_paste_text"].setup
-    assert copy_setup is not None
-    assert copy_setup["type"] == "agent_prompt"
-    assert "Notepad Free" in copy_setup["prompt"]
-    assert "标题输入框" in copy_setup["prompt"]
-    assert "正文输入区域" in copy_setup["prompt"]
-    assert "Gmail" in copy_setup["prompt"]
-    assert "收件人字段" in copy_setup["prompt"]
-    assert "翻译应用" in copy_setup["prompt"]
-    assert copy_setup["clear_history_after"] is True
+    for task_id in ("type_long_mixed_text", "select_all_and_delete", "copy_paste_text"):
+        setup = task_by_id[task_id].setup
+        assert setup is not None
+        assert setup["type"] == "agent_prompt"
+        assert setup["clear_history_after"] is True
 
 
-def test_phone_control_icon_tasks_target_visible_app_icons():
+def test_phone_control_drag_icon_excludes_adb_android():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
     suite = load_suite(suite_path)
     task_by_id = {task.id: task for task in suite.tasks}
 
-    for task_id in ("long_press_app_icon", "drag_app_icon"):
-        task = task_by_id[task_id]
-        assert "普通应用图标" in task.prompt
-        assert "设置图标" not in task.prompt
-        assert "小组件" in task.prompt
     assert "android" not in task_by_id["drag_app_icon"].platforms
 
 
@@ -654,14 +728,10 @@ def test_phone_control_wifi_toggle_is_split_into_on_and_off_tasks():
     off_task = task_by_id["toggle_wifi_off"]
     on_task = task_by_id["toggle_wifi_on"]
 
-    assert "关闭 Wi-Fi" in off_task.prompt
     assert off_task.setup is not None
-    assert "开启状态" in off_task.setup["prompt"]
     assert any(item.id == "wifi_off_final" for item in off_task.rubric)
 
-    assert "开启 Wi-Fi" in on_task.prompt
     assert on_task.setup is not None
-    assert "关闭状态" in on_task.setup["prompt"]
     assert any(item.id == "wifi_on_final" for item in on_task.rubric)
 
 
@@ -731,14 +801,6 @@ def test_skillopt_crossapp_device_operator_suites_target_skill_capabilities():
     assert verification.name == "crossapp_verification"
     assert [obs.skill_name for obs in train.trace_observations] == ["device-operator"]
     assert [obs.skill_name for obs in verification.trace_observations] == ["device-operator"]
-
-    for suite in (train, verification):
-        assert "MobileGym" in suite.prompt_prefix
-        assert "iPhone" not in suite.prompt_prefix
-        assert "每次动作前先观察截图" not in suite.prompt_prefix
-        assert "不要连续执行多个盲目动作" not in suite.prompt_prefix
-        assert "如果点击、滑动或输入没有效果" not in suite.prompt_prefix
-        assert "Do not fabricate" in suite.prompt_prefix
 
     expected_train_ids = {
         "crossapp_work_calendar_earliest_alarm",
@@ -941,7 +1003,9 @@ def test_notes_entry_policy_suite_covers_three_screen_states():
     assert "search_launch_app" in open_task.hard_assertions.forbidden_tools
     assert "bridge_open_app" in open_task.hard_assertions.forbidden_tools
     assert "enter_text" in open_task.hard_assertions.required_tools
-    assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in open_task.prompt
+    assert "enter_text" not in open_task.prompt
+    assert "bridge_clipboard" not in open_task.prompt
+    assert "search_launch_app" not in open_task.prompt
 
     icon_task = tasks["ios_pip_notes_icon_visible"]
     assert "touch_gesture" in icon_task.hard_assertions.required_tools
@@ -950,13 +1014,16 @@ def test_notes_entry_policy_suite_covers_three_screen_states():
         "type": "tap",
         "point": {"x": 180, "y": 310},
     }
-    assert "必须使用 point 对象" in icon_task.prompt
-    assert "不要使用 point 数组或顶层 x/y" in icon_task.prompt
-    assert "不要调用 bridge_clipboard、bridge_open_app 或 search_launch_app" in icon_task.prompt
+    assert "point" not in icon_task.prompt
+    assert "touch_gesture" not in icon_task.prompt
+    assert "enter_text" not in icon_task.prompt
+    assert "search_launch_app" not in icon_task.prompt
 
     missing_task = tasks["ios_pip_notes_icon_missing"]
     assert "search_launch_app" in missing_task.hard_assertions.required_tools
     assert "bridge_open_app" in missing_task.hard_assertions.forbidden_tools
+    assert "search_launch_app" not in missing_task.prompt
+    assert "enter_text" not in missing_task.prompt
     text_matcher = missing_task.hard_assertions.required_tool_calls[2].input_contains["text"]
     assert text_matcher == {"$contains": "+1 202-555-0147"}
 
@@ -967,8 +1034,14 @@ def test_phone_bridge_data_policy_suite_covers_tools_and_routing_modes():
     tasks = {task.id: task for task in suite.tasks}
 
     assert suite.mock_environment is None
+    assert suite.prompt_prefix == ""
     assert len(tasks) == 12
     assert all(task.mock_environment is not None for task in suite.tasks)
+    assert {
+        task.mock_environment.platform
+        for task in suite.tasks
+        if task.mock_environment is not None
+    } == {TargetPlatform.ANDROID, TargetPlatform.IOS}
     assert {
         tool
         for task in suite.tasks

@@ -41,14 +41,15 @@ option from its caller. For compatibility with older bridges, known
 
 ### `GET /api/tools`
 
-Returns the tool catalog used by agent daemons.
+Returns the tool catalog used by agent daemons. Screenshot is not a forwarded
+tool; capture goes through `POST /api/providers/screenshot`.
 
 ```json
 {
   "tools": [
     {
-      "name": "screenshot",
-      "description": "Capture the current screen.",
+      "name": "touch_gesture",
+      "description": "Perform a touch gesture.",
       "args_schema": {"type": "object"}
     }
   ]
@@ -76,37 +77,89 @@ The response should follow the Go agent tool response shape:
 }
 ```
 
-### `GET /api/screen`
+### `POST /api/providers/screenshot`
 
-Returns the current screen snapshot for runner pre/post capture.
-The task route is normally selected with the `benchmark-task-id` header. Screen
-viewers may also pass `benchmark-task-id` as a query parameter when setting
-custom headers is not practical.
+Returns a raw screen frame. The runner uses this for `pre.jpg` / `post.jpg`,
+and the agent uses it for its local `screenshot` tool. This is not a forwarded
+tool call: when environment-bridge mode is on, the agent keeps running
+`screenshot` locally and captures through this provider.
+
+```json
+{
+  "format": "jpeg",
+  "quality": 80,
+  "crop_black": true,
+  "minimal_width": 608
+}
+```
 
 ```json
 {
   "ok": true,
   "data": {
-    "status": "running",
-    "screenshot": {
-      "format": "jpeg",
+    "meta": {
+      "seq": 12,
       "width": 1080,
       "height": 2400,
-      "data": "base64..."
-    }
+      "source_width": 1080,
+      "source_height": 2400,
+      "crop_x": 0,
+      "crop_y": 0,
+      "crop_width": 1080,
+      "crop_height": 2400,
+      "pixel_format": "jpeg",
+      "stride": 0,
+      "bytes": 184320,
+      "stale": false
+    },
+    "capture_info": {
+      "capture_backend": "adb"
+    },
+    "image": "base64..."
   }
 }
 ```
+
+Bridges may ignore unsupported capture options such as `raw` or `crop_black`
+and return the format they actually produced in `meta.pixel_format`.
+
+Clients and bridges treat a single capture as a 30 second operation. The agent
+HTTP provider, runner pre/post capture, and `POST /api/providers/screenshot`
+handlers share that budget so a hung env fails at the caller instead of
+continuing after the client has already given up. Action and setup requests
+may use a longer timeout.
 
 ### `POST /api/setup`
 
 Initializes or resets the environment route for a benchmark task.
 
+Optional request body:
+
 ```json
-{"ok": true, "data": {"setup": true}}
+{
+  "episode_id": "task-episode",
+  "setup_token": "optional-idempotency-token",
+  "app_ids": ["settings"]
+}
 ```
 
+`app_ids` is optional environment metadata. MobileGym uses it to preload only
+the data loaders required by the task. An omitted or empty list skips eager app
+data loading; apps still load their own data when opened. This avoids loading
+every registered app during each task reset.
+
 For bridges that do not need setup, return success with `setup: false`.
+
+`setup_token` is optional. When present, a bridge runs at most one concurrent
+setup operation for the same `benchmark-task-id` and token. Concurrent
+duplicates wait for the original operation, and successful results are replayed
+without another reset. Failed operations are not cached, so a later request may
+retry. Calls without a token retain the traditional behavior: every request
+performs setup/reset. The cache is process-local, so a restarted bridge may
+execute the same token once to recreate a lost route.
+After `/api/release`, a client that starts a new logical session must use a new
+token. Bridges may discard completed token entries for the released task, so an
+old token no longer identifies an idempotent operation after release.
 
 ### `POST /api/release`
 
@@ -139,7 +192,7 @@ Concurrent bridges must route all task-scoped requests by the
 
 - `/api/setup`
 - `/api/tools/{tool_name}`
-- `/api/screen`
+- `/api/providers/screenshot`
 - `/api/release`
 
 The bridge should keep requests with the same `benchmark-task-id` on the same
@@ -147,7 +200,9 @@ underlying env until `/api/release` is called.
 
 ## Agent Daemon Mode
 
-Start the Go agent so selected tools are forwarded to an environment bridge:
+Start the Go agent so selected tools are forwarded to an environment bridge.
+`screenshot` is never forwarded; the agent captures it through
+`POST /api/providers/screenshot`.
 
 ```bash
 daemon \
@@ -156,9 +211,10 @@ daemon \
   --device-type android \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://bridge:9090 \
-  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_move,mouse_scroll,quick_action \
+  --environment-bridge-tools touch_gesture,keyboard_text,keyboard_tap,mouse_move,mouse_scroll,quick_action \
   --benchmark-task-id suite.json:task-1
 ```
 
 The agent still exposes its normal `/api/chat` endpoint. Only configured tools
-are forwarded to the environment bridge.
+are forwarded to the environment bridge. The agent also exposes
+`POST /api/providers/screenshot` when it is itself used as a bridge.

@@ -12,6 +12,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1108,7 +1109,45 @@ func TestHandleCoordinateDebugTapRejectsNonJSONContentType(t *testing.T) {
 	}
 }
 
-func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
+func postProviderScreenshot(t *testing.T, server *Server, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/screenshot", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleProviderScreenshot(rec, req)
+	return rec
+}
+
+func decodeProviderScreenshot(t *testing.T, rec *httptest.ResponseRecorder) (meta map[string]any, capture map[string]any, image []byte) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("content-type = %q, want application/json", got)
+	}
+	var payload struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Meta        map[string]any `json:"meta"`
+			CaptureInfo map[string]any `json:"capture_info"`
+			Image       string         `json:"image"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode provider screenshot: %v body=%s", err, rec.Body.String())
+	}
+	if !payload.OK {
+		t.Fatalf("provider screenshot failed: %s", rec.Body.String())
+	}
+	image, err := base64.StdEncoding.DecodeString(payload.Data.Image)
+	if err != nil {
+		t.Fatalf("decode provider image: %v", err)
+	}
+	return payload.Data.Meta, payload.Data.CaptureInfo, image
+}
+
+func TestHandleProviderScreenshotCanDisableBlackBarCropping(t *testing.T) {
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
 		method, _ := req["method"].(string)
 		if method == "health" {
@@ -1118,7 +1157,7 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 			t.Fatalf("unexpected method: %#v", req["method"])
 		}
 		if format, _ := req["format"].(string); format != "jpeg" {
-			t.Fatalf("expected jpeg format request when crop_black_bars=false, got %#v", req["format"])
+			t.Fatalf("expected jpeg format request when crop_black=false, got %#v", req["format"])
 		}
 		if cropBlack, _ := req["crop_black"].(bool); cropBlack {
 			t.Fatalf("crop_black = %#v, want false", req["crop_black"])
@@ -1143,25 +1182,16 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 	)
 	server := newServerForTest(runtime)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg?crop_black_bars=false", nil)
-	rec := httptest.NewRecorder()
-
-	server.handleScreenshotJPEG(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	rec := postProviderScreenshot(t, server, `{"format":"jpeg","quality":80,"crop_black":false,"minimal_width":0}`)
+	meta, _, imageBytes := decodeProviderScreenshot(t, rec)
+	if width, _ := meta["width"].(float64); width != 2 {
+		t.Fatalf("meta.width = %#v, want 2", meta["width"])
 	}
-	if got := rec.Header().Get("Content-Type"); got != "image/jpeg" {
-		t.Fatalf("content-type = %q, want image/jpeg", got)
-	}
-	if got := rec.Header().Get("X-Frame-Width"); got != "2" {
-		t.Fatalf("X-Frame-Width = %q, want 2", got)
-	}
-	if got := rec.Header().Get("X-Frame-Height"); got != "1" {
-		t.Fatalf("X-Frame-Height = %q, want 1", got)
+	if height, _ := meta["height"].(float64); height != 1 {
+		t.Fatalf("meta.height = %#v, want 1", meta["height"])
 	}
 
-	img, err := jpeg.Decode(bytes.NewReader(rec.Body.Bytes()))
+	img, err := jpeg.Decode(bytes.NewReader(imageBytes))
 	if err != nil {
 		t.Fatalf("decode response jpeg: %v", err)
 	}
@@ -1170,7 +1200,7 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 	}
 }
 
-func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *testing.T) {
+func TestHandleProviderScreenshotReturnsCropMetadata(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 16, 9))
 	for y := 0; y < 9; y++ {
 		for x := 5; x < 10; x++ {
@@ -1193,9 +1223,6 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 		if cropBlack, _ := req["crop_black"].(bool); !cropBlack {
 			t.Fatalf("crop_black = %#v, want true", req["crop_black"])
 		}
-		if minimalWidth, _ := req["minimal_width"].(float64); minimalWidth != 608 {
-			t.Fatalf("minimal_width = %#v, want 608", req["minimal_width"])
-		}
 		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":5,"height":9,"source_width":16,"source_height":9,"crop_x":5,"crop_y":0,"crop_width":5,"crop_height":9,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
 		return header, jpegData
 	})
@@ -1212,57 +1239,16 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	)
 	server := newServerForTest(runtime)
 
-	envData, err := json.Marshal(PhoneEnvironment{
-		Platform: "android",
-		Screen: screen.PhoneScreenInfo{
-			WidthPixels:        intPtr(1080),
-			HeightPixels:       intPtr(1920),
-			NativeWidthPixels:  intPtr(1080),
-			NativeHeightPixels: intPtr(2400),
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal environment: %v", err)
+	rec := postProviderScreenshot(t, server, `{"format":"jpeg","quality":80,"crop_black":true,"minimal_width":0}`)
+	meta, _, _ := decodeProviderScreenshot(t, rec)
+	if width, _ := meta["width"].(float64); width != 5 {
+		t.Fatalf("meta.width = %#v, want 5", meta["width"])
 	}
-	if !server.bridge.handleAppEvent(BridgeCommandResponse{
-		ID:     "phone_environment",
-		Method: "phone_environment",
-		Data:   envData,
-	}) {
-		t.Fatal("expected phone_environment event to be handled")
+	if sourceWidth, _ := meta["source_width"].(float64); sourceWidth != 16 {
+		t.Fatalf("meta.source_width = %#v, want 16", meta["source_width"])
 	}
-	server.bridge.mu.Lock()
-	server.bridge.connected = true
-	server.bridge.mu.Unlock()
-
-	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg", nil)
-	rec := httptest.NewRecorder()
-
-	server.handleScreenshotJPEG(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
-	}
-	if got := rec.Header().Get("X-Original-Screen-Width"); got != "1080" {
-		t.Fatalf("X-Original-Screen-Width = %q, want 1080", got)
-	}
-	if got := rec.Header().Get("X-Original-Screen-Height"); got != "2400" {
-		t.Fatalf("X-Original-Screen-Height = %q, want 2400", got)
-	}
-	if got := rec.Header().Get("X-Original-Screen-Valid"); got != "true" {
-		t.Fatalf("X-Original-Screen-Valid = %q, want true", got)
-	}
-
-	width, height, active, _, ok := runtime.tools.screen.ActiveAreaWithAge()
-	if !ok {
-		t.Fatal("expected shared screen state to be updated")
-	}
-	if width != 16 || height != 9 {
-		t.Fatalf("screen dimensions = %dx%d, want 16x9", width, height)
-	}
-	want := screen.ScreenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
-	if active != want {
-		t.Fatalf("active area = %+v, want %+v", active, want)
+	if cropX, _ := meta["crop_x"].(float64); cropX != 5 {
+		t.Fatalf("meta.crop_x = %#v, want 5", meta["crop_x"])
 	}
 }
 
@@ -1294,7 +1280,7 @@ func TestFrameServiceClientSendsRawCropBlackOption(t *testing.T) {
 	}
 }
 
-func TestHandleScreenshotJPEGIncludesADBDeviceHeadersWhenFallbackUsed(t *testing.T) {
+func TestHandleProviderScreenshotIncludesADBDeviceWhenFallbackUsed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell script uses /bin/sh")
 	}
@@ -1347,31 +1333,26 @@ func TestHandleScreenshotJPEGIncludesADBDeviceHeadersWhenFallbackUsed(t *testing
 	)
 	server := newServerForTest(runtime)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg", nil)
-	rec := httptest.NewRecorder()
-
-	server.handleScreenshotJPEG(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	rec := postProviderScreenshot(t, server, `{"format":"jpeg","quality":80,"crop_black":true,"minimal_width":0}`)
+	_, capture, imageBytes := decodeProviderScreenshot(t, rec)
+	if backend, _ := capture["capture_backend"].(string); backend != "adb" {
+		t.Fatalf("capture_backend = %#v, want adb", capture["capture_backend"])
 	}
-	if got := rec.Header().Get("X-Capture-Backend"); got != "adb" {
-		t.Fatalf("X-Capture-Backend = %q, want adb", got)
+	device, _ := capture["adb_device"].(map[string]any)
+	if device == nil {
+		t.Fatal("expected adb_device in capture_info")
 	}
-	if got := rec.Header().Get("X-Adb-Device-Valid"); got != "true" {
-		t.Fatalf("X-Adb-Device-Valid = %q, want true", got)
+	if serial, _ := device["serial"].(string); serial != "serial123" {
+		t.Fatalf("adb serial = %#v, want serial123", device["serial"])
 	}
-	if got := rec.Header().Get("X-Adb-Device-Serial"); got != "serial123" {
-		t.Fatalf("X-Adb-Device-Serial = %q, want serial123", got)
+	if name, _ := device["name"].(string); name != "Pixel 7 Pro" {
+		t.Fatalf("adb name = %#v, want Pixel 7 Pro", device["name"])
 	}
-	if got := rec.Header().Get("X-Adb-Device-Name"); got != "Pixel 7 Pro" {
-		t.Fatalf("X-Adb-Device-Name = %q, want Pixel 7 Pro", got)
-	}
-	if got := rec.Header().Get("X-Adb-Device-State"); got != "device" {
-		t.Fatalf("X-Adb-Device-State = %q, want device", got)
+	if state, _ := device["state"].(string); state != "device" {
+		t.Fatalf("adb state = %#v, want device", device["state"])
 	}
 
-	decoded, err := jpeg.Decode(bytes.NewReader(rec.Body.Bytes()))
+	decoded, err := jpeg.Decode(bytes.NewReader(imageBytes))
 	if err != nil {
 		t.Fatalf("jpeg.Decode() error = %v", err)
 	}
@@ -2547,31 +2528,106 @@ func TestServerHandleChatSteerRejectsNonRunningRequest(t *testing.T) {
 }
 
 func TestWebUISteerModeControlsArePresent(t *testing.T) {
+	chatScript := readWebUIResource(t, "scripts/chat.js")
+	index := readWebUIResource(t, "index.html")
 	for _, want := range []string{
 		"/api/chat/steer",
 		"/api/chat/steer/cancel",
 		"async function submitSteerMessage()",
-		"sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';",
-		"id=\"pendingSteer\"",
 	} {
-		if !strings.Contains(webUI, want) {
+		if !strings.Contains(chatScript, want) {
 			t.Fatalf("web UI missing %q", want)
+		}
+	}
+	if !strings.Contains(index, "id=\"pendingSteer\"") {
+		t.Fatal("web UI missing pending steer controls")
+	}
+	if !strings.Contains(readWebUIResource(t, "scripts/messages.js"), "sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';") {
+		t.Fatal("web UI missing steer composer state")
+	}
+}
+
+func TestWebUIIsEmbeddedFromStaticResource(t *testing.T) {
+	want, err := os.ReadFile("web_ui/index.html")
+	if err != nil {
+		t.Fatalf("read web UI static resource: %v", err)
+	}
+	if webUI != string(want) {
+		t.Fatal("embedded web UI differs from web_ui/index.html")
+	}
+
+	for _, asset := range []string{
+		"/web-ui/styles.css",
+		"/web-ui/scripts/state.js",
+		"/web-ui/scripts/storage.js",
+		"/web-ui/scripts/events.js",
+		"/web-ui/scripts/tools.js",
+		"/web-ui/scripts/chat.js",
+		"/web-ui/scripts/messages.js",
+		"/web-ui/scripts/attachments.js",
+		"/web-ui/scripts/tool_messages.js",
+		"/web-ui/scripts/bootstrap.js",
+	} {
+		if !strings.Contains(webUI, asset) {
+			t.Errorf("web UI index missing asset %q", asset)
+		}
+	}
+}
+
+func TestServerServesEmbeddedWebUIAssets(t *testing.T) {
+	server := &Server{logger: newTestLogger(), bridge: NewPhoneBridge(newTestLogger())}
+	handler := server.Handler()
+	for _, test := range []struct {
+		path        string
+		contentType string
+		content     string
+	}{
+		{path: "/web-ui/styles.css", contentType: "text/css", content: ":root {"},
+		{path: "/web-ui/scripts/bootstrap.js", contentType: "text/javascript", content: "loadHistory();"},
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s: unexpected status: %d body=%s", test.path, recorder.Code, recorder.Body.String())
+		}
+		if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, test.contentType) {
+			t.Fatalf("GET %s: unexpected content type: %q", test.path, got)
+		}
+		if !strings.Contains(recorder.Body.String(), test.content) {
+			t.Fatalf("GET %s: embedded content is missing", test.path)
 		}
 	}
 }
 
 func TestWebUIImagePasteControlsArePresent(t *testing.T) {
+	attachmentsScript := readWebUIResource(t, "scripts/attachments.js")
+	stateScript := readWebUIResource(t, "scripts/state.js")
+	bootstrapScript := readWebUIResource(t, "scripts/bootstrap.js")
 	for _, want := range []string{
-		"const maxDraftImageAttachments = 4;",
-		"inputEl.addEventListener('paste', handleComposerPaste);",
 		"async function handleComposerPaste(event)",
 		"await addImageFiles(files, 'pasted');",
 		"Only 4 images can be attached.",
 	} {
-		if !strings.Contains(webUI, want) {
+		if !strings.Contains(attachmentsScript, want) {
 			t.Fatalf("web UI missing %q", want)
 		}
 	}
+	if !strings.Contains(stateScript, "const maxDraftImageAttachments = 4;") {
+		t.Fatal("web UI missing image attachment limit")
+	}
+	if !strings.Contains(bootstrapScript, "inputEl.addEventListener('paste', handleComposerPaste);") {
+		t.Fatal("web UI missing image paste listener")
+	}
+}
+
+func readWebUIResource(t *testing.T, name string) string {
+	t.Helper()
+	data, err := fs.ReadFile(webUIFiles, name)
+	if err != nil {
+		t.Fatalf("read embedded web UI resource %q: %v", name, err)
+	}
+	return string(data)
 }
 
 func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
@@ -3088,6 +3144,27 @@ func TestDecodeMessageAttachmentsCountsImageMIMEWithFileKind(t *testing.T) {
 	_, _, err = decodeMessageAttachments(payloads)
 	if err == nil || !strings.Contains(err.Error(), "at most 4 image attachments") {
 		t.Fatalf("decodeMessageAttachments(%d file-kind images) error = %v, want image limit", len(payloads), err)
+	}
+}
+
+func TestDecodeMessageAttachmentsPreservesImageDimensions(t *testing.T) {
+	payloads := []MessageAttachment{{
+		Kind:     AttachmentKindImage,
+		MIMEType: "image/jpeg",
+		Width:    447,
+		Height:   972,
+		Data:     base64.StdEncoding.EncodeToString([]byte("jpeg")),
+	}}
+
+	decoded, history, err := decodeMessageAttachments(payloads)
+	if err != nil {
+		t.Fatalf("decodeMessageAttachments() error = %v", err)
+	}
+	if decoded[0].Width != 447 || decoded[0].Height != 972 {
+		t.Fatalf("decoded dimensions = %dx%d", decoded[0].Width, decoded[0].Height)
+	}
+	if history[0].Width != 447 || history[0].Height != 972 {
+		t.Fatalf("history dimensions = %dx%d", history[0].Width, history[0].Height)
 	}
 }
 
@@ -4087,17 +4164,18 @@ func TestRequestBaseURLPrefersForwardedHeaders(t *testing.T) {
 }
 
 func TestWebUIRedactsScreenshotBase64Payloads(t *testing.T) {
+	toolMessagesScript := readWebUIResource(t, "scripts/tool_messages.js")
 	required := []string{
 		"redactToolPayloadForDisplay(JSON.parse(value))",
 		"clone.data = '[base64 screenshot omitted: ' + byteLabel + ']'",
 		"function isScreenshotPayload(value)",
 	}
 	for _, snippet := range required {
-		if !strings.Contains(webUI, snippet) {
+		if !strings.Contains(toolMessagesScript, snippet) {
 			t.Fatalf("webUI missing screenshot redaction snippet %q", snippet)
 		}
 	}
-	if strings.Contains(webUI, "toolName !== 'screenshot'") {
+	if strings.Contains(toolMessagesScript, "toolName !== 'screenshot'") {
 		t.Fatalf("webUI still limits screenshot parsing to only the screenshot tool")
 	}
 }

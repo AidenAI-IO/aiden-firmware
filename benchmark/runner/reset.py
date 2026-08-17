@@ -29,10 +29,17 @@ def _environment_headers(task_id: str | None = None) -> dict[str, str]:
     return headers
 
 
-def _post_environment(endpoint: str, *, timeout: int, headers: dict[str, str], action: str) -> dict[str, Any]:
+def _post_environment(
+    endpoint: str,
+    *,
+    timeout: int,
+    headers: dict[str, str],
+    action: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     req = urllib.request.Request(
         endpoint,
-        data=b"{}",
+        data=json.dumps(payload or {}, ensure_ascii=False).encode("utf-8"),
         headers=headers,
         method="POST",
     )
@@ -58,12 +65,18 @@ def _post_environment(endpoint: str, *, timeout: int, headers: dict[str, str], a
     return payload if isinstance(payload, dict) else {}
 
 
-def call_environment_setup(environment_url: str, timeout: int = 30, task_id: str | None = None) -> dict[str, Any]:
+def call_environment_setup(
+    environment_url: str,
+    timeout: int = 30,
+    task_id: str | None = None,
+    app_ids: list[str] | None = None,
+) -> dict[str, Any]:
     return _post_environment(
         _environment_endpoint(environment_url).setup,
         timeout=timeout,
         headers=_environment_headers(task_id),
         action="setup",
+        payload={"app_ids": list(app_ids or [])},
     )
 
 

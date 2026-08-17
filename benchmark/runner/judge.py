@@ -15,12 +15,13 @@ from runner.suite import RubricItem
 
 JUDGE_PROMPT_VERSION = "v1"
 DEFAULT_JUDGE_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_JUDGE_API_KEY_ENV = "AIDEN_BENCHMARK_JUDGE_API_KEY"
 
 @dc.dataclass
 class JudgeConfig:
-    provider: str = "openrouter"
+    provider: str = "openai-compatible"
     model: str = "anthropic/claude-sonnet-4-6"
-    api_key_env: str = "OPENROUTER_API_KEY"
+    api_key_env: str = DEFAULT_JUDGE_API_KEY_ENV
     base_url: str = DEFAULT_JUDGE_BASE_URL
 
 @dc.dataclass
@@ -77,6 +78,13 @@ def _cache_key(pre: Path | None, post: Path | None, trace_json: str, rubric: lis
 
 def _chat_completions_url(base_url: str) -> str:
     return f"{(base_url or DEFAULT_JUDGE_BASE_URL).rstrip('/')}/chat/completions"
+
+
+def _resolve_judge_api_key(cfg: JudgeConfig) -> str:
+    api_key = os.environ.get(cfg.api_key_env, "").strip()
+    if not api_key:
+        raise RuntimeError(f"missing env var {cfg.api_key_env}")
+    return api_key
 
 def _judge_images(
     pre_screenshot: Path | None,
@@ -139,9 +147,7 @@ def judge_task(
         {"type": "text", "text": f"FINAL RESPONSE:\n{final_response}"},
     ]
     # Use an OpenAI-compatible chat completions endpoint.
-    api_key = os.environ.get(cfg.api_key_env, "").strip()
-    if not api_key:
-        raise RuntimeError(f"missing env var {cfg.api_key_env}")
+    api_key = _resolve_judge_api_key(cfg)
     payload = json.dumps({
         "model": cfg.model,
         "messages": [{"role": "user", "content": user_content}],

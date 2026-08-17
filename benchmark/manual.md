@@ -42,7 +42,7 @@ full trace and screenshots without re-operating the device.
 | Runner | `benchmark/runner/main.py` | CLI entry point; runs suites and generates reports |
 | WebUI | `benchmark/runner/webui.py` | Web console; manages suites, jobs, environments, logs, reports |
 | Agent client | `benchmark/runner/agent_client.py` | Calls the Go agent's `/api/chat`, `/api/tools/*`, `/api/history` |
-| Judge | `benchmark/runner/judge.py` | Calls an OpenRouter-compatible endpoint; scores using pre/post screenshots and the trace |
+| Judge | `benchmark/runner/judge.py` | Calls an OpenAI-compatible endpoint; scores using pre/post screenshots and the trace |
 | MobileGym bridge | `benchmark/mobilegym/bridge/` | Wraps a MobileGym env as an environment bridge API |
 | ADB Android bridge | `benchmark/adbandroid/` | Wraps an Android emulator/physical device as an environment bridge API via adb (see its README) |
 | Docker daemon worker | `benchmark/docker/Dockerfile.agent-daemon` | The isolated agent daemon the WebUI starts when running a job |
@@ -55,9 +55,9 @@ The main flow for a single task lives in `runner/runtask.py`:
 2. Clear the agent conversation history.
 3. If `environment_url` is set, call the environment's `/api/setup`.
 4. Run the suite/task's optional setup.
-5. If `environment_url` is set, fetch `pre.jpg` via `/api/screen`.
+5. If `environment_url` is set, fetch `pre.jpg` via `/api/providers/screenshot`.
 6. Call the agent's `/api/chat` with the actual prompt.
-7. If `environment_url` is set, fetch `post.jpg` via `/api/screen` again.
+7. If `environment_url` is set, fetch `post.jpg` via `/api/providers/screenshot` again.
 8. Extract the tool trace from the agent history.
 9. Run the hard assertions.
 10. If the judge is enabled, submit the rubric, trace, final response, and
@@ -89,11 +89,14 @@ Typical scenario:
 The tools the default WebUI Docker daemon forwards include:
 
 ```text
-screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,
+touch_gesture,keyboard_text,keyboard_tap,enter_text,
 search_launch_app,mouse_move,mouse_scroll,
 quick_action,bridge_open_app,bridge_clipboard,bridge_calendar,
 bridge_contacts,bridge_notification
 ```
+
+`screenshot` is not forwarded. The agent captures it locally through
+`POST /api/providers/screenshot`.
 
 Notes:
 
@@ -101,7 +104,7 @@ Notes:
   actions and the runner initializes the environment and captures pre/post
   screenshots.
 - The runner does not obtain pre/post screenshots through agent tool calls; it
-  calls the environment bridge's `/api/screen` directly.
+  calls the environment bridge's `/api/providers/screenshot` directly.
 - `run --agent-url ...` on the CLI calls the specified agent directly and does not
   start an environment bridge automatically; if you need an environment bridge you
   must start the daemon yourself and pass the relevant daemon parameters.
@@ -259,18 +262,18 @@ Standard environment bridge interface:
 | --- | --- |
 | `GET /health` | Health check |
 | `GET /api/tools` | Tool catalog, used by the agent health check and the environment bridge |
-| `POST /api/tools/<tool>` | Execute a tool, e.g. screenshot/touch/keyboard |
+| `POST /api/tools/<tool>` | Execute a forwarded tool, e.g. touch/keyboard |
 | `POST /api/setup` | Reset/claim the env for a benchmark task |
 | `POST /api/release` | Release the env held by a benchmark task |
 | `GET /api/concurrent` | Return how many concurrent tasks this bridge supports |
-| `GET /api/screen` | Return a JSON screenshot; used by the runner and the WebUI task screen page |
+| `POST /api/providers/screenshot` | Return a JSON screenshot; used by the runner and the WebUI task screen page |
 
 Concurrent MobileGym is routed by `benchmark-task-id`:
 
 - The WebUI generates a `benchmark-task-id` of the form `<suite-key>:<task-id>` per
   task worker.
 - The runner sends this header when calling `/api/setup`, `/api/release`,
-  `/api/screen`.
+  `/api/providers/screenshot`.
 - The agent daemon's environment bridge tool requests carry the same benchmark
   task id.
 - The bridge routes requests to the same env based on this id.
@@ -324,6 +327,7 @@ Common fields:
 | `prompt_prefix` | Prefix for every task prompt; constrains device type, tool usage, etc. |
 | `global_reset` | Suite-level reset configuration |
 | `setup` | Task-level pre-steps; currently supports `{"type": "agent_prompt", ...}` |
+| `app_ids` | Optional MobileGym app IDs to preload during environment setup; omitted tasks skip eager app data loading |
 | `rubric` | The judge model's scoring items |
 | `hard_assertions` | Deterministic checks, e.g. tool-call counts, timeout, required/forbidden tools |
 | `hard_assertions.required_tool_calls` | Requires a tool call whose input contains a specified nested subset |
@@ -385,8 +389,8 @@ Main areas on the WebUI home screen:
 
 ### 2.3 Configuring the judge
 
-The WebUI enables the judge by default. The judge is currently called over an
-OpenRouter-compatible endpoint, using the `OPENROUTER_API_KEY` API key.
+The WebUI enables the judge by default. The judge calls an OpenAI-compatible
+endpoint and uses the `AIDEN_BENCHMARK_JUDGE_API_KEY` credential.
 
 Usage:
 
@@ -433,9 +437,13 @@ The WebUI starts the MobileGym container and bridge server and records:
 
 - Bridge endpoint: used by the Docker daemon's environment bridge.
 - Public endpoint: used by the WebUI and the runner to call `/api/concurrent`,
-  `/api/setup`, `/api/screen`, `/api/release`.
+  `/api/setup`, `/api/providers/screenshot`, `/api/release`.
 - Task screen link: the screen link for each task worker is provided by the WebUI;
-  the WebUI backend pulls the screenshot via the bridge's `/api/screen`.
+  the WebUI backend pulls the screenshot via the bridge's `/api/providers/screenshot`.
+
+MobileGym containers recovered after a WebUI restart are marked `stale`. They
+remain visible so they can be stopped or deleted, but cannot be selected for a
+new benchmark. Start a fresh MobileGym environment for every new WebUI session.
 
 ### 2.5 Running a job
 
@@ -506,7 +514,7 @@ Check the task metrics in the report:
 - `judge_image_labels`
 
 In MobileGym mode the runner should produce `pre.jpg` and `post.jpg` via the
-bridge's `/api/screen`. If they are missing, it is usually because the environment
+bridge's `/api/providers/screenshot`. If they are missing, it is usually because the environment
 endpoint is unreachable, the `benchmark-task-id` routing is missing, or the task
 was released/failed before the screenshot.
 
@@ -550,7 +558,7 @@ Common parameters:
 | --- | --- |
 | `--suite PATH` | Required, path to the suite JSON |
 | `--agent-url URL` | Agent daemon address; default `http://localhost:8080` or `AIDEN_AGENT_URL` |
-| `--environment-url URL` | Optional, environment bridge address; used for `/api/setup`, `/api/screen`, `/api/release` |
+| `--environment-url URL` | Optional, environment bridge address; used for `/api/setup`, `/api/providers/screenshot`, `/api/release` |
 | `--auto-agent-setup` | Ignore `--agent-url`; auto-start isolated agent daemons concurrently per `/api/concurrent` |
 | `--daemon-image IMAGE` | Agent daemon image used by `--auto-agent-setup` |
 | `--base-config-dir DIR` | Agent config template directory used by `--auto-agent-setup` |
@@ -602,7 +610,7 @@ Notes:
 
 - `--agent-url` is the agent daemon.
 - `--environment-url` is the environment bridge endpoint that implements
-  `/api/setup`, `/api/screen`, `/api/release`.
+  `/api/setup`, `/api/providers/screenshot`, `/api/release`.
 - Without `--environment-url`, the runner can still run agent chat but will not
   save live pre/post screenshots; judge results that rely on visual screenshots
   will be weaker.
@@ -635,7 +643,14 @@ Agent configuration notes:
   static `memory/extraction.yaml` policy is preserved when present.
 - If `--agent-config` is specified, its content is written as the worker's
   `agent.toml`; if not, the runner prefers rendering `agent.toml` from
-  `--base-config-dir/agent.toml.template`, then falls back to the default config.
+  `--base-config-dir/agent.toml.template`. The built-in template reads only the
+  `AIDEN_BENCHMARK_AGENT_*` variables listed below.
+- Credential references such as `api_key = "$ANTHROPIC_AUTH_TOKEN"` are resolved
+  on the host while preparing the worker config. The resolved config is mounted
+  read-only into Docker. A missing credential fails before the daemon starts.
+- Before `--auto-agent-setup` uses a MobileGym endpoint, the runner performs a
+  short `setup` / `release` preflight. A bridge that is healthy but cannot reset
+  is rejected with instructions to start a fresh environment.
 
 Example:
 
@@ -773,18 +788,17 @@ Common parameters:
 | `--json` | false | Print machine-readable JSON |
 
 The agent config rules used by `start-agent-daemon` are the same as
-`run --auto-agent-setup`: copy `--base-config-dir` first, then override the
-generated `agent.toml` with `--agent-config`; if `--agent-config` is absent, use
-`agent.toml.template` or the default config. Platform resolution never rewrites
-that copy. When an environment bridge is provided, the command resolves its
-platform once and passes it to the daemon through process-local
-`--device-type`. Without a bridge, an explicit `--device-type` is an optional
-override; if it is omitted, the daemon keeps `[device].device_type` from
-`agent.toml`. The daemon applies a process-local override after loading
-`agent.toml`, reports the effective value as `status.device_type`, and the
-command validates that value after startup. The deprecated `--target-platform`
-spelling remains accepted as a compatibility alias. After starting the daemon
-manually, pass the printed `agent_url` to `runner run --agent-url`; the runner
+`run --auto-agent-setup`. Platform resolution never rewrites the generated
+config. When an environment bridge is provided,
+the command resolves its platform once and passes it to the daemon through
+process-local `--device-type`. Without a bridge, an explicit `--device-type` is
+an optional override; if it is omitted, the daemon keeps
+`[device].device_type` from `agent.toml`. The daemon applies a process-local
+override after loading `agent.toml`, reports the effective value as
+`status.device_type`, and the command validates that value after startup. The
+deprecated `--target-platform` spelling remains accepted as a compatibility
+alias. After starting the daemon manually, pass the printed `agent_url` to
+`runner run --agent-url`; the runner
 derives and validates its platform against the environment or CLI constraint.
 
 Recommended CLI MobileGym debug flow:
@@ -815,7 +829,7 @@ uv run python -m runner run \
 ```
 
 Note: if there are multiple envs behind the MobileGym bridge, `/api/setup`,
-`/api/screen`, `/api/tools/*`, and `/api/release` must all use the same
+`/api/providers/screenshot`, `/api/tools/*`, and `/api/release` must all use the same
 `benchmark-task-id`. When manually starting a long-lived agent daemon from the CLI,
 use a fixed route id such as `cli-task`; when you need to run multiple tasks
 concurrently, prefer the WebUI so each task worker gets its own daemon and its own
@@ -864,8 +878,14 @@ Common environment variables:
 | --- | --- |
 | `AIDEN_AGENT_URL` | Default for CLI `--agent-url` |
 | `AIDEN_ENVIRONMENT_URL` | Default for CLI `--environment-url` |
-| `OPENROUTER_API_KEY` | Judge API key |
-| `AIDEN_MODEL` / `MODEL_NAME` / `OPENAI_MODEL` | Agent model recorded in the manifest |
+| `AIDEN_BENCHMARK_AGENT_PROVIDER` | Agent provider type rendered into the default `agent.toml` |
+| `AIDEN_BENCHMARK_AGENT_MODEL` | Agent model rendered into `agent.toml` and recorded in the manifest |
+| `AIDEN_BENCHMARK_AGENT_BASE_URL` | Agent model endpoint rendered into the default `agent.toml` |
+| `AIDEN_BENCHMARK_AGENT_API_KEY` | Agent credential rendered into the default read-only `agent.toml` |
+| `AIDEN_BENCHMARK_JUDGE_MODEL` | Default judge model for `run` and `rejudge` |
+| `AIDEN_BENCHMARK_JUDGE_BASE_URL` | Default OpenAI-compatible judge endpoint |
+| `AIDEN_BENCHMARK_JUDGE_API_KEY` | Judge API key |
+| `AIDEN_BENCHMARK_ANALYSIS_API_KEY` | Optional post-run analysis credential; defaults to the Judge key |
 | `BENCHMARK_STATE_FILE` | Default for CLI `--state-file` |
 | `MOBILEGYM_PARALLEL_ENVS` | Default parallel env count for `start_simulator.py` |
 | `AIDEN_BRIDGE_BIND_HOST` | MobileGym bridge bind host |
@@ -937,12 +957,12 @@ curl http://127.0.0.1:8080/api/tools
 
 If it is a WebUI job, look at the job's daemon log.
 
-### The judge reports missing env var OPENROUTER_API_KEY
+### The judge reports missing env var AIDEN_BENCHMARK_JUDGE_API_KEY
 
 CLI:
 
 ```bash
-export OPENROUTER_API_KEY=...
+export AIDEN_BENCHMARK_JUDGE_API_KEY=...
 ```
 
 WebUI:
@@ -954,14 +974,18 @@ Fill in the API key in Run configuration, or turn off `Enable judge`.
 Check whether `--environment-url` was passed and whether that endpoint supports:
 
 ```bash
-curl http://127.0.0.1:8888/api/screen
+curl -X POST http://127.0.0.1:8888/api/providers/screenshot \
+  -H "Content-Type: application/json" \
+  -d '{"format": "jpeg", "quality": 80}'
 ```
 
 MobileGym concurrency requires a task id:
 
 ```bash
-curl -H 'benchmark-task-id: suite.json:task_id' \
-  http://127.0.0.1:8888/api/screen
+curl -X POST http://127.0.0.1:8888/api/providers/screenshot \
+  -H "Content-Type: application/json" \
+  -H 'benchmark-task-id: suite.json:task_id' \
+  -d '{"format": "jpeg", "quality": 80}'
 ```
 
 ### A MobileGym task stays pending or reports no env available

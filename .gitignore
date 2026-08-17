@@ -52,6 +52,7 @@ benchmark/mobilegym/vendor/*
 # MobileGym daemon runtime state (regenerated each run)
 benchmark/mobilegym/config/agent.toml
 benchmark/mobilegym/config/agent.toml.*
+!benchmark/mobilegym/config/agent.toml.template
 benchmark/mobilegym/config/memory/
 benchmark/mobilegym/config/log/
 benchmark/mobilegym/config/control_token

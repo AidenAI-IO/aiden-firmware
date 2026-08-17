@@ -59,7 +59,6 @@ const (
 	defaultVoiceFirstTurnTimeoutMs    = 10000
 	defaultVoiceMaxTurns              = 0
 	defaultVoiceMaxResponseTokens     = 300
-	defaultTodoReminderToolCalls      = 3
 	defaultMaxIterations              = -1
 
 	defaultTelemetryProvider    = "langfuse"
@@ -197,7 +196,6 @@ func DefaultConfig() Config {
 		VoiceToolCallSpeech:        defaultBoolPtr(true),
 		VoiceProgressSpeechEnabled: defaultBoolPtr(true),
 		VoiceMaxResponseTokens:     defaultVoiceMaxResponseTokens,
-		TodoReminderToolCalls:      defaultTodoReminderToolCalls,
 		MaxIterations:              defaultMaxIterations,
 		TerminationPolicy:          DefaultTerminationPolicyConfig(),
 		ScreenshotKeepN:            constants.DefaultScreenshotKeepN,

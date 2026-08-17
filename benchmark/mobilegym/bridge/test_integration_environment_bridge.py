@@ -84,13 +84,13 @@ def test_go_agent_environment_bridge_client(bridge_server):
 
     assert "tools" in catalog
     tool_names = {t["name"] for t in catalog["tools"]}
-    assert "screenshot" in tool_names
+    assert "screenshot" not in tool_names
     assert "touch_gesture" in tool_names
 
-    # 2. Call screenshot tool (simulating Go agent tool invocation)
-    request_body = json.dumps({"input": "{}"}).encode()
+    # 2. Capture through the screenshot provider (not a forwarded tool)
+    request_body = json.dumps({"format": "jpeg", "quality": 80}).encode()
     req = urllib.request.Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/providers/screenshot",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -100,18 +100,11 @@ def test_go_agent_environment_bridge_client(bridge_server):
         assert resp.status == 200
         result = json.loads(resp.read().decode())
 
-    # Verify response format matches Go agent expectations
-    assert "output" in result
-    assert "is_error" in result
-    assert result["is_error"] is False
-    assert "duration_ms" in result
-    assert "raw_input" in result
-
-    # Parse output
-    output = json.loads(result["output"])
-    assert "data" in output
-    assert "width" in output
-    assert "height" in output
+    assert result["ok"] is True
+    output = result["data"]
+    assert "image" in output
+    assert output["meta"]["width"] == 1080
+    assert output["meta"]["height"] == 2400
 
     # 3. Call touch_gesture tool
     request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 800}}}).encode()
@@ -139,10 +132,10 @@ def test_bridge_server_compatible_with_hardware_board_api(bridge_server):
 
     base_url = bridge_server["base_url"]
 
-    # Test screenshot tool
-    request_body = json.dumps({"input": "{}"}).encode()
+    # Test tool response envelope
+    request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 800}}}).encode()
     req = urllib.request.Request(
-        f"{base_url}/api/tools/screenshot",
+        f"{base_url}/api/tools/touch_gesture",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -157,7 +150,7 @@ def test_bridge_server_compatible_with_hardware_board_api(bridge_server):
 
     # Verify tool descriptor format
     assert "name" in result["tool"]
-    assert result["tool"]["name"] == "screenshot"
+    assert result["tool"]["name"] == "touch_gesture"
 
     # Verify output is a JSON string (as Go agent returns)
     assert isinstance(result["output"], str)
@@ -171,11 +164,9 @@ def test_multiple_tools_in_sequence(bridge_server):
     env = bridge_server["env"]
 
     tools_to_test = [
-        ("screenshot", "{}"),
         ("touch_gesture", '{"type": "tap", "point": {"x": 500, "y": 800}}'),
         ("keyboard_text", '{"text": "hello"}'),
         ("touch_gesture", '{"type": "swipe", "start": {"x": 500, "y": 1000}, "end": {"x": 500, "y": 500}}'),
-        ("screenshot", "{}"),
     ]
 
     for tool_name, tool_input in tools_to_test:
