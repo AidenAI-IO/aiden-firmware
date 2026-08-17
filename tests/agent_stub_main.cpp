@@ -47,6 +47,13 @@ const char* kDefaultMeta =
     "{\"name\":\"agent\",\"fields\":["
     "{\"key\":\"input_mode\",\"widget\":\"select\","
     "\"enum\":[{\"value\":\"text\"}],\"default\":\"text\"}"
+    "]},"
+    "{\"name\":\"model_providers\",\"fields\":["
+    "{\"key\":\"type\",\"widget\":\"select\"},"
+    "{\"key\":\"api_key\",\"widget\":\"text\"},"
+    "{\"key\":\"base_url\",\"widget\":\"text\",\"visibleWhen\":{\"all\":["
+    "{\"field\":\"model_providers.type\",\"op\":\"in\","
+    "\"values\":[\"openai\",\"anthropic\",\"ollama\"]}]}}"
     "]}"
     "]}\n";
 

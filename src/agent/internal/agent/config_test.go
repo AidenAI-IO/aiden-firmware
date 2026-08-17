@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -586,23 +585,6 @@ func TestConfigScreenStableDefaults(t *testing.T) {
 	defaults := cfg.ScreenStableDefaults().Resolved()
 	if defaults.TimeoutMs != 7000 || defaults.StableMs != 800 || defaults.DiffThreshold != 2.5 {
 		t.Fatalf("resolved defaults = %#v, want timeout=7000 stable=800 diff=2.5", defaults)
-	}
-}
-
-func TestConfigTodoReminderToolCallsDefaultsAndOverrides(t *testing.T) {
-	cfg := Config{}
-	if got := cfg.TodoReminderToolCallsOrDefault(); got != 3 {
-		t.Fatalf("TodoReminderToolCallsOrDefault() = %d, want 3", got)
-	}
-
-	cfg.TodoReminderToolCalls = 2
-	if got := cfg.TodoReminderToolCallsOrDefault(); got != 2 {
-		t.Fatalf("TodoReminderToolCallsOrDefault() override = %d, want 2", got)
-	}
-
-	cfg.TodoReminderToolCalls = 0
-	if got := cfg.TodoReminderToolCallsOrDefault(); got != 3 {
-		t.Fatalf("TodoReminderToolCallsOrDefault() zero = %d, want 3", got)
 	}
 }
 
@@ -1529,14 +1511,6 @@ func TestVoiceSessionConfigValidationRejectsNegativeValues(t *testing.T) {
 			},
 			want: "voice_max_response_tokens must be >= 0",
 		},
-		{
-			name: "negative todo reminder tool calls",
-			cfg: Config{
-				Model:                 ModelConfig{Provider: "fake"},
-				TodoReminderToolCalls: -1,
-			},
-			want: "todo_reminder_tool_calls must be >= 0",
-		},
 	}
 
 	for _, tt := range tests {
@@ -1720,6 +1694,7 @@ api_key = "x"
 model = "y"
 
 [live_activity]
+enabled = false
 relay_url = "https://relay.example.com"
 relay_api_key = "relay-secret"
 board_id = "board-001"
@@ -1737,27 +1712,12 @@ timeout_sec = 3
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.LiveActivity.EnabledOrDefault() {
-		t.Fatal("LiveActivity.EnabledOrDefault() = false, want true")
-	}
-	if !cfg.LiveActivity.RelayConfigured() {
-		t.Fatal("LiveActivity.RelayConfigured() = false, want true")
-	}
-	if cfg.LiveActivity.RelayURL != "https://relay.example.com" || cfg.LiveActivity.RelayAPIKey != "relay-secret" {
-		t.Fatalf("relay config = %#v, want configured URL/key", cfg.LiveActivity)
-	}
-	if cfg.LiveActivity.BoardIDOrDefault() != "board-001" {
-		t.Fatalf("relay board_id = %q, want board-001", cfg.LiveActivity.BoardIDOrDefault())
-	}
-	if cfg.LiveActivity.APNsTopic() != "com.example.aiden.push-type.liveactivity" {
-		t.Fatalf("APNsTopic() = %q", cfg.LiveActivity.APNsTopic())
-	}
-	if cfg.LiveActivity.TimeoutOrDefault() != 3*time.Second {
-		t.Fatalf("TimeoutOrDefault() = %s, want 3s", cfg.LiveActivity.TimeoutOrDefault())
+	if cfg.LiveActivity.EnabledOrDefault() {
+		t.Fatal("LiveActivity.EnabledOrDefault() = true, want false")
 	}
 }
 
-func TestLoadRuntimeConfigFromDirGeneratesLiveActivityBoardID(t *testing.T) {
+func TestLoadRuntimeConfigFromDirDoesNotCreateLiveActivityBoardID(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	body := `
@@ -1765,9 +1725,7 @@ func TestLoadRuntimeConfigFromDirGeneratesLiveActivityBoardID(t *testing.T) {
 provider = "fake"
 
 [live_activity]
-relay_url = "https://relay.example.com"
-relay_api_key = "board-secret"
-board_id = "default"
+enabled = true
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -1777,118 +1735,10 @@ board_id = "default"
 	if err != nil {
 		t.Fatal(err)
 	}
-	boardID := cfg.LiveActivity.BoardIDOrDefault()
-	if boardID == "" || boardID == "default" || !strings.HasPrefix(boardID, "board-") {
-		t.Fatalf("generated board_id = %q, want non-default board-*", boardID)
+	if !cfg.LiveActivity.EnabledOrDefault() {
+		t.Fatal("LiveActivity.EnabledOrDefault() = false, want true")
 	}
-	data, err := os.ReadFile(filepath.Join(dir, liveActivityBoardIDFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(string(data)) != boardID {
-		t.Fatalf("persisted board_id = %q, want %q", strings.TrimSpace(string(data)), boardID)
-	}
-
-	cfg, err = LoadRuntimeConfigFromDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := cfg.LiveActivity.BoardIDOrDefault(); got != boardID {
-		t.Fatalf("reloaded board_id = %q, want persisted %q", got, boardID)
-	}
-}
-
-func TestLoadOrCreateLiveActivityBoardIDConcurrent(t *testing.T) {
-	dir := t.TempDir()
-	const workers = 16
-	var wg sync.WaitGroup
-	ids := make(chan string, workers)
-	errs := make(chan error, workers)
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			boardID, err := loadOrCreateLiveActivityBoardID(dir)
-			if err != nil {
-				errs <- err
-				return
-			}
-			ids <- boardID
-		}()
-	}
-	wg.Wait()
-	close(ids)
-	close(errs)
-	for err := range errs {
-		t.Fatal(err)
-	}
-	var first string
-	for id := range ids {
-		if first == "" {
-			first = id
-			continue
-		}
-		if id != first {
-			t.Fatalf("concurrent board_id = %q, want %q", id, first)
-		}
-	}
-	data, err := os.ReadFile(filepath.Join(dir, liveActivityBoardIDFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.TrimSpace(string(data)); got != first {
-		t.Fatalf("persisted board_id = %q, want %q", got, first)
-	}
-}
-
-func TestLiveActivityTimeoutDefaultsAndValidation(t *testing.T) {
-	cfg := Config{Model: ModelConfig{Provider: "fake"}}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() with default live activity timeout error = %v", err)
-	}
-	if got := cfg.LiveActivity.TimeoutOrDefault(); got != 10*time.Second {
-		t.Fatalf("TimeoutOrDefault() = %s, want 10s", got)
-	}
-
-	cfg.LiveActivity.TimeoutSec = -1
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "live_activity.timeout_sec") {
-		t.Fatalf("Validate() error = %v, want live_activity.timeout_sec validation error", err)
-	}
-}
-
-func TestLiveActivityRelayURLValidation(t *testing.T) {
-	cases := []string{
-		"http://relay.example.com",
-		"https://user:pass@relay.example.com",
-		"https://relay.example.com?token=abc",
-		"https://relay.example.com/#fragment",
-	}
-	for _, relayURL := range cases {
-		cfg := Config{
-			Model:        ModelConfig{Provider: "fake"},
-			LiveActivity: LiveActivityConfig{RelayURL: relayURL},
-		}
-		err := cfg.Validate()
-		if err == nil || !strings.Contains(err.Error(), "live_activity.relay_url") {
-			t.Fatalf("Validate() with relay_url %q error = %v, want live_activity.relay_url validation error", relayURL, err)
-		}
-	}
-}
-
-func TestLiveActivityRelayRequiresCredential(t *testing.T) {
-	cfg := LiveActivityConfig{RelayURL: "https://relay.example.com"}
-	if cfg.RelayConfigured() {
-		t.Fatal("RelayConfigured() = true without a device-scoped credential")
-	}
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "live_activity.relay_api_key") {
-		t.Fatalf("Validate() error = %v, want missing relay credential", err)
-	}
-	cfg.RelayAPIKey = "board-secret"
-	if !cfg.RelayConfigured() {
-		t.Fatal("RelayConfigured() = false with URL and credential")
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() with URL and credential error = %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "board_id")); !os.IsNotExist(err) {
+		t.Fatalf("board_id file exists or stat failed: %v", err)
 	}
 }

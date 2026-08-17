@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
@@ -140,5 +141,22 @@ func TestUserMessageAttachmentsRemainUnmarked(t *testing.T) {
 	}
 	if msg.Attachments[0].Source != "" {
 		t.Fatalf("user upload Source = %q, want empty", msg.Attachments[0].Source)
+	}
+}
+
+func TestUserMessageAttachmentPromptIncludesImageDimensions(t *testing.T) {
+	manager, err := InitializeContextManager("system", t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("InitializeContextManager() error = %v", err)
+	}
+	msg := userMessageFromInput(manager, "inspect", []InputAttachment{{
+		Kind:     AttachmentKindImage,
+		MIMEType: "image/jpeg",
+		Width:    447,
+		Height:   972,
+		Data:     []byte("jpeg"),
+	}})
+	if !strings.Contains(msg.Content, "width=447 height=972") {
+		t.Fatalf("content missing image dimensions: %q", msg.Content)
 	}
 }

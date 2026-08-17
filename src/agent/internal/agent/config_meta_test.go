@@ -258,13 +258,6 @@ func TestConfigMeta_SpecialRendererFieldsRemainAddressable(t *testing.T) {
 	}
 }
 
-func TestConfigMeta_PreservesConfigWebLiveActivityPhoneID(t *testing.T) {
-	idx := fieldIndex(t)
-	if _, ok := idx["live_activity.phone_id"]; !ok {
-		t.Fatal("live_activity.phone_id is missing from config web metadata")
-	}
-}
-
 // TestConfigMeta_NonRegistryEnumsMatchValidation covers enums that do not have
 // a runtime provider registry as their canonical source.
 func TestConfigMeta_NonRegistryEnumsMatchValidation(t *testing.T) {
@@ -434,7 +427,6 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"agent.voice_progress_speech_enabled", defaults.VoiceProgressSpeechEnabledOrDefault()},
 		{"agent.voice_max_response_tokens", defaults.VoiceMaxResponseTokens},
 		{"agent.load_all_tools", defaults.LoadAllTools},
-		{"agent.todo_reminder_tool_calls", defaults.TodoReminderToolCallsOrDefault()},
 		{"agent.max_iterations", defaults.MaxIterations},
 		{"agent.screenshot_keep_n", defaults.ScreenshotKeepN},
 		{"agent.screenshot_prune_interval", defaults.ScreenshotPruneInterval},
@@ -719,12 +711,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"search", reflect.TypeOf(SearchConfig{}), nil},
 		{"log", reflect.TypeOf(LogConfig{}), nil},
 		{"telemetry", reflect.TypeOf(TelemetryConfig{}), nil},
-		{"live_activity", reflect.TypeOf(LiveActivityConfig{}), map[string]bool{
-			"relay_url": true, "relay_api_key": true, "bundle_id": true,
-			"topic": true, "environment": true, "team_id": true,
-			"key_id": true, "private_key_path": true, "private_key_pem": true,
-			"timeout_sec": true,
-		}},
+		{"live_activity", reflect.TypeOf(LiveActivityConfig{}), nil},
 	}
 
 	// A voice credential field may be described on the flat section or on its

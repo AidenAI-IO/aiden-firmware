@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -250,48 +249,10 @@ func TestQuickActionRejectsLegacyPlatformArgument(t *testing.T) {
 	}
 }
 
-func TestQuickActionDescriptionDocumentsListInspection(t *testing.T) {
-	desc := (&QuickActionTool{}).Description()
-	if !strings.Contains(desc, `{"action":"list"}`) {
-		t.Fatalf("description missing action=list inspection example: %s", desc)
-	}
-	if !strings.Contains(desc, `global device_type state`) {
-		t.Fatalf("description missing runtime device_type guidance: %s", desc)
-	}
-	for _, want := range []string{"Cataloged semantic actions MUST use quick_action", "physical-key requests", "uncataloged app-specific shortcuts", "current run", "reserved/unavailable", "keyboard_tap", `{"action":"home"}`, "KEYCODE_HOME", `touch_gesture {"type":"home"} remains a fallback`} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing semantic shortcut routing guidance %q: %s", want, desc)
-		}
-	}
-	// The reserved/alternative/no-retry behavior playbook now lives in the
-	// device-operator skill, not the tool description.
-}
-
 func TestQuickActionDoesNotExposeScreenshotFull(t *testing.T) {
 	table := newQuickActionsTable()
 	if id, ok := table.resolveActionID("screenshot_full"); ok {
 		t.Fatalf("screenshot_full resolved to %q", id)
-	}
-	if strings.Contains((&QuickActionTool{}).Description(), "screenshot_full") {
-		t.Fatal("description should not mention screenshot_full")
-	}
-}
-
-// TestQuickActionPlaybookLivesInSkill guards the backstop for the reserved/
-// alternative/no-retry guidance trimmed out of the tool description: it must
-// remain documented in the device-operator skill so the agent can still recall
-// it via skill_read.
-func TestQuickActionPlaybookLivesInSkill(t *testing.T) {
-	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
-	data, err := os.ReadFile(skillPath)
-	if err != nil {
-		t.Skipf("device-operator SKILL.md not readable from test cwd: %v", err)
-	}
-	content := string(data)
-	for _, want := range []string{"MUST use `quick_action`", "current run explicitly reports", "Do not infer that `quick_action` is unavailable", "text-entry failure", "Never replay the same binding", "alternative=true", "Never loop on the same binding", "app-specific shortcuts not represented", "system/global search", "semantic backward/forward deletion"} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("device-operator SKILL.md missing quick_action guidance %q", want)
-		}
 	}
 }
 

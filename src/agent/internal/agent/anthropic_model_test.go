@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -785,6 +788,406 @@ func TestAnthropicModelAcceptsMultipleMessageDeltas(t *testing.T) {
 	if got := choice.GenerationInfo["completion_tokens"]; got != 2 {
 		t.Fatalf("completion tokens = %#v, want cumulative value 2", got)
 	}
+}
+
+func TestAnthropicModelRejectsUnknownStreamingEvent(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_unknown_event","usage":{}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"ok"}}`,
+			``,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`data: {"type":"relay_metadata","backend":"pool-b"}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicStreamRetry(0, 0))
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), `unknown event type "relay_metadata"`) {
+		t.Fatalf("GenerateContent() error = %v, want explicit unknown event protocol error", err)
+	}
+}
+
+func TestAnthropicModelRejectsUnknownContentBlockDelta(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_unknown_delta","usage":{}}}`,
+			``,
+			`data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":"ok"}}`,
+			``,
+			`data: {"type":"content_block_delta","index":2,"delta":{"type":"relay_text_delta","text":"ignored"}}`,
+			``,
+			`data: {"type":"content_block_stop","index":2}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicStreamRetry(0, 0))
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), `unknown content_block_delta type "relay_text_delta" for block 2`) {
+		t.Fatalf("GenerateContent() error = %v, want explicit unknown delta protocol error", err)
+	}
+}
+
+func TestAnthropicModelAcceptsCitationsDelta(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_citation","usage":{}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			``,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"documented answer"}}`,
+			``,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"source","document_index":0,"document_title":"reference","start_char_index":0,"end_char_index":6}}}`,
+			``,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	var streamed strings.Builder
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicStreamRetry(0, 0))
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(_ context.Context, chunk []byte) error {
+		streamed.Write(chunk)
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v, want citations_delta to be accepted", err)
+	}
+	if got := streamed.String(); got != "documented answer" {
+		t.Fatalf("streamed text = %q, want documented answer", got)
+	}
+	if got := response.Choices[0].Content; got != "documented answer" {
+		t.Fatalf("response content = %q, want documented answer", got)
+	}
+}
+
+func TestAnthropicModelLogsToolUseProtocolFailureDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Request-Id", "req_upstream_test")
+		w.Header().Set("Anthropic-Ratelimit-Requests-Remaining", "42")
+		w.Header().Set("Authorization", "Bearer response-secret")
+		w.Header().Set("Set-Cookie", "session=response-secret")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_missing_tool","usage":{"input_tokens":3}}}`,
+			``,
+			`data: {"type":"content_block_start","index":3,"content_block":{"type":"text","text":"I will use a tool."}}`,
+			``,
+			`data: {"type":"content_block_stop","index":3}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":6}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(),
+		withAnthropicRawHTTPLogger(newTestLLMRawHTTPLogger(logDir, "test-session")),
+		withAnthropicProtocolRetry(0, 0),
+	)
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), "tool_use stop_reason has no valid tool_use content") {
+		t.Fatalf("GenerateContent() error = %v, want missing tool_use protocol error", err)
+	}
+
+	diagnostic := anthropicRawHTTPResponseDiagnostic(t, readRawHTTPLog(t, logDir))
+	if got := diagnostic["response_id"]; got != "msg_missing_tool" {
+		t.Errorf("response_id = %#v, want msg_missing_tool", got)
+	}
+	if got := diagnostic["upstream_request_id"]; got != "req_upstream_test" {
+		t.Errorf("upstream_request_id = %#v, want req_upstream_test", got)
+	}
+	headers, ok := diagnostic["response_headers"].(map[string]any)
+	if !ok || headers["request-id"] != "req_upstream_test" {
+		t.Errorf("response_headers = %#v, want preserved request-id", diagnostic["response_headers"])
+	}
+	if headers["anthropic-ratelimit-requests-remaining"] != "42" {
+		t.Errorf("response_headers = %#v, want preserved rate-limit header", headers)
+	}
+	if _, ok := headers["authorization"]; ok {
+		t.Errorf("response_headers = %#v, want authorization excluded", headers)
+	}
+	if _, ok := headers["set-cookie"]; ok {
+		t.Errorf("response_headers = %#v, want set-cookie excluded", headers)
+	}
+	eventCounts, ok := diagnostic["event_type_counts"].(map[string]any)
+	if !ok || eventCounts["message_start"] != float64(1) || eventCounts["content_block_start"] != float64(1) ||
+		eventCounts["content_block_stop"] != float64(1) || eventCounts["message_delta"] != float64(1) ||
+		eventCounts["message_stop"] != float64(1) {
+		t.Errorf("event_type_counts = %#v, want a count for every received event type", diagnostic["event_type_counts"])
+	}
+	blocks, ok := diagnostic["content_blocks"].([]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("content_blocks = %#v, want one block summary", diagnostic["content_blocks"])
+	}
+	block, ok := blocks[0].(map[string]any)
+	if !ok || block["index"] != float64(3) || block["type"] != "text" {
+		t.Errorf("content block summary = %#v, want index 3 type text", blocks[0])
+	}
+}
+
+func TestAnthropicModelLogsProtocolFailureToDaemonLogWithoutRawLogger(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Request-Id", "req_daemon_log")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_daemon_log","usage":{}}}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	var daemonLog bytes.Buffer
+	originalOutput := log.Writer()
+	log.SetOutput(&daemonLog)
+	t.Cleanup(func() { log.SetOutput(originalOutput) })
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(),
+		withAnthropicProtocolRetry(0, 0),
+	)
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), "tool_use stop_reason has no valid tool_use content") {
+		t.Fatalf("GenerateContent() error = %v, want missing tool_use protocol error", err)
+	}
+
+	logged := daemonLog.String()
+	for _, want := range []string{
+		`[ERROR] [anthropic] stream protocol failure`,
+		`"response_id":"msg_daemon_log"`,
+		`"upstream_request_id":"req_daemon_log"`,
+		`"raw_sse":`,
+	} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("daemon log missing %q:\n%s", want, logged)
+		}
+	}
+}
+
+func TestAnthropicModelBoundsRawSSEInDaemonProtocolFailureLog(t *testing.T) {
+	const paddingSize = 512 * 1024
+	padding := strings.Repeat("x", paddingSize)
+	rawSSE := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_large_daemon_log","usage":{}}}`,
+		``,
+		`: ` + padding,
+		``,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}`,
+		``,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(rawSSE))
+	}))
+	defer server.Close()
+
+	var daemonLog bytes.Buffer
+	originalOutput := log.Writer()
+	log.SetOutput(&daemonLog)
+	t.Cleanup(func() { log.SetOutput(originalOutput) })
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(),
+		withAnthropicProtocolRetry(0, 0),
+	)
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), "tool_use stop_reason has no valid tool_use content") {
+		t.Fatalf("GenerateContent() error = %v, want missing tool_use protocol error", err)
+	}
+
+	diagnostic := anthropicDaemonProtocolFailureDiagnostic(t, daemonLog.String())
+	if got := diagnostic["raw_sse_total_bytes"]; got != float64(len(rawSSE)) {
+		t.Errorf("raw_sse_total_bytes = %#v, want %d", got, len(rawSSE))
+	}
+	if got := diagnostic["raw_sse_truncated"]; got != true {
+		t.Errorf("raw_sse_truncated = %#v, want true", got)
+	}
+	if got := len(daemonLog.String()); got >= paddingSize/2 {
+		t.Errorf("daemon protocol failure log is %d bytes for a %d-byte stream; want a fixed-size diagnostic cap", got, len(rawSSE))
+	}
+}
+
+func TestAnthropicSSECaptureBoundsMemoryWithoutRawLogging(t *testing.T) {
+	capture := newAnthropicSSECapture(false)
+	t.Cleanup(capture.Close)
+
+	payload := bytes.Repeat([]byte("x"), anthropicDaemonRawSSELimit*3)
+	if n, err := capture.Write(payload); err != nil || n != len(payload) {
+		t.Fatalf("capture.Write() = (%d, %v), want (%d, nil)", n, err, len(payload))
+	}
+	if got := len(capture.daemonBytes()); got != anthropicDaemonRawSSELimit {
+		t.Fatalf("daemon capture bytes = %d, want %d", got, anthropicDaemonRawSSELimit)
+	}
+	if got := capture.totalBytes; got != len(payload) {
+		t.Fatalf("total bytes = %d, want %d", got, len(payload))
+	}
+	if capture.rawFile != nil {
+		t.Fatal("raw capture file created while raw HTTP logging is disabled")
+	}
+}
+
+func TestAnthropicSSECaptureUsesBoundedFileForRawLogging(t *testing.T) {
+	capture := newAnthropicSSECapture(true)
+	if capture.rawFile == nil {
+		t.Fatal("raw capture file was not created")
+	}
+	rawPath := capture.rawFile.Name()
+	t.Cleanup(capture.Close)
+
+	payload := bytes.Repeat([]byte("x"), anthropicRawHTTPRawSSELimit+1024)
+	if n, err := capture.Write(payload); err != nil || n != len(payload) {
+		t.Fatalf("capture.Write() = (%d, %v), want (%d, nil)", n, err, len(payload))
+	}
+	if got := len(capture.daemonBytes()); got != anthropicDaemonRawSSELimit {
+		t.Fatalf("daemon capture bytes = %d, want %d", got, anthropicDaemonRawSSELimit)
+	}
+	raw, err := capture.rawHTTPBytes()
+	if err != nil {
+		t.Fatalf("rawHTTPBytes() error = %v", err)
+	}
+	if got := len(raw); got != anthropicRawHTTPRawSSELimit {
+		t.Fatalf("raw HTTP capture bytes = %d, want %d", got, anthropicRawHTTPRawSSELimit)
+	}
+	if got := capture.totalBytes; got != len(payload) {
+		t.Fatalf("total bytes = %d, want %d", got, len(payload))
+	}
+	capture.Close()
+	if _, err := os.Stat(rawPath); !os.IsNotExist(err) {
+		t.Fatalf("raw capture file still exists after Close(): %v", err)
+	}
+}
+
+func TestAnthropicModelPreservesRawSSEBytesInProtocolFailureDiagnostic(t *testing.T) {
+	rawSSE := append([]byte(
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_invalid_utf8\",\"usage\":{}}}\r\n\r\n"+
+			"data: ",
+	), 0xff, 0xfe)
+	rawSSE = append(rawSSE, []byte("\r\n\r\n")...)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(rawSSE)
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(),
+		withAnthropicRawHTTPLogger(newTestLLMRawHTTPLogger(logDir, "test-session")),
+		withAnthropicStreamRetry(0, 0),
+	)
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), "decode event") {
+		t.Fatalf("GenerateContent() error = %v, want invalid event protocol error", err)
+	}
+
+	diagnostic := anthropicRawHTTPResponseDiagnostic(t, readRawHTTPLog(t, logDir))
+	encoded, ok := diagnostic["raw_sse_base64"].(string)
+	if !ok || encoded == "" {
+		t.Fatalf("raw_sse_base64 = %#v, want lossless raw SSE bytes", diagnostic["raw_sse_base64"])
+	}
+	decoded, decodeErr := base64.StdEncoding.DecodeString(encoded)
+	if decodeErr != nil {
+		t.Fatalf("decode raw_sse_base64: %v", decodeErr)
+	}
+	if !bytes.Equal(decoded, rawSSE) {
+		t.Fatalf("decoded raw SSE bytes differ:\n got %q\nwant %q", decoded, rawSSE)
+	}
+	if got := diagnostic["raw_sse_total_bytes"]; got != float64(len(rawSSE)) {
+		t.Errorf("raw_sse_total_bytes = %#v, want %d", got, len(rawSSE))
+	}
+	if got := diagnostic["raw_sse_truncated"]; got != false {
+		t.Errorf("raw_sse_truncated = %#v, want false", got)
+	}
+}
+
+func anthropicDaemonProtocolFailureDiagnostic(t *testing.T, logText string) map[string]any {
+	t.Helper()
+	const marker = "[ERROR] [anthropic] stream protocol failure "
+	markerIndex := strings.Index(logText, marker)
+	if markerIndex < 0 {
+		t.Fatalf("daemon log has no Anthropic protocol failure diagnostic:\n%s", logText)
+	}
+	encoded := strings.TrimSpace(logText[markerIndex+len(marker):])
+	var diagnostic map[string]any
+	if err := json.Unmarshal([]byte(encoded), &diagnostic); err != nil {
+		t.Fatalf("decode daemon protocol failure diagnostic: %v\n%s", err, encoded)
+	}
+	return diagnostic
+}
+
+func anthropicRawHTTPResponseDiagnostic(t *testing.T, logText string) map[string]any {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(logText), "\n") {
+		var entry struct {
+			Kind string `json:"kind"`
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("decode raw HTTP log entry: %v\n%s", err, line)
+		}
+		if entry.Kind != "response" {
+			continue
+		}
+		var diagnostic map[string]any
+		if err := json.Unmarshal([]byte(entry.Body), &diagnostic); err != nil {
+			t.Fatalf("decode Anthropic response diagnostic: %v\n%s", err, entry.Body)
+		}
+		return diagnostic
+	}
+	t.Fatal("raw HTTP log has no response entry")
+	return nil
 }
 
 func TestAnthropicModelLogsResponseOnEarlyStreamFailure(t *testing.T) {

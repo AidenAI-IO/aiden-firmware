@@ -1,0 +1,6 @@
+**
+!src/
+!src/**
+!docker/
+!docker/dev/
+!docker/dev/**

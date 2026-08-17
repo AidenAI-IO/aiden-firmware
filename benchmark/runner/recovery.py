@@ -51,18 +51,35 @@ def prepare_task_isolation(
     if not recover_agent_after_timeout(client, timeout_sec=min(30, ready_timeout_sec)):
         raise ResetError("agent did not recover before task isolation")
 
+    environment_setup_required = bool(environment_url and not task.input_screenshot)
+    environment_setup_done = not environment_setup_required
     last_error: Exception | None = None
     for attempt in range(1, setup_attempts + 1):
         try:
             client.clear_history()
-            if environment_url and not task.input_screenshot:
+        except (AgentTimeoutError, AgentRequestError) as e:
+            last_error = e
+            if attempt >= setup_attempts:
+                break
+            per_attempt_timeout = max(15, ready_timeout_sec // setup_attempts)
+            wait_for_agent_ready(client, timeout_sec=per_attempt_timeout)
+            time.sleep(1)
+            continue
+
+        if environment_setup_required and not environment_setup_done:
+            try:
                 call_environment_setup(
                     environment_url,
                     task_id=benchmark_task_id or task.id,
                     timeout=DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
+                    app_ids=task.app_ids,
                 )
-                per_task_setup(client, task.setup, prompt_prefix=suite.prompt_prefix)
-            elif not task.input_screenshot:
+            except (ResetError, AgentTimeoutError, AgentRequestError):
+                raise
+            environment_setup_done = True
+
+        try:
+            if not task.input_screenshot:
                 per_task_setup(client, task.setup, prompt_prefix=suite.prompt_prefix)
             return
         except (ResetError, AgentTimeoutError, AgentRequestError) as e:
@@ -70,7 +87,13 @@ def prepare_task_isolation(
             if attempt >= setup_attempts:
                 break
             per_attempt_timeout = max(15, ready_timeout_sec // setup_attempts)
-            wait_for_agent_ready(client, timeout_sec=per_attempt_timeout)
+            if not recover_agent_after_timeout(
+                client, timeout_sec=per_attempt_timeout
+            ):
+                raise ResetError(
+                    "agent did not recover after per-task setup failure"
+                ) from e
+            environment_setup_done = not environment_setup_required
             time.sleep(1)
 
     if last_error is None:

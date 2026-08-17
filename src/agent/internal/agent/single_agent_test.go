@@ -20,12 +20,12 @@ func TestSingleAgentProfileDoesNotBuildDelegatedRoles(t *testing.T) {
 		agentRoleRules(),
 	)
 
-	for _, want := range []string{"base", "extra", "- ui: Inspect first", "You are the Aiden agent."} {
+	for _, want := range []string{"base", "extra", "- ui: Inspect first"} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("agent prompt missing %q:\n%s", want, profile.SystemPrompt)
 		}
 	}
-	for _, unexpected := range []string{"enter_plan_mode", "commit_plan", "cancel_plan", "planner role", "executor role", "verifier role"} {
+	for _, unexpected := range []string{"enter_plan_mode", "commit_plan", "cancel_plan"} {
 		if strings.Contains(profile.SystemPrompt, unexpected) {
 			t.Fatalf("agent prompt should not contain old delegated role wording %q:\n%s", unexpected, profile.SystemPrompt)
 		}

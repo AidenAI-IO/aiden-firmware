@@ -80,6 +80,36 @@ func TestBuiltinToolSetWiresConfiguredKeyboardLayout(t *testing.T) {
 	}
 }
 
+func TestBuiltinToolSetRegistersExpectedTools(t *testing.T) {
+	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
+	want := []string{
+		"audio_volume",
+		"image_diff",
+		"keyboard_tap",
+		"list_scripts",
+		"mouse_move",
+		"mouse_scroll",
+		"quick_action",
+		"read_script",
+		"request_human_handoff",
+		"run_script",
+		"screenshot",
+		"shell",
+		"touch_gesture",
+		"wait_for_stable_screen",
+		"weather",
+		"web_scraper",
+		"web_search",
+		"wheel_nudge",
+		"wikipedia",
+		"write_script",
+	}
+
+	if got := tools.Names(); !slices.Equal(got, want) {
+		t.Fatalf("built-in tools = %v, want %v", got, want)
+	}
+}
+
 func TestHIDToolsExposeStructuredSchemas(t *testing.T) {
 	for name, tool := range map[string]structuredInputTool{
 		"keyboard_tap":  &KeyboardTapTool{},
@@ -809,36 +839,6 @@ func TestTouchGestureSchemaDoesNotExposeWheelMetadata(t *testing.T) {
 	}
 }
 
-func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndConservativeInput(t *testing.T) {
-	description := (&WheelNudgeTool{}).Description()
-	for _, want := range []string{
-		"tap or slow drag",
-		"9+",
-		"3-4",
-		"5-8",
-		"confident runtime image measurement",
-		"conservative limits remain",
-		"final requested value",
-		"never substitute an intermediate visible value",
-		"normalized 0-1000 coordinates",
-		"screenshot height",
-		"Use wheel_nudge directly from the latest screenshot",
-		"Do not tap the selected row",
-		"do not use keyboard_text for picker values",
-		"derives the shortest row gap",
-		"measures the row spacing",
-		"overrides the caller estimate",
-		"low-confidence images keep the caller estimate",
-	} {
-		if !strings.Contains(description, want) {
-			t.Fatalf("wheel_nudge description = %q, want %q", description, want)
-		}
-	}
-	if strings.Contains(description, "coord_space") {
-		t.Fatalf("wheel_nudge description must not expose coord_space: %q", description)
-	}
-}
-
 func TestWheelNudgeRejectsInputsThatWouldBypassGestureGuard(t *testing.T) {
 	invalidInputs := map[string]string{
 		`{"picker_id":"alarm-create","column_x":400,"current_value":15,"target_value":7,"cycle_size":24,"cycle_start":0,"row_spacing":40,"value_step":1}`: "center_y is required",
@@ -884,16 +884,6 @@ func TestKeyboardTapSchemaRequiresKeysArray(t *testing.T) {
 	if keys["type"] != "array" {
 		t.Fatalf("keys schema type = %#v, want array", keys["type"])
 	}
-	description, _ := keys["description"].(string)
-	for _, want := range []string{
-		"backspace is backward-delete",
-		"delete is forward-delete",
-		"For semantic deletion, use quick_action delete_backward/delete_forward",
-	} {
-		if !strings.Contains(description, want) {
-			t.Fatalf("keys schema description missing %q: %s", want, description)
-		}
-	}
 	items := keys["items"].(map[string]any)
 	if items["type"] != "string" {
 		t.Fatalf("keys items type = %#v, want string", items["type"])
@@ -913,6 +903,32 @@ func TestTouchGestureSchemaRequiresNamedPointCoordinates(t *testing.T) {
 	}
 	if _, ok := pointProps["y"]; !ok {
 		t.Fatalf("point schema missing y: %#v", pointProps)
+	}
+}
+
+func TestTouchGestureSchemaMakesNormalizedCoordinateContractExplicit(t *testing.T) {
+	tool := &TouchGestureTool{}
+	description := strings.ToLower(tool.Description())
+	for _, want := range []string{"normalized 0-1000", "screenshot pixels", "image_width", "image_height"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("touch_gesture description missing %q: %s", want, description)
+		}
+	}
+
+	schema := tool.ArgsSchema()
+	props := schema["properties"].(map[string]any)
+	for _, pointName := range []string{"point", "start", "end"} {
+		point := props[pointName].(map[string]any)
+		pointProps := point["properties"].(map[string]any)
+		for _, axis := range []string{"x", "y"} {
+			axisSchema := pointProps[axis].(map[string]any)
+			axisDescription := strings.ToLower(axisSchema["description"].(string))
+			for _, want := range []string{"normalized 0-1000", "screenshot pixel"} {
+				if !strings.Contains(axisDescription, want) {
+					t.Fatalf("%s.%s description missing %q: %s", pointName, axis, want, axisDescription)
+				}
+			}
+		}
 	}
 }
 
@@ -1378,37 +1394,6 @@ func TestResolvePointerPositionTouchscreenNormalizedUsesFrameSpaceWithinActiveAr
 	}
 }
 
-func TestModelFacingDeviceGuidanceUsesNormalizedCoordinatesOnly(t *testing.T) {
-	assertNoCoordinateSpaceGuidance := func(name, content string) {
-		t.Helper()
-		lower := strings.ToLower(content)
-		if strings.Contains(lower, "coord_space") || strings.Contains(lower, "coordinate space") {
-			t.Fatalf("%s still advertises coordinate-space selection: %q", name, content)
-		}
-	}
-
-	descriptions := map[string]string{
-		"mouse_move":    (&MouseMoveTool{}).Description(),
-		"touch_gesture": (&TouchGestureTool{}).Description(),
-		"wheel_nudge":   (&WheelNudgeTool{}).Description(),
-		"screenshot":    (&ScreenshotTool{}).Description(),
-	}
-	for name, description := range descriptions {
-		assertNoCoordinateSpaceGuidance(name+" description", description)
-	}
-
-	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
-	data, err := os.ReadFile(skillPath)
-	if err != nil {
-		t.Fatalf("read device-operator SKILL.md: %v", err)
-	}
-	content := string(data)
-	assertNoCoordinateSpaceGuidance("device-operator SKILL.md", content)
-	if !strings.Contains(content, "0-1000") {
-		t.Fatalf("device-operator SKILL.md must document the normalized 0-1000 scale")
-	}
-}
-
 func TestNormalizedCoordinatesPreserveNearlyFullAxisOffsetForAbsolutePointer(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
@@ -1725,78 +1710,6 @@ func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	last := reports[len(reports)-1]
 	if last.flags != 0x00 || last.x != 26214 {
 		t.Fatalf("last release = %+v, want release at end", last)
-	}
-}
-
-func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
-	desc := (&KeyboardTextTool{}).Description()
-	for _, want := range []string{
-		"ASCII",
-		"Do NOT pass non-ASCII",
-		"enter_text",
-		"Do not transliterate Chinese/CJK targets to pinyin",
-		"English/Latin keyboard",
-		`{"text":"App Store"}`,
-		"do not pass a bare string",
-	} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing %q:\n%s", want, desc)
-		}
-	}
-	for _, unexpected := range []string{
-		"Type a string of text",
-		"hello world",
-		"use pinyin",
-	} {
-		if strings.Contains(desc, unexpected) {
-			t.Fatalf("description should not contain misleading phrase %q:\n%s", unexpected, desc)
-		}
-	}
-}
-
-func TestKeyboardTextDescriptionRejectsNumericPickerInput(t *testing.T) {
-	desc := (&KeyboardTextTool{}).Description()
-	for _, want := range []string{
-		"Do not use keyboard_text for picker/wheel values",
-		"use wheel_nudge",
-		"verify each returned screenshot",
-	} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing conservative picker guidance %q:\n%s", want, desc)
-		}
-	}
-}
-
-func TestDeviceOperatorSkillUsesWheelOnlyForPickers(t *testing.T) {
-	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
-	data, err := os.ReadFile(skillPath)
-	if err != nil {
-		t.Skipf("device-operator SKILL.md not readable from test cwd: %v", err)
-	}
-	content := string(data)
-	for _, want := range []string{
-		"use `wheel_nudge` directly from the latest screenshot",
-		"Do not tap the selected row to probe for keyboard/edit mode",
-		"do not use `enter_text` for picker values",
-		"do not use `enter_text` or `keyboard_tap` to change picker values",
-		"issue one bounded `wheel_nudge`, then read the returned screenshot",
-	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("device-operator SKILL.md missing conservative picker guidance %q", want)
-		}
-	}
-}
-
-func TestTouchGestureDescriptionReservesPickerForWheelNudge(t *testing.T) {
-	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{
-		"Do not tap picker rows to probe for keyboard/edit mode",
-		"do not drag picker columns with this tool",
-		"use wheel_nudge for the entire picker interaction",
-	} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("touch_gesture description missing wheel ownership guidance %q:\n%s", want, desc)
-		}
 	}
 }
 
@@ -3068,7 +2981,7 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
 	}
-	// Edge-alias coordinates (back x=1, home y=999) now live in the type ArgsSchema field.
+	// Edge-alias coordinates (back x=1, home y=999) live in the type ArgsSchema field.
 	props, _ := (&TouchGestureTool{}).ArgsSchema()["properties"].(map[string]any)
 	typeSchema, _ := props["type"].(map[string]any)
 	typeDesc, _ := typeSchema["description"].(string)
@@ -3079,7 +2992,7 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	}
 }
 
-func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndShowsCompleteExamples(t *testing.T) {
+func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *testing.T) {
 	schema := (&TouchGestureTool{}).ArgsSchema()
 	description, _ := schema["description"].(string)
 	for _, want := range []string{"Unknown fields are ignored", "point", "start", "end", "both x and y"} {

@@ -9,12 +9,16 @@ import (
 )
 
 func TestModelProviderRegistryIsCanonicalSource(t *testing.T) {
-	want := modelProviderTypes()
-	if len(want) == 0 {
+	runtimeTypes := modelProviderTypes()
+	if len(runtimeTypes) == 0 {
 		t.Fatal("model provider registry is empty")
+	}
+	if !providerTypeListContains(runtimeTypes, "fake") {
+		t.Fatalf("runtime model provider types = %#v, want fake test provider", runtimeTypes)
 	}
 
 	seen := make(map[string]bool, len(modelProviderDefinitions))
+	wantUITypes := make([]string, 0, len(modelProviderDefinitions))
 	for _, definition := range modelProviderDefinitions {
 		if definition.providerType == "" || definition.providerType != strings.ToLower(strings.TrimSpace(definition.providerType)) {
 			t.Errorf("model provider type is not canonical: %q", definition.providerType)
@@ -29,18 +33,45 @@ func TestModelProviderRegistryIsCanonicalSource(t *testing.T) {
 		if !isKnownProviderType(definition.providerType) {
 			t.Errorf("registered model provider %q is rejected by validation", definition.providerType)
 		}
+		if !definition.hiddenFromConfigUI {
+			wantUITypes = append(wantUITypes, definition.providerType)
+		}
+	}
+	uiTypes := modelProviderTypesForConfigUI()
+	if !reflect.DeepEqual(uiTypes, wantUITypes) {
+		t.Fatalf("modelProviderTypesForConfigUI() = %#v, want %#v", uiTypes, wantUITypes)
+	}
+
+	fake, ok := lookupModelProviderDefinition("fake")
+	if !ok {
+		t.Fatal("fake provider must remain available to the runtime registry")
+	}
+	if !fake.hiddenFromConfigUI {
+		t.Fatal("fake provider must be explicitly hidden from config UI metadata")
 	}
 
 	idx := fieldIndex(t)
 	for _, path := range []string{"model.provider", "model_providers.type"} {
-		if got := enumOptionValues(idx[path].Enum); !reflect.DeepEqual(got, want) {
-			t.Errorf("%s enum = %#v, want registry order %#v", path, got, want)
+		if got := enumOptionValues(idx[path].Enum); !reflect.DeepEqual(got, uiTypes) {
+			t.Errorf("%s enum = %#v, want visible registry order %#v", path, got, uiTypes)
+		}
+		if providerTypeListContains(enumOptionValues(idx[path].Enum), "fake") {
+			t.Errorf("%s enum exposes fake test provider", path)
 		}
 	}
 }
 
 func TestModelProviderBaseURLCapabilityIsCanonicalSource(t *testing.T) {
-	allowed := modelProviderTypesAllowingCustomBaseURL()
+	wantAllowed := make([]string, 0, len(modelProviderDefinitions))
+	for _, definition := range modelProviderDefinitions {
+		if !definition.hiddenFromConfigUI && definition.allowsCustomBaseURL {
+			wantAllowed = append(wantAllowed, definition.providerType)
+		}
+	}
+	allowed := modelProviderTypesAllowingCustomBaseURLForConfigUI()
+	if !reflect.DeepEqual(allowed, wantAllowed) {
+		t.Fatalf("modelProviderTypesAllowingCustomBaseURLForConfigUI() = %#v, want %#v", allowed, wantAllowed)
+	}
 	idx := fieldIndex(t)
 	for _, test := range []struct {
 		path  string
@@ -175,4 +206,13 @@ func enumOptionValues(options []EnumOption) []string {
 		values = append(values, option.Value)
 	}
 	return values
+}
+
+func providerTypeListContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

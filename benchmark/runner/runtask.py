@@ -6,6 +6,9 @@ import shutil
 import time
 from pathlib import Path
 from typing import Any
+
+from PIL import Image
+
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
 from runner.assertions import (
     evaluate_expected_answer,
@@ -18,7 +21,7 @@ from runner.judge import judge_task, JudgeConfig
 from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 from runner.recovery import prepare_task_isolation, recover_agent_after_timeout
 from runner.reset import ResetError
-from runner.suite import Suite, TaskSpec
+from runner.suite import Suite, TaskSpec, effective_mock_environment
 from runner.trace import extract_trace
 from runner.report import now_iso
 
@@ -69,6 +72,7 @@ def evaluate_task_history(
     started_at: str | None = None,
     started_mono: float | None = None,
     active_skills: list[str] | None = None,
+    episode: dict[str, Any] | None = None,
 ) -> TaskResult:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     started = started_at or now_iso()
@@ -118,16 +122,36 @@ def evaluate_task_history(
         "final_response": trace.final_response,
         "total_tool_calls": trace.total_tool_calls,
     }
-    (artifact_dir / "trace.json").write_text(
-        json.dumps(trace_dict, ensure_ascii=False, indent=2), encoding="utf-8")
     last_shot_path = post_screenshot if post_screenshot is not None and post_screenshot.exists() else None
     base.metrics.update({"wall_ms": wall_ms, "tool_calls": trace.total_tool_calls,
                          "screenshots_taken": sum(1 for tc in trace.tool_calls if tc.has_screenshot),
                          "pre_screenshot_file": bool(pre_screenshot and pre_screenshot.exists()),
                          "post_screenshot_file": bool(post_screenshot and post_screenshot.exists())})
+    recall_outcome = None
+    if task.expected_recalled_memory_ids:
+        recall_outcome = evaluate_expected_recalled_memory_ids(
+            history,
+            task.expected_recalled_memory_ids,
+            episode=episode,
+        )
+        base.metrics.update({
+            "expected_recalled_memory_ids": recall_outcome.expected_memory_ids,
+            "recalled_memory_ids": recall_outcome.recalled_memory_ids,
+            "memory_recall_evidence_source": recall_outcome.evidence_source,
+            "expected_recalled_memory_match": recall_outcome.passed,
+        })
+        trace_dict.update({
+            "recalled_memory_ids": recall_outcome.recalled_memory_ids,
+            "memory_recall_evidence_source": recall_outcome.evidence_source,
+            "expected_recalled_memory_match": recall_outcome.passed,
+        })
+    (artifact_dir / "trace.json").write_text(
+        json.dumps(trace_dict, ensure_ascii=False, indent=2), encoding="utf-8")
     outcome = evaluate_hard_assertions(trace, task.hard_assertions, timed_out=timed_out)
     base.hard_assertions = outcome.results
     base.hard_assertion_failures = list(outcome.failures)
+    if recall_outcome is not None:
+        base.hard_assertions.expected_recalled_memory = recall_outcome.passed
     if not outcome.all_passed:
         base.status = "timeout" if timed_out else "failed"
         base.finished_at = now_iso()
@@ -154,29 +178,37 @@ def evaluate_task_history(
             base.status = "failed"
             base.finished_at = now_iso()
             return base
-    if task.expected_recalled_memory_ids:
-        recall_outcome = evaluate_expected_recalled_memory_ids(history, task.expected_recalled_memory_ids)
-        base.metrics.update({
-            "expected_recalled_memory_ids": recall_outcome.expected_memory_ids,
-            "recalled_memory_ids": recall_outcome.recalled_memory_ids,
-            "expected_recalled_memory_match": recall_outcome.passed,
-        })
-        base.hard_assertions.expected_recalled_memory = recall_outcome.passed
-        if not recall_outcome.passed:
+    if recall_outcome is not None:
+        if recall_outcome.passed is None:
+            base.status = "judge_error"
+            base.metrics["judge_error"] = (
+                "Memory recall evidence is unavailable: episode could not be used "
+                "and inline recall_memory results were incomplete or unparsable."
+            )
+            base.finished_at = now_iso()
+            return base
+        if recall_outcome.passed is False:
             missing_memory_ids = [
                 memory_id
                 for memory_id in recall_outcome.expected_memory_ids
                 if memory_id not in recall_outcome.recalled_memory_ids
             ]
+            if recall_outcome.recall_memory_called:
+                actual = (
+                    f"Missing: {_format_csv(missing_memory_ids)}. "
+                    f"Recalled: {_format_csv(recall_outcome.recalled_memory_ids)}."
+                )
+            else:
+                actual = (
+                    "No recall_memory call was found. "
+                    f"Missing: {_format_csv(missing_memory_ids)}. Recalled: none."
+                )
             base.hard_assertion_failures.append(
                 HardAssertionFailure(
                     id="expected_recalled_memory",
                     label="Expected Recalled Memory",
                     requirement=f"Must recall memory id(s): {_format_csv(recall_outcome.expected_memory_ids)}.",
-                    actual=(
-                        f"Missing: {_format_csv(missing_memory_ids)}. "
-                        f"Recalled: {_format_csv(recall_outcome.recalled_memory_ids)}."
-                    ),
+                    actual=actual,
                 )
             )
             base.status = "failed"
@@ -257,18 +289,53 @@ def run_one_task(
         base.finished_at = now_iso()
         return base
     pre_path = artifact_dir / "pre.jpg"
-    # Resolve input_screenshot: use static image as pre and send as attachment
     attachments = None
-    if task.input_screenshot:
-        screenshot_path = suite.source_path.parent / task.input_screenshot
-        if not screenshot_path.exists():
-            base.status = "skipped"
-            base.metrics = {"error": f"input_screenshot not found: {screenshot_path}"}
-            base.finished_at = now_iso()
-            return base
-        shutil.copy(screenshot_path, pre_path)
-        img_b64 = base64.b64encode(screenshot_path.read_bytes()).decode("ascii")
-        attachments = [{"kind": "image", "mime_type": "image/jpeg", "data": img_b64}]
+    input_screenshot_path = (
+        suite.source_path.parent / task.input_screenshot
+        if task.input_screenshot
+        else None
+    )
+    if input_screenshot_path is not None and not input_screenshot_path.exists():
+        base.status = "skipped"
+        base.metrics = {
+            "error": f"input_screenshot not found: {input_screenshot_path}"
+        }
+        base.finished_at = now_iso()
+        return base
+    mock_environment = effective_mock_environment(suite, task)
+    uses_single_frame_mock = bool(
+        mock_environment is not None and mock_environment.single_frame
+    )
+    if uses_single_frame_mock:
+        if environment_url:
+            try:
+                take_environment_screenshot(
+                    environment_url,
+                    pre_path,
+                    benchmark_task_id=benchmark_task_id,
+                )
+            except Exception as e:
+                base.metrics["pre_screenshot_error"] = str(e)[:300]
+        else:
+            base.metrics["pre_screenshot_error"] = (
+                "environment_url is required for mock screenshot capture"
+            )
+        if not pre_path.exists() and input_screenshot_path is not None:
+            shutil.copy(input_screenshot_path, pre_path)
+    elif input_screenshot_path is not None:
+        shutil.copy(input_screenshot_path, pre_path)
+        img_b64 = base64.b64encode(input_screenshot_path.read_bytes()).decode("ascii")
+        with Image.open(input_screenshot_path) as image:
+            width, height = image.size
+        attachments = [
+            {
+                "kind": "image",
+                "mime_type": "image/jpeg",
+                "width": width,
+                "height": height,
+                "data": img_b64,
+            }
+        ]
     else:
         if environment_url:
             try:
@@ -284,6 +351,8 @@ def run_one_task(
                 "environment_url is required for live screenshot capture"
             )
     timed_out = False
+    chat_completed = False
+    episode = None
     try:
         prompt = task.prompt
         if suite.prompt_prefix:
@@ -296,6 +365,7 @@ def run_one_task(
             chat_kwargs["skills"] = active_skills
         chat = client.chat(prompt, **chat_kwargs)
         history = chat.history
+        chat_completed = True
     except AgentTimeoutError:
         timed_out = True
         history = client_history_or_empty(client)
@@ -304,11 +374,32 @@ def run_one_task(
     except Exception as e:
         history = client_history_or_empty(client)
         base.metrics["agent_error"] = str(e)[:300]
+    if chat_completed and task.expected_recalled_memory_ids:
+        inline_recall_outcome = evaluate_expected_recalled_memory_ids(
+            history,
+            task.expected_recalled_memory_ids,
+        )
+    else:
+        inline_recall_outcome = None
+    if inline_recall_outcome is not None and inline_recall_outcome.passed is None:
+        episode_id = _unique_episode_id(history)
+        if episode_id is not None:
+            try:
+                episode = client.get_episode(episode_id)
+            except Exception as e:
+                base.metrics["episode_error"] = str(e)[:300]
+            else:
+                (artifact_dir / "episode.json").write_text(
+                    json.dumps(episode, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
     # Capture the final device state directly from the environment screen API.
     # The agent history no longer embeds base64 image data, so the post-screenshot
     # must be grabbed live rather than extracted from history.
     post_path = artifact_dir / "post.jpg"
-    if environment_url:
+    if uses_single_frame_mock:
+        post_path = None
+    elif environment_url:
         try:
             take_environment_screenshot(
                 environment_url,
@@ -339,6 +430,7 @@ def run_one_task(
         started_at=started,
         started_mono=started_mono,
         active_skills=active_skills,
+        episode=episode,
     )
 
 
@@ -352,6 +444,18 @@ def client_history_or_empty(client: AgentClient) -> list[dict]:
 
 def _format_csv(items: list[str]) -> str:
     return ", ".join(items) if items else "none"
+
+
+def _unique_episode_id(history: list[dict[str, Any]]) -> str | None:
+    episode_ids: list[str] = []
+    for message in history:
+        episode_id = message.get("episode_id")
+        if not isinstance(episode_id, str):
+            continue
+        episode_id = episode_id.strip()
+        if episode_id and episode_id not in episode_ids:
+            episode_ids.append(episode_id)
+    return episode_ids[0] if len(episode_ids) == 1 else None
 
 
 def _normalise_active_skills(skills: list[str] | None) -> list[str]:

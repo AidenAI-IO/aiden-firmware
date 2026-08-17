@@ -82,7 +82,7 @@ the HTML report.
 
 ### LLM Judge
 
-The judge uses OpenRouter-compatible chat completions. Its input is:
+The judge uses OpenAI-compatible chat completions. Its input is:
 
 - Task description.
 - Rubric.
@@ -92,6 +92,11 @@ The judge uses OpenRouter-compatible chat completions. Its input is:
 
 The output is one yes/no verdict plus reason per rubric item. Results are
 cached by screenshots, trace, rubric, final response, and model.
+
+Agent, Judge, and Analysis runtime configuration use separate role-specific
+namespaces: `AIDEN_BENCHMARK_AGENT_*`, `AIDEN_BENCHMARK_JUDGE_*`, and
+`AIDEN_BENCHMARK_ANALYSIS_*`. Provider-specific environment variable names are
+not part of the benchmark runtime contract.
 
 ## Artifacts
 

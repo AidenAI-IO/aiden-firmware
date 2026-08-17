@@ -107,6 +107,9 @@ def test_judge_does_not_fallback_to_agent_toml_api_key(monkeypatch, tmp_path: Pa
     config.write_text('[model]\napi_key = "sk-agent"\n', encoding="utf-8")
 
     monkeypatch.setenv("AIDEN_AGENT_CONFIG", str(config))
+    monkeypatch.delenv("AIDEN_BENCHMARK_JUDGE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     try:
@@ -120,6 +123,69 @@ def test_judge_does_not_fallback_to_agent_toml_api_key(monkeypatch, tmp_path: Pa
             cfg=JudgeConfig(),
         )
     except RuntimeError as e:
-        assert str(e) == "missing env var OPENROUTER_API_KEY"
+        assert "AIDEN_BENCHMARK_JUDGE_API_KEY" in str(e)
     else:
-        raise AssertionError("expected missing OPENROUTER_API_KEY error")
+        raise AssertionError("expected missing judge API key error")
+
+
+def test_default_judge_uses_benchmark_specific_api_key_env(monkeypatch):
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"content": json.dumps({
+                    "items": [{"id": "ok", "verdict": "yes", "reason": "passed"}],
+                    "overall_notes": "ok",
+                })}}]
+            }).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        seen["authorization"] = req.headers.get("Authorization")
+        return FakeResponse()
+
+    monkeypatch.setenv("AIDEN_BENCHMARK_JUDGE_API_KEY", "sk-benchmark-judge")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    judge_task(
+        description="check",
+        rubric=[RubricItem(id="ok", check="pass")],
+        pre_screenshot=None,
+        post_screenshot=None,
+        trace={"tool_calls": []},
+        final_response="done",
+        cfg=JudgeConfig(),
+    )
+
+    assert seen["authorization"] == "Bearer sk-benchmark-judge"
+
+
+def test_default_judge_does_not_read_provider_specific_api_key_envs(monkeypatch):
+    monkeypatch.delenv("AIDEN_BENCHMARK_JUDGE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_AUTH_TOKEN", "sk-openai-compatible")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter")
+
+    try:
+        judge_task(
+            description="check",
+            rubric=[RubricItem(id="ok", check="pass")],
+            pre_screenshot=None,
+            post_screenshot=None,
+            trace={"tool_calls": []},
+            final_response="done",
+            cfg=JudgeConfig(),
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "missing env var AIDEN_BENCHMARK_JUDGE_API_KEY"
+    else:
+        raise AssertionError("expected provider-specific API key envs to be ignored")

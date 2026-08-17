@@ -21,6 +21,8 @@ type InputAttachment struct {
 	Kind     string
 	Name     string
 	MIMEType string
+	Width    int
+	Height   int
 	Data     []byte
 }
 

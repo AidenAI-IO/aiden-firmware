@@ -76,7 +76,7 @@ The benchmark runner uses this endpoint to save `pre.jpg` and `post.jpg`.
 curl -X POST http://localhost:8888/api/setup \
   -H "Content-Type: application/json" \
   -H "benchmark-task-id: suite.json:task-1" \
-  -d '{}'
+  -d '{"app_ids":["settings"]}'
 
 curl -X POST http://localhost:8888/api/release \
   -H "Content-Type: application/json" \
@@ -86,6 +86,10 @@ curl -X POST http://localhost:8888/api/release \
 
 `/api/setup` claims an env route and resets it. `/api/release` frees that route
 for later tasks.
+
+`app_ids` is optional. Missing or empty `app_ids` skips eager app data loading;
+non-empty lists preload only the named apps. The app launch path still loads an
+app's data on demand.
 
 ## Concurrency
 

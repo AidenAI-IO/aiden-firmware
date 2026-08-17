@@ -154,20 +154,6 @@ struct TelemetryToml {
 
 struct LiveActivityToml {
     bool enabled = true;
-    std::string relay_url;
-    std::string relay_api_key;
-    bool has_relay_api_key = false;
-    std::string board_id;
-    std::string phone_id;
-    std::string bundle_id;
-    std::string topic;
-    std::string environment = "sandbox";
-    std::string team_id;
-    std::string key_id;
-    std::string private_key_path;
-    std::string private_key_pem;
-    bool has_private_key_pem = false;
-    int timeout_sec = 0;
 };
 
 struct TerminationPolicyToml {
