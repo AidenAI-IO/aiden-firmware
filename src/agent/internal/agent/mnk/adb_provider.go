@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -580,6 +581,11 @@ func (c *ADBScreenClient) ADBPath() (string, error) {
 		return c.adbPath, nil
 	}
 
+	if configured := strings.TrimSpace(os.Getenv("AIDEN_ADB_PATH")); configured != "" {
+		c.adbPath = configured
+		return c.adbPath, nil
+	}
+
 	// Try to find adb in PATH
 	path, err := exec.LookPath("adb")
 	if err != nil {
@@ -591,6 +597,12 @@ func (c *ADBScreenClient) ADBPath() (string, error) {
 }
 
 func (c *ADBScreenClient) ResolveSerial(ctx context.Context, adbPath string) (string, error) {
+	for _, key := range []string{"AIDEN_ADB_SERIAL", "ANDROID_SERIAL"} {
+		if serial := strings.TrimSpace(os.Getenv(key)); serial != "" {
+			return serial, nil
+		}
+	}
+
 	c.mu.Lock()
 	if c.autoSerialValid && c.autoSerial != "" {
 		serial := c.autoSerial

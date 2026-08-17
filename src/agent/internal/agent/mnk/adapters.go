@@ -246,8 +246,7 @@ func NewKeyboardTapToolAdapter(provider Provider) *KeyboardTapToolAdapter {
 // Call 处理 keyboard_tap 工具调用。
 func (t *KeyboardTapToolAdapter) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
-		Keys   []string `json:"keys"`
-		HoldMs int      `json:"hold_ms"`
+		Keys []string `json:"keys"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
@@ -268,8 +267,6 @@ func (t *KeyboardTapToolAdapter) Call(ctx context.Context, input string) (string
 		return "", ModuleUnavailable("keyboard_tap is not configured")
 	}
 
-	// hold_ms is accepted for API compatibility; provider currently applies its own defaults.
-	_ = args.HoldMs
 	if err := t.provider.Keypress(ctx, args.Keys); err != nil {
 		return "", WrapExecutionFailed(err)
 	}

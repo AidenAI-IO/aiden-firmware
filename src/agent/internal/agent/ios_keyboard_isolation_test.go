@@ -343,14 +343,14 @@ func TestKeyboardTapIsolatesOnlyModifierChords(t *testing.T) {
 	controller.keyboardDev = dev
 	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, gate: newIOSKeyboardIsolationProfileGate(controller)})
 
-	if out, err := tool.Call(context.Background(), `{"keys":["a"],"hold_ms":1}`); err != nil || out != "ok" {
+	if out, err := tool.Call(context.Background(), `{"keys":["a"]}`); err != nil || out != "ok" {
 		t.Fatalf("plain Call() = %q, %v", out, err)
 	}
 	if len(events) != 0 {
 		t.Fatalf("plain key profile events = %v, want none", events)
 	}
 
-	if out, err := tool.Call(context.Background(), `{"keys":["meta","v"],"hold_ms":1}`); err != nil || out != "ok" {
+	if out, err := tool.Call(context.Background(), `{"keys":["meta","v"]}`); err != nil || out != "ok" {
 		t.Fatalf("modifier Call() = %q, %v", out, err)
 	}
 	if want := []string{"isolate", "restore"}; !reflect.DeepEqual(events, want) {
@@ -419,7 +419,7 @@ func TestKeyboardTapExtraKeysRemainOnNormalProfile(t *testing.T) {
 	controller.extraKeysDev = extraKeysDev
 	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: keyboardDev, android: extraKeysDev, gate: newIOSKeyboardIsolationProfileGate(controller)})
 
-	out, err := tool.Call(context.Background(), `{"keys":["volume_up"],"hold_ms":1}`)
+	out, err := tool.Call(context.Background(), `{"keys":["volume_up"]}`)
 	if err != nil || out != "ok" {
 		t.Fatalf("Call() = %q, %v", out, err)
 	}

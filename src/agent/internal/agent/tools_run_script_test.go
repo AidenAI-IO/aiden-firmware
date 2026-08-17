@@ -90,8 +90,8 @@ func TestRunScriptBatchesIOSModifierIsolationAcrossSteps(t *testing.T) {
 
 	file := "modifier-batch.jsonl"
 	writeRunScriptTestFile(t, scriptsDir, file, strings.Join([]string{
-		`{"type":"call","tool":"keyboard_tap","input":{"keys":["meta","a"],"hold_ms":1}}`,
-		`{"type":"call","tool":"keyboard_tap","input":{"keys":["meta","c"],"hold_ms":1}}`,
+		`{"type":"call","tool":"keyboard_tap","input":{"keys":["meta","a"]}}`,
+		`{"type":"call","tool":"keyboard_tap","input":{"keys":["meta","c"]}}`,
 	}, "\n"))
 
 	out, err := tool.Call(context.Background(), `{"file":`+quoteJSON(file)+`}`)

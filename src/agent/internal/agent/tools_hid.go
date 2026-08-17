@@ -747,8 +747,7 @@ func (t *KeyboardTapTool) ArgsSchema() map[string]any {
 	keysSchema["maxItems"] = 6
 
 	return objectArgsSchema(map[string]any{
-		"keys":    keysSchema,
-		"hold_ms": minIntegerArgSchema("Optional press duration before release (default 50ms, or 120ms when modifiers are used).", 0),
+		"keys": keysSchema,
 	}, "keys")
 }
 

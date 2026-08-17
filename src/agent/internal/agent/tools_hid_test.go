@@ -1172,7 +1172,7 @@ func TestADBKeyboardTapUsesKeyCombinationForChords(t *testing.T) {
 	runner := &recordingADBRunner{}
 	tool := testKeyboardTapTool(t, testMNKOpts{adbRunner: runner})
 
-	out, err := tool.Call(context.Background(), `{"keys":["ctrl","c"],"hold_ms":77}`)
+	out, err := tool.Call(context.Background(), `{"keys":["ctrl","c"]}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -1180,7 +1180,7 @@ func TestADBKeyboardTapUsesKeyCombinationForChords(t *testing.T) {
 		t.Fatalf("Call output = %q, want ok", out)
 	}
 
-	want := []string{"-s", "serial123", "shell", "input", "keycombination", "-t", "77", "KEYCODE_CTRL_LEFT", "KEYCODE_C"}
+	want := []string{"-s", "serial123", "shell", "input", "keycombination", "-t", "50", "KEYCODE_CTRL_LEFT", "KEYCODE_C"}
 	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
 		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
 	}
@@ -2389,7 +2389,7 @@ func TestKeyboardTapUsesConfiguredAZERTYLayout(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, layout: keyboardLayoutAZERTY})
 
-	out, err := tool.Call(context.Background(), `{"keys":["a"],"hold_ms":1}`)
+	out, err := tool.Call(context.Background(), `{"keys":["a"]}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -2899,7 +2899,7 @@ func TestTouchGestureTapAcceptsHoldMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500},"hold_ms":150}`)
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500}50}`)
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
 	}
