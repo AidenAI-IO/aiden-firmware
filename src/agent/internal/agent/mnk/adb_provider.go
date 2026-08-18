@@ -210,10 +210,6 @@ func (p *ADBProvider) Keypress(ctx context.Context, keys []string) error {
 		return err
 	}
 
-	if len(keycodes) == 0 {
-		return fmt.Errorf("at least one key is required")
-	}
-
 	// Single key
 	if len(keycodes) == 1 {
 		return p.runShell(ctx, "input", "keyevent", keycodes[0])
@@ -221,7 +217,6 @@ func (p *ADBProvider) Keypress(ctx context.Context, keys []string) error {
 
 	// Key combination (multiple keys simultaneously)
 	holdMs := 50 // Default hold time
-	holdMs = p.clampDuration(holdMs, 50, 1)
 
 	args := []string{"input", "keycombination", "-t", strconv.Itoa(holdMs)}
 	args = append(args, keycodes...)
@@ -273,13 +268,13 @@ func (p *ADBProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 	} else if scrollX != 0 {
 		// Horizontal scroll
 		if scrollX < 0 {
-			// Scroll left -> swipe right
+			// Scroll left -> swipe left
 			return p.dragWithDuration(ctx, [][2]float64{
 				{centerX + distance/2, centerY},
 				{centerX - distance/2, centerY},
 			}, ButtonLeft, 650)
 		} else {
-			// Scroll right -> swipe left
+			// Scroll right -> swipe right
 			return p.dragWithDuration(ctx, [][2]float64{
 				{centerX - distance/2, centerY},
 				{centerX + distance/2, centerY},
@@ -580,6 +575,7 @@ type ADBScreenClient struct {
 	adbPath         string
 	autoSerial      string
 	autoSerialValid bool
+	commandRunner   adbCommandRunner
 }
 
 func NewADBScreenClient() *ADBScreenClient {
@@ -622,10 +618,16 @@ func (c *ADBScreenClient) ResolveSerial(ctx context.Context, adbPath string) (st
 		c.mu.Unlock()
 		return serial, nil
 	}
+	runner := c.commandRunner
 	c.mu.Unlock()
 
+	// Use injectable runner if available, otherwise fall back to package-level function
+	if runner == nil {
+		runner = runADBCommand
+	}
+
 	// Query connected devices
-	stdout, stderr, err := runADBCommand(ctx, adbPath, "devices")
+	stdout, stderr, err := runner(ctx, adbPath, "devices")
 	if err != nil {
 		return "", fmt.Errorf("adb devices failed: %w", err)
 	}

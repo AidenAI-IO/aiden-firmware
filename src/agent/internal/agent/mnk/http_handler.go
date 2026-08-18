@@ -72,9 +72,14 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle execution error
+	// Handle execution error with proper status code mapping
 	if execErr != nil {
-		h.writeError(w, http.StatusInternalServerError, fmt.Sprintf("execute operation: %v", execErr))
+		statusCode := http.StatusInternalServerError
+		// Map typed errors to appropriate status codes
+		if e := AsError(execErr); e != nil && (e.Kind == ErrInvalidArguments || e.Kind == ErrModuleUnavailable) {
+			statusCode = http.StatusBadRequest
+		}
+		h.writeError(w, statusCode, fmt.Sprintf("execute operation: %v", execErr))
 		return
 	}
 
@@ -84,48 +89,48 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPHandler) handleClick(ctx context.Context, params *ClickParams) error {
 	if params == nil {
-		return fmt.Errorf("click params required")
+		return InvalidArguments("click params required")
 	}
 	return h.provider.Click(ctx, params.X, params.Y, params.Button, params.HoldMs)
 }
 
 func (h *HTTPHandler) handleDoubleClick(ctx context.Context, params *DoubleClickParams) error {
 	if params == nil {
-		return fmt.Errorf("double_click params required")
+		return InvalidArguments("double_click params required")
 	}
 	return h.provider.DoubleClick(ctx, params.X, params.Y, params.Button)
 }
 
 func (h *HTTPHandler) handleDrag(ctx context.Context, params *DragParams) error {
 	if params == nil {
-		return fmt.Errorf("drag params required")
+		return InvalidArguments("drag params required")
 	}
 	if len(params.Path) < 2 {
-		return fmt.Errorf("drag path must contain at least 2 points")
+		return InvalidArguments("drag path must contain at least 2 points")
 	}
 	return h.provider.Drag(ctx, params.Path, params.Button)
 }
 
 func (h *HTTPHandler) handleKeypress(ctx context.Context, params *KeypressParams) error {
 	if params == nil {
-		return fmt.Errorf("keypress params required")
+		return InvalidArguments("keypress params required")
 	}
 	if len(params.Keys) == 0 {
-		return fmt.Errorf("keys array must not be empty")
+		return InvalidArguments("keys array must not be empty")
 	}
 	return h.provider.Keypress(ctx, params.Keys)
 }
 
 func (h *HTTPHandler) handleMove(ctx context.Context, params *MoveParams) error {
 	if params == nil {
-		return fmt.Errorf("move params required")
+		return InvalidArguments("move params required")
 	}
 	return h.provider.Move(ctx, params.X, params.Y)
 }
 
 func (h *HTTPHandler) handleScroll(ctx context.Context, params *ScrollParams) error {
 	if params == nil {
-		return fmt.Errorf("scroll params required")
+		return InvalidArguments("scroll params required")
 	}
 	return h.provider.Scroll(ctx, params.ScrollX, params.ScrollY)
 }

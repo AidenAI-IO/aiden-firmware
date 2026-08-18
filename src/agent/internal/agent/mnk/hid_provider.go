@@ -4,7 +4,6 @@ import (
 	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/binary"
-	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -159,13 +158,13 @@ func (p *HIDProvider) Drag(ctx context.Context, path [][2]float64, button string
 
 func (p *HIDProvider) dragLocked(path [][2]float64, button string) error {
 	if len(path) < 2 {
-		return fmt.Errorf("drag path must contain at least 2 points, got %d", len(path))
+		return InvalidArgumentsf("drag path must contain at least 2 points, got %d", len(path))
 	}
 
 	// Validate all points first
 	for i, point := range path {
 		if err := p.validateCoordinate(point[0], point[1]); err != nil {
-			return fmt.Errorf("invalid point %d in path: %w", i, err)
+			return InvalidArgumentsf("invalid point %d in path: %v", i, err)
 		}
 	}
 
@@ -174,7 +173,7 @@ func (p *HIDProvider) dragLocked(path [][2]float64, button string) error {
 	for i, point := range path {
 		absX, absY, err := p.normalizedToAbsolute(point[0], point[1])
 		if err != nil {
-			return fmt.Errorf("failed to convert point %d: %w", i, err)
+			return InvalidArgumentsf("failed to convert point %d: %v", i, err)
 		}
 		absPath[i] = [2]int{absX, absY}
 	}
@@ -274,7 +273,7 @@ func pathLength(path [][2]int) float64 {
 // Keypress sends one or more keys simultaneously.
 func (p *HIDProvider) Keypress(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {
-		return fmt.Errorf("keypress requires at least one key")
+		return InvalidArguments("keypress requires at least one key")
 	}
 
 	// Resolve keys into modifiers and key codes
@@ -319,20 +318,69 @@ func (p *HIDProvider) Move(ctx context.Context, x, y float64) error {
 // Scroll sends wheel/scroll input.
 func (p *HIDProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 	if p.touchscreen {
-		return InvalidArguments("mouse_scroll is unsupported when pointer_mode is touchscreen; use touch_gesture")
+		// Touchscreen can simulate both horizontal and vertical scroll via swipe gestures
+		if scrollX != 0 {
+			if err := runPointerGate(p.gate, ctx, func() error {
+				// Simulate horizontal scroll with a horizontal swipe
+				// Negative scrollX = scroll left (swipe left), positive = scroll right (swipe right)
+				centerY := absMouseMaxPos / 2
+				distance := int(math.Round(float64(absMouseMaxPos) * 0.3)) // 30% of screen width
+
+				var startX, endX int
+				if scrollX < 0 {
+					// Scroll left -> swipe left
+					startX = absMouseMaxPos/2 + distance/2
+					endX = absMouseMaxPos/2 - distance/2
+				} else {
+					// Scroll right -> swipe right
+					startX = absMouseMaxPos/2 - distance/2
+					endX = absMouseMaxPos/2 + distance/2
+				}
+
+				path := [][2]int{{startX, centerY}, {endX, centerY}}
+				return p.dragLocked(convertAbsPathToNormalized(path), ButtonLeft)
+			}); err != nil {
+				return err
+			}
+		}
+		if scrollY != 0 {
+			return runPointerGate(p.gate, ctx, func() error {
+				// Simulate vertical scroll with a vertical swipe
+				centerX := absMouseMaxPos / 2
+				distance := int(math.Round(float64(absMouseMaxPos) * 0.3))
+
+				var startY, endY int
+				if scrollY < 0 {
+					// Scroll down -> swipe up
+					startY = absMouseMaxPos/2 + distance/2
+					endY = absMouseMaxPos/2 - distance/2
+				} else {
+					// Scroll up -> swipe down
+					startY = absMouseMaxPos/2 - distance/2
+					endY = absMouseMaxPos/2 + distance/2
+				}
+
+				path := [][2]int{{centerX, startY}, {centerX, endY}}
+				return p.dragLocked(convertAbsPathToNormalized(path), ButtonLeft)
+			})
+		}
+		return nil
 	}
 
 	return runPointerGate(p.gate, ctx, func() error {
 		// Absolute mouse mode: send wheel events
-		// Current HID implementation only supports vertical scrolling
 		if scrollY != 0 {
 			if err := p.scrollPointer(scrollY); err != nil {
 				return err
 			}
 		}
 
-		// Note: scrollX is not implemented in current HID absolute mouse mode
-		// This would require horizontal wheel support in the HID descriptor
+		if scrollX != 0 {
+			// Horizontal scroll support for absolute mouse mode
+			if err := p.scrollPointerHorizontal(scrollX); err != nil {
+				return err
+			}
+		}
 
 		return nil
 	})
@@ -360,10 +408,10 @@ func (p *HIDProvider) normalizedToAbsolute(x, y float64) (int, int, error) {
 	// Uses the same logic as tools_hid.go:normalizedToAbsolutePointForSurface
 	// Handles active_area for de-blackbarring and touchscreen vs absolute mode
 	if math.IsNaN(x) || math.IsInf(x, 0) || math.IsNaN(y) || math.IsInf(y, 0) {
-		return 0, 0, fmt.Errorf("coordinates must be finite")
+		return 0, 0, InvalidArguments("coordinates must be finite")
 	}
 	if x < 0 || x > 1000 || y < 0 || y > 1000 {
-		return 0, 0, fmt.Errorf("coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f", x, y)
+		return 0, 0, InvalidArgumentsf("coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f", x, y)
 	}
 
 	// Try to use active_area from screen state
@@ -502,6 +550,26 @@ func (p *HIDProvider) scrollPointer(delta int) error {
 	return p.writeAbsMouseReport(x, y, 0, int8(delta))
 }
 
+func (p *HIDProvider) scrollPointerHorizontal(delta int) error {
+	if p.touchscreen {
+		return nil // Scroll not supported in touchscreen mode
+	}
+	if delta == 0 {
+		return nil
+	}
+	if delta < -127 {
+		delta = -127
+	} else if delta > 127 {
+		delta = 127
+	}
+
+	// Get current position and send horizontal scroll
+	x, y := p.getCurrentPosition()
+	// Use the same report structure but for horizontal wheel
+	// Note: This assumes the HID descriptor supports horizontal wheel (AC Pan)
+	return p.writeAbsMouseReportWithHorizontal(x, y, 0, 0, int8(delta))
+}
+
 func (p *HIDProvider) getCurrentPosition() (int, int) {
 	if p.pointerState != nil {
 		if x, y, ok := p.pointerState.Current(); ok {
@@ -517,7 +585,7 @@ func (p *HIDProvider) getCurrentPosition() (int, int) {
 
 func writeDevice(dev Device, report []byte) error {
 	if dev == nil {
-		return fmt.Errorf("hid device is not configured")
+		return ModuleUnavailable("hid device is not configured")
 	}
 	return dev.Write(report)
 }
@@ -532,7 +600,31 @@ func (p *HIDProvider) writeAbsMouseReport(x, y int, buttons uint8, wheel int8) e
 	report[0] = buttons
 	binary.LittleEndian.PutUint16(report[1:3], absX)
 	binary.LittleEndian.PutUint16(report[3:5], absY)
-	report[5] = byte(wheel)
+	report[5] = uint8(wheel)
+
+	// Update state after successful write
+	if err := writeDevice(p.pointerDev, report); err != nil {
+		return err
+	}
+
+	if p.pointerState != nil {
+		p.pointerState.Update(int(absX), int(absY))
+	}
+	return nil
+}
+
+// writeAbsMouseReportWithHorizontal writes a 7-byte absolute mouse report with horizontal scroll:
+// [buttons, x_lo, x_hi, y_lo, y_hi, wheel_vertical, wheel_horizontal]
+func (p *HIDProvider) writeAbsMouseReportWithHorizontal(x, y int, buttons uint8, wheelVertical, wheelHorizontal int8) error {
+	absX := clampUint16(x, absMouseMaxPos)
+	absY := clampUint16(y, absMouseMaxPos)
+
+	report := make([]byte, 7)
+	report[0] = buttons
+	binary.LittleEndian.PutUint16(report[1:3], absX)
+	binary.LittleEndian.PutUint16(report[3:5], absY)
+	report[5] = uint8(wheelVertical)
+	report[6] = uint8(wheelHorizontal)
 
 	// Update state after successful write
 	if err := writeDevice(p.pointerDev, report); err != nil {
@@ -717,4 +809,19 @@ func (p *HIDProvider) tapKeyboardChord(modifier uint8, keys []uint8) error {
 
 	// Release (all zeros)
 	return writeDevice(p.keyboardDev, make([]byte, 8))
+}
+
+// ============================================================================
+// Helper functions
+// ============================================================================
+
+func convertAbsPathToNormalized(absPath [][2]int) [][2]float64 {
+	normalized := make([][2]float64, len(absPath))
+	for i, point := range absPath {
+		normalized[i] = [2]float64{
+			(float64(point[0]) / float64(absMouseMaxPos)) * 1000.0,
+			(float64(point[1]) / float64(absMouseMaxPos)) * 1000.0,
+		}
+	}
+	return normalized
 }

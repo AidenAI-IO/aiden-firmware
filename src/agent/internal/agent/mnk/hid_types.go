@@ -59,7 +59,7 @@ func (d *HIDDevice) writeLocked(data []byte, after func()) error {
 	n, err := d.writeOnceLocked(data)
 	if err != nil {
 		d.closeLocked()
-		if n == 0 && hidShouldRetryWrite(err) {
+		if n <= 0 && hidShouldRetryWrite(err) {
 			if reopenErr := d.ensureOpenLocked(); reopenErr == nil {
 				n2, retryErr := d.writeOnceLocked(data)
 				if retryErr == nil && n2 == len(data) {

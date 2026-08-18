@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 )
 
@@ -187,12 +189,18 @@ func (t *TouchGestureToolAdapter) handleDirectionalSwipe(ctx context.Context, ge
 	default:
 		return "", InvalidArgumentsf("unsupported strength: %q", strength)
 	}
-	if distance != nil && *distance > 0 {
+	if distance != nil {
+		if *distance <= 0 || *distance > 1000 {
+			return "", InvalidArgumentsf("distance must be in range (0, 1000], got %.2f", *distance)
+		}
 		travel = *distance
 	}
 
 	center := 500.0
 	if anchor != nil {
+		if *anchor < 0 || *anchor > 1000 {
+			return "", InvalidArgumentsf("anchor must be in range [0, 1000], got %.2f", *anchor)
+		}
 		center = *anchor
 	}
 
@@ -396,9 +404,14 @@ func (c *pointerCoordinate) UnmarshalJSON(data []byte) error {
 }
 
 func parseFloat(s string) (float64, error) {
-	var value float64
-	_, err := fmt.Sscanf(s, "%f", &value)
-	return value, err
+	value, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, err
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, fmt.Errorf("coordinate must be a finite number, got %v", s)
+	}
+	return value, nil
 }
 
 func samePointerPoint(first, second *pointerPoint) bool {
