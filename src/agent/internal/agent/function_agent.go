@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"aiden-agent/internal/agent/executor"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -14,9 +13,8 @@ import (
 )
 
 type FunctionAgent struct {
-	Tools             []langtools.Tool
-	OutputKey         string
-	ScreenshotPruning executor.ScreenshotPruningConfig
+	Tools     []langtools.Tool
+	OutputKey string
 }
 
 type visualObservationTool interface {
@@ -140,90 +138,11 @@ func toolParametersSchema(schema map[string]any) map[string]any {
 	return parameters
 }
 
-func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []llms.MessageContent {
-	if len(steps) == 0 {
-		return nil
-	}
-
-	messages := make([]llms.MessageContent, 0, len(steps)*3)
-	visualObservationCount := a.countVisualObservations(steps)
-	prunedVisualObservationCount := a.ScreenshotPruning.PrunedCount(visualObservationCount)
-	visualObservationIndex := 0
-
-	for i := 0; i < len(steps); {
-		if strings.TrimSpace(steps[i].Action.Tool) == "" {
-			if observation := strings.TrimSpace(steps[i].Observation); observation != "" {
-				messages = append(messages, llms.MessageContent{
-					Role:  llms.ChatMessageTypeAI,
-					Parts: []llms.ContentPart{llms.TextPart(observation)},
-				})
-			}
-			i++
-			continue
-		}
-
-		groupEnd := i + 1
-		for groupEnd < len(steps) &&
-			strings.TrimSpace(steps[groupEnd].Action.Tool) != "" &&
-			steps[groupEnd].Action.Log == steps[i].Action.Log {
-			groupEnd++
-		}
-
-		toolCallParts := make([]llms.ContentPart, 0, groupEnd-i+1)
-		if content := toolContentFromAction(steps[i].Action); content != "" {
-			toolCallParts = append(toolCallParts, llms.TextPart(content))
-		}
-		for j := i; j < groupEnd; j++ {
-			toolCallParts = append(toolCallParts, llms.ToolCall{
-				ID:   scratchpadToolCallID(steps[j].Action, i, j),
-				Type: "function",
-				FunctionCall: &llms.FunctionCall{
-					Name:      steps[j].Action.Tool,
-					Arguments: encodeToolArguments(steps[j].Action.ToolInput),
-				},
-			})
-		}
-		messages = append(messages, llms.MessageContent{
-			Role:  llms.ChatMessageTypeAI,
-			Parts: toolCallParts,
-		})
-
-		for j := i; j < groupEnd; j++ {
-			includeVisual := true
-			if a.hasVisualObservation(steps[j]) {
-				visualObservationIndex++
-				includeVisual = visualObservationIndex > prunedVisualObservationCount
-			}
-			toolContent, followups := a.observationMessagesForStep(steps[j], includeVisual)
-			toolCallID := scratchpadToolCallID(steps[j].Action, i, j)
-			messages = append(messages, llms.MessageContent{
-				Role: llms.ChatMessageTypeTool,
-				Parts: []llms.ContentPart{llms.ToolCallResponse{
-					ToolCallID: toolCallID,
-					Content:    toolContent,
-				}},
-			})
-			messages = append(messages, followups...)
-		}
-
-		i = groupEnd
-	}
-
-	return messages
-}
-
 func ensureToolCallID(id string, index int) string {
 	if id = strings.TrimSpace(id); id != "" {
 		return id
 	}
 	return fmt.Sprintf("call_%d", index+1)
-}
-
-func scratchpadToolCallID(action schema.AgentAction, groupStart, index int) string {
-	if id := strings.TrimSpace(action.ToolID); id != "" {
-		return id
-	}
-	return fmt.Sprintf("scratchpad_%d_%d", groupStart, index)
 }
 
 func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includeVisual bool) (string, []llms.MessageContent) {
@@ -419,27 +338,6 @@ func (a *FunctionAgent) isVisualObservationTool(name string) bool {
 	return false
 }
 
-func buildUserMessageParts(input string, attachments []InputAttachment) []llms.ContentPart {
-	text := normalizeRunInput(input, attachments)
-	if len(attachments) == 0 {
-		return []llms.ContentPart{llms.TextPart(text)}
-	}
-
-	descriptions := make([]string, 0, len(attachments))
-	parts := []llms.ContentPart{llms.TextPart(attachmentAwarePrompt(text, attachments, descriptions))}
-	for _, attachment := range attachments {
-		if len(attachment.Data) == 0 {
-			continue
-		}
-		if attachment.Kind == AttachmentKindImage {
-			parts = append(parts, buildImagePart(attachment.MIMEType, attachment.Data))
-			continue
-		}
-		parts = append(parts, llms.BinaryPart(attachment.MIMEType, attachment.Data))
-	}
-	return parts
-}
-
 func buildImagePart(mimeType string, data []byte) llms.ContentPart {
 	if strings.TrimSpace(mimeType) == "" {
 		mimeType = "image/png"
@@ -502,10 +400,6 @@ func isGenericStringInputWrapper(fields map[string]any) bool {
 		}
 	}
 	return true
-}
-
-func extractToolInput(raw string) string {
-	return extractToolInvocation(raw).Input
 }
 
 func encodeToolArguments(input string) string {
