@@ -1260,6 +1260,9 @@ func (c Config) Validate() error {
 	if apiMode == "" {
 		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions or responses)", c.Model.APIMode)
 	}
+	if apiMode == modelAPIModeResponses && !c.modelProviderSupportsResponses() {
+		return fmt.Errorf("model.api_mode=responses requires a provider transport with an OpenAI-compatible /responses endpoint")
+	}
 	backend := c.Device.BackendOrDefault()
 	switch backend {
 	case "hdmi":
@@ -1417,6 +1420,19 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+// modelProviderSupportsResponses checks the resolved provider transport rather
+// than the configured provider-record name. Named custom OpenAI-compatible
+// endpoints therefore remain valid, while native Anthropic and Ollama clients
+// are rejected before a configuration is persisted or used at startup.
+func (c Config) modelProviderSupportsResponses() bool {
+	providerType := strings.TrimSpace(c.Model.Provider)
+	if provider, ok := c.ModelProviders[providerType]; ok {
+		providerType = strings.TrimSpace(provider.Type)
+	}
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsResponses
 }
 
 // isKnownProviderType reports whether the value names a built-in model

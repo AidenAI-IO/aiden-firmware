@@ -238,24 +238,28 @@ func TestBuildOpenAICompatibleResponsesMode(t *testing.T) {
 }
 
 func TestBuildResponsesModeUsesCustomOpenAICompatibleEndpoint(t *testing.T) {
-	mgr := NewModelManager(ModelConfig{
-		Provider: "openai",
-		Model:    "custom-model",
-		APIKey:   "test-key",
-		BaseURL:  "https://gateway.example.test/v1",
-		APIMode:  "responses",
-	}, ProxyConfig{})
+	for _, provider := range []string{"openai", "volcengine"} {
+		t.Run(provider, func(t *testing.T) {
+			mgr := NewModelManager(ModelConfig{
+				Provider: provider,
+				Model:    "custom-model",
+				APIKey:   "test-key",
+				BaseURL:  "https://gateway.example.test/v1",
+				APIMode:  "responses",
+			}, ProxyConfig{})
 
-	model, err := mgr.build()
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	responses, ok := model.(*responsesModel)
-	if !ok {
-		t.Fatalf("model type = %T, want *responsesModel", model)
-	}
-	if responses.baseURL != "https://gateway.example.test/v1" {
-		t.Fatalf("base URL = %q", responses.baseURL)
+			model, err := mgr.build()
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			responses, ok := model.(*responsesModel)
+			if !ok {
+				t.Fatalf("model type = %T, want *responsesModel", model)
+			}
+			if responses.baseURL != "https://gateway.example.test/v1" {
+				t.Fatalf("base URL = %q", responses.baseURL)
+			}
+		})
 	}
 }
 

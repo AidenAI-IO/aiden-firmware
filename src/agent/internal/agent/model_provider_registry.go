@@ -23,18 +23,21 @@ type ModelProviderBuilder func(ModelBuildContext, ModelConfig) (llms.Model, erro
 type modelProviderDefinition struct {
 	providerType        string
 	allowsCustomBaseURL bool
+	supportsResponses   bool
 	hiddenFromConfigUI  bool
 	build               ModelProviderBuilder
 }
 
 var modelProviderDefinitions = []modelProviderDefinition{
 	{
-		providerType: "openrouter",
-		build:        buildOpenRouterModel,
+		providerType:      "openrouter",
+		supportsResponses: true,
+		build:             buildOpenRouterModel,
 	},
 	{
 		providerType:        "openai",
 		allowsCustomBaseURL: true,
+		supportsResponses:   true,
 		build: func(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
 			return buildOpenAICompatibleModel(ctx, cfg, "https://api.openai.com/v1"), nil
 		},
@@ -45,19 +48,22 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		build:               buildAnthropicModel,
 	},
 	{
-		providerType: "kimi",
+		providerType:      "kimi",
+		supportsResponses: true,
 		build: func(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
 			return buildOpenAICompatibleModel(ctx, cfg, moonshotGlobalBaseURL), nil
 		},
 	},
 	{
-		providerType: "kimi-cn",
+		providerType:      "kimi-cn",
+		supportsResponses: true,
 		build: func(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
 			return buildOpenAICompatibleModel(ctx, cfg, moonshotCNBaseURL), nil
 		},
 	},
 	{
-		providerType: "volcengine",
+		providerType:      "volcengine",
+		supportsResponses: true,
 		build: func(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
 			return buildOpenAICompatibleModel(ctx, cfg, arkBeijingBaseURL), nil
 		},
@@ -69,6 +75,7 @@ var modelProviderDefinitions = []modelProviderDefinition{
 	},
 	{
 		providerType:       "fake",
+		supportsResponses:  true,
 		hiddenFromConfigUI: true,
 		build: func(_ ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
 			return fakellm.NewFakeLLM(cfg.Responses), nil

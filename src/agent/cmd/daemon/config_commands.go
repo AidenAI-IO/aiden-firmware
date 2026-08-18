@@ -1160,6 +1160,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "search.api_key"
 	} else if strings.Contains(errMsg, "model.provider") {
 		field = "model.provider"
+	} else if strings.Contains(errMsg, "model.api_mode") {
+		field = "model.api_mode"
 	} else if strings.Contains(errMsg, "model.max_response_tokens") {
 		field = "model.max_response_tokens"
 	} else if strings.Contains(errMsg, "model.context_window") {

@@ -23,10 +23,14 @@ func TestResponsesModelUsesLocalContextAndStoreFalse(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {
-			t.Fatalf("path = %q, want /v1/responses", r.URL.Path)
+			t.Errorf("path = %q, want /v1/responses", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
 		}
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"resp_1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]},{"type":"function_call","call_id":"call_1","name":"tap","arguments":"{\"x\":10}"}],"usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16,"input_tokens_details":{"cached_tokens":3}}}`))
@@ -70,7 +74,9 @@ func TestResponsesModelSendsStoreFalse(t *testing.T) {
 	var raw map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		_, _ = w.Write([]byte(`{"id":"resp_1","status":"completed","output":[]}`))
 	}))
@@ -91,10 +97,14 @@ func TestResponsesModelStreamsTextAndFunctionArguments(t *testing.T) {
 			Stream bool `json:"stream"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		if !request.Stream {
-			t.Fatal("stream = false, want true")
+			t.Errorf("stream = false, want true")
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(strings.Join([]string{
@@ -103,6 +113,7 @@ func TestResponsesModelStreamsTextAndFunctionArguments(t *testing.T) {
 			"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"tap\"}}\n",
 			"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"x\\\":\"}\n",
 			"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"10}\"}\n",
+			"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}}\n",
 			"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":5}}}\n",
 			"\n",
 		}, "")))
@@ -126,6 +137,10 @@ func TestResponsesModelStreamsTextAndFunctionArguments(t *testing.T) {
 	if got := resp.Choices[0].ToolCalls[0].FunctionCall.Arguments; got != `{"x":10}` {
 		t.Fatalf("arguments = %q", got)
 	}
+	reasoningItems, ok := resp.Choices[0].GenerationInfo["responses_reasoning_items"].([]json.RawMessage)
+	if !ok || len(reasoningItems) != 1 || !strings.Contains(string(reasoningItems[0]), `"encrypted_content":"opaque"`) {
+		t.Fatalf("streaming reasoning items = %#v", resp.Choices[0].GenerationInfo["responses_reasoning_items"])
+	}
 }
 
 func TestModelAPIModeValidation(t *testing.T) {
@@ -135,9 +150,15 @@ func TestModelAPIModeValidation(t *testing.T) {
 	if got := normalizeModelAPIMode("responses"); got != modelAPIModeResponses {
 		t.Fatalf("responses mode = %q", got)
 	}
-	cfg := Config{Model: ModelConfig{Provider: "anthropic", Model: "claude-test", APIMode: "responses"}}
+	cfg := Config{
+		ModelProviders: map[string]ModelProvider{"gateway": {Type: "openai", BaseURL: "https://gateway.example.test/v1"}},
+		Model:          ModelConfig{Provider: "gateway", Model: "test-model", APIMode: "responses"},
+	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() should not maintain a provider-name allowlist: %v", err)
+		t.Fatalf("Validate() rejected a named OpenAI-compatible endpoint: %v", err)
+	}
+	if err := (Config{Model: ModelConfig{Provider: "anthropic", Model: "claude-test", APIMode: "responses"}}).Validate(); err == nil || !strings.Contains(err.Error(), "OpenAI-compatible /responses endpoint") {
+		t.Fatalf("Validate() error = %v, want native transport compatibility error", err)
 	}
 }
 
@@ -174,6 +195,88 @@ func TestConvertResponsesInputPreservesMixedContentOrderAndAudioShape(t *testing
 	}
 }
 
+func TestConvertResponsesInputDoesNotAliasFlushedRichContent(t *testing.T) {
+	input, err := convertResponsesInput([]llms.MessageContent{{
+		Role: llms.ChatMessageTypeAI,
+		Parts: []llms.ContentPart{
+			llms.TextPart("before"),
+			llms.ImageURLContent{URL: "https://example.test/first.png"},
+			llms.ToolCall{ID: "call_1", Type: "function", FunctionCall: &llms.FunctionCall{Name: "tap", Arguments: "{}"}},
+			llms.ImageURLContent{URL: "https://example.test/second.png"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("convertResponsesInput: %v", err)
+	}
+	if len(input) != 3 {
+		t.Fatalf("input = %#v, want rich content, tool call, rich content", input)
+	}
+	first, ok := input[0].Content.([]responsesInputContent)
+	if !ok || len(first) != 2 || first[0].Text != "before" || first[1].ImageURL != "https://example.test/first.png" {
+		t.Fatalf("first rich item = %#v", input[0])
+	}
+	if input[1].Type != "function_call" || input[1].CallID != "call_1" {
+		t.Fatalf("tool item = %#v", input[1])
+	}
+	last, ok := input[2].Content.([]responsesInputContent)
+	if !ok || len(last) != 1 || last[0].ImageURL != "https://example.test/second.png" {
+		t.Fatalf("second rich item = %#v", input[2])
+	}
+}
+
+func TestResponsesModelStreamsWhenOnlyReasoningCallbackIsSet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Stream bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if !request.Stream {
+			t.Errorf("stream = false, want true")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"think\"}\n\ndata: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	var reasoning string
+	model := newResponsesModel(server.URL, "test-model", "", server.Client(), responsesModelOptions{})
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}}}, llms.WithStreamingReasoningFunc(func(_ context.Context, chunk []byte, _ []byte) error {
+		reasoning += string(chunk)
+		return nil
+	})); err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if reasoning != "think" {
+		t.Fatalf("reasoning = %q, want think", reasoning)
+	}
+}
+
+func TestResponsesModelStreamsLargeReasoningItem(t *testing.T) {
+	const scannerLimit = 1024 * 1024
+	largeEncryptedContent := strings.Repeat("x", scannerLimit+1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.done","item":{"id":"rs_large","type":"reasoning","encrypted_content":"` + largeEncryptedContent + `"}}` + "\n\ndata: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	model := newResponsesModel(server.URL, "test-model", "", server.Client(), responsesModelOptions{})
+	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}}}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	reasoningItems, ok := resp.Choices[0].GenerationInfo["responses_reasoning_items"].([]json.RawMessage)
+	if !ok || len(reasoningItems) != 1 || !strings.Contains(string(reasoningItems[0]), largeEncryptedContent) {
+		t.Fatalf("streaming reasoning items = %#v", resp.Choices[0].GenerationInfo["responses_reasoning_items"])
+	}
+}
+
 func TestResponsesModelReplaysOpaqueReasoningFromLocalContext(t *testing.T) {
 	requestCount := 0
 	var secondInput []json.RawMessage
@@ -182,7 +285,9 @@ func TestResponsesModelReplaysOpaqueReasoningFromLocalContext(t *testing.T) {
 			Input []json.RawMessage `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		if requestCount == 1 {
 			secondInput = request.Input

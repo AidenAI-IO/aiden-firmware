@@ -33,6 +33,9 @@ func RunModelProviderTest(ctx context.Context, cfg Config, req ModelProviderTest
 	if err := applyModelProviderTestRequest(&cfg, req); err != nil {
 		return ModelProviderTestResult{}, err
 	}
+	if err := cfg.Validate(); err != nil {
+		return ModelProviderTestResult{}, err
+	}
 	if strings.TrimSpace(cfg.Model.Provider) == "" {
 		return ModelProviderTestResult{}, errors.New("model.provider is required")
 	}

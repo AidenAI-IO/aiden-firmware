@@ -257,7 +257,7 @@ func (m *responsesModel) generateContent(ctx context.Context, messages []llms.Me
 		// previous_response_id chaining, which this adapter does not use, and
 		// OpenRouter rejects store=true outright since it is stateless-only.
 		Store:           false,
-		Stream:          callOpts.StreamingFunc != nil,
+		Stream:          callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil,
 		MaxOutputTokens: callOpts.MaxTokens,
 		Temperature:     m.temperature,
 	}
@@ -272,7 +272,7 @@ func (m *responsesModel) generateContent(ctx context.Context, messages []llms.Me
 	}
 
 	generationInfo := map[string]any{
-		"llm_stream":        callOpts.StreamingFunc != nil,
+		"llm_stream":        payload.Stream,
 		"llm_request_bytes": 0,
 	}
 	payloadBytes, err := json.Marshal(payload)
@@ -393,8 +393,8 @@ func convertResponsesInput(messages []llms.MessageContent, reasoningItems ...[][
 			} else if len(textParts) > 0 {
 				items = append(items, responsesInputItem{Role: role, Content: strings.Join(textParts, "\n\n")})
 			}
-			textParts = textParts[:0]
-			contentParts = contentParts[:0]
+			textParts = nil
+			contentParts = nil
 			hasRichContent = false
 		}
 		appendRichContent := func(part responsesInputContent) {
@@ -402,7 +402,7 @@ func convertResponsesInput(messages []llms.MessageContent, reasoningItems ...[][
 				for _, text := range textParts {
 					contentParts = append(contentParts, responsesInputContent{Type: responsesInputTextType(role), Text: text})
 				}
-				textParts = textParts[:0]
+				textParts = nil
 				hasRichContent = true
 			}
 			contentParts = append(contentParts, part)
@@ -592,8 +592,7 @@ type responsesStreamToolCall struct {
 }
 
 func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Reader, stream func(context.Context, []byte) error, reasoningStream func(context.Context, []byte, []byte) error, requestModel string, statusCode int, callStarted time.Time, generationInfo map[string]any) (*llms.ContentResponse, error) {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	reader := bufio.NewReader(body)
 	var content strings.Builder
 	var reasoning strings.Builder
 	tools := map[string]*responsesStreamToolCall{}
@@ -607,87 +606,96 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 			_ = m.logRawHTTP(ctx, requestModel, "response", statusCode, rawStream.String())
 		}
 	}()
-	for scanner.Scan() {
-		rawLine := scanner.Text()
-		rawStream.WriteString(rawLine)
-		rawStream.WriteByte('\n')
-		line := strings.TrimSpace(rawLine)
-		if line == "" {
-			eventName = ""
-			continue
+	for {
+		rawLine, readErr := reader.ReadString('\n')
+		if rawLine != "" {
+			rawLine = strings.TrimSuffix(rawLine, "\n")
+			rawLine = strings.TrimSuffix(rawLine, "\r")
 		}
-		if strings.HasPrefix(line, ":") {
-			continue
+		if rawLine != "" {
+			rawStream.WriteString(rawLine)
+			rawStream.WriteByte('\n')
+			line := strings.TrimSpace(rawLine)
+			if line == "" {
+				eventName = ""
+				continue
+			}
+			if strings.HasPrefix(line, ":") {
+				continue
+			}
+			if strings.HasPrefix(line, "event:") {
+				eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+				continue
+			}
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data == "[DONE]" {
+				break
+			}
+			var event responsesStreamEvent
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				return nil, fmt.Errorf("decode responses stream event: %w", err)
+			}
+			if event.Type == "" {
+				event.Type = eventName
+			}
+			switch event.Type {
+			case "response.output_text.delta":
+				hadTextDelta = true
+				content.WriteString(event.Delta)
+				if stream != nil && event.Delta != "" {
+					if err := stream(ctx, []byte(event.Delta)); err != nil {
+						return nil, err
+					}
+				}
+			case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+				reasoning.WriteString(event.Delta)
+				if reasoningStream != nil && event.Delta != "" {
+					if err := reasoningStream(ctx, []byte(event.Delta), nil); err != nil {
+						return nil, err
+					}
+				}
+			case "response.function_call_arguments.delta":
+				call := responsesStreamToolCallForEvent(tools, itemCallIDs, event)
+				call.Arguments.WriteString(event.Delta)
+			case "response.function_call_arguments.done":
+				call := responsesStreamToolCallForEvent(tools, itemCallIDs, event)
+				if event.Arguments != "" {
+					call.Arguments.Reset()
+					call.Arguments.WriteString(event.Arguments)
+				}
+			case "response.output_item.added", "response.output_item.done":
+				if event.Item != nil && event.Item.Type == "reasoning" && event.Type == "response.output_item.done" {
+					addResponsesReasoningItems(generationInfo, []responsesOutputItem{*event.Item})
+				}
+				if event.Item != nil && event.Item.Type == "function_call" {
+					callID := firstNonEmpty(event.Item.CallID, event.Item.ID, event.ItemID, fmt.Sprintf("responses_call_%d", event.OutputIndex))
+					call := tools[callID]
+					if call == nil {
+						call = &responsesStreamToolCall{ID: callID}
+						tools[callID] = call
+					}
+					if event.Item.ID != "" {
+						itemCallIDs[event.Item.ID] = callID
+					}
+					call.Name = firstNonEmpty(event.Item.Name, call.Name)
+					if event.Item.Arguments != "" {
+						call.Arguments.Reset()
+						call.Arguments.WriteString(event.Item.Arguments)
+					}
+				}
+			case "response.completed", "response.done":
+				completed = event.Response
+			}
 		}
-		if strings.HasPrefix(line, "event:") {
-			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			continue
-		}
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
+		if readErr == io.EOF {
 			break
 		}
-		var event responsesStreamEvent
-		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return nil, fmt.Errorf("decode responses stream event: %w", err)
+		if readErr != nil {
+			return nil, fmt.Errorf("read responses stream: %w", readErr)
 		}
-		if event.Type == "" {
-			event.Type = eventName
-		}
-		switch event.Type {
-		case "response.output_text.delta":
-			hadTextDelta = true
-			content.WriteString(event.Delta)
-			if stream != nil && event.Delta != "" {
-				if err := stream(ctx, []byte(event.Delta)); err != nil {
-					return nil, err
-				}
-			}
-		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
-			reasoning.WriteString(event.Delta)
-			if reasoningStream != nil && event.Delta != "" {
-				if err := reasoningStream(ctx, []byte(event.Delta), nil); err != nil {
-					return nil, err
-				}
-			}
-		case "response.function_call_arguments.delta":
-			call := responsesStreamToolCallForEvent(tools, itemCallIDs, event)
-			call.Arguments.WriteString(event.Delta)
-		case "response.function_call_arguments.done":
-			call := responsesStreamToolCallForEvent(tools, itemCallIDs, event)
-			if event.Arguments != "" {
-				call.Arguments.Reset()
-				call.Arguments.WriteString(event.Arguments)
-			}
-		case "response.output_item.added", "response.output_item.done":
-			if event.Item != nil && event.Item.Type == "reasoning" && event.Type == "response.output_item.done" {
-				addResponsesReasoningItems(generationInfo, []responsesOutputItem{*event.Item})
-			}
-			if event.Item != nil && event.Item.Type == "function_call" {
-				callID := firstNonEmpty(event.Item.CallID, event.Item.ID, event.ItemID, fmt.Sprintf("responses_call_%d", event.OutputIndex))
-				call := tools[callID]
-				if call == nil {
-					call = &responsesStreamToolCall{ID: callID}
-					tools[callID] = call
-				}
-				if event.Item.ID != "" {
-					itemCallIDs[event.Item.ID] = callID
-				}
-				call.Name = firstNonEmpty(event.Item.Name, call.Name)
-				if event.Item.Arguments != "" {
-					call.Arguments.Reset()
-					call.Arguments.WriteString(event.Item.Arguments)
-				}
-			}
-		case "response.completed", "response.done":
-			completed = event.Response
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read responses stream: %w", err)
 	}
 	if completed != nil {
 		if completed.ID != "" {
