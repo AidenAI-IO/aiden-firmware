@@ -100,9 +100,8 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 	agentTools := l.Profile.Tools
 	toolSpecs := NewToolSpecs(agentTools)
 	parser := &FunctionAgent{
-		Tools:             agentTools,
-		OutputKey:         agentLoopOutputKey,
-		ScreenshotPruning: l.ScreenshotPruning,
+		Tools:     agentTools,
+		OutputKey: agentLoopOutputKey,
 	}
 	callOptions := chains.GetLLMCallOptions(options...)
 	var toolExecutionHooks toolExecutionHookHandler
