@@ -11,6 +11,7 @@ struct ModelToml {
     std::string model;
     std::string base_url;
     std::string api_key;
+    std::string api_mode;
     std::string reasoning_effort;
     double temperature = 0.0;
     bool has_temperature = false;

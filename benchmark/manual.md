@@ -73,30 +73,19 @@ after. It does not consume every intermediate screenshot.
 
 The environment bridge is the unified HTTP protocol the benchmark uses to connect
 to a real device, a simulator, or another environment. Both the Go agent and the
-MobileGym bridge implement this interface set; the Go agent daemon can also enable
-environment bridge mode to forward some of its local tool calls to another bridge.
+MobileGym bridge implement this interface set; environment bridge mode wires the
+agent's screen and MNK providers to the selected bridge.
 
 Typical scenario:
 
 - The WebUI starts an isolated Docker agent daemon per job/task worker.
-- That daemon uses `--environment-bridge-mode` to forward device-related tools to
-  the selected environment bridge.
-- From the agent's perspective it is still calling ordinary tools such as
-  `screenshot`, `touch_gesture`, `keyboard_text`.
-- From the environment's perspective it actually receives HTTP `/api/tools/<tool>`
-  requests.
-
-The tools the default WebUI Docker daemon forwards include:
-
-```text
-touch_gesture,keyboard_text,keyboard_tap,enter_text,
-search_launch_app,mouse_move,mouse_scroll,
-quick_action,bridge_open_app,bridge_clipboard,bridge_calendar,
-bridge_contacts,bridge_notification
-```
-
-`screenshot` is not forwarded. The agent captures it locally through
-`POST /api/providers/screenshot`.
+- That daemon uses `--environment-bridge-mode` to wire its screen and MNK
+  providers to the selected environment bridge.
+- From the agent's perspective it still calls ordinary tools such as
+  `screenshot`, `touch_gesture`, and `keyboard_tap`; those tools use the injected
+  providers.
+- The bridge receives `POST /api/providers/screenshot` and
+  `POST /api/providers/mnk` requests.
 
 Notes:
 
@@ -234,8 +223,8 @@ the expected value. The same matcher works in mock responses and
    the field and tap the visible Paste/粘贴 menu action.
 
 The clipboard/paste sub-path does not fall back to typing the target text itself.
-The top-level `enter_text` tool owns the HID/IME typing fallback. Because mock suites forward
-`enter_text` to the scripted environment, they validate the Agent's
+The top-level `enter_text` tool owns the HID/IME typing fallback. Because mock suites route
+`enter_text` through the scripted environment, they validate the Agent's
 tool selection but not this internal fallback implementation. The Go unit tests
 cover those branches; a real-phone smoke test is still needed for platform paste
 behavior.
@@ -261,8 +250,9 @@ Standard environment bridge interface:
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Health check |
-| `GET /api/tools` | Tool catalog, used by the agent health check and the environment bridge |
-| `POST /api/tools/<tool>` | Execute a forwarded tool, e.g. touch/keyboard |
+| `GET /api/tools` | Legacy tool catalog for bridge clients and debugging |
+| `POST /api/tools/<tool>` | Legacy bridge tool invocation |
+| `POST /api/providers/mnk` | MNK provider operation used by the Go agent |
 | `POST /api/setup` | Reset/claim the env for a benchmark task |
 | `POST /api/release` | Release the env held by a benchmark task |
 | `GET /api/concurrent` | Return how many concurrent tasks this bridge supports |
@@ -274,8 +264,7 @@ Concurrent MobileGym is routed by `benchmark-task-id`:
   task worker.
 - The runner sends this header when calling `/api/setup`, `/api/release`,
   `/api/providers/screenshot`.
-- The agent daemon's environment bridge tool requests carry the same benchmark
-  task id.
+- The agent daemon's provider requests carry the same benchmark task id.
 - The bridge routes requests to the same env based on this id.
 
 If a MobileGym environment's env pool capacity is `N` and the suite has more than
@@ -416,7 +405,8 @@ A device environment is for an existing device/tool endpoint. Fill in:
 When the WebUI starts a job it will:
 
 1. Start an isolated Docker agent daemon for the job.
-2. Forward that daemon's device tools to this endpoint via the environment bridge.
+2. Connect that daemon's screen and MNK providers to this endpoint via the
+   environment bridge.
 3. Run the benchmark using the isolated daemon's `/api/chat`.
 
 This is suitable for a real device or external tool environment that needs
@@ -610,7 +600,7 @@ Notes:
 
 - `--agent-url` is the agent daemon.
 - `--environment-url` is the environment bridge endpoint that implements
-  `/api/setup`, `/api/providers/screenshot`, `/api/release`.
+  `/api/setup`, `/api/providers/screenshot`, `/api/providers/mnk`, and `/api/release`.
 - Without `--environment-url`, the runner can still run agent chat but will not
   save live pre/post screenshots; judge results that rely on visual screenshots
   will be weaker.
@@ -829,7 +819,7 @@ uv run python -m runner run \
 ```
 
 Note: if there are multiple envs behind the MobileGym bridge, `/api/setup`,
-`/api/providers/screenshot`, `/api/tools/*`, and `/api/release` must all use the same
+`/api/providers/screenshot`, `/api/providers/mnk`, and `/api/release` must all use the same
 `benchmark-task-id`. When manually starting a long-lived agent daemon from the CLI,
 use a fixed route id such as `cli-task`; when you need to run multiple tasks
 concurrently, prefer the WebUI so each task worker gets its own daemon and its own

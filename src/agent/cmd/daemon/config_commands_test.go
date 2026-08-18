@@ -852,6 +852,11 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 			expectedField: "model.provider",
 		},
 		{
+			name:          "model api mode error",
+			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions or responses)",
+			expectedField: "model.api_mode",
+		},
+		{
 			name:          "model max response tokens error",
 			errorMsg:      "model.max_response_tokens must be >= 0, got -1",
 			expectedField: "model.max_response_tokens",

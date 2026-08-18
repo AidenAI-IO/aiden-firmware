@@ -22,7 +22,7 @@ const (
 // on these. Adding a new code requires a registry entry below.
 // The code set comes from a real inventory of error sites in the codebase
 // (tool_execution.go, phone_bridge.go, tools_phone_bridge.go,
-// tools_quick_actions.go, environment_bridge.go, aiden-app/src/services/PhoneBridge.ts).
+// tools_quick_actions.go, aiden-app/src/services/PhoneBridge.ts).
 const (
 	// invalid_input — caller can fix args and retry
 	CodeInvalidArguments   = "invalid_arguments"
@@ -46,13 +46,12 @@ const (
 	CodeWheelGestureLimit              = "wheel_gesture_limit"
 
 	// transient — retry may help
-	CodeBridgeTimeout              = "bridge_timeout"
-	CodeBridgeWriteFailed          = "bridge_write_failed"
-	CodeBridgeConnectionClosed     = "bridge_connection_closed"
-	CodeAppLaunchFailed            = "app_launch_failed"
-	CodeCanceled                   = "canceled"
-	CodeDeadlineExceeded           = "deadline_exceeded"
-	CodeEnvironmentBridgeTransport = "environment_bridge_transport_failed"
+	CodeBridgeTimeout          = "bridge_timeout"
+	CodeBridgeWriteFailed      = "bridge_write_failed"
+	CodeBridgeConnectionClosed = "bridge_connection_closed"
+	CodeAppLaunchFailed        = "app_launch_failed"
+	CodeCanceled               = "canceled"
+	CodeDeadlineExceeded       = "deadline_exceeded"
 
 	// internal — bug or protocol violation; record and surface
 	CodeCommandMarshalFailed      = "command_marshal_failed"
@@ -60,8 +59,6 @@ const (
 	CodeQuickActionInvalidBinding = "quick_action_invalid_binding"
 	CodeSubtoolFailed             = "subtool_failed" // category overridden to inherit sub-tool category at construction
 	CodeToolExecutionFailed       = "tool_execution_failed"
-	CodeEnvironmentBridgeProtocol = "environment_bridge_protocol_error"
-	CodeEnvironmentBridgeRemote   = "environment_bridge_remote_error"
 	CodeNativeModuleFailed        = "native_module_failed"
 	CodeUnknownErrorCode          = "unknown_error_code"
 )
@@ -97,13 +94,12 @@ var codeRegistry = map[string]ToolErrorSpec{
 	CodeWheelGestureLimit:              {Category: CategoryUnsupported, Severity: "warning"},
 
 	// transient
-	CodeBridgeTimeout:              {Category: CategoryTransient, Severity: "warning"},
-	CodeBridgeWriteFailed:          {Category: CategoryTransient, Severity: "warning"},
-	CodeBridgeConnectionClosed:     {Category: CategoryTransient, Severity: "warning"},
-	CodeAppLaunchFailed:            {Category: CategoryTransient, Severity: "warning"},
-	CodeCanceled:                   {Category: CategoryTransient, Severity: "info"},
-	CodeDeadlineExceeded:           {Category: CategoryTransient, Severity: "warning"},
-	CodeEnvironmentBridgeTransport: {Category: CategoryTransient, Severity: "warning"},
+	CodeBridgeTimeout:          {Category: CategoryTransient, Severity: "warning"},
+	CodeBridgeWriteFailed:      {Category: CategoryTransient, Severity: "warning"},
+	CodeBridgeConnectionClosed: {Category: CategoryTransient, Severity: "warning"},
+	CodeAppLaunchFailed:        {Category: CategoryTransient, Severity: "warning"},
+	CodeCanceled:               {Category: CategoryTransient, Severity: "info"},
+	CodeDeadlineExceeded:       {Category: CategoryTransient, Severity: "warning"},
 
 	// internal
 	CodeCommandMarshalFailed:      {Category: CategoryInternal, Severity: "error"},
@@ -111,8 +107,6 @@ var codeRegistry = map[string]ToolErrorSpec{
 	CodeQuickActionInvalidBinding: {Category: CategoryInternal, Severity: "error"},
 	CodeSubtoolFailed:             {Category: CategoryInternal, Severity: "warning"}, // category overridden at construction
 	CodeToolExecutionFailed:       {Category: CategoryInternal, Severity: "error"},
-	CodeEnvironmentBridgeProtocol: {Category: CategoryInternal, Severity: "error"},
-	CodeEnvironmentBridgeRemote:   {Category: CategoryInternal, Severity: "error"},
 	CodeNativeModuleFailed:        {Category: CategoryInternal, Severity: "error"},
 	CodeUnknownErrorCode:          {Category: CategoryInternal, Severity: "error"},
 }

@@ -91,6 +91,8 @@ provider = "openai-main"
 model = "gpt-5.5"
 # temperature = 0.2
 # max_response_tokens = 1000
+# Responses API experiment: local ContextManager history, store=false.
+# api_mode = "responses"
 # Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
 # context_window = 128000
 # model_max_output_tokens = 8192

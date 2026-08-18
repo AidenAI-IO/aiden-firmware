@@ -73,7 +73,6 @@ type Runtime struct {
 	stateManager       *statemanager.StateManager
 	runtimeID          string
 	telemetrySessionID string
-	environmentBridge  *EnvironmentBridgeClient
 	runGate            chan struct{}
 	preemptMu          sync.Mutex
 	activeCancel       context.CancelFunc
@@ -297,6 +296,28 @@ func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llm
 	}
 	if m.promptCapture != nil {
 		m.promptCapture.Record(ctx, startedAt, time.Now(), messages, options, res, err, m.contextWindow())
+	}
+	return res, err
+}
+
+// GenerateContentFromMessageList forwards provider-specific persisted context
+// through the usage wrapper. Responses models use this to replay opaque
+// reasoning items when store=false; ordinary models retain the standard path.
+func (m *usageTrackingModel) GenerateContentFromMessageList(ctx context.Context, messageList []messages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	inner, ok := m.inner.(interface {
+		GenerateContentFromMessageList(context.Context, []messages.Message, ...llms.CallOption) (*llms.ContentResponse, error)
+	})
+	if !ok {
+		return m.GenerateContent(ctx, messages.ConvertMessageList(messageList), options...)
+	}
+
+	startedAt := time.Now()
+	res, err := inner.GenerateContentFromMessageList(ctx, messageList, options...)
+	if err == nil {
+		recordUsageMetrics(m.metrics, res)
+	}
+	if m.promptCapture != nil {
+		m.promptCapture.Record(ctx, startedAt, time.Now(), messages.ConvertMessageList(messageList), options, res, err, m.contextWindow())
 	}
 	return res, err
 }
@@ -540,14 +561,6 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
 
-	var environmentBridge *EnvironmentBridgeClient
-	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
-		environmentBridge = NewEnvironmentBridgeClient(
-			cfg.EnvironmentBridge.Endpoint,
-			WithEnvironmentBridgeBenchmarkTaskID(cfg.EnvironmentBridge.BenchmarkTaskID),
-		)
-	}
-
 	var memoryDir string
 	var longTermStore *LongTermMemoryStore
 	if cfg.ConfigDir != "" {
@@ -589,7 +602,6 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		),
 		runtimeID:          uuid.NewString(),
 		telemetrySessionID: uuid.NewString(),
-		environmentBridge:  environmentBridge,
 		stateManager:       statemanager.NewStateManager(),
 	}
 	// Use the active memory session ID for raw HTTP log partitioning.
@@ -1144,8 +1156,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		return newWheelNudgeGuard(r.tools.screen)
 	}
-	agentLoop.EnvironmentBridge = r.environmentBridge
-	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
 	agentLoop.ToolResultObserver = newScreenToolResultObserver(r.screenState)
 	agentLoop.SteerInterrupt = req.SteerInterrupt
 	agentLoop.SteerProvider = req.SteerProvider

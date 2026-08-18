@@ -19,11 +19,9 @@ func TestRegistryHasAllRequiredCodes(t *testing.T) {
 		// transient
 		"bridge_timeout", "bridge_write_failed", "bridge_connection_closed",
 		"app_launch_failed", "canceled", "deadline_exceeded",
-		"environment_bridge_transport_failed",
 		// internal
 		"command_marshal_failed", "command_id_collision",
 		"quick_action_invalid_binding", "subtool_failed", "tool_execution_failed",
-		"environment_bridge_protocol_error", "environment_bridge_remote_error",
 		"native_module_failed", "unknown_error_code",
 	}
 	for _, code := range required {

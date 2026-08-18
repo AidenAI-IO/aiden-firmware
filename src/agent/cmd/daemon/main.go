@@ -60,9 +60,8 @@ func main() {
 		dataDir                   = flag.String("dir", "", "path to the agent data directory holding agent.toml, skills, memory, cache and logs (required)")
 		addr                      = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
 		deviceType                = registerDeviceTypeFlag(flag.CommandLine)
-		environmentBridgeMode     = flag.Bool("environment-bridge-mode", false, "Enable environment bridge mode (forward selected tool calls to an environment bridge; see --environment-bridge-tools)")
+		environmentBridgeMode     = flag.Bool("environment-bridge-mode", false, "Enable environment bridge screen and input providers")
 		environmentBridgeEndpoint = flag.String("environment-bridge-endpoint", "", "Environment bridge endpoint (e.g., http://192.168.50.123:8080)")
-		environmentBridgeTools    = flag.String("environment-bridge-tools", "", "Comma-separated tool names or glob patterns to forward when environment-bridge-mode is on, e.g. \"keyboard_*,mouse_*\" or \"*\". screenshot is never forwarded; it is captured through POST /api/providers/screenshot. Required with --environment-bridge-mode.")
 		benchmarkTaskID           = flag.String("benchmark-task-id", "", "Benchmark task id to include on environment bridge requests for task routing")
 		benchmarkTokenFile        = flag.String("benchmark-token-file", "", "Path to benchmark API bearer token file. Enables benchmark-only mutation endpoints.")
 	)
@@ -98,11 +97,6 @@ func main() {
 		}
 		if cfg.EnvironmentBridge.Endpoint == "" {
 			_ = logging.LogEvent(logging.Error, "agent", "startup", "environment_bridge_endpoint_missing")
-			os.Exit(1)
-		}
-		cfg.EnvironmentBridge.Tools = parseCommaSeparated(*environmentBridgeTools)
-		if len(cfg.EnvironmentBridge.Tools) == 0 {
-			_ = logging.LogEvent(logging.Error, "agent", "startup", "environment_bridge_tools_missing")
 			os.Exit(1)
 		}
 		cfg.EnvironmentBridge.BenchmarkTaskID = strings.TrimSpace(*benchmarkTaskID)
@@ -165,7 +159,6 @@ func main() {
 	if cfg.EnvironmentBridge.Enabled {
 		fields := []logging.Field{
 			{Key: "endpoint", Value: cfg.EnvironmentBridge.Endpoint},
-			{Key: "tools", Value: cfg.EnvironmentBridge.Tools},
 		}
 		if cfg.EnvironmentBridge.BenchmarkTaskID != "" {
 			fields = append(fields, logging.Field{Key: "benchmark_task_id", Value: cfg.EnvironmentBridge.BenchmarkTaskID})
@@ -356,20 +349,6 @@ func floatOrDefault(value, fallback float64) float64 {
 		return value
 	}
 	return fallback
-}
-
-func parseCommaSeparated(input string) []string {
-	if strings.TrimSpace(input) == "" {
-		return nil
-	}
-	parts := strings.Split(input, ",")
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
 }
 
 type wakeupWatcherFactory func(pin int, callback func()) (wakeupWatcher, error)

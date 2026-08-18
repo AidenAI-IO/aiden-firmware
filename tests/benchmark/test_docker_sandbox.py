@@ -365,7 +365,6 @@ class DockerSandboxContractTest(unittest.TestCase):
                     "AIDEN_AGENT_STOP_ATTEMPTS": "1",
                     "AIDEN_BRIDGE_WAIT_ATTEMPTS": "1",
                     "AIDEN_ENVIRONMENT_BRIDGE_MODE": "true",
-                    "AIDEN_ENVIRONMENT_BRIDGE_TOOLS": "screenshot",
                     "AIDEN_FAKE_AGENT_STARTS": str(starts_file),
                 }
             )
