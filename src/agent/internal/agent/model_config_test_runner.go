@@ -12,6 +12,7 @@ type ModelProviderTestRequest struct {
 	Provider        string
 	APIKey          string
 	Model           string
+	APIMode         string
 	Temperature     *float64
 	ReasoningEffort string
 }
@@ -57,6 +58,7 @@ func applyModelProviderTestRequest(cfg *Config, req ModelProviderTestRequest) er
 		cfg.Model.APIKey = req.APIKey
 	}
 	cfg.Model.Model = req.Model
+	cfg.Model.APIMode = req.APIMode
 	cfg.Model.BaseURL = ""
 	cfg.Model.Temperature = nil
 	if req.Temperature != nil {

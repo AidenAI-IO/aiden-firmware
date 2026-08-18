@@ -81,6 +81,14 @@ func buildOpenAICompatibleModel(ctx ModelBuildContext, cfg ModelConfig, defaultB
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
+	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
+		return newResponsesModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, responsesModelOptions{
+			rawLogger:         ctx.RawHTTPLogger,
+			sessionIDProvider: ctx.SessionIDProvider,
+			reasoningEffort:   cfg.ReasoningEffort,
+			temperature:       cfg.Temperature,
+		})
+	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, openAICompatibleOptions(ctx, cfg)...)
 }
 
@@ -103,10 +111,22 @@ func buildOpenRouterModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, e
 	if ctx.PromptCachePolicy.UsesExplicitCacheControl() {
 		opts = append(opts, withOpenAICompatibleExplicitPromptCache())
 	}
+	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
+		return newResponsesModel(baseURL, cfg.Model, token, ctx.HTTPClient, responsesModelOptions{
+			rawLogger:         ctx.RawHTTPLogger,
+			sessionIDProvider: ctx.SessionIDProvider,
+			reasoningEffort:   cfg.ReasoningEffort,
+			temperature:       cfg.Temperature,
+			routerMetadata:    true,
+		}), nil
+	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, token, ctx.HTTPClient, opts...), nil
 }
 
 func buildAnthropicModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
+	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
+		return nil, fmt.Errorf("model.api_mode=responses requires an OpenAI-compatible /responses endpoint; configure that endpoint with provider type openai")
+	}
 	token, useBearerAuth := resolveAnthropicToken(cfg.APIKey)
 	if token == "" {
 		if env, ok := providerAPIKeyEnv(cfg.APIKey); ok && env != "" {
@@ -122,6 +142,9 @@ func buildAnthropicModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, er
 }
 
 func buildOllamaModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
+	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
+		return nil, fmt.Errorf("model.api_mode=responses requires an OpenAI-compatible /responses endpoint; configure that endpoint with provider type openai")
+	}
 	options := []ollama.Option{ollama.WithModel(cfg.Model), ollama.WithHTTPClient(ctx.OllamaHTTPClient)}
 	if cfg.BaseURL != "" {
 		options = append(options, ollama.WithServerURL(cfg.BaseURL))

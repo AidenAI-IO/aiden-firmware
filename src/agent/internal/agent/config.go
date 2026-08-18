@@ -720,6 +720,10 @@ type ModelConfig struct {
 	Model    string `toml:"model"`
 	BaseURL  string `toml:"-"`
 	APIKey   string `toml:"api_key,omitempty"`
+	// APIMode selects the wire protocol for OpenAI-compatible providers. Empty
+	// and "chat_completions" preserve the historical default; "responses"
+	// sends the locally maintained context as Responses input items.
+	APIMode string `toml:"api_mode,omitempty"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
 	// (see applyModelTemperatureDefault); an explicit value, including 0, is
@@ -1251,6 +1255,10 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Model.Model) == "" && strings.ToLower(c.Model.Provider) != "fake" {
 		return errors.New("model.model is required")
+	}
+	apiMode := normalizeModelAPIMode(c.Model.APIMode)
+	if apiMode == "" {
+		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions or responses)", c.Model.APIMode)
 	}
 	backend := c.Device.BackendOrDefault()
 	switch backend {
