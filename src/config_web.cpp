@@ -2903,6 +2903,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
     }
     cJSON_AddStringToObject(model, "model", config.model.model.c_str());
+    if (!config.model.api_mode.empty()) {
+        cJSON_AddStringToObject(model, "api_mode", config.model.api_mode.c_str());
+    }
     cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
     if (config.model.has_temperature) {
         cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
@@ -3263,6 +3266,7 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_str(&m->model, obj, "model");
     m->base_url.clear();
     set_json_str(&m->api_key, obj, "api_key");
+    set_json_str(&m->api_mode, obj, "api_mode");
     set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
     // Temperature is nullable: presence of the key sets has_temperature, and
     // its absence clears it. This function applies JSON as a patch onto an
