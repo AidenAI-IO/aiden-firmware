@@ -2976,6 +2976,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(hid, "keyboard_layout", config.hid.keyboard_layout.c_str());
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
     cJSON_AddStringToObject(hid, "android_keyboard_device", config.hid.android_keyboard_device.c_str());
+    cJSON_AddStringToObject(hid, "touchscreen_device", config.hid.touchscreen_device.c_str());
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
     cJSON_AddStringToObject(hid, "input_backend", normalize_input_backend(config.hid.input_backend).c_str());
 
@@ -3516,6 +3517,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->hid.keyboard_layout, hid, "keyboard_layout");
         set_json_str(&config->hid.mouse_device, hid, "mouse_device");
         set_json_str(&config->hid.android_keyboard_device, hid, "android_keyboard_device");
+        set_json_str(&config->hid.touchscreen_device, hid, "touchscreen_device");
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");
         set_json_str(&config->hid.input_backend, hid, "input_backend");
     }
@@ -6945,12 +6947,19 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     } else if (section == "hid") {
         cJSON* backend_item = cJSON_GetObjectItem(values, "input_backend");
         std::string input_backend = json_is_string(backend_item) ? normalize_input_backend(backend_item->valuestring) : "hid";
-        const char* dev_keys[] = {"keyboard_device", "mouse_device", "android_keyboard_device", NULL};
-        for (int i = 0; dev_keys[i]; ++i) {
-            cJSON* item = cJSON_GetObjectItem(values, dev_keys[i]);
+        std::vector<std::string> dev_keys = {"keyboard_device", "mouse_device", "android_keyboard_device"};
+        aiden::AgentToml current_config;
+        std::string config_error;
+        load_current_agent_config(options, &current_config, &config_error);
+        if (effective_device_type(current_config) == "Android") {
+            dev_keys.push_back("touchscreen_device");
+        }
+        for (size_t i = 0; i < dev_keys.size(); ++i) {
+            const char* dev_key = dev_keys[i].c_str();
+            cJSON* item = cJSON_GetObjectItem(values, dev_key);
             std::string path = json_is_string(item) ? trim_copy(item->valuestring) : "";
             cJSON* r = cJSON_CreateObject();
-            cJSON_AddStringToObject(r, "check", dev_keys[i]);
+            cJSON_AddStringToObject(r, "check", dev_key);
             if (input_backend == "adb") {
                 cJSON_AddBoolToObject(r, "passed", 1);
                 cJSON_AddStringToObject(r, "detail", "skipped when input_backend=adb");

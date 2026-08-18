@@ -72,7 +72,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
 - `log`: LLM HTTP log retention
 - `device`: device_type
-- `hid`: keyboard_device, keyboard_layout, mouse_device, android_keyboard_device, frame_socket, input_backend
+- `hid`: keyboard_device, keyboard_layout, mouse_device, android_keyboard_device, touchscreen_device, frame_socket, input_backend
 - `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
 - Wi-Fi: SSID / PSK etc. (written to `/userdata/wpa_supplicant.conf`)
 
@@ -119,6 +119,7 @@ keyboard_device = "/dev/hidg0"
 keyboard_layout = "qwerty"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
+touchscreen_device = "/dev/hidg3"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
@@ -189,6 +190,7 @@ keyboard_device = "/dev/hidg0"
 keyboard_layout = "qwerty"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
+touchscreen_device = "/dev/hidg3"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
@@ -447,7 +449,7 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 
 | Field         | Default | Description |
 | ------------- | ------- | ----------- |
-| `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Changing it requires a reboot so USB descriptors are re-enumerated. |
+| `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. Android exposes both a relative mouse and a touchscreen, with `pointer_mode = "touchscreen"` selecting touchscreen as the default gesture surface. Every other value derives `pointer_mode = "absolute"` and keeps the absolute mouse descriptor. Changing it requires a reboot so USB descriptors are re-enumerated. |
 
 ## `[hid]`
 
@@ -455,8 +457,9 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 | ------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `keyboard_device`         | `/dev/hidg0`                            | Keyboard HID device                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `keyboard_layout`         | `qwerty`                                | How the phone interprets the external USB HID keyboard: `qwerty`, `azerty`, or `qwertz`. The visible soft-keyboard layout may differ. Used by `keyboard_text` and standard text-like `keyboard_tap` keys. iOS locks the hardware layout at USB enumeration, so switch the phone's input language to match _before_ saving, then follow the Config Web reboot prompt. A same-identity soft re-enumeration is avoided because it can leave the iOS keyboard and pointer session inconsistent. See [USB HID](../03-services/usb-hid.md). |
-| `mouse_device`            | `/dev/hidg1`                            | Mouse/touch HID device                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `mouse_device`            | `/dev/hidg1`                            | Mouse HID device. Android uses relative mouse reports for real cursor events; iOS and desktop hosts use absolute reports.                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `android_keyboard_device` | `/dev/hidg2`                            | Consumer Control HID device (`hid.usb2`) used for Android extension keys when `[device].device_type = "Android"` and media/volume/brightness/screenshot keys for other device types                                                                                                                                                                                                                                                                                                                                          |
+| `touchscreen_device`      | `/dev/hidg3`                            | Android touchscreen HID device used by default for `touch_gesture`; select `input_device = "mouse"` in a gesture call to use `mouse_device` instead.                                                                                                                                                                                                                                                                                                                                                                          |
 | `frame_socket`            | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `input_backend`           | `hid`                                   | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands.                                                                                                                                                                                                                                                                                                                                               |
 

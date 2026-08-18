@@ -27,7 +27,8 @@ struct Options {
     std::string gadget_root = "/sys/kernel/config/usb_gadget";
     std::string gadget_name = "aiden_hid";
     std::string keyboard_dev = "/dev/hidg0";
-    std::string touch_dev = "/dev/hidg1";
+    std::string mouse_dev = "/dev/hidg1";
+    std::string touch_dev = "/dev/hidg3";
     std::string state_dir = "/tmp";
     std::string manufacturer = "Aiden";
     std::string product_name = "Aiden HID Gadget";
@@ -112,6 +113,38 @@ const uint8_t kTouchDescriptor[] = {
     0x25, 0x7f,             //     Logical Maximum (127)
     0x75, 0x08,             //     Report Size (8)
     0x95, 0x01,             //     Report Count (1)
+    0x81, 0x06,             //     Input (Data, Variable, Relative)
+    0xc0,                   //   End Collection (Physical)
+    0xc0,                   // End Collection (Application)
+};
+
+// Standard boot-compatible relative mouse descriptor used by Android. Android
+// InputReader requires REL_X/REL_Y to classify the interface as a cursor.
+const uint8_t kRelativeMouseDescriptor[] = {
+    0x05, 0x01,             // Usage Page (Generic Desktop)
+    0x09, 0x02,             // Usage (Mouse)
+    0xa1, 0x01,             // Collection (Application)
+    0x09, 0x01,             //   Usage (Pointer)
+    0xa1, 0x00,             //   Collection (Physical)
+    0x05, 0x09,             //     Usage Page (Button)
+    0x19, 0x01,             //     Usage Minimum (Button 1)
+    0x29, 0x03,             //     Usage Maximum (Button 3)
+    0x15, 0x00,             //     Logical Minimum (0)
+    0x25, 0x01,             //     Logical Maximum (1)
+    0x95, 0x03,             //     Report Count (3)
+    0x75, 0x01,             //     Report Size (1)
+    0x81, 0x02,             //     Input (Data, Variable, Absolute)
+    0x95, 0x01,             //     Report Count (1)
+    0x75, 0x05,             //     Report Size (5)
+    0x81, 0x01,             //     Input (Constant)
+    0x05, 0x01,             //     Usage Page (Generic Desktop)
+    0x09, 0x30,             //     Usage (X)
+    0x09, 0x31,             //     Usage (Y)
+    0x09, 0x38,             //     Usage (Wheel)
+    0x15, 0x81,             //     Logical Minimum (-127)
+    0x25, 0x7f,             //     Logical Maximum (127)
+    0x75, 0x08,             //     Report Size (8)
+    0x95, 0x03,             //     Report Count (3)
     0x81, 0x06,             //     Input (Data, Variable, Relative)
     0xc0,                   //   End Collection (Physical)
     0xc0,                   // End Collection (Application)
@@ -540,16 +573,28 @@ void setup_keyboard_function(const std::string& gadget) {
 void setup_touch_function(const std::string& gadget, const Options& options) {
     std::string function_path = gadget + "/functions/hid.usb1";
     ensure_dir(function_path);
-    write_text_file(function_path + "/protocol", "0");
-    write_text_file(function_path + "/subclass", "0");
     if (options.pointer_touchscreen) {
-        write_text_file(function_path + "/report_length", "6");
-        write_binary_file(function_path + "/report_desc", kTouchscreenDescriptor, sizeof(kTouchscreenDescriptor));
+        write_text_file(function_path + "/protocol", "2");
+        write_text_file(function_path + "/subclass", "1");
+        write_text_file(function_path + "/report_length", "4");
+        write_binary_file(function_path + "/report_desc", kRelativeMouseDescriptor, sizeof(kRelativeMouseDescriptor));
     } else {
+        write_text_file(function_path + "/protocol", "0");
+        write_text_file(function_path + "/subclass", "0");
         write_text_file(function_path + "/report_length", "6");
         write_binary_file(function_path + "/report_desc", kTouchDescriptor, sizeof(kTouchDescriptor));
     }
     ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb1");
+
+    if (options.pointer_touchscreen) {
+        function_path = gadget + "/functions/hid.usb3";
+        ensure_dir(function_path);
+        write_text_file(function_path + "/protocol", "0");
+        write_text_file(function_path + "/subclass", "0");
+        write_text_file(function_path + "/report_length", "6");
+        write_binary_file(function_path + "/report_desc", kTouchscreenDescriptor, sizeof(kTouchscreenDescriptor));
+        ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb3");
+    }
 }
 
 void setup_android_extension_function(const std::string& gadget, bool pointer_touchscreen) {
@@ -580,9 +625,11 @@ void cleanup_gadget(const Options& options) {
     remove_if_exists(gadget + "/configs/c.1/hid.usb0");
     remove_if_exists(gadget + "/configs/c.1/hid.usb1");
     remove_if_exists(gadget + "/configs/c.1/hid.usb2");
+    remove_if_exists(gadget + "/configs/c.1/hid.usb3");
     rmdir_if_exists(gadget + "/functions/hid.usb0");
     rmdir_if_exists(gadget + "/functions/hid.usb1");
     rmdir_if_exists(gadget + "/functions/hid.usb2");
+    rmdir_if_exists(gadget + "/functions/hid.usb3");
     rmdir_if_exists(gadget + "/configs/c.1/strings/0x409");
     rmdir_if_exists(gadget + "/configs/c.1");
     rmdir_if_exists(gadget + "/strings/0x409");
@@ -667,6 +714,7 @@ void print_usage() {
         << "  --gadget-root <PATH>\n"
         << "  --gadget-name <NAME>\n"
         << "  --keyboard-dev <PATH>\n"
+        << "  --mouse-dev <PATH>\n"
         << "  --touch-dev <PATH>\n"
         << "  --state-dir <PATH>\n"
         << "  --manufacturer <TEXT>\n"
@@ -701,6 +749,8 @@ Options parse_global_options(std::vector<std::string>& args) {
             options.gadget_name = args.at(++i);
         } else if (arg == "--keyboard-dev") {
             options.keyboard_dev = args.at(++i);
+        } else if (arg == "--mouse-dev") {
+            options.mouse_dev = args.at(++i);
         } else if (arg == "--touch-dev") {
             options.touch_dev = args.at(++i);
         } else if (arg == "--state-dir") {
@@ -777,6 +827,8 @@ std::vector<std::string> build_server_command_prefix(const Options& options,
     command.push_back(options.gadget_name);
     command.push_back("--keyboard-dev");
     command.push_back(options.keyboard_dev);
+    command.push_back("--mouse-dev");
+    command.push_back(options.mouse_dev);
     command.push_back("--touch-dev");
     command.push_back(options.touch_dev);
     command.push_back("--state-dir");
@@ -967,7 +1019,7 @@ void send_mouse_report(const Options& options, uint8_t buttons, int x, int y, in
     report[3] = static_cast<uint8_t>(y & 0xff);
     report[4] = static_cast<uint8_t>((y >> 8) & 0xff);
     report[5] = static_cast<uint8_t>(static_cast<int8_t>(std::max(-127, std::min(127, wheel))));
-    write_report(options.touch_dev, report);
+    write_report(options.mouse_dev, report);
     save_pointer_xy(options, x, y);
 }
 

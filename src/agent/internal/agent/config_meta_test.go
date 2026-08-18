@@ -182,7 +182,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 	}
 	want := map[string]displayMeta{
 		"device.device_type": {
-			help: "Android uses HID touchscreen mode. iOS, macOS, windows, and linux use absolute pointer mode.",
+			help: "Android exposes both a touchscreen and a relative mouse with a visible cursor. iOS, macOS, windows, and linux use the absolute mouse.",
 		},
 		"agent.vad_model_path":          {layout: "wide"},
 		"agent.vad_helper_path":         {layout: "wide"},
@@ -210,6 +210,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"hid.keyboard_device":         {layout: "wide"},
 		"hid.mouse_device":            {layout: "wide"},
 		"hid.android_keyboard_device": {layout: "wide"},
+		"hid.touchscreen_device":      {layout: "wide"},
 		"hid.frame_socket":            {layout: "wide"},
 		"search.api_key":              {layout: "wide"},
 		"telemetry.base_url": {
@@ -405,6 +406,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"hid.keyboard_layout", defaults.HID.KeyboardLayout},
 		{"hid.mouse_device", defaults.HID.MouseDevice},
 		{"hid.android_keyboard_device", defaults.HID.AndroidKeyboardDevice},
+		{"hid.touchscreen_device", defaults.HID.TouchscreenDevice},
 		{"hid.frame_socket", defaults.HID.FrameSocket},
 		{"hid.input_backend", defaults.HID.InputBackend},
 		{"search.provider", defaults.Search.ProviderOrDefault()},

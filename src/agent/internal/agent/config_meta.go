@@ -156,7 +156,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "device",
 				Fields: []FieldMeta{
 					{Key: "device_type", Widget: WidgetSelect,
-						Help:    "Android uses HID touchscreen mode. iOS, macOS, windows, and linux use absolute pointer mode.",
+						Help:    "Android exposes both a touchscreen and a relative mouse with a visible cursor. iOS, macOS, windows, and linux use the absolute mouse.",
 						Enum:    enumOptions("iOS", "Android", "macOS", "windows", "linux"),
 						Default: defaults.Device.DeviceTypeOrDefault()},
 				},
@@ -411,6 +411,8 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "keyboard_device", Widget: WidgetText, Default: defaults.HID.KeyboardDevice, Layout: "wide"},
 					{Key: "mouse_device", Widget: WidgetText, Default: defaults.HID.MouseDevice, Layout: "wide"},
 					{Key: "android_keyboard_device", Widget: WidgetText, Default: defaults.HID.AndroidKeyboardDevice, Layout: "wide"},
+					{Key: "touchscreen_device", Widget: WidgetText, Default: defaults.HID.TouchscreenDevice, Layout: "wide",
+						VisibleWhen: all(eq("device.device_type", "Android"))},
 					{Key: "frame_socket", Widget: WidgetText, Default: defaults.HID.FrameSocket, Layout: "wide"},
 				},
 			},

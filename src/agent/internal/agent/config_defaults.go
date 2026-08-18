@@ -47,6 +47,7 @@ const (
 	defaultKeyboardDevice             = "/dev/hidg0"
 	defaultMouseDevice                = "/dev/hidg1"
 	defaultAndroidKeyboardDevice      = "/dev/hidg2"
+	defaultTouchscreenDevice          = "/dev/hidg3"
 	defaultFrameServiceSocket         = "/run/frame_service/frame_service.sock"
 	defaultPointerMode                = "absolute"
 	defaultDeviceType                 = "iOS"
@@ -158,6 +159,7 @@ func DefaultConfig() Config {
 			KeyboardLayout:        defaultKeyboardLayout,
 			MouseDevice:           defaultMouseDevice,
 			AndroidKeyboardDevice: defaultAndroidKeyboardDevice,
+			TouchscreenDevice:     defaultTouchscreenDevice,
 			FrameSocket:           defaultFrameServiceSocket,
 			PointerMode:           defaultPointerMode,
 			InputBackend:          defaultInputBackend,

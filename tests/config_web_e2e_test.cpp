@@ -238,6 +238,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"keyboard_layout\":\"qwerty\",\"mouse_device\":\"/dev/hidg1\","
         "\"android_keyboard_device\":\"/dev/hidg2\","
+        "\"touchscreen_device\":\"/dev/hidg3\","
         "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"input_backend\":\"hid\"},"
         "\"search\":{\"provider\":\"") + search_provider + "\",\"has_api_key\":" +
         (search_has_api_key ? "true" : "false") +

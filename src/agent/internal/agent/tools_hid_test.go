@@ -1458,6 +1458,16 @@ func testTouchscreenPointerController(dev *HIDDevice, state *pointerState) *poin
 	return &pointerController{dev: dev, state: state, touchscreen: true}
 }
 
+func testRelativePointerController(dev *HIDDevice, state *pointerState, width, height int) *pointerController {
+	return &pointerController{
+		dev:           dev,
+		state:         state,
+		relative:      true,
+		surfaceWidth:  width,
+		surfaceHeight: height,
+	}
+}
+
 type touchscreenReport struct {
 	flags     uint8
 	contactID uint8
@@ -1678,6 +1688,140 @@ func TestTouchscreenTapWritesTouchDownAndUp(t *testing.T) {
 		if reports[i].flags != 0x00 || reports[i].contactID != 1 || reports[i].x != 16384 || reports[i].y != 8192 {
 			t.Fatalf("up report %d = %+v, want release at (16384,8192)", i, reports[i])
 		}
+	}
+}
+
+func TestTouchGestureMouseInputDeviceWritesOnlyMouseReports(t *testing.T) {
+	touchDev, touchPath := newTestHIDDevice(t)
+	mouseDev, mousePath := newTestHIDDevice(t)
+	tool := &TouchGestureTool{
+		pc:      testTouchscreenPointerController(touchDev, &pointerState{}),
+		mousePC: testPointerController(mouseDev, &pointerState{}),
+		screen:  &screen.ScreenState{},
+	}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":250},"input_device":"mouse"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	reports := readMouseReports(t, mouseDev, mousePath)
+	if len(reports) != 2+touchReleaseReportCount {
+		t.Fatalf("len(mouse reports) = %d, want %d", len(reports), 2+touchReleaseReportCount)
+	}
+	if reports[0].buttons != 0 || reports[1].buttons != 1 || reports[0].x != 16384 || reports[0].y != 8192 {
+		t.Fatalf("mouse reports begin %+v, %+v; want move then left press at (16384,8192)", reports[0], reports[1])
+	}
+
+	touchDev.Close()
+	touchData, err := os.ReadFile(touchPath)
+	if err != nil {
+		t.Fatalf("ReadFile touchscreen: %v", err)
+	}
+	if len(touchData) != 0 {
+		t.Fatalf("touchscreen received %d bytes during mouse input", len(touchData))
+	}
+}
+
+func TestTouchGestureRelativeMouseDoesNotRequireTouchscreenMapping(t *testing.T) {
+	touchDev, _ := newTestHIDDevice(t)
+	mouseDev, mousePath := newTestHIDDevice(t)
+	tool := &TouchGestureTool{
+		pc:      testTouchscreenPointerController(touchDev, &pointerState{}),
+		mousePC: testRelativePointerController(mouseDev, &pointerState{}, 1920, 1080),
+		screen:  &screen.ScreenState{},
+		primeScreenMapping: func(context.Context) error {
+			return errors.New("frame service unavailable")
+		},
+	}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":250},"input_device":"mouse"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+	if reports := readRelativeMouseReports(t, mouseDev, mousePath); len(reports) == 0 {
+		t.Fatal("relative mouse received no reports")
+	}
+	touchDev.Close()
+}
+
+func TestAndroidMousePointerControllerUsesRelativeReports(t *testing.T) {
+	android := newMousePointerController(HIDConfig{PointerMode: "touchscreen"})
+	if !android.relative || android.touchscreen {
+		t.Fatalf("Android mouse controller = relative:%v touchscreen:%v, want relative mouse", android.relative, android.touchscreen)
+	}
+
+	ios := newMousePointerController(HIDConfig{PointerMode: "absolute"})
+	if ios.relative || ios.touchscreen {
+		t.Fatalf("iOS mouse controller = relative:%v touchscreen:%v, want absolute mouse", ios.relative, ios.touchscreen)
+	}
+}
+
+func TestRelativeMouseMoveHomesAndTracksFullFramePosition(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	state := &pointerState{}
+	pc := testRelativePointerController(dev, state, 100, 200)
+	screenState := &screen.ScreenState{}
+	screenState.UpdateActiveArea(100, 200, screen.ScreenActiveArea{X: 0, Y: 0, Width: 100, Height: 200, Valid: true})
+	tool := &MouseMoveTool{pc: pc, screen: screenState}
+
+	out, err := tool.Call(context.Background(), `{"x":500,"y":250}`)
+	if err != nil || out != "ok" {
+		t.Fatalf("Call output=%q err=%v, want ok", out, err)
+	}
+
+	reports := readRelativeMouseReports(t, dev, path)
+	homeReports := (200+126)/127 + relativeMouseHomePaddingReports
+	if len(reports) <= homeReports {
+		t.Fatalf("len(reports) = %d, want homing plus target motion", len(reports))
+	}
+	for i := 0; i < homeReports; i++ {
+		if reports[i].deltaX != -127 || reports[i].deltaY != -127 || reports[i].buttons != 0 {
+			t.Fatalf("home report %d = %+v, want (-127,-127) with no buttons", i, reports[i])
+		}
+	}
+
+	var movedX, movedY int
+	for _, report := range reports[homeReports:] {
+		movedX += int(report.deltaX)
+		movedY += int(report.deltaY)
+	}
+	if movedX != 50 || movedY != 50 {
+		t.Fatalf("relative motion = (%d,%d), want (50,50)", movedX, movedY)
+	}
+	if x, y, ok := state.Current(); !ok || x != 16384 || y != 8192 {
+		t.Fatalf("tracked absolute state = (%d,%d,%v), want (16384,8192,true)", x, y, ok)
+	}
+}
+
+func TestRelativeMouseButtonAndScrollReports(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	state := &pointerState{}
+	state.Update(1000, 2000)
+	pc := testRelativePointerController(dev, state, 1920, 1080)
+
+	if err := pc.moveTo(1000, 2000, 1); err != nil {
+		t.Fatalf("moveTo button: %v", err)
+	}
+	if err := pc.scroll(-3); err != nil {
+		t.Fatalf("scroll: %v", err)
+	}
+
+	reports := readRelativeMouseReports(t, dev, path)
+	if len(reports) != 2 {
+		t.Fatalf("len(reports) = %d, want 2", len(reports))
+	}
+	if reports[0].buttons != 1 || reports[0].deltaX != 0 || reports[0].deltaY != 0 || reports[0].wheel != 0 {
+		t.Fatalf("button report = %+v", reports[0])
+	}
+	if reports[1].buttons != 0 || reports[1].deltaX != 0 || reports[1].deltaY != 0 || reports[1].wheel != -3 {
+		t.Fatalf("scroll report = %+v", reports[1])
 	}
 }
 
@@ -2243,6 +2387,13 @@ type mouseReport struct {
 	wheel   int8
 }
 
+type relativeMouseReport struct {
+	buttons uint8
+	deltaX  int8
+	deltaY  int8
+	wheel   int8
+}
+
 func newTestHIDDevice(t *testing.T) (*HIDDevice, string) {
 	t.Helper()
 
@@ -2743,6 +2894,30 @@ func readMouseReports(t *testing.T, dev *HIDDevice, path string) []mouseReport {
 	return reports
 }
 
+func readRelativeMouseReports(t *testing.T, dev *HIDDevice, path string) []relativeMouseReport {
+	t.Helper()
+
+	dev.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data)%4 != 0 {
+		t.Fatalf("relative mouse report data length = %d, want multiple of 4", len(data))
+	}
+
+	reports := make([]relativeMouseReport, 0, len(data)/4)
+	for i := 0; i < len(data); i += 4 {
+		reports = append(reports, relativeMouseReport{
+			buttons: data[i],
+			deltaX:  int8(data[i+1]),
+			deltaY:  int8(data[i+2]),
+			wheel:   int8(data[i+3]),
+		})
+	}
+	return reports
+}
+
 type fakeHIDWriteCloser struct {
 	closed     bool
 	writeCount int
@@ -3022,10 +3197,16 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 			t.Fatalf("%s required = %#v, want x and y", name, coordinate["required"])
 		}
 	}
+	inputDevices := stringEnumPropertyValues(t, schema, "input_device")
+	for _, want := range []string{"touchscreen", "mouse"} {
+		if _, ok := inputDevices[want]; !ok {
+			t.Fatalf("input_device schema missing %q: %v", want, inputDevices)
+		}
+	}
 
 	examples, ok := schema["examples"].([]map[string]any)
-	if !ok || len(examples) != 3 {
-		t.Fatalf("schema examples = %#v, want three complete examples", schema["examples"])
+	if !ok || len(examples) < 3 {
+		t.Fatalf("schema examples = %#v, want at least three complete examples", schema["examples"])
 	}
 	encoded, err := json.Marshal(examples)
 	if err != nil || !json.Valid(encoded) {
@@ -3033,6 +3214,7 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 	}
 	for _, want := range []string{
 		`{"point":{"x":500,"y":500},"type":"tap"}`,
+		`{"input_device":"mouse","point":{"x":500,"y":500},"type":"tap"}`,
 		`"start":{"x":500,"y":800}`,
 		`"end":{"x":500,"y":200}`,
 		`{"strength":"medium","type":"swipe_up"}`,

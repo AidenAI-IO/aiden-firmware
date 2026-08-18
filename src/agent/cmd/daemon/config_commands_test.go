@@ -329,6 +329,7 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	}
 	if defaults.HID.FrameSocket == "" || defaults.HID.KeyboardDevice == "" ||
 		defaults.HID.MouseDevice == "" || defaults.HID.AndroidKeyboardDevice == "" ||
+		defaults.HID.TouchscreenDevice == "" ||
 		defaults.HID.PointerMode == "" || defaults.HID.KeyboardLayout == "" {
 		t.Fatalf("hid defaults were not populated: %+v", defaults.HID)
 	}

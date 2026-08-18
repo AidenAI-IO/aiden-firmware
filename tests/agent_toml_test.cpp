@@ -102,6 +102,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.hid.keyboard_device = "/dev/hidg0";
     cfg.hid.keyboard_layout = "azerty";
     cfg.hid.mouse_device = "/dev/hidg1";
+    cfg.hid.touchscreen_device = "/dev/hidg3";
     cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
     cfg.device.device_type = "Android";
 
@@ -220,6 +221,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.hid.keyboard_layout == "azerty");
     CHECK(loaded.hid.mouse_device == "/dev/hidg1");
     CHECK(loaded.hid.android_keyboard_device == "/dev/hidg2");
+    CHECK(loaded.hid.touchscreen_device == "/dev/hidg3");
     CHECK(loaded.hid.frame_socket == "/run/frame_service/frame_service.sock");
     CHECK(loaded.device.device_type == "Android");
 
@@ -260,6 +262,7 @@ TEST_CASE("agent_toml defaults missing android keyboard device for old configs")
     REQUIRE(aiden::load_agent_toml(path.c_str(), loaded, &err));
     REQUIRE(err.empty());
     CHECK(loaded.hid.android_keyboard_device == "/dev/hidg2");
+    CHECK(loaded.hid.touchscreen_device == "/dev/hidg3");
     CHECK(loaded.hid.keyboard_layout == "qwerty");
 
     std::remove(path.c_str());
