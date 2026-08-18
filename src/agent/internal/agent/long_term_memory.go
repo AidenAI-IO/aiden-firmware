@@ -60,6 +60,28 @@ func withParsedCacheCapacity(capacity int) LongTermMemoryOption {
 	return func(s *LongTermMemoryStore) { s.parsedCache.init(capacity) }
 }
 
+// MemoryTypeScreenSnapshot is the long-term memory type for a Screen Memory:
+// what was on the controlled device's screen at one moment, recorded by a
+// deliberate button press.
+//
+// It is its own type rather than a fact so that it can be retrieved as a group,
+// is excluded from the User Profile by isProfileRelevantType, and is exempt
+// from the outcome feedback that applies to inferred memories.
+const MemoryTypeScreenSnapshot = "screen_snapshot"
+
+// MemorySourceTypeScreenCapture marks a Screen Memory's provenance.
+const MemorySourceTypeScreenCapture = "screen_capture"
+
+// isRecencyOrderedMemoryType reports whether equally-scoring memories of this
+// type should be ordered newest-first rather than by ascending ID.
+//
+// This only decides ordering. Confidence outranks it in the sort, which is why
+// a Screen Memory's confidence is pinned: if it ever drifted, an older
+// frequently-recalled entry would outrank a just-saved one.
+func isRecencyOrderedMemoryType(memoryType string) bool {
+	return memoryType == MemoryTypeScreenSnapshot
+}
+
 type MemorySourceRef struct {
 	Type     string   `yaml:"type" json:"type"`
 	ID       string   `yaml:"id" json:"id"`
@@ -249,6 +271,13 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 		}
 		if matches[i].Result.Confidence != matches[j].Result.Confidence {
 			return matches[i].Result.Confidence > matches[j].Result.Confidence
+		}
+		// Screen Memory answers "the one I just saved", so the most recent must
+		// win. Memory IDs begin with a fixed-width nanosecond timestamp, so
+		// descending ID order is chronological. Scoped to this type; every
+		// other type keeps its existing ascending order.
+		if isRecencyOrderedMemoryType(matches[i].Result.Type) && isRecencyOrderedMemoryType(matches[j].Result.Type) {
+			return matches[i].Result.ID > matches[j].Result.ID
 		}
 		return matches[i].Result.ID < matches[j].Result.ID
 	})

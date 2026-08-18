@@ -11,10 +11,36 @@ import (
 
 type promptSoundKind int
 
+// The first two values are load-bearing: existing call sites and tests depend on
+// recording_start and agent_send keeping their iota positions, so new kinds are
+// only ever appended.
 const (
 	promptSoundRecordingStart promptSoundKind = iota
 	promptSoundAgentSend
+	promptSoundQuickCaptureThreshold
+	promptSoundQuickCaptureSuccess
+	promptSoundQuickCaptureFailed
+)
 
+// String is the log label for a tone.
+func (k promptSoundKind) String() string {
+	switch k {
+	case promptSoundRecordingStart:
+		return "recording_start"
+	case promptSoundAgentSend:
+		return "agent_send"
+	case promptSoundQuickCaptureThreshold:
+		return "quick_capture_threshold"
+	case promptSoundQuickCaptureSuccess:
+		return "quick_capture_success"
+	case promptSoundQuickCaptureFailed:
+		return "quick_capture_failed"
+	default:
+		return "unknown"
+	}
+}
+
+const (
 	promptSoundSampleRate = 16000
 	promptSoundChannels   = 1
 	promptSoundBitWidth   = 16
@@ -112,7 +138,29 @@ func promptSoundPCM(kind promptSoundKind) []byte {
 			{frequency: 0, duration: 20 * time.Millisecond},
 			{frequency: 980, duration: 70 * time.Millisecond},
 		})
+	case promptSoundQuickCaptureThreshold:
+		// Plays immediately when the long-press threshold is reached, while the
+		// button is still held. A single mid-frequency chirp: distinctive
+		// without being jarring.
+		return synthPromptPCM([]promptTone{
+			{frequency: 880, duration: 60 * time.Millisecond},
+		})
+	case promptSoundQuickCaptureSuccess:
+		// Plays after the pipeline completes. Rising two-tone to signal success.
+		return synthPromptPCM([]promptTone{
+			{frequency: 660, duration: 50 * time.Millisecond},
+			{frequency: 0, duration: 15 * time.Millisecond},
+			{frequency: 880, duration: 65 * time.Millisecond},
+		})
+	case promptSoundQuickCaptureFailed:
+		// Plays when capture or vision fails. Descending to signal failure.
+		return synthPromptPCM([]promptTone{
+			{frequency: 740, duration: 50 * time.Millisecond},
+			{frequency: 0, duration: 15 * time.Millisecond},
+			{frequency: 440, duration: 65 * time.Millisecond},
+		})
 	default:
+		// promptSoundRecordingStart
 		return synthPromptPCM([]promptTone{
 			{frequency: 980, duration: 70 * time.Millisecond},
 			{frequency: 0, duration: 18 * time.Millisecond},

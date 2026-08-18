@@ -1366,6 +1366,20 @@ func (d *AudioDialog) playPromptSoundUninterruptible(kind promptSoundKind, label
 	log.Printf("[audio] %s prompt sound completed in %s\n", label, time.Since(startedAt).Round(time.Millisecond))
 }
 
+// PlayQuickCaptureTone plays a Quick Capture feedback tone and waits for it to
+// finish, so the caller controls ordering: the threshold tone must be audible
+// before the vision call starts.
+//
+// Playback is exclusive on device, so this returns an error when the agent is
+// already speaking. Quick Capture treats that as non-fatal — a missing tone is
+// better than a dropped capture.
+func (d *AudioDialog) PlayQuickCaptureTone(ctx context.Context, kind promptSoundKind) error {
+	if d == nil {
+		return nil
+	}
+	return playPromptSound(ctx, d.audioClient, kind, true)
+}
+
 // ProcessTextInput processes text input and speaks the response
 func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime *Runtime) error {
 	ctx = d.ConfigureRuntimeTools(ctx, runtime)

@@ -739,6 +739,42 @@ func (r *Runtime) MemoryPlane() MemoryPlane {
 	return r.memoryPlane
 }
 
+// Model returns the runtime's model manager for direct model calls outside the
+// agent loop, such as the screen memory pipeline's vision call.
+func (r *Runtime) Model() model.Model {
+	if r == nil {
+		return nil
+	}
+	return r.models
+}
+
+// ScreenState returns the runtime's screen coordinate mapping state for tools
+// and pipelines that need to resolve the active area.
+func (r *Runtime) ScreenState() *screen.ScreenState {
+	if r == nil {
+		return nil
+	}
+	return r.screenState
+}
+
+// LongTermMemoryStore returns the store for direct memory writes outside the
+// agent loop, such as the screen memory pipeline's Screen Memory entries.
+func (r *Runtime) LongTermMemoryStore() *LongTermMemoryStore {
+	if r == nil || r.memories == nil {
+		return nil
+	}
+	return r.memories.longTerm
+}
+
+// Logger returns the runtime's structured logger for components constructed
+// outside the agent loop, such as the Quick Capture controller.
+func (r *Runtime) Logger() *Logger {
+	if r == nil {
+		return nil
+	}
+	return r.logger
+}
+
 func (r *Runtime) markInterruptedEpisodesBestEffort() {
 	plane, ok := r.memoryPlane.(*FilesystemMemoryPlane)
 	if !ok || plane == nil || plane.episodes == nil {

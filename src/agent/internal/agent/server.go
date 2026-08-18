@@ -69,6 +69,7 @@ type Server struct {
 	ttsPlaybackBackend      tts.AudioServiceBackend
 	screenCaptureMu         sync.Mutex
 	screenCaptureClient     screenprovider.Provider
+	quickCapture            *QuickCaptureController
 	recordMu                sync.Mutex
 	webRecording            *webAudioRecording
 	sttConfigTestSession    *sttConfigTestLiveSession
@@ -429,6 +430,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		})
 	}
 	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
+	s.quickCapture = newServerQuickCapture(runtime, s.screenCaptureClient)
 	runtime.tools.RegisterPhoneBridge(s.bridge)
 	s.loadHistoryFromDisk()
 
@@ -497,6 +499,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
+	mux.HandleFunc("/api/quick-capture", s.handleQuickCapture)
 	mux.HandleFunc("/api/providers/screenshot", s.handleProviderScreenshot)
 	mux.HandleFunc("/api/concurrent", s.handleConcurrent)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)

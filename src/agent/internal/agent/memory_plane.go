@@ -536,6 +536,11 @@ func updateLongTermMemoryFromEpisode(item *MemoryItem, episode TaskEpisode) {
 			item.Confidence = clampConfidence(item.Confidence - 0.25)
 			return
 		}
+		// A volunteered memory records what was observed, so a successful task
+		// neither validates it nor earns it more time.
+		if isVolunteeredMemoryType(item.Type) {
+			return
+		}
 		item.SuccessCount++
 		item.LastValidatedAt = now.Format(time.RFC3339Nano)
 		item.Confidence = clampConfidence(item.Confidence + 0.05)
@@ -817,6 +822,21 @@ func shouldPenalizeMemoryType(memoryType string) bool {
 	default:
 		return false
 	}
+}
+
+// isVolunteeredMemoryType reports whether a memory was deliberately recorded by
+// the user rather than inferred by the agent from a run.
+//
+// A volunteered memory is an observation: it has no truth value to revise, so
+// outcome feedback must not touch its confidence, validation counts, or expiry.
+// This is the success-side counterpart to shouldPenalizeMemoryType, which
+// already gates the failure side. Both together express the same distinction.
+//
+// Refreshing expiry is the consequential one: TTL is the only automatic
+// reclamation path for long-term memory, so crediting a volunteered memory on
+// every successful recall would make a frequently-asked entry immortal.
+func isVolunteeredMemoryType(memoryType string) bool {
+	return memoryType == MemoryTypeScreenSnapshot
 }
 
 func memoryFailureDominates(successCount int, failureCount int) bool {

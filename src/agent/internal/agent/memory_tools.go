@@ -111,7 +111,8 @@ func (t *RecallMemoryTool) Name() string { return "recall_memory" }
 func (t *RecallMemoryTool) Description() string {
 	return strings.Join([]string{
 		"Recall long-term memories by tags, entities, or types. Leave arrays empty to match all.",
-		"Use for remembered preferences, rules, procedures, facts, or profile info; for raw recent session details use recall_session_chunks instead.",
+		"Use for remembered preferences, rules, procedures, facts, profile info, or screen content the user saved earlier with the device button.",
+		"Screen content the user saved belongs here even when they phrase it as something recent (\"the tracking number I just saved\"); use types [\"screen_snapshot\"] for those. Only use recall_session_chunks for what was actually said in conversation.",
 		"Returns matching memories with id, type, title, content, summary.",
 	}, " ")
 }
@@ -120,7 +121,7 @@ func (t *RecallMemoryTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"tags":     stringArrayArgSchema("Topic or domain keywords such as verification, payment, or expense."),
 		"entities": stringArrayArgSchema("Specific named things such as apps, accounts, services, or people."),
-		"types":    stringArrayArgSchema("Memory categories: preference (likes/dislikes), rule (must/must-not), procedure (how-to), fact (stable info), profile (user background)."),
+		"types":    stringArrayArgSchema("Memory categories: preference (likes/dislikes), rule (must/must-not), procedure (how-to), fact (stable info), profile (user background), screen_snapshot (screen content the user saved with the device button). Leave empty and pass no tags to get the most recently saved screen_snapshot entries first."),
 		"limit":    minIntegerArgSchema("Maximum number of memories to return.", 1),
 	})
 }
