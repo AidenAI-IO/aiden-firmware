@@ -167,7 +167,10 @@ def _handler_for(bridge: VPhoneBridgeServer):
             if not bridge.state.active_episode_id:
                 self._send_json(409, {"error": "no active episode; call /api/setup first"})
                 return
-            status, response = execute_mnk_request(payload, bridge.tools_api._submit_tool_call)
+            try:
+                status, response = execute_mnk_request(payload, bridge.tools_api._submit_tool_call)
+            except VPhoneSocketError as exc:
+                status, response = _vphone_error_status(exc), {"error": str(exc)}
             self._send_json(status, response)
 
         def _read_json(self) -> dict[str, Any] | None:
@@ -200,11 +203,7 @@ def _handler_for(bridge: VPhoneBridgeServer):
             return payload
 
         def _send_vphone_error(self, exc: VPhoneSocketError) -> None:
-            status = 503 if exc.code in {
-                "socket_not_found", "socket_refused", "socket_timeout", "socket_io",
-                "display_unavailable", "guest_unavailable", "guest_ssh_failed",
-            } else 500
-            self._send_error(status, exc.code, str(exc))
+            self._send_error(_vphone_error_status(exc), exc.code, str(exc))
 
         def _send_error(self, status: int, code: str, message: str, *, close: bool = False) -> None:
             self._send_json(status, bridge_error(code, message, status=status), close=close)
@@ -222,6 +221,15 @@ def _handler_for(bridge: VPhoneBridgeServer):
             self.wfile.write(data)
 
     return VPhoneBridgeRequestHandler
+
+
+def _vphone_error_status(exc: VPhoneSocketError) -> int:
+    if exc.code in {
+        "socket_not_found", "socket_refused", "socket_timeout", "socket_io",
+        "display_unavailable", "guest_unavailable", "guest_ssh_failed",
+    }:
+        return 503
+    return 500
 
 
 def _health_payload(bridge: VPhoneBridgeServer, status: dict[str, Any]) -> dict[str, Any]:

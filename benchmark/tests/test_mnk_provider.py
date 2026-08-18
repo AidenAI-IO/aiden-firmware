@@ -32,7 +32,7 @@ from mnk_provider import execute_mnk_request, mnk_tool_calls
         (
             {
                 "operation": "double_click",
-                "double_click": {"x": 300, "y": 400, "button": "right"},
+                "double_click": {"x": 300, "y": 400, "button": "left"},
             },
             [
                 (
@@ -44,7 +44,7 @@ from mnk_provider import execute_mnk_request, mnk_tool_calls
         (
             {
                 "operation": "swipe",
-                "swipe": {"path": [[100, 200], [300, 400], [500, 600]], "button": "left"},
+                "swipe": {"path": [[100, 200], [500, 600]], "button": "left"},
             },
             [
                 (
@@ -52,14 +52,6 @@ from mnk_provider import execute_mnk_request, mnk_tool_calls
                     {
                         "type": "swipe",
                         "start": {"x": 100.0, "y": 200.0},
-                        "end": {"x": 300.0, "y": 400.0},
-                    },
-                ),
-                (
-                    "touch_gesture",
-                    {
-                        "type": "swipe",
-                        "start": {"x": 300.0, "y": 400.0},
                         "end": {"x": 500.0, "y": 600.0},
                     },
                 ),
@@ -106,7 +98,20 @@ def test_mnk_tool_calls(payload, expected):
         {"operation": "unknown"},
         {"operation": "click", "click": {"x": -1, "y": 0}},
         {"operation": "click", "click": {"x": 1, "y": 2, "button": "side"}},
+        {"operation": "click", "click": {"x": 1, "y": 2, "button": "right"}},
+        {
+            "operation": "double_click",
+            "double_click": {"x": 1, "y": 2, "button": "middle"},
+        },
         {"operation": "drag", "drag": {"path": [[0, 0]]}},
+        {
+            "operation": "swipe",
+            "swipe": {"path": [[0, 0], [500, 500], [1000, 1000]], "button": "left"},
+        },
+        {
+            "operation": "drag",
+            "drag": {"path": [[0, 0], [1000, 1000]], "button": "right"},
+        },
         {"operation": "keypress", "keypress": {"keys": []}},
         {"operation": "scroll", "scroll": {"scroll_x": 1, "scroll_y": 0}},
     ],

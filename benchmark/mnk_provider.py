@@ -39,7 +39,7 @@ def mnk_tool_calls(payload: dict[str, Any]) -> list[ToolCall]:
         params = _params(payload, "click")
         point = _point(params.get("x"), params.get("y"))
         hold_ms = _non_negative_int(params.get("hold_ms", 0), "hold_ms")
-        _button(params.get("button", "left"))
+        _touch_button(params.get("button", "left"))
         gesture: dict[str, Any] = {
             "type": "long_press" if hold_ms > 0 else "tap",
             "point": point,
@@ -50,7 +50,7 @@ def mnk_tool_calls(payload: dict[str, Any]) -> list[ToolCall]:
 
     if operation == "double_click":
         params = _params(payload, "double_click")
-        _button(params.get("button", "left"))
+        _touch_button(params.get("button", "left"))
         return [("touch_gesture", {
             "type": "double_tap",
             "point": _point(params.get("x"), params.get("y")),
@@ -59,15 +59,17 @@ def mnk_tool_calls(payload: dict[str, Any]) -> list[ToolCall]:
     if operation in {"swipe", "drag"}:
         params = _params(payload, operation)
         path = _path(params.get("path"))
-        _button(params.get("button", "left"))
-        return [
-            ("touch_gesture", {
-                "type": operation,
-                "start": {"x": start[0], "y": start[1]},
-                "end": {"x": end[0], "y": end[1]},
-            })
-            for start, end in zip(path, path[1:])
-        ]
+        _touch_button(params.get("button", "left"))
+        if len(path) != 2:
+            raise MNKRequestError(
+                f"{operation} path must contain exactly 2 points; multi-point paths are unsupported"
+            )
+        start, end = path
+        return [("touch_gesture", {
+            "type": operation,
+            "start": {"x": start[0], "y": start[1]},
+            "end": {"x": end[0], "y": end[1]},
+        })]
 
     if operation == "keypress":
         params = _params(payload, "keypress")
@@ -129,6 +131,13 @@ def _button(value: Any) -> str:
     button = value.strip().lower() or "left"
     if button not in {"left", "right", "middle"}:
         raise MNKRequestError("button must be left, right, or middle")
+    return button
+
+
+def _touch_button(value: Any) -> str:
+    button = _button(value)
+    if button != "left":
+        raise MNKRequestError(f"touch operations do not support button {button!r}")
     return button
 
 

@@ -238,6 +238,30 @@ def test_mnk_provider_executes_click_and_drag(bridge):
     assert ("swipe", 129, 559, 1161, 2237, 700) in device.calls
 
 
+def test_mnk_provider_returns_flat_error_for_vphone_failure(bridge):
+    _, device, base_url = bridge
+    status, _ = request(base_url, "/api/setup", method="POST", task_id="owner")
+    assert status == 200
+
+    def fail_tap(x, y):
+        raise VPhoneSocketError("socket_refused", f"tap failed at {x},{y}")
+
+    device.tap = fail_tap
+    status, body = request(
+        base_url,
+        "/api/providers/mnk",
+        method="POST",
+        task_id="owner",
+        payload={
+            "operation": "click",
+            "click": {"x": 500, "y": 250, "button": "left", "hold_ms": 0},
+        },
+    )
+
+    assert status == 503
+    assert body == {"error": "tap failed at 645,699"}
+
+
 def test_mnk_provider_enforces_task_access(bridge):
     _, _, base_url = bridge
     request(base_url, "/api/setup", method="POST", task_id="owner")

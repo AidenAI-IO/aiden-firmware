@@ -397,6 +397,30 @@ def test_mnk_provider_executes_click_and_drag(bridge):
     assert ("swipe", 108, 384, 972, 1536, 700) in device.calls
 
 
+def test_mnk_provider_returns_flat_error_for_adb_failure(bridge):
+    _, device, base_url = bridge
+    status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:mnk-error")
+    assert status == 200
+
+    def fail_tap(x, y):
+        raise ADBCommandError(f"tap failed at {x},{y}")
+
+    device.tap = fail_tap
+    status, body = _request(
+        base_url,
+        "/api/providers/mnk",
+        method="POST",
+        task_id="suite:mnk-error",
+        payload={
+            "operation": "click",
+            "click": {"x": 500, "y": 250, "button": "left", "hold_ms": 0},
+        },
+    )
+
+    assert status == 500
+    assert body == {"error": "tap failed at 540,480"}
+
+
 def test_mnk_provider_enforces_task_access(bridge):
     _, _, base_url = bridge
     _request(base_url, "/api/setup", method="POST", task_id="suite:mnk")

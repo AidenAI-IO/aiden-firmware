@@ -205,7 +205,10 @@ def _handler_for(bridge: ADBBridgeServer):
             if not bridge.state.active_episode_id:
                 self._send_json(409, {"error": "no active episode; call /api/setup first"})
                 return
-            status, response = execute_mnk_request(payload, bridge.tools_api._submit_tool_call)
+            try:
+                status, response = execute_mnk_request(payload, bridge.tools_api._submit_tool_call)
+            except ADBCommandError as exc:
+                status, response = 500, {"error": str(exc)}
             self._send_json(status, response)
 
         def _read_json(self) -> dict[str, Any] | None:
