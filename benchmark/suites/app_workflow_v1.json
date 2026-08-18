@@ -2,7 +2,7 @@
   "name": "app_workflow_v1",
   "suite_category": "End-to-End Workflow",
   "description": "Real-world multi-step app workflows — covers messaging, content creation, information retrieval, and utility tasks on a real phone device.",
-  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机。请使用截图、touch_gesture、keyboard_text、keyboard_tap 等工具完成任务。每步操作后截图确认状态再继续。如果某个操作没有生效，不要重复点击同一位置，尝试其他方式。涉及文本输入时，先从最新截图确认键盘/输入法状态；如果要输入英文或 ASCII（如 hello、Aiden、benchmark），但键盘仍是中文输入法（空格键显示“拼音”或出现候选/预编辑），必须先点地球/输入法键切到英文/Latin 键盘，再输入；不要通过中文 IME 候选词提交英文。",
+  "prompt_prefix": "你正在帮用户操作一台手机。请像人一样根据屏幕上的内容自己判断该点哪里、怎么操作，一步步完成目标，每次操作后看一眼结果再继续；如果一个操作没生效，换个方式试试，别在同一个地方反复点。",
   "global_reset": {
     "type": "agent_prompt",
     "prompt": "请返回主屏幕，确保当前停留在桌面。",
@@ -14,7 +14,7 @@
       "id": "wechat_send_message",
       "category": "multi_step",
       "description_for_judge": "Agent must open WeChat, find a specific contact (文件传输助手), type a message and send it successfully.",
-      "prompt": "请打开微信，找到「文件传输助手」，发送一条消息：「Benchmark测试消息」，发送后截图确认消息已发出。",
+      "prompt": "请打开微信，找到「文件传输助手」，发一条消息「Benchmark测试消息」，发完确认消息已经发出。",
       "rubric": [
         {
           "id": "opened_wechat",
@@ -45,11 +45,11 @@
       "description_for_judge": "Agent must open WeChat, navigate to Moments, create a text-only post with specified content, and publish it.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开微信，停留在微信主界面。",
+        "prompt": "请打开微信，停在微信主界面。",
         "timeout_sec": 60,
         "clear_history_after": true
       },
-      "prompt": "请进入朋友圈，发布一条纯文字动态，内容为：「Aiden Benchmark 测试动态」。发布后截图确认动态已出现在朋友圈列表中。",
+      "prompt": "进入朋友圈，发一条纯文字动态，内容是「Aiden Benchmark 测试动态」。",
       "rubric": [
         {
           "id": "entered_moments",
@@ -80,11 +80,11 @@
       "description_for_judge": "Agent must open Xiaohongshu, create a new image+text note: select a photo, write title and body, then publish.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请确保相册中至少有一张图片可供选择，然后回到桌面。",
+        "prompt": "请先确认相册里至少有一张图，然后回到桌面。",
         "timeout_sec": 60,
         "clear_history_after": true
       },
-      "prompt": "请打开小红书，发布一篇图文笔记：从相册选择第一张图片，标题写「Benchmark测试笔记」，正文写「这是一篇自动化测试发布的笔记」，然后点击发布。发布后截图确认。",
+      "prompt": "打开小红书，发一篇图文笔记：从相册选第一张图，标题写「Benchmark测试笔记」，正文写「这是一篇自动化测试发布的笔记」，然后发布。",
       "rubric": [
         {
           "id": "opened_app",
@@ -121,7 +121,7 @@
       "id": "notes_create_and_verify",
       "category": "multi_step",
       "description_for_judge": "Agent must open a notes/memo app, create a new note with specific content, save it, exit, then reopen and verify the content persists.",
-      "prompt": "请打开备忘录（或任何可编辑文本的应用），新建一篇笔记，输入标题「测试备忘」，内容「Aiden 自动化验证内容，时间戳 2026」。保存后退出备忘录，再重新打开备忘录找到这篇笔记，截图确认内容完整。",
+      "prompt": "打开备忘录（或任何记事应用），新建一篇笔记：标题「测试备忘」，内容「Aiden 自动化验证内容，时间戳 2026」。保存后退出备忘录，再重新打开确认笔记还在、内容完整。",
       "rubric": [
         {
           "id": "opened_notes",
@@ -154,7 +154,7 @@
       "id": "browser_search_and_open",
       "category": "multi_step",
       "description_for_judge": "Agent must open the browser, search for a keyword, and open the first result page.",
-      "prompt": "请打开浏览器，在搜索引擎中搜索「Aiden AI assistant」，点击第一个搜索结果进入页面，截图确认页面已加载。",
+      "prompt": "请打开浏览器，搜一下「Aiden AI assistant」，点开第一个搜索结果，确认页面加载出来了。",
       "rubric": [
         {
           "id": "opened_browser",
@@ -183,7 +183,7 @@
       "id": "maps_search_route",
       "category": "multi_step",
       "description_for_judge": "Agent must open a maps app, search for a destination, and view the navigation route.",
-      "prompt": "请打开地图应用，搜索「上海东方明珠」，查看从当前位置到该地点的导航路线，截图确认路线已显示。",
+      "prompt": "请打开地图应用，搜索「上海东方明珠」，看看从当前位置到那边的导航路线，确认路线显示出来。",
       "rubric": [
         {
           "id": "opened_maps",
@@ -208,7 +208,7 @@
       "id": "camera_take_photo",
       "category": "multi_step",
       "description_for_judge": "Agent must open the camera app, take a photo, and confirm it was saved to the gallery.",
-      "prompt": "请打开相机，拍一张照片，然后进入相册确认刚才拍的照片已保存。截图确认相册中有最新照片。",
+      "prompt": "请打开相机，拍一张照片，然后进相册确认刚才的照片存下来了。",
       "rubric": [
         {
           "id": "opened_camera",
@@ -237,7 +237,7 @@
       "id": "calendar_create_full_event",
       "category": "multi_step",
       "description_for_judge": "Agent must open the calendar app and create a complete event with title, time, and location.",
-      "prompt": "请打开日历应用，创建一个新日程：标题「项目评审会议」，时间明天下午 2:00 到 3:00，地点「3号会议室」。保存后截图确认日程已创建。",
+      "prompt": "请打开日历应用，新建一个日程：标题「项目评审会议」，时间明天下午 2:00 到 3:00，地点「3号会议室」。保存后确认日程建好了。",
       "rubric": [
         {
           "id": "opened_calendar",
@@ -274,7 +274,7 @@
       "id": "xiaohongshu_browse_and_like",
       "category": "multi_step",
       "description_for_judge": "Agent must open Xiaohongshu, search for a topic, open the first post, like it, save/collect it, then return to the feed.",
-      "prompt": "请打开小红书，搜索「旅行攻略」，打开第一篇笔记，点赞并收藏该笔记，然后返回搜索结果页，截图确认点赞和收藏状态。",
+      "prompt": "请打开小红书，搜索「旅行攻略」，打开第一篇笔记，点赞并收藏，然后返回搜索结果页。",
       "rubric": [
         {
           "id": "opened_app",
@@ -311,7 +311,7 @@
       "id": "taobao_purchase_flow",
       "category": "multi_step",
       "description_for_judge": "Agent must open Taobao, search for a product, select one, and proceed through the purchase flow until reaching the payment page. Agent must NOT complete payment.",
-      "prompt": "请打开淘宝，搜索「充电宝」，选择第一个商品，点击购买，进入下单流程，走到支付页面后停止（不要实际支付）。截图确认已到达支付页面。",
+      "prompt": "请打开淘宝，搜索「充电宝」，选第一个商品，点购买进入下单流程，走到支付页面就停（别真付款）。",
       "rubric": [
         {
           "id": "opened_app",
@@ -349,7 +349,7 @@
       "id": "jingdong_purchase_flow",
       "category": "multi_step",
       "description_for_judge": "Agent must open JD.com app, search for a product, select one, and proceed through the purchase flow until reaching the payment page. Agent must NOT complete payment.",
-      "prompt": "请打开京东，搜索「蓝牙耳机」，选择第一个商品，点击购买，进入下单流程，走到支付页面后停止（不要实际支付）。截图确认已到达支付页面。",
+      "prompt": "请打开京东，搜索「蓝牙耳机」，选第一个商品，点购买进入下单流程，走到支付页面就停（别真付款）。",
       "rubric": [
         {
           "id": "opened_app",
@@ -387,7 +387,7 @@
       "id": "meituan_purchase_flow",
       "category": "multi_step",
       "description_for_judge": "Agent must open Meituan, search for a food/service, select one, and proceed through the order flow until reaching the payment page. Agent must NOT complete payment.",
-      "prompt": "请打开美团，搜索「奶茶」，选择第一个店铺或商品，加入购物车并提交订单，走到支付页面后停止（不要实际支付）。截图确认已到达支付页面。",
+      "prompt": "请打开美团，搜索「奶茶」，选第一个店铺或商品，加入购物车并提交订单，走到支付页面就停（别真付款）。",
       "rubric": [
         {
           "id": "opened_app",
