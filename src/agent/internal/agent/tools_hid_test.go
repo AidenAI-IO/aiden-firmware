@@ -2728,12 +2728,12 @@ func readMouseReports(t *testing.T, dev *HIDDevice, path string) []mouseReport {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if len(data)%7 != 0 {
-		t.Fatalf("mouse report data length = %d, want multiple of 7", len(data))
+	if len(data)%6 != 0 {
+		t.Fatalf("mouse report data length = %d, want multiple of 6", len(data))
 	}
 
-	reports := make([]mouseReport, 0, len(data)/7)
-	for i := 0; i < len(data); i += 7 {
+	reports := make([]mouseReport, 0, len(data)/6)
+	for i := 0; i < len(data); i += 6 {
 		reports = append(reports, mouseReport{
 			buttons: data[i],
 			x:       binary.LittleEndian.Uint16(data[i+1 : i+3]),

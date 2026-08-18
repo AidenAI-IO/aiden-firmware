@@ -317,6 +317,9 @@ func (p *HIDProvider) Move(ctx context.Context, x, y float64) error {
 
 // Scroll sends wheel/scroll input.
 func (p *HIDProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
+	if scrollX != 0 {
+		return InvalidArguments("horizontal scroll is unsupported by the absolute mouse HID descriptor; use scroll_y")
+	}
 	if p.touchscreen {
 		return InvalidArguments("mouse_scroll is unsupported when pointer_mode is touchscreen; use touch_gesture")
 	}
@@ -325,13 +328,6 @@ func (p *HIDProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 		// Absolute mouse mode: send wheel events
 		if scrollY != 0 {
 			if err := p.scrollPointer(scrollY); err != nil {
-				return err
-			}
-		}
-
-		if scrollX != 0 {
-			// Horizontal scroll support for absolute mouse mode
-			if err := p.scrollPointerHorizontal(scrollX); err != nil {
 				return err
 			}
 		}
@@ -504,26 +500,6 @@ func (p *HIDProvider) scrollPointer(delta int) error {
 	return p.writeAbsMouseReport(x, y, 0, int8(delta))
 }
 
-func (p *HIDProvider) scrollPointerHorizontal(delta int) error {
-	if p.touchscreen {
-		return nil // Scroll not supported in touchscreen mode
-	}
-	if delta == 0 {
-		return nil
-	}
-	if delta < -127 {
-		delta = -127
-	} else if delta > 127 {
-		delta = 127
-	}
-
-	// Get current position and send horizontal scroll
-	x, y := p.getCurrentPosition()
-	// Use the same report structure but for horizontal wheel
-	// Note: This assumes the HID descriptor supports horizontal wheel (AC Pan)
-	return p.writeAbsMouseReportWithHorizontal(x, y, 0, 0, int8(delta))
-}
-
 func (p *HIDProvider) getCurrentPosition() (int, int) {
 	if p.pointerState != nil {
 		if x, y, ok := p.pointerState.Current(); ok {
@@ -544,41 +520,17 @@ func writeDevice(dev Device, report []byte) error {
 	return dev.Write(report)
 }
 
-// writeAbsMouseReport writes a 7-byte absolute mouse report:
-// [buttons, x_lo, x_hi, y_lo, y_hi, wheel, horizontal_wheel]
+// writeAbsMouseReport writes a 6-byte absolute mouse report:
+// [buttons, x_lo, x_hi, y_lo, y_hi, wheel]
 func (p *HIDProvider) writeAbsMouseReport(x, y int, buttons uint8, wheel int8) error {
 	absX := clampUint16(x, absMouseMaxPos)
 	absY := clampUint16(y, absMouseMaxPos)
 
-	report := make([]byte, 7)
+	report := make([]byte, 6)
 	report[0] = buttons
 	binary.LittleEndian.PutUint16(report[1:3], absX)
 	binary.LittleEndian.PutUint16(report[3:5], absY)
 	report[5] = uint8(wheel)
-
-	// Update state after successful write
-	if err := writeDevice(p.pointerDev, report); err != nil {
-		return err
-	}
-
-	if p.pointerState != nil {
-		p.pointerState.Update(int(absX), int(absY))
-	}
-	return nil
-}
-
-// writeAbsMouseReportWithHorizontal writes a 7-byte absolute mouse report with horizontal scroll:
-// [buttons, x_lo, x_hi, y_lo, y_hi, wheel_vertical, wheel_horizontal]
-func (p *HIDProvider) writeAbsMouseReportWithHorizontal(x, y int, buttons uint8, wheelVertical, wheelHorizontal int8) error {
-	absX := clampUint16(x, absMouseMaxPos)
-	absY := clampUint16(y, absMouseMaxPos)
-
-	report := make([]byte, 7)
-	report[0] = buttons
-	binary.LittleEndian.PutUint16(report[1:3], absX)
-	binary.LittleEndian.PutUint16(report[3:5], absY)
-	report[5] = uint8(wheelVertical)
-	report[6] = uint8(wheelHorizontal)
 
 	// Update state after successful write
 	if err := writeDevice(p.pointerDev, report); err != nil {
@@ -763,19 +715,4 @@ func (p *HIDProvider) tapKeyboardChord(modifier uint8, keys []uint8) error {
 
 	// Release (all zeros)
 	return writeDevice(p.keyboardDev, make([]byte, 8))
-}
-
-// ============================================================================
-// Helper functions
-// ============================================================================
-
-func convertAbsPathToNormalized(absPath [][2]int) [][2]float64 {
-	normalized := make([][2]float64, len(absPath))
-	for i, point := range absPath {
-		normalized[i] = [2]float64{
-			(float64(point[0]) / float64(absMouseMaxPos)) * 1000.0,
-			(float64(point[1]) / float64(absMouseMaxPos)) * 1000.0,
-		}
-	}
-	return normalized
 }
