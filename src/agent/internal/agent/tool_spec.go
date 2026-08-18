@@ -321,9 +321,6 @@ func normalizeAgentToolPlatform(platform string) string {
 	if platform == "" {
 		return ""
 	}
-	if deviceType := deviceTypeFromPlatform(platform); deviceType != "" {
-		return deviceTypePlatform(deviceType)
-	}
 	if deviceType, ok := normalizeDeviceType(platform); ok {
 		return deviceTypePlatform(deviceType)
 	}
