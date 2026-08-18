@@ -2,15 +2,15 @@
 
 Controls an Android emulator (Genymotion) or a physical device through adb, and
 exposes an HTTP protocol to the benchmark that is **fully compatible with the
-MobileGym bridge**. The Aiden Go agent is unaware of the device implementation —
-it still only uses `--environment-bridge-mode` to forward tool calls.
+MobileGym bridge**. The Aiden Go agent uses the bridge's screen and MNK
+providers directly.
 
 ```text
 benchmark/runner (test orchestration)
   ↓ /api/chat
 Aiden Go Daemon (environment-bridge mode)
-  ↓ POST /api/tools/{tool}              ← forwarded tool calls
-  ↓ POST /api/providers/screenshot      ← local screenshot capture
+  ↓ POST /api/providers/mnk              ← input primitives
+  ↓ POST /api/providers/screenshot       ← screen provider
 ADB Android Bridge (this module, local Python process)
   ↓ adb -s <serial> shell input ...
 Android emulator / physical device
@@ -89,7 +89,6 @@ go run ./cmd/daemon \
   -dir <your agent data directory> \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://127.0.0.1:8899 \
-  --environment-bridge-tools "touch_gesture,keyboard_text,keyboard_tap,enter_text,mouse_move,mouse_scroll,quick_action" \
   --benchmark-task-id cli-task
 
 # 3. Run the benchmark (same as Option 1 step 3, with --benchmark-task-id cli-task)
@@ -185,10 +184,11 @@ against this):
 | `GET /health` | Returns 200 when the device is online; 503 when adb is unreachable |
 | `GET /api/concurrent` | `{"ok":true,"data":{"concurrent":1,...}}`; always 1 for a single device |
 | `POST /api/providers/screenshot` | Current screenshot (no setup required; used by the runner for pre/post capture) |
+| `POST /api/providers/mnk` | Mouse/keyboard primitives used by the Go agent |
 | `POST /api/setup` | Reset to home + create an episode; single-device ownership keyed on the `benchmark-task-id` header |
 | `POST /api/release` | Release the task id's ownership |
 | `GET /api/tools` | Tool catalog |
-| `POST /api/tools/{tool}` | Tool invocation (the Go agent's forwarding entry point) |
+| `POST /api/tools/{tool}` | Legacy tool endpoint for bridge clients and debugging |
 
 Task-routing semantics (single-device variant, aligned with MobileGym's
 single-env behavior):

@@ -7,6 +7,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from mnk_provider import execute_mnk_request
+
 from .client import VPhoneSocketError
 from .protocol import bridge_error, bridge_ok, encode_provider_frame
 from .state import NoBridgeEnvAvailableError, VPhoneBridgeState, benchmark_task_id_from_headers
@@ -92,6 +94,8 @@ def _handler_for(bridge: VPhoneBridgeServer):
                     self._handle_setup()
                 elif path == "/api/providers/screenshot":
                     self._handle_provider_screenshot()
+                elif path == "/api/providers/mnk":
+                    self._handle_provider_mnk(payload)
                 elif path in {"/api/release", "/release"}:
                     self._handle_release()
                 else:
@@ -156,6 +160,15 @@ def _handler_for(bridge: VPhoneBridgeServer):
                     )
                 ),
             )
+
+        def _handle_provider_mnk(self, payload: dict[str, Any]) -> None:
+            task_id = benchmark_task_id_from_headers(self.headers)
+            bridge.state.check_task_access(task_id)
+            if not bridge.state.active_episode_id:
+                self._send_json(409, {"error": "no active episode; call /api/setup first"})
+                return
+            status, response = execute_mnk_request(payload, bridge.tools_api._submit_tool_call)
+            self._send_json(status, response)
 
         def _read_json(self) -> dict[str, Any] | None:
             try:
@@ -226,7 +239,7 @@ def _health_payload(bridge: VPhoneBridgeServer, status: dict[str, Any]) -> dict[
         "legacy_host_control": bool(status.get("legacy_host_control")),
         "active_episode_id": bridge.state.active_episode_id,
         "active_task_id": bridge.state.active_task_id,
-        "interfaces": ["/api/tools", "/api/providers/screenshot", "/api/setup", "/api/release", "/api/concurrent"],
+        "interfaces": ["/api/tools", "/api/providers/screenshot", "/api/providers/mnk", "/api/setup", "/api/release", "/api/concurrent"],
     }
 
 

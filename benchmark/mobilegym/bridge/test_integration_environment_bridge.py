@@ -69,25 +69,13 @@ def bridge_server(mock_env):
     thread.join(timeout=2)
 
 
-def test_go_agent_environment_bridge_client(bridge_server):
-    """Test that Go agent's EnvironmentBridgeClient can call Bridge Server."""
-    # This test simulates what Go agent's EnvironmentBridgeClient does.
+def test_provider_apis(bridge_server):
+    """Test the screen and MNK provider APIs used by the Go agent."""
     import urllib.request
 
     base_url = bridge_server["base_url"]
 
-    # 1. Get tool catalog (what Go agent does during initialization)
-    req = urllib.request.Request(f"{base_url}/api/tools", method="GET")
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        assert resp.status == 200
-        catalog = json.loads(resp.read().decode())
-
-    assert "tools" in catalog
-    tool_names = {t["name"] for t in catalog["tools"]}
-    assert "screenshot" not in tool_names
-    assert "touch_gesture" in tool_names
-
-    # 2. Capture through the screenshot provider (not a forwarded tool)
+    # Capture through the screenshot provider.
     request_body = json.dumps({"format": "jpeg", "quality": 80}).encode()
     req = urllib.request.Request(
         f"{base_url}/api/providers/screenshot",
@@ -106,10 +94,13 @@ def test_go_agent_environment_bridge_client(bridge_server):
     assert output["meta"]["width"] == 1080
     assert output["meta"]["height"] == 2400
 
-    # 3. Call touch_gesture tool
-    request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 800}}}).encode()
+    # Execute a click through the MNK provider.
+    request_body = json.dumps({
+        "operation": "click",
+        "click": {"x": 500, "y": 800, "button": "left", "hold_ms": 0},
+    }).encode()
     req = urllib.request.Request(
-        f"{base_url}/api/tools/touch_gesture",
+        f"{base_url}/api/providers/mnk",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -119,10 +110,7 @@ def test_go_agent_environment_bridge_client(bridge_server):
         assert resp.status == 200
         result = json.loads(resp.read().decode())
 
-    assert result["is_error"] is False
-    output = json.loads(result["output"])
-    assert "action_output" in output
-    assert "data" in output  # Screenshot included
+    assert result == {"success": True}
 
 
 def test_bridge_server_compatible_with_hardware_board_api(bridge_server):

@@ -39,10 +39,11 @@ value as `device_type`. A pre-started external daemon must receive the same
 option from its caller. For compatibility with older bridges, known
 `bridge_type` values may still be used as a fallback.
 
-### `GET /api/tools`
+### `GET /api/tools` (compatibility)
 
-Returns the tool catalog used by agent daemons. Screenshot is not a forwarded
-tool; capture goes through `POST /api/providers/screenshot`.
+Returns the bridge's legacy tool catalog for benchmark/debug clients. The Go
+agent does not use this catalog; it wires its normal tools to the providers
+below.
 
 ```json
 {
@@ -56,10 +57,11 @@ tool; capture goes through `POST /api/providers/screenshot`.
 }
 ```
 
-### `POST /api/tools/{tool_name}`
+### `POST /api/tools/{tool_name}` (compatibility)
 
-Invokes a tool. The request body accepts either structured `input` or string
-`raw_input`.
+Invokes a legacy bridge tool. The request body accepts either structured `input`
+or string `raw_input`. This endpoint is not the Go agent's EnvironmentBridge
+transport.
 
 ```json
 {"input": {"type": "tap", "point": {"x": 500, "y": 800}}}
@@ -80,8 +82,8 @@ The response should follow the Go agent tool response shape:
 ### `POST /api/providers/screenshot`
 
 Returns a raw screen frame. The runner uses this for `pre.jpg` / `post.jpg`,
-and the agent uses it for its local `screenshot` tool. This is not a forwarded
-tool call: when environment-bridge mode is on, the agent keeps running
+and the agent uses it for its local `screenshot` tool. This is a provider call,
+not a legacy tool invocation: when environment-bridge mode is on, the agent keeps running
 `screenshot` locally and captures through this provider.
 
 ```json
@@ -128,6 +130,22 @@ HTTP provider, runner pre/post capture, and `POST /api/providers/screenshot`
 handlers share that budget so a hung env fails at the caller instead of
 continuing after the client has already given up. Action and setup requests
 may use a longer timeout.
+
+### `POST /api/providers/mnk`
+
+Executes one mouse/keyboard provider operation. Requests use the normalized
+0-1000 coordinate system and match the Go `mnk.Provider` interface:
+`click`, `double_click`, `swipe`, `drag`, `keypress`, `move`, and `scroll`.
+
+```json
+{
+  "operation": "drag",
+  "drag": {"path": [[100, 500], [900, 500]], "button": "left"}
+}
+```
+
+Success is `{"success": true}`. Invalid requests return HTTP 400 and device
+execution failures return HTTP 500 with a top-level `error` string.
 
 ### `POST /api/setup`
 
@@ -191,8 +209,8 @@ Concurrent bridges must route all task-scoped requests by the
 `benchmark-task-id` HTTP header. Runners and agent daemons send the same id for:
 
 - `/api/setup`
-- `/api/tools/{tool_name}`
 - `/api/providers/screenshot`
+- `/api/providers/mnk`
 - `/api/release`
 
 The bridge should keep requests with the same `benchmark-task-id` on the same
@@ -200,9 +218,8 @@ underlying env until `/api/release` is called.
 
 ## Agent Daemon Mode
 
-Start the Go agent so selected tools are forwarded to an environment bridge.
-`screenshot` is never forwarded; the agent captures it through
-`POST /api/providers/screenshot`.
+Start the Go agent with screen and MNK providers backed by an environment
+bridge. Normal agent tools remain local wrappers around these providers.
 
 ```bash
 daemon \
@@ -211,10 +228,8 @@ daemon \
   --device-type android \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://bridge:9090 \
-  --environment-bridge-tools touch_gesture,keyboard_text,keyboard_tap,mouse_move,mouse_scroll,quick_action \
   --benchmark-task-id suite.json:task-1
 ```
 
-The agent still exposes its normal `/api/chat` endpoint. Only configured tools
-are forwarded to the environment bridge. The agent also exposes
+The agent still exposes its normal `/api/chat` endpoint. The agent also exposes
 `POST /api/providers/screenshot` when it is itself used as a bridge.

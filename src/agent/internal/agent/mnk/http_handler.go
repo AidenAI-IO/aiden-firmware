@@ -46,7 +46,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log request (optional, can be controlled by log level)
-	taskID := r.Header.Get("X-Task-ID")
+	taskID := r.Header.Get(BenchmarkTaskIDHeader)
 	if taskID != "" {
 		log.Printf("[MNK] Task %s: %s", taskID, req.Operation)
 	}

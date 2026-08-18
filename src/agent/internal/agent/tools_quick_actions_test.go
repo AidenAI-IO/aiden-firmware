@@ -5,15 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/tmc/langchaingo/schema"
-	langtools "github.com/tmc/langchaingo/tools"
 )
 
 func TestBundledQuickActionsPathUsesOEMPartition(t *testing.T) {
@@ -282,7 +277,7 @@ func TestQuickActionExecutesDelegatedTouchGesture(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		deviceTypeFn: func() string { return "iOS" },
-		touch: testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev}),
+		touch:        testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev}),
 	}
 	out, err := tool.Call(context.Background(), `{"action":"back"}`)
 	if err != nil {
@@ -476,7 +471,7 @@ func TestQuickActionAlternativeBinding(t *testing.T) {
 	tool := &QuickActionTool{
 		keyboard:     testKeyboardTapTool(t, testMNKOpts{keyboard: dev}),
 		deviceTypeFn: func() string { return "Android" },
-		touch: testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev}),
+		touch:        testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev}),
 	}
 	out, err := tool.Call(context.Background(), `{"action":"back","alternative":true}`)
 	if err != nil {
@@ -510,54 +505,6 @@ func TestQuickActionUnknownAction(t *testing.T) {
 	}
 	if out != te.Message {
 		t.Errorf("Output (%q) must equal Error.Message (%q)", out, te.Message)
-	}
-}
-
-// In environment-bridge mode quick_action is forwarded verbatim (see
-// shouldForwardToEnvironmentBridge) rather than resolved against the local
-// quick_actions.json bindings, so the action the model picked must reach the
-// bridge untouched.
-func TestQuickActionForwardsInputToEnvironmentBridge(t *testing.T) {
-	input := `{"action":"app_switch"}`
-
-	var gotBody string
-	bridge := NewEnvironmentBridgeClient("http://bridge.local")
-	bridge.httpClient = &http.Client{Transport: bridgeCancelRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		body, err := io.ReadAll(req.Body)
-		if err != nil {
-			return nil, err
-		}
-		gotBody = string(body)
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"output":"ok"}`)),
-		}, nil
-	})}
-
-	specs := NewToolSpecs([]langtools.Tool{&QuickActionTool{}})
-	result := executeToolCall(context.Background(), ToolCallExecution{
-		Specs:                  specs,
-		Action:                 schema.AgentAction{Tool: "quick_action", ToolInput: input},
-		EnvironmentBridge:      bridge,
-		EnvironmentBridgeTools: []string{"quick_action"},
-	})
-	if result.Error != nil {
-		t.Fatalf("unexpected execution error: %v", result.Error)
-	}
-
-	var forwarded struct {
-		Input string `json:"input"`
-	}
-	if err := json.Unmarshal([]byte(gotBody), &forwarded); err != nil {
-		t.Fatalf("bridge request body is not JSON (%q): %v", gotBody, err)
-	}
-	var args map[string]any
-	if err := json.Unmarshal([]byte(forwarded.Input), &args); err != nil {
-		t.Fatalf("forwarded tool input is not JSON (%q): %v", forwarded.Input, err)
-	}
-	if args["action"] != "app_switch" || len(args) != 1 {
-		t.Fatalf("quick_action input changed in forwarding: %s", forwarded.Input)
 	}
 }
 

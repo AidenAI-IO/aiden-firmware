@@ -356,8 +356,10 @@ func TestTaskIDHeader(t *testing.T) {
 	mockProvider := NewMockProvider()
 
 	var receivedTaskID string
+	var receivedPath string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedTaskID = r.Header.Get("X-Task-ID")
+		receivedTaskID = r.Header.Get(BenchmarkTaskIDHeader)
+		receivedPath = r.URL.Path
 
 		// Delegate to actual handler
 		h := NewHTTPHandler(mockProvider)
@@ -368,8 +370,8 @@ func TestTaskIDHeader(t *testing.T) {
 	defer server.Close()
 
 	httpProvider := NewHTTPProvider(HTTPProviderConfig{
-		BaseURL: server.URL,
-		TaskID:  "test-task-123",
+		BaseURL: "  " + server.URL + "/  ",
+		TaskID:  "  test-task-123  ",
 	})
 
 	err := httpProvider.Click(context.Background(), 500, 500, "left", 0)
@@ -379,5 +381,8 @@ func TestTaskIDHeader(t *testing.T) {
 
 	if receivedTaskID != "test-task-123" {
 		t.Errorf("expected task ID 'test-task-123', got %q", receivedTaskID)
+	}
+	if receivedPath != "/api/providers/mnk" {
+		t.Errorf("expected MNK provider path, got %q", receivedPath)
 	}
 }

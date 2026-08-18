@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
+
+const BenchmarkTaskIDHeader = "benchmark-task-id"
 
 // HTTPProvider implements Provider interface by forwarding operations to a remote HTTP server.
 // This allows remote control and cross-process communication.
@@ -32,11 +35,11 @@ func NewHTTPProvider(config HTTPProviderConfig) *HTTPProvider {
 	}
 
 	return &HTTPProvider{
-		baseURL: config.BaseURL,
+		baseURL: strings.TrimRight(strings.TrimSpace(config.BaseURL), "/"),
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
-		taskID: config.TaskID,
+		taskID: strings.TrimSpace(config.TaskID),
 	}
 }
 
@@ -148,7 +151,7 @@ func (p *HTTPProvider) sendRequest(ctx context.Context, req MNKRequest) error {
 	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
 	if p.taskID != "" {
-		httpReq.Header.Set("X-Task-ID", p.taskID)
+		httpReq.Header.Set(BenchmarkTaskIDHeader, p.taskID)
 	}
 
 	// Send request

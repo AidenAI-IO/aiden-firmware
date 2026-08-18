@@ -42,8 +42,6 @@ type AgentLoop struct {
 	MaxIterations            int
 	Recorder                 *EpisodeRecorder
 	ScreenshotPruning        executor.ScreenshotPruningConfig
-	EnvironmentBridge        *EnvironmentBridgeClient
-	EnvironmentBridgeTools   []string
 	SteerInterrupt           func() <-chan struct{}
 	SteerProvider            func(context.Context) (RunSteerMessage, bool)
 	SteerWaiter              func(context.Context) (RunSteerMessage, bool, error)
@@ -375,11 +373,9 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			}
 			return toolExecutionHooks.BeforeToolCall(ctx, call)
 		},
-		After:                  after,
-		Callback:               l.CallbacksHandler,
-		EnvironmentBridge:      l.EnvironmentBridge,
-		EnvironmentBridgeTools: l.EnvironmentBridgeTools,
-		ResultObserver:         l.ToolResultObserver,
+		After:          after,
+		Callback:       l.CallbacksHandler,
+		ResultObserver: l.ToolResultObserver,
 	})
 	if l.Recorder != nil {
 		l.Recorder.RecordExecution(ToolCallExecutionResult{

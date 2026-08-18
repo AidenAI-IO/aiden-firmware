@@ -12,6 +12,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from mnk_provider import execute_mnk_request
 from setup_token_registry import SetupTokenRegistry, setup_token_from_payload
 
 from .adb import ADBAndroidDevice, ADBCommandError
@@ -110,6 +111,8 @@ def _handler_for(bridge: ADBBridgeServer):
                     self._handle_setup(payload)
                 elif path == "api/providers/screenshot":
                     self._handle_provider_screenshot(payload)
+                elif path == "api/providers/mnk":
+                    self._handle_provider_mnk(payload)
                 elif path in {"api/release", "release"}:
                     self._handle_release()
                 else:
@@ -195,6 +198,16 @@ def _handler_for(bridge: ADBBridgeServer):
                 ),
             )
 
+        def _handle_provider_mnk(self, payload: dict[str, Any]) -> None:
+            task_id = benchmark_task_id_from_headers(self.headers)
+            bridge.state.check_task_access(task_id)
+            bridge.state.renew_task_if_owner(task_id)
+            if not bridge.state.active_episode_id:
+                self._send_json(409, {"error": "no active episode; call /api/setup first"})
+                return
+            status, response = execute_mnk_request(payload, bridge.tools_api._submit_tool_call)
+            self._send_json(status, response)
+
         def _read_json(self) -> dict[str, Any] | None:
             try:
                 length = int(self.headers.get("Content-Length", "0") or "0")
@@ -245,7 +258,7 @@ def _health_payload(bridge: ADBBridgeServer, device_info: dict[str, Any]) -> dic
         "active_episode_id": bridge.state.active_episode_id,
         "active_task_id": bridge.state.active_task_id,
         "active_task_lease_state": bridge.state.active_task_lease_state(),
-        "interfaces": ["/api/tools", "/api/providers/screenshot", "/api/setup", "/api/release", "/api/concurrent"],
+        "interfaces": ["/api/tools", "/api/providers/screenshot", "/api/providers/mnk", "/api/setup", "/api/release", "/api/concurrent"],
     }
 
 

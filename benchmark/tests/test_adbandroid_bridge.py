@@ -365,6 +365,52 @@ def test_provider_screenshot_returns_frame_metadata(bridge):
     assert ("screenshot_jpeg",) in device.calls
 
 
+def test_mnk_provider_executes_click_and_drag(bridge):
+    _, device, base_url = bridge
+    status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:mnk")
+    assert status == 200
+
+    status, body = _request(
+        base_url,
+        "/api/providers/mnk",
+        method="POST",
+        task_id="suite:mnk",
+        payload={
+            "operation": "click",
+            "click": {"x": 500, "y": 250, "button": "left", "hold_ms": 0},
+        },
+    )
+    assert status == 200 and body == {"success": True}
+    assert ("tap", 540, 480) in device.calls
+
+    status, body = _request(
+        base_url,
+        "/api/providers/mnk",
+        method="POST",
+        task_id="suite:mnk",
+        payload={
+            "operation": "drag",
+            "drag": {"path": [[100, 200], [900, 800]], "button": "left"},
+        },
+    )
+    assert status == 200 and body == {"success": True}
+    assert ("swipe", 108, 384, 972, 1536, 700) in device.calls
+
+
+def test_mnk_provider_enforces_task_access(bridge):
+    _, _, base_url = bridge
+    _request(base_url, "/api/setup", method="POST", task_id="suite:mnk")
+    status, body = _request(
+        base_url,
+        "/api/providers/mnk",
+        method="POST",
+        task_id="suite:other",
+        payload={"operation": "move", "move": {"x": 500, "y": 500}},
+    )
+    assert status == 429
+    assert body["error"]["code"] == "no_bridge_env_available"
+
+
 def test_tool_call_with_mismatched_task_id_returns_429(bridge):
     _, _, base_url = bridge
     _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")

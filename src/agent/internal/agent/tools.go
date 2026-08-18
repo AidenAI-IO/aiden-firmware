@@ -39,6 +39,7 @@ type builtinToolSetOptions struct {
 	scriptsDir              string
 	screenState             *screen.ScreenState
 	screenProvider          screenprovider.Provider
+	mnkProvider             mnk.Provider
 	shellTemporaryDirectory string
 }
 
@@ -81,6 +82,12 @@ func WithScreenProvider(provider screenprovider.Provider) BuiltinToolSetOption {
 	}
 }
 
+func WithMNKProvider(provider mnk.Provider) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.mnkProvider = provider
+	}
+}
+
 func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	return newHardwareToolSet(hidCfg, audioCfg, searchCfg, proxyCfg, options...)
 }
@@ -90,18 +97,17 @@ func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...Bu
 	if cfg.ConfigDir != "" {
 		defaultOptions = append(defaultOptions, WithRunScriptScriptsDir(filepath.Join(cfg.ConfigDir, "scripts")))
 	}
-	if provider := screenProviderFromConfig(cfg); provider != nil {
-		defaultOptions = append(defaultOptions, WithScreenProvider(provider))
+	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
+		defaultOptions = append(defaultOptions,
+			WithScreenProvider(screenprovider.NewHTTP(cfg.EnvironmentBridge.Endpoint, cfg.EnvironmentBridge.BenchmarkTaskID)),
+			WithMNKProvider(mnk.NewHTTPProvider(mnk.HTTPProviderConfig{
+				BaseURL: cfg.EnvironmentBridge.Endpoint,
+				TaskID:  cfg.EnvironmentBridge.BenchmarkTaskID,
+			})),
+		)
 	}
 	options = append(defaultOptions, options...)
 	return newHardwareToolSet(cfg.HIDConfigForDevice(), cfg.Audio, cfg.Search, proxyCfg, options...)
-}
-
-func screenProviderFromConfig(cfg Config) screenprovider.Provider {
-	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
-		return screenprovider.NewHTTP(cfg.EnvironmentBridge.Endpoint, cfg.EnvironmentBridge.BenchmarkTaskID)
-	}
-	return nil
 }
 
 func screenProviderFromRuntime(runtime *Runtime) screenprovider.Provider {
@@ -159,27 +165,27 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		adbInput = NewADBInputController(screen)
 	}
 
-	// Create MNK Provider — HID path reuses the same device FDs as isolation.
-	mnkFactory := mnk.NewProviderFactory(screen)
-	var mnkProvider mnk.Provider
-	var mnkErr error
-
-	if hidCfg.InputBackendADB() {
-		mnkProvider, mnkErr = mnkFactory.CreateADBProvider()
-	} else {
-		mnkProvider, mnkErr = mnkFactory.CreateHIDProviderWithDevices(
-			asMNKDevice(pointer.dev),
-			asMNKDevice(kbDev),
-			asMNKDevice(androidKbDev),
-			hidCfg.PointerModeOrDefault() == "touchscreen",
-			hidCfg.KeyboardLayoutOrDefault(),
-			newIOSKeyboardIsolationProfileGate(iosKeyboardIsolation),
-		)
-	}
-
-	if mnkErr != nil {
-		touchscreenRCALogf("WARNING: failed to create MNK provider: %v; keyboard/pointer tools will report module unavailable", mnkErr)
-		mnkProvider = nil
+	mnkProvider := toolOptions.mnkProvider
+	if mnkProvider == nil {
+		// Local HID path reuses the same device FDs as isolation.
+		mnkFactory := mnk.NewProviderFactory(screen)
+		var mnkErr error
+		if hidCfg.InputBackendADB() {
+			mnkProvider, mnkErr = mnkFactory.CreateADBProvider()
+		} else {
+			mnkProvider, mnkErr = mnkFactory.CreateHIDProviderWithDevices(
+				asMNKDevice(pointer.dev),
+				asMNKDevice(kbDev),
+				asMNKDevice(androidKbDev),
+				hidCfg.PointerModeOrDefault() == "touchscreen",
+				hidCfg.KeyboardLayoutOrDefault(),
+				newIOSKeyboardIsolationProfileGate(iosKeyboardIsolation),
+			)
+		}
+		if mnkErr != nil {
+			touchscreenRCALogf("WARNING: failed to create MNK provider: %v; keyboard/pointer tools will report module unavailable", mnkErr)
+			mnkProvider = nil
+		}
 	}
 
 	touchscreenRCALogf(

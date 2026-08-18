@@ -271,7 +271,7 @@ func Example_withLogging() {
 				r.Method,
 				r.URL.Path,
 				duration,
-				r.Header.Get("X-Task-ID"),
+				r.Header.Get(mnk.BenchmarkTaskIDHeader),
 			)
 		})
 	}

@@ -1057,7 +1057,7 @@ func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
 		t.Fatalf("Call output = %q, want ok", out)
 	}
 
-	want := []string{"-s", "serial123", "shell", "input", "swipe", "100", "900", "900", "100", "700"}
+	want := []string{"-s", "serial123", "shell", "input", "swipe", "100", "900", "900", "100", "300"}
 	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
 		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
 	}
@@ -2862,7 +2862,7 @@ func TestTouchGestureTapAcceptsHoldMs(t *testing.T) {
 	}
 }
 
-func TestTouchGestureSwipeAppliesDefaultHoldBeforeMs(t *testing.T) {
+func TestTouchGestureSwipeStartsMovingImmediately(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
@@ -2880,12 +2880,12 @@ func TestTouchGestureSwipeAppliesDefaultHoldBeforeMs(t *testing.T) {
 		t.Fatalf("len(times) = %d, want >= 4", len(times))
 	}
 	gap := times[2].Sub(times[1])
-	if gap < 30*time.Millisecond {
-		t.Fatalf("swipe press-to-first-move gap = %v, want >= 30ms", gap)
+	if gap > 30*time.Millisecond {
+		t.Fatalf("swipe press-to-first-move gap = %v, want <= 30ms", gap)
 	}
 }
 
-func TestTouchGestureSwipeDefaultsUseSlowerMotionAndImmediateRelease(t *testing.T) {
+func TestTouchGestureSwipeDefaultsUseFastMotionAndImmediateRelease(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
@@ -2906,8 +2906,8 @@ func TestTouchGestureSwipeDefaultsUseSlowerMotionAndImmediateRelease(t *testing.
 	firstRelease := len(times) - touchReleaseReportCount
 	lastMove := firstRelease - 1
 	moveDuration := times[lastMove].Sub(times[moveStart])
-	if moveDuration < 550*time.Millisecond {
-		t.Fatalf("swipe move duration = %v, want >= 550ms", moveDuration)
+	if moveDuration < 250*time.Millisecond || moveDuration > 450*time.Millisecond {
+		t.Fatalf("swipe move duration = %v, want about 300ms", moveDuration)
 	}
 	releaseDelay := times[firstRelease].Sub(times[lastMove])
 	if releaseDelay > 200*time.Millisecond {
