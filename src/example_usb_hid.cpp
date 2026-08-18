@@ -113,6 +113,14 @@ const uint8_t kTouchDescriptor[] = {
     0x75, 0x08,             //     Report Size (8)
     0x95, 0x01,             //     Report Count (1)
     0x81, 0x06,             //     Input (Data, Variable, Relative)
+    // AC Pan (horizontal wheel)
+    0x05, 0x0c,             //     Usage Page (Consumer)
+    0x0a, 0x38, 0x02,       //     Usage (AC Pan)
+    0x15, 0x81,             //     Logical Minimum (-127)
+    0x25, 0x7f,             //     Logical Maximum (127)
+    0x75, 0x08,             //     Report Size (8)
+    0x95, 0x01,             //     Report Count (1)
+    0x81, 0x06,             //     Input (Data, Variable, Relative)
     0xc0,                   //   End Collection (Physical)
     0xc0,                   // End Collection (Application)
 };
@@ -546,7 +554,7 @@ void setup_touch_function(const std::string& gadget, const Options& options) {
         write_text_file(function_path + "/report_length", "6");
         write_binary_file(function_path + "/report_desc", kTouchscreenDescriptor, sizeof(kTouchscreenDescriptor));
     } else {
-        write_text_file(function_path + "/report_length", "6");
+        write_text_file(function_path + "/report_length", "7");
         write_binary_file(function_path + "/report_desc", kTouchDescriptor, sizeof(kTouchDescriptor));
     }
     ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb1");

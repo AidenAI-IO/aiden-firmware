@@ -196,38 +196,45 @@ func (t *TouchGestureToolAdapter) handleDirectionalSwipe(ctx context.Context, ge
 		travel = *distance
 	}
 
-	center := 500.0
+	// anchor is the cross-axis position: row for horizontal swipes and column
+	// for vertical swipes. Travel remains centered on the primary axis.
+	anchorPosition := 500.0
 	if anchor != nil {
 		if *anchor < 0 || *anchor > 1000 {
 			return "", InvalidArgumentsf("anchor must be in range [0, 1000], got %.2f", *anchor)
 		}
-		center = *anchor
+		anchorPosition = *anchor
 	}
 
 	half := travel / 2
+	travelCenter := 500.0
 
 	var path [][2]float64
 	switch gestureType {
 	case "swipe_left":
 		path = [][2]float64{
-			{center + half, center},
-			{center - half, center},
+			{travelCenter + half, anchorPosition},
+			{travelCenter - half, anchorPosition},
 		}
 	case "swipe_right":
 		path = [][2]float64{
-			{center - half, center},
-			{center + half, center},
+			{travelCenter - half, anchorPosition},
+			{travelCenter + half, anchorPosition},
 		}
 	case "swipe_up":
 		path = [][2]float64{
-			{center, center + half},
-			{center, center - half},
+			{anchorPosition, travelCenter + half},
+			{anchorPosition, travelCenter - half},
 		}
 	case "swipe_down":
 		path = [][2]float64{
-			{center, center - half},
-			{center, center + half},
+			{anchorPosition, travelCenter - half},
+			{anchorPosition, travelCenter + half},
 		}
+	}
+	for i := range path {
+		path[i][0] = clampFloat(path[i][0], 0, 1000)
+		path[i][1] = clampFloat(path[i][1], 0, 1000)
 	}
 
 	if err := t.provider.Drag(ctx, path, button); err != nil {

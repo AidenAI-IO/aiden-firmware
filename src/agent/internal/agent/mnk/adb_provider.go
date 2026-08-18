@@ -24,6 +24,8 @@ type ADBProvider struct {
 	mu                sync.Mutex
 	cachedScreenSize  adbInputScreenSize
 	screenSizeExpires time.Time
+	androidSDK        int
+	androidSDKValid   bool
 
 	// Timing constants
 	commandTimeout    time.Duration
@@ -62,6 +64,7 @@ func NewADBProvider(screen *screen.ScreenState, client *ADBScreenClient, runADB 
 	if runADB == nil {
 		runADB = runADBCommand
 	}
+	client.setCommandRunner(runADB)
 
 	return &ADBProvider{
 		screen:            screen,
@@ -113,8 +116,12 @@ func (p *ADBProvider) DoubleClick(ctx context.Context, x, y float64, button stri
 		return err
 	}
 
-	// Pause
-	time.Sleep(100 * time.Millisecond)
+	// Pause, while allowing a canceled caller to stop the second tap.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(100 * time.Millisecond):
+	}
 
 	// Second tap
 	return p.Click(ctx, x, y, button, 0)
@@ -215,10 +222,20 @@ func (p *ADBProvider) Keypress(ctx context.Context, keys []string) error {
 		return p.runShell(ctx, "input", "keyevent", keycodes[0])
 	}
 
-	// Key combination (multiple keys simultaneously)
-	holdMs := 50 // Default hold time
+	androidSDK, err := p.androidSDKVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if androidSDK < 30 {
+		return ModuleUnavailablef("adb input keycombination requires Android 11 (API 30) or later; detected API %d", androidSDK)
+	}
 
-	args := []string{"input", "keycombination", "-t", strconv.Itoa(holdMs)}
+	// Android 12 introduced the optional -t duration flag. Android 11 accepts
+	// the same key combination without it.
+	args := []string{"input", "keycombination"}
+	if androidSDK >= 31 {
+		args = append(args, "-t", "50")
+	}
 	args = append(args, keycodes...)
 
 	return p.runShell(ctx, args...)
@@ -268,16 +285,16 @@ func (p *ADBProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 	} else if scrollX != 0 {
 		// Horizontal scroll
 		if scrollX < 0 {
-			// Scroll left -> swipe left
+			// Scroll left -> swipe right
 			return p.dragWithDuration(ctx, [][2]float64{
-				{centerX + distance/2, centerY},
 				{centerX - distance/2, centerY},
+				{centerX + distance/2, centerY},
 			}, ButtonLeft, 650)
 		} else {
-			// Scroll right -> swipe right
+			// Scroll right -> swipe left
 			return p.dragWithDuration(ctx, [][2]float64{
-				{centerX - distance/2, centerY},
 				{centerX + distance/2, centerY},
+				{centerX - distance/2, centerY},
 			}, ButtonLeft, 650)
 		}
 	}
@@ -569,7 +586,7 @@ func (p *ADBProvider) clampDuration(value, fallback, minimum int) int {
 	return value
 }
 
-// Placeholder types that would come from tools_adb_input.go
+// ADBScreenClient discovers the adb executable and resolves a target device.
 type ADBScreenClient struct {
 	mu              sync.Mutex
 	adbPath         string
@@ -580,6 +597,12 @@ type ADBScreenClient struct {
 
 func NewADBScreenClient() *ADBScreenClient {
 	return &ADBScreenClient{}
+}
+
+func (c *ADBScreenClient) setCommandRunner(runner adbCommandRunner) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.commandRunner = runner
 }
 
 func (c *ADBScreenClient) ADBPath() (string, error) {
@@ -655,7 +678,11 @@ func (c *ADBScreenClient) ResolveSerial(ctx context.Context, adbPath string) (st
 		return "", fmt.Errorf("no adb devices connected")
 	}
 
-	// Use first device if only one available
+	if len(devices) > 1 {
+		return "", fmt.Errorf("multiple adb devices connected; set AIDEN_ADB_SERIAL or ANDROID_SERIAL")
+	}
+
+	// There is exactly one connected device, so it is safe to cache it.
 	serial := devices[0]
 
 	c.mu.Lock()
@@ -664,6 +691,31 @@ func (c *ADBScreenClient) ResolveSerial(ctx context.Context, adbPath string) (st
 	c.mu.Unlock()
 
 	return serial, nil
+}
+
+func (p *ADBProvider) androidSDKVersion(ctx context.Context) (int, error) {
+	p.mu.Lock()
+	if p.androidSDKValid {
+		androidSDK := p.androidSDK
+		p.mu.Unlock()
+		return androidSDK, nil
+	}
+	p.mu.Unlock()
+
+	output, err := p.runShellOutput(ctx, "getprop", "ro.build.version.sdk")
+	if err != nil {
+		return 0, fmt.Errorf("detect Android API level for key combination: %w", err)
+	}
+	androidSDK, err := strconv.Atoi(strings.TrimSpace(output))
+	if err != nil || androidSDK <= 0 {
+		return 0, fmt.Errorf("detect Android API level for key combination: invalid value %q", output)
+	}
+
+	p.mu.Lock()
+	p.androidSDK = androidSDK
+	p.androidSDKValid = true
+	p.mu.Unlock()
+	return androidSDK, nil
 }
 
 func (c *ADBScreenClient) InvalidateAutoSerial(serial string) {

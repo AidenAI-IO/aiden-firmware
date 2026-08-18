@@ -157,6 +157,35 @@ func TestTouchGestureToolAdapterRejectsZeroDistancePaths(t *testing.T) {
 	}
 }
 
+func TestTouchGestureToolAdapterDirectionalSwipeAnchor(t *testing.T) {
+	mock := NewMockProvider()
+	adapter := NewTouchGestureToolAdapter(mock)
+	_, err := adapter.Call(context.Background(), `{"type":"swipe_left","distance":800,"anchor":125}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if len(mock.drags) != 1 {
+		t.Fatalf("drags = %d, want 1", len(mock.drags))
+	}
+	path := mock.drags[0].Path
+	if path[0] != [2]float64{900, 125} || path[1] != [2]float64{100, 125} {
+		t.Fatalf("path = %#v, want [[900 125] [100 125]]", path)
+	}
+
+	for _, input := range []string{
+		`{"type":"swipe_up","distance":1001}`,
+		`{"type":"swipe_down","anchor":-1}`,
+	} {
+		mock.Reset()
+		if _, err := adapter.Call(context.Background(), input); AsError(err) == nil || AsError(err).Kind != ErrInvalidArguments {
+			t.Fatalf("Call(%s) error = %v, want invalid arguments", input, err)
+		}
+		if len(mock.drags) != 0 {
+			t.Fatalf("Call(%s) recorded %d drags, want none", input, len(mock.drags))
+		}
+	}
+}
+
 // TestKeyboardTapToolAdapter 测试 keyboard_tap 工具适配器
 func TestKeyboardTapToolAdapter(t *testing.T) {
 	mock := NewMockProvider()

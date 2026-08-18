@@ -1156,9 +1156,9 @@ func TestADBKeyboardTapAndroidAliasesAlignWithBridge(t *testing.T) {
 		keys []string
 		want string
 	}{
-		{name: "home", keys: []string{"home"}, want: "KEYCODE_HOME"},
+		{name: "home", keys: []string{"home"}, want: "KEYCODE_MOVE_HOME"},
 		{name: "keycode home", keys: []string{"KEYCODE_HOME"}, want: "KEYCODE_HOME"},
-		{name: "escape as android back", keys: []string{"escape"}, want: "KEYCODE_BACK"},
+		{name: "escape", keys: []string{"escape"}, want: "KEYCODE_ESCAPE"},
 		{name: "return", keys: []string{"return"}, want: "KEYCODE_ENTER"},
 		{name: "delete backward", keys: []string{"delete_backward"}, want: "KEYCODE_DEL"},
 		{name: "app switch", keys: []string{"keycode_app_switch"}, want: "KEYCODE_APP_SWITCH"},
@@ -1189,7 +1189,12 @@ func TestADBKeyboardTapAndroidAliasesAlignWithBridge(t *testing.T) {
 }
 
 func TestADBKeyboardTapUsesKeyCombinationForChords(t *testing.T) {
-	runner := &recordingADBRunner{}
+	runner := &recordingADBRunner{handler: func(args []string) (string, error) {
+		if strings.Join(args, " ") == "-s serial123 shell getprop ro.build.version.sdk" {
+			return "31", nil
+		}
+		return "", nil
+	}}
 	tool := testKeyboardTapTool(t, testMNKOpts{adbRunner: runner})
 
 	out, err := tool.Call(context.Background(), `{"keys":["ctrl","c"]}`)
@@ -1200,8 +1205,11 @@ func TestADBKeyboardTapUsesKeyCombinationForChords(t *testing.T) {
 		t.Fatalf("Call output = %q, want ok", out)
 	}
 
-	want := []string{"-s", "serial123", "shell", "input", "keycombination", "-t", "50", "KEYCODE_CTRL_LEFT", "KEYCODE_C"}
-	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+	want := [][]string{
+		{"-s", "serial123", "shell", "getprop", "ro.build.version.sdk"},
+		{"-s", "serial123", "shell", "input", "keycombination", "-t", "50", "KEYCODE_CTRL_LEFT", "KEYCODE_C"},
+	}
+	if !stringSliceMatrixEqual(runner.commands, want) {
 		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
 	}
 }
@@ -2720,12 +2728,12 @@ func readMouseReports(t *testing.T, dev *HIDDevice, path string) []mouseReport {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if len(data)%6 != 0 {
-		t.Fatalf("mouse report data length = %d, want multiple of 6", len(data))
+	if len(data)%7 != 0 {
+		t.Fatalf("mouse report data length = %d, want multiple of 7", len(data))
 	}
 
-	reports := make([]mouseReport, 0, len(data)/6)
-	for i := 0; i < len(data); i += 6 {
+	reports := make([]mouseReport, 0, len(data)/7)
+	for i := 0; i < len(data); i += 7 {
 		reports = append(reports, mouseReport{
 			buttons: data[i],
 			x:       binary.LittleEndian.Uint16(data[i+1 : i+3]),

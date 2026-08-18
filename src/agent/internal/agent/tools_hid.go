@@ -1367,12 +1367,13 @@ func mapMNKAdapterResult(ctx context.Context, output string, err error) (string,
 	return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 }
 
-// writeAbsMouseReport writes an absolute mouse report: [buttons, x_lo, x_hi, y_lo, y_hi, wheel].
+// writeAbsMouseReport writes an absolute mouse report:
+// [buttons, x_lo, x_hi, y_lo, y_hi, wheel, horizontal_wheel].
 func writeAbsMouseReport(dev *HIDDevice, state *pointerState, x, y int, buttons uint8, wheel int8) error {
 	absX := clampUint16(x, absMouseMaxPos)
 	absY := clampUint16(y, absMouseMaxPos)
 
-	report := make([]byte, 6)
+	report := make([]byte, 7)
 	report[0] = buttons
 	binary.LittleEndian.PutUint16(report[1:3], absX)
 	binary.LittleEndian.PutUint16(report[3:5], absY)

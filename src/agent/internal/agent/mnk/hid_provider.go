@@ -318,53 +318,7 @@ func (p *HIDProvider) Move(ctx context.Context, x, y float64) error {
 // Scroll sends wheel/scroll input.
 func (p *HIDProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 	if p.touchscreen {
-		// Touchscreen can simulate both horizontal and vertical scroll via swipe gestures
-		if scrollX != 0 {
-			if err := runPointerGate(p.gate, ctx, func() error {
-				// Simulate horizontal scroll with a horizontal swipe
-				// Negative scrollX = scroll left (swipe left), positive = scroll right (swipe right)
-				centerY := absMouseMaxPos / 2
-				distance := int(math.Round(float64(absMouseMaxPos) * 0.3)) // 30% of screen width
-
-				var startX, endX int
-				if scrollX < 0 {
-					// Scroll left -> swipe left
-					startX = absMouseMaxPos/2 + distance/2
-					endX = absMouseMaxPos/2 - distance/2
-				} else {
-					// Scroll right -> swipe right
-					startX = absMouseMaxPos/2 - distance/2
-					endX = absMouseMaxPos/2 + distance/2
-				}
-
-				path := [][2]int{{startX, centerY}, {endX, centerY}}
-				return p.dragLocked(convertAbsPathToNormalized(path), ButtonLeft)
-			}); err != nil {
-				return err
-			}
-		}
-		if scrollY != 0 {
-			return runPointerGate(p.gate, ctx, func() error {
-				// Simulate vertical scroll with a vertical swipe
-				centerX := absMouseMaxPos / 2
-				distance := int(math.Round(float64(absMouseMaxPos) * 0.3))
-
-				var startY, endY int
-				if scrollY < 0 {
-					// Scroll down -> swipe up
-					startY = absMouseMaxPos/2 + distance/2
-					endY = absMouseMaxPos/2 - distance/2
-				} else {
-					// Scroll up -> swipe down
-					startY = absMouseMaxPos/2 - distance/2
-					endY = absMouseMaxPos/2 + distance/2
-				}
-
-				path := [][2]int{{centerX, startY}, {centerX, endY}}
-				return p.dragLocked(convertAbsPathToNormalized(path), ButtonLeft)
-			})
-		}
-		return nil
+		return InvalidArguments("mouse_scroll is unsupported when pointer_mode is touchscreen; use touch_gesture")
 	}
 
 	return runPointerGate(p.gate, ctx, func() error {
@@ -590,13 +544,13 @@ func writeDevice(dev Device, report []byte) error {
 	return dev.Write(report)
 }
 
-// writeAbsMouseReport writes a 6-byte absolute mouse report:
-// [buttons, x_lo, x_hi, y_lo, y_hi, wheel]
+// writeAbsMouseReport writes a 7-byte absolute mouse report:
+// [buttons, x_lo, x_hi, y_lo, y_hi, wheel, horizontal_wheel]
 func (p *HIDProvider) writeAbsMouseReport(x, y int, buttons uint8, wheel int8) error {
 	absX := clampUint16(x, absMouseMaxPos)
 	absY := clampUint16(y, absMouseMaxPos)
 
-	report := make([]byte, 6)
+	report := make([]byte, 7)
 	report[0] = buttons
 	binary.LittleEndian.PutUint16(report[1:3], absX)
 	binary.LittleEndian.PutUint16(report[3:5], absY)
