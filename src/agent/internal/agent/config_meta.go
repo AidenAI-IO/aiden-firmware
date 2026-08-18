@@ -156,7 +156,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "device",
 				Fields: []FieldMeta{
 					{Key: "device_type", Widget: WidgetSelect,
-						Help:    "Android exposes both a touchscreen and an absolute mouse with a visible cursor. iOS, macOS, windows, and linux use the absolute mouse.",
+						Help:    "Android exposes both a touchscreen and a relative mouse with a visible cursor. iOS, macOS, windows, and linux use the absolute mouse.",
 						Enum:    enumOptions("iOS", "Android", "macOS", "windows", "linux"),
 						Default: defaults.Device.DeviceTypeOrDefault()},
 				},

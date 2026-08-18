@@ -118,6 +118,38 @@ const uint8_t kTouchDescriptor[] = {
     0xc0,                   // End Collection (Application)
 };
 
+// Standard boot-compatible relative mouse descriptor used by Android. Android
+// InputReader requires REL_X/REL_Y to classify the interface as a cursor.
+const uint8_t kRelativeMouseDescriptor[] = {
+    0x05, 0x01,             // Usage Page (Generic Desktop)
+    0x09, 0x02,             // Usage (Mouse)
+    0xa1, 0x01,             // Collection (Application)
+    0x09, 0x01,             //   Usage (Pointer)
+    0xa1, 0x00,             //   Collection (Physical)
+    0x05, 0x09,             //     Usage Page (Button)
+    0x19, 0x01,             //     Usage Minimum (Button 1)
+    0x29, 0x03,             //     Usage Maximum (Button 3)
+    0x15, 0x00,             //     Logical Minimum (0)
+    0x25, 0x01,             //     Logical Maximum (1)
+    0x95, 0x03,             //     Report Count (3)
+    0x75, 0x01,             //     Report Size (1)
+    0x81, 0x02,             //     Input (Data, Variable, Absolute)
+    0x95, 0x01,             //     Report Count (1)
+    0x75, 0x05,             //     Report Size (5)
+    0x81, 0x01,             //     Input (Constant)
+    0x05, 0x01,             //     Usage Page (Generic Desktop)
+    0x09, 0x30,             //     Usage (X)
+    0x09, 0x31,             //     Usage (Y)
+    0x09, 0x38,             //     Usage (Wheel)
+    0x15, 0x81,             //     Logical Minimum (-127)
+    0x25, 0x7f,             //     Logical Maximum (127)
+    0x75, 0x08,             //     Report Size (8)
+    0x95, 0x03,             //     Report Count (3)
+    0x81, 0x06,             //     Input (Data, Variable, Relative)
+    0xc0,                   //   End Collection (Physical)
+    0xc0,                   // End Collection (Application)
+};
+
 const uint8_t kTouchscreenDescriptor[] = {
     0x05, 0x0d,             // Usage Page (Digitizers)
     0x09, 0x04,             // Usage (Touch Screen)
@@ -541,10 +573,17 @@ void setup_keyboard_function(const std::string& gadget) {
 void setup_touch_function(const std::string& gadget, const Options& options) {
     std::string function_path = gadget + "/functions/hid.usb1";
     ensure_dir(function_path);
-    write_text_file(function_path + "/protocol", "0");
-    write_text_file(function_path + "/subclass", "0");
-    write_text_file(function_path + "/report_length", "6");
-    write_binary_file(function_path + "/report_desc", kTouchDescriptor, sizeof(kTouchDescriptor));
+    if (options.pointer_touchscreen) {
+        write_text_file(function_path + "/protocol", "2");
+        write_text_file(function_path + "/subclass", "1");
+        write_text_file(function_path + "/report_length", "4");
+        write_binary_file(function_path + "/report_desc", kRelativeMouseDescriptor, sizeof(kRelativeMouseDescriptor));
+    } else {
+        write_text_file(function_path + "/protocol", "0");
+        write_text_file(function_path + "/subclass", "0");
+        write_text_file(function_path + "/report_length", "6");
+        write_binary_file(function_path + "/report_desc", kTouchDescriptor, sizeof(kTouchDescriptor));
+    }
     ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb1");
 
     if (options.pointer_touchscreen) {

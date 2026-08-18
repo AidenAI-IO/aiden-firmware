@@ -197,7 +197,7 @@ assert.equal(t('config.save_failed', {section: 'agent'}), '保存 [agent] 失败
 assert.equal(t('wifi.connected_to', {ssid: 'Aiden Lab'}), '已连接到“Aiden Lab”。');
 assert.equal(
   t('config.fields.device.device_type.help'),
-  'Android 同时提供 touchscreen 和带可见指针的 absolute mouse。iOS、macOS、windows 和 linux 使用 absolute mouse。',
+  'Android 同时提供 touchscreen 和带可见指针的 relative mouse。iOS、macOS、windows 和 linux 使用 absolute mouse。',
 );
 assert.equal(t('config.default_value', {value: '16000'}), '默认值：16000');
 assert.equal(t('logs.jump_to_bottom'), '跳到底部');

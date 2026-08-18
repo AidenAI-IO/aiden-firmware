@@ -182,7 +182,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 	}
 	want := map[string]displayMeta{
 		"device.device_type": {
-			help: "Android exposes both a touchscreen and an absolute mouse with a visible cursor. iOS, macOS, windows, and linux use the absolute mouse.",
+			help: "Android exposes both a touchscreen and a relative mouse with a visible cursor. iOS, macOS, windows, and linux use the absolute mouse.",
 		},
 		"agent.vad_model_path":          {layout: "wide"},
 		"agent.vad_helper_path":         {layout: "wide"},

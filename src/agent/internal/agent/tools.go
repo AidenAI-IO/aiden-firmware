@@ -149,7 +149,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	if screen == nil {
 		screen = newToolScreenState()
 	}
-	mousePointer := newPointerControllerForDevice(hidCfg.MouseDeviceOrDefault(), false)
+	mousePointer := newMousePointerController(hidCfg)
 	pointer := mousePointer
 	if hidCfg.PointerTouchscreen() {
 		pointer = newPointerControllerForDevice(hidCfg.TouchscreenDeviceOrDefault(), true)

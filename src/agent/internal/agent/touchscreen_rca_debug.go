@@ -98,6 +98,9 @@ func touchscreenRCAPointerMode(pc *pointerController) string {
 	if pc.touchscreen {
 		return "touchscreen"
 	}
+	if pc.relative {
+		return "relative_mouse"
+	}
 	return "absolute_mouse"
 }
 

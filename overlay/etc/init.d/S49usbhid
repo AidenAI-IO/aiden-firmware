@@ -138,18 +138,27 @@ start() {
 	printf '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x01\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' \
 		> "$GADGET_DIR/functions/hid.usb0/report_desc"
 
-	# Absolute mouse HID function. Keep this a real mouse on every platform so
-	# Android can show a cursor while retaining a separate touchscreen device.
+	# Android requires REL_X/REL_Y for InputReader to classify the interface as
+	# a cursor device. Other platforms retain the absolute mouse used by iOS
+	# AssistiveTouch and desktop hosts.
+	read_pointer_mode
 	mkdir -p "$GADGET_DIR/functions/hid.usb1"
-	echo 0 > "$GADGET_DIR/functions/hid.usb1/protocol"
-	echo 0 > "$GADGET_DIR/functions/hid.usb1/subclass"
-	echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
-	printf '\x05\x01\x09\x02\xa1\x01\x09\x01\xa1\x00\x05\x09\x19\x01\x29\x08\x15\x00\x25\x01\x95\x08\x75\x01\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\x09\x38\x15\x81\x25\x7f\x75\x08\x95\x01\x81\x06\xc0\xc0' \
-		> "$GADGET_DIR/functions/hid.usb1/report_desc"
+	if [ "$POINTER_MODE" = "touchscreen" ]; then
+		echo 2 > "$GADGET_DIR/functions/hid.usb1/protocol"
+		echo 1 > "$GADGET_DIR/functions/hid.usb1/subclass"
+		echo 4 > "$GADGET_DIR/functions/hid.usb1/report_length"
+		printf '\x05\x01\x09\x02\xa1\x01\x09\x01\xa1\x00\x05\x09\x19\x01\x29\x03\x15\x00\x25\x01\x95\x03\x75\x01\x81\x02\x95\x01\x75\x05\x81\x01\x05\x01\x09\x30\x09\x31\x09\x38\x15\x81\x25\x7f\x75\x08\x95\x03\x81\x06\xc0\xc0' \
+			> "$GADGET_DIR/functions/hid.usb1/report_desc"
+	else
+		echo 0 > "$GADGET_DIR/functions/hid.usb1/protocol"
+		echo 0 > "$GADGET_DIR/functions/hid.usb1/subclass"
+		echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
+		printf '\x05\x01\x09\x02\xa1\x01\x09\x01\xa1\x00\x05\x09\x19\x01\x29\x08\x15\x00\x25\x01\x95\x08\x75\x01\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\x09\x38\x15\x81\x25\x7f\x75\x08\x95\x01\x81\x06\xc0\xc0' \
+			> "$GADGET_DIR/functions/hid.usb1/report_desc"
+	fi
 
 	# [device].device_type decides whether the additional Android touchscreen
 	# and the full Android extension-key descriptor are present.
-	read_pointer_mode
 	mkdir -p "$GADGET_DIR/functions/hid.usb2"
 	echo 0 > "$GADGET_DIR/functions/hid.usb2/protocol"
 	echo 0 > "$GADGET_DIR/functions/hid.usb2/subclass"
@@ -209,7 +218,7 @@ start() {
 	fi
 
 	if [ "$POINTER_MODE" = "touchscreen" ]; then
-		echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (mouse:absolute) /dev/hidg2 (android-extension) /dev/hidg3 (touchscreen) usb0 (ECM)"
+		echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (mouse:relative) /dev/hidg2 (android-extension) /dev/hidg3 (touchscreen) usb0 (ECM)"
 	else
 		echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (mouse:absolute) /dev/hidg2 (media-keys) usb0 (ECM)"
 	fi

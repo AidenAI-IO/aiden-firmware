@@ -32,7 +32,7 @@ Follow [Hardware & Wiring](hardware.md) to complete the wiring. Key connection f
 - The target device (iPhone / PC) connects to a **USB-C hub**;
 - The hub's **HDMI output** goes to the Firefly RK628D HDMI-to-CSI bridge, which feeds the Pico Zero's `/dev/video0` through four CSI lanes;
 - The hub's **USB-C output** connects to the Pico Zero for data and power;
-- The Pico Zero exposes `/dev/hidg0` for keyboard input, `/dev/hidg1` for an absolute mouse, and `/dev/hidg2` for Android extension keys or Consumer Control media keys. Android additionally gets `/dev/hidg3` as a touchscreen, so touch and visible-pointer mouse input can coexist;
+- The Pico Zero exposes `/dev/hidg0` for keyboard input, `/dev/hidg1` for mouse input, and `/dev/hidg2` for Android extension keys or Consumer Control media keys. Android uses a relative mouse on `/dev/hidg1` and additionally gets `/dev/hidg3` as a touchscreen, so touch and visible-pointer mouse input can coexist; other platforms keep the absolute mouse descriptor;
 - Audio goes through the Pico Zero's onboard codec / ALSA; networking goes through Wi-Fi or the USB gadget network.
 
 To control an iOS device over USB HID, first enable `Settings > Accessibility > Touch > AssistiveTouch` on the target device, and it is recommended to enable **Show Onscreen Keyboard** as well.

@@ -45,7 +45,7 @@ trigger_mode = "wakeup"
 # voice_max_response_tokens = 300
 
 # Target device configuration.
-# Android derives HID pointer_mode = "touchscreen" for default gestures while also exposing an absolute mouse; iOS, macOS, windows, and linux derive "absolute".
+# Android derives HID pointer_mode = "touchscreen" for default gestures while also exposing a relative mouse; iOS, macOS, windows, and linux derive "absolute".
 # Accepted device_type values: "iOS", "Android", "macOS", "windows", or "linux".
 [device]
 device_type = "iOS"
@@ -225,7 +225,7 @@ speed = 1.0                   # Speech speed: 0.5 - 2.0
 # keyboard_layout = "qwerty"  # How the phone interprets the USB HID keyboard: "qwerty", "azerty", or "qwertz"
 # mouse_device = "/dev/hidg1"
 # android_keyboard_device = "/dev/hidg2"  # hid.usb2 Consumer Control keys; Android nav keys in touchscreen mode, media/volume/brightness/screenshot keys in absolute mode
-# touchscreen_device = "/dev/hidg3"       # Android-only HID touchscreen; mouse_device remains a real mouse with a visible pointer
+# touchscreen_device = "/dev/hidg3"       # Android-only HID touchscreen; mouse_device is a relative mouse with a visible pointer
 # frame_socket = "/run/frame_service/frame_service.sock"
 # input_backend = "hid"         # "hid" writes USB HID reports; "adb" uses adb shell input for Android taps/keys/text
 

@@ -125,7 +125,7 @@ It is also recommended to enable **Show Onscreen Keyboard** on the AssistiveTouc
 | Video capture | `/dev/video0` | RK628D or TC358743 bridge output to the V4L2 capture device |
 | HDMI subdev | Auto-detected `rk628-csi` or `tc358743` node | EDID / DV timings / HDMI sync; the exact `/dev/v4l-subdevX` index can vary |
 | Keyboard HID | `/dev/hidg0` | Default keyboard device for Go Agent and example tools |
-| Absolute mouse HID | `/dev/hidg1` | Real mouse events, including the visible Android system pointer |
+| Mouse HID | `/dev/hidg1` | Android relative mouse with a visible system pointer; absolute mouse on iOS and desktop hosts |
 | Auxiliary control HID | `/dev/hidg2` | Android extension keys in touchscreen mode; Consumer Control media, volume, brightness, and screenshot keys in absolute mode |
 | Android touchscreen HID | `/dev/hidg3` | Touchscreen events used by default for Android taps, swipes, and drags |
 | Frame socket | `/run/frame_service/frame_service.sock` | Default path for system service deployment |

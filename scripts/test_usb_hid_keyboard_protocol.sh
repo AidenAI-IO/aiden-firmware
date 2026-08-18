@@ -86,7 +86,13 @@ grep -Fq 'functions/hid.usb3/report_desc' "$INIT_SCRIPT" ||
     fail "S49usbhid must expose a separate Android touchscreen HID function"
 
 grep -Fq 'functions/hid.usb1/report_desc' "$INIT_SCRIPT" ||
-    fail "S49usbhid must retain the absolute mouse HID function"
+    fail "S49usbhid must retain the mouse HID function"
+
+grep -Fq 'echo 4 > "$GADGET_DIR/functions/hid.usb1/report_length"' "$INIT_SCRIPT" ||
+    fail "S49usbhid must expose Android mouse reports as 4-byte relative reports"
+
+grep -Fq 'kRelativeMouseDescriptor' "$EXAMPLE_SRC" ||
+    fail "example_usb_hid setup must support the Android relative mouse descriptor"
 
 grep -Fq 'gadget + "/functions/hid.usb3"' "$EXAMPLE_SRC" ||
     fail "example_usb_hid setup must support the separate touchscreen HID function"

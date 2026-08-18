@@ -521,7 +521,7 @@ type HIDConfig struct {
 	FrameSocket           string `toml:"frame_socket,omitempty"`
 	// PointerMode selects the default gesture surface and hid.usb2 key profile.
 	// Android uses the touchscreen surface while still exposing MouseDevice as
-	// a separate absolute mouse with a visible cursor.
+	// a separate relative mouse with a visible cursor.
 	PointerMode string `toml:"pointer_mode,omitempty"`
 	// InputBackend selects the low-level input path for keyboard/touch tools:
 	// "hid" writes USB HID reports, "adb" sends Android adb shell input commands.

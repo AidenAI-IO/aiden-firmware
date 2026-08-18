@@ -100,11 +100,13 @@ touchscreen_device = "/dev/hidg3"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
-`mouse_device` is always an absolute mouse. On Android, the firmware also binds
-`hid.usb3` as `touchscreen_device`, so the host sees both a real mouse with a
-visible pointer and a touchscreen at the same time. `touch_gesture` keeps using
-the touchscreen by default; pass `"input_device":"mouse"` to send the gesture
-as mouse movement/button reports instead.
+On Android, `mouse_device` uses a standard relative `REL_X`/`REL_Y` mouse
+descriptor so InputReader classifies it as a cursor device. The firmware also
+binds `hid.usb3` as `touchscreen_device`, so the host sees both a real mouse with
+a visible pointer and a touchscreen at the same time. Other platforms retain
+the absolute mouse descriptor. `touch_gesture` keeps using the touchscreen by
+default; pass `"input_device":"mouse"` to send the gesture as mouse
+movement/button reports instead.
 
 The firmware also binds `hid.usb2` as `/dev/hidg2`. This second keyboard-like
 interface advertises Consumer Control usages. When `[device].device_type =
