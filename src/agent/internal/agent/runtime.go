@@ -73,7 +73,6 @@ type Runtime struct {
 	stateManager       *statemanager.StateManager
 	runtimeID          string
 	telemetrySessionID string
-	environmentBridge  *EnvironmentBridgeClient
 	runGate            chan struct{}
 	preemptMu          sync.Mutex
 	activeCancel       context.CancelFunc
@@ -562,14 +561,6 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
 
-	var environmentBridge *EnvironmentBridgeClient
-	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
-		environmentBridge = NewEnvironmentBridgeClient(
-			cfg.EnvironmentBridge.Endpoint,
-			WithEnvironmentBridgeBenchmarkTaskID(cfg.EnvironmentBridge.BenchmarkTaskID),
-		)
-	}
-
 	var memoryDir string
 	var longTermStore *LongTermMemoryStore
 	if cfg.ConfigDir != "" {
@@ -611,7 +602,6 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		),
 		runtimeID:          uuid.NewString(),
 		telemetrySessionID: uuid.NewString(),
-		environmentBridge:  environmentBridge,
 		stateManager:       statemanager.NewStateManager(),
 	}
 	// Use the active memory session ID for raw HTTP log partitioning.
@@ -1166,8 +1156,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		return newWheelNudgeGuard(r.tools.screen)
 	}
-	agentLoop.EnvironmentBridge = r.environmentBridge
-	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
 	agentLoop.ToolResultObserver = newScreenToolResultObserver(r.screenState)
 	agentLoop.SteerInterrupt = req.SteerInterrupt
 	agentLoop.SteerProvider = req.SteerProvider

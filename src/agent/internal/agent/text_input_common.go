@@ -69,7 +69,6 @@ const (
 	textInputCandidateSettleDelay   = textInputLocalIMESettleDelay
 	textInputInitialCandidateDelay  = textInputLocalIMESettleDelay
 	textInputIMESwitchSettleDelay   = textInputLocalIMESettleDelay
-	textInputIMESwitchHoldMs        = 200
 	textInputClearBackspaceRepeats  = 32
 	textInputClearBackspaceFallback = 16
 	textInputCandidatePageMax       = 5

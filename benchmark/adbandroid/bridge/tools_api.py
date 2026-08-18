@@ -472,7 +472,7 @@ class ADBToolsAPIHandler:
                     x_key="end_x",
                     y_key="end_y",
                 )
-                duration_ms = _duration_ms_arg(tool_input.get("duration_ms"), 300)
+                duration_ms = _duration_ms_arg(tool_input.get("duration_ms"), 300 if gesture_type == "swipe" else 700)
                 x1, y1 = _to_pixels(start, width, height)
                 x2, y2 = _to_pixels(end, width, height)
                 return self._execute_device(
