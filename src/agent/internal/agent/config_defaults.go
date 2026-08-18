@@ -102,6 +102,13 @@ func DefaultConfig() Config {
 			BitWidth:        defaultAudioBitWidth,
 			PlaybackBackend: AudioPlaybackBackendAuto,
 		},
+		VoiceModel: VoiceModelConfig{
+			Model:             "qwen-audio-3.0-realtime-plus",
+			Voice:             "longanqian",
+			InputAudioFormat:  "pcm",
+			OutputAudioFormat: "pcm",
+			TurnDetection:     "server_vad",
+		},
 		AudioArchive: AudioArchiveConfig{
 			Enabled:     true,
 			MaxFiles:    defaultAudioArchiveMaxFiles,

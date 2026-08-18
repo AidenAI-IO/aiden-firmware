@@ -272,6 +272,7 @@ type Config struct {
 	HID                        HIDConfig                `toml:"hid"`
 	Device                     DeviceConfig             `toml:"device,omitempty"`
 	Audio                      AudioConfig              `toml:"audio,omitempty"`
+	VoiceModel                 VoiceModelConfig         `toml:"voice_model,omitempty"`
 	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
 	Storage                    StorageConfig            `toml:"storage,omitempty"`
 	VoiceNotifications         VoiceNotificationsConfig `toml:"voice_notifications,omitempty"`
@@ -380,6 +381,45 @@ type AudioConfig struct {
 	Channels        int    `toml:"channels,omitempty"`
 	BitWidth        int    `toml:"bit_width,omitempty"`
 	PlaybackBackend string `toml:"playback_backend,omitempty"`
+}
+
+// VoiceModelConfig configures the realtime audio model used by the wakeup
+// voice path. An empty API key keeps the legacy voice loop active.
+type VoiceModelConfig struct {
+	APIKey                 string   `toml:"api_key,omitempty"`
+	Model                  string   `toml:"model,omitempty"`
+	WorkspaceID            string   `toml:"workspace_id,omitempty"`
+	Region                 string   `toml:"region,omitempty"`
+	Endpoint               string   `toml:"endpoint,omitempty"`
+	Voice                  string   `toml:"voice,omitempty"`
+	Instructions           string   `toml:"instructions,omitempty"`
+	EnableSpeechEmotion    *bool    `toml:"enable_speech_emotion,omitempty"`
+	InputAudioFormat       string   `toml:"input_audio_format,omitempty"`
+	OutputAudioFormat      string   `toml:"output_audio_format,omitempty"`
+	TurnDetection          string   `toml:"turn_detection,omitempty"`
+	TurnDetectionThreshold *float64 `toml:"turn_detection_threshold,omitempty"`
+	TurnDetectionSilenceMs int      `toml:"turn_detection_silence_ms,omitempty"`
+}
+
+func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) != "" }
+
+func (c VoiceModelConfig) Validate() error {
+	if region := strings.TrimSpace(c.Region); region != "" && region != "cn-beijing" && region != "ap-southeast-1" {
+		return fmt.Errorf("voice_model.region: unsupported region %q", c.Region)
+	}
+	if endpoint := strings.TrimSpace(c.Endpoint); endpoint != "" {
+		u, err := url.Parse(endpoint)
+		if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {
+			return fmt.Errorf("voice_model.endpoint: invalid websocket URL %q", c.Endpoint)
+		}
+	}
+	if c.TurnDetection != "" && c.TurnDetection != "server_vad" && c.TurnDetection != "smart_turn" {
+		return fmt.Errorf("voice_model.turn_detection: unsupported type %q", c.TurnDetection)
+	}
+	if c.TurnDetectionSilenceMs < 0 {
+		return errors.New("voice_model.turn_detection_silence_ms must be >= 0")
+	}
+	return nil
 }
 
 type ProxyConfig struct {
@@ -847,6 +887,7 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	// config page runs Config.ValidateVoiceProviders on save for strict checks.
 	resolveTTSProvider(&cfg)
 	resolveSTTProvider(&cfg)
+	cfg.VoiceModel.APIKey = resolveProviderAPIKey(cfg.VoiceModel.APIKey)
 
 	// Apply provider references to model configurations. This must run before
 	// the base_url whitelist below: until the reference is expanded, Provider
@@ -1262,6 +1303,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid device.device_type: %s (expected iOS, Android, macOS, windows, or linux)", c.Device.DeviceType)
 	}
 	if _, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend); err != nil {
+		return err
+	}
+	if err := c.VoiceModel.Validate(); err != nil {
 		return err
 	}
 	if c.Model.MaxResponseTokens < 0 {

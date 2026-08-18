@@ -196,7 +196,8 @@ func main() {
 	}()
 
 	if inputMode == "stt" {
-		if shouldRunConsoleAudioLoop(cfg, stdinIsInteractive()) {
+		if shouldRunConsoleAudioLoop(cfg, stdinIsInteractive()) ||
+			(cfg.TriggerModeOrDefault() == "wakeup" && cfg.VoiceModel.Enabled()) {
 			go func() {
 				if err := <-serverErr; err != nil {
 					log.Printf("[server] HTTP server stopped: %v", err)
@@ -252,6 +253,14 @@ func shouldRunConsoleAudioLoop(cfg agent.Config, stdinInteractive bool) bool {
 }
 
 func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server) {
+	// Setup signal handler for both legacy and realtime voice paths.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+	if cfg.TriggerModeOrDefault() == "wakeup" && cfg.VoiceModel.Enabled() {
+		runRealtimeWakeupMode(cfg, sigChan, newGPIOWatcher)
+		return
+	}
 	dialog, err := agent.NewAudioDialog(runtime)
 	if err != nil {
 		_ = logging.LogEvent(logging.Error, "agent", "audio", "dialog_create_failed",
@@ -289,10 +298,6 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 		floatOrDefault(cfg.VADSpeechThreshold, agent.DefaultVADSpeechThreshold()),
 		cfg.SilenceMs,
 		cfg.MinSpeechMs)
-
-	// Setup signal handler
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	if triggerMode == "manual" {
 		runManualMode(cfg, dialog, runtime, sigChan)

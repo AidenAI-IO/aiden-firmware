@@ -44,6 +44,25 @@ trigger_mode = "wakeup"
 # voice_progress_speech_enabled = true
 # voice_max_response_tokens = 300
 
+# Realtime voice model (optional). When api_key is set together with
+# input_mode = "stt" and trigger_mode = "wakeup", GPIO wakeup opens a
+# continuous PCM duplex session with rtclient. The legacy STT/LLM/TTS loop is
+# used when this section has no api_key.
+# [voice_model]
+# api_key = "$DASHSCOPE_API_KEY"
+# model = "qwen-audio-3.0-realtime-plus"
+# workspace_id = ""
+# region = "cn-beijing" # or "ap-southeast-1"
+# endpoint = ""         # optional ws/wss endpoint override
+# voice = "longanqian"
+# instructions = ""
+# enable_speech_emotion = true
+# input_audio_format = "pcm"
+# output_audio_format = "pcm"
+# turn_detection = "server_vad" # or "smart_turn"
+# turn_detection_threshold = 0.5
+# turn_detection_silence_ms = 800
+
 # Target device configuration.
 # Android derives HID pointer_mode = "touchscreen"; iOS, macOS, windows, and linux derive "absolute".
 # Accepted device_type values: "iOS", "Android", "macOS", "windows", or "linux".

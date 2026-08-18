@@ -22,6 +22,7 @@ under `[device]` below.
 - [`[model]`](#model)
 - [`[log]`](#log)
 - [`[audio]`](#audio)
+- [`[voice_model]`](#voice_model)
 - [`[voice_notifications]`](#voice_notifications)
 - [`[hid]`](#hid)
 - [`[stt]` and `[tts]`](#stt-and-tts)
@@ -409,6 +410,30 @@ API key and base URL do not carry over to it.
 | `channels`         | `1`                                     | Number of channels                                                                                                                                                                                                            |
 | `bit_width`        | `16`                                    | Bit width                                                                                                                                                                                                                     |
 | `playback_backend` | `auto`                                  | TTS playback backend. `auto` uses `audio_service` on board and the local OS player when the Agent is running in desktop/PC mode through ADB input backend or environment bridge. Use `audio_service` or `local` to force one. |
+
+## `[voice_model]`
+
+This optional section selects the realtime voice model used after a GPIO
+wakeup. It is active only when `input_mode = "stt"`, `trigger_mode = "wakeup"`,
+and `api_key` is non-empty. The daemon then streams 16 kHz PCM microphone data
+to `rtclient` continuously and plays the model's 24 kHz PCM response stream.
+Without an API key, the existing VAD/STT/LLM/TTS wakeup loop remains active.
+This section is currently TOML-only and is not rendered by Config Web.
+
+| Field | Default | Description |
+| ----- | ------- | ----------- |
+| `api_key` | empty | DashScope API key; supports `$ENV_VAR` expansion. |
+| `model` | `qwen-audio-3.0-realtime-plus` | Realtime voice model name. |
+| `workspace_id` | empty | Optional DashScope workspace. |
+| `region` | empty | `cn-beijing` or `ap-southeast-1`; endpoint is selected automatically. |
+| `endpoint` | empty | Optional `ws://` or `wss://` endpoint override. |
+| `voice` | `longanqian` | Realtime output voice. |
+| `instructions` | empty | Session instructions; falls back to `custom_instruction`. |
+| `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
+| `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
+| `turn_detection` | `server_vad` | Server turn detector: `server_vad` or `smart_turn`. |
+| `turn_detection_threshold` | empty | Optional server VAD threshold. |
+| `turn_detection_silence_ms` | `800` | Silence duration before a response is generated. |
 
 ## `[voice_notifications]`
 

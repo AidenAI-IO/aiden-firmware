@@ -28,6 +28,35 @@ func TestDaemonDeviceTypeFlag(t *testing.T) {
 	}
 }
 
+func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
+	emotion := false
+	cfg := agent.Config{
+		Instruction: "be concise",
+		VoiceModel: agent.VoiceModelConfig{
+			Voice:                  "custom-voice",
+			Instructions:           "speak naturally",
+			EnableSpeechEmotion:    &emotion,
+			InputAudioFormat:       "pcm",
+			OutputAudioFormat:      "pcm",
+			TurnDetection:          "smart_turn",
+			TurnDetectionThreshold: floatPtr(0.2),
+			TurnDetectionSilenceMs: 900,
+		},
+	}
+	got := realtimeSessionConfig(cfg)
+	if got.Voice != "custom-voice" || got.Instructions != "speak naturally" || got.TurnDetection == nil {
+		t.Fatalf("unexpected realtime session config: %+v", got)
+	}
+	if got.TurnDetection.Type != "smart_turn" || got.TurnDetection.SilenceDurationMS != 900 || got.TurnDetection.Threshold == nil || *got.TurnDetection.Threshold != 0.2 {
+		t.Fatalf("unexpected turn detection config: %+v", got.TurnDetection)
+	}
+	if got.EnableSpeechEmotion == nil || *got.EnableSpeechEmotion {
+		t.Fatalf("enable_speech_emotion = %#v, want false", got.EnableSpeechEmotion)
+	}
+}
+
+func floatPtr(value float64) *float64 { return &value }
+
 func TestApplyDeviceTypeOverrideTakesPrecedenceOverConfig(t *testing.T) {
 	cfg := agent.Config{
 		Device: agent.DeviceConfig{DeviceType: "iOS"},

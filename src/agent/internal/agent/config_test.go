@@ -1401,6 +1401,41 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 	}
 }
 
+func TestVoiceModelConfigLoadsAndValidates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	config := `[model]
+provider = "fake"
+model = "fake"
+input_mode = "stt"
+
+[stt]
+provider = "openai-whisper"
+
+[tts]
+provider = "minimax-cn"
+
+[voice_model]
+api_key = "voice-secret"
+model = "qwen-audio-3.0-realtime-plus"
+workspace_id = "ws-123"
+region = "cn-beijing"
+voice = "longanqian"
+turn_detection = "smart_turn"
+turn_detection_silence_ms = 900
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.VoiceModel.Enabled() || cfg.VoiceModel.Model != "qwen-audio-3.0-realtime-plus" || cfg.VoiceModel.TurnDetection != "smart_turn" {
+		t.Fatalf("unexpected voice model config: %+v", cfg.VoiceModel)
+	}
+}
+
 func TestVoiceSessionConfigDefaults(t *testing.T) {
 	cfg := Config{}
 
