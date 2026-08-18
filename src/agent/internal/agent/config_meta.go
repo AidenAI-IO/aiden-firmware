@@ -170,10 +170,11 @@ func ConfigMeta() ConfigMetadata {
 						Default: defaults.Model.Provider},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model, Layout: "wide"},
 					{Key: "api_mode", Widget: WidgetSelect,
-						Help: "Responses mode sends the local ContextManager history as input items and never stores it server-side.",
+						Help: "Responses API can replay local context without provider retention or use a provider-managed response chain.",
 						Enum: []EnumOption{
 							{Value: "", Label: "chat completions (default)"},
 							{Value: "responses", Label: "Responses API (manual context)"},
+							{Value: "responses_stateful", Label: "Responses API (provider-managed context)"},
 						},
 						Default: defaults.Model.APIMode},
 					// The effective default is model-dependent (resolved at load

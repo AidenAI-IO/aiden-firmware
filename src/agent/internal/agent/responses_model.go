@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	modelAPIModeChatCompletions = "chat_completions"
-	modelAPIModeResponses       = "responses"
+	modelAPIModeChatCompletions   = "chat_completions"
+	modelAPIModeResponses         = "responses"
+	modelAPIModeResponsesStateful = "responses_stateful"
 )
 
 func normalizeModelAPIMode(mode string) string {
@@ -29,6 +30,8 @@ func normalizeModelAPIMode(mode string) string {
 		return modelAPIModeChatCompletions
 	case "responses":
 		return modelAPIModeResponses
+	case "responses_stateful", "responses-stateful", "responses_provider":
+		return modelAPIModeResponsesStateful
 	default:
 		return ""
 	}
@@ -38,23 +41,25 @@ func normalizeModelAPIMode(mode string) string {
 // APIs have different item and streaming protocols even though their auth and
 // base URL conventions are compatible.
 type responsesModel struct {
-	baseURL           string
-	model             string
-	token             string
-	httpClient        *http.Client
-	rawLogger         RawHTTPLogger
-	sessionIDProvider func() string
-	reasoningEffort   string
-	temperature       *float64
-	routerMetadata    bool
+	baseURL                string
+	model                  string
+	token                  string
+	httpClient             *http.Client
+	rawLogger              RawHTTPLogger
+	sessionIDProvider      func() string
+	reasoningEffort        string
+	temperature            *float64
+	routerMetadata         bool
+	providerManagedContext bool
 }
 
 type responsesModelOptions struct {
-	rawLogger         RawHTTPLogger
-	sessionIDProvider func() string
-	reasoningEffort   string
-	temperature       *float64
-	routerMetadata    bool
+	rawLogger              RawHTTPLogger
+	sessionIDProvider      func() string
+	reasoningEffort        string
+	temperature            *float64
+	routerMetadata         bool
+	providerManagedContext bool
 }
 
 func newResponsesModel(baseURL, model, token string, httpClient *http.Client, opts responsesModelOptions) llms.Model {
@@ -62,15 +67,16 @@ func newResponsesModel(baseURL, model, token string, httpClient *http.Client, op
 		httpClient = http.DefaultClient
 	}
 	return &responsesModel{
-		baseURL:           strings.TrimRight(baseURL, "/"),
-		model:             model,
-		token:             token,
-		httpClient:        httpClient,
-		rawLogger:         opts.rawLogger,
-		sessionIDProvider: opts.sessionIDProvider,
-		reasoningEffort:   strings.TrimSpace(opts.reasoningEffort),
-		temperature:       opts.temperature,
-		routerMetadata:    opts.routerMetadata,
+		baseURL:                strings.TrimRight(baseURL, "/"),
+		model:                  model,
+		token:                  token,
+		httpClient:             httpClient,
+		rawLogger:              opts.rawLogger,
+		sessionIDProvider:      opts.sessionIDProvider,
+		reasoningEffort:        strings.TrimSpace(opts.reasoningEffort),
+		temperature:            opts.temperature,
+		routerMetadata:         opts.routerMetadata,
+		providerManagedContext: opts.providerManagedContext,
 	}
 }
 
@@ -79,17 +85,19 @@ func (m *responsesModel) Call(ctx context.Context, prompt string, options ...llm
 }
 
 type responsesRequest struct {
-	Model             string               `json:"model"`
-	Input             []responsesInputItem `json:"input"`
-	Tools             []responsesTool      `json:"tools,omitempty"`
-	ToolChoice        any                  `json:"tool_choice,omitempty"`
-	ParallelToolCalls bool                 `json:"parallel_tool_calls"`
-	Store             bool                 `json:"store"`
-	Stream            bool                 `json:"stream,omitempty"`
-	MaxOutputTokens   int                  `json:"max_output_tokens,omitempty"`
-	Temperature       *float64             `json:"temperature,omitempty"`
-	Reasoning         *responsesReasoning  `json:"reasoning,omitempty"`
-	Text              *responsesTextConfig `json:"text,omitempty"`
+	Model              string               `json:"model"`
+	Instructions       string               `json:"instructions,omitempty"`
+	PreviousResponseID string               `json:"previous_response_id,omitempty"`
+	Input              []responsesInputItem `json:"input"`
+	Tools              []responsesTool      `json:"tools,omitempty"`
+	ToolChoice         any                  `json:"tool_choice,omitempty"`
+	ParallelToolCalls  bool                 `json:"parallel_tool_calls"`
+	Store              bool                 `json:"store"`
+	Stream             bool                 `json:"stream,omitempty"`
+	MaxOutputTokens    int                  `json:"max_output_tokens,omitempty"`
+	Temperature        *float64             `json:"temperature,omitempty"`
+	Reasoning          *responsesReasoning  `json:"reasoning,omitempty"`
+	Text               *responsesTextConfig `json:"text,omitempty"`
 }
 
 type responsesInputItem struct {
@@ -208,13 +216,18 @@ func (u *responsesUsage) generationInfo() map[string]any {
 }
 
 func (m *responsesModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	return m.generateContent(ctx, messages, nil, options...)
+	return m.generateContent(ctx, messages, nil, "", "", options...)
 }
 
 // GenerateContentFromMessageList preserves opaque reasoning items that the
 // Responses API requires callers to include again when they keep context
 // locally with store=false. Other model implementations use GenerateContent.
 func (m *responsesModel) GenerateContentFromMessageList(ctx context.Context, contextMessages []messages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	if m.providerManagedContext {
+		instructions, previousResponseID, incrementalMessages := providerManagedContextInput(contextMessages)
+		standardMessages := messages.ConvertMessageList(incrementalMessages)
+		return m.generateContent(ctx, standardMessages, nil, instructions, previousResponseID, options...)
+	}
 	standardMessages := messages.ConvertMessageList(contextMessages)
 	reasoningItems := make([][]json.RawMessage, len(contextMessages))
 	for i := range contextMessages {
@@ -224,10 +237,10 @@ func (m *responsesModel) GenerateContentFromMessageList(ctx context.Context, con
 			}
 		}
 	}
-	return m.generateContent(ctx, standardMessages, reasoningItems, options...)
+	return m.generateContent(ctx, standardMessages, reasoningItems, "", "", options...)
 }
 
-func (m *responsesModel) generateContent(ctx context.Context, messages []llms.MessageContent, reasoningItems [][]json.RawMessage, options ...llms.CallOption) (*llms.ContentResponse, error) {
+func (m *responsesModel) generateContent(ctx context.Context, messages []llms.MessageContent, reasoningItems [][]json.RawMessage, instructions, previousResponseID string, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	callStarted := time.Now()
 	callOpts := llms.CallOptions{}
 	for _, option := range options {
@@ -240,23 +253,21 @@ func (m *responsesModel) generateContent(ctx context.Context, messages []llms.Me
 	}
 	requestModel := firstNonEmpty(callOpts.Model, m.model)
 	payload := responsesRequest{
-		Model:      requestModel,
-		Input:      input,
-		Tools:      convertResponsesTools(callOpts.Tools, callOpts.Functions),
-		ToolChoice: normalizeResponsesToolChoice(callOpts.ToolChoice, callOpts.FunctionCallBehavior),
+		Model:              requestModel,
+		Instructions:       instructions,
+		PreviousResponseID: previousResponseID,
+		Input:              input,
+		Tools:              convertResponsesTools(callOpts.Tools, callOpts.Functions),
+		ToolChoice:         normalizeResponsesToolChoice(callOpts.ToolChoice, callOpts.FunctionCallBehavior),
 		// The agent loop executes at most one tool call per iteration
 		// (choiceWithOnlyToolCall keeps the first valid call and drops the rest).
 		// Parallel calls would leave the dropped ones without a matching
 		// function_call_output item, which the Responses API rejects on the next
 		// turn, so disabling them is required rather than merely conservative.
 		ParallelToolCalls: false,
-		// store must be sent explicitly: the Responses API defaults it to true,
-		// which would retain conversations (including device screenshots) on the
-		// provider side. This is unrelated to prompt caching, which is keyed on the
-		// request prefix and applies either way. Retention would only buy
-		// previous_response_id chaining, which this adapter does not use, and
-		// OpenRouter rejects store=true outright since it is stateless-only.
-		Store:           false,
+		// Send store explicitly: manual mode opts out of provider retention while
+		// provider-managed mode needs retention for previous_response_id chaining.
+		Store:           m.providerManagedContext,
 		Stream:          callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil,
 		MaxOutputTokens: callOpts.MaxTokens,
 		Temperature:     m.temperature,
@@ -336,6 +347,35 @@ func (m *responsesModel) generateContent(ctx context.Context, messages []llms.Me
 		return nil, fmt.Errorf("decode responses response: %w", err)
 	}
 	return responsesContentResponse(decoded, callStarted, generationInfo)
+}
+
+// providerManagedContextInput translates the durable local transcript into the
+// incremental shape required by previous_response_id. The response that owns
+// the latest ResponsesResponseID is already retained by the provider, so it is
+// excluded along with all earlier local items. System guidance is always
+// lifted into top-level instructions because the Responses API does not carry
+// instructions forward through previous_response_id.
+func providerManagedContextInput(contextMessages []messages.Message) (instructions, previousResponseID string, incremental []messages.Message) {
+	start := 0
+	for i, message := range contextMessages {
+		if id := strings.TrimSpace(message.ResponsesResponseID); id != "" {
+			previousResponseID = id
+			start = i + 1
+		}
+		if message.Role == messages.MessageRoleSystem && strings.TrimSpace(message.Content) != "" {
+			if instructions != "" {
+				instructions += "\n\n"
+			}
+			instructions += strings.TrimSpace(message.Content)
+		}
+	}
+	for _, message := range contextMessages[start:] {
+		if message.Role == messages.MessageRoleSystem {
+			continue
+		}
+		incremental = append(incremental, message)
+	}
+	return instructions, previousResponseID, incremental
 }
 
 func (m *responsesModel) withRawHTTPLogFileTime(ctx context.Context) context.Context {

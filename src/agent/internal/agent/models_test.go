@@ -237,6 +237,24 @@ func TestBuildOpenAICompatibleResponsesMode(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICompatibleResponsesStatefulMode(t *testing.T) {
+	mgr := NewModelManager(ModelConfig{
+		Provider: "openai",
+		Model:    "gpt-5",
+		APIKey:   "test-key",
+		APIMode:  "responses_stateful",
+	}, ProxyConfig{})
+
+	model, err := mgr.build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	responses, ok := model.(*responsesModel)
+	if !ok || !responses.providerManagedContext {
+		t.Fatalf("model = %#v, want provider-managed Responses model", model)
+	}
+}
+
 func TestBuildResponsesModeUsesCustomOpenAICompatibleEndpoint(t *testing.T) {
 	for _, provider := range []string{"openai", "volcengine"} {
 		t.Run(provider, func(t *testing.T) {

@@ -72,8 +72,10 @@ provider = "openai-main"
 model = "gpt-5.5"
 # temperature = 0.2
 # max_response_tokens = 1000
-# Responses API experiment: local ContextManager history, store=false.
+# Responses API experiments: "responses" uses local history with store=false;
+# "responses_stateful" lets the provider retain and chain context.
 # api_mode = "responses"
+# api_mode = "responses_stateful"
 # Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
 # context_window = 128000
 # model_max_output_tokens = 8192

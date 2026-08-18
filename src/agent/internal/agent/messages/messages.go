@@ -52,6 +52,10 @@ type Message struct {
 	// later stateless request can submit it verbatim. It is deliberately not
 	// converted into ordinary chat content.
 	ResponsesReasoningItems []json.RawMessage `json:"responses_reasoning_items,omitempty"`
+	// ResponsesResponseID identifies the provider-owned response that produced
+	// this assistant/tool-call message. Stateful Responses mode uses it as the
+	// anchor for the next incremental request.
+	ResponsesResponseID string `json:"responses_response_id,omitempty"`
 }
 
 func (msg Message) Clone() Message {

@@ -143,7 +143,8 @@ func TestCompactSummarizesHistoricalToolResults(t *testing.T) {
 		{Role: messages.MessageRoleSystem, Content: "system"},
 		{Role: messages.MessageRoleUser, Content: "old request"},
 		{
-			Role: messages.MessageRoleToolCall,
+			Role:                messages.MessageRoleToolCall,
+			ResponsesResponseID: "resp_old_tool",
 			ToolCalls: []messages.ToolCall{{
 				ID:        "old_call",
 				Name:      "shell",
@@ -166,11 +167,12 @@ func TestCompactSummarizesHistoricalToolResults(t *testing.T) {
 				},
 			}},
 		},
-		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer", ResponsesResponseID: "resp_old_answer"},
 		{Role: messages.MessageRoleUser, Content: "new request"},
 		{
-			Role:      messages.MessageRoleToolCall,
-			ToolCalls: []messages.ToolCall{{ID: "new_call", Name: "shell", Arguments: `{"command":"pwd"}`}},
+			Role:                messages.MessageRoleToolCall,
+			ToolCalls:           []messages.ToolCall{{ID: "new_call", Name: "shell", Arguments: `{"command":"pwd"}`}},
+			ResponsesResponseID: "resp_new_tool",
 		},
 		{
 			Role:        messages.MessageRoleToolResult,
@@ -206,6 +208,11 @@ func TestCompactSummarizesHistoricalToolResults(t *testing.T) {
 	}
 	if got := compactedMessages[5].ToolResults[0].Content; got != "current result" {
 		t.Fatalf("current tool result = %q, want unchanged", got)
+	}
+	for _, message := range compactedMessages {
+		if message.ResponsesResponseID != "" {
+			t.Fatalf("compacted message retained provider response ID: %#v", message)
+		}
 	}
 }
 

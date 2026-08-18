@@ -86,7 +86,16 @@ func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) Message {
 		Content:                 contentChoiceText(choice),
 		ToolCalls:               toolCallsFromContentChoice(choice),
 		ResponsesReasoningItems: responsesReasoningItemsFromGenerationInfo(choice.GenerationInfo),
+		ResponsesResponseID:     responsesResponseIDFromGenerationInfo(choice.GenerationInfo),
 	}
+}
+
+func responsesResponseIDFromGenerationInfo(info map[string]any) string {
+	if len(info) == 0 {
+		return ""
+	}
+	id, _ := info["llm_response_id"].(string)
+	return strings.TrimSpace(id)
 }
 
 func responsesReasoningItemsFromGenerationInfo(info map[string]any) []json.RawMessage {

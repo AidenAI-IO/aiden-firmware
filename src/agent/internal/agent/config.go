@@ -1258,10 +1258,10 @@ func (c Config) Validate() error {
 	}
 	apiMode := normalizeModelAPIMode(c.Model.APIMode)
 	if apiMode == "" {
-		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions or responses)", c.Model.APIMode)
+		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions, responses, or responses_stateful)", c.Model.APIMode)
 	}
-	if apiMode == modelAPIModeResponses && !c.modelProviderSupportsResponses() {
-		return fmt.Errorf("model.api_mode=responses requires a provider transport with an OpenAI-compatible /responses endpoint")
+	if (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) && !c.modelProviderSupportsResponses() {
+		return fmt.Errorf("model.api_mode=%s requires a provider transport with an OpenAI-compatible /responses endpoint", apiMode)
 	}
 	backend := c.Device.BackendOrDefault()
 	switch backend {

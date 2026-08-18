@@ -88,12 +88,14 @@ func buildOpenAICompatibleModel(ctx ModelBuildContext, cfg ModelConfig, defaultB
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
+	apiMode := normalizeModelAPIMode(cfg.APIMode)
+	if apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
 		return newResponsesModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, responsesModelOptions{
-			rawLogger:         ctx.RawHTTPLogger,
-			sessionIDProvider: ctx.SessionIDProvider,
-			reasoningEffort:   cfg.ReasoningEffort,
-			temperature:       cfg.Temperature,
+			rawLogger:              ctx.RawHTTPLogger,
+			sessionIDProvider:      ctx.SessionIDProvider,
+			reasoningEffort:        cfg.ReasoningEffort,
+			temperature:            cfg.Temperature,
+			providerManagedContext: apiMode == modelAPIModeResponsesStateful,
 		})
 	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, openAICompatibleOptions(ctx, cfg)...)
@@ -118,21 +120,23 @@ func buildOpenRouterModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, e
 	if ctx.PromptCachePolicy.UsesExplicitCacheControl() {
 		opts = append(opts, withOpenAICompatibleExplicitPromptCache())
 	}
-	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
+	apiMode := normalizeModelAPIMode(cfg.APIMode)
+	if apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
 		return newResponsesModel(baseURL, cfg.Model, token, ctx.HTTPClient, responsesModelOptions{
-			rawLogger:         ctx.RawHTTPLogger,
-			sessionIDProvider: ctx.SessionIDProvider,
-			reasoningEffort:   cfg.ReasoningEffort,
-			temperature:       cfg.Temperature,
-			routerMetadata:    true,
+			rawLogger:              ctx.RawHTTPLogger,
+			sessionIDProvider:      ctx.SessionIDProvider,
+			reasoningEffort:        cfg.ReasoningEffort,
+			temperature:            cfg.Temperature,
+			routerMetadata:         true,
+			providerManagedContext: apiMode == modelAPIModeResponsesStateful,
 		}), nil
 	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, token, ctx.HTTPClient, opts...), nil
 }
 
 func buildAnthropicModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
-	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
-		return nil, fmt.Errorf("model.api_mode=responses requires an OpenAI-compatible /responses endpoint; configure that endpoint with provider type openai")
+	if apiMode := normalizeModelAPIMode(cfg.APIMode); apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
+		return nil, fmt.Errorf("model.api_mode=%s requires an OpenAI-compatible /responses endpoint; configure that endpoint with provider type openai", apiMode)
 	}
 	token, useBearerAuth := resolveAnthropicToken(cfg.APIKey)
 	if token == "" {
@@ -149,8 +153,8 @@ func buildAnthropicModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, er
 }
 
 func buildOllamaModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
-	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
-		return nil, fmt.Errorf("model.api_mode=responses requires an OpenAI-compatible /responses endpoint; configure that endpoint with provider type openai")
+	if apiMode := normalizeModelAPIMode(cfg.APIMode); apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
+		return nil, fmt.Errorf("model.api_mode=%s requires an OpenAI-compatible /responses endpoint; configure that endpoint with provider type openai", apiMode)
 	}
 	options := []ollama.Option{ollama.WithModel(cfg.Model), ollama.WithHTTPClient(ctx.OllamaHTTPClient)}
 	if cfg.BaseURL != "" {

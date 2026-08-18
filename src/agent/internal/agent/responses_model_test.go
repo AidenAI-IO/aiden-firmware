@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,6 +92,79 @@ func TestResponsesModelSendsStoreFalse(t *testing.T) {
 	}
 }
 
+func TestResponsesStatefulModeChainsOnlyNewItems(t *testing.T) {
+	var requests []struct {
+		Instructions       string               `json:"instructions"`
+		PreviousResponseID string               `json:"previous_response_id"`
+		Input              []responsesInputItem `json:"input"`
+		Store              bool                 `json:"store"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Instructions       string               `json:"instructions"`
+			PreviousResponseID string               `json:"previous_response_id"`
+			Input              []responsesInputItem `json:"input"`
+			Store              bool                 `json:"store"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, request)
+		id := fmt.Sprintf("resp_%d", len(requests))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":%q,"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`, id)
+	}))
+	defer server.Close()
+
+	model := newResponsesModel(server.URL, "test-model", "", server.Client(), responsesModelOptions{providerManagedContext: true}).(*responsesModel)
+	first := []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system guidance"},
+		{Role: messages.MessageRoleUser, Content: "first"},
+	}
+	response, err := model.GenerateContentFromMessageList(context.Background(), first)
+	if err != nil {
+		t.Fatalf("first GenerateContent: %v", err)
+	}
+	assistant := messages.ConvertChoiceToContextManagerMessage(*response.Choices[0])
+	if assistant.ResponsesResponseID != "resp_1" {
+		t.Fatalf("response id = %q, want resp_1", assistant.ResponsesResponseID)
+	}
+	second := append(first, assistant, messages.Message{Role: messages.MessageRoleUser, Content: "second"})
+	if _, err := model.GenerateContentFromMessageList(context.Background(), second); err != nil {
+		t.Fatalf("second GenerateContent: %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if !requests[0].Store || requests[0].PreviousResponseID != "" || requests[0].Instructions != "system guidance" {
+		t.Fatalf("first request = %#v", requests[0])
+	}
+	if !requests[1].Store || requests[1].PreviousResponseID != "resp_1" || requests[1].Instructions != "system guidance" {
+		t.Fatalf("second request metadata = %#v", requests[1])
+	}
+	if len(requests[1].Input) != 1 || requests[1].Input[0].Role != "user" || requests[1].Input[0].Content != "second" {
+		t.Fatalf("second incremental input = %#v", requests[1].Input)
+	}
+}
+
+func TestProviderManagedContextInputUsesLatestResponseAnchor(t *testing.T) {
+	instructions, previousID, input := providerManagedContextInput([]messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "one"},
+		{Role: messages.MessageRoleSystem, Content: "two"},
+		{Role: messages.MessageRoleUser, Content: "old"},
+		{Role: messages.MessageRoleAssistant, Content: "answer", ResponsesResponseID: "resp_old"},
+		{Role: messages.MessageRoleToolResult, ToolResults: []messages.ToolResult{{ToolCallID: "call", Content: "result"}}},
+	})
+	if instructions != "one\n\ntwo" || previousID != "resp_old" {
+		t.Fatalf("instructions=%q previousID=%q", instructions, previousID)
+	}
+	if len(input) != 1 || input[0].Role != messages.MessageRoleToolResult {
+		t.Fatalf("incremental input = %#v", input)
+	}
+}
+
 func TestResponsesModelStreamsTextAndFunctionArguments(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -150,12 +224,19 @@ func TestModelAPIModeValidation(t *testing.T) {
 	if got := normalizeModelAPIMode("responses"); got != modelAPIModeResponses {
 		t.Fatalf("responses mode = %q", got)
 	}
+	if got := normalizeModelAPIMode("responses_stateful"); got != modelAPIModeResponsesStateful {
+		t.Fatalf("responses_stateful mode = %q", got)
+	}
 	cfg := Config{
 		ModelProviders: map[string]ModelProvider{"gateway": {Type: "openai", BaseURL: "https://gateway.example.test/v1"}},
 		Model:          ModelConfig{Provider: "gateway", Model: "test-model", APIMode: "responses"},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() rejected a named OpenAI-compatible endpoint: %v", err)
+	}
+	cfg.Model.APIMode = "responses_stateful"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected stateful named OpenAI-compatible endpoint: %v", err)
 	}
 	if err := (Config{Model: ModelConfig{Provider: "anthropic", Model: "claude-test", APIMode: "responses"}}).Validate(); err == nil || !strings.Contains(err.Error(), "OpenAI-compatible /responses endpoint") {
 		t.Fatalf("Validate() error = %v, want native transport compatibility error", err)
