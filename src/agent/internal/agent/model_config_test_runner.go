@@ -12,6 +12,7 @@ type ModelProviderTestRequest struct {
 	Provider        string
 	APIKey          string
 	Model           string
+	APIMode         string
 	Temperature     *float64
 	ReasoningEffort string
 }
@@ -30,6 +31,9 @@ func RunModelProviderTest(ctx context.Context, cfg Config, req ModelProviderTest
 	}
 
 	if err := applyModelProviderTestRequest(&cfg, req); err != nil {
+		return ModelProviderTestResult{}, err
+	}
+	if err := cfg.Validate(); err != nil {
 		return ModelProviderTestResult{}, err
 	}
 	if strings.TrimSpace(cfg.Model.Provider) == "" {
@@ -57,6 +61,7 @@ func applyModelProviderTestRequest(cfg *Config, req ModelProviderTestRequest) er
 		cfg.Model.APIKey = req.APIKey
 	}
 	cfg.Model.Model = req.Model
+	cfg.Model.APIMode = req.APIMode
 	cfg.Model.BaseURL = ""
 	cfg.Model.Temperature = nil
 	if req.Temperature != nil {

@@ -300,6 +300,28 @@ func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llm
 	return res, err
 }
 
+// GenerateContentFromMessageList forwards provider-specific persisted context
+// through the usage wrapper. Responses models use this to replay opaque
+// reasoning items when store=false; ordinary models retain the standard path.
+func (m *usageTrackingModel) GenerateContentFromMessageList(ctx context.Context, messageList []messages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	inner, ok := m.inner.(interface {
+		GenerateContentFromMessageList(context.Context, []messages.Message, ...llms.CallOption) (*llms.ContentResponse, error)
+	})
+	if !ok {
+		return m.GenerateContent(ctx, messages.ConvertMessageList(messageList), options...)
+	}
+
+	startedAt := time.Now()
+	res, err := inner.GenerateContentFromMessageList(ctx, messageList, options...)
+	if err == nil {
+		recordUsageMetrics(m.metrics, res)
+	}
+	if m.promptCapture != nil {
+		m.promptCapture.Record(ctx, startedAt, time.Now(), messages.ConvertMessageList(messageList), options, res, err, m.contextWindow())
+	}
+	return res, err
+}
+
 func (m *usageTrackingModel) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
 	startedAt := time.Now()
 	out, err := m.inner.Call(ctx, prompt, options...)
