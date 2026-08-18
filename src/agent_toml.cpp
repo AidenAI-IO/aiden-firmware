@@ -324,10 +324,11 @@ void apply_kv(AgentToml& cfg,
             if (!assign_int(&cfg.screen_stable_ms, raw, &sub_err)) fail(sub_err);
         } else if (key == "screen_stable_diff_threshold") {
             if (!assign_double(&cfg.screen_stable_diff_threshold, raw, &sub_err)) fail(sub_err);
-        } else if (key == "default_platform") {
-            if (!assign_string(&cfg.default_platform, raw, &sub_err)) fail(sub_err);
         }
-        // Unknown top-level keys are ignored to remain forward-compatible.
+        // Unknown top-level keys are ignored to remain forward-compatible. This
+        // covers the legacy default_platform key: the agent CLI migrates it onto
+        // [device].device_type when it resolves the config, so config_web never
+        // needs to read or write it back.
         return;
     }
 
@@ -929,7 +930,6 @@ bool save_agent_toml(const char* path, const AgentToml& input, std::string* erro
     if (cfg.screen_stable_timeout_ms != 0) emit_int(out, "screen_stable_timeout_ms", cfg.screen_stable_timeout_ms);
     if (cfg.screen_stable_ms != 0) emit_int(out, "screen_stable_ms", cfg.screen_stable_ms);
     if (cfg.screen_stable_diff_threshold > 0.0) emit_double(out, "screen_stable_diff_threshold", cfg.screen_stable_diff_threshold);
-    if (!cfg.default_platform.empty()) emit_string(out, "default_platform", cfg.default_platform);
     out << "\n";
 
     // Write [model_providers.xxx] sections
