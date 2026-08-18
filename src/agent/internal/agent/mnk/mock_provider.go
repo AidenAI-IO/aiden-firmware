@@ -6,6 +6,7 @@ import "context"
 type MockProvider struct {
 	clicks       []MockClick
 	doubleClicks []MockDoubleClick
+	swipes       []MockDrag
 	drags        []MockDrag
 	keypresses   []MockKeypress
 	moves        []MockMove
@@ -56,6 +57,12 @@ func (m *MockProvider) DoubleClick(ctx context.Context, x, y float64, button str
 	return nil
 }
 
+func (m *MockProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
+	_ = ctx
+	m.swipes = append(m.swipes, MockDrag{Path: path, Button: button})
+	return nil
+}
+
 func (m *MockProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
 	_ = ctx
 	m.drags = append(m.drags, MockDrag{Path: path, Button: button})
@@ -83,6 +90,7 @@ func (m *MockProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 func (m *MockProvider) Reset() {
 	m.clicks = nil
 	m.doubleClicks = nil
+	m.swipes = nil
 	m.drags = nil
 	m.keypresses = nil
 	m.moves = nil

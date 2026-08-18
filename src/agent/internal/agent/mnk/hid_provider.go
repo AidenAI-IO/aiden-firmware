@@ -51,19 +51,20 @@ type HIDProvider struct {
 
 // Default timing values based on iOS/Android HID requirements
 const (
-	defaultTapHoldMs              = 60               // iOS drops faster events
-	defaultSwipeHoldBeforeMs      = 80               // iOS edge gesture recognition
-	defaultSwipeHoldAfterMs       = 0                // Avoid stuck dragged state
-	defaultSwipeDurationMs        = 700              // Low-inertia motion
-	defaultSwipeSteps             = 24               // Smooth interpolation
-	defaultCursorSettleMs         = 80               // iOS cursor animation
-	defaultReleaseRepeatCount     = 3                // USB polling workaround
-	defaultReleaseRepeatDelayMs   = 15               // Delay between releases
-	defaultDoubleClickPauseMs     = 100              // Pause between double-click taps
-	defaultKeyboardTapHoldMs      = 50               // Standard key hold
-	defaultKeyboardModifierHoldMs = 120              // Modifier chord hold
-	absMouseMaxPos                = 32767            // HID absolute coordinate max
-	screenDimensionsStaleAfter    = 30 * time.Second // Max age for cached screen dimensions
+	defaultTapHoldMs                = 60               // iOS drops faster events
+	defaultSwipeHoldBeforeMs        = 80               // iOS edge gesture recognition
+	defaultSwipeHoldAfterMs         = 0                // Avoid stuck dragged state
+	defaultSwipeDurationMs          = 700              // Low-inertia motion
+	defaultSwipeSteps               = 24               // Smooth interpolation
+	defaultSwipeGestureHoldBeforeMs = 0                // Start moving immediately to avoid long-press recognition
+	defaultCursorSettleMs           = 80               // iOS cursor animation
+	defaultReleaseRepeatCount       = 3                // USB polling workaround
+	defaultReleaseRepeatDelayMs     = 15               // Delay between releases
+	defaultDoubleClickPauseMs       = 100              // Pause between double-click taps
+	defaultKeyboardTapHoldMs        = 50               // Standard key hold
+	defaultKeyboardModifierHoldMs   = 120              // Modifier chord hold
+	absMouseMaxPos                  = 32767            // HID absolute coordinate max
+	screenDimensionsStaleAfter      = 30 * time.Second // Max age for cached screen dimensions
 )
 
 // NewHIDProvider creates a new HID-based MNK provider.
@@ -152,11 +153,18 @@ func (p *HIDProvider) DoubleClick(ctx context.Context, x, y float64, button stri
 // Drag performs a gesture along a path of points.
 func (p *HIDProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
 	return runPointerGate(p.gate, ctx, func() error {
-		return p.dragLocked(path, button)
+		return p.dragLockedWithTiming(path, button, p.swipeDurationMs, p.swipeHoldBeforeMs)
 	})
 }
 
-func (p *HIDProvider) dragLocked(path [][2]float64, button string) error {
+// Swipe performs a short gesture without the pre-movement dwell used by Drag.
+func (p *HIDProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
+	return runPointerGate(p.gate, ctx, func() error {
+		return p.dragLockedWithTiming(path, button, defaultSwipeGestureDurationMs, defaultSwipeGestureHoldBeforeMs)
+	})
+}
+
+func (p *HIDProvider) dragLockedWithTiming(path [][2]float64, button string, durationMs, holdBeforeMs int) error {
 	if len(path) < 2 {
 		return InvalidArgumentsf("drag path must contain at least 2 points, got %d", len(path))
 	}
@@ -196,10 +204,12 @@ func (p *HIDProvider) dragLocked(path [][2]float64, button string) error {
 	}
 
 	// Hold before starting movement
-	time.Sleep(time.Duration(p.swipeHoldBeforeMs) * time.Millisecond)
+	if holdBeforeMs > 0 {
+		time.Sleep(time.Duration(holdBeforeMs) * time.Millisecond)
+	}
 
 	// Interpolate and move through each segment
-	if err := p.dragAlongPath(absPath, buttonByte); err != nil {
+	if err := p.dragAlongPath(absPath, buttonByte, durationMs); err != nil {
 		// Attempt to release even if drag failed
 		_ = p.releasePointerRepeated(absPath[len(absPath)-1][0], absPath[len(absPath)-1][1])
 		return err
@@ -216,7 +226,7 @@ func (p *HIDProvider) dragLocked(path [][2]float64, button string) error {
 }
 
 // dragAlongPath interpolates and moves through a multi-point path.
-func (p *HIDProvider) dragAlongPath(absPath [][2]int, buttonByte uint8) error {
+func (p *HIDProvider) dragAlongPath(absPath [][2]int, buttonByte uint8, durationMs int) error {
 	// Calculate total path length for timing distribution
 	totalLength := pathLength(absPath)
 
@@ -234,7 +244,7 @@ func (p *HIDProvider) dragAlongPath(absPath [][2]int, buttonByte uint8) error {
 		if segmentSteps < 1 {
 			segmentSteps = 1
 		}
-		segmentDurationMs := int(math.Round(float64(p.swipeDurationMs) * segmentLength / totalLength))
+		segmentDurationMs := int(math.Round(float64(durationMs) * segmentLength / totalLength))
 
 		// Interpolate along this segment
 		stepDelayMs := 0

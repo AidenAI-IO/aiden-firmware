@@ -67,6 +67,18 @@ func (p *HTTPProvider) DoubleClick(ctx context.Context, x, y float64, button str
 	return p.sendRequest(ctx, req)
 }
 
+// Swipe performs a swipe operation via HTTP.
+func (p *HTTPProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
+	req := MNKRequest{
+		Operation: "swipe",
+		Swipe: &DragParams{
+			Path:   path,
+			Button: button,
+		},
+	}
+	return p.sendRequest(ctx, req)
+}
+
 // Drag performs a drag operation via HTTP
 func (p *HTTPProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
 	req := MNKRequest{
@@ -176,13 +188,14 @@ func (p *HTTPProvider) sendRequest(ctx context.Context, req MNKRequest) error {
 
 // MNKRequest represents an MNK operation request
 type MNKRequest struct {
-	Operation   string              `json:"operation"`
-	Click       *ClickParams        `json:"click,omitempty"`
-	DoubleClick *DoubleClickParams  `json:"double_click,omitempty"`
-	Drag        *DragParams         `json:"drag,omitempty"`
-	Keypress    *KeypressParams     `json:"keypress,omitempty"`
-	Move        *MoveParams         `json:"move,omitempty"`
-	Scroll      *ScrollParams       `json:"scroll,omitempty"`
+	Operation   string             `json:"operation"`
+	Click       *ClickParams       `json:"click,omitempty"`
+	DoubleClick *DoubleClickParams `json:"double_click,omitempty"`
+	Swipe       *DragParams        `json:"swipe,omitempty"`
+	Drag        *DragParams        `json:"drag,omitempty"`
+	Keypress    *KeypressParams    `json:"keypress,omitempty"`
+	Move        *MoveParams        `json:"move,omitempty"`
+	Scroll      *ScrollParams      `json:"scroll,omitempty"`
 }
 
 // ClickParams parameters for click operation

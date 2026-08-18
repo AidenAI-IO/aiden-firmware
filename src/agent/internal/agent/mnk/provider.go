@@ -2,6 +2,8 @@ package mnk
 
 import "context"
 
+const defaultSwipeGestureDurationMs = 300
+
 // Provider defines a minimal set of mouse/keyboard primitives for device input.
 // This interface isolates tools from device-specific implementations (HID, ADB, etc).
 //
@@ -25,6 +27,11 @@ type Provider interface {
 	// DoubleClick performs two clicks in rapid succession.
 	// The pause between clicks is handled by implementation (typically 100ms).
 	DoubleClick(ctx context.Context, x, y float64, button string) error
+
+	// Swipe performs a short gesture along a path of points.
+	// Unlike Drag, Swipe should begin moving immediately and complete quickly
+	// enough to avoid triggering long-press behavior.
+	Swipe(ctx context.Context, path [][2]float64, button string) error
 
 	// Drag performs a gesture along a path of points.
 	// The path is interpolated smoothly with implementation-defined timing and steps.

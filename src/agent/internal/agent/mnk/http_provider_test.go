@@ -1,8 +1,8 @@
 package mnk
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -80,6 +80,21 @@ func TestHTTPProvider(t *testing.T) {
 		dc := mockProvider.doubleClicks[0]
 		if dc.X != 300 || dc.Y != 400 {
 			t.Errorf("expected (300, 400), got (%.0f, %.0f)", dc.X, dc.Y)
+		}
+	})
+
+	t.Run("swipe", func(t *testing.T) {
+		mockProvider.Reset()
+
+		path := [][2]float64{{700, 500}, {300, 500}}
+		if err := httpProvider.Swipe(context.Background(), path, "left"); err != nil {
+			t.Fatalf("Swipe failed: %v", err)
+		}
+		if len(mockProvider.swipes) != 1 {
+			t.Fatalf("expected 1 swipe, got %d", len(mockProvider.swipes))
+		}
+		if mockProvider.swipes[0].Path[0] != path[0] || mockProvider.swipes[0].Path[1] != path[1] {
+			t.Fatalf("swipe path = %#v, want %#v", mockProvider.swipes[0].Path, path)
 		}
 	})
 

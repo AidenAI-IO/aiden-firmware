@@ -87,17 +87,29 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		}
 		return t.handleDoubleTap(ctx, args.Point, button)
 
-	case "swipe", "drag":
+	case "swipe":
 		if args.Start == nil || args.End == nil {
-			return "", InvalidArgumentsf("start and end are required for %s", gestureType)
+			return "", InvalidArguments("start and end are required for swipe")
 		}
 		if samePointerPoint(args.Start, args.End) {
-			return "", InvalidArgumentsf("%s requires distinct start and end points", gestureType)
+			return "", InvalidArguments("swipe requires distinct start and end points")
 		}
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
 		return t.handleSwipe(ctx, args.Start, args.End, button)
+
+	case "drag":
+		if args.Start == nil || args.End == nil {
+			return "", InvalidArguments("start and end are required for drag")
+		}
+		if samePointerPoint(args.Start, args.End) {
+			return "", InvalidArguments("drag requires distinct start and end points")
+		}
+		if err := t.requireProvider(); err != nil {
+			return "", err
+		}
+		return t.handleDrag(ctx, args.Start, args.End, button)
 
 	case "swipe_left", "swipe_right", "swipe_up", "swipe_down":
 		if err := t.requireProvider(); err != nil {
@@ -162,6 +174,17 @@ func (t *TouchGestureToolAdapter) handleDoubleTap(ctx context.Context, point *po
 }
 
 func (t *TouchGestureToolAdapter) handleSwipe(ctx context.Context, start, end *pointerPoint, button string) (string, error) {
+	path := [][2]float64{
+		{start.X.Float64(), start.Y.Float64()},
+		{end.X.Float64(), end.Y.Float64()},
+	}
+	if err := t.provider.Swipe(ctx, path, button); err != nil {
+		return "", WrapExecutionFailed(err)
+	}
+	return "ok", nil
+}
+
+func (t *TouchGestureToolAdapter) handleDrag(ctx context.Context, start, end *pointerPoint, button string) (string, error) {
 	path := [][2]float64{
 		{start.X.Float64(), start.Y.Float64()},
 		{end.X.Float64(), end.Y.Float64()},
@@ -237,7 +260,7 @@ func (t *TouchGestureToolAdapter) handleDirectionalSwipe(ctx context.Context, ge
 		path[i][1] = clampFloat(path[i][1], 0, 1000)
 	}
 
-	if err := t.provider.Drag(ctx, path, button); err != nil {
+	if err := t.provider.Swipe(ctx, path, button); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 	return "ok", nil

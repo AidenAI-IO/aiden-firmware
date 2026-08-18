@@ -143,6 +143,11 @@ func (p *ADBProvider) Drag(ctx context.Context, path [][2]float64, button string
 	return p.dragWithDuration(ctx, path, button, 700)
 }
 
+// Swipe performs a short gesture that avoids Android long-press recognition.
+func (p *ADBProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
+	return p.dragWithDuration(ctx, path, button, defaultSwipeGestureDurationMs)
+}
+
 func (p *ADBProvider) dragWithDuration(ctx context.Context, path [][2]float64, button string, totalDurationMs int) error {
 	if len(path) < 2 {
 		return fmt.Errorf("drag path must contain at least 2 points, got %d", len(path))

@@ -59,6 +59,8 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		execErr = h.handleClick(reqCtx, req.Click)
 	case "double_click":
 		execErr = h.handleDoubleClick(reqCtx, req.DoubleClick)
+	case "swipe":
+		execErr = h.handleSwipe(reqCtx, req.Swipe)
 	case "drag":
 		execErr = h.handleDrag(reqCtx, req.Drag)
 	case "keypress":
@@ -99,6 +101,16 @@ func (h *HTTPHandler) handleDoubleClick(ctx context.Context, params *DoubleClick
 		return InvalidArguments("double_click params required")
 	}
 	return h.provider.DoubleClick(ctx, params.X, params.Y, params.Button)
+}
+
+func (h *HTTPHandler) handleSwipe(ctx context.Context, params *DragParams) error {
+	if params == nil {
+		return InvalidArguments("swipe params required")
+	}
+	if len(params.Path) < 2 {
+		return InvalidArguments("swipe path must contain at least 2 points")
+	}
+	return h.provider.Swipe(ctx, params.Path, params.Button)
 }
 
 func (h *HTTPHandler) handleDrag(ctx context.Context, params *DragParams) error {

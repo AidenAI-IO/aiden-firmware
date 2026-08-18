@@ -133,6 +133,44 @@ func TestADBProviderScrollHorizontalDirection(t *testing.T) {
 	}
 }
 
+func TestADBProviderSeparatesSwipeAndDragDuration(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		perform      func(context.Context, *ADBProvider) error
+		wantDuration string
+	}{
+		{
+			name: "swipe",
+			perform: func(ctx context.Context, provider *ADBProvider) error {
+				return provider.Swipe(ctx, [][2]float64{{700, 500}, {300, 500}}, ButtonLeft)
+			},
+			wantDuration: "300",
+		},
+		{
+			name: "drag",
+			perform: func(ctx context.Context, provider *ADBProvider) error {
+				return provider.Drag(ctx, [][2]float64{{700, 500}, {300, 500}}, ButtonLeft)
+			},
+			wantDuration: "700",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &adbTestRunner{sdk: "31"}
+			provider := newTestADBProvider(t, runner)
+			if err := test.perform(context.Background(), provider); err != nil {
+				t.Fatalf("gesture failed: %v", err)
+			}
+			if len(runner.commands) != 2 {
+				t.Fatalf("commands = %#v, want wm size and swipe", runner.commands)
+			}
+			command := runner.commands[1]
+			if got := command[len(command)-1]; got != test.wantDuration {
+				t.Fatalf("duration = %s, want %s; command = %#v", got, test.wantDuration, command)
+			}
+		})
+	}
+}
+
 func stringSliceEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
