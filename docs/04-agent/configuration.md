@@ -69,6 +69,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, playback_backend
+- `quick_capture`: enabled, GPIO trigger pin, Screen Memory retention period
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
 - `log`: LLM HTTP log retention
 - `device`: device_type

@@ -93,6 +93,12 @@ struct AudioArchiveToml {
     std::string storage_path = "/userdata/audio";
 };
 
+struct QuickCaptureToml {
+    bool enabled = true;
+    int gpio_pin = 0;
+    std::string screen_memory_ttl = "90d";
+};
+
 struct VoiceNotificationResponseTailToml {
     bool enabled = true;
     int max_items = 1;
@@ -178,6 +184,7 @@ struct AgentToml {
     STTToml stt;
     AudioToml audio;
     AudioArchiveToml audio_archive;
+    QuickCaptureToml quick_capture;
     VoiceNotificationsToml voice_notifications;
     LogToml log;
     OTAToml ota;

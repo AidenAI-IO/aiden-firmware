@@ -384,6 +384,11 @@ void apply_kv(AgentToml& cfg,
         else if (key == "max_size_mb") assign_int(&cfg.audio_archive.max_size_mb, raw, &sub_err);
         else if (key == "storage_path") assign_string(&cfg.audio_archive.storage_path, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "quick_capture") {
+        if (key == "enabled") assign_bool(&cfg.quick_capture.enabled, raw, &sub_err);
+        else if (key == "gpio_pin") assign_non_negative_int(&cfg.quick_capture.gpio_pin, raw, &sub_err);
+        else if (key == "screen_memory_ttl") assign_string(&cfg.quick_capture.screen_memory_ttl, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     } else if (section == "voice_notifications") {
         if (key == "enabled") assign_bool(&cfg.voice_notifications.enabled, raw, &sub_err);
         else if (key == "max_pending") assign_non_negative_int(&cfg.voice_notifications.max_pending, raw, &sub_err);
@@ -1044,6 +1049,12 @@ bool save_agent_toml(const char* path, const AgentToml& input, std::string* erro
     if (cfg.audio_archive.max_files != 0) emit_int(out, "max_files", cfg.audio_archive.max_files);
     if (cfg.audio_archive.max_size_mb != 0) emit_int(out, "max_size_mb", cfg.audio_archive.max_size_mb);
     emit_string(out, "storage_path", cfg.audio_archive.storage_path);
+    out << "\n";
+
+    out << "[quick_capture]\n";
+    emit_bool(out, "enabled", cfg.quick_capture.enabled);
+    if (cfg.quick_capture.gpio_pin != 0) emit_int(out, "gpio_pin", cfg.quick_capture.gpio_pin);
+    if (!cfg.quick_capture.screen_memory_ttl.empty()) emit_string(out, "screen_memory_ttl", cfg.quick_capture.screen_memory_ttl);
     out << "\n";
 
     out << "[voice_notifications]\n";

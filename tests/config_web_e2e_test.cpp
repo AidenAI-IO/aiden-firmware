@@ -232,6 +232,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
+        "\"quick_capture\":{\"enabled\":true,\"gpio_pin\":3,\"screen_memory_ttl\":\"90d\"},"
         "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
         "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
         "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"storage\":900}}},"
@@ -931,6 +932,12 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     REQUIRE(voice_notifications != nullptr);
     CHECK(cJSON_GetObjectItem(voice_notifications, "default_locale") == nullptr);
     CHECK(required_json_int(voice_notifications, "max_pending") == 8);
+
+    cJSON* quick_capture = cJSON_GetObjectItem(config, "quick_capture");
+    REQUIRE(quick_capture != nullptr);
+    CHECK((cJSON_GetObjectItem(quick_capture, "enabled")->type & 0xff) == cJSON_True);
+    CHECK(required_json_int(quick_capture, "gpio_pin") == 3);
+    CHECK(required_json_string(quick_capture, "screen_memory_ttl") == "90d");
     cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
     REQUIRE(response_tail != nullptr);
     CHECK(required_json_int(response_tail, "max_text_chars") == 40);
@@ -1171,6 +1178,46 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("max_files = 123") != std::string::npos);
     CHECK(saved.find("max_size_mb = 45") != std::string::npos);
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config writes and preserves quick_capture section") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    std::string resolved = resolved_config_json("duckduckgo", false);
+    resolved = replace_all(
+        resolved,
+        "\"quick_capture\":{\"enabled\":true,\"gpio_pin\":3,\"screen_memory_ttl\":\"90d\"}",
+        "\"quick_capture\":{\"enabled\":false,\"gpio_pin\":3,\"screen_memory_ttl\":\"14d\"}");
+    write_file(tmp + "/config.json", resolved);
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"quick_capture\":{\"enabled\":false,\"gpio_pin\":3,"
+        "\"screen_memory_ttl\":\"14d\"}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[quick_capture]") != std::string::npos);
+    CHECK(saved.find("enabled = false") != std::string::npos);
+    CHECK(saved.find("gpio_pin = 3") != std::string::npos);
+    CHECK(saved.find("screen_memory_ttl = \"14d\"") != std::string::npos);
+
+    HttpResponse unrelated = http_request(
+        handle->port, "POST", "/api/config",
+        "{\"config\":{\"agent\":{\"max_iterations\":4}},\"apply_wifi\":false}");
+    REQUIRE(unrelated.status == 200);
+    const std::string saved_again = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved_again.find("[quick_capture]") != std::string::npos);
+    CHECK(saved_again.find("enabled = false") != std::string::npos);
+    CHECK(saved_again.find("gpio_pin = 3") != std::string::npos);
+    CHECK(saved_again.find("screen_memory_ttl = \"14d\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config ignores model base_url for every provider") {

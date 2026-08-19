@@ -112,7 +112,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		t.Errorf("expected device section first, got %q", ConfigMeta().Sections[0].Name)
 	}
 
-	for _, name := range []string{"device", "model", "tts", "stt", "audio", "audio_archive", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
+	for _, name := range []string{"device", "model", "tts", "stt", "audio", "audio_archive", "quick_capture", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -399,6 +399,9 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
 		{"audio_archive.storage_path", defaults.AudioArchive.StoragePathOrDefault()},
+		{"quick_capture.enabled", defaults.QuickCapture.EnabledOrDefault()},
+		{"quick_capture.gpio_pin", defaults.QuickCapture.GPIOPin},
+		{"quick_capture.screen_memory_ttl", defaults.QuickCapture.ScreenMemoryTTLOrDefault()},
 		{"device.device_type", defaults.Device.DeviceTypeOrDefault()},
 		{"log.llm_http_retention_days", defaults.Log.LLMHTTPRetentionDaysOrDefault()},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
@@ -706,6 +709,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"stt", reflect.TypeOf(STTConfig{}), nil},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
 		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},
+		{"quick_capture", reflect.TypeOf(QuickCaptureConfig{}), nil},
 		{"device", reflect.TypeOf(DeviceConfig{}), map[string]bool{"backend": true}},
 		{"hid", reflect.TypeOf(HIDConfig{}), map[string]bool{"pointer_mode": true}},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},

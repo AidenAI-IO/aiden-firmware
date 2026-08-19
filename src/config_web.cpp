@@ -1910,7 +1910,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model_providers", "tts_providers", "stt_providers", "model",
-        "tts", "stt", "audio", "audio_archive", "storage",
+        "tts", "stt", "audio", "audio_archive", "quick_capture", "storage",
         "voice_notifications", "log", "ota", "device", "hid", "search", "telemetry",
         "termination_policy", "live_activity", "agent", NULL,
     };
@@ -2937,6 +2937,11 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(audio_archive, "max_files", config.audio_archive.max_files);
     cJSON_AddNumberToObject(audio_archive, "max_size_mb", config.audio_archive.max_size_mb);
 
+    cJSON* quick_capture = add_object(root, "quick_capture");
+    cJSON_AddBoolToObject(quick_capture, "enabled", config.quick_capture.enabled ? 1 : 0);
+    cJSON_AddNumberToObject(quick_capture, "gpio_pin", config.quick_capture.gpio_pin);
+    cJSON_AddStringToObject(quick_capture, "screen_memory_ttl", config.quick_capture.screen_memory_ttl.c_str());
+
     cJSON* voice_notifications = add_object(root, "voice_notifications");
     cJSON_AddBoolToObject(voice_notifications, "enabled", config.voice_notifications.enabled ? 1 : 0);
     cJSON_AddNumberToObject(voice_notifications, "max_pending", config.voice_notifications.max_pending);
@@ -3451,6 +3456,13 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->audio_archive.storage_path, audio_archive, "storage_path");
         set_json_int(&config->audio_archive.max_files, audio_archive, "max_files");
         set_json_int(&config->audio_archive.max_size_mb, audio_archive, "max_size_mb");
+    }
+
+    cJSON* quick_capture = cJSON_GetObjectItem(root, "quick_capture");
+    if (json_is_object(quick_capture)) {
+        set_json_bool(&config->quick_capture.enabled, quick_capture, "enabled");
+        set_json_int(&config->quick_capture.gpio_pin, quick_capture, "gpio_pin");
+        set_json_str(&config->quick_capture.screen_memory_ttl, quick_capture, "screen_memory_ttl");
     }
 
     cJSON* voice_notifications = cJSON_GetObjectItem(root, "voice_notifications");
