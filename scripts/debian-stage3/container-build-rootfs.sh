@@ -78,11 +78,23 @@ EOF
     chroot "${ROOTFS_DIR}" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 \
         dpkg --configure -a
-    chroot "${ROOTFS_DIR}" getent group netdev >/dev/null \
-        || chroot "${ROOTFS_DIR}" groupadd --system netdev
+    for group in audio video dialout plugdev netdev; do
+        chroot "${ROOTFS_DIR}" getent group "${group}" >/dev/null \
+            || chroot "${ROOTFS_DIR}" groupadd --system "${group}"
+    done
+    chroot "${ROOTFS_DIR}" getent group aiden >/dev/null \
+        || chroot "${ROOTFS_DIR}" groupadd --gid 1000 aiden
+    chroot "${ROOTFS_DIR}" getent passwd aiden >/dev/null \
+        || chroot "${ROOTFS_DIR}" useradd --uid 1000 --gid aiden --create-home \
+            --shell /bin/bash --groups audio,video,dialout,plugdev,netdev aiden
+    # A fixed SHA-512 crypt hash keeps the factory rootfs reproducible. Root
+    # remains key-only even though ordinary-user password SSH is enabled.
+    chroot "${ROOTFS_DIR}" usermod -p \
+        '$6$aiden$mgLNEH35w8GS9UrV1Yi4BXg1g.CYyVIAnUAXIXmato37U4M5obgDhGY2YhpIwHd7sNCtBq/uB.5oEk8jHPNYZ.' \
+        aiden
 
     # Keep the root account enabled for public-key SSH while making password
-    # verification impossible. PasswordAuthentication is disabled separately.
+    # verification impossible. sshd separately prohibits root passwords.
     chroot "${ROOTFS_DIR}" usermod -p x root
     rm -f "${ROOTFS_DIR}/usr/sbin/policy-rc.d" \
         "${ROOTFS_DIR}/tmp/debian-stage3-packages.list"

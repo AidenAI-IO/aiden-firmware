@@ -6,8 +6,8 @@ readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 readonly STAGE2_OUTPUT=${DEBIAN_STAGE2_OUTPUT_DIR:-${REPO_ROOT}/output/debian-stage2}
 readonly BUNDLE_DIR=${DEBIAN_STAGE2_G0_OUTPUT_DIR:-${STAGE2_OUTPUT}/board-g0}
 readonly ARCHIVE=${BUNDLE_DIR}/debian-stage2-g0.tar.gz
-readonly BOARD_TARGET=${AIDEN_G0_BOARD_TARGET:-luckfox@192.168.76.153}
-readonly REMOTE_DIR=${AIDEN_G0_REMOTE_DIR:-/home/luckfox/debian-stage2-g0}
+readonly BOARD_TARGET=${AIDEN_G0_BOARD_TARGET:-aiden@192.168.76.153}
+readonly REMOTE_DIR=${AIDEN_G0_REMOTE_DIR:-/home/aiden/debian-stage2-g0}
 readonly LOCAL_RESULTS=${AIDEN_G0_LOCAL_RESULTS_DIR:-${BUNDLE_DIR}/board-results}
 readonly SSH_BIN=${SSH_BIN:-ssh}
 readonly SCP_BIN=${SCP_BIN:-scp}
@@ -40,7 +40,7 @@ Required explicit gates:
   AIDEN_G0_ALLOW_STRESS=1                for stress
 
 Connection/configuration:
-  AIDEN_G0_BOARD_TARGET       SSH target (default: luckfox@192.168.76.153).
+  AIDEN_G0_BOARD_TARGET       SSH target (default: aiden@192.168.76.153).
   AIDEN_G0_SSH_PORT           SSH port (default: 22).
   AIDEN_G0_REMOTE_DIR         Must be /home/*/debian-stage2-g0 or /tmp/debian-stage2-g0.
   AIDEN_G0_RKNN_FRAMES        Benchmark frames passed to the remote runner.

@@ -38,7 +38,6 @@ readonly -a APP_PAYLOAD=(
     bin/rknn_vad
     bin/trigger
     lib/librga.so.2.1.0
-    lib/librknnrt.so
 )
 
 usage() {
@@ -47,8 +46,8 @@ Usage: scripts/debian-stage2/prepare-board-g0.sh [bundle|verify]
 
 Create or verify the non-destructive Stage 2 physical-board G0 payload. This
 script never contacts a board. The bundle contains the audited Debian/glibc
-C/C++ executables, RGA and official RKNN 2.3.2 runtimes, the two pinned VAD
-model files, and the Stage 3 media-module loader.
+C/C++ executables, RGA, the statically linked official RKNN mini runtime, the
+two pinned VAD model files, and the Stage 3 media-module loader.
 
 Environment:
   DEBIAN_STAGE2_OUTPUT_DIR     Stage 2 build output.

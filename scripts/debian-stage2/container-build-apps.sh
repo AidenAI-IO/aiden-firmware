@@ -9,6 +9,8 @@ readonly DIST_DIR=${OUTPUT_DIR}/apps
 readonly JOBS=${RK_JOBS:-$(getconf _NPROCESSORS_ONLN)}
 readonly VENDOR_LIB_DIR=${REPO_ROOT}/pico-sdk/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-glibc-rockchip/usr/lib
 readonly RKNN_ROOT=${REPO_ROOT}/third_party/rknpu2/v2.3.2
+readonly RKNN_MICRO_ARCHIVE=${RKNN_ROOT}/lib/librknnmrt.a
+readonly RKNN_MICRO_ARCHIVE_SHA256=2cc37ceb72648411970b74d70918d09a337c8463ff8ecbc627691c974c9d9362
 readonly GO_VERSION=go1.26.0
 readonly SOURCE_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
 
@@ -16,6 +18,25 @@ if [ ! -f "${OPENCV_DIR}/OpenCVConfig.cmake" ]; then
     echo "Missing Debian OpenCV-Mobile build: ${OPENCV_DIR}" >&2
     exit 1
 fi
+
+[ -f "${RKNN_MICRO_ARCHIVE}" ] || {
+    echo "Missing Debian RKNN mini-runtime archive: ${RKNN_MICRO_ARCHIVE}" >&2
+    exit 1
+}
+[ "$(stat -c %s "${RKNN_MICRO_ARCHIVE}")" = 315362 ] || {
+    echo "Unexpected RKNN mini-runtime archive size" >&2
+    exit 1
+}
+[ "$(sha256sum "${RKNN_MICRO_ARCHIVE}" | awk '{print $1}')" = "${RKNN_MICRO_ARCHIVE_SHA256}" ] || {
+    echo "RKNN mini-runtime archive checksum mismatch" >&2
+    exit 1
+}
+grep -aF \
+    'librknnmrt version: 2.3.2 (429f97ae6b@2025-04-09T09:11:49)' \
+    "${RKNN_MICRO_ARCHIVE}" >/dev/null || {
+    echo "Unexpected RKNN mini-runtime archive version" >&2
+    exit 1
+}
 
 rm -rf "${BUILD_DIR}" "${DIST_DIR}"
 mkdir -p "${BUILD_DIR}" "${DIST_DIR}/bin" "${DIST_DIR}/lib" \
@@ -77,8 +98,6 @@ install -m 0644 "${VENDOR_LIB_DIR}/librga.so.2.1.0" \
     "${DIST_DIR}/lib/librga.so.2.1.0"
 ln -s librga.so.2.1.0 "${DIST_DIR}/lib/librga.so.2"
 ln -s librga.so.2 "${DIST_DIR}/lib/librga.so"
-install -m 0644 "${RKNN_ROOT}/lib/librknnrt.so" \
-    "${DIST_DIR}/lib/librknnrt.so"
 
 arm-linux-gnueabihf-gcc --version >"${DIST_DIR}/metadata/compiler.txt"
 cmake --version >"${DIST_DIR}/metadata/cmake.txt"
@@ -103,6 +122,6 @@ cp "${BUILD_DIR}/CMakeCache.txt" "${DIST_DIR}/metadata/CMakeCache.txt"
 sha256sum "${VENDOR_LIB_DIR}/librockit.a" \
     "${VENDOR_LIB_DIR}/librockchip_mpp.a" \
     "${VENDOR_LIB_DIR}/librga.so.2.1.0" \
-    "${RKNN_ROOT}/lib/librknnrt.so" \
+    "${RKNN_MICRO_ARCHIVE}" \
     "${OUTPUT_DIR}"/opencv-mobile/lib/libopencv_*.a \
     >"${DIST_DIR}/metadata/dependency-sha256.txt"

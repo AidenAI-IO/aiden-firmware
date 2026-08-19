@@ -24,6 +24,11 @@ for stage2_script in "${stage2_scripts[@]}"; do
     bash -n "${stage2_script}"
 done
 
+grep -Fq 'aiden@192.168.76.153' "${STAGE2_DIR}/run-board-g0.sh"
+grep -Fq '/home/aiden/debian-stage2-g0' "${STAGE2_DIR}/run-board-g0.sh"
+grep -Fq 'volatile sig_atomic_t quit' "${REPO_ROOT}/src/example_audio_capture.cpp"
+grep -Fq 'signal(SIGTERM, signal_handler)' "${REPO_ROOT}/src/example_audio_capture.cpp"
+
 grep -Fq 'chown "${SUDO_UID}:${SUDO_GID}" "${RESULTS_ROOT}"' \
     "${STAGE2_DIR}/board-g0-remote.sh"
 
@@ -113,13 +118,15 @@ touch \
     "${apps_dir}/bin/frame_service" \
     "${apps_dir}/bin/ota" \
     "${apps_dir}/bin/rknn_vad" \
-    "${apps_dir}/lib/librga.so.2.1.0" \
-    "${apps_dir}/lib/librknnrt.so"
+    "${apps_dir}/lib/librga.so.2.1.0"
 chmod +x \
     "${apps_dir}/bin/abctl" \
     "${apps_dir}/bin/agent" \
     "${apps_dir}/bin/ble_service" \
     "${apps_dir}/bin/ota"
+printf '%s\n' \
+    'librknnmrt version: 2.3.2 (429f97ae6b@2025-04-09T09:11:49)' \
+    >"${apps_dir}/bin/rknn_vad"
 ln -s librga.so.2.1.0 "${apps_dir}/lib/librga.so.2"
 ln -s librga.so.2 "${apps_dir}/lib/librga.so"
 
@@ -154,7 +161,7 @@ case "${mode}" in
         printf ' 0x0000001d (RUNPATH) Library runpath: [%s]\n' "${runpath}"
     fi
     if [[ "${file}" == */bin/rknn_vad ]]; then
-        printf ' 0x00000001 (NEEDED) Shared library: [librknnrt.so]\n'
+        printf ' 0x00000001 (NEEDED) Shared library: [libc.so.6]\n'
     elif [ "${MOCK_OPENCV_NEEDED:-0}" = 1 ] && [[ "${file}" == */bin/frame_service ]]; then
         printf ' 0x00000001 (NEEDED) Shared library: [libopencv_core.so.413]\n'
     elif [ "${MOCK_UCLIBC_NEEDED:-0}" = 1 ] && [[ "${file}" == */bin/frame_service ]]; then
@@ -194,6 +201,26 @@ case "${mode}" in
         printf '     1: 00000000     0 FUNC    GLOBAL DEFAULT  UND %s\n' "${symbol}"
     done
     ;;
+--syms)
+    symbols=(
+        __ctype_b
+        __ctype_tolower
+        aiden_rknn_glibc_compat_init
+        rknn_create_mem
+        rknn_destroy
+        rknn_destroy_mem
+        rknn_init
+        rknn_query
+        rknn_run
+        rknn_set_io_mem
+    )
+    for symbol in "${symbols[@]}"; do
+        if [ "${MOCK_MISSING_RKNN_SYMBOL:-}" = "${symbol}" ]; then
+            continue
+        fi
+        printf '     1: 00000000     0 FUNC    GLOBAL DEFAULT    1 %s\n' "${symbol}"
+    done
+    ;;
 *)
     exit 2
     ;;
@@ -218,12 +245,13 @@ expect_audit_failure() {
 
 run_audit "${TEST_ROOT}/report-pass"
 grep -qx 'status=pass' "${TEST_ROOT}/report-pass/summary.txt"
-grep -qx 'elf_count=8' "${TEST_ROOT}/report-pass/summary.txt"
+grep -qx 'elf_count=7' "${TEST_ROOT}/report-pass/summary.txt"
 
 expect_audit_failure bad-runpath MOCK_BAD_RUNPATH=1
 expect_audit_failure opencv-needed MOCK_OPENCV_NEEDED=1
 expect_audit_failure uclibc-needed MOCK_UCLIBC_NEEDED=1
 expect_audit_failure missing-mpp-symbol MOCK_MISSING_MPP_SYMBOL=mpp_init
+expect_audit_failure missing-rknn-symbol MOCK_MISSING_RKNN_SYMBOL=__ctype_tolower
 
 ln -snf missing-rga.so "${apps_dir}/lib/librga.so.2"
 expect_audit_failure dangling-rga
@@ -257,7 +285,6 @@ bundle_payload=(
     bin/rknn_vad
     bin/trigger
     lib/librga.so.2.1.0
-    lib/librknnrt.so
 )
 printf 'kind\tsha256\tbytes\tmachine\thard_float\tinterpreter\trunpath\tneeded\tpath\n' \
     >"${bundle_audit}/elf-audit.tsv"
@@ -272,7 +299,7 @@ done
 chmod +x "${bundle_apps}/bin/"*
 ln -s librga.so.2.1.0 "${bundle_apps}/lib/librga.so.2"
 ln -s librga.so.2 "${bundle_apps}/lib/librga.so"
-printf 'status=pass\nelf_count=19\n' >"${bundle_audit}/summary.txt"
+printf 'status=pass\nelf_count=18\n' >"${bundle_audit}/summary.txt"
 
 help_bundle_dir=${TEST_ROOT}/bundle-help
 DEBIAN_STAGE2_OUTPUT_DIR="${bundle_output}" \
