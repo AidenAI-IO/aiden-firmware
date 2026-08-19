@@ -1,4 +1,4 @@
-.PHONY: all configure build clean test test-clean sandbox-start sandbox-start-cached sandbox-update sandbox-logs sandbox-stop
+.PHONY: all configure build clean test test-clean sandbox-start sandbox-logs sandbox-stop
 
 BUILD_DIR := build
 TEST_BUILD_DIR := build-host
@@ -28,12 +28,6 @@ clean:
 
 sandbox-start:
 	./scripts/start_docker_sandbox.sh
-
-# Kept as an alias: sandbox-start already rebuilds from the current source.
-sandbox-update: sandbox-start
-
-sandbox-start-cached:
-	./scripts/start_docker_sandbox.sh --no-build
 
 sandbox-logs:
 	docker compose logs -f aiden

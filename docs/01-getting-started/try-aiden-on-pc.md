@@ -76,14 +76,7 @@ docker compose logs -f
 ```
 
 After changing Aiden source code, run `make sandbox-start` again to rebuild the
-image and replace the running container. `make sandbox-update` remains as an
-alias for the same behaviour.
-
-To skip the build and reuse whatever image already exists, run:
-
-```bash
-make sandbox-start-cached
-```
+image and replace the running container.
 
 Starting the sandbox preserves the `aiden-data` volume. Use `make sandbox-logs`
 to follow the Agent logs and `make sandbox-stop` to stop the sandbox.

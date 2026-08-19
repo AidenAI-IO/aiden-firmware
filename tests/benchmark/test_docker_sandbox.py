@@ -60,7 +60,7 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn('device_type = "iOS"', config)
         self.assertNotIn("api_key", config)
 
-    def test_start_and_update_targets_share_health_checked_startup(self):
+    def test_start_target_has_health_checked_startup(self):
         start_script = read_repo_file("scripts/start_docker_sandbox.sh")
         makefile = read_repo_file("Makefile")
 
@@ -71,11 +71,9 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("sandbox-start:", makefile)
         self.assertIn("./scripts/start_docker_sandbox.sh", makefile)
         self.assertNotIn("down -v", start_script)
-        self.assertIn("sandbox-update:", makefile)
-        self.assertIn("./scripts/start_docker_sandbox.sh --no-build", makefile)
 
-    def run_start_script(self, *arguments: str) -> list[str]:
-        """Run the start script against a fake docker and return its `up` args."""
+    def test_starting_the_sandbox_always_rebuilds_the_image(self):
+        """The started sandbox must run the working tree, never a stale image."""
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -97,7 +95,7 @@ class DockerSandboxContractTest(unittest.TestCase):
             environment["PATH"] = f"{temporary_path}{os.pathsep}{environment['PATH']}"
             environment["AIDEN_FAKE_DOCKER_LOG"] = str(invocations)
             completed = subprocess.run(
-                [str(REPO_ROOT / "scripts/start_docker_sandbox.sh"), *arguments],
+                [str(REPO_ROOT / "scripts/start_docker_sandbox.sh")],
                 env=environment,
                 capture_output=True,
                 text=True,
@@ -110,23 +108,7 @@ class DockerSandboxContractTest(unittest.TestCase):
                 if line.startswith("compose up")
             ]
             self.assertEqual(len(up_commands), 1, invocations.read_text())
-            return up_commands[0].split()
-
-    def test_starting_the_sandbox_rebuilds_the_image_by_default(self):
-        self.assertIn("--build", self.run_start_script())
-
-    def test_no_build_reuses_the_existing_sandbox_image(self):
-        self.assertNotIn("--build", self.run_start_script("--no-build"))
-
-    def test_start_script_rejects_unknown_arguments(self):
-        completed = subprocess.run(
-            [str(REPO_ROOT / "scripts/start_docker_sandbox.sh"), "--build"],
-            capture_output=True,
-            text=True,
-        )
-
-        self.assertEqual(completed.returncode, 2)
-        self.assertIn("--no-build", completed.stderr)
+            self.assertIn("--build", up_commands[0].split())
 
     def test_try_aiden_on_pc_is_the_hardware_free_sandbox_entrypoint(self):
         guide = read_repo_file("docs/01-getting-started/try-aiden-on-pc.md")
@@ -134,7 +116,7 @@ class DockerSandboxContractTest(unittest.TestCase):
 
         self.assertIn("docker compose up --build", guide)
         self.assertIn("make sandbox-start", guide)
-        self.assertIn("make sandbox-update", guide)
+        self.assertNotIn("make sandbox-update", guide)
         self.assertIn(
             "AIDEN_BRIDGE_EPISODE_ID=my-sandbox-session", guide
         )
