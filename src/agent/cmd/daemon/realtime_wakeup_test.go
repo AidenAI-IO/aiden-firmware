@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/agent/rtclient"
 )
 
 type fakeRealtimePlaybackAudio struct {
@@ -39,18 +42,25 @@ func (f *fakeRealtimePlaybackAudio) StopPlayback(sessionID uint64) error {
 	return nil
 }
 
-func TestRealtimePlaybackInterruptStopsDrainAndSuppressesStaleDeltas(t *testing.T) {
+func TestRealtimePlaybackStaysOpenAcrossResponsesAndInterrupts(t *testing.T) {
 	audio := &fakeRealtimePlaybackAudio{}
 	playback := realtimePlaybackState{}
 	format := agent.AudioFormat{SampleRate: 24000, Channels: 1, BitWidth: 16}
 
+	if err := playback.open(audio, format); err != nil {
+		t.Fatal(err)
+	}
 	if err := playback.append(audio, format, []byte{1, 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := playback.finalize(audio); err != nil {
+	if err := playback.beginResponse(audio, format); err != nil {
 		t.Fatal(err)
 	}
-	if err := playback.interrupt(audio); err != nil {
+	if audio.starts != 1 {
+		t.Fatalf("playback starts = %d, want one persistent session", audio.starts)
+	}
+
+	if err := playback.interrupt(audio, format); err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,17 +70,105 @@ func TestRealtimePlaybackInterruptStopsDrainAndSuppressesStaleDeltas(t *testing.
 	if err := playback.append(audio, format, []byte{3, 4}); err != nil {
 		t.Fatal(err)
 	}
-	if audio.starts != 1 {
-		t.Fatalf("playback starts = %d, want stale delta suppressed", audio.starts)
+	if audio.starts != 2 || len(audio.writes) != 1 {
+		t.Fatalf("after stale delta: starts=%d writes=%d, want starts=2 writes=1", audio.starts, len(audio.writes))
 	}
 
-	if err := playback.beginResponse(audio); err != nil {
+	if err := playback.beginResponse(audio, format); err != nil {
 		t.Fatal(err)
 	}
 	if err := playback.append(audio, format, []byte{5, 6}); err != nil {
 		t.Fatal(err)
 	}
 	if audio.starts != 2 {
-		t.Fatalf("playback starts = %d, want next response to start playback", audio.starts)
+		t.Fatalf("playback starts = %d, want one restart after interruption", audio.starts)
 	}
+	for _, write := range audio.writes {
+		if write.final {
+			t.Fatalf("persistent realtime playback sent final write: %#v", write)
+		}
+	}
+}
+
+func TestRealtimePlaybackOutputFormatUsesConfiguredDeviceFormat(t *testing.T) {
+	format := realtimePlaybackOutputFormat(agent.Config{Audio: agent.AudioConfig{
+		SampleRate: 16000,
+		Channels:   1,
+		BitWidth:   16,
+	}})
+	if format.SampleRate != 16000 || format.Channels != 1 || format.BitWidth != 16 {
+		t.Fatalf("format = %+v, want pcm/16000/mono/16", format)
+	}
+}
+
+type fakeRealtimeEventSource struct {
+	events chan rtclient.Event
+	errs   chan error
+	done   chan struct{}
+}
+
+func (f *fakeRealtimeEventSource) Events() <-chan rtclient.Event { return f.events }
+func (f *fakeRealtimeEventSource) Errors() <-chan error          { return f.errs }
+func (f *fakeRealtimeEventSource) Done() <-chan struct{}         { return f.done }
+
+func TestWaitForRealtimeEventIgnoresEarlierEvents(t *testing.T) {
+	source := &fakeRealtimeEventSource{
+		events: make(chan rtclient.Event, 2),
+		errs:   make(chan error),
+		done:   make(chan struct{}),
+	}
+	source.events <- rtclient.Event{Type: "session.created"}
+	source.events <- rtclient.Event{Type: "session.updated"}
+
+	if err := waitForRealtimeEvent(context.Background(), source, nil, "session.updated", time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWaitForRealtimeEventTimesOut(t *testing.T) {
+	source := &fakeRealtimeEventSource{
+		events: make(chan rtclient.Event),
+		errs:   make(chan error),
+		done:   make(chan struct{}),
+	}
+
+	if err := waitForRealtimeEvent(context.Background(), source, nil, "session.updated", time.Millisecond); err == nil {
+		t.Fatal("expected timeout")
+	}
+}
+
+func TestRealtimeChatBridgeQueuesOnlyWhenSessionActive(t *testing.T) {
+	bridge := newRealtimeChatBridge()
+	if _, err := bridge.Handle(context.Background(), agent.RealtimeChatRequest{Message: "hello"}); err == nil {
+		t.Fatal("expected inactive bridge to reject request")
+	}
+
+	bridge.activate()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events, err := bridge.Handle(ctx, agent.RealtimeChatRequest{RequestID: "req-1", Message: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case command := <-bridge.commands:
+		if command.request.Message != "hello" || command.request.RequestID != "req-1" {
+			t.Fatalf("queued request = %+v", command.request)
+		}
+		if !sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventDone, Response: "hi"}) {
+			t.Fatal("failed to deliver bridge response")
+		}
+		close(command.events)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for queued request")
+	}
+	select {
+	case event := <-events:
+		if event.Type != agent.RealtimeChatEventDone || event.Response != "hi" {
+			t.Fatalf("event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for bridge response")
+	}
+	bridge.deactivate()
 }

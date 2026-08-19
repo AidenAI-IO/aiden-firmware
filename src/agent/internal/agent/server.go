@@ -96,6 +96,8 @@ type Server struct {
 	steersMu                sync.Mutex
 	eventBroadcaster        *EventBroadcaster
 	storageMonitor          *StorageMonitor
+	realtimeChatMu          sync.RWMutex
+	realtimeChatHandler     RealtimeChatHandler
 }
 
 type webAudioRecording struct {
@@ -284,6 +286,33 @@ type ChatRequest struct {
 	PhoneID     string              `json:"phone_id,omitempty"`
 }
 
+// RealtimeChatRequest is the text-only request forwarded to an active
+// realtime voice session.
+type RealtimeChatRequest struct {
+	RequestID string
+	Message   string
+}
+
+// RealtimeChatEvent is emitted by a realtime chat handler. Delta events are
+// streamed to clients; done contains the complete response; error terminates
+// the request with an error message.
+type RealtimeChatEvent struct {
+	Type     string
+	Delta    string
+	Response string
+	Error    string
+}
+
+const (
+	RealtimeChatEventDelta = "delta"
+	RealtimeChatEventDone  = "done"
+	RealtimeChatEventError = "error"
+)
+
+// RealtimeChatHandler submits text to the currently active realtime session.
+// The returned channel is closed after a done or error event.
+type RealtimeChatHandler func(context.Context, RealtimeChatRequest) (<-chan RealtimeChatEvent, error)
+
 type ChatCancelRequest struct {
 	RequestID string `json:"request_id"`
 }
@@ -470,6 +499,26 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	})
 
 	return s
+}
+
+// SetRealtimeChatHandler installs the text bridge used while the realtime
+// voice session is active. Passing nil disables the bridge.
+func (s *Server) SetRealtimeChatHandler(handler RealtimeChatHandler) {
+	if s == nil {
+		return
+	}
+	s.realtimeChatMu.Lock()
+	s.realtimeChatHandler = handler
+	s.realtimeChatMu.Unlock()
+}
+
+func (s *Server) realtimeChatHandlerSnapshot() RealtimeChatHandler {
+	if s == nil {
+		return nil
+	}
+	s.realtimeChatMu.RLock()
+	defer s.realtimeChatMu.RUnlock()
+	return s.realtimeChatHandler
 }
 
 // Handler returns the HTTP API and web UI routes served by Server.
@@ -705,6 +754,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	turnInput, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
 		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if handler := s.realtimeChatHandlerSnapshot(); handler != nil {
+		if len(turnInput.Attachments) > 0 {
+			http.Error(w, "realtime chat supports text messages only", http.StatusBadRequest)
+			return
+		}
+		s.handleRealtimeChatAsync(w, req, turnInput)
 		return
 	}
 	episodeID := s.runtime.NewEpisodeID()
@@ -1621,6 +1678,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	turnInput, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
 		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if handler := s.realtimeChatHandlerSnapshot(); handler != nil {
+		if len(turnInput.Attachments) > 0 {
+			http.Error(w, "realtime chat supports text messages only", http.StatusBadRequest)
+			return
+		}
+		s.handleRealtimeChatStream(w, r, req, turnInput)
 		return
 	}
 	inputText := turnInput.InputText
