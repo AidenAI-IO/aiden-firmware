@@ -187,6 +187,44 @@ func (p *FilesystemMemoryPlane) EpisodeMemoryTaskFinished() {
 	}
 }
 
+func (p *FilesystemMemoryPlane) ProcessEpisodeMemoryNow(ctx context.Context, episodeID string) (episodeMemoryEpisodeStatus, []string, error) {
+	if p == nil {
+		return episodeMemoryEpisodeStatus{}, nil, fmt.Errorf("episode memory is not configured")
+	}
+	p.episodeMemoryMu.RLock()
+	worker := p.episodeMemory
+	p.episodeMemoryMu.RUnlock()
+	if worker == nil {
+		return episodeMemoryEpisodeStatus{}, nil, fmt.Errorf("episode memory worker is not configured")
+	}
+	if _, err := worker.ProcessNow(ctx); err != nil {
+		return episodeMemoryEpisodeStatus{}, nil, err
+	}
+	processor, ok := worker.processor.(*episodeMemoryProcessor)
+	if !ok || processor == nil || processor.state == nil {
+		return episodeMemoryEpisodeStatus{}, nil, fmt.Errorf("episode memory processor is not configured")
+	}
+	state, err := processor.state.Snapshot()
+	if err != nil {
+		return episodeMemoryEpisodeStatus{}, nil, err
+	}
+	status, found := state.Episodes[episodeMemoryStateKey(episodeID, episodeMemoryExtractorVersion)]
+	if !found {
+		return episodeMemoryEpisodeStatus{}, nil, fmt.Errorf("episode %q was not processed", episodeID)
+	}
+	items, err := p.device.readAll()
+	if err != nil {
+		return episodeMemoryEpisodeStatus{}, nil, err
+	}
+	memoryIDs := make([]string, 0)
+	for _, item := range items {
+		if hasEpisodeEvidence(item.EvidenceRefs, episodeID) {
+			memoryIDs = append(memoryIDs, item.ID)
+		}
+	}
+	return status, memoryIDs, nil
+}
+
 func (p *FilesystemMemoryPlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
 	return NewPersistentEpisodeRecorder(req, retrieved, p.episodes)
 }

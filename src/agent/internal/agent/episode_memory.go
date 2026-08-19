@@ -583,8 +583,11 @@ func validateEpisodeMemoryCandidate(episode TaskEpisode, assessment episodeMemor
 	if candidate.Action == episodeMemoryActionUpdate && candidate.MemoryID == "" {
 		return episodeMemoryCandidate{}, false
 	}
-	if candidate.Action == episodeMemoryActionCreate && (candidate.MemoryID != "" || candidate.MemoryRevision != 0 || candidate.UnresolvedConflict) {
+	if candidate.Action == episodeMemoryActionCreate && (candidate.MemoryID != "" || candidate.UnresolvedConflict) {
 		return episodeMemoryCandidate{}, false
+	}
+	if candidate.Action == episodeMemoryActionCreate {
+		candidate.MemoryRevision = 0
 	}
 	if candidate.UnresolvedConflict && candidate.ConflictReason == "" {
 		return episodeMemoryCandidate{}, false
@@ -600,6 +603,7 @@ func validateEpisodeMemoryCandidate(episode TaskEpisode, assessment episodeMemor
 	if len(candidate.EvidenceRefs) == 0 || len(candidate.EvidenceRefs) != len(originalRefs) {
 		return episodeMemoryCandidate{}, false
 	}
+	candidate.EvidenceRefs = expandEpisodeMemoryEvidenceRefs(episode, candidate.EvidenceRefs)
 	if !episodeMemoryTypeEvidenceValid(candidate.Type, episode, candidate.EvidenceRefs, assessment) {
 		return episodeMemoryCandidate{}, false
 	}
@@ -611,6 +615,35 @@ func validateEpisodeMemoryCandidate(episode TaskEpisode, assessment episodeMemor
 	}
 	candidate.Tags = normalizeEpisodeMemoryTags(candidate.Tags)
 	return candidate, true
+}
+
+func expandEpisodeMemoryEvidenceRefs(episode TaskEpisode, refs []string) []string {
+	expanded := append([]string(nil), refs...)
+	pendingCalls := make(map[string][]string)
+	pairedCalls := make(map[string]string)
+	for _, event := range episode.Events {
+		name := strings.ToLower(strings.TrimSpace(event.ToolName))
+		if name == "" || !isEpisodeMemoryDeviceTool(name) {
+			continue
+		}
+		switch event.Type {
+		case runEventToolCall:
+			pendingCalls[name] = append(pendingCalls[name], event.EventID)
+		case "tool_result":
+			calls := pendingCalls[name]
+			if len(calls) == 0 {
+				continue
+			}
+			pairedCalls[event.EventID] = calls[len(calls)-1]
+			pendingCalls[name] = calls[:len(calls)-1]
+		}
+	}
+	for _, ref := range refs {
+		if callID := pairedCalls[ref]; callID != "" {
+			expanded = appendUniqueString(expanded, callID)
+		}
+	}
+	return expanded
 }
 
 func episodeMemoryTypeEvidenceValid(memoryType episodeMemoryType, episode TaskEpisode, refs []string, assessment episodeMemoryAssessment) bool {
@@ -1180,6 +1213,7 @@ func buildEpisodeMemoryPrompt(payload string, existing []DeviceMemoryItem) strin
 }
 
 Return at most 3 independent candidates; an empty candidates array is correct when nothing is worth retaining. Every candidate must be reusable in future similar tasks, change future behavior or decisions, have explicit scope, add new knowledge or evidence, and be safer to recall than to omit. Do not retain greetings, task-specific prose, temporary values, OTPs, transient page contents, or information already explicitly saved through a Memory-management tool.
+When direct evidence verifies a non-obvious workaround, device-specific route, operational correction, stop condition, or stable fact that satisfies the type rules, you must emit at least one candidate. Do not return an empty candidates array merely because the Episode achieved its goal.
 
 Assess goal_result independently from the recorded success flag. achieved and not_achieved require direct result, final-state, screenshot, or user-correction evidence. Use unknown when final proof is missing and say what is missing. User steer is correction evidence, not an admission gate. Do not rely on verifier_decision or ObservedState; they are not part of this pipeline.
 
@@ -1192,13 +1226,14 @@ Type rules:
 
 Deduplication and conflict rules:
 - Use action=create only when no existing memory has the same scoped lesson.
+- For action=create, omit memory_id and memory_revision.
 - Use action=update with an existing memory_id and its exact memory_revision when the lesson overlaps. Output the complete merged situation, guidance, expected_effect, scope, and tags; preserve valid older conditions rather than merely copying the new Episode.
 - device_profile and app_profile entries are deterministic context only. Do not update them or duplicate facts already represented by them.
 - Resolve apparent conflicts by conditioning the merged memory on version, page, account state, or another evidenced precondition when possible.
 - Set unresolved_conflict=true only when the same scope still has incompatible conclusions and no safe condition can distinguish them. The memory will be quarantined as disputed.
 - An achieved Episode is not automatically a procedure, and an Episode-level failure is not automatically a failure memory.
 
-Evidence rules: cite only real event ids. Prefer tool results, structured errors, attached screenshots, final visible state, and user correction over Agent commentary. Screenshots support only what is visibly shown. Preserve uncertainty and never invent causal ownership, UI state, app/page names, or unsupported recovery tools.
+Evidence rules: cite only real event ids. Prefer tool results, structured errors, attached screenshots, final visible state, and user correction over Agent commentary. A cited tool result is deterministically linked to its paired tool call before type validation. Screenshots support only what is visibly shown. Preserve uncertainty and never invent causal ownership, UI state, app/page names, or unsupported recovery tools.
 
 Existing related Device Memories (maximum 8, including disputed records):
 ` + string(memoryJSON) + `

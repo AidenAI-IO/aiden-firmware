@@ -79,6 +79,7 @@ func TestEpisodeMemoryProcessorCreatesMultipleTypedMemoriesWithOneModelCall(t *t
       "lesson_key":"open_display_settings",
       "type":"procedure",
       "action":"create",
+      "memory_revision":1,
       "unresolved_conflict":false,
       "situation":"When the user wants the display settings on this device",
       "guidance":"Open Settings, then select Display",
@@ -487,6 +488,12 @@ func TestEpisodeMemoryModelInputUsesDirectEvidenceWithoutVerifierState(t *testin
 			t.Fatalf("Episode Memory model input contains %q:\n%s", forbidden, prompt)
 		}
 	}
+	if !strings.Contains(prompt, "For action=create, omit memory_id and memory_revision.") {
+		t.Fatal("Episode Memory model input does not distinguish create fields from update fields")
+	}
+	if !strings.Contains(prompt, "must emit at least one candidate") {
+		t.Fatal("Episode Memory model input does not require retention of directly verified reusable lessons")
+	}
 	if !model.firstCallHasImage() {
 		t.Fatal("Episode Memory model input did not attach the persisted screenshot")
 	}
@@ -706,6 +713,46 @@ func TestFailureCandidateMustReferenceNotAchievedEvidence(t *testing.T) {
 	candidate.EvidenceRefs = []string{"call", "result"}
 	if _, ok := validateEpisodeMemoryCandidate(episode, assessment, candidate, map[string]bool{}); !ok {
 		t.Fatal("failure Candidate citing the not-achieved result was rejected")
+	}
+}
+
+func TestNavigationCandidateLinksResultEvidenceToToolCalls(t *testing.T) {
+	episode := TaskEpisode{Events: []TaskEpisodeEvent{
+		{EventID: "ethernet_call", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: `{"type":"tap","target":"Ethernet"}`},
+		{EventID: "ethernet_result", Type: "tool_result", ToolName: "touch_gesture", Observation: "The Ethernet page is visible."},
+		{EventID: "interface_call", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: `{"type":"tap","target":"Aiden HID+ECM"}`},
+		{EventID: "interface_result", Type: "tool_result", ToolName: "touch_gesture", Observation: "The IPv4 details page is visible."},
+	}}
+	candidate := episodeMemoryCandidate{
+		LessonKey:      "ios_aiden_ethernet_path",
+		Type:           episodeMemoryTypeNavigation,
+		Action:         episodeMemoryActionCreate,
+		MemoryRevision: 1,
+		Situation:      "When opening the Aiden USB Ethernet details on iOS",
+		Guidance:       "Open Ethernet, then Aiden HID+ECM",
+		ExpectedEffect: "The IPv4 details page is visible",
+		Scope:          map[string]string{"app_name": "Settings"},
+		EvidenceRefs:   []string{"ethernet_result", "interface_result"},
+	}
+
+	validated, ok := validateEpisodeMemoryCandidate(episode, episodeMemoryAssessment{GoalResult: episodeGoalAchieved}, candidate, map[string]bool{})
+	if !ok {
+		t.Fatal("navigation Candidate citing paired tool results was rejected")
+	}
+	if validated.MemoryRevision != 0 {
+		t.Fatalf("create memory_revision = %d, want 0", validated.MemoryRevision)
+	}
+	for _, want := range []string{"ethernet_result", "interface_result", "ethernet_call", "interface_call"} {
+		found := false
+		for _, ref := range validated.EvidenceRefs {
+			if ref == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("evidence refs = %#v, missing %q", validated.EvidenceRefs, want)
+		}
 	}
 }
 

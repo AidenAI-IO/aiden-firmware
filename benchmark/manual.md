@@ -699,6 +699,112 @@ uv run python -m runner compare \
 Use it to see task status changes and performance changes; good for regression
 checks.
 
+#### Episode Memory consolidation diagnostic
+
+The text benchmark has three conditions over the same deterministic task:
+
+1. `before`: the Episode exists but has not produced Memory;
+2. `after`: the Episode Memory Worker processes the same Episode into Device Memory;
+3. `legacy`: a fixed legacy direct-extraction Memory fixture is present.
+
+This is a fast retrieval-and-decision diagnostic, not evidence of improved UI
+execution. Use it to determine whether failures come from consolidation,
+on-demand recall, or use of recalled Memory. The primary comparison is `before`
+versus `after`; the secondary comparison is `after` versus `legacy`. The legacy
+fixture does not execute or benchmark the removed extractor itself.
+
+These suites include a scripted mock environment, so use `--auto-agent-setup`.
+It creates a fresh daemon and data directory for every attempt, preventing
+Memory, Episode, session, and context-cache leakage between conditions.
+
+```bash
+uv run python -m runner run \
+  --suite suites/episode_memory_before_v1.json \
+  --auto-agent-setup \
+  --no-judge \
+  --run-id episode-memory-before
+
+uv run python -m runner run \
+  --suite suites/episode_memory_after_v1.json \
+  --auto-agent-setup \
+  --no-judge \
+  --run-id episode-memory-after
+
+uv run python -m runner run \
+  --suite suites/episode_memory_legacy_v1.json \
+  --auto-agent-setup \
+  --no-judge \
+  --run-id episode-memory-legacy
+
+uv run python -m runner compare \
+  --runs runs/episode-memory-before runs/episode-memory-after
+
+uv run python -m runner compare \
+  --runs runs/episode-memory-legacy runs/episode-memory-after
+```
+
+The comparison reports pass-count, median tool-call, and median wall-time
+deltas. Trace observations report on-demand use of `recall_device_memory`; it
+is not forced as the first call.
+
+#### Episode Memory physical-iPhone execution comparison
+
+The physical-iPhone benchmark has the same three conditions as the diagnostic:
+
+1. `before`: the completed Settings Episode exists but is not consolidated;
+2. `after`: the Episode Memory Worker processes that Episode into Device Memory;
+3. `legacy`: a fixed Device Memory fixture represents the removed synchronous
+   Episode-to-Memory procedure output.
+
+Every condition asks the agent to reach the active Ethernet interface's IPv4
+details. All suites require a final screenshot, and the judge checks the visible
+Ethernet page rather than trusting the final response. Task pass rate is the
+primary metric. Tool calls and wall time are secondary efficiency metrics, and
+the recall observation is diagnostic only.
+
+Run every condition with isolated agent state:
+
+```bash
+uv run python -m runner run \
+  --suite suites/episode_memory_iphone_before_v1.json \
+  --agent-url http://<agent-host>:8080 \
+  --environment-url http://<physical-device-environment-host>:<port> \
+  --target-platform ios \
+  --benchmark-token-file /path/to/control_token \
+  --run-id episode-memory-iphone-before
+
+uv run python -m runner run \
+  --suite suites/episode_memory_iphone_after_v1.json \
+  --agent-url http://<agent-host>:8080 \
+  --environment-url http://<physical-device-environment-host>:<port> \
+  --target-platform ios \
+  --benchmark-token-file /path/to/control_token \
+  --run-id episode-memory-iphone-after
+
+uv run python -m runner run \
+  --suite suites/episode_memory_iphone_legacy_v1.json \
+  --agent-url http://<agent-host>:8080 \
+  --environment-url http://<physical-device-environment-host>:<port> \
+  --target-platform ios \
+  --benchmark-token-file /path/to/control_token \
+  --run-id episode-memory-iphone-legacy
+
+uv run python -m runner compare \
+  --runs runs/episode-memory-iphone-before runs/episode-memory-iphone-after
+
+uv run python -m runner compare \
+  --runs runs/episode-memory-iphone-after runs/episode-memory-iphone-legacy
+```
+
+Use the same iPhone, model configuration, prompt, and environment reset for all
+three runs. Use an isolated agent data directory for every attempt so Episodes,
+Memory, sessions, and context caches cannot leak across conditions. Start with
+five attempts per suite; repeat with ten after the device path is stable.
+MobileGym can validate runner and setup plumbing, but the USB Ethernet execution
+result must be validated on the physical iPhone. The primary conclusion comes
+from `before` versus `after`; `after` versus `legacy` is a compatibility
+comparison and does not benchmark the removed legacy extractor itself.
+
 ### 3.6 webui: start the WebUI from the CLI
 
 ```bash

@@ -1,0 +1,148 @@
+{
+  "name": "episode_memory_before_natural_v1",
+  "suite_category": "Memory & Cognition",
+  "description": "Natural-prompt variant of episode_memory_before_v1.json: the prompt never names recall_device_memory, never licenses a tool call, and gives no miss-fallback instruction. Measures whether the agent recalls device memory on its own initiative. Original: Pure-Episode baseline. The completed episode is persisted, but it is not consolidated or directly materialized as memory before evaluation.",
+  "global_reset": {},
+  "mock_environment": {
+    "platform": "ios",
+    "phone_bridge": {},
+    "screen_text": "Static Episode Memory benchmark environment. No device operation is required.",
+    "tools": {}
+  },
+  "trace_observations": [
+    {
+      "id": "recalled_device_memory",
+      "description": "The agent called recall_device_memory on demand while answering the device-specific question.",
+      "tool_name": "recall_device_memory"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "qa_notes_title_save_procedure",
+      "category": "memory",
+      "description_for_judge": "The agent should select the title-save sequence that was verified in the seeded QA Notes build 7 episode.",
+      "prompt": "QA Notes build 7 里我已经改好了一个笔记标题。根据这台设备之前已经验证过的行为，要让标题修改真的保存下来，应该用哪个顺序？不用操作手机，直接回答就行。最后只用一行给出答案，格式为 <final_answer>(a)</final_answer>。\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "repeats": 10,
+      "rubric": [
+        {
+          "id": "uses_verified_title_save_procedure",
+          "check": "The final answer selects the Preview, then Edit, then Save round trip as the verified QA Notes build 7 title-save sequence."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 0,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "forbidden_tools": [
+          "screenshot",
+          "open_app",
+          "touch_gesture",
+          "inspect_episode"
+        ]
+      },
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": false,
+        "timeout_sec": 90,
+        "episode": {
+          "id": "ep_benchmark_qa_notes_title_save",
+          "user_goal": "Change the QA Notes build 7 note title and verify that it persists after reopening.",
+          "device_scope": {
+            "device_id": "default",
+            "app_name": "QA Notes",
+            "app_version": "7",
+            "page_name": "Note editor"
+          },
+          "outcome": {
+            "success": true,
+            "final_state": "The changed title remains visible after reopening the note.",
+            "final_answer": "The title change was saved and verified after reopening."
+          },
+          "tags": [
+            "qa-notes",
+            "title",
+            "save",
+            "verification"
+          ],
+          "entities": [
+            "QA Notes",
+            "Note editor",
+            "Preview",
+            "Edit",
+            "Save"
+          ],
+          "events": [
+            {
+              "event_id": "direct_save_call",
+              "type": "tool_call",
+              "tool_name": "touch_gesture",
+              "tool_input": "{\"type\":\"tap\",\"target\":\"Save\"}",
+              "content": "Tap Save immediately after editing the title."
+            },
+            {
+              "event_id": "direct_save_result",
+              "type": "tool_result",
+              "tool_name": "touch_gesture",
+              "observation": "After reopening, the edited title had reverted; direct Save did not persist it."
+            },
+            {
+              "event_id": "preview_call",
+              "type": "tool_call",
+              "tool_name": "touch_gesture",
+              "tool_input": "{\"type\":\"tap\",\"target\":\"Preview\"}",
+              "content": "Switch from Edit to Preview."
+            },
+            {
+              "event_id": "preview_result",
+              "type": "tool_result",
+              "tool_name": "touch_gesture",
+              "observation": "Preview mode is visible with the changed title."
+            },
+            {
+              "event_id": "edit_call",
+              "type": "tool_call",
+              "tool_name": "touch_gesture",
+              "tool_input": "{\"type\":\"tap\",\"target\":\"Edit\"}",
+              "content": "Return from Preview to Edit."
+            },
+            {
+              "event_id": "edit_result",
+              "type": "tool_result",
+              "tool_name": "touch_gesture",
+              "observation": "Edit mode is visible again and the changed title is still present."
+            },
+            {
+              "event_id": "save_call",
+              "type": "tool_call",
+              "tool_name": "touch_gesture",
+              "tool_input": "{\"type\":\"tap\",\"target\":\"Save\"}",
+              "content": "Tap Save after the Preview-to-Edit round trip."
+            },
+            {
+              "event_id": "save_result",
+              "type": "tool_result",
+              "tool_name": "touch_gesture",
+              "observation": "Save completed after the Preview and Edit transition."
+            },
+            {
+              "event_id": "verify_call",
+              "type": "tool_call",
+              "tool_name": "touch_gesture",
+              "tool_input": "{\"type\":\"reopen_note\"}",
+              "content": "Close and reopen the note to verify persistence."
+            },
+            {
+              "event_id": "verify_result",
+              "type": "tool_result",
+              "tool_name": "touch_gesture",
+              "observation": "The changed title remains visible after reopening the note."
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

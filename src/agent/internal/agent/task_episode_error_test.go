@@ -128,3 +128,39 @@ func TestMaterializeEventArtifactUsesExistingReference(t *testing.T) {
 		t.Fatalf("compact observation is missing reference: %s", event.Observation)
 	}
 }
+
+func TestReadEpisodeEventsRepairsNULTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	valid := "{\"event_id\":\"one\",\"type\":\"tool_call\"}\n{\"event_id\":\"two\",\"type\":\"tool_result\"}\n"
+	data := append([]byte(valid), make([]byte, 128)...)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write events: %v", err)
+	}
+
+	events, err := readEpisodeEvents(path)
+	if err != nil {
+		t.Fatalf("readEpisodeEvents() error = %v", err)
+	}
+	if len(events) != 2 || events[0].EventID != "one" || events[1].EventID != "two" {
+		t.Fatalf("events = %#v", events)
+	}
+	repaired, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read repaired events: %v", err)
+	}
+	if string(repaired) != valid {
+		t.Fatalf("repaired events = %q, want %q", repaired, valid)
+	}
+}
+
+func TestReadEpisodeEventsRejectsNULBeforeNonzeroData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	data := []byte("{\"event_id\":\"one\",\"type\":\"tool_call\"}\n\x00corrupt\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write events: %v", err)
+	}
+
+	if _, err := readEpisodeEvents(path); err == nil || !strings.Contains(err.Error(), "invalid NUL byte") {
+		t.Fatalf("readEpisodeEvents() error = %v, want invalid NUL byte", err)
+	}
+}

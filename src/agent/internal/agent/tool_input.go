@@ -70,12 +70,37 @@ func (f *flexStringSlice) UnmarshalJSON(data []byte) error {
 			*f = arr
 			return nil
 		}
-		// A bare single value, e.g. "foo".
-		*f = []string{s}
+		// A bare value, e.g. "foo". LLMs also emit multi-value fields as one
+		// delimited string ("procedure, fact") instead of an array; keeping that
+		// as a single element makes exact-match filters such as matchesAny fail
+		// against every candidate, silently dropping all results.
+		*f = splitDelimitedArgValues(s)
 		return nil
 	default:
 		return fmt.Errorf("cannot decode %s into string slice", trimmed)
 	}
+}
+
+// splitDelimitedArgValues splits a bare string argument on ASCII and fullwidth
+// commas, so "procedure, fact" and "procedure，fact" both yield two values. A
+// string with no delimiter returns a single-element slice unchanged.
+func splitDelimitedArgValues(s string) []string {
+	if !strings.ContainsAny(s, ",，") {
+		return []string{s}
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == '，'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // flexInt decodes a JSON number, but also tolerates a numeric string ("3"),

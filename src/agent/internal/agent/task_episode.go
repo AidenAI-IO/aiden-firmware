@@ -1102,8 +1102,21 @@ func readEpisodeEvents(path string) ([]TaskEpisodeEvent, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0), 1<<20)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		rawLine := scanner.Text()
+		if nulIndex := strings.IndexByte(rawLine, 0); nulIndex >= 0 {
+			for index := nulIndex; index < len(rawLine); index++ {
+				if rawLine[index] != 0 {
+					return nil, fmt.Errorf("invalid NUL byte in episode event data")
+				}
+			}
+			rawLine = rawLine[:nulIndex]
+			repairedTruncatedTail = true
+		}
+		line := strings.TrimSpace(rawLine)
 		if line == "" {
+			if repairedTruncatedTail {
+				break
+			}
 			continue
 		}
 		var event TaskEpisodeEvent
@@ -1117,6 +1130,9 @@ func readEpisodeEvents(path string) ([]TaskEpisodeEvent, error) {
 		validData = append(validData, line...)
 		validData = append(validData, '\n')
 		events = append(events, event)
+		if repairedTruncatedTail {
+			break
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err

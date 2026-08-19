@@ -1,0 +1,80 @@
+{
+  "name": "episode_memory_legacy_v1",
+  "suite_category": "Memory & Cognition",
+  "description": "Legacy direct-memory control. A deterministic fixture materializes the reusable procedure that the removed synchronous Episode-to-Memory path would have written before evaluation; this measures downstream task execution, not the removed extractor itself.",
+  "global_reset": {},
+  "mock_environment": {
+    "platform": "ios",
+    "phone_bridge": {},
+    "screen_text": "Static Episode Memory benchmark environment. No device operation is required.",
+    "tools": {}
+  },
+  "trace_observations": [
+    {
+      "id": "recalled_device_memory",
+      "description": "The agent called recall_device_memory on demand while answering the device-specific question.",
+      "tool_name": "recall_device_memory"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "qa_notes_title_save_procedure",
+      "category": "memory",
+      "description_for_judge": "The agent should select the title-save sequence recorded by the legacy direct Episode-to-Memory procedure fixture.",
+      "prompt": "This is a multiple-choice memory evaluation, not an instruction to operate the device. Do not inspect the screen, open an app, inspect raw episodes, or use session/long-term memory tools. You may call recall_device_memory exactly once if saved device memory is relevant. If it returns no relevant memory, choose the most likely option and answer immediately without trying another tool.\n\nA note title has already been edited in QA Notes build 7. Based on previously verified device behavior, which sequence should be used to make the changed title persist? End with exactly one final line in the form <final_answer>(a)</final_answer>.\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "repeats": 10,
+      "rubric": [
+        {
+          "id": "uses_verified_title_save_procedure",
+          "check": "The final answer selects the Preview, then Edit, then Save round trip as the verified QA Notes build 7 title-save sequence."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 0,
+        "max_tool_calls": 1,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "forbidden_tools": [
+          "inspect_episode",
+          "recall_session_chunks",
+          "recall_memory",
+          "screenshot",
+          "open_app",
+          "touch_gesture"
+        ]
+      },
+      "setup": {
+        "type": "seed_memory",
+        "timeout_sec": 30,
+        "memories": [
+          {
+            "store": "device",
+            "id": "legacy_qa_notes_title_save_procedure",
+            "type": "procedure",
+            "priority": 70,
+            "title": "Verified task path",
+            "content": "User goal: persist an edited QA Notes build 7 title. Verified procedure: switch from Edit to Preview, return from Preview to Edit, then tap Save. Direct Save immediately after editing did not persist the title. Reopening the note after the Preview-to-Edit round trip and Save verified that the changed title remained visible.",
+            "tags": [
+              "qa-notes",
+              "title",
+              "save",
+              "verification"
+            ],
+            "entities": [
+              "QA Notes",
+              "Note editor",
+              "Preview",
+              "Edit",
+              "Save"
+            ],
+            "evidence": [
+              "Direct Save reverted after reopening; Preview, then Edit, then Save persisted the changed title."
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

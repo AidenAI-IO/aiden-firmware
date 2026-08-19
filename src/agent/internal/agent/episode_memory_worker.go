@@ -2,11 +2,17 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
 
 const defaultEpisodeMemoryIdleDelay = 5 * time.Minute
+
+var (
+	errEpisodeMemoryWorkerBusy    = errors.New("episode memory worker is busy")
+	errEpisodeMemoryWorkerStopped = errors.New("episode memory worker is stopped")
+)
 
 // episodeMemoryWorker owns one resettable timer and never processes more than one
 // Episode at a time. A foreground run does not wait for consolidation: it stops
@@ -135,6 +141,64 @@ func (w *episodeMemoryWorker) Stop() {
 	w.wg.Wait()
 }
 
+func (w *episodeMemoryWorker) ProcessNow(ctx context.Context) (episodeMemoryBatchResult, error) {
+	if w == nil || w.processor == nil {
+		return episodeMemoryBatchResult{}, nil
+	}
+	w.mu.Lock()
+	if w.stopped {
+		w.mu.Unlock()
+		return episodeMemoryBatchResult{}, errEpisodeMemoryWorkerStopped
+	}
+	if w.activeRuns > 0 || w.running {
+		w.mu.Unlock()
+		return episodeMemoryBatchResult{}, errEpisodeMemoryWorkerBusy
+	}
+	w.stopTimerLocked()
+	batchCtx, batchCancel := w.startBatchLocked(ctx)
+	w.mu.Unlock()
+
+	return w.executeBatch(batchCtx, batchCancel)
+}
+
+func (w *episodeMemoryWorker) startBatchLocked(parent context.Context) (context.Context, context.CancelFunc) {
+	w.running = true
+	w.pending = false
+	batchCtx, batchCancel := context.WithCancel(parent)
+	w.batchCancel = batchCancel
+	w.wg.Add(1)
+	return batchCtx, batchCancel
+}
+
+func (w *episodeMemoryWorker) executeBatch(ctx context.Context, cancel context.CancelFunc) (episodeMemoryBatchResult, error) {
+	result, err := w.processor.ProcessBatch(ctx, episodeMemoryBatchLimit, w.shouldStopBatch)
+	cancel()
+	w.processor.logBatchError(err)
+	w.finishBatch(result, err)
+	w.wg.Done()
+	return result, err
+}
+
+func (w *episodeMemoryWorker) finishBatch(result episodeMemoryBatchResult, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.batchCancel = nil
+	w.running = false
+	if err != nil || result.HasPending {
+		w.pending = true
+	}
+	if w.stopped || w.activeRuns > 0 {
+		return
+	}
+	switch {
+	case w.pending:
+		w.scheduleLocked(w.idleDelay)
+	case !result.NextRunAt.IsZero():
+		w.pending = true
+		w.scheduleLocked(w.delayFor(result.NextRunAt))
+	}
+}
+
 func (w *episodeMemoryWorker) shouldStopBatch() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -170,37 +234,10 @@ func (w *episodeMemoryWorker) runBatch() {
 		return
 	}
 	w.timer = nil
-	w.running = true
-	w.pending = false
-	batchCtx, batchCancel := context.WithCancel(w.ctx)
-	w.batchCancel = batchCancel
-	w.wg.Add(1)
+	batchCtx, batchCancel := w.startBatchLocked(w.ctx)
 	w.mu.Unlock()
 
-	result, err := w.processor.ProcessBatch(batchCtx, episodeMemoryBatchLimit, w.shouldStopBatch)
-	batchCancel()
-	w.processor.logBatchError(err)
-
-	w.mu.Lock()
-	w.batchCancel = nil
-	w.running = false
-	if err != nil {
-		w.pending = true
-	}
-	if result.HasPending {
-		w.pending = true
-	}
-	if !w.stopped && w.activeRuns == 0 {
-		switch {
-		case w.pending:
-			w.scheduleLocked(w.idleDelay)
-		case !result.NextRunAt.IsZero():
-			w.pending = true
-			w.scheduleLocked(w.delayFor(result.NextRunAt))
-		}
-	}
-	w.mu.Unlock()
-	w.wg.Done()
+	_, _ = w.executeBatch(batchCtx, batchCancel)
 }
 
 func (w *episodeMemoryWorker) delayFor(due time.Time) time.Duration {
