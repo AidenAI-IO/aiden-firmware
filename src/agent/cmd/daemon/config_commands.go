@@ -88,6 +88,7 @@ type modelDTO struct {
 	Provider             string   `json:"provider"`
 	APIKey               string   `json:"api_key"`
 	Model                string   `json:"model"`
+	APIMode              string   `json:"api_mode,omitempty"`
 	ReasoningEffort      string   `json:"reasoning_effort"`
 	Temperature          *float64 `json:"temperature,omitempty"`
 	MaxResponseTokens    int      `json:"max_response_tokens"`
@@ -100,6 +101,7 @@ func (d modelDTO) providerTestRequest() agent.ModelProviderTestRequest {
 		Provider:        d.Provider,
 		APIKey:          d.APIKey,
 		Model:           d.Model,
+		APIMode:         d.APIMode,
 		Temperature:     d.Temperature,
 		ReasoningEffort: d.ReasoningEffort,
 	}
@@ -389,7 +391,6 @@ type agentDTO struct {
 	ScreenStableTimeoutMs      int     `json:"screen_stable_timeout_ms"`
 	ScreenStableMs             int     `json:"screen_stable_ms"`
 	ScreenStableDiffThreshold  float64 `json:"screen_stable_diff_threshold"`
-	DefaultPlatform            string  `json:"default_platform,omitempty"`
 }
 
 // hasAPIKeyPlaceholder is substituted for a real key when the wire payload
@@ -415,6 +416,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			Provider:             d.Model.Provider,
 			APIKey:               d.Model.APIKey,
 			Model:                d.Model.Model,
+			APIMode:              d.Model.APIMode,
 			Temperature:          d.Model.Temperature,
 			MaxResponseTokens:    d.Model.MaxResponseTokens,
 			ContextWindow:        d.Model.ContextWindow,
@@ -659,6 +661,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Provider:             cfg.Model.Provider,
 			APIKey:               cfg.Model.APIKey,
 			Model:                cfg.Model.Model,
+			APIMode:              cfg.Model.APIMode,
 			ReasoningEffort:      cfg.Model.ReasoningEffort,
 			Temperature:          cfg.Model.Temperature,
 			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
@@ -775,7 +778,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			ScreenStableTimeoutMs:      cfg.ScreenStableTimeoutMs,
 			ScreenStableMs:             cfg.ScreenStableMs,
 			ScreenStableDiffThreshold:  cfg.ScreenStableDiffThreshold,
-			DefaultPlatform:            cfg.DefaultPlatform,
 		},
 	}
 }
@@ -1156,6 +1158,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "search.api_key"
 	} else if strings.Contains(errMsg, "model.provider") {
 		field = "model.provider"
+	} else if strings.Contains(errMsg, "model.api_mode") {
+		field = "model.api_mode"
 	} else if strings.Contains(errMsg, "model.max_response_tokens") {
 		field = "model.max_response_tokens"
 	} else if strings.Contains(errMsg, "model.context_window") {

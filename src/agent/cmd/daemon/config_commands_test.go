@@ -279,11 +279,11 @@ llm_http_retention_days = 14
 	if dto.Model.Provider != "openai" || dto.Model.Model != "gpt-4o-mini" {
 		t.Fatalf("model overlay = provider %q model %q", dto.Model.Provider, dto.Model.Model)
 	}
-	if dto.Device.DeviceType != "Android" {
-		t.Fatalf("device.device_type = %q, want Android inferred from legacy hid.pointer_mode", dto.Device.DeviceType)
+	if dto.Device.DeviceType != "iOS" {
+		t.Fatalf("device.device_type = %q, want iOS (default when unset)", dto.Device.DeviceType)
 	}
-	if dto.HID.PointerMode != "touchscreen" {
-		t.Fatalf("derived hid.pointer_mode = %q, want touchscreen", dto.HID.PointerMode)
+	if dto.HID.PointerMode != "absolute" {
+		t.Fatalf("hid.pointer_mode = %q, want absolute (derived from iOS device_type)", dto.HID.PointerMode)
 	}
 	if dto.HID.KeyboardLayout != "azerty" {
 		t.Fatalf("hid.keyboard_layout = %q, want azerty", dto.HID.KeyboardLayout)
@@ -850,6 +850,11 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 			name:          "model provider error",
 			errorMsg:      "model.provider is required",
 			expectedField: "model.provider",
+		},
+		{
+			name:          "model api mode error",
+			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions or responses)",
+			expectedField: "model.api_mode",
 		},
 		{
 			name:          "model max response tokens error",

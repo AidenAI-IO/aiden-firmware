@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"io"
-	"net/http"
 	"strings"
 	"testing"
 
@@ -516,45 +514,6 @@ func TestExecuteToolCallPropagatesParentCancellation(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestExecuteToolCallPropagatesParentCancellationAfterEnvironmentBridgeReturns(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	bridge := NewEnvironmentBridgeClient("http://bridge.local")
-	bridge.httpClient = &http.Client{Transport: bridgeCancelRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		cancel()
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"output":"ok"}`)),
-		}, nil
-	})}
-	recorder := &toolExecutionCallbackRecorder{}
-	specs := NewToolSpecs([]langtools.Tool{&stubTool{name: "echo", description: "Echo text.", output: "local"}})
-
-	result := executeToolCall(ctx, ToolCallExecution{
-		Specs:                  specs,
-		Action:                 schema.AgentAction{Tool: "echo", ToolInput: "hello"},
-		Callback:               recorder,
-		EnvironmentBridge:      bridge,
-		EnvironmentBridgeTools: []string{"echo"},
-	})
-
-	if !errors.Is(result.Error, context.Canceled) {
-		t.Fatalf("execution error = %v, want parent cancellation", result.Error)
-	}
-	if result.Result.Error == nil || result.Result.Error.Code != CodeCanceled {
-		t.Fatalf("result error = %+v, want canceled structured error", result.Result.Error)
-	}
-	if len(recorder.results) != 1 || recorder.results[0].Error == nil || recorder.results[0].Error.Code != CodeCanceled {
-		t.Fatalf("terminal result callback = %#v, want canceled error", recorder.results)
-	}
-}
-
-type bridgeCancelRoundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f bridgeCancelRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
 }
 
 func TestDefaultAfterToolCallSummarizesScreenshotAndMarksTerminate(t *testing.T) {

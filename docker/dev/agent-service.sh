@@ -365,7 +365,6 @@ run_agent() {
     bridge_endpoint="${AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT:-${ENVIRONMENT_BRIDGE_ENDPOINT:-}}"
     bridge_endpoint="${bridge_endpoint%/}"
     bridge_mode="${AIDEN_ENVIRONMENT_BRIDGE_MODE:-auto}"
-    bridge_tools="${AIDEN_ENVIRONMENT_BRIDGE_TOOLS:-screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text,search_launch_app,mouse_move,mouse_scroll,quick_action,bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,bridge_notification}"
     bridge_task_id="${AIDEN_BENCHMARK_TASK_ID:-docker-sandbox}"
     bridge_episode_id="${AIDEN_BRIDGE_EPISODE_ID:-docker-sandbox}"
     if bridge_enabled "$bridge_endpoint" "$bridge_mode"; then
@@ -378,7 +377,6 @@ run_agent() {
             set -- "$@" \
                 --environment-bridge-mode \
                 --environment-bridge-endpoint "$bridge_endpoint" \
-                --environment-bridge-tools "$bridge_tools" \
                 --benchmark-task-id "$bridge_task_id"
         else
             release_bridge_episode

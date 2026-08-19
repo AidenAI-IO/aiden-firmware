@@ -410,10 +410,9 @@ func TestRuntimeRunInjectsDeviceTypeStateIntoTools(t *testing.T) {
 	}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{
-			Model:           ModelConfig{Provider: "fake"},
-			Instruction:     "Use tools.",
-			DefaultPlatform: "ios",
-			Device:          DeviceConfig{DeviceType: "Android"},
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+			Device:      DeviceConfig{DeviceType: "Android"},
 		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
