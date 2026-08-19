@@ -591,18 +591,10 @@ func (e *textInputEngine) applyFocus(ctx context.Context, focus focusPointArgs) 
 }
 
 func (e *textInputEngine) tapKeys(ctx context.Context, keys []string) error {
-	return e.tapKeysWithHold(ctx, keys, 0)
-}
-
-func (e *textInputEngine) tapKeysWithHold(ctx context.Context, keys []string, holdMs int) error {
 	if e == nil || e.hw.keyboardTap == nil {
 		return fmt.Errorf("keyboard_tap is not configured")
 	}
-	input := map[string]any{"keys": keys}
-	if holdMs > 0 {
-		input["hold_ms"] = holdMs
-	}
-	out, err := callTextInputTool(ctx, e.hw.keyboardTap, jsonString(input))
+	out, err := callTextInputTool(ctx, e.hw.keyboardTap, jsonString(map[string]any{"keys": keys}))
 	if err != nil {
 		return err
 	}
@@ -647,7 +639,7 @@ func (e *textInputEngine) cycleIME(ctx context.Context, platform string) (string
 	if err != nil {
 		return "", err
 	}
-	if err := e.tapKeysWithHold(ctx, keys, textInputIMESwitchHoldMs); err != nil {
+	if err := e.tapKeys(ctx, keys); err != nil {
 		return "", err
 	}
 	if err := e.sleepFor(ctx, textInputIMESwitchSettleDelay); err != nil {

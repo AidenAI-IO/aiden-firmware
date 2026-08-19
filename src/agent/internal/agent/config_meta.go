@@ -169,6 +169,13 @@ func ConfigMeta() ConfigMetadata {
 						Enum:    enumOptions(modelProviderTypesForConfigUI()...),
 						Default: defaults.Model.Provider},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model, Layout: "wide"},
+					{Key: "api_mode", Widget: WidgetSelect,
+						Help: "Responses mode sends the local ContextManager history as input items and never stores it server-side.",
+						Enum: []EnumOption{
+							{Value: "", Label: "chat completions (default)"},
+							{Value: "responses", Label: "Responses API (manual context)"},
+						},
+						Default: defaults.Model.APIMode},
 					// The effective default is model-dependent (resolved at load
 					// time); show the global fallback here as the UI placeholder.
 					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},
@@ -514,9 +521,6 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "screen_stable_timeout_ms", Widget: WidgetNumber, Default: defaults.ScreenStableTimeoutMs},
 					{Key: "screen_stable_ms", Widget: WidgetNumber, Default: defaults.ScreenStableMs},
 					{Key: "screen_stable_diff_threshold", Widget: WidgetNumber, Default: defaults.ScreenStableDiffThreshold},
-					{Key: "default_platform", Widget: WidgetSelect,
-						Enum:    enumOptions("", "ios", "android", "mac"),
-						Default: defaults.DefaultPlatform},
 					{Key: "custom_instruction", Widget: WidgetTextarea, Layout: "wide"},
 					{Key: "additional_prompt", Widget: WidgetTextarea, Layout: "wide"},
 				},

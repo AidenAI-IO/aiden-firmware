@@ -20,10 +20,9 @@ type SearchConfig struct {
 }
 
 type EnvironmentBridgeConfig struct {
-	Enabled         bool     `toml:"-"` // Only set via CLI, not config file
-	Endpoint        string   `toml:"-"` // Only set via CLI, not config file
-	Tools           []string `toml:"-"` // Only set via CLI, not config file
-	BenchmarkTaskID string   `toml:"-"` // Only set via CLI, not config file
+	Enabled         bool   `toml:"-"` // Only set via CLI, not config file
+	Endpoint        string `toml:"-"` // Only set via CLI, not config file
+	BenchmarkTaskID string `toml:"-"` // Only set via CLI, not config file
 }
 
 type BenchmarkConfig struct {
@@ -310,7 +309,6 @@ type Config struct {
 	ScreenStableTimeoutMs      int                      `toml:"screen_stable_timeout_ms,omitempty"`
 	ScreenStableMs             int                      `toml:"screen_stable_ms,omitempty"`
 	ScreenStableDiffThreshold  float64                  `toml:"screen_stable_diff_threshold,omitempty"`
-	DefaultPlatform            string                   `toml:"default_platform,omitempty"` // "ios", "android", "mac"
 	SkillsDirs                 []string                 `toml:"skills_dirs"`
 	BundledSkillsDir           string                   `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel            SkillMergeModel          `toml:"-"`
@@ -593,38 +591,11 @@ func deviceTypePlatform(deviceType string) string {
 	}
 }
 
-func deviceTypeFromPlatform(platform string) string {
-	switch strings.ToLower(strings.TrimSpace(platform)) {
-	case "ios", "iphone", "ipad", "ipados":
-		return "iOS"
-	case "android":
-		return "Android"
-	case "mac", "macos", "darwin":
-		return "macOS"
-	case "windows", "win":
-		return "windows"
-	case "linux":
-		return "linux"
-	default:
-		return ""
-	}
-}
-
-func inferredDeviceTypeFromLegacyConfig(hid HIDConfig, defaultPlatform string) string {
-	if deviceType := deviceTypeFromPlatform(defaultPlatform); deviceType != "" {
-		return deviceType
-	}
-	if strings.ToLower(strings.TrimSpace(hid.PointerMode)) == "touchscreen" {
-		return "Android"
-	}
-	return defaultDeviceType
-}
-
 func (c Config) DeviceTypeOrDefault() string {
 	if strings.TrimSpace(c.Device.DeviceType) != "" {
 		return c.Device.DeviceTypeOrDefault()
 	}
-	return inferredDeviceTypeFromLegacyConfig(c.HID, c.DefaultPlatform)
+	return defaultDeviceType
 }
 
 func (c Config) DevicePlatformOrDefault() string {
@@ -720,6 +691,10 @@ type ModelConfig struct {
 	Model    string `toml:"model"`
 	BaseURL  string `toml:"-"`
 	APIKey   string `toml:"api_key,omitempty"`
+	// APIMode selects the wire protocol for OpenAI-compatible providers. Empty
+	// and "chat_completions" preserve the historical default; "responses"
+	// sends the locally maintained context as Responses input items.
+	APIMode string `toml:"api_mode,omitempty"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
 	// (see applyModelTemperatureDefault); an explicit value, including 0, is
@@ -877,7 +852,7 @@ func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
 	}
 	deviceTypeConfigured := metadata.IsDefined("device", "device_type") && strings.TrimSpace(cfg.Device.DeviceType) != ""
 	if !deviceTypeConfigured {
-		cfg.Device.DeviceType = inferredDeviceTypeFromLegacyConfig(cfg.HID, cfg.DefaultPlatform)
+		cfg.Device.DeviceType = defaultDeviceType
 	} else if deviceType, ok := normalizeDeviceType(cfg.Device.DeviceType); ok {
 		cfg.Device.DeviceType = deviceType
 	}
@@ -1252,6 +1227,13 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Model.Model) == "" && strings.ToLower(c.Model.Provider) != "fake" {
 		return errors.New("model.model is required")
 	}
+	apiMode := normalizeModelAPIMode(c.Model.APIMode)
+	if apiMode == "" {
+		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions or responses)", c.Model.APIMode)
+	}
+	if apiMode == modelAPIModeResponses && !c.modelProviderSupportsResponses() {
+		return fmt.Errorf("model.api_mode=responses requires a provider transport with an OpenAI-compatible /responses endpoint")
+	}
 	backend := c.Device.BackendOrDefault()
 	switch backend {
 	case "hdmi":
@@ -1409,6 +1391,19 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+// modelProviderSupportsResponses checks the resolved provider transport rather
+// than the configured provider-record name. Named custom OpenAI-compatible
+// endpoints therefore remain valid, while native Anthropic and Ollama clients
+// are rejected before a configuration is persisted or used at startup.
+func (c Config) modelProviderSupportsResponses() bool {
+	providerType := strings.TrimSpace(c.Model.Provider)
+	if provider, ok := c.ModelProviders[providerType]; ok {
+		providerType = strings.TrimSpace(provider.Type)
+	}
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsResponses
 }
 
 // isKnownProviderType reports whether the value names a built-in model

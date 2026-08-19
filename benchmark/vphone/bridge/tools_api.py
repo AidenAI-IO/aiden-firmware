@@ -353,7 +353,7 @@ class VPhoneToolsAPIHandler:
                 end = _normalized_point_arg(tool_input, field="end", x_key="end_x", y_key="end_y")
                 x1, y1 = _to_pixels(start, width, height)
                 x2, y2 = _to_pixels(end, width, height)
-                duration = _duration_ms_arg(tool_input.get("duration_ms"), 300)
+                duration = _duration_ms_arg(tool_input.get("duration_ms"), 300 if gesture_type == "swipe" else 700)
                 return self._execute_device(
                     lambda: device.swipe(x1, y1, x2, y2, duration),
                     log_name, log_input, f"swipe {x1} {y1} {x2} {y2} duration={duration}",
