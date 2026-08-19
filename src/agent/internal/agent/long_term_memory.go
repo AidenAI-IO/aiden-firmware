@@ -266,11 +266,14 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 		if matches[i].Result.Confidence != matches[j].Result.Confidence {
 			return matches[i].Result.Confidence > matches[j].Result.Confidence
 		}
-		// Screen Memory answers "the one I just saved", so the most recent must
-		// win. Memory IDs begin with a fixed-width nanosecond timestamp, so
-		// descending ID order is chronological. Scoped to this type; every
-		// other type keeps its existing ascending order.
-		if isScreenMemoryType(matches[i].Result.Type) && isScreenMemoryType(matches[j].Result.Type) {
+		iScreen := isScreenMemoryType(matches[i].Result.Type)
+		jScreen := isScreenMemoryType(matches[j].Result.Type)
+		if iScreen != jScreen {
+			return iScreen
+		}
+		// Screen Memory answers "the one I just saved", so tied snapshots sort
+		// newest-first. Other memory types preserve their existing ID order.
+		if iScreen {
 			return matches[i].Result.ID > matches[j].Result.ID
 		}
 		return matches[i].Result.ID < matches[j].Result.ID

@@ -104,6 +104,43 @@ func TestScreenMemoryOrderedNewestFirst(t *testing.T) {
 	}
 }
 
+func TestScreenMemoryMixedTypeOrderingIsTransitiveBeforeLimit(t *testing.T) {
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))
+	addScreenMemory(t, store, "mem_1700000000000000002_screen_old", "Older screen", "same topic", nil, nil)
+	addScreenMemory(t, store, "mem_1700000000000000004_screen_new", "Newer screen", "same topic", nil, nil)
+	for _, id := range []string{"mem_1700000000000000001_fact_old", "mem_1700000000000000003_fact_new"} {
+		if _, err := store.AddMemory(context.Background(), MemoryItem{
+			ID:               id,
+			Type:             "fact",
+			Priority:         80,
+			Confidence:       1.0,
+			Title:            id,
+			Content:          "same topic",
+			EvidenceExcerpts: []string{"same topic"},
+		}); err != nil {
+			t.Fatalf("AddMemory(%s) error = %v", id, err)
+		}
+	}
+
+	results, err := store.Search(context.Background(), MemoryQuery{Limit: 3})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	want := []string{
+		"mem_1700000000000000004_screen_new",
+		"mem_1700000000000000002_screen_old",
+		"mem_1700000000000000001_fact_old",
+	}
+	if len(results) != len(want) {
+		t.Fatalf("Search() returned %d results, want %d", len(results), len(want))
+	}
+	for i := range want {
+		if results[i].ID != want[i] {
+			t.Fatalf("result[%d] = %q, want %q", i, results[i].ID, want[i])
+		}
+	}
+}
+
 func TestTwoCapturesOfSameScreenBothSurvive(t *testing.T) {
 	// The data-loss guard. Had DecideAction been in the pipeline, overlapping
 	// tags and entities would have marked the earlier entry "replaced" and

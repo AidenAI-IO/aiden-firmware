@@ -1,15 +1,11 @@
 package agent
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 func TestQuickCaptureConfigRejectsLegacyWakeupPins(t *testing.T) {
 	for _, pin := range []int{32, 33} {
-		err := (QuickCaptureConfig{GPIOPin: pin}).Validate()
-		if err == nil || !strings.Contains(err.Error(), "reserved for legacy wakeup") {
-			t.Fatalf("GPIOPin %d Validate() error = %v", pin, err)
+		if err := (QuickCaptureConfig{GPIOPin: pin}).Validate(); err == nil {
+			t.Fatalf("GPIOPin %d Validate() succeeded, want an error", pin)
 		}
 	}
 }

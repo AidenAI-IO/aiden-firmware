@@ -14,21 +14,7 @@ type promptSoundKind int
 const (
 	promptSoundRecordingStart promptSoundKind = iota
 	promptSoundAgentSend
-)
 
-// String is the log label for a tone.
-func (k promptSoundKind) String() string {
-	switch k {
-	case promptSoundRecordingStart:
-		return "recording_start"
-	case promptSoundAgentSend:
-		return "agent_send"
-	default:
-		return "unknown"
-	}
-}
-
-const (
 	promptSoundSampleRate = 16000
 	promptSoundChannels   = 1
 	promptSoundBitWidth   = 16

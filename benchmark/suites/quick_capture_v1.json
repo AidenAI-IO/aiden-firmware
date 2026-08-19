@@ -174,7 +174,7 @@
     {
       "id": "route_screen_memory_away_from_session",
       "category": "memory",
-      "description_for_judge": "A screen_snapshot and a normal long-term fact contain competing approval codes. The phrase 'saved with the device button' must route to screen_snapshot recall, never session history or the normal fact.",
+      "description_for_judge": "A screen_snapshot and a normal long-term fact contain competing approval codes. Recall evidence must include the expected screen record, and the answer must use that record rather than session history or the competing fact. The exact recall query shape is not prescribed.",
       "setup": {
         "type": "seed_memory",
         "clear_history_after": true,
@@ -202,7 +202,7 @@
       "prompt": "刚才 OA 通过那个码是多少来着？",
       "expected_recalled_memory_ids": ["mem_1700000000000000500_qc_approval_screen"],
       "rubric": [
-        {"id": "routes_to_screen_snapshot", "check": "The agent uses recall_memory with screen_snapshot type filtering."},
+        {"id": "routes_to_screen_snapshot", "check": "The recall_memory evidence includes mem_1700000000000000500_qc_approval_screen and the answer is grounded in that screen record."},
         {"id": "ignores_competing_fact", "check": "The final answer gives OA-SC-8821 from the captured screen record rather than the competing normal fact OA-SC-1140."}
       ],
       "hard_assertions": {
@@ -453,7 +453,7 @@
         "clear_history_after": true,
         "memories": [
           {
-            "id": "mem_1700000000000000500_qc_old_order",
+            "id": "mem_1700000000000001100_qc_old_order",
             "type": "screen_snapshot",
             "title": "旧订单详情",
             "content": "订单详情。\n\n- 订单号：ORD-OLD-771\n- 金额：￥88.00",
@@ -462,7 +462,7 @@
             "priority": 80
           },
           {
-            "id": "mem_1700000000000000501_qc_new_order",
+            "id": "mem_1700000000000001101_qc_new_order",
             "type": "screen_snapshot",
             "title": "新订单详情",
             "content": "订单详情。\n\n- 订单号：ORD-NEW-992\n- 金额：￥188.00",
@@ -473,10 +473,10 @@
         ]
       },
       "prompt": "ORD-OLD-771 那张别记了，新的 ORD-NEW-992 留着。",
-      "expected_recalled_memory_ids": ["mem_1700000000000000500_qc_old_order"],
+      "expected_recalled_memory_ids": ["mem_1700000000000001100_qc_old_order"],
       "rubric": [
         {"id": "finds_requested_old_snapshot", "check": "The agent recalls the old ORD-OLD-771 screen_snapshot before deletion."},
-        {"id": "forgets_only_old_snapshot", "check": "forget_memory is called with mem_1700000000000000500_qc_old_order and not with the newer snapshot ID."},
+        {"id": "forgets_only_old_snapshot", "check": "forget_memory is called with mem_1700000000000001100_qc_old_order and not with the newer snapshot ID."},
         {"id": "confirms_preserved_new_snapshot", "check": "The final response says the old snapshot was removed while ORD-NEW-992 was preserved."}
       ],
       "hard_assertions": {
@@ -487,7 +487,7 @@
         "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
         "required_tool_calls": [
           {"tool": "recall_memory"},
-          {"tool": "forget_memory", "input_contains": {"id": "mem_1700000000000000500_qc_old_order"}}
+          {"tool": "forget_memory", "input_contains": {"id": "mem_1700000000000001100_qc_old_order"}}
         ]
       }
     }

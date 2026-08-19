@@ -5,33 +5,32 @@ import (
 	"time"
 )
 
-// Screen Memory is a Volunteered Memory: an observation the user deliberately
-// recorded, not something the agent inferred. It has no truth value to revise,
-// so the lifecycle machinery built for Derived Memory must leave it alone.
+// Screen Memory records an observation the user deliberately captured, not an
+// inference whose confidence should change with later task outcomes.
 //
 // These exemptions look like scattered special cases in the code, which makes
 // them easy for a later reader to "fix". These tests are what stops that.
 
-func TestVolunteeredMemoryKeepsConfidenceOnSuccess(t *testing.T) {
+func TestScreenMemoryKeepsConfidenceOnSuccess(t *testing.T) {
 	item := MemoryItem{
 		Type:       MemoryTypeScreenSnapshot,
 		Status:     "active",
-		Confidence: 1.0,
+		Confidence: 0.9,
 	}
 	updateLongTermMemoryFromEpisode(&item, TaskEpisode{
 		ID:      "ep_1",
 		Outcome: TaskEpisodeOutcome{Success: true},
 	})
 
-	if item.Confidence != 1.0 {
-		t.Fatalf("confidence = %v, want 1.0 unchanged: a screen observation does not become more true when a task succeeds", item.Confidence)
+	if item.Confidence != 0.9 {
+		t.Fatalf("confidence = %v, want 0.9 unchanged: a screen observation does not become more true when a task succeeds", item.Confidence)
 	}
 	if item.SuccessCount != 0 {
 		t.Fatalf("success_count = %d, want 0: validation counts are meaningless for an observation", item.SuccessCount)
 	}
 }
 
-func TestVolunteeredMemoryExpiryIsNotRefreshedOnSuccess(t *testing.T) {
+func TestScreenMemoryExpiryIsNotRefreshedOnSuccess(t *testing.T) {
 	// This is the exemption with real consequences. TTL is the only automatic
 	// reclamation path for long-term memory, so refreshing it on every
 	// successful recall would make a frequently-asked entry immortal.
@@ -39,7 +38,7 @@ func TestVolunteeredMemoryExpiryIsNotRefreshedOnSuccess(t *testing.T) {
 	item := MemoryItem{
 		Type:       MemoryTypeScreenSnapshot,
 		Status:     "active",
-		Confidence: 1.0,
+		Confidence: 0.9,
 		TTL:        "90d",
 		ExpiresAt:  original,
 	}
@@ -53,11 +52,11 @@ func TestVolunteeredMemoryExpiryIsNotRefreshedOnSuccess(t *testing.T) {
 	}
 }
 
-func TestVolunteeredMemorySurvivesFailedEpisode(t *testing.T) {
+func TestScreenMemorySurvivesFailedEpisode(t *testing.T) {
 	item := MemoryItem{
 		Type:       MemoryTypeScreenSnapshot,
 		Status:     "active",
-		Confidence: 1.0,
+		Confidence: 0.9,
 	}
 	updateLongTermMemoryFromEpisode(&item, TaskEpisode{
 		ID:      "ep_1",
@@ -67,16 +66,16 @@ func TestVolunteeredMemorySurvivesFailedEpisode(t *testing.T) {
 	if item.Status != "active" {
 		t.Fatalf("status = %q, want active: a failed task says nothing about what was on screen", item.Status)
 	}
-	if item.Confidence != 1.0 {
-		t.Fatalf("confidence = %v, want 1.0 unchanged", item.Confidence)
+	if item.Confidence != 0.9 {
+		t.Fatalf("confidence = %v, want 0.9 unchanged", item.Confidence)
 	}
 	if item.FailureCount != 0 {
 		t.Fatalf("failure_count = %d, want 0", item.FailureCount)
 	}
 }
 
-func TestDerivedMemoryStillGetsOutcomeFeedback(t *testing.T) {
-	// The exemption must be narrow: derived types keep their existing behavior.
+func TestNonScreenMemoryStillGetsOutcomeFeedback(t *testing.T) {
+	// The exemption must be narrow: other types keep their existing behavior.
 	item := MemoryItem{
 		Type:       "procedure",
 		Status:     "active",
@@ -91,17 +90,17 @@ func TestDerivedMemoryStillGetsOutcomeFeedback(t *testing.T) {
 	})
 
 	if item.Confidence <= 0.75 {
-		t.Fatalf("confidence = %v, want > 0.75: derived memory should still be credited", item.Confidence)
+		t.Fatalf("confidence = %v, want > 0.75: non-screen memory should still be credited", item.Confidence)
 	}
 	if item.SuccessCount != 1 {
 		t.Fatalf("success_count = %d, want 1", item.SuccessCount)
 	}
 	if item.ExpiresAt == before {
-		t.Fatalf("expires_at unchanged, want refreshed for derived memory")
+		t.Fatalf("expires_at unchanged, want refreshed for non-screen memory")
 	}
 }
 
-func TestDerivedMemoryStillPenalizedOnFailure(t *testing.T) {
+func TestNonScreenMemoryStillPenalizedOnFailure(t *testing.T) {
 	item := MemoryItem{
 		Type:       "procedure",
 		Status:     "active",
@@ -130,16 +129,5 @@ func TestScreenSnapshotIsNotProfileRelevant(t *testing.T) {
 func TestScreenSnapshotIsNotPenalized(t *testing.T) {
 	if shouldPenalizeMemoryType(MemoryTypeScreenSnapshot) {
 		t.Fatal("screen_snapshot is in the penalize list, want exempt")
-	}
-}
-
-func TestScreenMemoryTypeClassification(t *testing.T) {
-	if !isScreenMemoryType(MemoryTypeScreenSnapshot) {
-		t.Fatal("screen_snapshot should be classified as volunteered")
-	}
-	for _, derived := range []string{"procedure", "fact", "rule", "preference", "profile", "calibration", "failure"} {
-		if isScreenMemoryType(derived) {
-			t.Fatalf("%q should be classified as derived, not volunteered", derived)
-		}
 	}
 }

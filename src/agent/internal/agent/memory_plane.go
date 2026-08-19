@@ -536,8 +536,8 @@ func updateLongTermMemoryFromEpisode(item *MemoryItem, episode TaskEpisode) {
 			item.Confidence = clampConfidence(item.Confidence - 0.25)
 			return
 		}
-		// A volunteered memory records what was observed, so a successful task
-		// neither validates it nor earns it more time.
+		// A screen memory records what was observed, so a successful task neither
+		// validates it nor earns it more time.
 		if isScreenMemoryType(item.Type) {
 			return
 		}

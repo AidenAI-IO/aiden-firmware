@@ -99,13 +99,11 @@ func TestScreenMemoryPipelineWritesRetrievableMemory(t *testing.T) {
 	if got.Confidence != 0.9 {
 		t.Fatalf("confidence = %v, want 0.9", got.Confidence)
 	}
-	// Key text must survive into the content verbatim, or the specific value
-	// the user will ask about is unanswerable.
-	if !strings.Contains(got.Content, "SF1234567890") {
-		t.Fatalf("content does not contain the key text verbatim: %q", got.Content)
-	}
-	if !strings.Contains(got.Content, "预计明天送达") {
-		t.Fatalf("content dropped a key text entry: %q", got.Content)
+	// Key text must survive into the body verbatim, or the specific value the
+	// user will ask about is unanswerable.
+	wantContent := "WeChat chat window showing a SF Express tracking number\n\n- SF1234567890\n- 预计明天送达"
+	if got.Content != wantContent {
+		t.Fatalf("content = %q, want %q", got.Content, wantContent)
 	}
 }
 
