@@ -2230,6 +2230,29 @@ func TestHIDDeviceWriteReopensAfterWatchdogRefreshState(t *testing.T) {
 	}
 }
 
+func TestTriggerUSBCompositeRefreshUsesConfiguredCommand(t *testing.T) {
+	dir := t.TempDir()
+	commandPath := filepath.Join(dir, "usb-refresh")
+	argsPath := filepath.Join(dir, "args")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$AIDEN_USB_REFRESH_TEST_ARGS\"\n"
+	if err := os.WriteFile(commandPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write refresh command: %v", err)
+	}
+	t.Setenv("AIDEN_USB_COMPOSITE_REFRESH_COMMAND", commandPath)
+	t.Setenv("AIDEN_USB_REFRESH_TEST_ARGS", argsPath)
+
+	if err := triggerUSBCompositeRefresh(""); err != nil {
+		t.Fatalf("triggerUSBCompositeRefresh returned error: %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read refresh arguments: %v", err)
+	}
+	if string(args) != "refresh\n" {
+		t.Fatalf("refresh arguments = %q, want %q", args, "refresh\\n")
+	}
+}
+
 func TestHIDDeviceWriteReturnsNonRetryableError(t *testing.T) {
 	dev := &HIDDevice{
 		path: "fake-hid",

@@ -1,0 +1,73 @@
+#!/bin/sh
+set -eu
+
+binary=${FRAME_SERVICE_BIN:-/oem/usr/bin/frame_service}
+socket=${SOCKET_PATH:-/run/frame_service/frame_service.sock}
+fps=${FRAME_SERVICE_FPS:-30}
+width=${FRAME_SERVICE_WIDTH:-1920}
+height=${FRAME_SERVICE_HEIGHT:-1080}
+requested_subdev=${FRAME_SERVICE_SUBDEV:-}
+requested_force=${FRAME_SERVICE_FORCE_TRIGGER:-auto}
+requested_edid=${FRAME_SERVICE_EDID:-auto}
+tc_edid=${FRAME_SERVICE_TC358743_EDID:-/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex}
+hpd_low=${FRAME_SERVICE_TC358743_HPD_LOW_SECONDS:-2}
+settle=${FRAME_SERVICE_TC358743_SETTLE_SECONDS:-5}
+
+detect_subdev() {
+    for name_file in /sys/class/video4linux/v4l-subdev*/name; do
+        [ -r "${name_file}" ] || continue
+        name=$(cat "${name_file}")
+        case "${name}" in
+            *rk628-csi*|*tc358743*) echo "/dev/$(basename "$(dirname "${name_file}")")"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+subdev=${requested_subdev}
+elapsed=0
+while [ -z "${subdev}" ] && [ "${elapsed}" -lt 20 ]; do
+    subdev=$(detect_subdev || true)
+    [ -n "${subdev}" ] || sleep 1
+    elapsed=$((elapsed + 1))
+done
+[ -n "${subdev}" ] || { echo "HDMI bridge subdevice did not appear" >&2; exit 1; }
+name_file=/sys/class/video4linux/$(basename "${subdev}")/name
+bridge_name=$(cat "${name_file}" 2>/dev/null || true)
+
+case "${requested_force}" in
+    0|1) force=${requested_force} ;;
+    auto|'') case "${bridge_name}" in *tc358743*) force=1 ;; *) force=0 ;; esac ;;
+    *) echo "Invalid FRAME_SERVICE_FORCE_TRIGGER=${requested_force}" >&2; exit 1 ;;
+esac
+case "${requested_edid}" in
+    auto|'') case "${bridge_name}" in *tc358743*) edid=${tc_edid} ;; *) edid= ;; esac ;;
+    *) edid=${requested_edid} ;;
+esac
+
+case "${bridge_name}" in
+    *tc358743*)
+        if [ "${force}" = 1 ]; then
+            [ -r "${edid}" ] || { echo "TC358743 EDID is unreadable: ${edid}" >&2; exit 1; }
+            command -v v4l2-ctl >/dev/null
+            v4l2-ctl -d "${subdev}" --clear-edid=pad=0
+            sleep "${hpd_low}"
+            if v4l2-ctl --help-edid 2>&1 | grep -q -- '--fix-edid-checksums'; then
+                fix_checksums=--fix-edid-checksums
+            else
+                fix_checksums=
+            fi
+            v4l2-ctl -d "${subdev}" \
+                --set-edid="pad=0,file=${edid}" ${fix_checksums:+"${fix_checksums}"}
+            sleep "${settle}"
+            force=0
+        fi
+        ;;
+esac
+
+set -- --socket "${socket}" --fps "${fps}" --subdev "${subdev}"
+[ -z "${width}" ] || set -- "$@" --width "${width}"
+[ -z "${height}" ] || set -- "$@" --height "${height}"
+if [ "${force}" = 1 ]; then set -- "$@" --force-trigger; else set -- "$@" --no-force-trigger; fi
+[ -z "${edid}" ] || set -- "$@" --edid "${edid}"
+exec "${binary}" "$@"

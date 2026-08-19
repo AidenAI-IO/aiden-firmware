@@ -3,6 +3,11 @@ from pathlib import Path
 
 import pytest
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
+
 from runner import config as runner_config
 from runner import webui
 

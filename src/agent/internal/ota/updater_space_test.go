@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -58,6 +59,43 @@ func TestUpdaterIgnoresStorageIdentityFromJSON(t *testing.T) {
 			updater.config.StorageDevicePath,
 			updater.config.StorageFilesystem,
 		)
+	}
+}
+
+func TestDefaultUpdaterUsesPartlabelPaths(t *testing.T) {
+	config := DefaultUpdaterConfig()
+	if config.StorageDevicePath != "/dev/disk/by-partlabel/ota" {
+		t.Fatalf("StorageDevicePath = %q, want by-partlabel OTA path", config.StorageDevicePath)
+	}
+	if config.MiscPath != "/dev/disk/by-partlabel/misc" {
+		t.Fatalf("MiscPath = %q, want by-partlabel misc path", config.MiscPath)
+	}
+	if config.BlockDir != "/dev/disk/by-partlabel" {
+		t.Fatalf("BlockDir = %q, want by-partlabel directory", config.BlockDir)
+	}
+}
+
+func TestPreferExistingPathRetainsLegacyCompatibility(t *testing.T) {
+	dir := t.TempDir()
+	primary := filepath.Join(dir, "by-partlabel", "ota")
+	legacy := filepath.Join(dir, "by-name", "ota")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatalf("MkdirAll(legacy) error = %v", err)
+	}
+	if err := os.WriteFile(legacy, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile(legacy) error = %v", err)
+	}
+	if got := preferExistingPath(primary, legacy); got != legacy {
+		t.Fatalf("preferExistingPath() = %q, want legacy %q", got, legacy)
+	}
+	if err := os.MkdirAll(filepath.Dir(primary), 0o755); err != nil {
+		t.Fatalf("MkdirAll(primary) error = %v", err)
+	}
+	if err := os.WriteFile(primary, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile(primary) error = %v", err)
+	}
+	if got := preferExistingPath(primary, legacy); got != primary {
+		t.Fatalf("preferExistingPath() = %q, want primary %q", got, primary)
 	}
 }
 
@@ -310,5 +348,120 @@ func TestUpdaterCapacityCreditsResumablePartialDownload(t *testing.T) {
 	}
 	if !result.Updated {
 		t.Fatalf("CheckOnce() = %+v, want update", result)
+	}
+}
+
+func TestUpdaterStreamsOneVerifiedAssetAtATimeWithinLargestAssetBudget(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	assets := map[string][]byte{
+		"boot_a.img": []byte("boot-a-v2"),
+		"boot_b.img": []byte("boot-b-v2"),
+		"oem_a.img":  []byte("oem-a-v2"),
+		"oem_b.img":  []byte("oem-b-v2"),
+		"rootfs.img": []byte("rootfs-v2"),
+	}
+	manifest := env.signedManifest(assets, nil)
+	ab, err := readMiscFile(env.miscPath)
+	if err != nil {
+		t.Fatalf("readMiscFile() error = %v", err)
+	}
+	ab.Slots[SlotB] = SlotData{Priority: MaxPriority - 1, SuccessfulBoot: true}
+	if err := writeMiscFile(env.miscPath, ab); err != nil {
+		t.Fatalf("writeMiscFile() error = %v", err)
+	}
+
+	var invariantMu sync.Mutex
+	var invariantErr string
+	setInvariantErr := func(format string, args ...any) {
+		invariantMu.Lock()
+		defer invariantMu.Unlock()
+		if invariantErr == "" {
+			invariantErr = fmt.Sprintf(format, args...)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
+			var release struct {
+				Assets []githubAsset `json:"assets"`
+			}
+			release.Assets = append(release.Assets, githubAsset{Name: "manifest.json", BrowserDownloadURL: "http://" + r.Host + "/assets/manifest.json"})
+			for _, name := range []string{"boot_b.img", "oem_b.img", "rootfs.img"} {
+				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "http://" + r.Host + "/assets/" + name})
+			}
+			_ = json.NewEncoder(w).Encode(release)
+			return
+		}
+		if r.URL.Path == "/assets/manifest.json" {
+			_, _ = w.Write(manifest)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/assets/")
+		switch name {
+		case "boot_b.img":
+			current, readErr := readMiscFile(env.miscPath)
+			if readErr != nil || !current.Bootable(SlotB) {
+				setInvariantErr("target slot was invalidated before the first asset was downloaded: misc=%+v err=%v", current.Slots[SlotB], readErr)
+			}
+		case "oem_b.img":
+			assertStreamedPartComplete(env, "boot_b", "boot-b-v2", "boot_b.img", setInvariantErr)
+		case "rootfs.img":
+			assertStreamedPartComplete(env, "oem_b", "oem-b-v2", "oem_b.img", setInvariantErr)
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		body := assets[name]
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
+	env.config.DownloadSafetyMarginBytes = 64
+	largest := int64(0)
+	total := int64(0)
+	for _, name := range []string{"boot_b.img", "oem_b.img", "rootfs.img"} {
+		size := int64(len(assets[name]))
+		total += size
+		if size > largest {
+			largest = size
+		}
+	}
+	if largest >= total {
+		t.Fatalf("test assets do not exercise streaming budget: largest=%d total=%d", largest, total)
+	}
+	updater := env.updater()
+	updater.availableBytes = func(string) (int64, error) { return largest + env.config.DownloadSafetyMarginBytes, nil }
+	if _, err := updater.CheckOnce(context.Background()); err != nil {
+		t.Fatalf("CheckOnce() error = %v", err)
+	}
+	invariantMu.Lock()
+	gotInvariantErr := invariantErr
+	invariantMu.Unlock()
+	if gotInvariantErr != "" {
+		t.Fatal(gotInvariantErr)
+	}
+	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), "rootfs-v2")
+	if _, err := os.Stat(filepath.Join(env.downloadDir, "rootfs.img")); !os.IsNotExist(err) {
+		t.Fatalf("rootfs cache still exists after streaming update: %v", err)
+	}
+}
+
+func assertStreamedPartComplete(env *updaterTestEnv, blockName string, wantContent string, cacheName string, fail func(string, ...any)) {
+	content, err := os.ReadFile(filepath.Join(env.blockDir, blockName))
+	if err != nil || string(content) != wantContent {
+		fail("streamed partition %s = %q err=%v, want %q", blockName, content, err, wantContent)
+		return
+	}
+	if _, err := os.Stat(filepath.Join(env.downloadDir, cacheName)); !os.IsNotExist(err) {
+		fail("streamed cache %s still exists before the next asset download: %v", cacheName, err)
+		return
+	}
+	ab, err := readMiscFile(env.miscPath)
+	if err != nil {
+		fail("read misc after streaming %s: %v", blockName, err)
+		return
+	}
+	if ab.Bootable(SlotB) || ab.Slots[SlotB] != (SlotData{}) {
+		fail("target slot after streaming %s = %+v, want unbootable", blockName, ab.Slots[SlotB])
 	}
 }

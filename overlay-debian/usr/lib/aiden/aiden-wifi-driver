@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+ko_dir=/oem/usr/ko
+insert_if_present() {
+    module=$1
+    shift
+    path=${ko_dir}/${module}
+    [ -f "${path}" ] || return 0
+    sys_name=$(basename "${module}" .ko | tr '-' '_')
+    [ -d "/sys/module/${sys_name}" ] || insmod "${path}" "$@"
+}
+
+insert_if_present libarc4.ko
+insert_if_present ctr.ko
+insert_if_present ccm.ko
+insert_if_present aes_generic.ko
+insert_if_present cfg80211.ko
+insert_if_present aic8800_bsp.ko aic_fw_path=/oem/usr/ko/aic8800dc_fw
+sleep 1
+insert_if_present aic8800_fdrv.ko
+sleep 2
+insert_if_present aic8800_btlpm.ko
+
+[ -e /sys/class/net/wlan0 ] || {
+    echo "AIC8800 modules loaded but wlan0 did not appear" >&2
+    exit 1
+}

@@ -1,0 +1,14 @@
+[Unit]
+Description=Register Aiden OEM glibc libraries
+Requires=oem.mount
+After=oem.mount
+Before=aiden-environment.service aiden-media-modules.service aiden-wifi-driver.service
+ConditionDirectoryNotEmpty=/oem/usr/lib
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/ldconfig
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

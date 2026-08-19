@@ -4,6 +4,8 @@ set -eu
 repo_root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 config="$repo_root/overlay/etc/aiden_frame_service.conf"
 init_script="$repo_root/overlay/etc/init.d/S52frame_service"
+debian_start="$repo_root/overlay-debian/usr/lib/aiden/aiden-frame-start"
+sdk_source="$repo_root/src/aiden_sdk.cpp"
 tc_edid="$repo_root/overlay/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex"
 
 grep -q '^FRAME_SERVICE_FORCE_TRIGGER=auto$' "$config"
@@ -26,7 +28,15 @@ grep -q '\*tc358743\*) echo "$FRAME_SERVICE_TC358743_EDID"' "$init_script"
 grep -q 'force_trigger="$(resolve_force_trigger ' "$init_script"
 grep -q 'edid="$(resolve_edid ' "$init_script"
 grep -q -- '--clear-edid=pad=0' "$init_script"
-grep -q -- '--set-edid="pad=0,file=$edid" --fix-edid-checksums' "$init_script"
+grep -q -- "v4l2-ctl --help-edid 2>&1 | grep -q -- '--fix-edid-checksums'" "$init_script"
+grep -q -- '--set-edid="pad=0,file=$edid" ${fix_checksums:+"$fix_checksums"}' "$init_script"
+grep -q -- "v4l2-ctl --help-edid 2>&1 | grep -q -- '--fix-edid-checksums'" "$debian_start"
+grep -q -- '--set-edid="pad=0,file=${edid}" ${fix_checksums:+"${fix_checksums}"}' "$debian_start"
+grep -q 'normalize_edid_checksums' "$sdk_source"
+if grep -q -- '"--fix-edid-checksums"' "$sdk_source"; then
+    echo "FAIL: SDK binary still requires a version-specific v4l2-ctl checksum option" >&2
+    exit 1
+fi
 grep -q 'prepare_tc358743_edid "$subdev" "$edid"' "$init_script"
 grep -q '\[ "$bridge_prepared" = "1" \]' "$init_script"
 grep -q '^[[:space:]]*force_trigger=0$' "$init_script"
@@ -51,6 +61,15 @@ if [ "$prepare_line" -ge "$force_arg_line" ] || \
     exit 1
 fi
 cmp "$repo_root/edid/hdmi_1080p30_cta.hex" "$tc_edid"
+python3 - "$tc_edid" <<'PY'
+import pathlib
+import sys
+
+values = [int(token, 16) for token in pathlib.Path(sys.argv[1]).read_text().split()]
+assert values and len(values) % 128 == 0
+assert all(sum(values[offset:offset + 128]) % 256 == 0
+           for offset in range(0, len(values), 128))
+PY
 
 run_stream_mode_fixture() {
     mode="$1"
