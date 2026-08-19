@@ -72,7 +72,61 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("./scripts/start_docker_sandbox.sh", makefile)
         self.assertNotIn("down -v", start_script)
         self.assertIn("sandbox-update:", makefile)
-        self.assertIn("./scripts/start_docker_sandbox.sh --build", makefile)
+        self.assertIn("./scripts/start_docker_sandbox.sh --no-build", makefile)
+
+    def run_start_script(self, *arguments: str) -> list[str]:
+        """Run the start script against a fake docker and return its `up` args."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            invocations = temporary_path / "docker-invocations"
+            docker = temporary_path / "docker"
+            docker.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = compose ] && [ "$2" = up ] && [ "$3" = --help ]; then\n'
+                "    printf '  --build\\n  --wait\\n  --wait-timeout duration\\n'\n"
+                "    exit 0\n"
+                "fi\n"
+                'printf \'%s\\n\' "$*" >>"$AIDEN_FAKE_DOCKER_LOG"\n'
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            docker.chmod(0o755)
+
+            environment = os.environ.copy()
+            environment["PATH"] = f"{temporary_path}{os.pathsep}{environment['PATH']}"
+            environment["AIDEN_FAKE_DOCKER_LOG"] = str(invocations)
+            completed = subprocess.run(
+                [str(REPO_ROOT / "scripts/start_docker_sandbox.sh"), *arguments],
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+
+            up_commands = [
+                line
+                for line in invocations.read_text(encoding="utf-8").splitlines()
+                if line.startswith("compose up")
+            ]
+            self.assertEqual(len(up_commands), 1, invocations.read_text())
+            return up_commands[0].split()
+
+    def test_starting_the_sandbox_rebuilds_the_image_by_default(self):
+        self.assertIn("--build", self.run_start_script())
+
+    def test_no_build_reuses_the_existing_sandbox_image(self):
+        self.assertNotIn("--build", self.run_start_script("--no-build"))
+
+    def test_start_script_rejects_unknown_arguments(self):
+        completed = subprocess.run(
+            [str(REPO_ROOT / "scripts/start_docker_sandbox.sh"), "--build"],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--no-build", completed.stderr)
 
     def test_try_aiden_on_pc_is_the_hardware_free_sandbox_entrypoint(self):
         guide = read_repo_file("docs/01-getting-started/try-aiden-on-pc.md")

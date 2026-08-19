@@ -46,9 +46,10 @@ From the repository root:
 make sandbox-start
 ```
 
-The command starts the sandbox in the background and waits for both web services
-to become healthy. The first run builds the image if it does not exist; later
-runs reuse the existing image. When the services are ready, open:
+The command rebuilds the image from the current source, starts the sandbox in the
+background, and waits for both web services to become healthy. Docker layer
+caching keeps repeat runs fast when nothing changed, so the running sandbox
+always matches the working tree. When the services are ready, open:
 
 | Page | URL | Purpose |
 | --- | --- | --- |
@@ -74,15 +75,18 @@ Follow service output with:
 docker compose logs -f
 ```
 
-After changing Aiden source code, rebuild the image, replace the running
-container, and wait for both web services to become healthy with:
+After changing Aiden source code, run `make sandbox-start` again to rebuild the
+image and replace the running container. `make sandbox-update` remains as an
+alias for the same behaviour.
+
+To skip the build and reuse whatever image already exists, run:
 
 ```bash
-make sandbox-update
+make sandbox-start-cached
 ```
 
-The update preserves the `aiden-data` volume. Use `make sandbox-logs` to follow
-the Agent logs and `make sandbox-stop` to stop the sandbox.
+Starting the sandbox preserves the `aiden-data` volume. Use `make sandbox-logs`
+to follow the Agent logs and `make sandbox-stop` to stop the sandbox.
 
 ## Connect an Environment Bridge
 

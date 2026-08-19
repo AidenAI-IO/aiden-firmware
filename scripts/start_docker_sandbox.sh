@@ -5,14 +5,14 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 WAIT_TIMEOUT="${AIDEN_SANDBOX_WAIT_TIMEOUT:-180}"
 CONFIG_WEB_PORT="${AIDEN_CONFIG_WEB_PORT:-8000}"
 AGENT_WEB_PORT="${AIDEN_AGENT_WEB_PORT:-8080}"
-BUILD_IMAGE=false
+BUILD_IMAGE=true
 
-if [[ $# -gt 1 ]] || [[ $# -eq 1 && "$1" != "--build" ]]; then
-    echo "Usage: $0 [--build]" >&2
+if [[ $# -gt 1 ]] || [[ $# -eq 1 && "$1" != "--no-build" ]]; then
+    echo "Usage: $0 [--no-build]" >&2
     exit 2
 fi
-if [[ ${1:-} == "--build" ]]; then
-    BUILD_IMAGE=true
+if [[ ${1:-} == "--no-build" ]]; then
+    BUILD_IMAGE=false
 fi
 
 cd "$ROOT_DIR"
@@ -43,10 +43,10 @@ compose_args=(
     --wait-timeout "$WAIT_TIMEOUT"
 )
 if [[ "$BUILD_IMAGE" == true ]]; then
-    echo "Rebuilding and updating the Aiden Docker sandbox..."
+    echo "Building the current source and starting the Aiden Docker sandbox..."
     compose_args+=(--build)
 else
-    echo "Starting the Aiden Docker sandbox..."
+    echo "Starting the Aiden Docker sandbox from the existing image..."
 fi
 
 if ! docker compose up "${compose_args[@]}" aiden; then
