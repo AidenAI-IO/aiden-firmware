@@ -35,6 +35,19 @@ readonly MPP_SYMBOLS=(
 
 readonly READELF=${READELF:-arm-linux-gnueabihf-readelf}
 readonly GO_EXECUTABLES=(abctl agent ble_service ota)
+readonly RKNN_RUNTIME_VERSION='librknnmrt version: 2.3.2 (429f97ae6b@2025-04-09T09:11:49)'
+readonly RKNN_STATIC_SYMBOLS=(
+    __ctype_b
+    __ctype_tolower
+    aiden_rknn_glibc_compat_init
+    rknn_create_mem
+    rknn_destroy
+    rknn_destroy_mem
+    rknn_init
+    rknn_query
+    rknn_run
+    rknn_set_io_mem
+)
 failures=0
 
 fail() {
@@ -126,8 +139,17 @@ done
 
 rknn_needed=$(${READELF} -dW "${APPS_DIR}/bin/rknn_vad" \
     | sed -n 's/.*(NEEDED).*\[\([^]]*\)\].*/\1/p')
-grep -qx librknnrt.so <<<"${rknn_needed}" \
-    || fail "rknn_vad does not link the official full librknnrt.so"
+if grep -Eq '^librknn(rt|mrt)\.so$' <<<"${rknn_needed}"; then
+    fail "rknn_vad has a dynamic RKNN runtime dependency: ${rknn_needed}"
+fi
+rknn_symbols=$(${READELF} --syms -W "${APPS_DIR}/bin/rknn_vad")
+for symbol in "${RKNN_STATIC_SYMBOLS[@]}"; do
+    awk -v symbol="${symbol}" \
+        '$7 != "UND" && $8 == symbol { found = 1 } END { exit !found }' \
+        <<<"${rknn_symbols}" || fail "rknn_vad does not define static symbol ${symbol}"
+done
+grep -aFq "${RKNN_RUNTIME_VERSION}" "${APPS_DIR}/bin/rknn_vad" \
+    || fail "rknn_vad does not embed the expected RKNN mini runtime ${RKNN_RUNTIME_VERSION}"
 
 frame_dynamic_symbols=$(${READELF} --dyn-syms -W "${APPS_DIR}/bin/frame_service")
 for symbol in "${MPP_SYMBOLS[@]}"; do
