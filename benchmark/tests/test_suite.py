@@ -572,7 +572,7 @@ def test_load_suite_allows_task_mock_to_override_suite_default(tmp_path: Path):
     assert suite.tasks[1].mock_environment.platform == "android"
 
 
-def test_load_suite_rejects_partial_task_level_mock_environment_without_default(
+def test_load_suite_allows_mixed_mock_and_real_environment_tasks(
     tmp_path: Path,
 ):
     fixture = {
@@ -594,8 +594,12 @@ def test_load_suite_rejects_partial_task_level_mock_environment_without_default(
     p = tmp_path / "partial-task-mock.json"
     p.write_text(json.dumps(fixture), encoding="utf-8")
 
-    with pytest.raises(SuiteValidationError, match="must define it for every task"):
-        load_suite(p)
+    suite = load_suite(p)
+
+    assert suite.mock_environment is None
+    assert suite.tasks[0].mock_environment is not None
+    assert suite.tasks[0].mock_environment.platform == "ios"
+    assert suite.tasks[1].mock_environment is None
 
 def test_load_suite_rejects_invalid_expected_option_answer(tmp_path: Path):
     fixture = {
@@ -972,6 +976,7 @@ def test_personamem_lt_recall_suite_uses_deterministic_answers():
 
 def test_episode_memory_suite_guards_against_setup_context_leakage():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "episode_memory_v1.json"
+    assert suite_path.read_text(encoding="utf-8").isascii()
     suite = load_suite(suite_path)
     task_by_id = {task.id: task for task in suite.tasks}
     task = task_by_id["reuse_success_episode_for_planning"]
@@ -980,105 +985,70 @@ def test_episode_memory_suite_guards_against_setup_context_leakage():
     assert task.setup["clear_history_after"] is True
     assert "shell" not in task.setup["prompt"].lower()
     assert "current_time" not in task.setup["prompt"]
-    assert any(
-        "recall_device_memory" in item.check and "on-demand" in item.check
-        for item in task.rubric
+    task_text = " ".join(
+        [task.prompt, task.description_for_judge, *(item.check for item in task.rubric)]
     )
+    assert "recall_device_memory" not in task_text
 
 
-def test_episode_memory_before_after_suites_change_only_consolidation():
+def test_episode_memory_conditions_share_natural_and_iphone_tasks():
     suites_dir = Path(__file__).resolve().parents[1] / "suites"
+    for name in (
+        "episode_memory_before_v1.json",
+        "episode_memory_after_v1.json",
+        "episode_memory_legacy_v1.json",
+    ):
+        assert (suites_dir / name).read_text(encoding="utf-8").isascii()
     before = load_suite(suites_dir / "episode_memory_before_v1.json")
     after = load_suite(suites_dir / "episode_memory_after_v1.json")
-
-    assert len(before.tasks) == len(after.tasks) == 1
-    before_task = before.tasks[0]
-    after_task = after.tasks[0]
-    _assert_same_evaluation_task(before_task, after_task)
-    assert before_task.setup["episode"] == after_task.setup["episode"]
-    assert before_task.setup["consolidate"] is False
-    assert after_task.setup["consolidate"] is True
-    assert before.trace_observations == after.trace_observations
-
-
-def test_episode_memory_three_conditions_share_the_same_evaluation_task():
-    suites_dir = Path(__file__).resolve().parents[1] / "suites"
-    pure_episode = load_suite(suites_dir / "episode_memory_before_v1.json")
-    consolidated = load_suite(suites_dir / "episode_memory_after_v1.json")
     legacy = load_suite(suites_dir / "episode_memory_legacy_v1.json")
 
-    pure_task = pure_episode.tasks[0]
-    consolidated_task = consolidated.tasks[0]
-    legacy_task = legacy.tasks[0]
-    _assert_same_evaluation_task(pure_task, consolidated_task, legacy_task)
-    assert pure_task.hard_assertions == consolidated_task.hard_assertions == legacy_task.hard_assertions
-    assert pure_episode.trace_observations == consolidated.trace_observations == legacy.trace_observations
+    assert [task.id for task in before.tasks] == [
+        "qa_notes_title_save_procedure",
+        "settings_ethernet_ipv4_from_episode",
+    ]
+    assert [task.id for task in after.tasks] == [
+        "qa_notes_title_save_procedure",
+        "settings_ethernet_ipv4_from_episode",
+    ]
+    assert [task.id for task in legacy.tasks] == [
+        "qa_notes_title_save_procedure",
+        "settings_ethernet_ipv4_from_episode",
+    ]
 
-    assert pure_task.setup["type"] == consolidated_task.setup["type"] == "seed_episode"
-    assert pure_task.setup["episode"] == consolidated_task.setup["episode"]
-    assert pure_task.setup["consolidate"] is False
-    assert consolidated_task.setup["consolidate"] is True
-    assert legacy_task.setup["type"] == "seed_memory"
-    assert legacy_task.setup["memories"][0]["store"] == "device"
+    for suite in (before, after, legacy):
+        assert len(suite.tasks) == 2
+        assert suite.tasks[0].mock_environment is not None
+        assert suite.tasks[1].mock_environment is None
+        assert suite.tasks[1].platforms == ["ios"]
+        assert suite.tasks[1].setup["type"] in {"seed_episode", "seed_memory"}
 
-    for suite in (pure_episode, consolidated, legacy):
-        assert suite.mock_environment is not None
-        assert suite.mock_environment.tools == {}
+    for before_task, after_task in zip(before.tasks, after.tasks, strict=True):
+        assert before_task.id == after_task.id
+        assert before_task.prompt == after_task.prompt
+        assert before_task.rubric == after_task.rubric
+        assert before_task.hard_assertions == after_task.hard_assertions
 
+    for suite in (before, after, legacy):
+        natural_task = suite.tasks[0]
+        natural_text = " ".join(
+            [
+                natural_task.prompt,
+                natural_task.description_for_judge,
+                *(item.check for item in natural_task.rubric),
+            ]
+        )
+        assert "recall_device_memory" not in natural_text
 
-def test_episode_memory_iphone_three_conditions_share_the_same_execution_task():
-    suites_dir = Path(__file__).resolve().parents[1] / "suites"
-    before = load_suite(suites_dir / "episode_memory_iphone_before_v1.json")
-    after = load_suite(suites_dir / "episode_memory_iphone_after_v1.json")
-    legacy = load_suite(suites_dir / "episode_memory_iphone_legacy_v1.json")
+    assert before.tasks[0].setup["consolidate"] is False
+    assert after.tasks[0].setup["consolidate"] is True
+    assert legacy.tasks[0].setup["type"] == "seed_memory"
+    assert legacy.tasks[1].setup["type"] == "seed_memory"
+    assert legacy.tasks[1].setup["memories"][0]["store"] == "device"
 
-    assert len(before.tasks) == len(after.tasks) == len(legacy.tasks) == 1
-    before_task = before.tasks[0]
-    after_task = after.tasks[0]
-    legacy_task = legacy.tasks[0]
-    assert before_task.id == after_task.id == legacy_task.id == "settings_ethernet_ipv4_from_episode"
-    assert before_task.platforms == after_task.platforms == legacy_task.platforms == ["ios"]
-    assert before_task.prompt == after_task.prompt == legacy_task.prompt
-    assert before_task.prompt.startswith("请在这台 iPhone 上打开系统设置")
-    assert before_task.repeats == after_task.repeats == legacy_task.repeats
-    assert before_task.rubric == after_task.rubric == legacy_task.rubric
-    assert before_task.hard_assertions == after_task.hard_assertions == legacy_task.hard_assertions
-    assert "screenshot" in before_task.hard_assertions.required_tools
-    assert "inspect_episode" in before_task.hard_assertions.forbidden_tools
-    assert before_task.setup["episode"] == after_task.setup["episode"]
-    assert before_task.setup["consolidate"] is False
-    assert after_task.setup["consolidate"] is True
-    assert legacy_task.setup["type"] == "seed_memory"
-    assert legacy_task.setup["memories"][0]["store"] == "device"
-    assert legacy_task.setup["memories"][0]["type"] == "procedure"
-    assert before.trace_observations == after.trace_observations == legacy.trace_observations
-
-    episode = before_task.setup["episode"]
-    assert episode["device_scope"] == {
-        "device_id": "default",
-        "platform": "ios",
-        "app_name": "Settings",
-        "page_name": "Aiden HID+ECM Ethernet IPv4 Details",
-    }
-    assert episode["outcome"]["success"] is True
-    observations = " ".join(
-        str(event.get("observation") or "") for event in episode["events"]
-    )
-    assert "IP Address" in observations
-    assert "Subnet Mask" in observations
-    assert "Router" in observations
-    assert "transient" in observations
-    assert "does not expose the Aiden HID+ECM USB wired interface" in observations
-
-
-def _assert_same_evaluation_task(*tasks):
-    first, *rest = tasks
-    for task in rest:
-        assert task.id == first.id
-        assert task.prompt == first.prompt
-        assert task.expected_answer == first.expected_answer
-        assert task.answer_format == first.answer_format
-        assert task.repeats == first.repeats
+    assert before.tasks[1].setup["consolidate"] is False
+    assert after.tasks[1].setup["consolidate"] is True
+    assert before.tasks[1].setup["episode"] == after.tasks[1].setup["episode"]
 
 
 def test_notes_entry_policy_suite_covers_three_screen_states():

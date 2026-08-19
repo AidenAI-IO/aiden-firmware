@@ -1,27 +1,20 @@
 {
   "name": "episode_memory_before_v1",
   "suite_category": "Memory & Cognition",
-  "description": "Pure-Episode baseline. The completed episode is persisted, but it is not consolidated or directly materialized as memory before evaluation.",
+  "description": "Episode Memory baseline across natural recall and physical-iPhone execution. Completed episodes are persisted but not consolidated before evaluation.",
   "global_reset": {},
-  "mock_environment": {
-    "platform": "ios",
-    "phone_bridge": {},
-    "screen_text": "Static Episode Memory benchmark environment. No device operation is required.",
-    "tools": {}
-  },
-  "trace_observations": [
-    {
-      "id": "recalled_device_memory",
-      "description": "The agent called recall_device_memory on demand while answering the device-specific question.",
-      "tool_name": "recall_device_memory"
-    }
-  ],
   "tasks": [
     {
       "id": "qa_notes_title_save_procedure",
       "category": "memory",
+      "mock_environment": {
+        "platform": "ios",
+        "phone_bridge": {},
+        "screen_text": "Static Episode Memory benchmark environment. No device operation is required.",
+        "tools": {}
+      },
       "description_for_judge": "The agent should select the title-save sequence that was verified in the seeded QA Notes build 7 episode.",
-      "prompt": "This is a multiple-choice memory evaluation, not an instruction to operate the device. Do not inspect the screen, open an app, inspect raw episodes, or use session/long-term memory tools. You may call recall_device_memory exactly once if saved device memory is relevant. If it returns no relevant memory, choose the most likely option and answer immediately without trying another tool.\n\nA note title has already been edited in QA Notes build 7. Based on previously verified device behavior, which sequence should be used to make the changed title persist? End with exactly one final line in the form <final_answer>(a)</final_answer>.\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
+      "prompt": "A note title has already been edited in QA Notes build 7. Based on this device's previously verified behavior, which sequence makes the changed title persist? Do not operate the phone; answer directly. End with exactly one line in the form <final_answer>(a)</final_answer>.\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
       "expected_answer": "(b)",
       "answer_format": "option_letter",
       "repeats": 10,
@@ -33,16 +26,14 @@
       ],
       "hard_assertions": {
         "min_tool_calls": 0,
-        "max_tool_calls": 1,
+        "max_tool_calls": 3,
         "must_complete_within_sec": 90,
         "response_required": true,
         "forbidden_tools": [
-          "inspect_episode",
-          "recall_session_chunks",
-          "recall_memory",
           "screenshot",
           "open_app",
-          "touch_gesture"
+          "touch_gesture",
+          "inspect_episode"
         ]
       },
       "setup": {
@@ -142,6 +133,63 @@
               "tool_name": "touch_gesture",
               "observation": "The changed title remains visible after reopening the note."
             }
+          ]
+        }
+      }
+    },
+    {
+      "id": "settings_ethernet_ipv4_from_episode",
+      "category": "memory",
+      "platforms": ["ios"],
+      "description_for_judge": "The agent must use the real iPhone UI to reach the active Ethernet interface's IPv4 details without modifying network configuration. The final screenshot, rather than the final response, is the source of truth.",
+      "prompt": "On this iPhone, open Settings and find the IPv4 details page for the active Aiden USB wired Ethernet connection. Do not modify, renew, or save any network settings. Finish on a page where IP Address, Subnet Mask, and Router are simultaneously visible, and explicitly call screenshot once before responding.",
+      "repeats": 5,
+      "rubric": [
+        {"id": "reached_ethernet_ipv4_details", "check": "The post-screenshot shows the active Ethernet interface detail page and its IPv4 Address section."},
+        {"id": "shows_all_ipv4_fields", "check": "The post-screenshot simultaneously shows the IP Address, Subnet Mask, and Router field labels, in either Chinese or English."},
+        {"id": "did_not_modify_network_settings", "check": "The trace and post-screenshot show no network-setting modification, renewal, save confirmation, or Configure IP editing screen."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 25,
+        "must_complete_within_sec": 240,
+        "response_required": true,
+        "required_tools": ["screenshot"],
+        "forbidden_tools": ["inspect_episode", "recall_session_chunks", "recall_memory"]
+      },
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": false,
+        "timeout_sec": 90,
+        "episode": {
+          "id": "ep_benchmark_iphone_aiden_hid_ecm_ipv4_wifi_contrast_v2",
+          "status": "completed",
+          "user_goal": "Determine the verified Settings path to the active Aiden USB wired interface and its IPv4 details, explicitly distinguishing it from Wi-Fi, without changing any settings.",
+          "device_scope": {"device_id": "default", "platform": "ios", "app_name": "Settings", "page_name": "Aiden HID+ECM Ethernet IPv4 Details"},
+          "initial_state": {"summary": "The iPhone is on the Home Screen and Settings is not open in the foreground."},
+          "outcome": {
+            "success": true,
+            "final_state": "The Aiden HID+ECM Ethernet interface detail page visibly shows the IPv4 Address section with IP Address, Subnet Mask, and Router labels at the same time.",
+            "final_answer": "The Ethernet IPv4 details page was reached and visually verified without changing the configuration.",
+            "verifier_reason": "The final screenshot observation contains all three required IPv4 field labels on the Ethernet detail page."
+          },
+          "tags": ["ios", "settings", "ethernet", "ipv4", "aiden-hid-ecm", "usb-network", "navigation"],
+          "entities": ["iPhone", "Settings", "Ethernet", "Aiden HID+ECM", "IPv4 Address", "IP Address", "Subnet Mask", "Router"],
+          "events": [
+            {"event_id": "home_screen_call", "type": "tool_call", "tool_name": "screenshot", "tool_input": "{}", "content": "Inspect the iPhone before beginning the navigation."},
+            {"event_id": "home_screen_result", "type": "tool_result", "tool_name": "screenshot", "observation": "The iPhone Home Screen is visible."},
+            {"event_id": "open_settings_call", "type": "tool_call", "tool_name": "open_app", "tool_input": "{\"app_name\":\"Settings\"}", "content": "Open the iOS Settings app."},
+            {"event_id": "open_settings_result", "type": "tool_result", "tool_name": "open_app", "observation": "On this iPhone connected to Aiden hardware, the Settings main page includes a dedicated Ethernet entry for the USB HID+ECM wired connection."},
+            {"event_id": "open_wifi_call", "type": "tool_call", "tool_name": "touch_gesture", "tool_input": "{\"type\":\"tap\",\"target\":\"Wi-Fi\"}", "content": "Check whether the active Aiden USB wired interface is exposed under Wi-Fi."},
+            {"event_id": "open_wifi_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "The Wi-Fi page lists wireless networks and does not expose the Aiden HID+ECM USB wired interface. The wired connection must be accessed through the separate Ethernet section."},
+            {"event_id": "return_settings_call", "type": "tool_call", "tool_name": "quick_action", "tool_input": "{\"action\":\"back\"}", "content": "Return to the Settings main page after ruling out Wi-Fi."},
+            {"event_id": "return_settings_result", "type": "tool_result", "tool_name": "quick_action", "observation": "The Settings main page is visible again with Wi-Fi and Ethernet as separate entries."},
+            {"event_id": "open_ethernet_call", "type": "tool_call", "tool_name": "touch_gesture", "tool_input": "{\"type\":\"tap\",\"target\":\"Ethernet\"}", "content": "Open the Ethernet settings entry."},
+            {"event_id": "open_ethernet_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "The Ethernet page is visible. In the Interfaces section, the active Aiden USB composite network interface is explicitly named Aiden HID+ECM."},
+            {"event_id": "open_interface_call", "type": "tool_call", "tool_name": "touch_gesture", "tool_input": "{\"type\":\"tap\",\"target\":\"Aiden HID+ECM\"}", "content": "Open the Aiden HID+ECM Ethernet interface details."},
+            {"event_id": "open_interface_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "The Aiden HID+ECM interface detail page is visible with an IPv4 Address section."},
+            {"event_id": "verify_ipv4_call", "type": "tool_call", "tool_name": "screenshot", "tool_input": "{}", "content": "Capture the final page without changing, renewing, or saving any network setting."},
+            {"event_id": "verify_ipv4_result", "type": "tool_result", "tool_name": "screenshot", "observation": "The final visible page is the Aiden HID+ECM Ethernet interface detail page. The IPv4 Address section simultaneously shows the IP Address, Subnet Mask, and Router labels. The current values are transient and are intentionally not retained as reusable facts."}
           ]
         }
       }

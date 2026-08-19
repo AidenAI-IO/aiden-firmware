@@ -276,15 +276,6 @@ def load_suite(path: Path) -> Suite:
         )
 
     mock_environment = _parse_mock_environment(data.get("mock_environment"))
-    if mock_environment is None and any(task.mock_environment is not None for task in tasks):
-        missing_task_ids = [task.id for task in tasks if task.mock_environment is None]
-        if missing_task_ids:
-            raise SuiteValidationError(
-                "a suite using task-level mock_environment must define it for every task "
-                "or provide a suite-level mock_environment default; missing: "
-                + ", ".join(missing_task_ids)
-            )
-
     return Suite(
         name=data.get("name", Path(path).stem),
         global_reset=data.get("global_reset") or {},

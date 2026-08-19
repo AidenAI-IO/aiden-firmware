@@ -701,7 +701,8 @@ checks.
 
 #### Episode Memory consolidation diagnostic
 
-The text benchmark has three conditions over the same deterministic task:
+Each of the three suites contains both a natural recall task and a physical-iPhone
+execution task. The conditions are:
 
 1. `before`: the Episode exists but has not produced Memory;
 2. `after`: the Episode Memory Worker processes the same Episode into Device Memory;
@@ -713,25 +714,29 @@ on-demand recall, or use of recalled Memory. The primary comparison is `before`
 versus `after`; the secondary comparison is `after` versus `legacy`. The legacy
 fixture does not execute or benchmark the removed extractor itself.
 
-These suites include a scripted mock environment, so use `--auto-agent-setup`.
+Select the natural recall task and use `--auto-agent-setup` for its scripted mock
+environment.
 It creates a fresh daemon and data directory for every attempt, preventing
 Memory, Episode, session, and context-cache leakage between conditions.
 
 ```bash
 uv run python -m runner run \
   --suite suites/episode_memory_before_v1.json \
+  --task-id qa_notes_title_save_procedure \
   --auto-agent-setup \
   --no-judge \
   --run-id episode-memory-before
 
 uv run python -m runner run \
   --suite suites/episode_memory_after_v1.json \
+  --task-id qa_notes_title_save_procedure \
   --auto-agent-setup \
   --no-judge \
   --run-id episode-memory-after
 
 uv run python -m runner run \
   --suite suites/episode_memory_legacy_v1.json \
+  --task-id qa_notes_title_save_procedure \
   --auto-agent-setup \
   --no-judge \
   --run-id episode-memory-legacy
@@ -744,8 +749,7 @@ uv run python -m runner compare \
 ```
 
 The comparison reports pass-count, median tool-call, and median wall-time
-deltas. Trace observations report on-demand use of `recall_device_memory`; it
-is not forced as the first call.
+deltas. The prompt does not name or force a particular memory tool.
 
 #### Episode Memory physical-iPhone execution comparison
 
@@ -762,11 +766,13 @@ Ethernet page rather than trusting the final response. Task pass rate is the
 primary metric. Tool calls and wall time are secondary efficiency metrics, and
 the recall observation is diagnostic only.
 
-Run every condition with isolated agent state:
+Run the physical-iPhone task from each of the same three suites with isolated
+agent state:
 
 ```bash
 uv run python -m runner run \
-  --suite suites/episode_memory_iphone_before_v1.json \
+  --suite suites/episode_memory_before_v1.json \
+  --task-id settings_ethernet_ipv4_from_episode \
   --agent-url http://<agent-host>:8080 \
   --environment-url http://<physical-device-environment-host>:<port> \
   --target-platform ios \
@@ -774,7 +780,8 @@ uv run python -m runner run \
   --run-id episode-memory-iphone-before
 
 uv run python -m runner run \
-  --suite suites/episode_memory_iphone_after_v1.json \
+  --suite suites/episode_memory_after_v1.json \
+  --task-id settings_ethernet_ipv4_from_episode \
   --agent-url http://<agent-host>:8080 \
   --environment-url http://<physical-device-environment-host>:<port> \
   --target-platform ios \
@@ -782,7 +789,8 @@ uv run python -m runner run \
   --run-id episode-memory-iphone-after
 
 uv run python -m runner run \
-  --suite suites/episode_memory_iphone_legacy_v1.json \
+  --suite suites/episode_memory_legacy_v1.json \
+  --task-id settings_ethernet_ipv4_from_episode \
   --agent-url http://<agent-host>:8080 \
   --environment-url http://<physical-device-environment-host>:<port> \
   --target-platform ios \
