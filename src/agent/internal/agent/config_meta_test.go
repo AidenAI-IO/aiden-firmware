@@ -593,6 +593,23 @@ func TestConfigMeta_ModelReasoningEffortProviderScoping(t *testing.T) {
 	}
 }
 
+func TestConfigMeta_ResponsesStatefulProviderScoping(t *testing.T) {
+	field, ok := fieldIndex(t)["model.api_mode"]
+	if !ok {
+		t.Fatal("missing model.api_mode metadata")
+	}
+	for _, option := range field.Enum {
+		if option.Value != "responses_stateful" {
+			continue
+		}
+		if !reflect.DeepEqual(option.Providers, []string{"openai"}) {
+			t.Fatalf("responses_stateful providers = %#v, want [openai]", option.Providers)
+		}
+		return
+	}
+	t.Fatal("model.api_mode enum missing responses_stateful")
+}
+
 func TestConfigMeta_STTTencentASRProviderMetadata(t *testing.T) {
 	idx := fieldIndex(t)
 

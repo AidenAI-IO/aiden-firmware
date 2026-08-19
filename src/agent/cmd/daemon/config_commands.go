@@ -430,6 +430,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			ResponsesCompactThreshold:  d.Model.ResponsesCompactThreshold,
 			ResponsesTruncation:        d.Model.ResponsesTruncation,
 			ResponsesInclude:           append([]string(nil), d.Model.ResponsesInclude...),
+			ReasoningEffort:            d.Model.ReasoningEffort,
 			Temperature:                d.Model.Temperature,
 			MaxResponseTokens:          d.Model.MaxResponseTokens,
 			ContextWindow:              d.Model.ContextWindow,

@@ -755,7 +755,7 @@ type ModelConfig struct {
 
 func (m ModelConfig) ResponsesProviderCompactionEnabled() bool {
 	apiMode := normalizeModelAPIMode(m.APIMode)
-	return (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) &&
+	return apiMode == modelAPIModeResponsesStateful &&
 		normalizeResponsesContextManagement(m.ResponsesContextManagement) == responsesContextManagementCompaction
 }
 

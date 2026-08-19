@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -94,7 +95,9 @@ bool parse_int(const std::string& raw, int* out, std::string* err) {
     errno = 0;
     char* end = nullptr;
     long v = std::strtol(raw.c_str(), &end, 10);
-    if (errno != 0 || !end || *end != '\0') {
+    if (errno != 0 || !end || *end != '\0' ||
+        v < std::numeric_limits<int>::min() ||
+        v > std::numeric_limits<int>::max()) {
         if (err) *err = "invalid integer: " + raw;
         return false;
     }

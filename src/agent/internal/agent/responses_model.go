@@ -313,7 +313,10 @@ func shouldRetryResponsesWithoutPreviousID(err error) bool {
 	default:
 		return false
 	}
-	text := strings.ToLower(providerErr.ProviderCode + " " + providerErr.Message + " " + providerErr.Body)
+	text := strings.ToLower(strings.TrimSpace(providerErr.ProviderCode + " " + providerErr.Message))
+	if text == "" {
+		text = strings.ToLower(providerErr.Body)
+	}
 	return strings.Contains(text, "previous_response_id") ||
 		strings.Contains(text, "previous response") ||
 		strings.Contains(text, "response not found") ||

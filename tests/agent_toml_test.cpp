@@ -498,6 +498,35 @@ TEST_CASE("agent_toml rejects negative model metadata overrides") {
     }
 }
 
+TEST_CASE("agent_toml rejects invalid Responses compact thresholds") {
+    struct Case {
+        const char* leaf;
+        const char* value;
+    };
+    const Case cases[] = {
+        {"fractional_responses_compact_threshold.toml", "1.5"},
+        {"negative_responses_compact_threshold.toml", "-1"},
+        {"overflow_responses_compact_threshold.toml", "2147483648"},
+    };
+
+    for (const auto& tc : cases) {
+        std::string path = make_temp_path(tc.leaf);
+        {
+            std::ofstream out(path);
+            out << "[model]\n"
+                << "provider = \"fake\"\n"
+                << "responses_compact_threshold = " << tc.value << "\n";
+        }
+
+        aiden::AgentToml cfg;
+        std::string err;
+        CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+        CHECK(err.find("responses_compact_threshold") != std::string::npos);
+
+        std::remove(path.c_str());
+    }
+}
+
 TEST_CASE("agent_toml rejects negative model response token limits") {
     struct Case {
         const char* leaf;

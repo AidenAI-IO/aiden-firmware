@@ -129,9 +129,6 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	// anchor is reset.
 	for i := range newMessageList {
 		newMessageList[i].ResponsesResponseID = ""
-		newMessageList[i].ResponsesReasoningItems = nil
-		newMessageList[i].ResponsesOutputItems = nil
-		newMessageList[i].ResponsesAssistantPhase = ""
 	}
 	// create new context manager
 	newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, newMessageList)

@@ -1985,6 +1985,13 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
         && !validate_required_string(model_section, "model", "provider", false, error)) {
         return false;
     }
+    if (json_is_object(model_section) &&
+        !validate_non_negative_json_integer(
+            cJSON_GetObjectItem(model_section, "responses_compact_threshold"),
+            "model.responses_compact_threshold",
+            error)) {
+        return false;
+    }
 
     return validate_config_field_types_from_metadata(root, *metadata, error);
 }

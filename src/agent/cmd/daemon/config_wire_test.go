@@ -364,6 +364,7 @@ func TestConfigWire_ResponsesSettingsRoundTrip(t *testing.T) {
 		ResponsesCompactThreshold:  32000,
 		ResponsesTruncation:        "auto",
 		ResponsesInclude:           []string{"reasoning.encrypted_content"},
+		ReasoningEffort:            "high",
 	}}
 	dto := webConfigDTOFromAgentConfig(cfg)
 	back := dto.toAgentConfig()
@@ -371,6 +372,7 @@ func TestConfigWire_ResponsesSettingsRoundTrip(t *testing.T) {
 		back.Model.ResponsesContextManagement != cfg.Model.ResponsesContextManagement ||
 		back.Model.ResponsesCompactThreshold != cfg.Model.ResponsesCompactThreshold ||
 		back.Model.ResponsesTruncation != cfg.Model.ResponsesTruncation ||
+		back.Model.ReasoningEffort != cfg.Model.ReasoningEffort ||
 		!reflect.DeepEqual(back.Model.ResponsesInclude, cfg.Model.ResponsesInclude) {
 		t.Fatalf("Responses settings round trip = %#v", back.Model)
 	}

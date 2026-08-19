@@ -1196,6 +1196,28 @@ TEST_CASE("config_web: POST /api/config writes Responses context settings") {
     CHECK(saved.find("responses_include = [\"reasoning.encrypted_content\"]") != std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config rejects invalid Responses compact thresholds") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const char* invalid_values[] = {"1.5", "-1", "2147483648"};
+    for (const char* value : invalid_values) {
+        const std::string body =
+            std::string("{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"gpt-test\",") +
+            "\"api_key\":\"k\",\"api_mode\":\"responses_stateful\"," +
+            "\"responses_context_management\":\"compaction\"," +
+            "\"responses_compact_threshold\":" + value + "}," +
+            "\"device\":{\"device_type\":\"iOS\"}," +
+            "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK_MESSAGE(resp.status == 400, value << ": status=" << resp.status);
+        CHECK_MESSAGE(resp.body.find("model.responses_compact_threshold") != std::string::npos,
+                      value << ": body=" << resp.body);
+        CHECK_MESSAGE(resp.body.find("non-negative integer") != std::string::npos,
+                      value << ": body=" << resp.body);
+    }
+}
+
 TEST_CASE("config_web: POST /api/config ignores model base_url for every provider") {
     const char* providers[] = {
         "openai", "anthropic", "ollama", "openrouter", "kimi", "kimi-cn",

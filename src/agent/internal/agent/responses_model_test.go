@@ -281,6 +281,25 @@ func TestResponsesStatefulModeDoesNotRetryUnrelatedError(t *testing.T) {
 	}
 }
 
+func TestResponsesStatefulModeDoesNotRetryRequestEcho(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"invalid_tool_schema","message":"invalid tool schema"},"request":{"previous_response_id":"resp_1"}}`))
+	}))
+	defer server.Close()
+
+	model := newResponsesModel(server.URL, "test-model", "", server.Client(), responsesModelOptions{providerManagedContext: true}).(*responsesModel)
+	_, err := model.GenerateContentFromMessageList(context.Background(), []messages.Message{
+		{Role: messages.MessageRoleAssistant, Content: "answer", ResponsesResponseID: "resp_1"},
+		{Role: messages.MessageRoleUser, Content: "second"},
+	})
+	if err == nil || requestCount != 1 {
+		t.Fatalf("error=%v requestCount=%d, want one failed request", err, requestCount)
+	}
+}
+
 func TestProviderManagedContextInputUsesLatestResponseAnchor(t *testing.T) {
 	instructions, previousID, input := providerManagedContextInput([]messages.Message{
 		{Role: messages.MessageRoleSystem, Content: "one"},
@@ -405,6 +424,9 @@ func TestModelAPIModeValidation(t *testing.T) {
 	}
 	if (ModelConfig{APIMode: "chat_completions", ResponsesContextManagement: "compaction"}).ResponsesProviderCompactionEnabled() {
 		t.Fatal("provider compaction should not affect Chat Completions mode")
+	}
+	if (ModelConfig{APIMode: "responses", ResponsesContextManagement: "compaction"}).ResponsesProviderCompactionEnabled() {
+		t.Fatal("stateless Responses mode must retain proactive local compaction")
 	}
 }
 

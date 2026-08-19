@@ -174,7 +174,7 @@ func ConfigMeta() ConfigMetadata {
 						Enum: []EnumOption{
 							{Value: "", Label: "chat completions (default)"},
 							{Value: "responses", Label: "Responses API (manual context)"},
-							{Value: "responses_stateful", Label: "Responses API (provider-managed context)"},
+							{Value: "responses_stateful", Label: "Responses API (provider-managed context)", Providers: []string{"openai"}},
 						},
 						Default: defaults.Model.APIMode},
 					{Key: "responses_context_management", Widget: WidgetSelect,
