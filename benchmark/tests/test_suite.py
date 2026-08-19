@@ -150,6 +150,15 @@ def test_adb_android_basic_suite_loads_device_operation_tasks():
         assert by_id[task_id].hard_assertions.min_tool_calls >= 2
 
 
+def test_vphone_ios_basic_warmup_requires_screenshot():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "vphone_ios_basic.json"
+    suite = load_suite(suite_path)
+    warmup = next(task for task in suite.tasks if task.id == "warmup")
+
+    assert warmup.hard_assertions.min_tool_calls == 1
+    assert warmup.hard_assertions.required_tools == ["screenshot"]
+
+
 def test_quick_action_suite_marks_non_android_action_tasks():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "quick_action_v1.json"
     suite = load_suite(suite_path)
