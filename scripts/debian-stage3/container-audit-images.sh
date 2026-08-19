@@ -68,7 +68,7 @@ audit_ext4() {
 audit_packages() {
     local package
     for package in \
-        systemd-sysv udev dbus kmod openssh-server adb iproute2 \
+        systemd-sysv udev dbus kmod openssh-server sudo adb iproute2 \
         iputils-arping wpasupplicant bluez systemd-resolved \
         systemd-timesyncd dnsmasq-base e2fsprogs v4l-utils libdrm2; do
         awk -F '\t' -v package="${package}" \
@@ -97,13 +97,24 @@ audit_rootfs() {
         "${ROOTFS_MOUNT}/etc/passwd" || fail "aiden login user is missing"
     grep -qx 'aiden:x:1000:' "${ROOTFS_MOUNT}/etc/group" \
         || fail "aiden primary group is missing"
-    for group in audio video dialout plugdev netdev; do
+    for group in sudo audio video dialout plugdev netdev; do
         grep -Eq "^${group}:[^:]*:[^:]*:([^,]*,)*aiden(,|$)" \
             "${ROOTFS_MOUNT}/etc/group" \
             >/dev/null || fail "aiden is missing required ${group} group"
     done
     test "$(stat -c '%u:%g:%a' "${ROOTFS_MOUNT}/home/aiden")" = 1000:1000:700 \
         || fail "aiden home ownership or mode is invalid"
+    test "$(stat -c '%u:%g:%a' "${ROOTFS_MOUNT}/usr/bin/sudo")" = 0:0:4755 \
+        || fail "sudo executable ownership or mode is invalid"
+    test "$(stat -c '%u:%g:%a' "${ROOTFS_MOUNT}/etc/sudoers")" = 0:0:440 \
+        || fail "sudoers ownership or mode is invalid"
+    grep -Eq '^%sudo[[:space:]]+ALL=\(ALL:ALL\)[[:space:]]+ALL$' \
+        "${ROOTFS_MOUNT}/etc/sudoers" \
+        || fail "sudo group does not require password-authenticated administrator access"
+    if grep -REq '(^|[[:space:],])NOPASSWD:' \
+        "${ROOTFS_MOUNT}/etc/sudoers" "${ROOTFS_MOUNT}/etc/sudoers.d"; then
+        fail "passwordless sudo policy is present"
+    fi
     grep -qx 'PasswordAuthentication yes' \
         "${ROOTFS_MOUNT}/etc/ssh/sshd_config.d/20-aiden.conf" \
         || fail "ordinary-user SSH password authentication is disabled"
