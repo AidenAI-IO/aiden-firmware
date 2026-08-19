@@ -72,6 +72,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.model.provider = "openrouter";
     cfg.model.model = "openai/gpt-4o-mini";
     cfg.model.api_key = "sk-or-test";
+    cfg.model.api_mode = "responses";
     cfg.model.temperature = 0.2;
     cfg.model.has_temperature = true;
     cfg.model.max_response_tokens = 1000;
@@ -183,6 +184,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.model.provider == "openrouter");
     CHECK(loaded.model.model == "openai/gpt-4o-mini");
     CHECK(loaded.model.api_key == "sk-or-test");
+    CHECK(loaded.model.api_mode == "responses");
     CHECK(loaded.model.temperature == doctest::Approx(0.2));
     CHECK(loaded.model.max_response_tokens == 1000);
     CHECK(loaded.model.context_window == 64000);

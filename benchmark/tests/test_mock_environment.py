@@ -176,6 +176,16 @@ def test_perception_mock_environment_exposes_fixture_and_accepts_tap():
         assert tap["is_error"] is False
         assert json.loads(tap["output"]) == {"ok": True}
 
+        mnk_tap = _json_request(
+            f"{base_url}/api/providers/mnk",
+            "POST",
+            {
+                "operation": "click",
+                "click": {"x": 940, "y": 95, "button": "left", "hold_ms": 0},
+            },
+        )
+        assert mnk_tap == {"success": True}
+
         assert before_image
     finally:
         server.stop()

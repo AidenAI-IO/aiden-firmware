@@ -7,6 +7,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from mnk_provider import execute_mnk_request
+
 from .client import VPhoneSocketError
 from .protocol import bridge_error, bridge_ok, encode_provider_frame
 from .state import NoBridgeEnvAvailableError, VPhoneBridgeState, benchmark_task_id_from_headers
@@ -92,6 +94,8 @@ def _handler_for(bridge: VPhoneBridgeServer):
                     self._handle_setup()
                 elif path == "/api/providers/screenshot":
                     self._handle_provider_screenshot()
+                elif path == "/api/providers/mnk":
+                    self._handle_provider_mnk(payload)
                 elif path in {"/api/release", "/release"}:
                     self._handle_release()
                 else:
@@ -157,6 +161,18 @@ def _handler_for(bridge: VPhoneBridgeServer):
                 ),
             )
 
+        def _handle_provider_mnk(self, payload: dict[str, Any]) -> None:
+            task_id = benchmark_task_id_from_headers(self.headers)
+            bridge.state.check_task_access(task_id)
+            if not bridge.state.active_episode_id:
+                self._send_json(409, {"error": "no active episode; call /api/setup first"})
+                return
+            try:
+                status, response = execute_mnk_request(payload, bridge.tools_api._submit_tool_call)
+            except VPhoneSocketError as exc:
+                status, response = _vphone_error_status(exc), {"error": str(exc)}
+            self._send_json(status, response)
+
         def _read_json(self) -> dict[str, Any] | None:
             try:
                 length = int(self.headers.get("Content-Length", "0") or "0")
@@ -187,11 +203,7 @@ def _handler_for(bridge: VPhoneBridgeServer):
             return payload
 
         def _send_vphone_error(self, exc: VPhoneSocketError) -> None:
-            status = 503 if exc.code in {
-                "socket_not_found", "socket_refused", "socket_timeout", "socket_io",
-                "display_unavailable", "guest_unavailable", "guest_ssh_failed",
-            } else 500
-            self._send_error(status, exc.code, str(exc))
+            self._send_error(_vphone_error_status(exc), exc.code, str(exc))
 
         def _send_error(self, status: int, code: str, message: str, *, close: bool = False) -> None:
             self._send_json(status, bridge_error(code, message, status=status), close=close)
@@ -211,6 +223,15 @@ def _handler_for(bridge: VPhoneBridgeServer):
     return VPhoneBridgeRequestHandler
 
 
+def _vphone_error_status(exc: VPhoneSocketError) -> int:
+    if exc.code in {
+        "socket_not_found", "socket_refused", "socket_timeout", "socket_io",
+        "display_unavailable", "guest_unavailable", "guest_ssh_failed",
+    }:
+        return 503
+    return 500
+
+
 def _health_payload(bridge: VPhoneBridgeServer, status: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "ok",
@@ -226,7 +247,7 @@ def _health_payload(bridge: VPhoneBridgeServer, status: dict[str, Any]) -> dict[
         "legacy_host_control": bool(status.get("legacy_host_control")),
         "active_episode_id": bridge.state.active_episode_id,
         "active_task_id": bridge.state.active_task_id,
-        "interfaces": ["/api/tools", "/api/providers/screenshot", "/api/setup", "/api/release", "/api/concurrent"],
+        "interfaces": ["/api/tools", "/api/providers/screenshot", "/api/providers/mnk", "/api/setup", "/api/release", "/api/concurrent"],
     }
 
 

@@ -10,7 +10,7 @@ MobileGym **仅作为设备模拟器**，通过统一的 environment bridge API 
 benchmark/runner/main.py (测试编排)
   ↓ /api/chat
 Aiden Go Daemon (environment-bridge mode)
-  ↓ /api/tools/* (统一工具接口)
+  ↓ /api/providers/mnk + /api/providers/screenshot
 MobileGym Bridge Server (HTTP ↔ env.step)
   ↓ env.step(action)
 MobileGym Simulator (bench_env)
@@ -39,7 +39,6 @@ go run src/agent/cmd/daemon/main.go \
   --config /path/to/agent.toml \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://localhost:8888 \
-  --environment-bridge-tools touch_gesture,keyboard_text,keyboard_tap \
   --benchmark-task-id cli-task &
 
 # 3. 运行 benchmark（使用标准 runner）
@@ -149,7 +148,6 @@ go run cmd/daemon/main.go \
   --config agent.toml \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://localhost:8888 \
-  --environment-bridge-tools touch_gesture,keyboard_text,keyboard_tap \
   --benchmark-task-id cli-task
 ```
 
@@ -180,11 +178,11 @@ curl -X POST http://localhost:8888/api/providers/screenshot \
   -H "benchmark-task-id: cli-task" \
   -d '{"format": "jpeg", "quality": 80}'
 
-# 测试 bridge tool 操作
-curl -X POST http://localhost:8888/api/tools/touch_gesture \
+# 测试 MNK provider 操作
+curl -X POST http://localhost:8888/api/providers/mnk \
   -H "Content-Type: application/json" \
   -H "benchmark-task-id: cli-task" \
-  -d '{"input": {"type": "tap", "point": {"x": 500, "y": 800}}}'
+  -d '{"operation":"click","click":{"x":500,"y":800,"button":"left","hold_ms":0}}'
 
 # 运行单个测试
 cd benchmark

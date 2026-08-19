@@ -490,7 +490,7 @@ class ToolsAPIHandler:
                         "start_y": start["y"],
                         "end_x": end["x"],
                         "end_y": end["y"],
-                        "duration_ms": tool_input.get("duration_ms", 300),
+                        "duration_ms": tool_input.get("duration_ms", 300 if gesture_type == "swipe" else 700),
                     },
                 )
             elif gesture_type in ("swipe_left", "swipe_right", "swipe_up", "swipe_down"):

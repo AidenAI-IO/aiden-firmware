@@ -48,6 +48,10 @@ type Message struct {
 	ToolResults            []ToolResult            `json:"tool_results,omitempty"`
 	RecoverableToolResults []RecoverableToolResult `json:"recoverable_tool_results,omitempty"`
 	Attachments            []Attachment            `json:"attachments,omitempty"`
+	// ResponsesReasoningItems carries opaque Responses API reasoning output so a
+	// later stateless request can submit it verbatim. It is deliberately not
+	// converted into ordinary chat content.
+	ResponsesReasoningItems []json.RawMessage `json:"responses_reasoning_items,omitempty"`
 }
 
 func (msg Message) Clone() Message {
@@ -70,6 +74,12 @@ func (msg Message) Clone() Message {
 	}
 	if len(msg.Attachments) > 0 {
 		cloned.Attachments = append([]Attachment(nil), msg.Attachments...)
+	}
+	if len(msg.ResponsesReasoningItems) > 0 {
+		cloned.ResponsesReasoningItems = make([]json.RawMessage, len(msg.ResponsesReasoningItems))
+		for i := range msg.ResponsesReasoningItems {
+			cloned.ResponsesReasoningItems[i] = append(json.RawMessage(nil), msg.ResponsesReasoningItems[i]...)
+		}
 	}
 	return cloned
 }

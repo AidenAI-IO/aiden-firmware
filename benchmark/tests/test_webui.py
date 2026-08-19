@@ -2094,7 +2094,7 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     assert job.status == "passed"
 
 
-def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: Path):
+def test_daemon_compose_command_and_env_use_environment_bridge_providers(tmp_path: Path):
     config = tmp_path / "config"
     config.mkdir()
 
@@ -2130,20 +2130,13 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     entrypoint_text = (webui.BENCHMARK_DOCKER_DIR / "agent-daemon-entrypoint.sh").read_text(
         encoding="utf-8"
     )
-    expected_forward_tools = (
-        "touch_gesture,keyboard_text,keyboard_tap,"
-        "enter_text,"
-        "search_launch_app,mouse_move,mouse_scroll,quick_action,"
-        "bridge_open_app,bridge_clipboard,bridge_calendar,bridge_contacts,"
-        "bridge_notification"
-    )
     assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}" in compose_text
-    assert f'AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "{expected_forward_tools}"' in compose_text
+    assert "AIDEN_ENVIRONMENT_BRIDGE_TOOLS" not in compose_text
     assert "AIDEN_BENCHMARK_TASK_ID" in compose_text
     assert "AIDEN_DEVICE_TYPE" in compose_text
     assert "--environment-bridge-mode" in entrypoint_text
     assert '--environment-bridge-endpoint "$ENVIRONMENT_BRIDGE_ENDPOINT"' in entrypoint_text
-    assert '--environment-bridge-tools "${AIDEN_ENVIRONMENT_BRIDGE_TOOLS:-$default_forward_tools}"' in entrypoint_text
+    assert "environment-bridge-tools" not in entrypoint_text
     assert '--device-type "$AIDEN_DEVICE_TYPE"' in entrypoint_text
 
 
