@@ -88,6 +88,7 @@ type modelDTO struct {
 	Provider             string   `json:"provider"`
 	APIKey               string   `json:"api_key"`
 	Model                string   `json:"model"`
+	APIMode              string   `json:"api_mode,omitempty"`
 	ReasoningEffort      string   `json:"reasoning_effort"`
 	Temperature          *float64 `json:"temperature,omitempty"`
 	MaxResponseTokens    int      `json:"max_response_tokens"`
@@ -100,6 +101,7 @@ func (d modelDTO) providerTestRequest() agent.ModelProviderTestRequest {
 		Provider:        d.Provider,
 		APIKey:          d.APIKey,
 		Model:           d.Model,
+		APIMode:         d.APIMode,
 		Temperature:     d.Temperature,
 		ReasoningEffort: d.ReasoningEffort,
 	}
@@ -358,20 +360,7 @@ type telemetryDTO struct {
 }
 
 type liveActivityDTO struct {
-	Enabled          *bool  `json:"enabled"`
-	RelayURL         string `json:"relay_url"`
-	RelayAPIKey      string `json:"relay_api_key,omitempty"`
-	HasRelayAPIKey   bool   `json:"has_relay_api_key"`
-	BoardID          string `json:"board_id"`
-	BundleID         string `json:"bundle_id"`
-	Topic            string `json:"topic"`
-	Environment      string `json:"environment"`
-	TeamID           string `json:"team_id"`
-	KeyID            string `json:"key_id"`
-	PrivateKeyPath   string `json:"private_key_path"`
-	PrivateKeyPEM    string `json:"private_key_pem,omitempty"`
-	HasPrivateKeyPEM bool   `json:"has_private_key_pem"`
-	TimeoutSec       int    `json:"timeout_sec"`
+	Enabled *bool `json:"enabled"`
 }
 
 type agentDTO struct {
@@ -402,7 +391,6 @@ type agentDTO struct {
 	ScreenStableTimeoutMs      int     `json:"screen_stable_timeout_ms"`
 	ScreenStableMs             int     `json:"screen_stable_ms"`
 	ScreenStableDiffThreshold  float64 `json:"screen_stable_diff_threshold"`
-	DefaultPlatform            string  `json:"default_platform,omitempty"`
 }
 
 // hasAPIKeyPlaceholder is substituted for a real key when the wire payload
@@ -420,15 +408,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 	} else if d.Search.HasAPIKey {
 		searchKey = hasAPIKeyPlaceholder
 	}
-	liveActivityRelayAPIKey := d.LiveActivity.RelayAPIKey
-	if strings.TrimSpace(liveActivityRelayAPIKey) == "" && d.LiveActivity.HasRelayAPIKey {
-		liveActivityRelayAPIKey = hasAPIKeyPlaceholder
-	}
-	liveActivityPrivateKeyPEM := d.LiveActivity.PrivateKeyPEM
-	if strings.TrimSpace(liveActivityPrivateKeyPEM) == "" && d.LiveActivity.HasPrivateKeyPEM {
-		liveActivityPrivateKeyPEM = hasAPIKeyPlaceholder
-	}
-
 	return agent.Config{
 		ModelProviders: d.modelProvidersToAgentConfig(),
 		TTSProviders:   d.ttsProvidersToAgentConfig(),
@@ -437,6 +416,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			Provider:             d.Model.Provider,
 			APIKey:               d.Model.APIKey,
 			Model:                d.Model.Model,
+			APIMode:              d.Model.APIMode,
 			Temperature:          d.Model.Temperature,
 			MaxResponseTokens:    d.Model.MaxResponseTokens,
 			ContextWindow:        d.Model.ContextWindow,
@@ -525,18 +505,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			Environment:       d.Telemetry.Environment,
 		},
 		LiveActivity: agent.LiveActivityConfig{
-			Enabled:        d.LiveActivity.Enabled,
-			RelayURL:       d.LiveActivity.RelayURL,
-			RelayAPIKey:    liveActivityRelayAPIKey,
-			BoardID:        d.LiveActivity.BoardID,
-			BundleID:       d.LiveActivity.BundleID,
-			Topic:          d.LiveActivity.Topic,
-			Environment:    d.LiveActivity.Environment,
-			TeamID:         d.LiveActivity.TeamID,
-			KeyID:          d.LiveActivity.KeyID,
-			PrivateKeyPath: d.LiveActivity.PrivateKeyPath,
-			PrivateKeyPEM:  liveActivityPrivateKeyPEM,
-			TimeoutSec:     d.LiveActivity.TimeoutSec,
+			Enabled: d.LiveActivity.Enabled,
 		},
 		TerminationPolicy:          d.TerminationPolicy,
 		Locale:                     d.Agent.Locale,
@@ -692,6 +661,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Provider:             cfg.Model.Provider,
 			APIKey:               cfg.Model.APIKey,
 			Model:                cfg.Model.Model,
+			APIMode:              cfg.Model.APIMode,
 			ReasoningEffort:      cfg.Model.ReasoningEffort,
 			Temperature:          cfg.Model.Temperature,
 			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
@@ -777,18 +747,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Environment:       cfg.Telemetry.EnvironmentOrDefault(),
 		},
 		LiveActivity: liveActivityDTO{
-			Enabled:          boolPtr(cfg.LiveActivity.EnabledOrDefault()),
-			RelayURL:         cfg.LiveActivity.RelayURL,
-			HasRelayAPIKey:   strings.TrimSpace(cfg.LiveActivity.RelayAPIKey) != "",
-			BoardID:          cfg.LiveActivity.BoardIDOrDefault(),
-			BundleID:         cfg.LiveActivity.BundleID,
-			Topic:            cfg.LiveActivity.Topic,
-			Environment:      cfg.LiveActivity.EnvironmentOrDefault(),
-			TeamID:           cfg.LiveActivity.TeamID,
-			KeyID:            cfg.LiveActivity.KeyID,
-			PrivateKeyPath:   cfg.LiveActivity.PrivateKeyPath,
-			HasPrivateKeyPEM: strings.TrimSpace(cfg.LiveActivity.PrivateKeyPEM) != "",
-			TimeoutSec:       int(cfg.LiveActivity.TimeoutOrDefault().Seconds()),
+			Enabled: boolPtr(cfg.LiveActivity.EnabledOrDefault()),
 		},
 		TerminationPolicy: cfg.TerminationPolicyOrDefault(),
 		Agent: agentDTO{
@@ -819,7 +778,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			ScreenStableTimeoutMs:      cfg.ScreenStableTimeoutMs,
 			ScreenStableMs:             cfg.ScreenStableMs,
 			ScreenStableDiffThreshold:  cfg.ScreenStableDiffThreshold,
-			DefaultPlatform:            cfg.DefaultPlatform,
 		},
 	}
 }
@@ -1200,6 +1158,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "search.api_key"
 	} else if strings.Contains(errMsg, "model.provider") {
 		field = "model.provider"
+	} else if strings.Contains(errMsg, "model.api_mode") {
+		field = "model.api_mode"
 	} else if strings.Contains(errMsg, "model.max_response_tokens") {
 		field = "model.max_response_tokens"
 	} else if strings.Contains(errMsg, "model.context_window") {
@@ -1266,14 +1226,6 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "telemetry.max_retry"
 	} else if strings.Contains(errMsg, "log.llm_http_retention_days") {
 		field = "log.llm_http_retention_days"
-	} else if strings.Contains(errMsg, "live_activity.relay_url") {
-		field = "live_activity.relay_url"
-	} else if strings.Contains(errMsg, "live_activity.environment") {
-		field = "live_activity.environment"
-	} else if strings.Contains(errMsg, "live_activity.timeout_sec") {
-		field = "live_activity.timeout_sec"
-	} else if strings.Contains(errMsg, "live_activity.bundle_id") || strings.Contains(errMsg, "live_activity.topic") {
-		field = "live_activity.bundle_id"
 	}
 
 	errors = append(errors, ValidationError{

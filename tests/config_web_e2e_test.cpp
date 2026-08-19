@@ -1973,7 +1973,12 @@ TEST_CASE("config_web: POST /api/config writes keyboard layout and requires rebo
     CHECK(saved_buffer.str().find("keyboard_layout = \"azerty\"") != std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config uses default_platform to infer legacy device type") {
+// default_platform was removed in favor of [device].device_type. The C++
+// config parser silently ignores unknown top-level keys for forward
+// compatibility, so old config files with default_platform still load.
+// This test verifies that submitting it through the API has no effect and
+// it does not get written back.
+TEST_CASE("config_web: POST /api/config ignores the removed default_platform field") {
     StubEnv env;
     auto handle = start_server(env);
 
@@ -1985,9 +1990,12 @@ TEST_CASE("config_web: POST /api/config uses default_platform to infer legacy de
     CHECK(resp.status == 200);
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("[device]") != std::string::npos);
-    CHECK(saved.find("device_type = \"Android\"") != std::string::npos);
-    CHECK(saved.find("default_platform = \"android\"") != std::string::npos);
+    CHECK(saved.find("default_platform") == std::string::npos);
+    CHECK(saved.find("device_type = \"iOS\"") != std::string::npos);
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(get_resp.status == 200);
+    CHECK(get_resp.body.find("default_platform") == std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config same-pointer-mode device type change requires reboot") {
@@ -3368,7 +3376,7 @@ TEST_CASE("config_web: POST /api/config keeps compatibility field type guards") 
         {"{\"device\":{\"backend\":7}}", "device.backend", "string"},
         {"{\"search\":{\"has_api_key\":\"yes\"}}", "search.has_api_key", "bool"},
         {"{\"termination_policy\":{\"enabled\":\"yes\"}}", "termination_policy.enabled", "bool"},
-        {"{\"live_activity\":{\"timeout_sec\":\"30\"}}", "live_activity.timeout_sec", "number"},
+        {"{\"live_activity\":{\"enabled\":\"yes\"}}", "live_activity.enabled", "bool"},
     };
 
     for (const InvalidCase& test_case : cases) {

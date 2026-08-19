@@ -2,8 +2,6 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/executor"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -11,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -23,10 +20,9 @@ type SearchConfig struct {
 }
 
 type EnvironmentBridgeConfig struct {
-	Enabled         bool     `toml:"-"` // Only set via CLI, not config file
-	Endpoint        string   `toml:"-"` // Only set via CLI, not config file
-	Tools           []string `toml:"-"` // Only set via CLI, not config file
-	BenchmarkTaskID string   `toml:"-"` // Only set via CLI, not config file
+	Enabled         bool   `toml:"-"` // Only set via CLI, not config file
+	Endpoint        string `toml:"-"` // Only set via CLI, not config file
+	BenchmarkTaskID string `toml:"-"` // Only set via CLI, not config file
 }
 
 type BenchmarkConfig struct {
@@ -39,12 +35,7 @@ const (
 	searchProviderBrave      = "brave"
 
 	braveSearchAPIKeyEnv = "BRAVE_SEARCH_API_KEY"
-
-	defaultLiveActivityTimeout = 10 * time.Second
-	liveActivityBoardIDFile    = "board_id"
 )
-
-var liveActivityBoardIDMu sync.Mutex
 
 func (s SearchConfig) ProviderOrDefault() string {
 	return normalizeSearchProvider(s.Provider)
@@ -318,7 +309,6 @@ type Config struct {
 	ScreenStableTimeoutMs      int                      `toml:"screen_stable_timeout_ms,omitempty"`
 	ScreenStableMs             int                      `toml:"screen_stable_ms,omitempty"`
 	ScreenStableDiffThreshold  float64                  `toml:"screen_stable_diff_threshold,omitempty"`
-	DefaultPlatform            string                   `toml:"default_platform,omitempty"` // "ios", "android", "mac"
 	SkillsDirs                 []string                 `toml:"skills_dirs"`
 	BundledSkillsDir           string                   `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel            SkillMergeModel          `toml:"-"`
@@ -344,18 +334,7 @@ type TelemetryConfig struct {
 }
 
 type LiveActivityConfig struct {
-	Enabled        *bool  `toml:"enabled,omitempty"`
-	RelayURL       string `toml:"relay_url,omitempty"`
-	RelayAPIKey    string `toml:"relay_api_key,omitempty"`
-	BoardID        string `toml:"board_id,omitempty"`
-	BundleID       string `toml:"bundle_id,omitempty"`
-	Topic          string `toml:"topic,omitempty"`
-	Environment    string `toml:"environment,omitempty"`
-	TeamID         string `toml:"team_id,omitempty"`
-	KeyID          string `toml:"key_id,omitempty"`
-	PrivateKeyPath string `toml:"private_key_path,omitempty"`
-	PrivateKeyPEM  string `toml:"private_key_pem,omitempty"`
-	TimeoutSec     int    `toml:"timeout_sec,omitempty"`
+	Enabled *bool `toml:"enabled,omitempty"`
 }
 
 type TTSConfig struct {
@@ -612,38 +591,11 @@ func deviceTypePlatform(deviceType string) string {
 	}
 }
 
-func deviceTypeFromPlatform(platform string) string {
-	switch strings.ToLower(strings.TrimSpace(platform)) {
-	case "ios", "iphone", "ipad", "ipados":
-		return "iOS"
-	case "android":
-		return "Android"
-	case "mac", "macos", "darwin":
-		return "macOS"
-	case "windows", "win":
-		return "windows"
-	case "linux":
-		return "linux"
-	default:
-		return ""
-	}
-}
-
-func inferredDeviceTypeFromLegacyConfig(hid HIDConfig, defaultPlatform string) string {
-	if deviceType := deviceTypeFromPlatform(defaultPlatform); deviceType != "" {
-		return deviceType
-	}
-	if strings.ToLower(strings.TrimSpace(hid.PointerMode)) == "touchscreen" {
-		return "Android"
-	}
-	return defaultDeviceType
-}
-
 func (c Config) DeviceTypeOrDefault() string {
 	if strings.TrimSpace(c.Device.DeviceType) != "" {
 		return c.Device.DeviceTypeOrDefault()
 	}
-	return inferredDeviceTypeFromLegacyConfig(c.HID, c.DefaultPlatform)
+	return defaultDeviceType
 }
 
 func (c Config) DevicePlatformOrDefault() string {
@@ -739,6 +691,10 @@ type ModelConfig struct {
 	Model    string `toml:"model"`
 	BaseURL  string `toml:"-"`
 	APIKey   string `toml:"api_key,omitempty"`
+	// APIMode selects the wire protocol for OpenAI-compatible providers. Empty
+	// and "chat_completions" preserve the historical default; "responses"
+	// sends the locally maintained context as Responses input items.
+	APIMode string `toml:"api_mode,omitempty"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
 	// (see applyModelTemperatureDefault); an explicit value, including 0, is
@@ -775,14 +731,7 @@ func LoadConfigFromDir(configDir string) (Config, error) {
 // directory. It preserves the historic agent.toml -> agent.json lookup while
 // returning a config with runtime defaults resolved.
 func LoadRuntimeConfigFromDir(configDir string) (Config, error) {
-	cfg, err := loadConfigFromDir(configDir, LoadRuntimeConfig)
-	if err != nil {
-		return Config{}, err
-	}
-	if err := ensureRuntimeLiveActivityBoardID(&cfg); err != nil {
-		return Config{}, err
-	}
-	return cfg, nil
+	return loadConfigFromDir(configDir, LoadRuntimeConfig)
 }
 
 type configFileLoader func(string) (Config, error)
@@ -903,7 +852,7 @@ func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
 	}
 	deviceTypeConfigured := metadata.IsDefined("device", "device_type") && strings.TrimSpace(cfg.Device.DeviceType) != ""
 	if !deviceTypeConfigured {
-		cfg.Device.DeviceType = inferredDeviceTypeFromLegacyConfig(cfg.HID, cfg.DefaultPlatform)
+		cfg.Device.DeviceType = defaultDeviceType
 	} else if deviceType, ok := normalizeDeviceType(cfg.Device.DeviceType); ok {
 		cfg.Device.DeviceType = deviceType
 	}
@@ -1278,6 +1227,13 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Model.Model) == "" && strings.ToLower(c.Model.Provider) != "fake" {
 		return errors.New("model.model is required")
 	}
+	apiMode := normalizeModelAPIMode(c.Model.APIMode)
+	if apiMode == "" {
+		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions or responses)", c.Model.APIMode)
+	}
+	if apiMode == modelAPIModeResponses && !c.modelProviderSupportsResponses() {
+		return fmt.Errorf("model.api_mode=responses requires a provider transport with an OpenAI-compatible /responses endpoint")
+	}
 	backend := c.Device.BackendOrDefault()
 	switch backend {
 	case "hdmi":
@@ -1437,6 +1393,19 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// modelProviderSupportsResponses checks the resolved provider transport rather
+// than the configured provider-record name. Named custom OpenAI-compatible
+// endpoints therefore remain valid, while native Anthropic and Ollama clients
+// are rejected before a configuration is persisted or used at startup.
+func (c Config) modelProviderSupportsResponses() bool {
+	providerType := strings.TrimSpace(c.Model.Provider)
+	if provider, ok := c.ModelProviders[providerType]; ok {
+		providerType = strings.TrimSpace(provider.Type)
+	}
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsResponses
+}
+
 // isKnownProviderType reports whether the value names a built-in model
 // provider type (as opposed to a [model_providers] section name).
 func isKnownProviderType(providerType string) bool {
@@ -1533,52 +1502,7 @@ func (t TelemetryConfig) EnabledOrDefault() bool {
 }
 
 func (l LiveActivityConfig) Validate() error {
-	if !l.EnabledOrDefault() {
-		return nil
-	}
-	if env := strings.ToLower(strings.TrimSpace(l.Environment)); env != "" {
-		switch env {
-		case "sandbox", "production", "prod":
-		default:
-			return fmt.Errorf("invalid live_activity.environment: %s (expected sandbox or production)", l.Environment)
-		}
-	}
-	if l.TimeoutSec < 0 {
-		return fmt.Errorf("live_activity.timeout_sec must be >= 0, got %d (0 uses default)", l.TimeoutSec)
-	}
-	if relayURL := strings.TrimSpace(l.RelayURL); relayURL != "" {
-		if _, err := normalizeLiveActivityRelayURL(relayURL); err != nil {
-			return err
-		}
-		if strings.TrimSpace(l.RelayAPIKey) == "" {
-			return errors.New("live_activity.relay_api_key is required when relay_url is configured")
-		}
-	}
-	if !l.APNsConfigured() {
-		return nil
-	}
-	if strings.TrimSpace(l.BundleID) == "" && strings.TrimSpace(l.Topic) == "" {
-		return errors.New("live_activity.bundle_id or live_activity.topic is required when APNs credentials are configured")
-	}
 	return nil
-}
-
-func normalizeLiveActivityRelayURL(raw string) (string, error) {
-	endpoint := strings.TrimRight(strings.TrimSpace(raw), "/")
-	if endpoint == "" {
-		return "", errors.New("missing live_activity.relay_url")
-	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("invalid live_activity.relay_url: %s", raw)
-	}
-	if !strings.EqualFold(parsed.Scheme, "https") {
-		return "", fmt.Errorf("invalid live_activity.relay_url scheme: %s (https required)", parsed.Scheme)
-	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New("invalid live_activity.relay_url: userinfo, query, and fragment are not allowed")
-	}
-	return endpoint, nil
 }
 
 func (l LiveActivityConfig) EnabledOrDefault() bool {
@@ -1586,140 +1510,6 @@ func (l LiveActivityConfig) EnabledOrDefault() bool {
 		return *l.Enabled
 	}
 	return true
-}
-
-func (l LiveActivityConfig) EnvironmentOrDefault() string {
-	switch strings.ToLower(strings.TrimSpace(l.Environment)) {
-	case "production", "prod":
-		return "production"
-	default:
-		return "sandbox"
-	}
-}
-
-func (l LiveActivityConfig) APNsConfigured() bool {
-	return strings.TrimSpace(l.TeamID) != "" &&
-		strings.TrimSpace(l.KeyID) != "" &&
-		(strings.TrimSpace(l.PrivateKeyPath) != "" || strings.TrimSpace(l.PrivateKeyPEM) != "")
-}
-
-func (l LiveActivityConfig) RelayConfigured() bool {
-	return strings.TrimSpace(l.RelayURL) != "" &&
-		strings.TrimSpace(l.RelayAPIKey) != ""
-}
-
-func (l LiveActivityConfig) BoardIDOrDefault() string {
-	return normalizeLiveActivityBoardID(l.BoardID)
-}
-
-func normalizeLiveActivityBoardID(boardID string) string {
-	boardID = strings.TrimSpace(boardID)
-	if boardID == "" || strings.EqualFold(boardID, "default") {
-		return ""
-	}
-	return boardID
-}
-
-func ensureRuntimeLiveActivityBoardID(cfg *Config) error {
-	if cfg == nil || !cfg.LiveActivity.EnabledOrDefault() {
-		return nil
-	}
-	if boardID := cfg.LiveActivity.BoardIDOrDefault(); boardID != "" {
-		cfg.LiveActivity.BoardID = boardID
-		return nil
-	}
-	if strings.TrimSpace(cfg.ConfigDir) == "" {
-		return nil
-	}
-	boardID, err := loadOrCreateLiveActivityBoardID(cfg.ConfigDir)
-	if err != nil {
-		return fmt.Errorf("live_activity.board_id: %w", err)
-	}
-	cfg.LiveActivity.BoardID = boardID
-	return nil
-}
-
-func loadOrCreateLiveActivityBoardID(configDir string) (string, error) {
-	liveActivityBoardIDMu.Lock()
-	defer liveActivityBoardIDMu.Unlock()
-
-	path := filepath.Join(configDir, liveActivityBoardIDFile)
-	if data, err := os.ReadFile(path); err == nil {
-		if boardID := normalizeLiveActivityBoardID(string(data)); boardID != "" {
-			return boardID, nil
-		}
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("read %s: %w", path, err)
-	}
-
-	boardID, err := generateLiveActivityBoardID()
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		return "", fmt.Errorf("create config dir %s: %w", configDir, err)
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if !os.IsExist(err) {
-			return "", fmt.Errorf("create %s: %w", path, err)
-		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return "", fmt.Errorf("read existing %s: %w", path, readErr)
-		}
-		existing := normalizeLiveActivityBoardID(string(data))
-		if existing != "" {
-			return existing, nil
-		}
-		if err := os.WriteFile(path, []byte(boardID+"\n"), 0o600); err != nil {
-			return "", fmt.Errorf("replace invalid %s: %w", path, err)
-		}
-		return boardID, nil
-	}
-	if _, err := file.WriteString(boardID + "\n"); err != nil {
-		_ = file.Close()
-		return "", fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := file.Close(); err != nil {
-		return "", fmt.Errorf("close %s: %w", path, err)
-	}
-	return boardID, nil
-}
-
-func generateLiveActivityBoardID() (string, error) {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("generate random board id: %w", err)
-	}
-	raw[6] = (raw[6] & 0x0f) | 0x40
-	raw[8] = (raw[8] & 0x3f) | 0x80
-	encoded := make([]byte, 32)
-	hex.Encode(encoded, raw[:])
-	return fmt.Sprintf("board-%s-%s-%s-%s-%s",
-		encoded[0:8],
-		encoded[8:12],
-		encoded[12:16],
-		encoded[16:20],
-		encoded[20:32],
-	), nil
-}
-
-func (l LiveActivityConfig) APNsTopic() string {
-	if topic := strings.TrimSpace(l.Topic); topic != "" {
-		return topic
-	}
-	if bundleID := strings.TrimSpace(l.BundleID); bundleID != "" {
-		return bundleID + ".push-type.liveactivity"
-	}
-	return ""
-}
-
-func (l LiveActivityConfig) TimeoutOrDefault() time.Duration {
-	if l.TimeoutSec > 0 {
-		return time.Duration(l.TimeoutSec) * time.Second
-	}
-	return defaultLiveActivityTimeout
 }
 
 func (t TelemetryConfig) ProviderOrDefault() string {

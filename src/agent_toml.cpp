@@ -324,10 +324,11 @@ void apply_kv(AgentToml& cfg,
             if (!assign_int(&cfg.screen_stable_ms, raw, &sub_err)) fail(sub_err);
         } else if (key == "screen_stable_diff_threshold") {
             if (!assign_double(&cfg.screen_stable_diff_threshold, raw, &sub_err)) fail(sub_err);
-        } else if (key == "default_platform") {
-            if (!assign_string(&cfg.default_platform, raw, &sub_err)) fail(sub_err);
         }
-        // Unknown top-level keys are ignored to remain forward-compatible.
+        // Unknown top-level keys are ignored to remain forward-compatible. This
+        // covers the legacy default_platform key: the agent CLI migrates it onto
+        // [device].device_type when it resolves the config, so config_web never
+        // needs to read or write it back.
         return;
     }
 
@@ -335,6 +336,7 @@ void apply_kv(AgentToml& cfg,
         if (key == "provider") assign_string(&m.provider, raw, &sub_err);
         else if (key == "model") assign_string(&m.model, raw, &sub_err);
         else if (key == "api_key") assign_string(&m.api_key, raw, &sub_err);
+        else if (key == "api_mode") assign_string(&m.api_mode, raw, &sub_err);
         else if (key == "reasoning_effort") assign_string(&m.reasoning_effort, raw, &sub_err);
         else if (key == "temperature") {
             assign_double(&m.temperature, raw, &sub_err);
@@ -453,22 +455,6 @@ void apply_kv(AgentToml& cfg,
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "live_activity") {
         if (key == "enabled") assign_bool(&cfg.live_activity.enabled, raw, &sub_err);
-        else if (key == "relay_url") assign_string(&cfg.live_activity.relay_url, raw, &sub_err);
-        else if (key == "relay_api_key") {
-            assign_string(&cfg.live_activity.relay_api_key, raw, &sub_err);
-            cfg.live_activity.has_relay_api_key = !cfg.live_activity.relay_api_key.empty();
-        } else if (key == "board_id") assign_string(&cfg.live_activity.board_id, raw, &sub_err);
-        else if (key == "phone_id") assign_string(&cfg.live_activity.phone_id, raw, &sub_err);
-        else if (key == "bundle_id") assign_string(&cfg.live_activity.bundle_id, raw, &sub_err);
-        else if (key == "topic") assign_string(&cfg.live_activity.topic, raw, &sub_err);
-        else if (key == "environment") assign_string(&cfg.live_activity.environment, raw, &sub_err);
-        else if (key == "team_id") assign_string(&cfg.live_activity.team_id, raw, &sub_err);
-        else if (key == "key_id") assign_string(&cfg.live_activity.key_id, raw, &sub_err);
-        else if (key == "private_key_path") assign_string(&cfg.live_activity.private_key_path, raw, &sub_err);
-        else if (key == "private_key_pem") {
-            assign_string(&cfg.live_activity.private_key_pem, raw, &sub_err);
-            cfg.live_activity.has_private_key_pem = !cfg.live_activity.private_key_pem.empty();
-        } else if (key == "timeout_sec") assign_non_negative_int(&cfg.live_activity.timeout_sec, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     } else if (section.find("tts_providers.") == 0) {
         // Handle [tts_providers.xxx] sections. Checked before the
@@ -730,6 +716,7 @@ void emit_model(std::ostringstream& out, const char* section, const ModelToml& m
     emit_string(out, "provider", m.provider);
     emit_string(out, "model", m.model);
     if (!m.api_key.empty()) emit_string(out, "api_key", m.api_key);
+    if (!m.api_mode.empty()) emit_string(out, "api_mode", m.api_mode);
     // Always emit reasoning_effort, even if empty (empty = "auto" default)
     emit_string(out, "reasoning_effort", m.reasoning_effort);
     if (m.has_temperature) emit_double(out, "temperature", m.temperature);
@@ -943,7 +930,6 @@ bool save_agent_toml(const char* path, const AgentToml& input, std::string* erro
     if (cfg.screen_stable_timeout_ms != 0) emit_int(out, "screen_stable_timeout_ms", cfg.screen_stable_timeout_ms);
     if (cfg.screen_stable_ms != 0) emit_int(out, "screen_stable_ms", cfg.screen_stable_ms);
     if (cfg.screen_stable_diff_threshold > 0.0) emit_double(out, "screen_stable_diff_threshold", cfg.screen_stable_diff_threshold);
-    if (!cfg.default_platform.empty()) emit_string(out, "default_platform", cfg.default_platform);
     out << "\n";
 
     // Write [model_providers.xxx] sections
@@ -1137,18 +1123,6 @@ bool save_agent_toml(const char* path, const AgentToml& input, std::string* erro
 
     out << "[live_activity]\n";
     emit_bool(out, "enabled", cfg.live_activity.enabled);
-    if (!cfg.live_activity.relay_url.empty()) emit_string(out, "relay_url", cfg.live_activity.relay_url);
-    if (!cfg.live_activity.relay_api_key.empty()) emit_string(out, "relay_api_key", cfg.live_activity.relay_api_key);
-    if (!cfg.live_activity.board_id.empty()) emit_string(out, "board_id", cfg.live_activity.board_id);
-    if (!cfg.live_activity.phone_id.empty()) emit_string(out, "phone_id", cfg.live_activity.phone_id);
-    if (!cfg.live_activity.bundle_id.empty()) emit_string(out, "bundle_id", cfg.live_activity.bundle_id);
-    if (!cfg.live_activity.topic.empty()) emit_string(out, "topic", cfg.live_activity.topic);
-    if (!cfg.live_activity.environment.empty()) emit_string(out, "environment", cfg.live_activity.environment);
-    if (!cfg.live_activity.team_id.empty()) emit_string(out, "team_id", cfg.live_activity.team_id);
-    if (!cfg.live_activity.key_id.empty()) emit_string(out, "key_id", cfg.live_activity.key_id);
-    if (!cfg.live_activity.private_key_path.empty()) emit_string(out, "private_key_path", cfg.live_activity.private_key_path);
-    if (!cfg.live_activity.private_key_pem.empty()) emit_string(out, "private_key_pem", cfg.live_activity.private_key_pem);
-    if (cfg.live_activity.timeout_sec != 0) emit_int(out, "timeout_sec", cfg.live_activity.timeout_sec);
     out << "\n";
 
     return atomic_write(path, out.str(), error);

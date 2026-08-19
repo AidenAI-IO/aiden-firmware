@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"aiden-agent/internal/agent/messages"
+
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -131,5 +133,29 @@ func TestUsageTrackingModelCapturesFullPromptForTelemetry(t *testing.T) {
 	parameters, ok := function["parameters"].(map[string]interface{})
 	if !ok || parameters["type"] != "object" {
 		t.Fatalf("captured tool parameters = %#v, want object schema", function["parameters"])
+	}
+}
+
+type contextListUsageTestModel struct {
+	*scriptedModel
+	calls int
+}
+
+func (m *contextListUsageTestModel) GenerateContentFromMessageList(_ context.Context, _ []messages.Message, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	m.calls++
+	return usageResponse(7, 2, 9), nil
+}
+
+func TestUsageTrackingModelForwardsContextMessageList(t *testing.T) {
+	inner := &contextListUsageTestModel{scriptedModel: &scriptedModel{}}
+	tracked := &usageTrackingModel{inner: inner, metrics: &RunMetrics{}}
+	if _, err := tracked.GenerateContentFromMessageList(context.Background(), []messages.Message{{}}, llms.WithMaxTokens(4)); err != nil {
+		t.Fatalf("GenerateContentFromMessageList() error = %v", err)
+	}
+	if inner.calls != 1 {
+		t.Fatalf("context-list calls = %d, want 1", inner.calls)
+	}
+	if tracked.metrics.TotalTokens != 9 {
+		t.Fatalf("tracked total tokens = %d, want 9", tracked.metrics.TotalTokens)
 	}
 }

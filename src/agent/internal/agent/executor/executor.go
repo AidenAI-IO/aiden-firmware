@@ -50,6 +50,13 @@ type LLMExecutor struct {
 	transforms     []OutboundMessageTransform
 }
 
+// contextMessageContentModel can consume persisted context directly when a
+// wire protocol needs provider-specific opaque items in addition to the common
+// LangChain message parts.
+type contextMessageContentModel interface {
+	GenerateContentFromMessageList(context.Context, []messages.Message, ...llms.CallOption) (*llms.ContentResponse, error)
+}
+
 func NewLLMExecutor(model llms.Model, contextManager *contextmanager.ContextManager, transforms ...OutboundMessageTransform) *LLMExecutor {
 	return &LLMExecutor{
 		model:          model,
@@ -78,8 +85,14 @@ func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallO
 		}
 		messageList = transform.Transform(messageList)
 	}
-	standard := messages.ConvertMessageList(messageList)
-	contentResponse, err := e.model.GenerateContent(ctx, standard, options...)
+	var contentResponse *llms.ContentResponse
+	var err error
+	if model, ok := e.model.(contextMessageContentModel); ok {
+		contentResponse, err = model.GenerateContentFromMessageList(ctx, messageList, options...)
+	} else {
+		standard := messages.ConvertMessageList(messageList)
+		contentResponse, err = e.model.GenerateContent(ctx, standard, options...)
+	}
 	if err != nil {
 		return nil, MarkLLMCallError(err)
 	}

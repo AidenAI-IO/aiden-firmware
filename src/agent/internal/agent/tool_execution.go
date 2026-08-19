@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"strings"
 	"time"
 
@@ -33,14 +32,12 @@ type ToolResult struct {
 func (r ToolResult) IsError() bool { return r.Error != nil }
 
 type ToolCallExecution struct {
-	Specs                  *ToolSpecs
-	Action                 schema.AgentAction
-	Before                 BeforeToolCallHook
-	After                  AfterToolCallHook
-	Callback               callbacks.Handler
-	EnvironmentBridge      *EnvironmentBridgeClient
-	EnvironmentBridgeTools []string // Tool name globs to forward; empty forwards nothing (see shouldForwardToEnvironmentBridge)
-	ResultObserver         ToolResultObserver
+	Specs          *ToolSpecs
+	Action         schema.AgentAction
+	Before         BeforeToolCallHook
+	After          AfterToolCallHook
+	Callback       callbacks.Handler
+	ResultObserver ToolResultObserver
 }
 
 type ToolCallExecutionResult struct {
@@ -71,38 +68,6 @@ type toolResultCallbackHandler interface {
 
 type toolCallStartCallbackHandler interface {
 	HandleToolCallStart(ctx context.Context, call ToolCall)
-}
-
-// shouldForwardToEnvironmentBridge determines whether a tool call should be forwarded to the
-// environment bridge. A tool is forwarded when its name matches any pattern in
-// environmentBridgeTools. Patterns use shell-style globbing (path.Match), so "*" matches
-// every tool except screenshot, "keyboard_*" matches all keyboard tools, and an exact name
-// like "touch_gesture" matches only that tool. screenshot is never forwarded; the agent
-// captures it through the remote screen provider. An empty environmentBridgeTools list
-// forwards nothing, so the caller is responsible for supplying the device-tool patterns.
-func shouldForwardToEnvironmentBridge(toolName string, environmentBridgeTools []string) bool {
-	if toolName == "screenshot" {
-		return false
-	}
-	for _, pattern := range environmentBridgeTools {
-		pattern = strings.TrimSpace(pattern)
-		if pattern == "" {
-			continue
-		}
-		// path.Match only errors on malformed patterns; treat a malformed
-		// pattern as a literal exact-match fallback so a stray character never
-		// silently forwards or drops a tool.
-		if matched, err := path.Match(pattern, toolName); err == nil {
-			if matched {
-				return true
-			}
-			continue
-		}
-		if pattern == toolName {
-			return true
-		}
-	}
-	return false
 }
 
 func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {
@@ -147,53 +112,6 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		result = runAfterToolCallHook(ctx, execution, call, result)
 		emitToolResult(ctx, execution.Callback, call, result)
 		return resultForToolCall(call, result, nil, false)
-	}
-
-	// If environment bridge is enabled, forward the call to the bridge. When the
-	// HTTP call succeeds the remote ToolResult is passed through verbatim because
-	// the remote ran the same executeToolCall path and already produced the same
-	// structured response the LLM would see locally. Only transport failures are
-	// formatted here, mirroring how a local tool error is surfaced.
-	//
-	// Only forward tools whose name matches one of the configured EnvironmentBridgeTools
-	// patterns (see shouldForwardToEnvironmentBridge). Everything else runs locally.
-	if execution.EnvironmentBridge != nil && shouldForwardToEnvironmentBridge(spec.Name, execution.EnvironmentBridgeTools) {
-		remote, err := execution.EnvironmentBridge.CallTool(ctx, spec.Name, input)
-		if err != nil {
-			code := CodeToolExecutionFailed
-			if errors.Is(err, context.Canceled) {
-				code = CodeCanceled
-			} else if errors.Is(err, context.DeadlineExceeded) {
-				code = CodeDeadlineExceeded
-			}
-			toolErr := NewToolError(code, err.Error())
-			result := ToolResult{
-				Output:   toolErr.Message,
-				Error:    toolErr,
-				Duration: time.Since(call.StartedAt),
-			}
-			result = runAfterToolCallHook(ctx, execution, call, result)
-			emitToolResult(ctx, execution.Callback, call, result)
-			return resultForToolCall(call, result, err, false)
-		}
-		result := *remote
-		result.Duration = time.Since(call.StartedAt)
-		if ctxErr := ctx.Err(); ctxErr != nil && !(errors.Is(context.Cause(ctx), errSteerInterruptToolCancel) && result.Error == nil) {
-			if errors.Is(ctxErr, context.Canceled) {
-				result.Error = NewToolError(CodeCanceled, ctxErr.Error())
-			} else if errors.Is(ctxErr, context.DeadlineExceeded) {
-				result.Error = NewToolError(CodeDeadlineExceeded, ctxErr.Error())
-			} else {
-				result.Error = NewToolError(CodeToolExecutionFailed, ctxErr.Error())
-			}
-			result.Output = result.Error.Message
-			result = runAfterToolCallHook(ctx, execution, call, result)
-			emitToolResult(ctx, execution.Callback, call, result)
-			return resultForToolCall(call, result, ctxErr, true)
-		}
-		result = runAfterToolCallHook(ctx, execution, call, result)
-		emitToolResult(ctx, execution.Callback, call, result)
-		return resultForToolCall(call, result, nil, true)
 	}
 
 	ctx2, _ := WithToolError(ctx)

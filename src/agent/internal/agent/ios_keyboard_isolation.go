@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	defaultIOSKeyboardIsolationControl = "/oem/usr/bin/aiden-dynamic-keyboard"
-	iosKeyboardProfileSwitchTimeout    = 30 * time.Second
-	iosKeyboardRestoreRetryCooldown    = 5 * time.Second
+	defaultIOSKeyboardIsolationControl  = "/oem/usr/bin/aiden-dynamic-keyboard"
+	iosKeyboardProfileSwitchTimeout     = 30 * time.Second
+	iosKeyboardReenumerationWakeTimeout = 2 * time.Second
+	iosKeyboardRestoreRetryCooldown     = 5 * time.Second
 )
 
 type iosKeyboardIsolationCommand func(context.Context, string, ...string) ([]byte, error)
@@ -42,19 +43,25 @@ func iosKeyboardIsolationControllerFromContext(ctx context.Context) *iosKeyboard
 // pointer-free USB profile. Unmodified text, pointer input, and Consumer
 // Control actions do not trigger profile switching.
 type iosKeyboardIsolationController struct {
-	controlPath        string
-	keyboardDev        *HIDDevice
-	pointerDev         *HIDDevice
-	extraKeysDev       *HIDDevice
-	run                iosKeyboardIsolationCommand
-	gateOnce           sync.Once
-	gate               chan struct{}
-	needsRestore       bool
-	lastRestoreErr     error
-	lastRestoreFailure time.Time
+	controlPath         string
+	keyboardDev         hidDeviceCloser
+	pointerDev          hidDeviceCloser
+	extraKeysDev        hidDeviceCloser
+	run                 iosKeyboardIsolationCommand
+	notifyReenumeration func(context.Context) error
+	gateOnce            sync.Once
+	gate                chan struct{}
+	needsRestore        bool
+	lastRestoreErr      error
+	lastRestoreFailure  time.Time
 }
 
-func newIOSKeyboardIsolationController(cfg HIDConfig, keyboardDev, pointerDev, extraKeysDev *HIDDevice) *iosKeyboardIsolationController {
+// hidDeviceCloser is closed across USB profile switches so writers reopen FDs.
+type hidDeviceCloser interface {
+	Close()
+}
+
+func newIOSKeyboardIsolationController(cfg HIDConfig, keyboardDev, pointerDev, extraKeysDev hidDeviceCloser) *iosKeyboardIsolationController {
 	if cfg.InputBackendADB() || cfg.PointerModeOrDefault() != "absolute" {
 		return nil
 	}
@@ -67,6 +74,9 @@ func newIOSKeyboardIsolationController(cfg HIDConfig, keyboardDev, pointerDev, e
 		keyboardDev:  keyboardDev,
 		pointerDev:   pointerDev,
 		extraKeysDev: extraKeysDev,
+		notifyReenumeration: func(ctx context.Context) error {
+			return defaultBLEWake(ctx, "usb_reenumeration")
+		},
 		run: func(ctx context.Context, path string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, path, args...).CombinedOutput()
 		},
@@ -118,6 +128,17 @@ func (c *iosKeyboardIsolationController) release() {
 func (c *iosKeyboardIsolationController) switchProfile(command string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), iosKeyboardProfileSwitchTimeout)
 	defer cancel()
+	if c.notifyReenumeration != nil {
+		// Best effort: the profile switch must still run when BLE is unavailable.
+		// The App uses this advance notice only to ignore the short, intentional
+		// ECM interruption caused by rebinding the single USB gadget controller.
+		notifyCtx, notifyCancel := context.WithTimeout(
+			context.Background(),
+			iosKeyboardReenumerationWakeTimeout,
+		)
+		_ = c.notifyReenumeration(notifyCtx)
+		notifyCancel()
+	}
 	output, err := c.run(ctx, c.controlPath, command)
 	if err == nil {
 		return nil
@@ -298,26 +319,36 @@ func (c *iosKeyboardIsolationController) withKeyboard(ctx context.Context, isola
 }
 
 func (c *iosKeyboardIsolationController) withPointerCall(ctx context.Context, action func(context.Context) (string, error)) (string, error) {
+	var output string
+	err := c.withPointerAction(ctx, func(callCtx context.Context) error {
+		var callErr error
+		output, callErr = action(callCtx)
+		return callErr
+	})
+	return output, err
+}
+
+func (c *iosKeyboardIsolationController) withPointerAction(ctx context.Context, action func(context.Context) error) error {
 	if c == nil {
 		return action(ctx)
 	}
 	if batch := c.batchFromContext(ctx); batch != nil {
 		if err := batch.restore(); err != nil {
-			return "", err
+			return err
 		}
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
-				return "", err
+				return err
 			}
 		}
 		return action(ctx)
 	}
 	if err := c.acquire(ctx); err != nil {
-		return "", err
+		return err
 	}
 	defer c.release()
 	if err := c.ensureNormalProfileLocked(); err != nil {
-		return "", err
+		return err
 	}
 	return action(ctx)
 }

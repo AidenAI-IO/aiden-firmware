@@ -53,6 +53,28 @@ func TestIOSKeyboardIsolationWrapsModifierShortcut(t *testing.T) {
 	}
 }
 
+func TestIOSKeyboardIsolationAnnouncesEachPlannedUSBReenumeration(t *testing.T) {
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	controller.notifyReenumeration = func(context.Context) error {
+		events = append(events, "usb-reenumeration")
+		return nil
+	}
+
+	err := controller.withKeyboard(context.Background(), true, func() error {
+		events = append(events, "shortcut")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withKeyboard() error = %v", err)
+	}
+	if want := []string{
+		"usb-reenumeration", "isolate", "shortcut", "usb-reenumeration", "restore",
+	}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
 func TestIOSKeyboardIsolationBatchCoalescesModifierActions(t *testing.T) {
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)
@@ -341,16 +363,16 @@ func TestKeyboardTapIsolatesOnlyModifierChords(t *testing.T) {
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)
 	controller.keyboardDev = dev
-	tool := &KeyboardTapTool{dev: dev, pointerMode: "absolute", iosKeyboardIsolation: controller}
+	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: dev, gate: newIOSKeyboardIsolationProfileGate(controller)})
 
-	if out, err := tool.Call(context.Background(), `{"keys":["a"],"hold_ms":1}`); err != nil || out != "ok" {
+	if out, err := tool.Call(context.Background(), `{"keys":["a"]}`); err != nil || out != "ok" {
 		t.Fatalf("plain Call() = %q, %v", out, err)
 	}
 	if len(events) != 0 {
 		t.Fatalf("plain key profile events = %v, want none", events)
 	}
 
-	if out, err := tool.Call(context.Background(), `{"keys":["meta","v"],"hold_ms":1}`); err != nil || out != "ok" {
+	if out, err := tool.Call(context.Background(), `{"keys":["meta","v"]}`); err != nil || out != "ok" {
 		t.Fatalf("modifier Call() = %q, %v", out, err)
 	}
 	if want := []string{"isolate", "restore"}; !reflect.DeepEqual(events, want) {
@@ -417,14 +439,9 @@ func TestKeyboardTapExtraKeysRemainOnNormalProfile(t *testing.T) {
 	controller := newTestIOSKeyboardIsolationController(&events)
 	controller.keyboardDev = keyboardDev
 	controller.extraKeysDev = extraKeysDev
-	tool := &KeyboardTapTool{
-		dev:                  keyboardDev,
-		androidDev:           extraKeysDev,
-		pointerMode:          "absolute",
-		iosKeyboardIsolation: controller,
-	}
+	tool := testKeyboardTapTool(t, testMNKOpts{keyboard: keyboardDev, android: extraKeysDev, gate: newIOSKeyboardIsolationProfileGate(controller)})
 
-	out, err := tool.Call(context.Background(), `{"keys":["volume_up"],"hold_ms":1}`)
+	out, err := tool.Call(context.Background(), `{"keys":["volume_up"]}`)
 	if err != nil || out != "ok" {
 		t.Fatalf("Call() = %q, %v", out, err)
 	}

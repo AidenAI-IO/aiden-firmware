@@ -72,6 +72,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.model.provider = "openrouter";
     cfg.model.model = "openai/gpt-4o-mini";
     cfg.model.api_key = "sk-or-test";
+    cfg.model.api_mode = "responses";
     cfg.model.temperature = 0.2;
     cfg.model.has_temperature = true;
     cfg.model.max_response_tokens = 1000;
@@ -121,18 +122,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.telemetry.environment = "staging";
 
     cfg.live_activity.enabled = true;
-    cfg.live_activity.relay_url = "https://relay.example.com";
-    cfg.live_activity.relay_api_key = "relay-secret";
-    cfg.live_activity.board_id = "board-001";
-    cfg.live_activity.phone_id = "phone-001";
-    cfg.live_activity.bundle_id = "com.aiden.bridge";
-    cfg.live_activity.topic = "com.aiden.bridge.push-type.liveactivity";
-    cfg.live_activity.environment = "production";
-    cfg.live_activity.team_id = "TEAM123456";
-    cfg.live_activity.key_id = "KEY123456";
-    cfg.live_activity.private_key_path = "/userdata/agent/AuthKey_KEY123456.p8";
-    cfg.live_activity.private_key_pem = "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----";
-    cfg.live_activity.timeout_sec = 12;
 
     std::string path = make_temp_path("roundtrip.toml");
     std::string err;
@@ -195,6 +184,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.model.provider == "openrouter");
     CHECK(loaded.model.model == "openai/gpt-4o-mini");
     CHECK(loaded.model.api_key == "sk-or-test");
+    CHECK(loaded.model.api_mode == "responses");
     CHECK(loaded.model.temperature == doctest::Approx(0.2));
     CHECK(loaded.model.max_response_tokens == 1000);
     CHECK(loaded.model.context_window == 64000);
@@ -252,20 +242,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.telemetry.environment == "staging");
 
     CHECK(loaded.live_activity.enabled == true);
-    CHECK(loaded.live_activity.relay_url == "https://relay.example.com");
-    CHECK(loaded.live_activity.relay_api_key == "relay-secret");
-    CHECK(loaded.live_activity.has_relay_api_key == true);
-    CHECK(loaded.live_activity.board_id == "board-001");
-    CHECK(loaded.live_activity.phone_id == "phone-001");
-    CHECK(loaded.live_activity.bundle_id == "com.aiden.bridge");
-    CHECK(loaded.live_activity.topic == "com.aiden.bridge.push-type.liveactivity");
-    CHECK(loaded.live_activity.environment == "production");
-    CHECK(loaded.live_activity.team_id == "TEAM123456");
-    CHECK(loaded.live_activity.key_id == "KEY123456");
-    CHECK(loaded.live_activity.private_key_path == "/userdata/agent/AuthKey_KEY123456.p8");
-    CHECK(loaded.live_activity.private_key_pem == "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----");
-    CHECK(loaded.live_activity.has_private_key_pem == true);
-    CHECK(loaded.live_activity.timeout_sec == 12);
 
     std::remove(path.c_str());
 }
@@ -336,22 +312,6 @@ TEST_CASE("agent_toml rejects invalid voice notification TTL code keys") {
     std::string err;
     CHECK_FALSE(aiden::save_agent_toml(path.c_str(), cfg, &err));
     CHECK(err.find("expected a bare TOML key") != std::string::npos);
-
-    std::remove(path.c_str());
-}
-
-TEST_CASE("agent_toml rejects negative live_activity timeout") {
-    std::string path = make_temp_path("negative_live_activity_timeout.toml");
-    {
-        std::ofstream out(path);
-        out << "[live_activity]\n"
-            << "timeout_sec = -1\n";
-    }
-
-    aiden::AgentToml loaded;
-    std::string err;
-    CHECK_FALSE(aiden::load_agent_toml(path.c_str(), loaded, &err));
-    CHECK(err.find("must be >= 0") != std::string::npos);
 
     std::remove(path.c_str());
 }

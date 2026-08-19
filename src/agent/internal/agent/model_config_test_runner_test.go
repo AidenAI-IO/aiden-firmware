@@ -58,6 +58,17 @@ func TestRunModelProviderTestReportsInvalidProviderRecord(t *testing.T) {
 	}
 }
 
+func TestRunModelProviderTestRejectsInvalidAPIMode(t *testing.T) {
+	_, err := RunModelProviderTest(context.Background(), Config{}, ModelProviderTestRequest{
+		Provider: "openai",
+		Model:    "test-model",
+		APIMode:  "invalid",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid model.api_mode") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestRunModelProviderTestSendsEffectiveSamplingValues(t *testing.T) {
 	tests := []struct {
 		name                string

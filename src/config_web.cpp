@@ -425,29 +425,12 @@ std::string pointer_mode_for_device_type(const std::string& device_type) {
     return normalize_device_type(device_type) == "Android" ? "touchscreen" : "absolute";
 }
 
-std::string device_type_from_platform(const std::string& value) {
-    std::string platform = trim_copy(value);
-    for (size_t i = 0; i < platform.size(); ++i) {
-        platform[i] = static_cast<char>(tolower(static_cast<unsigned char>(platform[i])));
-    }
-    if (platform == "ios" || platform == "iphone" || platform == "ipad" || platform == "ipados") return "iOS";
-    if (platform == "android") return "Android";
-    if (platform == "macos" || platform == "mac" || platform == "darwin") return "macOS";
-    if (platform == "windows" || platform == "win") return "windows";
-    if (platform == "linux") return "linux";
-    return "";
-}
-
 std::string effective_device_type(const aiden::AgentToml& config) {
     std::string configured = trim_copy(config.device.device_type);
     if (!configured.empty()) {
         return normalize_device_type(configured);
     }
-    std::string platform_device_type = device_type_from_platform(config.default_platform);
-    if (!platform_device_type.empty()) {
-        return platform_device_type;
-    }
-    return normalize_pointer_mode(config.hid.pointer_mode) == "touchscreen" ? "Android" : "iOS";
+    return "iOS";
 }
 
 std::string normalize_input_backend(const std::string& value) {
@@ -1052,18 +1035,7 @@ bool validate_compatibility_config_field_types(cJSON* root, std::string* error) 
         {"termination_policy", "restrict_tools_stall_score", CONFIG_FIELD_NUMBER},
         {"termination_policy", "terminate_stall_score", CONFIG_FIELD_NUMBER},
         {"termination_policy", "parse_failure_limit", CONFIG_FIELD_NUMBER},
-        {"live_activity", "relay_url", CONFIG_FIELD_STRING},
-        {"live_activity", "relay_api_key", CONFIG_FIELD_STRING},
-        {"live_activity", "has_relay_api_key", CONFIG_FIELD_BOOL},
-        {"live_activity", "bundle_id", CONFIG_FIELD_STRING},
-        {"live_activity", "topic", CONFIG_FIELD_STRING},
-        {"live_activity", "environment", CONFIG_FIELD_STRING},
-        {"live_activity", "team_id", CONFIG_FIELD_STRING},
-        {"live_activity", "key_id", CONFIG_FIELD_STRING},
-        {"live_activity", "private_key_path", CONFIG_FIELD_STRING},
-        {"live_activity", "private_key_pem", CONFIG_FIELD_STRING},
-        {"live_activity", "has_private_key_pem", CONFIG_FIELD_BOOL},
-        {"live_activity", "timeout_sec", CONFIG_FIELD_NUMBER},
+        {"live_activity", "enabled", CONFIG_FIELD_BOOL},
         {NULL, NULL, CONFIG_FIELD_STRING},
     };
 
@@ -2104,10 +2076,6 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
         return;
     }
     bool need_search_api_key = config->search.api_key.empty() && config->search.has_api_key;
-    bool need_live_activity_relay_api_key =
-        config->live_activity.relay_api_key.empty() && config->live_activity.has_relay_api_key;
-    bool need_live_activity_private_key_pem =
-        config->live_activity.private_key_pem.empty() && config->live_activity.has_private_key_pem;
     bool need_provider_secrets = false;
     for (const auto& item : config->model_providers) {
         need_provider_secrets = need_provider_secrets || item.second.api_key.empty();
@@ -2119,8 +2087,7 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
         need_provider_secrets = need_provider_secrets || item.second.api_key.empty() ||
             item.second.secret_id.empty() || item.second.secret_key.empty();
     }
-    if (!need_search_api_key && !need_live_activity_relay_api_key &&
-        !need_live_activity_private_key_pem && !need_provider_secrets) {
+    if (!need_search_api_key && !need_provider_secrets) {
         return;
     }
 
@@ -2132,14 +2099,6 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
     if (need_search_api_key && !stored.search.api_key.empty()) {
         config->search.api_key = stored.search.api_key;
         config->search.has_api_key = true;
-    }
-    if (need_live_activity_relay_api_key && !stored.live_activity.relay_api_key.empty()) {
-        config->live_activity.relay_api_key = stored.live_activity.relay_api_key;
-        config->live_activity.has_relay_api_key = true;
-    }
-    if (need_live_activity_private_key_pem && !stored.live_activity.private_key_pem.empty()) {
-        config->live_activity.private_key_pem = stored.live_activity.private_key_pem;
-        config->live_activity.has_private_key_pem = true;
     }
     for (auto& item : config->model_providers) {
         std::map<std::string, aiden::ModelProviderToml>::const_iterator previous =
@@ -2927,6 +2886,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
     }
     cJSON_AddStringToObject(model, "model", config.model.model.c_str());
+    if (!config.model.api_mode.empty()) {
+        cJSON_AddStringToObject(model, "api_mode", config.model.api_mode.c_str());
+    }
     cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
     if (config.model.has_temperature) {
         cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
@@ -3033,30 +2995,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
     cJSON* live_activity = add_object(root, "live_activity");
     cJSON_AddBoolToObject(live_activity, "enabled", config.live_activity.enabled ? 1 : 0);
-    cJSON_AddStringToObject(live_activity, "relay_url", config.live_activity.relay_url.c_str());
-    if (include_secrets) {
-        cJSON_AddStringToObject(live_activity, "relay_api_key", config.live_activity.relay_api_key.c_str());
-    } else {
-        cJSON_AddBoolToObject(live_activity, "has_relay_api_key",
-                              (config.live_activity.has_relay_api_key ||
-                               !config.live_activity.relay_api_key.empty()) ? 1 : 0);
-    }
-    cJSON_AddStringToObject(live_activity, "board_id", config.live_activity.board_id.c_str());
-    cJSON_AddStringToObject(live_activity, "phone_id", config.live_activity.phone_id.c_str());
-    cJSON_AddStringToObject(live_activity, "bundle_id", config.live_activity.bundle_id.c_str());
-    cJSON_AddStringToObject(live_activity, "topic", config.live_activity.topic.c_str());
-    cJSON_AddStringToObject(live_activity, "environment", config.live_activity.environment.c_str());
-    cJSON_AddStringToObject(live_activity, "team_id", config.live_activity.team_id.c_str());
-    cJSON_AddStringToObject(live_activity, "key_id", config.live_activity.key_id.c_str());
-    cJSON_AddStringToObject(live_activity, "private_key_path", config.live_activity.private_key_path.c_str());
-    if (include_secrets) {
-        cJSON_AddStringToObject(live_activity, "private_key_pem", config.live_activity.private_key_pem.c_str());
-    } else {
-        cJSON_AddBoolToObject(live_activity, "has_private_key_pem",
-                              (config.live_activity.has_private_key_pem ||
-                               !config.live_activity.private_key_pem.empty()) ? 1 : 0);
-    }
-    cJSON_AddNumberToObject(live_activity, "timeout_sec", config.live_activity.timeout_sec);
 
     cJSON* agent = add_object(root, "agent");
     cJSON_AddStringToObject(agent, "locale", config.locale.c_str());
@@ -3086,7 +3024,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(agent, "screen_stable_timeout_ms", config.screen_stable_timeout_ms);
     cJSON_AddNumberToObject(agent, "screen_stable_ms", config.screen_stable_ms);
     cJSON_AddNumberToObject(agent, "screen_stable_diff_threshold", config.screen_stable_diff_threshold);
-    cJSON_AddStringToObject(agent, "default_platform", config.default_platform.c_str());
 
     return root;
 }
@@ -3311,6 +3248,7 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_str(&m->model, obj, "model");
     m->base_url.clear();
     set_json_str(&m->api_key, obj, "api_key");
+    set_json_str(&m->api_mode, obj, "api_mode");
     set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
     // Temperature is nullable: presence of the key sets has_temperature, and
     // its absence clears it. This function applies JSON as a patch onto an
@@ -3609,34 +3547,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* live_activity = cJSON_GetObjectItem(root, "live_activity");
     if (json_is_object(live_activity)) {
         set_json_bool(&config->live_activity.enabled, live_activity, "enabled");
-        set_json_str(&config->live_activity.relay_url, live_activity, "relay_url");
-        set_json_bool(&config->live_activity.has_relay_api_key, live_activity, "has_relay_api_key");
-        cJSON* relay_key_item = cJSON_GetObjectItem(live_activity, "relay_api_key");
-        if (json_is_string(relay_key_item)) {
-            std::string relay_api_key = trim_copy(relay_key_item->valuestring);
-            if (!relay_api_key.empty()) {
-                config->live_activity.relay_api_key = relay_api_key;
-                config->live_activity.has_relay_api_key = true;
-            }
-        }
-        set_json_str(&config->live_activity.board_id, live_activity, "board_id");
-        set_json_str(&config->live_activity.phone_id, live_activity, "phone_id");
-        set_json_str(&config->live_activity.bundle_id, live_activity, "bundle_id");
-        set_json_str(&config->live_activity.topic, live_activity, "topic");
-        set_json_str(&config->live_activity.environment, live_activity, "environment");
-        set_json_str(&config->live_activity.team_id, live_activity, "team_id");
-        set_json_str(&config->live_activity.key_id, live_activity, "key_id");
-        set_json_str(&config->live_activity.private_key_path, live_activity, "private_key_path");
-        set_json_bool(&config->live_activity.has_private_key_pem, live_activity, "has_private_key_pem");
-        cJSON* private_key_item = cJSON_GetObjectItem(live_activity, "private_key_pem");
-        if (json_is_string(private_key_item)) {
-            std::string private_key_pem = private_key_item->valuestring;
-            if (!trim_copy(private_key_pem).empty()) {
-                config->live_activity.private_key_pem = private_key_pem;
-                config->live_activity.has_private_key_pem = true;
-            }
-        }
-        set_json_int(&config->live_activity.timeout_sec, live_activity, "timeout_sec");
     }
 
     cJSON* agent = cJSON_GetObjectItem(root, "agent");
@@ -3668,7 +3578,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->screen_stable_timeout_ms, agent, "screen_stable_timeout_ms");
         set_json_int(&config->screen_stable_ms, agent, "screen_stable_ms");
         set_json_double(&config->screen_stable_diff_threshold, agent, "screen_stable_diff_threshold");
-        set_json_str(&config->default_platform, agent, "default_platform");
     }
 }
 

@@ -45,8 +45,7 @@ is created on demand, so a directory holding only `agent.toml` is a valid start.
 ├── memory/                  # conversation memory persistence directory
 │   └── extraction.yaml      # optional memory extraction overrides
 ├── cache/                   # provider model metadata cache
-├── log/                     # runtime log directory
-└── board_id                 # generated on first run when live activity is on
+└── log/                     # runtime log directory
 ```
 
 ## Config Web: the device config page
@@ -66,7 +65,7 @@ The firmware starts `config_web` on port 80.
 The page fields cover the following config sections (all detailed later on this page). The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
 - `agent`: `locale`, `input_mode`, `trigger_mode`, VAD params, `load_all_tools`, `max_iterations`, `custom_instruction`, `additional_prompt`
-- `model`: provider, model, api_key, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
+- `model`: provider, model, api_key, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, playback_backend
@@ -101,6 +100,9 @@ provider = "openrouter-main"
 model = "bytedance-seed/seed-2.0-lite"
 temperature = 0.2
 max_response_tokens = 1000
+# Optional Responses API experiment. This keeps ContextManager history local
+# and sends store = false on every request.
+# api_mode = "responses"
 # Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
 # context_window = 128000
 # model_max_output_tokens = 8192
@@ -326,6 +328,7 @@ built. When a section is named exactly like a provider type, the section wins.
 | `provider`                | A provider type, or the name of a `[model_providers.<name>]` section. Types: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
+| `api_mode`                | Wire protocol. Omit it (or use `chat_completions`) for the existing Chat Completions path; `responses` sends manual local-context requests to the configured OpenAI-compatible `/responses` endpoint with `store=false`. There is no provider-name allowlist: compatibility is determined by the endpoint. Native Anthropic and Ollama transports do not implement this protocol; configure a compatible gateway as an `openai` provider. Server-side `previous_response_id` chaining is intentionally not used. |
 | `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
 | `reasoning_effort`        | Thinking effort. Unset is auto. For no-tool requests, native Anthropic maps `low`/`medium`/`high` to adaptive thinking `output_config.effort`; tool requests retain Claude's default reasoning because Aiden does not persist Anthropic thinking signatures. `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, Ollama, and the fake provider, but not by native Anthropic or Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
 | `max_response_tokens`     | Maximum output tokens passed to the model on request                                                                                                                                                                                                 |
@@ -701,28 +704,13 @@ speed = 1.0
 
 ## `[live_activity]`
 
-For the iOS companion app's Live Activity / Dynamic Island task status. The agent-side status snapshot is enabled by default. See the full flow in [Live Activity / Dynamic Island](./live-activity.md).
+For the iOS companion app's Live Activity / Dynamic Island task status.
+Snapshots are enabled by default and delivered locally through BLE Wake plus
+USB ECM. See [Live Activity / Dynamic Island](./live-activity.md).
 
-**Relay-based updates** (legacy, used when APNs credentials are not configured):
-
-| Field           | Default                                 | Description                                                                                       |
-| --------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `relay_url`     | -                                       | Aiden Live Activity relay URL; remote updates are disabled until the URL and credential are provisioned |
-| `relay_api_key` | -                                       | Device-scoped relay credential; the relay must bind it to the effective `board_id` and reject cross-board use |
-| `board_id`      | generated in `/userdata/agent/board_id` | Effective board ID in relay. The persisted generated value is the default; an explicit configuration value overrides it. Empty or `default` is not valid |
-
-**APNs-based updates** (for remote updates when the app is backgrounded, on lock screen, or not open):
-
-| Field              | Default                              | Description                                                                                                                        |
-| ------------------ | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `bundle_id`        | -                                    | iOS app bundle id; required only when configuring background APNs and `topic` is not explicitly set                                |
-| `topic`            | `<bundle_id>.push-type.liveactivity` | APNs topic; usually does not need to be set manually                                                                               |
-| `environment`      | `sandbox`                            | `sandbox` or `production`                                                                                                          |
-| `team_id`          | -                                    | Apple Developer Team ID; used only by background APNs                                                                              |
-| `key_id`           | -                                    | APNs Auth Key ID; used only by background APNs                                                                                     |
-| `private_key_path` | -                                    | APNs `.p8` private key path; used only by background APNs                                                                          |
-| `private_key_pem`  | -                                    | Inline APNs `.p8` PEM directly; for development/debugging only, do not place in open-source config or on user boards in production |
-| `timeout_sec`      | `10`                                 | Background APNs request timeout                                                                                                    |
+| Field     | Default | Description |
+| --------- | ------- | ----------- |
+| `enabled` | `true`  | Maintain local task-status snapshots and send coalesced `live_activity` BLE Wake notifications |
 
 ## Episode telemetry (Langfuse)
 

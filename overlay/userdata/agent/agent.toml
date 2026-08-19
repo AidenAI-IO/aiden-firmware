@@ -72,6 +72,8 @@ provider = "openai-main"
 model = "gpt-5.5"
 # temperature = 0.2
 # max_response_tokens = 1000
+# Responses API experiment: local ContextManager history, store=false.
+# api_mode = "responses"
 # Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
 # context_window = 128000
 # model_max_output_tokens = 8192
@@ -235,14 +237,10 @@ provider = "duckduckgo"
 api_key = ""
 
 # Live Activity / Dynamic Island.
-# Foreground ActivityKit updates work without relay configuration. For remote
-# updates, provision a relay URL and a device-scoped credential bound to the
-# board_id generated at /userdata/agent/board_id. Do not reuse credentials
-# across boards.
+# State updates stay local: BLE carries only a wake hint and the iOS app reads
+# the current snapshot over USB ECM before updating ActivityKit.
 [live_activity]
 enabled = true
-# relay_url = "https://relay.example.com"
-# relay_api_key = "device-scoped-credential"
 
 # Episode telemetry (Langfuse). Disabled by default.
 # Set enabled = true and configure base_url + public_key + secret_key.

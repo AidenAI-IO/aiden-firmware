@@ -220,6 +220,61 @@ func TestBuildOpenRouterEnablesNestedReasoning(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICompatibleResponsesMode(t *testing.T) {
+	mgr := NewModelManager(ModelConfig{
+		Provider: "openai",
+		Model:    "gpt-5",
+		APIKey:   "test-key",
+		APIMode:  "responses",
+	}, ProxyConfig{})
+
+	model, err := mgr.build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, ok := model.(*responsesModel); !ok {
+		t.Fatalf("model type = %T, want *responsesModel", model)
+	}
+}
+
+func TestBuildResponsesModeUsesCustomOpenAICompatibleEndpoint(t *testing.T) {
+	for _, provider := range []string{"openai", "volcengine"} {
+		t.Run(provider, func(t *testing.T) {
+			mgr := NewModelManager(ModelConfig{
+				Provider: provider,
+				Model:    "custom-model",
+				APIKey:   "test-key",
+				BaseURL:  "https://gateway.example.test/v1",
+				APIMode:  "responses",
+			}, ProxyConfig{})
+
+			model, err := mgr.build()
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			responses, ok := model.(*responsesModel)
+			if !ok {
+				t.Fatalf("model type = %T, want *responsesModel", model)
+			}
+			if responses.baseURL != "https://gateway.example.test/v1" {
+				t.Fatalf("base URL = %q", responses.baseURL)
+			}
+		})
+	}
+}
+
+func TestNativeTransportsExplainResponsesModeRequirement(t *testing.T) {
+	for _, provider := range []string{"anthropic", "ollama"} {
+		t.Run(provider, func(t *testing.T) {
+			mgr := NewModelManager(ModelConfig{Provider: provider, Model: "test", APIKey: "test-key", APIMode: "responses"}, ProxyConfig{})
+			_, err := mgr.build()
+			if err == nil || !strings.Contains(err.Error(), "OpenAI-compatible /responses endpoint") {
+				t.Fatalf("build error = %v", err)
+			}
+		})
+	}
+}
+
 func TestBuildOpenRouterMissingAPIKeyError(t *testing.T) {
 	t.Run("named environment reference", func(t *testing.T) {
 		const tokenEnv = "AIDEN_TEST_MISSING_OPENROUTER_KEY"

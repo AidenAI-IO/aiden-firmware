@@ -169,6 +169,13 @@ func ConfigMeta() ConfigMetadata {
 						Enum:    enumOptions(modelProviderTypesForConfigUI()...),
 						Default: defaults.Model.Provider},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model, Layout: "wide"},
+					{Key: "api_mode", Widget: WidgetSelect,
+						Help: "Responses mode sends the local ContextManager history as input items and never stores it server-side.",
+						Enum: []EnumOption{
+							{Value: "", Label: "chat completions (default)"},
+							{Value: "responses", Label: "Responses API (manual context)"},
+						},
+						Default: defaults.Model.APIMode},
 					// The effective default is model-dependent (resolved at load
 					// time); show the global fallback here as the UI placeholder.
 					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},
@@ -453,11 +460,6 @@ func ConfigMeta() ConfigMetadata {
 				Name: "live_activity",
 				Fields: []FieldMeta{
 					{Key: "enabled", Widget: WidgetBoolean, Default: true},
-					{Key: "board_id", Widget: WidgetText,
-						VisibleWhen: all(truthy("live_activity.enabled"))},
-					// phone_id is still part of the config_web TOML contract even
-					// though the Go runtime no longer consumes it directly.
-					{Key: "phone_id", Widget: WidgetText},
 				},
 			},
 			{
@@ -519,9 +521,6 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "screen_stable_timeout_ms", Widget: WidgetNumber, Default: defaults.ScreenStableTimeoutMs},
 					{Key: "screen_stable_ms", Widget: WidgetNumber, Default: defaults.ScreenStableMs},
 					{Key: "screen_stable_diff_threshold", Widget: WidgetNumber, Default: defaults.ScreenStableDiffThreshold},
-					{Key: "default_platform", Widget: WidgetSelect,
-						Enum:    enumOptions("", "ios", "android", "mac"),
-						Default: defaults.DefaultPlatform},
 					{Key: "custom_instruction", Widget: WidgetTextarea, Layout: "wide"},
 					{Key: "additional_prompt", Widget: WidgetTextarea, Layout: "wide"},
 				},
