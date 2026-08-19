@@ -118,11 +118,15 @@ add_executable(aiden_tests
     terminal_input_test.cpp
     service_status_test.cpp
     vad_common_test.cpp
+    system_env_parser_test.cpp
+    system_env_generator_test.cpp
     audio_service_protocol_test.cpp
     audio_service_client_test.cpp
     audio_playback_session_test.cpp
     audio_session_manager_test.cpp
     audio_volume_state_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
+    ${CMAKE_SOURCE_DIR}/src/system_env_generator.cpp
     ${AIDEN_IMAGE_TEST_SOURCES}
     ${AIDEN_TEST_SOURCES}
 )
@@ -215,3 +219,12 @@ add_test(
 add_test(NAME usb0_dhcp_options
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_usb0_dhcp_options.sh
 )
+
+add_test(NAME boot_timeline
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_boot_timeline.sh
+)
+
+add_test(NAME debian_ext4_canonicalizer
+    COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/test_debian_ext4_canonicalizer.sh
+)
+set_tests_properties(debian_ext4_canonicalizer PROPERTIES SKIP_RETURN_CODE 77)

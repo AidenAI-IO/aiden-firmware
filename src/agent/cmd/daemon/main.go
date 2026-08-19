@@ -167,11 +167,6 @@ func main() {
 	if err := runtime.StartStorageMonitor(); err != nil {
 		log.Printf("[storage_monitor] startup check failed: %v", err)
 	}
-	if wrote, err := ota.WriteHealthMarkerIfPending("/userdata/ota/pending_boot.json", "/userdata/ota/health.ok"); err != nil {
-		log.Printf("[ota] health marker not written: %v", err)
-	} else if wrote {
-		log.Printf("[ota] health marker written")
-	}
 	if err := runtime.PrimeScreenMappingOnStartup(context.Background()); err != nil {
 		log.Printf("[init] screen mapping prime failed: %v", err)
 	}

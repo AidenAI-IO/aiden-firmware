@@ -1,0 +1,36 @@
+# Debian 13 production runtime. Keep this list free of alternate network
+# managers, vendor kernels and bootloader packages.
+systemd-sysv
+udev
+dbus
+kmod
+openssh-server
+ca-certificates
+curl
+adb
+android-sdk-platform-tools-common
+iproute2
+iputils-ping
+iputils-arping
+iw
+rfkill
+wireless-regdb
+wpasupplicant
+bluez
+systemd-resolved
+systemd-timesyncd
+dnsmasq-base
+procps
+psmisc
+util-linux
+e2fsprogs
+dosfstools
+rsync
+ethtool
+usbutils
+i2c-tools
+alsa-utils
+v4l-utils
+libdrm2
+file
+tzdata

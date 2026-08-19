@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly REPO_ROOT=/work
+readonly OUTPUT_DIR=${DEBIAN_STAGE2_OUTPUT_DIR:-/out}
+readonly OPENCV_DIR=${OUTPUT_DIR}/opencv-mobile/lib/cmake/opencv4
+readonly BUILD_DIR=${OUTPUT_DIR}/apps-build
+readonly DIST_DIR=${OUTPUT_DIR}/apps
+readonly JOBS=${RK_JOBS:-$(getconf _NPROCESSORS_ONLN)}
+readonly VENDOR_LIB_DIR=${REPO_ROOT}/pico-sdk/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-glibc-rockchip/usr/lib
+readonly RKNN_ROOT=${REPO_ROOT}/third_party/rknpu2/v2.3.2
+readonly GO_VERSION=go1.26.0
+readonly SOURCE_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
+
+if [ ! -f "${OPENCV_DIR}/OpenCVConfig.cmake" ]; then
+    echo "Missing Debian OpenCV-Mobile build: ${OPENCV_DIR}" >&2
+    exit 1
+fi
+
+rm -rf "${BUILD_DIR}" "${DIST_DIR}"
+mkdir -p "${BUILD_DIR}" "${DIST_DIR}/bin" "${DIST_DIR}/lib" \
+    "${DIST_DIR}/maps" "${DIST_DIR}/metadata"
+
+cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_TOOLCHAIN_FILE="${REPO_ROOT}/cmake/toolchains/armhf-debian.cmake" \
+    -DAIDEN_TARGET_PLATFORM=rv1106-debian-glibc \
+    -DAIDEN_DEBIAN_OPENCV_DIR="${OPENCV_DIR}" \
+    -DAIDEN_ENABLE_LINK_MAPS=ON
+cmake --build "${BUILD_DIR}" --parallel "${JOBS}" --verbose \
+    2>&1 | tee "${DIST_DIR}/metadata/build.log"
+
+find "${BUILD_DIR}/bin" -maxdepth 1 -type f -print0 \
+    | while IFS= read -r -d '' binary; do
+        install -m 0755 "${binary}" "${DIST_DIR}/bin/$(basename "${binary}")"
+    done
+cp "${BUILD_DIR}"/maps/*.map "${DIST_DIR}/maps/"
+
+if [ "$(/usr/local/go/bin/go env GOVERSION)" != "${GO_VERSION}" ]; then
+    echo "Go ${GO_VERSION} is required; found $(/usr/local/go/bin/go env GOVERSION)" >&2
+    exit 1
+fi
+case "${SOURCE_EPOCH}" in
+'' | *[!0-9]*)
+    echo "SOURCE_DATE_EPOCH must be an unsigned Unix timestamp: ${SOURCE_EPOCH}" >&2
+    exit 1
+    ;;
+esac
+export PATH=/usr/local/go/bin:${PATH}
+export GOTOOLCHAIN=local
+export GOCACHE=/go-build-cache
+export GOMODCACHE=/go-mod-cache
+export GOPATH=/tmp/aiden-go-path
+readonly AGENT_COMMIT=$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD)
+readonly AGENT_BUILD_TIME=$(date -u -d "@${SOURCE_EPOCH}" +%Y%m%d-%H%M%S)
+readonly AGENT_BUILD_VERSION=${AGENT_BUILD_TIME}-${AGENT_COMMIT}
+readonly AGENT_LDFLAGS="-s -w -buildid= -X aiden-agent/internal/agent.buildCommit=${AGENT_COMMIT} -X aiden-agent/internal/agent.buildVersion=${AGENT_BUILD_VERSION}"
+
+pushd "${REPO_ROOT}/src/agent" >/dev/null
+CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
+    go build -mod=readonly -trimpath -buildvcs=false -ldflags "${AGENT_LDFLAGS}" \
+    -o "${DIST_DIR}/bin/agent" ./cmd/daemon
+CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
+    go build -mod=readonly -trimpath -buildvcs=false -ldflags '-s -w -buildid=' \
+    -o "${DIST_DIR}/bin/ble_service" ./cmd/ble_service
+CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
+    go build -mod=readonly -trimpath -buildvcs=false -ldflags "${AGENT_LDFLAGS}" \
+    -o "${DIST_DIR}/bin/ota" ./cmd/ota
+CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
+    go build -mod=readonly -trimpath -buildvcs=false -ldflags "${AGENT_LDFLAGS}" \
+    -o "${DIST_DIR}/bin/abctl" ./cmd/abctl
+go version >"${DIST_DIR}/metadata/go-version.txt"
+go list -mod=readonly -m all >"${DIST_DIR}/metadata/go-modules.txt"
+popd >/dev/null
+
+install -m 0644 "${VENDOR_LIB_DIR}/librga.so.2.1.0" \
+    "${DIST_DIR}/lib/librga.so.2.1.0"
+ln -s librga.so.2.1.0 "${DIST_DIR}/lib/librga.so.2"
+ln -s librga.so.2 "${DIST_DIR}/lib/librga.so"
+install -m 0644 "${RKNN_ROOT}/lib/librknnrt.so" \
+    "${DIST_DIR}/lib/librknnrt.so"
+
+arm-linux-gnueabihf-gcc --version >"${DIST_DIR}/metadata/compiler.txt"
+cmake --version >"${DIST_DIR}/metadata/cmake.txt"
+printf '%s\n' "${DEBIAN_STAGE2_BUILD_IMAGE_ID:-unknown}" \
+    >"${DIST_DIR}/metadata/builder-image-id.txt"
+cp /etc/apt/sources.list.d/debian.sources \
+    "${DIST_DIR}/metadata/builder-debian.sources"
+dpkg-query -W -f='${binary:Package}\t${Version}\n' \
+    | LC_ALL=C sort >"${DIST_DIR}/metadata/builder-packages.txt"
+printf '%s\n' "$(git -C "${REPO_ROOT}" rev-parse HEAD)" \
+    >"${DIST_DIR}/metadata/hardware-demo-commit.txt"
+git -C "${REPO_ROOT}" status --short \
+    >"${DIST_DIR}/metadata/hardware-demo-status.txt"
+printf '%s\n' "$(git -C "${REPO_ROOT}/pico-sdk" rev-parse HEAD)" \
+    >"${DIST_DIR}/metadata/pico-sdk-commit.txt"
+git -C "${REPO_ROOT}/pico-sdk" status --short \
+    >"${DIST_DIR}/metadata/pico-sdk-status.txt"
+printf 'source_date_epoch=%s\nagent_build_version=%s\n' \
+    "${SOURCE_EPOCH}" "${AGENT_BUILD_VERSION}" \
+    >"${DIST_DIR}/metadata/go-build.txt"
+cp "${BUILD_DIR}/CMakeCache.txt" "${DIST_DIR}/metadata/CMakeCache.txt"
+sha256sum "${VENDOR_LIB_DIR}/librockit.a" \
+    "${VENDOR_LIB_DIR}/librockchip_mpp.a" \
+    "${VENDOR_LIB_DIR}/librga.so.2.1.0" \
+    "${RKNN_ROOT}/lib/librknnrt.so" \
+    "${OUTPUT_DIR}"/opencv-mobile/lib/libopencv_*.a \
+    >"${DIST_DIR}/metadata/dependency-sha256.txt"

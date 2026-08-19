@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly REPO_ROOT=/work
+readonly SCRIPT_DIR=${REPO_ROOT}/scripts/debian-stage3
+readonly OUTPUT_DIR=/out
+readonly WORK_DIR=${OUTPUT_DIR}/rootfs-work
+readonly ROOTFS_DIR=${WORK_DIR}/rootfs
+readonly ROOTFS_IMPORT_DIR=${WORK_DIR}/rootfs-import
+readonly MOUNT_DIR=${WORK_DIR}/mnt
+readonly ROOTFS_IMAGE=${OUTPUT_DIR}/rootfs.ext4
+readonly ROOTFS_ARCHIVE=${OUTPUT_DIR}/rootfs.tar.zst
+readonly SNAPSHOT=http://snapshot.debian.org/archive/debian/20260803T000000Z
+readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
+readonly ROOTFS_UUID=1d29a2d4-5488-4bea-a648-bf133c4b53d3
+
+mounts=()
+
+cleanup() {
+    local index
+    for ((index = ${#mounts[@]} - 1; index >= 0; index--)); do
+        mountpoint -q "${mounts[index]}" && umount "${mounts[index]}" || true
+    done
+}
+trap cleanup EXIT
+
+mount_chroot_filesystems() {
+    mkdir -p "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys" \
+        "${ROOTFS_DIR}/dev/pts" "${ROOTFS_DIR}/run"
+    mount -t proc proc "${ROOTFS_DIR}/proc"
+    mounts+=("${ROOTFS_DIR}/proc")
+    mount -t sysfs sysfs "${ROOTFS_DIR}/sys"
+    mounts+=("${ROOTFS_DIR}/sys")
+    mount --bind /dev "${ROOTFS_DIR}/dev"
+    mounts+=("${ROOTFS_DIR}/dev")
+    mount --bind /dev/pts "${ROOTFS_DIR}/dev/pts"
+    mounts+=("${ROOTFS_DIR}/dev/pts")
+    mount -t tmpfs tmpfs "${ROOTFS_DIR}/run"
+    mounts+=("${ROOTFS_DIR}/run")
+}
+
+unmount_all() {
+    cleanup
+    mounts=()
+}
+
+bootstrap_rootfs() {
+    rm -rf "${WORK_DIR}"
+    mkdir -p "${ROOTFS_DIR}" "${MOUNT_DIR}"
+    update-binfmts --enable qemu-arm >/dev/null 2>&1 || true
+    qemu-debootstrap \
+        --arch=armhf \
+        --variant=minbase \
+        --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
+        trixie "${ROOTFS_DIR}" "${SNAPSHOT}"
+
+    rm -f "${ROOTFS_DIR}/etc/apt/sources.list"
+    install -d -m 0755 "${ROOTFS_DIR}/etc/apt/sources.list.d" \
+        "${ROOTFS_DIR}/etc/apt/preferences.d"
+    install -m 0644 "${SCRIPT_DIR}/debian.sources" \
+        "${ROOTFS_DIR}/etc/apt/sources.list.d/debian.sources"
+    install -m 0644 "${SCRIPT_DIR}/aiden-production.pref" \
+        "${ROOTFS_DIR}/etc/apt/preferences.d/aiden-production"
+    install -m 0644 "${SCRIPT_DIR}/packages.list" \
+        "${ROOTFS_DIR}/tmp/debian-stage3-packages.list"
+    cat >"${ROOTFS_DIR}/usr/sbin/policy-rc.d" <<'EOF'
+#!/bin/sh
+exit 101
+EOF
+    chmod 0755 "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
+
+    mount_chroot_filesystems
+    chroot "${ROOTFS_DIR}" /usr/bin/env \
+        DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 \
+        apt-get update
+    chroot "${ROOTFS_DIR}" /bin/sh -ec \
+        'DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 apt-get install -y --no-install-recommends $(grep -v "^[[:space:]]*#" /tmp/debian-stage3-packages.list | xargs)'
+    chroot "${ROOTFS_DIR}" /usr/bin/env \
+        DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 \
+        dpkg --configure -a
+    chroot "${ROOTFS_DIR}" getent group netdev >/dev/null \
+        || chroot "${ROOTFS_DIR}" groupadd --system netdev
+
+    # Keep the root account enabled for public-key SSH while making password
+    # verification impossible. PasswordAuthentication is disabled separately.
+    chroot "${ROOTFS_DIR}" usermod -p x root
+    rm -f "${ROOTFS_DIR}/usr/sbin/policy-rc.d" \
+        "${ROOTFS_DIR}/tmp/debian-stage3-packages.list"
+    unmount_all
+}
+
+configure_rootfs() {
+    # Apply only the Debian-native overlay with root ownership. This scoped
+    # chown does not touch Debian package files or their numeric UID/GID data.
+    rsync -aHAX --numeric-ids --chown=0:0 \
+        "${REPO_ROOT}/overlay-debian/" "${ROOTFS_DIR}/"
+    chmod 0755 "${ROOTFS_DIR}"
+    while IFS= read -r -d '' path; do
+        chmod 0755 "${ROOTFS_DIR}/${path}"
+    done < <(find "${REPO_ROOT}/overlay-debian" -mindepth 1 -type d -printf '%P\0')
+    while IFS= read -r -d '' path; do
+        if [ -x "${REPO_ROOT}/overlay-debian/${path}" ]; then
+            chmod 0755 "${ROOTFS_DIR}/${path}"
+        else
+            chmod 0644 "${ROOTFS_DIR}/${path}"
+        fi
+    done < <(find "${REPO_ROOT}/overlay-debian" -type f -printf '%P\0')
+    install -m 0755 "${REPO_ROOT}/overlay/etc/init.d/S49usbhid" \
+        "${ROOTFS_DIR}/usr/lib/aiden/aiden-usb-gadget"
+    install -m 0755 "${REPO_ROOT}/overlay/etc/aiden_boot_timeline.sh" \
+        "${ROOTFS_DIR}/usr/lib/aiden/aiden-boot-timeline"
+
+    install -d -m 0755 \
+        "${ROOTFS_DIR}/oem" \
+        "${ROOTFS_DIR}/userdata" \
+        "${ROOTFS_DIR}/userdata/ota" \
+        "${ROOTFS_DIR}/var/lib/aiden"
+    printf 'aiden\n' >"${ROOTFS_DIR}/etc/hostname"
+    cat >"${ROOTFS_DIR}/etc/hosts" <<'EOF'
+127.0.0.1 localhost
+127.0.1.1 aiden
+::1 localhost ip6-localhost ip6-loopback
+EOF
+    ln -sfn /run/systemd/resolve/stub-resolv.conf "${ROOTFS_DIR}/etc/resolv.conf"
+    : >"${ROOTFS_DIR}/etc/machine-id"
+    install -d -m 0755 "${ROOTFS_DIR}/var/lib/dbus"
+    ln -sfn /etc/machine-id "${ROOTFS_DIR}/var/lib/dbus/machine-id"
+    rm -f "${ROOTFS_DIR}"/etc/ssh/ssh_host_*
+    rm -f "${ROOTFS_DIR}/var/lib/systemd/random-seed"
+
+    systemctl --root="${ROOTFS_DIR}" preset-all
+    systemctl --root="${ROOTFS_DIR}" enable \
+        systemd-networkd.service systemd-resolved.service systemd-timesyncd.service \
+        wpa_supplicant@wlan0.service ssh.service serial-getty@ttyFIQ0.service \
+        aiden-slot-resolve.service aiden-rootfs-grow.service \
+        oem.mount userdata.mount userdata-ota.mount \
+        aiden-userdata-migrate.service aiden-machine-id.service \
+        aiden-root-home.service \
+        aiden-ssh-identity.service aiden-oem-ldconfig.service \
+        aiden-environment.service aiden-zram.service aiden-swap.service \
+        aiden-media-modules.service aiden-wifi-driver.service \
+        aiden-bluetooth-state.service aiden-bluetooth-attach.service \
+        bluetooth.service aiden-rtc.service aiden-boot-timeline.service aiden.target
+    local unit
+    for unit in \
+        aiden-wetty.service dnsmasq.service wpa_supplicant.service \
+        ssh.socket rsync.service systemd-networkd-wait-online.service \
+        e2scrub_all.timer e2scrub_reap.service \
+        apt-daily.service apt-daily.timer \
+        apt-daily-upgrade.service apt-daily-upgrade.timer; do
+        systemctl --root="${ROOTFS_DIR}" disable "${unit}" || true
+    done
+    systemctl --root="${ROOTFS_DIR}" mask \
+        dnsmasq.service wpa_supplicant.service \
+        ssh.socket rsync.service \
+        systemd-networkd-wait-online.service \
+        apt-daily.service apt-daily.timer \
+        apt-daily-upgrade.service apt-daily-upgrade.timer \
+        e2scrub_all.timer e2scrub_reap.service || true
+
+    mount_chroot_filesystems
+    chroot "${ROOTFS_DIR}" dpkg-query -W \
+        -f='${binary:Package}\t${Version}\t${Architecture}\t${source:Package}\t${Maintainer}\n' \
+        | LC_ALL=C sort >"${OUTPUT_DIR}/packages.txt"
+    chroot "${ROOTFS_DIR}" dpkg --audit >"${OUTPUT_DIR}/dpkg-audit.txt"
+    unmount_all
+    if [ -s "${OUTPUT_DIR}/dpkg-audit.txt" ]; then
+        echo "dpkg reports an incomplete or inconsistent production rootfs" >&2
+        exit 1
+    fi
+    sed -i '1i package\tversion\tarchitecture\tsource\tmaintainer' \
+        "${OUTPUT_DIR}/packages.txt"
+    (
+        cd "${OUTPUT_DIR}"
+        sha256sum packages.txt >packages.sha256
+    )
+    python3 "${SCRIPT_DIR}/generate-spdx.py" \
+        "${OUTPUT_DIR}/packages.txt" "${OUTPUT_DIR}/sbom.spdx.json"
+    cp "${SCRIPT_DIR}/debian.sources" "${OUTPUT_DIR}/debian.sources"
+
+    rm -rf "${ROOTFS_DIR}/var/lib/apt/lists/"* \
+        "${ROOTFS_DIR}/var/cache/apt/archives/"*.deb \
+        "${ROOTFS_DIR}/var/log/"* \
+        "${ROOTFS_DIR}/tmp/"* \
+        "${ROOTFS_DIR}/var/tmp/"*
+    rm -f "${ROOTFS_DIR}/var/cache/apt/pkgcache.bin" \
+        "${ROOTFS_DIR}/var/cache/apt/srcpkgcache.bin" \
+        "${ROOTFS_DIR}/var/cache/ldconfig/aux-cache"
+    rm -f "${ROOTFS_DIR}/usr/bin/qemu-arm-static"
+    find "${ROOTFS_DIR}/dev" -xdev \( -type b -o -type c \) -delete
+
+    # Normalize mutable build timestamps after package installation and before
+    # producing manifests or archives. Symlink targets are not followed.
+    find "${ROOTFS_DIR}" -xdev -exec touch -h -d "@${BUILD_EPOCH}" {} +
+    (
+        cd "${ROOTFS_DIR}"
+        find . -xdev -printf '%U\t%G\t%m\t%T@\t%p\t%l\n' | LC_ALL=C sort
+    ) >"${OUTPUT_DIR}/filesystem-manifest.txt"
+    getcap -r "${ROOTFS_DIR}" 2>/dev/null \
+        | sed "s#^${ROOTFS_DIR}##" >"${OUTPUT_DIR}/capabilities.txt" || true
+    getfattr -R -d -m - "${ROOTFS_DIR}" 2>/dev/null \
+        | sed "s#${ROOTFS_DIR}##g" >"${OUTPUT_DIR}/xattrs.txt" || true
+    find "${ROOTFS_DIR}" -xdev -type f \( -perm -4000 -o -perm -2000 \) \
+        -printf '%m\t%U\t%G\t%p\n' \
+        | sed "s#${ROOTFS_DIR}##" | LC_ALL=C sort \
+        >"${OUTPUT_DIR}/setid-files.txt"
+
+    rm -f "${ROOTFS_ARCHIVE}"
+    tar --sort=name --format=posix --numeric-owner --acls --xattrs \
+        --xattrs-include='*' --mtime="@${BUILD_EPOCH}" --clamp-mtime \
+        --pax-option=delete=atime,delete=ctime \
+        -I 'zstd -19 -T0' -cf "${ROOTFS_ARCHIVE}" -C "${ROOTFS_DIR}" .
+}
+
+create_ext4_image() {
+    local feature_opts
+    feature_opts='^64bit,^huge_file,^metadata_csum,^metadata_csum_seed,^dir_index,^quota'
+    if mkfs.ext4 -q -n -O '^orphan_file' /dev/null >/dev/null 2>&1; then
+        feature_opts="${feature_opts},^orphan_file"
+    else
+        # Debian 13 supports orphan_file; retain the explicit compatibility
+        # constraint even if a future host tool changes its probe behavior.
+        feature_opts="${feature_opts},^orphan_file"
+    fi
+
+    rm -f "${ROOTFS_IMAGE}"
+    rm -rf "${ROOTFS_IMPORT_DIR}"
+    mkdir -p "${ROOTFS_IMPORT_DIR}"
+    tar --zstd --acls --xattrs --xattrs-include='*' --numeric-owner \
+        -xf "${ROOTFS_ARCHIVE}" -C "${ROOTFS_IMPORT_DIR}"
+    truncate -s 1536M "${ROOTFS_IMAGE}"
+    mkfs.ext4 -F -L rootfs -U "${ROOTFS_UUID}" -m 1 \
+        -E "lazy_itable_init=0,lazy_journal_init=0,hash_seed=${ROOTFS_UUID},root_owner=0:0" \
+        -O "${feature_opts}" -d "${ROOTFS_IMPORT_DIR}" "${ROOTFS_IMAGE}"
+    e2fsck -fy "${ROOTFS_IMAGE}"
+    resize2fs -M "${ROOTFS_IMAGE}"
+    e2fsck -fy "${ROOTFS_IMAGE}"
+    python3 "${SCRIPT_DIR}/canonicalize-ext4.py" \
+        "${ROOTFS_IMAGE}" "${BUILD_EPOCH}"
+    e2fsck -fn "${ROOTFS_IMAGE}"
+
+    mount -o loop,ro,noload "${ROOTFS_IMAGE}" "${MOUNT_DIR}"
+    mounts+=("${MOUNT_DIR}")
+    rsync -naiHAXc --numeric-ids --delete --exclude=/lost+found \
+        "${ROOTFS_DIR}/" "${MOUNT_DIR}/" >"${OUTPUT_DIR}/rootfs-import-diff.txt"
+    if [ -s "${OUTPUT_DIR}/rootfs-import-diff.txt" ]; then
+        cat "${OUTPUT_DIR}/rootfs-import-diff.txt" >&2
+        echo "mke2fs rootfs import did not preserve the source tree" >&2
+        exit 1
+    fi
+    umount "${MOUNT_DIR}"
+    mounts=()
+    {
+        echo 'status=pass'
+        echo 'importer=mke2fs-d'
+        mkfs.ext4 -V 2>&1 | head -n 1
+        echo 'comparison=rsync-HAXc-numeric-ids'
+        echo 'excluded=/lost+found'
+    } >"${OUTPUT_DIR}/rootfs-import-audit.txt"
+    rm -f "${OUTPUT_DIR}/rootfs-import-diff.txt"
+    dumpe2fs -h "${ROOTFS_IMAGE}" >"${OUTPUT_DIR}/rootfs-dumpe2fs.txt" 2>&1
+    (
+        cd "${OUTPUT_DIR}"
+        sha256sum rootfs.ext4 rootfs.tar.zst >rootfs-artifacts.sha256
+    )
+}
+
+write_metadata() {
+    local rootfs_sha packages_sha source_commit app_commit
+    rootfs_sha=$(sha256sum "${ROOTFS_IMAGE}" | awk '{print $1}')
+    packages_sha=$(sha256sum "${OUTPUT_DIR}/packages.txt" | awk '{print $1}')
+    # The repository is mounted read-only from a non-root host user, while
+    # this privileged builder runs as root. Trust only the two exact bind
+    # mount paths needed for immutable build provenance.
+    source_commit=$(git -c safe.directory="${REPO_ROOT}/pico-sdk" \
+        -C "${REPO_ROOT}/pico-sdk" rev-parse HEAD)
+    app_commit=$(git -c safe.directory="${REPO_ROOT}" \
+        -C "${REPO_ROOT}" rev-parse HEAD)
+    cat >"${OUTPUT_DIR}/build-metadata.json" <<EOF
+{
+  "architecture": "armhf",
+  "build_image_id": "${DEBIAN_STAGE3_BUILD_IMAGE_ID:-unknown}",
+  "debian_snapshot": "20260803T000000Z",
+  "hardware_demo_commit": "${app_commit}",
+  "packages_sha256": "${packages_sha}",
+  "pico_sdk_commit": "${source_commit}",
+  "rootfs_sha256": "${rootfs_sha}",
+  "source_date_epoch": ${BUILD_EPOCH},
+  "suite": "trixie"
+}
+EOF
+}
+
+finalize() {
+    local path
+    for path in \
+        rootfs.ext4 rootfs.tar.zst packages.txt packages.sha256 \
+        debian.sources build-metadata.json filesystem-manifest.txt \
+        capabilities.txt xattrs.txt setid-files.txt sbom.spdx.json \
+        dpkg-audit.txt rootfs-dumpe2fs.txt rootfs-import-audit.txt \
+        rootfs-artifacts.sha256; do
+        chown "${HOST_UID:-0}:${HOST_GID:-0}" "${OUTPUT_DIR}/${path}"
+    done
+    rm -rf "${WORK_DIR}"
+}
+
+bootstrap_rootfs
+configure_rootfs
+create_ext4_image
+write_metadata
+finalize

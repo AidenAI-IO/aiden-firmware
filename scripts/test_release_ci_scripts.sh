@@ -238,6 +238,10 @@ fi
 python3 "$ROOT_DIR/scripts/check_ci_policy_job.py"
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_debian_stage2.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_debian_stage3.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_debian_init_script_map.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_debian_systemd_overlay.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_build_cli.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_rootfs_cli_tool_catalog.sh' "$CI_WORKFLOW" || \
