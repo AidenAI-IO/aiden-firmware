@@ -97,6 +97,9 @@ grep -q -- '--wifi-backend=systemd-networkd' \
 grep -q 'AIDEN_USB_COMPOSITE_REFRESH_COMMAND=/usr/lib/aiden/aiden-usb-ecm-watchdog' \
     "${UNIT_DIR}/aiden-agent.service"
 grep -q 'aiden-boot-timeline-init.service' "${UNIT_DIR}/aiden-agent.service"
+grep -qx 'StartLimitIntervalSec=0' "${UNIT_DIR}/aiden-frame.service"
+grep -qx 'Restart=on-failure' "${UNIT_DIR}/aiden-frame.service"
+grep -qx 'RestartSec=2s' "${UNIT_DIR}/aiden-frame.service"
 grep -qx 'ExecStart=/usr/lib/aiden/aiden-boot-timeline init-systemd' \
     "${UNIT_DIR}/aiden-boot-timeline-init.service"
 grep -qx 'ExecStart=/usr/lib/aiden/aiden-boot-timeline finalize-systemd' \
