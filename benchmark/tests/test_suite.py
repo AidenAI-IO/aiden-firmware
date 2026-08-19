@@ -1066,12 +1066,17 @@ def test_quick_capture_live_suite_uses_real_trigger_setup_and_natural_prompts():
     }
     for task in suite.tasks:
         assert task.setup["type"] == "agent_prompt"
-        assert "127.0.0.1:8080/api/quick-capture" in task.setup["prompt"]
-        assert "screen_snapshot" in task.setup["prompt"]
-        assert "增加" in task.setup["prompt"]
-        assert task.setup["prompt"].index(
-            "api/tools/recall_memory"
-        ) < task.setup["prompt"].index("api/quick-capture")
+        setup_prompt = task.setup["prompt"]
+        assert "API=http://127.0.0.1:8080" in setup_prompt
+        assert "api/tools/recall_memory" in setup_prompt
+        assert "api/quick-capture" in setup_prompt
+        assert 'RECALL_BODY=\'{"input":' in setup_prompt
+        assert '"types":["screen_snapshot"]' in setup_prompt
+        assert "grep -o 'mem_" in setup_prompt
+        assert "echo READY" in setup_prompt
+        assert "FAILED:" in setup_prompt
+        assert "python3 <<" not in setup_prompt
+        assert "/usr/bin/python3" not in setup_prompt
         prompt = task.prompt.lower()
         for implementation_detail in (
             "screen_snapshot",
